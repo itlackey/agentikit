@@ -12,7 +12,7 @@ export interface SearchHit {
   openRef: string
   summary?: string
   runCmd?: string
-  kind?: "bash" | "bun"
+  kind?: "bash" | "bun" | "powershell" | "cmd"
 }
 
 export interface SearchResponse {
@@ -32,7 +32,7 @@ export interface OpenResponse {
   toolPolicy?: unknown
   modelHint?: unknown
   runCmd?: string
-  kind?: "bash" | "bun"
+  kind?: "bash" | "bun" | "powershell" | "cmd"
 }
 
 export interface RunResponse {
@@ -57,12 +57,13 @@ interface ToolExecution {
 
 interface ToolInfo {
   runCmd: string
-  kind: "bash" | "bun"
+  kind: "bash" | "bun" | "powershell" | "cmd"
   install?: ToolExecution
   execute: ToolExecution
 }
 
-const TOOL_EXTENSIONS = new Set([".sh", ".ts", ".js"])
+const IS_WINDOWS = process.platform === "win32"
+const TOOL_EXTENSIONS = new Set([".sh", ".ts", ".js", ".ps1", ".cmd", ".bat"])
 const DEFAULT_LIMIT = 20
 
 export function resolveStashDir(): string {
@@ -214,39 +215,48 @@ function normalizeLimit(limit?: number): number {
   return Math.min(Math.floor(limit), 200)
 }
 
+const ASSET_INDEXERS: Record<AgentikitAssetType, { dir: string; collect: (root: string, file: string) => IndexedAsset | undefined }> = {
+  tool: {
+    dir: "tools",
+    collect(root, file) {
+      if (!TOOL_EXTENSIONS.has(path.extname(file).toLowerCase())) return undefined
+      return { type: "tool", name: toPosix(path.relative(root, file)), path: file }
+    },
+  },
+  skill: {
+    dir: "skills",
+    collect(root, file) {
+      if (path.basename(file) !== "SKILL.md") return undefined
+      const relDir = toPosix(path.dirname(path.relative(root, file)))
+      if (!relDir || relDir === ".") return undefined
+      return { type: "skill", name: relDir, path: file }
+    },
+  },
+  command: {
+    dir: "commands",
+    collect(root, file) {
+      if (path.extname(file).toLowerCase() !== ".md") return undefined
+      return { type: "command", name: toPosix(path.relative(root, file)), path: file }
+    },
+  },
+  agent: {
+    dir: "agents",
+    collect(root, file) {
+      if (path.extname(file).toLowerCase() !== ".md") return undefined
+      return { type: "agent", name: toPosix(path.relative(root, file)), path: file }
+    },
+  },
+}
+
 function indexAssets(stashDir: string, type: AgentikitSearchType): IndexedAsset[] {
   const assets: IndexedAsset[] = []
-  if (type === "any" || type === "tool") {
-    const root = path.join(stashDir, "tools")
+  const types = type === "any" ? (Object.keys(ASSET_INDEXERS) as AgentikitAssetType[]) : [type]
+  for (const assetType of types) {
+    const indexer = ASSET_INDEXERS[assetType]
+    const root = path.join(stashDir, indexer.dir)
     walkFiles(root, (file) => {
-      if (!TOOL_EXTENSIONS.has(path.extname(file).toLowerCase())) return
-      const rel = toPosix(path.relative(root, file))
-      assets.push({ type: "tool", name: rel, path: file })
-    })
-  }
-  if (type === "any" || type === "skill") {
-    const root = path.join(stashDir, "skills")
-    walkFiles(root, (file) => {
-      if (path.basename(file) !== "SKILL.md") return
-      const relDir = toPosix(path.dirname(path.relative(root, file)))
-      if (!relDir || relDir === ".") return
-      assets.push({ type: "skill", name: relDir, path: file })
-    })
-  }
-  if (type === "any" || type === "command") {
-    const root = path.join(stashDir, "commands")
-    walkFiles(root, (file) => {
-      if (path.extname(file).toLowerCase() !== ".md") return
-      const rel = toPosix(path.relative(root, file))
-      assets.push({ type: "command", name: rel, path: file })
-    })
-  }
-  if (type === "any" || type === "agent") {
-    const root = path.join(stashDir, "agents")
-    walkFiles(root, (file) => {
-      if (path.extname(file).toLowerCase() !== ".md") return
-      const rel = toPosix(path.relative(root, file))
-      assets.push({ type: "agent", name: rel, path: file })
+      const asset = indexer.collect(root, file)
+      if (asset) assets.push(asset)
     })
   }
   return assets
@@ -325,7 +335,7 @@ function resolveAssetPath(stashDir: string, type: AgentikitAssetType, name: stri
     throw new Error("Ref resolves outside the stash root.")
   }
   if (type === "tool" && !TOOL_EXTENSIONS.has(path.extname(resolvedTarget).toLowerCase())) {
-    throw new Error("Tool ref must resolve to a .sh, .ts, or .js file.")
+    throw new Error("Tool ref must resolve to a .sh, .ts, .js, .ps1, .cmd, or .bat file.")
   }
   return realTarget
 }
@@ -342,7 +352,7 @@ function readTypeRootStat(root: string, type: AgentikitAssetType, name: string):
   try {
     return fs.statSync(root)
   } catch (error: unknown) {
-    if (isErrnoWithCode(error, "ENOENT")) {
+    if (hasErrnoCode(error, "ENOENT")) {
       throw new Error(`Stash type root not found for ref: ${type}:${name}`)
     }
     throw error
@@ -351,6 +361,7 @@ function readTypeRootStat(root: string, type: AgentikitAssetType, name: string):
 
 function buildToolInfo(stashDir: string, filePath: string): ToolInfo {
   const ext = path.extname(filePath).toLowerCase()
+
   if (ext === ".sh") {
     return {
       runCmd: `bash ${shellQuote(filePath)}`,
@@ -358,6 +369,23 @@ function buildToolInfo(stashDir: string, filePath: string): ToolInfo {
       execute: { command: "bash", args: [filePath] },
     }
   }
+
+  if (ext === ".ps1") {
+    return {
+      runCmd: `powershell -ExecutionPolicy Bypass -File ${shellQuote(filePath)}`,
+      kind: "powershell",
+      execute: { command: "powershell", args: ["-ExecutionPolicy", "Bypass", "-File", filePath] },
+    }
+  }
+
+  if (ext === ".cmd" || ext === ".bat") {
+    return {
+      runCmd: `cmd /c ${shellQuote(filePath)}`,
+      kind: "cmd",
+      execute: { command: "cmd", args: ["/c", filePath] },
+    }
+  }
+
   if (ext !== ".ts" && ext !== ".js") {
     throw new Error(`Unsupported tool extension: ${ext}`)
   }
@@ -376,10 +404,12 @@ function buildToolInfo(stashDir: string, filePath: string): ToolInfo {
 
   const quotedPkgDir = shellQuote(pkgDir)
   const quotedFilePath = shellQuote(filePath)
+  const cdCmd = IS_WINDOWS ? `cd /d ${quotedPkgDir}` : `cd ${quotedPkgDir}`
+  const chain = IS_WINDOWS ? " & " : " && "
   return {
     runCmd: shouldInstall
-      ? `cd ${quotedPkgDir} && bun install && bun ${quotedFilePath}`
-      : `cd ${quotedPkgDir} && bun ${quotedFilePath}`,
+      ? `${cdCmd}${chain}bun install${chain}bun ${quotedFilePath}`
+      : `${cdCmd}${chain}bun ${quotedFilePath}`,
     kind: "bun",
     install: shouldInstall ? { command: "bun", args: ["install"], cwd: pkgDir } : undefined,
     execute: { command: "bun", args: [filePath], cwd: pkgDir },
@@ -473,6 +503,9 @@ function shellQuote(input: string): string {
   if (/[\r\n\t\0]/.test(input)) {
     throw new Error("Unsupported control characters in stash path.")
   }
+  if (IS_WINDOWS) {
+    return `"${input.replace(/"/g, '""')}"`
+  }
   const escaped = input
     .replace(/\\/g, "\\\\")
     .replace(/"/g, '\\"')
@@ -513,11 +546,7 @@ function combineProcessOutput(stdout: string, stderr: string): string {
   return `${stdout}${stderr}`.trim()
 }
 
-function isErrnoWithCode(error: unknown, code: string): boolean {
-  return (
-    typeof error === "object"
-    && error !== null
-    && "code" in error
-    && (error as { code?: unknown }).code === code
-  )
+function hasErrnoCode(error: unknown, code: string): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) return false
+  return (error as Record<string, unknown>).code === code
 }
