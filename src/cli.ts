@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { agentikitSearch, agentikitOpen, agentikitRun } from "./stash"
 
 const args = process.argv.slice(2)
