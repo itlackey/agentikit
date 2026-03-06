@@ -40,10 +40,10 @@
     }
   },
   "scripts": {
-    "build": "tsc --project ./tsconfig.build.json --emitDeclarationOnly false --declaration false --outDir dist",
-    "build:types": "tsc --project ./tsconfig.build.json",
-    "test": "node ./scripts/run-tests.cjs",
-    "prepublishOnly": "npm run build && npm run build:types"
+    "build": "bun run tsc --project ./tsconfig.build.json --emitDeclarationOnly false --declaration false --outDir dist",
+    "build:types": "bun run tsc --project ./tsconfig.build.json",
+    "test": "bun test",
+    "prepublishOnly": "bun run build && bun run build:types"
   },
   "publishConfig": {
     "access": "public"

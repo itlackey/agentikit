@@ -19,14 +19,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: oven-sh/setup-bun@v2
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
-      - run: npm ci
+      - run: bun install
 
-      - run: npm test
+      - run: bun test
 
       - name: Set version from tag
         if: github.event_name == 'push'
@@ -44,7 +46,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json
+          git add package.json
           git commit -m "chore: bump version to ${{ inputs.version }}"
           git push
 
