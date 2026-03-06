@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process"
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 
@@ -47,6 +47,19 @@ type IndexedAsset = {
   type: AgentikitAssetType
   name: string
   path: string
+}
+
+interface ToolExecution {
+  command: string
+  args: string[]
+  cwd?: string
+}
+
+interface ToolInfo {
+  runCmd: string
+  kind: "bash" | "bun"
+  install?: ToolExecution
+  execute: ToolExecution
 }
 
 const TOOL_EXTENSIONS = new Set([".sh", ".ts", ".js"])
@@ -170,34 +183,27 @@ export function agentikitRun(input: { ref: string }): RunResponse {
   const assetPath = resolveAssetPath(stashDir, "tool", parsed.name)
   const toolInfo = buildToolInfo(stashDir, assetPath)
 
-  let output = ""
-  let exitCode = 0
-  try {
-    output = execSync(toolInfo.runCmd, { encoding: "utf8", timeout: 60_000 })
-  } catch (error: unknown) {
-    exitCode = 1
-    if (
-      typeof error === "object"
-      && error !== null
-      && "stdout" in error
-      && "status" in error
-    ) {
-      const execError = error as { stdout?: string; stderr?: string; status?: number }
-      const stdout = typeof execError.stdout === "string" ? execError.stdout : ""
-      const stderr = typeof execError.stderr === "string" ? execError.stderr : ""
-      output = stdout || stderr || String(error)
-      exitCode = typeof execError.status === "number" ? execError.status : 1
-    } else {
-      output = error instanceof Error ? error.message : String(error)
+  if (toolInfo.install) {
+    const installResult = runToolExecution(toolInfo.install)
+    if (installResult.exitCode !== 0) {
+      return {
+        type: "tool",
+        name: parsed.name,
+        path: assetPath,
+        output: installResult.output,
+        exitCode: installResult.exitCode,
+      }
     }
   }
+
+  const runResult = runToolExecution(toolInfo.execute)
 
   return {
     type: "tool",
     name: parsed.name,
     path: assetPath,
-    output,
-    exitCode,
+    output: runResult.output,
+    exitCode: runResult.exitCode,
   }
 }
 
@@ -279,7 +285,12 @@ function parseOpenRef(ref: string): { type: AgentikitAssetType; name: string } {
   if (!isAssetType(rawType)) {
     throw new Error(`Invalid open ref type: "${rawType}".`)
   }
-  const name = decodeURIComponent(rawName)
+  let name: string
+  try {
+    name = decodeURIComponent(rawName)
+  } catch {
+    throw new Error("Invalid open ref encoding.")
+  }
   const normalized = path.posix.normalize(name.replace(/\\/g, "/"))
   if (
     !name
@@ -303,14 +314,14 @@ function resolveAssetPath(stashDir: string, type: AgentikitAssetType, name: stri
   const target = type === "skill" ? path.join(root, name, "SKILL.md") : path.join(root, name)
   const resolvedRoot = resolveAndValidateTypeRoot(root, type, name)
   const resolvedTarget = path.resolve(target)
-  if (!resolvedTarget.startsWith(ensureTrailingSep(path.resolve(root)))) {
+  if (!isWithin(resolvedTarget, resolvedRoot)) {
     throw new Error("Ref resolves outside the stash root.")
   }
   if (!fs.existsSync(resolvedTarget) || !fs.statSync(resolvedTarget).isFile()) {
     throw new Error(`Stash asset not found for ref: ${type}:${name}`)
   }
   const realTarget = fs.realpathSync(resolvedTarget)
-  if (!realTarget.startsWith(resolvedRoot)) {
+  if (!isWithin(realTarget, resolvedRoot)) {
     throw new Error("Ref resolves outside the stash root.")
   }
   if (type === "tool" && !TOOL_EXTENSIONS.has(path.extname(resolvedTarget).toLowerCase())) {
@@ -324,7 +335,7 @@ function resolveAndValidateTypeRoot(root: string, type: AgentikitAssetType, name
   if (!rootStat.isDirectory()) {
     throw new Error(`Stash type root is not a directory for ref: ${type}:${name}`)
   }
-  return ensureTrailingSep(fs.realpathSync(root))
+  return fs.realpathSync(root)
 }
 
 function readTypeRootStat(root: string, type: AgentikitAssetType, name: string): fs.Stats {
@@ -338,10 +349,14 @@ function readTypeRootStat(root: string, type: AgentikitAssetType, name: string):
   }
 }
 
-function buildToolInfo(stashDir: string, filePath: string): { runCmd: string; kind: "bash" | "bun" } {
+function buildToolInfo(stashDir: string, filePath: string): ToolInfo {
   const ext = path.extname(filePath).toLowerCase()
   if (ext === ".sh") {
-    return { runCmd: `bash ${shellQuote(filePath)}`, kind: "bash" }
+    return {
+      runCmd: `bash ${shellQuote(filePath)}`,
+      kind: "bash",
+      execute: { command: "bash", args: [filePath] },
+    }
   }
   if (ext !== ".ts" && ext !== ".js") {
     throw new Error(`Unsupported tool extension: ${ext}`)
@@ -350,11 +365,24 @@ function buildToolInfo(stashDir: string, filePath: string): { runCmd: string; ki
   const toolsRoot = path.resolve(path.join(stashDir, "tools"))
   const pkgDir = findNearestPackageDir(path.dirname(filePath), toolsRoot)
   if (!pkgDir) {
-    return { runCmd: `bun ${shellQuote(filePath)}`, kind: "bun" }
+    return {
+      runCmd: `bun ${shellQuote(filePath)}`,
+      kind: "bun",
+      execute: { command: "bun", args: [filePath] },
+    }
   }
+  const installFlag = process.env.AGENTIKIT_BUN_INSTALL
+  const shouldInstall = installFlag === "1" || installFlag === "true" || installFlag === "yes"
+
+  const quotedPkgDir = shellQuote(pkgDir)
+  const quotedFilePath = shellQuote(filePath)
   return {
-    runCmd: `cd ${shellQuote(pkgDir)} && bun install && bun ${shellQuote(filePath)}`,
+    runCmd: shouldInstall
+      ? `cd ${quotedPkgDir} && bun install && bun ${quotedFilePath}`
+      : `cd ${quotedPkgDir} && bun ${quotedFilePath}`,
     kind: "bun",
+    install: shouldInstall ? { command: "bun", args: ["install"], cwd: pkgDir } : undefined,
+    execute: { command: "bun", args: [filePath], cwd: pkgDir },
   }
 }
 
@@ -372,12 +400,14 @@ function findNearestPackageDir(startDir: string, toolsRoot: string): string | un
 }
 
 function isWithin(candidate: string, root: string): boolean {
-  const rel = path.relative(root, candidate)
+  const normalizedRoot = normalizeFsPathForComparison(path.resolve(root))
+  const normalizedCandidate = normalizeFsPathForComparison(path.resolve(candidate))
+  const rel = path.relative(normalizedRoot, normalizedCandidate)
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))
 }
 
-function ensureTrailingSep(input: string): string {
-  return input.endsWith(path.sep) ? input : `${input}${path.sep}`
+function normalizeFsPathForComparison(value: string): string {
+  return process.platform === "win32" ? value.toLowerCase() : value
 }
 
 function toPosix(input: string): string {
@@ -449,6 +479,27 @@ function shellQuote(input: string): string {
     .replace(/\$/g, "\\$")
     .replace(/`/g, "\\`")
   return `"${escaped}"`
+}
+
+function runToolExecution(execution: ToolExecution): { output: string; exitCode: number } {
+  const result = spawnSync(execution.command, execution.args, {
+    cwd: execution.cwd,
+    encoding: "utf8",
+    timeout: 60_000,
+  })
+
+  const stdout = typeof result.stdout === "string" ? result.stdout : ""
+  const stderr = typeof result.stderr === "string" ? result.stderr : ""
+  if (typeof result.status === "number") {
+    return { output: `${stdout}${stderr}`, exitCode: result.status }
+  }
+  if (result.error) {
+    return {
+      output: `${stdout}${stderr}${result.error.message ? `\n${result.error.message}` : ""}`.trim(),
+      exitCode: 1,
+    }
+  }
+  return { output: `${stdout}${stderr}`.trim(), exitCode: 1 }
 }
 
 function isErrnoWithCode(error: unknown, code: string): boolean {

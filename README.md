@@ -43,8 +43,9 @@ Tool command generation:
 - `.sh` → `bash "<absolute-file>"`
 - `.ts`/`.js`:
   - find nearest `package.json` from script dir upward to stash `tools/` root
-  - if found: `cd "<pkgDir>" && bun install && bun "<absolute-file>"`
+  - if found: `cd "<pkgDir>" && bun "<absolute-file>"`
   - else: `bun "<absolute-file>"`
+  - optional: set `AGENTIKIT_BUN_INSTALL=true` to include `bun install` before running
 
 ### `agentikit_open`
 

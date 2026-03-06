@@ -42,7 +42,7 @@
   "scripts": {
     "build": "tsc --project ./tsconfig.build.json --emitDeclarationOnly false --declaration false --outDir dist",
     "build:types": "tsc --project ./tsconfig.build.json",
-    "test": "node ./scripts/clean-test-build.cjs && tsc --project ./tsconfig.build.json --emitDeclarationOnly false --declaration false --outDir /tmp/agentikit-test && AGENTIKIT_TEST_BUILD_DIR=/tmp/agentikit-test node --test ./tests/stash.test.mjs",
+    "test": "node ./scripts/run-tests.cjs",
     "prepublishOnly": "npm run build && npm run build:types"
   },
   "publishConfig": {

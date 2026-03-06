@@ -5,7 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
-const buildDir = process.env.AGENTIKIT_TEST_BUILD_DIR || "/tmp/agentikit-test"
+const buildDir = process.env.AGENTIKIT_TEST_BUILD_DIR || path.join(os.tmpdir(), "agentikit-test")
 const modulePath = path.join(buildDir, "src", "stash.js")
 const { agentikitOpen, agentikitSearch, agentikitRun } = await import(pathToFileURL(modulePath).href)
 
@@ -37,7 +37,24 @@ test("agentikitSearch creates bun runCmd from nearest package.json up to tools r
   writeFile(path.join(stashDir, "tools", "package.json"), "{\"name\":\"root\"}")
 
   process.env.AGENTIKIT_STASH_DIR = stashDir
+  delete process.env.AGENTIKIT_BUN_INSTALL
   const result = agentikitSearch({ query: "job", type: "tool" })
+
+  assert.equal(result.hits.length, 1)
+  assert.match(result.hits[0].runCmd ?? "", /^cd ".+\/tools\/group" && bun ".+\/job\.js"$/)
+  assert.equal(result.hits[0].kind, "bun")
+})
+
+test("agentikitSearch only includes bun install in runCmd when AGENTIKIT_BUN_INSTALL is enabled", () => {
+  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const nestedTool = path.join(stashDir, "tools", "group", "nested", "job.js")
+  writeFile(nestedTool, "console.log('job')\n")
+  writeFile(path.join(stashDir, "tools", "group", "package.json"), "{\"name\":\"group\"}")
+
+  process.env.AGENTIKIT_STASH_DIR = stashDir
+  process.env.AGENTIKIT_BUN_INSTALL = "true"
+  const result = agentikitSearch({ query: "job", type: "tool" })
+  delete process.env.AGENTIKIT_BUN_INSTALL
 
   assert.equal(result.hits.length, 1)
   assert.match(result.hits[0].runCmd ?? "", /^cd ".+\/tools\/group" && bun install && bun ".+\/job\.js"$/)
@@ -110,5 +127,49 @@ test("agentikitRun throws when given a non-tool ref", () => {
   assert.throws(
     () => agentikitRun({ ref: "skill:ops" }),
     /agentikitRun only supports tool refs/,
+  )
+})
+
+test("agentikitOpen rejects malformed open ref encoding", () => {
+  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  process.env.AGENTIKIT_STASH_DIR = stashDir
+  assert.throws(
+    () => agentikitOpen({ ref: "tool:%E0%A4%A" }),
+    /Invalid open ref encoding/,
+  )
+})
+
+test("agentikitOpen rejects traversal and absolute path refs", () => {
+  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  process.env.AGENTIKIT_STASH_DIR = stashDir
+
+  assert.throws(
+    () => agentikitOpen({ ref: "tool:..%2Foutside.sh" }),
+    /Invalid open ref name/,
+  )
+  assert.throws(
+    () => agentikitOpen({ ref: "tool:%2Fetc%2Fpasswd" }),
+    /Invalid open ref name/,
+  )
+})
+
+test("agentikitOpen blocks symlink escapes outside stash type root", () => {
+  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-outside-"))
+  const outsideFile = path.join(outsideDir, "outside.sh")
+  const symlinkFile = path.join(stashDir, "tools", "link.sh")
+  writeFile(outsideFile, "echo outside\n")
+  fs.mkdirSync(path.join(stashDir, "tools"), { recursive: true })
+
+  try {
+    fs.symlinkSync(outsideFile, symlinkFile)
+  } catch {
+    return
+  }
+
+  process.env.AGENTIKIT_STASH_DIR = stashDir
+  assert.throws(
+    () => agentikitOpen({ ref: "tool:link.sh" }),
+    /Ref resolves outside the stash root/,
   )
 })
