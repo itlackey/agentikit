@@ -1,6 +1,15 @@
 import { type Plugin, tool } from "@opencode-ai/plugin"
 import { agentikitOpen, agentikitRun, agentikitSearch } from "./stash"
 
+function tryJson(fn: () => unknown, action: string): string {
+  try {
+    return JSON.stringify(fn())
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    return JSON.stringify({ ok: false, error: `Failed to ${action}: ${message}` })
+  }
+}
+
 export const plugin: Plugin = async () => ({
   tool: {
     agentikit_search: tool({
@@ -14,15 +23,7 @@ export const plugin: Plugin = async () => ({
         limit: tool.schema.number().optional().describe("Maximum number of hits to return. Defaults to 20."),
       },
       async execute({ query, type, limit }) {
-        try {
-          return JSON.stringify(agentikitSearch({ query, type, limit }))
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error)
-          return JSON.stringify({
-            ok: false,
-            error: `Failed to search Agentikit stash: ${message}`,
-          })
-        }
+        return tryJson(() => agentikitSearch({ query, type, limit }), "search Agentikit stash")
       },
     }),
     agentikit_open: tool({
@@ -31,15 +32,7 @@ export const plugin: Plugin = async () => ({
         ref: tool.schema.string().describe("Open reference returned by agentikit_search."),
       },
       async execute({ ref }) {
-        try {
-          return JSON.stringify(agentikitOpen({ ref }))
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error)
-          return JSON.stringify({
-            ok: false,
-            error: `Failed to open stash asset: ${message}`,
-          })
-        }
+        return tryJson(() => agentikitOpen({ ref }), "open stash asset")
       },
     }),
     agentikit_run: tool({
@@ -48,15 +41,7 @@ export const plugin: Plugin = async () => ({
         ref: tool.schema.string().describe("Open reference of a tool returned by agentikit_search."),
       },
       async execute({ ref }) {
-        try {
-          return JSON.stringify(agentikitRun({ ref }))
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error)
-          return JSON.stringify({
-            ok: false,
-            error: `Failed to run stash tool: ${message}`,
-          })
-        }
+        return tryJson(() => agentikitRun({ ref }), "run stash tool")
       },
     }),
   },

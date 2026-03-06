@@ -4,10 +4,11 @@ const { spawnSync } = require("node:child_process")
 
 const buildDir = process.env.AGENTIKIT_TEST_BUILD_DIR || path.join(os.tmpdir(), "agentikit-test")
 const env = { ...process.env, AGENTIKIT_TEST_BUILD_DIR: buildDir }
+const tsc = path.join(__dirname, "..", "node_modules", ".bin", "tsc")
 
 runOrExit(process.execPath, ["./scripts/clean-test-build.cjs"], env)
 runOrExit(
-  "tsc",
+  tsc,
   [
     "--project",
     "./tsconfig.build.json",

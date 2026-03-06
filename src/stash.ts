@@ -214,39 +214,48 @@ function normalizeLimit(limit?: number): number {
   return Math.min(Math.floor(limit), 200)
 }
 
+const ASSET_INDEXERS: Record<AgentikitAssetType, { dir: string; collect: (root: string, file: string) => IndexedAsset | undefined }> = {
+  tool: {
+    dir: "tools",
+    collect(root, file) {
+      if (!TOOL_EXTENSIONS.has(path.extname(file).toLowerCase())) return undefined
+      return { type: "tool", name: toPosix(path.relative(root, file)), path: file }
+    },
+  },
+  skill: {
+    dir: "skills",
+    collect(root, file) {
+      if (path.basename(file) !== "SKILL.md") return undefined
+      const relDir = toPosix(path.dirname(path.relative(root, file)))
+      if (!relDir || relDir === ".") return undefined
+      return { type: "skill", name: relDir, path: file }
+    },
+  },
+  command: {
+    dir: "commands",
+    collect(root, file) {
+      if (path.extname(file).toLowerCase() !== ".md") return undefined
+      return { type: "command", name: toPosix(path.relative(root, file)), path: file }
+    },
+  },
+  agent: {
+    dir: "agents",
+    collect(root, file) {
+      if (path.extname(file).toLowerCase() !== ".md") return undefined
+      return { type: "agent", name: toPosix(path.relative(root, file)), path: file }
+    },
+  },
+}
+
 function indexAssets(stashDir: string, type: AgentikitSearchType): IndexedAsset[] {
   const assets: IndexedAsset[] = []
-  if (type === "any" || type === "tool") {
-    const root = path.join(stashDir, "tools")
+  const types = type === "any" ? (Object.keys(ASSET_INDEXERS) as AgentikitAssetType[]) : [type]
+  for (const assetType of types) {
+    const indexer = ASSET_INDEXERS[assetType]
+    const root = path.join(stashDir, indexer.dir)
     walkFiles(root, (file) => {
-      if (!TOOL_EXTENSIONS.has(path.extname(file).toLowerCase())) return
-      const rel = toPosix(path.relative(root, file))
-      assets.push({ type: "tool", name: rel, path: file })
-    })
-  }
-  if (type === "any" || type === "skill") {
-    const root = path.join(stashDir, "skills")
-    walkFiles(root, (file) => {
-      if (path.basename(file) !== "SKILL.md") return
-      const relDir = toPosix(path.dirname(path.relative(root, file)))
-      if (!relDir || relDir === ".") return
-      assets.push({ type: "skill", name: relDir, path: file })
-    })
-  }
-  if (type === "any" || type === "command") {
-    const root = path.join(stashDir, "commands")
-    walkFiles(root, (file) => {
-      if (path.extname(file).toLowerCase() !== ".md") return
-      const rel = toPosix(path.relative(root, file))
-      assets.push({ type: "command", name: rel, path: file })
-    })
-  }
-  if (type === "any" || type === "agent") {
-    const root = path.join(stashDir, "agents")
-    walkFiles(root, (file) => {
-      if (path.extname(file).toLowerCase() !== ".md") return
-      const rel = toPosix(path.relative(root, file))
-      assets.push({ type: "agent", name: rel, path: file })
+      const asset = indexer.collect(root, file)
+      if (asset) assets.push(asset)
     })
   }
   return assets
@@ -342,7 +351,7 @@ function readTypeRootStat(root: string, type: AgentikitAssetType, name: string):
   try {
     return fs.statSync(root)
   } catch (error: unknown) {
-    if (isErrnoWithCode(error, "ENOENT")) {
+    if (hasErrnoCode(error, "ENOENT")) {
       throw new Error(`Stash type root not found for ref: ${type}:${name}`)
     }
     throw error
@@ -513,11 +522,7 @@ function combineProcessOutput(stdout: string, stderr: string): string {
   return `${stdout}${stderr}`.trim()
 }
 
-function isErrnoWithCode(error: unknown, code: string): boolean {
-  return (
-    typeof error === "object"
-    && error !== null
-    && "code" in error
-    && (error as { code?: unknown }).code === code
-  )
+function hasErrnoCode(error: unknown, code: string): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) return false
+  return (error as Record<string, unknown>).code === code
 }
