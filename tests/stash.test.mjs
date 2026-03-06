@@ -37,7 +37,6 @@ test("agentikitSearch creates bun runCmd from nearest package.json up to tools r
   writeFile(path.join(stashDir, "tools", "package.json"), "{\"name\":\"root\"}")
 
   process.env.AGENTIKIT_STASH_DIR = stashDir
-  delete process.env.AGENTIKIT_BUN_INSTALL
   const result = agentikitSearch({ query: "job", type: "tool" })
 
   assert.equal(result.hits.length, 1)
@@ -53,12 +52,14 @@ test("agentikitSearch only includes bun install in runCmd when AGENTIKIT_BUN_INS
 
   process.env.AGENTIKIT_STASH_DIR = stashDir
   process.env.AGENTIKIT_BUN_INSTALL = "true"
-  const result = agentikitSearch({ query: "job", type: "tool" })
-  delete process.env.AGENTIKIT_BUN_INSTALL
-
-  assert.equal(result.hits.length, 1)
-  assert.match(result.hits[0].runCmd ?? "", /^cd ".+\/tools\/group" && bun install && bun ".+\/job\.js"$/)
-  assert.equal(result.hits[0].kind, "bun")
+  try {
+    const result = agentikitSearch({ query: "job", type: "tool" })
+    assert.equal(result.hits.length, 1)
+    assert.match(result.hits[0].runCmd ?? "", /^cd ".+\/tools\/group" && bun install && bun ".+\/job\.js"$/)
+    assert.equal(result.hits[0].kind, "bun")
+  } finally {
+    delete process.env.AGENTIKIT_BUN_INSTALL
+  }
 })
 
 test("agentikitOpen returns full payloads for skill/command/agent", () => {
@@ -153,7 +154,7 @@ test("agentikitOpen rejects traversal and absolute path refs", () => {
   )
 })
 
-test("agentikitOpen blocks symlink escapes outside stash type root", () => {
+test("agentikitOpen blocks symlink escapes outside stash type root", (t) => {
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
   const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-outside-"))
   const outsideFile = path.join(outsideDir, "outside.sh")
@@ -164,6 +165,7 @@ test("agentikitOpen blocks symlink escapes outside stash type root", () => {
   try {
     fs.symlinkSync(outsideFile, symlinkFile)
   } catch {
+    t.skip("Symlinks are not supported in this environment")
     return
   }
 

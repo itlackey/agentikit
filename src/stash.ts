@@ -490,16 +490,27 @@ function runToolExecution(execution: ToolExecution): { output: string; exitCode:
 
   const stdout = typeof result.stdout === "string" ? result.stdout : ""
   const stderr = typeof result.stderr === "string" ? result.stderr : ""
+  const combinedOutput = combineProcessOutput(stdout, stderr)
   if (typeof result.status === "number") {
-    return { output: `${stdout}${stderr}`, exitCode: result.status }
+    return { output: combinedOutput, exitCode: result.status }
   }
   if (result.error) {
     return {
-      output: `${stdout}${stderr}${result.error.message ? `\n${result.error.message}` : ""}`.trim(),
+      output: `${combinedOutput}${result.error.message ? `\n${result.error.message}` : ""}`.trim(),
       exitCode: 1,
     }
   }
-  return { output: `${stdout}${stderr}`.trim(), exitCode: 1 }
+  return {
+    output: combinedOutput || `Unexpected process termination while running "${execution.command}": no status code or error information available.`,
+    exitCode: 1,
+  }
+}
+
+function combineProcessOutput(stdout: string, stderr: string): string {
+  if (stdout && stderr) {
+    return `stdout:\n${stdout.trim()}\n\nstderr:\n${stderr.trim()}`
+  }
+  return `${stdout}${stderr}`.trim()
 }
 
 function isErrnoWithCode(error: unknown, code: string): boolean {
