@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { agentikitSearch, agentikitOpen, agentikitRun, type KnowledgeView } from "./stash"
+import { agentikitSearch, agentikitRead, type KnowledgeView } from "./stash"
 import { agentikitInit } from "./init"
 import { agentikitIndex } from "./indexer"
 import { loadConfig, updateConfig, type AgentikitConfig } from "./config"
@@ -45,18 +45,17 @@ function parseCliArgs(
 }
 
 function usage(): never {
-  console.error("Usage: agentikit <init|search|open|run> [options]")
+  console.error("Usage: agentikit <init|search|read> [options]")
   console.error("")
   console.error("Commands:")
   console.error("  init                 Initialize agentikit stash directory and set AGENTIKIT_STASH_DIR")
   console.error("  index [--full]       Build search index (incremental by default; --full forces full reindex)")
   console.error("  search [query]       Search the stash (--type tool|skill|command|agent|knowledge|any) (--limit N)")
-  console.error("  open <type:name>     Open a stash asset by ref")
+  console.error("  read <type:name>     Read a stash asset by ref")
   console.error("       Knowledge view options: --view full|toc|frontmatter|section|lines")
   console.error("         --heading <text>   Section heading (for --view section)")
   console.error("         --start <N>        Start line (for --view lines)")
   console.error("         --end <N>          End line (for --view lines)")
-  console.error("  run <type:name>      Run a tool by ref")
   console.error("  config               Show current configuration")
   console.error("  config --set k=v     Update a configuration key")
   process.exit(1)
@@ -85,7 +84,7 @@ async function main() {
       console.log(JSON.stringify(await agentikitSearch({ query, type, limit }), null, 2))
       break
     }
-    case "open": {
+    case "read": {
       const ref = args[1]
       if (!ref) { console.error("Error: missing ref argument\n"); return usage() }
       const parsed = parseCliArgs(args.slice(2), {
@@ -121,15 +120,7 @@ async function main() {
             usage()
         }
       }
-      console.log(JSON.stringify(agentikitOpen({ ref, view }), null, 2))
-      break
-    }
-    case "run": {
-      const ref = args[1]
-      if (!ref) { console.error("Error: missing ref argument\n"); return usage() }
-      const result = agentikitRun({ ref })
-      console.log(JSON.stringify(result, null, 2))
-      process.exit(result.exitCode)
+      console.log(JSON.stringify(agentikitRead({ ref, view }), null, 2))
       break
     }
     case "config": {

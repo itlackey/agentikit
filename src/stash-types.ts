@@ -21,7 +21,7 @@ export interface SearchResponse {
   tip?: string
 }
 
-export interface OpenResponse {
+export interface ReadResponse {
   type: AgentikitAssetType
   name: string
   path: string
@@ -33,14 +33,6 @@ export interface OpenResponse {
   modelHint?: unknown
   runCmd?: string
   kind?: ToolKind
-}
-
-export interface RunResponse {
-  type: "tool"
-  name: string
-  path: string
-  output: string
-  exitCode: number
 }
 
 export type KnowledgeView =

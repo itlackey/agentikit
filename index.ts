@@ -1,4 +1,4 @@
-export { agentikitSearch, agentikitOpen, agentikitRun } from "./src/stash"
+export { agentikitSearch, agentikitRead } from "./src/stash"
 export { agentikitInit } from "./src/init"
 export type { InitResponse } from "./src/init"
 export type {
@@ -6,8 +6,7 @@ export type {
   AgentikitSearchType,
   SearchHit,
   SearchResponse,
-  OpenResponse,
-  RunResponse,
+  ReadResponse,
   KnowledgeView,
 } from "./src/stash"
 export type { ToolKind } from "./src/tool-runner"
