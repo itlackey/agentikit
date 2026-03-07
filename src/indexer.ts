@@ -11,6 +11,7 @@ import {
 } from "./metadata"
 import { TfIdfAdapter, type ScoredEntry, type SerializedTfIdf } from "./similarity"
 import { walkStash } from "./walker"
+import type { EmbeddingVector } from "./embedder"
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -18,15 +19,20 @@ export interface IndexedEntry {
   entry: StashEntry
   path: string
   dirPath: string
+  embedding?: EmbeddingVector
 }
 
 export interface SearchIndex {
   version: number
   builtAt: string
   stashDir: string
+  /** All stash directories that were indexed (primary + additional) */
+  stashDirs?: string[]
   entries: IndexedEntry[]
   /** Serialized TF-IDF state (term frequencies, idf values) */
   tfidf?: SerializedTfIdf
+  /** Whether embeddings are included in entries */
+  hasEmbeddings?: boolean
 }
 
 export interface IndexResponse {
@@ -41,7 +47,7 @@ export interface IndexResponse {
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const INDEX_VERSION = 2
+const INDEX_VERSION = 3
 
 // ── Index Path ──────────────────────────────────────────────────────────────
 
@@ -65,8 +71,22 @@ export function loadSearchIndex(): SearchIndex | null {
 
 // ── Indexer ──────────────────────────────────────────────────────────────────
 
-export function agentikitIndex(options?: { stashDir?: string; full?: boolean }): IndexResponse {
+export async function agentikitIndex(options?: { stashDir?: string; full?: boolean }): Promise<IndexResponse> {
   const stashDir = options?.stashDir || resolveStashDir()
+
+  // Load config to get additional stash dirs and semantic search setting
+  const { loadConfig } = await import("./config.js")
+  const config = loadConfig(stashDir)
+
+  const allStashDirs = [stashDir]
+  for (const d of config.additionalStashDirs) {
+    try {
+      if (fs.statSync(d).isDirectory() && !allStashDirs.includes(path.resolve(d))) {
+        allStashDirs.push(path.resolve(d))
+      }
+    } catch { /* skip nonexistent dirs */ }
+  }
+
   const allEntries: IndexedEntry[] = []
   let generatedCount = 0
   let scannedDirs = 0
@@ -87,52 +107,60 @@ export function agentikitIndex(options?: { stashDir?: string; full?: boolean }):
     }
   }
 
-  for (const assetType of ASSET_TYPES as AgentikitAssetType[]) {
-    const typeRoot = path.join(stashDir, TYPE_DIRS[assetType])
-    try {
-      if (!fs.statSync(typeRoot).isDirectory()) continue
-    } catch { continue }
+  const seenPaths = new Set<string>()
 
-    // Group files by their immediate parent directory
-    const dirGroups = walkStash(typeRoot, assetType)
+  for (const currentStashDir of allStashDirs) {
+    for (const assetType of ASSET_TYPES as AgentikitAssetType[]) {
+      const typeRoot = path.join(currentStashDir, TYPE_DIRS[assetType])
+      try {
+        if (!fs.statSync(typeRoot).isDirectory()) continue
+      } catch { continue }
 
-    for (const { dirPath, files } of dirGroups) {
-      // Incremental: skip directories that haven't changed
-      const prevEntries = previousEntriesByDir.get(dirPath)
-      if (isIncremental && prevEntries && !isDirStale(dirPath, files, prevEntries, builtAtMs)) {
-        allEntries.push(...prevEntries)
-        skippedDirs++
-        continue
-      }
+      // Group files by their immediate parent directory
+      const dirGroups = walkStash(typeRoot, assetType)
 
-      scannedDirs++
+      for (const { dirPath, files } of dirGroups) {
+        // Deduplicate by dirPath across stash dirs
+        if (seenPaths.has(path.resolve(dirPath))) continue
+        seenPaths.add(path.resolve(dirPath))
 
-      // Try loading existing .stash.json
-      let stash = loadStashFile(dirPath)
-
-      if (stash) {
-        const migration = migrateGeneratedSkillMetadata(stash, files, typeRoot)
-        if (migration.changed) {
-          stash = migration.stash
-          writeStashFile(dirPath, stash)
+        // Incremental: skip directories that haven't changed
+        const prevEntries = previousEntriesByDir.get(dirPath)
+        if (isIncremental && prevEntries && !isDirStale(dirPath, files, prevEntries, builtAtMs)) {
+          allEntries.push(...prevEntries)
+          skippedDirs++
+          continue
         }
-      }
 
-      if (!stash) {
-        // Generate metadata
-        stash = generateMetadata(dirPath, assetType, files, typeRoot)
-        if (stash.entries.length > 0) {
-          writeStashFile(dirPath, stash)
-          generatedCount += stash.entries.length
+        scannedDirs++
+
+        // Try loading existing .stash.json
+        let stash = loadStashFile(dirPath)
+
+        if (stash) {
+          const migration = migrateGeneratedSkillMetadata(stash, files, typeRoot)
+          if (migration.changed) {
+            stash = migration.stash
+            writeStashFile(dirPath, stash)
+          }
         }
-      }
 
-      if (stash) {
-        for (const entry of stash.entries) {
-          const entryPath = entry.entry
-            ? path.join(dirPath, entry.entry)
-            : files[0] || dirPath
-          allEntries.push({ entry, path: entryPath, dirPath })
+        if (!stash) {
+          // Generate metadata
+          stash = generateMetadata(dirPath, assetType, files, typeRoot)
+          if (stash.entries.length > 0) {
+            writeStashFile(dirPath, stash)
+            generatedCount += stash.entries.length
+          }
+        }
+
+        if (stash) {
+          for (const entry of stash.entries) {
+            const entryPath = entry.entry
+              ? path.join(dirPath, entry.entry)
+              : files[0] || dirPath
+            allEntries.push({ entry, path: entryPath, dirPath })
+          }
         }
       }
     }
@@ -148,6 +176,23 @@ export function agentikitIndex(options?: { stashDir?: string; full?: boolean }):
   }))
   adapter.buildIndex(scoredEntries)
 
+  // Generate embeddings if semantic search is enabled
+  let hasEmbeddings = false
+  if (config.semanticSearch) {
+    try {
+      const { embed } = await import("./embedder.js")
+      for (const ie of allEntries) {
+        if (!ie.embedding) {
+          const text = buildSearchText(ie.entry)
+          ie.embedding = await embed(text)
+        }
+      }
+      hasEmbeddings = true
+    } catch {
+      // @xenova/transformers not available, continue without embeddings
+    }
+  }
+
   // Persist index
   const indexPath = getIndexPath()
   const indexDir = path.dirname(indexPath)
@@ -159,8 +204,10 @@ export function agentikitIndex(options?: { stashDir?: string; full?: boolean }):
     version: INDEX_VERSION,
     builtAt: new Date().toISOString(),
     stashDir,
+    stashDirs: allStashDirs,
     entries: allEntries,
     tfidf: adapter.serialize(),
+    hasEmbeddings,
   }
   fs.writeFileSync(indexPath, JSON.stringify(index) + "\n", "utf8")
 

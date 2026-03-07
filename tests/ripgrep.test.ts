@@ -188,7 +188,7 @@ test("rgFilterCandidates returns null on rg process error status > 1", () => {
 
 // ── Integration: ripgrep + semantic search ──────────────────────────────────
 
-test("search pipeline uses ripgrep pre-filtering when index exists", () => {
+test("search pipeline uses ripgrep pre-filtering when index exists", async () => {
   const stashDir = tmpDir()
   for (const sub of ["tools", "skills", "commands", "agents"]) {
     fs.mkdirSync(path.join(stashDir, sub), { recursive: true })
@@ -224,12 +224,12 @@ test("search pipeline uses ripgrep pre-filtering when index exists", () => {
   try {
     // Build index
     process.env.AGENTIKIT_STASH_DIR = stashDir
-    const { agentikitIndex } = require("../src/indexer")
-    agentikitIndex({ stashDir })
+    const { agentikitIndex } = await import("../src/indexer")
+    await agentikitIndex({ stashDir })
 
     // Search — ripgrep should filter candidates before TF-IDF ranks them
-    const { agentikitSearch } = require("../src/stash")
-    const result = agentikitSearch({ query: "docker", type: "any" })
+    const { agentikitSearch } = await import("../src/stash")
+    const result = await agentikitSearch({ query: "docker", type: "any" })
 
     expect(result.hits.length).toBeGreaterThan(0)
     // Docker-related result should be ranked first

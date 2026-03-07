@@ -15,14 +15,14 @@ function writeFile(filePath: string, content = "") {
   fs.writeFileSync(filePath, content)
 }
 
-test("agentikitSearch only includes tool files with .sh/.ts/.js and returns runCmd", () => {
+test("agentikitSearch only includes tool files with .sh/.ts/.js and returns runCmd", async () => {
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
   writeFile(path.join(stashDir, "tools", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
   writeFile(path.join(stashDir, "tools", "script.ts"), "console.log('x')\n")
   writeFile(path.join(stashDir, "tools", "README.md"), "ignore\n")
 
   process.env.AGENTIKIT_STASH_DIR = stashDir
-  const result = agentikitSearch({ query: "", type: "tool" })
+  const result = await agentikitSearch({ query: "", type: "tool" })
 
   expect(result.hits.length).toBe(2)
   expect(result.hits.every((hit: SearchHit) => hit.type === "tool")).toBe(true)
@@ -30,7 +30,7 @@ test("agentikitSearch only includes tool files with .sh/.ts/.js and returns runC
   expect(result.hits.some((hit: SearchHit) => typeof hit.runCmd === "string")).toBe(true)
 })
 
-test("agentikitSearch creates bun runCmd from nearest package.json up to tools root", () => {
+test("agentikitSearch creates bun runCmd from nearest package.json up to tools root", async () => {
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
   const nestedTool = path.join(stashDir, "tools", "group", "nested", "job.js")
   writeFile(nestedTool, "console.log('job')\n")
@@ -38,14 +38,14 @@ test("agentikitSearch creates bun runCmd from nearest package.json up to tools r
   writeFile(path.join(stashDir, "tools", "package.json"), '{"name":"root"}')
 
   process.env.AGENTIKIT_STASH_DIR = stashDir
-  const result = agentikitSearch({ query: "job", type: "tool" })
+  const result = await agentikitSearch({ query: "job", type: "tool" })
 
   expect(result.hits.length).toBe(1)
   expect(result.hits[0].runCmd ?? "").toMatch(/^cd ".+\/tools\/group" && bun ".+\/job\.js"$/)
   expect(result.hits[0].kind).toBe("bun")
 })
 
-test("agentikitSearch only includes bun install in runCmd when AGENTIKIT_BUN_INSTALL is enabled", () => {
+test("agentikitSearch only includes bun install in runCmd when AGENTIKIT_BUN_INSTALL is enabled", async () => {
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
   const nestedTool = path.join(stashDir, "tools", "group", "nested", "job.js")
   writeFile(nestedTool, "console.log('job')\n")
@@ -54,7 +54,7 @@ test("agentikitSearch only includes bun install in runCmd when AGENTIKIT_BUN_INS
   process.env.AGENTIKIT_STASH_DIR = stashDir
   process.env.AGENTIKIT_BUN_INSTALL = "true"
   try {
-    const result = agentikitSearch({ query: "job", type: "tool" })
+    const result = await agentikitSearch({ query: "job", type: "tool" })
     expect(result.hits.length).toBe(1)
     expect(result.hits[0].runCmd ?? "").toMatch(/^cd ".+\/tools\/group" && bun install && bun ".+\/job\.js"$/)
     expect(result.hits[0].kind).toBe("bun")
@@ -211,12 +211,12 @@ Returns all users.
 Creates a user.
 `
 
-test("agentikitSearch finds knowledge assets", () => {
+test("agentikitSearch finds knowledge assets", async () => {
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
   writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC)
 
   process.env.AGENTIKIT_STASH_DIR = stashDir
-  const result = agentikitSearch({ query: "", type: "knowledge" })
+  const result = await agentikitSearch({ query: "", type: "knowledge" })
 
   expect(result.hits.length).toBe(1)
   expect(result.hits[0].type).toBe("knowledge")
