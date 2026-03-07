@@ -180,11 +180,15 @@ function trySemanticSearch(
   const results = adapter.search(query, limit, typeFilter)
 
   return results.map((r): SearchHit => {
+    // Derive the openRef name from the filesystem path, not the stash entry name,
+    // because agentikitOpen resolves assets by their relative path under the type root.
+    const openRefName = deriveOpenRefName(r.entry.type, r.path, stashDir)
+
     const hit: SearchHit = {
       type: r.entry.type,
       name: r.entry.name,
       path: r.path,
-      openRef: makeOpenRef(r.entry.type, r.entry.name),
+      openRef: makeOpenRef(r.entry.type, openRefName),
       description: r.entry.description,
       tags: r.entry.tags,
       score: r.score,
@@ -202,6 +206,26 @@ function trySemanticSearch(
 
     return hit
   })
+}
+
+/**
+ * Derive the correct openRef name for a semantic search result.
+ * Tools use their relative file path (e.g., "deploy/deploy-k8s.sh"),
+ * skills use directory name, commands/agents use relative .md path.
+ */
+function deriveOpenRefName(
+  type: AgentikitAssetType,
+  filePath: string,
+  stashDir: string,
+): string {
+  const indexer = ASSET_INDEXERS[type]
+  const root = path.join(stashDir, indexer.dir)
+  if (type === "skill") {
+    // Skills resolve by directory name relative to skills/
+    const rel = toPosix(path.dirname(path.relative(root, filePath)))
+    return rel === "." ? path.basename(path.dirname(filePath)) : rel
+  }
+  return toPosix(path.relative(root, filePath))
 }
 
 export function agentikitOpen(input: { ref: string }): OpenResponse {

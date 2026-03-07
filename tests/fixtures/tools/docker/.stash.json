@@ -1,0 +1,30 @@
+{
+  "entries": [
+    {
+      "name": "docker-build",
+      "type": "tool",
+      "description": "Build Docker images from Dockerfiles with multi-stage support",
+      "tags": ["docker", "build", "container", "image"],
+      "examples": ["build a docker image", "create container image from Dockerfile"],
+      "intent": {
+        "when": "user needs to build container images",
+        "input": "Dockerfile path or build context directory",
+        "output": "built docker image with tag"
+      },
+      "entry": "build-image.sh"
+    },
+    {
+      "name": "docker-compose",
+      "type": "tool",
+      "description": "Start Docker Compose services for local development environments",
+      "tags": ["docker", "compose", "development", "services"],
+      "examples": ["start dev environment", "bring up docker compose"],
+      "intent": {
+        "when": "user needs to start local development services",
+        "input": "docker-compose.yml location",
+        "output": "running service containers"
+      },
+      "entry": "compose-up.sh"
+    }
+  ]
+}
