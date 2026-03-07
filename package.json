@@ -2,19 +2,13 @@
   "name": "agentikit",
   "version": "0.0.7",
   "type": "module",
-  "description": "Search, open, and run extension assets from a stash directory. Works as both an OpenCode plugin and a Claude Code plugin.",
+  "description": "CLI tool to search, open, and run extension assets from an agentikit stash directory.",
   "keywords": [
-    "opencode",
-    "opencode-ai",
-    "opencode-plugin",
-    "opencode-extensions",
-    "claude-code",
-    "claude-code-plugin",
     "agentikit",
     "ai-agent",
     "agent-framework",
     "developer-tools",
-    "plugin",
+    "cli",
     "tools",
     "skills",
     "commands"
@@ -31,9 +25,6 @@
   "files": [
     "dist",
     "src",
-    ".claude-plugin",
-    "skills",
-    "commands",
     "README.md"
   ],
   "bin": {
@@ -59,8 +50,5 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.9.3"
-  },
-  "dependencies": {
-    "@opencode-ai/plugin": "^1.2.20"
   }
 }

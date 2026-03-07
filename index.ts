@@ -1,4 +1,3 @@
-export { plugin } from "./src/plugin"
 export { agentikitSearch, agentikitOpen, agentikitRun, agentikitInit } from "./src/stash"
 export type {
   AgentikitAssetType,
