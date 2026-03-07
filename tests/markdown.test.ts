@@ -117,6 +117,11 @@ test("extractLineRange clamps to valid range", () => {
   expect(extractLineRange(content, 2, 2)).toBe("line2")
 })
 
+test("extractLineRange returns empty when end is before start", () => {
+  const content = "line1\nline2\nline3\nline4\nline5"
+  expect(extractLineRange(content, 5, 2)).toBe("")
+})
+
 test("extractFrontmatterOnly returns YAML block", () => {
   const fm = extractFrontmatterOnly(SAMPLE_DOC)
   expect(fm).not.toBeNull()
