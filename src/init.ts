@@ -25,16 +25,15 @@ export interface InitResponse {
 
 export function agentikitInit(): InitResponse {
   let stashDir: string
-  const home = process.env.HOME || ""
   if (IS_WINDOWS) {
-    const docs = process.env.USERPROFILE
-      ? path.join(process.env.USERPROFILE, "Documents")
-      : ""
-    if (!docs) {
+    const userProfile = process.env.USERPROFILE?.trim()
+    if (!userProfile) {
       throw new Error("Unable to determine Documents folder. Ensure USERPROFILE is set.")
     }
+    const docs = path.join(userProfile, "Documents")
     stashDir = path.join(docs, "agentikit")
   } else {
+    const home = process.env.HOME?.trim()
     if (!home) {
       throw new Error("Unable to determine home directory. Set HOME.")
     }
@@ -65,13 +64,14 @@ export function agentikitInit(): InitResponse {
     envSet = result.status === 0
   } else {
     const shell = process.env.SHELL || ""
+    const homeDir = process.env.HOME! // already validated non-empty above
     let profile: string
     if (shell.endsWith("/zsh")) {
-      profile = path.join(home, ".zshrc")
+      profile = path.join(homeDir, ".zshrc")
     } else if (shell.endsWith("/bash")) {
-      profile = path.join(home, ".bashrc")
+      profile = path.join(homeDir, ".bashrc")
     } else {
-      profile = path.join(home, ".profile")
+      profile = path.join(homeDir, ".profile")
     }
 
     const exportLine = `export AGENTIKIT_STASH_DIR="${stashDir}"`

@@ -151,7 +151,7 @@ function trySemanticSearch(
       entry: ie.entry,
       path: ie.path,
     }))
-    adapter = TfIdfAdapter.deserialize(index.tfidf as any, allScored)
+    adapter = TfIdfAdapter.deserialize(index.tfidf, allScored)
   } else {
     // Rebuild adapter from candidate subset
     adapter = new TfIdfAdapter()
@@ -181,8 +181,11 @@ function trySemanticSearch(
         const toolInfo = buildToolInfo(stashDir, r.path)
         hit.runCmd = toolInfo.runCmd
         hit.kind = toolInfo.kind
-      } catch {
-        // Tool file may have been removed since indexing
+      } catch (error: unknown) {
+        // Only suppress file-not-found errors (tool may have been removed since indexing)
+        if (!hasErrnoCode(error, "ENOENT")) {
+          throw error
+        }
       }
     }
 
@@ -469,4 +472,3 @@ function isWithin(candidate: string, root: string): boolean {
 function normalizeFsPathForComparison(value: string): string {
   return process.platform === "win32" ? value.toLowerCase() : value
 }
-

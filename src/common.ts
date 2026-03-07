@@ -45,7 +45,7 @@ export function resolveStashDir(): string {
 }
 
 export function toPosix(input: string): string {
-  return input.split(path.sep).join("/")
+  return input.replace(/\\/g, "/")
 }
 
 export function hasErrnoCode(error: unknown, code: string): boolean {

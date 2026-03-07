@@ -27,60 +27,79 @@ function usage(): never {
   process.exit(1)
 }
 
-switch (command) {
-  case "init": {
-    const result = agentikitInit()
-    console.log(JSON.stringify(result, null, 2))
-    break
-  }
-  case "index": {
-    const full = args.includes("--full")
-    const result = agentikitIndex({ full })
-    console.log(JSON.stringify(result, null, 2))
-    break
-  }
-  case "search": {
-    const query = args.find((a, i) => i > 0 && !a.startsWith("--") && args[i - 1] !== "--type" && args[i - 1] !== "--limit") ?? ""
-    const type = flag("--type") as "tool" | "skill" | "command" | "agent" | "any" | undefined
-    const limitStr = flag("--limit")
-    const limit = limitStr ? parseInt(limitStr, 10) : undefined
-    console.log(JSON.stringify(agentikitSearch({ query, type, limit }), null, 2))
-    break
-  }
-  case "open": {
-    const ref = args[1]
-    if (!ref) { console.error("Error: missing ref argument\n"); usage() }
-    const viewMode = flag("--view")
-    let view: KnowledgeView | undefined
-    if (viewMode) {
-      switch (viewMode) {
-        case "section":
-          view = { mode: "section", heading: flag("--heading") ?? "" }
-          break
-        case "lines":
-          view = { mode: "lines", start: Number(flag("--start") ?? "1"), end: Number(flag("--end") ?? "Infinity") }
-          break
-        case "toc":
-        case "frontmatter":
-        case "full":
-          view = { mode: viewMode }
-          break
-        default:
-          console.error(`Unknown view mode: ${viewMode}`)
-          usage()
-      }
+try {
+  switch (command) {
+    case "init": {
+      const result = agentikitInit()
+      console.log(JSON.stringify(result, null, 2))
+      break
     }
-    console.log(JSON.stringify(agentikitOpen({ ref, view }), null, 2))
-    break
+    case "index": {
+      const full = args.includes("--full")
+      const result = agentikitIndex({ full })
+      console.log(JSON.stringify(result, null, 2))
+      break
+    }
+    case "search": {
+      // Collect positional args (not flags or flag values)
+      const flagNames = new Set(["--type", "--limit"])
+      const positionals: string[] = []
+      for (let i = 1; i < args.length; i++) {
+        if (flagNames.has(args[i])) { i++; continue } // skip flag and its value
+        if (args[i].startsWith("--")) continue // skip unknown flags
+        positionals.push(args[i])
+      }
+      const query = positionals.join(" ")
+      const type = flag("--type") as "tool" | "skill" | "command" | "agent" | "any" | undefined
+      const limitStr = flag("--limit")
+      const limit = limitStr ? parseInt(limitStr, 10) : undefined
+      console.log(JSON.stringify(agentikitSearch({ query, type, limit }), null, 2))
+      break
+    }
+    case "open": {
+      const ref = args[1]
+      if (!ref) { console.error("Error: missing ref argument\n"); usage() }
+      const viewMode = flag("--view")
+      let view: KnowledgeView | undefined
+      if (viewMode) {
+        switch (viewMode) {
+          case "section":
+            view = { mode: "section", heading: flag("--heading") ?? "" }
+            break
+          case "lines": {
+            const endVal = flag("--end")
+            view = {
+              mode: "lines",
+              start: Number(flag("--start") ?? "1"),
+              end: endVal ? parseInt(endVal, 10) : Number.MAX_SAFE_INTEGER,
+            }
+            break
+          }
+          case "toc":
+          case "frontmatter":
+          case "full":
+            view = { mode: viewMode }
+            break
+          default:
+            console.error(`Unknown view mode: ${viewMode}`)
+            usage()
+        }
+      }
+      console.log(JSON.stringify(agentikitOpen({ ref, view }), null, 2))
+      break
+    }
+    case "run": {
+      const ref = args[1]
+      if (!ref) { console.error("Error: missing ref argument\n"); usage() }
+      const result = agentikitRun({ ref })
+      console.log(JSON.stringify(result, null, 2))
+      process.exit(result.exitCode)
+      break
+    }
+    default:
+      usage()
   }
-  case "run": {
-    const ref = args[1]
-    if (!ref) { console.error("Error: missing ref argument\n"); usage() }
-    const result = agentikitRun({ ref })
-    console.log(JSON.stringify(result, null, 2))
-    process.exit(result.exitCode)
-    break
-  }
-  default:
-    usage()
+} catch (err) {
+  console.error(`Error: ${err instanceof Error ? err.message : String(err)}`)
+  process.exit(1)
 }

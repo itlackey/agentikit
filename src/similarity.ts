@@ -28,7 +28,7 @@ interface TfIdfDocument {
   magnitude: number
 }
 
-interface SerializedTfIdf {
+export interface SerializedTfIdf {
   idf: Record<string, number>
   docs: Array<{
     id: string

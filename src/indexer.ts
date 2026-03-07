@@ -8,7 +8,7 @@ import {
   writeStashFile,
   generateMetadata,
 } from "./metadata"
-import { TfIdfAdapter, type ScoredEntry } from "./similarity"
+import { TfIdfAdapter, type ScoredEntry, type SerializedTfIdf } from "./similarity"
 import { walkStash } from "./walker"
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ export interface SearchIndex {
   stashDir: string
   entries: IndexedEntry[]
   /** Serialized TF-IDF state (term frequencies, idf values) */
-  tfidf?: unknown
+  tfidf?: SerializedTfIdf
 }
 
 export interface IndexResponse {
@@ -88,7 +88,9 @@ export function agentikitIndex(options?: { stashDir?: string; full?: boolean }):
 
   for (const assetType of Object.keys(TYPE_DIRS) as AgentikitAssetType[]) {
     const typeRoot = path.join(stashDir, TYPE_DIRS[assetType])
-    if (!fs.existsSync(typeRoot) || !fs.statSync(typeRoot).isDirectory()) continue
+    try {
+      if (!fs.statSync(typeRoot).isDirectory()) continue
+    } catch { continue }
 
     // Group files by their immediate parent directory
     const dirGroups = walkStash(typeRoot, assetType)

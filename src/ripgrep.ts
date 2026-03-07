@@ -286,17 +286,35 @@ function downloadAndExtractZip(url: string, archiveName: string, destBinary: str
       throw new Error(dlResult.stderr?.trim() || "download failed")
     }
 
-    // Extract just the rg.exe
-    const extractResult = spawnSync("powershell", [
+    // Extract the zip archive using separate spawnSync calls with argument arrays
+    // to avoid shell injection via path interpolation in PowerShell -Command strings
+    const expandResult = spawnSync("powershell", [
       "-Command",
-      `Expand-Archive -Path "${tmpZip}" -DestinationPath "${destDir}" -Force; ` +
-      `Move-Item -Force "${path.join(destDir, archiveName, "rg.exe")}" "${destBinary}"`,
+      "Expand-Archive",
+      "-Path", tmpZip,
+      "-DestinationPath", destDir,
+      "-Force",
     ], {
       encoding: "utf8",
       timeout: 60_000,
     })
-    if (extractResult.status !== 0) {
-      throw new Error(extractResult.stderr?.trim() || "extraction failed")
+    if (expandResult.status !== 0) {
+      throw new Error(expandResult.stderr?.trim() || "extraction failed")
+    }
+
+    const srcRgExe = path.join(destDir, archiveName, "rg.exe")
+    const moveResult = spawnSync("powershell", [
+      "-Command",
+      "Move-Item",
+      "-Force",
+      "-Path", srcRgExe,
+      "-Destination", destBinary,
+    ], {
+      encoding: "utf8",
+      timeout: 60_000,
+    })
+    if (moveResult.status !== 0) {
+      throw new Error(moveResult.stderr?.trim() || "move failed")
     }
   } finally {
     if (fs.existsSync(tmpZip)) fs.unlinkSync(tmpZip)

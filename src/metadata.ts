@@ -82,11 +82,13 @@ export function validateStashEntry(entry: unknown): StashEntry | null {
   if (e.generated === true) result.generated = true
   if (Array.isArray(e.toc)) {
     const validated = e.toc.filter(
-      (h: unknown): h is TocHeading =>
-        typeof h === "object" && h !== null
-        && typeof (h as any).level === "number"
-        && typeof (h as any).text === "string"
-        && typeof (h as any).line === "number",
+      (h: unknown): h is TocHeading => {
+        if (typeof h !== "object" || h === null) return false
+        const rec = h as Record<string, unknown>
+        return typeof rec.level === "number"
+          && typeof rec.text === "string"
+          && typeof rec.line === "number"
+      },
     )
     if (validated.length > 0) result.toc = validated
   }
@@ -118,14 +120,14 @@ export function generateMetadata(
       generated: true,
     }
 
-    // Priority 3: package.json metadata
+    // Priority 1: package.json metadata
     const pkgMeta = extractPackageMetadata(dirPath)
     if (pkgMeta) {
       if (pkgMeta.description && !entry.description) entry.description = pkgMeta.description
       if (pkgMeta.keywords && pkgMeta.keywords.length > 0) entry.tags = pkgMeta.keywords
     }
 
-    // Priority 2: Frontmatter (for .md files)
+    // Priority 2: Frontmatter (for .md files — overrides package.json description)
     if (ext === ".md") {
       const fm = extractFrontmatterDescription(file)
       if (fm) entry.description = fm
@@ -142,13 +144,13 @@ export function generateMetadata(
       }
     }
 
-    // Priority 4: Code comments (for script files)
+    // Priority 3: Code comments (for script files)
     if (SCRIPT_EXTENSIONS.has(ext) && ext !== ".md") {
       const commentDesc = extractDescriptionFromComments(file)
       if (commentDesc && !entry.description) entry.description = commentDesc
     }
 
-    // Priority 5: Filename heuristics (fallback)
+    // Priority 4: Filename heuristics (fallback)
     if (!entry.description) {
       entry.description = fileNameToDescription(baseName)
     }
