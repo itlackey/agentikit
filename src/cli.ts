@@ -164,6 +164,39 @@ main().catch((err) => {
   process.exit(1)
 })
 
+function parseConnectionValue(
+  key: string,
+  value: string,
+  exampleEndpoint: string,
+  exampleModel: string,
+): { endpoint: string; model: string; apiKey?: string } | undefined {
+  if (value === "null" || value === "") return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    throw new Error(
+      `Invalid value for ${key}: expected JSON object with endpoint and model`
+      + ` (e.g. '{"endpoint":"${exampleEndpoint}","model":"${exampleModel}"}')`,
+    )
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`Invalid value for ${key}: expected a JSON object`)
+  }
+  const obj = parsed as Record<string, unknown>
+  if (typeof obj.endpoint !== "string" || !obj.endpoint || typeof obj.model !== "string" || !obj.model) {
+    throw new Error(`Invalid value for ${key}: "endpoint" and "model" are required string fields`)
+  }
+  const result: { endpoint: string; model: string; apiKey?: string } = {
+    endpoint: obj.endpoint,
+    model: obj.model,
+  }
+  if (typeof obj.apiKey === "string" && obj.apiKey) {
+    result.apiKey = obj.apiKey
+  }
+  return result
+}
+
 function parseConfigValue(key: string, value: string): Partial<AgentikitConfig> {
   switch (key) {
     case "semanticSearch":
@@ -179,6 +212,10 @@ function parseConfigValue(key: string, value: string): Partial<AgentikitConfig> 
       } catch {
         throw new Error(`Invalid value for additionalStashDirs: expected JSON array (e.g. '["/path/a","/path/b"]')`)
       }
+    case "embedding":
+      return { embedding: parseConnectionValue("embedding", value, "http://localhost:11434/v1/embeddings", "nomic-embed-text") }
+    case "llm":
+      return { llm: parseConnectionValue("llm", value, "http://localhost:11434/v1/chat/completions", "llama3.2") }
     default:
       throw new Error(`Unknown config key: ${key}`)
   }

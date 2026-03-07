@@ -7,6 +7,7 @@ import {
   writeStashFile,
   validateStashEntry,
   generateMetadata,
+  generateIntents,
   extractDescriptionFromComments,
   extractPackageMetadata,
   fileNameToDescription,
@@ -251,4 +252,102 @@ test("generateMetadata handles multi-tool directories", () => {
   expect(stash.entries[0].description).toBe("Build docker images")
   expect(stash.entries[1].name).toBe("docker-compose")
   expect(stash.entries[1].description).toBe("Generate docker compose stacks")
+})
+
+// ── generateIntents ─────────────────────────────────────────────────────────
+
+test("generateIntents produces phrases from description, tags, and name", () => {
+  const intents = generateIntents("summarize git commit changes", ["git", "diff", "commit"], "summarize-diff")
+  expect(intents.length).toBeGreaterThan(0)
+  expect(intents).toContain("summarize diff")
+  expect(intents).toContain("summarize git commit changes")
+})
+
+test("generateIntents returns empty array for empty inputs", () => {
+  const intents = generateIntents("", [], "")
+  expect(intents).toEqual([])
+})
+
+test("generateIntents deduplicates phrases", () => {
+  const intents = generateIntents("deploy", ["deploy"], "deploy")
+  const unique = new Set(intents)
+  expect(intents.length).toBe(unique.size)
+})
+
+test("generateIntents combines verb from name with tags", () => {
+  const intents = generateIntents("build docker images", ["docker", "container"], "docker-build")
+  // Should produce something like "docker docker container" or similar tag combinations
+  expect(intents.some((i) => i.includes("docker"))).toBe(true)
+})
+
+test("generateIntents caps at 8 intents", () => {
+  const intents = generateIntents(
+    "a very long description about many things",
+    ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
+    "multi-word-name-with-many-parts",
+  )
+  expect(intents.length).toBeLessThanOrEqual(8)
+})
+
+// ── validateStashEntry with intents ─────────────────────────────────────────
+
+test("validateStashEntry accepts entries with intents array", () => {
+  const result = validateStashEntry({
+    name: "test",
+    type: "tool",
+    intents: ["summarize commits", "explain changes"],
+  })
+  expect(result).not.toBeNull()
+  expect(result!.intents).toEqual(["summarize commits", "explain changes"])
+})
+
+test("validateStashEntry filters non-string elements from intents", () => {
+  const result = validateStashEntry({
+    name: "test",
+    type: "tool",
+    intents: ["valid", 42, "", "also valid", null],
+  })
+  expect(result).not.toBeNull()
+  expect(result!.intents).toEqual(["valid", "also valid"])
+})
+
+test("validateStashEntry omits intents if all filtered out", () => {
+  const result = validateStashEntry({
+    name: "test",
+    type: "tool",
+    intents: ["", "  "],
+  })
+  expect(result).not.toBeNull()
+  expect(result!.intents).toBeUndefined()
+})
+
+test("loadStashFile parses intents field", () => {
+  const dir = tmpDir()
+  const stash: StashFile = {
+    entries: [
+      {
+        name: "git-diff",
+        type: "tool",
+        intents: ["summarize git commits", "explain what changed"],
+        entry: "run.ts",
+      },
+    ],
+  }
+  writeFile(path.join(dir, ".stash.json"), JSON.stringify(stash))
+
+  const result = loadStashFile(dir)
+  expect(result!.entries[0].intents).toEqual(["summarize git commits", "explain what changed"])
+})
+
+// ── generateMetadata populates intents ──────────────────────────────────────
+
+test("generateMetadata populates intents on generated entries", () => {
+  const dir = tmpDir()
+  const tool = path.join(dir, "summarize-diff.ts")
+  writeFile(tool, `/**\n * Summarize git diff changes\n */\n`)
+
+  const stash = generateMetadata(dir, "tool", [tool])
+  expect(stash.entries[0].intents).toBeDefined()
+  expect(stash.entries[0].intents!.length).toBeGreaterThan(0)
+  expect(stash.entries[0].intents!.some((i) => i.includes("summarize"))).toBe(true)
 })

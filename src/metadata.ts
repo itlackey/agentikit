@@ -19,6 +19,7 @@ export interface StashEntry {
   description?: string
   tags?: string[]
   examples?: string[]
+  intents?: string[]
   intent?: StashIntent
   entry?: string
   generated?: boolean
@@ -72,6 +73,10 @@ export function validateStashEntry(entry: unknown): StashEntry | null {
   if (typeof e.description === "string" && e.description) result.description = e.description
   if (Array.isArray(e.tags)) result.tags = e.tags.filter((t): t is string => typeof t === "string")
   if (Array.isArray(e.examples)) result.examples = e.examples.filter((x): x is string => typeof x === "string")
+  if (Array.isArray(e.intents)) {
+    const filtered = e.intents.filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+    if (filtered.length > 0) result.intents = filtered
+  }
   if (typeof e.intent === "object" && e.intent !== null) {
     const intent = e.intent as Record<string, unknown>
     result.intent = {}
@@ -163,11 +168,61 @@ export function generateMetadata(
       entry.tags = extractTagsFromPath(file, dirPath)
     }
 
+    // Generate intents from description and tags
+    entry.intents = generateIntents(entry.description ?? "", entry.tags ?? [], canonicalName)
+    if (entry.intents.length === 0) delete entry.intents
+
     entry.entry = path.basename(file)
     entries.push(entry)
   }
 
   return { entries }
+}
+
+// ── Intent Generation ────────────────────────────────────────────────────────
+
+export function generateIntents(description: string, tags: string[], name: string): string[] {
+  const intents = new Set<string>()
+
+  // Split name on separators to extract tokens and potential verb
+  const nameTokens = name
+    .replace(/[-_]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .trim()
+    .split(/\s+/)
+    .filter((t) => t.length > 1)
+
+  // Intent from name as phrase (e.g. "summarize diff")
+  const namePhrase = nameTokens.join(" ")
+  if (namePhrase.length > 2) intents.add(namePhrase)
+
+  // Intent from description (lowercased)
+  const desc = description.toLowerCase().trim()
+  if (desc.length > 2) intents.add(desc)
+
+  // Combine first name token (potential verb) with tags
+  // e.g. name "summarize-diff", tags ["git"] → "summarize git diff"
+  if (nameTokens.length >= 1 && tags.length > 0) {
+    const verb = nameTokens[0]
+    const rest = nameTokens.slice(1).join(" ")
+    for (const tag of tags) {
+      const tagLower = tag.toLowerCase()
+      // verb + tag + rest (e.g. "summarize git diff")
+      const parts = [verb, tagLower, rest].filter((p) => p.length > 0)
+      const phrase = parts.join(" ")
+      if (phrase !== namePhrase && phrase.length > 2) intents.add(phrase)
+    }
+  }
+
+  // Join tag pairs (e.g. ["git", "diff"] → "git diff")
+  if (tags.length >= 2) {
+    const tagPhrase = tags.map((t) => t.toLowerCase()).join(" ")
+    if (tagPhrase.length > 2) intents.add(tagPhrase)
+  }
+
+  // Cap at 8 intents
+  return Array.from(intents).slice(0, 8)
 }
 
 export function extractDescriptionFromComments(filePath: string): string | null {

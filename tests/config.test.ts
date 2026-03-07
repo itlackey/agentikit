@@ -187,3 +187,193 @@ describe("updateConfig", () => {
     }
   })
 })
+
+// ── embedding config ────────────────────────────────────────────────────────
+
+describe("embedding config", () => {
+  test("loads embedding connection config", () => {
+    const dir = makeTmpDir()
+    try {
+      fs.writeFileSync(
+        path.join(dir, "config.json"),
+        JSON.stringify({
+          embedding: {
+            endpoint: "http://localhost:11434/v1/embeddings",
+            model: "nomic-embed-text",
+          },
+        }),
+      )
+      const config = loadConfig(dir)
+      expect(config.embedding).toEqual({
+        endpoint: "http://localhost:11434/v1/embeddings",
+        model: "nomic-embed-text",
+      })
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("loads embedding config with apiKey", () => {
+    const dir = makeTmpDir()
+    try {
+      fs.writeFileSync(
+        path.join(dir, "config.json"),
+        JSON.stringify({
+          embedding: {
+            endpoint: "https://api.openai.com/v1/embeddings",
+            model: "text-embedding-3-small",
+            apiKey: "sk-test123",
+          },
+        }),
+      )
+      const config = loadConfig(dir)
+      expect(config.embedding?.apiKey).toBe("sk-test123")
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("ignores invalid embedding config (missing model)", () => {
+    const dir = makeTmpDir()
+    try {
+      fs.writeFileSync(
+        path.join(dir, "config.json"),
+        JSON.stringify({ embedding: { endpoint: "http://localhost:11434" } }),
+      )
+      const config = loadConfig(dir)
+      expect(config.embedding).toBeUndefined()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("ignores non-object embedding config", () => {
+    const dir = makeTmpDir()
+    try {
+      fs.writeFileSync(
+        path.join(dir, "config.json"),
+        JSON.stringify({ embedding: "not-an-object" }),
+      )
+      const config = loadConfig(dir)
+      expect(config.embedding).toBeUndefined()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("defaults to no embedding config", () => {
+    const dir = makeTmpDir()
+    try {
+      const config = loadConfig(dir)
+      expect(config.embedding).toBeUndefined()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("roundtrips embedding config via updateConfig", () => {
+    const dir = makeTmpDir()
+    try {
+      const embeddingConfig = {
+        endpoint: "http://localhost:11434/v1/embeddings",
+        model: "nomic-embed-text",
+      }
+      updateConfig({ embedding: embeddingConfig }, dir)
+      const loaded = loadConfig(dir)
+      expect(loaded.embedding).toEqual(embeddingConfig)
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("clears embedding config with undefined", () => {
+    const dir = makeTmpDir()
+    try {
+      const embeddingConfig = {
+        endpoint: "http://localhost:11434/v1/embeddings",
+        model: "nomic-embed-text",
+      }
+      updateConfig({ embedding: embeddingConfig }, dir)
+      updateConfig({ embedding: undefined }, dir)
+      const loaded = loadConfig(dir)
+      expect(loaded.embedding).toBeUndefined()
+    } finally {
+      cleanup(dir)
+    }
+  })
+})
+
+// ── llm config ──────────────────────────────────────────────────────────────
+
+describe("llm config", () => {
+  test("loads llm connection config", () => {
+    const dir = makeTmpDir()
+    try {
+      fs.writeFileSync(
+        path.join(dir, "config.json"),
+        JSON.stringify({
+          llm: {
+            endpoint: "http://localhost:11434/v1/chat/completions",
+            model: "llama3.2",
+          },
+        }),
+      )
+      const config = loadConfig(dir)
+      expect(config.llm).toEqual({
+        endpoint: "http://localhost:11434/v1/chat/completions",
+        model: "llama3.2",
+      })
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("loads llm config with apiKey", () => {
+    const dir = makeTmpDir()
+    try {
+      fs.writeFileSync(
+        path.join(dir, "config.json"),
+        JSON.stringify({
+          llm: {
+            endpoint: "https://api.openai.com/v1/chat/completions",
+            model: "gpt-4",
+            apiKey: "sk-key",
+          },
+        }),
+      )
+      const config = loadConfig(dir)
+      expect(config.llm?.apiKey).toBe("sk-key")
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("ignores invalid llm config", () => {
+    const dir = makeTmpDir()
+    try {
+      fs.writeFileSync(
+        path.join(dir, "config.json"),
+        JSON.stringify({ llm: { endpoint: "http://localhost" } }),
+      )
+      const config = loadConfig(dir)
+      expect(config.llm).toBeUndefined()
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("roundtrips llm config via updateConfig", () => {
+    const dir = makeTmpDir()
+    try {
+      const llmConfig = {
+        endpoint: "http://localhost:11434/v1/chat/completions",
+        model: "llama3.2",
+      }
+      updateConfig({ llm: llmConfig }, dir)
+      const loaded = loadConfig(dir)
+      expect(loaded.llm).toEqual(llmConfig)
+    } finally {
+      cleanup(dir)
+    }
+  })
+})

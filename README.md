@@ -125,6 +125,79 @@ import { agentikitSearch, agentikitOpen, agentikitRun, agentikitInit, agentikitI
 - `agentikitInit()` — initialize stash directory
 - `agentikitIndex()` — build/rebuild search index
 
+## Configuration
+
+Agentikit stores configuration in `config.json` inside the stash directory.
+
+```sh
+agentikit config                    # Show current config
+agentikit config --set key=value    # Update a config key
+```
+
+### Embedding connection
+
+By default, agentikit uses the local `@xenova/transformers` library for embeddings. You can configure an OpenAI-compatible embedding endpoint instead:
+
+```sh
+agentikit config --set 'embedding={"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}'
+```
+
+To clear the custom embedding config and revert to local embeddings:
+
+```sh
+agentikit config --set 'embedding=null'
+```
+
+### LLM connection
+
+When configured, agentikit uses an OpenAI-compatible LLM to generate richer metadata (descriptions, intents, tags) during indexing:
+
+```sh
+agentikit config --set 'llm={"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2"}'
+```
+
+To clear:
+
+```sh
+agentikit config --set 'llm=null'
+```
+
+### Using a local Ollama instance
+
+[Ollama](https://ollama.com) provides local models with an OpenAI-compatible API. After installing Ollama and pulling your models:
+
+```sh
+# Pull models
+ollama pull nomic-embed-text
+ollama pull llama3.2
+
+# Configure agentikit to use Ollama for both embeddings and metadata generation
+agentikit config --set 'embedding={"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}'
+agentikit config --set 'llm={"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2"}'
+
+# Rebuild the index — embeddings use Ollama, metadata is LLM-enhanced
+agentikit index --full
+```
+
+Both `embedding` and `llm` accept an optional `apiKey` field for authenticated endpoints:
+
+```json
+{
+  "endpoint": "https://api.openai.com/v1/embeddings",
+  "model": "text-embedding-3-small",
+  "apiKey": "sk-..."
+}
+```
+
+### Config reference
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `semanticSearch` | `boolean` | `true` | Enable semantic search ranking |
+| `additionalStashDirs` | `string[]` | `[]` | Extra stash directories to search |
+| `embedding` | `object` | not set | OpenAI-compatible embedding endpoint (`endpoint`, `model`, `apiKey?`) |
+| `llm` | `object` | not set | OpenAI-compatible LLM endpoint (`endpoint`, `model`, `apiKey?`) |
+
 ## Notes
 
 - Agentikit does not install or copy kit files.

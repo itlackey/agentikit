@@ -12,6 +12,7 @@ import {
 import { TfIdfAdapter, type ScoredEntry, type SerializedTfIdf } from "./similarity"
 import { walkStash } from "./walker"
 import type { EmbeddingVector } from "./embedder"
+import type { LlmConnectionConfig } from "./config"
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -47,7 +48,7 @@ export interface IndexResponse {
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const INDEX_VERSION = 3
+const INDEX_VERSION = 4
 
 // ── Index Path ──────────────────────────────────────────────────────────────
 
@@ -148,6 +149,10 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
         if (!stash) {
           // Generate metadata
           stash = generateMetadata(dirPath, assetType, files, typeRoot)
+          // Enhance with LLM if configured
+          if (config.llm && stash.entries.length > 0) {
+            stash = await enhanceStashWithLlm(config.llm, stash, dirPath, files)
+          }
           if (stash.entries.length > 0) {
             writeStashFile(dirPath, stash)
             generatedCount += stash.entries.length
@@ -184,12 +189,12 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
       for (const ie of allEntries) {
         if (!ie.embedding) {
           const text = buildSearchText(ie.entry)
-          ie.embedding = await embed(text)
+          ie.embedding = await embed(text, config.embedding)
         }
       }
       hasEmbeddings = true
     } catch {
-      // @xenova/transformers not available, continue without embeddings
+      // Embedding provider not available, continue without embeddings
     }
   }
 
@@ -294,11 +299,48 @@ function migrateGeneratedSkillMetadata(
   }
 }
 
+async function enhanceStashWithLlm(
+  llmConfig: LlmConnectionConfig,
+  stash: StashFile,
+  dirPath: string,
+  files: string[],
+): Promise<StashFile> {
+  const { enhanceMetadata } = await import("./llm.js")
+
+  const enhanced: StashEntry[] = []
+  for (const entry of stash.entries) {
+    try {
+      // Find the file matching this entry for content context
+      const entryFile = entry.entry
+        ? files.find((f) => path.basename(f) === entry.entry) ?? files[0]
+        : files[0]
+      let fileContent: string | undefined
+      if (entryFile) {
+        try {
+          fileContent = fs.readFileSync(entryFile, "utf8")
+        } catch { /* ignore unreadable files */ }
+      }
+
+      const improvements = await enhanceMetadata(llmConfig, entry, fileContent)
+      const updated = { ...entry }
+      if (improvements.description) updated.description = improvements.description
+      if (improvements.intents?.length) updated.intents = improvements.intents
+      if (improvements.tags?.length) updated.tags = improvements.tags
+      enhanced.push(updated)
+    } catch {
+      // LLM enhancement failed for this entry, keep original
+      enhanced.push(entry)
+    }
+  }
+  return { entries: enhanced }
+}
+
 export function buildSearchText(entry: StashEntry): string {
   const parts: string[] = [entry.name.replace(/[-_]/g, " ")]
   if (entry.description) parts.push(entry.description)
   if (entry.tags) parts.push(entry.tags.join(" "))
   if (entry.examples) parts.push(entry.examples.join(" "))
+  if (entry.intents) parts.push(entry.intents.join(" "))
   if (entry.intent) {
     if (entry.intent.when) parts.push(entry.intent.when)
     if (entry.intent.input) parts.push(entry.intent.input)

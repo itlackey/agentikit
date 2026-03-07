@@ -39,7 +39,7 @@ export async function agentikitSearch(input: {
 
   // Try embedding-based search first if semantic search is enabled
   if (config.semanticSearch) {
-    const embeddingHits = await tryEmbeddingSearch(query, searchType, limit, stashDir, allStashDirs)
+    const embeddingHits = await tryEmbeddingSearch(query, searchType, limit, stashDir, allStashDirs, config)
     if (embeddingHits) {
       return {
         stashDir,
@@ -82,6 +82,7 @@ async function tryEmbeddingSearch(
   limit: number,
   stashDir: string,
   allStashDirs: string[],
+  config: import("./config").AgentikitConfig,
 ): Promise<SearchHit[] | null> {
   const index = loadSearchIndex()
   if (!index || !index.entries || index.entries.length === 0) return null
@@ -94,7 +95,7 @@ async function tryEmbeddingSearch(
 
   try {
     const { embed, cosineSimilarity } = await import("./embedder.js")
-    const queryEmbedding = await embed(query)
+    const queryEmbedding = await embed(query, config.embedding)
 
     let candidates = entriesWithEmbeddings
     if (searchType !== "any") {
@@ -138,7 +139,7 @@ async function tryEmbeddingSearch(
       return hit
     })
   } catch {
-    // @xenova/transformers not available, fall through to TF-IDF
+    // Embedding provider not available, fall through to TF-IDF
     return null
   }
 }

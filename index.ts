@@ -20,6 +20,7 @@ export { parseMarkdownToc, extractSection, extractLineRange, extractFrontmatterO
 export type { TocHeading, KnowledgeToc } from "./src/markdown"
 export { parseFrontmatter } from "./src/frontmatter"
 export { loadConfig, saveConfig, updateConfig } from "./src/config"
-export type { AgentikitConfig } from "./src/config"
+export type { AgentikitConfig, EmbeddingConnectionConfig, LlmConnectionConfig } from "./src/config"
+export { enhanceMetadata, isLlmAvailable } from "./src/llm"
 export { embed, cosineSimilarity, isEmbeddingAvailable } from "./src/embedder"
 export type { EmbeddingVector } from "./src/embedder"
