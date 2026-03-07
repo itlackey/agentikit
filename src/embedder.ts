@@ -1,13 +1,15 @@
+import type { EmbeddingConnectionConfig } from "./config"
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export type EmbeddingVector = number[]
 
-// ── Singleton embedder ──────────────────────────────────────────────────────
+// ── Singleton local embedder ────────────────────────────────────────────────
 
-let embedder: any
+let localEmbedder: any
 
-export async function getEmbedder(): Promise<any> {
-  if (!embedder) {
+async function getLocalEmbedder(): Promise<any> {
+  if (!localEmbedder) {
     let pipeline: any
     try {
       const mod = await import("@xenova/transformers")
@@ -17,15 +19,68 @@ export async function getEmbedder(): Promise<any> {
         "Semantic search requires @xenova/transformers. Install it with: npm install @xenova/transformers",
       )
     }
-    embedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2")
+    localEmbedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2")
   }
-  return embedder
+  return localEmbedder
 }
 
-export async function embed(text: string): Promise<EmbeddingVector> {
-  const model = await getEmbedder()
+async function embedLocal(text: string): Promise<EmbeddingVector> {
+  const model = await getLocalEmbedder()
   const result = await model(text, { pooling: "mean", normalize: true })
   return Array.from(result.data) as number[]
+}
+
+// ── OpenAI-compatible remote embedder ───────────────────────────────────────
+
+async function embedRemote(
+  text: string,
+  config: EmbeddingConnectionConfig,
+): Promise<EmbeddingVector> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (config.apiKey) {
+    headers["Authorization"] = `Bearer ${config.apiKey}`
+  }
+
+  const response = await fetch(config.endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      input: text,
+      model: config.model,
+    }),
+  })
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "")
+    throw new Error(`Embedding request failed (${response.status}): ${body}`)
+  }
+
+  const json = (await response.json()) as {
+    data: Array<{ embedding: number[] }>
+  }
+
+  if (!json.data?.[0]?.embedding) {
+    throw new Error("Unexpected embedding response format: missing data[0].embedding")
+  }
+
+  return json.data[0].embedding
+}
+
+// ── Public API ──────────────────────────────────────────────────────────────
+
+/**
+ * Generate an embedding for the given text.
+ * If embeddingConfig is provided, uses the configured OpenAI-compatible endpoint.
+ * Otherwise falls back to local @xenova/transformers.
+ */
+export async function embed(
+  text: string,
+  embeddingConfig?: EmbeddingConnectionConfig,
+): Promise<EmbeddingVector> {
+  if (embeddingConfig) {
+    return embedRemote(text, embeddingConfig)
+  }
+  return embedLocal(text)
 }
 
 // ── Similarity ──────────────────────────────────────────────────────────────
@@ -40,9 +95,19 @@ export function cosineSimilarity(a: EmbeddingVector, b: EmbeddingVector): number
 
 // ── Availability check ──────────────────────────────────────────────────────
 
-export async function isEmbeddingAvailable(): Promise<boolean> {
+export async function isEmbeddingAvailable(
+  embeddingConfig?: EmbeddingConnectionConfig,
+): Promise<boolean> {
+  if (embeddingConfig) {
+    try {
+      await embedRemote("test", embeddingConfig)
+      return true
+    } catch {
+      return false
+    }
+  }
   try {
-    await getEmbedder()
+    await getLocalEmbedder()
     return true
   } catch {
     return false

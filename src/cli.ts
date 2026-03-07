@@ -179,6 +179,36 @@ function parseConfigValue(key: string, value: string): Partial<AgentikitConfig> 
       } catch {
         throw new Error(`Invalid value for additionalStashDirs: expected JSON array (e.g. '["/path/a","/path/b"]')`)
       }
+    case "embedding":
+      try {
+        if (value === "null" || value === "") return { embedding: undefined }
+        const parsed = JSON.parse(value)
+        if (typeof parsed !== "object" || parsed === null) throw new Error("expected JSON object")
+        if (typeof parsed.endpoint !== "string" || typeof parsed.model !== "string") {
+          throw new Error("requires endpoint and model")
+        }
+        return { embedding: parsed }
+      } catch (e) {
+        throw new Error(
+          `Invalid value for embedding: expected JSON object with endpoint and model `
+          + `(e.g. '{"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}')`,
+        )
+      }
+    case "llm":
+      try {
+        if (value === "null" || value === "") return { llm: undefined }
+        const parsed = JSON.parse(value)
+        if (typeof parsed !== "object" || parsed === null) throw new Error("expected JSON object")
+        if (typeof parsed.endpoint !== "string" || typeof parsed.model !== "string") {
+          throw new Error("requires endpoint and model")
+        }
+        return { llm: parsed }
+      } catch (e) {
+        throw new Error(
+          `Invalid value for llm: expected JSON object with endpoint and model `
+          + `(e.g. '{"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2"}')`,
+        )
+      }
     default:
       throw new Error(`Unknown config key: ${key}`)
   }

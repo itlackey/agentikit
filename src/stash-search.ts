@@ -93,8 +93,10 @@ async function tryEmbeddingSearch(
   if (entriesWithEmbeddings.length === 0) return null
 
   try {
+    const { loadConfig } = await import("./config.js")
+    const searchConfig = loadConfig(stashDir)
     const { embed, cosineSimilarity } = await import("./embedder.js")
-    const queryEmbedding = await embed(query)
+    const queryEmbedding = await embed(query, searchConfig.embedding)
 
     let candidates = entriesWithEmbeddings
     if (searchType !== "any") {
