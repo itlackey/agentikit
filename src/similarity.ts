@@ -208,17 +208,29 @@ export class TfIdfAdapter implements SearchAdapter {
 
   private substringFallback(query: string, limit: number, typeFilter?: string): ScoredResult[] {
     const q = query.toLowerCase()
+    const tokens = tokenize(q)
     return this.documents
-      .filter((d) => {
-        if (typeFilter && typeFilter !== "any" && d.entry.entry.type !== typeFilter) return false
-        return d.entry.text.includes(q) || d.entry.entry.name.toLowerCase().includes(q)
+      .map((d) => {
+        if (typeFilter && typeFilter !== "any" && d.entry.entry.type !== typeFilter) return null
+        // Check if any query token matches the document text or name
+        const text = d.entry.text
+        const name = d.entry.entry.name.toLowerCase()
+        let matchCount = 0
+        for (const token of tokens) {
+          if (text.includes(token) || name.includes(token)) matchCount++
+        }
+        // Also check full substring match
+        if (text.includes(q) || name.includes(q)) matchCount = Math.max(matchCount, tokens.length)
+        if (matchCount === 0) return null
+        return {
+          entry: d.entry.entry,
+          path: d.entry.path,
+          score: Math.round((matchCount / Math.max(tokens.length, 1)) * 500) / 1000,
+        }
       })
+      .filter((d): d is ScoredResult => d !== null)
+      .sort((a, b) => b.score - a.score)
       .slice(0, limit)
-      .map((d) => ({
-        entry: d.entry.entry,
-        path: d.entry.path,
-        score: 0.5,
-      }))
   }
 }
 

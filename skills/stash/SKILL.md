@@ -28,7 +28,7 @@ Run this after adding new extensions to enable semantic search ranking.
 
 ### Search the stash
 
-Find assets by semantic similarity (if indexed) or name substring. Returns JSON with matching hits including `openRef` identifiers.
+Find assets using a two-stage search pipeline: ripgrep pre-filters `.stash.json` metadata files for fast candidate discovery, then TF-IDF ranks results by semantic relevance. Falls back to name substring matching when no index exists.
 
 ```bash
 agentikit search [query] [--type tool|skill|command|agent|any] [--limit N]
@@ -58,11 +58,16 @@ agentikit run <openRef>
 
 Returns the tool's stdout/stderr output and exit code.
 
+## Dependencies
+
+`agentikit init` will auto-install [ripgrep](https://github.com/BurntSushi/ripgrep) to `stash/bin/` if not already on PATH. Ripgrep is used for fast candidate filtering during search.
+
 ## Workflow
 
-1. Build the index: `agentikit index`
-2. Search for assets: `agentikit search "deploy" --type tool`
-3. Inspect a result: `agentikit open <openRef>`
-4. Run a tool: `agentikit run <openRef>`
+1. Initialize: `agentikit init` (creates stash dirs, installs ripgrep)
+2. Build the index: `agentikit index`
+3. Search for assets: `agentikit search "deploy" --type tool`
+4. Inspect a result: `agentikit open <openRef>`
+5. Run a tool: `agentikit run <openRef>`
 
 All output is JSON for easy parsing.

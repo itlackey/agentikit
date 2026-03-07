@@ -12,3 +12,5 @@ export type {
 export { agentikitIndex } from "./src/indexer"
 export type { IndexResponse } from "./src/indexer"
 export type { StashEntry, StashFile, StashIntent } from "./src/metadata"
+export { resolveRg, isRgAvailable, ensureRg } from "./src/ripgrep"
+export type { EnsureRgResult } from "./src/ripgrep"
