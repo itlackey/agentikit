@@ -1,6 +1,6 @@
 import fs from "node:fs"
 import path from "node:path"
-import { type AgentikitAssetType, SCRIPT_EXTENSIONS, TYPE_DIRS, isAssetType, resolveStashDir, toPosix, hasErrnoCode } from "./common"
+import { type AgentikitAssetType, SCRIPT_EXTENSIONS, TYPE_DIRS, isAssetType, resolveStashDir, toPosix, hasErrnoCode, isWithin } from "./common"
 import { parseFrontmatter, toStringOrUndefined } from "./frontmatter"
 import { agentikitInit, type InitResponse } from "./init"
 import { loadSearchIndex, buildSearchText } from "./indexer"
@@ -462,13 +462,3 @@ function readTypeRootStat(root: string, type: AgentikitAssetType, name: string):
   }
 }
 
-function isWithin(candidate: string, root: string): boolean {
-  const normalizedRoot = normalizeFsPathForComparison(path.resolve(root))
-  const normalizedCandidate = normalizeFsPathForComparison(path.resolve(candidate))
-  const rel = path.relative(normalizedRoot, normalizedCandidate)
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))
-}
-
-function normalizeFsPathForComparison(value: string): string {
-  return process.platform === "win32" ? value.toLowerCase() : value
-}

@@ -128,8 +128,6 @@ test("isDirStale detects stash.json newer than index", () => {
   const stashDir = tmpStash()
   writeFile(path.join(stashDir, "tools", "deploy", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
 
-  process.env.AGENTIKIT_STASH_DIR = stashDir
-
   // First index
   const result1 = agentikitIndex({ stashDir })
   expect(result1.totalEntries).toBe(1)

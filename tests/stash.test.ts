@@ -302,6 +302,7 @@ test("agentikitOpen for tool type returns runCmd and kind", () => {
 
 test("agentikitInit returns created false when stash dir already exists", () => {
   const origHome = process.env.HOME
+  const origStashDir = process.env.AGENTIKIT_STASH_DIR
   const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-home-"))
   // Pre-create the agentikit directory so init finds it existing
   const stashPath = path.join(tmpHome, "agentikit")
@@ -316,24 +317,32 @@ test("agentikitInit returns created false when stash dir already exists", () => 
     expect(result.stashDir).toBe(stashPath)
   } finally {
     process.env.HOME = origHome
+    if (origStashDir === undefined) delete process.env.AGENTIKIT_STASH_DIR
+    else process.env.AGENTIKIT_STASH_DIR = origStashDir
+    fs.rmSync(tmpHome, { recursive: true, force: true })
   }
 })
 
 test("agentikitOpen throws unsupported tool extension for .txt file", () => {
+  const origStashDir = process.env.AGENTIKIT_STASH_DIR
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
-  // We need a .txt file in the tools directory — but resolveAssetPath checks
-  // SCRIPT_EXTENSIONS before calling buildToolInfo, so it will throw
-  // "Tool ref must resolve to a .sh, .ts, .js, .ps1, .cmd, or .bat file."
   writeFile(path.join(stashDir, "tools", "readme.txt"), "not a tool\n")
 
   process.env.AGENTIKIT_STASH_DIR = stashDir
-  expect(() => agentikitOpen({ ref: "tool:readme.txt" })).toThrow(
-    /Tool ref must resolve to a \.sh/,
-  )
+  try {
+    expect(() => agentikitOpen({ ref: "tool:readme.txt" })).toThrow(
+      /Tool ref must resolve to a \.sh/,
+    )
+  } finally {
+    if (origStashDir === undefined) delete process.env.AGENTIKIT_STASH_DIR
+    else process.env.AGENTIKIT_STASH_DIR = origStashDir
+    fs.rmSync(stashDir, { recursive: true, force: true })
+  }
 })
 
 test("agentikitInit creates knowledge directory", () => {
   const origHome = process.env.HOME
+  const origStashDir = process.env.AGENTIKIT_STASH_DIR
   const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-home-"))
   process.env.HOME = tmpHome
   delete process.env.AGENTIKIT_STASH_DIR
@@ -343,5 +352,8 @@ test("agentikitInit creates knowledge directory", () => {
     expect(fs.existsSync(path.join(result.stashDir, "knowledge"))).toBe(true)
   } finally {
     process.env.HOME = origHome
+    if (origStashDir === undefined) delete process.env.AGENTIKIT_STASH_DIR
+    else process.env.AGENTIKIT_STASH_DIR = origStashDir
+    fs.rmSync(tmpHome, { recursive: true, force: true })
   }
 })

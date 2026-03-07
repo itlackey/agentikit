@@ -52,3 +52,14 @@ export function hasErrnoCode(error: unknown, code: string): boolean {
   if (typeof error !== "object" || error === null || !("code" in error)) return false
   return (error as Record<string, unknown>).code === code
 }
+
+export function isWithin(candidate: string, root: string): boolean {
+  const normalizedRoot = normalizeFsPathForComparison(path.resolve(root))
+  const normalizedCandidate = normalizeFsPathForComparison(path.resolve(candidate))
+  const rel = path.relative(normalizedRoot, normalizedCandidate)
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))
+}
+
+function normalizeFsPathForComparison(value: string): string {
+  return process.platform === "win32" ? value.toLowerCase() : value
+}

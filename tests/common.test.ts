@@ -62,11 +62,12 @@ describe("toPosix", () => {
     expect(toPosix("foo/bar/baz")).toBe("foo/bar/baz")
   })
 
-  test("backslash paths are converted on any platform", () => {
-    // toPosix splits on path.sep, so on Linux this is already posix
-    // We test that the function at minimum doesn't break posix paths
-    const input = "foo/bar/baz"
-    expect(toPosix(input)).toBe("foo/bar/baz")
+  test("backslash paths are converted to forward slashes", () => {
+    expect(toPosix("foo\\bar\\baz")).toBe("foo/bar/baz")
+  })
+
+  test("mixed separators are normalized", () => {
+    expect(toPosix("foo\\bar/baz")).toBe("foo/bar/baz")
   })
 
   test("empty string returns empty string", () => {
