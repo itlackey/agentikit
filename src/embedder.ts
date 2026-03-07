@@ -86,8 +86,10 @@ export async function embed(
 // ── Similarity ──────────────────────────────────────────────────────────────
 
 export function cosineSimilarity(a: EmbeddingVector, b: EmbeddingVector): number {
+  const len = Math.min(a.length, b.length)
+  if (len === 0) return 0
   let dot = 0
-  for (let i = 0; i < a.length; i++) {
+  for (let i = 0; i < len; i++) {
     dot += a[i] * b[i]
   }
   return dot

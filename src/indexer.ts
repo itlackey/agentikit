@@ -305,14 +305,12 @@ async function enhanceStashWithLlm(
   dirPath: string,
   files: string[],
 ): Promise<StashFile> {
-  const fs = await import("node:fs")
-  const path = await import("node:path")
   const { enhanceMetadata } = await import("./llm.js")
 
   const enhanced: StashEntry[] = []
   for (const entry of stash.entries) {
     try {
-      // Read file content for context
+      // Find the file matching this entry for content context
       const entryFile = entry.entry
         ? files.find((f) => path.basename(f) === entry.entry) ?? files[0]
         : files[0]
