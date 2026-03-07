@@ -125,13 +125,16 @@ jobs:
 
       - name: Generate checksums
         run: |
-          sha256sum \
+          : > artifacts/checksums.txt
+          for file in \
             artifacts/agentikit-linux-x64/agentikit-linux-x64 \
             artifacts/agentikit-linux-arm64/agentikit-linux-arm64 \
             artifacts/agentikit-darwin-x64/agentikit-darwin-x64 \
             artifacts/agentikit-darwin-arm64/agentikit-darwin-arm64 \
-            artifacts/agentikit-windows-x64.exe/agentikit-windows-x64.exe \
-            > artifacts/checksums.txt
+            artifacts/agentikit-windows-x64.exe/agentikit-windows-x64.exe
+          do
+            printf '%s  %s\n' "$(sha256sum "$file" | awk '{ print $1 }')" "$(basename "$file")" >> artifacts/checksums.txt
+          done
 
       - name: Create GitHub release
         run: |
