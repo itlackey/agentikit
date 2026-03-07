@@ -11,6 +11,7 @@ export interface SearchHit {
   description?: string
   tags?: string[]
   score?: number
+  whyMatched?: string[]
   runCmd?: string
   kind?: ToolKind
 }

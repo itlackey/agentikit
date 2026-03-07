@@ -23,6 +23,10 @@ export interface StashEntry {
   intent?: StashIntent
   entry?: string
   generated?: boolean
+  quality?: "generated" | "curated"
+  confidence?: number
+  source?: "package" | "frontmatter" | "comments" | "filename" | "manual" | "llm"
+  aliases?: string[]
   toc?: TocHeading[]
 }
 
@@ -86,6 +90,15 @@ export function validateStashEntry(entry: unknown): StashEntry | null {
   }
   if (typeof e.entry === "string" && e.entry) result.entry = e.entry
   if (e.generated === true) result.generated = true
+  if (e.quality === "generated" || e.quality === "curated") result.quality = e.quality
+  if (typeof e.confidence === "number" && Number.isFinite(e.confidence)) result.confidence = Math.max(0, Math.min(1, e.confidence))
+  if (typeof e.source === "string" && ["package", "frontmatter", "comments", "filename", "manual", "llm"].includes(e.source)) {
+    result.source = e.source as StashEntry["source"]
+  }
+  if (Array.isArray(e.aliases)) {
+    const filtered = e.aliases.filter((a): a is string => typeof a === "string" && a.trim().length > 0)
+    if (filtered.length > 0) result.aliases = normalizeTerms(filtered)
+  }
   if (Array.isArray(e.toc)) {
     const validated = e.toc.filter(
       (h: unknown): h is TocHeading => {
@@ -129,18 +142,29 @@ export function generateMetadata(
       name: canonicalName,
       type: assetType,
       generated: true,
+      quality: "generated",
+      confidence: 0.55,
+      source: "filename",
     }
 
     // Priority 1: package.json metadata
     if (pkgMeta) {
-      if (pkgMeta.description && !entry.description) entry.description = pkgMeta.description
-      if (pkgMeta.keywords && pkgMeta.keywords.length > 0) entry.tags = pkgMeta.keywords
+      if (pkgMeta.description && !entry.description) {
+        entry.description = pkgMeta.description
+        entry.source = "package"
+        entry.confidence = 0.8
+      }
+      if (pkgMeta.keywords && pkgMeta.keywords.length > 0) entry.tags = normalizeTerms(pkgMeta.keywords)
     }
 
     // Priority 2: Frontmatter (for .md files — overrides package.json description)
     if (ext === ".md") {
       const fm = extractFrontmatterDescription(file)
-      if (fm) entry.description = fm
+      if (fm) {
+        entry.description = fm
+        entry.source = "frontmatter"
+        entry.confidence = 0.9
+      }
     }
 
     // Knowledge entries: generate TOC from headings
@@ -157,16 +181,25 @@ export function generateMetadata(
     // Priority 3: Code comments (for script files)
     if (SCRIPT_EXTENSIONS.has(ext) && ext !== ".md") {
       const commentDesc = extractDescriptionFromComments(file)
-      if (commentDesc && !entry.description) entry.description = commentDesc
+      if (commentDesc && !entry.description) {
+        entry.description = commentDesc
+        entry.source = "comments"
+        entry.confidence = 0.7
+      }
     }
 
     // Priority 4: Filename heuristics (fallback)
     if (!entry.description) {
       entry.description = fileNameToDescription(baseName)
+      entry.source = "filename"
+      entry.confidence = Math.min(entry.confidence ?? 0.55, 0.55)
     }
     if (!entry.tags || entry.tags.length === 0) {
       entry.tags = extractTagsFromPath(file, dirPath)
     }
+
+    entry.tags = normalizeTerms(entry.tags ?? [])
+    entry.aliases = buildAliases(canonicalName, entry.tags)
 
     // Generate intents from description and tags
     entry.intents = generateIntents(entry.description ?? "", entry.tags ?? [], canonicalName)
@@ -177,6 +210,28 @@ export function generateMetadata(
   }
 
   return { entries }
+}
+
+
+function normalizeTerms(values: string[]): string[] {
+  const normalized = new Set<string>()
+  for (const value of values) {
+    const cleaned = value.toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim()
+    if (!cleaned) continue
+    normalized.add(cleaned)
+    if (cleaned.endsWith("s") && cleaned.length > 3) {
+      normalized.add(cleaned.slice(0, -1))
+    }
+  }
+  return Array.from(normalized)
+}
+
+function buildAliases(name: string, tags: string[]): string[] {
+  const aliases = new Set<string>()
+  const spaced = name.replace(/[-_]+/g, " ").trim().toLowerCase()
+  if (spaced && spaced !== name.toLowerCase()) aliases.add(spaced)
+  if (tags.length > 1) aliases.add(tags.join(" "))
+  return Array.from(aliases)
 }
 
 // ── Intent Generation ────────────────────────────────────────────────────────
