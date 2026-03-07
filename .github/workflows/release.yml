@@ -72,7 +72,8 @@ jobs:
         with:
           node-version: 24
       - run: bun install
-      - run: npm publish
+      - run: npm install -g npm@latest
+      - run: npm publish --provenance --access public
 
   build:
     needs: version
