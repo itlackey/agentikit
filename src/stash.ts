@@ -554,15 +554,22 @@ export interface InitResponse {
 }
 
 export function agentikitInit(): InitResponse {
-  const home = IS_WINDOWS
-    ? process.env.USERPROFILE || process.env.HOME || ""
-    : process.env.HOME || ""
-
-  if (!home) {
-    throw new Error("Unable to determine home directory. Set HOME (or USERPROFILE on Windows).")
+  let stashDir: string
+  if (IS_WINDOWS) {
+    const docs = process.env.USERPROFILE
+      ? path.join(process.env.USERPROFILE, "Documents")
+      : ""
+    if (!docs) {
+      throw new Error("Unable to determine Documents folder. Ensure USERPROFILE is set.")
+    }
+    stashDir = path.join(docs, "agentikit")
+  } else {
+    const home = process.env.HOME || ""
+    if (!home) {
+      throw new Error("Unable to determine home directory. Set HOME.")
+    }
+    stashDir = path.join(home, "agentikit")
   }
-
-  const stashDir = path.join(home, "agentikit")
 
   let created = false
   if (!fs.existsSync(stashDir)) {
