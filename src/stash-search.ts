@@ -2,9 +2,8 @@ import fs from "node:fs"
 import path from "node:path"
 import { type AgentikitAssetType, hasErrnoCode, resolveStashDir } from "./common"
 import { ASSET_TYPES, TYPE_DIRS, deriveCanonicalAssetName } from "./asset-spec"
-import { loadSearchIndex, buildSearchText, type IndexedEntry, type SearchIndex } from "./indexer"
-import { TfIdfAdapter, type ScoredEntry, type ScoredResult } from "./similarity"
-import { rgFilterCandidates } from "./ripgrep-filter"
+import { loadSearchIndex, buildSearchText, type IndexedEntry } from "./indexer"
+import { TfIdfAdapter, type ScoredEntry } from "./similarity"
 import { buildToolInfo } from "./tool-runner"
 import { walkStash } from "./walker"
 import { makeOpenRef } from "./stash-ref"
@@ -110,34 +109,16 @@ async function tryEmbeddingSearch(
     scored.sort((a, b) => b.score - a.score)
     const topResults = scored.slice(0, limit)
 
-    return topResults.map(({ ie, score }): SearchHit => {
-      const entryStashDir = findStashDirForPath(ie.path, allStashDirs) ?? stashDir
-      const typeRoot = path.join(entryStashDir, TYPE_DIRS[ie.entry.type])
-      const openRefName = deriveCanonicalAssetName(ie.entry.type, typeRoot, ie.path)
-        ?? ie.entry.name
-
-      const hit: SearchHit = {
-        type: ie.entry.type,
-        name: ie.entry.name,
+    return topResults.map(({ ie, score }): SearchHit =>
+      buildIndexedHit({
+        entry: ie.entry,
         path: ie.path,
-        openRef: makeOpenRef(ie.entry.type, openRefName),
-        description: ie.entry.description,
-        tags: ie.entry.tags,
         score: Math.round(score * 1000) / 1000,
-      }
-
-      if (ie.entry.type === "tool") {
-        try {
-          const toolInfo = buildToolInfo(entryStashDir, ie.path)
-          hit.runCmd = toolInfo.runCmd
-          hit.kind = toolInfo.kind
-        } catch (error: unknown) {
-          if (!hasErrnoCode(error, "ENOENT")) throw error
-        }
-      }
-
-      return hit
-    })
+        query,
+        rankingMode: "semantic",
+        defaultStashDir: stashDir,
+        allStashDirs,
+      }))
   } catch {
     // Embedding provider not available, fall through to TF-IDF
     return null
@@ -184,22 +165,7 @@ function tryTfIdfSearch(
   if (!index || !index.entries || index.entries.length === 0) return null
   if (index.stashDir !== stashDir) return null
 
-  let candidateEntries = index.entries
-  if (query) {
-    // Try ripgrep pre-filtering across all stash dirs
-    for (const dir of allStashDirs) {
-      const rgResult = rgFilterCandidates(query, dir, dir)
-      if (rgResult && rgResult.usedRg) {
-        const matchedDirs = new Set(rgResult.matchedFiles.map((f) => path.dirname(f)))
-        const filtered = index.entries.filter((ie) => matchedDirs.has(ie.dirPath))
-        if (filtered.length > 0) {
-          candidateEntries = filtered
-          break
-        }
-      }
-    }
-  }
-
+  const candidateEntries = index.entries
   const candidateScoredEntries = toScoredEntries(candidateEntries)
 
   let adapter: TfIdfAdapter
@@ -214,37 +180,86 @@ function tryTfIdfSearch(
   const typeFilter = searchType === "any" ? undefined : searchType
   const results = adapter.search(query, limit, typeFilter)
 
-  return results.map((r): SearchHit => indexResultToHit(r, stashDir))
+  return results.map((r): SearchHit =>
+    buildIndexedHit({
+      entry: r.entry,
+      path: r.path,
+      score: r.score,
+      query,
+      rankingMode: "tfidf",
+      defaultStashDir: stashDir,
+      allStashDirs,
+    }))
 }
 
-function indexResultToHit(r: ScoredResult, stashDir: string): SearchHit {
-  const typeRoot = path.join(stashDir, TYPE_DIRS[r.entry.type])
-  const openRefName = deriveCanonicalAssetName(r.entry.type, typeRoot, r.path)
-    ?? r.entry.name
+
+function buildIndexedHit(input: {
+  entry: IndexedEntry["entry"]
+  path: string
+  score: number
+  query: string
+  rankingMode: "semantic" | "tfidf"
+  defaultStashDir: string
+  allStashDirs: string[]
+}): SearchHit {
+  const entryStashDir = findStashDirForPath(input.path, input.allStashDirs) ?? input.defaultStashDir
+  const typeRoot = path.join(entryStashDir, TYPE_DIRS[input.entry.type])
+  const openRefName = deriveCanonicalAssetName(input.entry.type, typeRoot, input.path)
+    ?? input.entry.name
+
+  const qualityBoost = input.entry.generated === true ? 0 : 0.05
+  const confidenceBoost = typeof input.entry.confidence === "number" ? Math.min(0.05, Math.max(0, input.entry.confidence) * 0.05) : 0
+  const score = Math.round((input.score + qualityBoost + confidenceBoost) * 1000) / 1000
+
+  const whyMatched = buildWhyMatched(input.entry, input.query, input.rankingMode, qualityBoost, confidenceBoost)
 
   const hit: SearchHit = {
-    type: r.entry.type,
-    name: r.entry.name,
-    path: r.path,
-    openRef: makeOpenRef(r.entry.type, openRefName),
-    description: r.entry.description,
-    tags: r.entry.tags,
-    score: r.score,
+    type: input.entry.type,
+    name: input.entry.name,
+    path: input.path,
+    openRef: makeOpenRef(input.entry.type, openRefName),
+    description: input.entry.description,
+    tags: input.entry.tags,
+    score,
+    whyMatched,
   }
 
-  if (r.entry.type === "tool") {
+  if (input.entry.type === "tool") {
     try {
-      const toolInfo = buildToolInfo(stashDir, r.path)
+      const toolInfo = buildToolInfo(entryStashDir, input.path)
       hit.runCmd = toolInfo.runCmd
       hit.kind = toolInfo.kind
     } catch (error: unknown) {
-      if (!hasErrnoCode(error, "ENOENT")) {
-        throw error
-      }
+      if (!hasErrnoCode(error, "ENOENT")) throw error
     }
   }
 
   return hit
+}
+
+function buildWhyMatched(
+  entry: IndexedEntry["entry"],
+  query: string,
+  rankingMode: "semantic" | "tfidf",
+  qualityBoost: number,
+  confidenceBoost: number,
+): string[] {
+  const reasons: string[] = [rankingMode === "semantic" ? "semantic similarity" : "tf-idf lexical relevance"]
+  const tokens = query.toLowerCase().split(/\s+/).filter(Boolean)
+
+  const name = entry.name.toLowerCase()
+  const tags = entry.tags?.join(" ").toLowerCase() ?? ""
+  const intents = entry.intents?.join(" ").toLowerCase() ?? ""
+  const aliases = entry.aliases?.join(" ").toLowerCase() ?? ""
+
+  if (tokens.some((t) => name.includes(t))) reasons.push("matched name tokens")
+  if (tokens.some((t) => tags.includes(t))) reasons.push("matched tags")
+  if (tokens.some((t) => intents.includes(t))) reasons.push("matched intents")
+  if (tokens.some((t) => aliases.includes(t))) reasons.push("matched aliases")
+  if (qualityBoost > 0) reasons.push("curated metadata boost")
+  if (confidenceBoost > 0) reasons.push("metadata confidence boost")
+
+  return reasons
 }
 
 function toScoredEntries(entries: IndexedEntry[]): ScoredEntry[] {

@@ -120,6 +120,24 @@ test("validateStashEntry accepts minimal valid entry", () => {
   expect(result!.type).toBe("tool")
 })
 
+test("validateStashEntry parses quality, confidence, source, and aliases", () => {
+  const result = validateStashEntry({
+    name: "lint",
+    type: "tool",
+    quality: "curated",
+    confidence: 2,
+    source: "manual",
+    aliases: ["Lint", "linters"],
+  })
+
+  expect(result).not.toBeNull()
+  expect(result?.quality).toBe("curated")
+  expect(result?.confidence).toBe(1)
+  expect(result?.source).toBe("manual")
+  expect(result?.aliases).toEqual(["lint", "linters", "linter"])
+})
+
+
 // ── extractDescriptionFromComments ──────────────────────────────────────────
 
 test("extractDescriptionFromComments parses JSDoc block comment", () => {
@@ -204,6 +222,10 @@ test("generateMetadata creates entries from script files with filename heuristic
   expect(stash.entries[0].type).toBe("tool")
   expect(stash.entries[0].description).toBe("summarize diff")
   expect(stash.entries[0].generated).toBe(true)
+  expect(stash.entries[0].quality).toBe("generated")
+  expect(stash.entries[0].source).toBe("filename")
+  expect(stash.entries[0].confidence).toBe(0.55)
+  expect(stash.entries[0].aliases).toContain("summarize diff")
   expect(stash.entries[0].entry).toBe("summarize-diff.ts")
 })
 
@@ -214,6 +236,7 @@ test("generateMetadata extracts description from code comments", () => {
 
   const stash = generateMetadata(dir, "tool", [tool1])
   expect(stash.entries[0].description).toBe("Deploy services to production")
+  expect(stash.entries[0].source).toBe("comments")
 })
 
 test("generateMetadata extracts metadata from package.json", () => {
@@ -227,6 +250,8 @@ test("generateMetadata extracts metadata from package.json", () => {
 
   const stash = generateMetadata(dir, "tool", [tool1])
   expect(stash.entries[0].description).toBe("Git diff summarizer")
+  expect(stash.entries[0].source).toBe("package")
+  expect(stash.entries[0].confidence).toBe(0.8)
   expect(stash.entries[0].tags).toEqual(["git", "diff"])
 })
 

@@ -69,7 +69,7 @@ agentikit search "deploy" --type tool --limit 10
 - `--type`: `tool | skill | command | agent | knowledge | any` (default: `any`)
 - `--limit`: defaults to `20`
 
-Returns typed hits with `openRef` and, for tools, execution-ready `runCmd`.
+Returns typed hits with `openRef`, score/explainability details (`score`, `whyMatched`), and, for tools, execution-ready `runCmd`.
 
 ### open
 
