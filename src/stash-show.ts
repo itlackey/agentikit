@@ -1,4 +1,5 @@
 import fs from "node:fs"
+import path from "node:path"
 import { parseFrontmatter, toStringOrUndefined } from "./frontmatter"
 import { resolveStashDir } from "./common"
 import { parseOpenRef } from "./stash-ref"
@@ -6,11 +7,32 @@ import { resolveAssetPath } from "./stash-resolve"
 import type { KnowledgeView, ShowResponse } from "./stash-types"
 import { parseMarkdownToc, extractSection, extractLineRange, extractFrontmatterOnly, formatToc } from "./markdown"
 import { buildToolInfo } from "./tool-runner"
+import { loadConfig } from "./config"
 
 export function agentikitShow(input: { ref: string; view?: KnowledgeView }): ShowResponse {
   const parsed = parseOpenRef(input.ref)
   const stashDir = resolveStashDir()
-  const assetPath = resolveAssetPath(stashDir, parsed.type, parsed.name)
+  const config = loadConfig(stashDir)
+  const allStashDirs = [
+    stashDir,
+    ...config.additionalStashDirs.filter((d) => {
+      try { return fs.statSync(d).isDirectory() } catch { return false }
+    }),
+  ]
+
+  let assetPath: string | undefined
+  let lastError: Error | undefined
+  for (const dir of allStashDirs) {
+    try {
+      assetPath = resolveAssetPath(dir, parsed.type, parsed.name)
+      break
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err))
+    }
+  }
+  if (!assetPath) {
+    throw lastError ?? new Error(`Stash asset not found for ref: ${parsed.type}:${parsed.name}`)
+  }
   const content = fs.readFileSync(assetPath, "utf8")
 
   switch (parsed.type) {
@@ -44,7 +66,8 @@ export function agentikitShow(input: { ref: string; view?: KnowledgeView }): Sho
       }
     }
     case "tool": {
-      const toolInfo = buildToolInfo(stashDir, assetPath)
+      const assetStashDir = allStashDirs.find((d) => path.resolve(assetPath!).startsWith(path.resolve(d) + path.sep)) ?? stashDir
+      const toolInfo = buildToolInfo(assetStashDir, assetPath)
       return {
         type: "tool",
         name: parsed.name,

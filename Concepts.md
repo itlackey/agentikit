@@ -212,7 +212,7 @@ Two commands are needed.
 
 Build index
 
-agentikit index
+akm index
 
 Output example:
 
@@ -225,7 +225,7 @@ Index updated
 
 Search
 
-agentikit search "summarize git commits"
+akm search "summarize git commits"
 
 Output:
 

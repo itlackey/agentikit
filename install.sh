@@ -25,7 +25,7 @@ case "$ARCH" in
   *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 
-BINARY="agentikit-${OS}-${ARCH}"
+BINARY="akm-${OS}-${ARCH}"
 TAG="${1:-latest}"
 
 if [ "$TAG" = "latest" ]; then
@@ -78,13 +78,13 @@ chmod +x "$TMPFILE"
 
 # Use sudo if needed
 if [ -w "$INSTALL_DIR" ]; then
-  mv "$TMPFILE" "${INSTALL_DIR}/agentikit"
+  mv "$TMPFILE" "${INSTALL_DIR}/akm"
 else
   echo "Installing to ${INSTALL_DIR} (requires sudo)..."
-  sudo mv "$TMPFILE" "${INSTALL_DIR}/agentikit"
+  sudo mv "$TMPFILE" "${INSTALL_DIR}/akm"
 fi
 
-echo "agentikit installed to ${INSTALL_DIR}/agentikit"
+echo "akm installed to ${INSTALL_DIR}/akm"
 
-echo "Running agentikit init..."
-"${INSTALL_DIR}/agentikit" init
+echo "Running akm init..."
+"${INSTALL_DIR}/akm" init

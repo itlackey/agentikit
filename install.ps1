@@ -6,8 +6,8 @@ $InstallDir = if ($env:AGENTIKIT_INSTALL_DIR) { $env:AGENTIKIT_INSTALL_DIR } els
 # Detect architecture
 $Arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 switch ($Arch) {
-    "X64"   { $Binary = "agentikit-windows-x64.exe" }
-    "Arm64" { $Binary = "agentikit-windows-x64.exe"; Write-Warning "ARM64 detected; downloading x64 binary (runs via emulation)" }
+    "X64"   { $Binary = "akm-windows-x64.exe" }
+    "Arm64" { $Binary = "akm-windows-x64.exe"; Write-Warning "ARM64 detected; downloading x64 binary (runs via emulation)" }
     default { Write-Error "Unsupported architecture: $Arch"; exit 1 }
 }
 
@@ -25,8 +25,8 @@ if (!(Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
 
-$OutFile = Join-Path $InstallDir "agentikit.exe"
-$ChecksumFile = Join-Path $env:TEMP "agentikit-checksums.txt"
+$OutFile = Join-Path $InstallDir "akm.exe"
+$ChecksumFile = Join-Path $env:TEMP "akm-checksums.txt"
 
 Write-Host "Downloading $Binary..."
 Invoke-WebRequest -Uri $DownloadUrl -OutFile $OutFile -UseBasicParsing
@@ -68,7 +68,7 @@ if ($UserPath -notlike "*$InstallDir*") {
     Write-Host "Added $InstallDir to your PATH (restart your shell to pick it up)."
 }
 
-Write-Host "agentikit installed to $OutFile"
+Write-Host "akm installed to $OutFile"
 
-Write-Host "Running agentikit init..."
+Write-Host "Running akm init..."
 & $OutFile init

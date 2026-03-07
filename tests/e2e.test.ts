@@ -314,7 +314,7 @@ describe("Scenario: CLI subprocess execution", () => {
     fs.rmSync(stashDir, { recursive: true, force: true })
   })
 
-  test("cli: agentikit search returns JSON with hits", async () => {
+  test("cli: akm search returns JSON with hits", async () => {
     const result = runCli("search", "docker")
     expect(result.exitCode).toBe(0)
 
@@ -324,7 +324,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.stashDir).toBeTruthy()
   })
 
-  test("cli: agentikit search --type tool filters by type", async () => {
+  test("cli: akm search --type tool filters by type", async () => {
     const result = runCli("search", "deploy", "--type", "tool")
     expect(result.exitCode).toBe(0)
 
@@ -332,7 +332,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.hits.every((h: any) => h.type === "tool")).toBe(true)
   })
 
-  test("cli: agentikit search --type knowledge filters by type", async () => {
+  test("cli: akm search --type knowledge filters by type", async () => {
     const result = runCli("search", "guide", "--type", "knowledge")
     expect(result.exitCode).toBe(0)
 
@@ -341,7 +341,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.hits.every((h: any) => h.type === "knowledge")).toBe(true)
   })
 
-  test("cli: agentikit search --limit 2 respects limit", async () => {
+  test("cli: akm search --limit 2 respects limit", async () => {
     const result = runCli("search", "", "--limit", "2")
     expect(result.exitCode).toBe(0)
 
@@ -349,7 +349,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.hits.length).toBeLessThanOrEqual(2)
   })
 
-  test("cli: agentikit show returns asset content", async () => {
+  test("cli: akm show returns asset content", async () => {
     const result = runCli("show", "skill:code-review")
     expect(result.exitCode).toBe(0)
 
@@ -358,7 +358,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.content).toContain("Code Review Skill")
   })
 
-  test("cli: agentikit show command returns template", async () => {
+  test("cli: akm show command returns template", async () => {
     const result = runCli("show", "command:release.md")
     expect(result.exitCode).toBe(0)
 
@@ -368,7 +368,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.template).toContain("npm version")
   })
 
-  test("cli: agentikit index builds index and reports stats", async () => {
+  test("cli: akm index builds index and reports stats", async () => {
     const result = runCli("index")
     expect(result.exitCode).toBe(0)
 
@@ -377,7 +377,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.indexPath).toBeTruthy()
   })
 
-  test("cli: agentikit index --full returns mode full", async () => {
+  test("cli: akm index --full returns mode full", async () => {
     const result = runCli("index", "--full")
     expect(result.exitCode).toBe(0)
 
@@ -385,16 +385,18 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.mode).toBe("full")
   })
 
-  test("cli: agentikit with no command prints usage", async () => {
+  test("cli: akm with no command prints usage", async () => {
     const result = runCli()
     expect(result.exitCode).not.toBe(0)
-    expect(result.stderr).toContain("Usage:")
+    const output = result.stdout + result.stderr
+    expect(output).toContain("No command specified")
   })
 
-  test("cli: agentikit show with no ref prints error", async () => {
+  test("cli: akm show with no ref prints error", async () => {
     const result = runCli("show")
     expect(result.exitCode).not.toBe(0)
-    expect(result.stderr).toContain("missing ref")
+    const output = result.stdout + result.stderr
+    expect(output).toContain("Missing required positional argument")
   })
 })
 

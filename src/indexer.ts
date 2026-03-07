@@ -45,7 +45,7 @@ export interface IndexResponse {
   directoriesScanned: number
   directoriesSkipped: number
   /** Timing counters in milliseconds */
-  timing?: { totalMs: number; walkMs: number; metadataMs: number; embedMs: number; tfidfMs: number }
+  timing?: { totalMs: number; walkMs: number; embedMs: number; tfidfMs: number }
 }
 
 // ── Constants ───────────────────────────────────────────────────────────────

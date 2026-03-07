@@ -2,6 +2,8 @@
 
 Agentikit is a CLI tool and library for managing a stash of extension assets for AI coding assistants. It lets you **search** and **show** tools, skills, commands, and agents from a stash directory.
 
+The CLI is called **akm** (Agentikit Manager).
+
 ## Installation
 
 ### npm / bun
@@ -30,7 +32,7 @@ The shell installer verifies the downloaded binary against release `checksums.tx
 
 ## Stash model
 
-Set a stash path via `AGENTIKIT_STASH_DIR`, or run `agentikit init` to create one automatically.
+Set a stash path via `AGENTIKIT_STASH_DIR`, or run `akm init` to create one automatically.
 
 ```sh
 export AGENTIKIT_STASH_DIR=/abs/path/to/your-stash
@@ -50,10 +52,10 @@ $AGENTIKIT_STASH_DIR/
 ## CLI usage
 
 ```sh
-agentikit init                 # Initialize stash directory and set AGENTIKIT_STASH_DIR
-agentikit index [--full]       # Build search index (incremental by default)
-agentikit search [query]       # Search the stash
-agentikit show <type:name>     # Read a stash asset by ref
+akm init                 # Initialize stash directory and set AGENTIKIT_STASH_DIR
+akm index [--full]       # Build search index (incremental by default)
+akm search [query]       # Search the stash
+akm show <type:name>     # Read a stash asset by ref
 ```
 
 ### search
@@ -61,7 +63,7 @@ agentikit show <type:name>     # Read a stash asset by ref
 Search the stash for extension assets.
 
 ```sh
-agentikit search "deploy" --type tool --limit 10
+akm search "deploy" --type tool --limit 10
 ```
 
 - `query`: case-insensitive substring over stable names (relative paths)
@@ -75,10 +77,10 @@ Returns typed hits with `openRef`, score/explainability details (`score`, `whyMa
 Show a hit using `openRef` from search results.
 
 ```sh
-agentikit show skill:code-review
-agentikit show knowledge:guide.md --view toc
-agentikit show knowledge:guide.md --view section --heading "Getting Started"
-agentikit show knowledge:guide.md --view lines --start 10 --end 30
+akm show skill:code-review
+akm show knowledge:guide.md --view toc
+akm show knowledge:guide.md --view section --heading "Getting Started"
+akm show knowledge:guide.md --view lines --start 10 --end 30
 ```
 
 Returns full payload by type:
@@ -107,8 +109,8 @@ import { agentikitSearch, agentikitShow, agentikitInit, agentikitIndex } from "a
 Agentikit stores configuration in `config.json` inside the stash directory.
 
 ```sh
-agentikit config                    # Show current config
-agentikit config --set key=value    # Update a config key
+akm config                    # Show current config
+akm config --set key=value    # Update a config key
 ```
 
 ### Embedding connection
@@ -116,13 +118,13 @@ agentikit config --set key=value    # Update a config key
 By default, agentikit uses the local `@xenova/transformers` library for embeddings. You can configure an OpenAI-compatible embedding endpoint instead:
 
 ```sh
-agentikit config --set 'embedding={"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}'
+akm config --set 'embedding={"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}'
 ```
 
 To clear the custom embedding config and revert to local embeddings:
 
 ```sh
-agentikit config --set 'embedding=null'
+akm config --set 'embedding=null'
 ```
 
 ### LLM connection
@@ -130,13 +132,13 @@ agentikit config --set 'embedding=null'
 When configured, agentikit uses an OpenAI-compatible LLM to generate richer metadata (descriptions, intents, tags) during indexing:
 
 ```sh
-agentikit config --set 'llm={"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2"}'
+akm config --set 'llm={"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2"}'
 ```
 
 To clear:
 
 ```sh
-agentikit config --set 'llm=null'
+akm config --set 'llm=null'
 ```
 
 ### Using a local Ollama instance
@@ -149,11 +151,11 @@ ollama pull nomic-embed-text
 ollama pull llama3.2
 
 # Configure agentikit to use Ollama for both embeddings and metadata generation
-agentikit config --set 'embedding={"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}'
-agentikit config --set 'llm={"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2"}'
+akm config --set 'embedding={"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}'
+akm config --set 'llm={"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2"}'
 
 # Rebuild the index — embeddings use Ollama, metadata is LLM-enhanced
-agentikit index --full
+akm index --full
 ```
 
 Both `embedding` and `llm` accept an optional `apiKey` field for authenticated endpoints:

@@ -44,7 +44,7 @@ export async function agentikitSearch(input: {
     return {
       stashDir,
       hits,
-      tip: hits.length === 0 ? "No matching stash assets were found. Try running 'agentikit index' to rebuild." : undefined,
+      tip: hits.length === 0 ? "No matching stash assets were found. Try running 'akm index' to rebuild." : undefined,
       timing: { totalMs: Date.now() - t0, rankMs, embedMs },
     }
   }
@@ -57,7 +57,7 @@ export async function agentikitSearch(input: {
   return {
     stashDir,
     hits,
-    tip: hits.length === 0 ? "No matching stash assets were found. Try running 'agentikit index' to rebuild." : undefined,
+    tip: hits.length === 0 ? "No matching stash assets were found. Try running 'akm index' to rebuild." : undefined,
     timing: { totalMs: Date.now() - t0 },
   }
 }

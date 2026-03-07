@@ -1,159 +1,122 @@
 #!/usr/bin/env node
+import { defineCommand, runMain } from "citty"
 import { agentikitSearch, agentikitShow, type KnowledgeView } from "./stash"
 import { agentikitInit } from "./init"
 import { agentikitIndex } from "./indexer"
 import { loadConfig, updateConfig, type AgentikitConfig } from "./config"
 import { resolveStashDir } from "./common"
 
-const args = process.argv.slice(2)
-const command = args[0]
-
-type FlagKind = "boolean" | "string"
-
-function parseCliArgs(
-  argv: string[],
-  specs: Record<string, FlagKind>,
-): { flags: Record<string, string | boolean | undefined>; positionals: string[] } {
-  const flags: Record<string, string | boolean | undefined> = {}
-  const positionals: string[] = []
-
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]
-    const kind = specs[arg]
-
-    if (kind === "boolean") {
-      flags[arg] = true
-      continue
-    }
-
-    if (kind === "string") {
-      if (i + 1 < argv.length) {
-        flags[arg] = argv[i + 1]
-        i++
-      }
-      continue
-    }
-
-    if (arg.startsWith("--")) {
-      continue
-    }
-
-    positionals.push(arg)
-  }
-
-  return { flags, positionals }
-}
-
-function usage(): never {
-  console.error("Usage: agentikit <init|index|search|show|config> [options]")
-  console.error("")
-  console.error("Commands:")
-  console.error("  init                 Initialize agentikit stash directory and set AGENTIKIT_STASH_DIR")
-  console.error("  index [--full]       Build search index (incremental by default; --full forces full reindex)")
-  console.error("  search [query]       Search the stash (--type tool|skill|command|agent|knowledge|any) (--limit N)")
-  console.error("  show <type:name>     Show a stash asset by ref")
-  console.error("       Knowledge view options: --view full|toc|frontmatter|section|lines")
-  console.error("         --heading <text>   Section heading (for --view section)")
-  console.error("         --start <N>        Start line (for --view lines)")
-  console.error("         --end <N>          End line (for --view lines)")
-  console.error("  config               Show current configuration")
-  console.error("  config --set k=v     Update a configuration key")
-  process.exit(1)
-}
-
-async function main() {
-  switch (command) {
-    case "init": {
-      const result = agentikitInit()
-      console.log(JSON.stringify(result, null, 2))
-      break
-    }
-    case "index": {
-      const parsed = parseCliArgs(args.slice(1), { "--full": "boolean" })
-      const full = parsed.flags["--full"] === true
-      const result = await agentikitIndex({ full })
-      console.log(JSON.stringify(result, null, 2))
-      break
-    }
-    case "search": {
-      const parsed = parseCliArgs(args.slice(1), { "--type": "string", "--limit": "string" })
-      const query = parsed.positionals.join(" ")
-      const type = parsed.flags["--type"] as "tool" | "skill" | "command" | "agent" | "knowledge" | "any" | undefined
-      const limitStr = parsed.flags["--limit"] as string | undefined
-      const limit = limitStr ? parseInt(limitStr, 10) : undefined
-      console.log(JSON.stringify(await agentikitSearch({ query, type, limit }), null, 2))
-      break
-    }
-    case "show": {
-      const ref = args[1]
-      if (!ref) { console.error("Error: missing ref argument\n"); return usage() }
-      const parsed = parseCliArgs(args.slice(2), {
-        "--view": "string",
-        "--heading": "string",
-        "--start": "string",
-        "--end": "string",
-      })
-      const viewMode = parsed.flags["--view"] as string | undefined
-      let view: KnowledgeView | undefined
-      if (viewMode) {
-        switch (viewMode) {
-          case "section":
-            view = { mode: "section", heading: (parsed.flags["--heading"] as string | undefined) ?? "" }
-            break
-          case "lines": {
-            const startVal = parsed.flags["--start"] as string | undefined
-            const endVal = parsed.flags["--end"] as string | undefined
-            view = {
-              mode: "lines",
-              start: Number(startVal ?? "1"),
-              end: endVal ? parseInt(endVal, 10) : Number.MAX_SAFE_INTEGER,
-            }
-            break
-          }
-          case "toc":
-          case "frontmatter":
-          case "full":
-            view = { mode: viewMode }
-            break
-          default:
-            console.error(`Unknown view mode: ${viewMode}`)
-            usage()
-        }
-      }
-      console.log(JSON.stringify(agentikitShow({ ref, view }), null, 2))
-      break
-    }
-    case "config": {
-      const parsed = parseCliArgs(args.slice(1), { "--set": "string" })
-      const stashDir = resolveStashDir()
-
-      if (parsed.flags["--set"]) {
-        const raw = parsed.flags["--set"] as string
-        const eqIndex = raw.indexOf("=")
-        if (eqIndex === -1) {
-          console.error("Error: --set expects key=value format")
-          process.exit(1)
-        }
-        const key = raw.slice(0, eqIndex)
-        const value = raw.slice(eqIndex + 1)
-        const partial = parseConfigValue(key, value)
-        const config = updateConfig(partial, stashDir)
-        console.log(JSON.stringify(config, null, 2))
-      } else {
-        const config = loadConfig(stashDir)
-        console.log(JSON.stringify(config, null, 2))
-      }
-      break
-    }
-    default:
-      usage()
-  }
-}
-
-main().catch((err) => {
-  console.error(`Error: ${err instanceof Error ? err.message : String(err)}`)
-  process.exit(1)
+const initCommand = defineCommand({
+  meta: { name: "init", description: "Initialize agentikit stash directory and set AGENTIKIT_STASH_DIR" },
+  run() {
+    const result = agentikitInit()
+    console.log(JSON.stringify(result, null, 2))
+  },
 })
+
+const indexCommand = defineCommand({
+  meta: { name: "index", description: "Build search index (incremental by default; --full forces full reindex)" },
+  args: {
+    full: { type: "boolean", description: "Force full reindex", default: false },
+  },
+  async run({ args }) {
+    const result = await agentikitIndex({ full: args.full })
+    console.log(JSON.stringify(result, null, 2))
+  },
+})
+
+const searchCommand = defineCommand({
+  meta: { name: "search", description: "Search the stash" },
+  args: {
+    query: { type: "positional", description: "Search query", required: false, default: "" },
+    type: { type: "string", description: "Asset type filter (tool|skill|command|agent|knowledge|any)" },
+    limit: { type: "string", description: "Maximum number of results" },
+  },
+  async run({ args }) {
+    const type = args.type as "tool" | "skill" | "command" | "agent" | "knowledge" | "any" | undefined
+    const limit = args.limit ? parseInt(args.limit, 10) : undefined
+    console.log(JSON.stringify(await agentikitSearch({ query: args.query, type, limit }), null, 2))
+  },
+})
+
+const showCommand = defineCommand({
+  meta: { name: "show", description: "Show a stash asset by ref (e.g. agent:bunjs-typescript-coder.md)" },
+  args: {
+    ref: { type: "positional", description: "Asset ref (type:name)", required: true },
+    view: { type: "string", description: "Knowledge view mode (full|toc|frontmatter|section|lines)" },
+    heading: { type: "string", description: "Section heading (for --view section)" },
+    start: { type: "string", description: "Start line (for --view lines)" },
+    end: { type: "string", description: "End line (for --view lines)" },
+  },
+  run({ args }) {
+    let view: KnowledgeView | undefined
+    if (args.view) {
+      switch (args.view) {
+        case "section":
+          view = { mode: "section", heading: args.heading ?? "" }
+          break
+        case "lines":
+          view = {
+            mode: "lines",
+            start: Number(args.start ?? "1"),
+            end: args.end ? parseInt(args.end, 10) : Number.MAX_SAFE_INTEGER,
+          }
+          break
+        case "toc":
+        case "frontmatter":
+        case "full":
+          view = { mode: args.view }
+          break
+        default:
+          console.error(`Unknown view mode: ${args.view}`)
+          process.exit(1)
+      }
+    }
+    console.log(JSON.stringify(agentikitShow({ ref: args.ref, view }), null, 2))
+  },
+})
+
+const configCommand = defineCommand({
+  meta: { name: "config", description: "Show or update configuration" },
+  args: {
+    set: { type: "string", description: "Update a config key (key=value format)" },
+  },
+  run({ args }) {
+    const stashDir = resolveStashDir()
+
+    if (args.set) {
+      const eqIndex = args.set.indexOf("=")
+      if (eqIndex === -1) {
+        console.error("Error: --set expects key=value format")
+        process.exit(1)
+      }
+      const key = args.set.slice(0, eqIndex)
+      const value = args.set.slice(eqIndex + 1)
+      const partial = parseConfigValue(key, value)
+      const config = updateConfig(partial, stashDir)
+      console.log(JSON.stringify(config, null, 2))
+    } else {
+      const config = loadConfig(stashDir)
+      console.log(JSON.stringify(config, null, 2))
+    }
+  },
+})
+
+const main = defineCommand({
+  meta: {
+    name: "akm",
+    description: "CLI tool to search, open, and run extension assets from an agentikit stash directory.",
+  },
+  subCommands: {
+    init: initCommand,
+    index: indexCommand,
+    search: searchCommand,
+    show: showCommand,
+    config: configCommand,
+  },
+})
+
+runMain(main)
 
 function parseConnectionValue(
   key: string,
