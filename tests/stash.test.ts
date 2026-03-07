@@ -287,6 +287,51 @@ test("agentikitRun throws helpful error for knowledge refs", () => {
   expect(() => agentikitRun({ ref: "knowledge:doc.md" })).toThrow(/Knowledge assets are read-only/)
 })
 
+test("agentikitOpen for tool type returns runCmd and kind", () => {
+  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  writeFile(path.join(stashDir, "tools", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
+
+  process.env.AGENTIKIT_STASH_DIR = stashDir
+  const result = agentikitOpen({ ref: "tool:deploy.sh" })
+
+  expect(result.type).toBe("tool")
+  expect(result.runCmd).toBeTruthy()
+  expect(typeof result.runCmd).toBe("string")
+  expect(result.kind).toBe("bash")
+})
+
+test("agentikitInit returns created false when stash dir already exists", () => {
+  const origHome = process.env.HOME
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-home-"))
+  // Pre-create the agentikit directory so init finds it existing
+  const stashPath = path.join(tmpHome, "agentikit")
+  fs.mkdirSync(stashPath, { recursive: true })
+
+  process.env.HOME = tmpHome
+  delete process.env.AGENTIKIT_STASH_DIR
+
+  try {
+    const result = agentikitInit()
+    expect(result.created).toBe(false)
+    expect(result.stashDir).toBe(stashPath)
+  } finally {
+    process.env.HOME = origHome
+  }
+})
+
+test("agentikitOpen throws unsupported tool extension for .txt file", () => {
+  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  // We need a .txt file in the tools directory — but resolveAssetPath checks
+  // SCRIPT_EXTENSIONS before calling buildToolInfo, so it will throw
+  // "Tool ref must resolve to a .sh, .ts, .js, .ps1, .cmd, or .bat file."
+  writeFile(path.join(stashDir, "tools", "readme.txt"), "not a tool\n")
+
+  process.env.AGENTIKIT_STASH_DIR = stashDir
+  expect(() => agentikitOpen({ ref: "tool:readme.txt" })).toThrow(
+    /Tool ref must resolve to a \.sh/,
+  )
+})
+
 test("agentikitInit creates knowledge directory", () => {
   const origHome = process.env.HOME
   const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-home-"))

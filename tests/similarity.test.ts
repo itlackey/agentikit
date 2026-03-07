@@ -95,3 +95,45 @@ test("TfIdfAdapter handles unknown query terms gracefully", () => {
   // Should fall back to substring or return empty
   expect(results).toHaveLength(0)
 })
+
+test("substringFallback returns hits when query term is absent from IDF vocabulary but present as substring", () => {
+  const adapter = new TfIdfAdapter()
+  // Build index with a document containing the word "kubernetes"
+  adapter.buildIndex([
+    makeEntry("k8s-deploy", "deploy to kubernetes cluster orchestration"),
+  ])
+
+  // Search for a term that is NOT in the IDF vocabulary (not a token in any doc)
+  // but IS a substring of the document text. "kubernet" is a substring of "kubernetes"
+  // but won't be a token produced by the tokenizer (which produces "kubernetes").
+  // We need ALL query tokens to be unknown to trigger substringFallback.
+  // Use a made-up token that appears as substring in the text.
+  const results = adapter.search("kubernet", 10)
+  expect(results.length).toBeGreaterThan(0)
+  expect(results[0].entry.name).toBe("k8s-deploy")
+})
+
+test("TfIdfAdapter.buildIndex with empty entries then search returns empty array", () => {
+  const adapter = new TfIdfAdapter()
+  adapter.buildIndex([])
+
+  const results = adapter.search("anything", 10)
+  expect(results).toHaveLength(0)
+})
+
+test("TfIdfAdapter.deserialize drops entries missing from provided entries array", () => {
+  const entry1 = makeEntry("docker-build", "build docker images container")
+  const entry2 = makeEntry("git-diff", "summarize git diff changes")
+
+  const adapter = new TfIdfAdapter()
+  adapter.buildIndex([entry1, entry2])
+  const serialized = adapter.serialize()
+
+  // Deserialize with only entry1 — entry2 should be silently dropped
+  const restored = TfIdfAdapter.deserialize(serialized, [entry1])
+  const results = restored.search("", 10)
+
+  // Should only contain entry1, not entry2
+  expect(results).toHaveLength(1)
+  expect(results[0].entry.name).toBe("docker-build")
+})

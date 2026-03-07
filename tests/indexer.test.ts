@@ -124,6 +124,46 @@ test("agentikitIndex generates TOC in stash.json for knowledge entries", () => {
   expect(stashJson.entries[0].toc[1].text).toBe("Installation")
 })
 
+test("isDirStale detects stash.json newer than index", () => {
+  const stashDir = tmpStash()
+  writeFile(path.join(stashDir, "tools", "deploy", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
+
+  process.env.AGENTIKIT_STASH_DIR = stashDir
+
+  // First index
+  const result1 = agentikitIndex({ stashDir })
+  expect(result1.totalEntries).toBe(1)
+  expect(result1.mode).toBe("full")
+
+  // Second index (incremental) — nothing changed, so dir should be skipped
+  const result2 = agentikitIndex({ stashDir })
+  expect(result2.mode).toBe("incremental")
+  expect(result2.directoriesSkipped).toBeGreaterThanOrEqual(1)
+
+  // Now touch the .stash.json to make it newer than the index
+  // We need a small delay to ensure the mtime is strictly newer
+  const stashJsonPath = path.join(stashDir, "tools", "deploy", ".stash.json")
+  const futureTime = new Date(Date.now() + 2000)
+  fs.utimesSync(stashJsonPath, futureTime, futureTime)
+
+  // Third index (incremental) — should detect stale dir
+  const result3 = agentikitIndex({ stashDir })
+  expect(result3.mode).toBe("incremental")
+  expect(result3.directoriesScanned).toBeGreaterThanOrEqual(1)
+})
+
+test("agentikitIndex --full mode returns mode full", () => {
+  const stashDir = tmpStash()
+  writeFile(path.join(stashDir, "tools", "hello", "hello.sh"), "#!/bin/bash\necho hi\n")
+
+  // First index to create a previous index
+  agentikitIndex({ stashDir })
+
+  // Second index with full flag — should force full reindex
+  const result = agentikitIndex({ stashDir, full: true })
+  expect(result.mode).toBe("full")
+})
+
 test("buildSearchText includes TOC heading text for knowledge entries", () => {
   const entry = {
     name: "guide",

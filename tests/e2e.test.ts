@@ -407,6 +407,14 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.indexPath).toBeTruthy()
   })
 
+  test("cli: agentikit index --full returns mode full", () => {
+    const result = runCli("index", "--full")
+    expect(result.exitCode).toBe(0)
+
+    const json = parseJson(result.stdout)
+    expect(json.mode).toBe("full")
+  })
+
   test("cli: agentikit with no command prints usage", () => {
     const result = runCli()
     expect(result.exitCode).not.toBe(0)
@@ -417,6 +425,57 @@ describe("Scenario: CLI subprocess execution", () => {
     const result = runCli("open")
     expect(result.exitCode).not.toBe(0)
     expect(result.stderr).toContain("missing ref")
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Scenario 3b: CLI knowledge --view flags
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("Scenario: CLI knowledge --view flags", () => {
+  let stashDir: string
+
+  beforeAll(() => {
+    stashDir = copyFixturesToTmp()
+    process.env.AGENTIKIT_STASH_DIR = stashDir
+  })
+
+  afterAll(() => {
+    fs.rmSync(stashDir, { recursive: true, force: true })
+  })
+
+  test("cli: open knowledge with --view toc", () => {
+    const result = runCli("open", "knowledge:guide.md", "--view", "toc")
+    expect(result.exitCode).toBe(0)
+
+    const json = parseJson(result.stdout)
+    expect(json.type).toBe("knowledge")
+    expect(json.content).toContain("# API Reference Guide")
+    expect(json.content).toContain("## Getting Started")
+    expect(json.content).toContain("lines total")
+  })
+
+  test("cli: open knowledge with --view section --heading", () => {
+    const result = runCli("open", "knowledge:guide.md", "--view", "section", "--heading", "Getting Started")
+    expect(result.exitCode).toBe(0)
+
+    const json = parseJson(result.stdout)
+    expect(json.type).toBe("knowledge")
+    expect(json.content).toContain("Getting Started")
+    expect(json.content).toContain("install the package")
+    // Should include sub-headings but not sibling headings
+    expect(json.content).toContain("Prerequisites")
+    expect(json.content).not.toContain("Authentication")
+  })
+
+  test("cli: open knowledge with --view lines --start --end", () => {
+    const result = runCli("open", "knowledge:guide.md", "--view", "lines", "--start", "1", "--end", "5")
+    expect(result.exitCode).toBe(0)
+
+    const json = parseJson(result.stdout)
+    expect(json.type).toBe("knowledge")
+    // Lines 1-5 cover the frontmatter start
+    expect(json.content).toContain("---")
   })
 })
 
