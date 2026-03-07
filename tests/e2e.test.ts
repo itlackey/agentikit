@@ -355,6 +355,15 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.hits.every((h: any) => h.type === "tool")).toBe(true)
   })
 
+  test("cli: agentikit search --type knowledge filters by type", async () => {
+    const result = runCli("search", "guide", "--type", "knowledge")
+    expect(result.exitCode).toBe(0)
+
+    const json = parseJson(result.stdout)
+    expect(json.hits.length).toBeGreaterThan(0)
+    expect(json.hits.every((h: any) => h.type === "knowledge")).toBe(true)
+  })
+
   test("cli: agentikit search --limit 2 respects limit", async () => {
     const result = runCli("search", "", "--limit", "2")
     expect(result.exitCode).toBe(0)

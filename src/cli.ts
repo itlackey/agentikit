@@ -79,7 +79,7 @@ async function main() {
     case "search": {
       const parsed = parseCliArgs(args.slice(1), { "--type": "string", "--limit": "string" })
       const query = parsed.positionals.join(" ")
-      const type = parsed.flags["--type"] as "tool" | "skill" | "command" | "agent" | "any" | undefined
+      const type = parsed.flags["--type"] as "tool" | "skill" | "command" | "agent" | "knowledge" | "any" | undefined
       const limitStr = parsed.flags["--limit"] as string | undefined
       const limit = limitStr ? parseInt(limitStr, 10) : undefined
       console.log(JSON.stringify(await agentikitSearch({ query, type, limit }), null, 2))
@@ -87,7 +87,7 @@ async function main() {
     }
     case "open": {
       const ref = args[1]
-      if (!ref) { console.error("Error: missing ref argument\n"); usage() }
+      if (!ref) { console.error("Error: missing ref argument\n"); return usage() }
       const parsed = parseCliArgs(args.slice(2), {
         "--view": "string",
         "--heading": "string",
@@ -126,7 +126,7 @@ async function main() {
     }
     case "run": {
       const ref = args[1]
-      if (!ref) { console.error("Error: missing ref argument\n"); usage() }
+      if (!ref) { console.error("Error: missing ref argument\n"); return usage() }
       const result = agentikitRun({ ref })
       console.log(JSON.stringify(result, null, 2))
       process.exit(result.exitCode)

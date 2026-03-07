@@ -75,8 +75,9 @@ export function extractSection(
 
 export function extractLineRange(content: string, start: number, end: number): string {
   const lines = content.split(/\r?\n/)
+  if (end < start) return ""
   const s = Math.max(1, Math.min(start, lines.length))
-  const e = Math.max(s, Math.min(end, lines.length))
+  const e = Math.min(end, lines.length)
   return lines.slice(s - 1, e).join("\n")
 }
 
