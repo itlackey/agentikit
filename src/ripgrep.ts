@@ -186,22 +186,59 @@ export function ensureRg(stashDir: string): EnsureRgResult {
 }
 
 function downloadAndExtractTarGz(url: string, archiveName: string, destBinary: string): void {
-  // Use curl to download and tar to extract in one pipeline
-  const result = spawnSync("sh", [
-    "-c",
-    `curl -fsSL "${url}" | tar xz --strip-components=1 -C "${path.dirname(destBinary)}" "${archiveName}/rg"`,
-  ], {
-    encoding: "utf8",
-    timeout: 60_000,
-  })
+  const destDir = path.dirname(destBinary)
+  const tmpTarGz = path.join(destDir, "rg-download.tar.gz")
 
-  if (result.status !== 0) {
-    const err = result.stderr?.trim() || result.error?.message || "unknown error"
-    throw new Error(`Failed to download ripgrep from ${url}: ${err}`)
-  }
+  try {
+    // Download archive to a temporary file without using a shell
+    const curlResult = spawnSync(
+      "curl",
+      ["-fsSL", "-o", tmpTarGz, url],
+      {
+        encoding: "utf8",
+        timeout: 60_000,
+      }
+    )
 
-  if (!fs.existsSync(destBinary)) {
-    throw new Error(`ripgrep binary not found at ${destBinary} after extraction`)
+    if (curlResult.status !== 0) {
+      const err = curlResult.stderr?.trim() || curlResult.error?.message || "unknown error"
+      throw new Error(`Failed to download ripgrep from ${url}: ${err}`)
+    }
+
+    // Extract the specific binary from the archive into destDir
+    const tarResult = spawnSync(
+      "tar",
+      [
+        "xzf",
+        tmpTarGz,
+        "--strip-components=1",
+        "-C",
+        destDir,
+        `${archiveName}/rg`,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 60_000,
+      }
+    )
+
+    if (tarResult.status !== 0) {
+      const err = tarResult.stderr?.trim() || tarResult.error?.message || "unknown error"
+      throw new Error(`Failed to extract ripgrep from ${url}: ${err}`)
+    }
+
+    if (!fs.existsSync(destBinary)) {
+      throw new Error(`ripgrep binary not found at ${destBinary} after extraction`)
+    }
+  } finally {
+    // Best-effort cleanup of temporary archive
+    try {
+      if (fs.existsSync(tmpTarGz)) {
+        fs.unlinkSync(tmpTarGz)
+      }
+    } catch {
+      // ignore cleanup errors
+    }
   }
 }
 
