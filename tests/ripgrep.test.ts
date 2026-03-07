@@ -170,6 +170,22 @@ test("rgFilterCandidates only searches .stash.json files", () => {
   expect(result!.matchedFiles.every((f) => f.endsWith(".stash.json"))).toBe(true)
 })
 
+test("rgFilterCandidates returns null on rg process error status > 1", () => {
+  if (process.platform === "win32") return
+
+  const stashDir = tmpDir()
+  const searchDir = tmpDir()
+  const binDir = path.join(stashDir, "bin")
+  fs.mkdirSync(binDir, { recursive: true })
+
+  const fakeRg = path.join(binDir, "rg")
+  fs.writeFileSync(fakeRg, "#!/bin/sh\nexit 2\n")
+  fs.chmodSync(fakeRg, 0o755)
+
+  const result = rgFilterCandidates("docker", searchDir, stashDir)
+  expect(result).toBeNull()
+})
+
 // ── Integration: ripgrep + semantic search ──────────────────────────────────
 
 test("search pipeline uses ripgrep pre-filtering when index exists", () => {

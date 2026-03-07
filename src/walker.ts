@@ -8,7 +8,8 @@
 
 import fs from "node:fs"
 import path from "node:path"
-import { type AgentikitAssetType, SCRIPT_EXTENSIONS } from "./common"
+import { type AgentikitAssetType } from "./common"
+import { isRelevantAssetFile } from "./asset-spec"
 
 export interface DirectoryGroup {
   dirPath: string
@@ -36,7 +37,7 @@ export function walkStash(typeRoot: string, assetType: AgentikitAssetType): Dire
       const fullPath = path.join(current, entry.name)
       if (entry.isDirectory()) {
         stack.push(fullPath)
-      } else if (entry.isFile() && isRelevantFile(entry.name, assetType)) {
+      } else if (entry.isFile() && isRelevantAssetFile(assetType, entry.name)) {
         const parentDir = path.dirname(fullPath)
         const existing = groups.get(parentDir)
         if (existing) {
@@ -49,23 +50,4 @@ export function walkStash(typeRoot: string, assetType: AgentikitAssetType): Dire
   }
 
   return Array.from(groups, ([dirPath, files]) => ({ dirPath, files }))
-}
-
-/**
- * Determine whether a file is relevant for the given asset type.
- */
-function isRelevantFile(fileName: string, assetType: AgentikitAssetType): boolean {
-  const ext = path.extname(fileName).toLowerCase()
-  switch (assetType) {
-    case "tool":
-      return SCRIPT_EXTENSIONS.has(ext)
-    case "skill":
-      return fileName === "SKILL.md"
-    case "command":
-    case "agent":
-    case "knowledge":
-      return ext === ".md"
-    default:
-      return false
-  }
 }

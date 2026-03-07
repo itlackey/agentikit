@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { IS_WINDOWS, TYPE_DIRS } from "./common"
-import { ensureRg } from "./ripgrep"
+import { ensureRg } from "./ripgrep-install"
 
 export interface InitResponse {
   stashDir: string

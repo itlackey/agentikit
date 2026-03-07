@@ -69,6 +69,38 @@ test("agentikitIndex preserves manually-written .stash.json", () => {
   expect(stash.entries[0].generated).toBeUndefined()
 })
 
+test("agentikitIndex migrates generated skill metadata name to canonical directory name", () => {
+  const stashDir = tmpStash()
+  writeFile(path.join(stashDir, "skills", "code-review", "SKILL.md"), "# Code Review\n")
+  writeFile(
+    path.join(stashDir, "skills", "code-review", ".stash.json"),
+    JSON.stringify({
+      entries: [
+        {
+          name: "SKILL",
+          type: "skill",
+          generated: true,
+          entry: "SKILL.md",
+          description: "legacy generated skill metadata",
+        },
+      ],
+    }),
+  )
+
+  const result = agentikitIndex({ stashDir })
+  expect(result.totalEntries).toBe(1)
+
+  const stash = JSON.parse(
+    fs.readFileSync(path.join(stashDir, "skills", "code-review", ".stash.json"), "utf8"),
+  )
+  expect(stash.entries[0].name).toBe("code-review")
+  expect(stash.entries[0].generated).toBe(true)
+
+  const index = loadSearchIndex()
+  expect(index).not.toBeNull()
+  expect(index!.entries[0].entry.name).toBe("code-review")
+})
+
 test("agentikitIndex writes index to cache", () => {
   const stashDir = tmpStash()
   writeFile(path.join(stashDir, "tools", "hello", "hello.sh"), "#!/bin/bash\necho hi\n")
@@ -78,7 +110,7 @@ test("agentikitIndex writes index to cache", () => {
 
   const index = loadSearchIndex()
   expect(index).not.toBeNull()
-  expect(index!.version).toBe(1)
+  expect(index!.version).toBe(2)
   expect(index!.entries.length).toBeGreaterThan(0)
 })
 

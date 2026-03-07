@@ -10,17 +10,22 @@
  *
  * Returns the parsed key-value data and the remaining body content.
  */
-export function parseFrontmatter(raw: string): { data: Record<string, unknown>; content: string } {
-  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
-  if (!match) {
-    return { data: {}, content: raw }
+export function parseFrontmatter(raw: string): {
+  data: Record<string, unknown>
+  content: string
+  frontmatter: string | null
+  bodyStartLine: number
+} {
+  const parsedBlock = parseFrontmatterBlock(raw)
+  if (!parsedBlock) {
+    return { data: {}, content: raw, frontmatter: null, bodyStartLine: 1 }
   }
 
   const data: Record<string, unknown> = {}
   let currentKey: string | null = null
   let nested: Record<string, unknown> | null = null
 
-  for (const line of match[1].split(/\r?\n/)) {
+  for (const line of parsedBlock.frontmatter.split(/\r?\n/)) {
     const indented = line.match(/^  (\w[\w-]*):\s*(.+)$/)
     if (indented && currentKey && nested) {
       nested[indented[1]] = parseYamlScalar(indented[2].trim())
@@ -42,7 +47,29 @@ export function parseFrontmatter(raw: string): { data: Record<string, unknown>; 
       data[currentKey] = parseYamlScalar(value)
     }
   }
-  return { data, content: match[2] }
+  return {
+    data,
+    content: parsedBlock.content,
+    frontmatter: parsedBlock.frontmatter,
+    bodyStartLine: parsedBlock.bodyStartLine,
+  }
+}
+
+export function parseFrontmatterBlock(
+  raw: string,
+): { frontmatter: string; content: string; bodyStartLine: number } | null {
+  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
+  if (!match) return null
+  return {
+    frontmatter: match[1],
+    content: match[2],
+    bodyStartLine: countLines(raw.slice(0, match[0].length - match[2].length)) + 1,
+  }
+}
+
+function countLines(text: string): number {
+  if (text.length === 0) return 0
+  return text.split(/\r?\n/).length - 1
 }
 
 /**

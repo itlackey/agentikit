@@ -1,6 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
-import { type AgentikitAssetType, TYPE_DIRS, resolveStashDir } from "./common"
+import { type AgentikitAssetType, resolveStashDir } from "./common"
+import { ASSET_TYPES, TYPE_DIRS, deriveCanonicalAssetName } from "./asset-spec"
 import {
   type StashFile,
   type StashEntry,
@@ -40,7 +41,7 @@ export interface IndexResponse {
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const INDEX_VERSION = 1
+const INDEX_VERSION = 2
 
 // ── Index Path ──────────────────────────────────────────────────────────────
 
@@ -86,7 +87,7 @@ export function agentikitIndex(options?: { stashDir?: string; full?: boolean }):
     }
   }
 
-  for (const assetType of Object.keys(TYPE_DIRS) as AgentikitAssetType[]) {
+  for (const assetType of ASSET_TYPES as AgentikitAssetType[]) {
     const typeRoot = path.join(stashDir, TYPE_DIRS[assetType])
     try {
       if (!fs.statSync(typeRoot).isDirectory()) continue
@@ -109,9 +110,17 @@ export function agentikitIndex(options?: { stashDir?: string; full?: boolean }):
       // Try loading existing .stash.json
       let stash = loadStashFile(dirPath)
 
+      if (stash) {
+        const migration = migrateGeneratedSkillMetadata(stash, files, typeRoot)
+        if (migration.changed) {
+          stash = migration.stash
+          writeStashFile(dirPath, stash)
+        }
+      }
+
       if (!stash) {
         // Generate metadata
-        stash = generateMetadata(dirPath, assetType, files)
+        stash = generateMetadata(dirPath, assetType, files, typeRoot)
         if (stash.entries.length > 0) {
           writeStashFile(dirPath, stash)
           generatedCount += stash.entries.length
@@ -206,6 +215,38 @@ function isDirStale(
   return false
 }
 
+function migrateGeneratedSkillMetadata(
+  stash: StashFile,
+  files: string[],
+  typeRoot: string,
+): { stash: StashFile; changed: boolean } {
+  const fileByBaseName = new Map(files.map((filePath) => [path.basename(filePath), filePath]))
+  let changed = false
+
+  const entries = stash.entries.map((entry) => {
+    if (entry.type !== "skill" || entry.generated !== true) return entry
+
+    const hintedFilePath = entry.entry ? fileByBaseName.get(path.basename(entry.entry)) : undefined
+    const skillFilePath = hintedFilePath ?? fileByBaseName.get("SKILL.md")
+    if (!skillFilePath) return entry
+
+    const canonicalName = deriveCanonicalAssetName("skill", typeRoot, skillFilePath)
+    if (!canonicalName || canonicalName === entry.name) return entry
+
+    changed = true
+    return { ...entry, name: canonicalName }
+  })
+
+  if (!changed) {
+    return { stash, changed: false }
+  }
+
+  return {
+    stash: { entries },
+    changed: true,
+  }
+}
+
 export function buildSearchText(entry: StashEntry): string {
   const parts: string[] = [entry.name.replace(/[-_]/g, " ")]
   if (entry.description) parts.push(entry.description)
@@ -221,4 +262,3 @@ export function buildSearchText(entry: StashEntry): string {
   }
   return parts.join(" ").toLowerCase()
 }
-

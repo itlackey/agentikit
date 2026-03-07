@@ -1,3 +1,5 @@
+import { parseFrontmatter } from "./frontmatter"
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export interface TocHeading {
@@ -17,16 +19,8 @@ export function parseMarkdownToc(content: string): KnowledgeToc {
   const lines = content.split(/\r?\n/)
   const headings: TocHeading[] = []
 
-  // Skip frontmatter block
-  let start = 0
-  if (lines[0]?.trimEnd() === "---") {
-    for (let i = 1; i < lines.length; i++) {
-      if (lines[i].trimEnd() === "---") {
-        start = i + 1
-        break
-      }
-    }
-  }
+  const parsed = parseFrontmatter(content)
+  const start = parsed.frontmatter ? parsed.bodyStartLine - 1 : 0
 
   for (let i = start; i < lines.length; i++) {
     const match = lines[i].match(/^(#{1,6})\s+(.+)$/)
@@ -87,8 +81,8 @@ export function extractLineRange(content: string, start: number, end: number): s
 }
 
 export function extractFrontmatterOnly(content: string): string | null {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)
-  return match ? match[1] : null
+  const parsed = parseFrontmatter(content)
+  return parsed.frontmatter
 }
 
 // ── Formatting ──────────────────────────────────────────────────────────────

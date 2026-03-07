@@ -1,6 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
-import { type AgentikitAssetType, SCRIPT_EXTENSIONS, isAssetType } from "./common"
+import { type AgentikitAssetType, isAssetType } from "./common"
+import { SCRIPT_EXTENSIONS, isRelevantAssetFile, deriveCanonicalAssetName } from "./asset-spec"
 import { parseFrontmatter, toStringOrUndefined } from "./frontmatter"
 import { parseMarkdownToc, type TocHeading } from "./markdown"
 
@@ -102,26 +103,30 @@ export function generateMetadata(
   dirPath: string,
   assetType: AgentikitAssetType,
   files: string[],
+  typeRoot = dirPath,
 ): StashFile {
   const entries: StashEntry[] = []
+  const pkgMeta = extractPackageMetadata(dirPath)
 
   for (const file of files) {
     const ext = path.extname(file).toLowerCase()
     const baseName = path.basename(file, ext)
+    const fileName = path.basename(file)
 
     // Skip non-relevant files
-    if (assetType === "tool" && !SCRIPT_EXTENSIONS.has(ext)) continue
-    if ((assetType === "command" || assetType === "agent" || assetType === "knowledge") && ext !== ".md") continue
-    if (assetType === "skill" && path.basename(file) !== "SKILL.md") continue
+    if (!isRelevantAssetFile(assetType, fileName)) continue
+
+    const canonicalName = assetType === "skill"
+      ? deriveCanonicalAssetName(assetType, typeRoot, file) ?? baseName
+      : baseName
 
     const entry: StashEntry = {
-      name: baseName,
+      name: canonicalName,
       type: assetType,
       generated: true,
     }
 
     // Priority 1: package.json metadata
-    const pkgMeta = extractPackageMetadata(dirPath)
     if (pkgMeta) {
       if (pkgMeta.description && !entry.description) entry.description = pkgMeta.description
       if (pkgMeta.keywords && pkgMeta.keywords.length > 0) entry.tags = pkgMeta.keywords

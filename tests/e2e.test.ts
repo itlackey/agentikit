@@ -625,7 +625,7 @@ describe("Scenario: Index persistence across sessions", () => {
 
     const index = loadSearchIndex()
     expect(index).not.toBeNull()
-    expect(index!.version).toBe(1)
+    expect(index!.version).toBe(2)
     expect(index!.stashDir).toBe(stashDir)
     expect(index!.entries.length).toBeGreaterThan(0)
     expect(index!.builtAt).toBeTruthy()

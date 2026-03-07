@@ -1,5 +1,6 @@
 import fs from "node:fs"
 import path from "node:path"
+import { TYPE_DIRS } from "./asset-spec"
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -8,15 +9,7 @@ export type AgentikitAssetType = "tool" | "skill" | "command" | "agent" | "knowl
 // ── Constants ───────────────────────────────────────────────────────────────
 
 export const IS_WINDOWS = process.platform === "win32"
-export const SCRIPT_EXTENSIONS = new Set([".sh", ".ts", ".js", ".ps1", ".cmd", ".bat"])
-
-export const TYPE_DIRS: Record<AgentikitAssetType, string> = {
-  tool: "tools",
-  skill: "skills",
-  command: "commands",
-  agent: "agents",
-  knowledge: "knowledge",
-}
+export { SCRIPT_EXTENSIONS, TYPE_DIRS } from "./asset-spec"
 
 // ── Validators ──────────────────────────────────────────────────────────────
 

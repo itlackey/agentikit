@@ -122,6 +122,31 @@ test("agentikitRun returns non-zero exitCode when tool fails", () => {
   expect(result.output).toMatch(/oops/)
 })
 
+test("agentikitRun returns install output when bun install step fails", () => {
+  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const markerPath = path.join(stashDir, "tools", "group", "executed.txt")
+
+  // Intentionally invalid package.json so `bun install` fails.
+  writeFile(path.join(stashDir, "tools", "group", "package.json"), "{\n")
+  writeFile(
+    path.join(stashDir, "tools", "group", "job.js"),
+    `import fs from "node:fs"\nfs.writeFileSync(${JSON.stringify(markerPath)}, "executed")\nconsole.log("run job")\n`,
+  )
+
+  process.env.AGENTIKIT_STASH_DIR = stashDir
+  process.env.AGENTIKIT_BUN_INSTALL = "true"
+
+  try {
+    const result = agentikitRun({ ref: "tool:group%2Fjob.js" })
+    expect(result.type).toBe("tool")
+    expect(result.exitCode).not.toBe(0)
+    expect(result.output.length).toBeGreaterThan(0)
+    expect(fs.existsSync(markerPath)).toBe(false)
+  } finally {
+    delete process.env.AGENTIKIT_BUN_INSTALL
+  }
+})
+
 test("agentikitRun throws when given a non-tool ref", () => {
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
   process.env.AGENTIKIT_STASH_DIR = stashDir
