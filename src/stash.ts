@@ -626,6 +626,7 @@ export interface InitResponse {
 
 export function agentikitInit(): InitResponse {
   let stashDir: string
+  const home = process.env.HOME || ""
   if (IS_WINDOWS) {
     const docs = process.env.USERPROFILE
       ? path.join(process.env.USERPROFILE, "Documents")
@@ -635,7 +636,6 @@ export function agentikitInit(): InitResponse {
     }
     stashDir = path.join(docs, "agentikit")
   } else {
-    const home = process.env.HOME || ""
     if (!home) {
       throw new Error("Unable to determine home directory. Set HOME.")
     }
