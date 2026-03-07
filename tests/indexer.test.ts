@@ -17,13 +17,13 @@ function writeFile(filePath: string, content = "") {
   fs.writeFileSync(filePath, content)
 }
 
-test("agentikitIndex scans directories and builds index", () => {
+test("agentikitIndex scans directories and builds index", async () => {
   const stashDir = tmpStash()
   writeFile(path.join(stashDir, "tools", "deploy", "deploy.sh"), "#!/usr/bin/env bash\n# Deploy to staging\necho deploy\n")
   writeFile(path.join(stashDir, "tools", "lint", "lint.ts"), "/**\n * Lint source code\n */\nconsole.log('lint')\n")
 
   process.env.AGENTIKIT_STASH_DIR = stashDir
-  const result = agentikitIndex({ stashDir })
+  const result = await agentikitIndex({ stashDir })
 
   expect(result.totalEntries).toBe(2)
   expect(result.generatedMetadata).toBe(2)
@@ -38,7 +38,7 @@ test("agentikitIndex scans directories and builds index", () => {
   expect(parsed.entries[0].generated).toBe(true)
 })
 
-test("agentikitIndex preserves manually-written .stash.json", () => {
+test("agentikitIndex preserves manually-written .stash.json", async () => {
   const stashDir = tmpStash()
   writeFile(path.join(stashDir, "tools", "git", "summarize.ts"), "console.log('x')\n")
   writeFile(
@@ -56,7 +56,7 @@ test("agentikitIndex preserves manually-written .stash.json", () => {
     }),
   )
 
-  const result = agentikitIndex({ stashDir })
+  const result = await agentikitIndex({ stashDir })
 
   expect(result.totalEntries).toBe(1)
   expect(result.generatedMetadata).toBe(0) // no generation needed
@@ -69,7 +69,7 @@ test("agentikitIndex preserves manually-written .stash.json", () => {
   expect(stash.entries[0].generated).toBeUndefined()
 })
 
-test("agentikitIndex migrates generated skill metadata name to canonical directory name", () => {
+test("agentikitIndex migrates generated skill metadata name to canonical directory name", async () => {
   const stashDir = tmpStash()
   writeFile(path.join(stashDir, "skills", "code-review", "SKILL.md"), "# Code Review\n")
   writeFile(
@@ -87,7 +87,7 @@ test("agentikitIndex migrates generated skill metadata name to canonical directo
     }),
   )
 
-  const result = agentikitIndex({ stashDir })
+  const result = await agentikitIndex({ stashDir })
   expect(result.totalEntries).toBe(1)
 
   const stash = JSON.parse(
@@ -101,28 +101,28 @@ test("agentikitIndex migrates generated skill metadata name to canonical directo
   expect(index!.entries[0].entry.name).toBe("code-review")
 })
 
-test("agentikitIndex writes index to cache", () => {
+test("agentikitIndex writes index to cache", async () => {
   const stashDir = tmpStash()
   writeFile(path.join(stashDir, "tools", "hello", "hello.sh"), "#!/bin/bash\necho hi\n")
 
-  const result = agentikitIndex({ stashDir })
+  const result = await agentikitIndex({ stashDir })
   expect(fs.existsSync(result.indexPath)).toBe(true)
 
   const index = loadSearchIndex()
   expect(index).not.toBeNull()
-  expect(index!.version).toBe(2)
+  expect(index!.version).toBe(3)
   expect(index!.entries.length).toBeGreaterThan(0)
 })
 
-test("agentikitIndex handles empty stash gracefully", () => {
+test("agentikitIndex handles empty stash gracefully", async () => {
   const stashDir = tmpStash()
-  const result = agentikitIndex({ stashDir })
+  const result = await agentikitIndex({ stashDir })
 
   expect(result.totalEntries).toBe(0)
   expect(result.generatedMetadata).toBe(0)
 })
 
-test("agentikitIndex handles markdown assets", () => {
+test("agentikitIndex handles markdown assets", async () => {
   const stashDir = tmpStash()
   writeFile(
     path.join(stashDir, "commands", "release.md"),
@@ -133,18 +133,18 @@ test("agentikitIndex handles markdown assets", () => {
     '---\ndescription: "Refactor code"\n---\n# Refactor skill\n',
   )
 
-  const result = agentikitIndex({ stashDir })
+  const result = await agentikitIndex({ stashDir })
   expect(result.totalEntries).toBe(2)
 })
 
-test("agentikitIndex generates TOC in stash.json for knowledge entries", () => {
+test("agentikitIndex generates TOC in stash.json for knowledge entries", async () => {
   const stashDir = tmpStash()
   writeFile(
     path.join(stashDir, "knowledge", "guide.md"),
     "---\ndescription: \"A guide\"\n---\n# Getting Started\n\nIntro.\n\n## Installation\n\nInstall steps.\n",
   )
 
-  const result = agentikitIndex({ stashDir })
+  const result = await agentikitIndex({ stashDir })
   expect(result.totalEntries).toBe(1)
 
   const stashJson = JSON.parse(
@@ -156,17 +156,17 @@ test("agentikitIndex generates TOC in stash.json for knowledge entries", () => {
   expect(stashJson.entries[0].toc[1].text).toBe("Installation")
 })
 
-test("isDirStale detects stash.json newer than index", () => {
+test("isDirStale detects stash.json newer than index", async () => {
   const stashDir = tmpStash()
   writeFile(path.join(stashDir, "tools", "deploy", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
 
   // First index
-  const result1 = agentikitIndex({ stashDir })
+  const result1 = await agentikitIndex({ stashDir })
   expect(result1.totalEntries).toBe(1)
   expect(result1.mode).toBe("full")
 
   // Second index (incremental) — nothing changed, so dir should be skipped
-  const result2 = agentikitIndex({ stashDir })
+  const result2 = await agentikitIndex({ stashDir })
   expect(result2.mode).toBe("incremental")
   expect(result2.directoriesSkipped).toBeGreaterThanOrEqual(1)
 
@@ -177,24 +177,24 @@ test("isDirStale detects stash.json newer than index", () => {
   fs.utimesSync(stashJsonPath, futureTime, futureTime)
 
   // Third index (incremental) — should detect stale dir
-  const result3 = agentikitIndex({ stashDir })
+  const result3 = await agentikitIndex({ stashDir })
   expect(result3.mode).toBe("incremental")
   expect(result3.directoriesScanned).toBeGreaterThanOrEqual(1)
 })
 
-test("agentikitIndex --full mode returns mode full", () => {
+test("agentikitIndex --full mode returns mode full", async () => {
   const stashDir = tmpStash()
   writeFile(path.join(stashDir, "tools", "hello", "hello.sh"), "#!/bin/bash\necho hi\n")
 
   // First index to create a previous index
-  agentikitIndex({ stashDir })
+  await agentikitIndex({ stashDir })
 
   // Second index with full flag — should force full reindex
-  const result = agentikitIndex({ stashDir, full: true })
+  const result = await agentikitIndex({ stashDir, full: true })
   expect(result.mode).toBe("full")
 })
 
-test("buildSearchText includes TOC heading text for knowledge entries", () => {
+test("buildSearchText includes TOC heading text for knowledge entries", async () => {
   const entry = {
     name: "guide",
     type: "knowledge" as const,

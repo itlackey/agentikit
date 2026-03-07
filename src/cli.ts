@@ -62,7 +62,7 @@ function usage(): never {
   process.exit(1)
 }
 
-try {
+async function main() {
   switch (command) {
     case "init": {
       const result = agentikitInit()
@@ -72,7 +72,7 @@ try {
     case "index": {
       const parsed = parseCliArgs(args.slice(1), { "--full": "boolean" })
       const full = parsed.flags["--full"] === true
-      const result = agentikitIndex({ full })
+      const result = await agentikitIndex({ full })
       console.log(JSON.stringify(result, null, 2))
       break
     }
@@ -82,7 +82,7 @@ try {
       const type = parsed.flags["--type"] as "tool" | "skill" | "command" | "agent" | "any" | undefined
       const limitStr = parsed.flags["--limit"] as string | undefined
       const limit = limitStr ? parseInt(limitStr, 10) : undefined
-      console.log(JSON.stringify(agentikitSearch({ query, type, limit }), null, 2))
+      console.log(JSON.stringify(await agentikitSearch({ query, type, limit }), null, 2))
       break
     }
     case "open": {
@@ -157,10 +157,12 @@ try {
     default:
       usage()
   }
-} catch (err) {
+}
+
+main().catch((err) => {
   console.error(`Error: ${err instanceof Error ? err.message : String(err)}`)
   process.exit(1)
-}
+})
 
 function parseConfigValue(key: string, value: string): Partial<AgentikitConfig> {
   switch (key) {

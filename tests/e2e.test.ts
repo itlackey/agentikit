@@ -67,7 +67,7 @@ function parseJson(text: string): any {
 const originalXdgCacheHome = process.env.XDG_CACHE_HOME
 let testCacheDir = ""
 
-beforeAll(() => {
+beforeAll(async () => {
   testCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-cache-"))
   process.env.XDG_CACHE_HOME = testCacheDir
 })
@@ -90,7 +90,7 @@ afterAll(() => {
 describe("Scenario: Full lifecycle (index → search → open → run)", () => {
   let stashDir: string
 
-  beforeAll(() => {
+  beforeAll(async () => {
     stashDir = copyFixturesToTmp()
     process.env.AGENTIKIT_STASH_DIR = stashDir
   })
@@ -99,8 +99,8 @@ describe("Scenario: Full lifecycle (index → search → open → run)", () => {
     fs.rmSync(stashDir, { recursive: true, force: true })
   })
 
-  test("search works without index (substring fallback)", () => {
-    const result = agentikitSearch({ query: "deploy", type: "tool" })
+  test("search works without index (substring fallback)", async () => {
+    const result = await agentikitSearch({ query: "deploy", type: "tool" })
 
     expect(result.hits.length).toBeGreaterThan(0)
     expect(result.hits.some((h) => h.name.includes("deploy"))).toBe(true)
@@ -108,8 +108,8 @@ describe("Scenario: Full lifecycle (index → search → open → run)", () => {
     expect(result.hits[0].score).toBeUndefined()
   })
 
-  test("index generates metadata and builds search index", () => {
-    const result = agentikitIndex({ stashDir })
+  test("index generates metadata and builds search index", async () => {
+    const result = await agentikitIndex({ stashDir })
 
     expect(result.stashDir).toBe(stashDir)
     expect(result.totalEntries).toBeGreaterThanOrEqual(8)
@@ -117,7 +117,7 @@ describe("Scenario: Full lifecycle (index → search → open → run)", () => {
     expect(fs.existsSync(result.indexPath)).toBe(true)
   })
 
-  test("index generates .stash.json for directories that lack one", () => {
+  test("index generates .stash.json for directories that lack one", async () => {
     // git/ directory had no .stash.json — should have been generated
     const gitStash = loadStashFile(path.join(stashDir, "tools", "git"))
     expect(gitStash).not.toBeNull()
@@ -131,7 +131,7 @@ describe("Scenario: Full lifecycle (index → search → open → run)", () => {
     }
   })
 
-  test("index preserves hand-written .stash.json (docker/ has intent fields)", () => {
+  test("index preserves hand-written .stash.json (docker/ has intent fields)", async () => {
     const dockerStash = loadStashFile(path.join(stashDir, "tools", "docker"))
     expect(dockerStash).not.toBeNull()
     expect(dockerStash!.entries.length).toBe(2)
@@ -142,7 +142,7 @@ describe("Scenario: Full lifecycle (index → search → open → run)", () => {
     expect(dockerStash!.entries[0].intent!.when).toBeTruthy()
   })
 
-  test("index extracts description from code comments", () => {
+  test("index extracts description from code comments", async () => {
     const gitStash = loadStashFile(path.join(stashDir, "tools", "git"))!
     const diffEntry = gitStash.entries.find((e) => e.name === "summarize-diff")
     expect(diffEntry).toBeDefined()
@@ -151,7 +151,7 @@ describe("Scenario: Full lifecycle (index → search → open → run)", () => {
     expect(diffEntry!.description!.toLowerCase()).toContain("git diff")
   })
 
-  test("index extracts metadata from package.json", () => {
+  test("index extracts metadata from package.json", async () => {
     const lintStash = loadStashFile(path.join(stashDir, "tools", "lint"))!
     const lintEntry = lintStash.entries.find((e) => e.name === "eslint-check")
     expect(lintEntry).toBeDefined()
@@ -160,8 +160,8 @@ describe("Scenario: Full lifecycle (index → search → open → run)", () => {
     expect(lintEntry!.tags).toContain("eslint")
   })
 
-  test("search with index returns scored results with descriptions", () => {
-    const result = agentikitSearch({ query: "docker build image", type: "any" })
+  test("search with index returns scored results with descriptions", async () => {
+    const result = await agentikitSearch({ query: "docker build image", type: "any" })
 
     expect(result.hits.length).toBeGreaterThan(0)
     // Docker-build should be ranked first
@@ -172,8 +172,8 @@ describe("Scenario: Full lifecycle (index → search → open → run)", () => {
     expect(topHit.description).toBeTruthy()
   })
 
-  test("search ranks semantically relevant results higher", () => {
-    const result = agentikitSearch({ query: "summarize commit changes", type: "any" })
+  test("search ranks semantically relevant results higher", async () => {
+    const result = await agentikitSearch({ query: "summarize commit changes", type: "any" })
 
     expect(result.hits.length).toBeGreaterThan(0)
     // Git tools should rank higher than docker tools for this query
@@ -184,26 +184,26 @@ describe("Scenario: Full lifecycle (index → search → open → run)", () => {
     expect(hasGitRelated).toBe(true)
   })
 
-  test("search type filter restricts results to that type", () => {
-    const toolResult = agentikitSearch({ query: "review", type: "skill" })
+  test("search type filter restricts results to that type", async () => {
+    const toolResult = await agentikitSearch({ query: "review", type: "skill" })
     expect(toolResult.hits.every((h) => h.type === "skill")).toBe(true)
 
-    const cmdResult = agentikitSearch({ query: "", type: "command" })
+    const cmdResult = await agentikitSearch({ query: "", type: "command" })
     expect(cmdResult.hits.every((h) => h.type === "command")).toBe(true)
   })
 
-  test("search with empty query returns all entries of that type", () => {
-    const result = agentikitSearch({ query: "", type: "agent" })
+  test("search with empty query returns all entries of that type", async () => {
+    const result = await agentikitSearch({ query: "", type: "agent" })
     expect(result.hits.length).toBe(2) // architect.md and debugger.md
   })
 
-  test("search respects limit parameter", () => {
-    const result = agentikitSearch({ query: "", type: "any", limit: 3 })
+  test("search respects limit parameter", async () => {
+    const result = await agentikitSearch({ query: "", type: "any", limit: 3 })
     expect(result.hits.length).toBeLessThanOrEqual(3)
   })
 
-  test("open a tool returns runCmd and kind", () => {
-    const searchResult = agentikitSearch({ query: "deploy", type: "tool" })
+  test("open a tool returns runCmd and kind", async () => {
+    const searchResult = await agentikitSearch({ query: "deploy", type: "tool" })
     const deployHit = searchResult.hits.find((h) => h.name.includes("deploy"))
     expect(deployHit).toBeDefined()
 
@@ -213,21 +213,21 @@ describe("Scenario: Full lifecycle (index → search → open → run)", () => {
     expect(openResult.kind).toBe("bash")
   })
 
-  test("open a skill returns full SKILL.md content", () => {
+  test("open a skill returns full SKILL.md content", async () => {
     const openResult = agentikitOpen({ ref: "skill:code-review" })
     expect(openResult.type).toBe("skill")
     expect(openResult.content).toContain("Code Review Skill")
     expect(openResult.content).toContain("security vulnerabilities")
   })
 
-  test("open a command returns template and description", () => {
+  test("open a command returns template and description", async () => {
     const openResult = agentikitOpen({ ref: "command:release.md" })
     expect(openResult.type).toBe("command")
     expect(openResult.description).toBe("Create a new release with changelog and version bump")
     expect(openResult.template).toContain("npm version")
   })
 
-  test("open an agent returns prompt, description, model hint, and tool policy", () => {
+  test("open an agent returns prompt, description, model hint, and tool policy", async () => {
     const openResult = agentikitOpen({ ref: "agent:architect.md" })
     expect(openResult.type).toBe("agent")
     expect(openResult.description).toContain("architect")
@@ -236,9 +236,9 @@ describe("Scenario: Full lifecycle (index → search → open → run)", () => {
     expect(openResult.toolPolicy).toEqual({ allow: "Read,Glob,Grep" })
   })
 
-  test("run a tool and get output", () => {
+  test("run a tool and get output", async () => {
     // Find the commit-message tool
-    const searchResult = agentikitSearch({ query: "commit", type: "tool" })
+    const searchResult = await agentikitSearch({ query: "commit", type: "tool" })
     const commitHit = searchResult.hits.find((h) =>
       h.name.includes("commit"),
     )
@@ -249,7 +249,7 @@ describe("Scenario: Full lifecycle (index → search → open → run)", () => {
     expect(runResult.output).toContain("feat(auth)")
   })
 
-  test("run a failing tool returns non-zero exit code", () => {
+  test("run a failing tool returns non-zero exit code", async () => {
     const result = agentikitRun({ ref: "tool:failing%2Fbad-script.sh" })
     expect(result.exitCode).not.toBe(0)
     expect(result.output).toContain("Something went wrong")
@@ -263,32 +263,32 @@ describe("Scenario: Full lifecycle (index → search → open → run)", () => {
 describe("Scenario: Agent discovers capabilities for task", () => {
   let stashDir: string
 
-  beforeAll(() => {
+  beforeAll(async () => {
     stashDir = copyFixturesToTmp()
     process.env.AGENTIKIT_STASH_DIR = stashDir
-    agentikitIndex({ stashDir })
+    await agentikitIndex({ stashDir })
   })
 
   afterAll(() => {
     fs.rmSync(stashDir, { recursive: true, force: true })
   })
 
-  test("agent asks 'set up local dev environment' → docker-compose ranks high", () => {
-    const result = agentikitSearch({ query: "set up local development environment" })
+  test("agent asks 'set up local dev environment' → docker-compose ranks high", async () => {
+    const result = await agentikitSearch({ query: "set up local development environment" })
     const names = result.hits.map((h) => h.name.toLowerCase())
     // Docker compose should appear because its intent says "start local development services"
     expect(names.some((n) => n.includes("compose") || n.includes("docker"))).toBe(true)
   })
 
-  test("agent asks 'check code quality' → lint tool ranks high", () => {
-    const result = agentikitSearch({ query: "check code quality style" })
+  test("agent asks 'check code quality' → lint tool ranks high", async () => {
+    const result = await agentikitSearch({ query: "check code quality style" })
     expect(result.hits.length).toBeGreaterThan(0)
     const names = result.hits.map((h) => h.name.toLowerCase())
     expect(names.some((n) => n.includes("lint") || n.includes("eslint"))).toBe(true)
   })
 
-  test("agent asks 'review my pull request' → code-review skill found", () => {
-    const result = agentikitSearch({ query: "review pull request code changes" })
+  test("agent asks 'review my pull request' → code-review skill found", async () => {
+    const result = await agentikitSearch({ query: "review pull request code changes" })
     expect(result.hits.length).toBeGreaterThan(0)
     // Skill openRef contains "code-review" (directory name), even though display name is "SKILL"
     expect(result.hits.some((h) =>
@@ -296,15 +296,15 @@ describe("Scenario: Agent discovers capabilities for task", () => {
     )).toBe(true)
   })
 
-  test("agent asks 'help me design the system' → architect agent found", () => {
-    const result = agentikitSearch({ query: "system design architecture" })
+  test("agent asks 'help me design the system' → architect agent found", async () => {
+    const result = await agentikitSearch({ query: "system design architecture" })
     expect(result.hits.length).toBeGreaterThan(0)
     expect(result.hits.some((h) => h.name.includes("architect"))).toBe(true)
   })
 
-  test("agent workflow: search → open → run (end-to-end)", () => {
+  test("agent workflow: search → open → run (end-to-end)", async () => {
     // Step 1: Agent searches for a tool to run tests
-    const searchResult = agentikitSearch({ query: "run tests" })
+    const searchResult = await agentikitSearch({ query: "run tests" })
     expect(searchResult.hits.length).toBeGreaterThan(0)
     const testTool = searchResult.hits.find((h) => h.type === "tool" && h.name.includes("test"))
     expect(testTool).toBeDefined()
@@ -327,17 +327,17 @@ describe("Scenario: Agent discovers capabilities for task", () => {
 describe("Scenario: CLI subprocess execution", () => {
   let stashDir: string
 
-  beforeAll(() => {
+  beforeAll(async () => {
     stashDir = copyFixturesToTmp()
     process.env.AGENTIKIT_STASH_DIR = stashDir
-    agentikitIndex({ stashDir })
+    await agentikitIndex({ stashDir })
   })
 
   afterAll(() => {
     fs.rmSync(stashDir, { recursive: true, force: true })
   })
 
-  test("cli: agentikit search returns JSON with hits", () => {
+  test("cli: agentikit search returns JSON with hits", async () => {
     const result = runCli("search", "docker")
     expect(result.exitCode).toBe(0)
 
@@ -347,7 +347,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.stashDir).toBeTruthy()
   })
 
-  test("cli: agentikit search --type tool filters by type", () => {
+  test("cli: agentikit search --type tool filters by type", async () => {
     const result = runCli("search", "deploy", "--type", "tool")
     expect(result.exitCode).toBe(0)
 
@@ -355,7 +355,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.hits.every((h: any) => h.type === "tool")).toBe(true)
   })
 
-  test("cli: agentikit search --limit 2 respects limit", () => {
+  test("cli: agentikit search --limit 2 respects limit", async () => {
     const result = runCli("search", "", "--limit", "2")
     expect(result.exitCode).toBe(0)
 
@@ -363,7 +363,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.hits.length).toBeLessThanOrEqual(2)
   })
 
-  test("cli: agentikit open returns asset content", () => {
+  test("cli: agentikit open returns asset content", async () => {
     const result = runCli("open", "skill:code-review")
     expect(result.exitCode).toBe(0)
 
@@ -372,7 +372,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.content).toContain("Code Review Skill")
   })
 
-  test("cli: agentikit open command returns template", () => {
+  test("cli: agentikit open command returns template", async () => {
     const result = runCli("open", "command:release.md")
     expect(result.exitCode).toBe(0)
 
@@ -382,7 +382,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.template).toContain("npm version")
   })
 
-  test("cli: agentikit run executes tool and returns output", () => {
+  test("cli: agentikit run executes tool and returns output", async () => {
     const result = runCli("run", "tool:docker%2Fbuild-image.sh")
     expect(result.exitCode).toBe(0)
 
@@ -390,7 +390,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.output).toContain("Successfully built")
   })
 
-  test("cli: agentikit run returns non-zero for failing tool", () => {
+  test("cli: agentikit run returns non-zero for failing tool", async () => {
     const result = runCli("run", "tool:failing%2Fbad-script.sh")
     expect(result.exitCode).not.toBe(0)
 
@@ -398,7 +398,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.output).toContain("Something went wrong")
   })
 
-  test("cli: agentikit index builds index and reports stats", () => {
+  test("cli: agentikit index builds index and reports stats", async () => {
     const result = runCli("index")
     expect(result.exitCode).toBe(0)
 
@@ -407,7 +407,7 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.indexPath).toBeTruthy()
   })
 
-  test("cli: agentikit index --full returns mode full", () => {
+  test("cli: agentikit index --full returns mode full", async () => {
     const result = runCli("index", "--full")
     expect(result.exitCode).toBe(0)
 
@@ -415,13 +415,13 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.mode).toBe("full")
   })
 
-  test("cli: agentikit with no command prints usage", () => {
+  test("cli: agentikit with no command prints usage", async () => {
     const result = runCli()
     expect(result.exitCode).not.toBe(0)
     expect(result.stderr).toContain("Usage:")
   })
 
-  test("cli: agentikit open with no ref prints error", () => {
+  test("cli: agentikit open with no ref prints error", async () => {
     const result = runCli("open")
     expect(result.exitCode).not.toBe(0)
     expect(result.stderr).toContain("missing ref")
@@ -435,7 +435,7 @@ describe("Scenario: CLI subprocess execution", () => {
 describe("Scenario: CLI knowledge --view flags", () => {
   let stashDir: string
 
-  beforeAll(() => {
+  beforeAll(async () => {
     stashDir = copyFixturesToTmp()
     process.env.AGENTIKIT_STASH_DIR = stashDir
   })
@@ -444,7 +444,7 @@ describe("Scenario: CLI knowledge --view flags", () => {
     fs.rmSync(stashDir, { recursive: true, force: true })
   })
 
-  test("cli: open knowledge with --view toc", () => {
+  test("cli: open knowledge with --view toc", async () => {
     const result = runCli("open", "knowledge:guide.md", "--view", "toc")
     expect(result.exitCode).toBe(0)
 
@@ -455,7 +455,7 @@ describe("Scenario: CLI knowledge --view flags", () => {
     expect(json.content).toContain("lines total")
   })
 
-  test("cli: open knowledge with --view section --heading", () => {
+  test("cli: open knowledge with --view section --heading", async () => {
     const result = runCli("open", "knowledge:guide.md", "--view", "section", "--heading", "Getting Started")
     expect(result.exitCode).toBe(0)
 
@@ -468,7 +468,7 @@ describe("Scenario: CLI knowledge --view flags", () => {
     expect(json.content).not.toContain("Authentication")
   })
 
-  test("cli: open knowledge with --view lines --start --end", () => {
+  test("cli: open knowledge with --view lines --start --end", async () => {
     const result = runCli("open", "knowledge:guide.md", "--view", "lines", "--start", "1", "--end", "5")
     expect(result.exitCode).toBe(0)
 
@@ -486,7 +486,7 @@ describe("Scenario: CLI knowledge --view flags", () => {
 describe("Scenario: Zero-config progressive improvement", () => {
   let stashDir: string
 
-  beforeAll(() => {
+  beforeAll(async () => {
     stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-prog-"))
     for (const sub of ["tools", "skills", "commands", "agents"]) {
       fs.mkdirSync(path.join(stashDir, sub), { recursive: true })
@@ -498,20 +498,20 @@ describe("Scenario: Zero-config progressive improvement", () => {
     fs.rmSync(stashDir, { recursive: true, force: true })
   })
 
-  test("user drops a script in tools/ — search finds it by name (no index)", () => {
+  test("user drops a script in tools/ — search finds it by name (no index)", async () => {
     fs.mkdirSync(path.join(stashDir, "tools", "format"), { recursive: true })
     fs.writeFileSync(
       path.join(stashDir, "tools", "format", "prettier-check.sh"),
       "#!/usr/bin/env bash\n# Format code with Prettier\nprettier --check .\n",
     )
 
-    const result = agentikitSearch({ query: "prettier", type: "tool" })
+    const result = await agentikitSearch({ query: "prettier", type: "tool" })
     expect(result.hits.length).toBe(1)
     expect(result.hits[0].name).toContain("prettier")
   })
 
-  test("user runs index — .stash.json auto-generated with description from comments", () => {
-    agentikitIndex({ stashDir })
+  test("user runs index — .stash.json auto-generated with description from comments", async () => {
+    await agentikitIndex({ stashDir })
 
     const stash = loadStashFile(path.join(stashDir, "tools", "format"))
     expect(stash).not.toBeNull()
@@ -519,14 +519,14 @@ describe("Scenario: Zero-config progressive improvement", () => {
     expect(stash!.entries[0].description).toContain("Format code")
   })
 
-  test("user adds more scripts — re-index picks them up", () => {
+  test("user adds more scripts — re-index picks them up", async () => {
     fs.mkdirSync(path.join(stashDir, "tools", "db"), { recursive: true })
     fs.writeFileSync(
       path.join(stashDir, "tools", "db", "migrate.sh"),
       "#!/usr/bin/env bash\n# Run database migrations\necho 'migrating...'\n",
     )
 
-    const result = agentikitIndex({ stashDir })
+    const result = await agentikitIndex({ stashDir })
     expect(result.totalEntries).toBeGreaterThanOrEqual(2)
 
     const dbStash = loadStashFile(path.join(stashDir, "tools", "db"))
@@ -534,7 +534,7 @@ describe("Scenario: Zero-config progressive improvement", () => {
     expect(dbStash!.entries[0].description).toContain("database migrations")
   })
 
-  test("user edits .stash.json manually — edits preserved on next index", () => {
+  test("user edits .stash.json manually — edits preserved on next index", async () => {
     // Read the auto-generated stash
     const stashPath = path.join(stashDir, "tools", "format", ".stash.json")
     const stash = JSON.parse(fs.readFileSync(stashPath, "utf8"))
@@ -546,7 +546,7 @@ describe("Scenario: Zero-config progressive improvement", () => {
     fs.writeFileSync(stashPath, JSON.stringify(stash, null, 2))
 
     // Re-index — should preserve user edits
-    agentikitIndex({ stashDir })
+    await agentikitIndex({ stashDir })
 
     const reloaded = loadStashFile(path.join(stashDir, "tools", "format"))!
     expect(reloaded.entries[0].description).toBe("Check code formatting with Prettier")
@@ -554,11 +554,11 @@ describe("Scenario: Zero-config progressive improvement", () => {
     expect(reloaded.entries[0].generated).toBeUndefined()
   })
 
-  test("semantic search finds user-edited metadata after re-index", () => {
+  test("semantic search finds user-edited metadata after re-index", async () => {
     // Re-index to pick up manual edits in the search index
-    agentikitIndex({ stashDir })
+    await agentikitIndex({ stashDir })
 
-    const result = agentikitSearch({ query: "format code style" })
+    const result = await agentikitSearch({ query: "format code style" })
     expect(result.hits.length).toBeGreaterThan(0)
     expect(result.hits.some((h) => h.name.includes("prettier"))).toBe(true)
   })
@@ -571,17 +571,17 @@ describe("Scenario: Zero-config progressive improvement", () => {
 describe("Scenario: Multi-tool directory with hand-written .stash.json", () => {
   let stashDir: string
 
-  beforeAll(() => {
+  beforeAll(async () => {
     stashDir = copyFixturesToTmp()
     process.env.AGENTIKIT_STASH_DIR = stashDir
-    agentikitIndex({ stashDir })
+    await agentikitIndex({ stashDir })
   })
 
   afterAll(() => {
     fs.rmSync(stashDir, { recursive: true, force: true })
   })
 
-  test("docker/ directory exposes two tools from single .stash.json", () => {
+  test("docker/ directory exposes two tools from single .stash.json", async () => {
     const stash = loadStashFile(path.join(stashDir, "tools", "docker"))!
     expect(stash.entries).toHaveLength(2)
 
@@ -590,14 +590,14 @@ describe("Scenario: Multi-tool directory with hand-written .stash.json", () => {
     expect(names).toContain("docker-compose")
   })
 
-  test("search for 'docker build' returns docker-build as top result", () => {
-    const result = agentikitSearch({ query: "docker build" })
+  test("search for 'docker build' returns docker-build as top result", async () => {
+    const result = await agentikitSearch({ query: "docker build" })
     expect(result.hits[0].name).toContain("docker")
     expect(result.hits[0].description).toContain("Docker image")
   })
 
-  test("search for 'compose development' returns docker-compose", () => {
-    const result = agentikitSearch({ query: "compose development" })
+  test("search for 'compose development' returns docker-compose", async () => {
+    const result = await agentikitSearch({ query: "compose development" })
     const composeHit = result.hits.find((h) => h.name.includes("compose"))
     expect(composeHit).toBeDefined()
     expect(composeHit!.tags).toContain("compose")
@@ -611,7 +611,7 @@ describe("Scenario: Multi-tool directory with hand-written .stash.json", () => {
 describe("Scenario: Index persistence across sessions", () => {
   let stashDir: string
 
-  beforeAll(() => {
+  beforeAll(async () => {
     stashDir = copyFixturesToTmp()
     process.env.AGENTIKIT_STASH_DIR = stashDir
   })
@@ -620,31 +620,31 @@ describe("Scenario: Index persistence across sessions", () => {
     fs.rmSync(stashDir, { recursive: true, force: true })
   })
 
-  test("index is persisted and loadable", () => {
-    agentikitIndex({ stashDir })
+  test("index is persisted and loadable", async () => {
+    await agentikitIndex({ stashDir })
 
     const index = loadSearchIndex()
     expect(index).not.toBeNull()
-    expect(index!.version).toBe(2)
+    expect(index!.version).toBe(3)
     expect(index!.stashDir).toBe(stashDir)
     expect(index!.entries.length).toBeGreaterThan(0)
     expect(index!.builtAt).toBeTruthy()
     expect(index!.tfidf).toBeDefined()
   })
 
-  test("search uses persisted index (simulates new session)", () => {
+  test("search uses persisted index (simulates new session)", async () => {
     // First index
-    agentikitIndex({ stashDir })
+    await agentikitIndex({ stashDir })
 
     // Simulate a new session by just doing search (no re-index)
-    const result = agentikitSearch({ query: "docker" })
+    const result = await agentikitSearch({ query: "docker" })
     expect(result.hits.length).toBeGreaterThan(0)
     // Should have scores from semantic search, not substring
     expect(result.hits[0].score).toBeDefined()
   })
 
-  test("re-index updates the persisted index", () => {
-    agentikitIndex({ stashDir })
+  test("re-index updates the persisted index", async () => {
+    await agentikitIndex({ stashDir })
     const index1 = loadSearchIndex()!
 
     // Add a new tool
@@ -654,7 +654,7 @@ describe("Scenario: Index persistence across sessions", () => {
       "#!/bin/bash\necho hello\n",
     )
 
-    agentikitIndex({ stashDir })
+    await agentikitIndex({ stashDir })
     const index2 = loadSearchIndex()!
 
     expect(index2.entries.length).toBeGreaterThan(index1.entries.length)
@@ -669,27 +669,27 @@ describe("Scenario: Index persistence across sessions", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("Scenario: Error handling and edge cases", () => {
-  test("search with non-existent AGENTIKIT_STASH_DIR throws clear error", () => {
+  test("search with non-existent AGENTIKIT_STASH_DIR throws clear error", async () => {
     const orig = process.env.AGENTIKIT_STASH_DIR
     process.env.AGENTIKIT_STASH_DIR = "/nonexistent/path"
     try {
-      expect(() => agentikitSearch({ query: "test" })).toThrow(/Unable to read/)
+      await expect(agentikitSearch({ query: "test" })).rejects.toThrow(/Unable to read/)
     } finally {
       process.env.AGENTIKIT_STASH_DIR = orig
     }
   })
 
-  test("search with unset AGENTIKIT_STASH_DIR throws clear error", () => {
+  test("search with unset AGENTIKIT_STASH_DIR throws clear error", async () => {
     const orig = process.env.AGENTIKIT_STASH_DIR
     delete process.env.AGENTIKIT_STASH_DIR
     try {
-      expect(() => agentikitSearch({ query: "test" })).toThrow(/AGENTIKIT_STASH_DIR is not set/)
+      await expect(agentikitSearch({ query: "test" })).rejects.toThrow(/AGENTIKIT_STASH_DIR is not set/)
     } finally {
       process.env.AGENTIKIT_STASH_DIR = orig
     }
   })
 
-  test("open with invalid ref format throws", () => {
+  test("open with invalid ref format throws", async () => {
     const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-err-"))
     process.env.AGENTIKIT_STASH_DIR = stashDir
     try {
@@ -699,7 +699,7 @@ describe("Scenario: Error handling and edge cases", () => {
     }
   })
 
-  test("open with unknown type throws", () => {
+  test("open with unknown type throws", async () => {
     const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-err-"))
     process.env.AGENTIKIT_STASH_DIR = stashDir
     try {
@@ -709,7 +709,7 @@ describe("Scenario: Error handling and edge cases", () => {
     }
   })
 
-  test("run with non-tool type throws", () => {
+  test("run with non-tool type throws", async () => {
     const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-err-"))
     process.env.AGENTIKIT_STASH_DIR = stashDir
     try {
@@ -719,7 +719,7 @@ describe("Scenario: Error handling and edge cases", () => {
     }
   })
 
-  test("open with path traversal attempt throws", () => {
+  test("open with path traversal attempt throws", async () => {
     const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-err-"))
     fs.mkdirSync(path.join(stashDir, "tools"), { recursive: true })
     process.env.AGENTIKIT_STASH_DIR = stashDir
@@ -730,14 +730,14 @@ describe("Scenario: Error handling and edge cases", () => {
     }
   })
 
-  test("search on empty stash returns no hits with tip", () => {
+  test("search on empty stash returns no hits with tip", async () => {
     const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-empty-"))
     for (const sub of ["tools", "skills", "commands", "agents"]) {
       fs.mkdirSync(path.join(stashDir, sub), { recursive: true })
     }
     process.env.AGENTIKIT_STASH_DIR = stashDir
     try {
-      const result = agentikitSearch({ query: "anything" })
+      const result = await agentikitSearch({ query: "anything" })
       expect(result.hits).toHaveLength(0)
       expect(result.tip).toBeTruthy()
     } finally {
@@ -745,13 +745,13 @@ describe("Scenario: Error handling and edge cases", () => {
     }
   })
 
-  test("index on empty stash succeeds with zero entries", () => {
+  test("index on empty stash succeeds with zero entries", async () => {
     const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-empty-"))
     for (const sub of ["tools", "skills", "commands", "agents"]) {
       fs.mkdirSync(path.join(stashDir, sub), { recursive: true })
     }
     try {
-      const result = agentikitIndex({ stashDir })
+      const result = await agentikitIndex({ stashDir })
       expect(result.totalEntries).toBe(0)
       expect(result.generatedMetadata).toBe(0)
     } finally {
@@ -767,26 +767,26 @@ describe("Scenario: Error handling and edge cases", () => {
 describe("Scenario: Cross-type discovery", () => {
   let stashDir: string
 
-  beforeAll(() => {
+  beforeAll(async () => {
     stashDir = copyFixturesToTmp()
     process.env.AGENTIKIT_STASH_DIR = stashDir
-    agentikitIndex({ stashDir })
+    await agentikitIndex({ stashDir })
   })
 
   afterAll(() => {
     fs.rmSync(stashDir, { recursive: true, force: true })
   })
 
-  test("search 'any' type returns mixed results across tools, skills, commands, agents", () => {
-    const result = agentikitSearch({ query: "", type: "any" })
+  test("search 'any' type returns mixed results across tools, skills, commands, agents", async () => {
+    const result = await agentikitSearch({ query: "", type: "any" })
     const types = new Set(result.hits.map((h) => h.type))
     // Should have at least tools and one other type
     expect(types.has("tool")).toBe(true)
     expect(types.size).toBeGreaterThan(1)
   })
 
-  test("each hit has a valid openRef that can be used with open", () => {
-    const result = agentikitSearch({ query: "", type: "any", limit: 10 })
+  test("each hit has a valid openRef that can be used with open", async () => {
+    const result = await agentikitSearch({ query: "", type: "any", limit: 10 })
     for (const hit of result.hits) {
       expect(hit.openRef).toBeTruthy()
       expect(hit.openRef).toContain(":")
@@ -797,8 +797,8 @@ describe("Scenario: Cross-type discovery", () => {
     }
   })
 
-  test("tool hits have runCmd, non-tool hits do not", () => {
-    const result = agentikitSearch({ query: "", type: "any" })
+  test("tool hits have runCmd, non-tool hits do not", async () => {
+    const result = await agentikitSearch({ query: "", type: "any" })
     for (const hit of result.hits) {
       if (hit.type === "tool") {
         expect(hit.runCmd).toBeTruthy()
