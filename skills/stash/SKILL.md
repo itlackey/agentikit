@@ -66,8 +66,8 @@ Returns the tool's stdout/stderr output and exit code.
 
 1. Initialize: `agentikit init` (creates stash dirs, installs ripgrep)
 2. Build the index: `agentikit index`
-2. Search for assets: `agentikit search "deploy" --type tool`
-3. Inspect a result: `agentikit open <openRef>`
-4. Run a tool: `agentikit run <openRef>`
+3. Search for assets: `agentikit search "deploy" --type tool`
+4. Inspect a result: `agentikit open <openRef>`
+5. Run a tool: `agentikit run <openRef>`
 
 All output is JSON for easy parsing.
