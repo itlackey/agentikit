@@ -49,8 +49,10 @@ export async function agentikitSearch(input: {
     }
   }
 
-  // No index: fall back to filesystem walk + substring match
-  const hits = substringSearch(query, searchType, limit, stashDir)
+  // No index: fall back to filesystem walk + substring match across all stash dirs
+  const hits = allStashDirs
+    .flatMap((dir) => substringSearch(query, searchType, limit, dir))
+    .slice(0, limit)
 
   return {
     stashDir,
