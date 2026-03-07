@@ -10,12 +10,14 @@ import fs from "node:fs"
 import path from "node:path"
 import { IS_WINDOWS, TYPE_DIRS } from "./common"
 import { ensureRg } from "./ripgrep-install"
+import { getConfigPath, saveConfig, DEFAULT_CONFIG } from "./config"
 
 export interface InitResponse {
   stashDir: string
   created: boolean
   envSet: boolean
   profileUpdated?: string
+  configPath: string
   ripgrep?: {
     rgPath: string
     installed: boolean
@@ -83,6 +85,12 @@ export function agentikitInit(): InitResponse {
     }
   }
 
+  // Create default config.json if it doesn't exist
+  const configPath = getConfigPath(stashDir)
+  if (!fs.existsSync(configPath)) {
+    saveConfig(DEFAULT_CONFIG, stashDir)
+  }
+
   process.env.AGENTIKIT_STASH_DIR = stashDir
 
   // Ensure ripgrep is available (install to stash/bin if needed)
@@ -94,5 +102,5 @@ export function agentikitInit(): InitResponse {
     // Non-fatal: ripgrep is optional, search works without it
   }
 
-  return { stashDir, created, envSet, profileUpdated, ripgrep }
+  return { stashDir, created, envSet, profileUpdated, configPath, ripgrep }
 }

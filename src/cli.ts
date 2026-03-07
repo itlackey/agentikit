@@ -2,6 +2,8 @@
 import { agentikitSearch, agentikitOpen, agentikitRun, type KnowledgeView } from "./stash"
 import { agentikitInit } from "./init"
 import { agentikitIndex } from "./indexer"
+import { loadConfig, updateConfig, type AgentikitConfig } from "./config"
+import { resolveStashDir } from "./common"
 
 const args = process.argv.slice(2)
 const command = args[0]
@@ -55,6 +57,8 @@ function usage(): never {
   console.error("         --start <N>        Start line (for --view lines)")
   console.error("         --end <N>          End line (for --view lines)")
   console.error("  run <type:name>      Run a tool by ref")
+  console.error("  config               Show current configuration")
+  console.error("  config --set k=v     Update a configuration key")
   process.exit(1)
 }
 
@@ -128,10 +132,52 @@ try {
       process.exit(result.exitCode)
       break
     }
+    case "config": {
+      const parsed = parseCliArgs(args.slice(1), { "--set": "string" })
+      const stashDir = resolveStashDir()
+
+      if (parsed.flags["--set"]) {
+        const raw = parsed.flags["--set"] as string
+        const eqIndex = raw.indexOf("=")
+        if (eqIndex === -1) {
+          console.error("Error: --set expects key=value format")
+          process.exit(1)
+        }
+        const key = raw.slice(0, eqIndex)
+        const value = raw.slice(eqIndex + 1)
+        const partial = parseConfigValue(key, value)
+        const config = updateConfig(partial, stashDir)
+        console.log(JSON.stringify(config, null, 2))
+      } else {
+        const config = loadConfig(stashDir)
+        console.log(JSON.stringify(config, null, 2))
+      }
+      break
+    }
     default:
       usage()
   }
 } catch (err) {
   console.error(`Error: ${err instanceof Error ? err.message : String(err)}`)
   process.exit(1)
+}
+
+function parseConfigValue(key: string, value: string): Partial<AgentikitConfig> {
+  switch (key) {
+    case "semanticSearch":
+      if (value !== "true" && value !== "false") {
+        throw new Error(`Invalid value for semanticSearch: expected "true" or "false"`)
+      }
+      return { semanticSearch: value === "true" }
+    case "additionalStashDirs":
+      try {
+        const parsed = JSON.parse(value)
+        if (!Array.isArray(parsed)) throw new Error("expected JSON array")
+        return { additionalStashDirs: parsed.filter((d: unknown): d is string => typeof d === "string") }
+      } catch {
+        throw new Error(`Invalid value for additionalStashDirs: expected JSON array (e.g. '["/path/a","/path/b"]')`)
+      }
+    default:
+      throw new Error(`Unknown config key: ${key}`)
+  }
 }
