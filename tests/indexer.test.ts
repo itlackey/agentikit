@@ -110,7 +110,7 @@ test("agentikitIndex writes index to cache", async () => {
 
   const index = loadSearchIndex()
   expect(index).not.toBeNull()
-  expect(index!.version).toBe(3)
+  expect(index!.version).toBe(4)
   expect(index!.entries.length).toBeGreaterThan(0)
 })
 
@@ -208,4 +208,46 @@ test("buildSearchText includes TOC heading text for knowledge entries", async ()
   const text = buildSearchText(entry)
   expect(text).toContain("getting started")
   expect(text).toContain("installation")
+})
+
+test("buildSearchText includes intents array content", () => {
+  const entry = {
+    name: "git-diff",
+    type: "tool" as const,
+    description: "summarize git changes",
+    intents: ["explain what changed in a repository", "show commit summary"],
+  }
+
+  const text = buildSearchText(entry)
+  expect(text).toContain("explain what changed in a repository")
+  expect(text).toContain("show commit summary")
+})
+
+test("buildSearchText handles entries with both intents and intent fields", () => {
+  const entry = {
+    name: "deploy",
+    type: "tool" as const,
+    description: "deploy services",
+    intents: ["deploy to production", "push services live"],
+    intent: { when: "user needs to deploy", input: "service name", output: "status" },
+  }
+
+  const text = buildSearchText(entry)
+  expect(text).toContain("deploy to production")
+  expect(text).toContain("push services live")
+  expect(text).toContain("user needs to deploy")
+  expect(text).toContain("service name")
+})
+
+test("agentikitIndex generates intents in .stash.json for new entries", async () => {
+  const stashDir = tmpStash()
+  writeFile(path.join(stashDir, "tools", "deploy", "deploy.sh"), "#!/usr/bin/env bash\n# Deploy services to production\necho deploy\n")
+
+  await agentikitIndex({ stashDir })
+
+  const stashJson = JSON.parse(
+    fs.readFileSync(path.join(stashDir, "tools", "deploy", ".stash.json"), "utf8"),
+  )
+  expect(stashJson.entries[0].intents).toBeDefined()
+  expect(stashJson.entries[0].intents.length).toBeGreaterThan(0)
 })

@@ -147,6 +147,18 @@ export class TfIdfAdapter implements SearchAdapter {
         }
       }
 
+      // Boost: intent phrase contains query token
+      const intents = doc.entry.entry.intents || []
+      for (const intent of intents) {
+        const intentLower = intent.toLowerCase()
+        for (const token of queryTokens) {
+          if (intentLower.includes(token)) {
+            score += 0.12
+            break // one boost per intent phrase
+          }
+        }
+      }
+
       // Boost: name contains query token
       const nameLower = doc.entry.entry.name.toLowerCase().replace(/[-_]/g, " ")
       for (const token of queryTokens) {

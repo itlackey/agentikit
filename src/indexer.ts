@@ -47,7 +47,7 @@ export interface IndexResponse {
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const INDEX_VERSION = 3
+const INDEX_VERSION = 4
 
 // ── Index Path ──────────────────────────────────────────────────────────────
 
@@ -299,6 +299,7 @@ export function buildSearchText(entry: StashEntry): string {
   if (entry.description) parts.push(entry.description)
   if (entry.tags) parts.push(entry.tags.join(" "))
   if (entry.examples) parts.push(entry.examples.join(" "))
+  if (entry.intents) parts.push(entry.intents.join(" "))
   if (entry.intent) {
     if (entry.intent.when) parts.push(entry.intent.when)
     if (entry.intent.input) parts.push(entry.intent.input)
