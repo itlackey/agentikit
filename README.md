@@ -1,6 +1,6 @@
 # agentikit
 
-Agentikit is a CLI tool and library for managing a stash of extension assets for AI coding assistants. It lets you **search**, **open**, and **run** tools, skills, commands, and agents from a stash directory.
+Agentikit is a CLI tool and library for managing a stash of extension assets for AI coding assistants. It lets you **search** and **show** tools, skills, commands, and agents from a stash directory.
 
 ## Installation
 
@@ -53,8 +53,7 @@ $AGENTIKIT_STASH_DIR/
 agentikit init                 # Initialize stash directory and set AGENTIKIT_STASH_DIR
 agentikit index [--full]       # Build search index (incremental by default)
 agentikit search [query]       # Search the stash
-agentikit open <type:name>     # Open a stash asset by ref
-agentikit run <type:name>      # Run a tool by ref
+agentikit show <type:name>     # Read a stash asset by ref
 ```
 
 ### search
@@ -71,15 +70,15 @@ agentikit search "deploy" --type tool --limit 10
 
 Returns typed hits with `openRef`, score/explainability details (`score`, `whyMatched`), and, for tools, execution-ready `runCmd`.
 
-### open
+### show
 
-Open a hit using `openRef` from search results.
+Show a hit using `openRef` from search results.
 
 ```sh
-agentikit open skill:code-review
-agentikit open knowledge:guide.md --view toc
-agentikit open knowledge:guide.md --view section --heading "Getting Started"
-agentikit open knowledge:guide.md --view lines --start 10 --end 30
+agentikit show skill:code-review
+agentikit show knowledge:guide.md --view toc
+agentikit show knowledge:guide.md --view section --heading "Getting Started"
+agentikit show knowledge:guide.md --view lines --start 10 --end 30
 ```
 
 Returns full payload by type:
@@ -87,41 +86,19 @@ Returns full payload by type:
 - `skill` — full `SKILL.md` content
 - `command` — full markdown body as `template` (+ best-effort `description`)
 - `agent` — full markdown body as `prompt` (+ best-effort `description`, `toolPolicy`, `modelHint`)
-- `tool` — `runCmd`/`kind`
+- `tool` — `runCmd`/`kind` (the agent uses the host's shell to execute `runCmd`)
 - `knowledge` — content with optional view modes (`full`, `toc`, `frontmatter`, `section`, `lines`)
-
-### run
-
-Execute a tool from the stash by its `openRef`. Only `tool:` refs are supported.
-
-```sh
-agentikit run tool:docker%2Fbuild-image.sh
-```
-
-Returns `{ type, name, path, output, exitCode }`.
-
-Tool command generation:
-
-- `.sh` → `bash "<absolute-file>"`
-- `.ps1` → `powershell -ExecutionPolicy Bypass -File "<absolute-file>"`
-- `.cmd`/`.bat` → `cmd /c "<absolute-file>"`
-- `.ts`/`.js`:
-  - find nearest `package.json` from script dir upward to stash `tools/` root
-  - if found: `cd "<pkgDir>" && bun "<absolute-file>"`
-  - else: `bun "<absolute-file>"`
-  - optional: set `AGENTIKIT_BUN_INSTALL=true` to include `bun install` before running
 
 ## Library API
 
 Agentikit also exports its core functions for use as a library:
 
 ```ts
-import { agentikitSearch, agentikitOpen, agentikitRun, agentikitInit, agentikitIndex } from "agentikit"
+import { agentikitSearch, agentikitShow, agentikitInit, agentikitIndex } from "agentikit"
 ```
 
 - `agentikitSearch({ query, type?, limit? })` — search the stash
-- `agentikitOpen({ ref, view? })` — open a stash asset
-- `agentikitRun({ ref })` — run a tool
+- `agentikitShow({ ref, view? })` — show a stash asset
 - `agentikitInit()` — initialize stash directory
 - `agentikitIndex()` — build/rebuild search index
 

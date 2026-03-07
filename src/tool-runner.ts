@@ -5,7 +5,6 @@
  * kinds (bash, bun, powershell, cmd).
  */
 
-import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { IS_WINDOWS, isWithin } from "./common"
@@ -92,44 +91,6 @@ export function buildToolInfo(stashDir: string, filePath: string): ToolInfo {
     install: shouldInstall ? { command: "bun", args: ["install"], cwd: pkgDir } : undefined,
     execute: { command: "bun", args: [filePath], cwd: pkgDir },
   }
-}
-
-/**
- * Spawn a synchronous child process for a tool execution step.
- */
-export function runToolExecution(execution: ToolExecution): { output: string; exitCode: number } {
-  const result = spawnSync(execution.command, execution.args, {
-    cwd: execution.cwd,
-    encoding: "utf8",
-    timeout: 60_000,
-  })
-
-  const stdout = typeof result.stdout === "string" ? result.stdout : ""
-  const stderr = typeof result.stderr === "string" ? result.stderr : ""
-  const combinedOutput = combineProcessOutput(stdout, stderr)
-  if (typeof result.status === "number") {
-    return { output: combinedOutput, exitCode: result.status }
-  }
-  if (result.error) {
-    return {
-      output: `${combinedOutput}${result.error.message ? `\n${result.error.message}` : ""}`.trim(),
-      exitCode: 1,
-    }
-  }
-  return {
-    output: combinedOutput || `Unexpected process termination while running "${execution.command}": no status code or error information available.`,
-    exitCode: 1,
-  }
-}
-
-/**
- * Combine stdout and stderr into a single string.
- */
-export function combineProcessOutput(stdout: string, stderr: string): string {
-  if (stdout && stderr) {
-    return `stdout:\n${stdout.trim()}\n\nstderr:\n${stderr.trim()}`
-  }
-  return `${stdout}${stderr}`.trim()
 }
 
 /**

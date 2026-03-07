@@ -20,9 +20,11 @@ export interface SearchResponse {
   stashDir: string
   hits: SearchHit[]
   tip?: string
+  /** Timing counters in milliseconds */
+  timing?: { totalMs: number; rankMs?: number; embedMs?: number }
 }
 
-export interface OpenResponse {
+export interface ShowResponse {
   type: AgentikitAssetType
   name: string
   path: string
@@ -34,14 +36,6 @@ export interface OpenResponse {
   modelHint?: unknown
   runCmd?: string
   kind?: ToolKind
-}
-
-export interface RunResponse {
-  type: "tool"
-  name: string
-  path: string
-  output: string
-  exitCode: number
 }
 
 export type KnowledgeView =
