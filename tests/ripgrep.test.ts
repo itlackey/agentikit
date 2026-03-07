@@ -146,16 +146,25 @@ test("search pipeline uses ripgrep pre-filtering when index exists", () => {
     }),
   )
 
-  // Build index
-  process.env.AGENTIKIT_STASH_DIR = stashDir
-  const { agentikitIndex } = require("../src/indexer")
-  agentikitIndex({ stashDir })
+  // Isolation: ensure index cache is written to a temp directory
+  const oldXdgCacheHome = process.env.XDG_CACHE_HOME
+  const tempCacheDir = tmpDir()
+  process.env.XDG_CACHE_HOME = tempCacheDir
 
-  // Search — ripgrep should filter candidates before TF-IDF ranks them
-  const { agentikitSearch } = require("../src/stash")
-  const result = agentikitSearch({ query: "docker", type: "any" })
+  try {
+    // Build index
+    process.env.AGENTIKIT_STASH_DIR = stashDir
+    const { agentikitIndex } = require("../src/indexer")
+    agentikitIndex({ stashDir })
 
-  expect(result.hits.length).toBeGreaterThan(0)
-  // Docker-related result should be ranked first
-  expect(result.hits[0].name).toContain("docker")
+    // Search — ripgrep should filter candidates before TF-IDF ranks them
+    const { agentikitSearch } = require("../src/stash")
+    const result = agentikitSearch({ query: "docker", type: "any" })
+
+    expect(result.hits.length).toBeGreaterThan(0)
+    // Docker-related result should be ranked first
+    expect(result.hits[0].name).toContain("docker")
+  } finally {
+    process.env.XDG_CACHE_HOME = oldXdgCacheHome
+  }
 })
