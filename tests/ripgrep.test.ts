@@ -16,10 +16,37 @@ function writeFile(filePath: string, content = "") {
 // ── resolveRg ───────────────────────────────────────────────────────────────
 
 test("resolveRg finds system ripgrep on PATH", () => {
-  const rg = resolveRg()
-  // rg is available in this test environment
-  expect(rg).not.toBeNull()
-  expect(rg!).toContain("rg")
+  const originalPath = process.env.PATH
+  const stashDir = tmpDir()
+  const binDir = path.join(stashDir, "bin")
+  fs.mkdirSync(binDir, { recursive: true })
+
+  // Create a fake rg binary on PATH so the test does not depend on the host environment
+  const rgName = process.platform === "win32" ? "rg.cmd" : "rg"
+  const fakeRg = path.join(binDir, rgName)
+  const scriptContent =
+    process.platform === "win32"
+      ? "@echo off\r\necho fake rg\r\n"
+      : "#!/bin/sh\necho fake rg\n"
+  fs.writeFileSync(fakeRg, scriptContent)
+  try {
+    // Make sure the fake rg is executable where that concept applies
+    if (process.platform !== "win32") {
+      fs.chmodSync(fakeRg, 0o755)
+    }
+  } catch {
+    // Ignore chmod errors on platforms/filesystems that do not support it
+  }
+
+  // Prepend the fake rg directory to PATH for this test only
+  process.env.PATH = binDir + path.delimiter + (originalPath ?? "")
+  try {
+    const rg = resolveRg()
+    expect(rg).not.toBeNull()
+    expect(rg!).toContain("rg")
+  } finally {
+    process.env.PATH = originalPath as string | undefined
+  }
 })
 
 test("resolveRg prefers stash/bin over system PATH", () => {
