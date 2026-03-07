@@ -340,6 +340,7 @@ export function buildSearchText(entry: StashEntry): string {
   if (entry.description) parts.push(entry.description)
   if (entry.tags) parts.push(entry.tags.join(" "))
   if (entry.examples) parts.push(entry.examples.join(" "))
+  if (entry.aliases) parts.push(entry.aliases.join(" "))
   if (entry.intents) parts.push(entry.intents.join(" "))
   if (entry.intent) {
     if (entry.intent.when) parts.push(entry.intent.when)

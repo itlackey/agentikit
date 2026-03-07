@@ -9,6 +9,8 @@ import {
   agentikitInit,
   type SearchHit,
 } from "../src/stash"
+import { agentikitIndex } from "../src/indexer"
+import { saveConfig } from "../src/config"
 
 function writeFile(filePath: string, content = "") {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -63,6 +65,44 @@ test("agentikitSearch only includes bun install in runCmd when AGENTIKIT_BUN_INS
   }
 })
 
+test("agentikitSearch resolves tool runCmd correctly for additional stash directories", async () => {
+  const primaryStashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-primary-"))
+  const additionalStashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-additional-"))
+
+  writeFile(path.join(primaryStashDir, "tools", "placeholder.sh"), "#!/usr/bin/env bash\necho primary\n")
+  writeFile(path.join(additionalStashDir, "tools", "group", "nested", "job.js"), "console.log('job')\n")
+  writeFile(path.join(additionalStashDir, "tools", "group", "package.json"), '{"name":"group"}')
+
+  saveConfig({ semanticSearch: false, additionalStashDirs: [additionalStashDir] }, primaryStashDir)
+
+  process.env.AGENTIKIT_STASH_DIR = primaryStashDir
+  await agentikitIndex({ stashDir: primaryStashDir, full: true })
+
+  const result = await agentikitSearch({ query: "job", type: "tool" })
+  const additionalHit = result.hits.find((hit) => hit.path.includes(additionalStashDir))
+
+  expect(additionalHit).toBeDefined()
+  expect(additionalHit?.runCmd ?? "").toMatch(/^cd ".+agentikit-stash-additional-.+\/tools\/group" && bun ".+\/job\.js"$/)
+})
+
+
+
+
+test("agentikitSearch includes explainability reasons for indexed hits", async () => {
+  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  writeFile(path.join(stashDir, "tools", "summarize-diff.ts"), "console.log('summarize')\n")
+
+  saveConfig({ semanticSearch: true, additionalStashDirs: [] }, stashDir)
+  process.env.AGENTIKIT_STASH_DIR = stashDir
+
+  await agentikitIndex({ stashDir, full: true })
+  const result = await agentikitSearch({ query: "summarize diff", type: "tool" })
+
+  expect(result.hits.length).toBeGreaterThan(0)
+  expect(result.hits[0].whyMatched).toBeDefined()
+  expect(result.hits[0].whyMatched).toContain("tf-idf lexical relevance")
+  expect(result.hits[0].whyMatched).toContain("matched name tokens")
+})
 test("agentikitOpen returns full payloads for skill/command/agent", () => {
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
   writeFile(path.join(stashDir, "skills", "ops", "SKILL.md"), "# Ops\n")
