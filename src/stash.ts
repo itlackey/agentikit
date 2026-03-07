@@ -3,6 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { loadSearchIndex, buildSearchText } from "./indexer"
 import { TfIdfAdapter, type ScoredEntry } from "./similarity"
+import { rgFilterCandidates, ensureRg } from "./ripgrep"
 
 export type AgentikitAssetType = "tool" | "skill" | "command" | "agent"
 export type AgentikitSearchType = AgentikitAssetType | "any"
@@ -134,7 +135,25 @@ function trySemanticSearch(
   if (!index || !index.entries || index.entries.length === 0) return null
   if (index.stashDir !== stashDir) return null
 
-  const scoredEntries: ScoredEntry[] = index.entries.map((ie) => ({
+  // Stage 1: ripgrep candidate filtering
+  // Use rg to pre-filter .stash.json files that contain query tokens,
+  // then only run TF-IDF ranking on those candidates.
+  let candidateEntries = index.entries
+  if (query) {
+    const rgResult = rgFilterCandidates(query, stashDir, stashDir)
+    if (rgResult && rgResult.usedRg) {
+      const matchedDirs = new Set(rgResult.matchedFiles.map((f) => path.dirname(f)))
+      candidateEntries = index.entries.filter((ie) => matchedDirs.has(ie.dirPath))
+      // If rg found nothing but we have a query, still fall through to TF-IDF
+      // on all entries — rg is a fast pre-filter, not the final authority
+      if (candidateEntries.length === 0) {
+        candidateEntries = index.entries
+      }
+    }
+  }
+
+  // Stage 2: TF-IDF semantic ranking
+  const scoredEntries: ScoredEntry[] = candidateEntries.map((ie) => ({
     id: `${ie.entry.type}:${ie.entry.name}`,
     text: buildSearchText(ie.entry),
     entry: ie.entry,
@@ -142,9 +161,17 @@ function trySemanticSearch(
   }))
 
   let adapter: TfIdfAdapter
-  if (index.tfidf) {
-    adapter = TfIdfAdapter.deserialize(index.tfidf as any, scoredEntries)
+  if (index.tfidf && !query) {
+    // Use cached TF-IDF state for empty queries (listing all)
+    const allScored: ScoredEntry[] = index.entries.map((ie) => ({
+      id: `${ie.entry.type}:${ie.entry.name}`,
+      text: buildSearchText(ie.entry),
+      entry: ie.entry,
+      path: ie.path,
+    }))
+    adapter = TfIdfAdapter.deserialize(index.tfidf as any, allScored)
   } else {
+    // Rebuild adapter from candidate subset
     adapter = new TfIdfAdapter()
     adapter.buildIndex(scoredEntries)
   }
@@ -622,6 +649,11 @@ export interface InitResponse {
   created: boolean
   envSet: boolean
   profileUpdated?: string
+  ripgrep?: {
+    rgPath: string
+    installed: boolean
+    version: string
+  }
 }
 
 export function agentikitInit(): InitResponse {
@@ -686,7 +718,16 @@ export function agentikitInit(): InitResponse {
 
   process.env.AGENTIKIT_STASH_DIR = stashDir
 
-  return { stashDir, created, envSet, profileUpdated }
+  // Ensure ripgrep is available (install to stash/bin if needed)
+  let ripgrep: InitResponse["ripgrep"]
+  try {
+    const rgResult = ensureRg(stashDir)
+    ripgrep = rgResult
+  } catch {
+    // Non-fatal: ripgrep is optional, search works without it
+  }
+
+  return { stashDir, created, envSet, profileUpdated, ripgrep }
 }
 
 function hasErrnoCode(error: unknown, code: string): boolean {
