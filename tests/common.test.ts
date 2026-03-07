@@ -2,7 +2,7 @@ import { test, expect, describe, beforeAll, afterAll } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { resolveStashDir, toPosix, hasErrnoCode, isAssetType } from "../src/common"
+import { resolveStashDir, toPosix, hasErrnoCode, isAssetType, isWithin } from "../src/common"
 
 // ── resolveStashDir ──────────────────────────────────────────────────────────
 
@@ -122,5 +122,33 @@ describe("isAssetType", () => {
     expect(isAssetType("Tool")).toBe(false)
     expect(isAssetType("TOOL")).toBe(false)
     expect(isAssetType("plugin")).toBe(false)
+  })
+})
+
+// ── isWithin ────────────────────────────────────────────────────────────────
+
+describe("isWithin", () => {
+  test("returns true for path inside root", () => {
+    expect(isWithin("/root/sub/file.txt", "/root")).toBe(true)
+  })
+
+  test("returns true for path equal to root", () => {
+    expect(isWithin("/root", "/root")).toBe(true)
+  })
+
+  test("returns false for path outside root", () => {
+    expect(isWithin("/other/file.txt", "/root")).toBe(false)
+  })
+
+  test("returns false for parent traversal", () => {
+    expect(isWithin("/root/../etc/passwd", "/root")).toBe(false)
+  })
+
+  test("returns true for nested subdirectory", () => {
+    expect(isWithin("/root/a/b/c/d.txt", "/root")).toBe(true)
+  })
+
+  test("returns false for sibling directory with similar prefix", () => {
+    expect(isWithin("/root-other/file.txt", "/root")).toBe(false)
   })
 })
