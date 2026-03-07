@@ -1,3 +1,4 @@
+import fs from "node:fs"
 import path from "node:path"
 import { type AgentikitAssetType, hasErrnoCode, resolveStashDir } from "./common"
 import { ASSET_TYPES, TYPE_DIRS, deriveCanonicalAssetName } from "./asset-spec"
@@ -8,6 +9,7 @@ import { buildToolInfo } from "./tool-runner"
 import { walkStash } from "./walker"
 import { makeOpenRef } from "./stash-ref"
 import type { AgentikitSearchType, SearchHit, SearchResponse } from "./stash-types"
+import { loadConfig } from "./config"
 
 type IndexedAsset = {
   type: AgentikitAssetType
@@ -26,28 +28,59 @@ export function agentikitSearch(input: {
   const searchType = input.type ?? "any"
   const limit = normalizeLimit(input.limit)
   const stashDir = resolveStashDir()
+  const config = loadConfig(stashDir)
 
-  const semanticHits = trySemanticSearch(query, searchType, limit, stashDir)
-  if (semanticHits) {
-    return {
-      stashDir,
-      hits: semanticHits,
-      tip: semanticHits.length === 0 ? "No matching stash assets were found. Try running 'agentikit index' to rebuild." : undefined,
-    }
+  const allStashDirs = [
+    stashDir,
+    ...config.additionalStashDirs.filter((d) => {
+      try { return fs.statSync(d).isDirectory() } catch { return false }
+    }),
+  ]
+
+  let allHits: SearchHit[] = []
+
+  for (const dir of allStashDirs) {
+    const hits = searchSingleStash(query, searchType, limit, dir, config.semanticSearch)
+    allHits.push(...hits)
+  }
+
+  // Deduplicate by path (primary stash wins since it's first)
+  const seen = new Set<string>()
+  allHits = allHits.filter((hit) => {
+    if (seen.has(hit.path)) return false
+    seen.add(hit.path)
+    return true
+  })
+
+  // Sort by score descending (scored hits first), then apply limit
+  allHits.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+  allHits = allHits.slice(0, limit)
+
+  return {
+    stashDir,
+    hits: allHits,
+    tip: allHits.length === 0 ? "No matching stash assets were found. Try running 'agentikit index' to rebuild." : undefined,
+  }
+}
+
+function searchSingleStash(
+  query: string,
+  searchType: AgentikitSearchType,
+  limit: number,
+  stashDir: string,
+  semanticEnabled: boolean,
+): SearchHit[] {
+  if (semanticEnabled) {
+    const semanticHits = trySemanticSearch(query, searchType, limit, stashDir)
+    if (semanticHits) return semanticHits
   }
 
   const assets = indexAssets(stashDir, searchType)
-  const hits = assets
+  return assets
     .filter((asset) => asset.name.toLowerCase().includes(query))
     .sort(compareAssets)
     .slice(0, limit)
     .map((asset): SearchHit => assetToSearchHit(asset, stashDir))
-
-  return {
-    stashDir,
-    hits,
-    tip: hits.length === 0 ? "No matching stash assets were found." : undefined,
-  }
 }
 
 function trySemanticSearch(
