@@ -117,12 +117,12 @@ function tryParseLocalGitRef(rawRef: string): ParsedGitRef | undefined {
   }
 
   if (!stat.isDirectory()) {
-    throw new Error(`Local add path must point to a directory: ${rawRef}`)
+    throw new Error("Local add path must point to a directory.")
   }
 
   const repoRoot = findGitRepoRoot(resolvedPath)
   if (!repoRoot) {
-    throw new Error(`Local add path must be inside a git repository: ${rawRef}`)
+    throw new Error("Local add path must be inside a git repository.")
   }
 
   return {
