@@ -174,6 +174,19 @@ describe("local git installs", () => {
     }
   })
 
+  test("parseRegistryRef rejects missing explicit local paths", () => {
+    const tempDir = makeTempDir("agentikit-missing-local-path-")
+    const previousCwd = process.cwd()
+
+    try {
+      process.chdir(tempDir)
+      expect(() => parseRegistryRef("./missing-kit")).toThrow("Local path not found:")
+    } finally {
+      process.chdir(previousCwd)
+      fs.rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
   test("applies include from nearest package.json for nested kit roots", async () => {
     const cacheHome = makeTempDir("agentikit-nested-include-cache-")
     const packageDir = makeTempDir("agentikit-nested-include-package-")
