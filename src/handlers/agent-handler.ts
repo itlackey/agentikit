@@ -26,7 +26,7 @@ export const agentHandler: AssetTypeHandler = {
   },
 
   defaultUsageGuide: [
-    "Read the .md file and dispatch and agent using the content of the file. Use modelHint/toolPolicy when present to run the agent with compatible settings.",
+    "Read the .md file and dispatch an agent using the content of the file. Use modelHint/toolPolicy when present to run the agent with compatible settings.",
     "Use with `akm show <openRef>` to get the full prompt payload.",
   ],
 }
