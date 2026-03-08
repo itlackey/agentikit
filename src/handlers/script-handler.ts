@@ -1,20 +1,11 @@
 import path from "node:path"
-import { SCRIPT_EXTENSIONS } from "../asset-spec"
+import { SCRIPT_EXTENSIONS, SCRIPT_EXTENSIONS_BROAD } from "../asset-spec"
 import { hasErrnoCode } from "../common"
 import { buildToolInfo } from "../tool-runner"
 import { extractDescriptionFromComments } from "../metadata"
 import type { AssetTypeHandler, ShowInput } from "../asset-type-handler"
 import type { ShowResponse, LocalSearchHit } from "../stash-types"
 import type { StashEntry } from "../metadata"
-
-/**
- * Extended set of script extensions.
- * Scripts support a broader range of languages than tools.
- */
-export const SCRIPT_EXTENSIONS_BROAD = new Set([
-  ...SCRIPT_EXTENSIONS,
-  ".py", ".rb", ".go", ".pl", ".php", ".lua", ".r", ".swift", ".kt", ".kts",
-])
 
 /** Extensions that buildToolInfo can handle (tool-runner supported) */
 const RUNNABLE_EXTENSIONS = SCRIPT_EXTENSIONS
