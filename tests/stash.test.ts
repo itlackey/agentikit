@@ -511,40 +511,70 @@ test("agentikitInit creates knowledge directory", () => {
 // ── Script tests ────────────────────────────────────────────────────────────
 
 test("agentikitSearch finds script assets with broad extensions", async () => {
+  const origStashDir = process.env.AGENTIKIT_STASH_DIR
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
   writeFile(path.join(stashDir, "scripts", "cleanup.sh"), "#!/usr/bin/env bash\necho cleanup\n")
   writeFile(path.join(stashDir, "scripts", "process.py"), "print('hello')\n")
   writeFile(path.join(stashDir, "scripts", "README.md"), "ignore\n")
 
-  process.env.AGENTIKIT_STASH_DIR = stashDir
-  const result = await agentikitSearch({ query: "", type: "script" })
+  try {
+    process.env.AGENTIKIT_STASH_DIR = stashDir
+    const result = await agentikitSearch({ query: "", type: "script" })
 
-  expect(result.hits.length).toBe(2)
-  expect(result.hits.every((hit: SearchHit) => hit.type === "script")).toBe(true)
-  expect(result.hits.some((hit: SearchHit) => hit.name === "README.md")).toBe(false)
+    expect(result.hits.length).toBe(2)
+    expect(result.hits.every((hit: SearchHit) => hit.type === "script")).toBe(true)
+    expect(result.hits.some((hit: SearchHit) => hit.name === "README.md")).toBe(false)
+  } finally {
+    if (origStashDir === undefined) {
+      delete process.env.AGENTIKIT_STASH_DIR
+    } else {
+      process.env.AGENTIKIT_STASH_DIR = origStashDir
+    }
+    fs.rmSync(stashDir, { recursive: true, force: true })
+  }
 })
 
 test("agentikitSearch returns runCmd for runnable script extensions", async () => {
+  const origStashDir = process.env.AGENTIKIT_STASH_DIR
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
   writeFile(path.join(stashDir, "scripts", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
 
-  process.env.AGENTIKIT_STASH_DIR = stashDir
-  const result = await agentikitSearch({ query: "", type: "script" })
+  try {
+    process.env.AGENTIKIT_STASH_DIR = stashDir
+    const result = await agentikitSearch({ query: "", type: "script" })
 
-  expect(result.hits.length).toBe(1)
-  expect(result.hits[0].runCmd).toBeTruthy()
-  expect(result.hits[0].kind).toBe("bash")
+    expect(result.hits.length).toBe(1)
+    expect(result.hits[0].runCmd).toBeTruthy()
+    expect(result.hits[0].kind).toBe("bash")
+  } finally {
+    if (origStashDir === undefined) {
+      delete process.env.AGENTIKIT_STASH_DIR
+    } else {
+      process.env.AGENTIKIT_STASH_DIR = origStashDir
+    }
+    fs.rmSync(stashDir, { recursive: true, force: true })
+  }
 })
 
 test("agentikitShow returns content for non-runnable script extensions", () => {
+  const origStashDir = process.env.AGENTIKIT_STASH_DIR
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
   writeFile(path.join(stashDir, "scripts", "process.py"), "# A python script\nprint('hello')\n")
 
-  process.env.AGENTIKIT_STASH_DIR = stashDir
-  const result = agentikitShow({ ref: "script:process.py" })
+  try {
+    process.env.AGENTIKIT_STASH_DIR = stashDir
+    const result = agentikitShow({ ref: "script:process.py" })
 
-  expect(result.type).toBe("script")
-  expect(result.content).toContain("print('hello')")
+    expect(result.type).toBe("script")
+    expect(result.content).toContain("print('hello')")
+  } finally {
+    if (origStashDir === undefined) {
+      delete process.env.AGENTIKIT_STASH_DIR
+    } else {
+      process.env.AGENTIKIT_STASH_DIR = origStashDir
+    }
+    fs.rmSync(stashDir, { recursive: true, force: true })
+  }
 })
 
 test("agentikitShow returns runCmd for runnable script", () => {
