@@ -17,7 +17,7 @@ const markdownSpec: Omit<AssetSpec, "stashDir"> = {
 }
 
 /** Extended set of script extensions for the script asset type */
-const SCRIPT_EXTENSIONS_BROAD = new Set([
+export const SCRIPT_EXTENSIONS_BROAD = new Set([
   ...SCRIPT_EXTENSIONS,
   ".py", ".rb", ".go", ".pl", ".php", ".lua", ".r", ".swift", ".kt", ".kts",
 ])
