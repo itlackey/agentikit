@@ -260,8 +260,11 @@ Agentikit stores configuration in a platform-standard config directory:
 - Windows: `%APPDATA%\agentikit\config.json` (falls back to `%USERPROFILE%\AppData\Roaming\agentikit\config.json` when `%APPDATA%` is unset)
 
 ```sh
-akm config                    # Show current config
-akm config --set key=value    # Update a config key
+akm config                       # Show current config
+akm config --list                # List current config with effective providers
+akm config embedding.provider    # Read one key
+akm config llm.maxTokens 512     # Update one key
+akm config --unset llm.apiKey    # Remove an optional key
 ```
 
 ### Embedding connection
@@ -269,13 +272,17 @@ akm config --set key=value    # Update a config key
 By default, agentikit uses the local `@xenova/transformers` library for embeddings. You can configure an OpenAI-compatible embedding endpoint instead:
 
 ```sh
-akm config --set 'embedding={"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}'
+akm config providers embedding
+akm config embedding.provider ollama
+akm config embedding.model nomic-embed-text
+akm config embedding.dimension 384
+akm config embedding '{"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text","dimension":384}'
 ```
 
 To clear the custom embedding config and revert to local embeddings:
 
 ```sh
-akm config --set 'embedding=null'
+akm config --unset embedding
 ```
 
 ### LLM connection
@@ -283,13 +290,17 @@ akm config --set 'embedding=null'
 When configured, agentikit uses an OpenAI-compatible LLM to generate richer metadata (descriptions, intents, tags) during indexing:
 
 ```sh
-akm config --set 'llm={"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2"}'
+akm config providers llm
+akm config llm.provider ollama
+akm config llm.temperature 0.3
+akm config llm.maxTokens 512
+akm config llm '{"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2"}'
 ```
 
 To clear:
 
 ```sh
-akm config --set 'llm=null'
+akm config --unset llm
 ```
 
 ### Using a local Ollama instance
@@ -302,22 +313,28 @@ ollama pull nomic-embed-text
 ollama pull llama3.2
 
 # Configure agentikit to use Ollama for both embeddings and metadata generation
-akm config --set 'embedding={"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}'
-akm config --set 'llm={"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2"}'
+akm config embedding.provider ollama
+akm config embedding.model nomic-embed-text
+akm config embedding.dimension 384
+akm config llm.provider ollama
+akm config llm.model llama3.2
 
 # Rebuild the index — embeddings use Ollama, metadata is LLM-enhanced
 akm index --full
 ```
 
-Both `embedding` and `llm` accept an optional `apiKey` field for authenticated endpoints:
+Both `embedding` and `llm` accept an optional `apiKey` field for authenticated endpoints. Embeddings also support an optional `dimension`, and LLMs support optional `temperature` / `maxTokens`:
 
 ```json
 {
   "endpoint": "https://api.openai.com/v1/embeddings",
   "model": "text-embedding-3-small",
+  "dimension": 384,
   "apiKey": "sk-..."
 }
 ```
+
+When using a remote embedding provider, make sure `embedding.dimension` matches the search index vector size (`384`). The built-in presets seed this automatically, but custom JSON configs should include it explicitly.
 
 ### Config reference
 
@@ -325,8 +342,8 @@ Both `embedding` and `llm` accept an optional `apiKey` field for authenticated e
 |-----|------|---------|-------------|
 | `semanticSearch` | `boolean` | `true` | Enable semantic search ranking |
 | `additionalStashDirs` | `string[]` | `[]` | Extra stash directories to search |
-| `embedding` | `object` | not set | OpenAI-compatible embedding endpoint (`endpoint`, `model`, `apiKey?`) |
-| `llm` | `object` | not set | OpenAI-compatible LLM endpoint (`endpoint`, `model`, `apiKey?`) |
+| `embedding` | `object` | built-in local provider | Embedding provider settings (`provider?`, `endpoint`, `model`, `dimension?`, `apiKey?`) |
+| `llm` | `object` | disabled | LLM provider settings (`provider?`, `endpoint`, `model`, `temperature?`, `maxTokens?`, `apiKey?`) |
 
 ## Notes
 

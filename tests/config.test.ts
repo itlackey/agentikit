@@ -247,10 +247,44 @@ describe("embedding config", () => {
     expect(loadConfig().embedding?.apiKey).toBe("sk-test123")
   })
 
+  test("loads embedding config with provider and dimension", () => {
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({
+        embedding: {
+          provider: "openai",
+          endpoint: "https://api.openai.com/v1/embeddings",
+          model: "text-embedding-3-small",
+          dimension: 384,
+        },
+      }),
+    )
+    expect(loadConfig().embedding).toEqual({
+      provider: "openai",
+      endpoint: "https://api.openai.com/v1/embeddings",
+      model: "text-embedding-3-small",
+      dimension: 384,
+    })
+  })
+
   test("ignores invalid embedding config (missing model)", () => {
     writeRawConfig(
       getConfigPath(),
       JSON.stringify({ embedding: { endpoint: "http://localhost:11434" } }),
+    )
+    expect(loadConfig().embedding).toBeUndefined()
+  })
+
+  test("ignores invalid embedding config with non-integer dimension", () => {
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({
+        embedding: {
+          endpoint: "https://api.openai.com/v1/embeddings",
+          model: "text-embedding-3-small",
+          dimension: 384.5,
+        },
+      }),
     )
     expect(loadConfig().embedding).toBeUndefined()
   })
@@ -317,8 +351,44 @@ describe("llm config", () => {
     expect(loadConfig().llm?.apiKey).toBe("sk-key")
   })
 
+  test("loads llm config with provider, temperature, and maxTokens", () => {
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({
+        llm: {
+          provider: "openai",
+          endpoint: "https://api.openai.com/v1/chat/completions",
+          model: "gpt-4o-mini",
+          temperature: 0.6,
+          maxTokens: 256,
+        },
+      }),
+    )
+    expect(loadConfig().llm).toEqual({
+      provider: "openai",
+      endpoint: "https://api.openai.com/v1/chat/completions",
+      model: "gpt-4o-mini",
+      temperature: 0.6,
+      maxTokens: 256,
+    })
+  })
+
   test("ignores invalid llm config", () => {
     writeRawConfig(getConfigPath(), JSON.stringify({ llm: { endpoint: "http://localhost" } }))
+    expect(loadConfig().llm).toBeUndefined()
+  })
+
+  test("ignores llm config with non-integer maxTokens", () => {
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({
+        llm: {
+          endpoint: "https://api.openai.com/v1/chat/completions",
+          model: "gpt-4o-mini",
+          maxTokens: 256.5,
+        },
+      }),
+    )
     expect(loadConfig().llm).toBeUndefined()
   })
 

@@ -13,7 +13,16 @@ import {
 import type { SearchSource, SearchUsageMode } from "./stash-types"
 import { agentikitInit } from "./init"
 import { agentikitIndex } from "./indexer"
-import { loadConfig, updateConfig, type AgentikitConfig } from "./config"
+import { loadConfig, saveConfig } from "./config"
+import {
+  getConfigValue,
+  listConfig,
+  listProviders,
+  parseConfigValue,
+  setConfigValue,
+  unsetConfigValue,
+  useProvider,
+} from "./config-cli"
 
 const initCommand = defineCommand({
   meta: { name: "init", description: "Initialize agentikit stash directory and set AGENTIKIT_STASH_DIR" },
@@ -160,12 +169,105 @@ const showCommand = defineCommand({
 })
 
 const configCommand = defineCommand({
-  meta: { name: "config", description: "Show or update configuration" },
+  meta: { name: "config", description: "Show configuration, get/set keys, and manage embedding/LLM providers" },
   args: {
-    set: { type: "string", description: "Update a config key (key=value format)" },
+    list: { type: "boolean", description: "List current configuration with effective defaults", default: false },
+    get: { type: "string", description: "Get a configuration value by key" },
+    unset: { type: "string", description: "Unset an optional configuration key or whole embedding/llm section" },
+    set: { type: "string", description: "Back-compat alias for updating a key (key=value format)" },
+  },
+  subCommands: {
+    list: defineCommand({
+      meta: { name: "list", description: "List current configuration with effective embedding/LLM settings" },
+      run() {
+        return runWithJsonErrors(() => {
+          console.log(JSON.stringify(listConfig(loadConfig()), null, 2))
+        })
+      },
+    }),
+    get: defineCommand({
+      meta: { name: "get", description: "Get a configuration value by key" },
+      args: {
+        key: { type: "positional", required: true, description: "Config key (for example: embedding.provider)" },
+      },
+      run({ args }) {
+        return runWithJsonErrors(() => {
+          console.log(JSON.stringify(getConfigValue(loadConfig(), args.key), null, 2))
+        })
+      },
+    }),
+    set: defineCommand({
+      meta: { name: "set", description: "Set a configuration value by key" },
+      args: {
+        key: { type: "positional", required: true, description: "Config key (for example: llm.temperature)" },
+        value: { type: "positional", required: true, description: "Config value" },
+      },
+      run({ args }) {
+        return runWithJsonErrors(() => {
+          const updated = setConfigValue(loadConfig(), args.key, args.value)
+          saveConfig(updated)
+          console.log(JSON.stringify(listConfig(updated), null, 2))
+        })
+      },
+    }),
+    unset: defineCommand({
+      meta: { name: "unset", description: "Unset an optional configuration key or whole embedding/llm section" },
+      args: {
+        key: { type: "positional", required: true, description: "Config key to unset" },
+      },
+      run({ args }) {
+        return runWithJsonErrors(() => {
+          const updated = unsetConfigValue(loadConfig(), args.key)
+          saveConfig(updated)
+          console.log(JSON.stringify(listConfig(updated), null, 2))
+        })
+      },
+    }),
+    providers: defineCommand({
+      meta: { name: "providers", description: "List available embedding or LLM providers" },
+      args: {
+        scope: { type: "positional", required: true, description: "Provider scope: embedding or llm" },
+      },
+      run({ args }) {
+        return runWithJsonErrors(() => {
+          const scope = parseProviderScope(args.scope)
+          console.log(JSON.stringify(listProviders(scope, loadConfig()), null, 2))
+        })
+      },
+    }),
+    use: defineCommand({
+      meta: { name: "use", description: "Switch the default embedding or LLM provider" },
+      args: {
+        scope: { type: "positional", required: true, description: "Provider scope: embedding or llm" },
+        provider: { type: "positional", required: true, description: "Provider name" },
+      },
+      run({ args }) {
+        return runWithJsonErrors(() => {
+          const scope = parseProviderScope(args.scope)
+          const updated = useProvider(loadConfig(), scope, args.provider)
+          saveConfig(updated)
+          console.log(JSON.stringify(listConfig(updated), null, 2))
+        })
+      },
+    }),
   },
   run({ args }) {
     return runWithJsonErrors(() => {
+      if (hasConfigSubcommand(args)) return
+      if (args.list) {
+        console.log(JSON.stringify(listConfig(loadConfig()), null, 2))
+        return
+      }
+      if (args.get) {
+        console.log(JSON.stringify(getConfigValue(loadConfig(), args.get), null, 2))
+        return
+      }
+      if (args.unset) {
+        const updated = unsetConfigValue(loadConfig(), args.unset)
+        saveConfig(updated)
+        console.log(JSON.stringify(listConfig(updated), null, 2))
+        return
+      }
       if (args.set) {
         const eqIndex = args.set.indexOf("=")
         if (eqIndex === -1) {
@@ -174,11 +276,11 @@ const configCommand = defineCommand({
         const key = args.set.slice(0, eqIndex)
         const value = args.set.slice(eqIndex + 1)
         const partial = parseConfigValue(key, value)
-        const config = updateConfig(partial)
-        console.log(JSON.stringify(config, null, 2))
+        const config = { ...loadConfig(), ...partial }
+        saveConfig(config)
+        console.log(JSON.stringify(listConfig(config), null, 2))
       } else {
-        const config = loadConfig()
-        console.log(JSON.stringify(config, null, 2))
+        console.log(JSON.stringify(listConfig(loadConfig()), null, 2))
       }
     })
   },
@@ -203,10 +305,12 @@ const main = defineCommand({
   },
 })
 
-runMain(main)
-
 const SEARCH_USAGE_MODES: SearchUsageMode[] = ["none", "both", "item", "guide"]
 const SEARCH_SOURCES: SearchSource[] = ["local", "registry", "both"]
+const CONFIG_SUBCOMMAND_SET = new Set(["list", "get", "set", "unset", "providers", "use"])
+
+normalizeConfigArgv(process.argv)
+runMain(main)
 
 function parseSearchUsageMode(value: string): SearchUsageMode {
   if ((SEARCH_USAGE_MODES as string[]).includes(value)) return value as SearchUsageMode
@@ -216,63 +320,6 @@ function parseSearchUsageMode(value: string): SearchUsageMode {
 function parseSearchSource(value: string): SearchSource {
   if ((SEARCH_SOURCES as string[]).includes(value)) return value as SearchSource
   throw new Error(`Invalid value for --source: ${value}. Expected one of: ${SEARCH_SOURCES.join("|")}`)
-}
-
-function parseConnectionValue(
-  key: string,
-  value: string,
-  exampleEndpoint: string,
-  exampleModel: string,
-): { endpoint: string; model: string; apiKey?: string } | undefined {
-  if (value === "null" || value === "") return undefined
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(value)
-  } catch {
-    throw new Error(
-      `Invalid value for ${key}: expected JSON object with endpoint and model`
-      + ` (e.g. '{"endpoint":"${exampleEndpoint}","model":"${exampleModel}"}')`,
-    )
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`Invalid value for ${key}: expected a JSON object`)
-  }
-  const obj = parsed as Record<string, unknown>
-  if (typeof obj.endpoint !== "string" || !obj.endpoint || typeof obj.model !== "string" || !obj.model) {
-    throw new Error(`Invalid value for ${key}: "endpoint" and "model" are required string fields`)
-  }
-  const result: { endpoint: string; model: string; apiKey?: string } = {
-    endpoint: obj.endpoint,
-    model: obj.model,
-  }
-  if (typeof obj.apiKey === "string" && obj.apiKey) {
-    result.apiKey = obj.apiKey
-  }
-  return result
-}
-
-function parseConfigValue(key: string, value: string): Partial<AgentikitConfig> {
-  switch (key) {
-    case "semanticSearch":
-      if (value !== "true" && value !== "false") {
-        throw new Error(`Invalid value for semanticSearch: expected "true" or "false"`)
-      }
-      return { semanticSearch: value === "true" }
-    case "additionalStashDirs":
-      try {
-        const parsed = JSON.parse(value)
-        if (!Array.isArray(parsed)) throw new Error("expected JSON array")
-        return { additionalStashDirs: parsed.filter((d: unknown): d is string => typeof d === "string") }
-      } catch {
-        throw new Error(`Invalid value for additionalStashDirs: expected JSON array (e.g. '["/path/a","/path/b"]')`)
-      }
-    case "embedding":
-      return { embedding: parseConnectionValue("embedding", value, "http://localhost:11434/v1/embeddings", "nomic-embed-text") }
-    case "llm":
-      return { llm: parseConnectionValue("llm", value, "http://localhost:11434/v1/chat/completions", "llama3.2") }
-    default:
-      throw new Error(`Unknown config key: ${key}`)
-  }
 }
 
 async function runWithJsonErrors(fn: (() => void) | (() => Promise<void>)): Promise<void> {
@@ -293,5 +340,51 @@ function buildHint(message: string): string | undefined {
   if (message.includes("No installed registry entry matched target")) return "Run `akm list` to view installed ids/refs, then retry with one of those values."
   if (message.includes("Invalid value for --source")) return "Pick one of: local, registry, both."
   if (message.includes("Invalid value for --usage")) return "Pick one of: none, both, item, guide."
+  if (message.includes("expected JSON object with endpoint and model")) {
+    return "Quote JSON values in your shell, for example: akm config set embedding '{\"endpoint\":\"http://localhost:11434/v1/embeddings\",\"model\":\"nomic-embed-text\"}'."
+  }
   return undefined
+}
+
+function parseProviderScope(value: string): "embedding" | "llm" {
+  if (value === "embedding" || value === "llm") return value
+  throw new Error(`Invalid provider scope: ${value}. Expected one of: embedding|llm`)
+}
+
+function hasConfigSubcommand(args: Record<string, unknown>): boolean {
+  const command = Array.isArray(args._) ? args._[0] : undefined
+  return typeof command === "string" && CONFIG_SUBCOMMAND_SET.has(command)
+}
+
+/**
+ * Mutate argv before citty parses it so git-style config forms like
+ * `akm config llm.maxTokens 512` and `akm config --get llm.maxTokens`
+ * are normalized into the existing config subcommands.
+ */
+function normalizeConfigArgv(argv: string[]): void {
+  const [, , command, argAfterCommand, argAfterKey, ...rest] = argv
+  if (command !== "config") return
+  if (!argAfterCommand) return
+  if (argAfterCommand === "--list") {
+    argv.splice(3, argv.length - 3, "list")
+    return
+  }
+  if (argAfterCommand === "--get" && argAfterKey) {
+    argv.splice(3, argv.length - 3, "get", argAfterKey, ...rest)
+    return
+  }
+  if (argAfterCommand === "--unset" && argAfterKey) {
+    argv.splice(3, argv.length - 3, "unset", argAfterKey, ...rest)
+    return
+  }
+  if (argAfterCommand.startsWith("-")) return
+  if (CONFIG_SUBCOMMAND_SET.has(argAfterCommand)) return
+
+  // A single arg after `config` behaves like `git config <key>` and reads the value.
+  if (argAfterKey === undefined) {
+    argv.splice(3, argv.length - 3, "get", argAfterCommand)
+    return
+  }
+
+  argv.splice(3, argv.length - 3, "set", argAfterCommand, argAfterKey, ...rest)
 }
