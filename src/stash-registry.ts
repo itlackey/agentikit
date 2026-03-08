@@ -44,7 +44,7 @@ export async function agentikitRemove(input: { target: string; stashDir?: string
   const installed = config.registry?.installed ?? []
   const entry = resolveInstalledTarget(installed, target)
 
-  const updatedConfig = removeInstalledRegistryEntry(entry.id, stashDir)
+  const updatedConfig = removeInstalledRegistryEntry(entry.id)
   cleanupDirectoryBestEffort(entry.cacheDir)
   const index = await agentikitIndex({ stashDir })
 
@@ -85,7 +85,7 @@ export async function agentikitReinstall(input?: {
   const processed: ReinstallResponse["processed"] = []
   for (const entry of selectedEntries) {
     const installed = await installRegistryRef(entry.ref)
-    upsertInstalledRegistryEntry(toInstalledEntry(installed), stashDir)
+    upsertInstalledRegistryEntry(toInstalledEntry(installed))
     if (entry.cacheDir !== installed.cacheDir) {
       cleanupDirectoryBestEffort(entry.cacheDir)
     }
@@ -134,7 +134,7 @@ export async function agentikitUpdate(input?: {
   const processed: UpdateResponse["processed"] = []
   for (const entry of selectedEntries) {
     const installed = await installRegistryRef(entry.ref)
-    upsertInstalledRegistryEntry(toInstalledEntry(installed), stashDir)
+    upsertInstalledRegistryEntry(toInstalledEntry(installed))
     if (entry.cacheDir !== installed.cacheDir) {
       cleanupDirectoryBestEffort(entry.cacheDir)
     }

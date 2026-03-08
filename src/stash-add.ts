@@ -12,20 +12,17 @@ export async function agentikitAdd(input: { ref: string }): Promise<AddResponse>
   const stashDir = resolveStashDir()
   const installed = await installRegistryRef(ref)
   const replaced = loadConfig().registry?.installed.find((entry) => entry.id === installed.id)
-  const config = upsertInstalledRegistryEntry(
-    {
-      id: installed.id,
-      source: installed.source,
-      ref: installed.ref,
-      artifactUrl: installed.artifactUrl,
-      resolvedVersion: installed.resolvedVersion,
-      resolvedRevision: installed.resolvedRevision,
-      stashRoot: installed.stashRoot,
-      cacheDir: installed.cacheDir,
-      installedAt: installed.installedAt,
-    },
-    stashDir,
-  )
+  const config = upsertInstalledRegistryEntry({
+    id: installed.id,
+    source: installed.source,
+    ref: installed.ref,
+    artifactUrl: installed.artifactUrl,
+    resolvedVersion: installed.resolvedVersion,
+    resolvedRevision: installed.resolvedRevision,
+    stashRoot: installed.stashRoot,
+    cacheDir: installed.cacheDir,
+    installedAt: installed.installedAt,
+  })
 
   if (replaced && replaced.cacheDir !== installed.cacheDir) {
     try {

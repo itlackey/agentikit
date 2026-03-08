@@ -74,7 +74,7 @@ akm init
 Creates the stash directory structure (`tools/`, `skills/`, `commands/`, `agents/`, `knowledge/`) and generates a config file in the platform-standard app config directory:
 
 - Linux/macOS: `$XDG_CONFIG_HOME/agentikit/config.json` (defaults to `~/.config/agentikit/config.json`)
-- Windows: `%APPDATA%\agentikit\config.json`
+- Windows: `%APPDATA%\agentikit\config.json` (falls back to `%USERPROFILE%\AppData\Roaming\agentikit\config.json` if `%APPDATA%` is not set)
 
 ### index
 
