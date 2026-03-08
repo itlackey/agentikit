@@ -10,7 +10,7 @@ export { agentikitSearch } from "./stash-search"
 export { agentikitShow } from "./stash-show"
 export { agentikitAdd } from "./stash-add"
 export { agentikitClone } from "./stash-clone"
-export { agentikitEdit } from "./stash-edit"
+
 export { agentikitList, agentikitRemove, agentikitReinstall, agentikitUpdate } from "./stash-registry"
 export { resolveStashSources, resolveAllStashDirs, findSourceForPath } from "./stash-source"
 export type { StashSource, StashSourceKind } from "./stash-source"
@@ -37,4 +37,3 @@ export type {
 } from "./stash-types"
 
 export type { CloneOptions, CloneResponse } from "./stash-clone"
-export type { EditOptions, EditResponse } from "./stash-edit"

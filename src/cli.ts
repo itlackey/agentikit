@@ -14,7 +14,7 @@ import type { SearchSource, SearchUsageMode } from "./stash-types"
 import { agentikitInit } from "./init"
 import { agentikitIndex } from "./indexer"
 import { agentikitClone } from "./stash-clone"
-import { agentikitEdit } from "./stash-edit"
+
 import { resolveStashSources } from "./stash-source"
 import { loadConfig, saveConfig } from "./config"
 import {
@@ -308,28 +308,6 @@ const cloneCommand = defineCommand({
   },
 })
 
-const editCommand = defineCommand({
-  meta: { name: "edit", description: "Edit an asset in the working stash" },
-  args: {
-    ref: { type: "positional", description: "Asset ref (must be in working stash)", required: true },
-    content: { type: "string", description: "New file content (reads from stdin if omitted)" },
-  },
-  async run({ args }) {
-    await runWithJsonErrors(async () => {
-      let content = args.content
-      if (!content) {
-        // Read from stdin
-        const chunks: Buffer[] = []
-        for await (const chunk of process.stdin) {
-          chunks.push(chunk as Buffer)
-        }
-        content = Buffer.concat(chunks).toString("utf8")
-      }
-      const result = agentikitEdit({ ref: args.ref, content })
-      console.log(JSON.stringify(result, null, 2))
-    })
-  },
-})
 
 const sourcesCommand = defineCommand({
   meta: { name: "sources", description: "List all stash sources with their kind, path, and status" },
@@ -357,7 +335,6 @@ const main = defineCommand({
     search: searchCommand,
     show: showCommand,
     clone: cloneCommand,
-    edit: editCommand,
     sources: sourcesCommand,
     config: configCommand,
   },

@@ -61,6 +61,8 @@ akm update [target] [--all]     # Fresh install from current ref(s), report chan
 akm reinstall [target] [--all]  # Reinstall from stored refs
 akm search [query]       # Search local stash and/or registry
 akm show <type:name>     # Read a stash asset by ref
+akm clone <ref> [--name] [--force]  # Clone an asset into the working stash
+akm sources              # List all stash sources with kind and status
 ```
 
 ### init
@@ -224,6 +226,27 @@ Returns full payload by type:
 
 When a section is not found (e.g., `--view section --heading "Missing"`), returns a helpful message suggesting to use `--view toc` to discover available headings.
 
+### clone
+
+Copy an asset from any stash source into the working stash.
+
+```sh
+akm clone tool:deploy.sh                          # Clone from first source found
+akm clone @installed:npm%3A%40scope%2Fpkg/tool:deploy.sh  # Clone from a specific installed package
+akm clone tool:deploy.sh --name my-deploy.sh       # Clone with a new name
+akm clone tool:deploy.sh --force                   # Overwrite if already in working stash
+```
+
+### sources
+
+List all resolved stash sources with their kind, path, and status.
+
+```sh
+akm sources
+```
+
+Returns an array of sources in priority order: working (writable), mounted (read-only), installed (read-only).
+
 ## Library API
 
 Agentikit also exports its core functions for use as a library:
@@ -231,6 +254,7 @@ Agentikit also exports its core functions for use as a library:
 ```ts
 import {
   agentikitAdd,
+  agentikitClone,
   agentikitList,
   agentikitRemove,
   agentikitReinstall,
@@ -239,6 +263,7 @@ import {
   agentikitShow,
   agentikitInit,
   agentikitIndex,
+  resolveStashSources,
 } from "agentikit"
 ```
 

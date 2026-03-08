@@ -58,6 +58,7 @@ function initGitRepo(repoDir: string): void {
   runGit(["init"], repoDir)
   runGit(["config", "user.name", "Agentikit Tests"], repoDir)
   runGit(["config", "user.email", "agentikit@example.test"], repoDir)
+  runGit(["config", "commit.gpgsign", "false"], repoDir)
   runGit(["add", "."], repoDir)
   runGit(["commit", "-m", "initial"], repoDir)
 }
@@ -128,7 +129,8 @@ describe("local git installs", () => {
       expect(fs.existsSync(path.join(result.installed.extractedDir, ".git"))).toBe(false)
 
       const config = loadConfig()
-      expect(config.mountedStashDirs).toContain(result.installed.stashRoot)
+      const installedRoots = (config.registry?.installed ?? []).map((e: { stashRoot: string }) => e.stashRoot)
+      expect(installedRoots).toContain(result.installed.stashRoot)
 
       const shown = withEnv(
         { AGENTIKIT_STASH_DIR: stashDir, XDG_CACHE_HOME: cacheHome },

@@ -1,7 +1,6 @@
 export {
   agentikitAdd,
   agentikitClone,
-  agentikitEdit,
   agentikitList,
   agentikitRemove,
   agentikitReinstall,
@@ -37,8 +36,6 @@ export type {
   StashSourceKind,
   CloneOptions,
   CloneResponse,
-  EditOptions,
-  EditResponse,
 } from "./src/stash"
 export type { ToolKind } from "./src/tool-runner"
 export { agentikitIndex } from "./src/indexer"

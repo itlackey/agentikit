@@ -704,7 +704,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
 
     saveConfig({
       semanticSearch: false,
-      mountedStashDirs: [stashRoot],
+      mountedStashDirs: [],
       registry: {
         installed: [
           {
