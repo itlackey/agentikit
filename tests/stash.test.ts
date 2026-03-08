@@ -97,9 +97,9 @@ test("agentikitSearch includes explainability reasons for indexed hits", async (
   expect(result.hits.length).toBeGreaterThan(0)
   expect(result.hits[0].whyMatched).toBeDefined()
   // Ranking mode depends on whether semantic search (embeddings) is available.
-  // Accept either "semantic similarity" or "tf-idf lexical relevance".
+  // Accept either "semantic similarity" or "fts bm25 relevance".
   expect(
-    result.hits[0].whyMatched!.includes("tf-idf lexical relevance")
+    result.hits[0].whyMatched!.includes("fts bm25 relevance")
     || result.hits[0].whyMatched!.includes("semantic similarity"),
   ).toBe(true)
   expect(result.hits[0].whyMatched).toContain("matched name tokens")
