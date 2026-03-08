@@ -31,7 +31,8 @@ export async function installRegistryRef(ref: string, options?: InstallRegistryR
   await downloadArchive(resolved.artifactUrl, archivePath)
   extractTarGzSecure(archivePath, extractedDir)
 
-  const installRoot = applyAgentikitIncludeConfig(extractedDir, cacheDir) ?? extractedDir
+  const provisionalKitRoot = detectStashRoot(extractedDir)
+  const installRoot = applyAgentikitIncludeConfig(provisionalKitRoot, cacheDir, extractedDir) ?? provisionalKitRoot
   const stashRoot = detectStashRoot(installRoot)
 
   return {
@@ -169,8 +170,12 @@ function buildInstallCacheDir(cacheRootDir: string, source: RegistrySource, id: 
   return path.join(cacheRootDir, slug || source, stamp)
 }
 
-function applyAgentikitIncludeConfig(sourceRoot: string, cacheDir: string): string | undefined {
-  const includeConfig = readAgentikitIncludeConfig(sourceRoot)
+function applyAgentikitIncludeConfig(
+  sourceRoot: string,
+  cacheDir: string,
+  searchRoot: string = sourceRoot,
+): string | undefined {
+  const includeConfig = findNearestAgentikitIncludeConfig(sourceRoot, searchRoot)
   if (!includeConfig) return undefined
 
   const selectedDir = path.join(cacheDir, "selected")

@@ -19,7 +19,7 @@ export function parseRegistryRef(rawRef: string): ParsedRegistryRef {
   if (ref.startsWith("http://") || ref.startsWith("https://")) {
     return parseGithubUrl(ref)
   }
-  const localGitRef = tryParseLocalGitRef(ref)
+  const localGitRef = tryParseLocalGitRef(ref, isPathLikeRef(ref))
   if (localGitRef) {
     return localGitRef
   }
@@ -107,13 +107,17 @@ function parseGithubUrl(rawUrl: string): ParsedGithubRef {
   }
 }
 
-function tryParseLocalGitRef(rawRef: string): ParsedGitRef | undefined {
+function tryParseLocalGitRef(rawRef: string, explicitPath: boolean): ParsedGitRef | undefined {
+  if (!explicitPath) {
+    return undefined
+  }
+
   const resolvedPath = path.resolve(rawRef)
   let stat: fs.Stats
   try {
     stat = fs.statSync(resolvedPath)
   } catch {
-    return undefined
+    throw new Error("Local add path does not exist.")
   }
 
   if (!stat.isDirectory()) {
@@ -132,6 +136,14 @@ function tryParseLocalGitRef(rawRef: string): ParsedGitRef | undefined {
     repoRoot,
     sourcePath: resolvedPath,
   }
+}
+
+function isPathLikeRef(ref: string): boolean {
+  if (path.isAbsolute(ref)) return true
+  if (ref.startsWith("./") || ref.startsWith("../") || ref.startsWith(".\\") || ref.startsWith("..\\")) {
+    return true
+  }
+  return ref.includes("/") || ref.includes("\\")
 }
 
 async function resolveNpmArtifact(parsed: ParsedNpmRef): Promise<ResolvedRegistryArtifact> {
