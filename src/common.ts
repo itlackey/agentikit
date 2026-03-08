@@ -4,7 +4,7 @@ import { TYPE_DIRS } from "./asset-spec"
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-export type AgentikitAssetType = "tool" | "skill" | "command" | "agent" | "knowledge"
+export type AgentikitAssetType = "tool" | "skill" | "command" | "agent" | "knowledge" | "script"
 
 // ── Constants ───────────────────────────────────────────────────────────────
 

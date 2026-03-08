@@ -68,7 +68,7 @@ function parseJson(text: string): any {
 
 function createEmptyStashDir(prefix: string): string {
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
-  for (const sub of ["tools", "skills", "commands", "agents", "knowledge"]) {
+  for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
     fs.mkdirSync(path.join(stashDir, sub), { recursive: true })
   }
   return stashDir

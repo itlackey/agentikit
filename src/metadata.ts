@@ -4,6 +4,7 @@ import { type AgentikitAssetType, isAssetType } from "./common"
 import { SCRIPT_EXTENSIONS, isRelevantAssetFile, deriveCanonicalAssetName } from "./asset-spec"
 import { parseFrontmatter, toStringOrUndefined } from "./frontmatter"
 import { parseMarkdownToc, type TocHeading } from "./markdown"
+import { tryGetHandler } from "./asset-type-handler"
 
 // ── Schema ──────────────────────────────────────────────────────────────────
 
@@ -183,25 +184,10 @@ export function generateMetadata(
       }
     }
 
-    // Knowledge entries: generate TOC from headings
-    if (assetType === "knowledge") {
-      try {
-        const mdContent = fs.readFileSync(file, "utf8")
-        const toc = parseMarkdownToc(mdContent)
-        if (toc.headings.length > 0) entry.toc = toc.headings
-      } catch {
-        // Non-fatal: skip TOC if file can't be read
-      }
-    }
-
-    // Priority 3: Code comments (for script files)
-    if (SCRIPT_EXTENSIONS.has(ext) && ext !== ".md") {
-      const commentDesc = extractDescriptionFromComments(file)
-      if (commentDesc && !entry.description) {
-        entry.description = commentDesc
-        entry.source = "comments"
-        entry.confidence = 0.7
-      }
+    // Type-specific metadata extraction (e.g. TOC for knowledge, comments for tools/scripts)
+    const handler = tryGetHandler(assetType)
+    if (handler?.extractTypeMetadata) {
+      handler.extractTypeMetadata(entry, file, ext)
     }
 
     // Priority 4: Filename heuristics (fallback)

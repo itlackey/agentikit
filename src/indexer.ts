@@ -2,6 +2,9 @@ import fs from "node:fs"
 import path from "node:path"
 import { type AgentikitAssetType, resolveStashDir } from "./common"
 import { ASSET_TYPES, TYPE_DIRS, deriveCanonicalAssetName } from "./asset-spec"
+
+// Ensure handlers are registered for type-specific metadata generation
+import "./handlers/index"
 import {
   type StashFile,
   type StashEntry,

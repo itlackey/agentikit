@@ -16,6 +16,12 @@ const markdownSpec: Omit<AssetSpec, "stashDir"> = {
   toAssetPath: (typeRoot, name) => path.join(typeRoot, name),
 }
 
+/** Extended set of script extensions for the script asset type */
+const SCRIPT_EXTENSIONS_BROAD = new Set([
+  ...SCRIPT_EXTENSIONS,
+  ".py", ".rb", ".go", ".pl", ".php", ".lua", ".r", ".swift", ".kt", ".kts",
+])
+
 export const ASSET_SPECS: Record<AgentikitAssetType, AssetSpec> = {
   tool: {
     stashDir: "tools",
@@ -36,6 +42,12 @@ export const ASSET_SPECS: Record<AgentikitAssetType, AssetSpec> = {
   command: { stashDir: "commands", ...markdownSpec },
   agent: { stashDir: "agents", ...markdownSpec },
   knowledge: { stashDir: "knowledge", ...markdownSpec },
+  script: {
+    stashDir: "scripts",
+    isRelevantFile: (fileName) => SCRIPT_EXTENSIONS_BROAD.has(path.extname(fileName).toLowerCase()),
+    toCanonicalName: (typeRoot, filePath) => toPosix(path.relative(typeRoot, filePath)),
+    toAssetPath: (typeRoot, name) => path.join(typeRoot, name),
+  },
 }
 
 export const ASSET_TYPES = Object.keys(ASSET_SPECS) as AgentikitAssetType[]
