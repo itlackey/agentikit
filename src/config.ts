@@ -73,7 +73,9 @@ export function getConfigDir(
   return path.join(home, ".config", "agentikit")
 }
 
-export function getConfigPath(_stashDir?: string): string {
+// Keep the optional stashDir parameter for backward-compatible call sites; the
+// config file now lives in the platform config directory instead of the stash.
+export function getConfigPath(_unusedStashDir?: string): string {
   return path.join(getConfigDir(), "config.json")
 }
 
@@ -89,6 +91,7 @@ export function loadConfig(stashDir?: string): AgentikitConfig {
   if (raw) return pickKnownKeys(raw)
 
   const legacyPath = stashDir ? getLegacyConfigPath(stashDir) : undefined
+  // If a user points AGENTIKIT_STASH_DIR at the config directory itself, both paths can match.
   if (legacyPath && legacyPath !== configPath) {
     const legacyRaw = readConfigObject(legacyPath)
     if (legacyRaw) {
@@ -107,6 +110,7 @@ export function saveConfig(config: AgentikitConfig, stashDir?: string): void {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8")
 
   const legacyPath = stashDir ? getLegacyConfigPath(stashDir) : undefined
+  // If a user points AGENTIKIT_STASH_DIR at the config directory itself, both paths can match.
   if (legacyPath && legacyPath !== configPath && fs.existsSync(legacyPath)) {
     fs.rmSync(legacyPath, { force: true })
   }

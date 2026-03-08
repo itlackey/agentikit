@@ -80,12 +80,21 @@ describe("getConfigPath", () => {
   test("uses APPDATA on Windows", () => {
     const appData = String.raw`C:\Users\alice\AppData\Roaming`
     expect(getConfigDir({ APPDATA: appData }, "win32")).toBe(path.join(appData, "agentikit"))
+    expect(path.join(getConfigDir({ APPDATA: appData }, "win32"), "config.json")).toBe(
+      path.join(appData, "agentikit", "config.json"),
+    )
   })
 
   test("falls back to USERPROFILE AppData Roaming on Windows", () => {
     const userProfile = String.raw`C:\Users\alice`
     expect(getConfigDir({ USERPROFILE: userProfile }, "win32")).toBe(
       path.join(userProfile, "AppData", "Roaming", "agentikit"),
+    )
+  })
+
+  test("throws on Windows when APPDATA and USERPROFILE are missing", () => {
+    expect(() => getConfigDir({}, "win32")).toThrow(
+      "Unable to determine config directory. Set APPDATA or USERPROFILE.",
     )
   })
 })
@@ -107,6 +116,7 @@ describe("loadConfig", () => {
     delete process.env.AGENTIKIT_STASH_DIR
     writeRawConfig(getConfigPath(), JSON.stringify({ semanticSearch: false }))
 
+    expect(fs.existsSync(getConfigPath())).toBe(true)
     expect(loadConfig()).toEqual({ semanticSearch: false, additionalStashDirs: [] })
   })
 
@@ -212,6 +222,20 @@ describe("loadConfig", () => {
       expect(config).toEqual({ semanticSearch: false, additionalStashDirs: [] })
       expect(fs.existsSync(getConfigPath(dir))).toBe(true)
       expect(fs.existsSync(legacyPath)).toBe(false)
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("prefers XDG config when both XDG and legacy stash configs exist", () => {
+    const dir = makeTmpDir()
+    const legacyPath = getLegacyConfigPath(dir)
+    try {
+      writeRawConfig(getConfigPath(dir), JSON.stringify({ semanticSearch: false }))
+      writeRawConfig(legacyPath, JSON.stringify({ semanticSearch: true }))
+
+      expect(loadConfig(dir)).toEqual({ semanticSearch: false, additionalStashDirs: [] })
+      expect(fs.existsSync(legacyPath)).toBe(true)
     } finally {
       cleanup(dir)
     }
