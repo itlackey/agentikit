@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { TYPE_DIRS } from "./common"
+import { isWithin, TYPE_DIRS } from "./common"
 import { loadConfig, saveConfig, type AgentikitConfig } from "./config"
 import { parseRegistryRef, resolveRegistryArtifact } from "./registry-resolve"
-import type { RegistryInstallResult, RegistryInstalledEntry, RegistrySource } from "./registry-types"
+import type { ParsedGitRef, RegistryInstallResult, RegistryInstalledEntry, RegistrySource } from "./registry-types"
 
 const REGISTRY_STASH_DIR_NAMES = new Set<string>(Object.values(TYPE_DIRS))
 
@@ -15,6 +15,9 @@ export interface InstallRegistryRefOptions {
 
 export async function installRegistryRef(ref: string, options?: InstallRegistryRefOptions): Promise<RegistryInstallResult> {
   const parsed = parseRegistryRef(ref)
+  if (parsed.source === "git") {
+    return installGitRegistryRef(parsed, options)
+  }
   const resolved = await resolveRegistryArtifact(parsed)
 
   const installedAt = (options?.now ?? new Date()).toISOString()
@@ -27,6 +30,42 @@ export async function installRegistryRef(ref: string, options?: InstallRegistryR
 
   await downloadArchive(resolved.artifactUrl, archivePath)
   extractTarGzSecure(archivePath, extractedDir)
+
+  const provisionalKitRoot = detectStashRoot(extractedDir)
+  const installRoot = applyAgentikitIncludeConfig(provisionalKitRoot, cacheDir, extractedDir) ?? provisionalKitRoot
+  const stashRoot = detectStashRoot(installRoot)
+
+  return {
+    id: resolved.id,
+    source: resolved.source,
+    ref: resolved.ref,
+    artifactUrl: resolved.artifactUrl,
+    resolvedVersion: resolved.resolvedVersion,
+    resolvedRevision: resolved.resolvedRevision,
+    installedAt,
+    cacheDir,
+    extractedDir,
+    stashRoot,
+  }
+}
+
+async function installGitRegistryRef(parsed: ParsedGitRef, options?: InstallRegistryRefOptions): Promise<RegistryInstallResult> {
+  const resolved = await resolveRegistryArtifact(parsed)
+  const installedAt = (options?.now ?? new Date()).toISOString()
+  const cacheRootDir = options?.cacheRootDir ?? getRegistryCacheRootDir()
+  const cacheDir = buildInstallCacheDir(cacheRootDir, parsed.source, parsed.id)
+  const extractedDir = path.join(cacheDir, "extracted")
+
+  fs.mkdirSync(cacheDir, { recursive: true })
+  fs.rmSync(extractedDir, { recursive: true, force: true })
+  fs.mkdirSync(extractedDir, { recursive: true })
+
+  const includeConfig = findNearestAgentikitIncludeConfig(parsed.sourcePath, parsed.repoRoot)
+  if (includeConfig) {
+    copyIncludedPaths(includeConfig.baseDir, includeConfig.include, extractedDir)
+  } else {
+    copyDirectoryContents(parsed.sourcePath, extractedDir)
+  }
 
   const stashRoot = detectStashRoot(extractedDir)
 
@@ -131,6 +170,21 @@ function buildInstallCacheDir(cacheRootDir: string, source: RegistrySource, id: 
   return path.join(cacheRootDir, slug || source, stamp)
 }
 
+function applyAgentikitIncludeConfig(
+  sourceRoot: string,
+  cacheDir: string,
+  searchRoot: string = sourceRoot,
+): string | undefined {
+  const includeConfig = findNearestAgentikitIncludeConfig(sourceRoot, searchRoot)
+  if (!includeConfig) return undefined
+
+  const selectedDir = path.join(cacheDir, "selected")
+  fs.rmSync(selectedDir, { recursive: true, force: true })
+  fs.mkdirSync(selectedDir, { recursive: true })
+  copyIncludedPaths(includeConfig.baseDir, includeConfig.include, selectedDir)
+  return selectedDir
+}
+
 async function downloadArchive(url: string, destination: string): Promise<void> {
   const response = await fetch(url)
   if (!response.ok) {
@@ -193,6 +247,89 @@ function isDirectory(target: string): boolean {
   } catch {
     return false
   }
+}
+
+function readAgentikitIncludeConfigAtDir(dirPath: string): { baseDir: string; include: string[] } | undefined {
+  const packageJsonPath = path.join(dirPath, "package.json")
+  if (!fs.existsSync(packageJsonPath)) return undefined
+
+  let pkg: unknown
+  try {
+    pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"))
+  } catch {
+    return undefined
+  }
+  if (typeof pkg !== "object" || pkg === null || Array.isArray(pkg)) return undefined
+
+  const agentikit = (pkg as Record<string, unknown>).agentikit
+  if (typeof agentikit !== "object" || agentikit === null || Array.isArray(agentikit)) return undefined
+
+  const include = (agentikit as Record<string, unknown>).include
+  if (!Array.isArray(include)) return undefined
+
+  const parsedInclude = include
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter(Boolean)
+
+  return parsedInclude.length > 0 ? { baseDir: dirPath, include: parsedInclude } : undefined
+}
+
+function findNearestAgentikitIncludeConfig(
+  startDir: string,
+  stopDir: string,
+): { baseDir: string; include: string[] } | undefined {
+  let current = path.resolve(startDir)
+  const boundary = path.resolve(stopDir)
+
+  while (isWithin(current, boundary)) {
+    const config = readAgentikitIncludeConfigAtDir(current)
+    if (config) return config
+    if (current === boundary) break
+    const parent = path.dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+
+  return undefined
+}
+
+function copyIncludedPaths(baseDir: string, include: string[], destinationDir: string): void {
+  for (const entry of include) {
+    const resolvedSource = path.resolve(baseDir, entry)
+    if (!isWithin(resolvedSource, baseDir)) {
+      throw new Error(`Path in agentikit.include escapes the package root: ${entry}`)
+    }
+    if (!fs.existsSync(resolvedSource)) {
+      throw new Error(`Path in agentikit.include does not exist: ${entry}`)
+    }
+    if (path.basename(resolvedSource) === ".git") {
+      continue
+    }
+    const relativePath = path.relative(baseDir, resolvedSource)
+    if (!relativePath || relativePath === ".") {
+      copyDirectoryContents(baseDir, destinationDir)
+      continue
+    }
+    copyPath(resolvedSource, path.join(destinationDir, relativePath))
+  }
+}
+
+function copyDirectoryContents(sourceDir: string, destinationDir: string): void {
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    if (entry.name === ".git") continue
+    copyPath(path.join(sourceDir, entry.name), path.join(destinationDir, entry.name))
+  }
+}
+
+function copyPath(sourcePath: string, destinationPath: string): void {
+  const stat = fs.statSync(sourcePath)
+  fs.mkdirSync(path.dirname(destinationPath), { recursive: true })
+  if (stat.isDirectory()) {
+    fs.cpSync(sourcePath, destinationPath, { recursive: true, force: true })
+    return
+  }
+  fs.copyFileSync(sourcePath, destinationPath)
 }
 
 function hasStashDirs(dirPath: string): boolean {
