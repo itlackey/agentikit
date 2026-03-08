@@ -2,7 +2,7 @@ import { test, expect, describe, afterEach } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { loadConfig, saveConfig, updateConfig, DEFAULT_CONFIG, getConfigPath } from "../src/config"
+import { loadConfig, saveConfig, updateConfig, addStashDir, removeStashDir, DEFAULT_CONFIG, getConfigPath } from "../src/config"
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-config-test-"))
@@ -372,6 +372,108 @@ describe("llm config", () => {
       updateConfig({ llm: llmConfig }, dir)
       const loaded = loadConfig(dir)
       expect(loaded.llm).toEqual(llmConfig)
+    } finally {
+      cleanup(dir)
+    }
+  })
+})
+
+// ── addStashDir ─────────────────────────────────────────────────────────────
+
+describe("addStashDir", () => {
+  test("appends a new directory to additionalStashDirs", () => {
+    const dir = makeTmpDir()
+    try {
+      const config = addStashDir("/extra/stash", dir)
+      expect(config.additionalStashDirs).toContain("/extra/stash")
+      // Verify persisted
+      const loaded = loadConfig(dir)
+      expect(loaded.additionalStashDirs).toContain("/extra/stash")
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("does not duplicate an already-present directory", () => {
+    const dir = makeTmpDir()
+    try {
+      saveConfig({ semanticSearch: true, additionalStashDirs: ["/existing"] }, dir)
+      const config = addStashDir("/existing", dir)
+      expect(config.additionalStashDirs).toEqual(["/existing"])
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("appends when existing dirs are present", () => {
+    const dir = makeTmpDir()
+    try {
+      saveConfig({ semanticSearch: true, additionalStashDirs: ["/first"] }, dir)
+      const config = addStashDir("/second", dir)
+      expect(config.additionalStashDirs).toEqual(["/first", "/second"])
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("creates config.json if it does not exist", () => {
+    const dir = makeTmpDir()
+    try {
+      addStashDir("/new", dir)
+      expect(fs.existsSync(path.join(dir, "config.json"))).toBe(true)
+      const loaded = loadConfig(dir)
+      expect(loaded.additionalStashDirs).toEqual(["/new"])
+    } finally {
+      cleanup(dir)
+    }
+  })
+})
+
+// ── removeStashDir ──────────────────────────────────────────────────────────
+
+describe("removeStashDir", () => {
+  test("removes an existing directory from additionalStashDirs", () => {
+    const dir = makeTmpDir()
+    try {
+      saveConfig({ semanticSearch: true, additionalStashDirs: ["/a", "/b"] }, dir)
+      const config = removeStashDir("/a", dir)
+      expect(config.additionalStashDirs).toEqual(["/b"])
+      // Verify persisted
+      const loaded = loadConfig(dir)
+      expect(loaded.additionalStashDirs).toEqual(["/b"])
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("is a no-op when directory is not in the list", () => {
+    const dir = makeTmpDir()
+    try {
+      saveConfig({ semanticSearch: true, additionalStashDirs: ["/a"] }, dir)
+      const config = removeStashDir("/nothere", dir)
+      expect(config.additionalStashDirs).toEqual(["/a"])
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("results in empty list when last directory is removed", () => {
+    const dir = makeTmpDir()
+    try {
+      saveConfig({ semanticSearch: true, additionalStashDirs: ["/only"] }, dir)
+      const config = removeStashDir("/only", dir)
+      expect(config.additionalStashDirs).toEqual([])
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("removes only the matching directory when multiple exist", () => {
+    const dir = makeTmpDir()
+    try {
+      saveConfig({ semanticSearch: true, additionalStashDirs: ["/a", "/b", "/c"] }, dir)
+      const config = removeStashDir("/b", dir)
+      expect(config.additionalStashDirs).toEqual(["/a", "/c"])
     } finally {
       cleanup(dir)
     }

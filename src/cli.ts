@@ -13,7 +13,7 @@ import {
 import type { SearchSource, SearchUsageMode } from "./stash-types"
 import { agentikitInit } from "./init"
 import { agentikitIndex } from "./indexer"
-import { loadConfig, updateConfig, type AgentikitConfig } from "./config"
+import { loadConfig, updateConfig, addStashDir, removeStashDir, type AgentikitConfig } from "./config"
 import { resolveStashDir } from "./common"
 
 const initCommand = defineCommand({
@@ -187,6 +187,42 @@ const configCommand = defineCommand({
   },
 })
 
+const stashAddCommand = defineCommand({
+  meta: { name: "add", description: "Add a directory to additionalStashDirs" },
+  args: {
+    dir: { type: "positional", description: "Directory to add", required: true },
+  },
+  run({ args }) {
+    return runWithJsonErrors(() => {
+      const stashDir = resolveStashDir()
+      const config = addStashDir(args.dir, stashDir)
+      console.log(JSON.stringify(config, null, 2))
+    })
+  },
+})
+
+const stashRemoveCommand = defineCommand({
+  meta: { name: "remove", description: "Remove a directory from additionalStashDirs" },
+  args: {
+    dir: { type: "positional", description: "Directory to remove", required: true },
+  },
+  run({ args }) {
+    return runWithJsonErrors(() => {
+      const stashDir = resolveStashDir()
+      const config = removeStashDir(args.dir, stashDir)
+      console.log(JSON.stringify(config, null, 2))
+    })
+  },
+})
+
+const stashCommand = defineCommand({
+  meta: { name: "stash", description: "Manage additional stash directories" },
+  subCommands: {
+    add: stashAddCommand,
+    remove: stashRemoveCommand,
+  },
+})
+
 const main = defineCommand({
   meta: {
     name: "akm",
@@ -203,6 +239,7 @@ const main = defineCommand({
     search: searchCommand,
     show: showCommand,
     config: configCommand,
+    stash: stashCommand,
   },
 })
 

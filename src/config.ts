@@ -89,6 +89,20 @@ export function updateConfig(
   return merged
 }
 
+export function addStashDir(dir: string, stashDir?: string): AgentikitConfig {
+  const configDir = stashDir ?? resolveStashDir()
+  const current = loadConfig(configDir)
+  if (current.additionalStashDirs.includes(dir)) return current
+  return updateConfig({ additionalStashDirs: [...current.additionalStashDirs, dir] }, configDir)
+}
+
+export function removeStashDir(dir: string, stashDir?: string): AgentikitConfig {
+  const configDir = stashDir ?? resolveStashDir()
+  const current = loadConfig(configDir)
+  const updated = current.additionalStashDirs.filter((d) => d !== dir)
+  return updateConfig({ additionalStashDirs: updated }, configDir)
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function pickKnownKeys(raw: Record<string, unknown>): AgentikitConfig {

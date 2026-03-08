@@ -174,6 +174,20 @@ akm update --all
 - Reports per-entry change flags for version/revision (`changed.version`, `changed.revision`, `changed.any`)
 - Runs one incremental reindex after all installs
 
+### stash
+
+Manage additional stash directories in `config.additionalStashDirs`.
+
+```sh
+akm stash add /path/to/extra-stash
+agentikit stash remove /path/to/extra-stash
+```
+
+- `add <dir>` — appends the directory to `additionalStashDirs` (no-op if already present)
+- `remove <dir>` — removes the directory from `additionalStashDirs` (no-op if not present)
+- Changes are persisted immediately to `config.json` in the primary stash directory
+- Outputs the full updated config as JSON
+
 ### search
 
 Search local stash assets, registry entries, or both.
