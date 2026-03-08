@@ -51,14 +51,14 @@ const searchCommand = defineCommand({
   meta: { name: "search", description: "Search the stash" },
   args: {
     query: { type: "positional", description: "Search query", required: false, default: "" },
-    type: { type: "string", description: "Asset type filter (tool|skill|command|agent|knowledge|any)" },
+    type: { type: "string", description: "Asset type filter (tool|skill|command|agent|knowledge|script|any)" },
     limit: { type: "string", description: "Maximum number of results" },
     usage: { type: "string", description: "Usage metadata mode (none|both|item|guide)", default: "both" },
     source: { type: "string", description: "Search source (local|registry|both)", default: "local" },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      const type = args.type as "tool" | "skill" | "command" | "agent" | "knowledge" | "any" | undefined
+      const type = args.type as "tool" | "skill" | "command" | "agent" | "knowledge" | "script" | "any" | undefined
       const limit = args.limit ? parseInt(args.limit, 10) : undefined
       const usage = parseSearchUsageMode(args.usage)
       const source = parseSearchSource(args.source)

@@ -67,8 +67,17 @@ export function buildToolInfo(stashDir: string, filePath: string): ToolInfo {
     throw new Error(`Unsupported tool extension: ${ext}`)
   }
 
-  const toolsRoot = path.resolve(path.join(stashDir, "tools"))
-  const pkgDir = findNearestPackageDir(path.dirname(filePath), toolsRoot)
+  // Determine the type root by checking which subdirectory contains the file
+  const resolvedFile = path.resolve(filePath)
+  let typeRoot = path.resolve(path.join(stashDir, "tools"))
+  for (const subdir of ["tools", "scripts"]) {
+    const candidate = path.resolve(path.join(stashDir, subdir))
+    if (resolvedFile.startsWith(candidate + path.sep)) {
+      typeRoot = candidate
+      break
+    }
+  }
+  const pkgDir = findNearestPackageDir(path.dirname(filePath), typeRoot)
   if (!pkgDir) {
     return {
       runCmd: `bun ${shellQuote(filePath)}`,

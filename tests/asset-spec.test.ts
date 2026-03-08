@@ -27,13 +27,14 @@ describe("SCRIPT_EXTENSIONS", () => {
 })
 
 describe("ASSET_TYPES", () => {
-  test("contains all five types", () => {
+  test("contains all six types", () => {
     expect(ASSET_TYPES).toContain("tool")
     expect(ASSET_TYPES).toContain("skill")
     expect(ASSET_TYPES).toContain("command")
     expect(ASSET_TYPES).toContain("agent")
     expect(ASSET_TYPES).toContain("knowledge")
-    expect(ASSET_TYPES).toHaveLength(5)
+    expect(ASSET_TYPES).toContain("script")
+    expect(ASSET_TYPES).toHaveLength(6)
   })
 })
 
@@ -44,6 +45,7 @@ describe("TYPE_DIRS", () => {
     expect(TYPE_DIRS.command).toBe("commands")
     expect(TYPE_DIRS.agent).toBe("agents")
     expect(TYPE_DIRS.knowledge).toBe("knowledge")
+    expect(TYPE_DIRS.script).toBe("scripts")
   })
 })
 
@@ -87,6 +89,22 @@ describe("isRelevantAssetFile", () => {
   test("knowledge: accepts .md files", () => {
     expect(isRelevantAssetFile("knowledge", "guide.md")).toBe(true)
     expect(isRelevantAssetFile("knowledge", "data.json")).toBe(false)
+  })
+
+  test("script: accepts tool extensions and broader languages", () => {
+    expect(isRelevantAssetFile("script", "deploy.sh")).toBe(true)
+    expect(isRelevantAssetFile("script", "run.ts")).toBe(true)
+    expect(isRelevantAssetFile("script", "script.js")).toBe(true)
+    expect(isRelevantAssetFile("script", "run.py")).toBe(true)
+    expect(isRelevantAssetFile("script", "tool.rb")).toBe(true)
+    expect(isRelevantAssetFile("script", "main.go")).toBe(true)
+    expect(isRelevantAssetFile("script", "run.lua")).toBe(true)
+  })
+
+  test("script: rejects non-script files", () => {
+    expect(isRelevantAssetFile("script", "README.md")).toBe(false)
+    expect(isRelevantAssetFile("script", "package.json")).toBe(false)
+    expect(isRelevantAssetFile("script", "data.txt")).toBe(false)
   })
 })
 
@@ -134,6 +152,18 @@ describe("deriveCanonicalAssetName", () => {
     const file = path.join(root, "guide.md")
     expect(deriveCanonicalAssetName("knowledge", root, file)).toBe("guide.md")
   })
+
+  test("script: returns relative path from type root", () => {
+    const root = "/stash/scripts"
+    const file = path.join(root, "utils", "cleanup.py")
+    expect(deriveCanonicalAssetName("script", root, file)).toBe("utils/cleanup.py")
+  })
+
+  test("script: returns file name for flat structure", () => {
+    const root = "/stash/scripts"
+    const file = path.join(root, "deploy.sh")
+    expect(deriveCanonicalAssetName("script", root, file)).toBe("deploy.sh")
+  })
 })
 
 // ── resolveAssetPathFromName ────────────────────────────────────────────────
@@ -154,6 +184,12 @@ describe("resolveAssetPathFromName", () => {
   test("command: joins type root with name", () => {
     expect(resolveAssetPathFromName("command", "/stash/commands", "release.md")).toBe(
       path.join("/stash/commands", "release.md"),
+    )
+  })
+
+  test("script: joins type root with name", () => {
+    expect(resolveAssetPathFromName("script", "/stash/scripts", "deploy.sh")).toBe(
+      path.join("/stash/scripts", "deploy.sh"),
     )
   })
 })

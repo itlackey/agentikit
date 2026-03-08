@@ -1,9 +1,8 @@
 import fs from "node:fs"
 import path from "node:path"
-import { type AgentikitAssetType, hasErrnoCode, resolveStashDir } from "./common"
+import { type AgentikitAssetType, resolveStashDir } from "./common"
 import { ASSET_TYPES, TYPE_DIRS, deriveCanonicalAssetName } from "./asset-spec"
 import { buildSearchText } from "./indexer"
-import { buildToolInfo } from "./tool-runner"
 import { walkStash } from "./walker"
 import { makeOpenRef } from "./stash-ref"
 import type {
@@ -30,6 +29,10 @@ import {
   isVecAvailable,
   type DbSearchResult,
 } from "./db"
+import { tryGetHandler } from "./asset-type-handler"
+
+// Ensure handlers are registered
+import "./handlers/index"
 
 type IndexedAsset = {
   type: AgentikitAssetType
@@ -38,29 +41,6 @@ type IndexedAsset = {
 }
 
 const DEFAULT_LIMIT = 20
-
-const DEFAULT_USAGE_GUIDE_BY_TYPE: Record<AgentikitAssetType, string[]> = {
-  tool: [
-    "Use the hit's runCmd for execution so runtime and working directory stay correct.",
-    "Use `akm show <openRef>` to inspect the tool before running it.",
-  ],
-  skill: [
-    "Read and apply the skill instructions as written, then adapt examples to your current repo state and task.",
-    "Use `akm show <openRef>` to read the full SKILL.md for required steps and constraints.",
-  ],
-  command: [
-    "Read the .md file, fill placeholders, and run it in the current repo context.",
-    "Use `akm show <openRef>` to retrieve the command template body.",
-  ],
-  agent: [
-    "Read the .md file and dispatch and agent using the content of the file. Use modelHint/toolPolicy when present to run the agent with compatible settings.",
-    "Use with `akm show <openRef>` to get the full prompt payload.",
-  ],
-  knowledge: [
-    "Use `akm show <openRef>` to read the document; start with `--view toc` for large files.",
-    "Use `--view section` or `--view lines` to load only the part you need.",
-  ],
-}
 
 export async function agentikitSearch(input: {
   query: string
@@ -437,14 +417,9 @@ function buildDbHit(input: {
     hit.usage = input.entry.usage
   }
 
-  if (input.entry.type === "tool") {
-    try {
-      const toolInfo = buildToolInfo(entryStashDir, input.path)
-      hit.runCmd = toolInfo.runCmd
-      hit.kind = toolInfo.kind
-    } catch (error: unknown) {
-      if (!hasErrnoCode(error, "ENOENT")) throw error
-    }
+  const handler = tryGetHandler(input.entry.type)
+  if (handler?.enrichSearchHit) {
+    handler.enrichSearchHit(hit, entryStashDir)
   }
 
   return hit
@@ -478,25 +453,18 @@ function buildWhyMatched(
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function assetToSearchHit(asset: IndexedAsset, stashDir: string): LocalSearchHit {
-  if (asset.type !== "tool") {
-    return {
-      hitSource: "local",
-      type: asset.type,
-      name: asset.name,
-      path: asset.path,
-      openRef: makeOpenRef(asset.type, asset.name),
-    }
-  }
-  const toolInfo = buildToolInfo(stashDir, asset.path)
-  return {
+  const hit: LocalSearchHit = {
     hitSource: "local",
-    type: "tool",
+    type: asset.type,
     name: asset.name,
     path: asset.path,
-    openRef: makeOpenRef("tool", asset.name),
-    runCmd: toolInfo.runCmd,
-    kind: toolInfo.kind,
+    openRef: makeOpenRef(asset.type, asset.name),
   }
+  const handler = tryGetHandler(asset.type)
+  if (handler?.enrichSearchHit) {
+    handler.enrichSearchHit(hit, stashDir)
+  }
+  return hit
 }
 
 function normalizeLimit(limit?: number): number {
@@ -604,7 +572,8 @@ function resolveGuideTypes(hitTypes: AgentikitAssetType[], searchType: Agentikit
 }
 
 function usageGuideByType(type: AgentikitAssetType): string[] {
-  return DEFAULT_USAGE_GUIDE_BY_TYPE[type]
+  const handler = tryGetHandler(type)
+  return handler?.defaultUsageGuide ?? []
 }
 
 function fileToAsset(assetType: AgentikitAssetType, root: string, file: string): IndexedAsset | undefined {

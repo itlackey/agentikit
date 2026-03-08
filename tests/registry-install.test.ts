@@ -14,7 +14,7 @@ function makeTempDir(prefix: string): string {
 
 function createEmptyStashDir(prefix: string): string {
   const stashDir = makeTempDir(prefix)
-  for (const sub of ["tools", "skills", "commands", "agents", "knowledge"]) {
+  for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
     fs.mkdirSync(path.join(stashDir, sub), { recursive: true })
   }
   saveConfig({ semanticSearch: false, additionalStashDirs: [] })

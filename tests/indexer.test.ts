@@ -15,7 +15,7 @@ beforeEach(() => {
 
 function tmpStash(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-idx-"))
-  for (const sub of ["tools", "skills", "commands", "agents", "knowledge"]) {
+  for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
     fs.mkdirSync(path.join(dir, sub), { recursive: true })
   }
   return dir
