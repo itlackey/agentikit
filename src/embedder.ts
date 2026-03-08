@@ -41,14 +41,18 @@ async function embedRemote(
     headers["Authorization"] = `Bearer ${config.apiKey}`
   }
 
+  const body: { input: string; model: string; dimensions?: number } = {
+    input: text,
+    model: config.model,
+  }
+  if (config.dimension) {
+    body.dimensions = config.dimension
+  }
+
   const response = await fetch(config.endpoint, {
     method: "POST",
     headers,
-    body: JSON.stringify({
-      input: text,
-      model: config.model,
-      ...(config.dimension ? { dimensions: config.dimension } : {}),
-    }),
+    body: JSON.stringify(body),
   })
 
   if (!response.ok) {
