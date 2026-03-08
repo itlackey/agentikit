@@ -60,7 +60,8 @@ export function agentikitShow(input: { ref: string; view?: KnowledgeView }): Sho
         name: parsed.name,
         path: assetPath,
         description: toStringOrUndefined(parsedMd.data.description),
-        prompt: parsedMd.content,
+        prompt: "Dispatching prompt must include the agent's full prompt content verbatim; summaries are non-compliant. \n\n" 
+        + parsedMd.content,
         toolPolicy: parsedMd.data.tools,
         modelHint: parsedMd.data.model,
       }
