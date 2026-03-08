@@ -185,7 +185,7 @@ export function upsertEntry(
       entry_type = excluded.entry_type
   `)
   stmt.run(entryKey, dirPath, filePath, stashDir, JSON.stringify(entry), searchText, entry.type)
-  // For ON CONFLICT DO UPDATE, last_insert_rowid() returns the existing row's id
+  // Fetch the row id explicitly since last_insert_rowid() is unreliable for ON CONFLICT DO UPDATE
   const row = db.prepare("SELECT id FROM entries WHERE entry_key = ?").get(entryKey) as { id: number }
   return row.id
 }
@@ -311,8 +311,8 @@ function sanitizeFtsQuery(query: string): string {
     .split(/\s+/)
     .filter((t) => t.length > 1)
   if (tokens.length === 0) return ""
-  // Use OR to match any term (better recall, like the old TF-IDF behavior)
-  return tokens.map((t) => `"${t}"`).join(" OR ")
+  // Use unquoted tokens so the porter stemmer can normalize word forms
+  return tokens.join(" OR ")
 }
 
 // ── All entries ─────────────────────────────────────────────────────────────

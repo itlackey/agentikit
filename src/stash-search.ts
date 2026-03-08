@@ -248,7 +248,8 @@ async function searchDatabase(
   const ftsScoreMap = new Map<number, { score: number; result: DbSearchResult }>()
   for (const r of ftsResults) {
     // BM25 returns negative scores (more negative = better match), normalize to 0-1
-    const normalized = 1 / (1 + Math.abs(r.bm25Score))
+    const absScore = Math.abs(r.bm25Score)
+    const normalized = absScore / (1 + absScore)
     ftsScoreMap.set(r.id, { score: normalized, result: r })
   }
 

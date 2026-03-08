@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test"
+import { test, expect, beforeEach, afterEach } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -15,6 +15,27 @@ function writeFile(filePath: string, content = "") {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, content)
 }
+
+// Isolate each test with its own cache directory so SQLite databases don't leak
+const originalXdgCacheHome = process.env.XDG_CACHE_HOME
+let testCacheDir = ""
+
+beforeEach(() => {
+  testCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-cache-"))
+  process.env.XDG_CACHE_HOME = testCacheDir
+})
+
+afterEach(() => {
+  if (originalXdgCacheHome === undefined) {
+    delete process.env.XDG_CACHE_HOME
+  } else {
+    process.env.XDG_CACHE_HOME = originalXdgCacheHome
+  }
+  if (testCacheDir) {
+    fs.rmSync(testCacheDir, { recursive: true, force: true })
+    testCacheDir = ""
+  }
+})
 
 test("agentikitSearch only includes tool files with .sh/.ts/.js and returns runCmd", async () => {
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
