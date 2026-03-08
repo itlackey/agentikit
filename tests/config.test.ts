@@ -1,8 +1,16 @@
-import { test, expect, describe, afterEach } from "bun:test"
+import { test, expect, describe, beforeEach, afterEach } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { loadConfig, saveConfig, updateConfig, DEFAULT_CONFIG, getConfigPath } from "../src/config"
+import {
+  loadConfig,
+  saveConfig,
+  updateConfig,
+  DEFAULT_CONFIG,
+  getConfigDir,
+  getConfigPath,
+  getLegacyConfigPath,
+} from "../src/config"
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-config-test-"))
@@ -12,11 +20,73 @@ function cleanup(dir: string): void {
   fs.rmSync(dir, { recursive: true, force: true })
 }
 
+function writeRawConfig(configPath: string, content: string): void {
+  fs.mkdirSync(path.dirname(configPath), { recursive: true })
+  fs.writeFileSync(configPath, content)
+}
+
+const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
+const originalHome = process.env.HOME
+const originalStashDir = process.env.AGENTIKIT_STASH_DIR
+let testConfigHome = ""
+
+beforeEach(() => {
+  testConfigHome = makeTmpDir()
+  process.env.XDG_CONFIG_HOME = testConfigHome
+})
+
+afterEach(() => {
+  if (originalXdgConfigHome === undefined) {
+    delete process.env.XDG_CONFIG_HOME
+  } else {
+    process.env.XDG_CONFIG_HOME = originalXdgConfigHome
+  }
+
+  if (originalHome === undefined) {
+    delete process.env.HOME
+  } else {
+    process.env.HOME = originalHome
+  }
+
+  if (originalStashDir === undefined) {
+    delete process.env.AGENTIKIT_STASH_DIR
+  } else {
+    process.env.AGENTIKIT_STASH_DIR = originalStashDir
+  }
+
+  if (testConfigHome) {
+    cleanup(testConfigHome)
+    testConfigHome = ""
+  }
+})
+
 // ── getConfigPath ───────────────────────────────────────────────────────────
 
 describe("getConfigPath", () => {
-  test("returns config.json at stash root", () => {
-    expect(getConfigPath("/some/stash")).toBe(path.join("/some/stash", "config.json"))
+  test("returns config.json under XDG_CONFIG_HOME", () => {
+    expect(getConfigPath("/some/stash")).toBe(path.join(testConfigHome, "agentikit", "config.json"))
+  })
+
+  test("defaults to ~/.config/agentikit when XDG_CONFIG_HOME is unset", () => {
+    const home = makeTmpDir()
+    delete process.env.XDG_CONFIG_HOME
+    process.env.HOME = home
+
+    expect(getConfigPath("/some/stash")).toBe(path.join(home, ".config", "agentikit", "config.json"))
+
+    cleanup(home)
+  })
+
+  test("uses APPDATA on Windows", () => {
+    const appData = String.raw`C:\Users\alice\AppData\Roaming`
+    expect(getConfigDir({ APPDATA: appData }, "win32")).toBe(path.join(appData, "agentikit"))
+  })
+
+  test("falls back to USERPROFILE AppData Roaming on Windows", () => {
+    const userProfile = String.raw`C:\Users\alice`
+    expect(getConfigDir({ USERPROFILE: userProfile }, "win32")).toBe(
+      path.join(userProfile, "AppData", "Roaming", "agentikit"),
+    )
   })
 })
 
@@ -33,10 +103,17 @@ describe("loadConfig", () => {
     }
   })
 
+  test("loads config without requiring AGENTIKIT_STASH_DIR", () => {
+    delete process.env.AGENTIKIT_STASH_DIR
+    writeRawConfig(getConfigPath(), JSON.stringify({ semanticSearch: false }))
+
+    expect(loadConfig()).toEqual({ semanticSearch: false, additionalStashDirs: [] })
+  })
+
   test("merges partial config with defaults", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ semanticSearch: false }))
+      writeRawConfig(getConfigPath(dir), JSON.stringify({ semanticSearch: false }))
       const config = loadConfig(dir)
       expect(config.semanticSearch).toBe(false)
       expect(config.additionalStashDirs).toEqual([])
@@ -48,7 +125,7 @@ describe("loadConfig", () => {
   test("handles corrupted JSON gracefully", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(path.join(dir, "config.json"), "not valid json {{{")
+      writeRawConfig(getConfigPath(dir), "not valid json {{{")
       const config = loadConfig(dir)
       expect(config).toEqual(DEFAULT_CONFIG)
     } finally {
@@ -59,7 +136,7 @@ describe("loadConfig", () => {
   test("handles non-object JSON gracefully", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(path.join(dir, "config.json"), '"just a string"')
+      writeRawConfig(getConfigPath(dir), '"just a string"')
       const config = loadConfig(dir)
       expect(config).toEqual(DEFAULT_CONFIG)
     } finally {
@@ -70,7 +147,7 @@ describe("loadConfig", () => {
   test("handles JSON array gracefully", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(path.join(dir, "config.json"), "[1, 2, 3]")
+      writeRawConfig(getConfigPath(dir), "[1, 2, 3]")
       const config = loadConfig(dir)
       expect(config).toEqual(DEFAULT_CONFIG)
     } finally {
@@ -81,8 +158,8 @@ describe("loadConfig", () => {
   test("drops unknown keys", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
+      writeRawConfig(
+        getConfigPath(dir),
         JSON.stringify({ semanticSearch: false, futureKey: "hello", anotherKey: 42 }),
       )
       const config = loadConfig(dir)
@@ -97,8 +174,8 @@ describe("loadConfig", () => {
   test("filters non-string entries from additionalStashDirs", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
+      writeRawConfig(
+        getConfigPath(dir),
         JSON.stringify({ additionalStashDirs: ["/valid", 123, null, "/also-valid"] }),
       )
       const config = loadConfig(dir)
@@ -111,14 +188,30 @@ describe("loadConfig", () => {
   test("ignores wrong types for known keys", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
+      writeRawConfig(
+        getConfigPath(dir),
         JSON.stringify({ semanticSearch: "yes", additionalStashDirs: "not-an-array" }),
       )
       const config = loadConfig(dir)
       // Wrong types should fall back to defaults
       expect(config.semanticSearch).toBe(true)
       expect(config.additionalStashDirs).toEqual([])
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("loads legacy stash config and migrates it to XDG config path", () => {
+    const dir = makeTmpDir()
+    const legacyPath = getLegacyConfigPath(dir)
+    try {
+      writeRawConfig(legacyPath, JSON.stringify({ semanticSearch: false }))
+
+      const config = loadConfig(dir)
+
+      expect(config).toEqual({ semanticSearch: false, additionalStashDirs: [] })
+      expect(fs.existsSync(getConfigPath(dir))).toBe(true)
+      expect(fs.existsSync(legacyPath)).toBe(false)
     } finally {
       cleanup(dir)
     }
@@ -133,7 +226,7 @@ describe("saveConfig", () => {
     try {
       const config = { semanticSearch: false, additionalStashDirs: ["/extra"] }
       saveConfig(config, dir)
-      const raw = fs.readFileSync(path.join(dir, "config.json"), "utf8")
+      const raw = fs.readFileSync(getConfigPath(dir), "utf8")
       expect(JSON.parse(raw)).toEqual(config)
       // Verify formatted with indentation
       expect(raw).toContain("  ")
@@ -151,6 +244,21 @@ describe("saveConfig", () => {
       saveConfig(config, dir)
       const loaded = loadConfig(dir)
       expect(loaded).toEqual(config)
+    } finally {
+      cleanup(dir)
+    }
+  })
+
+  test("removes legacy stash config after saving to XDG config path", () => {
+    const dir = makeTmpDir()
+    const legacyPath = getLegacyConfigPath(dir)
+    try {
+      writeRawConfig(legacyPath, JSON.stringify({ semanticSearch: true }))
+
+      saveConfig({ semanticSearch: false, additionalStashDirs: [] }, dir)
+
+      expect(fs.existsSync(getConfigPath(dir))).toBe(true)
+      expect(fs.existsSync(legacyPath)).toBe(false)
     } finally {
       cleanup(dir)
     }
@@ -181,7 +289,7 @@ describe("updateConfig", () => {
       const updated = updateConfig({ semanticSearch: false }, dir)
       expect(updated.semanticSearch).toBe(false)
       expect(updated.additionalStashDirs).toEqual([])
-      expect(fs.existsSync(path.join(dir, "config.json"))).toBe(true)
+      expect(fs.existsSync(getConfigPath(dir))).toBe(true)
     } finally {
       cleanup(dir)
     }
@@ -194,8 +302,8 @@ describe("embedding config", () => {
   test("loads embedding connection config", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
+      writeRawConfig(
+        getConfigPath(dir),
         JSON.stringify({
           embedding: {
             endpoint: "http://localhost:11434/v1/embeddings",
@@ -216,8 +324,8 @@ describe("embedding config", () => {
   test("loads embedding config with apiKey", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
+      writeRawConfig(
+        getConfigPath(dir),
         JSON.stringify({
           embedding: {
             endpoint: "https://api.openai.com/v1/embeddings",
@@ -236,8 +344,8 @@ describe("embedding config", () => {
   test("ignores invalid embedding config (missing model)", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
+      writeRawConfig(
+        getConfigPath(dir),
         JSON.stringify({ embedding: { endpoint: "http://localhost:11434" } }),
       )
       const config = loadConfig(dir)
@@ -250,8 +358,8 @@ describe("embedding config", () => {
   test("ignores non-object embedding config", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
+      writeRawConfig(
+        getConfigPath(dir),
         JSON.stringify({ embedding: "not-an-object" }),
       )
       const config = loadConfig(dir)
@@ -309,8 +417,8 @@ describe("llm config", () => {
   test("loads llm connection config", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
+      writeRawConfig(
+        getConfigPath(dir),
         JSON.stringify({
           llm: {
             endpoint: "http://localhost:11434/v1/chat/completions",
@@ -331,8 +439,8 @@ describe("llm config", () => {
   test("loads llm config with apiKey", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
+      writeRawConfig(
+        getConfigPath(dir),
         JSON.stringify({
           llm: {
             endpoint: "https://api.openai.com/v1/chat/completions",
@@ -351,8 +459,8 @@ describe("llm config", () => {
   test("ignores invalid llm config", () => {
     const dir = makeTmpDir()
     try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
+      writeRawConfig(
+        getConfigPath(dir),
         JSON.stringify({ llm: { endpoint: "http://localhost" } }),
       )
       const config = loadConfig(dir)

@@ -96,11 +96,15 @@ async function withMockedFetch<T>(
 }
 
 const originalXdgCacheHome = process.env.XDG_CACHE_HOME
+const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
 let testCacheDir = ""
+let testConfigDir = ""
 
 beforeAll(async () => {
   testCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-cache-"))
+  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-config-"))
   process.env.XDG_CACHE_HOME = testCacheDir
+  process.env.XDG_CONFIG_HOME = testConfigDir
 })
 
 afterAll(() => {
@@ -109,8 +113,16 @@ afterAll(() => {
   } else {
     process.env.XDG_CACHE_HOME = originalXdgCacheHome
   }
+  if (originalXdgConfigHome === undefined) {
+    delete process.env.XDG_CONFIG_HOME
+  } else {
+    process.env.XDG_CONFIG_HOME = originalXdgConfigHome
+  }
   if (testCacheDir) {
     fs.rmSync(testCacheDir, { recursive: true, force: true })
+  }
+  if (testConfigDir) {
+    fs.rmSync(testConfigDir, { recursive: true, force: true })
   }
 })
 

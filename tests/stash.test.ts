@@ -9,7 +9,7 @@ import {
   type SearchHit,
 } from "../src/stash"
 import { agentikitIndex } from "../src/indexer"
-import { saveConfig } from "../src/config"
+import { getConfigPath, saveConfig } from "../src/config"
 
 function writeFile(filePath: string, content = "") {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -18,11 +18,15 @@ function writeFile(filePath: string, content = "") {
 
 // Isolate each test with its own cache directory so SQLite databases don't leak
 const originalXdgCacheHome = process.env.XDG_CACHE_HOME
+const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
 let testCacheDir = ""
+let testConfigDir = ""
 
 beforeEach(() => {
   testCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-cache-"))
+  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-config-"))
   process.env.XDG_CACHE_HOME = testCacheDir
+  process.env.XDG_CONFIG_HOME = testConfigDir
 })
 
 afterEach(() => {
@@ -31,9 +35,18 @@ afterEach(() => {
   } else {
     process.env.XDG_CACHE_HOME = originalXdgCacheHome
   }
+  if (originalXdgConfigHome === undefined) {
+    delete process.env.XDG_CONFIG_HOME
+  } else {
+    process.env.XDG_CONFIG_HOME = originalXdgConfigHome
+  }
   if (testCacheDir) {
     fs.rmSync(testCacheDir, { recursive: true, force: true })
     testCacheDir = ""
+  }
+  if (testConfigDir) {
+    fs.rmSync(testConfigDir, { recursive: true, force: true })
+    testConfigDir = ""
   }
 })
 
@@ -485,6 +498,27 @@ test("agentikitInit creates knowledge directory", () => {
   try {
     const result = agentikitInit()
     expect(fs.existsSync(path.join(result.stashDir, "knowledge"))).toBe(true)
+  } finally {
+    process.env.HOME = origHome
+    if (origStashDir === undefined) delete process.env.AGENTIKIT_STASH_DIR
+    else process.env.AGENTIKIT_STASH_DIR = origStashDir
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  }
+})
+
+test("agentikitInit writes config outside the stash directory", () => {
+  const origHome = process.env.HOME
+  const origStashDir = process.env.AGENTIKIT_STASH_DIR
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-home-"))
+  process.env.HOME = tmpHome
+  delete process.env.AGENTIKIT_STASH_DIR
+
+  try {
+    const result = agentikitInit()
+    expect(result.configPath).toBe(getConfigPath(result.stashDir))
+    expect(result.configPath.startsWith(result.stashDir)).toBe(false)
+    expect(fs.existsSync(result.configPath)).toBe(true)
+    expect(fs.existsSync(path.join(result.stashDir, "config.json"))).toBe(false)
   } finally {
     process.env.HOME = origHome
     if (origStashDir === undefined) delete process.env.AGENTIKIT_STASH_DIR

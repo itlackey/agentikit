@@ -1,6 +1,5 @@
 import fs from "node:fs"
 import path from "node:path"
-import { resolveStashDir } from "./common"
 import type { RegistryInstalledEntry, RegistrySource } from "./registry-types"
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -49,43 +48,77 @@ export const DEFAULT_CONFIG: AgentikitConfig = {
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 
-export function getConfigPath(stashDir: string): string {
+export function getConfigDir(
+  env: NodeJS.ProcessEnv = process.env,
+  platform = process.platform,
+): string {
+  if (platform === "win32") {
+    const appData = env.APPDATA?.trim()
+    if (appData) return path.join(appData, "agentikit")
+
+    const userProfile = env.USERPROFILE?.trim()
+    if (!userProfile) {
+      throw new Error("Unable to determine config directory. Set APPDATA or USERPROFILE.")
+    }
+    return path.join(userProfile, "AppData", "Roaming", "agentikit")
+  }
+
+  const xdgConfigHome = env.XDG_CONFIG_HOME?.trim()
+  if (xdgConfigHome) return path.join(xdgConfigHome, "agentikit")
+
+  const home = env.HOME?.trim()
+  if (!home) {
+    throw new Error("Unable to determine config directory. Set XDG_CONFIG_HOME or HOME.")
+  }
+  return path.join(home, ".config", "agentikit")
+}
+
+export function getConfigPath(_stashDir?: string): string {
+  return path.join(getConfigDir(), "config.json")
+}
+
+export function getLegacyConfigPath(stashDir: string): string {
   return path.join(stashDir, "config.json")
 }
 
 // ── Load / Save / Update ────────────────────────────────────────────────────
 
 export function loadConfig(stashDir?: string): AgentikitConfig {
-  const dir = stashDir ?? resolveStashDir()
-  const configPath = getConfigPath(dir)
+  const configPath = getConfigPath(stashDir)
+  const raw = readConfigObject(configPath)
+  if (raw) return pickKnownKeys(raw)
 
-  let raw: Record<string, unknown>
-  try {
-    raw = JSON.parse(fs.readFileSync(configPath, "utf8"))
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-      return { ...DEFAULT_CONFIG }
+  const legacyPath = stashDir ? getLegacyConfigPath(stashDir) : undefined
+  if (legacyPath && legacyPath !== configPath) {
+    const legacyRaw = readConfigObject(legacyPath)
+    if (legacyRaw) {
+      const migrated = pickKnownKeys(legacyRaw)
+      saveConfig(migrated, stashDir)
+      return migrated
     }
-  } catch {
-    return { ...DEFAULT_CONFIG }
   }
 
-  return pickKnownKeys(raw)
+  return { ...DEFAULT_CONFIG }
 }
 
 export function saveConfig(config: AgentikitConfig, stashDir?: string): void {
-  const dir = stashDir ?? resolveStashDir()
-  const configPath = getConfigPath(dir)
+  const configPath = getConfigPath(stashDir)
+  fs.mkdirSync(path.dirname(configPath), { recursive: true })
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8")
+
+  const legacyPath = stashDir ? getLegacyConfigPath(stashDir) : undefined
+  if (legacyPath && legacyPath !== configPath && fs.existsSync(legacyPath)) {
+    fs.rmSync(legacyPath, { force: true })
+  }
 }
 
 export function updateConfig(
   partial: Partial<AgentikitConfig>,
   stashDir?: string,
 ): AgentikitConfig {
-  const dir = stashDir ?? resolveStashDir()
-  const current = loadConfig(dir)
+  const current = loadConfig(stashDir)
   const merged: AgentikitConfig = { ...current, ...partial }
-  saveConfig(merged, dir)
+  saveConfig(merged, stashDir)
   return merged
 }
 
@@ -114,6 +147,16 @@ function pickKnownKeys(raw: Record<string, unknown>): AgentikitConfig {
   if (registry) config.registry = registry
 
   return config
+}
+
+function readConfigObject(configPath: string): Record<string, unknown> | undefined {
+  try {
+    const raw = JSON.parse(fs.readFileSync(configPath, "utf8"))
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined
+    return raw
+  } catch {
+    return undefined
+  }
 }
 
 function parseConnectionConfig(
