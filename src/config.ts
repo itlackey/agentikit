@@ -73,56 +73,30 @@ export function getConfigDir(
   return path.join(home, ".config", "agentikit")
 }
 
-// Keep the optional stashDir parameter for backward-compatible call sites; the
-// config file now lives in the platform config directory instead of the stash.
-export function getConfigPath(_unusedStashDir?: string): string {
+export function getConfigPath(): string {
   return path.join(getConfigDir(), "config.json")
-}
-
-export function getLegacyConfigPath(stashDir: string): string {
-  return path.join(stashDir, "config.json")
 }
 
 // ── Load / Save / Update ────────────────────────────────────────────────────
 
-export function loadConfig(stashDir?: string): AgentikitConfig {
-  const configPath = getConfigPath(stashDir)
+export function loadConfig(): AgentikitConfig {
+  const configPath = getConfigPath()
   const raw = readConfigObject(configPath)
   if (raw) return pickKnownKeys(raw)
-
-  const legacyPath = stashDir ? getLegacyConfigPath(stashDir) : undefined
-  // If a user points AGENTIKIT_STASH_DIR at the config directory itself, both paths can match.
-  if (legacyPath && legacyPath !== configPath) {
-    const legacyRaw = readConfigObject(legacyPath)
-    if (legacyRaw) {
-      const migrated = pickKnownKeys(legacyRaw)
-      saveConfig(migrated, stashDir)
-      return migrated
-    }
-  }
 
   return { ...DEFAULT_CONFIG }
 }
 
-export function saveConfig(config: AgentikitConfig, stashDir?: string): void {
-  const configPath = getConfigPath(stashDir)
+export function saveConfig(config: AgentikitConfig): void {
+  const configPath = getConfigPath()
   fs.mkdirSync(path.dirname(configPath), { recursive: true })
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8")
-
-  const legacyPath = stashDir ? getLegacyConfigPath(stashDir) : undefined
-  // If a user points AGENTIKIT_STASH_DIR at the config directory itself, both paths can match.
-  if (legacyPath && legacyPath !== configPath && fs.existsSync(legacyPath)) {
-    fs.rmSync(legacyPath, { force: true })
-  }
 }
 
-export function updateConfig(
-  partial: Partial<AgentikitConfig>,
-  stashDir?: string,
-): AgentikitConfig {
-  const current = loadConfig(stashDir)
+export function updateConfig(partial: Partial<AgentikitConfig>): AgentikitConfig {
+  const current = loadConfig()
   const merged: AgentikitConfig = { ...current, ...partial }
-  saveConfig(merged, stashDir)
+  saveConfig(merged)
   return merged
 }
 

@@ -12,7 +12,7 @@ import { loadConfig } from "./config"
 export function agentikitShow(input: { ref: string; view?: KnowledgeView }): ShowResponse {
   const parsed = parseOpenRef(input.ref)
   const stashDir = resolveStashDir()
-  const config = loadConfig(stashDir)
+  const config = loadConfig()
   const allStashDirs = [
     stashDir,
     ...config.additionalStashDirs.filter((d) => {

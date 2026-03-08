@@ -84,7 +84,7 @@ async function installGitRegistryRef(parsed: ParsedGitRef, options?: InstallRegi
 }
 
 export function upsertInstalledRegistryEntry(entry: RegistryInstalledEntry, stashDir?: string): AgentikitConfig {
-  const current = loadConfig(stashDir)
+  const current = loadConfig()
   const currentInstalled = current.registry?.installed ?? []
   const previousRegistryRoots = new Set(currentInstalled.map((item) => path.resolve(item.stashRoot)))
 
@@ -103,12 +103,12 @@ export function upsertInstalledRegistryEntry(entry: RegistryInstalledEntry, stas
       installed: nextInstalled,
     },
   }
-  saveConfig(nextConfig, stashDir)
+  saveConfig(nextConfig)
   return nextConfig
 }
 
 export function removeInstalledRegistryEntry(id: string, stashDir?: string): AgentikitConfig {
-  const current = loadConfig(stashDir)
+  const current = loadConfig()
   const currentInstalled = current.registry?.installed ?? []
   const previousRegistryRoots = new Set(currentInstalled.map((item) => path.resolve(item.stashRoot)))
 
@@ -125,7 +125,7 @@ export function removeInstalledRegistryEntry(id: string, stashDir?: string): Age
     additionalStashDirs: syncedAdditional,
     registry: nextInstalled.length > 0 ? { installed: nextInstalled } : undefined,
   }
-  saveConfig(nextConfig, stashDir)
+  saveConfig(nextConfig)
   return nextConfig
 }
 

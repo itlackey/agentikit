@@ -153,7 +153,7 @@ async function searchLocal(input: {
   stashDir: string
 }): Promise<{ hits: LocalSearchHit[]; usageGuide?: Partial<Record<AgentikitAssetType, string[]>>; tip?: string; embedMs?: number; rankMs?: number }> {
   const { query, searchType, limit, usageMode, stashDir } = input
-  const config = loadConfig(stashDir)
+  const config = loadConfig()
   const allStashDirs = [
     stashDir,
     ...config.additionalStashDirs.filter((d) => {

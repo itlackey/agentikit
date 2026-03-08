@@ -49,7 +49,7 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
 
   // Load config to get additional stash dirs and semantic search setting
   const { loadConfig } = await import("./config.js")
-  const config = loadConfig(stashDir)
+  const config = loadConfig()
 
   const allStashDirs = [stashDir]
   for (const d of config.additionalStashDirs) {

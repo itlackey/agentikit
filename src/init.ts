@@ -86,9 +86,9 @@ export function agentikitInit(): InitResponse {
   }
 
   // Create default config.json if it doesn't exist
-  const configPath = getConfigPath(stashDir)
+  const configPath = getConfigPath()
   if (!fs.existsSync(configPath)) {
-    saveConfig(DEFAULT_CONFIG, stashDir)
+    saveConfig(DEFAULT_CONFIG)
   }
 
   process.env.AGENTIKIT_STASH_DIR = stashDir

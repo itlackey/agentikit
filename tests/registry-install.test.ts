@@ -17,7 +17,7 @@ function createEmptyStashDir(prefix: string): string {
   for (const sub of ["tools", "skills", "commands", "agents", "knowledge"]) {
     fs.mkdirSync(path.join(stashDir, sub), { recursive: true })
   }
-  saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+  saveConfig({ semanticSearch: false, additionalStashDirs: [] })
   return stashDir
 }
 
@@ -127,7 +127,7 @@ describe("local git installs", () => {
       expect(fs.existsSync(path.join(result.installed.stashRoot, "tools", "hello.sh"))).toBe(true)
       expect(fs.existsSync(path.join(result.installed.extractedDir, ".git"))).toBe(false)
 
-      const config = loadConfig(stashDir)
+      const config = loadConfig()
       expect(config.additionalStashDirs).toContain(result.installed.stashRoot)
 
       const shown = withEnv(

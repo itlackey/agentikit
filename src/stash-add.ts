@@ -11,7 +11,7 @@ export async function agentikitAdd(input: { ref: string }): Promise<AddResponse>
 
   const stashDir = resolveStashDir()
   const installed = await installRegistryRef(ref)
-  const replaced = loadConfig(stashDir).registry?.installed.find((entry) => entry.id === installed.id)
+  const replaced = loadConfig().registry?.installed.find((entry) => entry.id === installed.id)
   const config = upsertInstalledRegistryEntry(
     {
       id: installed.id,

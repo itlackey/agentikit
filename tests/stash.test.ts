@@ -106,7 +106,7 @@ test("agentikitSearch resolves tool runCmd correctly for additional stash direct
   writeFile(path.join(additionalStashDir, "tools", "group", "nested", "job.js"), "console.log('job')\n")
   writeFile(path.join(additionalStashDir, "tools", "group", "package.json"), '{"name":"group"}')
 
-  saveConfig({ semanticSearch: false, additionalStashDirs: [additionalStashDir] }, primaryStashDir)
+  saveConfig({ semanticSearch: false, additionalStashDirs: [additionalStashDir] })
 
   process.env.AGENTIKIT_STASH_DIR = primaryStashDir
   await agentikitIndex({ stashDir: primaryStashDir, full: true })
@@ -122,7 +122,7 @@ test("agentikitSearch includes explainability reasons for indexed hits", async (
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
   writeFile(path.join(stashDir, "tools", "summarize-diff.ts"), "console.log('summarize')\n")
 
-  saveConfig({ semanticSearch: true, additionalStashDirs: [] }, stashDir)
+  saveConfig({ semanticSearch: true, additionalStashDirs: [] })
   process.env.AGENTIKIT_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -155,7 +155,7 @@ test("agentikitSearch usage mode both includes guide and per-hit metadata usage"
     ],
   }))
 
-  saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+  saveConfig({ semanticSearch: false, additionalStashDirs: [] })
   process.env.AGENTIKIT_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -179,7 +179,7 @@ test("agentikitSearch usage mode guide omits per-hit usage", async () => {
     ],
   }))
 
-  saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+  saveConfig({ semanticSearch: false, additionalStashDirs: [] })
   process.env.AGENTIKIT_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -203,7 +203,7 @@ test("agentikitSearch usage mode item omits usage guide", async () => {
     ],
   }))
 
-  saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+  saveConfig({ semanticSearch: false, additionalStashDirs: [] })
   process.env.AGENTIKIT_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -227,7 +227,7 @@ test("agentikitSearch usage mode none omits guide and per-hit usage", async () =
     ],
   }))
 
-  saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+  saveConfig({ semanticSearch: false, additionalStashDirs: [] })
   process.env.AGENTIKIT_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -515,7 +515,7 @@ test("agentikitInit writes config outside the stash directory", () => {
 
   try {
     const result = agentikitInit()
-    expect(result.configPath).toBe(getConfigPath(result.stashDir))
+    expect(result.configPath).toBe(getConfigPath())
     expect(result.configPath.startsWith(result.stashDir)).toBe(false)
     expect(fs.existsSync(result.configPath)).toBe(true)
     expect(fs.existsSync(path.join(result.stashDir, "config.json"))).toBe(false)
