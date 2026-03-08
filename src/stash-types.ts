@@ -1,5 +1,6 @@
 import type { AgentikitAssetType } from "./common"
 import type { RegistrySource } from "./registry-types"
+import type { StashSourceKind } from "./stash-source"
 import type { ToolKind } from "./tool-runner"
 
 export type AgentikitSearchType = AgentikitAssetType | "any"
@@ -12,6 +13,12 @@ export interface LocalSearchHit {
   name: string
   path: string
   openRef: string
+  /** Which stash source this hit came from */
+  sourceKind?: StashSourceKind
+  /** For installed sources, the registry id */
+  registryId?: string
+  /** Whether this asset is editable (only true for working stash) */
+  editable?: boolean
   description?: string
   tags?: string[]
   score?: number
@@ -72,7 +79,7 @@ export interface AddResponse {
     installedAt: string
   }
   config: {
-    additionalStashDirs: string[]
+    mountedStashDirs: string[]
     installedRegistryCount: number
   }
   index: {
@@ -129,7 +136,7 @@ export interface RemoveResponse {
     stashRoot: string
   }
   config: {
-    additionalStashDirs: string[]
+    mountedStashDirs: string[]
     installedRegistryCount: number
   }
   index: {
@@ -154,7 +161,7 @@ export interface ReinstallResponse {
   all: boolean
   processed: ReinstallResultItem[]
   config: {
-    additionalStashDirs: string[]
+    mountedStashDirs: string[]
     installedRegistryCount: number
   }
   index: {
@@ -188,7 +195,7 @@ export interface UpdateResponse {
   all: boolean
   processed: UpdateResultItem[]
   config: {
-    additionalStashDirs: string[]
+    mountedStashDirs: string[]
     installedRegistryCount: number
   }
   index: {
@@ -211,6 +218,12 @@ export interface ShowResponse {
   modelHint?: unknown
   runCmd?: string
   kind?: ToolKind
+  /** Which stash source this asset came from */
+  sourceKind?: StashSourceKind
+  /** For installed sources, the registry id */
+  registryId?: string
+  /** Whether this asset is editable (only true for working stash) */
+  editable?: boolean
 }
 
 export type KnowledgeView =

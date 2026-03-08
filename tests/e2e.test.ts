@@ -681,7 +681,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
   test("cli: akm list returns empty installed set when none configured", async () => {
     const stashDir = createEmptyStashDir("agentikit-e2e-registry-empty-")
     process.env.AGENTIKIT_STASH_DIR = stashDir
-    saveConfig({ semanticSearch: false, additionalStashDirs: [] })
+    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
 
     try {
       const result = runCli("list")
@@ -704,7 +704,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
 
     saveConfig({
       semanticSearch: false,
-      additionalStashDirs: [stashRoot],
+      mountedStashDirs: [stashRoot],
       registry: {
         installed: [
           {
@@ -741,7 +741,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
   test("cli: akm update requires target or --all", async () => {
     const stashDir = createEmptyStashDir("agentikit-e2e-registry-update-")
     process.env.AGENTIKIT_STASH_DIR = stashDir
-    saveConfig({ semanticSearch: false, additionalStashDirs: [] })
+    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
 
     try {
       const result = runCli("update")
@@ -756,7 +756,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
   test("cli: akm reinstall rejects target with --all", async () => {
     const stashDir = createEmptyStashDir("agentikit-e2e-registry-reinstall-")
     process.env.AGENTIKIT_STASH_DIR = stashDir
-    saveConfig({ semanticSearch: false, additionalStashDirs: [] })
+    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
 
     try {
       const result = runCli("reinstall", "npm:@scope/kit", "--all")
@@ -771,7 +771,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
   test("cli: akm update missing target returns stable not-installed error", async () => {
     const stashDir = createEmptyStashDir("agentikit-e2e-registry-missing-")
     process.env.AGENTIKIT_STASH_DIR = stashDir
-    saveConfig({ semanticSearch: false, additionalStashDirs: [] })
+    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
 
     try {
       const result = runCli("update", "npm:@scope/kit")

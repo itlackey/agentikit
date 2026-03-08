@@ -86,22 +86,12 @@ async function installGitRegistryRef(parsed: ParsedGitRef, options?: InstallRegi
 export function upsertInstalledRegistryEntry(entry: RegistryInstalledEntry): AgentikitConfig {
   const current = loadConfig()
   const currentInstalled = current.registry?.installed ?? []
-  const previousRegistryRoots = new Set(currentInstalled.map((item) => path.resolve(item.stashRoot)))
-
   const withoutExisting = currentInstalled.filter((item) => item.id !== entry.id)
   const nextInstalled = [...withoutExisting, normalizeInstalledEntry(entry)]
-  const nextRegistryRoots = new Set(nextInstalled.map((item) => path.resolve(item.stashRoot)))
-  const preservedAdditional = current.additionalStashDirs.filter(
-    (dir) => !previousRegistryRoots.has(path.resolve(dir)),
-  )
-  const syncedAdditional = uniquePaths([...preservedAdditional, ...nextRegistryRoots])
 
   const nextConfig: AgentikitConfig = {
     ...current,
-    additionalStashDirs: syncedAdditional,
-    registry: {
-      installed: nextInstalled,
-    },
+    registry: { installed: nextInstalled },
   }
   saveConfig(nextConfig)
   return nextConfig
@@ -110,19 +100,10 @@ export function upsertInstalledRegistryEntry(entry: RegistryInstalledEntry): Age
 export function removeInstalledRegistryEntry(id: string): AgentikitConfig {
   const current = loadConfig()
   const currentInstalled = current.registry?.installed ?? []
-  const previousRegistryRoots = new Set(currentInstalled.map((item) => path.resolve(item.stashRoot)))
-
   const nextInstalled = currentInstalled.filter((item) => item.id !== id)
-  const nextRegistryRoots = new Set(nextInstalled.map((item) => path.resolve(item.stashRoot)))
-
-  const preservedAdditional = current.additionalStashDirs.filter(
-    (dir) => !previousRegistryRoots.has(path.resolve(dir)),
-  )
-  const syncedAdditional = uniquePaths([...preservedAdditional, ...nextRegistryRoots])
 
   const nextConfig: AgentikitConfig = {
     ...current,
-    additionalStashDirs: syncedAdditional,
     registry: nextInstalled.length > 0 ? { installed: nextInstalled } : undefined,
   }
   saveConfig(nextConfig)
@@ -369,14 +350,3 @@ function normalizeInstalledEntry(entry: RegistryInstalledEntry): RegistryInstall
   }
 }
 
-function uniquePaths(paths: Iterable<string>): string[] {
-  const seen = new Set<string>()
-  const result: string[] = []
-  for (const candidate of paths) {
-    const normalized = path.resolve(candidate)
-    if (seen.has(normalized)) continue
-    seen.add(normalized)
-    result.push(normalized)
-  }
-  return result
-}

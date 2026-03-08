@@ -108,7 +108,7 @@ akm add /abs/path/to/your/repo/kits/frontend
 - Uses registry resolution + install helpers (`npm`, `github`, and local git directories)
 - Local paths must point to a directory inside a git repository
 - Passing a directory under a git repo installs that directory as the kit root
-- Updates the Agentikit config file registry install records and syncs `additionalStashDirs`
+- Updates the Agentikit config file registry install records
 - If an existing install with the same id is replaced, old cache directories are cleaned up (best effort)
 - Triggers an incremental index build
 - Returns JSON with install details and index stats
@@ -145,7 +145,7 @@ akm remove owner/repo
 ```
 
 - Target resolution order: exact `id`, exact stored `ref`, then parsed ref `id`
-- Removes entry via config helper (also syncs `additionalStashDirs`)
+- Removes entry via config helper
 - Deletes prior `cacheDir` best effort
 - Runs one incremental reindex
 
@@ -159,7 +159,7 @@ akm reinstall --all
 ```
 
 - Uses the same registry install flow as `akm add`
-- Upserts config entries + `additionalStashDirs`
+- Upserts config entries
 - Cleans up replaced cache directories best effort
 - Runs one incremental reindex after all installs
 
@@ -341,13 +341,13 @@ When using a remote embedding provider, make sure `embedding.dimension` matches 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `semanticSearch` | `boolean` | `true` | Enable semantic search ranking |
-| `additionalStashDirs` | `string[]` | `[]` | Extra stash directories to search |
+| `mountedStashDirs` | `string[]` | `[]` | User-mounted read-only stash directories |
 | `embedding` | `object` | built-in local provider | Embedding provider settings (`provider?`, `endpoint`, `model`, `dimension?`, `apiKey?`) |
 | `llm` | `object` | disabled | LLM provider settings (`provider?`, `endpoint`, `model`, `temperature?`, `maxTokens?`, `apiKey?`) |
 
 ## Notes
 
-- `akm add` installs registry kits into the local cache and adds discovered stash roots to `additionalStashDirs`.
+- `akm add` installs registry kits into the local cache. Installed stash roots are derived at query time from `config.registry.installed`.
 - Registry lifecycle commands (`list`, `remove`, `reinstall`, `update`) use `config.registry.installed` as the source of truth.
 - When commands fail, CLI errors are returned as structured JSON with `error` and `hint` fields for better user guidance.
 - Missing or unreadable stash paths return friendly errors.

@@ -30,6 +30,7 @@ import {
   type DbSearchResult,
 } from "./db"
 import { tryGetHandler } from "./asset-type-handler"
+import { type StashSource, resolveStashSources, findSourceForPath } from "./stash-source"
 
 // Ensure handlers are registered
 import "./handlers/index"
@@ -56,7 +57,8 @@ export async function agentikitSearch(input: {
   const limit = normalizeLimit(input.limit)
   const usageMode = parseSearchUsageMode(input.usage)
   const source = parseSearchSource(input.source)
-  const stashDir = resolveStashDir()
+  const sources = resolveStashSources()
+  const stashDir = sources[0].path
   const localResult = source === "registry"
     ? undefined
     : await searchLocal({
@@ -65,6 +67,7 @@ export async function agentikitSearch(input: {
       limit,
       usageMode,
       stashDir,
+      sources,
     })
 
   const registryResult = source === "local"
@@ -131,15 +134,11 @@ async function searchLocal(input: {
   limit: number
   usageMode: SearchUsageMode
   stashDir: string
+  sources: StashSource[]
 }): Promise<{ hits: LocalSearchHit[]; usageGuide?: Partial<Record<AgentikitAssetType, string[]>>; tip?: string; embedMs?: number; rankMs?: number }> {
-  const { query, searchType, limit, usageMode, stashDir } = input
+  const { query, searchType, limit, usageMode, stashDir, sources } = input
   const config = loadConfig()
-  const allStashDirs = [
-    stashDir,
-    ...config.additionalStashDirs.filter((d) => {
-      try { return fs.statSync(d).isDirectory() } catch { return false }
-    }),
-  ]
+  const allStashDirs = sources.map((s) => s.path)
 
   // Try to open the database
   const dbPath = getDbPath()
@@ -150,7 +149,7 @@ async function searchLocal(input: {
         const entryCount = getEntryCount(db)
         const storedStashDir = getMeta(db, "stashDir")
         if (entryCount > 0 && storedStashDir === stashDir) {
-          const { hits, usageGuide, embedMs, rankMs } = await searchDatabase(db, query, searchType, limit, stashDir, allStashDirs, config, usageMode)
+          const { hits, usageGuide, embedMs, rankMs } = await searchDatabase(db, query, searchType, limit, stashDir, allStashDirs, config, usageMode, sources)
           return {
             hits,
             usageGuide,
@@ -168,7 +167,7 @@ async function searchLocal(input: {
   }
 
   const hits = allStashDirs
-    .flatMap((dir) => substringSearch(query, searchType, limit, dir))
+    .flatMap((dir) => substringSearch(query, searchType, limit, dir, sources))
     .slice(0, limit)
   const usageGuide = shouldIncludeUsageGuide(usageMode) ? buildUsageGuide(hits.map((hit) => hit.type), searchType) : undefined
   return {
@@ -189,6 +188,7 @@ async function searchDatabase(
   allStashDirs: string[],
   config: import("./config").AgentikitConfig,
   usageMode: SearchUsageMode,
+  sources: StashSource[],
 ): Promise<{ hits: LocalSearchHit[]; usageGuide?: Partial<Record<AgentikitAssetType, string[]>>; embedMs?: number; rankMs?: number }> {
   // Empty query: return all entries
   if (!query) {
@@ -204,6 +204,7 @@ async function searchDatabase(
         rankingMode: "fts",
         defaultStashDir: stashDir,
         allStashDirs,
+        sources,
         includeItemUsage: shouldIncludeItemUsage(usageMode),
       }),
     )
@@ -311,6 +312,7 @@ async function searchDatabase(
       rankingMode,
       defaultStashDir: stashDir,
       allStashDirs,
+      sources,
       includeItemUsage: shouldIncludeItemUsage(usageMode),
     }),
   )
@@ -361,13 +363,14 @@ function substringSearch(
   searchType: AgentikitSearchType,
   limit: number,
   stashDir: string,
+  sources: StashSource[],
 ): LocalSearchHit[] {
   const assets = indexAssets(stashDir, searchType)
   return assets
     .filter((asset) => asset.name.toLowerCase().includes(query))
     .sort(compareAssets)
     .slice(0, limit)
-    .map((asset) => assetToSearchHit(asset, stashDir))
+    .map((asset) => assetToSearchHit(asset, stashDir, sources))
 }
 
 // ── Hit building ────────────────────────────────────────────────────────────
@@ -388,6 +391,7 @@ function buildDbHit(input: {
   rankingMode: "semantic" | "fts"
   defaultStashDir: string
   allStashDirs: string[]
+  sources: StashSource[]
   includeItemUsage: boolean
 }): LocalSearchHit {
   const entryStashDir = findStashDirForPath(input.path, input.allStashDirs) ?? input.defaultStashDir
@@ -401,12 +405,17 @@ function buildDbHit(input: {
 
   const whyMatched = buildWhyMatched(input.entry, input.query, input.rankingMode, qualityBoost, confidenceBoost)
 
+  const source = findSourceForPath(input.path, input.sources)
+
   const hit: LocalSearchHit = {
     hitSource: "local",
     type: input.entry.type,
     name: input.entry.name,
     path: input.path,
-    openRef: makeOpenRef(input.entry.type, openRefName),
+    openRef: makeOpenRef(input.entry.type, openRefName, source?.kind, source?.registryId),
+    sourceKind: source?.kind,
+    registryId: source?.registryId,
+    editable: source?.writable ?? false,
     description: input.entry.description,
     tags: input.entry.tags,
     score,
@@ -452,13 +461,17 @@ function buildWhyMatched(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function assetToSearchHit(asset: IndexedAsset, stashDir: string): LocalSearchHit {
+function assetToSearchHit(asset: IndexedAsset, stashDir: string, sources: StashSource[]): LocalSearchHit {
+  const source = findSourceForPath(asset.path, sources)
   const hit: LocalSearchHit = {
     hitSource: "local",
     type: asset.type,
     name: asset.name,
     path: asset.path,
-    openRef: makeOpenRef(asset.type, asset.name),
+    openRef: makeOpenRef(asset.type, asset.name, source?.kind, source?.registryId),
+    sourceKind: source?.kind,
+    registryId: source?.registryId,
+    editable: source?.writable ?? false,
   }
   const handler = tryGetHandler(asset.type)
   if (handler?.enrichSearchHit) {

@@ -59,7 +59,7 @@ export async function agentikitRemove(input: { target: string; stashDir?: string
       stashRoot: entry.stashRoot,
     },
     config: {
-      additionalStashDirs: updatedConfig.additionalStashDirs,
+      mountedStashDirs: updatedConfig.mountedStashDirs,
       installedRegistryCount: updatedConfig.registry?.installed.length ?? 0,
     },
     index: {
@@ -108,7 +108,7 @@ export async function agentikitReinstall(input?: {
     all,
     processed,
     config: {
-      additionalStashDirs: config.additionalStashDirs,
+      mountedStashDirs: config.mountedStashDirs,
       installedRegistryCount: config.registry?.installed.length ?? 0,
     },
     index: {
@@ -169,7 +169,7 @@ export async function agentikitUpdate(input?: {
     all,
     processed,
     config: {
-      additionalStashDirs: config.additionalStashDirs,
+      mountedStashDirs: config.mountedStashDirs,
       installedRegistryCount: config.registry?.installed.length ?? 0,
     },
     index: {

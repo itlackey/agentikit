@@ -17,7 +17,7 @@ function createEmptyStashDir(prefix: string): string {
   for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
     fs.mkdirSync(path.join(stashDir, sub), { recursive: true })
   }
-  saveConfig({ semanticSearch: false, additionalStashDirs: [] })
+  saveConfig({ semanticSearch: false, mountedStashDirs: [] })
   return stashDir
 }
 
@@ -128,7 +128,7 @@ describe("local git installs", () => {
       expect(fs.existsSync(path.join(result.installed.extractedDir, ".git"))).toBe(false)
 
       const config = loadConfig()
-      expect(config.additionalStashDirs).toContain(result.installed.stashRoot)
+      expect(config.mountedStashDirs).toContain(result.installed.stashRoot)
 
       const shown = withEnv(
         { AGENTIKIT_STASH_DIR: stashDir, XDG_CACHE_HOME: cacheHome },
