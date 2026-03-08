@@ -249,7 +249,7 @@ function isDirectory(target: string): boolean {
   }
 }
 
-function readAgentikitIncludeConfig(dirPath: string): { baseDir: string; include: string[] } | undefined {
+function readAgentikitIncludeConfigAtDir(dirPath: string): { baseDir: string; include: string[] } | undefined {
   const packageJsonPath = path.join(dirPath, "package.json")
   if (!fs.existsSync(packageJsonPath)) return undefined
 
@@ -283,7 +283,7 @@ function findNearestAgentikitIncludeConfig(
   const boundary = path.resolve(stopDir)
 
   while (isWithin(current, boundary)) {
-    const config = readAgentikitIncludeConfig(current)
+    const config = readAgentikitIncludeConfigAtDir(current)
     if (config) return config
     if (current === boundary) break
     const parent = path.dirname(current)
