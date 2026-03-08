@@ -23,7 +23,7 @@ export function resolveAssetPath(stashDir: string, type: AgentikitAssetType, nam
       throw new Error("Tool ref must resolve to a .sh, .ts, .js, .ps1, .cmd, or .bat file.")
     }
     if (type === "script") {
-      throw new Error("Script ref must resolve to a supported script file (.sh, .ts, .js, .py, .rb, .go, etc.).")
+      throw new Error("Script ref must resolve to a file with a supported script extension. Refer to the Agentikit documentation for the complete list of supported script extensions.");
     }
     throw new Error(`Stash asset not found for ref: ${type}:${name}`)
   }
