@@ -31,7 +31,7 @@ export interface DbVecResult {
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const DB_VERSION = 5
+export const DB_VERSION = 5
 const EMBEDDING_DIM = 384
 
 // ── Path ────────────────────────────────────────────────────────────────────
@@ -171,12 +171,19 @@ export function upsertEntry(
   searchText: string,
 ): number {
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO entries (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type)
+    INSERT INTO entries (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type)
     VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(entry_key) DO UPDATE SET
+      dir_path = excluded.dir_path,
+      file_path = excluded.file_path,
+      stash_dir = excluded.stash_dir,
+      entry_json = excluded.entry_json,
+      search_text = excluded.search_text,
+      entry_type = excluded.entry_type
   `)
   stmt.run(entryKey, dirPath, filePath, stashDir, JSON.stringify(entry), searchText, entry.type)
-  // Get the rowid of the last inserted row
-  const row = db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }
+  // For ON CONFLICT DO UPDATE, last_insert_rowid() returns the existing row's id
+  const row = db.prepare("SELECT id FROM entries WHERE entry_key = ?").get(entryKey) as { id: number }
   return row.id
 }
 

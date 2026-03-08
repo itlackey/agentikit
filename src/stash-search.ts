@@ -162,14 +162,12 @@ async function searchLocal(input: {
 
   // Try to open the database
   const dbPath = getDbPath()
-  let hasDb = false
   try {
     if (fs.existsSync(dbPath)) {
       const db = openDatabase(dbPath)
       const entryCount = getEntryCount(db)
       const storedStashDir = getMeta(db, "stashDir")
       if (entryCount > 0 && storedStashDir === stashDir) {
-        hasDb = true
         const { hits, usageGuide, embedMs, rankMs } = await searchDatabase(db, query, searchType, limit, stashDir, allStashDirs, config, usageMode)
         closeDatabase(db)
         return {
@@ -246,8 +244,8 @@ async function searchDatabase(
   // Build score map from FTS results (normalize BM25 scores)
   const ftsScoreMap = new Map<number, { score: number; result: DbSearchResult }>()
   for (const r of ftsResults) {
-    // BM25 returns negative scores (lower = better), normalize to 0-1
-    const normalized = 1 / (1 - r.bm25Score)
+    // BM25 returns negative scores (more negative = better match), normalize to 0-1
+    const normalized = 1 / (1 + Math.abs(r.bm25Score))
     ftsScoreMap.set(r.id, { score: normalized, result: r })
   }
 

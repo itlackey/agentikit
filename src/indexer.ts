@@ -25,6 +25,7 @@ import {
   getEntriesByDir,
   getEntryCount,
   isVecAvailable,
+  DB_VERSION,
   type DbIndexedEntry,
 } from "./db"
 
@@ -141,7 +142,7 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
               const entryPath = entry.entry
                 ? path.join(dirPath, entry.entry)
                 : files[0] || dirPath
-              const entryKey = `${entry.type}:${entry.name}`
+              const entryKey = `${currentStashDir}:${entry.type}:${entry.name}`
               const searchText = buildSearchText(entry)
 
               const rowId = upsertEntry(db, entryKey, dirPath, entryPath, currentStashDir, entry, searchText)
@@ -153,8 +154,11 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
     }
   })
 
+  // Run the synchronous transaction first
+  insertTransaction()
+
   // LLM enhancement needs to happen outside transaction (async)
-  // First pass: collect dirs that need LLM enhancement
+  // Collect dirs that need LLM enhancement (after transaction so seenPaths is populated)
   const dirsNeedingLlm: Array<{ dirPath: string; files: string[]; assetType: AgentikitAssetType; currentStashDir: string }> = []
 
   if (config.llm) {
@@ -168,7 +172,7 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
         const dirGroups = walkStash(typeRoot, assetType)
         for (const { dirPath, files } of dirGroups) {
           const resolved = path.resolve(dirPath)
-          if (!seenPaths.has(resolved)) continue // already handled in main loop
+          if (!seenPaths.has(resolved)) continue // only dirs handled in main loop
 
           // Check if this dir's entries were generated (not from manual stash)
           const stash = loadStashFile(dirPath)
@@ -180,12 +184,9 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
     }
   }
 
-  // Run the synchronous transaction first
-  insertTransaction()
-
   // LLM enhancement (async, outside transaction)
   if (config.llm && dirsNeedingLlm.length > 0) {
-    for (const { dirPath, files } of dirsNeedingLlm) {
+    for (const { dirPath, files, currentStashDir } of dirsNeedingLlm) {
       let stash = loadStashFile(dirPath)
       if (!stash) continue
       stash = await enhanceStashWithLlm(config.llm, stash, dirPath, files)
@@ -194,9 +195,9 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
       // Re-upsert enhanced entries
       for (const entry of stash.entries) {
         const entryPath = entry.entry ? path.join(dirPath, entry.entry) : files[0] || dirPath
-        const entryKey = `${entry.type}:${entry.name}`
+        const entryKey = `${currentStashDir}:${entry.type}:${entry.name}`
         const searchText = buildSearchText(entry)
-        const rowId = upsertEntry(db, entryKey, dirPath, entryPath, stash.entries[0]?.type === entry.type ? dirPath : dirPath, entry, searchText)
+        const rowId = upsertEntry(db, entryKey, dirPath, entryPath, currentStashDir, entry, searchText)
         syncFtsForEntry(db, rowId, searchText)
       }
     }
@@ -227,7 +228,7 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
   const tEmbedEnd = Date.now()
 
   // Update metadata
-  setMeta(db, "version", "5")
+  setMeta(db, "version", String(DB_VERSION))
   setMeta(db, "builtAt", new Date().toISOString())
   setMeta(db, "stashDir", stashDir)
   setMeta(db, "stashDirs", JSON.stringify(allStashDirs))
