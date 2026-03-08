@@ -14,7 +14,6 @@ import type { SearchSource, SearchUsageMode } from "./stash-types"
 import { agentikitInit } from "./init"
 import { agentikitIndex } from "./indexer"
 import { loadConfig, updateConfig, type AgentikitConfig } from "./config"
-import { resolveStashDir } from "./common"
 
 const initCommand = defineCommand({
   meta: { name: "init", description: "Initialize agentikit stash directory and set AGENTIKIT_STASH_DIR" },
@@ -167,8 +166,6 @@ const configCommand = defineCommand({
   },
   run({ args }) {
     return runWithJsonErrors(() => {
-      const stashDir = resolveStashDir()
-
       if (args.set) {
         const eqIndex = args.set.indexOf("=")
         if (eqIndex === -1) {
@@ -177,10 +174,10 @@ const configCommand = defineCommand({
         const key = args.set.slice(0, eqIndex)
         const value = args.set.slice(eqIndex + 1)
         const partial = parseConfigValue(key, value)
-        const config = updateConfig(partial, stashDir)
+        const config = updateConfig(partial)
         console.log(JSON.stringify(config, null, 2))
       } else {
-        const config = loadConfig(stashDir)
+        const config = loadConfig()
         console.log(JSON.stringify(config, null, 2))
       }
     })

@@ -1,8 +1,15 @@
-import { test, expect, describe, afterEach } from "bun:test"
+import { test, expect, describe, beforeEach, afterEach } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { loadConfig, saveConfig, updateConfig, DEFAULT_CONFIG, getConfigPath } from "../src/config"
+import {
+  loadConfig,
+  saveConfig,
+  updateConfig,
+  DEFAULT_CONFIG,
+  getConfigDir,
+  getConfigPath,
+} from "../src/config"
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-config-test-"))
@@ -12,11 +19,82 @@ function cleanup(dir: string): void {
   fs.rmSync(dir, { recursive: true, force: true })
 }
 
+function writeRawConfig(configPath: string, content: string): void {
+  fs.mkdirSync(path.dirname(configPath), { recursive: true })
+  fs.writeFileSync(configPath, content)
+}
+
+const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
+const originalHome = process.env.HOME
+const originalStashDir = process.env.AGENTIKIT_STASH_DIR
+let testConfigHome = ""
+
+beforeEach(() => {
+  testConfigHome = makeTmpDir()
+  process.env.XDG_CONFIG_HOME = testConfigHome
+})
+
+afterEach(() => {
+  if (originalXdgConfigHome === undefined) {
+    delete process.env.XDG_CONFIG_HOME
+  } else {
+    process.env.XDG_CONFIG_HOME = originalXdgConfigHome
+  }
+
+  if (originalHome === undefined) {
+    delete process.env.HOME
+  } else {
+    process.env.HOME = originalHome
+  }
+
+  if (originalStashDir === undefined) {
+    delete process.env.AGENTIKIT_STASH_DIR
+  } else {
+    process.env.AGENTIKIT_STASH_DIR = originalStashDir
+  }
+
+  if (testConfigHome) {
+    cleanup(testConfigHome)
+    testConfigHome = ""
+  }
+})
+
 // ── getConfigPath ───────────────────────────────────────────────────────────
 
 describe("getConfigPath", () => {
-  test("returns config.json at stash root", () => {
-    expect(getConfigPath("/some/stash")).toBe(path.join("/some/stash", "config.json"))
+  test("returns config.json under XDG_CONFIG_HOME", () => {
+    expect(getConfigPath()).toBe(path.join(testConfigHome, "agentikit", "config.json"))
+  })
+
+  test("defaults to ~/.config/agentikit when XDG_CONFIG_HOME is unset", () => {
+    const home = makeTmpDir()
+    delete process.env.XDG_CONFIG_HOME
+    process.env.HOME = home
+
+    expect(getConfigPath()).toBe(path.join(home, ".config", "agentikit", "config.json"))
+
+    cleanup(home)
+  })
+
+  test("uses APPDATA on Windows", () => {
+    const appData = String.raw`C:\Users\alice\AppData\Roaming`
+    expect(getConfigDir({ APPDATA: appData }, "win32")).toBe(path.join(appData, "agentikit"))
+    expect(path.join(getConfigDir({ APPDATA: appData }, "win32"), "config.json")).toBe(
+      path.join(appData, "agentikit", "config.json"),
+    )
+  })
+
+  test("falls back to USERPROFILE AppData Roaming on Windows", () => {
+    const userProfile = String.raw`C:\Users\alice`
+    expect(getConfigDir({ USERPROFILE: userProfile }, "win32")).toBe(
+      path.join(userProfile, "AppData", "Roaming", "agentikit"),
+    )
+  })
+
+  test("throws on Windows when APPDATA and USERPROFILE are missing", () => {
+    expect(() => getConfigDir({}, "win32")).toThrow(
+      "Unable to determine config directory. Set APPDATA or USERPROFILE.",
+    )
   })
 })
 
@@ -24,103 +102,76 @@ describe("getConfigPath", () => {
 
 describe("loadConfig", () => {
   test("returns defaults when no config.json exists", () => {
-    const dir = makeTmpDir()
-    try {
-      const config = loadConfig(dir)
-      expect(config).toEqual(DEFAULT_CONFIG)
-    } finally {
-      cleanup(dir)
-    }
+    expect(loadConfig()).toEqual(DEFAULT_CONFIG)
+  })
+
+  test("loads config without requiring AGENTIKIT_STASH_DIR", () => {
+    delete process.env.AGENTIKIT_STASH_DIR
+    writeRawConfig(getConfigPath(), JSON.stringify({ semanticSearch: false }))
+
+    expect(loadConfig()).toEqual({ semanticSearch: false, additionalStashDirs: [] })
   })
 
   test("merges partial config with defaults", () => {
-    const dir = makeTmpDir()
-    try {
-      fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({ semanticSearch: false }))
-      const config = loadConfig(dir)
-      expect(config.semanticSearch).toBe(false)
-      expect(config.additionalStashDirs).toEqual([])
-    } finally {
-      cleanup(dir)
-    }
+    writeRawConfig(getConfigPath(), JSON.stringify({ semanticSearch: false }))
+    const config = loadConfig()
+    expect(config.semanticSearch).toBe(false)
+    expect(config.additionalStashDirs).toEqual([])
   })
 
   test("handles corrupted JSON gracefully", () => {
-    const dir = makeTmpDir()
-    try {
-      fs.writeFileSync(path.join(dir, "config.json"), "not valid json {{{")
-      const config = loadConfig(dir)
-      expect(config).toEqual(DEFAULT_CONFIG)
-    } finally {
-      cleanup(dir)
-    }
+    writeRawConfig(getConfigPath(), "not valid json {{{")
+    expect(loadConfig()).toEqual(DEFAULT_CONFIG)
   })
 
   test("handles non-object JSON gracefully", () => {
-    const dir = makeTmpDir()
-    try {
-      fs.writeFileSync(path.join(dir, "config.json"), '"just a string"')
-      const config = loadConfig(dir)
-      expect(config).toEqual(DEFAULT_CONFIG)
-    } finally {
-      cleanup(dir)
-    }
+    writeRawConfig(getConfigPath(), '"just a string"')
+    expect(loadConfig()).toEqual(DEFAULT_CONFIG)
   })
 
   test("handles JSON array gracefully", () => {
-    const dir = makeTmpDir()
-    try {
-      fs.writeFileSync(path.join(dir, "config.json"), "[1, 2, 3]")
-      const config = loadConfig(dir)
-      expect(config).toEqual(DEFAULT_CONFIG)
-    } finally {
-      cleanup(dir)
-    }
+    writeRawConfig(getConfigPath(), "[1, 2, 3]")
+    expect(loadConfig()).toEqual(DEFAULT_CONFIG)
   })
 
   test("drops unknown keys", () => {
-    const dir = makeTmpDir()
-    try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
-        JSON.stringify({ semanticSearch: false, futureKey: "hello", anotherKey: 42 }),
-      )
-      const config = loadConfig(dir)
-      expect(config).toEqual({ semanticSearch: false, additionalStashDirs: [] })
-      expect((config as Record<string, unknown>).futureKey).toBeUndefined()
-      expect((config as Record<string, unknown>).anotherKey).toBeUndefined()
-    } finally {
-      cleanup(dir)
-    }
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({ semanticSearch: false, futureKey: "hello", anotherKey: 42 }),
+    )
+    const config = loadConfig()
+    expect(config).toEqual({ semanticSearch: false, additionalStashDirs: [] })
+    expect((config as Record<string, unknown>).futureKey).toBeUndefined()
+    expect((config as Record<string, unknown>).anotherKey).toBeUndefined()
   })
 
   test("filters non-string entries from additionalStashDirs", () => {
-    const dir = makeTmpDir()
-    try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
-        JSON.stringify({ additionalStashDirs: ["/valid", 123, null, "/also-valid"] }),
-      )
-      const config = loadConfig(dir)
-      expect(config.additionalStashDirs).toEqual(["/valid", "/also-valid"])
-    } finally {
-      cleanup(dir)
-    }
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({ additionalStashDirs: ["/valid", 123, null, "/also-valid"] }),
+    )
+    expect(loadConfig().additionalStashDirs).toEqual(["/valid", "/also-valid"])
   })
 
   test("ignores wrong types for known keys", () => {
-    const dir = makeTmpDir()
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({ semanticSearch: "yes", additionalStashDirs: "not-an-array" }),
+    )
+    const config = loadConfig()
+    expect(config.semanticSearch).toBe(true)
+    expect(config.additionalStashDirs).toEqual([])
+  })
+
+  test("ignores stash-root config.json files", () => {
+    const stashDir = makeTmpDir()
     try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
-        JSON.stringify({ semanticSearch: "yes", additionalStashDirs: "not-an-array" }),
-      )
-      const config = loadConfig(dir)
-      // Wrong types should fall back to defaults
-      expect(config.semanticSearch).toBe(true)
-      expect(config.additionalStashDirs).toEqual([])
+      writeRawConfig(path.join(stashDir, "config.json"), JSON.stringify({ semanticSearch: false }))
+
+      expect(loadConfig()).toEqual(DEFAULT_CONFIG)
+      expect(fs.existsSync(getConfigPath())).toBe(false)
     } finally {
-      cleanup(dir)
+      cleanup(stashDir)
     }
   })
 })
@@ -129,31 +180,18 @@ describe("loadConfig", () => {
 
 describe("saveConfig", () => {
   test("writes formatted JSON to config.json", () => {
-    const dir = makeTmpDir()
-    try {
-      const config = { semanticSearch: false, additionalStashDirs: ["/extra"] }
-      saveConfig(config, dir)
-      const raw = fs.readFileSync(path.join(dir, "config.json"), "utf8")
-      expect(JSON.parse(raw)).toEqual(config)
-      // Verify formatted with indentation
-      expect(raw).toContain("  ")
-      // Verify trailing newline
-      expect(raw.endsWith("\n")).toBe(true)
-    } finally {
-      cleanup(dir)
-    }
+    const config = { semanticSearch: false, additionalStashDirs: ["/extra"] }
+    saveConfig(config)
+    const raw = fs.readFileSync(getConfigPath(), "utf8")
+    expect(JSON.parse(raw)).toEqual(config)
+    expect(raw).toContain("  ")
+    expect(raw.endsWith("\n")).toBe(true)
   })
 
   test("roundtrips with loadConfig", () => {
-    const dir = makeTmpDir()
-    try {
-      const config = { semanticSearch: false, additionalStashDirs: ["/a", "/b"] }
-      saveConfig(config, dir)
-      const loaded = loadConfig(dir)
-      expect(loaded).toEqual(config)
-    } finally {
-      cleanup(dir)
-    }
+    const config = { semanticSearch: false, additionalStashDirs: ["/a", "/b"] }
+    saveConfig(config)
+    expect(loadConfig()).toEqual(config)
   })
 })
 
@@ -161,30 +199,18 @@ describe("saveConfig", () => {
 
 describe("updateConfig", () => {
   test("merges partial update over existing config", () => {
-    const dir = makeTmpDir()
-    try {
-      saveConfig({ semanticSearch: true, additionalStashDirs: ["/a"] }, dir)
-      const updated = updateConfig({ semanticSearch: false }, dir)
-      expect(updated.semanticSearch).toBe(false)
-      expect(updated.additionalStashDirs).toEqual(["/a"])
-      // Verify persisted
-      const loaded = loadConfig(dir)
-      expect(loaded).toEqual(updated)
-    } finally {
-      cleanup(dir)
-    }
+    saveConfig({ semanticSearch: true, additionalStashDirs: ["/a"] })
+    const updated = updateConfig({ semanticSearch: false })
+    expect(updated.semanticSearch).toBe(false)
+    expect(updated.additionalStashDirs).toEqual(["/a"])
+    expect(loadConfig()).toEqual(updated)
   })
 
   test("creates config.json if it does not exist", () => {
-    const dir = makeTmpDir()
-    try {
-      const updated = updateConfig({ semanticSearch: false }, dir)
-      expect(updated.semanticSearch).toBe(false)
-      expect(updated.additionalStashDirs).toEqual([])
-      expect(fs.existsSync(path.join(dir, "config.json"))).toBe(true)
-    } finally {
-      cleanup(dir)
-    }
+    const updated = updateConfig({ semanticSearch: false })
+    expect(updated.semanticSearch).toBe(false)
+    expect(updated.additionalStashDirs).toEqual([])
+    expect(fs.existsSync(getConfigPath())).toBe(true)
   })
 })
 
@@ -192,114 +218,69 @@ describe("updateConfig", () => {
 
 describe("embedding config", () => {
   test("loads embedding connection config", () => {
-    const dir = makeTmpDir()
-    try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
-        JSON.stringify({
-          embedding: {
-            endpoint: "http://localhost:11434/v1/embeddings",
-            model: "nomic-embed-text",
-          },
-        }),
-      )
-      const config = loadConfig(dir)
-      expect(config.embedding).toEqual({
-        endpoint: "http://localhost:11434/v1/embeddings",
-        model: "nomic-embed-text",
-      })
-    } finally {
-      cleanup(dir)
-    }
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({
+        embedding: {
+          endpoint: "http://localhost:11434/v1/embeddings",
+          model: "nomic-embed-text",
+        },
+      }),
+    )
+    expect(loadConfig().embedding).toEqual({
+      endpoint: "http://localhost:11434/v1/embeddings",
+      model: "nomic-embed-text",
+    })
   })
 
   test("loads embedding config with apiKey", () => {
-    const dir = makeTmpDir()
-    try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
-        JSON.stringify({
-          embedding: {
-            endpoint: "https://api.openai.com/v1/embeddings",
-            model: "text-embedding-3-small",
-            apiKey: "sk-test123",
-          },
-        }),
-      )
-      const config = loadConfig(dir)
-      expect(config.embedding?.apiKey).toBe("sk-test123")
-    } finally {
-      cleanup(dir)
-    }
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({
+        embedding: {
+          endpoint: "https://api.openai.com/v1/embeddings",
+          model: "text-embedding-3-small",
+          apiKey: "sk-test123",
+        },
+      }),
+    )
+    expect(loadConfig().embedding?.apiKey).toBe("sk-test123")
   })
 
   test("ignores invalid embedding config (missing model)", () => {
-    const dir = makeTmpDir()
-    try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
-        JSON.stringify({ embedding: { endpoint: "http://localhost:11434" } }),
-      )
-      const config = loadConfig(dir)
-      expect(config.embedding).toBeUndefined()
-    } finally {
-      cleanup(dir)
-    }
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({ embedding: { endpoint: "http://localhost:11434" } }),
+    )
+    expect(loadConfig().embedding).toBeUndefined()
   })
 
   test("ignores non-object embedding config", () => {
-    const dir = makeTmpDir()
-    try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
-        JSON.stringify({ embedding: "not-an-object" }),
-      )
-      const config = loadConfig(dir)
-      expect(config.embedding).toBeUndefined()
-    } finally {
-      cleanup(dir)
-    }
+    writeRawConfig(getConfigPath(), JSON.stringify({ embedding: "not-an-object" }))
+    expect(loadConfig().embedding).toBeUndefined()
   })
 
   test("defaults to no embedding config", () => {
-    const dir = makeTmpDir()
-    try {
-      const config = loadConfig(dir)
-      expect(config.embedding).toBeUndefined()
-    } finally {
-      cleanup(dir)
-    }
+    expect(loadConfig().embedding).toBeUndefined()
   })
 
   test("roundtrips embedding config via updateConfig", () => {
-    const dir = makeTmpDir()
-    try {
-      const embeddingConfig = {
-        endpoint: "http://localhost:11434/v1/embeddings",
-        model: "nomic-embed-text",
-      }
-      updateConfig({ embedding: embeddingConfig }, dir)
-      const loaded = loadConfig(dir)
-      expect(loaded.embedding).toEqual(embeddingConfig)
-    } finally {
-      cleanup(dir)
+    const embeddingConfig = {
+      endpoint: "http://localhost:11434/v1/embeddings",
+      model: "nomic-embed-text",
     }
+    updateConfig({ embedding: embeddingConfig })
+    expect(loadConfig().embedding).toEqual(embeddingConfig)
   })
 
   test("clears embedding config with undefined", () => {
-    const dir = makeTmpDir()
-    try {
-      const embeddingConfig = {
-        endpoint: "http://localhost:11434/v1/embeddings",
-        model: "nomic-embed-text",
-      }
-      updateConfig({ embedding: embeddingConfig }, dir)
-      updateConfig({ embedding: undefined }, dir)
-      const loaded = loadConfig(dir)
-      expect(loaded.embedding).toBeUndefined()
-    } finally {
-      cleanup(dir)
+    const embeddingConfig = {
+      endpoint: "http://localhost:11434/v1/embeddings",
+      model: "nomic-embed-text",
     }
+    updateConfig({ embedding: embeddingConfig })
+    updateConfig({ embedding: undefined })
+    expect(loadConfig().embedding).toBeUndefined()
   })
 })
 
@@ -307,73 +288,46 @@ describe("embedding config", () => {
 
 describe("llm config", () => {
   test("loads llm connection config", () => {
-    const dir = makeTmpDir()
-    try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
-        JSON.stringify({
-          llm: {
-            endpoint: "http://localhost:11434/v1/chat/completions",
-            model: "llama3.2",
-          },
-        }),
-      )
-      const config = loadConfig(dir)
-      expect(config.llm).toEqual({
-        endpoint: "http://localhost:11434/v1/chat/completions",
-        model: "llama3.2",
-      })
-    } finally {
-      cleanup(dir)
-    }
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({
+        llm: {
+          endpoint: "http://localhost:11434/v1/chat/completions",
+          model: "llama3.2",
+        },
+      }),
+    )
+    expect(loadConfig().llm).toEqual({
+      endpoint: "http://localhost:11434/v1/chat/completions",
+      model: "llama3.2",
+    })
   })
 
   test("loads llm config with apiKey", () => {
-    const dir = makeTmpDir()
-    try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
-        JSON.stringify({
-          llm: {
-            endpoint: "https://api.openai.com/v1/chat/completions",
-            model: "gpt-4",
-            apiKey: "sk-key",
-          },
-        }),
-      )
-      const config = loadConfig(dir)
-      expect(config.llm?.apiKey).toBe("sk-key")
-    } finally {
-      cleanup(dir)
-    }
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({
+        llm: {
+          endpoint: "https://api.openai.com/v1/chat/completions",
+          model: "gpt-4",
+          apiKey: "sk-key",
+        },
+      }),
+    )
+    expect(loadConfig().llm?.apiKey).toBe("sk-key")
   })
 
   test("ignores invalid llm config", () => {
-    const dir = makeTmpDir()
-    try {
-      fs.writeFileSync(
-        path.join(dir, "config.json"),
-        JSON.stringify({ llm: { endpoint: "http://localhost" } }),
-      )
-      const config = loadConfig(dir)
-      expect(config.llm).toBeUndefined()
-    } finally {
-      cleanup(dir)
-    }
+    writeRawConfig(getConfigPath(), JSON.stringify({ llm: { endpoint: "http://localhost" } }))
+    expect(loadConfig().llm).toBeUndefined()
   })
 
   test("roundtrips llm config via updateConfig", () => {
-    const dir = makeTmpDir()
-    try {
-      const llmConfig = {
-        endpoint: "http://localhost:11434/v1/chat/completions",
-        model: "llama3.2",
-      }
-      updateConfig({ llm: llmConfig }, dir)
-      const loaded = loadConfig(dir)
-      expect(loaded.llm).toEqual(llmConfig)
-    } finally {
-      cleanup(dir)
+    const llmConfig = {
+      endpoint: "http://localhost:11434/v1/chat/completions",
+      model: "llama3.2",
     }
+    updateConfig({ llm: llmConfig })
+    expect(loadConfig().llm).toEqual(llmConfig)
   })
 })

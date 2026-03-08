@@ -71,7 +71,10 @@ Initialize a stash directory and set `AGENTIKIT_STASH_DIR`.
 akm init
 ```
 
-Creates the stash directory structure (`tools/`, `skills/`, `commands/`, `agents/`, `knowledge/`) and generates a `config.json` file.
+Creates the stash directory structure (`tools/`, `skills/`, `commands/`, `agents/`, `knowledge/`) and generates a config file in the platform-standard app config directory:
+
+- Linux/macOS: `$XDG_CONFIG_HOME/agentikit/config.json` (defaults to `~/.config/agentikit/config.json`)
+- Windows: `%APPDATA%\agentikit\config.json` (falls back to `%USERPROFILE%\AppData\Roaming\agentikit\config.json` if `%APPDATA%` is not set)
 
 ### index
 
@@ -105,7 +108,7 @@ akm add /abs/path/to/your/repo/kits/frontend
 - Uses registry resolution + install helpers (`npm`, `github`, and local git directories)
 - Local paths must point to a directory inside a git repository
 - Passing a directory under a git repo installs that directory as the kit root
-- Updates `config.json` registry install records and syncs `additionalStashDirs`
+- Updates the Agentikit config file registry install records and syncs `additionalStashDirs`
 - If an existing install with the same id is replaced, old cache directories are cleaned up (best effort)
 - Triggers an incremental index build
 - Returns JSON with install details and index stats
@@ -251,7 +254,10 @@ import {
 
 ## Configuration
 
-Agentikit stores configuration in `config.json` inside the stash directory.
+Agentikit stores configuration in a platform-standard config directory:
+
+- Linux/macOS: `$XDG_CONFIG_HOME/agentikit/config.json` (defaults to `~/.config/agentikit/config.json`)
+- Windows: `%APPDATA%\agentikit\config.json` (falls back to `%USERPROFILE%\AppData\Roaming\agentikit\config.json` when `%APPDATA%` is unset)
 
 ```sh
 akm config                    # Show current config

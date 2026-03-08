@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
@@ -17,7 +17,7 @@ function createEmptyStashDir(prefix: string): string {
   for (const sub of ["tools", "skills", "commands", "agents", "knowledge"]) {
     fs.mkdirSync(path.join(stashDir, sub), { recursive: true })
   }
-  saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+  saveConfig({ semanticSearch: false, additionalStashDirs: [] })
   return stashDir
 }
 
@@ -33,6 +33,26 @@ function runGit(args: string[], cwd: string): string {
   }
   return result.stdout.trim()
 }
+
+const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
+let testConfigDir = ""
+
+beforeEach(() => {
+  testConfigDir = makeTempDir("agentikit-registry-config-")
+  process.env.XDG_CONFIG_HOME = testConfigDir
+})
+
+afterEach(() => {
+  if (originalXdgConfigHome === undefined) {
+    delete process.env.XDG_CONFIG_HOME
+  } else {
+    process.env.XDG_CONFIG_HOME = originalXdgConfigHome
+  }
+  if (testConfigDir) {
+    fs.rmSync(testConfigDir, { recursive: true, force: true })
+    testConfigDir = ""
+  }
+})
 
 function initGitRepo(repoDir: string): void {
   runGit(["init"], repoDir)
@@ -107,7 +127,7 @@ describe("local git installs", () => {
       expect(fs.existsSync(path.join(result.installed.stashRoot, "tools", "hello.sh"))).toBe(true)
       expect(fs.existsSync(path.join(result.installed.extractedDir, ".git"))).toBe(false)
 
-      const config = loadConfig(stashDir)
+      const config = loadConfig()
       expect(config.additionalStashDirs).toContain(result.installed.stashRoot)
 
       const shown = withEnv(

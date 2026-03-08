@@ -14,7 +14,7 @@
  * - Graceful degradation (no index, no ripgrep)
  * - Edge cases and error handling
  */
-import { test, expect, describe, beforeAll, afterAll } from "bun:test"
+import { test, expect, describe, beforeAll, beforeEach, afterAll, afterEach } from "bun:test"
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
@@ -96,11 +96,18 @@ async function withMockedFetch<T>(
 }
 
 const originalXdgCacheHome = process.env.XDG_CACHE_HOME
+const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
 let testCacheDir = ""
+let testConfigDir = ""
 
 beforeAll(async () => {
   testCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-cache-"))
   process.env.XDG_CACHE_HOME = testCacheDir
+})
+
+beforeEach(() => {
+  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-config-"))
+  process.env.XDG_CONFIG_HOME = testConfigDir
 })
 
 afterAll(() => {
@@ -111,6 +118,19 @@ afterAll(() => {
   }
   if (testCacheDir) {
     fs.rmSync(testCacheDir, { recursive: true, force: true })
+    testCacheDir = ""
+  }
+})
+
+afterEach(() => {
+  if (originalXdgConfigHome === undefined) {
+    delete process.env.XDG_CONFIG_HOME
+  } else {
+    process.env.XDG_CONFIG_HOME = originalXdgConfigHome
+  }
+  if (testConfigDir) {
+    fs.rmSync(testConfigDir, { recursive: true, force: true })
+    testConfigDir = ""
   }
 })
 
@@ -600,7 +620,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
   test("cli: akm list returns empty installed set when none configured", async () => {
     const stashDir = createEmptyStashDir("agentikit-e2e-registry-empty-")
     process.env.AGENTIKIT_STASH_DIR = stashDir
-    saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+    saveConfig({ semanticSearch: false, additionalStashDirs: [] })
 
     try {
       const result = runCli("list")
@@ -639,7 +659,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
           },
         ],
       },
-    }, stashDir)
+    })
 
     try {
       const result = runCli("remove", "npm:@scope/kit@latest")
@@ -648,7 +668,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
       const json = parseJson(result.stdout)
       expect(json.removed.id).toBe("npm:@scope/kit")
 
-      const config = loadConfig(stashDir)
+      const config = loadConfig()
       expect(config.registry).toBeUndefined()
       expect(fs.existsSync(cacheDir)).toBe(false)
     } finally {
@@ -660,7 +680,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
   test("cli: akm update requires target or --all", async () => {
     const stashDir = createEmptyStashDir("agentikit-e2e-registry-update-")
     process.env.AGENTIKIT_STASH_DIR = stashDir
-    saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+    saveConfig({ semanticSearch: false, additionalStashDirs: [] })
 
     try {
       const result = runCli("update")
@@ -675,7 +695,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
   test("cli: akm reinstall rejects target with --all", async () => {
     const stashDir = createEmptyStashDir("agentikit-e2e-registry-reinstall-")
     process.env.AGENTIKIT_STASH_DIR = stashDir
-    saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+    saveConfig({ semanticSearch: false, additionalStashDirs: [] })
 
     try {
       const result = runCli("reinstall", "npm:@scope/kit", "--all")
@@ -690,7 +710,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
   test("cli: akm update missing target returns stable not-installed error", async () => {
     const stashDir = createEmptyStashDir("agentikit-e2e-registry-missing-")
     process.env.AGENTIKIT_STASH_DIR = stashDir
-    saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+    saveConfig({ semanticSearch: false, additionalStashDirs: [] })
 
     try {
       const result = runCli("update", "npm:@scope/kit")

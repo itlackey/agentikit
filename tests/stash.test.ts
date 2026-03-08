@@ -9,7 +9,7 @@ import {
   type SearchHit,
 } from "../src/stash"
 import { agentikitIndex } from "../src/indexer"
-import { saveConfig } from "../src/config"
+import { getConfigPath, saveConfig } from "../src/config"
 
 function writeFile(filePath: string, content = "") {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -18,11 +18,15 @@ function writeFile(filePath: string, content = "") {
 
 // Isolate each test with its own cache directory so SQLite databases don't leak
 const originalXdgCacheHome = process.env.XDG_CACHE_HOME
+const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
 let testCacheDir = ""
+let testConfigDir = ""
 
 beforeEach(() => {
   testCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-cache-"))
+  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-config-"))
   process.env.XDG_CACHE_HOME = testCacheDir
+  process.env.XDG_CONFIG_HOME = testConfigDir
 })
 
 afterEach(() => {
@@ -31,9 +35,18 @@ afterEach(() => {
   } else {
     process.env.XDG_CACHE_HOME = originalXdgCacheHome
   }
+  if (originalXdgConfigHome === undefined) {
+    delete process.env.XDG_CONFIG_HOME
+  } else {
+    process.env.XDG_CONFIG_HOME = originalXdgConfigHome
+  }
   if (testCacheDir) {
     fs.rmSync(testCacheDir, { recursive: true, force: true })
     testCacheDir = ""
+  }
+  if (testConfigDir) {
+    fs.rmSync(testConfigDir, { recursive: true, force: true })
+    testConfigDir = ""
   }
 })
 
@@ -93,7 +106,7 @@ test("agentikitSearch resolves tool runCmd correctly for additional stash direct
   writeFile(path.join(additionalStashDir, "tools", "group", "nested", "job.js"), "console.log('job')\n")
   writeFile(path.join(additionalStashDir, "tools", "group", "package.json"), '{"name":"group"}')
 
-  saveConfig({ semanticSearch: false, additionalStashDirs: [additionalStashDir] }, primaryStashDir)
+  saveConfig({ semanticSearch: false, additionalStashDirs: [additionalStashDir] })
 
   process.env.AGENTIKIT_STASH_DIR = primaryStashDir
   await agentikitIndex({ stashDir: primaryStashDir, full: true })
@@ -109,7 +122,7 @@ test("agentikitSearch includes explainability reasons for indexed hits", async (
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
   writeFile(path.join(stashDir, "tools", "summarize-diff.ts"), "console.log('summarize')\n")
 
-  saveConfig({ semanticSearch: true, additionalStashDirs: [] }, stashDir)
+  saveConfig({ semanticSearch: true, additionalStashDirs: [] })
   process.env.AGENTIKIT_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -142,7 +155,7 @@ test("agentikitSearch usage mode both includes guide and per-hit metadata usage"
     ],
   }))
 
-  saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+  saveConfig({ semanticSearch: false, additionalStashDirs: [] })
   process.env.AGENTIKIT_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -166,7 +179,7 @@ test("agentikitSearch usage mode guide omits per-hit usage", async () => {
     ],
   }))
 
-  saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+  saveConfig({ semanticSearch: false, additionalStashDirs: [] })
   process.env.AGENTIKIT_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -190,7 +203,7 @@ test("agentikitSearch usage mode item omits usage guide", async () => {
     ],
   }))
 
-  saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+  saveConfig({ semanticSearch: false, additionalStashDirs: [] })
   process.env.AGENTIKIT_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -214,7 +227,7 @@ test("agentikitSearch usage mode none omits guide and per-hit usage", async () =
     ],
   }))
 
-  saveConfig({ semanticSearch: false, additionalStashDirs: [] }, stashDir)
+  saveConfig({ semanticSearch: false, additionalStashDirs: [] })
   process.env.AGENTIKIT_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -451,7 +464,8 @@ test("agentikitInit returns created false when stash dir already exists", () => 
     expect(result.created).toBe(false)
     expect(result.stashDir).toBe(stashPath)
   } finally {
-    process.env.HOME = origHome
+    if (origHome === undefined) delete process.env.HOME
+    else process.env.HOME = origHome
     if (origStashDir === undefined) delete process.env.AGENTIKIT_STASH_DIR
     else process.env.AGENTIKIT_STASH_DIR = origStashDir
     fs.rmSync(tmpHome, { recursive: true, force: true })
@@ -486,7 +500,30 @@ test("agentikitInit creates knowledge directory", () => {
     const result = agentikitInit()
     expect(fs.existsSync(path.join(result.stashDir, "knowledge"))).toBe(true)
   } finally {
-    process.env.HOME = origHome
+    if (origHome === undefined) delete process.env.HOME
+    else process.env.HOME = origHome
+    if (origStashDir === undefined) delete process.env.AGENTIKIT_STASH_DIR
+    else process.env.AGENTIKIT_STASH_DIR = origStashDir
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  }
+})
+
+test("agentikitInit writes config outside the stash directory", () => {
+  const origHome = process.env.HOME
+  const origStashDir = process.env.AGENTIKIT_STASH_DIR
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-home-"))
+  process.env.HOME = tmpHome
+  delete process.env.AGENTIKIT_STASH_DIR
+
+  try {
+    const result = agentikitInit()
+    expect(result.configPath).toBe(getConfigPath())
+    expect(result.configPath.startsWith(result.stashDir)).toBe(false)
+    expect(fs.existsSync(result.configPath)).toBe(true)
+    expect(fs.existsSync(path.join(result.stashDir, "config.json"))).toBe(false)
+  } finally {
+    if (origHome === undefined) delete process.env.HOME
+    else process.env.HOME = origHome
     if (origStashDir === undefined) delete process.env.AGENTIKIT_STASH_DIR
     else process.env.AGENTIKIT_STASH_DIR = origStashDir
     fs.rmSync(tmpHome, { recursive: true, force: true })
