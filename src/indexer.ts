@@ -178,6 +178,25 @@ function indexEntries(
               stash = migration.stash
               writeStashFile(dirPath, stash)
             }
+
+            // Check for files on disk that aren't covered by existing .stash.json entries.
+            // This handles the case where new files are added after the initial index.
+            const coveredFiles = new Set(
+              stash.entries
+                .map((e) => e.entry)
+                .filter((e): e is string => !!e),
+            )
+            const uncoveredFiles = files.filter(
+              (f) => !coveredFiles.has(path.basename(f)),
+            )
+            if (uncoveredFiles.length > 0) {
+              const generated = generateMetadata(dirPath, assetType, uncoveredFiles, typeRoot)
+              if (generated.entries.length > 0) {
+                stash = { entries: [...stash.entries, ...generated.entries] }
+                writeStashFile(dirPath, stash)
+                generatedCount += generated.entries.length
+              }
+            }
           }
 
           if (!stash) {
