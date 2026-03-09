@@ -1,4 +1,6 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
+import fs from "node:fs"
+import path from "node:path"
 import { defineCommand, runMain } from "citty"
 import {
   agentikitAdd,
@@ -26,6 +28,101 @@ import {
   unsetConfigValue,
   useProvider,
 } from "./config-cli"
+
+// Read version from package.json
+const pkgPath = path.resolve(import.meta.dir ?? __dirname, "../package.json")
+const pkgVersion: string = JSON.parse(fs.readFileSync(pkgPath, "utf-8")).version
+
+/** Check whether --json flag is present in argv */
+function isJsonMode(): boolean {
+  return process.argv.includes("--json")
+}
+
+/** Output result: JSON if --json flag set, otherwise human-readable */
+function output(command: string, result: unknown): void {
+  if (isJsonMode()) {
+    console.log(JSON.stringify(result, null, 2))
+  } else {
+    console.log(formatHuman(command, result))
+  }
+}
+
+/** Format a command result for human-readable output */
+function formatHuman(command: string, result: unknown): string {
+  const r = result as Record<string, unknown>
+
+  switch (command) {
+    case "init": {
+      let out = `Stash initialized at ${r.stashDir ?? r.path ?? "unknown"}`
+      if (r.envHint) out += `\n\nTo use akm in this shell session, run:\n\n  ${r.envHint}`
+      if (r.profileUpdated) out += `\n\nFuture shells will pick it up automatically from ${r.profileUpdated}.`
+      return out
+    }
+    case "index": {
+      return `Indexed ${r.totalEntries ?? 0} entries from ${r.directoriesScanned ?? 0} directories (mode: ${r.mode ?? "unknown"})`
+    }
+    case "search": {
+      const hits = (r.hits as Array<Record<string, unknown>>) ?? []
+      if (hits.length === 0) return r.tip as string ?? "No results found."
+      const lines = hits.map((h) => {
+        const score = h.score != null ? ` (score: ${Number(h.score).toFixed(2)})` : ""
+        const desc = h.description ? `  ${h.description}` : ""
+        return `  ${h.name ?? h.ref}  [${h.type}]${score}${desc}`
+      })
+      return lines.join("\n")
+    }
+    case "show": {
+      if (r.content != null) return String(r.content)
+      if (r.runCmd != null) return String(r.runCmd)
+      if (r.markdown != null) return String(r.markdown)
+      return JSON.stringify(result, null, 2)
+    }
+    case "add": {
+      const installed = r.installed as Record<string, unknown> | undefined
+      const indexed = installed?.indexed ?? r.indexed ?? 0
+      return `Installed ${r.ref} (${indexed} assets indexed)`
+    }
+    case "list": {
+      const entries = (r.installed as Array<Record<string, unknown>>) ?? []
+      if (entries.length === 0) return "No kits installed."
+      const lines = entries.map((e) => `  ${e.id ?? e.ref}  ${e.stashRoot ?? ""}`)
+      return lines.join("\n")
+    }
+    case "remove":
+    case "update":
+    case "reinstall": {
+      const target = r.target ?? r.ref ?? ""
+      const ok = r.ok !== false ? "OK" : "FAILED"
+      return `${command}: ${target} ${ok}`
+    }
+    case "config-list":
+    case "config-get":
+    case "config-set":
+    case "config-unset":
+    case "config-use":
+    case "config-providers":
+    case "config": {
+      if (typeof r === "object" && r !== null) {
+        // For config get which returns { key, value }
+        if ("key" in r && "value" in r) return `${r.key}=${JSON.stringify(r.value)}`
+        // For config list / set / unset / use which returns full config
+        const lines: string[] = []
+        for (const [k, v] of Object.entries(r)) {
+          lines.push(`${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
+        }
+        return lines.join("\n")
+      }
+      return String(result)
+    }
+    case "sources": {
+      const sources = (r.sources as Array<Record<string, unknown>>) ?? []
+      if (sources.length === 0) return "No stash sources configured."
+      return sources.map((s) => `  [${s.kind}] ${s.path}${s.writable ? " (writable)" : ""}`).join("\n")
+    }
+    default:
+      return JSON.stringify(result, null, 2)
+  }
+}
 
 const initCommand = defineCommand({
   meta: { name: "init", description: "Initialize Agent-i-Kit's working stash directory and set AKM_STASH_DIR" },
@@ -56,7 +153,7 @@ const indexCommand = defineCommand({
   async run({ args }) {
     await runWithJsonErrors(async () => {
       const result = await agentikitIndex({ full: args.full })
-      console.log(JSON.stringify(result, null, 2))
+      output("index", result)
     })
   },
 })
@@ -76,7 +173,8 @@ const searchCommand = defineCommand({
       const limit = args.limit ? parseInt(args.limit, 10) : undefined
       const usage = parseSearchUsageMode(args.usage)
       const source = parseSearchSource(args.source)
-      console.log(JSON.stringify(await agentikitSearch({ query: args.query, type, limit, usage, source }), null, 2))
+      const result = await agentikitSearch({ query: args.query, type, limit, usage, source })
+      output("search", result)
     })
   },
 })
@@ -92,7 +190,8 @@ const addCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      console.log(JSON.stringify(await agentikitAdd({ ref: args.ref }), null, 2))
+      const result = await agentikitAdd({ ref: args.ref })
+      output("add", result)
     })
   },
 })
@@ -101,7 +200,8 @@ const listCommand = defineCommand({
   meta: { name: "list", description: "List installed registry packages from config" },
   async run() {
     await runWithJsonErrors(async () => {
-      console.log(JSON.stringify(await agentikitList(), null, 2))
+      const result = await agentikitList()
+      output("list", result)
     })
   },
 })
@@ -113,7 +213,8 @@ const removeCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      console.log(JSON.stringify(await agentikitRemove({ target: args.target }), null, 2))
+      const result = await agentikitRemove({ target: args.target })
+      output("remove", result)
     })
   },
 })
@@ -126,7 +227,8 @@ const updateCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      console.log(JSON.stringify(await agentikitUpdate({ target: args.target, all: args.all }), null, 2))
+      const result = await agentikitUpdate({ target: args.target, all: args.all })
+      output("update", result)
     })
   },
 })
@@ -139,7 +241,8 @@ const reinstallCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      console.log(JSON.stringify(await agentikitReinstall({ target: args.target, all: args.all }), null, 2))
+      const result = await agentikitReinstall({ target: args.target, all: args.all })
+      output("reinstall", result)
     })
   },
 })
@@ -177,7 +280,8 @@ const showCommand = defineCommand({
             throw new Error(`Unknown view mode: ${args.view}. Expected one of: full|toc|frontmatter|section|lines`)
         }
       }
-      console.log(JSON.stringify(await agentikitShow({ ref: args.ref, view }), null, 2))
+      const result = await agentikitShow({ ref: args.ref, view })
+      output("show", result)
     })
   },
 })
@@ -195,7 +299,7 @@ const configCommand = defineCommand({
       meta: { name: "list", description: "List current configuration with effective embedding/LLM settings" },
       run() {
         return runWithJsonErrors(() => {
-          console.log(JSON.stringify(listConfig(loadConfig()), null, 2))
+          output("config", listConfig(loadConfig()))
         })
       },
     }),
@@ -206,7 +310,7 @@ const configCommand = defineCommand({
       },
       run({ args }) {
         return runWithJsonErrors(() => {
-          console.log(JSON.stringify(getConfigValue(loadConfig(), args.key), null, 2))
+          output("config", getConfigValue(loadConfig(), args.key))
         })
       },
     }),
@@ -220,7 +324,7 @@ const configCommand = defineCommand({
         return runWithJsonErrors(() => {
           const updated = setConfigValue(loadConfig(), args.key, args.value)
           saveConfig(updated)
-          console.log(JSON.stringify(listConfig(updated), null, 2))
+          output("config", listConfig(updated))
         })
       },
     }),
@@ -233,7 +337,7 @@ const configCommand = defineCommand({
         return runWithJsonErrors(() => {
           const updated = unsetConfigValue(loadConfig(), args.key)
           saveConfig(updated)
-          console.log(JSON.stringify(listConfig(updated), null, 2))
+          output("config", listConfig(updated))
         })
       },
     }),
@@ -245,7 +349,7 @@ const configCommand = defineCommand({
       run({ args }) {
         return runWithJsonErrors(() => {
           const scope = parseProviderScope(args.scope)
-          console.log(JSON.stringify(listProviders(scope, loadConfig()), null, 2))
+          output("config", listProviders(scope, loadConfig()))
         })
       },
     }),
@@ -260,7 +364,7 @@ const configCommand = defineCommand({
           const scope = parseProviderScope(args.scope)
           const updated = useProvider(loadConfig(), scope, args.provider)
           saveConfig(updated)
-          console.log(JSON.stringify(listConfig(updated), null, 2))
+          output("config", listConfig(updated))
         })
       },
     }),
@@ -269,17 +373,17 @@ const configCommand = defineCommand({
     return runWithJsonErrors(() => {
       if (hasConfigSubcommand(args)) return
       if (args.list) {
-        console.log(JSON.stringify(listConfig(loadConfig()), null, 2))
+        output("config", listConfig(loadConfig()))
         return
       }
       if (args.get) {
-        console.log(JSON.stringify(getConfigValue(loadConfig(), args.get), null, 2))
+        output("config", getConfigValue(loadConfig(), args.get))
         return
       }
       if (args.unset) {
         const updated = unsetConfigValue(loadConfig(), args.unset)
         saveConfig(updated)
-        console.log(JSON.stringify(listConfig(updated), null, 2))
+        output("config", listConfig(updated))
         return
       }
       if (args.set) {
@@ -292,9 +396,9 @@ const configCommand = defineCommand({
         const partial = parseConfigValue(key, value)
         const config = { ...loadConfig(), ...partial }
         saveConfig(config)
-        console.log(JSON.stringify(listConfig(config), null, 2))
+        output("config", listConfig(config))
       } else {
-        console.log(JSON.stringify(listConfig(loadConfig()), null, 2))
+        output("config", listConfig(loadConfig()))
       }
     })
   },
@@ -314,7 +418,7 @@ const cloneCommand = defineCommand({
         newName: args.name,
         force: args.force,
       })
-      console.log(JSON.stringify(result, null, 2))
+      output("clone", result)
     })
   },
 })
@@ -325,7 +429,7 @@ const sourcesCommand = defineCommand({
   run() {
     return runWithJsonErrors(() => {
       const sources = resolveStashSources()
-      console.log(JSON.stringify({ sources }, null, 2))
+      output("sources", { sources })
     })
   },
 })
@@ -333,7 +437,11 @@ const sourcesCommand = defineCommand({
 const main = defineCommand({
   meta: {
     name: "akm",
+    version: pkgVersion,
     description: "CLI tool to search, open, and manage assets from Agent-i-Kit stash.",
+  },
+  args: {
+    json: { type: "boolean", description: "Output in JSON format", default: false },
   },
   subCommands: {
     init: initCommand,
@@ -355,9 +463,11 @@ const SEARCH_USAGE_MODES: SearchUsageMode[] = ["none", "both", "item", "guide"]
 const SEARCH_SOURCES: SearchSource[] = ["local", "registry", "both"]
 const CONFIG_SUBCOMMAND_SET = new Set(["list", "get", "set", "unset", "providers", "use"])
 
-// Note: citty reads process.argv directly, so we must normalize it in-place.
-// This is done once at startup before runMain.
-normalizeConfigArgv(process.argv)
+// citty reads process.argv directly and does not accept a custom argv array,
+// so we must replace process.argv with the normalized version before runMain.
+const normalizedArgv = [...process.argv]
+normalizeConfigArgv(normalizedArgv)
+process.argv = normalizedArgv
 runMain(main)
 
 function parseSearchUsageMode(value: string): SearchUsageMode {
@@ -370,14 +480,41 @@ function parseSearchSource(value: string): SearchSource {
   throw new Error(`Invalid value for --source: ${value}. Expected one of: ${SEARCH_SOURCES.join("|")}`)
 }
 
+// ── Exit codes ──────────────────────────────────────────────────────────────
+const EXIT_GENERAL = 1
+const EXIT_USAGE = 2
+const EXIT_CONFIG = 78
+
+function classifyExitCode(message: string): number {
+  // Usage / argument errors
+  if (
+    message.includes("required") ||
+    message.includes("Invalid value for") ||
+    message.includes("Expected one of") ||
+    message.includes("expected JSON object")
+  ) {
+    return EXIT_USAGE
+  }
+  // Configuration errors
+  if (
+    message.includes("AKM_STASH_DIR") ||
+    message.includes("Unable to determine") ||
+    message.includes("config")
+  ) {
+    return EXIT_CONFIG
+  }
+  return EXIT_GENERAL
+}
+
 async function runWithJsonErrors(fn: (() => void) | (() => Promise<void>)): Promise<void> {
   try {
     await fn()
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
     const hint = buildHint(message)
+    const exitCode = classifyExitCode(message)
     console.error(JSON.stringify({ ok: false, error: message, hint }, null, 2))
-    process.exit(1)
+    process.exit(exitCode)
   }
 }
 
@@ -405,24 +542,38 @@ function hasConfigSubcommand(args: Record<string, unknown>): boolean {
 }
 
 /**
- * Mutate argv before citty parses it so git-style config forms like
+ * Normalize argv before citty parses it so git-style config forms like
  * `akm config llm.maxTokens 512` and `akm config --get llm.maxTokens`
  * are normalized into the existing config subcommands.
+ *
+ * Operates on a copy of process.argv; the caller replaces process.argv
+ * with the normalized result (safer than in-place splice).
  */
 function normalizeConfigArgv(argv: string[]): void {
-  const [, , command, argAfterCommand, argAfterKey, ...rest] = argv
+  // Global flags (like --json) should not be treated as config subcommand arguments.
+  // We strip them from the analysis portion, normalize, then re-append them.
+  const GLOBAL_FLAGS = new Set(["--json"])
+  const globalFlags = argv.slice(3).filter((a) => GLOBAL_FLAGS.has(a))
+  const configArgs = argv.slice(3).filter((a) => !GLOBAL_FLAGS.has(a))
+
+  const [command, argAfterCommand, argAfterKey, ...rest] = [argv[2], ...configArgs]
   if (command !== "config") return
   if (!argAfterCommand) return
+
+  const replaceArgs = (...newArgs: string[]) => {
+    argv.splice(3, argv.length - 3, ...newArgs, ...globalFlags)
+  }
+
   if (argAfterCommand === "--list") {
-    argv.splice(3, argv.length - 3, "list")
+    replaceArgs("list")
     return
   }
   if (argAfterCommand === "--get" && argAfterKey) {
-    argv.splice(3, argv.length - 3, "get", argAfterKey, ...rest)
+    replaceArgs("get", argAfterKey, ...rest)
     return
   }
   if (argAfterCommand === "--unset" && argAfterKey) {
-    argv.splice(3, argv.length - 3, "unset", argAfterKey, ...rest)
+    replaceArgs("unset", argAfterKey, ...rest)
     return
   }
   if (argAfterCommand.startsWith("-")) return
@@ -430,9 +581,9 @@ function normalizeConfigArgv(argv: string[]): void {
 
   // A single arg after `config` behaves like `git config <key>` and reads the value.
   if (argAfterKey === undefined) {
-    argv.splice(3, argv.length - 3, "get", argAfterCommand)
+    replaceArgs("get", argAfterCommand)
     return
   }
 
-  argv.splice(3, argv.length - 3, "set", argAfterCommand, argAfterKey, ...rest)
+  replaceArgs("set", argAfterCommand, argAfterKey, ...rest)
 }

@@ -254,8 +254,8 @@ async function generateEmbeddingsForDb(
       upsertEmbedding(db, allEntries[i].id, embeddings[i])
     }
     return true
-  } catch {
-    // Embedding generation failed (e.g. model unavailable) — continue without embeddings
+  } catch (error) {
+    console.warn("Embedding generation failed, continuing without:", error instanceof Error ? error.message : String(error))
     return false
   }
 }

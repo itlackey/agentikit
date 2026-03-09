@@ -50,7 +50,9 @@ function copyDirRecursive(src: string, dest: string): void {
 }
 
 function runCli(...args: string[]): { stdout: string; stderr: string; exitCode: number } {
-  const result = spawnSync("bun", [CLI, ...args], {
+  // Append --json by default so existing tests get JSON output (the new default is human-readable)
+  const cliArgs = args.length > 0 ? [...args, "--json"] : args
+  const result = spawnSync("bun", [CLI, ...cliArgs], {
     encoding: "utf8",
     timeout: 30_000,
     env: { ...process.env },

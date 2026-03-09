@@ -79,6 +79,7 @@ export async function agentikitSearch(input: {
       hits: localResult?.hits ?? [],
       usageGuide: localResult?.usageGuide,
       tip: localResult?.tip,
+      warnings: localResult?.warnings,
       timing: { totalMs: Date.now() - t0, rankMs: localResult?.rankMs, embedMs: localResult?.embedMs },
     }
   }
@@ -122,7 +123,9 @@ export async function agentikitSearch(input: {
     hits: mergedHits,
     usageGuide: localResult?.usageGuide,
     tip: mergedHits.length === 0 ? "No matching stash assets or registry entries were found." : undefined,
-    warnings: registryResult?.warnings.length ? registryResult.warnings : undefined,
+    warnings: [...(localResult?.warnings ?? []), ...(registryResult?.warnings ?? [])].length
+      ? [...(localResult?.warnings ?? []), ...(registryResult?.warnings ?? [])]
+      : undefined,
     timing: { totalMs: Date.now() - t0 },
   }
 }
@@ -134,7 +137,7 @@ async function searchLocal(input: {
   usageMode: SearchUsageMode
   stashDir: string
   sources: StashSource[]
-}): Promise<{ hits: LocalSearchHit[]; usageGuide?: Partial<Record<AgentikitAssetType, string[]>>; tip?: string; embedMs?: number; rankMs?: number }> {
+}): Promise<{ hits: LocalSearchHit[]; usageGuide?: Partial<Record<AgentikitAssetType, string[]>>; tip?: string; warnings?: string[]; embedMs?: number; rankMs?: number }> {
   const { query, searchType, limit, usageMode, stashDir, sources } = input
   const config = loadConfig()
   const allStashDirs = sources.map((s) => s.path)
@@ -162,8 +165,8 @@ async function searchLocal(input: {
         closeDatabase(db)
       }
     }
-  } catch {
-    // Search index unavailable — fall back to substring search
+  } catch (error) {
+    console.warn("Search index unavailable, falling back to substring search:", error instanceof Error ? error.message : String(error))
   }
 
   const hits = allStashDirs
@@ -365,8 +368,8 @@ async function tryVecScores(
       scores.set(id, Math.max(0, cosineSim))
     }
     return scores
-  } catch {
-    // Vector search failed — skip semantic scoring
+  } catch (error) {
+    console.warn("Vector search failed, skipping:", error instanceof Error ? error.message : String(error))
     return null
   }
 }
