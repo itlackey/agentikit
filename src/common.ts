@@ -84,3 +84,47 @@ export async function fetchWithTimeout(
     clearTimeout(timer)
   }
 }
+
+/**
+ * Fetch with retry and exponential backoff.
+ * Retries on network errors, 429, and 5xx responses.
+ * Honors Retry-After header for 429 responses.
+ */
+export async function fetchWithRetry(
+  url: string,
+  init?: RequestInit,
+  options?: { timeout?: number; retries?: number; baseDelay?: number },
+): Promise<Response> {
+  const maxRetries = options?.retries ?? 3
+  const baseDelay = options?.baseDelay ?? 500
+  const timeout = options?.timeout ?? 30_000
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetchWithTimeout(url, init, timeout)
+      if (attempt < maxRetries && shouldRetry(response.status)) {
+        const retryAfter = parseRetryAfter(response)
+        const delay = retryAfter ?? baseDelay * Math.pow(2, attempt) * (0.5 + Math.random() * 0.5)
+        await new Promise((r) => setTimeout(r, delay))
+        continue
+      }
+      return response
+    } catch (err) {
+      if (attempt >= maxRetries) throw err
+      const delay = baseDelay * Math.pow(2, attempt) * (0.5 + Math.random() * 0.5)
+      await new Promise((r) => setTimeout(r, delay))
+    }
+  }
+  throw new Error("fetchWithRetry: unreachable")
+}
+
+function shouldRetry(status: number): boolean {
+  return status === 429 || status >= 500
+}
+
+function parseRetryAfter(response: Response): number | undefined {
+  const header = response.headers.get("retry-after")
+  if (!header) return undefined
+  const seconds = parseInt(header, 10)
+  return isNaN(seconds) ? undefined : seconds * 1000
+}

@@ -68,6 +68,8 @@ export type {
   RegistrySearchHit,
   RegistrySearchResponse,
 } from "./src/registry-types"
+export { readLockfile, writeLockfile, upsertLockEntry, removeLockEntry } from "./src/lockfile"
+export type { LockfileEntry } from "./src/lockfile"
 export { enhanceMetadata, isLlmAvailable } from "./src/llm"
 export { embed, cosineSimilarity, isEmbeddingAvailable } from "./src/embedder"
 export type { EmbeddingVector } from "./src/embedder"

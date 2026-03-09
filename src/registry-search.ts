@@ -1,6 +1,6 @@
 import fs from "node:fs"
 import path from "node:path"
-import { fetchWithTimeout } from "./common"
+import { fetchWithRetry } from "./common"
 import type { RegistrySearchHit, RegistrySearchResponse } from "./registry-types"
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ async function loadIndex(url: string): Promise<RegistryIndex | null> {
 
   // Try to fetch fresh index
   try {
-    const response = await fetchWithTimeout(url, undefined, 10_000)
+    const response = await fetchWithRetry(url, undefined, { timeout: 10_000 })
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`)
     }

@@ -2,6 +2,7 @@ import { agentikitIndex } from "./indexer"
 import fs from "node:fs"
 import { resolveStashDir } from "./common"
 import { loadConfig } from "./config"
+import { upsertLockEntry } from "./lockfile"
 import { upsertInstalledRegistryEntry, installRegistryRef } from "./registry-install"
 import type { AddResponse } from "./stash-types"
 
@@ -22,6 +23,15 @@ export async function agentikitAdd(input: { ref: string }): Promise<AddResponse>
     stashRoot: installed.stashRoot,
     cacheDir: installed.cacheDir,
     installedAt: installed.installedAt,
+  })
+
+  upsertLockEntry({
+    id: installed.id,
+    source: installed.source,
+    ref: installed.ref,
+    resolvedVersion: installed.resolvedVersion,
+    resolvedRevision: installed.resolvedRevision,
+    integrity: installed.integrity ?? (installed.source === "local" ? "local" : undefined),
   })
 
   if (replaced && replaced.cacheDir !== installed.cacheDir) {

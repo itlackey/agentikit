@@ -56,6 +56,7 @@ export interface RegistryInstalledEntry {
 
 export interface RegistryInstallResult extends RegistryInstalledEntry {
   extractedDir: string
+  integrity?: string
 }
 
 export interface RegistrySearchHit {

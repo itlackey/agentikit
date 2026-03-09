@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
-import { fetchWithTimeout } from "./common"
+import { fetchWithRetry } from "./common"
 import type { ParsedGitRef, ParsedLocalRef, ParsedGithubRef, ParsedNpmRef, ParsedRegistryRef, ResolvedRegistryArtifact } from "./registry-types"
 import { GITHUB_API_BASE, githubHeaders, asRecord, asString } from "./github"
 
@@ -187,7 +187,14 @@ async function resolveNpmArtifact(parsed: ParsedNpmRef): Promise<ResolvedRegistr
   } else if (requested in versions) {
     resolvedVersion = requested
   } else {
+    // Try dist-tag first
     resolvedVersion = asString(distTags[requested])
+
+    // If not a dist-tag, try semver range resolution
+    if (!resolvedVersion && isSemverRange(requested)) {
+      const versionKeys = Object.keys(versions).filter(isExactSemver)
+      resolvedVersion = maxSatisfying(versionKeys, requested)
+    }
   }
 
   if (!resolvedVersion || !(resolvedVersion in versions)) {
@@ -397,8 +404,107 @@ function readGitValue(repoRoot: string, ...args: string[]): string | undefined {
   return value || undefined
 }
 
+// ── Semver helpers ──────────────────────────────────────────────────────────
+
+interface SemverParts {
+  major: number
+  minor: number
+  patch: number
+  prerelease?: string
+}
+
+function parseSemver(version: string): SemverParts | undefined {
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/)
+  if (!match) return undefined
+  return {
+    major: parseInt(match[1], 10),
+    minor: parseInt(match[2], 10),
+    patch: parseInt(match[3], 10),
+    prerelease: match[4],
+  }
+}
+
+function isExactSemver(version: string): boolean {
+  return /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.+-]+)?$/.test(version)
+}
+
+function isSemverRange(input: string): boolean {
+  return /^[~^>=<*]/.test(input) || /^\d+\.(\d+|\*)/.test(input)
+}
+
+function compareSemver(a: SemverParts, b: SemverParts): number {
+  if (a.major !== b.major) return a.major - b.major
+  if (a.minor !== b.minor) return a.minor - b.minor
+  if (a.patch !== b.patch) return a.patch - b.patch
+  // Versions with prerelease are lower than release
+  if (a.prerelease && !b.prerelease) return -1
+  if (!a.prerelease && b.prerelease) return 1
+  return 0
+}
+
+function semverGte(a: SemverParts, b: SemverParts): boolean {
+  return compareSemver(a, b) >= 0
+}
+
+function satisfiesRange(version: SemverParts, range: string): boolean {
+  // Skip pre-release versions unless range specifically mentions one
+  if (version.prerelease && !range.includes("-")) return false
+
+  // ^1.2.3 — compatible with version: same major, >= minor.patch
+  const caretMatch = range.match(/^\^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/)
+  if (caretMatch) {
+    const rMajor = parseInt(caretMatch[1], 10)
+    const rMinor = parseInt(caretMatch[2], 10)
+    const rPatch = parseInt(caretMatch[3], 10)
+    if (version.major !== rMajor) return false
+    // ^0.x has special behavior: ^0.2.3 means >=0.2.3 <0.3.0
+    if (rMajor === 0) {
+      if (version.minor !== rMinor) return false
+      return version.patch >= rPatch
+    }
+    return semverGte(version, { major: rMajor, minor: rMinor, patch: rPatch })
+  }
+
+  // ~1.2.3 — same major.minor, patch >= specified
+  const tildeMatch = range.match(/^~(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/)
+  if (tildeMatch) {
+    const rMajor = parseInt(tildeMatch[1], 10)
+    const rMinor = parseInt(tildeMatch[2], 10)
+    const rPatch = parseInt(tildeMatch[3], 10)
+    return version.major === rMajor && version.minor === rMinor && version.patch >= rPatch
+  }
+
+  // >=1.2.3
+  const gteMatch = range.match(/^>=(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/)
+  if (gteMatch) {
+    const rMajor = parseInt(gteMatch[1], 10)
+    const rMinor = parseInt(gteMatch[2], 10)
+    const rPatch = parseInt(gteMatch[3], 10)
+    return semverGte(version, { major: rMajor, minor: rMinor, patch: rPatch })
+  }
+
+  // * or latest
+  if (range === "*" || range === "latest") return true
+
+  return false
+}
+
+export function maxSatisfying(versions: string[], range: string): string | undefined {
+  const candidates: Array<{ version: string; parsed: SemverParts }> = []
+  for (const v of versions) {
+    const parsed = parseSemver(v)
+    if (!parsed) continue
+    if (satisfiesRange(parsed, range)) {
+      candidates.push({ version: v, parsed })
+    }
+  }
+  if (candidates.length === 0) return undefined
+  candidates.sort((a, b) => compareSemver(b.parsed, a.parsed))
+  return candidates[0].version
+}
+
 async function fetchJson<T>(url: string, headers?: HeadersInit): Promise<T> {
-  const response = await fetchWithTimeout(url, { headers })
+  const response = await fetchWithRetry(url, { headers })
   if (!response.ok) {
     throw new Error(`Request failed (${response.status}) for ${url}`)
   }
@@ -406,7 +512,7 @@ async function fetchJson<T>(url: string, headers?: HeadersInit): Promise<T> {
 }
 
 async function tryFetchJson<T>(url: string, headers?: HeadersInit): Promise<T | null> {
-  const response = await fetchWithTimeout(url, { headers })
+  const response = await fetchWithRetry(url, { headers })
   if (!response.ok) return null
   return await response.json() as T
 }

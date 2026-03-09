@@ -2,6 +2,7 @@ import fs from "node:fs"
 import { resolveStashDir } from "./common"
 import { loadConfig } from "./config"
 import { agentikitIndex } from "./indexer"
+import { removeLockEntry, upsertLockEntry } from "./lockfile"
 import {
   installRegistryRef,
   removeInstalledRegistryEntry,
@@ -45,6 +46,7 @@ export async function agentikitRemove(input: { target: string; stashDir?: string
   const entry = resolveInstalledTarget(installed, target)
 
   const updatedConfig = removeInstalledRegistryEntry(entry.id)
+  removeLockEntry(entry.id)
   cleanupDirectoryBestEffort(entry.cacheDir)
   const index = await agentikitIndex({ stashDir })
 
@@ -86,6 +88,14 @@ export async function agentikitReinstall(input?: {
   for (const entry of selectedEntries) {
     const installed = await installRegistryRef(entry.ref)
     upsertInstalledRegistryEntry(toInstalledEntry(installed))
+    upsertLockEntry({
+      id: installed.id,
+      source: installed.source,
+      ref: installed.ref,
+      resolvedVersion: installed.resolvedVersion,
+      resolvedRevision: installed.resolvedRevision,
+      integrity: installed.integrity ?? (installed.source === "local" ? "local" : undefined),
+    })
     if (entry.cacheDir !== installed.cacheDir) {
       cleanupDirectoryBestEffort(entry.cacheDir)
     }
@@ -135,6 +145,14 @@ export async function agentikitUpdate(input?: {
   for (const entry of selectedEntries) {
     const installed = await installRegistryRef(entry.ref)
     upsertInstalledRegistryEntry(toInstalledEntry(installed))
+    upsertLockEntry({
+      id: installed.id,
+      source: installed.source,
+      ref: installed.ref,
+      resolvedVersion: installed.resolvedVersion,
+      resolvedRevision: installed.resolvedRevision,
+      integrity: installed.integrity ?? (installed.source === "local" ? "local" : undefined),
+    })
     if (entry.cacheDir !== installed.cacheDir) {
       cleanupDirectoryBestEffort(entry.cacheDir)
     }

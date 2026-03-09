@@ -1,8 +1,8 @@
-import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { fetchWithTimeout, isWithin, TYPE_DIRS } from "./common"
+import { fetchWithRetry, isWithin, TYPE_DIRS } from "./common"
 import { loadConfig, saveConfig, type AgentikitConfig } from "./config"
 import { parseRegistryRef, resolveRegistryArtifact } from "./registry-resolve"
 import type { ParsedGitRef, ParsedLocalRef, RegistryInstallResult, RegistryInstalledEntry, RegistrySource } from "./registry-types"
@@ -26,14 +26,40 @@ export async function installRegistryRef(ref: string, options?: InstallRegistryR
 
   const installedAt = (options?.now ?? new Date()).toISOString()
   const cacheRootDir = options?.cacheRootDir ?? getRegistryCacheRootDir()
-  const cacheDir = buildInstallCacheDir(cacheRootDir, resolved.source, resolved.id)
+  const cacheDir = buildInstallCacheDir(cacheRootDir, resolved.source, resolved.id, resolved.resolvedVersion ?? resolved.resolvedRevision)
   const archivePath = path.join(cacheDir, "artifact.tar.gz")
   const extractedDir = path.join(cacheDir, "extracted")
+
+  // Check for cache hit: if extracted dir already exists and has a valid stash root, reuse it
+  if (isDirectory(extractedDir)) {
+    try {
+      const cachedStashRoot = detectStashRoot(extractedDir)
+      if (cachedStashRoot) {
+        const integrity = fs.existsSync(archivePath) ? await computeFileHash(archivePath) : undefined
+        return {
+          id: resolved.id,
+          source: resolved.source,
+          ref: resolved.ref,
+          artifactUrl: resolved.artifactUrl,
+          resolvedVersion: resolved.resolvedVersion,
+          resolvedRevision: resolved.resolvedRevision,
+          installedAt,
+          cacheDir,
+          extractedDir,
+          stashRoot: cachedStashRoot,
+          integrity,
+        }
+      }
+    } catch {
+      // Cache invalid, re-download
+    }
+  }
 
   fs.mkdirSync(cacheDir, { recursive: true })
 
   await downloadArchive(resolved.artifactUrl, archivePath)
   verifyArchiveIntegrity(archivePath, resolved.resolvedRevision, resolved.source)
+  const integrity = await computeFileHash(archivePath)
   extractTarGzSecure(archivePath, extractedDir)
 
   const provisionalKitRoot = detectStashRoot(extractedDir)
@@ -51,6 +77,7 @@ export async function installRegistryRef(ref: string, options?: InstallRegistryR
     cacheDir,
     extractedDir,
     stashRoot,
+    integrity,
   }
 }
 
@@ -93,9 +120,34 @@ async function installGitRegistryRef(parsed: ParsedGitRef, options?: InstallRegi
   const resolved = await resolveRegistryArtifact(parsed)
   const installedAt = (options?.now ?? new Date()).toISOString()
   const cacheRootDir = options?.cacheRootDir ?? getRegistryCacheRootDir()
-  const cacheDir = buildInstallCacheDir(cacheRootDir, parsed.source, parsed.id)
+  const cacheDir = buildInstallCacheDir(cacheRootDir, parsed.source, parsed.id, resolved.resolvedRevision)
   const cloneDir = path.join(cacheDir, "clone")
   const extractedDir = path.join(cacheDir, "extracted")
+
+  // Check for cache hit
+  if (isDirectory(extractedDir)) {
+    try {
+      const provisionalKitRoot = detectStashRoot(extractedDir)
+      const installRoot = applyAgentikitIncludeConfig(provisionalKitRoot, cacheDir, extractedDir) ?? provisionalKitRoot
+      const stashRoot = detectStashRoot(installRoot)
+      if (stashRoot) {
+        return {
+          id: resolved.id,
+          source: resolved.source,
+          ref: resolved.ref,
+          artifactUrl: resolved.artifactUrl,
+          resolvedVersion: resolved.resolvedVersion,
+          resolvedRevision: resolved.resolvedRevision,
+          installedAt,
+          cacheDir,
+          extractedDir,
+          stashRoot,
+        }
+      }
+    } catch {
+      // Cache invalid, re-clone
+    }
+  }
 
   fs.mkdirSync(cacheDir, { recursive: true })
 
@@ -198,10 +250,12 @@ export function detectStashRoot(extractedDir: string): string {
   return root
 }
 
-function buildInstallCacheDir(cacheRootDir: string, source: RegistrySource, id: string): string {
+function buildInstallCacheDir(cacheRootDir: string, source: RegistrySource, id: string, version?: string): string {
   const slug = `${source}-${id.replace(/[^a-zA-Z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "")}`
-  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-  return path.join(cacheRootDir, slug || source, stamp)
+  const versionSlug = source === "local"
+    ? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    : (version?.replace(/[^a-zA-Z0-9_.-]+/g, "-") ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
+  return path.join(cacheRootDir, slug || source, versionSlug)
 }
 
 function applyAgentikitIncludeConfig(
@@ -220,7 +274,7 @@ function applyAgentikitIncludeConfig(
 }
 
 async function downloadArchive(url: string, destination: string): Promise<void> {
-  const response = await fetchWithTimeout(url, undefined, 120_000)
+  const response = await fetchWithRetry(url, undefined, { timeout: 120_000 })
   if (!response.ok) {
     throw new Error(`Failed to download archive (${response.status}) from ${url}`)
   }
@@ -453,5 +507,11 @@ function normalizeInstalledEntry(entry: RegistryInstalledEntry): RegistryInstall
     stashRoot: path.resolve(entry.stashRoot),
     cacheDir: path.resolve(entry.cacheDir),
   }
+}
+
+async function computeFileHash(filePath: string): Promise<string> {
+  const data = fs.readFileSync(filePath)
+  const hash = createHash("sha256").update(data).digest("hex")
+  return `sha256:${hash}`
 }
 
