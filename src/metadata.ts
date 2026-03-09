@@ -63,7 +63,14 @@ export function loadStashFile(dirPath: string): StashFile | null {
 
 export function writeStashFile(dirPath: string, stash: StashFile): void {
   const filePath = stashFilePath(dirPath)
-  fs.writeFileSync(filePath, JSON.stringify(stash, null, 2) + "\n", "utf8")
+  const tmpPath = filePath + `.tmp.${process.pid}`
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(stash, null, 2) + "\n", "utf8")
+    fs.renameSync(tmpPath, filePath)
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath) } catch { /* ignore cleanup failure */ }
+    throw err
+  }
 }
 
 export function validateStashEntry(entry: unknown): StashEntry | null {

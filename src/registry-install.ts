@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { fetchWithTimeout, isWithin, TYPE_DIRS } from "./common"
@@ -32,6 +33,7 @@ export async function installRegistryRef(ref: string, options?: InstallRegistryR
   fs.mkdirSync(cacheDir, { recursive: true })
 
   await downloadArchive(resolved.artifactUrl, archivePath)
+  verifyArchiveIntegrity(archivePath, resolved.resolvedRevision, resolved.source)
   extractTarGzSecure(archivePath, extractedDir)
 
   const provisionalKitRoot = detectStashRoot(extractedDir)
@@ -233,6 +235,49 @@ async function downloadArchive(url: string, destination: string): Promise<void> 
     const arrayBuffer = await response.arrayBuffer()
     fs.writeFileSync(destination, Buffer.from(arrayBuffer))
   }
+}
+
+export function verifyArchiveIntegrity(
+  archivePath: string,
+  expected: string | undefined,
+  source?: RegistrySource,
+): void {
+  if (!expected) return
+
+  // For GitHub and git sources, resolvedRevision is a commit SHA, not a content hash.
+  // Content integrity cannot be verified from a commit hash, so skip verification.
+  if (source === "github" || source === "git") return
+
+  const fileBuffer = fs.readFileSync(archivePath)
+
+  // SRI hash format: sha256-<base64> or sha512-<base64>
+  if (expected.startsWith("sha256-") || expected.startsWith("sha512-")) {
+    const dashIndex = expected.indexOf("-")
+    const algorithm = expected.slice(0, dashIndex)
+    const expectedBase64 = expected.slice(dashIndex + 1)
+    const actualBase64 = createHash(algorithm).update(fileBuffer).digest("base64")
+    if (actualBase64 !== expectedBase64) {
+      fs.unlinkSync(archivePath)
+      throw new Error(
+        `Integrity check failed for ${archivePath}: expected ${algorithm} digest ${expectedBase64}, got ${actualBase64}`,
+      )
+    }
+    return
+  }
+
+  // Hex shasum (SHA-1 from npm)
+  if (/^[0-9a-f]{40}$/i.test(expected)) {
+    const actualHex = createHash("sha1").update(fileBuffer).digest("hex")
+    if (actualHex.toLowerCase() !== expected.toLowerCase()) {
+      fs.unlinkSync(archivePath)
+      throw new Error(
+        `Integrity check failed for ${archivePath}: expected sha1 ${expected}, got ${actualHex}`,
+      )
+    }
+    return
+  }
+
+  // Unrecognized format — skip verification
 }
 
 function extractTarGzSecure(archivePath: string, destinationDir: string): void {

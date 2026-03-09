@@ -47,10 +47,20 @@ export function hasErrnoCode(error: unknown, code: string): boolean {
 }
 
 export function isWithin(candidate: string, root: string): boolean {
-  const normalizedRoot = normalizeFsPathForComparison(path.resolve(root))
-  const normalizedCandidate = normalizeFsPathForComparison(path.resolve(candidate))
+  const resolvedRoot = safeRealpath(root)
+  const resolvedCandidate = safeRealpath(candidate)
+  const normalizedRoot = normalizeFsPathForComparison(resolvedRoot)
+  const normalizedCandidate = normalizeFsPathForComparison(resolvedCandidate)
   const rel = path.relative(normalizedRoot, normalizedCandidate)
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))
+}
+
+function safeRealpath(p: string): string {
+  try {
+    return fs.realpathSync(path.resolve(p))
+  } catch {
+    return path.resolve(p)
+  }
 }
 
 function normalizeFsPathForComparison(value: string): string {
