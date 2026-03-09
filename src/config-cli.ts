@@ -115,7 +115,7 @@ export function getConfigValue(config: AgentikitConfig, key: string): unknown {
     case "embedding.dimension":
       return getEmbeddingDisplayConfig(config).dimension ?? null
     case "embedding.apiKey":
-      return maskSecret(getEmbeddingDisplayConfig(config).apiKey)
+      return maskSecret(getEmbeddingDisplayConfig(config).apiKey) ?? null
     case "llm":
       return maskSecrets(getLlmDisplayConfig(config))
     case "llm.provider":
@@ -129,7 +129,7 @@ export function getConfigValue(config: AgentikitConfig, key: string): unknown {
     case "llm.maxTokens":
       return getLlmDisplayConfig(config).maxTokens ?? null
     case "llm.apiKey":
-      return maskSecret(getLlmDisplayConfig(config).apiKey)
+      return maskSecret(getLlmDisplayConfig(config).apiKey) ?? null
     default:
       throw new Error(`Unknown config key: ${key}`)
   }

@@ -289,7 +289,7 @@ function validateNpmPackageName(name: string): void {
   if (name.startsWith('.') || name.startsWith('_')) {
     throw new Error(`Invalid npm package name: "${name}" cannot start with . or _.`)
   }
-  if (/[~'!()*]/.test(name) || name.includes(' ') || encodeURIComponent(name) !== name.replace(/%40/g, '@').replace(/%2[Ff]/g, '/')) {
+  if (/[~'!()*]/.test(name) || name.includes(' ') || encodeURIComponent(name).replace(/%40/g, '@').replace(/%2[Ff]/g, '/') !== name) {
     throw new Error(`Invalid npm package name: "${name}" contains invalid characters.`)
   }
 }

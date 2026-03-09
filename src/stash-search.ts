@@ -257,6 +257,7 @@ async function searchDatabase(
       if (seenIds.has(id)) continue
       const found = getEntryById(db, id)
       if (found) {
+        if (typeFilter && found.entry.type !== typeFilter) continue
         scored.push({
           id,
           entry: found.entry,

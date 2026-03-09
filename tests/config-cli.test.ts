@@ -86,7 +86,7 @@ describe("config CLI helpers", () => {
     }
     const updated = unsetConfigValue(base, "llm.apiKey")
     expect(updated.llm?.apiKey).toBeUndefined()
-    expect(getConfigValue(updated, "llm.apiKey")).toBeUndefined()
+    expect(getConfigValue(updated, "llm.apiKey")).toBeNull()
   })
 
   test("listProviders marks the current provider", () => {
