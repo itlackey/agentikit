@@ -37,10 +37,15 @@ export const EMBEDDING_DIM = 384
 // ── Path ────────────────────────────────────────────────────────────────────
 
 export function getDbPath(): string {
-  const cacheDir =
-    process.env.XDG_CACHE_HOME ||
-    path.join(process.env.HOME || process.env.USERPROFILE || "", ".cache")
-  return path.join(cacheDir, "agentikit", "index.db")
+  const xdgCacheHome = process.env.XDG_CACHE_HOME?.trim()
+  if (xdgCacheHome) {
+    return path.join(xdgCacheHome, "agentikit", "index.db")
+  }
+  const home = process.env.HOME?.trim() || process.env.USERPROFILE?.trim()
+  if (!home) {
+    throw new Error("Unable to determine cache directory. Set XDG_CACHE_HOME or HOME.")
+  }
+  return path.join(home, ".cache", "agentikit", "index.db")
 }
 
 // ── Database lifecycle ──────────────────────────────────────────────────────

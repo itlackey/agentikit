@@ -35,9 +35,14 @@ const initCommand = defineCommand({
       console.log(JSON.stringify(result, null, 2))
       if (result.envHint) {
         console.error(
-          `\nTo use akm in this shell session, run:\n\n  ${result.envHint}\n\n` +
-          `Future shells will pick it up automatically from ${result.profileUpdated}.`
+          `\nTo use akm in this shell session, run:\n\n  ${result.envHint}\n`
         )
+        if (result.shellSetup) {
+          console.error(
+            `\nTo make this permanent, add to your shell profile (~/.bashrc or ~/.zshrc):\n` +
+            result.shellSetup.filter(l => !l.startsWith("#")).map(l => `  ${l}`).join("\n")
+          )
+        }
       }
     })
   },

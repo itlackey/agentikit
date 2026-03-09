@@ -186,12 +186,60 @@ function pickKnownKeys(raw: Record<string, unknown>): AgentikitConfig {
 
 function readConfigObject(configPath: string): Record<string, unknown> | undefined {
   try {
-    const raw = JSON.parse(fs.readFileSync(configPath, "utf8"))
+    const text = fs.readFileSync(configPath, "utf8")
+    const raw = JSON.parse(stripJsonComments(text))
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined
     return raw
   } catch {
     return undefined
   }
+}
+
+/**
+ * Strip JavaScript-style comments from a JSON string (JSONC support).
+ * Handles // line comments and /* block comments while preserving
+ * comment-like sequences inside quoted strings.
+ */
+export function stripJsonComments(text: string): string {
+  let result = ""
+  let i = 0
+  let inString = false
+  let stringChar = ""
+  while (i < text.length) {
+    if (inString) {
+      if (text[i] === "\\") {
+        result += text[i] + (text[i + 1] ?? "")
+        i += 2
+        continue
+      }
+      if (text[i] === stringChar) {
+        inString = false
+      }
+      result += text[i]
+      i++
+      continue
+    }
+    if (text[i] === '"' || text[i] === "'") {
+      inString = true
+      stringChar = text[i]
+      result += text[i]
+      i++
+      continue
+    }
+    if (text[i] === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i++
+      continue
+    }
+    if (text[i] === "/" && text[i + 1] === "*") {
+      i += 2
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++
+      i += 2
+      continue
+    }
+    result += text[i]
+    i++
+  }
+  return result
 }
 
 function parseEmbeddingConfig(value: unknown): EmbeddingConnectionConfig | undefined {

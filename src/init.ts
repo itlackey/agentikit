@@ -5,7 +5,6 @@
  * environment variable, and ensures ripgrep is available.
  */
 
-import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { IS_WINDOWS, TYPE_DIRS } from "./common"
@@ -16,9 +15,9 @@ export interface InitResponse {
   stashDir: string
   created: boolean
   envSet: boolean
-  profileUpdated?: string
   configPath: string
   envHint?: string
+  shellSetup?: string[]
   ripgrep?: {
     rgPath: string
     installed: boolean
@@ -29,18 +28,27 @@ export interface InitResponse {
 export async function agentikitInit(): Promise<InitResponse> {
   let stashDir: string
   if (IS_WINDOWS) {
-    const userProfile = process.env.USERPROFILE?.trim()
-    if (!userProfile) {
-      throw new Error("Unable to determine Documents folder. Ensure USERPROFILE is set.")
+    const localAppData = process.env.LOCALAPPDATA?.trim()
+    if (localAppData) {
+      stashDir = path.join(localAppData, "agentikit")
+    } else {
+      const userProfile = process.env.USERPROFILE?.trim()
+      if (!userProfile) {
+        throw new Error("Unable to determine data directory. Set LOCALAPPDATA or USERPROFILE.")
+      }
+      stashDir = path.join(userProfile, "Documents", "agentikit")
     }
-    const docs = path.join(userProfile, "Documents")
-    stashDir = path.join(docs, "agentikit")
   } else {
-    const home = process.env.HOME?.trim()
-    if (!home) {
-      throw new Error("Unable to determine home directory. Set HOME.")
+    const xdgDataHome = process.env.XDG_DATA_HOME?.trim()
+    if (xdgDataHome) {
+      stashDir = path.join(xdgDataHome, "agentikit")
+    } else {
+      const home = process.env.HOME?.trim()
+      if (!home) {
+        throw new Error("Unable to determine data directory. Set XDG_DATA_HOME or HOME.")
+      }
+      stashDir = path.join(home, ".local", "share", "agentikit")
     }
-    stashDir = path.join(home, "agentikit")
   }
 
   let created = false
@@ -56,43 +64,7 @@ export async function agentikitInit(): Promise<InitResponse> {
     }
   }
 
-  let envSet = false
-  let profileUpdated: string | undefined
-
-  if (IS_WINDOWS) {
-    const result = spawnSync("setx", ["AKM_STASH_DIR", stashDir], {
-      encoding: "utf8",
-      timeout: 10_000,
-    })
-    envSet = result.status === 0
-  } else {
-    const shell = process.env.SHELL || ""
-    const homeDir = process.env.HOME! // already validated non-empty above
-    let profile: string
-    if (shell.endsWith("/zsh")) {
-      profile = path.join(homeDir, ".zshrc")
-    } else if (shell.endsWith("/bash")) {
-      profile = path.join(homeDir, ".bashrc")
-    } else {
-      profile = path.join(homeDir, ".profile")
-    }
-
-    const exportLine = `export AKM_STASH_DIR="${stashDir}"`
-    const existing = fs.existsSync(profile) ? fs.readFileSync(profile, "utf8") : ""
-    if (!existing.includes("AKM_STASH_DIR")) {
-      const updated = existing + `\n# Agentikit working stash directory\n${exportLine}\n`
-      const tmpPath = profile + `.tmp.${process.pid}`
-      try {
-        fs.writeFileSync(tmpPath, updated, "utf8")
-        fs.renameSync(tmpPath, profile)
-      } catch (err) {
-        try { fs.unlinkSync(tmpPath) } catch { /* ignore */ }
-        throw err
-      }
-      envSet = true
-      profileUpdated = profile
-    }
-  }
+  const envSet = false
 
   // Create default config.json if it doesn't exist
   const configPath = getConfigPath()
@@ -111,15 +83,19 @@ export async function agentikitInit(): Promise<InitResponse> {
     // Non-fatal: ripgrep is optional, search works without it
   }
 
-  // Build a hint so callers can set the env var in the current shell
+  // Build hints so callers can set the env var in the current shell and profile
   let envHint: string | undefined
-  if (profileUpdated) {
-    if (IS_WINDOWS) {
-      envHint = `set AKM_STASH_DIR=${stashDir}`
-    } else {
-      envHint = `export AKM_STASH_DIR="${stashDir}"`
-    }
+  let shellSetup: string[] | undefined
+  if (IS_WINDOWS) {
+    envHint = `set AKM_STASH_DIR=${stashDir}`
+    shellSetup = [`setx AKM_STASH_DIR "${stashDir}"`]
+  } else {
+    envHint = `export AKM_STASH_DIR="${stashDir}"`
+    shellSetup = [
+      `# Add to your shell profile (~/.bashrc or ~/.zshrc):`,
+      `export AKM_STASH_DIR="${stashDir}"`,
+    ]
   }
 
-  return { stashDir, created, envSet, profileUpdated, envHint, configPath, ripgrep }
+  return { stashDir, created, envSet, envHint, shellSetup, configPath, ripgrep }
 }
