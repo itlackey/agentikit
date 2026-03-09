@@ -109,14 +109,14 @@ describe("loadConfig", () => {
     delete process.env.AGENTIKIT_STASH_DIR
     writeRawConfig(getConfigPath(), JSON.stringify({ semanticSearch: false }))
 
-    expect(loadConfig()).toEqual({ semanticSearch: false, additionalStashDirs: [] })
+    expect(loadConfig()).toEqual({ semanticSearch: false, mountedStashDirs: [] })
   })
 
   test("merges partial config with defaults", () => {
     writeRawConfig(getConfigPath(), JSON.stringify({ semanticSearch: false }))
     const config = loadConfig()
     expect(config.semanticSearch).toBe(false)
-    expect(config.additionalStashDirs).toEqual([])
+    expect(config.mountedStashDirs).toEqual([])
   })
 
   test("handles corrupted JSON gracefully", () => {
@@ -140,27 +140,27 @@ describe("loadConfig", () => {
       JSON.stringify({ semanticSearch: false, futureKey: "hello", anotherKey: 42 }),
     )
     const config = loadConfig()
-    expect(config).toEqual({ semanticSearch: false, additionalStashDirs: [] })
+    expect(config).toEqual({ semanticSearch: false, mountedStashDirs: [] })
     expect((config as Record<string, unknown>).futureKey).toBeUndefined()
     expect((config as Record<string, unknown>).anotherKey).toBeUndefined()
   })
 
-  test("filters non-string entries from additionalStashDirs", () => {
+  test("filters non-string entries from mountedStashDirs", () => {
     writeRawConfig(
       getConfigPath(),
-      JSON.stringify({ additionalStashDirs: ["/valid", 123, null, "/also-valid"] }),
+      JSON.stringify({ mountedStashDirs: ["/valid", 123, null, "/also-valid"] }),
     )
-    expect(loadConfig().additionalStashDirs).toEqual(["/valid", "/also-valid"])
+    expect(loadConfig().mountedStashDirs).toEqual(["/valid", "/also-valid"])
   })
 
   test("ignores wrong types for known keys", () => {
     writeRawConfig(
       getConfigPath(),
-      JSON.stringify({ semanticSearch: "yes", additionalStashDirs: "not-an-array" }),
+      JSON.stringify({ semanticSearch: "yes", mountedStashDirs: "not-an-array" }),
     )
     const config = loadConfig()
     expect(config.semanticSearch).toBe(true)
-    expect(config.additionalStashDirs).toEqual([])
+    expect(config.mountedStashDirs).toEqual([])
   })
 
   test("ignores stash-root config.json files", () => {
@@ -180,7 +180,7 @@ describe("loadConfig", () => {
 
 describe("saveConfig", () => {
   test("writes formatted JSON to config.json", () => {
-    const config = { semanticSearch: false, additionalStashDirs: ["/extra"] }
+    const config = { semanticSearch: false, mountedStashDirs: ["/extra"] }
     saveConfig(config)
     const raw = fs.readFileSync(getConfigPath(), "utf8")
     expect(JSON.parse(raw)).toEqual(config)
@@ -189,7 +189,7 @@ describe("saveConfig", () => {
   })
 
   test("roundtrips with loadConfig", () => {
-    const config = { semanticSearch: false, additionalStashDirs: ["/a", "/b"] }
+    const config = { semanticSearch: false, mountedStashDirs: ["/a", "/b"] }
     saveConfig(config)
     expect(loadConfig()).toEqual(config)
   })
@@ -199,17 +199,17 @@ describe("saveConfig", () => {
 
 describe("updateConfig", () => {
   test("merges partial update over existing config", () => {
-    saveConfig({ semanticSearch: true, additionalStashDirs: ["/a"] })
+    saveConfig({ semanticSearch: true, mountedStashDirs: ["/a"] })
     const updated = updateConfig({ semanticSearch: false })
     expect(updated.semanticSearch).toBe(false)
-    expect(updated.additionalStashDirs).toEqual(["/a"])
+    expect(updated.mountedStashDirs).toEqual(["/a"])
     expect(loadConfig()).toEqual(updated)
   })
 
   test("creates config.json if it does not exist", () => {
     const updated = updateConfig({ semanticSearch: false })
     expect(updated.semanticSearch).toBe(false)
-    expect(updated.additionalStashDirs).toEqual([])
+    expect(updated.mountedStashDirs).toEqual([])
     expect(fs.existsSync(getConfigPath())).toBe(true)
   })
 })

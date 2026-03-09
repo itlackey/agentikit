@@ -81,13 +81,13 @@ export function parseConfigValue(key: string, value: string): Partial<AgentikitC
         throw new Error(`Invalid value for semanticSearch: expected "true" or "false"`)
       }
       return { semanticSearch: value === "true" }
-    case "additionalStashDirs":
+    case "mountedStashDirs":
       try {
         const parsed = JSON.parse(value)
         if (!Array.isArray(parsed)) throw new Error("expected JSON array")
-        return { additionalStashDirs: parsed.filter((d: unknown): d is string => typeof d === "string") }
+        return { mountedStashDirs: parsed.filter((d: unknown): d is string => typeof d === "string") }
       } catch {
-        throw new Error(`Invalid value for additionalStashDirs: expected JSON array (e.g. '["/path/a","/path/b"]')`)
+        throw new Error(`Invalid value for mountedStashDirs: expected JSON array (e.g. '["/path/a","/path/b"]')`)
       }
     case "embedding":
       return { embedding: parseEmbeddingConnectionValue(value) }
@@ -102,8 +102,8 @@ export function getConfigValue(config: AgentikitConfig, key: string): unknown {
   switch (key) {
     case "semanticSearch":
       return config.semanticSearch
-    case "additionalStashDirs":
-      return [...config.additionalStashDirs]
+    case "mountedStashDirs":
+      return [...config.mountedStashDirs]
     case "embedding":
       return maskSecrets(getEmbeddingDisplayConfig(config))
     case "embedding.provider":
@@ -138,7 +138,7 @@ export function getConfigValue(config: AgentikitConfig, key: string): unknown {
 export function setConfigValue(config: AgentikitConfig, key: string, rawValue: string): AgentikitConfig {
   switch (key) {
     case "semanticSearch":
-    case "additionalStashDirs":
+    case "mountedStashDirs":
     case "embedding":
     case "llm":
       return { ...config, ...parseConfigValue(key, rawValue) }

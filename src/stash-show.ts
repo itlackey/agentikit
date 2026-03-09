@@ -1,24 +1,28 @@
 import fs from "node:fs"
-import { resolveStashDir } from "./common"
 import { parseOpenRef } from "./stash-ref"
 import { resolveAssetPath } from "./stash-resolve"
 import type { KnowledgeView, ShowResponse } from "./stash-types"
 import { getHandler } from "./asset-type-handler"
-import { loadConfig } from "./config"
+import { resolveStashSources, findSourceForPath } from "./stash-source"
 
 // Ensure handlers are registered
 import "./handlers/index"
 
 export function agentikitShow(input: { ref: string; view?: KnowledgeView }): ShowResponse {
   const parsed = parseOpenRef(input.ref)
-  const stashDir = resolveStashDir()
-  const config = loadConfig()
-  const allStashDirs = [
-    stashDir,
-    ...config.additionalStashDirs.filter((d) => {
-      try { return fs.statSync(d).isDirectory() } catch { return false }
-    }),
-  ]
+  const sources = resolveStashSources()
+
+  // If the ref specifies a source kind, filter to matching sources
+  let searchSources = sources
+  if (parsed.sourceKind) {
+    if (parsed.sourceKind === "installed" && parsed.registryId) {
+      searchSources = sources.filter((s) => s.kind === "installed" && s.registryId === parsed.registryId)
+    } else {
+      searchSources = sources.filter((s) => s.kind === parsed.sourceKind)
+    }
+  }
+
+  const allStashDirs = searchSources.map((s) => s.path)
 
   let assetPath: string | undefined
   let lastError: Error | undefined
@@ -35,12 +39,20 @@ export function agentikitShow(input: { ref: string; view?: KnowledgeView }): Sho
   }
   const content = fs.readFileSync(assetPath, "utf8")
 
+  const source = findSourceForPath(assetPath, sources)
   const handler = getHandler(parsed.type)
-  return handler.buildShowResponse({
+  const response = handler.buildShowResponse({
     name: parsed.name,
     path: assetPath,
     content,
     view: input.view,
     stashDirs: allStashDirs,
   })
+
+  return {
+    ...response,
+    sourceKind: source?.kind,
+    registryId: source?.registryId,
+    editable: source?.writable ?? false,
+  }
 }

@@ -1,7 +1,7 @@
 /**
  * Agentikit initialization logic.
  *
- * Creates the stash directory structure, sets the AGENTIKIT_STASH_DIR
+ * Creates the working stash directory structure, sets the AGENTIKIT_STASH_DIR
  * environment variable, and ensures ripgrep is available.
  */
 
@@ -79,7 +79,7 @@ export function agentikitInit(): InitResponse {
     const exportLine = `export AGENTIKIT_STASH_DIR="${stashDir}"`
     const existing = fs.existsSync(profile) ? fs.readFileSync(profile, "utf8") : ""
     if (!existing.includes("AGENTIKIT_STASH_DIR")) {
-      fs.appendFileSync(profile, `\n# Agentikit stash directory\n${exportLine}\n`)
+      fs.appendFileSync(profile, `\n# Agentikit working stash directory\n${exportLine}\n`)
       envSet = true
       profileUpdated = profile
     }

@@ -1,11 +1,15 @@
 export {
   agentikitAdd,
+  agentikitClone,
   agentikitList,
   agentikitRemove,
   agentikitReinstall,
   agentikitSearch,
   agentikitShow,
   agentikitUpdate,
+  resolveStashSources,
+  resolveAllStashDirs,
+  findSourceForPath,
 } from "./src/stash"
 export { agentikitInit } from "./src/init"
 export type { InitResponse } from "./src/init"
@@ -28,6 +32,10 @@ export type {
   RegistryInstallStatus,
   ReinstallResultItem,
   UpdateResultItem,
+  StashSource,
+  StashSourceKind,
+  CloneOptions,
+  CloneResponse,
 } from "./src/stash"
 export type { ToolKind } from "./src/tool-runner"
 export { agentikitIndex } from "./src/indexer"

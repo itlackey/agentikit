@@ -13,6 +13,9 @@ import {
 import type { SearchSource, SearchUsageMode } from "./stash-types"
 import { agentikitInit } from "./init"
 import { agentikitIndex } from "./indexer"
+import { agentikitClone } from "./stash-clone"
+
+import { resolveStashSources } from "./stash-source"
 import { loadConfig, saveConfig } from "./config"
 import {
   getConfigValue,
@@ -286,6 +289,36 @@ const configCommand = defineCommand({
   },
 })
 
+const cloneCommand = defineCommand({
+  meta: { name: "clone", description: "Clone an asset from any stash source into the working stash" },
+  args: {
+    ref: { type: "positional", description: "Asset ref (e.g. @installed:pkg/tool:script.sh)", required: true },
+    name: { type: "string", description: "New name for the cloned asset" },
+    force: { type: "boolean", description: "Overwrite if asset already exists in working stash", default: false },
+  },
+  run({ args }) {
+    return runWithJsonErrors(() => {
+      const result = agentikitClone({
+        sourceRef: args.ref,
+        newName: args.name,
+        force: args.force,
+      })
+      console.log(JSON.stringify(result, null, 2))
+    })
+  },
+})
+
+
+const sourcesCommand = defineCommand({
+  meta: { name: "sources", description: "List all stash sources with their kind, path, and status" },
+  run() {
+    return runWithJsonErrors(() => {
+      const sources = resolveStashSources()
+      console.log(JSON.stringify({ sources }, null, 2))
+    })
+  },
+})
+
 const main = defineCommand({
   meta: {
     name: "akm",
@@ -301,6 +334,8 @@ const main = defineCommand({
     reinstall: reinstallCommand,
     search: searchCommand,
     show: showCommand,
+    clone: cloneCommand,
+    sources: sourcesCommand,
     config: configCommand,
   },
 })

@@ -50,18 +50,11 @@ export interface IndexResponse {
 export async function agentikitIndex(options?: { stashDir?: string; full?: boolean }): Promise<IndexResponse> {
   const stashDir = options?.stashDir || resolveStashDir()
 
-  // Load config to get additional stash dirs and semantic search setting
+  // Load config and resolve all stash sources
   const { loadConfig } = await import("./config.js")
   const config = loadConfig()
-
-  const allStashDirs = [stashDir]
-  for (const d of config.additionalStashDirs) {
-    try {
-      if (fs.statSync(d).isDirectory() && !allStashDirs.includes(path.resolve(d))) {
-        allStashDirs.push(path.resolve(d))
-      }
-    } catch { /* skip nonexistent dirs */ }
-  }
+  const { resolveAllStashDirs } = await import("./stash-source.js")
+  const allStashDirs = resolveAllStashDirs(stashDir)
 
   const t0 = Date.now()
   let generatedCount = 0
