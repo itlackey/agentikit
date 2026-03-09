@@ -5,9 +5,6 @@ import { parseOpenRef, makeOpenRef } from "./stash-ref"
 import { resolveAssetPath } from "./stash-resolve"
 import { resolveStashSources, findSourceForPath, type StashSource, type StashSourceKind } from "./stash-source"
 
-// Ensure handlers are registered
-import "./handlers/index"
-
 export interface CloneOptions {
   /** Source ref (e.g., @installed:my-pkg/tool:deploy.sh) */
   sourceRef: string
@@ -30,7 +27,7 @@ export interface CloneResponse {
   overwritten: boolean
 }
 
-export function agentikitClone(options: CloneOptions): CloneResponse {
+export async function agentikitClone(options: CloneOptions): Promise<CloneResponse> {
   const parsed = parseOpenRef(options.sourceRef)
   const sources = resolveStashSources()
   const workingSource = sources.find((s) => s.kind === "working")

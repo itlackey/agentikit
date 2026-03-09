@@ -92,15 +92,54 @@ export function getConfigPath(): string {
 export function loadConfig(): AgentikitConfig {
   const configPath = getConfigPath()
   const raw = readConfigObject(configPath)
-  if (raw) return pickKnownKeys(raw)
+  const config = raw ? pickKnownKeys(raw) : { ...DEFAULT_CONFIG }
 
-  return { ...DEFAULT_CONFIG }
+  // Inject API keys from environment variables.
+  // API keys should be provided via AKM_EMBED_API_KEY and AKM_LLM_API_KEY
+  // rather than stored in the config file.
+  if (config.embedding && !config.embedding.apiKey) {
+    const envKey = process.env.AKM_EMBED_API_KEY?.trim()
+    if (envKey) config.embedding.apiKey = envKey
+  }
+  if (config.llm && !config.llm.apiKey) {
+    const envKey = process.env.AKM_LLM_API_KEY?.trim()
+    if (envKey) config.llm.apiKey = envKey
+  }
+
+  return config
 }
 
 export function saveConfig(config: AgentikitConfig): void {
   const configPath = getConfigPath()
-  fs.mkdirSync(path.dirname(configPath), { recursive: true })
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8")
+  const dir = path.dirname(configPath)
+  fs.mkdirSync(dir, { recursive: true })
+  const sanitized = sanitizeConfigForWrite(config)
+  const tmpPath = configPath + `.tmp.${process.pid}`
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(sanitized, null, 2) + "\n", "utf8")
+    fs.renameSync(tmpPath, configPath)
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath) } catch { /* ignore cleanup failure */ }
+    throw err
+  }
+}
+
+/**
+ * Strip apiKey fields before writing config to disk.
+ * API keys should be provided via environment variables
+ * AKM_EMBED_API_KEY and AKM_LLM_API_KEY.
+ */
+function sanitizeConfigForWrite(config: AgentikitConfig): AgentikitConfig {
+  const sanitized = { ...config }
+  if (sanitized.embedding) {
+    const { apiKey, ...rest } = sanitized.embedding
+    sanitized.embedding = rest as EmbeddingConnectionConfig
+  }
+  if (sanitized.llm) {
+    const { apiKey, ...rest } = sanitized.llm
+    sanitized.llm = rest as LlmConnectionConfig
+  }
+  return sanitized
 }
 
 export function updateConfig(partial: Partial<AgentikitConfig>): AgentikitConfig {

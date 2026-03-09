@@ -4,9 +4,19 @@ import os from "node:os"
 import path from "node:path"
 import { buildToolInfo, shellQuote, findNearestPackageDir } from "../src/tool-runner"
 
+const createdTmpDirs: string[] = []
+
 function tmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-toolrun-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-toolrun-"))
+  createdTmpDirs.push(dir)
+  return dir
 }
+
+afterAll(() => {
+  for (const dir of createdTmpDirs) {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 function writeFile(filePath: string, content = "") {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -65,15 +75,15 @@ describe("buildToolInfo", () => {
     expect(info.execute.cwd).toBe(toolDir)
   })
 
-  test("includes bun install when AGENTIKIT_BUN_INSTALL is set", () => {
+  test("includes bun install when AKM_BUN_INSTALL is set", () => {
     const stashDir = tmpDir()
     const toolDir = path.join(stashDir, "tools", "group")
     const toolPath = path.join(toolDir, "run.ts")
     writeFile(toolPath, "console.log('hi')\n")
     writeFile(path.join(toolDir, "package.json"), '{"name":"group"}')
 
-    const orig = process.env.AGENTIKIT_BUN_INSTALL
-    process.env.AGENTIKIT_BUN_INSTALL = "true"
+    const orig = process.env.AKM_BUN_INSTALL
+    process.env.AKM_BUN_INSTALL = "true"
     try {
       const info = buildToolInfo(stashDir, toolPath)
       expect(info.runCmd).toContain("bun install")
@@ -81,26 +91,26 @@ describe("buildToolInfo", () => {
       expect(info.install!.command).toBe("bun")
       expect(info.install!.args).toEqual(["install"])
     } finally {
-      if (orig === undefined) delete process.env.AGENTIKIT_BUN_INSTALL
-      else process.env.AGENTIKIT_BUN_INSTALL = orig
+      if (orig === undefined) delete process.env.AKM_BUN_INSTALL
+      else process.env.AKM_BUN_INSTALL = orig
     }
   })
 
-  test("does not include bun install when AGENTIKIT_BUN_INSTALL is not set", () => {
+  test("does not include bun install when AKM_BUN_INSTALL is not set", () => {
     const stashDir = tmpDir()
     const toolDir = path.join(stashDir, "tools", "group")
     const toolPath = path.join(toolDir, "run.ts")
     writeFile(toolPath, "console.log('hi')\n")
     writeFile(path.join(toolDir, "package.json"), '{"name":"group"}')
 
-    const orig = process.env.AGENTIKIT_BUN_INSTALL
-    delete process.env.AGENTIKIT_BUN_INSTALL
+    const orig = process.env.AKM_BUN_INSTALL
+    delete process.env.AKM_BUN_INSTALL
     try {
       const info = buildToolInfo(stashDir, toolPath)
       expect(info.runCmd).not.toContain("bun install")
       expect(info.install).toBeUndefined()
     } finally {
-      if (orig !== undefined) process.env.AGENTIKIT_BUN_INSTALL = orig
+      if (orig !== undefined) process.env.AKM_BUN_INSTALL = orig
     }
   })
 

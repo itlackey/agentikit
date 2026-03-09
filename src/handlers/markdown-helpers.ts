@@ -1,4 +1,5 @@
 import path from "node:path"
+import { toPosix } from "../common"
 
 /**
  * Shared file-system helpers for markdown-based asset types
@@ -15,8 +16,4 @@ export function markdownCanonicalName(typeRoot: string, filePath: string): strin
 
 export function markdownAssetPath(typeRoot: string, name: string): string {
   return path.join(typeRoot, name)
-}
-
-function toPosix(input: string): string {
-  return input.replace(/\\/g, "/")
 }

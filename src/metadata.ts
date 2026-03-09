@@ -235,52 +235,6 @@ function buildAliases(name: string, tags: string[]): string[] {
   return Array.from(aliases)
 }
 
-// ── Intent Generation ────────────────────────────────────────────────────────
-
-export function generateIntents(description: string, tags: string[], name: string): string[] {
-  const intents = new Set<string>()
-
-  // Split name on separators to extract tokens and potential verb
-  const nameTokens = name
-    .replace(/[-_]+/g, " ")
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .toLowerCase()
-    .trim()
-    .split(/\s+/)
-    .filter((t) => t.length > 1)
-
-  // Intent from name as phrase (e.g. "summarize diff")
-  const namePhrase = nameTokens.join(" ")
-  if (namePhrase.length > 2) intents.add(namePhrase)
-
-  // Intent from description (lowercased)
-  const desc = description.toLowerCase().trim()
-  if (desc.length > 2) intents.add(desc)
-
-  // Combine first name token (potential verb) with tags
-  // e.g. name "summarize-diff", tags ["git"] → "summarize git diff"
-  if (nameTokens.length >= 1 && tags.length > 0) {
-    const verb = nameTokens[0]
-    const rest = nameTokens.slice(1).join(" ")
-    for (const tag of tags) {
-      const tagLower = tag.toLowerCase()
-      // verb + tag + rest (e.g. "summarize git diff")
-      const parts = [verb, tagLower, rest].filter((p) => p.length > 0)
-      const phrase = parts.join(" ")
-      if (phrase !== namePhrase && phrase.length > 2) intents.add(phrase)
-    }
-  }
-
-  // Join tag pairs (e.g. ["git", "diff"] → "git diff")
-  if (tags.length >= 2) {
-    const tagPhrase = tags.map((t) => t.toLowerCase()).join(" ")
-    if (tagPhrase.length > 2) intents.add(tagPhrase)
-  }
-
-  // Cap at 8 intents
-  return Array.from(intents).slice(0, 8)
-}
-
 export function extractDescriptionFromComments(filePath: string): string | null {
   let content: string
   try {

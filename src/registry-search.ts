@@ -1,6 +1,6 @@
+import { fetchWithTimeout } from "./common"
 import type { RegistrySearchHit, RegistrySearchResponse } from "./registry-types"
-
-const GITHUB_API_BASE = "https://api.github.com"
+import { GITHUB_API_BASE, githubHeaders, asRecord, asString } from "./github"
 
 export interface RegistrySearchOptions {
   limit?: number
@@ -46,7 +46,7 @@ async function searchNpm(query: string, limit: number): Promise<RegistrySearchHi
   // Request more results so we still have enough after filtering by keywords
   const fetchSize = Math.min(limit * 5, 100)
   const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(query)}&size=${fetchSize}`
-  const response = await fetch(url)
+  const response = await fetchWithTimeout(url)
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`)
   }
@@ -88,7 +88,7 @@ async function searchGithub(query: string, limit: number): Promise<RegistrySearc
   const topicFilter = "topic:akm OR topic:agentikit"
   const q = encodeURIComponent(`${query} in:name,description,readme ${topicFilter}`)
   const url = `${GITHUB_API_BASE}/search/repositories?q=${q}&sort=stars&order=desc&per_page=${limit}`
-  const response = await fetch(url, { headers: githubHeaders() })
+  const response = await fetchWithTimeout(url, { headers: githubHeaders() })
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`)
   }
@@ -119,29 +119,9 @@ async function searchGithub(query: string, limit: number): Promise<RegistrySearc
   })
 }
 
-function githubHeaders(): HeadersInit {
-  const token = process.env.GITHUB_TOKEN?.trim()
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-    "User-Agent": "agentikit-registry",
-  }
-  if (token) headers.Authorization = `Bearer ${token}`
-  return headers
-}
-
 function clampLimit(limit: number | undefined): number {
   if (!limit || !Number.isFinite(limit)) return 20
   return Math.min(100, Math.max(1, Math.trunc(limit)))
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {}
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value ? value : undefined
 }
 
 function asNumber(value: unknown): number {

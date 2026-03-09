@@ -25,7 +25,7 @@ export interface InitResponse {
   }
 }
 
-export function agentikitInit(): InitResponse {
+export async function agentikitInit(): Promise<InitResponse> {
   let stashDir: string
   if (IS_WINDOWS) {
     const userProfile = process.env.USERPROFILE?.trim()
@@ -79,7 +79,15 @@ export function agentikitInit(): InitResponse {
     const exportLine = `export AKM_STASH_DIR="${stashDir}"`
     const existing = fs.existsSync(profile) ? fs.readFileSync(profile, "utf8") : ""
     if (!existing.includes("AKM_STASH_DIR")) {
-      fs.appendFileSync(profile, `\n# Agentikit working stash directory\n${exportLine}\n`)
+      const updated = existing + `\n# Agentikit working stash directory\n${exportLine}\n`
+      const tmpPath = profile + `.tmp.${process.pid}`
+      try {
+        fs.writeFileSync(tmpPath, updated, "utf8")
+        fs.renameSync(tmpPath, profile)
+      } catch (err) {
+        try { fs.unlinkSync(tmpPath) } catch { /* ignore */ }
+        throw err
+      }
       envSet = true
       profileUpdated = profile
     }

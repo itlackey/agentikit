@@ -1,5 +1,7 @@
 import path from "node:path"
 import type { AgentikitAssetType } from "./common"
+import { toPosix } from "./common"
+import { tryGetHandler } from "./asset-type-handler"
 
 export const SCRIPT_EXTENSIONS = new Set([".sh", ".ts", ".js", ".ps1", ".cmd", ".bat"])
 
@@ -61,6 +63,8 @@ export const TYPE_DIRS: Record<AgentikitAssetType, string> = ASSET_TYPES.reduce(
 )
 
 export function isRelevantAssetFile(assetType: AgentikitAssetType, fileName: string): boolean {
+  const handler = tryGetHandler(assetType)
+  if (handler) return handler.isRelevantFile(fileName)
   return ASSET_SPECS[assetType].isRelevantFile(fileName)
 }
 
@@ -69,13 +73,13 @@ export function deriveCanonicalAssetName(
   typeRoot: string,
   filePath: string,
 ): string | undefined {
+  const handler = tryGetHandler(assetType)
+  if (handler) return handler.toCanonicalName(typeRoot, filePath)
   return ASSET_SPECS[assetType].toCanonicalName(typeRoot, filePath)
 }
 
 export function resolveAssetPathFromName(assetType: AgentikitAssetType, typeRoot: string, name: string): string {
+  const handler = tryGetHandler(assetType)
+  if (handler) return handler.toAssetPath(typeRoot, name)
   return ASSET_SPECS[assetType].toAssetPath(typeRoot, name)
-}
-
-function toPosix(input: string): string {
-  return input.replace(/\\/g, "/")
 }

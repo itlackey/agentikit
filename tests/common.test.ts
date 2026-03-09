@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeAll, afterAll } from "bun:test"
+import { test, expect, describe, beforeAll, afterAll, afterEach } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -9,7 +9,7 @@ import { resolveStashDir, toPosix, hasErrnoCode, isAssetType, isWithin } from ".
 describe("resolveStashDir", () => {
   const origEnv = process.env.AKM_STASH_DIR
 
-  afterAll(() => {
+  afterEach(() => {
     if (origEnv === undefined) {
       delete process.env.AKM_STASH_DIR
     } else {

@@ -45,7 +45,7 @@ export function getDbPath(): string {
 
 // ── Database lifecycle ──────────────────────────────────────────────────────
 
-export function openDatabase(dbPath?: string): Database {
+export function openDatabase(dbPath?: string, options?: { embeddingDim?: number }): Database {
   const resolvedPath = dbPath ?? getDbPath()
   const dir = path.dirname(resolvedPath)
   if (!fs.existsSync(dir)) {
@@ -59,7 +59,7 @@ export function openDatabase(dbPath?: string): Database {
   // Try to load sqlite-vec extension
   loadVecExtension(db)
 
-  ensureSchema(db)
+  ensureSchema(db, options?.embeddingDim ?? EMBEDDING_DIM)
   return db
 }
 
@@ -70,17 +70,14 @@ export function closeDatabase(db: Database): void {
 // ── sqlite-vec extension ────────────────────────────────────────────────────
 
 let vecAvailable = false
-let vecChecked = false
 
 function loadVecExtension(db: Database): void {
-  if (vecChecked) return
-  vecChecked = true
   try {
     const sqliteVec = require("sqlite-vec")
     sqliteVec.load(db)
     vecAvailable = true
   } catch {
-    // sqlite-vec not available — embeddings will be skipped
+    console.warn("sqlite-vec extension not available, embeddings will be skipped")
     vecAvailable = false
   }
 }
@@ -91,13 +88,27 @@ export function isVecAvailable(): boolean {
 
 // ── Schema ──────────────────────────────────────────────────────────────────
 
-function ensureSchema(db: Database): void {
+function ensureSchema(db: Database, embeddingDim: number): void {
+  // Create meta table first so we can check version
   db.exec(`
     CREATE TABLE IF NOT EXISTS index_meta (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+  `)
 
+  // Check stored version — if it differs from DB_VERSION, drop and recreate all tables
+  const storedVersion = getMeta(db, "version")
+  if (storedVersion && storedVersion !== String(DB_VERSION)) {
+    db.exec("DROP TABLE IF EXISTS entries_vec")
+    db.exec("DROP TABLE IF EXISTS entries_fts")
+    db.exec("DROP INDEX IF EXISTS idx_entries_dir")
+    db.exec("DROP INDEX IF EXISTS idx_entries_type")
+    db.exec("DROP TABLE IF EXISTS entries")
+    db.exec("DELETE FROM index_meta")
+  }
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS entries (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       entry_key   TEXT NOT NULL UNIQUE,
@@ -129,6 +140,12 @@ function ensureSchema(db: Database): void {
 
   // sqlite-vec table
   if (vecAvailable) {
+    // Check if stored embedding dimension differs from configured one
+    const storedDim = getMeta(db, "embeddingDim")
+    if (storedDim && storedDim !== String(embeddingDim)) {
+      try { db.exec("DROP TABLE IF EXISTS entries_vec") } catch { /* ignore */ }
+    }
+
     const vecExists = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entries_vec'")
       .get()
@@ -136,10 +153,11 @@ function ensureSchema(db: Database): void {
       db.exec(`
         CREATE VIRTUAL TABLE entries_vec USING vec0(
           id       INTEGER PRIMARY KEY,
-          embedding FLOAT[${EMBEDDING_DIM}]
+          embedding FLOAT[${embeddingDim}]
         );
       `)
     }
+    setMeta(db, "embeddingDim", String(embeddingDim))
   }
 
   // Set version if not present

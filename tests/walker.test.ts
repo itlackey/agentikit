@@ -1,12 +1,22 @@
-import { test, expect, describe } from "bun:test"
+import { test, expect, describe, afterAll } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { walkStash } from "../src/walker"
 
+const createdTmpDirs: string[] = []
+
 function tmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-walker-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-walker-"))
+  createdTmpDirs.push(dir)
+  return dir
 }
+
+afterAll(() => {
+  for (const dir of createdTmpDirs) {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 function writeFile(filePath: string, content = "") {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })

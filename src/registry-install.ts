@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
-import { isWithin, TYPE_DIRS } from "./common"
+import { fetchWithTimeout, isWithin, TYPE_DIRS } from "./common"
 import { loadConfig, saveConfig, type AgentikitConfig } from "./config"
 import { parseRegistryRef, resolveRegistryArtifact } from "./registry-resolve"
 import type { ParsedGitRef, RegistryInstallResult, RegistryInstalledEntry, RegistrySource } from "./registry-types"
@@ -167,12 +167,21 @@ function applyAgentikitIncludeConfig(
 }
 
 async function downloadArchive(url: string, destination: string): Promise<void> {
-  const response = await fetch(url)
+  const response = await fetchWithTimeout(url, undefined, 120_000)
   if (!response.ok) {
     throw new Error(`Failed to download archive (${response.status}) from ${url}`)
   }
-  const arrayBuffer = await response.arrayBuffer()
-  fs.writeFileSync(destination, Buffer.from(arrayBuffer))
+  // Stream response to disk instead of buffering the entire archive in memory.
+  // Uses Bun.write which handles Response streaming natively.
+  const BunRuntime: { write(path: string, body: Response): Promise<number> } =
+    (globalThis as Record<string, unknown>).Bun as typeof BunRuntime
+  if (BunRuntime?.write) {
+    await BunRuntime.write(destination, response)
+  } else {
+    // Fallback for non-Bun environments (e.g., tests)
+    const arrayBuffer = await response.arrayBuffer()
+    fs.writeFileSync(destination, Buffer.from(arrayBuffer))
+  }
 }
 
 function extractTarGzSecure(archivePath: string, destinationDir: string): void {

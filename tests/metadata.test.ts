@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test"
+import { test, expect, afterAll } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -7,7 +7,6 @@ import {
   writeStashFile,
   validateStashEntry,
   generateMetadata,
-  generateIntents,
   extractDescriptionFromComments,
   extractPackageMetadata,
   fileNameToDescription,
@@ -16,9 +15,19 @@ import {
 } from "../src/metadata"
 import "../src/handlers/index" // register asset-type handlers so extractTypeMetadata runs
 
+const createdTmpDirs: string[] = []
+
 function tmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-meta-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-meta-"))
+  createdTmpDirs.push(dir)
+  return dir
 }
+
+afterAll(() => {
+  for (const dir of createdTmpDirs) {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 function writeFile(filePath: string, content = "") {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -278,41 +287,6 @@ test("generateMetadata handles multi-tool directories", () => {
   expect(stash.entries[0].description).toBe("Build docker images")
   expect(stash.entries[1].name).toBe("docker-compose")
   expect(stash.entries[1].description).toBe("Generate docker compose stacks")
-})
-
-// ── generateIntents ─────────────────────────────────────────────────────────
-
-test("generateIntents produces phrases from description, tags, and name", () => {
-  const intents = generateIntents("summarize git commit changes", ["git", "diff", "commit"], "summarize-diff")
-  expect(intents.length).toBeGreaterThan(0)
-  expect(intents).toContain("summarize diff")
-  expect(intents).toContain("summarize git commit changes")
-})
-
-test("generateIntents returns empty array for empty inputs", () => {
-  const intents = generateIntents("", [], "")
-  expect(intents).toEqual([])
-})
-
-test("generateIntents deduplicates phrases", () => {
-  const intents = generateIntents("deploy", ["deploy"], "deploy")
-  const unique = new Set(intents)
-  expect(intents.length).toBe(unique.size)
-})
-
-test("generateIntents combines verb from name with tags", () => {
-  const intents = generateIntents("build docker images", ["docker", "container"], "docker-build")
-  // Should produce something like "docker docker container" or similar tag combinations
-  expect(intents.some((i) => i.includes("docker"))).toBe(true)
-})
-
-test("generateIntents caps at 8 intents", () => {
-  const intents = generateIntents(
-    "a very long description about many things",
-    ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10"],
-    "multi-word-name-with-many-parts",
-  )
-  expect(intents.length).toBeLessThanOrEqual(8)
 })
 
 // ── validateStashEntry with intents ─────────────────────────────────────────

@@ -2,9 +2,9 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
+import { fetchWithTimeout } from "./common"
 import type { ParsedGitRef, ParsedGithubRef, ParsedNpmRef, ParsedRegistryRef, ResolvedRegistryArtifact } from "./registry-types"
-
-const GITHUB_API_BASE = "https://api.github.com"
+import { GITHUB_API_BASE, githubHeaders, asRecord, asString } from "./github"
 
 export function parseRegistryRef(rawRef: string): ParsedRegistryRef {
   const ref = rawRef.trim()
@@ -281,8 +281,16 @@ function splitNpmNameAndVersion(input: string): { packageName: string; requested
 }
 
 function validateNpmPackageName(name: string): void {
-  if (!name || name.includes(" ")) {
-    throw new Error(`Invalid npm package name: \"${name}\".`)
+  if (!name) throw new Error('Invalid npm package name: name is required.')
+  if (name.length > 214) throw new Error(`Invalid npm package name: "${name}" exceeds 214 characters.`)
+  if (name !== name.toLowerCase() && !name.startsWith('@')) {
+    throw new Error(`Invalid npm package name: "${name}" must be lowercase.`)
+  }
+  if (name.startsWith('.') || name.startsWith('_')) {
+    throw new Error(`Invalid npm package name: "${name}" cannot start with . or _.`)
+  }
+  if (/[~'!()*]/.test(name) || name.includes(' ') || encodeURIComponent(name) !== name.replace(/%40/g, '@').replace(/%2[Ff]/g, '/')) {
+    throw new Error(`Invalid npm package name: "${name}" contains invalid characters.`)
   }
 }
 
@@ -296,16 +304,6 @@ function splitRefSuffix(value: string): [string, string | undefined] {
   const hash = value.indexOf("#")
   if (hash < 0) return [value, undefined]
   return [value.slice(0, hash), value.slice(hash + 1) || undefined]
-}
-
-function githubHeaders(): HeadersInit {
-  const token = process.env.GITHUB_TOKEN?.trim()
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-    "User-Agent": "agentikit-registry",
-  }
-  if (token) headers.Authorization = `Bearer ${token}`
-  return headers
 }
 
 function findGitRepoRoot(startDir: string): string | undefined {
@@ -328,7 +326,7 @@ function readGitValue(repoRoot: string, ...args: string[]): string | undefined {
 }
 
 async function fetchJson<T>(url: string, headers?: HeadersInit): Promise<T> {
-  const response = await fetch(url, { headers })
+  const response = await fetchWithTimeout(url, { headers })
   if (!response.ok) {
     throw new Error(`Request failed (${response.status}) for ${url}`)
   }
@@ -336,17 +334,8 @@ async function fetchJson<T>(url: string, headers?: HeadersInit): Promise<T> {
 }
 
 async function tryFetchJson<T>(url: string, headers?: HeadersInit): Promise<T | null> {
-  const response = await fetch(url, { headers })
+  const response = await fetchWithTimeout(url, { headers })
   if (!response.ok) return null
   return await response.json() as T
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {}
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value ? value : undefined
-}

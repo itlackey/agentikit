@@ -1,4 +1,4 @@
-import { test, expect, beforeEach, afterEach } from "bun:test"
+import { test, expect, beforeEach, afterEach, afterAll } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -11,10 +11,24 @@ import {
 import { agentikitIndex } from "../src/indexer"
 import { getConfigPath, saveConfig } from "../src/config"
 
+const createdTmpDirs: string[] = []
+
+function createTmpDir(prefix = "agentikit-stash-"): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  createdTmpDirs.push(dir)
+  return dir
+}
+
 function writeFile(filePath: string, content = "") {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, content)
 }
+
+afterAll(() => {
+  for (const dir of createdTmpDirs) {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 /** Place a dummy rg binary in stashDir/bin so ensureRg skips download */
 function stubRg(stashDir: string): void {
@@ -32,8 +46,8 @@ let testCacheDir = ""
 let testConfigDir = ""
 
 beforeEach(() => {
-  testCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-cache-"))
-  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-config-"))
+  testCacheDir = createTmpDir("agentikit-stash-cache-")
+  testConfigDir = createTmpDir("agentikit-stash-config-")
   process.env.XDG_CACHE_HOME = testCacheDir
   process.env.XDG_CONFIG_HOME = testConfigDir
 })
@@ -60,7 +74,7 @@ afterEach(() => {
 })
 
 test("agentikitSearch only includes tool files with .sh/.ts/.js and returns runCmd", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "tools", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
   writeFile(path.join(stashDir, "tools", "script.ts"), "console.log('x')\n")
   writeFile(path.join(stashDir, "tools", "README.md"), "ignore\n")
@@ -75,7 +89,7 @@ test("agentikitSearch only includes tool files with .sh/.ts/.js and returns runC
 })
 
 test("agentikitSearch creates bun runCmd from nearest package.json up to tools root", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   const nestedTool = path.join(stashDir, "tools", "group", "nested", "job.js")
   writeFile(nestedTool, "console.log('job')\n")
   writeFile(path.join(stashDir, "tools", "group", "package.json"), '{"name":"group"}')
@@ -89,27 +103,27 @@ test("agentikitSearch creates bun runCmd from nearest package.json up to tools r
   expect(result.hits[0].kind).toBe("bun")
 })
 
-test("agentikitSearch only includes bun install in runCmd when AGENTIKIT_BUN_INSTALL is enabled", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+test("agentikitSearch only includes bun install in runCmd when AKM_BUN_INSTALL is enabled", async () => {
+  const stashDir = createTmpDir("agentikit-stash-")
   const nestedTool = path.join(stashDir, "tools", "group", "nested", "job.js")
   writeFile(nestedTool, "console.log('job')\n")
   writeFile(path.join(stashDir, "tools", "group", "package.json"), '{"name":"group"}')
 
   process.env.AKM_STASH_DIR = stashDir
-  process.env.AGENTIKIT_BUN_INSTALL = "true"
+  process.env.AKM_BUN_INSTALL = "true"
   try {
     const result = await agentikitSearch({ query: "job", type: "tool" })
     expect(result.hits.length).toBe(1)
     expect(result.hits[0].runCmd ?? "").toMatch(/^cd ".+\/tools\/group" && bun install && bun ".+\/job\.js"$/)
     expect(result.hits[0].kind).toBe("bun")
   } finally {
-    delete process.env.AGENTIKIT_BUN_INSTALL
+    delete process.env.AKM_BUN_INSTALL
   }
 })
 
 test("agentikitSearch resolves tool runCmd correctly for mounted stash directories", async () => {
-  const primaryStashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-primary-"))
-  const mountedStashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-mounted-"))
+  const primaryStashDir = createTmpDir("agentikit-stash-primary-")
+  const mountedStashDir = createTmpDir("agentikit-stash-mounted-")
 
   writeFile(path.join(primaryStashDir, "tools", "placeholder.sh"), "#!/usr/bin/env bash\necho primary\n")
   writeFile(path.join(mountedStashDir, "tools", "group", "nested", "job.js"), "console.log('job')\n")
@@ -128,7 +142,7 @@ test("agentikitSearch resolves tool runCmd correctly for mounted stash directori
 })
 
 test("agentikitSearch includes explainability reasons for indexed hits", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "tools", "summarize-diff.ts"), "console.log('summarize')\n")
 
   saveConfig({ semanticSearch: true, mountedStashDirs: [] })
@@ -149,7 +163,7 @@ test("agentikitSearch includes explainability reasons for indexed hits", async (
 })
 
 test("agentikitSearch usage mode both includes guide and per-hit metadata usage", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   const toolPath = path.join(stashDir, "tools", "deploy.sh")
   writeFile(toolPath, "#!/usr/bin/env bash\necho deploy\n")
   writeFile(path.join(stashDir, "tools", ".stash.json"), JSON.stringify({
@@ -175,7 +189,7 @@ test("agentikitSearch usage mode both includes guide and per-hit metadata usage"
 })
 
 test("agentikitSearch usage mode guide omits per-hit usage", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "tools", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
   writeFile(path.join(stashDir, "tools", ".stash.json"), JSON.stringify({
     entries: [
@@ -199,7 +213,7 @@ test("agentikitSearch usage mode guide omits per-hit usage", async () => {
 })
 
 test("agentikitSearch usage mode item omits usage guide", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "tools", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
   writeFile(path.join(stashDir, "tools", ".stash.json"), JSON.stringify({
     entries: [
@@ -223,7 +237,7 @@ test("agentikitSearch usage mode item omits usage guide", async () => {
 })
 
 test("agentikitSearch usage mode none omits guide and per-hit usage", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "tools", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
   writeFile(path.join(stashDir, "tools", ".stash.json"), JSON.stringify({
     entries: [
@@ -247,7 +261,7 @@ test("agentikitSearch usage mode none omits guide and per-hit usage", async () =
 })
 
 test("agentikitSearch fallback includes usageGuide for guide mode", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "tools", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
 
   process.env.AKM_STASH_DIR = stashDir
@@ -259,7 +273,7 @@ test("agentikitSearch fallback includes usageGuide for guide mode", async () => 
 })
 
 test("agentikitShow returns full payloads for skill/command/agent", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "skills", "ops", "SKILL.md"), "# Ops\n")
   writeFile(path.join(stashDir, "commands", "release.md"), '---\ndescription: "Release command"\n---\nrun release\n')
   writeFile(path.join(stashDir, "agents", "coach.md"), '---\ndescription: "Coach"\nmodel: "gpt-5"\n---\nGuide users\n')
@@ -281,7 +295,7 @@ test("agentikitShow returns full payloads for skill/command/agent", async () => 
 })
 
 test("agentikitShow returns clear error when stash type root is missing", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   try {
     process.env.AKM_STASH_DIR = stashDir
     await expect(agentikitShow({ ref: "agent:missing.md" })).rejects.toThrow(
@@ -293,13 +307,13 @@ test("agentikitShow returns clear error when stash type root is missing", async 
 })
 
 test("agentikitShow rejects malformed open ref encoding", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   process.env.AKM_STASH_DIR = stashDir
   await expect(agentikitShow({ ref: "tool:%E0%A4%A" })).rejects.toThrow(/Invalid open ref encoding/)
 })
 
 test("agentikitShow rejects traversal and absolute path refs", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   process.env.AKM_STASH_DIR = stashDir
 
   await expect(agentikitShow({ ref: "tool:..%2Foutside.sh" })).rejects.toThrow(/Invalid open ref name/)
@@ -307,8 +321,8 @@ test("agentikitShow rejects traversal and absolute path refs", async () => {
 })
 
 test("agentikitShow blocks symlink escapes outside stash type root", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
-  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-outside-"))
+  const stashDir = createTmpDir("agentikit-stash-")
+  const outsideDir = createTmpDir("agentikit-outside-")
   const outsideFile = path.join(outsideDir, "outside.sh")
   const symlinkFile = path.join(stashDir, "tools", "link.sh")
   writeFile(outsideFile, "echo outside\n")
@@ -351,7 +365,7 @@ Creates a user.
 `
 
 test("agentikitSearch finds knowledge assets", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC)
 
   process.env.AKM_STASH_DIR = stashDir
@@ -363,7 +377,7 @@ test("agentikitSearch finds knowledge assets", async () => {
 })
 
 test("agentikitShow returns full content for knowledge by default", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC)
 
   process.env.AKM_STASH_DIR = stashDir
@@ -375,7 +389,7 @@ test("agentikitShow returns full content for knowledge by default", async () => 
 })
 
 test("agentikitShow returns TOC for knowledge with view toc", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC)
 
   process.env.AKM_STASH_DIR = stashDir
@@ -389,7 +403,7 @@ test("agentikitShow returns TOC for knowledge with view toc", async () => {
 })
 
 test("agentikitShow extracts section for knowledge", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC)
 
   process.env.AKM_STASH_DIR = stashDir
@@ -401,7 +415,7 @@ test("agentikitShow extracts section for knowledge", async () => {
 })
 
 test("agentikitShow extracts line range for knowledge", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC)
 
   process.env.AKM_STASH_DIR = stashDir
@@ -412,7 +426,7 @@ test("agentikitShow extracts line range for knowledge", async () => {
 })
 
 test("agentikitShow extracts frontmatter for knowledge", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC)
 
   process.env.AKM_STASH_DIR = stashDir
@@ -424,7 +438,7 @@ test("agentikitShow extracts frontmatter for knowledge", async () => {
 })
 
 test("agentikitShow returns no-frontmatter message when missing", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "knowledge", "plain.md"), "# Just a heading\nSome text.\n")
 
   process.env.AKM_STASH_DIR = stashDir
@@ -434,7 +448,7 @@ test("agentikitShow returns no-frontmatter message when missing", async () => {
 })
 
 test("agentikitShow returns helpful message for missing section in knowledge", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC)
 
   process.env.AKM_STASH_DIR = stashDir
@@ -445,7 +459,7 @@ test("agentikitShow returns helpful message for missing section in knowledge", a
 })
 
 test("agentikitShow for tool type returns runCmd and kind", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "tools", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
 
   process.env.AKM_STASH_DIR = stashDir
@@ -457,10 +471,10 @@ test("agentikitShow for tool type returns runCmd and kind", async () => {
   expect(result.kind).toBe("bash")
 })
 
-test("agentikitInit returns created false when stash dir already exists", () => {
+test("agentikitInit returns created false when stash dir already exists", async () => {
   const origHome = process.env.HOME
   const origStashDir = process.env.AKM_STASH_DIR
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-home-"))
+  const tmpHome = createTmpDir("agentikit-home-")
   // Pre-create the agentikit directory so init finds it existing
   const stashPath = path.join(tmpHome, "agentikit")
   fs.mkdirSync(stashPath, { recursive: true })
@@ -470,7 +484,7 @@ test("agentikitInit returns created false when stash dir already exists", () => 
   delete process.env.AKM_STASH_DIR
 
   try {
-    const result = agentikitInit()
+    const result = await agentikitInit()
     expect(result.created).toBe(false)
     expect(result.stashDir).toBe(stashPath)
   } finally {
@@ -484,7 +498,7 @@ test("agentikitInit returns created false when stash dir already exists", () => 
 
 test("agentikitShow throws unsupported tool extension for .txt file", async () => {
   const origStashDir = process.env.AKM_STASH_DIR
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "tools", "readme.txt"), "not a tool\n")
 
   process.env.AKM_STASH_DIR = stashDir
@@ -499,16 +513,16 @@ test("agentikitShow throws unsupported tool extension for .txt file", async () =
   }
 })
 
-test("agentikitInit creates knowledge directory", () => {
+test("agentikitInit creates knowledge directory", async () => {
   const origHome = process.env.HOME
   const origStashDir = process.env.AKM_STASH_DIR
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-home-"))
+  const tmpHome = createTmpDir("agentikit-home-")
   stubRg(path.join(tmpHome, "agentikit"))
   process.env.HOME = tmpHome
   delete process.env.AKM_STASH_DIR
 
   try {
-    const result = agentikitInit()
+    const result = await agentikitInit()
     expect(fs.existsSync(path.join(result.stashDir, "knowledge"))).toBe(true)
   } finally {
     if (origHome === undefined) delete process.env.HOME
@@ -523,7 +537,7 @@ test("agentikitInit creates knowledge directory", () => {
 
 test("agentikitSearch finds script assets with broad extensions", async () => {
   const origStashDir = process.env.AKM_STASH_DIR
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "scripts", "cleanup.sh"), "#!/usr/bin/env bash\necho cleanup\n")
   writeFile(path.join(stashDir, "scripts", "process.py"), "print('hello')\n")
   writeFile(path.join(stashDir, "scripts", "README.md"), "ignore\n")
@@ -547,7 +561,7 @@ test("agentikitSearch finds script assets with broad extensions", async () => {
 
 test("agentikitSearch returns runCmd for runnable script extensions", async () => {
   const origStashDir = process.env.AKM_STASH_DIR
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "scripts", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
 
   try {
@@ -569,7 +583,7 @@ test("agentikitSearch returns runCmd for runnable script extensions", async () =
 
 test("agentikitShow returns content for non-runnable script extensions", async () => {
   const origStashDir = process.env.AKM_STASH_DIR
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "scripts", "process.py"), "# A python script\nprint('hello')\n")
 
   try {
@@ -589,7 +603,7 @@ test("agentikitShow returns content for non-runnable script extensions", async (
 })
 
 test("agentikitShow returns runCmd for runnable script", async () => {
-  const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-stash-"))
+  const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "scripts", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
 
   process.env.AKM_STASH_DIR = stashDir
@@ -600,16 +614,16 @@ test("agentikitShow returns runCmd for runnable script", async () => {
   expect(result.kind).toBe("bash")
 })
 
-test("agentikitInit writes config outside the stash directory", () => {
+test("agentikitInit writes config outside the stash directory", async () => {
   const origHome = process.env.HOME
   const origStashDir = process.env.AKM_STASH_DIR
-  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-home-"))
+  const tmpHome = createTmpDir("agentikit-home-")
   stubRg(path.join(tmpHome, "agentikit"))
   process.env.HOME = tmpHome
   delete process.env.AKM_STASH_DIR
 
   try {
-    const result = agentikitInit()
+    const result = await agentikitInit()
     expect(result.configPath).toBe(getConfigPath())
     expect(result.configPath.startsWith(result.stashDir)).toBe(false)
     expect(fs.existsSync(result.configPath)).toBe(true)

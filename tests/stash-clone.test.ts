@@ -53,10 +53,10 @@ afterEach(() => {
 })
 
 describe("agentikitClone", () => {
-  test("clones a tool from mounted stash to working stash", () => {
+  test("clones a tool from mounted stash to working stash", async () => {
     writeFile(path.join(mountedDir, "tools", "deploy.sh"), "#!/bin/bash\necho deploy\n")
 
-    const result = agentikitClone({ sourceRef: "tool:deploy.sh" })
+    const result = await agentikitClone({ sourceRef: "tool:deploy.sh" })
 
     expect(result.source.sourceKind).toBe("mounted")
     expect(result.destination.ref).toContain("tool:deploy.sh")
@@ -65,11 +65,11 @@ describe("agentikitClone", () => {
     expect(fs.readFileSync(path.join(stashDir, "tools", "deploy.sh"), "utf8")).toBe("#!/bin/bash\necho deploy\n")
   })
 
-  test("clones a skill directory", () => {
+  test("clones a skill directory", async () => {
     writeFile(path.join(mountedDir, "skills", "review", "SKILL.md"), "# Review Skill\n")
     writeFile(path.join(mountedDir, "skills", "review", "helper.md"), "# Helper\n")
 
-    const result = agentikitClone({ sourceRef: "skill:review" })
+    const result = await agentikitClone({ sourceRef: "skill:review" })
 
     expect(result.source.sourceKind).toBe("mounted")
     expect(result.overwritten).toBe(false)
@@ -77,70 +77,70 @@ describe("agentikitClone", () => {
     expect(fs.existsSync(path.join(stashDir, "skills", "review", "helper.md"))).toBe(true)
   })
 
-  test("clones with a new name", () => {
+  test("clones with a new name", async () => {
     writeFile(path.join(mountedDir, "tools", "deploy.sh"), "echo deploy\n")
 
-    const result = agentikitClone({ sourceRef: "tool:deploy.sh", newName: "my-deploy.sh" })
+    const result = await agentikitClone({ sourceRef: "tool:deploy.sh", newName: "my-deploy.sh" })
 
     expect(fs.existsSync(path.join(stashDir, "tools", "my-deploy.sh"))).toBe(true)
     expect(result.destination.ref).toContain("my-deploy.sh")
   })
 
-  test("throws when asset already exists without --force", () => {
+  test("throws when asset already exists without --force", async () => {
     writeFile(path.join(mountedDir, "tools", "deploy.sh"), "echo mounted\n")
     writeFile(path.join(stashDir, "tools", "deploy.sh"), "echo existing\n")
 
-    expect(() => agentikitClone({ sourceRef: "@mounted/tool:deploy.sh" })).toThrow("already exists")
+    await expect(agentikitClone({ sourceRef: "@mounted/tool:deploy.sh" })).rejects.toThrow("already exists")
   })
 
-  test("overwrites with --force", () => {
+  test("overwrites with --force", async () => {
     writeFile(path.join(mountedDir, "tools", "deploy.sh"), "echo updated\n")
     writeFile(path.join(stashDir, "tools", "deploy.sh"), "echo old\n")
 
-    const result = agentikitClone({ sourceRef: "@mounted/tool:deploy.sh", force: true })
+    const result = await agentikitClone({ sourceRef: "@mounted/tool:deploy.sh", force: true })
 
     expect(result.overwritten).toBe(true)
     expect(fs.readFileSync(path.join(stashDir, "tools", "deploy.sh"), "utf8")).toBe("echo updated\n")
   })
 
-  test("force overwrite removes stale files from skill directory", () => {
+  test("force overwrite removes stale files from skill directory", async () => {
     // Source skill has only SKILL.md
     writeFile(path.join(mountedDir, "skills", "review", "SKILL.md"), "# Updated\n")
     // Existing working skill has an extra file
     writeFile(path.join(stashDir, "skills", "review", "SKILL.md"), "# Old\n")
     writeFile(path.join(stashDir, "skills", "review", "stale.md"), "# Stale\n")
 
-    agentikitClone({ sourceRef: "@mounted/skill:review", force: true })
+    await agentikitClone({ sourceRef: "@mounted/skill:review", force: true })
 
     expect(fs.existsSync(path.join(stashDir, "skills", "review", "SKILL.md"))).toBe(true)
     expect(fs.existsSync(path.join(stashDir, "skills", "review", "stale.md"))).toBe(false)
   })
 
-  test("throws when source asset not found", () => {
-    expect(() => agentikitClone({ sourceRef: "tool:nonexistent.sh" })).toThrow()
+  test("throws when source asset not found", async () => {
+    await expect(agentikitClone({ sourceRef: "tool:nonexistent.sh" })).rejects.toThrow()
   })
 
-  test("clones from working stash to itself with new name", () => {
+  test("clones from working stash to itself with new name", async () => {
     writeFile(path.join(stashDir, "tools", "original.sh"), "echo original\n")
 
-    const result = agentikitClone({ sourceRef: "tool:original.sh", newName: "copy.sh" })
+    const result = await agentikitClone({ sourceRef: "tool:original.sh", newName: "copy.sh" })
 
     expect(result.source.sourceKind).toBe("working")
     expect(fs.existsSync(path.join(stashDir, "tools", "copy.sh"))).toBe(true)
   })
 
-  test("throws when self-cloning a tool without rename", () => {
+  test("throws when self-cloning a tool without rename", async () => {
     writeFile(path.join(stashDir, "tools", "deploy.sh"), "echo deploy\n")
 
-    expect(() => agentikitClone({ sourceRef: "tool:deploy.sh" })).toThrow("same path")
+    await expect(agentikitClone({ sourceRef: "tool:deploy.sh" })).rejects.toThrow("same path")
     // Verify the file was not destroyed
     expect(fs.readFileSync(path.join(stashDir, "tools", "deploy.sh"), "utf8")).toBe("echo deploy\n")
   })
 
-  test("throws when self-cloning a skill without rename", () => {
+  test("throws when self-cloning a skill without rename", async () => {
     writeFile(path.join(stashDir, "skills", "review", "SKILL.md"), "# Review\n")
 
-    expect(() => agentikitClone({ sourceRef: "skill:review" })).toThrow("same path")
+    await expect(agentikitClone({ sourceRef: "skill:review" })).rejects.toThrow("same path")
     // Verify the skill was not destroyed
     expect(fs.existsSync(path.join(stashDir, "skills", "review", "SKILL.md"))).toBe(true)
   })

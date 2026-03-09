@@ -39,11 +39,21 @@ export interface AssetTypeHandler {
 
 const handlers = new Map<string, AssetTypeHandler>()
 
+let handlersInitialized = false
+
+function ensureHandlersRegistered(): void {
+  if (handlersInitialized) return
+  handlersInitialized = true
+  // Import handler registrations
+  require("./handlers/index")
+}
+
 export function registerAssetType(handler: AssetTypeHandler): void {
   handlers.set(handler.typeName, handler)
 }
 
 export function getHandler(type: string): AssetTypeHandler {
+  ensureHandlersRegistered()
   const handler = handlers.get(type)
   if (!handler) {
     throw new Error(`Unknown asset type: "${type}"`)
@@ -52,17 +62,16 @@ export function getHandler(type: string): AssetTypeHandler {
 }
 
 export function tryGetHandler(type: string): AssetTypeHandler | undefined {
+  ensureHandlersRegistered()
   return handlers.get(type)
 }
 
 export function getAllHandlers(): AssetTypeHandler[] {
+  ensureHandlersRegistered()
   return Array.from(handlers.values())
 }
 
 export function getRegisteredTypeNames(): string[] {
+  ensureHandlersRegistered()
   return Array.from(handlers.keys())
-}
-
-export function isRegisteredType(type: string): boolean {
-  return handlers.has(type)
 }

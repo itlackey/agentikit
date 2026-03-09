@@ -5,6 +5,7 @@ JavaScript projects.
 
 ```ts
 import {
+  // Core operations
   agentikitAdd,
   agentikitClone,
   agentikitInit,
@@ -15,7 +16,53 @@ import {
   agentikitSearch,
   agentikitShow,
   agentikitUpdate,
+
+  // Stash sources
   resolveStashSources,
+  resolveAllStashDirs,
+  findSourceForPath,
+
+  // Ripgrep
+  resolveRg,
+  isRgAvailable,
+  ensureRg,
+
+  // Markdown
+  parseMarkdownToc,
+  extractSection,
+  extractLineRange,
+  extractFrontmatterOnly,
+  formatToc,
+  parseFrontmatter,
+
+  // Config
+  loadConfig,
+  saveConfig,
+  updateConfig,
+
+  // Registry
+  parseRegistryRef,
+  resolveRegistryArtifact,
+  searchRegistry,
+  installRegistryRef,
+  upsertInstalledRegistryEntry,
+  removeInstalledRegistryEntry,
+  getRegistryCacheRootDir,
+  detectStashRoot,
+
+  // LLM & Embeddings
+  enhanceMetadata,
+  isLlmAvailable,
+  embed,
+  cosineSimilarity,
+  isEmbeddingAvailable,
+
+  // Asset type handler registry
+  registerAssetType,
+  getHandler,
+  tryGetHandler,
+  getAllHandlers,
+  getRegisteredTypeNames,
 } from "agentikit"
 ```
 
@@ -23,7 +70,7 @@ import {
 
 | Function | Description |
 | --- | --- |
-| `agentikitInit()` | Initialize stash directory and config |
+| `agentikitInit()` | Initialize stash directory and config (async) |
 | `agentikitIndex({ full?, stashDir? })` | Build or rebuild the search index |
 | `agentikitSearch({ query, type?, limit?, usage?, source? })` | Search local stash and/or registry |
 | `agentikitShow({ ref, view? })` | Show asset content by ref (async, auto-installs if needed) |
@@ -32,5 +79,119 @@ import {
 | `agentikitRemove({ target })` | Remove an installed kit and reindex |
 | `agentikitUpdate({ target?, all? })` | Update one or all kits to latest version |
 | `agentikitReinstall({ target?, all? })` | Reinstall one or all kits from stored refs |
-| `agentikitClone({ sourceRef, newName?, force? })` | Copy an asset into the working stash |
+| `agentikitClone({ sourceRef, newName?, force? })` | Copy an asset into the working stash (async) |
 | `resolveStashSources()` | Resolve all stash sources in priority order |
+| `resolveAllStashDirs(stashDir)` | Resolve all stash directories including mounted dirs |
+| `findSourceForPath(path, sources)` | Find which stash source a file path belongs to |
+| `resolveRg(stashDir?)` | Resolve the path to ripgrep binary |
+| `isRgAvailable()` | Check if ripgrep is available |
+| `ensureRg(stashDir)` | Install ripgrep if not available |
+| `parseMarkdownToc(content)` | Parse table of contents from markdown |
+| `extractSection(content, heading)` | Extract a section from markdown by heading |
+| `extractLineRange(content, start, end)` | Extract a line range from content |
+| `extractFrontmatterOnly(content)` | Extract only the frontmatter from markdown |
+| `formatToc(toc)` | Format a TOC for display |
+| `parseFrontmatter(content)` | Parse YAML frontmatter from markdown |
+| `loadConfig()` | Load the agentikit config from disk |
+| `saveConfig(config)` | Save config to disk |
+| `updateConfig(partial)` | Merge partial config and save |
+| `parseRegistryRef(ref)` | Parse a registry reference string |
+| `resolveRegistryArtifact(parsed)` | Resolve a parsed ref to a downloadable artifact |
+| `searchRegistry(query, options?)` | Search the npm/GitHub registry |
+| `installRegistryRef(ref, config)` | Install a registry reference |
+| `upsertInstalledRegistryEntry(entry)` | Add or update an installed entry in config |
+| `removeInstalledRegistryEntry(id)` | Remove an installed entry from config |
+| `getRegistryCacheRootDir()` | Get the registry cache root directory |
+| `detectStashRoot(extractedDir)` | Detect the stash root inside an extracted package |
+| `enhanceMetadata(llmConfig, entry, content?)` | Enhance entry metadata using LLM |
+| `isLlmAvailable(llmConfig)` | Check if LLM endpoint is available |
+| `embed(text, embeddingConfig?)` | Generate an embedding vector |
+| `cosineSimilarity(a, b)` | Compute cosine similarity between two vectors |
+| `isEmbeddingAvailable(config?)` | Check if embedding provider is available |
+| `registerAssetType(handler)` | Register a custom asset type handler |
+| `getHandler(type)` | Get handler for an asset type (throws if not found) |
+| `tryGetHandler(type)` | Get handler for an asset type (returns undefined if not found) |
+| `getAllHandlers()` | Get all registered asset type handlers |
+| `getRegisteredTypeNames()` | Get all registered asset type names |
+
+## Types
+
+All public types are re-exported from the main entry point:
+
+```ts
+import type {
+  // Core types
+  AgentikitAssetType,
+  AgentikitSearchType,
+  InitResponse,
+  IndexResponse,
+  SearchUsageMode,
+
+  // Search
+  AddResponse,
+  LocalSearchHit,
+  RegistrySearchResultHit,
+  SearchSource,
+  SearchHit,
+  SearchResponse,
+
+  // Show
+  ShowResponse,
+  KnowledgeView,
+
+  // Registry management
+  ListResponse,
+  RemoveResponse,
+  ReinstallResponse,
+  UpdateResponse,
+  RegistryListEntry,
+  RegistryInstallStatus,
+  ReinstallResultItem,
+  UpdateResultItem,
+
+  // Stash sources
+  StashSource,
+  StashSourceKind,
+  CloneOptions,
+  CloneResponse,
+
+  // Tool runner
+  ToolKind,
+
+  // Metadata
+  StashEntry,
+  StashFile,
+  StashIntent,
+
+  // Config
+  AgentikitConfig,
+  EmbeddingConnectionConfig,
+  LlmConnectionConfig,
+  RegistryConfig,
+
+  // Registry internals
+  RegistrySource,
+  ParsedRegistryRef,
+  ParsedNpmRef,
+  ParsedGithubRef,
+  ResolvedRegistryArtifact,
+  RegistryInstalledEntry,
+  RegistryInstallResult,
+  RegistrySearchHit,
+  RegistrySearchResponse,
+
+  // Markdown
+  TocHeading,
+  KnowledgeToc,
+
+  // Ripgrep
+  EnsureRgResult,
+
+  // Embeddings
+  EmbeddingVector,
+
+  // Asset type handler
+  AssetTypeHandler,
+  ShowInput,
+} from "agentikit"
+```

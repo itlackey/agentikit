@@ -1,12 +1,22 @@
-import { test, expect } from "bun:test"
+import { test, expect, afterAll } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { resolveRg, isRgAvailable } from "../src/ripgrep"
 
+const createdTmpDirs: string[] = []
+
 function tmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-rg-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-rg-"))
+  createdTmpDirs.push(dir)
+  return dir
 }
+
+afterAll(() => {
+  for (const dir of createdTmpDirs) {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 function writeFile(filePath: string, content = "") {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -137,6 +147,7 @@ test("search pipeline returns ranked results when index exists", async () => {
 
   // Isolation: ensure index cache is written to a temp directory
   const oldXdgCacheHome = process.env.XDG_CACHE_HOME
+  const oldAkmStashDir = process.env.AKM_STASH_DIR
   const tempCacheDir = tmpDir()
   process.env.XDG_CACHE_HOME = tempCacheDir
 
@@ -154,6 +165,9 @@ test("search pipeline returns ranked results when index exists", async () => {
     // Docker-related result should be ranked first
     expect(result.hits[0].name).toContain("docker")
   } finally {
-    process.env.XDG_CACHE_HOME = oldXdgCacheHome
+    if (oldXdgCacheHome === undefined) delete process.env.XDG_CACHE_HOME
+    else process.env.XDG_CACHE_HOME = oldXdgCacheHome
+    if (oldAkmStashDir === undefined) delete process.env.AKM_STASH_DIR
+    else process.env.AKM_STASH_DIR = oldAkmStashDir
   }
 })

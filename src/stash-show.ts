@@ -4,10 +4,6 @@ import { resolveAssetPath } from "./stash-resolve"
 import type { KnowledgeView, ShowResponse } from "./stash-types"
 import { getHandler } from "./asset-type-handler"
 import { resolveStashSources, findSourceForPath } from "./stash-source"
-import { agentikitAdd } from "./stash-add"
-
-// Ensure handlers are registered
-import "./handlers/index"
 
 export async function agentikitShow(input: { ref: string; view?: KnowledgeView }): Promise<ShowResponse> {
   const parsed = parseOpenRef(input.ref)
@@ -36,27 +32,12 @@ export async function agentikitShow(input: { ref: string; view?: KnowledgeView }
     }
   }
 
-  // Auto-install: if asset not found and ref has a registryId, install it and retry
   if (!assetPath && parsed.registryId) {
-    await agentikitAdd({ ref: parsed.registryId })
-
-    // Re-resolve sources after installation
-    sources = resolveStashSources()
-    if (parsed.sourceKind === "installed" && parsed.registryId) {
-      searchSources = sources.filter((s) => s.kind === "installed" && s.registryId === parsed.registryId)
-    } else {
-      searchSources = sources.filter((s) => s.kind === parsed.sourceKind)
-    }
-    allStashDirs = searchSources.map((s) => s.path)
-
-    for (const dir of allStashDirs) {
-      try {
-        assetPath = resolveAssetPath(dir, parsed.type, parsed.name)
-        break
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err))
-      }
-    }
+    const installCmd = `akm add ${parsed.registryId}`
+    throw new Error(
+      `Stash asset not found for ref: ${parsed.type}:${parsed.name}. ` +
+      `To install from registry, run: ${installCmd}`
+    )
   }
 
   if (!assetPath) {

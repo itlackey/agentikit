@@ -71,3 +71,6 @@ export type {
 export { enhanceMetadata, isLlmAvailable } from "./src/llm"
 export { embed, cosineSimilarity, isEmbeddingAvailable } from "./src/embedder"
 export type { EmbeddingVector } from "./src/embedder"
+export type { SearchUsageMode } from "./src/stash-types"
+export type { AssetTypeHandler, ShowInput } from "./src/asset-type-handler"
+export { registerAssetType, getHandler, tryGetHandler, getAllHandlers, getRegisteredTypeNames } from "./src/asset-type-handler"

@@ -1,4 +1,5 @@
 import type { LlmConnectionConfig } from "./config"
+import { fetchWithTimeout } from "./common"
 import type { StashEntry } from "./metadata"
 
 // ── OpenAI-compatible chat completions ──────────────────────────────────────
@@ -21,7 +22,7 @@ async function chatCompletion(
     headers["Authorization"] = `Bearer ${config.apiKey}`
   }
 
-  const response = await fetch(config.endpoint, {
+  const response = await fetchWithTimeout(config.endpoint, {
     method: "POST",
     headers,
     body: JSON.stringify({

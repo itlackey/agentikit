@@ -34,7 +34,7 @@ export interface ToolInfo {
  *
  * For `.ts` / `.js` files, looks up the nearest `package.json` so that
  * `bun install` can be run in the correct working directory when the
- * `AGENTIKIT_BUN_INSTALL` env flag is set.
+ * `AKM_BUN_INSTALL` env flag is set.
  */
 export function buildToolInfo(stashDir: string, filePath: string): ToolInfo {
   const ext = path.extname(filePath).toLowerCase()
@@ -85,7 +85,7 @@ export function buildToolInfo(stashDir: string, filePath: string): ToolInfo {
       execute: { command: "bun", args: [filePath] },
     }
   }
-  const installFlag = process.env.AGENTIKIT_BUN_INSTALL
+  const installFlag = process.env.AKM_BUN_INSTALL
   const shouldInstall = installFlag === "1" || installFlag === "true" || installFlag === "yes"
 
   const quotedPkgDir = shellQuote(pkgDir)
@@ -110,7 +110,11 @@ export function shellQuote(input: string): string {
     throw new Error("Unsupported control characters in stash path.")
   }
   if (IS_WINDOWS) {
-    return `"${input.replace(/"/g, '""')}"`
+    const escaped = input
+      .replace(/%/g, "%%")
+      .replace(/([\\^|&<>])/g, "^$1")
+      .replace(/"/g, '""')
+    return `"${escaped}"`
   }
   const escaped = input
     .replace(/\\/g, "\\\\")

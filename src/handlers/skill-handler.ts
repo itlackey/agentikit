@@ -1,10 +1,7 @@
 import path from "node:path"
+import { toPosix } from "../common"
 import type { AssetTypeHandler, ShowInput } from "../asset-type-handler"
 import type { ShowResponse } from "../stash-types"
-
-function toPosix(input: string): string {
-  return input.replace(/\\/g, "/")
-}
 
 export const skillHandler: AssetTypeHandler = {
   typeName: "skill",

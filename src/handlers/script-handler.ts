@@ -1,6 +1,6 @@
 import path from "node:path"
 import { SCRIPT_EXTENSIONS, SCRIPT_EXTENSIONS_BROAD } from "../asset-spec"
-import { hasErrnoCode } from "../common"
+import { hasErrnoCode, toPosix } from "../common"
 import { buildToolInfo } from "../tool-runner"
 import { extractDescriptionFromComments } from "../metadata"
 import type { AssetTypeHandler, ShowInput } from "../asset-type-handler"
@@ -9,10 +9,6 @@ import type { StashEntry } from "../metadata"
 
 /** Extensions that buildToolInfo can handle (tool-runner supported) */
 const RUNNABLE_EXTENSIONS = SCRIPT_EXTENSIONS
-
-function toPosix(input: string): string {
-  return input.replace(/\\/g, "/")
-}
 
 export const scriptHandler: AssetTypeHandler = {
   typeName: "script",

@@ -2,9 +2,6 @@ import fs from "node:fs"
 import path from "node:path"
 import { type AgentikitAssetType, resolveStashDir } from "./common"
 import { ASSET_TYPES, TYPE_DIRS, deriveCanonicalAssetName } from "./asset-spec"
-
-// Ensure handlers are registered for type-specific metadata generation
-import "./handlers/index"
 import {
   type StashFile,
   type StashEntry,
@@ -57,34 +54,93 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
   const allStashDirs = resolveAllStashDirs(stashDir)
 
   const t0 = Date.now()
-  let generatedCount = 0
+
+  // Open database — pass embedding dimension from config if available
+  const dbPath = getDbPath()
+  const embeddingDim = config.embedding?.dimension
+  const db = openDatabase(dbPath, embeddingDim ? { embeddingDim } : undefined)
+
+  try {
+    // Check if we should do incremental
+    const prevStashDir = getMeta(db, "stashDir")
+    const prevBuiltAt = getMeta(db, "builtAt")
+    const isIncremental = !options?.full && prevStashDir === stashDir && !!prevBuiltAt
+    const builtAtMs = isIncremental ? new Date(prevBuiltAt!).getTime() : 0
+
+    if (options?.full || !isIncremental) {
+      // Wipe all entries for full rebuild or stashDir change
+      db.exec("DELETE FROM entries")
+      db.exec("DELETE FROM entries_fts")
+      if (isVecAvailable()) {
+        try { db.exec("DELETE FROM entries_vec") } catch { /* ignore */ }
+      }
+    }
+
+    const tWalkStart = Date.now()
+
+    // Walk stash dirs and index entries
+    const { scannedDirs, skippedDirs, generatedCount, dirsNeedingLlm } = indexEntries(db, allStashDirs, stashDir, isIncremental, builtAtMs)
+
+    // Enhance entries with LLM if configured
+    await enhanceDirsWithLlm(db, config, dirsNeedingLlm)
+
+    const tWalkEnd = Date.now()
+
+    // Rebuild FTS after all inserts
+    rebuildFts(db)
+    const tFtsEnd = Date.now()
+
+    // Generate embeddings if semantic search is enabled
+    const hasEmbeddings = await generateEmbeddingsForDb(db, config)
+
+    const tEmbedEnd = Date.now()
+
+    // Update metadata
+    setMeta(db, "version", String(DB_VERSION))
+    setMeta(db, "builtAt", new Date().toISOString())
+    setMeta(db, "stashDir", stashDir)
+    setMeta(db, "stashDirs", JSON.stringify(allStashDirs))
+    setMeta(db, "hasEmbeddings", hasEmbeddings ? "1" : "0")
+
+    const totalEntries = getEntryCount(db)
+
+    const tEnd = Date.now()
+
+    return {
+      stashDir,
+      totalEntries,
+      generatedMetadata: generatedCount,
+      indexPath: dbPath,
+      mode: isIncremental ? "incremental" : "full",
+      directoriesScanned: scannedDirs,
+      directoriesSkipped: skippedDirs,
+      timing: {
+        totalMs: tEnd - t0,
+        walkMs: tWalkEnd - tWalkStart,
+        embedMs: tEmbedEnd - tFtsEnd,
+        ftsMs: tFtsEnd - tWalkEnd,
+      },
+    }
+  } finally {
+    closeDatabase(db)
+  }
+}
+
+// ── Extracted helpers for agentikitIndex ─────────────────────────────────────
+
+function indexEntries(
+  db: import("bun:sqlite").Database,
+  allStashDirs: string[],
+  stashDir: string,
+  isIncremental: boolean,
+  builtAtMs: number,
+): { scannedDirs: number; skippedDirs: number; generatedCount: number; dirsNeedingLlm: Array<{ dirPath: string; files: string[]; assetType: AgentikitAssetType; currentStashDir: string }> } {
   let scannedDirs = 0
   let skippedDirs = 0
-
-  // Open database
-  const dbPath = getDbPath()
-  const db = openDatabase(dbPath)
-
-  // Check if we should do incremental
-  const prevStashDir = getMeta(db, "stashDir")
-  const prevBuiltAt = getMeta(db, "builtAt")
-  const isIncremental = !options?.full && prevStashDir === stashDir && !!prevBuiltAt
-  const builtAtMs = isIncremental ? new Date(prevBuiltAt!).getTime() : 0
-
-  if (options?.full || !isIncremental) {
-    // Wipe all entries for full rebuild or stashDir change
-    db.exec("DELETE FROM entries")
-    db.exec("DELETE FROM entries_fts")
-    if (isVecAvailable()) {
-      try { db.exec("DELETE FROM entries_vec") } catch { /* ignore */ }
-    }
-  }
-
+  let generatedCount = 0
   const seenPaths = new Set<string>()
-  const scannedPaths = new Set<string>()
-  const tWalkStart = Date.now()
+  const dirsNeedingLlm: Array<{ dirPath: string; files: string[]; assetType: AgentikitAssetType; currentStashDir: string }> = []
 
-  // Collect entries to insert (inside a transaction for speed)
   const insertTransaction = db.transaction(() => {
     for (const currentStashDir of allStashDirs) {
       for (const assetType of ASSET_TYPES as AgentikitAssetType[]) {
@@ -109,7 +165,6 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
           }
 
           scannedDirs++
-          scannedPaths.add(path.resolve(dirPath))
 
           // Delete old entries for this dir (will be re-inserted)
           deleteEntriesByDir(db, dirPath)
@@ -144,110 +199,62 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
 
               upsertEntry(db, entryKey, dirPath, entryPath, currentStashDir, entry, searchText)
             }
+
+            // Collect dirs needing LLM enhancement during the first walk
+            if (stash.entries.some((e) => e.generated)) {
+              dirsNeedingLlm.push({ dirPath, files, assetType, currentStashDir })
+            }
           }
         }
       }
     }
   })
 
-  // Run the synchronous transaction first
   insertTransaction()
 
-  // LLM enhancement needs to happen outside transaction (async)
-  // Collect dirs that need LLM enhancement (after transaction so seenPaths is populated)
-  const dirsNeedingLlm: Array<{ dirPath: string; files: string[]; assetType: AgentikitAssetType; currentStashDir: string }> = []
+  return { scannedDirs, skippedDirs, generatedCount, dirsNeedingLlm }
+}
 
-  if (config.llm) {
-    for (const currentStashDir of allStashDirs) {
-      for (const assetType of ASSET_TYPES as AgentikitAssetType[]) {
-        const typeRoot = path.join(currentStashDir, TYPE_DIRS[assetType])
-        try {
-          if (!fs.statSync(typeRoot).isDirectory()) continue
-        } catch { continue }
+async function enhanceDirsWithLlm(
+  db: import("bun:sqlite").Database,
+  config: import("./config").AgentikitConfig,
+  dirsNeedingLlm: Array<{ dirPath: string; files: string[]; assetType: AgentikitAssetType; currentStashDir: string }>,
+): Promise<void> {
+  if (!config.llm || dirsNeedingLlm.length === 0) return
 
-        const dirGroups = walkStash(typeRoot, assetType)
-        for (const { dirPath, files } of dirGroups) {
-          const resolved = path.resolve(dirPath)
-          if (!scannedPaths.has(resolved)) continue // only dirs actually re-scanned
+  for (const { dirPath, files, currentStashDir } of dirsNeedingLlm) {
+    let stash = loadStashFile(dirPath)
+    if (!stash) continue
+    stash = await enhanceStashWithLlm(config.llm, stash, dirPath, files)
+    writeStashFile(dirPath, stash)
 
-          // Check if this dir's entries were generated (not from manual stash)
-          const stash = loadStashFile(dirPath)
-          if (stash && stash.entries.some((e) => e.generated)) {
-            dirsNeedingLlm.push({ dirPath, files, assetType, currentStashDir })
-          }
-        }
-      }
+    // Re-upsert enhanced entries
+    for (const entry of stash.entries) {
+      const entryPath = entry.entry ? path.join(dirPath, entry.entry) : files[0] || dirPath
+      const entryKey = `${currentStashDir}:${entry.type}:${entry.name}`
+      const searchText = buildSearchText(entry)
+      upsertEntry(db, entryKey, dirPath, entryPath, currentStashDir, entry, searchText)
     }
   }
+}
 
-  // LLM enhancement (async, outside transaction)
-  if (config.llm && dirsNeedingLlm.length > 0) {
-    for (const { dirPath, files, currentStashDir } of dirsNeedingLlm) {
-      let stash = loadStashFile(dirPath)
-      if (!stash) continue
-      stash = await enhanceStashWithLlm(config.llm, stash, dirPath, files)
-      writeStashFile(dirPath, stash)
+async function generateEmbeddingsForDb(
+  db: import("bun:sqlite").Database,
+  config: import("./config").AgentikitConfig,
+): Promise<boolean> {
+  if (!config.semanticSearch || !isVecAvailable()) return false
 
-      // Re-upsert enhanced entries
-      for (const entry of stash.entries) {
-        const entryPath = entry.entry ? path.join(dirPath, entry.entry) : files[0] || dirPath
-        const entryKey = `${currentStashDir}:${entry.type}:${entry.name}`
-        const searchText = buildSearchText(entry)
-        upsertEntry(db, entryKey, dirPath, entryPath, currentStashDir, entry, searchText)
-      }
+  try {
+    const { embed } = await import("./embedder.js")
+    const allEntries = getAllEntriesForEmbedding(db)
+    for (const { id, searchText } of allEntries) {
+      const embedding = await embed(searchText, config.embedding)
+      upsertEmbedding(db, id, embedding)
     }
-  }
-
-  const tWalkEnd = Date.now()
-
-  // Rebuild FTS after all inserts
-  rebuildFts(db)
-  const tFtsEnd = Date.now()
-
-  // Generate embeddings if semantic search is enabled
-  let hasEmbeddings = false
-  if (config.semanticSearch && isVecAvailable()) {
-    try {
-      const { embed } = await import("./embedder.js")
-      const allEntries = getAllEntriesForEmbedding(db)
-      for (const { id, searchText } of allEntries) {
-        const embedding = await embed(searchText, config.embedding)
-        upsertEmbedding(db, id, embedding)
-      }
-      hasEmbeddings = true
-    } catch {
-      // Embedding provider not available, continue without
-    }
-  }
-
-  const tEmbedEnd = Date.now()
-
-  // Update metadata
-  setMeta(db, "version", String(DB_VERSION))
-  setMeta(db, "builtAt", new Date().toISOString())
-  setMeta(db, "stashDir", stashDir)
-  setMeta(db, "stashDirs", JSON.stringify(allStashDirs))
-  setMeta(db, "hasEmbeddings", hasEmbeddings ? "1" : "0")
-
-  const totalEntries = getEntryCount(db)
-  closeDatabase(db)
-
-  const tEnd = Date.now()
-
-  return {
-    stashDir,
-    totalEntries,
-    generatedMetadata: generatedCount,
-    indexPath: dbPath,
-    mode: isIncremental ? "incremental" : "full",
-    directoriesScanned: scannedDirs,
-    directoriesSkipped: skippedDirs,
-    timing: {
-      totalMs: tEnd - t0,
-      walkMs: tWalkEnd - tWalkStart,
-      embedMs: tEmbedEnd - tFtsEnd,
-      ftsMs: tFtsEnd - tWalkEnd,
-    },
+    return true
+  } catch (error) {
+    console.warn("Embedding generation failed, continuing without:", error instanceof Error ? error.message : String(error))
+    return false
   }
 }
 

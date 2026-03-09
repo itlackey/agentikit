@@ -1,15 +1,11 @@
 import path from "node:path"
 import { SCRIPT_EXTENSIONS } from "../asset-spec"
-import { hasErrnoCode } from "../common"
+import { hasErrnoCode, toPosix } from "../common"
 import { buildToolInfo } from "../tool-runner"
 import { extractDescriptionFromComments } from "../metadata"
 import type { AssetTypeHandler, ShowInput } from "../asset-type-handler"
 import type { ShowResponse, LocalSearchHit } from "../stash-types"
 import type { StashEntry } from "../metadata"
-
-function toPosix(input: string): string {
-  return input.replace(/\\/g, "/")
-}
 
 export const toolHandler: AssetTypeHandler = {
   typeName: "tool",

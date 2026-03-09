@@ -29,9 +29,9 @@ import {
 
 const initCommand = defineCommand({
   meta: { name: "init", description: "Initialize Agent-i-Kit's working stash directory and set AKM_STASH_DIR" },
-  run() {
-    return runWithJsonErrors(() => {
-      const result = agentikitInit()
+  async run() {
+    await runWithJsonErrors(async () => {
+      const result = await agentikitInit()
       console.log(JSON.stringify(result, null, 2))
     })
   },
@@ -296,9 +296,9 @@ const cloneCommand = defineCommand({
     name: { type: "string", description: "New name for the cloned asset" },
     force: { type: "boolean", description: "Overwrite if asset already exists in working stash", default: false },
   },
-  run({ args }) {
-    return runWithJsonErrors(() => {
-      const result = agentikitClone({
+  async run({ args }) {
+    await runWithJsonErrors(async () => {
+      const result = await agentikitClone({
         sourceRef: args.ref,
         newName: args.name,
         force: args.force,
@@ -344,6 +344,8 @@ const SEARCH_USAGE_MODES: SearchUsageMode[] = ["none", "both", "item", "guide"]
 const SEARCH_SOURCES: SearchSource[] = ["local", "registry", "both"]
 const CONFIG_SUBCOMMAND_SET = new Set(["list", "get", "set", "unset", "providers", "use"])
 
+// Note: citty reads process.argv directly, so we must normalize it in-place.
+// This is done once at startup before runMain.
 normalizeConfigArgv(process.argv)
 runMain(main)
 

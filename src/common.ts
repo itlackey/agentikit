@@ -56,3 +56,21 @@ export function isWithin(candidate: string, root: string): boolean {
 function normalizeFsPathForComparison(value: string): string {
   return process.platform === "win32" ? value.toLowerCase() : value
 }
+
+/**
+ * Fetch with an AbortController timeout.
+ * Defaults to 30 seconds if no timeout is specified.
+ */
+export async function fetchWithTimeout(
+  url: string,
+  opts?: RequestInit,
+  timeoutMs = 30_000,
+): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...opts, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}

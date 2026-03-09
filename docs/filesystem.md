@@ -16,7 +16,7 @@ The main working directory for all assets.
 
 ```
 <stash>/
-  tools/          # Executable scripts (.sh, .ts, .js)
+  tools/          # Executable scripts (.sh, .ts, .js, .ps1, .cmd, .bat)
   skills/         # Skill definitions (.md)
   commands/       # Slash commands (.md)
   agents/         # Agent definitions (.md)

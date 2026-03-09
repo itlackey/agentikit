@@ -1,4 +1,5 @@
 import type { EmbeddingConnectionConfig } from "./config"
+import { fetchWithTimeout } from "./common"
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -6,22 +7,27 @@ export type EmbeddingVector = number[]
 
 // ── Singleton local embedder ────────────────────────────────────────────────
 
-let localEmbedder: any
+interface TransformerPipeline {
+  (text: string, options: { pooling: string; normalize: boolean }): Promise<{ data: Float32Array }>
+}
 
-async function getLocalEmbedder(): Promise<any> {
+let localEmbedder: TransformerPipeline | undefined
+
+async function getLocalEmbedder(): Promise<TransformerPipeline> {
   if (!localEmbedder) {
-    let pipeline: any
+    let pipeline: unknown
     try {
       const mod = await import("@xenova/transformers")
-      pipeline = mod.pipeline
+      pipeline = mod.pipeline as unknown
     } catch {
       throw new Error(
         "Semantic search requires @xenova/transformers. Install it with: npm install @xenova/transformers",
       )
     }
-    localEmbedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2")
+    const pipelineFn = pipeline as (task: string, model: string) => Promise<TransformerPipeline>
+    localEmbedder = await pipelineFn("feature-extraction", "Xenova/all-MiniLM-L6-v2")
   }
-  return localEmbedder
+  return localEmbedder!
 }
 
 async function embedLocal(text: string): Promise<EmbeddingVector> {
@@ -49,7 +55,7 @@ async function embedRemote(
     body.dimensions = config.dimension
   }
 
-  const response = await fetch(config.endpoint, {
+  const response = await fetchWithTimeout(config.endpoint, {
     method: "POST",
     headers,
     body: JSON.stringify(body),

@@ -32,9 +32,6 @@ import {
 import { tryGetHandler } from "./asset-type-handler"
 import { type StashSource, resolveStashSources, findSourceForPath } from "./stash-source"
 
-// Ensure handlers are registered
-import "./handlers/index"
-
 type IndexedAsset = {
   type: AgentikitAssetType
   name: string
@@ -144,7 +141,8 @@ async function searchLocal(input: {
   const dbPath = getDbPath()
   try {
     if (fs.existsSync(dbPath)) {
-      const db = openDatabase(dbPath)
+      const embeddingDim = config.embedding?.dimension
+      const db = openDatabase(dbPath, embeddingDim ? { embeddingDim } : undefined)
       try {
         const entryCount = getEntryCount(db)
         const storedStashDir = getMeta(db, "stashDir")
@@ -162,8 +160,8 @@ async function searchLocal(input: {
         closeDatabase(db)
       }
     }
-  } catch {
-    // DB not available, fall through to substring search
+  } catch (error) {
+    console.warn("Search index unavailable, falling back to substring search:", error instanceof Error ? error.message : String(error))
   }
 
   const hits = allStashDirs
@@ -299,6 +297,10 @@ async function searchDatabase(
     }
   }
 
+  for (const item of scored) {
+    item.score = Math.min(item.score, 1.0)
+  }
+
   scored.sort((a, b) => b.score - a.score)
   const rankMs = Date.now() - tRank0
 
@@ -351,7 +353,8 @@ async function tryVecScores(
       scores.set(id, Math.max(0, cosineSim))
     }
     return scores
-  } catch {
+  } catch (error) {
+    console.warn("Vector search failed, skipping:", error instanceof Error ? error.message : String(error))
     return null
   }
 }
@@ -375,14 +378,6 @@ function substringSearch(
 
 // ── Hit building ────────────────────────────────────────────────────────────
 
-function findStashDirForPath(filePath: string, stashDirs: string[]): string | undefined {
-  const resolved = path.resolve(filePath)
-  for (const dir of stashDirs) {
-    if (resolved.startsWith(path.resolve(dir) + path.sep)) return dir
-  }
-  return undefined
-}
-
 function buildDbHit(input: {
   entry: import("./metadata").StashEntry
   path: string
@@ -394,14 +389,14 @@ function buildDbHit(input: {
   sources: StashSource[]
   includeItemUsage: boolean
 }): LocalSearchHit {
-  const entryStashDir = findStashDirForPath(input.path, input.allStashDirs) ?? input.defaultStashDir
+  const entryStashDir = findSourceForPath(input.path, input.sources)?.path ?? input.defaultStashDir
   const typeRoot = path.join(entryStashDir, TYPE_DIRS[input.entry.type])
   const openRefName = deriveCanonicalAssetName(input.entry.type, typeRoot, input.path)
     ?? input.entry.name
 
   const qualityBoost = input.entry.generated === true ? 0 : 0.05
   const confidenceBoost = typeof input.entry.confidence === "number" ? Math.min(0.05, Math.max(0, input.entry.confidence) * 0.05) : 0
-  const score = Math.round((input.score + qualityBoost + confidenceBoost) * 1000) / 1000
+  const score = Math.min(Math.round((input.score + qualityBoost + confidenceBoost) * 1000) / 1000, 1.0)
 
   const whyMatched = buildWhyMatched(input.entry, input.query, input.rankingMode, qualityBoost, confidenceBoost)
 
