@@ -32,16 +32,16 @@ The shell installer verifies the downloaded binary against release `checksums.tx
 
 ## Stash model
 
-Set a stash path via `AGENTIKIT_STASH_DIR`, or run `akm init` to create one automatically.
+Set a stash path via `AKM_STASH_DIR`, or run `akm init` to create one automatically.
 
 ```sh
-export AGENTIKIT_STASH_DIR=/abs/path/to/your-stash
+export AKM_STASH_DIR=/abs/path/to/your-stash
 ```
 
 Expected stash layout:
 
 ```
-$AGENTIKIT_STASH_DIR/
+$AKM_STASH_DIR/
 ├── tools/      # recursive files (.sh, .ts, .js, .ps1, .cmd, .bat)
 ├── skills/     # skill directories containing SKILL.md
 ├── commands/   # markdown files
@@ -52,7 +52,7 @@ $AGENTIKIT_STASH_DIR/
 ## CLI usage
 
 ```sh
-akm init                 # Initialize stash directory and set AGENTIKIT_STASH_DIR
+akm init                 # Initialize stash directory and set AKM_STASH_DIR
 akm index [--full]       # Build search index (incremental by default)
 akm add <ref>            # Install a registry kit or local git directory
 akm list                 # List installed registry kits from config.registry.installed
@@ -67,7 +67,7 @@ akm sources              # List all stash sources with kind and status
 
 ### init
 
-Initialize a stash directory and set `AGENTIKIT_STASH_DIR`.
+Initialize a stash directory and set `AKM_STASH_DIR`.
 
 ```sh
 akm init

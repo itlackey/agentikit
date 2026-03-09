@@ -14,6 +14,7 @@ import {
   extractTagsFromPath,
   type StashFile,
 } from "../src/metadata"
+import "../src/handlers/index" // register asset-type handlers so extractTypeMetadata runs
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-meta-"))

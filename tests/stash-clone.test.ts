@@ -5,7 +5,7 @@ import path from "node:path"
 import { agentikitClone } from "../src/stash-clone"
 import { saveConfig } from "../src/config"
 
-const originalStashDir = process.env.AGENTIKIT_STASH_DIR
+const originalStashDir = process.env.AKM_STASH_DIR
 const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
 const originalXdgCacheHome = process.env.XDG_CACHE_HOME
 let testConfigDir = ""
@@ -33,7 +33,7 @@ beforeEach(() => {
   mountedDir = createStashDir("agentikit-clone-mounted-")
   process.env.XDG_CONFIG_HOME = testConfigDir
   process.env.XDG_CACHE_HOME = testCacheDir
-  process.env.AGENTIKIT_STASH_DIR = stashDir
+  process.env.AKM_STASH_DIR = stashDir
 
   saveConfig({
     semanticSearch: false,
@@ -42,7 +42,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  process.env.AGENTIKIT_STASH_DIR = originalStashDir ?? undefined
+  process.env.AKM_STASH_DIR = originalStashDir ?? undefined
   if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
   else process.env.XDG_CONFIG_HOME = originalXdgConfigHome
   if (originalXdgCacheHome === undefined) delete process.env.XDG_CACHE_HOME

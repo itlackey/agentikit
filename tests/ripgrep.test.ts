@@ -142,7 +142,7 @@ test("search pipeline returns ranked results when index exists", async () => {
 
   try {
     // Build index
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     const { agentikitIndex } = await import("../src/indexer")
     await agentikitIndex({ stashDir })
 

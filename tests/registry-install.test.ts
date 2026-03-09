@@ -120,7 +120,7 @@ describe("local git installs", () => {
 
     try {
       const result = await withEnv(
-        { AGENTIKIT_STASH_DIR: stashDir, XDG_CACHE_HOME: cacheHome },
+        { AKM_STASH_DIR: stashDir, XDG_CACHE_HOME: cacheHome },
         () => agentikitAdd({ ref: kitDir }),
       )
 
@@ -133,7 +133,7 @@ describe("local git installs", () => {
       expect(installedRoots).toContain(result.installed.stashRoot)
 
       const shown = withEnv(
-        { AGENTIKIT_STASH_DIR: stashDir, XDG_CACHE_HOME: cacheHome },
+        { AKM_STASH_DIR: stashDir, XDG_CACHE_HOME: cacheHome },
         () => agentikitShow({ ref: "tool:hello.sh" }),
       )
       expect(shown.type).toBe("tool")
@@ -165,7 +165,7 @@ describe("local git installs", () => {
 
     try {
       const result = await withEnv(
-        { AGENTIKIT_STASH_DIR: stashDir, XDG_CACHE_HOME: cacheHome },
+        { AKM_STASH_DIR: stashDir, XDG_CACHE_HOME: cacheHome },
         () => agentikitAdd({ ref: repoDir }),
       )
 

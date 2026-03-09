@@ -143,7 +143,7 @@ describe("Scenario: Full lifecycle (index → search → show)", () => {
 
   beforeAll(async () => {
     stashDir = copyFixturesToTmp()
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
   })
 
   afterAll(() => {
@@ -298,7 +298,7 @@ describe("Scenario: Agent discovers capabilities for task", () => {
 
   beforeAll(async () => {
     stashDir = copyFixturesToTmp()
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     await agentikitIndex({ stashDir })
   })
 
@@ -353,7 +353,7 @@ describe("Scenario: Mixed local + registry search compatibility", () => {
 
   beforeAll(async () => {
     stashDir = copyFixturesToTmp()
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     await agentikitIndex({ stashDir })
   })
 
@@ -451,7 +451,7 @@ describe("Scenario: CLI subprocess execution", () => {
 
   beforeAll(async () => {
     stashDir = copyFixturesToTmp()
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     await agentikitIndex({ stashDir })
   })
 
@@ -680,7 +680,7 @@ describe("Scenario: CLI subprocess execution", () => {
 describe("Scenario: Registry lifecycle CLI (no network)", () => {
   test("cli: akm list returns empty installed set when none configured", async () => {
     const stashDir = createEmptyStashDir("agentikit-e2e-registry-empty-")
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     saveConfig({ semanticSearch: false, mountedStashDirs: [] })
 
     try {
@@ -700,7 +700,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
     const stashRoot = path.join(stashDir, "registry-kit")
     const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-cache-remove-"))
     fs.mkdirSync(path.join(stashRoot, "tools"), { recursive: true })
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
 
     saveConfig({
       semanticSearch: false,
@@ -740,7 +740,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
 
   test("cli: akm update requires target or --all", async () => {
     const stashDir = createEmptyStashDir("agentikit-e2e-registry-update-")
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     saveConfig({ semanticSearch: false, mountedStashDirs: [] })
 
     try {
@@ -755,7 +755,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
 
   test("cli: akm reinstall rejects target with --all", async () => {
     const stashDir = createEmptyStashDir("agentikit-e2e-registry-reinstall-")
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     saveConfig({ semanticSearch: false, mountedStashDirs: [] })
 
     try {
@@ -770,7 +770,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
 
   test("cli: akm update missing target returns stable not-installed error", async () => {
     const stashDir = createEmptyStashDir("agentikit-e2e-registry-missing-")
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     saveConfig({ semanticSearch: false, mountedStashDirs: [] })
 
     try {
@@ -793,7 +793,7 @@ describe("Scenario: CLI knowledge --view flags", () => {
 
   beforeAll(async () => {
     stashDir = copyFixturesToTmp()
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
   })
 
   afterAll(() => {
@@ -847,7 +847,7 @@ describe("Scenario: Zero-config progressive improvement", () => {
     for (const sub of ["tools", "skills", "commands", "agents"]) {
       fs.mkdirSync(path.join(stashDir, sub), { recursive: true })
     }
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
   })
 
   afterAll(() => {
@@ -929,7 +929,7 @@ describe("Scenario: Multi-tool directory with hand-written .stash.json", () => {
 
   beforeAll(async () => {
     stashDir = copyFixturesToTmp()
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     await agentikitIndex({ stashDir })
   })
 
@@ -969,7 +969,7 @@ describe("Scenario: Index persistence across sessions", () => {
 
   beforeAll(async () => {
     stashDir = copyFixturesToTmp()
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
   })
 
   afterAll(() => {
@@ -1034,29 +1034,29 @@ describe("Scenario: Index persistence across sessions", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("Scenario: Error handling and edge cases", () => {
-  test("search with non-existent AGENTIKIT_STASH_DIR throws clear error", async () => {
-    const orig = process.env.AGENTIKIT_STASH_DIR
-    process.env.AGENTIKIT_STASH_DIR = "/nonexistent/path"
+  test("search with non-existent AKM_STASH_DIR throws clear error", async () => {
+    const orig = process.env.AKM_STASH_DIR
+    process.env.AKM_STASH_DIR = "/nonexistent/path"
     try {
       await expect(agentikitSearch({ query: "test" })).rejects.toThrow(/Unable to read/)
     } finally {
-      process.env.AGENTIKIT_STASH_DIR = orig
+      process.env.AKM_STASH_DIR = orig
     }
   })
 
-  test("search with unset AGENTIKIT_STASH_DIR throws clear error", async () => {
-    const orig = process.env.AGENTIKIT_STASH_DIR
-    delete process.env.AGENTIKIT_STASH_DIR
+  test("search with unset AKM_STASH_DIR throws clear error", async () => {
+    const orig = process.env.AKM_STASH_DIR
+    delete process.env.AKM_STASH_DIR
     try {
-      await expect(agentikitSearch({ query: "test" })).rejects.toThrow(/AGENTIKIT_STASH_DIR is not set/)
+      await expect(agentikitSearch({ query: "test" })).rejects.toThrow(/AKM_STASH_DIR is not set/)
     } finally {
-      process.env.AGENTIKIT_STASH_DIR = orig
+      process.env.AKM_STASH_DIR = orig
     }
   })
 
   test("show with invalid ref format throws", async () => {
     const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-err-"))
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     try {
       expect(() => agentikitShow({ ref: "badref" })).toThrow(/Invalid open ref/)
     } finally {
@@ -1066,7 +1066,7 @@ describe("Scenario: Error handling and edge cases", () => {
 
   test("show with unknown type throws", async () => {
     const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-err-"))
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     try {
       expect(() => agentikitShow({ ref: "widget:foo" })).toThrow(/Invalid open ref type/)
     } finally {
@@ -1077,7 +1077,7 @@ describe("Scenario: Error handling and edge cases", () => {
   test("show with path traversal attempt throws", async () => {
     const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-err-"))
     fs.mkdirSync(path.join(stashDir, "tools"), { recursive: true })
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     try {
       expect(() => agentikitShow({ ref: "tool:..%2F..%2Fetc%2Fpasswd" })).toThrow(/Invalid open ref name/)
     } finally {
@@ -1090,7 +1090,7 @@ describe("Scenario: Error handling and edge cases", () => {
     for (const sub of ["tools", "skills", "commands", "agents"]) {
       fs.mkdirSync(path.join(stashDir, sub), { recursive: true })
     }
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     try {
       const result = await agentikitSearch({ query: "anything" })
       expect(result.hits).toHaveLength(0)
@@ -1124,7 +1124,7 @@ describe("Scenario: Cross-type discovery", () => {
 
   beforeAll(async () => {
     stashDir = copyFixturesToTmp()
-    process.env.AGENTIKIT_STASH_DIR = stashDir
+    process.env.AKM_STASH_DIR = stashDir
     await agentikitIndex({ stashDir })
   })
 

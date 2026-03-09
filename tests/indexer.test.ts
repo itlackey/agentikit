@@ -31,7 +31,7 @@ test("agentikitIndex scans directories and builds index", async () => {
   writeFile(path.join(stashDir, "tools", "deploy", "deploy.sh"), "#!/usr/bin/env bash\n# Deploy to staging\necho deploy\n")
   writeFile(path.join(stashDir, "tools", "lint", "lint.ts"), "/**\n * Lint source code\n */\nconsole.log('lint')\n")
 
-  process.env.AGENTIKIT_STASH_DIR = stashDir
+  process.env.AKM_STASH_DIR = stashDir
   const result = await agentikitIndex({ stashDir })
 
   expect(result.totalEntries).toBe(2)

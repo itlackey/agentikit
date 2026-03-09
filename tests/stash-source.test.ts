@@ -5,7 +5,7 @@ import path from "node:path"
 import { resolveStashSources, resolveAllStashDirs, findSourceForPath } from "../src/stash-source"
 import { saveConfig } from "../src/config"
 
-const originalStashDir = process.env.AGENTIKIT_STASH_DIR
+const originalStashDir = process.env.AKM_STASH_DIR
 const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
 let testConfigDir = ""
 let stashDir = ""
@@ -17,11 +17,11 @@ beforeEach(() => {
     fs.mkdirSync(path.join(stashDir, sub), { recursive: true })
   }
   process.env.XDG_CONFIG_HOME = testConfigDir
-  process.env.AGENTIKIT_STASH_DIR = stashDir
+  process.env.AKM_STASH_DIR = stashDir
 })
 
 afterEach(() => {
-  process.env.AGENTIKIT_STASH_DIR = originalStashDir ?? undefined
+  process.env.AKM_STASH_DIR = originalStashDir ?? undefined
   if (originalXdgConfigHome === undefined) {
     delete process.env.XDG_CONFIG_HOME
   } else {

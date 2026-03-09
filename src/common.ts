@@ -20,19 +20,19 @@ export function isAssetType(type: string): type is AgentikitAssetType {
 // ── Utilities ───────────────────────────────────────────────────────────────
 
 export function resolveStashDir(): string {
-  const raw = process.env.AGENTIKIT_STASH_DIR?.trim()
+  const raw = process.env.AKM_STASH_DIR?.trim()
   if (!raw) {
-    throw new Error("AGENTIKIT_STASH_DIR is not set. Set it to your Agentikit stash path.")
+    throw new Error("AKM_STASH_DIR is not set. Set it to your Agentikit stash path.")
   }
   const stashDir = path.resolve(raw)
   let stat: fs.Stats
   try {
     stat = fs.statSync(stashDir)
   } catch {
-    throw new Error(`Unable to read AGENTIKIT_STASH_DIR at "${stashDir}".`)
+    throw new Error(`Unable to read AKM_STASH_DIR at "${stashDir}".`)
   }
   if (!stat.isDirectory()) {
-    throw new Error(`AGENTIKIT_STASH_DIR must point to a directory: "${stashDir}".`)
+    throw new Error(`AKM_STASH_DIR must point to a directory: "${stashDir}".`)
   }
   return stashDir
 }

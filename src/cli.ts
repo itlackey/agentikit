@@ -28,7 +28,7 @@ import {
 } from "./config-cli"
 
 const initCommand = defineCommand({
-  meta: { name: "init", description: "Initialize agentikit stash directory and set AGENTIKIT_STASH_DIR" },
+  meta: { name: "init", description: "Initialize Agent-i-Kit's working stash directory and set AKM_STASH_DIR" },
   run() {
     return runWithJsonErrors(() => {
       const result = agentikitInit()
@@ -322,7 +322,7 @@ const sourcesCommand = defineCommand({
 const main = defineCommand({
   meta: {
     name: "akm",
-    description: "CLI tool to search, open, and run extension assets from an agentikit stash directory.",
+    description: "CLI tool to search, open, and manage assets from Agent-i-Kit stash.",
   },
   subCommands: {
     init: initCommand,
@@ -369,7 +369,7 @@ async function runWithJsonErrors(fn: (() => void) | (() => Promise<void>)): Prom
 }
 
 function buildHint(message: string): string | undefined {
-  if (message.includes("AGENTIKIT_STASH_DIR")) return "Run `akm init` or set AGENTIKIT_STASH_DIR to a valid directory."
+  if (message.includes("AKM_STASH_DIR")) return "Run `akm init` or set AKM_STASH_DIR to a valid directory."
   if (message.includes("Either <target> or --all is required")) return "Use `akm update --all` or pass a target like `akm update npm:@scope/pkg`."
   if (message.includes("Specify either <target> or --all")) return "Use only one: a positional target or `--all`."
   if (message.includes("No installed registry entry matched target")) return "Run `akm list` to view installed ids/refs, then retry with one of those values."

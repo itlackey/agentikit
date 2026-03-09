@@ -26,7 +26,7 @@ function writeRawConfig(configPath: string, content: string): void {
 
 const originalXdgConfigHome = process.env.XDG_CONFIG_HOME
 const originalHome = process.env.HOME
-const originalStashDir = process.env.AGENTIKIT_STASH_DIR
+const originalStashDir = process.env.AKM_STASH_DIR
 let testConfigHome = ""
 
 beforeEach(() => {
@@ -48,9 +48,9 @@ afterEach(() => {
   }
 
   if (originalStashDir === undefined) {
-    delete process.env.AGENTIKIT_STASH_DIR
+    delete process.env.AKM_STASH_DIR
   } else {
-    process.env.AGENTIKIT_STASH_DIR = originalStashDir
+    process.env.AKM_STASH_DIR = originalStashDir
   }
 
   if (testConfigHome) {
@@ -105,8 +105,8 @@ describe("loadConfig", () => {
     expect(loadConfig()).toEqual(DEFAULT_CONFIG)
   })
 
-  test("loads config without requiring AGENTIKIT_STASH_DIR", () => {
-    delete process.env.AGENTIKIT_STASH_DIR
+  test("loads config without requiring AKM_STASH_DIR", () => {
+    delete process.env.AKM_STASH_DIR
     writeRawConfig(getConfigPath(), JSON.stringify({ semanticSearch: false }))
 
     expect(loadConfig()).toEqual({ semanticSearch: false, mountedStashDirs: [] })

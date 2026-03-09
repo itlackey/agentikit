@@ -7,28 +7,28 @@ import { resolveStashDir, toPosix, hasErrnoCode, isAssetType, isWithin } from ".
 // ── resolveStashDir ──────────────────────────────────────────────────────────
 
 describe("resolveStashDir", () => {
-  const origEnv = process.env.AGENTIKIT_STASH_DIR
+  const origEnv = process.env.AKM_STASH_DIR
 
   afterAll(() => {
     if (origEnv === undefined) {
-      delete process.env.AGENTIKIT_STASH_DIR
+      delete process.env.AKM_STASH_DIR
     } else {
-      process.env.AGENTIKIT_STASH_DIR = origEnv
+      process.env.AKM_STASH_DIR = origEnv
     }
   })
 
-  test("throws when AGENTIKIT_STASH_DIR is not set", () => {
-    delete process.env.AGENTIKIT_STASH_DIR
-    expect(() => resolveStashDir()).toThrow("AGENTIKIT_STASH_DIR is not set")
+  test("throws when AKM_STASH_DIR is not set", () => {
+    delete process.env.AKM_STASH_DIR
+    expect(() => resolveStashDir()).toThrow("AKM_STASH_DIR is not set")
   })
 
-  test("throws when AGENTIKIT_STASH_DIR is empty string", () => {
-    process.env.AGENTIKIT_STASH_DIR = "   "
-    expect(() => resolveStashDir()).toThrow("AGENTIKIT_STASH_DIR is not set")
+  test("throws when AKM_STASH_DIR is empty string", () => {
+    process.env.AKM_STASH_DIR = "   "
+    expect(() => resolveStashDir()).toThrow("AKM_STASH_DIR is not set")
   })
 
   test("throws when path does not exist", () => {
-    process.env.AGENTIKIT_STASH_DIR = "/nonexistent/path/that/does/not/exist"
+    process.env.AKM_STASH_DIR = "/nonexistent/path/that/does/not/exist"
     expect(() => resolveStashDir()).toThrow("Unable to read")
   })
 
@@ -36,7 +36,7 @@ describe("resolveStashDir", () => {
     const tmpFile = path.join(os.tmpdir(), `agentikit-common-test-file-${Date.now()}`)
     fs.writeFileSync(tmpFile, "not a directory")
     try {
-      process.env.AGENTIKIT_STASH_DIR = tmpFile
+      process.env.AKM_STASH_DIR = tmpFile
       expect(() => resolveStashDir()).toThrow("must point to a directory")
     } finally {
       fs.unlinkSync(tmpFile)
@@ -46,7 +46,7 @@ describe("resolveStashDir", () => {
   test("returns resolved path for valid directory", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-common-test-"))
     try {
-      process.env.AGENTIKIT_STASH_DIR = tmpDir
+      process.env.AKM_STASH_DIR = tmpDir
       const result = resolveStashDir()
       expect(result).toBe(path.resolve(tmpDir))
     } finally {

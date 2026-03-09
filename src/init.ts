@@ -1,7 +1,7 @@
 /**
  * Agentikit initialization logic.
  *
- * Creates the working stash directory structure, sets the AGENTIKIT_STASH_DIR
+ * Creates the working stash directory structure, sets the AKM_STASH_DIR
  * environment variable, and ensures ripgrep is available.
  */
 
@@ -59,7 +59,7 @@ export function agentikitInit(): InitResponse {
   let profileUpdated: string | undefined
 
   if (IS_WINDOWS) {
-    const result = spawnSync("setx", ["AGENTIKIT_STASH_DIR", stashDir], {
+    const result = spawnSync("setx", ["AKM_STASH_DIR", stashDir], {
       encoding: "utf8",
       timeout: 10_000,
     })
@@ -76,9 +76,9 @@ export function agentikitInit(): InitResponse {
       profile = path.join(homeDir, ".profile")
     }
 
-    const exportLine = `export AGENTIKIT_STASH_DIR="${stashDir}"`
+    const exportLine = `export AKM_STASH_DIR="${stashDir}"`
     const existing = fs.existsSync(profile) ? fs.readFileSync(profile, "utf8") : ""
-    if (!existing.includes("AGENTIKIT_STASH_DIR")) {
+    if (!existing.includes("AKM_STASH_DIR")) {
       fs.appendFileSync(profile, `\n# Agentikit working stash directory\n${exportLine}\n`)
       envSet = true
       profileUpdated = profile
@@ -91,7 +91,7 @@ export function agentikitInit(): InitResponse {
     saveConfig(DEFAULT_CONFIG)
   }
 
-  process.env.AGENTIKIT_STASH_DIR = stashDir
+  process.env.AKM_STASH_DIR = stashDir
 
   // Ensure ripgrep is available (install to stash/bin if needed)
   let ripgrep: InitResponse["ripgrep"]
