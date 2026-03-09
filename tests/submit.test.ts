@@ -286,6 +286,66 @@ describe("agentikitSubmit", () => {
     )).rejects.toThrow('Registry entry "github:example/existing-kit" already exists in agentikit-registry.')
   })
 
+  test("dry run rejects private GitHub repos even when the API is accessible", async () => {
+    const { binDir } = createMockBinDir()
+
+    await expect(withEnv(
+      {
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        AKM_SUBMIT_GH_BIN: path.join(binDir, "gh"),
+        AKM_SUBMIT_GIT_BIN: path.join(binDir, "git"),
+      },
+      () => withMockedFetch((url) => {
+        if (url === "https://api.github.com/repos/example/private-kit") {
+          return new Response(JSON.stringify({ private: true, visibility: "private" }), { status: 200 })
+        }
+        return new Response("not found", { status: 404 })
+      }, () => agentikitSubmit({
+        ref: "example/private-kit",
+        dryRun: true,
+        interactive: false,
+        ghBin: path.join(binDir, "gh"),
+        gitBin: path.join(binDir, "git"),
+      })),
+    )).rejects.toThrow('Registry ref "example/private-kit" is not publicly accessible.')
+  })
+
+  test("dry run fetches manual entries from raw.githubusercontent using slash-containing default branches", async () => {
+    const { binDir } = createMockBinDir()
+    const urls: string[] = []
+
+    const result = await withEnv(
+      {
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        AKM_SUBMIT_GH_BIN: path.join(binDir, "gh"),
+        AKM_SUBMIT_GIT_BIN: path.join(binDir, "git"),
+      },
+      () => withMockedFetch((url) => {
+        urls.push(url)
+        if (url === "https://api.github.com/repos/example/branch-kit") {
+          return new Response(JSON.stringify({ private: false, visibility: "public" }), { status: 200 })
+        }
+        if (url === "https://api.github.com/repos/itlackey/agentikit-registry") {
+          return new Response(JSON.stringify({ default_branch: "release/2026" }), { status: 200 })
+        }
+        if (url === "https://raw.githubusercontent.com/itlackey/agentikit-registry/release/2026/manual-entries.json") {
+          return new Response("[]", { status: 200 })
+        }
+        return new Response("not found", { status: 404 })
+      }, () => agentikitSubmit({
+        ref: "example/branch-kit",
+        dryRun: true,
+        interactive: false,
+        ghBin: path.join(binDir, "gh"),
+        gitBin: path.join(binDir, "git"),
+      })),
+    )
+
+    expect(result.dryRun).toBe(true)
+    expect(urls).toContain("https://raw.githubusercontent.com/itlackey/agentikit-registry/release/2026/manual-entries.json")
+    expect(urls.some((url) => url.includes("release%2F2026"))).toBe(false)
+  })
+
   test("full submit workflow uses gh and git commands in order", async () => {
     const { binDir, ghLog, gitLog, snapshotPath } = createMockBinDir()
 
@@ -325,6 +385,10 @@ describe("agentikitSubmit", () => {
     expect(ghCommands).toContain("api\tuser\t--jq\t.login")
     expect(ghCommands).toContain("pr\tcreate")
     expect(ghCommands).toContain("repo\tdelete\tmock-user/agentikit-registry\t--yes")
+
+    expect(result.commands?.some((command) =>
+      command.includes("--body") && command.includes("\"## New registry entry: owner-kit"),
+    )).toBe(true)
 
     const gitCommands = fs.readFileSync(gitLog, "utf8")
     expect(gitCommands).toContain("checkout\t-b\tsubmit/github-example-owner-kit-")

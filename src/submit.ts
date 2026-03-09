@@ -96,7 +96,14 @@ export async function agentikitSubmit(options: AgentikitSubmitOptions = {}): Pro
   progress("Looking up GitHub username")
   const username = getGhUsername(runtime)
   const branchName = buildSubmitBranchName(entry.id)
-  const commands = buildPlannedCommands({ branchName, entry, username, cleanupFork: options.cleanupFork === true })
+  const pullRequestBody = buildPullRequestBody(entry)
+  const commands = buildPlannedCommands({
+    branchName,
+    entry,
+    username,
+    cleanupFork: options.cleanupFork === true,
+    pullRequestBody,
+  })
 
   if (options.dryRun) {
     return {
@@ -131,7 +138,7 @@ export async function agentikitSubmit(options: AgentikitSubmitOptions = {}): Pro
     runCommand(runtime, "git", ["push", "origin", branchName], { cwd: cloneDir })
 
     progress("Opening pull request")
-    const pr = createPullRequest({ cloneDir, username, branchName, entry, runtime })
+    const pr = createPullRequest({ cloneDir, username, branchName, entry, runtime, pullRequestBody })
 
     if (options.cleanupFork) {
       progress("Deleting temporary fork")
@@ -423,7 +430,12 @@ async function isRefAccessible(parsed: SupportedSubmitRef): Promise<boolean> {
 
   const url = `${GITHUB_API_BASE}/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}`
   const response = await fetchWithRetry(url, { headers: githubHeaders() }, { timeout: 10_000 })
-  return response.ok
+  if (!response.ok) return false
+
+  const repo = asRecord(await response.json())
+  const isPrivate = repo.private === true
+  const visibility = asString(repo.visibility)?.toLowerCase()
+  return !isPrivate && (!visibility || visibility === "public")
 }
 
 async function fetchRegistryManualEntries(): Promise<unknown[]> {
@@ -438,7 +450,7 @@ async function fetchRegistryManualEntries(): Promise<unknown[]> {
   const repoJson = asRecord(await repoResponse.json())
   const defaultBranch = asString(repoJson.default_branch) ?? "main"
 
-  const rawUrl = `https://raw.githubusercontent.com/${REGISTRY_OWNER}/${REGISTRY_REPO}/${encodeURIComponent(defaultBranch)}/${MANUAL_ENTRIES_FILE}`
+  const rawUrl = `https://raw.githubusercontent.com/${REGISTRY_OWNER}/${REGISTRY_REPO}/${defaultBranch}/${MANUAL_ENTRIES_FILE}`
   const entriesResponse = await fetchWithRetry(rawUrl, undefined, { timeout: 10_000 })
   if (!entriesResponse.ok) {
     throw new Error(`Failed to load ${MANUAL_ENTRIES_FILE} from ${REGISTRY_OWNER}/${REGISTRY_REPO} (${entriesResponse.status}).`)
@@ -472,23 +484,12 @@ function createPullRequest(options: {
   branchName: string
   entry: RegistryKitEntry
   runtime: SubmitRuntime
+  pullRequestBody: string
 }): { url: string; number?: number } {
-  const body = buildPullRequestBody(options.entry)
   const output = runCommand(
     options.runtime,
     "gh",
-    [
-      "pr",
-      "create",
-      "--repo",
-      `${REGISTRY_OWNER}/${REGISTRY_REPO}`,
-      "--title",
-      `Add ${options.entry.name} to registry`,
-      "--body",
-      body,
-      "--head",
-      `${options.username}:${options.branchName}`,
-    ],
+    buildPullRequestArgs(options.entry, options.username, options.branchName, options.pullRequestBody),
     { cwd: options.cloneDir },
   )
 
@@ -528,6 +529,7 @@ function buildPlannedCommands(options: {
   entry: RegistryKitEntry
   username: string
   cleanupFork: boolean
+  pullRequestBody: string
 }): string[] {
   const commands = [
     `gh repo fork ${REGISTRY_OWNER}/${REGISTRY_REPO} --clone --remote`,
@@ -535,12 +537,41 @@ function buildPlannedCommands(options: {
     `git add ${MANUAL_ENTRIES_FILE}`,
     `git commit -m "feat: add ${options.entry.name} to registry"`,
     `git push origin ${options.branchName}`,
-    `gh pr create --repo ${REGISTRY_OWNER}/${REGISTRY_REPO} --title "Add ${options.entry.name} to registry" --head ${options.username}:${options.branchName}`,
+    formatCommand(buildPullRequestArgs(options.entry, options.username, options.branchName, options.pullRequestBody)),
   ]
   if (options.cleanupFork) {
     commands.push(`gh repo delete ${options.username}/${REGISTRY_REPO} --yes`)
   }
   return commands
+}
+
+function buildPullRequestArgs(
+  entry: RegistryKitEntry,
+  username: string,
+  branchName: string,
+  body: string,
+): string[] {
+  return [
+    "pr",
+    "create",
+    "--repo",
+    `${REGISTRY_OWNER}/${REGISTRY_REPO}`,
+    "--title",
+    `Add ${entry.name} to registry`,
+    "--body",
+    body,
+    "--head",
+    `${username}:${branchName}`,
+  ]
+}
+
+function formatCommand(args: string[]): string {
+  return ["gh", ...args].map(quoteShellArg).join(" ")
+}
+
+function quoteShellArg(value: string): string {
+  if (/^[a-zA-Z0-9_./:@#=-]+$/.test(value)) return value
+  return JSON.stringify(value)
 }
 
 function ensureGhAvailable(runtime: SubmitRuntime): void {
