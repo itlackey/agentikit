@@ -35,11 +35,24 @@ When you search or open an asset, the working stash takes priority. This
 means you can install a kit and override individual assets by cloning them
 into your working stash.
 
+## Prerequisites
+
+Agent-i-Kit requires [Bun](https://bun.sh) (v1.0+) as its runtime. It uses
+Bun-specific APIs (`bun:sqlite`) that are not available in Node.js.
+
+```sh
+# Install Bun if you don't have it
+curl -fsSL https://bun.sh/install | bash
+```
+
+> **Don't want to install Bun?** Use the [standalone binary](#standalone-binary)
+> instead -- it has no runtime dependencies.
+
 ## Quick Start
 
 ```sh
 # Install
-npm install -g agentikit
+bun install -g agentikit
 
 # Initialize your stash
 akm init
@@ -58,6 +71,9 @@ akm search "lint" --source both
 ```
 
 ### Standalone Binary
+
+The standalone binary bundles everything it needs and does **not** require Bun
+or Node.js.
 
 ```sh
 # macOS / Linux

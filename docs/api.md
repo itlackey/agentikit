@@ -1,7 +1,8 @@
 # Library API
 
-Agentikit exports its core functions for use as a library in TypeScript and
-JavaScript projects.
+Agentikit exports its core functions for use as a library in Bun-based
+TypeScript and JavaScript projects. Bun v1.0+ is required as the runtime
+since agentikit depends on `bun:sqlite`.
 
 ```ts
 import {
