@@ -2,6 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fetchWithRetry } from "./common"
 import type { RegistrySearchHit, RegistrySearchResponse } from "./registry-types"
+import { getCacheDir } from "./paths"
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -149,11 +150,7 @@ function indexCachePath(url: string): string {
 }
 
 function resolveCacheDir(): string {
-  const xdgCache = process.env.XDG_CACHE_HOME?.trim()
-  if (xdgCache) return path.join(path.resolve(xdgCache), "agentikit")
-  const home = process.env.HOME?.trim()
-  if (!home) return path.join("/tmp", "agentikit-cache")
-  return path.join(path.resolve(home), ".cache", "agentikit")
+  return getCacheDir()
 }
 
 function isCacheExpired(mtimeMs: number): boolean {

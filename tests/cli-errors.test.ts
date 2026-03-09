@@ -46,10 +46,10 @@ function runCli(...args: string[]): { stdout: string; stderr: string; status: nu
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe("CLI error handling", () => {
-  test("search without AKM_STASH_DIR prints JSON error with hint", () => {
+  test("search without stash dir prints JSON error with hint", () => {
     const { stderr, status } = runCli("search", "test")
     expect(status).not.toBe(0)
-    expect(stderr).toContain("AKM_STASH_DIR")
+    expect(stderr).toContain("No stash directory found")
     expect(stderr).toContain("hint")
   })
 
