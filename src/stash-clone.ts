@@ -70,6 +70,25 @@ export function agentikitClone(options: CloneOptions): CloneResponse {
   const typeDir = TYPE_DIRS[parsed.type]
   const workingDir = workingSource.path
 
+  // Guard against self-clone: source and destination resolve to the same location
+  if (parsed.type === "skill") {
+    const sourceSkillDir = path.resolve(path.dirname(sourcePath))
+    const destSkillDir = path.resolve(path.join(workingDir, typeDir, destName))
+    if (sourceSkillDir === destSkillDir) {
+      throw new Error(
+        `Source and destination are the same path. Use --name to provide a new name for the clone.`,
+      )
+    }
+  } else {
+    const resolvedSource = path.resolve(sourcePath)
+    const resolvedDest = path.resolve(path.join(workingDir, typeDir, destName))
+    if (resolvedSource === resolvedDest) {
+      throw new Error(
+        `Source and destination are the same path. Use --name to provide a new name for the clone.`,
+      )
+    }
+  }
+
   let destPath: string
   if (parsed.type === "skill") {
     // Skills are directories — clone the entire skill directory

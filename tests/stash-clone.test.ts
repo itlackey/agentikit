@@ -128,4 +128,20 @@ describe("agentikitClone", () => {
     expect(result.source.sourceKind).toBe("working")
     expect(fs.existsSync(path.join(stashDir, "tools", "copy.sh"))).toBe(true)
   })
+
+  test("throws when self-cloning a tool without rename", () => {
+    writeFile(path.join(stashDir, "tools", "deploy.sh"), "echo deploy\n")
+
+    expect(() => agentikitClone({ sourceRef: "tool:deploy.sh" })).toThrow("same path")
+    // Verify the file was not destroyed
+    expect(fs.readFileSync(path.join(stashDir, "tools", "deploy.sh"), "utf8")).toBe("echo deploy\n")
+  })
+
+  test("throws when self-cloning a skill without rename", () => {
+    writeFile(path.join(stashDir, "skills", "review", "SKILL.md"), "# Review\n")
+
+    expect(() => agentikitClone({ sourceRef: "skill:review" })).toThrow("same path")
+    // Verify the skill was not destroyed
+    expect(fs.existsSync(path.join(stashDir, "skills", "review", "SKILL.md"))).toBe(true)
+  })
 })
