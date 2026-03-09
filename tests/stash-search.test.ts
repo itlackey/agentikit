@@ -224,11 +224,10 @@ describe("Database search path (FTS scoring)", () => {
     expect(localHits.length).toBe(3)
   })
 
-  test("scores are clamped to 1.0", async () => {
+  test("scores use multiplicative boosts without clamping", async () => {
     const stashDir = tmpStash()
 
     // Create an entry with tags, intents, and name all matching the query
-    // to try to push the score above 1.0 before clamping
     writeFile(path.join(stashDir, "tools", "clamp-deploy", "clamp-deploy.sh"), "#!/bin/bash\necho deploy\n")
     writeFile(
       path.join(stashDir, "tools", "clamp-deploy", ".stash.json"),
@@ -252,7 +251,7 @@ describe("Database search path (FTS scoring)", () => {
     const deployHit = result.hits.find(h => h.name === "clamp-deploy")
     expect(deployHit).toBeDefined()
     expect(deployHit!.score).toBeDefined()
-    expect(deployHit!.score!).toBeLessThanOrEqual(1.0)
+    expect(deployHit!.score!).toBeGreaterThan(0)
   })
 })
 

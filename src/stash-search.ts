@@ -225,59 +225,71 @@ async function searchDatabase(
   const typeFilter = searchType === "any" ? undefined : searchType
   const ftsResults = searchFts(db, query, limit * 3, typeFilter)
 
-  // Build score map from FTS results (normalize BM25 scores)
-  const ftsScoreMap = new Map<number, { score: number; result: DbSearchResult }>()
-  for (const r of ftsResults) {
-    // BM25 returns negative scores (more negative = better match), normalize to 0-1
-    const absScore = Math.abs(r.bm25Score)
-    const normalized = absScore / (1 + absScore)
-    ftsScoreMap.set(r.id, { score: normalized, result: r })
+  // Reciprocal Rank Fusion (RRF) constant
+  const RRF_K = 60
+
+  // Build FTS rank map: rank 1 = best BM25, rank 2 = second best, etc.
+  // FTS results are already sorted by bm25Score (ascending, more negative = better)
+  const ftsRankMap = new Map<number, { rank: number; result: DbSearchResult }>()
+  for (let i = 0; i < ftsResults.length; i++) {
+    const r = ftsResults[i]
+    ftsRankMap.set(r.id, { rank: i + 1, result: r })
   }
 
-  // Blend scores
+  // Build embedding rank map: sort by cosine similarity descending
+  const embedRankMap = new Map<number, number>()
+  if (embeddingScores) {
+    const sortedEmbeddings = [...embeddingScores.entries()].sort((a, b) => b[1] - a[1])
+    for (let i = 0; i < sortedEmbeddings.length; i++) {
+      embedRankMap.set(sortedEmbeddings[i][0], i + 1)
+    }
+  }
+
+  // Merge results using RRF
   const scored: Array<{ id: number; entry: import("./metadata").StashEntry; filePath: string; score: number; rankingMode: "semantic" | "fts" }> = []
   const seenIds = new Set<number>()
 
   // Process FTS results
-  for (const [id, { score: ftsScore, result }] of ftsScoreMap) {
+  for (const [id, { rank, result }] of ftsRankMap) {
     seenIds.add(id)
-    const embScore = embeddingScores?.get(id)
-
-    if (embScore !== undefined) {
-      const blended = embScore * 0.7 + ftsScore * 0.3
-      if (blended > 0) scored.push({ id, entry: result.entry, filePath: result.filePath, score: blended, rankingMode: "semantic" })
-    } else if (ftsScore > 0) {
-      scored.push({ id, entry: result.entry, filePath: result.filePath, score: ftsScore, rankingMode: "fts" })
-    }
+    const ftsRrf = 1 / (RRF_K + rank)
+    const embedRank = embedRankMap.get(id)
+    const embedRrf = embedRank !== undefined ? 1 / (RRF_K + embedRank) : 0
+    const rrfScore = ftsRrf + embedRrf
+    const rankingMode = embedRrf > 0 ? "semantic" as const : "fts" as const
+    scored.push({ id, entry: result.entry, filePath: result.filePath, score: rrfScore, rankingMode })
   }
 
   // Add vec-only results not already in FTS results
   if (embeddingScores) {
-    for (const [id, embScore] of embeddingScores) {
+    for (const [id] of embeddingScores) {
       if (seenIds.has(id)) continue
+      const embedRank = embedRankMap.get(id)!
       const found = getEntryById(db, id)
       if (found) {
         if (typeFilter && found.entry.type !== typeFilter) continue
+        const rrfScore = 1 / (RRF_K + embedRank)
         scored.push({
           id,
           entry: found.entry,
           filePath: found.filePath,
-          score: embScore,
+          score: rrfScore,
           rankingMode: "semantic",
         })
       }
     }
   }
 
-  // Apply boosts (tag, intent, name matches)
+  // Apply boosts as multiplicative factors
   const queryTokens = query.toLowerCase().split(/\s+/).filter(Boolean)
   for (const item of scored) {
     const entry = item.entry
+    let boostSum = 0
     // Tag boost
     if (entry.tags) {
       for (const tag of entry.tags) {
         if (queryTokens.some((t) => tag.toLowerCase() === t)) {
-          item.score += 0.15
+          boostSum += 0.15
         }
       }
     }
@@ -287,7 +299,7 @@ async function searchDatabase(
         const intentLower = intent.toLowerCase()
         for (const token of queryTokens) {
           if (intentLower.includes(token)) {
-            item.score += 0.12
+            boostSum += 0.12
             break
           }
         }
@@ -296,12 +308,9 @@ async function searchDatabase(
     // Name boost
     const nameLower = entry.name.toLowerCase().replace(/[-_]/g, " ")
     if (queryTokens.some((t) => nameLower.includes(t))) {
-      item.score += 0.1
+      boostSum += 0.1
     }
-  }
-
-  for (const item of scored) {
-    item.score = Math.min(item.score, 1.0)
+    item.score = item.score * (1 + boostSum)
   }
 
   scored.sort((a, b) => b.score - a.score)
@@ -399,7 +408,7 @@ function buildDbHit(input: {
 
   const qualityBoost = input.entry.generated === true ? 0 : 0.05
   const confidenceBoost = typeof input.entry.confidence === "number" ? Math.min(0.05, Math.max(0, input.entry.confidence) * 0.05) : 0
-  const score = Math.min(Math.round((input.score + qualityBoost + confidenceBoost) * 1000) / 1000, 1.0)
+  const score = Math.round(input.score * (1 + qualityBoost + confidenceBoost) * 1000) / 1000
 
   const whyMatched = buildWhyMatched(input.entry, input.query, input.rankingMode, qualityBoost, confidenceBoost)
 
@@ -498,23 +507,9 @@ function parseSearchSource(source: SearchSource | undefined): SearchSource {
 }
 
 function mergeSearchHits(localHits: LocalSearchHit[], registryHits: RegistrySearchResultHit[], limit: number): SearchHit[] {
-  const merged: SearchHit[] = []
-  let localIndex = 0
-  let registryIndex = 0
-
-  while (merged.length < limit && (localIndex < localHits.length || registryIndex < registryHits.length)) {
-    if (localIndex < localHits.length) {
-      merged.push(localHits[localIndex])
-      localIndex += 1
-      if (merged.length >= limit) break
-    }
-    if (registryIndex < registryHits.length) {
-      merged.push(registryHits[registryIndex])
-      registryIndex += 1
-    }
-  }
-
-  return merged
+  const all: SearchHit[] = [...localHits, ...registryHits]
+  all.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+  return all.slice(0, limit)
 }
 
 function shouldIncludeUsageGuide(mode: SearchUsageMode): boolean {

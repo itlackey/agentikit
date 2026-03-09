@@ -94,6 +94,77 @@ export async function embed(
   return embedLocal(text)
 }
 
+// ── Batch embedding ─────────────────────────────────────────────────────────
+
+/**
+ * Generate embeddings for multiple texts in batch.
+ * Uses the OpenAI-compatible batch API for remote endpoints (batches of 100).
+ * Falls back to sequential embedding for local transformer pipeline.
+ */
+export async function embedBatch(
+  texts: string[],
+  embeddingConfig?: EmbeddingConnectionConfig,
+): Promise<EmbeddingVector[]> {
+  if (texts.length === 0) return []
+
+  if (embeddingConfig) {
+    return embedRemoteBatch(texts, embeddingConfig)
+  }
+
+  // Local transformer: process sequentially (pipeline handles one at a time)
+  const results: EmbeddingVector[] = []
+  for (const text of texts) {
+    results.push(await embedLocal(text))
+  }
+  return results
+}
+
+async function embedRemoteBatch(
+  texts: string[],
+  config: EmbeddingConnectionConfig,
+): Promise<EmbeddingVector[]> {
+  const BATCH_SIZE = 100
+  const results: EmbeddingVector[] = []
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (config.apiKey) {
+    headers["Authorization"] = `Bearer ${config.apiKey}`
+  }
+
+  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+    const batch = texts.slice(i, i + BATCH_SIZE)
+    const body: { input: string[]; model: string; dimensions?: number } = {
+      input: batch,
+      model: config.model,
+    }
+    if (config.dimension) {
+      body.dimensions = config.dimension
+    }
+
+    const response = await fetchWithTimeout(config.endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    })
+
+    if (!response.ok) {
+      const respBody = await response.text().catch(() => "")
+      throw new Error(`Embedding batch request failed (${response.status}): ${respBody}`)
+    }
+
+    const json = (await response.json()) as {
+      data: Array<{ embedding: number[] }>
+    }
+
+    if (!json.data || json.data.length !== batch.length) {
+      throw new Error(`Unexpected embedding batch response: expected ${batch.length} embeddings, got ${json.data?.length ?? 0}`)
+    }
+
+    results.push(...json.data.map((d) => d.embedding))
+  }
+
+  return results
+}
+
 // ── Similarity ──────────────────────────────────────────────────────────────
 
 export function cosineSimilarity(a: EmbeddingVector, b: EmbeddingVector): number {

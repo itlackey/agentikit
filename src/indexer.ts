@@ -245,11 +245,13 @@ async function generateEmbeddingsForDb(
   if (!config.semanticSearch || !isVecAvailable()) return false
 
   try {
-    const { embed } = await import("./embedder.js")
+    const { embedBatch } = await import("./embedder.js")
     const allEntries = getAllEntriesForEmbedding(db)
-    for (const { id, searchText } of allEntries) {
-      const embedding = await embed(searchText, config.embedding)
-      upsertEmbedding(db, id, embedding)
+    if (allEntries.length === 0) return true
+    const texts = allEntries.map((e) => e.searchText)
+    const embeddings = await embedBatch(texts, config.embedding)
+    for (let i = 0; i < allEntries.length; i++) {
+      upsertEmbedding(db, allEntries[i].id, embeddings[i])
     }
     return true
   } catch (error) {

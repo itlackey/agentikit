@@ -335,7 +335,7 @@ function sanitizeFtsQuery(query: string): string {
     .filter((t) => t.length > 1)
   if (tokens.length === 0) return ""
   // Use unquoted tokens so the porter stemmer can normalize word forms
-  return tokens.join(" OR ")
+  return tokens.join(" ")
 }
 
 // ── All entries ─────────────────────────────────────────────────────────────
