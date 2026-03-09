@@ -84,15 +84,15 @@ jobs:
       matrix:
         include:
           - target: bun-linux-x64
-            artifact: agentikit-linux-x64
+            artifact: akm-linux-x64
           - target: bun-linux-arm64
-            artifact: agentikit-linux-arm64
+            artifact: akm-linux-arm64
           - target: bun-darwin-x64
-            artifact: agentikit-darwin-x64
+            artifact: akm-darwin-x64
           - target: bun-darwin-arm64
-            artifact: agentikit-darwin-arm64
+            artifact: akm-darwin-arm64
           - target: bun-windows-x64
-            artifact: agentikit-windows-x64.exe
+            artifact: akm-windows-x64.exe
     steps:
       - uses: actions/checkout@v4
         with:
@@ -124,11 +124,11 @@ jobs:
         run: |
           : > artifacts/checksums.txt
           for file in \
-            artifacts/agentikit-linux-x64/agentikit-linux-x64 \
-            artifacts/agentikit-linux-arm64/agentikit-linux-arm64 \
-            artifacts/agentikit-darwin-x64/agentikit-darwin-x64 \
-            artifacts/agentikit-darwin-arm64/agentikit-darwin-arm64 \
-            artifacts/agentikit-windows-x64.exe/agentikit-windows-x64.exe
+            artifacts/akm-linux-x64/akm-linux-x64 \
+            artifacts/akm-linux-arm64/akm-linux-arm64 \
+            artifacts/akm-darwin-x64/akm-darwin-x64 \
+            artifacts/akm-darwin-arm64/akm-darwin-arm64 \
+            artifacts/akm-windows-x64.exe/akm-windows-x64.exe
           do
             printf '%s  %s\n' "$(sha256sum "$file" | awk '{ print $1 }')" "$(basename "$file")" >> artifacts/checksums.txt
           done
@@ -140,10 +140,10 @@ jobs:
             --title "${{ needs.version.outputs.tag }}" \
             --generate-notes \
             artifacts/checksums.txt \
-            artifacts/agentikit-linux-x64/agentikit-linux-x64 \
-            artifacts/agentikit-linux-arm64/agentikit-linux-arm64 \
-            artifacts/agentikit-darwin-x64/agentikit-darwin-x64 \
-            artifacts/agentikit-darwin-arm64/agentikit-darwin-arm64 \
-            artifacts/agentikit-windows-x64.exe/agentikit-windows-x64.exe
+            artifacts/akm-linux-x64/akm-linux-x64 \
+            artifacts/akm-linux-arm64/akm-linux-arm64 \
+            artifacts/akm-darwin-x64/akm-darwin-x64 \
+            artifacts/akm-darwin-arm64/akm-darwin-arm64 \
+            artifacts/akm-windows-x64.exe/akm-windows-x64.exe
         env:
           GH_TOKEN: ${{ github.token }}
