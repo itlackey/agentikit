@@ -116,7 +116,7 @@ describe("agentikitShow mounted stash", () => {
 
     const result = await agentikitShow({ ref: "tool:deploy.sh" })
 
-    expect(result.type).toBe("tool")
+    expect(result.type).toBe("script")
     expect(result.name).toBe("deploy.sh")
     expect(result.path).toContain(mountedStashDir)
   })
@@ -135,7 +135,7 @@ describe("agentikitShow sourceKind and editable", () => {
 
     const result = await agentikitShow({ ref: "tool:local.sh" })
 
-    expect(result.type).toBe("tool")
+    expect(result.type).toBe("script")
     expect(result.editable).toBe(true)
   })
 
@@ -151,7 +151,7 @@ describe("agentikitShow sourceKind and editable", () => {
     // The asset only exists in the mounted dir, not in working stash.
     const result = await agentikitShow({ ref: "tool:remote.sh" })
 
-    expect(result.type).toBe("tool")
+    expect(result.type).toBe("script")
     expect(result.editable).toBe(false)
   })
 
@@ -180,7 +180,125 @@ describe("agentikitShow sourceKind and editable", () => {
 
     const result = await agentikitShow({ ref: "tool:deploy.sh" })
 
-    expect(result.type).toBe("tool")
+    expect(result.type).toBe("script")
     expect(result.editable).toBe(false)
+  })
+})
+
+// ── Content-based classification via new renderer pipeline ─────────────────
+
+describe("agentikitShow content-based classification", () => {
+  test("model alone in commands/ stays a command (directory wins over weak agent signal)", async () => {
+    // model is shared frontmatter (OpenCode convention). In commands/,
+    // the directory matcher (specificity 10) beats the model-only agent
+    // signal (specificity 8), so this stays a command.
+    writeFile(
+      path.join(stashDir, "commands", "deploy.md"),
+      ["---", "model: gpt-4", "description: Deploy command", "---", "Deploy $ARGUMENTS."].join("\n"),
+    )
+
+    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+
+    const result = await agentikitShow({ ref: "command:deploy.md" })
+
+    expect(result.type).toBe("command")
+    expect(result.template).toBe("Deploy $ARGUMENTS.")
+    expect(result.modelHint).toBe("gpt-4")
+  })
+
+  test("tools frontmatter in commands/ overrides to agent (strong signal)", async () => {
+    // tools/toolPolicy are agent-exclusive signals at specificity 20,
+    // which beats the commands/ directory matcher at 10.
+    writeFile(
+      path.join(stashDir, "commands", "hybrid.md"),
+      ["---", "tools:", "  read: allow", "model: gpt-4", "---", "You are a hybrid agent."].join("\n"),
+    )
+
+    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+
+    const result = await agentikitShow({ ref: "command:hybrid.md" })
+
+    expect(result.type).toBe("agent")
+    expect(result.prompt).toContain("You are a hybrid agent.")
+  })
+
+  test("command in commands/ directory extracts OpenCode-style frontmatter", async () => {
+    writeFile(
+      path.join(stashDir, "commands", "deploy.md"),
+      ["---", "description: Deploy to production", "model: claude-sonnet-4-20250514", "agent: build", "---", "Deploy $ARGUMENTS to production."].join("\n"),
+    )
+
+    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+
+    const result = await agentikitShow({ ref: "command:deploy.md" })
+
+    expect(result.type).toBe("command")
+    expect(result.template).toBe("Deploy $ARGUMENTS to production.")
+    expect(result.description).toBe("Deploy to production")
+    expect(result.modelHint).toBe("claude-sonnet-4-20250514")
+    expect(result.agent).toBe("build")
+  })
+
+  test("script in tools/ directory uses new renderer pipeline", async () => {
+    writeFile(
+      path.join(stashDir, "tools", "build.sh"),
+      "#!/usr/bin/env bash\necho build\n",
+    )
+
+    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+
+    const result = await agentikitShow({ ref: "tool:build.sh" })
+
+    expect(result.type).toBe("script")
+    expect(result.runCmd).toBeDefined()
+    expect(result.runCmd).toContain("bash")
+  })
+
+  test("$ARGUMENTS in body classifies .md as command even outside commands/", async () => {
+    writeFile(
+      path.join(stashDir, "knowledge", "deploy-cmd.md"),
+      ["---", "description: Deploy helper", "---", "Deploy $ARGUMENTS to staging."].join("\n"),
+    )
+
+    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+
+    // $ARGUMENTS placeholder (specificity 18) beats knowledge/ directory hint (10)
+    const result = await agentikitShow({ ref: "knowledge:deploy-cmd.md" })
+
+    expect(result.type).toBe("command")
+    expect(result.template).toBe("Deploy $ARGUMENTS to staging.")
+    expect(result.description).toBe("Deploy helper")
+  })
+
+  test("agent frontmatter classifies .md as command even outside commands/", async () => {
+    writeFile(
+      path.join(stashDir, "agents", "build-cmd.md"),
+      ["---", "agent: build", "description: Build dispatch", "---", "Build the project."].join("\n"),
+    )
+
+    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+
+    // agent frontmatter (specificity 18) beats agents/ directory hint (15)
+    const result = await agentikitShow({ ref: "agent:build-cmd.md" })
+
+    expect(result.type).toBe("command")
+    expect(result.template).toBe("Build the project.")
+    expect(result.agent).toBe("build")
+  })
+
+  test("knowledge view modes work through new renderer pipeline", async () => {
+    writeFile(
+      path.join(stashDir, "knowledge", "guide.md"),
+      ["# Intro", "Welcome.", "", "## Setup", "Install things.", "", "## Usage", "Use things."].join("\n"),
+    )
+
+    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+
+    const tocResult = await agentikitShow({ ref: "knowledge:guide.md", view: { mode: "toc" } })
+    expect(tocResult.content).toContain("Intro")
+    expect(tocResult.content).toContain("Setup")
+
+    const sectionResult = await agentikitShow({ ref: "knowledge:guide.md", view: { mode: "section", heading: "Setup" } })
+    expect(sectionResult.content).toContain("Install things.")
   })
 })

@@ -465,7 +465,7 @@ test("agentikitShow for tool type returns runCmd and kind", async () => {
   process.env.AKM_STASH_DIR = stashDir
   const result = await agentikitShow({ ref: "tool:deploy.sh" })
 
-  expect(result.type).toBe("tool")
+  expect(result.type).toBe("script")
   expect(result.runCmd).toBeTruthy()
   expect(typeof result.runCmd).toBe("string")
   expect(result.kind).toBe("bash")

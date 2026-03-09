@@ -3,43 +3,56 @@
 This guide walks through building a kit from scratch and sharing it so others
 can install it with `akm add`.
 
-## Step 1: Create the Directory Structure
+## Step 1: Organize Your Assets
 
-A kit is a directory with one or more asset type subdirectories:
+You can organize a kit however you like. Agentikit classifies assets by
+**file extension and content**, so directory names are not required to
+follow any particular pattern.
+
+That said, using these preferred directory names is an **opt-in convention**
+that increases classification confidence during indexing:
 
 ```text
 my-kit/
-  tools/
-  skills/
-  commands/
-  agents/
-  knowledge/
-  scripts/
+  scripts/        # .sh, .ts, .js, .py, .rb, .go, etc.
+  skills/         # Directories containing SKILL.md
+  commands/       # .md prompt templates (agent frontmatter, $ARGUMENTS)
+  agents/         # .md files with model/tools/toolPolicy frontmatter
+  knowledge/      # .md reference documents
 ```
 
-You only need the directories for the asset types you are shipping. A kit
-with just `tools/` and a `knowledge/` doc is perfectly valid.
+These directories are hints, not requirements. A `.sh` file is a script
+whether it lives in `scripts/`, `deploy/`, or at the kit root. A `.md` file
+with `model` in its frontmatter is an agent definition no matter where you
+put it. Organize your kit in whatever way makes sense for your project.
 
 ## Step 2: Add Assets
 
-### Tools
+### Scripts
 
-Drop executable scripts into `tools/`. Supported extensions: `.sh`, `.ts`,
-`.js`, `.ps1`, `.cmd`, `.bat`.
+Drop executable scripts into `scripts/`. Supported extensions: `.sh`, `.ts`,
+`.js`, `.ps1`, `.cmd`, `.bat`, `.py`, `.rb`, `.go`, `.pl`, `.php`, `.lua`,
+and more.
 
 ```sh
-# tools/deploy.sh
+# scripts/deploy.sh
 #!/usr/bin/env bash
 set -euo pipefail
 echo "Deploying $1..."
 ```
 
-When an agent runs `akm show tool:deploy.sh`, it gets back a `runCmd` it can
-execute directly.
+When an agent runs `akm show script:deploy.sh`, it gets back a `runCmd` it
+can execute directly. For extensions without built-in runtime support (e.g.
+`.py`, `.rb`), the file content is returned instead.
 
-If your tool has dependencies, add a `package.json` in the tool's directory
-or a parent. When akm detects a `package.json`, it sets the working directory
-to that package root.
+If your script has dependencies, add a `package.json` in the script's
+directory or a parent. When akm detects a `package.json`, it sets the
+working directory to that package root.
+
+> **`tools/` directory:** You can also use a `tools/` directory instead of
+> `scripts/`. Both are functionally identical -- the only difference is that
+> `tools/` accepts a narrower set of extensions (.sh, .ts, .js, .ps1, .cmd,
+> .bat). Use whichever name fits your project's organization.
 
 ### Skills
 
@@ -68,15 +81,25 @@ Review the changed files for bugs, security issues, and style violations.
 
 ### Commands
 
-Markdown files in `commands/`. Use YAML frontmatter for the description:
+Markdown files whose body is a prompt template. Commands follow the
+[OpenCode convention](https://opencode.ai/docs/commands/): frontmatter
+supports `description`, `model`, and `agent` (dispatch target). The body
+can use `$ARGUMENTS` for the full argument string, or `$1`/`$2`/`$3` for
+positional arguments:
 
 ```markdown
 ---
 description: "Run the release workflow"
+model: "claude-sonnet-4-20250514"
+agent: build
 ---
 Tag the current commit with the next semantic version, push the tag, and
-wait for CI to complete.
+wait for CI to complete. Target environment: $ARGUMENTS.
 ```
+
+Commands are automatically detected by content signals -- `agent`
+frontmatter or `$ARGUMENTS`/`$1`-`$3` placeholders -- even outside the
+`commands/` directory.
 
 ### Agents
 
@@ -117,12 +140,6 @@ Default: 100 requests per minute per API key.
 Agents can request just the table of contents (`--view toc`) or a specific
 section (`--view section --heading "Rate Limits"`) to avoid loading the
 entire document.
-
-### Scripts
-
-General-purpose scripts in `scripts/`. Supports a wide range of extensions:
-`.sh`, `.ts`, `.js`, `.py`, `.rb`, `.go`, `.pl`, `.php`, `.lua`, `.r`,
-`.swift`, `.kt`, and more.
 
 ## Step 3: Add Metadata
 

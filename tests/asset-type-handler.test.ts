@@ -1,10 +1,19 @@
-import { test, expect, describe } from "bun:test"
+import { test, expect, describe, afterAll } from "bun:test"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import {
   getHandler,
   tryGetHandler,
   getAllHandlers,
   getRegisteredTypeNames,
 } from "../src/asset-type-handler"
+import {
+  getRenderer,
+  getAllRenderers,
+  runMatchers,
+  buildFileContext,
+} from "../src/file-context"
 
 // ── getHandler ──────────────────────────────────────────────────────────────
 
@@ -111,5 +120,102 @@ describe("lazy initialization", () => {
     const handler = getHandler("tool")
     expect(handler).toBeDefined()
     expect(handler.typeName).toBe("tool")
+  })
+})
+
+// ── Helpers for new renderer/matcher tests ─────────────────────────────────
+
+const createdTmpDirs: string[] = []
+
+function tmpDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-ath-"))
+  createdTmpDirs.push(dir)
+  return dir
+}
+
+function writeFile(filePath: string, content = "") {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, content)
+}
+
+afterAll(() => {
+  for (const dir of createdTmpDirs) {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// ── New renderer registry ──────────────────────────────────────────────────
+
+describe("getAllRenderers", () => {
+  test("returns all 6 renderers", () => {
+    const renderers = getAllRenderers()
+    expect(renderers).toHaveLength(6)
+  })
+
+  test("renderer names match expected set", () => {
+    const names = getAllRenderers().map((r) => r.name).sort()
+    expect(names).toEqual([
+      "agent-md",
+      "command-md",
+      "knowledge-md",
+      "script-source",
+      "skill-md",
+      "tool-script",
+    ])
+  })
+})
+
+describe("getRenderer", () => {
+  test("returns renderer for each known name", () => {
+    for (const name of ["tool-script", "skill-md", "command-md", "agent-md", "knowledge-md", "script-source"]) {
+      const renderer = getRenderer(name)
+      expect(renderer).toBeDefined()
+      expect(renderer!.name).toBe(name)
+    }
+  })
+
+  test("returns undefined for unknown renderer name", () => {
+    expect(getRenderer("nonexistent")).toBeUndefined()
+  })
+})
+
+// ── Matcher integration ─────────────────────────────────────────────────────
+
+describe("runMatchers integration", () => {
+  test("classifies tool file under tools/ directory", () => {
+    const root = tmpDir()
+    const filePath = path.join(root, "tools", "deploy.sh")
+    writeFile(filePath, "#!/bin/bash\necho deploy\n")
+
+    const ctx = buildFileContext(root, filePath)
+    const result = runMatchers(ctx)
+
+    expect(result).not.toBeNull()
+    expect(result!.type).toBe("script")
+  })
+
+  test("classifies .md with model frontmatter as agent regardless of directory", () => {
+    const root = tmpDir()
+    const filePath = path.join(root, "misc", "assistant.md")
+    writeFile(filePath, ["---", "model: gpt-4", "---", "You are an assistant."].join("\n"))
+
+    const ctx = buildFileContext(root, filePath)
+    const result = runMatchers(ctx)
+
+    expect(result).not.toBeNull()
+    expect(result!.type).toBe("agent")
+  })
+
+  test("classifies plain .md as knowledge at low specificity", () => {
+    const root = tmpDir()
+    const filePath = path.join(root, "docs", "readme.md")
+    writeFile(filePath, "# README\nJust a doc.")
+
+    const ctx = buildFileContext(root, filePath)
+    const result = runMatchers(ctx)
+
+    expect(result).not.toBeNull()
+    expect(result!.type).toBe("knowledge")
+    expect(result!.specificity).toBeLessThanOrEqual(10)
   })
 })

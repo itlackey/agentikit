@@ -7,21 +7,53 @@ scripts into a **stash**, and agents discover what they need through
 
 ## What Is a Kit?
 
-A kit is a shareable package of assets. Any directory with asset
-subdirectories is a valid kit:
+A kit is a shareable package of assets. You can organize a kit however you
+like -- agentikit classifies assets by their **file extension and content**,
+not by directory structure. A `.sh` file is a script whether it lives in
+`scripts/`, `tools/`, or `my-stuff/`. A `.md` file with `model` in its
+frontmatter is an agent definition no matter where you put it.
+
+That said, a recommended directory layout exists as an **opt-in convention**
+that improves indexing confidence:
 
 ```text
 my-kit/
-  tools/          # Executable scripts (.sh, .ts, .js)
+  scripts/        # Executable scripts (.sh, .ts, .js, .py, .rb, .go, etc.)
   skills/         # Skill definitions (directories with SKILL.md)
   commands/       # Slash commands (.md)
   agents/         # Agent definitions (.md)
   knowledge/      # Reference documents (.md)
-  scripts/        # General scripts (.py, .rb, .go, etc.)
 ```
+
+Using these directory names is not required. They act as hints that increase
+classification confidence during indexing. See [Concepts](docs/concepts.md)
+for details on how classification works.
 
 Kits can be published to npm or hosted on GitHub. Tag them with `akm` or
 `agentikit` so others can discover them through registry search.
+
+## What Is an Asset?
+
+An asset is a single capability that an AI agent can discover and use. Each
+asset has a **type** that determines how it behaves:
+
+| Type | What it is | What the agent gets |
+| --- | --- | --- |
+| **script** | An executable script | A `runCmd` the agent can execute, or source for unsupported runtimes |
+| **skill** | A set of instructions | Step-by-step guidance the agent follows |
+| **command** | A prompt template | A template with placeholders to fill in |
+| **agent** | An agent definition | A system prompt, model hint, and tool policy |
+| **knowledge** | A reference document | Navigable content with TOC and section views |
+
+> **Scripts and tools:** Agentikit also supports a `tool` type that behaves
+> identically to `script`. The only difference is convention: `tools/`
+> accepts a focused set of extensions (.sh, .ts, .js, .ps1, .cmd, .bat)
+> while `scripts/` accepts those plus .py, .rb, .go, and more. Use
+> whichever name fits your mental model -- they produce the same output.
+
+Assets are referenced by type and name, e.g. `script:deploy.sh` or
+`knowledge:api-guide.md`. Agents discover assets through `akm search` and
+retrieve their details with `akm show`.
 
 ## What Is a Stash?
 
@@ -187,7 +219,7 @@ See [docs/registry.md](docs/registry.md) for details.
 
 ## Publishing a Kit
 
-1. Organize your assets into the standard directory structure
+1. Organize your assets (preferred directory names are optional but improve indexing)
 2. Add `"akm"` to `keywords` in `package.json` (for npm) or add the `akm`
    topic to your GitHub repo
 3. Optionally add an `agentikit.include` array in `package.json` to control

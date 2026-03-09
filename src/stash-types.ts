@@ -206,7 +206,7 @@ export interface UpdateResponse {
 }
 
 export interface ShowResponse {
-  type: AgentikitAssetType
+  type: AgentikitAssetType | string
   name: string
   path: string
   content?: string
@@ -215,6 +215,8 @@ export interface ShowResponse {
   description?: string
   toolPolicy?: unknown
   modelHint?: unknown
+  /** For commands: which agent should execute this command (OpenCode convention) */
+  agent?: string
   runCmd?: string
   kind?: ToolKind
   /** For installed sources, the registry id */

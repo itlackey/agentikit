@@ -136,7 +136,7 @@ describe("local directory installs", () => {
         { AKM_STASH_DIR: stashDir, XDG_CACHE_HOME: cacheHome },
         () => agentikitShow({ ref: "tool:hello.sh" }),
       )
-      expect(shown.type).toBe("tool")
+      expect(shown.type).toBe("script")
       expect(shown.path).toContain(result.installed.stashRoot)
     } finally {
       fs.rmSync(stashDir, { recursive: true, force: true })

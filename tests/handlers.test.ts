@@ -11,6 +11,11 @@ import { commandHandler } from "../src/handlers/command-handler"
 import { agentHandler } from "../src/handlers/agent-handler"
 import { isMarkdownFile, markdownCanonicalName, markdownAssetPath } from "../src/handlers/markdown-helpers"
 import type { LocalSearchHit } from "../src/stash-types"
+import {
+  getRenderer,
+  buildFileContext,
+  buildRenderContext,
+} from "../src/file-context"
 
 // ── Temp directory helpers ──────────────────────────────────────────────────
 
@@ -521,5 +526,194 @@ describe("markdown helpers", () => {
   test("markdownAssetPath joins typeRoot and name", () => {
     const result = markdownAssetPath("/stash/knowledge", "guides/setup.md")
     expect(result).toBe(path.join("/stash/knowledge", "guides/setup.md"))
+  })
+})
+
+// ── Renderer equivalents ────────────────────────────────────────────────────
+// These tests verify that the new renderer system produces equivalent output
+// to the legacy handlers above.
+
+describe("tool-script renderer", () => {
+  test("buildShowResponse returns runCmd for .sh file", () => {
+    const stashDir = tmpDir()
+    const toolPath = path.join(stashDir, "tools", "deploy.sh")
+    writeFile(toolPath, "#!/bin/bash\necho deploy\n")
+
+    const renderer = getRenderer("tool-script")!
+    const ctx = buildFileContext(stashDir, toolPath)
+    const match = { type: "tool", specificity: 10, renderer: "tool-script", meta: { name: "deploy.sh" } }
+    const renderCtx = buildRenderContext(ctx, match, [stashDir])
+    const res = renderer.buildShowResponse(renderCtx)
+
+    expect(res.runCmd).toBeDefined()
+    expect(res.runCmd).toContain("bash")
+    expect(res.type).toBe("tool")
+  })
+
+  test("buildShowResponse returns runCmd for .ts file", () => {
+    const stashDir = tmpDir()
+    const toolPath = path.join(stashDir, "tools", "run.ts")
+    writeFile(toolPath, "console.log('hi')\n")
+
+    const renderer = getRenderer("tool-script")!
+    const ctx = buildFileContext(stashDir, toolPath)
+    const match = { type: "tool", specificity: 10, renderer: "tool-script", meta: { name: "run.ts" } }
+    const renderCtx = buildRenderContext(ctx, match, [stashDir])
+    const res = renderer.buildShowResponse(renderCtx)
+
+    expect(res.runCmd).toBeDefined()
+    expect(res.runCmd).toContain("bun")
+    expect(res.type).toBe("tool")
+  })
+})
+
+describe("skill-md renderer", () => {
+  test("buildShowResponse returns skill content", () => {
+    const stashDir = tmpDir()
+    const skillPath = path.join(stashDir, "skills", "ops", "SKILL.md")
+    writeFile(skillPath, "# Ops Skill\nDo ops stuff.")
+
+    const renderer = getRenderer("skill-md")!
+    const ctx = buildFileContext(stashDir, skillPath)
+    const match = { type: "skill", specificity: 10, renderer: "skill-md", meta: { name: "ops" } }
+    const renderCtx = buildRenderContext(ctx, match, [stashDir])
+    const res = renderer.buildShowResponse(renderCtx)
+
+    expect(res.type).toBe("skill")
+    expect(res.name).toBe("ops")
+    expect(res.content).toBe("# Ops Skill\nDo ops stuff.")
+  })
+})
+
+describe("command-md renderer", () => {
+  test("buildShowResponse extracts description and template", () => {
+    const stashDir = tmpDir()
+    const cmdPath = path.join(stashDir, "commands", "deploy.md")
+    writeFile(cmdPath, ["---", "description: Deploy to production", "---", "Run the deploy script with {{env}}."].join("\n"))
+
+    const renderer = getRenderer("command-md")!
+    const ctx = buildFileContext(stashDir, cmdPath)
+    const match = { type: "command", specificity: 10, renderer: "command-md", meta: { name: "deploy.md" } }
+    const renderCtx = buildRenderContext(ctx, match, [stashDir])
+    const res = renderer.buildShowResponse(renderCtx)
+
+    expect(res.type).toBe("command")
+    expect(res.description).toBe("Deploy to production")
+    expect(res.template).toBe("Run the deploy script with {{env}}.")
+  })
+})
+
+describe("agent-md renderer", () => {
+  test("buildShowResponse extracts prompt with prefix", () => {
+    const stashDir = tmpDir()
+    const agentPath = path.join(stashDir, "agents", "reviewer.md")
+    writeFile(agentPath, ["---", "description: Code reviewer", "model: gpt-4", "---", "You are a code reviewer."].join("\n"))
+
+    const renderer = getRenderer("agent-md")!
+    const ctx = buildFileContext(stashDir, agentPath)
+    const match = { type: "agent", specificity: 20, renderer: "agent-md", meta: { name: "reviewer.md" } }
+    const renderCtx = buildRenderContext(ctx, match, [stashDir])
+    const res = renderer.buildShowResponse(renderCtx)
+
+    expect(res.type).toBe("agent")
+    expect(res.prompt).toContain("Dispatching prompt")
+    expect(res.prompt).toContain("You are a code reviewer.")
+    expect(res.description).toBe("Code reviewer")
+    expect(res.modelHint).toBe("gpt-4")
+  })
+
+  test("buildShowResponse extracts toolPolicy", () => {
+    const stashDir = tmpDir()
+    const agentPath = path.join(stashDir, "agents", "assistant.md")
+    writeFile(agentPath, ["---", "tools:", "  read: allow", "  write: deny", "---", "You are an assistant."].join("\n"))
+
+    const renderer = getRenderer("agent-md")!
+    const ctx = buildFileContext(stashDir, agentPath)
+    const match = { type: "agent", specificity: 20, renderer: "agent-md", meta: { name: "assistant.md" } }
+    const renderCtx = buildRenderContext(ctx, match, [stashDir])
+    const res = renderer.buildShowResponse(renderCtx)
+
+    expect(res.toolPolicy).toBeDefined()
+    expect(res.toolPolicy).toEqual({ read: "allow", write: "deny" })
+  })
+})
+
+describe("knowledge-md renderer", () => {
+  const sampleMarkdown = [
+    "---",
+    "title: Guide",
+    "---",
+    "# Introduction",
+    "Welcome to the guide.",
+    "",
+    "## Setup",
+    "Install things.",
+    "",
+    "## Usage",
+    "Use things.",
+  ].join("\n")
+
+  test("buildShowResponse with full mode returns entire content", () => {
+    const stashDir = tmpDir()
+    const kPath = path.join(stashDir, "knowledge", "guide.md")
+    writeFile(kPath, sampleMarkdown)
+
+    const renderer = getRenderer("knowledge-md")!
+    const ctx = buildFileContext(stashDir, kPath)
+    const match = { type: "knowledge", specificity: 10, renderer: "knowledge-md", meta: { name: "guide.md", view: { mode: "full" as const } } }
+    const renderCtx = buildRenderContext(ctx, match, [stashDir])
+    const res = renderer.buildShowResponse(renderCtx)
+
+    expect(res.type).toBe("knowledge")
+    expect(res.content).toBe(sampleMarkdown)
+  })
+
+  test("buildShowResponse with toc mode returns formatted TOC", () => {
+    const stashDir = tmpDir()
+    const kPath = path.join(stashDir, "knowledge", "guide.md")
+    writeFile(kPath, sampleMarkdown)
+
+    const renderer = getRenderer("knowledge-md")!
+    const ctx = buildFileContext(stashDir, kPath)
+    const match = { type: "knowledge", specificity: 10, renderer: "knowledge-md", meta: { name: "guide.md", view: { mode: "toc" as const } } }
+    const renderCtx = buildRenderContext(ctx, match, [stashDir])
+    const res = renderer.buildShowResponse(renderCtx)
+
+    expect(res.content).toContain("Introduction")
+    expect(res.content).toContain("Setup")
+    expect(res.content).toContain("Usage")
+  })
+})
+
+describe("script-source renderer", () => {
+  test("buildShowResponse returns runCmd for .sh file", () => {
+    const stashDir = tmpDir()
+    const scriptPath = path.join(stashDir, "scripts", "run.sh")
+    writeFile(scriptPath, "echo hello\n")
+
+    const renderer = getRenderer("script-source")!
+    const ctx = buildFileContext(stashDir, scriptPath)
+    const match = { type: "script", specificity: 10, renderer: "script-source", meta: { name: "run.sh" } }
+    const renderCtx = buildRenderContext(ctx, match, [stashDir])
+    const res = renderer.buildShowResponse(renderCtx)
+
+    expect(res.runCmd).toBeDefined()
+    expect(res.type).toBe("script")
+  })
+
+  test("buildShowResponse returns content for non-runnable extensions", () => {
+    const stashDir = tmpDir()
+    const scriptPath = path.join(stashDir, "scripts", "run.py")
+    writeFile(scriptPath, "print('hi')\n")
+
+    const renderer = getRenderer("script-source")!
+    const ctx = buildFileContext(stashDir, scriptPath)
+    const match = { type: "script", specificity: 10, renderer: "script-source", meta: { name: "run.py" } }
+    const renderCtx = buildRenderContext(ctx, match, [stashDir])
+    const res = renderer.buildShowResponse(renderCtx)
+
+    expect(res.content).toBe("print('hi')\n")
+    expect(res.runCmd).toBeUndefined()
+    expect(res.type).toBe("script")
   })
 })

@@ -64,6 +64,16 @@ import {
   tryGetHandler,
   getAllHandlers,
   getRegisteredTypeNames,
+
+  // Flexible asset resolution (matcher/renderer system)
+  buildFileContext,
+  registerMatcher,
+  registerRenderer,
+  getRenderer,
+  getAllRenderers,
+  runMatchers,
+  buildRenderContext,
+  walkStashFlat,
 } from "agentikit"
 ```
 
@@ -114,6 +124,14 @@ import {
 | `tryGetHandler(type)` | Get handler for an asset type (returns undefined if not found) |
 | `getAllHandlers()` | Get all registered asset type handlers |
 | `getRegisteredTypeNames()` | Get all registered asset type names |
+| `buildFileContext(stashRoot, absPath)` | Build a FileContext with lazy content/frontmatter/stat getters |
+| `registerMatcher(matcher)` | Register a custom asset matcher function |
+| `registerRenderer(renderer)` | Register a custom asset renderer |
+| `getRenderer(name)` | Get a renderer by name (returns undefined if not found) |
+| `getAllRenderers()` | Get all registered renderers |
+| `runMatchers(ctx)` | Run all matchers against a FileContext, return highest-specificity result |
+| `buildRenderContext(ctx, match, stashDirs)` | Build a RenderContext from FileContext + MatchResult |
+| `walkStashFlat(stashRoot)` | Walk entire stash root returning FileContext[] for all files |
 
 ## Types
 
@@ -194,5 +212,12 @@ import type {
   // Asset type handler
   AssetTypeHandler,
   ShowInput,
+
+  // Flexible asset resolution
+  FileContext,
+  MatchResult,
+  AssetMatcher,
+  RenderContext,
+  AssetRenderer,
 } from "agentikit"
 ```

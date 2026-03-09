@@ -12,18 +12,26 @@ The main working directory for all assets.
 | Linux / macOS | `~/agentikit` |
 | Windows | `%USERPROFILE%\Documents\agentikit` |
 
-### Subdirectories
+### Preferred Directories
+
+The following directory names are **opt-in conventions** that increase
+classification confidence during indexing. They are not required -- assets
+are classified by file extension and content regardless of directory.
 
 ```
 <stash>/
-  tools/          # Executable scripts (.sh, .ts, .js, .ps1, .cmd, .bat)
-  skills/         # Skill definitions (.md)
-  commands/       # Slash commands (.md)
-  agents/         # Agent definitions (.md)
+  scripts/        # Executable scripts (.sh, .ts, .js, .py, .rb, .go, etc.)
+  skills/         # Skill definitions (SKILL.md)
+  commands/       # Slash commands (.md with template/parameters)
+  agents/         # Agent definitions (.md with model/tools)
   knowledge/      # Reference documents (.md)
-  scripts/        # Broad script collection (.sh, .ts, .js, .py, etc.)
+  tools/          # Same as scripts/ (alias kept for convenience)
   bin/            # Auto-installed binaries (e.g. ripgrep)
 ```
+
+A `.py` file placed in `scripts/` is classified at higher confidence than
+one placed in `random/`, but both are recognized as scripts. See
+[Concepts](concepts.md) for details on how classification works.
 
 Each type directory may contain a `.stash.json` with per-asset metadata (see below).
 

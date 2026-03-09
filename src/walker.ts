@@ -10,6 +10,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { type AgentikitAssetType } from "./common"
 import { isRelevantAssetFile } from "./asset-spec"
+import { buildFileContext, type FileContext } from "./file-context"
 
 export interface DirectoryGroup {
   dirPath: string
@@ -50,4 +51,40 @@ export function walkStash(typeRoot: string, assetType: AgentikitAssetType): Dire
   }
 
   return Array.from(groups, ([dirPath, files]) => ({ dirPath, files }))
+}
+
+/**
+ * Walk an entire stash root directory and return FileContext objects for every
+ * regular file found.
+ *
+ * Unlike walkStash(), this does NOT filter by asset type or require files to
+ * live under type-specific directories. Matchers decide what each file is.
+ *
+ * Skips: .git, node_modules, bin, .cache, any directory starting with ".",
+ * and .stash.json files.
+ */
+export function walkStashFlat(stashRoot: string): FileContext[] {
+  if (!fs.existsSync(stashRoot)) return []
+
+  const results: FileContext[] = []
+  const SKIP_DIRS = new Set([".git", "node_modules", "bin", ".cache"])
+
+  const stack = [stashRoot]
+  while (stack.length > 0) {
+    const current = stack.pop()
+    if (!current) continue
+    const entries = fs.readdirSync(current, { withFileTypes: true })
+    for (const entry of entries) {
+      if (entry.name === ".stash.json") continue
+      const fullPath = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        if (SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue
+        stack.push(fullPath)
+      } else if (entry.isFile()) {
+        results.push(buildFileContext(stashRoot, fullPath))
+      }
+    }
+  }
+
+  return results
 }

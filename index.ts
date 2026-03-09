@@ -70,3 +70,22 @@ export { registerAssetType, getHandler, tryGetHandler, getAllHandlers, getRegist
 export { parseAssetRef, makeAssetRef } from "./src/stash-ref"
 export type { AssetRef } from "./src/stash-ref"
 export { resolveSourcesForOrigin, isRemoteOrigin } from "./src/origin-resolve"
+
+// New flexible asset resolution system
+export type {
+  FileContext,
+  MatchResult,
+  AssetMatcher,
+  RenderContext,
+  AssetRenderer,
+} from "./src/file-context"
+export {
+  buildFileContext,
+  registerMatcher,
+  registerRenderer,
+  getRenderer,
+  getAllRenderers,
+  runMatchers,
+  buildRenderContext,
+} from "./src/file-context"
+export { walkStashFlat } from "./src/walker"

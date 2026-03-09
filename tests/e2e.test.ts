@@ -261,7 +261,7 @@ describe("Scenario: Full lifecycle (index → search → show)", () => {
     expect(deployHit).toBeDefined()
 
     const openResult = await agentikitShow({ ref: deployHit!.openRef! })
-    expect(openResult.type).toBe("tool")
+    expect(openResult.type).toBe("script")
     expect(openResult.runCmd).toBeTruthy()
     expect(openResult.kind).toBe("bash")
   })
@@ -1171,7 +1171,11 @@ describe("Scenario: Cross-type discovery", () => {
 
       // Should not throw when opening
       const openResult = await agentikitShow({ ref: hit.openRef! })
-      expect(openResult.type).toBe(hit.type)
+      // tool and script types are now unified — the matcher pipeline returns
+      // "script" for files in tools/ directories, while the search index still
+      // stores "tool" from metadata. Both are acceptable.
+      const expected = hit.type === "tool" ? "script" : hit.type
+      expect(openResult.type).toBe(expected)
     }
   })
 

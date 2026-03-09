@@ -5,6 +5,7 @@ import { resolveAssetPath } from "./stash-resolve"
 import type { KnowledgeView, ShowResponse } from "./stash-types"
 import { getHandler } from "./asset-type-handler"
 import { resolveStashSources, findSourceForPath } from "./stash-source"
+import { buildFileContext, runMatchers, getRenderer, buildRenderContext } from "./file-context"
 
 export async function agentikitShow(input: { ref: string; view?: KnowledgeView }): Promise<ShowResponse> {
   const parsed = parseAssetRef(input.ref)
@@ -35,9 +36,31 @@ export async function agentikitShow(input: { ref: string; view?: KnowledgeView }
   if (!assetPath) {
     throw lastError ?? new Error(`Stash asset not found for ref: ${parsed.type}:${parsed.name}`)
   }
-  const content = fs.readFileSync(assetPath, "utf8")
 
   const source = findSourceForPath(assetPath, allSources)
+  const sourceStashDir = source?.path ?? allStashDirs[0]
+
+  // Try new renderer pipeline first
+  if (sourceStashDir) {
+    const fileCtx = buildFileContext(sourceStashDir, assetPath)
+    const match = runMatchers(fileCtx)
+    if (match) {
+      match.meta = { ...match.meta, name: parsed.name, view: input.view }
+      const renderer = getRenderer(match.renderer)
+      if (renderer) {
+        const renderCtx = buildRenderContext(fileCtx, match, allStashDirs)
+        const response = renderer.buildShowResponse(renderCtx)
+        return {
+          ...response,
+          registryId: source?.registryId,
+          editable: source?.writable ?? false,
+        }
+      }
+    }
+  }
+
+  // Fallback to legacy handler
+  const content = fs.readFileSync(assetPath, "utf8")
   const handler = getHandler(parsed.type)
   const response = handler.buildShowResponse({
     name: parsed.name,

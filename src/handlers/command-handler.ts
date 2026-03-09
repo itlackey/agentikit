@@ -19,6 +19,8 @@ export const commandHandler: AssetTypeHandler = {
       path: input.path,
       description: toStringOrUndefined(parsedMd.data.description),
       template: parsedMd.content,
+      modelHint: parsedMd.data.model,
+      agent: toStringOrUndefined(parsedMd.data.agent),
     }
   },
 

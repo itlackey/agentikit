@@ -2,7 +2,7 @@ import { test, expect, describe, afterAll } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { walkStash } from "../src/walker"
+import { walkStash, walkStashFlat } from "../src/walker"
 
 const createdTmpDirs: string[] = []
 
@@ -126,5 +126,76 @@ describe("walkStash", () => {
     const groups = walkStash(root, "knowledge")
     expect(groups).toHaveLength(1)
     expect(groups[0].files).toHaveLength(2)
+  })
+})
+
+describe("walkStashFlat", () => {
+  test("returns FileContext objects (not plain paths)", () => {
+    const root = tmpDir()
+    writeFile(path.join(root, "tools", "build.sh"), "echo build\n")
+
+    const results = walkStashFlat(root)
+    expect(results).toHaveLength(1)
+
+    const ctx = results[0]
+    expect(typeof ctx.absPath).toBe("string")
+    expect(typeof ctx.relPath).toBe("string")
+    expect(typeof ctx.ext).toBe("string")
+    expect(typeof ctx.fileName).toBe("string")
+    expect(typeof ctx.stashRoot).toBe("string")
+    expect(typeof ctx.content).toBe("function")
+    expect(typeof ctx.frontmatter).toBe("function")
+    expect(typeof ctx.stat).toBe("function")
+  })
+
+  test("walks across all asset type directories", () => {
+    const root = tmpDir()
+    writeFile(path.join(root, "tools", "build.sh"), "echo build\n")
+    writeFile(path.join(root, "agents", "helper.md"), "# Helper\n")
+    writeFile(path.join(root, "knowledge", "guide.md"), "# Guide\n")
+    writeFile(path.join(root, "scripts", "deploy.py"), "print('deploy')\n")
+
+    const results = walkStashFlat(root)
+    expect(results).toHaveLength(4)
+
+    const fileNames = results.map((r) => r.fileName).sort()
+    expect(fileNames).toEqual(["build.sh", "deploy.py", "guide.md", "helper.md"])
+  })
+
+  test("does not filter by asset type", () => {
+    const root = tmpDir()
+    writeFile(path.join(root, "data.json"), '{"key":"value"}')
+    writeFile(path.join(root, "script.py"), "print('hi')\n")
+
+    const results = walkStashFlat(root)
+    expect(results).toHaveLength(2)
+
+    const fileNames = results.map((r) => r.fileName).sort()
+    expect(fileNames).toEqual(["data.json", "script.py"])
+  })
+
+  test("skips directories starting with dot", () => {
+    const root = tmpDir()
+    writeFile(path.join(root, ".hidden", "file.txt"), "secret\n")
+    writeFile(path.join(root, "visible", "file.txt"), "public\n")
+
+    const results = walkStashFlat(root)
+    expect(results).toHaveLength(1)
+    expect(results[0].fileName).toBe("file.txt")
+    expect(results[0].absPath).toContain("visible")
+  })
+
+  test("preserves stashRoot on all FileContext results", () => {
+    const root = tmpDir()
+    writeFile(path.join(root, "a", "one.sh"), "echo one\n")
+    writeFile(path.join(root, "b", "two.md"), "# Two\n")
+    writeFile(path.join(root, "c", "three.py"), "print(3)\n")
+
+    const results = walkStashFlat(root)
+    expect(results).toHaveLength(3)
+
+    for (const ctx of results) {
+      expect(ctx.stashRoot).toBe(root)
+    }
   })
 })
