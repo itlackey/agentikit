@@ -88,7 +88,7 @@ akm add @scope/kit
 akm add npm:@scope/kit@latest
 akm add github:owner/repo#v1.2.3
 akm add https://github.com/owner/repo
-akm add git:https://gitlab.com/org/kit
+akm add git+https://gitlab.com/org/kit
 akm add ./path/to/local/kit
 ```
 

@@ -172,7 +172,7 @@ Install kits from npm, GitHub, any git host, or local directories:
 ```sh
 akm add @scope/my-kit              # npm package
 akm add github:owner/repo          # GitHub repo
-akm add git:https://gitlab.com/org/kit  # Any git repo
+akm add git+https://gitlab.com/org/kit  # Any git repo
 akm add ./path/to/local/kit        # Local directory
 ```
 

@@ -231,8 +231,8 @@ describe("local directory installs", () => {
     }
   })
 
-  test("parseRegistryRef parses git: prefix as git source", () => {
-    const parsed = parseRegistryRef("git:https://gitlab.com/org/kit.git")
+  test("parseRegistryRef parses git+https:// prefix as git source", () => {
+    const parsed = parseRegistryRef("git+https://gitlab.com/org/kit.git")
     expect(parsed.source).toBe("git")
     expect(parsed.id).toBe("git:https://gitlab.com/org/kit")
     if (parsed.source === "git") {
@@ -241,12 +241,20 @@ describe("local directory installs", () => {
     }
   })
 
-  test("parseRegistryRef parses git: prefix with ref suffix", () => {
-    const parsed = parseRegistryRef("git:https://gitlab.com/org/kit#v2.0")
+  test("parseRegistryRef parses git+https:// with ref suffix", () => {
+    const parsed = parseRegistryRef("git+https://gitlab.com/org/kit#v2.0")
     expect(parsed.source).toBe("git")
     if (parsed.source === "git") {
       expect(parsed.url).toBe("https://gitlab.com/org/kit")
       expect(parsed.requestedRef).toBe("v2.0")
+    }
+  })
+
+  test("parseRegistryRef parses git+ssh:// as git source", () => {
+    const parsed = parseRegistryRef("git+ssh://git@gitlab.com/org/kit.git")
+    expect(parsed.source).toBe("git")
+    if (parsed.source === "git") {
+      expect(parsed.url).toBe("ssh://git@gitlab.com/org/kit.git")
     }
   })
 
@@ -258,6 +266,32 @@ describe("local directory installs", () => {
   test("parseRegistryRef still routes GitHub https URLs to github source", () => {
     const parsed = parseRegistryRef("https://github.com/owner/repo")
     expect(parsed.source).toBe("github")
+  })
+
+  test("parseRegistryRef parses file: prefix as local source", () => {
+    const tempDir = makeTempDir("agentikit-file-uri-")
+    try {
+      const parsed = parseRegistryRef(`file:${tempDir}`)
+      expect(parsed.source).toBe("local")
+      if (parsed.source === "local") {
+        expect(parsed.sourcePath).toBe(path.resolve(tempDir))
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  test("parseRegistryRef parses file:/// absolute URI as local source", () => {
+    const tempDir = makeTempDir("agentikit-file-abs-uri-")
+    try {
+      const parsed = parseRegistryRef(`file://${tempDir}`)
+      expect(parsed.source).toBe("local")
+      if (parsed.source === "local") {
+        expect(parsed.sourcePath).toBe(path.resolve(tempDir))
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true })
+    }
   })
 
   test("applies include from nearest package.json for nested kit roots", async () => {

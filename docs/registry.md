@@ -79,14 +79,17 @@ akm add github:owner/repo#v1.2.0
 akm add https://github.com/owner/repo
 
 # Any git repo (GitLab, Bitbucket, Gitea, self-hosted, etc.)
-akm add git:https://gitlab.com/org/my-kit
-akm add git:https://gitlab.com/org/my-kit#v1.0
+akm add git+https://gitlab.com/org/my-kit
+akm add git+https://gitlab.com/org/my-kit#v1.0
+akm add git+ssh://git@gitlab.com/org/my-kit.git
 
 # Non-GitHub https URLs are automatically treated as git repos
 akm add https://gitlab.com/org/my-kit
 
-# Local directory
+# Local directory (path or file: URI)
 akm add ./path/to/local/kit
+akm add file:../relative/kit
+akm add file:///absolute/path/to/kit
 ```
 
 ### What Happens During Install

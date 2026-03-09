@@ -16,8 +16,11 @@ export function parseRegistryRef(rawRef: string): ParsedRegistryRef {
   if (ref.startsWith("github:")) {
     return parseGithubShorthand(ref.slice(7), ref)
   }
-  if (ref.startsWith("git:")) {
-    return parseGitUrl(ref.slice(4), ref)
+  if (ref.startsWith("git+")) {
+    return parseGitUrl(stripGitTransport(ref), ref)
+  }
+  if (ref.startsWith("file:")) {
+    return tryParseLocalRef(fileUriToPath(ref), true) as ParsedLocalRef
   }
   if (ref.startsWith("http://") || ref.startsWith("https://")) {
     return parseRemoteUrl(ref)
@@ -347,6 +350,32 @@ function splitRefSuffix(value: string): [string, string | undefined] {
   const hash = value.indexOf("#")
   if (hash < 0) return [value, undefined]
   return [value.slice(0, hash), value.slice(hash + 1) || undefined]
+}
+
+/**
+ * Strip the `git+` transport prefix from a ref, returning the inner URL.
+ * Handles `git+https://...`, `git+ssh://...`, `git+http://...`, etc.
+ */
+function stripGitTransport(ref: string): string {
+  return ref.slice(4) // strip "git+"
+}
+
+/**
+ * Convert a `file:` URI to a local filesystem path.
+ * Supports `file:./relative`, `file:../relative`, and `file:///absolute`.
+ */
+function fileUriToPath(ref: string): string {
+  const after = ref.slice(5) // strip "file:"
+  // file:///absolute/path or file:///C:/path
+  if (after.startsWith("///")) {
+    return after.slice(2) // keep one leading /
+  }
+  // file://hostname/path (rare, treat hostname/path as absolute)
+  if (after.startsWith("//")) {
+    return after.slice(1)
+  }
+  // file:./relative or file:../relative or file:/absolute
+  return after
 }
 
 function findGitRepoRoot(startDir: string): string | undefined {
