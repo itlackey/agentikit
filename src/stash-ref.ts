@@ -8,8 +8,8 @@ export interface AssetRef {
   name: string
   /**
    * Where to find this asset.
-   *   - undefined: search all sources (working → mounted → installed)
-   *   - "local": working stash only
+   *   - undefined: search all sources (primary → search paths → installed)
+   *   - "local": primary stash only
    *   - registry ref: e.g. "npm:@scope/pkg", "owner/repo", "github:owner/repo#v1"
    *   - filesystem path: e.g. "/mnt/shared-stash"
    */

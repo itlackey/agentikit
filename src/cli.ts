@@ -518,7 +518,7 @@ const submitCommand = defineCommand({
 
 
 const sourcesCommand = defineCommand({
-  meta: { name: "sources", description: "List all stash sources with their kind, path, and status" },
+  meta: { name: "sources", description: "List all stash search paths and their status" },
   run() {
     return runWithJsonErrors(() => {
       const sources = resolveStashSources()

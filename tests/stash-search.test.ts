@@ -52,7 +52,7 @@ async function buildTestIndex(stashDir: string, files: Record<string, string>) {
     fs.writeFileSync(fullPath, content)
   }
   process.env.AKM_STASH_DIR = stashDir
-  saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+  saveConfig({ semanticSearch: false, searchPaths: [] })
   await agentikitIndex({ stashDir, full: true })
 }
 
@@ -374,7 +374,7 @@ describe("Substring fallback", () => {
     // Do NOT call agentikitIndex — just create files on disk
     writeFile(path.join(stashDir, "tools", "deploy", "deploy.sh"), "#!/bin/bash\necho deploy\n")
     process.env.AKM_STASH_DIR = stashDir
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const result = await agentikitSearch({ query: "deploy", source: "local" })
     const localHits = result.hits.filter((h): h is LocalSearchHit => h.hitSource === "local")
@@ -392,7 +392,7 @@ describe("Substring fallback", () => {
 
     writeFile(path.join(stashDir, "tools", "Deploy", "Deploy.sh"), "#!/bin/bash\necho deploy\n")
     process.env.AKM_STASH_DIR = stashDir
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     // Do NOT call agentikitIndex
     const result = await agentikitSearch({ query: "deploy", source: "local" })

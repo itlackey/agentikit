@@ -2,7 +2,7 @@ import { test, expect, describe, beforeEach, afterEach } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { resolveStashSources, resolveAllStashDirs, findSourceForPath } from "../src/stash-source"
+import { resolveStashSources, resolveAllStashDirs, findSourceForPath, getPrimarySource, isEditable } from "../src/stash-source"
 import { saveConfig } from "../src/config"
 
 const originalStashDir = process.env.AKM_STASH_DIR
@@ -32,42 +32,39 @@ afterEach(() => {
 })
 
 describe("resolveStashSources", () => {
-  test("returns working stash as first source", () => {
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+  test("returns primary stash as first source", () => {
+    saveConfig({ semanticSearch: false, searchPaths: [] })
     const sources = resolveStashSources()
     expect(sources.length).toBeGreaterThanOrEqual(1)
-    expect(sources[0].kind).toBe("working")
-    expect(sources[0].writable).toBe(true)
     expect(sources[0].path).toBe(stashDir)
+    expect(sources[0].registryId).toBeUndefined()
   })
 
-  test("includes valid mounted directories", () => {
-    const mountedDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-mounted-"))
+  test("includes valid search paths", () => {
+    const extraDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-extra-"))
     try {
-      saveConfig({ semanticSearch: false, mountedStashDirs: [mountedDir] })
+      saveConfig({ semanticSearch: false, searchPaths: [extraDir] })
       const sources = resolveStashSources()
-      const mounted = sources.find((s) => s.kind === "mounted")
-      expect(mounted).toBeDefined()
-      expect(mounted!.path).toBe(mountedDir)
-      expect(mounted!.writable).toBe(false)
+      expect(sources.length).toBe(2)
+      expect(sources[1].path).toBe(extraDir)
+      expect(sources[1].registryId).toBeUndefined()
     } finally {
-      fs.rmSync(mountedDir, { recursive: true, force: true })
+      fs.rmSync(extraDir, { recursive: true, force: true })
     }
   })
 
-  test("skips non-existent mounted directories", () => {
-    saveConfig({ semanticSearch: false, mountedStashDirs: ["/nonexistent/path/should/not/exist"] })
+  test("skips non-existent search paths", () => {
+    saveConfig({ semanticSearch: false, searchPaths: ["/nonexistent/path/should/not/exist"] })
     const sources = resolveStashSources()
     expect(sources.length).toBe(1)
-    expect(sources[0].kind).toBe("working")
   })
 
-  test("includes installed registry entries", () => {
+  test("includes installed registry entries with registryId", () => {
     const installedDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-installed-"))
     try {
       saveConfig({
         semanticSearch: false,
-        mountedStashDirs: [],
+        searchPaths: [],
         registry: {
           installed: [{
             id: "npm:test-pkg",
@@ -81,23 +78,21 @@ describe("resolveStashSources", () => {
         },
       })
       const sources = resolveStashSources()
-      const installed = sources.find((s) => s.kind === "installed")
+      const installed = sources.find((s) => s.registryId === "npm:test-pkg")
       expect(installed).toBeDefined()
       expect(installed!.path).toBe(installedDir)
-      expect(installed!.registryId).toBe("npm:test-pkg")
-      expect(installed!.writable).toBe(false)
     } finally {
       fs.rmSync(installedDir, { recursive: true, force: true })
     }
   })
 
-  test("preserves three-tier ordering: working, mounted, installed", () => {
-    const mountedDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-mounted-"))
+  test("preserves ordering: primary, search paths, installed", () => {
+    const extraDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-extra-"))
     const installedDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-installed-"))
     try {
       saveConfig({
         semanticSearch: false,
-        mountedStashDirs: [mountedDir],
+        searchPaths: [extraDir],
         registry: {
           installed: [{
             id: "npm:test-pkg",
@@ -111,11 +106,14 @@ describe("resolveStashSources", () => {
         },
       })
       const sources = resolveStashSources()
-      expect(sources[0].kind).toBe("working")
-      expect(sources[1].kind).toBe("mounted")
-      expect(sources[2].kind).toBe("installed")
+      expect(sources[0].path).toBe(stashDir)
+      expect(sources[0].registryId).toBeUndefined()
+      expect(sources[1].path).toBe(extraDir)
+      expect(sources[1].registryId).toBeUndefined()
+      expect(sources[2].path).toBe(installedDir)
+      expect(sources[2].registryId).toBe("npm:test-pkg")
     } finally {
-      fs.rmSync(mountedDir, { recursive: true, force: true })
+      fs.rmSync(extraDir, { recursive: true, force: true })
       fs.rmSync(installedDir, { recursive: true, force: true })
     }
   })
@@ -123,9 +121,8 @@ describe("resolveStashSources", () => {
   test("accepts overrideStashDir parameter", () => {
     const overrideDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-override-"))
     try {
-      saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+      saveConfig({ semanticSearch: false, searchPaths: [] })
       const sources = resolveStashSources(overrideDir)
-      expect(sources[0].kind).toBe("working")
       expect(sources[0].path).toBe(overrideDir)
     } finally {
       fs.rmSync(overrideDir, { recursive: true, force: true })
@@ -135,45 +132,108 @@ describe("resolveStashSources", () => {
 
 describe("resolveAllStashDirs", () => {
   test("returns just paths in correct order", () => {
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
     const dirs = resolveAllStashDirs()
     expect(dirs[0]).toBe(stashDir)
   })
 })
 
-describe("findSourceForPath", () => {
-  test("finds working source for file inside working stash", () => {
+describe("getPrimarySource", () => {
+  test("returns first source from list", () => {
     const sources = [
-      { kind: "working" as const, path: stashDir, writable: true },
-      { kind: "mounted" as const, path: "/other/dir", writable: false },
+      { path: stashDir },
+      { path: "/other/dir" },
+    ]
+    const primary = getPrimarySource(sources)
+    expect(primary).toBeDefined()
+    expect(primary!.path).toBe(stashDir)
+  })
+
+  test("returns undefined for empty list", () => {
+    expect(getPrimarySource([])).toBeUndefined()
+  })
+})
+
+describe("findSourceForPath", () => {
+  test("finds correct source for file inside primary stash", () => {
+    const sources = [
+      { path: stashDir },
+      { path: "/other/dir" },
     ]
     const filePath = path.join(stashDir, "tools", "deploy.sh")
     const result = findSourceForPath(filePath, sources)
     expect(result).toBeDefined()
-    expect(result!.kind).toBe("working")
+    expect(result!.path).toBe(stashDir)
   })
 
-  test("finds mounted source for file inside mounted dir", () => {
-    const mountedDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-mounted-"))
+  test("finds correct source for file inside search path", () => {
+    const extraDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-extra-"))
     try {
       const sources = [
-        { kind: "working" as const, path: stashDir, writable: true },
-        { kind: "mounted" as const, path: mountedDir, writable: false },
+        { path: stashDir },
+        { path: extraDir },
       ]
-      const filePath = path.join(mountedDir, "tools", "test.sh")
+      const filePath = path.join(extraDir, "tools", "test.sh")
       const result = findSourceForPath(filePath, sources)
       expect(result).toBeDefined()
-      expect(result!.kind).toBe("mounted")
+      expect(result!.path).toBe(extraDir)
     } finally {
-      fs.rmSync(mountedDir, { recursive: true, force: true })
+      fs.rmSync(extraDir, { recursive: true, force: true })
     }
   })
 
   test("returns undefined for file not in any source", () => {
-    const sources = [
-      { kind: "working" as const, path: stashDir, writable: true },
-    ]
+    const sources = [{ path: stashDir }]
     const result = findSourceForPath("/completely/unrelated/path.sh", sources)
     expect(result).toBeUndefined()
+  })
+})
+
+describe("isEditable", () => {
+  test("files in primary stash are editable", () => {
+    saveConfig({ semanticSearch: false, searchPaths: [] })
+    const filePath = path.join(stashDir, "tools", "deploy.sh")
+    expect(isEditable(filePath)).toBe(true)
+  })
+
+  test("files in search paths are editable", () => {
+    const extraDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-extra-"))
+    try {
+      saveConfig({ semanticSearch: false, searchPaths: [extraDir] })
+      const filePath = path.join(extraDir, "tools", "deploy.sh")
+      expect(isEditable(filePath)).toBe(true)
+    } finally {
+      fs.rmSync(extraDir, { recursive: true, force: true })
+    }
+  })
+
+  test("files in cache-managed dirs are NOT editable", () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-cache-"))
+    try {
+      saveConfig({
+        semanticSearch: false,
+        searchPaths: [],
+        registry: {
+          installed: [{
+            id: "npm:test-pkg",
+            source: "npm",
+            ref: "npm:test-pkg@1.0.0",
+            artifactUrl: "https://example.test/test-pkg.tgz",
+            stashRoot: cacheDir,
+            cacheDir: cacheDir,
+            installedAt: new Date().toISOString(),
+          }],
+        },
+      })
+      const filePath = path.join(cacheDir, "tools", "deploy.sh")
+      expect(isEditable(filePath)).toBe(false)
+    } finally {
+      fs.rmSync(cacheDir, { recursive: true, force: true })
+    }
+  })
+
+  test("files outside any known path are editable", () => {
+    saveConfig({ semanticSearch: false, searchPaths: [] })
+    expect(isEditable("/some/random/path/file.sh")).toBe(true)
   })
 })

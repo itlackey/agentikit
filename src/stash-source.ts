@@ -2,42 +2,41 @@ import fs from "node:fs"
 import path from "node:path"
 import { resolveStashDir } from "./common"
 import { loadConfig } from "./config"
+import type { AgentikitConfig } from "./config"
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-export type StashSourceKind = "working" | "mounted" | "installed"
-
 export interface StashSource {
-  kind: StashSourceKind
   path: string
   /** For installed sources, the registry entry id */
   registryId?: string
-  /** Whether this source is writable (only working stash) */
-  writable: boolean
 }
 
 // ── Resolution ──────────────────────────────────────────────────────────────
 
 /**
- * Build the ordered list of stash sources:
- *   1. Working stash (writable)
- *   2. Mounted stash dirs (read-only, user-configured)
- *   3. Installed stash dirs (read-only, derived from registry.installed)
+ * Build the ordered list of stash sources (search paths):
+ *   1. Primary stash dir (user's own, destination for clone)
+ *   2. Additional search paths (user-configured)
+ *   3. Installed kit paths (cache-managed, from registry)
+ *
+ * The first entry is always the primary stash. Additional entries come
+ * from `searchPaths` config and `registry.installed` entries.
  */
 export function resolveStashSources(overrideStashDir?: string): StashSource[] {
   const stashDir = overrideStashDir ?? resolveStashDir()
   const config = loadConfig()
 
   const sources: StashSource[] = [
-    { kind: "working", path: stashDir, writable: true },
+    { path: stashDir },
   ]
 
-  for (const dir of config.mountedStashDirs) {
+  for (const dir of config.searchPaths) {
     if (isSuspiciousStashRoot(dir)) {
       console.warn(`Warning: stash root "${dir}" appears to be a system directory. This may be unintentional.`)
     }
     if (isValidDirectory(dir)) {
-      sources.push({ kind: "mounted", path: dir, writable: false })
+      sources.push({ path: dir })
     }
   }
 
@@ -47,10 +46,8 @@ export function resolveStashSources(overrideStashDir?: string): StashSource[] {
     }
     if (isValidDirectory(entry.stashRoot)) {
       sources.push({
-        kind: "installed",
         path: entry.stashRoot,
         registryId: entry.id,
-        writable: false,
       })
     }
   }
@@ -74,6 +71,55 @@ export function findSourceForPath(filePath: string, sources: StashSource[]): Sta
     if (resolved.startsWith(path.resolve(source.path) + path.sep)) return source
   }
   return undefined
+}
+
+/**
+ * Return the primary stash source (first entry in the list).
+ * This is the user's working stash and the default destination for clone.
+ */
+export function getPrimarySource(sources: StashSource[]): StashSource | undefined {
+  return sources[0]
+}
+
+// ── Editability ─────────────────────────────────────────────────────────────
+
+/**
+ * Determine whether a file is safe to edit in place.
+ *
+ * The only files that are NOT editable are those inside a cache directory
+ * managed by the package manager (`registry.installed[].cacheDir`). These
+ * will be overwritten by `akm update` without warning.
+ *
+ * Everything else — working stash, search paths, local project dirs — is
+ * the user's domain to manage.
+ */
+export function isEditable(filePath: string, config?: AgentikitConfig): boolean {
+  const cfg = config ?? loadConfig()
+  const resolved = path.resolve(filePath)
+  const cacheManaged = cfg.registry?.installed ?? []
+  const isWin = process.platform === "win32"
+
+  for (const entry of cacheManaged) {
+    const cacheRoot = path.resolve(entry.cacheDir)
+    if (isWin) {
+      // Windows paths are case-insensitive — normalize both sides
+      if (resolved.toLowerCase().startsWith(cacheRoot.toLowerCase() + path.sep)) return false
+    } else {
+      if (resolved.startsWith(cacheRoot + path.sep)) return false
+    }
+  }
+
+  return true
+}
+
+/**
+ * Build an actionable hint for the agent when a file is not editable.
+ * Callers must check `isEditable()` before calling — this function
+ * unconditionally returns the hint string.
+ */
+export function buildEditHint(filePath: string, assetType: string, assetName: string, origin?: string): string {
+  const ref = origin ? `${origin}//${assetType}:${assetName}` : `${assetType}:${assetName}`
+  return `This asset is managed by akm and may be overwritten on update. To edit, run: akm clone ${ref}`
 }
 
 // ── Validation ──────────────────────────────────────────────────────────────

@@ -4,11 +4,13 @@ import { resolveSourcesForOrigin } from "./origin-resolve"
 import { resolveAssetPath } from "./stash-resolve"
 import type { KnowledgeView, ShowResponse } from "./stash-types"
 import { getHandler } from "./asset-type-handler"
-import { resolveStashSources, findSourceForPath } from "./stash-source"
+import { resolveStashSources, findSourceForPath, isEditable, buildEditHint } from "./stash-source"
 import { buildFileContext, runMatchers, getRenderer, buildRenderContext } from "./file-context"
+import { loadConfig } from "./config"
 
 export async function agentikitShow(input: { ref: string; view?: KnowledgeView }): Promise<ShowResponse> {
   const parsed = parseAssetRef(input.ref)
+  const config = loadConfig()
   const allSources = resolveStashSources()
   const searchSources = resolveSourcesForOrigin(parsed.origin, allSources)
 
@@ -50,10 +52,12 @@ export async function agentikitShow(input: { ref: string; view?: KnowledgeView }
       if (renderer) {
         const renderCtx = buildRenderContext(fileCtx, match, allStashDirs)
         const response = renderer.buildShowResponse(renderCtx)
+        const editable = isEditable(assetPath, config)
         return {
           ...response,
           registryId: source?.registryId,
-          editable: source?.writable ?? false,
+          editable,
+          ...(!editable ? { editHint: buildEditHint(assetPath, parsed.type, parsed.name, source?.registryId) } : {}),
         }
       }
     }
@@ -70,9 +74,11 @@ export async function agentikitShow(input: { ref: string; view?: KnowledgeView }
     stashDirs: allStashDirs,
   })
 
+  const editable = isEditable(assetPath, config)
   return {
     ...response,
     registryId: source?.registryId,
-    editable: source?.writable ?? false,
+    editable,
+    ...(!editable ? { editHint: buildEditHint(assetPath, parsed.type, parsed.name, source?.registryId) } : {}),
   }
 }

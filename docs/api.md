@@ -92,10 +92,12 @@ import {
 | `agentikitUpdate({ target?, all?, force? })` | Update one or all kits to latest version (`--force` busts cache) |
 | `checkForUpdate(currentVersion)` | Check if a newer akm release is available |
 | `performUpgrade(check, opts?)` | Upgrade akm binary to the latest release |
-| `agentikitClone({ sourceRef, newName?, force?, dest? })` | Copy an asset into the working stash or custom destination (async). Fetches remote origins automatically |
+| `agentikitClone({ sourceRef, newName?, force?, dest? })` | Copy an asset into the primary stash or custom destination (async). Fetches remote origins automatically |
 | `resolveStashSources()` | Resolve all stash sources in priority order |
-| `resolveAllStashDirs(stashDir)` | Resolve all stash directories including mounted dirs |
+| `resolveAllStashDirs(stashDir)` | Resolve all stash directories (primary + search paths + installed) |
 | `findSourceForPath(path, sources)` | Find which stash source a file path belongs to |
+| `getPrimarySource(sources)` | Return the primary stash source (first entry, destination for clone) |
+| `isEditable(filePath, config?)` | Check if a file is safe to edit in place (false for cache-managed files) |
 | `resolveRg(stashDir?)` | Resolve the path to ripgrep binary |
 | `isRgAvailable()` | Check if ripgrep is available |
 | `ensureRg(stashDir)` | Install ripgrep if not available |
@@ -172,7 +174,6 @@ import type {
 
   // Stash sources
   StashSource,
-  StashSourceKind,
   CloneOptions,
   CloneResponse,
 
@@ -223,3 +224,19 @@ import type {
   AssetRenderer,
 } from "agentikit"
 ```
+
+## Editability
+
+Search hits (`LocalSearchHit`) and show responses (`ShowResponse`) include
+editability guidance:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `editable` | `boolean` | Whether the file is safe to edit in place |
+| `editHint` | `string?` | Actionable `akm clone` command (only present when `editable` is false) |
+
+Files inside the package manager's cache (`registry.installed[].cacheDir`)
+are not editable — `akm update` may overwrite them. All other files
+(primary stash, search paths, project dirs) are editable.
+
+When `editable` is `true`, `editHint` is omitted to keep output clean.

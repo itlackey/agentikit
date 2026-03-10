@@ -32,8 +32,8 @@ export { agentikitClone } from "./stash-clone"
 
 export { agentikitList, agentikitRemove, agentikitUpdate } from "./stash-registry"
 export { checkForUpdate, performUpgrade } from "./self-update"
-export { resolveStashSources, resolveAllStashDirs, findSourceForPath } from "./stash-source"
-export type { StashSource, StashSourceKind } from "./stash-source"
+export { resolveStashSources, resolveAllStashDirs, findSourceForPath, getPrimarySource, isEditable } from "./stash-source"
+export type { StashSource } from "./stash-source"
 
 export type {
   AddResponse,

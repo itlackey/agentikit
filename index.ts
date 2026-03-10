@@ -11,6 +11,8 @@ export {
   resolveStashSources,
   resolveAllStashDirs,
   findSourceForPath,
+  getPrimarySource,
+  isEditable,
 } from "./src/stash"
 export { agentikitInit } from "./src/init"
 export type { InitResponse } from "./src/init"
@@ -34,7 +36,6 @@ export type {
   UpgradeCheckResponse,
   UpgradeResponse,
   StashSource,
-  StashSourceKind,
   CloneOptions,
   CloneResponse,
 } from "./src/stash"

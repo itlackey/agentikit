@@ -4,7 +4,7 @@ import { TYPE_DIRS } from "./asset-spec"
 import { parseAssetRef, makeAssetRef } from "./stash-ref"
 import { resolveSourcesForOrigin, isRemoteOrigin } from "./origin-resolve"
 import { resolveAssetPath } from "./stash-resolve"
-import { resolveStashSources, findSourceForPath, type StashSource, type StashSourceKind } from "./stash-source"
+import { resolveStashSources, findSourceForPath, getPrimarySource, type StashSource } from "./stash-source"
 import { installRegistryRef } from "./registry-install"
 
 export interface CloneOptions {
@@ -21,7 +21,6 @@ export interface CloneOptions {
 export interface CloneResponse {
   source: {
     path: string
-    sourceKind: StashSourceKind
     registryId?: string
   }
   destination: {
@@ -47,8 +46,8 @@ export async function agentikitClone(options: CloneOptions): Promise<CloneRespon
     }
   }
 
-  const workingSource = allSources.find((s) => s.kind === "working")
-  const destRoot = options.dest ? path.resolve(options.dest) : workingSource?.path
+  const primarySource = getPrimarySource(allSources)
+  const destRoot = options.dest ? path.resolve(options.dest) : primarySource?.path
 
   if (!destRoot) {
     throw new Error("No working stash configured and no --dest provided. Run `akm init` or pass --dest.")
@@ -61,10 +60,8 @@ export async function agentikitClone(options: CloneOptions): Promise<CloneRespon
   if (searchSources.length === 0 && parsed.origin && isRemoteOrigin(parsed.origin, allSources)) {
     const installResult = await installRegistryRef(parsed.origin)
     const syntheticSource: StashSource = {
-      kind: "installed",
       path: installResult.stashRoot,
       registryId: installResult.id,
-      writable: false,
     }
     searchSources = [syntheticSource]
     allSources = [...allSources, syntheticSource]
@@ -91,7 +88,6 @@ export async function agentikitClone(options: CloneOptions): Promise<CloneRespon
   }
 
   const sourceSource = findSourceForPath(sourcePath, allSources)
-  const sourceKind = sourceSource?.kind ?? "working"
 
   const destName = options.newName ?? parsed.name
   const typeDir = TYPE_DIRS[parsed.type]
@@ -137,7 +133,7 @@ export async function agentikitClone(options: CloneOptions): Promise<CloneRespon
     const ref = makeAssetRef(parsed.type, destName, "local")
 
     return {
-      source: { path: sourcePath, sourceKind, registryId: sourceSource?.registryId },
+      source: { path: sourcePath, registryId: sourceSource?.registryId },
       destination: { path: destPath, ref },
       overwritten,
       ...(remoteFetched ? { remoteFetched } : {}),
@@ -159,7 +155,7 @@ export async function agentikitClone(options: CloneOptions): Promise<CloneRespon
   const ref = makeAssetRef(parsed.type, destName, "local")
 
   return {
-    source: { path: sourcePath, sourceKind, registryId: sourceSource?.registryId },
+    source: { path: sourcePath, registryId: sourceSource?.registryId },
     destination: { path: destPath, ref },
     overwritten,
     ...(remoteFetched ? { remoteFetched } : {}),

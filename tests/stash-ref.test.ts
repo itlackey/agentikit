@@ -130,7 +130,7 @@ describe("parseAssetRef", () => {
     expect(ref.name).toBe("db/migrate/run.sh")
   })
 
-  test("mounted path origin", () => {
+  test("path-based origin", () => {
     const ref = parseAssetRef("/mnt/shared-stash//skill:code-review")
     expect(ref.origin).toBe("/mnt/shared-stash")
     expect(ref.type).toBe("skill")

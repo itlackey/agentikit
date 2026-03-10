@@ -80,7 +80,7 @@ describe("agentikitShow installed ref", () => {
 
     saveConfig({
       semanticSearch: false,
-      mountedStashDirs: [],
+      searchPaths: [],
       registry: {
         installed: [{
           id: "test-pkg",
@@ -102,60 +102,61 @@ describe("agentikitShow installed ref", () => {
   })
 })
 
-// ── Mounted stash resolution ─────────────────────────────────────────────────
+// ── Search path resolution ───────────────────────────────────────────────────
 
-describe("agentikitShow mounted stash", () => {
-  test("resolves from mounted stash directories", async () => {
-    const mountedStashDir = createTmpDir("agentikit-show-mounted-")
+describe("agentikitShow search path", () => {
+  test("resolves from search path directories", async () => {
+    const searchPathDir = createTmpDir("agentikit-show-searchpath-")
     writeFile(
-      path.join(mountedStashDir, "tools", "deploy.sh"),
+      path.join(searchPathDir, "tools", "deploy.sh"),
       "#!/usr/bin/env bash\necho deploy\n",
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [mountedStashDir] })
+    saveConfig({ semanticSearch: false, searchPaths: [searchPathDir] })
 
     const result = await agentikitShow({ ref: "tool:deploy.sh" })
 
     expect(result.type).toBe("script")
     expect(result.name).toBe("deploy.sh")
-    expect(result.path).toContain(mountedStashDir)
+    expect(result.path).toContain(searchPathDir)
   })
 })
 
-// ── sourceKind and editable flags ────────────────────────────────────────────
+// ── editability flags ────────────────────────────────────────────────────────
 
-describe("agentikitShow sourceKind and editable", () => {
+describe("agentikitShow editability", () => {
   test("working stash asset has editable true", async () => {
     writeFile(
       path.join(stashDir, "tools", "local.sh"),
       "#!/usr/bin/env bash\necho local\n",
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const result = await agentikitShow({ ref: "tool:local.sh" })
 
     expect(result.type).toBe("script")
     expect(result.editable).toBe(true)
+    expect(result.editHint).toBeUndefined()
   })
 
-  test("mounted stash asset has editable false", async () => {
-    const mountedStashDir = createTmpDir("agentikit-show-mounted-editable-")
+  test("search path asset has editable true", async () => {
+    const searchPathDir = createTmpDir("agentikit-show-searchpath-editable-")
     writeFile(
-      path.join(mountedStashDir, "tools", "remote.sh"),
+      path.join(searchPathDir, "tools", "remote.sh"),
       "#!/usr/bin/env bash\necho remote\n",
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [mountedStashDir] })
+    saveConfig({ semanticSearch: false, searchPaths: [searchPathDir] })
 
-    // The asset only exists in the mounted dir, not in working stash.
     const result = await agentikitShow({ ref: "tool:remote.sh" })
 
     expect(result.type).toBe("script")
-    expect(result.editable).toBe(false)
+    expect(result.editable).toBe(true)
+    expect(result.editHint).toBeUndefined()
   })
 
-  test("resolves from installed stash directories", async () => {
+  test("installed (cache-managed) asset has editable false with editHint", async () => {
     const installedStashRoot = createTmpDir("agentikit-show-installed-resolve-")
     writeFile(
       path.join(installedStashRoot, "tools", "deploy.sh"),
@@ -164,7 +165,7 @@ describe("agentikitShow sourceKind and editable", () => {
 
     saveConfig({
       semanticSearch: false,
-      mountedStashDirs: [],
+      searchPaths: [],
       registry: {
         installed: [{
           id: "installed-pkg",
@@ -182,6 +183,8 @@ describe("agentikitShow sourceKind and editable", () => {
 
     expect(result.type).toBe("script")
     expect(result.editable).toBe(false)
+    expect(result.editHint).toContain("akm clone")
+    expect(result.editHint).toContain("tool:deploy.sh")
   })
 })
 
@@ -197,7 +200,7 @@ describe("agentikitShow content-based classification", () => {
       ["---", "model: gpt-4", "description: Deploy command", "---", "Deploy $ARGUMENTS."].join("\n"),
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const result = await agentikitShow({ ref: "command:deploy.md" })
 
@@ -214,7 +217,7 @@ describe("agentikitShow content-based classification", () => {
       ["---", "tools:", "  read: allow", "model: gpt-4", "---", "You are a hybrid agent."].join("\n"),
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const result = await agentikitShow({ ref: "command:hybrid.md" })
 
@@ -228,7 +231,7 @@ describe("agentikitShow content-based classification", () => {
       ["---", "description: Deploy to production", "model: claude-sonnet-4-20250514", "agent: build", "---", "Deploy $ARGUMENTS to production."].join("\n"),
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const result = await agentikitShow({ ref: "command:deploy.md" })
 
@@ -245,7 +248,7 @@ describe("agentikitShow content-based classification", () => {
       "#!/usr/bin/env bash\necho build\n",
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const result = await agentikitShow({ ref: "tool:build.sh" })
 
@@ -260,7 +263,7 @@ describe("agentikitShow content-based classification", () => {
       ["---", "description: Deploy helper", "---", "Deploy $ARGUMENTS to staging."].join("\n"),
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     // $ARGUMENTS placeholder (specificity 18) beats knowledge/ directory hint (10)
     const result = await agentikitShow({ ref: "knowledge:deploy-cmd.md" })
@@ -276,7 +279,7 @@ describe("agentikitShow content-based classification", () => {
       ["---", "agent: build", "description: Build dispatch", "---", "Build the project."].join("\n"),
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     // agent frontmatter (specificity 18) beats agents/ directory hint (15)
     const result = await agentikitShow({ ref: "agent:build-cmd.md" })
@@ -292,7 +295,7 @@ describe("agentikitShow content-based classification", () => {
       ["# Intro", "Welcome.", "", "## Setup", "Install things.", "", "## Usage", "Use things."].join("\n"),
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const tocResult = await agentikitShow({ ref: "knowledge:guide.md", view: { mode: "toc" } })
     expect(tocResult.content).toContain("Intro")
