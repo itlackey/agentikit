@@ -41,17 +41,26 @@ function isJsonMode(): boolean {
   return process.argv.includes("--json")
 }
 
-/** Output result: JSON if --json flag set, otherwise human-readable */
+/** Output result: JSON if --json flag set, otherwise YAML (default) */
 function output(command: string, result: unknown): void {
   if (isJsonMode()) {
     console.log(JSON.stringify(result, null, 2))
-  } else {
-    console.log(formatHuman(command, result))
+    return
   }
+  // Some commands output plain text messages rather than structured data
+  const plain = formatPlain(command, result)
+  if (plain != null) {
+    console.log(plain)
+    return
+  }
+  console.log(Bun.YAML.stringify(result, null, 4))
 }
 
-/** Format a command result for human-readable output */
-function formatHuman(command: string, result: unknown): string {
+/**
+ * Return a plain-text string for commands that are better as short messages,
+ * or null to fall through to YAML output.
+ */
+function formatPlain(command: string, result: unknown): string | null {
   const r = result as Record<string, unknown>
 
   switch (command) {
@@ -63,32 +72,16 @@ function formatHuman(command: string, result: unknown): string {
     case "index": {
       return `Indexed ${r.totalEntries ?? 0} entries from ${r.directoriesScanned ?? 0} directories (mode: ${r.mode ?? "unknown"})`
     }
-    case "search": {
-      const hits = (r.hits as Array<Record<string, unknown>>) ?? []
-      if (hits.length === 0) return r.tip as string ?? "No results found."
-      const lines = hits.map((h) => {
-        const score = h.score != null ? ` (score: ${Number(h.score).toFixed(2)})` : ""
-        const desc = h.description ? `  ${h.description}` : ""
-        return `  ${h.name ?? h.ref}  [${h.type}]${score}${desc}`
-      })
-      return lines.join("\n")
-    }
     case "show": {
       if (r.content != null) return String(r.content)
       if (r.runCmd != null) return String(r.runCmd)
       if (r.markdown != null) return String(r.markdown)
-      return JSON.stringify(result, null, 2)
+      return null // fall through to YAML
     }
     case "add": {
       const installed = r.installed as Record<string, unknown> | undefined
       const indexed = installed?.indexed ?? r.indexed ?? 0
       return `Installed ${r.ref} (${indexed} assets indexed)`
-    }
-    case "list": {
-      const entries = (r.installed as Array<Record<string, unknown>>) ?? []
-      if (entries.length === 0) return "No kits installed."
-      const lines = entries.map((e) => `  ${e.id ?? e.ref}  ${e.stashRoot ?? ""}`)
-      return lines.join("\n")
     }
     case "remove":
     case "update":
@@ -97,35 +90,11 @@ function formatHuman(command: string, result: unknown): string {
       const ok = r.ok !== false ? "OK" : "FAILED"
       return `${command}: ${target} ${ok}`
     }
-    case "config-list":
-    case "config-get":
-    case "config-set":
-    case "config-unset":
-    case "config-use":
-    case "config-providers":
-    case "config": {
-      if (typeof r === "object" && r !== null) {
-        // For config get which returns { key, value }
-        if ("key" in r && "value" in r) return `${r.key}=${JSON.stringify(r.value)}`
-        // For config list / set / unset / use which returns full config
-        const lines: string[] = []
-        for (const [k, v] of Object.entries(r)) {
-          lines.push(`${k}=${typeof v === "object" ? JSON.stringify(v) : v}`)
-        }
-        return lines.join("\n")
-      }
-      return String(result)
-    }
     case "clone": {
       const dst = (r.destination as Record<string, unknown>)?.path ?? "unknown"
       const remote = r.remoteFetched ? " (fetched from remote)" : ""
       const over = r.overwritten ? " (overwritten)" : ""
       return `Cloned${remote} → ${dst}${over}`
-    }
-    case "sources": {
-      const sources = (r.sources as Array<Record<string, unknown>>) ?? []
-      if (sources.length === 0) return "No stash sources configured."
-      return sources.map((s) => `  [${s.kind}] ${s.path}${s.writable ? " (writable)" : ""}`).join("\n")
     }
     case "submit": {
       const entry = r.entry as Record<string, unknown> | undefined
@@ -135,7 +104,7 @@ function formatHuman(command: string, result: unknown): string {
         const lines = [
           `Dry run: prepared registry entry ${entry?.name ?? entry?.id ?? "unknown"}`,
           "",
-          JSON.stringify(entry, null, 2),
+          Bun.YAML.stringify(entry, null, 4),
         ]
         if (commands.length > 0) {
           lines.push("", "Would run:")
@@ -153,7 +122,7 @@ function formatHuman(command: string, result: unknown): string {
       return lines.join("\n")
     }
     default:
-      return JSON.stringify(result, null, 2)
+      return null // fall through to YAML
   }
 }
 
