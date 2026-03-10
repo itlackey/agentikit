@@ -85,7 +85,7 @@ What you get back depends on the asset type:
 Always search the stash first when you need a capability. Prefer existing
 assets over writing new code.
 
-Use `akm -help` for more options and details on searching and using assets.
+Use `akm -h` for more options and details on searching and using assets.
 
 ~~~
 
