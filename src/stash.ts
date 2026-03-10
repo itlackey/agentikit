@@ -31,7 +31,7 @@ export { agentikitAdd } from "./stash-add"
 export { agentikitClone } from "./stash-clone"
 
 export { agentikitList, agentikitRemove, agentikitReinstall, agentikitUpdate } from "./stash-registry"
-export { resolveStashSources, resolveAllStashDirs, findSourceForPath, getPrimarySource, isEditable, buildEditHint } from "./stash-source"
+export { resolveStashSources, resolveAllStashDirs, findSourceForPath, getPrimarySource, isEditable } from "./stash-source"
 export type { StashSource } from "./stash-source"
 
 export type {

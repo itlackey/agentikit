@@ -114,11 +114,10 @@ export function isEditable(filePath: string, config?: AgentikitConfig): boolean 
 
 /**
  * Build an actionable hint for the agent when a file is not editable.
- * Returns undefined when the file is editable (no hint needed).
+ * Callers must check `isEditable()` before calling — this function
+ * unconditionally returns the hint string.
  */
-export function buildEditHint(filePath: string, assetType: string, assetName: string, config?: AgentikitConfig, origin?: string): string | undefined {
-  const cfg = config ?? loadConfig()
-  if (isEditable(filePath, cfg)) return undefined
+export function buildEditHint(filePath: string, assetType: string, assetName: string, origin?: string): string {
   const ref = origin ? `${origin}//${assetType}:${assetName}` : `${assetType}:${assetName}`
   return `This asset is managed by akm and may be overwritten on update. To edit, run: akm clone ${ref}`
 }

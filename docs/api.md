@@ -13,7 +13,6 @@ import {
   agentikitIndex,
   agentikitList,
   agentikitRemove,
-  agentikitReinstall,
   agentikitSearch,
   agentikitShow,
   agentikitUpdate,
@@ -88,15 +87,13 @@ import {
 | `agentikitAdd({ ref })` | Install a kit from npm, GitHub, or local path |
 | `agentikitList()` | List installed kits with status flags |
 | `agentikitRemove({ target })` | Remove an installed kit and reindex |
-| `agentikitUpdate({ target?, all? })` | Update one or all kits to latest version |
-| `agentikitReinstall({ target?, all? })` | Reinstall one or all kits from stored refs |
+| `agentikitUpdate({ target?, all?, force? })` | Update one or all kits to latest version (`--force` busts cache) |
 | `agentikitClone({ sourceRef, newName?, force?, dest? })` | Copy an asset into the primary stash or custom destination (async). Fetches remote origins automatically |
 | `resolveStashSources()` | Resolve all stash sources in priority order |
 | `resolveAllStashDirs(stashDir)` | Resolve all stash directories (primary + search paths + installed) |
 | `findSourceForPath(path, sources)` | Find which stash source a file path belongs to |
 | `getPrimarySource(sources)` | Return the primary stash source (first entry, destination for clone) |
 | `isEditable(filePath, config?)` | Check if a file is safe to edit in place (false for cache-managed files) |
-| `buildEditHint(filePath, type, name, config?)` | Build an actionable `akm clone` hint when a file is not editable |
 | `resolveRg(stashDir?)` | Resolve the path to ripgrep binary |
 | `isRgAvailable()` | Check if ripgrep is available |
 | `ensureRg(stashDir)` | Install ripgrep if not available |
@@ -164,12 +161,12 @@ import type {
   // Registry management
   ListResponse,
   RemoveResponse,
-  ReinstallResponse,
   UpdateResponse,
   RegistryListEntry,
   RegistryInstallStatus,
-  ReinstallResultItem,
   UpdateResultItem,
+  UpgradeCheckResponse,
+  UpgradeResponse,
 
   // Stash sources
   StashSource,

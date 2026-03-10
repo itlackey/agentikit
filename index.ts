@@ -3,7 +3,6 @@ export {
   agentikitClone,
   agentikitList,
   agentikitRemove,
-  agentikitReinstall,
   agentikitSearch,
   agentikitShow,
   agentikitUpdate,
@@ -12,7 +11,6 @@ export {
   findSourceForPath,
   getPrimarySource,
   isEditable,
-  buildEditHint,
 } from "./src/stash"
 export { agentikitInit } from "./src/init"
 export type { InitResponse } from "./src/init"
@@ -29,11 +27,9 @@ export type {
   KnowledgeView,
   ListResponse,
   RemoveResponse,
-  ReinstallResponse,
   UpdateResponse,
   RegistryListEntry,
   RegistryInstallStatus,
-  ReinstallResultItem,
   UpdateResultItem,
   StashSource,
   CloneOptions,

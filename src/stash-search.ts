@@ -429,7 +429,7 @@ function buildDbHit(input: {
     openRef: makeAssetRef(input.entry.type, openRefName, source?.registryId),
     registryId: source?.registryId,
     editable,
-    ...(!editable ? { editHint: buildEditHint(input.path, input.entry.type, openRefName, input.config, source?.registryId) } : {}),
+    ...(!editable ? { editHint: buildEditHint(input.path, input.entry.type, openRefName, source?.registryId) } : {}),
     description: input.entry.description,
     tags: input.entry.tags,
     score,
@@ -486,7 +486,7 @@ function assetToSearchHit(asset: IndexedAsset, stashDir: string, sources: StashS
     openRef: makeAssetRef(asset.type, asset.name, source?.registryId),
     registryId: source?.registryId,
     editable,
-    ...(!editable ? { editHint: buildEditHint(asset.path, asset.type, asset.name, config, source?.registryId) } : {}),
+    ...(!editable ? { editHint: buildEditHint(asset.path, asset.type, asset.name, source?.registryId) } : {}),
   }
   const handler = tryGetHandler(asset.type)
   if (handler?.enrichSearchHit) {
