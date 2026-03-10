@@ -92,3 +92,21 @@ describe("CLI error handling", () => {
     expect(parsed.hint).toContain("Quote JSON values")
   })
 })
+
+describe("config path subcommand", () => {
+  test("config path prints the config file path", () => {
+    const { stdout, status } = runCli("config", "path")
+    expect(status).toBe(0)
+    expect(stdout.trim()).toContain("config.json")
+  })
+
+  test("config path --all returns all path keys", () => {
+    const { stdout, status } = runCli("config", "path", "--all", "--json")
+    expect(status).toBe(0)
+    const parsed = JSON.parse(stdout.trim())
+    expect(parsed).toHaveProperty("config")
+    expect(parsed).toHaveProperty("stash")
+    expect(parsed).toHaveProperty("cache")
+    expect(parsed).toHaveProperty("index")
+  })
+})

@@ -51,7 +51,11 @@ export function getCacheDir(): string {
     const userProfile = process.env.USERPROFILE?.trim()
     if (userProfile) return path.join(userProfile, "AppData", "Local", "agentikit")
 
-    return path.join(process.env.APPDATA?.trim() ?? "", "..", "Local", "agentikit")
+    const appData = process.env.APPDATA?.trim()
+    if (!appData) {
+      throw new Error("Unable to determine cache directory. Set LOCALAPPDATA, USERPROFILE, or APPDATA.")
+    }
+    return path.join(appData, "..", "Local", "agentikit")
   }
 
   const xdgCacheHome = process.env.XDG_CACHE_HOME?.trim()

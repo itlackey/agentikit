@@ -29,7 +29,7 @@ import {
   unsetConfigValue,
   useProvider,
 } from "./config-cli"
-import { getCacheDir, getDefaultStashDir } from "./paths"
+import { getCacheDir, getDbPath, getDefaultStashDir } from "./paths"
 import { resolveStashDir } from "./common"
 
 // Read version from package.json
@@ -340,7 +340,7 @@ const configCommand = defineCommand({
               config: configPath,
               stash: stashDir,
               cache: cacheDir,
-              index: cacheDir + "/index.db",
+              index: getDbPath(),
             }
             output("config", result)
           } else {
