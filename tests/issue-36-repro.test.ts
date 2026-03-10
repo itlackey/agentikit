@@ -56,7 +56,7 @@ async function buildTestIndex(stashDir: string, files: Record<string, string> = 
     fs.writeFileSync(fullPath, content)
   }
   process.env.AKM_STASH_DIR = stashDir
-  saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+  saveConfig({ semanticSearch: false, searchPaths: [] })
   return agentikitIndex({ stashDir, full: true })
 }
 
@@ -377,7 +377,7 @@ describe("Issue #36: Stale .stash.json prevents new files from being indexed", (
 
     // Incremental index (not full)
     process.env.AKM_STASH_DIR = stashDir
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
     const result = await agentikitIndex({ stashDir })
 
     // The .stash.json should now have 2 entries
@@ -408,7 +408,7 @@ describe("Issue #36: Mounted/installed stash source indexing", () => {
     )
 
     process.env.AKM_STASH_DIR = workingStash
-    saveConfig({ semanticSearch: false, mountedStashDirs: [mountedStash] })
+    saveConfig({ semanticSearch: false, searchPaths: [mountedStash] })
     await agentikitIndex({ stashDir: workingStash, full: true })
 
     const result = await agentikitSearch({ query: "foundry", source: "local" })
@@ -444,7 +444,7 @@ describe("Issue #36: Mounted/installed stash source indexing", () => {
     )
 
     process.env.AKM_STASH_DIR = workingStash
-    saveConfig({ semanticSearch: false, mountedStashDirs: [mountedStash] })
+    saveConfig({ semanticSearch: false, searchPaths: [mountedStash] })
     const indexResult = await agentikitIndex({ stashDir: workingStash, full: true })
 
     // All 4 assets from the mounted stash should be indexed

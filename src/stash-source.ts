@@ -6,10 +6,7 @@ import type { AgentikitConfig } from "./config"
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-export type StashSourceKind = "working" | "mounted" | "installed"
-
 export interface StashSource {
-  kind: StashSourceKind
   path: string
   /** For installed sources, the registry entry id */
   registryId?: string
@@ -18,25 +15,28 @@ export interface StashSource {
 // ── Resolution ──────────────────────────────────────────────────────────────
 
 /**
- * Build the ordered list of stash sources:
- *   1. Working stash (user's own)
- *   2. Mounted stash dirs (user-configured, editable by default)
- *   3. Installed stash dirs (cache-managed, not safe to edit in place)
+ * Build the ordered list of stash sources (search paths):
+ *   1. Primary stash dir (user's own, destination for clone)
+ *   2. Additional search paths (user-configured)
+ *   3. Installed kit paths (cache-managed, from registry)
+ *
+ * The first entry is always the primary stash. Additional entries come
+ * from `searchPaths` config and `registry.installed` entries.
  */
 export function resolveStashSources(overrideStashDir?: string): StashSource[] {
   const stashDir = overrideStashDir ?? resolveStashDir()
   const config = loadConfig()
 
   const sources: StashSource[] = [
-    { kind: "working", path: stashDir },
+    { path: stashDir },
   ]
 
-  for (const dir of config.mountedStashDirs) {
+  for (const dir of config.searchPaths) {
     if (isSuspiciousStashRoot(dir)) {
       console.warn(`Warning: stash root "${dir}" appears to be a system directory. This may be unintentional.`)
     }
     if (isValidDirectory(dir)) {
-      sources.push({ kind: "mounted", path: dir })
+      sources.push({ path: dir })
     }
   }
 
@@ -46,7 +46,6 @@ export function resolveStashSources(overrideStashDir?: string): StashSource[] {
     }
     if (isValidDirectory(entry.stashRoot)) {
       sources.push({
-        kind: "installed",
         path: entry.stashRoot,
         registryId: entry.id,
       })
@@ -74,6 +73,14 @@ export function findSourceForPath(filePath: string, sources: StashSource[]): Sta
   return undefined
 }
 
+/**
+ * Return the primary stash source (first entry in the list).
+ * This is the user's working stash and the default destination for clone.
+ */
+export function getPrimarySource(sources: StashSource[]): StashSource | undefined {
+  return sources[0]
+}
+
 // ── Editability ─────────────────────────────────────────────────────────────
 
 /**
@@ -83,7 +90,7 @@ export function findSourceForPath(filePath: string, sources: StashSource[]): Sta
  * managed by the package manager (`registry.installed[].cacheDir`). These
  * will be overwritten by `akm update` without warning.
  *
- * Everything else — working stash, mounted dirs, local project dirs — is
+ * Everything else — working stash, search paths, local project dirs — is
  * the user's domain to manage.
  */
 export function isEditable(filePath: string, config?: AgentikitConfig): boolean {

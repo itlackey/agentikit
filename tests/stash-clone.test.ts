@@ -37,7 +37,7 @@ beforeEach(() => {
 
   saveConfig({
     semanticSearch: false,
-    mountedStashDirs: [mountedDir],
+    searchPaths: [mountedDir],
   })
 })
 
@@ -230,7 +230,7 @@ describe("agentikitClone remote", () => {
   })
 
   test("clones a tool from a remote origin via installRegistryRef", async () => {
-    // Use bare path as origin — not in mountedStashDirs, so isRemoteOrigin returns true
+    // Use bare path as origin — not in searchPaths, so isRemoteOrigin returns true
     const result = await agentikitClone({
       sourceRef: `${remoteFixtureDir}//tool:remote-tool.sh`,
     })

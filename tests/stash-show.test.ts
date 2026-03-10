@@ -80,7 +80,7 @@ describe("agentikitShow installed ref", () => {
 
     saveConfig({
       semanticSearch: false,
-      mountedStashDirs: [],
+      searchPaths: [],
       registry: {
         installed: [{
           id: "test-pkg",
@@ -112,7 +112,7 @@ describe("agentikitShow mounted stash", () => {
       "#!/usr/bin/env bash\necho deploy\n",
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [mountedStashDir] })
+    saveConfig({ semanticSearch: false, searchPaths: [mountedStashDir] })
 
     const result = await agentikitShow({ ref: "tool:deploy.sh" })
 
@@ -131,7 +131,7 @@ describe("agentikitShow editability", () => {
       "#!/usr/bin/env bash\necho local\n",
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const result = await agentikitShow({ ref: "tool:local.sh" })
 
@@ -147,7 +147,7 @@ describe("agentikitShow editability", () => {
       "#!/usr/bin/env bash\necho remote\n",
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [mountedStashDir] })
+    saveConfig({ semanticSearch: false, searchPaths: [mountedStashDir] })
 
     const result = await agentikitShow({ ref: "tool:remote.sh" })
 
@@ -165,7 +165,7 @@ describe("agentikitShow editability", () => {
 
     saveConfig({
       semanticSearch: false,
-      mountedStashDirs: [],
+      searchPaths: [],
       registry: {
         installed: [{
           id: "installed-pkg",
@@ -200,7 +200,7 @@ describe("agentikitShow content-based classification", () => {
       ["---", "model: gpt-4", "description: Deploy command", "---", "Deploy $ARGUMENTS."].join("\n"),
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const result = await agentikitShow({ ref: "command:deploy.md" })
 
@@ -217,7 +217,7 @@ describe("agentikitShow content-based classification", () => {
       ["---", "tools:", "  read: allow", "model: gpt-4", "---", "You are a hybrid agent."].join("\n"),
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const result = await agentikitShow({ ref: "command:hybrid.md" })
 
@@ -231,7 +231,7 @@ describe("agentikitShow content-based classification", () => {
       ["---", "description: Deploy to production", "model: claude-sonnet-4-20250514", "agent: build", "---", "Deploy $ARGUMENTS to production."].join("\n"),
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const result = await agentikitShow({ ref: "command:deploy.md" })
 
@@ -248,7 +248,7 @@ describe("agentikitShow content-based classification", () => {
       "#!/usr/bin/env bash\necho build\n",
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const result = await agentikitShow({ ref: "tool:build.sh" })
 
@@ -263,7 +263,7 @@ describe("agentikitShow content-based classification", () => {
       ["---", "description: Deploy helper", "---", "Deploy $ARGUMENTS to staging."].join("\n"),
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     // $ARGUMENTS placeholder (specificity 18) beats knowledge/ directory hint (10)
     const result = await agentikitShow({ ref: "knowledge:deploy-cmd.md" })
@@ -279,7 +279,7 @@ describe("agentikitShow content-based classification", () => {
       ["---", "agent: build", "description: Build dispatch", "---", "Build the project."].join("\n"),
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     // agent frontmatter (specificity 18) beats agents/ directory hint (15)
     const result = await agentikitShow({ ref: "agent:build-cmd.md" })
@@ -295,7 +295,7 @@ describe("agentikitShow content-based classification", () => {
       ["# Intro", "Welcome.", "", "## Setup", "Install things.", "", "## Usage", "Use things."].join("\n"),
     )
 
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const tocResult = await agentikitShow({ ref: "knowledge:guide.md", view: { mode: "toc" } })
     expect(tocResult.content).toContain("Intro")

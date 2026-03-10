@@ -4,7 +4,7 @@ import { TYPE_DIRS } from "./asset-spec"
 import { parseAssetRef, makeAssetRef } from "./stash-ref"
 import { resolveSourcesForOrigin, isRemoteOrigin } from "./origin-resolve"
 import { resolveAssetPath } from "./stash-resolve"
-import { resolveStashSources, findSourceForPath, type StashSource } from "./stash-source"
+import { resolveStashSources, findSourceForPath, getPrimarySource, type StashSource } from "./stash-source"
 import { installRegistryRef } from "./registry-install"
 
 export interface CloneOptions {
@@ -46,8 +46,8 @@ export async function agentikitClone(options: CloneOptions): Promise<CloneRespon
     }
   }
 
-  const workingSource = allSources.find((s) => s.kind === "working")
-  const destRoot = options.dest ? path.resolve(options.dest) : workingSource?.path
+  const primarySource = getPrimarySource(allSources)
+  const destRoot = options.dest ? path.resolve(options.dest) : primarySource?.path
 
   if (!destRoot) {
     throw new Error("No working stash configured and no --dest provided. Run `akm init` or pass --dest.")
@@ -60,7 +60,6 @@ export async function agentikitClone(options: CloneOptions): Promise<CloneRespon
   if (searchSources.length === 0 && parsed.origin && isRemoteOrigin(parsed.origin, allSources)) {
     const installResult = await installRegistryRef(parsed.origin)
     const syntheticSource: StashSource = {
-      kind: "installed",
       path: installResult.stashRoot,
       registryId: installResult.id,
     }

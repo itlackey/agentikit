@@ -346,7 +346,7 @@ See [CLI Reference](cli.md#submit) for the full flag list.
 ## Sharing on a Network Directory
 
 For teams that want to share assets without publishing to a registry, use
-mounted stash directories.
+search paths.
 
 1. Place your kit on a shared filesystem (NFS, SMB, cloud-synced folder):
 
@@ -360,19 +360,19 @@ mounted stash directories.
 2. Each team member mounts it in their config:
 
    ```sh
-   akm config set mountedStashDirs '["/mnt/shared/team-kit"]'
+   akm config set searchPaths '["/mnt/shared/team-kit"]'
    ```
 
    Or add it directly to `~/.config/agentikit/config.json`:
 
    ```json
    {
-     "mountedStashDirs": ["/mnt/shared/team-kit"]
+     "searchPaths": ["/mnt/shared/team-kit"]
    }
    ```
 
-3. Assets from the mounted directory appear in search results immediately --
-   no `akm add` needed. To fork an asset into the working stash, use clone:
+3. Assets from the search path appear in search results immediately --
+   no `akm add` needed. To fork an asset into the primary stash, use clone:
 
    ```sh
    akm clone tool:deploy.sh

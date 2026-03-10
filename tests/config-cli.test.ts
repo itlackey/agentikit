@@ -13,7 +13,7 @@ import {
 
 describe("config CLI helpers", () => {
   test("listConfig shows effective local embedding and disabled llm defaults", () => {
-    const config = listConfig({ semanticSearch: true, mountedStashDirs: [] })
+    const config = listConfig({ semanticSearch: true, searchPaths: [] })
     expect(config.embedding).toMatchObject({
       provider: "local",
       model: "Xenova/all-MiniLM-L6-v2",
@@ -50,7 +50,7 @@ describe("config CLI helpers", () => {
   })
 
   test("useProvider seeds config with provider defaults", () => {
-    const base: AgentikitConfig = { semanticSearch: true, mountedStashDirs: [] }
+    const base: AgentikitConfig = { semanticSearch: true, searchPaths: [] }
     const updated = useProvider(base, "embedding", "openai")
     expect(updated.embedding).toMatchObject({
       provider: "openai",
@@ -61,7 +61,7 @@ describe("config CLI helpers", () => {
   })
 
   test("setConfigValue updates nested llm settings after provider selection", () => {
-    const base: AgentikitConfig = { semanticSearch: true, mountedStashDirs: [] }
+    const base: AgentikitConfig = { semanticSearch: true, searchPaths: [] }
     const enabled = useProvider(base, "llm", "ollama")
     const updated = setConfigValue(enabled, "llm.temperature", "0.9")
     expect(updated.llm).toMatchObject({
@@ -74,7 +74,7 @@ describe("config CLI helpers", () => {
   test("unsetConfigValue removes optional keys without removing provider config", () => {
     const base: AgentikitConfig = {
       semanticSearch: true,
-      mountedStashDirs: [],
+      searchPaths: [],
       llm: {
         provider: "openai",
         endpoint: "https://api.openai.com/v1/chat/completions",
@@ -92,7 +92,7 @@ describe("config CLI helpers", () => {
   test("listProviders marks the current provider", () => {
     const config: AgentikitConfig = {
       semanticSearch: true,
-      mountedStashDirs: [],
+      searchPaths: [],
       embedding: {
         provider: "ollama",
         endpoint: "http://localhost:11434/v1/embeddings",
@@ -108,7 +108,7 @@ describe("config CLI helpers", () => {
   test("setConfigValue rejects non-canonical positive integers", () => {
     const base: AgentikitConfig = {
       semanticSearch: true,
-      mountedStashDirs: [],
+      searchPaths: [],
       embedding: {
         provider: "openai",
         endpoint: "https://api.openai.com/v1/embeddings",

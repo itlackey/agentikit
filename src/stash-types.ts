@@ -80,7 +80,7 @@ export interface AddResponse {
     installedAt: string
   }
   config: {
-    mountedStashDirs: string[]
+    searchPaths: string[]
     installedRegistryCount: number
   }
   index: {
@@ -137,7 +137,7 @@ export interface RemoveResponse {
     stashRoot: string
   }
   config: {
-    mountedStashDirs: string[]
+    searchPaths: string[]
     installedRegistryCount: number
   }
   index: {
@@ -162,7 +162,7 @@ export interface ReinstallResponse {
   all: boolean
   processed: ReinstallResultItem[]
   config: {
-    mountedStashDirs: string[]
+    searchPaths: string[]
     installedRegistryCount: number
   }
   index: {
@@ -196,7 +196,7 @@ export interface UpdateResponse {
   all: boolean
   processed: UpdateResultItem[]
   config: {
-    mountedStashDirs: string[]
+    searchPaths: string[]
     installedRegistryCount: number
   }
   index: {

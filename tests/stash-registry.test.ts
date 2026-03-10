@@ -68,7 +68,7 @@ afterEach(() => {
 
 describe("agentikitList", () => {
   test("returns empty list when no registry installed", async () => {
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     const result = await agentikitList({ stashDir })
 
@@ -83,7 +83,7 @@ describe("agentikitList", () => {
 
     saveConfig({
       semanticSearch: false,
-      mountedStashDirs: [stashRoot],
+      searchPaths: [stashRoot],
       registry: {
         installed: [{
           id: "test-pkg",
@@ -114,7 +114,7 @@ describe("agentikitList", () => {
 
     saveConfig({
       semanticSearch: false,
-      mountedStashDirs: [],
+      searchPaths: [],
       registry: {
         installed: [{
           id: "missing-pkg",
@@ -140,7 +140,7 @@ describe("agentikitList", () => {
 
 describe("agentikitRemove", () => {
   test("throws for empty target", async () => {
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     await expect(
       agentikitRemove({ target: "", stashDir }),
@@ -148,7 +148,7 @@ describe("agentikitRemove", () => {
   })
 
   test("throws for whitespace-only target", async () => {
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     await expect(
       agentikitRemove({ target: "   ", stashDir }),
@@ -156,7 +156,7 @@ describe("agentikitRemove", () => {
   })
 
   test("throws for unknown target", async () => {
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     await expect(
       agentikitRemove({ target: "nonexistent-package", stashDir }),
@@ -182,7 +182,7 @@ describe("agentikitRemove", () => {
 
     saveConfig({
       semanticSearch: false,
-      mountedStashDirs: [stashRoot],
+      searchPaths: [stashRoot],
       registry: { installed: [entry] },
     })
 
@@ -214,7 +214,7 @@ describe("agentikitRemove", () => {
 
     saveConfig({
       semanticSearch: false,
-      mountedStashDirs: [stashRoot],
+      searchPaths: [stashRoot],
       registry: { installed: [entry] },
     })
 
@@ -246,7 +246,7 @@ describe("agentikitRemove", () => {
 
     saveConfig({
       semanticSearch: false,
-      mountedStashDirs: [stashRoot],
+      searchPaths: [stashRoot],
       registry: { installed: [entry] },
     })
 
@@ -260,7 +260,7 @@ describe("agentikitRemove", () => {
 
 describe("selectTargets via agentikitReinstall", () => {
   test("throws when both target and all are specified", async () => {
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     await expect(
       agentikitReinstall({ target: "some-pkg", all: true, stashDir }),
@@ -268,7 +268,7 @@ describe("selectTargets via agentikitReinstall", () => {
   })
 
   test("throws when neither target nor all is specified", async () => {
-    saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+    saveConfig({ semanticSearch: false, searchPaths: [] })
 
     await expect(
       agentikitReinstall({ stashDir }),
@@ -283,7 +283,7 @@ describe("selectTargets via agentikitReinstall", () => {
 
     saveConfig({
       semanticSearch: false,
-      mountedStashDirs: [stashRoot],
+      searchPaths: [stashRoot],
       registry: {
         installed: [{
           id: "all-pkg-1",

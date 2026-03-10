@@ -126,7 +126,7 @@ async function buildTestIndex(stashDir: string, files: Record<string, string>) {
     fs.writeFileSync(fullPath, content)
   }
   process.env.AKM_STASH_DIR = stashDir
-  saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+  saveConfig({ semanticSearch: false, searchPaths: [] })
   await agentikitIndex({ stashDir, full: true })
 }
 ```
@@ -364,11 +364,11 @@ Most show behavior is tested indirectly via `stash.test.ts`. Focus on gaps:
 - `throws with installCmd when origin is not installed` --
   Parse a ref like `npm:@other/missing-pkg//tool:missing.sh`. Verify error
   message contains `akm add`.
-- `resolves from mounted stash directories` -- Set up a mounted stash with an
+- `resolves from search path directories` -- Set up a search path with an
   asset, call show, verify it resolves.
 - `resolves from installed stash directories` -- Similar with installed source.
 - `response includes editable flag` -- Show an asset from working stash,
-  verify `editable: true`. Show from mounted, verify `editable: true`. Show
+  verify `editable: true`. Show from search path, verify `editable: true`. Show
   from installed (cache-managed), verify `editable: false` with `editHint`.
 
 ---

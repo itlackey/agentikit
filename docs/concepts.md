@@ -129,11 +129,11 @@ matchers override built-in ones.
 The stash is where assets live on disk. Assets are resolved from three
 sources in priority order:
 
-1. **Working stash** -- The user's main stash directory
-   (`AKM_STASH_DIR`). Created by `akm init`.
+1. **Primary stash** -- The user's main stash directory
+   (`AKM_STASH_DIR`). Created by `akm init`. Default destination for `clone`.
 
-2. **Mounted stash dirs** -- Additional directories listed in
-   config. Useful for sharing assets across teams or projects.
+2. **Search paths** -- Additional directories listed in config (`searchPaths`).
+   Useful for sharing assets across teams or projects.
 
 3. **Installed kits** (cache-managed) -- Kits installed via `akm add`. Stored
    in the cache directory and tracked in config. Not safe to edit in place

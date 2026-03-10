@@ -60,7 +60,7 @@ export async function agentikitAdd(input: { ref: string }): Promise<AddResponse>
       installedAt: installed.installedAt,
     },
     config: {
-      mountedStashDirs: config.mountedStashDirs,
+      searchPaths: config.searchPaths,
       installedRegistryCount: config.registry?.installed.length ?? 0,
     },
     index: {

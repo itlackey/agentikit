@@ -129,7 +129,7 @@ test("agentikitSearch resolves tool runCmd correctly for mounted stash directori
   writeFile(path.join(mountedStashDir, "tools", "group", "nested", "job.js"), "console.log('job')\n")
   writeFile(path.join(mountedStashDir, "tools", "group", "package.json"), '{"name":"group"}')
 
-  saveConfig({ semanticSearch: false, mountedStashDirs: [mountedStashDir] })
+  saveConfig({ semanticSearch: false, searchPaths: [mountedStashDir] })
 
   process.env.AKM_STASH_DIR = primaryStashDir
   await agentikitIndex({ stashDir: primaryStashDir, full: true })
@@ -145,7 +145,7 @@ test("agentikitSearch includes explainability reasons for indexed hits", async (
   const stashDir = createTmpDir("agentikit-stash-")
   writeFile(path.join(stashDir, "tools", "summarize-diff.ts"), "console.log('summarize')\n")
 
-  saveConfig({ semanticSearch: true, mountedStashDirs: [] })
+  saveConfig({ semanticSearch: true, searchPaths: [] })
   process.env.AKM_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -178,7 +178,7 @@ test("agentikitSearch usage mode both includes guide and per-hit metadata usage"
     ],
   }))
 
-  saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+  saveConfig({ semanticSearch: false, searchPaths: [] })
   process.env.AKM_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -202,7 +202,7 @@ test("agentikitSearch usage mode guide omits per-hit usage", async () => {
     ],
   }))
 
-  saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+  saveConfig({ semanticSearch: false, searchPaths: [] })
   process.env.AKM_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -226,7 +226,7 @@ test("agentikitSearch usage mode item omits usage guide", async () => {
     ],
   }))
 
-  saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+  saveConfig({ semanticSearch: false, searchPaths: [] })
   process.env.AKM_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })
@@ -250,7 +250,7 @@ test("agentikitSearch usage mode none omits guide and per-hit usage", async () =
     ],
   }))
 
-  saveConfig({ semanticSearch: false, mountedStashDirs: [] })
+  saveConfig({ semanticSearch: false, searchPaths: [] })
   process.env.AKM_STASH_DIR = stashDir
 
   await agentikitIndex({ stashDir, full: true })

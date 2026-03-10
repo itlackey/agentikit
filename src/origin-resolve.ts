@@ -7,11 +7,11 @@ import { parseRegistryRef } from "./registry-resolve"
  * sources, return the subset of sources to search.
  *
  * Resolution order:
- *   1. undefined   → all sources (working → mounted → installed)
- *   2. "local"     → working stash only
- *   3. exact match → installed source whose registryId matches verbatim
+ *   1. undefined   → all sources
+ *   2. "local"     → primary stash only (first entry)
+ *   3. exact match → source whose registryId matches verbatim
  *   4. parsed match → parse origin as a registry ref, match by parsed ID
- *   5. path match  → mounted source whose path matches
+ *   5. path match  → source whose resolved path matches the origin
  *   6. empty       → indicates a remote/uninstalled origin (caller decides)
  */
 export function resolveSourcesForOrigin(
@@ -20,13 +20,14 @@ export function resolveSourcesForOrigin(
 ): StashSource[] {
   if (!origin) return allSources
 
+  // "local" means the primary stash (first entry)
   if (origin === "local") {
-    return allSources.filter((s) => s.kind === "working")
+    return allSources.length > 0 ? [allSources[0]] : []
   }
 
   // Exact registryId match (e.g. origin is "npm:@scope/pkg")
   const byExactId = allSources.filter(
-    (s) => s.kind === "installed" && s.registryId === origin,
+    (s) => s.registryId !== undefined && s.registryId === origin,
   )
   if (byExactId.length > 0) return byExactId
 
@@ -36,17 +37,17 @@ export function resolveSourcesForOrigin(
   try {
     const parsed = parseRegistryRef(origin)
     const byParsedId = allSources.filter(
-      (s) => s.kind === "installed" && s.registryId === parsed.id,
+      (s) => s.registryId !== undefined && s.registryId === parsed.id,
     )
     if (byParsedId.length > 0) return byParsedId
   } catch {
     // Not a valid registry ref — continue to path matching
   }
 
-  // Mounted stash by resolved path
+  // Match by resolved path
   const resolvedOrigin = path.resolve(origin)
   const byPath = allSources.filter(
-    (s) => s.kind === "mounted" && path.resolve(s.path) === resolvedOrigin,
+    (s) => !s.registryId && path.resolve(s.path) === resolvedOrigin,
   )
   if (byPath.length > 0) return byPath
 

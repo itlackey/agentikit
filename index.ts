@@ -10,6 +10,7 @@ export {
   resolveStashSources,
   resolveAllStashDirs,
   findSourceForPath,
+  getPrimarySource,
   isEditable,
   buildEditHint,
 } from "./src/stash"
@@ -35,7 +36,6 @@ export type {
   ReinstallResultItem,
   UpdateResultItem,
   StashSource,
-  StashSourceKind,
   CloneOptions,
   CloneResponse,
 } from "./src/stash"

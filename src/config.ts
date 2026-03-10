@@ -38,8 +38,8 @@ export interface AgentikitConfig {
   stashDir?: string
   /** Whether semantic search is enabled. Default: true */
   semanticSearch: boolean
-  /** User-mounted additional stash directories */
-  mountedStashDirs: string[]
+  /** User-configured additional stash directories to search */
+  searchPaths: string[]
   /** OpenAI-compatible embedding endpoint config. If not set, uses local @xenova/transformers */
   embedding?: EmbeddingConnectionConfig
   /** OpenAI-compatible LLM endpoint config for metadata generation. If not set, uses heuristic generation */
@@ -58,7 +58,7 @@ export interface RegistryConfig {
 
 export const DEFAULT_CONFIG: AgentikitConfig = {
   semanticSearch: true,
-  mountedStashDirs: [],
+  searchPaths: [],
 }
 
 // ── Paths ───────────────────────────────────────────────────────────────────
@@ -172,8 +172,14 @@ function pickKnownKeys(raw: Record<string, unknown>): AgentikitConfig {
     config.semanticSearch = raw.semanticSearch
   }
 
-  if (Array.isArray(raw.mountedStashDirs)) {
-    config.mountedStashDirs = raw.mountedStashDirs.filter(
+  // Support both new `searchPaths` and legacy `mountedStashDirs`
+  const rawPaths = Array.isArray(raw.searchPaths)
+    ? raw.searchPaths
+    : Array.isArray(raw.mountedStashDirs)
+      ? raw.mountedStashDirs
+      : undefined
+  if (rawPaths) {
+    config.searchPaths = rawPaths.filter(
       (d): d is string => typeof d === "string",
     )
   }

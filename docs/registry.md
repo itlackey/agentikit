@@ -206,8 +206,8 @@ an installed kit -- it only extracts the single requested asset.
 
 When multiple sources provide the same asset name, the first match wins:
 
-1. **Working stash** -- `AKM_STASH_DIR`
-2. **Mounted stash dirs** -- Additional directories from config
+1. **Primary stash** -- `AKM_STASH_DIR`
+2. **Search paths** -- Additional directories from config (`searchPaths`)
 3. **Installed packages** -- Registry kits from `akm add` (cache-managed)
 
 This means local edits and clones always override installed versions.

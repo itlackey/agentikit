@@ -22,7 +22,7 @@ akm config unset llm.apiKey         # Remove an optional key
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `semanticSearch` | boolean | `true` | Enable semantic vector search |
-| `mountedStashDirs` | string[] | `[]` | Additional stash directories to search |
+| `searchPaths` | string[] | `[]` | Additional stash directories to search |
 | `embedding` | object | local provider | Embedding provider settings |
 | `llm` | object | disabled | LLM provider for metadata enhancement |
 | `registry.installed` | array | `[]` | Installed kit metadata (managed by akm) |

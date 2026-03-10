@@ -195,7 +195,7 @@ use `akm add` for that.
 # Clone a single tool from a remote package without installing the full kit
 akm clone "npm:@scope/pkg//tool:deploy.sh"
 
-# Clone from a local directory that isn't mounted as a stash source
+# Clone from a local directory that isn't configured as a search path
 akm clone "/path/to/kit//skill:code-review" --dest ./project/.claude
 ```
 
