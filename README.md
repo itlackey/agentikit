@@ -51,10 +51,9 @@ Add this to your `AGENTS.md`, `CLAUDE.md`, system prompt, or any instruction
 file to give your agent access to your stash without any additional setup:
 
 ~~~markdown
-## Agent-i-Kit
 
 You have access to a searchable library of tools, skills, commands, agents,
-and knowledge documents via `akm` (Agent Kit Manager). Use it to find and
+and knowledge documents via `akm`. Use it to find and
 use capabilities before writing something from scratch.
 
 **Finding assets:**
