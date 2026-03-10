@@ -12,7 +12,7 @@ import { test, expect, describe, beforeEach, afterEach, afterAll } from "bun:tes
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { agentikitSearch } from "../src/stash"
+import { agentikitSearch } from "../src/stash-search"
 import { agentikitIndex, buildSearchText } from "../src/indexer"
 import { saveConfig } from "../src/config"
 import { searchFts, openDatabase, closeDatabase, getDbPath, getAllEntries, getEntryCount } from "../src/db"

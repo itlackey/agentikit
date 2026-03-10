@@ -11,8 +11,6 @@
 - [Registry](registry.md) -- Finding, installing, and managing kits
 - [Configuration](configuration.md) -- Providers, settings, and Ollama setup
 - [Filesystem](filesystem.md) -- Directory layout and `.stash.json` schema
-- [API](api.md) -- Using agentikit as a TypeScript/JS library
-
 ## Internals
 
 - [Search](search.md) -- Hybrid search architecture and scoring

@@ -2,7 +2,7 @@ import { test, expect, describe, beforeEach, afterEach, afterAll } from "bun:tes
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { agentikitSearch } from "../src/stash"
+import { agentikitSearch } from "../src/stash-search"
 import { agentikitIndex } from "../src/indexer"
 import { saveConfig } from "../src/config"
 import type { LocalSearchHit } from "../src/stash-types"

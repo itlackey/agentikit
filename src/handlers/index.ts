@@ -16,10 +16,3 @@ registerAssetType(commandHandler)
 registerAssetType(agentHandler)
 registerAssetType(knowledgeHandler)
 registerAssetType(scriptHandler)
-
-export { toolHandler } from "./tool-handler"
-export { skillHandler } from "./skill-handler"
-export { commandHandler } from "./command-handler"
-export { agentHandler } from "./agent-handler"
-export { knowledgeHandler } from "./knowledge-handler"
-export { scriptHandler } from "./script-handler"

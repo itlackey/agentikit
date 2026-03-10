@@ -2,18 +2,12 @@
 import fs from "node:fs"
 import path from "node:path"
 import { defineCommand, runMain } from "citty"
-import {
-  agentikitAdd,
-  agentikitList,
-  agentikitRemove,
-  agentikitSearch,
-  agentikitShow,
-  agentikitUpdate,
-  checkForUpdate,
-  performUpgrade,
-  type KnowledgeView,
-} from "./stash"
-import type { SearchSource, SearchUsageMode } from "./stash-types"
+import { agentikitAdd } from "./stash-add"
+import { agentikitList, agentikitRemove, agentikitUpdate } from "./stash-registry"
+import { agentikitSearch } from "./stash-search"
+import { agentikitShow } from "./stash-show"
+import { checkForUpdate, performUpgrade } from "./self-update"
+import type { KnowledgeView, SearchSource, SearchUsageMode } from "./stash-types"
 import { agentikitInit } from "./init"
 import { agentikitIndex } from "./indexer"
 import { agentikitClone } from "./stash-clone"

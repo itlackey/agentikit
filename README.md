@@ -262,4 +262,3 @@ validates the public npm package or GitHub repo, and opens a PR with `gh`.
 | [Indexing](docs/indexing.md) | How the search index is built |
 | [Filesystem](docs/filesystem.md) | Directory layout and `.stash.json` schema |
 | [Configuration](docs/configuration.md) | Providers, settings, and Ollama setup |
-| [Library API](docs/api.md) | Using agentikit as a TypeScript/JS library |

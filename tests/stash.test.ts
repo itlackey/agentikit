@@ -2,12 +2,10 @@ import { test, expect, beforeEach, afterEach, afterAll } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import {
-  agentikitSearch,
-  agentikitShow,
-  agentikitInit,
-  type SearchHit,
-} from "../src/stash"
+import { agentikitSearch } from "../src/stash-search"
+import { agentikitShow } from "../src/stash-show"
+import { agentikitInit } from "../src/init"
+import type { SearchHit } from "../src/stash-types"
 import { agentikitIndex } from "../src/indexer"
 import { getConfigPath, saveConfig } from "../src/config"
 

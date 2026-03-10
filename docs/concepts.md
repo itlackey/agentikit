@@ -100,29 +100,10 @@ Each asset type has a dedicated renderer:
 
 ### Extensibility
 
-Register custom matchers and renderers to support new asset types:
-
-```ts
-import { registerMatcher, registerRenderer } from "agentikit"
-
-registerMatcher((ctx) => {
-  if (ctx.ext === ".yaml" && ctx.parentDir === "workflows") {
-    return { type: "workflow", specificity: 25, renderer: "workflow-yaml" }
-  }
-  return null
-})
-
-registerRenderer({
-  name: "workflow-yaml",
-  buildShowResponse(ctx) {
-    return { type: "workflow", name: ctx.fileName, path: ctx.absPath, content: ctx.content() }
-  },
-  usageGuide: ["Load and execute the workflow YAML."],
-})
-```
-
-Later registrations win ties at the same specificity, so user-registered
-matchers override built-in ones.
+Custom matchers and renderers can be registered in source to support new
+asset types. Later registrations win ties at the same specificity, so
+custom matchers override built-in ones. See `src/matchers.ts` and
+`src/renderers.ts` for examples.
 
 ## The Stash
 
@@ -172,4 +153,3 @@ directory is set to that package root.
 - [Indexing](indexing.md) -- How the search index is built
 - [Filesystem Layout](filesystem.md) -- Directory structure and metadata schema
 - [Configuration](configuration.md) -- Providers and settings
-- [Library API](api.md) -- Using agentikit as a library

@@ -30,23 +30,10 @@
   "bin": {
     "akm": "dist/src/cli.js"
   },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./internals": {
-      "types": "./dist/internals.d.ts",
-      "default": "./dist/internals.js"
-    }
-  },
   "scripts": {
-    "build": "bun run tsc --project ./tsconfig.json --emitDeclarationOnly false --declaration false --outDir dist",
-    "build:types": "bun run tsc --project ./tsconfig.json",
+    "build": "bun run tsc --project ./tsconfig.json --outDir dist",
     "test": "bun test",
-    "prepublishOnly": "bun run build && bun run build:types"
+    "prepublishOnly": "bun run build"
   },
   "publishConfig": {
     "access": "public"

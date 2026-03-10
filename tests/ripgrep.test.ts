@@ -154,7 +154,7 @@ test("search pipeline returns ranked results when index exists", async () => {
     await agentikitIndex({ stashDir })
 
     // Search — TF-IDF should rank docker-related results first
-    const { agentikitSearch } = await import("../src/stash")
+    const { agentikitSearch } = await import("../src/stash-search")
     const result = await agentikitSearch({ query: "docker", type: "any" })
 
     expect(result.hits.length).toBeGreaterThan(0)

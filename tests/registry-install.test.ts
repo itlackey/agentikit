@@ -6,7 +6,8 @@ import path from "node:path"
 import { loadConfig, saveConfig } from "../src/config"
 import { installRegistryRef } from "../src/registry-install"
 import { parseRegistryRef } from "../src/registry-resolve"
-import { agentikitAdd, agentikitShow } from "../src/stash"
+import { agentikitAdd } from "../src/stash-add"
+import { agentikitShow } from "../src/stash-show"
 
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
