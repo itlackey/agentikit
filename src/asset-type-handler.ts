@@ -1,5 +1,6 @@
 import type { StashEntry } from "./metadata"
 import type { LocalSearchHit, ShowResponse, KnowledgeView } from "./stash-types"
+import { registerBuiltinHandlers } from "./handlers/index"
 
 // ── Interface ────────────────────────────────────────────────────────────────
 
@@ -44,8 +45,7 @@ let handlersInitialized = false
 function ensureHandlersRegistered(): void {
   if (handlersInitialized) return
   handlersInitialized = true
-  // Import handler registrations
-  require("./handlers/index")
+  registerBuiltinHandlers()
 }
 
 export function registerAssetType(handler: AssetTypeHandler): void {
