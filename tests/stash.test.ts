@@ -121,24 +121,24 @@ test("agentikitSearch only includes bun install in runCmd when AKM_BUN_INSTALL i
   }
 })
 
-test("agentikitSearch resolves tool runCmd correctly for mounted stash directories", async () => {
+test("agentikitSearch resolves tool runCmd correctly for search path directories", async () => {
   const primaryStashDir = createTmpDir("agentikit-stash-primary-")
-  const mountedStashDir = createTmpDir("agentikit-stash-mounted-")
+  const searchPathDir = createTmpDir("agentikit-stash-searchpath-")
 
   writeFile(path.join(primaryStashDir, "tools", "placeholder.sh"), "#!/usr/bin/env bash\necho primary\n")
-  writeFile(path.join(mountedStashDir, "tools", "group", "nested", "job.js"), "console.log('job')\n")
-  writeFile(path.join(mountedStashDir, "tools", "group", "package.json"), '{"name":"group"}')
+  writeFile(path.join(searchPathDir, "tools", "group", "nested", "job.js"), "console.log('job')\n")
+  writeFile(path.join(searchPathDir, "tools", "group", "package.json"), '{"name":"group"}')
 
-  saveConfig({ semanticSearch: false, searchPaths: [mountedStashDir] })
+  saveConfig({ semanticSearch: false, searchPaths: [searchPathDir] })
 
   process.env.AKM_STASH_DIR = primaryStashDir
   await agentikitIndex({ stashDir: primaryStashDir, full: true })
 
   const result = await agentikitSearch({ query: "job", type: "tool" })
-  const mountedHit = result.hits.find((hit) => hit.path.includes(mountedStashDir))
+  const searchPathHit = result.hits.find((hit) => hit.path.includes(searchPathDir))
 
-  expect(mountedHit).toBeDefined()
-  expect(mountedHit?.runCmd ?? "").toMatch(/^cd ".+agentikit-stash-mounted-.+\/tools\/group" && bun ".+\/job\.js"$/)
+  expect(searchPathHit).toBeDefined()
+  expect(searchPathHit?.runCmd ?? "").toMatch(/^cd ".+agentikit-stash-searchpath-.+\/tools\/group" && bun ".+\/job\.js"$/)
 })
 
 test("agentikitSearch includes explainability reasons for indexed hits", async () => {

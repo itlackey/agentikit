@@ -150,7 +150,7 @@ export type AssetMatcher = (ctx: FileContext) => MatchResult | null
 
 /**
  * Extended FileContext that carries the winning MatchResult and all
- * currently-mounted stash directories. Passed to AssetRenderer methods.
+ * stash search paths. Passed to AssetRenderer methods.
  */
 export interface RenderContext extends FileContext {
   matchResult: MatchResult
@@ -269,7 +269,7 @@ export function runMatchers(ctx: FileContext): MatchResult | null {
 
 /**
  * Build a RenderContext by merging a FileContext with its winning MatchResult
- * and the list of currently-mounted stash directories.
+ * and the list of stash search paths.
  */
 export function buildRenderContext(
   ctx: FileContext,

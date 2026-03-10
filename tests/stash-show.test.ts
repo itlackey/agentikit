@@ -102,23 +102,23 @@ describe("agentikitShow installed ref", () => {
   })
 })
 
-// ── Mounted stash resolution ─────────────────────────────────────────────────
+// ── Search path resolution ───────────────────────────────────────────────────
 
-describe("agentikitShow mounted stash", () => {
-  test("resolves from mounted stash directories", async () => {
-    const mountedStashDir = createTmpDir("agentikit-show-mounted-")
+describe("agentikitShow search path", () => {
+  test("resolves from search path directories", async () => {
+    const searchPathDir = createTmpDir("agentikit-show-searchpath-")
     writeFile(
-      path.join(mountedStashDir, "tools", "deploy.sh"),
+      path.join(searchPathDir, "tools", "deploy.sh"),
       "#!/usr/bin/env bash\necho deploy\n",
     )
 
-    saveConfig({ semanticSearch: false, searchPaths: [mountedStashDir] })
+    saveConfig({ semanticSearch: false, searchPaths: [searchPathDir] })
 
     const result = await agentikitShow({ ref: "tool:deploy.sh" })
 
     expect(result.type).toBe("script")
     expect(result.name).toBe("deploy.sh")
-    expect(result.path).toContain(mountedStashDir)
+    expect(result.path).toContain(searchPathDir)
   })
 })
 
@@ -140,14 +140,14 @@ describe("agentikitShow editability", () => {
     expect(result.editHint).toBeUndefined()
   })
 
-  test("mounted stash asset has editable true (user controls mounted dirs)", async () => {
-    const mountedStashDir = createTmpDir("agentikit-show-mounted-editable-")
+  test("search path asset has editable true", async () => {
+    const searchPathDir = createTmpDir("agentikit-show-searchpath-editable-")
     writeFile(
-      path.join(mountedStashDir, "tools", "remote.sh"),
+      path.join(searchPathDir, "tools", "remote.sh"),
       "#!/usr/bin/env bash\necho remote\n",
     )
 
-    saveConfig({ semanticSearch: false, searchPaths: [mountedStashDir] })
+    saveConfig({ semanticSearch: false, searchPaths: [searchPathDir] })
 
     const result = await agentikitShow({ ref: "tool:remote.sh" })
 

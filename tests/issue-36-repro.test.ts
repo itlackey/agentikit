@@ -396,19 +396,19 @@ describe("Issue #36: Stale .stash.json prevents new files from being indexed", (
   })
 })
 
-describe("Issue #36: Mounted/installed stash source indexing", () => {
-  test("scripts from mounted stash sources are indexed and searchable", async () => {
+describe("Issue #36: Search path and installed source indexing", () => {
+  test("scripts from search path sources are indexed and searchable", async () => {
     const workingStash = tmpStash()
-    const mountedStash = tmpStash()
+    const searchPathStash = tmpStash()
 
-    // Put the script in the mounted stash, not the working stash
+    // Put the script in the search path, not the primary stash
     writeFile(
-      path.join(mountedStash, "scripts", "provision-ai-foundry.sh"),
+      path.join(searchPathStash, "scripts", "provision-ai-foundry.sh"),
       "#!/usr/bin/env bash\n# Provision AI Foundry resources on Azure\naz group create --name ai-foundry\n",
     )
 
     process.env.AKM_STASH_DIR = workingStash
-    saveConfig({ semanticSearch: false, searchPaths: [mountedStash] })
+    saveConfig({ semanticSearch: false, searchPaths: [searchPathStash] })
     await agentikitIndex({ stashDir: workingStash, full: true })
 
     const result = await agentikitSearch({ query: "foundry", source: "local" })
@@ -421,33 +421,33 @@ describe("Issue #36: Mounted/installed stash source indexing", () => {
     expect(hit).toBeDefined()
   })
 
-  test("empty working stash + populated mounted stash still indexes all assets", async () => {
+  test("empty primary stash + populated search path still indexes all assets", async () => {
     const workingStash = tmpStash()  // empty
-    const mountedStash = tmpStash()
+    const searchPathStash = tmpStash()
 
-    // Populate mounted stash with various assets
+    // Populate search path with various assets
     writeFile(
-      path.join(mountedStash, "scripts", "provision-ai-foundry.sh"),
+      path.join(searchPathStash, "scripts", "provision-ai-foundry.sh"),
       "#!/bin/bash\n# Provision AI Foundry\necho foundry\n",
     )
     writeFile(
-      path.join(mountedStash, "scripts", "deploy-app.sh"),
+      path.join(searchPathStash, "scripts", "deploy-app.sh"),
       "#!/bin/bash\n# Deploy application\necho deploy\n",
     )
     writeFile(
-      path.join(mountedStash, "tools", "lint", "lint.sh"),
+      path.join(searchPathStash, "tools", "lint", "lint.sh"),
       "#!/bin/bash\n# Lint code\necho lint\n",
     )
     writeFile(
-      path.join(mountedStash, "commands", "release.md"),
+      path.join(searchPathStash, "commands", "release.md"),
       "---\ndescription: Release the project\n---\n# Release\n",
     )
 
     process.env.AKM_STASH_DIR = workingStash
-    saveConfig({ semanticSearch: false, searchPaths: [mountedStash] })
+    saveConfig({ semanticSearch: false, searchPaths: [searchPathStash] })
     const indexResult = await agentikitIndex({ stashDir: workingStash, full: true })
 
-    // All 4 assets from the mounted stash should be indexed
+    // All 4 assets from the search path should be indexed
     expect(indexResult.totalEntries).toBeGreaterThanOrEqual(4)
 
     // Verify search finds the script
