@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- CI workflow running lint, type-check, and tests on every push/PR
+- Biome linter and formatter configuration
+- README badges (npm version, CI status, license)
+
+### Changed
+- Pinned `sqlite-vec` to exact version `0.1.7-alpha.2` (removed caret range)
+- Replaced `(Bun as any).YAML` cast with proper type guard in CLI
+
 ## [0.0.13] - 2026-03-09
 
 Initial public release of Agent-i-Kit (`akm` CLI).
