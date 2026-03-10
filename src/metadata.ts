@@ -5,6 +5,7 @@ import { SCRIPT_EXTENSIONS, isRelevantAssetFile, deriveCanonicalAssetName } from
 import { parseFrontmatter, toStringOrUndefined } from "./frontmatter"
 import { parseMarkdownToc, type TocHeading } from "./markdown"
 import { tryGetHandler } from "./asset-type-handler"
+import { warn } from "./warn"
 
 // ── Schema ──────────────────────────────────────────────────────────────────
 
@@ -59,7 +60,7 @@ export function loadStashFile(dirPath: string): StashFile | null {
         const name = typeof e === "object" && e !== null && typeof (e as Record<string, unknown>).name === "string"
           ? (e as Record<string, unknown>).name
           : "(unknown)"
-        console.warn(`Warning: Skipping invalid entry "${name}" in ${filePath}`)
+        warn(`Warning: Skipping invalid entry "${name}" in ${filePath}`)
       }
     }
     return entries.length > 0 ? { entries } : null

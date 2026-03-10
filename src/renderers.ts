@@ -168,7 +168,7 @@ const agentMdRenderer: AssetRenderer = {
       prompt:
         "Dispatching prompt must include the agent's full prompt content verbatim; summaries are non-compliant. \n\n" +
         parsedMd.content,
-      toolPolicy: parsedMd.data.tools,
+      toolPolicy: parsedMd.data.tools as ShowResponse["toolPolicy"],
       modelHint: parsedMd.data.model,
     }
   },

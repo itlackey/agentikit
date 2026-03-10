@@ -27,7 +27,7 @@ import {
 import { getCacheDir, getDbPath, getDefaultStashDir } from "./paths"
 import { resolveStashDir } from "./common"
 import { ConfigError, UsageError, NotFoundError } from "./errors"
-import { setQuiet } from "./warn"
+import { setQuiet, warn } from "./warn"
 
 // Read version from package.json
 const pkgPath = path.resolve(import.meta.dir ?? __dirname, "../package.json")
@@ -43,7 +43,7 @@ function yamlStringify(obj: unknown): string {
   try {
     return (Bun as any).YAML.stringify(obj)
   } catch {
-    console.warn("YAML output not available, using JSON")
+    warn("YAML output not available, using JSON")
     return JSON.stringify(obj, null, 2)
   }
 }
