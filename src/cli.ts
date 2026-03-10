@@ -1,20 +1,9 @@
 #!/usr/bin/env bun
-import fs from "node:fs"
-import path from "node:path"
-import { defineCommand, runMain } from "citty"
-import { agentikitAdd } from "./stash-add"
-import { agentikitList, agentikitRemove, agentikitUpdate } from "./stash-registry"
-import { agentikitSearch } from "./stash-search"
-import { agentikitShow } from "./stash-show"
-import { checkForUpdate, performUpgrade } from "./self-update"
-import type { KnowledgeView, SearchSource, SearchUsageMode } from "./stash-types"
-import { agentikitInit } from "./init"
-import { agentikitIndex } from "./indexer"
-import { agentikitClone } from "./stash-clone"
-import { agentikitSubmit } from "./submit"
-
-import { resolveStashSources } from "./stash-source"
-import { loadConfig, saveConfig, getConfigPath } from "./config"
+import fs from "node:fs";
+import path from "node:path";
+import { defineCommand, runMain } from "citty";
+import { resolveStashDir } from "./common";
+import { getConfigPath, loadConfig, saveConfig } from "./config";
 import {
   getConfigValue,
   listConfig,
@@ -23,44 +12,54 @@ import {
   setConfigValue,
   unsetConfigValue,
   useProvider,
-} from "./config-cli"
-import { getCacheDir, getDbPath, getDefaultStashDir } from "./paths"
-import { resolveStashDir } from "./common"
-import { ConfigError, UsageError, NotFoundError } from "./errors"
-import { setQuiet, warn } from "./warn"
+} from "./config-cli";
+import { ConfigError, NotFoundError, UsageError } from "./errors";
+import { agentikitIndex } from "./indexer";
+import { agentikitInit } from "./init";
+import { getCacheDir, getDbPath, getDefaultStashDir } from "./paths";
+import { checkForUpdate, performUpgrade } from "./self-update";
+import { agentikitAdd } from "./stash-add";
+import { agentikitClone } from "./stash-clone";
+import { agentikitList, agentikitRemove, agentikitUpdate } from "./stash-registry";
+import { agentikitSearch } from "./stash-search";
+import { agentikitShow } from "./stash-show";
+import { resolveStashSources } from "./stash-source";
+import type { KnowledgeView, SearchSource, SearchUsageMode } from "./stash-types";
+import { agentikitSubmit } from "./submit";
+import { setQuiet, warn } from "./warn";
 
 // Read version from package.json
-const pkgPath = path.resolve(import.meta.dir ?? __dirname, "../package.json")
-const pkgVersion: string = JSON.parse(fs.readFileSync(pkgPath, "utf-8")).version
+const pkgPath = path.resolve(import.meta.dir ?? __dirname, "../package.json");
+const pkgVersion: string = JSON.parse(fs.readFileSync(pkgPath, "utf-8")).version;
 
 /** Check whether --json flag is present in argv */
 function isJsonMode(): boolean {
-  return process.argv.includes("--json")
+  return process.argv.includes("--json");
 }
 
 /** Try Bun.YAML.stringify; fall back to JSON if the API is unavailable */
 function yamlStringify(obj: unknown): string {
   try {
-    return (Bun as any).YAML.stringify(obj)
+    return (Bun as any).YAML.stringify(obj);
   } catch {
-    warn("YAML output not available, using JSON")
-    return JSON.stringify(obj, null, 2)
+    warn("YAML output not available, using JSON");
+    return JSON.stringify(obj, null, 2);
   }
 }
 
 /** Output result: JSON if --json flag set, otherwise YAML (default) */
 function output(command: string, result: unknown): void {
   if (isJsonMode()) {
-    console.log(JSON.stringify(result, null, 2))
-    return
+    console.log(JSON.stringify(result, null, 2));
+    return;
   }
   // Some commands output plain text messages rather than structured data
-  const plain = formatPlain(command, result)
+  const plain = formatPlain(command, result);
   if (plain != null) {
-    console.log(plain)
-    return
+    console.log(plain);
+    return;
   }
-  console.log(yamlStringify(result))
+  console.log(yamlStringify(result));
 }
 
 /**
@@ -68,110 +67,113 @@ function output(command: string, result: unknown): void {
  * or null to fall through to YAML output.
  */
 function formatPlain(command: string, result: unknown): string | null {
-  const r = result as Record<string, unknown>
+  const r = result as Record<string, unknown>;
 
   switch (command) {
     case "init": {
-      let out = `Stash initialized at ${r.stashDir ?? "unknown"}`
-      if (r.configPath) out += `\nConfig saved to ${r.configPath}`
-      return out
+      let out = `Stash initialized at ${r.stashDir ?? "unknown"}`;
+      if (r.configPath) out += `\nConfig saved to ${r.configPath}`;
+      return out;
     }
     case "index": {
-      return `Indexed ${r.totalEntries ?? 0} entries from ${r.directoriesScanned ?? 0} directories (mode: ${r.mode ?? "unknown"})`
+      return `Indexed ${r.totalEntries ?? 0} entries from ${r.directoriesScanned ?? 0} directories (mode: ${r.mode ?? "unknown"})`;
     }
     case "show": {
-      if (r.content != null) return String(r.content)
-      if (r.runCmd != null) return String(r.runCmd)
-      if (r.prompt != null) return String(r.prompt)
-      return null // fall through to YAML
+      if (r.content != null) return String(r.content);
+      if (r.runCmd != null) return String(r.runCmd);
+      if (r.prompt != null) return String(r.prompt);
+      return null; // fall through to YAML
     }
     case "add": {
-      const installed = r.installed as Record<string, unknown> | undefined
-      const indexed = installed?.indexed ?? r.indexed ?? 0
-      return `Installed ${r.ref} (${indexed} assets indexed)`
+      const installed = r.installed as Record<string, unknown> | undefined;
+      const indexed = installed?.indexed ?? r.indexed ?? 0;
+      return `Installed ${r.ref} (${indexed} assets indexed)`;
     }
     case "remove": {
-      const target = r.target ?? r.ref ?? ""
-      const ok = r.ok !== false ? "OK" : "FAILED"
-      return `remove: ${target} ${ok}`
+      const target = r.target ?? r.ref ?? "";
+      const ok = r.ok !== false ? "OK" : "FAILED";
+      return `remove: ${target} ${ok}`;
     }
     case "update": {
-      const processed = r.processed as Array<Record<string, unknown>> | undefined
-      if (!processed?.length) return `update: nothing to update`
+      const processed = r.processed as Array<Record<string, unknown>> | undefined;
+      if (!processed?.length) return `update: nothing to update`;
       const lines = processed.map((item) => {
-        const changed = item.changed as Record<string, unknown> | undefined
-        const installed = item.installed as Record<string, unknown> | undefined
-        const previous = item.previous as Record<string, unknown> | undefined
+        const changed = item.changed as Record<string, unknown> | undefined;
+        const installed = item.installed as Record<string, unknown> | undefined;
+        const previous = item.previous as Record<string, unknown> | undefined;
         if (changed?.any) {
-          const prev = previous?.resolvedVersion ?? "unknown"
-          const next = installed?.resolvedVersion ?? "unknown"
-          return `update: ${item.id} v${prev} → v${next}`
+          const prev = previous?.resolvedVersion ?? "unknown";
+          const next = installed?.resolvedVersion ?? "unknown";
+          return `update: ${item.id} v${prev} → v${next}`;
         }
-        return `update: ${item.id} (unchanged)`
-      })
-      return lines.join("\n")
+        return `update: ${item.id} (unchanged)`;
+      });
+      return lines.join("\n");
     }
     case "upgrade": {
       if (r.upgraded === true) {
-        return `akm upgraded: v${r.currentVersion} → v${r.newVersion}`
+        return `akm upgraded: v${r.currentVersion} → v${r.newVersion}`;
       }
       if (r.updateAvailable === true) {
-        return `akm v${r.currentVersion} → v${r.latestVersion} available (run 'akm upgrade' to install)`
+        return `akm v${r.currentVersion} → v${r.latestVersion} available (run 'akm upgrade' to install)`;
       }
       if (r.updateAvailable === false && r.latestVersion) {
-        return `akm v${r.currentVersion} is already the latest version`
+        return `akm v${r.currentVersion} is already the latest version`;
       }
-      if (r.message) return String(r.message)
-      return null
+      if (r.message) return String(r.message);
+      return null;
     }
     case "clone": {
-      const dst = (r.destination as Record<string, unknown>)?.path ?? "unknown"
-      const remote = r.remoteFetched ? " (fetched from remote)" : ""
-      const over = r.overwritten ? " (overwritten)" : ""
-      return `Cloned${remote} → ${dst}${over}`
+      const dst = (r.destination as Record<string, unknown>)?.path ?? "unknown";
+      const remote = r.remoteFetched ? " (fetched from remote)" : "";
+      const over = r.overwritten ? " (overwritten)" : "";
+      return `Cloned${remote} → ${dst}${over}`;
     }
     case "submit": {
-      const entry = r.entry as Record<string, unknown> | undefined
-      const pr = r.pr as Record<string, unknown> | undefined
-      const commands = (r.commands as string[] | undefined) ?? []
+      const entry = r.entry as Record<string, unknown> | undefined;
+      const pr = r.pr as Record<string, unknown> | undefined;
+      const commands = (r.commands as string[] | undefined) ?? [];
       if (r.dryRun) {
         const lines = [
           `Dry run: prepared registry entry ${entry?.name ?? entry?.id ?? "unknown"}`,
           "",
           yamlStringify(entry),
-        ]
+        ];
         if (commands.length > 0) {
-          lines.push("", "Would run:")
-          lines.push(...commands.map((command) => `  ${command}`))
+          lines.push("", "Would run:");
+          lines.push(...commands.map((command) => `  ${command}`));
         }
-        return lines.join("\n")
+        return lines.join("\n");
       }
-      const prUrl = typeof pr?.url === "string" ? pr.url : "unknown"
-      const fork = r.fork as Record<string, unknown> | undefined
-      const cleanupCmd = typeof fork?.cleanupCommand === "string" ? fork.cleanupCommand : undefined
-      const lines = [`Submitted ${entry?.name ?? entry?.id ?? "registry entry"}.`, `PR: ${prUrl}`]
+      const prUrl = typeof pr?.url === "string" ? pr.url : "unknown";
+      const fork = r.fork as Record<string, unknown> | undefined;
+      const cleanupCmd = typeof fork?.cleanupCommand === "string" ? fork.cleanupCommand : undefined;
+      const lines = [`Submitted ${entry?.name ?? entry?.id ?? "registry entry"}.`, `PR: ${prUrl}`];
       if (cleanupCmd) {
-        lines.push(`\nAfter the PR is merged, clean up the fork with:\n  ${cleanupCmd}`)
+        lines.push(`\nAfter the PR is merged, clean up the fork with:\n  ${cleanupCmd}`);
       }
-      return lines.join("\n")
+      return lines.join("\n");
     }
     default:
-      return null // fall through to YAML
+      return null; // fall through to YAML
   }
 }
 
 const initCommand = defineCommand({
-  meta: { name: "init", description: "Initialize Agent-i-Kit's working stash directory and persist stashDir in config" },
+  meta: {
+    name: "init",
+    description: "Initialize Agent-i-Kit's working stash directory and persist stashDir in config",
+  },
   args: {
     dir: { type: "string", description: "Custom stash directory path (default: ~/agentikit)" },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      const result = await agentikitInit({ dir: args.dir })
-      output("init", result)
-    })
+      const result = await agentikitInit({ dir: args.dir });
+      output("init", result);
+    });
   },
-})
+});
 
 const indexCommand = defineCommand({
   meta: { name: "index", description: "Build search index (incremental by default; --full forces full reindex)" },
@@ -180,11 +182,11 @@ const indexCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      const result = await agentikitIndex({ full: args.full })
-      output("index", result)
-    })
+      const result = await agentikitIndex({ full: args.full });
+      output("index", result);
+    });
   },
-})
+});
 
 const searchCommand = defineCommand({
   meta: { name: "search", description: "Search the stash" },
@@ -197,15 +199,15 @@ const searchCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      const type = args.type as "tool" | "skill" | "command" | "agent" | "knowledge" | "script" | "any" | undefined
-      const limit = args.limit ? parseInt(args.limit, 10) : undefined
-      const usage = parseSearchUsageMode(args.usage)
-      const source = parseSearchSource(args.source)
-      const result = await agentikitSearch({ query: args.query, type, limit, usage, source })
-      output("search", result)
-    })
+      const type = args.type as "tool" | "skill" | "command" | "agent" | "knowledge" | "script" | "any" | undefined;
+      const limit = args.limit ? parseInt(args.limit, 10) : undefined;
+      const usage = parseSearchUsageMode(args.usage);
+      const source = parseSearchSource(args.source);
+      const result = await agentikitSearch({ query: args.query, type, limit, usage, source });
+      output("search", result);
+    });
   },
-})
+});
 
 const addCommand = defineCommand({
   meta: { name: "add", description: "Install a kit from npm, GitHub, any git host, or a local directory" },
@@ -218,21 +220,21 @@ const addCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      const result = await agentikitAdd({ ref: args.ref })
-      output("add", result)
-    })
+      const result = await agentikitAdd({ ref: args.ref });
+      output("add", result);
+    });
   },
-})
+});
 
 const listCommand = defineCommand({
   meta: { name: "list", description: "List installed registry packages from config" },
   async run() {
     await runWithJsonErrors(async () => {
-      const result = await agentikitList()
-      output("list", result)
-    })
+      const result = await agentikitList();
+      output("list", result);
+    });
   },
-})
+});
 
 const removeCommand = defineCommand({
   meta: { name: "remove", description: "Remove an installed registry package by id or ref" },
@@ -241,11 +243,11 @@ const removeCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      const result = await agentikitRemove({ target: args.target })
-      output("remove", result)
-    })
+      const result = await agentikitRemove({ target: args.target });
+      output("remove", result);
+    });
   },
-})
+});
 
 const updateCommand = defineCommand({
   meta: { name: "update", description: "Update one or all installed registry packages" },
@@ -256,11 +258,11 @@ const updateCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      const result = await agentikitUpdate({ target: args.target, all: args.all, force: args.force })
-      output("update", result)
-    })
+      const result = await agentikitUpdate({ target: args.target, all: args.all, force: args.force });
+      output("update", result);
+    });
   },
-})
+});
 
 const upgradeCommand = defineCommand({
   meta: { name: "upgrade", description: "Upgrade akm to the latest release" },
@@ -270,16 +272,16 @@ const upgradeCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      const check = await checkForUpdate(pkgVersion)
+      const check = await checkForUpdate(pkgVersion);
       if (args.check) {
-        output("upgrade", check)
-        return
+        output("upgrade", check);
+        return;
       }
-      const result = await performUpgrade(check, { force: args.force })
-      output("upgrade", result)
-    })
+      const result = await performUpgrade(check, { force: args.force });
+      output("upgrade", result);
+    });
   },
-})
+});
 
 const showCommand = defineCommand({
   meta: { name: "show", description: "Show a stash asset by ref (e.g. agent:bunjs-typescript-coder.md)" },
@@ -292,33 +294,35 @@ const showCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      let view: KnowledgeView | undefined
+      let view: KnowledgeView | undefined;
       if (args.view) {
         switch (args.view) {
           case "section":
-            view = { mode: "section", heading: args.heading ?? "" }
-            break
+            view = { mode: "section", heading: args.heading ?? "" };
+            break;
           case "lines":
             view = {
               mode: "lines",
               start: Number(args.start ?? "1"),
               end: args.end ? parseInt(args.end, 10) : Number.MAX_SAFE_INTEGER,
-            }
-            break
+            };
+            break;
           case "toc":
           case "frontmatter":
           case "full":
-            view = { mode: args.view }
-            break
+            view = { mode: args.view };
+            break;
           default:
-            throw new UsageError(`Unknown view mode: ${args.view}. Expected one of: full|toc|frontmatter|section|lines`)
+            throw new UsageError(
+              `Unknown view mode: ${args.view}. Expected one of: full|toc|frontmatter|section|lines`,
+            );
         }
       }
-      const result = await agentikitShow({ ref: args.ref, view })
-      output("show", result)
-    })
+      const result = await agentikitShow({ ref: args.ref, view });
+      output("show", result);
+    });
   },
-})
+});
 
 const configCommand = defineCommand({
   meta: { name: "config", description: "Show configuration, get/set keys, and manage embedding/LLM providers" },
@@ -336,34 +340,34 @@ const configCommand = defineCommand({
       },
       run({ args }) {
         return runWithJsonErrors(() => {
-          const configPath = getConfigPath()
+          const configPath = getConfigPath();
           if (args.all) {
-            let stashDir: string
+            let stashDir: string;
             try {
-              stashDir = resolveStashDir({ readOnly: true })
+              stashDir = resolveStashDir({ readOnly: true });
             } catch {
-              stashDir = getDefaultStashDir() + " (not initialized)"
+              stashDir = getDefaultStashDir() + " (not initialized)";
             }
-            const cacheDir = getCacheDir()
+            const cacheDir = getCacheDir();
             const result = {
               config: configPath,
               stash: stashDir,
               cache: cacheDir,
               index: getDbPath(),
-            }
-            output("config", result)
+            };
+            output("config", result);
           } else {
-            console.log(configPath)
+            console.log(configPath);
           }
-        })
+        });
       },
     }),
     list: defineCommand({
       meta: { name: "list", description: "List current configuration with effective embedding/LLM settings" },
       run() {
         return runWithJsonErrors(() => {
-          output("config", listConfig(loadConfig()))
-        })
+          output("config", listConfig(loadConfig()));
+        });
       },
     }),
     get: defineCommand({
@@ -373,8 +377,8 @@ const configCommand = defineCommand({
       },
       run({ args }) {
         return runWithJsonErrors(() => {
-          output("config", getConfigValue(loadConfig(), args.key))
-        })
+          output("config", getConfigValue(loadConfig(), args.key));
+        });
       },
     }),
     set: defineCommand({
@@ -385,10 +389,10 @@ const configCommand = defineCommand({
       },
       run({ args }) {
         return runWithJsonErrors(() => {
-          const updated = setConfigValue(loadConfig(), args.key, args.value)
-          saveConfig(updated)
-          output("config", listConfig(updated))
-        })
+          const updated = setConfigValue(loadConfig(), args.key, args.value);
+          saveConfig(updated);
+          output("config", listConfig(updated));
+        });
       },
     }),
     unset: defineCommand({
@@ -398,10 +402,10 @@ const configCommand = defineCommand({
       },
       run({ args }) {
         return runWithJsonErrors(() => {
-          const updated = unsetConfigValue(loadConfig(), args.key)
-          saveConfig(updated)
-          output("config", listConfig(updated))
-        })
+          const updated = unsetConfigValue(loadConfig(), args.key);
+          saveConfig(updated);
+          output("config", listConfig(updated));
+        });
       },
     }),
     providers: defineCommand({
@@ -411,9 +415,9 @@ const configCommand = defineCommand({
       },
       run({ args }) {
         return runWithJsonErrors(() => {
-          const scope = parseProviderScope(args.scope)
-          output("config", listProviders(scope, loadConfig()))
-        })
+          const scope = parseProviderScope(args.scope);
+          output("config", listProviders(scope, loadConfig()));
+        });
       },
     }),
     use: defineCommand({
@@ -424,51 +428,54 @@ const configCommand = defineCommand({
       },
       run({ args }) {
         return runWithJsonErrors(() => {
-          const scope = parseProviderScope(args.scope)
-          const updated = useProvider(loadConfig(), scope, args.provider)
-          saveConfig(updated)
-          output("config", listConfig(updated))
-        })
+          const scope = parseProviderScope(args.scope);
+          const updated = useProvider(loadConfig(), scope, args.provider);
+          saveConfig(updated);
+          output("config", listConfig(updated));
+        });
       },
     }),
   },
   run({ args }) {
     return runWithJsonErrors(() => {
-      if (hasConfigSubcommand(args)) return
+      if (hasConfigSubcommand(args)) return;
       if (args.list) {
-        output("config", listConfig(loadConfig()))
-        return
+        output("config", listConfig(loadConfig()));
+        return;
       }
       if (args.get) {
-        output("config", getConfigValue(loadConfig(), args.get))
-        return
+        output("config", getConfigValue(loadConfig(), args.get));
+        return;
       }
       if (args.unset) {
-        const updated = unsetConfigValue(loadConfig(), args.unset)
-        saveConfig(updated)
-        output("config", listConfig(updated))
-        return
+        const updated = unsetConfigValue(loadConfig(), args.unset);
+        saveConfig(updated);
+        output("config", listConfig(updated));
+        return;
       }
       if (args.set) {
-        const eqIndex = args.set.indexOf("=")
+        const eqIndex = args.set.indexOf("=");
         if (eqIndex === -1) {
-          throw new UsageError("--set expects key=value format")
+          throw new UsageError("--set expects key=value format");
         }
-        const key = args.set.slice(0, eqIndex)
-        const value = args.set.slice(eqIndex + 1)
-        const partial = parseConfigValue(key, value)
-        const config = { ...loadConfig(), ...partial }
-        saveConfig(config)
-        output("config", listConfig(config))
+        const key = args.set.slice(0, eqIndex);
+        const value = args.set.slice(eqIndex + 1);
+        const partial = parseConfigValue(key, value);
+        const config = { ...loadConfig(), ...partial };
+        saveConfig(config);
+        output("config", listConfig(config));
       } else {
-        output("config", listConfig(loadConfig()))
+        output("config", listConfig(loadConfig()));
       }
-    })
+    });
   },
-})
+});
 
 const cloneCommand = defineCommand({
-  meta: { name: "clone", description: "Clone an asset from any stash source into the working stash or a custom destination" },
+  meta: {
+    name: "clone",
+    description: "Clone an asset from any stash source into the working stash or a custom destination",
+  },
   args: {
     ref: { type: "positional", description: "Asset ref (e.g. @installed:pkg/tool:script.sh)", required: true },
     name: { type: "string", description: "New name for the cloned asset" },
@@ -482,16 +489,20 @@ const cloneCommand = defineCommand({
         newName: args.name,
         force: args.force,
         dest: args.dest,
-      })
-      output("clone", result)
-    })
+      });
+      output("clone", result);
+    });
   },
-})
+});
 
 const submitCommand = defineCommand({
   meta: { name: "submit", description: "Submit a kit to agentikit-registry by opening a pull request" },
   args: {
-    ref: { type: "positional", description: "Public ref to submit (npm package, owner/repo, or local kit directory)", required: false },
+    ref: {
+      type: "positional",
+      description: "Public ref to submit (npm package, owner/repo, or local kit directory)",
+      required: false,
+    },
     name: { type: "string", description: "Display name for the registry entry" },
     description: { type: "string", description: "Short description for the registry entry" },
     tags: { type: "string", description: "Comma-separated tags" },
@@ -499,8 +510,16 @@ const submitCommand = defineCommand({
     author: { type: "string", description: "Author name" },
     license: { type: "string", description: "License identifier" },
     homepage: { type: "string", description: "Homepage URL" },
-    "dry-run": { type: "boolean", description: "Preview the entry and gh commands without creating a pull request", default: false },
-    "cleanup-fork": { type: "boolean", description: "Show the fork cleanup command after the pull request is created (run it after the PR is merged)", default: false },
+    "dry-run": {
+      type: "boolean",
+      description: "Preview the entry and gh commands without creating a pull request",
+      default: false,
+    },
+    "cleanup-fork": {
+      type: "boolean",
+      description: "Show the fork cleanup command after the pull request is created (run it after the PR is merged)",
+      default: false,
+    },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
@@ -516,22 +535,21 @@ const submitCommand = defineCommand({
         dryRun: args["dry-run"],
         cleanupFork: args["cleanup-fork"],
         progress: isJsonMode() ? undefined : (message) => console.error(`• ${message}`),
-      })
-      output("submit", result)
-    })
+      });
+      output("submit", result);
+    });
   },
-})
-
+});
 
 const sourcesCommand = defineCommand({
   meta: { name: "sources", description: "List all stash search paths and their status" },
   run() {
     return runWithJsonErrors(() => {
-      const sources = resolveStashSources()
-      output("sources", { sources })
-    })
+      const sources = resolveStashSources();
+      output("sources", { sources });
+    });
   },
-})
+});
 
 const main = defineCommand({
   meta: {
@@ -558,90 +576,99 @@ const main = defineCommand({
     sources: sourcesCommand,
     config: configCommand,
   },
-})
+});
 
-const SEARCH_USAGE_MODES: SearchUsageMode[] = ["none", "both", "item", "guide"]
-const SEARCH_SOURCES: SearchSource[] = ["local", "registry", "both"]
-const CONFIG_SUBCOMMAND_SET = new Set(["path", "list", "get", "set", "unset", "providers", "use"])
+const SEARCH_USAGE_MODES: SearchUsageMode[] = ["none", "both", "item", "guide"];
+const SEARCH_SOURCES: SearchSource[] = ["local", "registry", "both"];
+const CONFIG_SUBCOMMAND_SET = new Set(["path", "list", "get", "set", "unset", "providers", "use"]);
 
 // citty reads process.argv directly and does not accept a custom argv array,
 // so we must replace process.argv with the normalized version before runMain.
-process.argv = normalizeConfigArgv(process.argv)
-runMain(main)
+process.argv = normalizeConfigArgv(process.argv);
+runMain(main);
 
 function parseSearchUsageMode(value: string): SearchUsageMode {
-  if ((SEARCH_USAGE_MODES as string[]).includes(value)) return value as SearchUsageMode
-  throw new UsageError(`Invalid value for --usage: ${value}. Expected one of: ${SEARCH_USAGE_MODES.join("|")}`)
+  if ((SEARCH_USAGE_MODES as string[]).includes(value)) return value as SearchUsageMode;
+  throw new UsageError(`Invalid value for --usage: ${value}. Expected one of: ${SEARCH_USAGE_MODES.join("|")}`);
 }
 
 function parseSearchSource(value: string): SearchSource {
-  if ((SEARCH_SOURCES as string[]).includes(value)) return value as SearchSource
-  throw new UsageError(`Invalid value for --source: ${value}. Expected one of: ${SEARCH_SOURCES.join("|")}`)
+  if ((SEARCH_SOURCES as string[]).includes(value)) return value as SearchSource;
+  throw new UsageError(`Invalid value for --source: ${value}. Expected one of: ${SEARCH_SOURCES.join("|")}`);
 }
 
 // ── Exit codes ──────────────────────────────────────────────────────────────
-const EXIT_GENERAL = 1
-const EXIT_USAGE = 2
-const EXIT_CONFIG = 78
+const EXIT_GENERAL = 1;
+const EXIT_USAGE = 2;
+const EXIT_CONFIG = 78;
 
 function classifyExitCode(error: unknown): number {
-  if (error instanceof UsageError) return EXIT_USAGE
-  if (error instanceof ConfigError) return EXIT_CONFIG
-  if (error instanceof NotFoundError) return EXIT_GENERAL
-  return EXIT_GENERAL
+  if (error instanceof UsageError) return EXIT_USAGE;
+  if (error instanceof ConfigError) return EXIT_CONFIG;
+  if (error instanceof NotFoundError) return EXIT_GENERAL;
+  return EXIT_GENERAL;
 }
 
 async function runWithJsonErrors(fn: (() => void) | (() => Promise<void>)): Promise<void> {
   try {
     // Apply --quiet flag early so warnings inside the command are suppressed
     if (process.argv.includes("--quiet") || process.argv.includes("-q")) {
-      setQuiet(true)
+      setQuiet(true);
     }
-    await fn()
+    await fn();
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error)
-    const hint = buildHint(message)
-    const exitCode = classifyExitCode(error)
-    console.error(JSON.stringify({ ok: false, error: message, hint }, null, 2))
-    process.exit(exitCode)
+    const message = error instanceof Error ? error.message : String(error);
+    const hint = buildHint(message);
+    const exitCode = classifyExitCode(error);
+    console.error(JSON.stringify({ ok: false, error: message, hint }, null, 2));
+    process.exit(exitCode);
   }
 }
 
 function buildHint(message: string): string | undefined {
-  if (message.includes("No stash directory found")) return "Run `akm init` to create the default stash, or set stashDir in your config."
-  if (message.includes("Either <target> or --all is required")) return "Use `akm update --all` or pass a target like `akm update npm:@scope/pkg`."
-  if (message.includes("Specify either <target> or --all")) return "Use only one: a positional target or `--all`."
-  if (message.includes("No installed registry entry matched target")) return "Run `akm list` to view installed ids/refs, then retry with one of those values."
-  if (message.includes("remote package fetched but asset not found")) return "The remote package was fetched but doesn't contain the requested asset. Check the asset name and type."
-  if (message.includes("Invalid value for --source")) return "Pick one of: local, registry, both."
-  if (message.includes("Invalid value for --usage")) return "Pick one of: none, both, item, guide."
-  if (message.includes("gh CLI is required")) return buildGhInstallHint()
-  if (message.includes("gh CLI is not authenticated")) return "Run `gh auth login` and then retry `akm submit`."
-  if (message.includes("not publicly accessible")) return "Check that the npm package is published or the GitHub repository is public, then retry."
-  if (message.includes("already exists in agentikit-registry")) return "Update the existing registry entry instead of creating a duplicate, or choose a different public ref."
-  if (message.includes("Unable to infer a public npm or GitHub ref") || message.includes("Unable to infer a publicly accessible npm package or GitHub repository")) {
-    return "Run `akm submit <package-or-owner/repo>` explicitly, or add name/repository metadata to package.json."
+  if (message.includes("No stash directory found"))
+    return "Run `akm init` to create the default stash, or set stashDir in your config.";
+  if (message.includes("Either <target> or --all is required"))
+    return "Use `akm update --all` or pass a target like `akm update npm:@scope/pkg`.";
+  if (message.includes("Specify either <target> or --all")) return "Use only one: a positional target or `--all`.";
+  if (message.includes("No installed registry entry matched target"))
+    return "Run `akm list` to view installed ids/refs, then retry with one of those values.";
+  if (message.includes("remote package fetched but asset not found"))
+    return "The remote package was fetched but doesn't contain the requested asset. Check the asset name and type.";
+  if (message.includes("Invalid value for --source")) return "Pick one of: local, registry, both.";
+  if (message.includes("Invalid value for --usage")) return "Pick one of: none, both, item, guide.";
+  if (message.includes("gh CLI is required")) return buildGhInstallHint();
+  if (message.includes("gh CLI is not authenticated")) return "Run `gh auth login` and then retry `akm submit`.";
+  if (message.includes("not publicly accessible"))
+    return "Check that the npm package is published or the GitHub repository is public, then retry.";
+  if (message.includes("already exists in agentikit-registry"))
+    return "Update the existing registry entry instead of creating a duplicate, or choose a different public ref.";
+  if (
+    message.includes("Unable to infer a public npm or GitHub ref") ||
+    message.includes("Unable to infer a publicly accessible npm package or GitHub repository")
+  ) {
+    return "Run `akm submit <package-or-owner/repo>` explicitly, or add name/repository metadata to package.json.";
   }
   if (message.includes("expected JSON object with endpoint and model")) {
-    return "Quote JSON values in your shell, for example: akm config set embedding '{\"endpoint\":\"http://localhost:11434/v1/embeddings\",\"model\":\"nomic-embed-text\"}'."
+    return 'Quote JSON values in your shell, for example: akm config set embedding \'{"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}\'.';
   }
-  return undefined
+  return undefined;
 }
 
 function buildGhInstallHint(): string {
-  if (process.platform === "darwin") return "Install GitHub CLI with Homebrew: `brew install gh`."
-  if (process.platform === "win32") return "Install GitHub CLI with winget: `winget install --id GitHub.cli`."
-  return "Install GitHub CLI from https://cli.github.com/ or your package manager (for Debian/Ubuntu: `sudo apt install gh`)."
+  if (process.platform === "darwin") return "Install GitHub CLI with Homebrew: `brew install gh`.";
+  if (process.platform === "win32") return "Install GitHub CLI with winget: `winget install --id GitHub.cli`.";
+  return "Install GitHub CLI from https://cli.github.com/ or your package manager (for Debian/Ubuntu: `sudo apt install gh`).";
 }
 
 function parseProviderScope(value: string): "embedding" | "llm" {
-  if (value === "embedding" || value === "llm") return value
-  throw new UsageError(`Invalid provider scope: ${value}. Expected one of: embedding|llm`)
+  if (value === "embedding" || value === "llm") return value;
+  throw new UsageError(`Invalid provider scope: ${value}. Expected one of: embedding|llm`);
 }
 
 function hasConfigSubcommand(args: Record<string, unknown>): boolean {
-  const command = Array.isArray(args._) ? args._[0] : undefined
-  return typeof command === "string" && CONFIG_SUBCOMMAND_SET.has(command)
+  const command = Array.isArray(args._) ? args._[0] : undefined;
+  return typeof command === "string" && CONFIG_SUBCOMMAND_SET.has(command);
 }
 
 /**
@@ -654,33 +681,33 @@ function hasConfigSubcommand(args: Record<string, unknown>): boolean {
 function normalizeConfigArgv(argv: string[]): string[] {
   // Global flags (like --json, --quiet) should not be treated as config subcommand arguments.
   // We strip them from the analysis portion, normalize, then re-append them.
-  const GLOBAL_FLAGS = new Set(["--json", "--quiet", "-q"])
-  const globalFlags = argv.slice(3).filter((a) => GLOBAL_FLAGS.has(a))
-  const configArgs = argv.slice(3).filter((a) => !GLOBAL_FLAGS.has(a))
+  const GLOBAL_FLAGS = new Set(["--json", "--quiet", "-q"]);
+  const globalFlags = argv.slice(3).filter((a) => GLOBAL_FLAGS.has(a));
+  const configArgs = argv.slice(3).filter((a) => !GLOBAL_FLAGS.has(a));
 
-  const [command, argAfterCommand, argAfterKey, ...rest] = [argv[2], ...configArgs]
-  if (command !== "config") return argv
-  if (!argAfterCommand) return argv
+  const [command, argAfterCommand, argAfterKey, ...rest] = [argv[2], ...configArgs];
+  if (command !== "config") return argv;
+  if (!argAfterCommand) return argv;
 
-  const prefix = argv.slice(0, 3)
-  const buildResult = (...newArgs: string[]) => [...prefix, ...newArgs, ...globalFlags]
+  const prefix = argv.slice(0, 3);
+  const buildResult = (...newArgs: string[]) => [...prefix, ...newArgs, ...globalFlags];
 
   if (argAfterCommand === "--list") {
-    return buildResult("list")
+    return buildResult("list");
   }
   if (argAfterCommand === "--get" && argAfterKey) {
-    return buildResult("get", argAfterKey, ...rest)
+    return buildResult("get", argAfterKey, ...rest);
   }
   if (argAfterCommand === "--unset" && argAfterKey) {
-    return buildResult("unset", argAfterKey, ...rest)
+    return buildResult("unset", argAfterKey, ...rest);
   }
-  if (argAfterCommand.startsWith("-")) return argv
-  if (CONFIG_SUBCOMMAND_SET.has(argAfterCommand)) return argv
+  if (argAfterCommand.startsWith("-")) return argv;
+  if (CONFIG_SUBCOMMAND_SET.has(argAfterCommand)) return argv;
 
   // A single arg after `config` behaves like `git config <key>` and reads the value.
   if (argAfterKey === undefined) {
-    return buildResult("get", argAfterCommand)
+    return buildResult("get", argAfterCommand);
   }
 
-  return buildResult("set", argAfterCommand, argAfterKey, ...rest)
+  return buildResult("set", argAfterCommand, argAfterKey, ...rest);
 }

@@ -1,3 +1,3 @@
-export { resolveRg, isRgAvailable } from "./ripgrep-resolve"
-export { ensureRg } from "./ripgrep-install"
-export type { EnsureRgResult } from "./ripgrep-install"
+export type { EnsureRgResult } from "./ripgrep-install";
+export { ensureRg } from "./ripgrep-install";
+export { isRgAvailable, resolveRg } from "./ripgrep-resolve";

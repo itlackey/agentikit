@@ -3,14 +3,14 @@
  * Controlled by the CLI --quiet / -q flag.
  */
 
-let quiet = false
+let quiet = false;
 
 export function setQuiet(value: boolean): void {
-  quiet = value
+  quiet = value;
 }
 
 export function isQuiet(): boolean {
-  return quiet
+  return quiet;
 }
 
 /**
@@ -19,6 +19,6 @@ export function isQuiet(): boolean {
  */
 export function warn(...args: unknown[]): void {
   if (!quiet) {
-    console.warn(...args)
+    console.warn(...args);
   }
 }

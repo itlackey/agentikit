@@ -1,56 +1,63 @@
-import { test, expect, beforeEach } from "bun:test"
-import fs from "node:fs"
-import os from "node:os"
-import path from "node:path"
-import { agentikitIndex, buildSearchText } from "../src/indexer"
-import { openDatabase, closeDatabase, getMeta, getAllEntries } from "../src/db"
-import { getDbPath } from "../src/paths"
+import { beforeEach, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { closeDatabase, getAllEntries, getMeta, openDatabase } from "../src/db";
+import { agentikitIndex, buildSearchText } from "../src/indexer";
+import { getDbPath } from "../src/paths";
 
 // Each test gets a fresh database
 beforeEach(() => {
-  const dbPath = getDbPath()
+  const dbPath = getDbPath();
   for (const f of [dbPath, dbPath + "-wal", dbPath + "-shm"]) {
-    try { fs.unlinkSync(f) } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(f);
+    } catch {
+      /* ignore */
+    }
   }
-})
+});
 
 function tmpStash(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-idx-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-idx-"));
   for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
-    fs.mkdirSync(path.join(dir, sub), { recursive: true })
+    fs.mkdirSync(path.join(dir, sub), { recursive: true });
   }
-  return dir
+  return dir;
 }
 
 function writeFile(filePath: string, content = "") {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  fs.writeFileSync(filePath, content)
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content);
 }
 
 test("agentikitIndex scans directories and builds index", async () => {
-  const stashDir = tmpStash()
-  writeFile(path.join(stashDir, "tools", "deploy", "deploy.sh"), "#!/usr/bin/env bash\n# Deploy to staging\necho deploy\n")
-  writeFile(path.join(stashDir, "tools", "lint", "lint.ts"), "/**\n * Lint source code\n */\nconsole.log('lint')\n")
+  const stashDir = tmpStash();
+  writeFile(
+    path.join(stashDir, "tools", "deploy", "deploy.sh"),
+    "#!/usr/bin/env bash\n# Deploy to staging\necho deploy\n",
+  );
+  writeFile(path.join(stashDir, "tools", "lint", "lint.ts"), "/**\n * Lint source code\n */\nconsole.log('lint')\n");
 
-  process.env.AKM_STASH_DIR = stashDir
-  const result = await agentikitIndex({ stashDir })
+  process.env.AKM_STASH_DIR = stashDir;
+  const result = await agentikitIndex({ stashDir });
 
-  expect(result.totalEntries).toBe(2)
-  expect(result.generatedMetadata).toBe(2)
-  expect(result.stashDir).toBe(stashDir)
+  expect(result.totalEntries).toBe(2);
+  expect(result.generatedMetadata).toBe(2);
+  expect(result.stashDir).toBe(stashDir);
 
   // Verify .stash.json files were created
-  const deployStash = path.join(stashDir, "tools", "deploy", ".stash.json")
-  expect(fs.existsSync(deployStash)).toBe(true)
+  const deployStash = path.join(stashDir, "tools", "deploy", ".stash.json");
+  expect(fs.existsSync(deployStash)).toBe(true);
 
-  const parsed = JSON.parse(fs.readFileSync(deployStash, "utf8"))
-  expect(parsed.entries[0].name).toBe("deploy")
-  expect(parsed.entries[0].generated).toBe(true)
-})
+  const parsed = JSON.parse(fs.readFileSync(deployStash, "utf8"));
+  expect(parsed.entries[0].name).toBe("deploy");
+  expect(parsed.entries[0].generated).toBe(true);
+});
 
 test("agentikitIndex preserves manually-written .stash.json", async () => {
-  const stashDir = tmpStash()
-  writeFile(path.join(stashDir, "tools", "git", "summarize.ts"), "console.log('x')\n")
+  const stashDir = tmpStash();
+  writeFile(path.join(stashDir, "tools", "git", "summarize.ts"), "console.log('x')\n");
   writeFile(
     path.join(stashDir, "tools", "git", ".stash.json"),
     JSON.stringify({
@@ -64,24 +71,22 @@ test("agentikitIndex preserves manually-written .stash.json", async () => {
         },
       ],
     }),
-  )
+  );
 
-  const result = await agentikitIndex({ stashDir })
+  const result = await agentikitIndex({ stashDir });
 
-  expect(result.totalEntries).toBe(1)
-  expect(result.generatedMetadata).toBe(0) // no generation needed
+  expect(result.totalEntries).toBe(1);
+  expect(result.generatedMetadata).toBe(0); // no generation needed
 
   // Verify the manual .stash.json was not overwritten
-  const stash = JSON.parse(
-    fs.readFileSync(path.join(stashDir, "tools", "git", ".stash.json"), "utf8"),
-  )
-  expect(stash.entries[0].name).toBe("git-summarize")
-  expect(stash.entries[0].generated).toBeUndefined()
-})
+  const stash = JSON.parse(fs.readFileSync(path.join(stashDir, "tools", "git", ".stash.json"), "utf8"));
+  expect(stash.entries[0].name).toBe("git-summarize");
+  expect(stash.entries[0].generated).toBeUndefined();
+});
 
 test("agentikitIndex migrates generated skill metadata name to canonical directory name", async () => {
-  const stashDir = tmpStash()
-  writeFile(path.join(stashDir, "skills", "code-review", "SKILL.md"), "# Code Review\n")
+  const stashDir = tmpStash();
+  writeFile(path.join(stashDir, "skills", "code-review", "SKILL.md"), "# Code Review\n");
   writeFile(
     path.join(stashDir, "skills", "code-review", ".stash.json"),
     JSON.stringify({
@@ -95,119 +100,115 @@ test("agentikitIndex migrates generated skill metadata name to canonical directo
         },
       ],
     }),
-  )
+  );
 
-  const result = await agentikitIndex({ stashDir })
-  expect(result.totalEntries).toBe(1)
+  const result = await agentikitIndex({ stashDir });
+  expect(result.totalEntries).toBe(1);
 
-  const stash = JSON.parse(
-    fs.readFileSync(path.join(stashDir, "skills", "code-review", ".stash.json"), "utf8"),
-  )
-  expect(stash.entries[0].name).toBe("code-review")
-  expect(stash.entries[0].generated).toBe(true)
+  const stash = JSON.parse(fs.readFileSync(path.join(stashDir, "skills", "code-review", ".stash.json"), "utf8"));
+  expect(stash.entries[0].name).toBe("code-review");
+  expect(stash.entries[0].generated).toBe(true);
 
   // Check the database
-  const db = openDatabase()
-  const entries = getAllEntries(db)
-  expect(entries.length).toBeGreaterThan(0)
-  expect(entries[0].entry.name).toBe("code-review")
-  closeDatabase(db)
-})
+  const db = openDatabase();
+  const entries = getAllEntries(db);
+  expect(entries.length).toBeGreaterThan(0);
+  expect(entries[0].entry.name).toBe("code-review");
+  closeDatabase(db);
+});
 
 test("agentikitIndex writes index to SQLite database", async () => {
-  const stashDir = tmpStash()
-  writeFile(path.join(stashDir, "tools", "hello", "hello.sh"), "#!/bin/bash\necho hi\n")
+  const stashDir = tmpStash();
+  writeFile(path.join(stashDir, "tools", "hello", "hello.sh"), "#!/bin/bash\necho hi\n");
 
-  const result = await agentikitIndex({ stashDir })
-  expect(fs.existsSync(result.indexPath)).toBe(true)
-  expect(result.indexPath).toEndWith(".db")
+  const result = await agentikitIndex({ stashDir });
+  expect(fs.existsSync(result.indexPath)).toBe(true);
+  expect(result.indexPath).toEndWith(".db");
 
-  const db = openDatabase()
-  const version = getMeta(db, "version")
-  expect(version).toBe("6")
-  const entries = getAllEntries(db)
-  expect(entries.length).toBeGreaterThan(0)
-  closeDatabase(db)
-})
+  const db = openDatabase();
+  const version = getMeta(db, "version");
+  expect(version).toBe("6");
+  const entries = getAllEntries(db);
+  expect(entries.length).toBeGreaterThan(0);
+  closeDatabase(db);
+});
 
 test("agentikitIndex handles empty stash gracefully", async () => {
-  const stashDir = tmpStash()
-  const result = await agentikitIndex({ stashDir })
+  const stashDir = tmpStash();
+  const result = await agentikitIndex({ stashDir });
 
-  expect(result.totalEntries).toBe(0)
-  expect(result.generatedMetadata).toBe(0)
-})
+  expect(result.totalEntries).toBe(0);
+  expect(result.generatedMetadata).toBe(0);
+});
 
 test("agentikitIndex handles markdown assets", async () => {
-  const stashDir = tmpStash()
+  const stashDir = tmpStash();
   writeFile(
     path.join(stashDir, "commands", "release.md"),
     '---\ndescription: "Release the project"\n---\nRun the release\n',
-  )
+  );
   writeFile(
     path.join(stashDir, "skills", "refactor", "SKILL.md"),
     '---\ndescription: "Refactor code"\n---\n# Refactor skill\n',
-  )
+  );
 
-  const result = await agentikitIndex({ stashDir })
-  expect(result.totalEntries).toBe(2)
-})
+  const result = await agentikitIndex({ stashDir });
+  expect(result.totalEntries).toBe(2);
+});
 
 test("agentikitIndex generates TOC in stash.json for knowledge entries", async () => {
-  const stashDir = tmpStash()
+  const stashDir = tmpStash();
   writeFile(
     path.join(stashDir, "knowledge", "guide.md"),
-    "---\ndescription: \"A guide\"\n---\n# Getting Started\n\nIntro.\n\n## Installation\n\nInstall steps.\n",
-  )
+    '---\ndescription: "A guide"\n---\n# Getting Started\n\nIntro.\n\n## Installation\n\nInstall steps.\n',
+  );
 
-  const result = await agentikitIndex({ stashDir })
-  expect(result.totalEntries).toBe(1)
+  const result = await agentikitIndex({ stashDir });
+  expect(result.totalEntries).toBe(1);
 
-  const stashJson = JSON.parse(
-    fs.readFileSync(path.join(stashDir, "knowledge", ".stash.json"), "utf8"),
-  )
-  expect(stashJson.entries[0].toc).toBeDefined()
-  expect(stashJson.entries[0].toc.length).toBe(2)
-  expect(stashJson.entries[0].toc[0].text).toBe("Getting Started")
-  expect(stashJson.entries[0].toc[1].text).toBe("Installation")
-})
+  const stashJson = JSON.parse(fs.readFileSync(path.join(stashDir, "knowledge", ".stash.json"), "utf8"));
+  expect(stashJson.entries[0].toc).toBeDefined();
+  expect(stashJson.entries[0].toc.length).toBe(2);
+  expect(stashJson.entries[0].toc[0].text).toBe("Getting Started");
+  expect(stashJson.entries[0].toc[1].text).toBe("Installation");
+});
 
 test("isDirStale detects stash.json newer than index", async () => {
-  const stashDir = tmpStash()
-  writeFile(path.join(stashDir, "tools", "deploy", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n")
+  const stashDir = tmpStash();
+  writeFile(path.join(stashDir, "tools", "deploy", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n");
 
   // First index
-  const result1 = await agentikitIndex({ stashDir })
-  expect(result1.totalEntries).toBe(1)
-  expect(result1.mode).toBe("full")
+  const result1 = await agentikitIndex({ stashDir });
+  expect(result1.totalEntries).toBe(1);
+  expect(result1.mode).toBe("full");
 
   // Second index (incremental) — nothing changed, so dir should be skipped
-  const result2 = await agentikitIndex({ stashDir })
-  expect(result2.mode).toBe("incremental")
-  expect(result2.directoriesSkipped).toBeGreaterThanOrEqual(1)
+  const result2 = await agentikitIndex({ stashDir });
+  expect(result2.mode).toBe("incremental");
+  expect(result2.directoriesSkipped).toBeGreaterThanOrEqual(1);
 
   // Now touch the .stash.json to make it newer than the index
-  const stashJsonPath = path.join(stashDir, "tools", "deploy", ".stash.json")
-  const futureTime = new Date(Date.now() + 2000)
-  fs.utimesSync(stashJsonPath, futureTime, futureTime)
+  const stashJsonPath = path.join(stashDir, "tools", "deploy", ".stash.json");
+  const futureTime = new Date(Date.now() + 2000);
+  fs.utimesSync(stashJsonPath, futureTime, futureTime);
 
   // Third index (incremental) — should detect stale dir
-  const result3 = await agentikitIndex({ stashDir })
-  expect(result3.mode).toBe("incremental")
-  expect(result3.directoriesScanned).toBeGreaterThanOrEqual(1)
-})
+  const result3 = await agentikitIndex({ stashDir });
+  expect(result3.mode).toBe("incremental");
+  expect(result3.directoriesScanned).toBeGreaterThanOrEqual(1);
+});
 
 test("agentikitIndex --full mode returns mode full", async () => {
-  const stashDir = tmpStash()
-  writeFile(path.join(stashDir, "tools", "hello", "hello.sh"), "#!/bin/bash\necho hi\n")
+  const stashDir = tmpStash();
+  writeFile(path.join(stashDir, "tools", "hello", "hello.sh"), "#!/bin/bash\necho hi\n");
 
   // First index to create a previous index
-  await agentikitIndex({ stashDir })
+  await agentikitIndex({ stashDir });
 
   // Second index with full flag — should force full reindex
-  const result = await agentikitIndex({ stashDir, full: true })
-  expect(result.mode).toBe("full")
-})
+  const result = await agentikitIndex({ stashDir, full: true });
+  expect(result.mode).toBe("full");
+});
 
 test("buildSearchText includes TOC heading text for knowledge entries", async () => {
   const entry = {
@@ -218,12 +219,12 @@ test("buildSearchText includes TOC heading text for knowledge entries", async ()
       { level: 1, text: "Getting Started", line: 4 },
       { level: 2, text: "Installation", line: 8 },
     ],
-  }
+  };
 
-  const text = buildSearchText(entry)
-  expect(text).toContain("getting started")
-  expect(text).toContain("installation")
-})
+  const text = buildSearchText(entry);
+  expect(text).toContain("getting started");
+  expect(text).toContain("installation");
+});
 
 test("buildSearchText includes intents array content", () => {
   const entry = {
@@ -231,12 +232,12 @@ test("buildSearchText includes intents array content", () => {
     type: "tool" as const,
     description: "summarize git changes",
     intents: ["explain what changed in a repository", "show commit summary"],
-  }
+  };
 
-  const text = buildSearchText(entry)
-  expect(text).toContain("explain what changed in a repository")
-  expect(text).toContain("show commit summary")
-})
+  const text = buildSearchText(entry);
+  expect(text).toContain("explain what changed in a repository");
+  expect(text).toContain("show commit summary");
+});
 
 test("buildSearchText handles entries with both intents and intent fields", () => {
   const entry = {
@@ -245,24 +246,25 @@ test("buildSearchText handles entries with both intents and intent fields", () =
     description: "deploy services",
     intents: ["deploy to production", "push services live"],
     intent: { when: "user needs to deploy", input: "service name", output: "status" },
-  }
+  };
 
-  const text = buildSearchText(entry)
-  expect(text).toContain("deploy to production")
-  expect(text).toContain("push services live")
-  expect(text).toContain("user needs to deploy")
-  expect(text).toContain("service name")
-})
+  const text = buildSearchText(entry);
+  expect(text).toContain("deploy to production");
+  expect(text).toContain("push services live");
+  expect(text).toContain("user needs to deploy");
+  expect(text).toContain("service name");
+});
 
 test("agentikitIndex does not generate heuristic intents (LLM-only)", async () => {
-  const stashDir = tmpStash()
-  writeFile(path.join(stashDir, "tools", "deploy", "deploy.sh"), "#!/usr/bin/env bash\n# Deploy services to production\necho deploy\n")
+  const stashDir = tmpStash();
+  writeFile(
+    path.join(stashDir, "tools", "deploy", "deploy.sh"),
+    "#!/usr/bin/env bash\n# Deploy services to production\necho deploy\n",
+  );
 
-  await agentikitIndex({ stashDir })
+  await agentikitIndex({ stashDir });
 
-  const stashJson = JSON.parse(
-    fs.readFileSync(path.join(stashDir, "tools", "deploy", ".stash.json"), "utf8"),
-  )
+  const stashJson = JSON.parse(fs.readFileSync(path.join(stashDir, "tools", "deploy", ".stash.json"), "utf8"));
   // Intents are only generated when LLM is configured
-  expect(stashJson.entries[0].intents).toBeUndefined()
-})
+  expect(stashJson.entries[0].intents).toBeUndefined();
+});

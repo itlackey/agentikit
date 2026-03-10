@@ -5,56 +5,56 @@
  * in config.json, and ensures ripgrep is available.
  */
 
-import fs from "node:fs"
-import path from "node:path"
-import { TYPE_DIRS } from "./asset-spec"
-import { ensureRg } from "./ripgrep-install"
-import { loadConfig, saveConfig, getConfigPath } from "./config"
-import { getDefaultStashDir, getBinDir } from "./paths"
+import fs from "node:fs";
+import path from "node:path";
+import { TYPE_DIRS } from "./asset-spec";
+import { getConfigPath, loadConfig, saveConfig } from "./config";
+import { getBinDir, getDefaultStashDir } from "./paths";
+import { ensureRg } from "./ripgrep-install";
 
 export interface InitResponse {
-  stashDir: string
-  created: boolean
-  configPath: string
+  stashDir: string;
+  created: boolean;
+  configPath: string;
   ripgrep?: {
-    rgPath: string
-    installed: boolean
-    version: string
-  }
+    rgPath: string;
+    installed: boolean;
+    version: string;
+  };
 }
 
 export async function agentikitInit(options?: { dir?: string }): Promise<InitResponse> {
-  const stashDir = options?.dir ? path.resolve(options.dir) : getDefaultStashDir()
+  const stashDir = options?.dir ? path.resolve(options.dir) : getDefaultStashDir();
 
-  let created = false
+  let created = false;
   if (!fs.existsSync(stashDir)) {
-    fs.mkdirSync(stashDir, { recursive: true })
-    created = true
+    fs.mkdirSync(stashDir, { recursive: true });
+    created = true;
   }
 
   for (const sub of Object.values(TYPE_DIRS)) {
-    const subDir = path.join(stashDir, sub)
+    const subDir = path.join(stashDir, sub);
     if (!fs.existsSync(subDir)) {
-      fs.mkdirSync(subDir, { recursive: true })
+      fs.mkdirSync(subDir, { recursive: true });
     }
   }
 
   // Persist stashDir in config.json
-  const configPath = getConfigPath()
-  const existing = loadConfig()
+  const configPath = getConfigPath();
+  const existing = loadConfig();
   if (!existing.stashDir || existing.stashDir !== stashDir) {
-    saveConfig({ ...existing, stashDir })
+    saveConfig({ ...existing, stashDir });
   }
 
   // Ensure ripgrep is available (install to cache/bin if needed)
-  let ripgrep: InitResponse["ripgrep"]
+  let ripgrep: InitResponse["ripgrep"];
   try {
-    const binDir = getBinDir()
-    const rgResult = ensureRg(binDir)
-    ripgrep = rgResult
+    const binDir = getBinDir();
+    const rgResult = ensureRg(binDir);
+    ripgrep = rgResult;
   } catch {
     // Non-fatal: ripgrep is optional, search works without it
   }
 
-  return { stashDir, created, configPath, ripgrep }
+  return { stashDir, created, configPath, ripgrep };
 }

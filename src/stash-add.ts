@@ -1,19 +1,19 @@
-import { agentikitIndex } from "./indexer"
-import fs from "node:fs"
-import { resolveStashDir } from "./common"
-import { loadConfig } from "./config"
-import { upsertLockEntry } from "./lockfile"
-import { upsertInstalledRegistryEntry, installRegistryRef } from "./registry-install"
-import type { AddResponse } from "./stash-types"
-import { UsageError } from "./errors"
+import fs from "node:fs";
+import { resolveStashDir } from "./common";
+import { loadConfig } from "./config";
+import { UsageError } from "./errors";
+import { agentikitIndex } from "./indexer";
+import { upsertLockEntry } from "./lockfile";
+import { installRegistryRef, upsertInstalledRegistryEntry } from "./registry-install";
+import type { AddResponse } from "./stash-types";
 
 export async function agentikitAdd(input: { ref: string }): Promise<AddResponse> {
-  const ref = input.ref.trim()
-  if (!ref) throw new UsageError("Install ref or local directory is required.")
+  const ref = input.ref.trim();
+  if (!ref) throw new UsageError("Install ref or local directory is required.");
 
-  const stashDir = resolveStashDir()
-  const installed = await installRegistryRef(ref)
-  const replaced = loadConfig().registry?.installed.find((entry) => entry.id === installed.id)
+  const stashDir = resolveStashDir();
+  const installed = await installRegistryRef(ref);
+  const replaced = loadConfig().registry?.installed.find((entry) => entry.id === installed.id);
   const config = upsertInstalledRegistryEntry({
     id: installed.id,
     source: installed.source,
@@ -24,7 +24,7 @@ export async function agentikitAdd(input: { ref: string }): Promise<AddResponse>
     stashRoot: installed.stashRoot,
     cacheDir: installed.cacheDir,
     installedAt: installed.installedAt,
-  })
+  });
 
   upsertLockEntry({
     id: installed.id,
@@ -33,17 +33,17 @@ export async function agentikitAdd(input: { ref: string }): Promise<AddResponse>
     resolvedVersion: installed.resolvedVersion,
     resolvedRevision: installed.resolvedRevision,
     integrity: installed.integrity ?? (installed.source === "local" ? "local" : undefined),
-  })
+  });
 
   if (replaced && replaced.cacheDir !== installed.cacheDir) {
     try {
-      fs.rmSync(replaced.cacheDir, { recursive: true, force: true })
+      fs.rmSync(replaced.cacheDir, { recursive: true, force: true });
     } catch {
       // Best-effort cleanup only.
     }
   }
 
-  const index = await agentikitIndex({ stashDir })
+  const index = await agentikitIndex({ stashDir });
 
   return {
     stashDir,
@@ -70,5 +70,5 @@ export async function agentikitAdd(input: { ref: string }): Promise<AddResponse>
       directoriesScanned: index.directoriesScanned,
       directoriesSkipped: index.directoriesSkipped,
     },
-  }
+  };
 }

@@ -1,9 +1,9 @@
-import { test, expect, describe, beforeEach, afterEach, afterAll } from "bun:test"
-import fs from "node:fs"
-import os from "node:os"
-import path from "node:path"
-import { searchRegistry } from "../src/registry-search"
-import type { RegistryIndex } from "../src/registry-search"
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { RegistryIndex } from "../src/registry-search";
+import { searchRegistry } from "../src/registry-search";
 
 // ── Test fixtures ───────────────────────────────────────────────────────────
 
@@ -58,33 +58,33 @@ const FIXTURE_INDEX: RegistryIndex = {
       author: "devperson",
     },
   ],
-}
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const createdTmpDirs: string[] = []
+const createdTmpDirs: string[] = [];
 
 function createTmpDir(prefix = "agentikit-search-"): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
-  createdTmpDirs.push(dir)
-  return dir
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  createdTmpDirs.push(dir);
+  return dir;
 }
 
 /** Start a minimal HTTP server that serves the fixture index. */
 function serveIndex(index: RegistryIndex): { url: string; close: () => void } {
-  const body = JSON.stringify(index)
+  const body = JSON.stringify(index);
   const server = Bun.serve({
     port: 0,
     fetch() {
       return new Response(body, {
         headers: { "Content-Type": "application/json" },
-      })
+      });
     },
-  })
+  });
   return {
     url: `http://localhost:${server.port}/index.json`,
     close: () => server.stop(true),
-  }
+  };
 }
 
 /** Start a server that always returns an error. */
@@ -92,226 +92,226 @@ function serveError(status: number): { url: string; close: () => void } {
   const server = Bun.serve({
     port: 0,
     fetch() {
-      return new Response("error", { status })
+      return new Response("error", { status });
     },
-  })
+  });
   return {
     url: `http://localhost:${server.port}/index.json`,
     close: () => server.stop(true),
-  }
+  };
 }
 
 afterAll(() => {
   for (const dir of createdTmpDirs) {
-    fs.rmSync(dir, { recursive: true, force: true })
+    fs.rmSync(dir, { recursive: true, force: true });
   }
-})
+});
 
-const originalXdgCacheHome = process.env.XDG_CACHE_HOME
-const originalRegistryUrl = process.env.AKM_REGISTRY_URL
+const originalXdgCacheHome = process.env.XDG_CACHE_HOME;
+const originalRegistryUrl = process.env.AKM_REGISTRY_URL;
 
 beforeEach(() => {
   // Isolate cache per test
-  process.env.XDG_CACHE_HOME = createTmpDir("agentikit-search-cache-")
-  delete process.env.AKM_REGISTRY_URL
-})
+  process.env.XDG_CACHE_HOME = createTmpDir("agentikit-search-cache-");
+  delete process.env.AKM_REGISTRY_URL;
+});
 
 afterEach(() => {
   if (originalXdgCacheHome === undefined) {
-    delete process.env.XDG_CACHE_HOME
+    delete process.env.XDG_CACHE_HOME;
   } else {
-    process.env.XDG_CACHE_HOME = originalXdgCacheHome
+    process.env.XDG_CACHE_HOME = originalXdgCacheHome;
   }
   if (originalRegistryUrl === undefined) {
-    delete process.env.AKM_REGISTRY_URL
+    delete process.env.AKM_REGISTRY_URL;
   } else {
-    process.env.AKM_REGISTRY_URL = originalRegistryUrl
+    process.env.AKM_REGISTRY_URL = originalRegistryUrl;
   }
-})
+});
 
 // ── Empty / blank queries ───────────────────────────────────────────────────
 
 describe("searchRegistry", () => {
   test("returns empty for blank query", async () => {
-    const result = await searchRegistry("")
-    expect(result).toEqual({ query: "", hits: [], warnings: [] })
-  })
+    const result = await searchRegistry("");
+    expect(result).toEqual({ query: "", hits: [], warnings: [] });
+  });
 
   test("returns empty for whitespace query", async () => {
-    const result = await searchRegistry("   ")
-    expect(result).toEqual({ query: "", hits: [], warnings: [] })
-  })
-})
+    const result = await searchRegistry("   ");
+    expect(result).toEqual({ query: "", hits: [], warnings: [] });
+  });
+});
 
 // ── Scoring and ranking ─────────────────────────────────────────────────────
 
 describe("scoring", () => {
   test("exact name match ranks highest", async () => {
-    const srv = serveIndex(FIXTURE_INDEX)
+    const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("Azure Ops Kit", {
         registryUrls: srv.url,
-      })
-      expect(result.hits.length).toBeGreaterThan(0)
-      expect(result.hits[0].id).toBe("github:someone/azure-ops-kit")
+      });
+      expect(result.hits.length).toBeGreaterThan(0);
+      expect(result.hits[0].id).toBe("github:someone/azure-ops-kit");
     } finally {
-      srv.close()
+      srv.close();
     }
-  })
+  });
 
   test("tag match surfaces relevant kits", async () => {
-    const srv = serveIndex(FIXTURE_INDEX)
+    const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("creaturepunk", {
         registryUrls: srv.url,
-      })
-      expect(result.hits.length).toBeGreaterThan(0)
-      expect(result.hits[0].id).toBe("github:itlackey/dimm-city-kit")
+      });
+      expect(result.hits.length).toBeGreaterThan(0);
+      expect(result.hits[0].id).toBe("github:itlackey/dimm-city-kit");
     } finally {
-      srv.close()
+      srv.close();
     }
-  })
+  });
 
   test("description substring matches", async () => {
-    const srv = serveIndex(FIXTURE_INDEX)
+    const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("Container Apps", {
         registryUrls: srv.url,
-      })
-      expect(result.hits.some((h) => h.id === "github:someone/azure-ops-kit")).toBe(true)
+      });
+      expect(result.hits.some((h) => h.id === "github:someone/azure-ops-kit")).toBe(true);
     } finally {
-      srv.close()
+      srv.close();
     }
-  })
+  });
 
   test("no match returns empty hits without error", async () => {
-    const srv = serveIndex(FIXTURE_INDEX)
+    const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("zzz-nonexistent-xxy", {
         registryUrls: srv.url,
-      })
-      expect(result.hits).toEqual([])
-      expect(result.warnings).toEqual([])
+      });
+      expect(result.hits).toEqual([]);
+      expect(result.warnings).toEqual([]);
     } finally {
-      srv.close()
+      srv.close();
     }
-  })
+  });
 
   test("multi-token query scores across fields", async () => {
-    const srv = serveIndex(FIXTURE_INDEX)
+    const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("bun typescript starter", {
         registryUrls: srv.url,
-      })
-      expect(result.hits.length).toBeGreaterThan(0)
+      });
+      expect(result.hits.length).toBeGreaterThan(0);
       // openkit has all three in its tags
-      expect(result.hits[0].id).toBe("npm:@itlackey/openkit")
+      expect(result.hits[0].id).toBe("npm:@itlackey/openkit");
     } finally {
-      srv.close()
+      srv.close();
     }
-  })
+  });
 
   test("author match works", async () => {
-    const srv = serveIndex(FIXTURE_INDEX)
+    const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("devperson", {
         registryUrls: srv.url,
-      })
-      expect(result.hits.length).toBe(1)
-      expect(result.hits[0].id).toBe("npm:generic-agent-utils")
+      });
+      expect(result.hits.length).toBe(1);
+      expect(result.hits[0].id).toBe("npm:generic-agent-utils");
     } finally {
-      srv.close()
+      srv.close();
     }
-  })
-})
+  });
+});
 
 // ── Limit enforcement ───────────────────────────────────────────────────────
 
 describe("limit enforcement", () => {
   test("limit: 1 returns at most 1 hit", async () => {
-    const srv = serveIndex(FIXTURE_INDEX)
+    const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("kit", {
         registryUrls: srv.url,
         limit: 1,
-      })
-      expect(result.hits.length).toBeLessThanOrEqual(1)
+      });
+      expect(result.hits.length).toBeLessThanOrEqual(1);
     } finally {
-      srv.close()
+      srv.close();
     }
-  })
+  });
 
   test("limit: 0 falls back to default", async () => {
-    const srv = serveIndex(FIXTURE_INDEX)
+    const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("kit", {
         registryUrls: srv.url,
         limit: 0,
-      })
+      });
       // Should not crash, uses default of 20
-      expect(result.hits.length).toBeLessThanOrEqual(20)
+      expect(result.hits.length).toBeLessThanOrEqual(20);
     } finally {
-      srv.close()
+      srv.close();
     }
-  })
+  });
 
   test("limit: NaN falls back to default", async () => {
-    const srv = serveIndex(FIXTURE_INDEX)
+    const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("kit", {
         registryUrls: srv.url,
         limit: NaN,
-      })
-      expect(result.hits.length).toBeLessThanOrEqual(20)
+      });
+      expect(result.hits.length).toBeLessThanOrEqual(20);
     } finally {
-      srv.close()
+      srv.close();
     }
-  })
-})
+  });
+});
 
 // ── Caching ─────────────────────────────────────────────────────────────────
 
 describe("caching", () => {
   test("second call uses cached index (no network needed)", async () => {
-    const srv = serveIndex(FIXTURE_INDEX)
-    const url = srv.url
+    const srv = serveIndex(FIXTURE_INDEX);
+    const url = srv.url;
 
     // First call — fetches from server
-    const result1 = await searchRegistry("openkit", { registryUrls: url })
-    expect(result1.hits.length).toBeGreaterThan(0)
+    const result1 = await searchRegistry("openkit", { registryUrls: url });
+    expect(result1.hits.length).toBeGreaterThan(0);
 
     // Kill the server
-    srv.close()
+    srv.close();
 
     // Second call — should use cache
-    const result2 = await searchRegistry("openkit", { registryUrls: url })
-    expect(result2.hits.length).toBeGreaterThan(0)
-    expect(result2.hits[0].id).toBe(result1.hits[0].id)
-  })
-})
+    const result2 = await searchRegistry("openkit", { registryUrls: url });
+    expect(result2.hits.length).toBeGreaterThan(0);
+    expect(result2.hits[0].id).toBe(result1.hits[0].id);
+  });
+});
 
 // ── Error handling ──────────────────────────────────────────────────────────
 
 describe("error handling", () => {
   test("server error produces warning, not exception", async () => {
-    const srv = serveError(500)
+    const srv = serveError(500);
     try {
-      const result = await searchRegistry("test", { registryUrls: srv.url })
-      expect(result.hits).toEqual([])
-      expect(result.warnings.length).toBe(1)
-      expect(result.warnings[0]).toContain("HTTP 500")
+      const result = await searchRegistry("test", { registryUrls: srv.url });
+      expect(result.hits).toEqual([]);
+      expect(result.warnings.length).toBe(1);
+      expect(result.warnings[0]).toContain("HTTP 500");
     } finally {
-      srv.close()
+      srv.close();
     }
-  })
+  });
 
   test("unreachable server produces warning", async () => {
     const result = await searchRegistry("test", {
       registryUrls: "http://127.0.0.1:1/nonexistent",
-    })
-    expect(result.hits).toEqual([])
-    expect(result.warnings.length).toBe(1)
-  })
+    });
+    expect(result.hits).toEqual([]);
+    expect(result.warnings.length).toBe(1);
+  });
 
   test("invalid JSON produces warning", async () => {
     const server = Bun.serve({
@@ -319,20 +319,20 @@ describe("error handling", () => {
       fetch() {
         return new Response("not json", {
           headers: { "Content-Type": "application/json" },
-        })
+        });
       },
-    })
+    });
     try {
       const result = await searchRegistry("test", {
         registryUrls: `http://localhost:${server.port}/index.json`,
-      })
-      expect(result.hits).toEqual([])
-      expect(result.warnings.length).toBe(1)
+      });
+      expect(result.hits).toEqual([]);
+      expect(result.warnings.length).toBe(1);
     } finally {
-      server.stop(true)
+      server.stop(true);
     }
-  })
-})
+  });
+});
 
 // ── Multiple registries ─────────────────────────────────────────────────────
 
@@ -351,7 +351,7 @@ describe("multiple registries", () => {
           tags: ["deploy"],
         },
       ],
-    }
+    };
     const index2: RegistryIndex = {
       version: 1,
       updatedAt: "2026-01-01T00:00:00Z",
@@ -365,23 +365,23 @@ describe("multiple registries", () => {
           tags: ["deploy"],
         },
       ],
-    }
+    };
 
-    const srv1 = serveIndex(index1)
-    const srv2 = serveIndex(index2)
+    const srv1 = serveIndex(index1);
+    const srv2 = serveIndex(index2);
     try {
       const result = await searchRegistry("deploy", {
         registryUrls: [srv1.url, srv2.url],
-      })
-      expect(result.hits.length).toBe(2)
-      const ids = result.hits.map((h) => h.id)
-      expect(ids).toContain("npm:kit-a")
-      expect(ids).toContain("github:org/kit-b")
+      });
+      expect(result.hits.length).toBe(2);
+      const ids = result.hits.map((h) => h.id);
+      expect(ids).toContain("npm:kit-a");
+      expect(ids).toContain("github:org/kit-b");
     } finally {
-      srv1.close()
-      srv2.close()
+      srv1.close();
+      srv2.close();
     }
-  })
+  });
 
   test("one failing registry does not block others", async () => {
     const goodIndex: RegistryIndex = {
@@ -396,79 +396,79 @@ describe("multiple registries", () => {
           tags: ["works"],
         },
       ],
-    }
+    };
 
-    const good = serveIndex(goodIndex)
-    const bad = serveError(500)
+    const good = serveIndex(goodIndex);
+    const bad = serveError(500);
     try {
       const result = await searchRegistry("works", {
         registryUrls: [good.url, bad.url],
-      })
-      expect(result.hits.length).toBe(1)
-      expect(result.hits[0].id).toBe("npm:good-kit")
-      expect(result.warnings.length).toBe(1)
+      });
+      expect(result.hits.length).toBe(1);
+      expect(result.hits[0].id).toBe("npm:good-kit");
+      expect(result.warnings.length).toBe(1);
     } finally {
-      good.close()
-      bad.close()
+      good.close();
+      bad.close();
     }
-  })
-})
+  });
+});
 
 // ── Hit shape ───────────────────────────────────────────────────────────────
 
 describe("hit shape", () => {
   test("includes metadata fields from index", async () => {
-    const srv = serveIndex(FIXTURE_INDEX)
+    const srv = serveIndex(FIXTURE_INDEX);
     try {
-      const result = await searchRegistry("openkit", { registryUrls: srv.url })
-      const hit = result.hits.find((h) => h.id === "npm:@itlackey/openkit")
-      expect(hit).toBeDefined()
-      expect(hit!.source).toBe("npm")
-      expect(hit!.title).toBe("@itlackey/openkit")
-      expect(hit!.ref).toBe("@itlackey/openkit")
-      expect(hit!.metadata?.version).toBe("1.2.0")
-      expect(hit!.metadata?.author).toBe("itlackey")
-      expect(hit!.metadata?.license).toBe("MIT")
-      expect(hit!.metadata?.assetTypes).toBe("skill, tool, command")
-      expect(typeof hit!.score).toBe("number")
+      const result = await searchRegistry("openkit", { registryUrls: srv.url });
+      const hit = result.hits.find((h) => h.id === "npm:@itlackey/openkit");
+      expect(hit).toBeDefined();
+      expect(hit!.source).toBe("npm");
+      expect(hit!.title).toBe("@itlackey/openkit");
+      expect(hit!.ref).toBe("@itlackey/openkit");
+      expect(hit!.metadata?.version).toBe("1.2.0");
+      expect(hit!.metadata?.author).toBe("itlackey");
+      expect(hit!.metadata?.license).toBe("MIT");
+      expect(hit!.metadata?.assetTypes).toBe("skill, tool, command");
+      expect(typeof hit!.score).toBe("number");
     } finally {
-      srv.close()
+      srv.close();
     }
-  })
+  });
 
   test("curated field is true for manual entries and undefined for auto-discovered", async () => {
-    const srv = serveIndex(FIXTURE_INDEX)
+    const srv = serveIndex(FIXTURE_INDEX);
     try {
-      const result = await searchRegistry("itlackey", { registryUrls: srv.url })
-      const curatedHit = result.hits.find((h) => h.id === "github:itlackey/dimm-city-kit")
-      expect(curatedHit).toBeDefined()
-      expect(curatedHit!.curated).toBe(true)
+      const result = await searchRegistry("itlackey", { registryUrls: srv.url });
+      const curatedHit = result.hits.find((h) => h.id === "github:itlackey/dimm-city-kit");
+      expect(curatedHit).toBeDefined();
+      expect(curatedHit!.curated).toBe(true);
 
-      const autoHit = result.hits.find((h) => h.id === "npm:@itlackey/openkit")
-      expect(autoHit).toBeDefined()
-      expect(autoHit!.curated).toBeUndefined()
+      const autoHit = result.hits.find((h) => h.id === "npm:@itlackey/openkit");
+      expect(autoHit).toBeDefined();
+      expect(autoHit!.curated).toBeUndefined();
     } finally {
-      srv.close()
+      srv.close();
     }
-  })
-})
+  });
+});
 
 // ── Environment variable override ───────────────────────────────────────────
 
 describe("AKM_REGISTRY_URL env var", () => {
   test("uses env var when no explicit URLs provided", async () => {
-    const srv = serveIndex(FIXTURE_INDEX)
-    process.env.AKM_REGISTRY_URL = srv.url
+    const srv = serveIndex(FIXTURE_INDEX);
+    process.env.AKM_REGISTRY_URL = srv.url;
     try {
-      const result = await searchRegistry("azure")
-      expect(result.hits.length).toBeGreaterThan(0)
+      const result = await searchRegistry("azure");
+      expect(result.hits.length).toBeGreaterThan(0);
     } finally {
-      srv.close()
+      srv.close();
     }
-  })
+  });
 
   test("supports comma-separated URLs in env var", async () => {
-    const srv1 = serveIndex(FIXTURE_INDEX)
+    const srv1 = serveIndex(FIXTURE_INDEX);
     const srv2 = serveIndex({
       version: 1,
       updatedAt: "2026-01-01T00:00:00Z",
@@ -481,16 +481,16 @@ describe("AKM_REGISTRY_URL env var", () => {
           tags: ["azure"],
         },
       ],
-    })
-    process.env.AKM_REGISTRY_URL = `${srv1.url},${srv2.url}`
+    });
+    process.env.AKM_REGISTRY_URL = `${srv1.url},${srv2.url}`;
     try {
-      const result = await searchRegistry("azure")
-      const ids = result.hits.map((h) => h.id)
-      expect(ids).toContain("github:someone/azure-ops-kit")
-      expect(ids).toContain("npm:extra-kit")
+      const result = await searchRegistry("azure");
+      const ids = result.hits.map((h) => h.id);
+      expect(ids).toContain("github:someone/azure-ops-kit");
+      expect(ids).toContain("npm:extra-kit");
     } finally {
-      srv1.close()
-      srv2.close()
+      srv1.close();
+      srv2.close();
     }
-  })
-})
+  });
+});

@@ -6,15 +6,15 @@
  * directories and group files by parent directory.
  */
 
-import fs from "node:fs"
-import path from "node:path"
-import { type AgentikitAssetType } from "./common"
-import { isRelevantAssetFile } from "./asset-spec"
-import { buildFileContext, type FileContext } from "./file-context"
+import fs from "node:fs";
+import path from "node:path";
+import { isRelevantAssetFile } from "./asset-spec";
+import type { AgentikitAssetType } from "./common";
+import { buildFileContext, type FileContext } from "./file-context";
 
 export interface DirectoryGroup {
-  dirPath: string
-  files: string[]
+  dirPath: string;
+  files: string[];
 }
 
 /**
@@ -24,33 +24,33 @@ export interface DirectoryGroup {
  * commands, script extensions for tools, `SKILL.md` for skills).
  */
 export function walkStash(typeRoot: string, assetType: AgentikitAssetType): DirectoryGroup[] {
-  if (!fs.existsSync(typeRoot)) return []
+  if (!fs.existsSync(typeRoot)) return [];
 
-  const groups = new Map<string, string[]>()
+  const groups = new Map<string, string[]>();
 
-  const stack = [typeRoot]
+  const stack = [typeRoot];
   while (stack.length > 0) {
-    const current = stack.pop()
-    if (!current) continue
-    const entries = fs.readdirSync(current, { withFileTypes: true })
+    const current = stack.pop();
+    if (!current) continue;
+    const entries = fs.readdirSync(current, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name === ".stash.json") continue
-      const fullPath = path.join(current, entry.name)
+      if (entry.name === ".stash.json") continue;
+      const fullPath = path.join(current, entry.name);
       if (entry.isDirectory()) {
-        stack.push(fullPath)
+        stack.push(fullPath);
       } else if (entry.isFile() && isRelevantAssetFile(assetType, entry.name)) {
-        const parentDir = path.dirname(fullPath)
-        const existing = groups.get(parentDir)
+        const parentDir = path.dirname(fullPath);
+        const existing = groups.get(parentDir);
         if (existing) {
-          existing.push(fullPath)
+          existing.push(fullPath);
         } else {
-          groups.set(parentDir, [fullPath])
+          groups.set(parentDir, [fullPath]);
         }
       }
     }
   }
 
-  return Array.from(groups, ([dirPath, files]) => ({ dirPath, files }))
+  return Array.from(groups, ([dirPath, files]) => ({ dirPath, files }));
 }
 
 /**
@@ -64,27 +64,27 @@ export function walkStash(typeRoot: string, assetType: AgentikitAssetType): Dire
  * and .stash.json files.
  */
 export function walkStashFlat(stashRoot: string): FileContext[] {
-  if (!fs.existsSync(stashRoot)) return []
+  if (!fs.existsSync(stashRoot)) return [];
 
-  const results: FileContext[] = []
-  const SKIP_DIRS = new Set([".git", "node_modules", "bin", ".cache"])
+  const results: FileContext[] = [];
+  const SKIP_DIRS = new Set([".git", "node_modules", "bin", ".cache"]);
 
-  const stack = [stashRoot]
+  const stack = [stashRoot];
   while (stack.length > 0) {
-    const current = stack.pop()
-    if (!current) continue
-    const entries = fs.readdirSync(current, { withFileTypes: true })
+    const current = stack.pop();
+    if (!current) continue;
+    const entries = fs.readdirSync(current, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name === ".stash.json") continue
-      const fullPath = path.join(current, entry.name)
+      if (entry.name === ".stash.json") continue;
+      const fullPath = path.join(current, entry.name);
       if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue
-        stack.push(fullPath)
+        if (SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
+        stack.push(fullPath);
       } else if (entry.isFile()) {
-        results.push(buildFileContext(stashRoot, fullPath))
+        results.push(buildFileContext(stashRoot, fullPath));
       }
     }
   }
 
-  return results
+  return results;
 }

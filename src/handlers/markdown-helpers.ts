@@ -1,5 +1,5 @@
-import path from "node:path"
-import { toPosix } from "../common"
+import path from "node:path";
+import { toPosix } from "../common";
 
 /**
  * Shared file-system helpers for markdown-based asset types
@@ -7,13 +7,13 @@ import { toPosix } from "../common"
  */
 
 export function isMarkdownFile(fileName: string): boolean {
-  return path.extname(fileName).toLowerCase() === ".md"
+  return path.extname(fileName).toLowerCase() === ".md";
 }
 
 export function markdownCanonicalName(typeRoot: string, filePath: string): string | undefined {
-  return toPosix(path.relative(typeRoot, filePath))
+  return toPosix(path.relative(typeRoot, filePath));
 }
 
 export function markdownAssetPath(typeRoot: string, name: string): string {
-  return path.join(typeRoot, name)
+  return path.join(typeRoot, name);
 }

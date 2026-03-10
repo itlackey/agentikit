@@ -1,16 +1,16 @@
-import fs from "node:fs"
-import path from "node:path"
-import { resolveStashDir } from "./common"
-import { loadConfig } from "./config"
-import type { AgentikitConfig } from "./config"
-import { warn } from "./warn"
+import fs from "node:fs";
+import path from "node:path";
+import { resolveStashDir } from "./common";
+import type { AgentikitConfig } from "./config";
+import { loadConfig } from "./config";
+import { warn } from "./warn";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export interface StashSource {
-  path: string
+  path: string;
   /** For installed sources, the registry entry id */
-  registryId?: string
+  registryId?: string;
 }
 
 // ── Resolution ──────────────────────────────────────────────────────────────
@@ -25,53 +25,51 @@ export interface StashSource {
  * from `searchPaths` config and `registry.installed` entries.
  */
 export function resolveStashSources(overrideStashDir?: string, existingConfig?: AgentikitConfig): StashSource[] {
-  const stashDir = overrideStashDir ?? resolveStashDir()
-  const config = existingConfig ?? loadConfig()
+  const stashDir = overrideStashDir ?? resolveStashDir();
+  const config = existingConfig ?? loadConfig();
 
-  const sources: StashSource[] = [
-    { path: stashDir },
-  ]
+  const sources: StashSource[] = [{ path: stashDir }];
 
   for (const dir of config.searchPaths) {
     if (isSuspiciousStashRoot(dir)) {
-      warn(`Warning: stash root "${dir}" appears to be a system directory. This may be unintentional.`)
+      warn(`Warning: stash root "${dir}" appears to be a system directory. This may be unintentional.`);
     }
     if (isValidDirectory(dir)) {
-      sources.push({ path: dir })
+      sources.push({ path: dir });
     }
   }
 
   for (const entry of config.registry?.installed ?? []) {
     if (isSuspiciousStashRoot(entry.stashRoot)) {
-      warn(`Warning: stash root "${entry.stashRoot}" appears to be a system directory. This may be unintentional.`)
+      warn(`Warning: stash root "${entry.stashRoot}" appears to be a system directory. This may be unintentional.`);
     }
     if (isValidDirectory(entry.stashRoot)) {
       sources.push({
         path: entry.stashRoot,
         registryId: entry.id,
-      })
+      });
     }
   }
 
-  return sources
+  return sources;
 }
 
 /**
  * Convenience: returns just the directory paths, preserving priority order.
  */
 export function resolveAllStashDirs(overrideStashDir?: string): string[] {
-  return resolveStashSources(overrideStashDir).map((s) => s.path)
+  return resolveStashSources(overrideStashDir).map((s) => s.path);
 }
 
 /**
  * Find which source a file path belongs to.
  */
 export function findSourceForPath(filePath: string, sources: StashSource[]): StashSource | undefined {
-  const resolved = path.resolve(filePath)
+  const resolved = path.resolve(filePath);
   for (const source of sources) {
-    if (resolved.startsWith(path.resolve(source.path) + path.sep)) return source
+    if (resolved.startsWith(path.resolve(source.path) + path.sep)) return source;
   }
-  return undefined
+  return undefined;
 }
 
 /**
@@ -79,7 +77,7 @@ export function findSourceForPath(filePath: string, sources: StashSource[]): Sta
  * This is the user's working stash and the default destination for clone.
  */
 export function getPrimarySource(sources: StashSource[]): StashSource | undefined {
-  return sources[0]
+  return sources[0];
 }
 
 // ── Editability ─────────────────────────────────────────────────────────────
@@ -95,22 +93,22 @@ export function getPrimarySource(sources: StashSource[]): StashSource | undefine
  * the user's domain to manage.
  */
 export function isEditable(filePath: string, config?: AgentikitConfig): boolean {
-  const cfg = config ?? loadConfig()
-  const resolved = path.resolve(filePath)
-  const cacheManaged = cfg.registry?.installed ?? []
-  const isWin = process.platform === "win32"
+  const cfg = config ?? loadConfig();
+  const resolved = path.resolve(filePath);
+  const cacheManaged = cfg.registry?.installed ?? [];
+  const isWin = process.platform === "win32";
 
   for (const entry of cacheManaged) {
-    const cacheRoot = path.resolve(entry.cacheDir)
+    const cacheRoot = path.resolve(entry.cacheDir);
     if (isWin) {
       // Windows paths are case-insensitive — normalize both sides
-      if (resolved.toLowerCase().startsWith(cacheRoot.toLowerCase() + path.sep)) return false
+      if (resolved.toLowerCase().startsWith(cacheRoot.toLowerCase() + path.sep)) return false;
     } else {
-      if (resolved.startsWith(cacheRoot + path.sep)) return false
+      if (resolved.startsWith(cacheRoot + path.sep)) return false;
     }
   }
 
-  return true
+  return true;
 }
 
 /**
@@ -119,32 +117,32 @@ export function isEditable(filePath: string, config?: AgentikitConfig): boolean 
  * unconditionally returns the hint string.
  */
 export function buildEditHint(filePath: string, assetType: string, assetName: string, origin?: string): string {
-  const ref = origin ? `${origin}//${assetType}:${assetName}` : `${assetType}:${assetName}`
-  return `This asset is managed by akm and may be overwritten on update. To edit, run: akm clone ${ref}`
+  const ref = origin ? `${origin}//${assetType}:${assetName}` : `${assetType}:${assetName}`;
+  return `This asset is managed by akm and may be overwritten on update. To edit, run: akm clone ${ref}`;
 }
 
 // ── Validation ──────────────────────────────────────────────────────────────
 
-const SUSPICIOUS_ROOTS = new Set(["/", "/etc", "/bin", "/sbin", "/usr", "/var", "/tmp", "/dev", "/proc", "/sys"])
+const SUSPICIOUS_ROOTS = new Set(["/", "/etc", "/bin", "/sbin", "/usr", "/var", "/tmp", "/dev", "/proc", "/sys"]);
 
 function isSuspiciousStashRoot(dir: string): boolean {
-  const resolved = path.resolve(dir)
-  const normalized = process.platform === "win32" ? resolved.toLowerCase() : resolved
-  if (SUSPICIOUS_ROOTS.has(normalized)) return true
+  const resolved = path.resolve(dir);
+  const normalized = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  if (SUSPICIOUS_ROOTS.has(normalized)) return true;
   if (process.platform === "win32") {
     // Check for Windows system directories
-    const winDir = (process.env.SystemRoot || "C:\\Windows").toLowerCase()
-    if (normalized === winDir || normalized.startsWith(winDir + path.sep)) return true
+    const winDir = (process.env.SystemRoot || "C:\\Windows").toLowerCase();
+    if (normalized === winDir || normalized.startsWith(winDir + path.sep)) return true;
   }
-  return false
+  return false;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function isValidDirectory(dir: string): boolean {
   try {
-    return fs.statSync(dir).isDirectory()
+    return fs.statSync(dir).isDirectory();
   } catch {
-    return false
+    return false;
   }
 }

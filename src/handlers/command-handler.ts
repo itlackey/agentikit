@@ -1,8 +1,8 @@
-import { getRenderer } from "../file-context"
-import { isMarkdownFile, markdownCanonicalName, markdownAssetPath } from "./markdown-helpers"
-import { showInputToRenderContext } from "./handler-bridge"
-import type { AssetTypeHandler, ShowInput } from "../asset-type-handler"
-import type { ShowResponse } from "../stash-types"
+import type { AssetTypeHandler, ShowInput } from "../asset-type-handler";
+import { getRenderer } from "../file-context";
+import type { ShowResponse } from "../stash-types";
+import { showInputToRenderContext } from "./handler-bridge";
+import { isMarkdownFile, markdownAssetPath, markdownCanonicalName } from "./markdown-helpers";
 
 export const commandHandler: AssetTypeHandler = {
   typeName: "command",
@@ -13,9 +13,9 @@ export const commandHandler: AssetTypeHandler = {
   toAssetPath: markdownAssetPath,
 
   buildShowResponse(input: ShowInput): ShowResponse {
-    const renderer = getRenderer("command-md")!
-    const ctx = showInputToRenderContext(input, "command-md")
-    return renderer.buildShowResponse(ctx)
+    const renderer = getRenderer("command-md")!;
+    const ctx = showInputToRenderContext(input, "command-md");
+    return renderer.buildShowResponse(ctx);
   },
 
   defaultUsageGuide: [
@@ -23,4 +23,4 @@ export const commandHandler: AssetTypeHandler = {
     "Use `akm show <openRef>` to retrieve the command template body.",
     "When `agent` is specified, dispatch the command to that agent.",
   ],
-}
+};
