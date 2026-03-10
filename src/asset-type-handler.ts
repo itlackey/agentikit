@@ -1,78 +1,78 @@
-import type { StashEntry } from "./metadata"
-import type { LocalSearchHit, ShowResponse, KnowledgeView } from "./stash-types"
-import { UsageError } from "./errors"
-import { registerBuiltinHandlers } from "./handlers/index"
+import { UsageError } from "./errors";
+import { registerBuiltinHandlers } from "./handlers/index";
+import type { StashEntry } from "./metadata";
+import type { KnowledgeView, LocalSearchHit, ShowResponse } from "./stash-types";
 
 // ── Interface ────────────────────────────────────────────────────────────────
 
 export interface ShowInput {
-  name: string
-  path: string
-  content: string
-  view?: KnowledgeView
-  stashDirs?: string[]
+  name: string;
+  path: string;
+  content: string;
+  view?: KnowledgeView;
+  stashDirs?: string[];
 }
 
 export interface AssetTypeHandler {
   /** The type name, e.g. "tool", "script" */
-  readonly typeName: string
+  readonly typeName: string;
   /** Directory inside the stash root, e.g. "tools", "scripts" */
-  readonly stashDir: string
+  readonly stashDir: string;
 
   // -- File system spec --
-  isRelevantFile(fileName: string): boolean
-  toCanonicalName(typeRoot: string, filePath: string): string | undefined
-  toAssetPath(typeRoot: string, name: string): string
+  isRelevantFile(fileName: string): boolean;
+  toCanonicalName(typeRoot: string, filePath: string): string | undefined;
+  toAssetPath(typeRoot: string, name: string): string;
 
   // -- Show behavior --
-  buildShowResponse(input: ShowInput): ShowResponse
+  buildShowResponse(input: ShowInput): ShowResponse;
 
   // -- Search enrichment --
-  enrichSearchHit?(hit: LocalSearchHit, stashDir: string): void
+  enrichSearchHit?(hit: LocalSearchHit, stashDir: string): void;
 
   // -- Usage guide --
-  readonly defaultUsageGuide: string[]
+  readonly defaultUsageGuide: string[];
 
   // -- Metadata generation hooks --
-  extractTypeMetadata?(entry: StashEntry, file: string, ext: string): void
+  extractTypeMetadata?(entry: StashEntry, file: string, ext: string): void;
 }
 
 // ── Registry ─────────────────────────────────────────────────────────────────
 
-const handlers = new Map<string, AssetTypeHandler>()
+const handlers = new Map<string, AssetTypeHandler>();
 
-let handlersInitialized = false
+let handlersInitialized = false;
 
 function ensureHandlersRegistered(): void {
-  if (handlersInitialized) return
-  handlersInitialized = true
-  registerBuiltinHandlers()
+  if (handlersInitialized) return;
+  handlersInitialized = true;
+  registerBuiltinHandlers();
 }
 
 export function registerAssetType(handler: AssetTypeHandler): void {
-  handlers.set(handler.typeName, handler)
+  handlers.set(handler.typeName, handler);
 }
 
 export function getHandler(type: string): AssetTypeHandler {
-  ensureHandlersRegistered()
-  const handler = handlers.get(type)
+  ensureHandlersRegistered();
+  const handler = handlers.get(type);
   if (!handler) {
-    throw new UsageError(`Unknown asset type: "${type}"`)
+    throw new UsageError(`Unknown asset type: "${type}"`);
   }
-  return handler
+  return handler;
 }
 
 export function tryGetHandler(type: string): AssetTypeHandler | undefined {
-  ensureHandlersRegistered()
-  return handlers.get(type)
+  ensureHandlersRegistered();
+  return handlers.get(type);
 }
 
 export function getAllHandlers(): AssetTypeHandler[] {
-  ensureHandlersRegistered()
-  return Array.from(handlers.values())
+  ensureHandlersRegistered();
+  return Array.from(handlers.values());
 }
 
 export function getRegisteredTypeNames(): string[] {
-  ensureHandlersRegistered()
-  return Array.from(handlers.keys())
+  ensureHandlersRegistered();
+  return Array.from(handlers.keys());
 }

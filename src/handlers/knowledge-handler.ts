@@ -1,11 +1,11 @@
-import fs from "node:fs"
-import { parseMarkdownToc } from "../markdown"
-import { getRenderer } from "../file-context"
-import { isMarkdownFile, markdownCanonicalName, markdownAssetPath } from "./markdown-helpers"
-import { showInputToRenderContext } from "./handler-bridge"
-import type { AssetTypeHandler, ShowInput } from "../asset-type-handler"
-import type { ShowResponse } from "../stash-types"
-import type { StashEntry } from "../metadata"
+import fs from "node:fs";
+import type { AssetTypeHandler, ShowInput } from "../asset-type-handler";
+import { getRenderer } from "../file-context";
+import { parseMarkdownToc } from "../markdown";
+import type { StashEntry } from "../metadata";
+import type { ShowResponse } from "../stash-types";
+import { showInputToRenderContext } from "./handler-bridge";
+import { isMarkdownFile, markdownAssetPath, markdownCanonicalName } from "./markdown-helpers";
 
 export const knowledgeHandler: AssetTypeHandler = {
   typeName: "knowledge",
@@ -16,9 +16,9 @@ export const knowledgeHandler: AssetTypeHandler = {
   toAssetPath: markdownAssetPath,
 
   buildShowResponse(input: ShowInput): ShowResponse {
-    const renderer = getRenderer("knowledge-md")!
-    const ctx = showInputToRenderContext(input, "knowledge-md")
-    return renderer.buildShowResponse(ctx)
+    const renderer = getRenderer("knowledge-md")!;
+    const ctx = showInputToRenderContext(input, "knowledge-md");
+    return renderer.buildShowResponse(ctx);
   },
 
   defaultUsageGuide: [
@@ -28,11 +28,11 @@ export const knowledgeHandler: AssetTypeHandler = {
 
   extractTypeMetadata(entry: StashEntry, file: string): void {
     try {
-      const mdContent = fs.readFileSync(file, "utf8")
-      const toc = parseMarkdownToc(mdContent)
-      if (toc.headings.length > 0) entry.toc = toc.headings
+      const mdContent = fs.readFileSync(file, "utf8");
+      const toc = parseMarkdownToc(mdContent);
+      if (toc.headings.length > 0) entry.toc = toc.headings;
     } catch {
       // Non-fatal: skip TOC if file can't be read
     }
   },
-}
+};

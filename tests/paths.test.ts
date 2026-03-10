@@ -1,207 +1,191 @@
-import { test, expect, describe, afterEach } from "bun:test"
-import path from "node:path"
+import { afterEach, describe, expect, test } from "bun:test";
+import path from "node:path";
 import {
+  getBinDir,
+  getCacheDir,
   getConfigDir,
   getConfigPath,
-  getCacheDir,
   getDbPath,
+  getDefaultStashDir,
   getRegistryCacheDir,
   getRegistryIndexCacheDir,
-  getBinDir,
-  getDefaultStashDir,
-} from "../src/paths"
+} from "../src/paths";
 
 // ── Environment helpers ─────────────────────────────────────────────────────
 
-const savedEnv: Record<string, string | undefined> = {}
+const savedEnv: Record<string, string | undefined> = {};
 
-const envKeys = [
-  "XDG_CONFIG_HOME",
-  "XDG_CACHE_HOME",
-  "HOME",
-  "APPDATA",
-  "LOCALAPPDATA",
-  "USERPROFILE",
-]
+const envKeys = ["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "HOME", "APPDATA", "LOCALAPPDATA", "USERPROFILE"];
 
 function saveEnv(): void {
   for (const key of envKeys) {
-    savedEnv[key] = process.env[key]
+    savedEnv[key] = process.env[key];
   }
 }
 
 function restoreEnv(): void {
   for (const key of envKeys) {
     if (savedEnv[key] === undefined) {
-      delete process.env[key]
+      delete process.env[key];
     } else {
-      process.env[key] = savedEnv[key]
+      process.env[key] = savedEnv[key];
     }
   }
 }
 
-saveEnv()
+saveEnv();
 
 afterEach(() => {
-  restoreEnv()
-})
+  restoreEnv();
+});
 
 // ── getConfigDir ────────────────────────────────────────────────────────────
 
 describe("getConfigDir", () => {
   test("uses XDG_CONFIG_HOME on Unix", () => {
-    const result = getConfigDir({ XDG_CONFIG_HOME: "/custom/config" }, "linux")
-    expect(result).toBe(path.join("/custom/config", "agentikit"))
-  })
+    const result = getConfigDir({ XDG_CONFIG_HOME: "/custom/config" }, "linux");
+    expect(result).toBe(path.join("/custom/config", "agentikit"));
+  });
 
   test("falls back to HOME/.config on Unix when XDG_CONFIG_HOME is unset", () => {
-    const result = getConfigDir({ HOME: "/home/user" }, "linux")
-    expect(result).toBe(path.join("/home/user", ".config", "agentikit"))
-  })
+    const result = getConfigDir({ HOME: "/home/user" }, "linux");
+    expect(result).toBe(path.join("/home/user", ".config", "agentikit"));
+  });
 
   test("throws on Unix when HOME and XDG_CONFIG_HOME are both unset", () => {
     expect(() => getConfigDir({}, "linux")).toThrow(
-      "Unable to determine config directory. Set XDG_CONFIG_HOME or HOME."
-    )
-  })
+      "Unable to determine config directory. Set XDG_CONFIG_HOME or HOME.",
+    );
+  });
 
   test("uses APPDATA on Windows", () => {
-    const result = getConfigDir({ APPDATA: String.raw`C:\Users\user\AppData\Roaming` }, "win32")
-    expect(result).toBe(path.join(String.raw`C:\Users\user\AppData\Roaming`, "agentikit"))
-  })
+    const result = getConfigDir({ APPDATA: String.raw`C:\Users\user\AppData\Roaming` }, "win32");
+    expect(result).toBe(path.join(String.raw`C:\Users\user\AppData\Roaming`, "agentikit"));
+  });
 
   test("falls back to USERPROFILE on Windows when APPDATA is unset", () => {
-    const result = getConfigDir({ USERPROFILE: String.raw`C:\Users\user` }, "win32")
-    expect(result).toBe(
-      path.join(String.raw`C:\Users\user`, "AppData", "Roaming", "agentikit")
-    )
-  })
+    const result = getConfigDir({ USERPROFILE: String.raw`C:\Users\user` }, "win32");
+    expect(result).toBe(path.join(String.raw`C:\Users\user`, "AppData", "Roaming", "agentikit"));
+  });
 
   test("throws on Windows when APPDATA and USERPROFILE are both unset", () => {
     expect(() => getConfigDir({}, "win32")).toThrow(
-      "Unable to determine config directory. Set APPDATA or USERPROFILE."
-    )
-  })
+      "Unable to determine config directory. Set APPDATA or USERPROFILE.",
+    );
+  });
 
   test("trims whitespace from XDG_CONFIG_HOME", () => {
-    const result = getConfigDir({ XDG_CONFIG_HOME: "  /trimmed  " }, "linux")
-    expect(result).toBe(path.join("/trimmed", "agentikit"))
-  })
+    const result = getConfigDir({ XDG_CONFIG_HOME: "  /trimmed  " }, "linux");
+    expect(result).toBe(path.join("/trimmed", "agentikit"));
+  });
 
   test("trims whitespace from HOME", () => {
-    const result = getConfigDir({ HOME: "  /home/user  " }, "linux")
-    expect(result).toBe(path.join("/home/user", ".config", "agentikit"))
-  })
+    const result = getConfigDir({ HOME: "  /home/user  " }, "linux");
+    expect(result).toBe(path.join("/home/user", ".config", "agentikit"));
+  });
 
   test("ignores empty XDG_CONFIG_HOME and falls back to HOME", () => {
-    const result = getConfigDir({ XDG_CONFIG_HOME: "  ", HOME: "/home/user" }, "linux")
-    expect(result).toBe(path.join("/home/user", ".config", "agentikit"))
-  })
+    const result = getConfigDir({ XDG_CONFIG_HOME: "  ", HOME: "/home/user" }, "linux");
+    expect(result).toBe(path.join("/home/user", ".config", "agentikit"));
+  });
 
   test("ignores empty APPDATA on Windows and falls back to USERPROFILE", () => {
-    const result = getConfigDir(
-      { APPDATA: "  ", USERPROFILE: String.raw`C:\Users\user` },
-      "win32"
-    )
-    expect(result).toBe(
-      path.join(String.raw`C:\Users\user`, "AppData", "Roaming", "agentikit")
-    )
-  })
+    const result = getConfigDir({ APPDATA: "  ", USERPROFILE: String.raw`C:\Users\user` }, "win32");
+    expect(result).toBe(path.join(String.raw`C:\Users\user`, "AppData", "Roaming", "agentikit"));
+  });
 
   test("uses default process.env when env argument omitted", () => {
-    process.env.XDG_CONFIG_HOME = "/test-xdg"
-    const result = getConfigDir()
-    expect(result).toBe(path.join("/test-xdg", "agentikit"))
-  })
+    process.env.XDG_CONFIG_HOME = "/test-xdg";
+    const result = getConfigDir();
+    expect(result).toBe(path.join("/test-xdg", "agentikit"));
+  });
 
   test("uses darwin platform same as linux (XDG path)", () => {
-    const result = getConfigDir({ XDG_CONFIG_HOME: "/darwin/cfg" }, "darwin")
-    expect(result).toBe(path.join("/darwin/cfg", "agentikit"))
-  })
-})
+    const result = getConfigDir({ XDG_CONFIG_HOME: "/darwin/cfg" }, "darwin");
+    expect(result).toBe(path.join("/darwin/cfg", "agentikit"));
+  });
+});
 
 // ── getConfigPath ───────────────────────────────────────────────────────────
 
 describe("getConfigPath", () => {
   test("returns config.json under config dir", () => {
-    process.env.XDG_CONFIG_HOME = "/test-cfg"
-    expect(getConfigPath()).toBe(path.join("/test-cfg", "agentikit", "config.json"))
-  })
-})
+    process.env.XDG_CONFIG_HOME = "/test-cfg";
+    expect(getConfigPath()).toBe(path.join("/test-cfg", "agentikit", "config.json"));
+  });
+});
 
 // ── getCacheDir ─────────────────────────────────────────────────────────────
 
 describe("getCacheDir", () => {
   test("uses XDG_CACHE_HOME on Unix", () => {
-    process.env.XDG_CACHE_HOME = "/custom/cache"
-    const result = getCacheDir()
-    expect(result).toBe(path.join("/custom/cache", "agentikit"))
-  })
+    process.env.XDG_CACHE_HOME = "/custom/cache";
+    const result = getCacheDir();
+    expect(result).toBe(path.join("/custom/cache", "agentikit"));
+  });
 
   test("falls back to HOME/.cache on Unix when XDG_CACHE_HOME is unset", () => {
-    delete process.env.XDG_CACHE_HOME
-    process.env.HOME = "/home/user"
-    const result = getCacheDir()
-    expect(result).toBe(path.join("/home/user", ".cache", "agentikit"))
-  })
+    delete process.env.XDG_CACHE_HOME;
+    process.env.HOME = "/home/user";
+    const result = getCacheDir();
+    expect(result).toBe(path.join("/home/user", ".cache", "agentikit"));
+  });
 
   test("falls back to /tmp/agentikit-cache when HOME is also unset", () => {
-    delete process.env.XDG_CACHE_HOME
-    delete process.env.HOME
-    const result = getCacheDir()
-    expect(result).toBe(path.join("/tmp", "agentikit-cache"))
-  })
-})
+    delete process.env.XDG_CACHE_HOME;
+    delete process.env.HOME;
+    const result = getCacheDir();
+    expect(result).toBe(path.join("/tmp", "agentikit-cache"));
+  });
+});
 
 // ── getDbPath ───────────────────────────────────────────────────────────────
 
 describe("getDbPath", () => {
   test("returns index.db under cache dir", () => {
-    process.env.XDG_CACHE_HOME = "/cache"
-    expect(getDbPath()).toBe(path.join("/cache", "agentikit", "index.db"))
-  })
-})
+    process.env.XDG_CACHE_HOME = "/cache";
+    expect(getDbPath()).toBe(path.join("/cache", "agentikit", "index.db"));
+  });
+});
 
 // ── getRegistryCacheDir ─────────────────────────────────────────────────────
 
 describe("getRegistryCacheDir", () => {
   test("returns registry subdir under cache dir", () => {
-    process.env.XDG_CACHE_HOME = "/cache"
-    expect(getRegistryCacheDir()).toBe(path.join("/cache", "agentikit", "registry"))
-  })
-})
+    process.env.XDG_CACHE_HOME = "/cache";
+    expect(getRegistryCacheDir()).toBe(path.join("/cache", "agentikit", "registry"));
+  });
+});
 
 // ── getRegistryIndexCacheDir ────────────────────────────────────────────────
 
 describe("getRegistryIndexCacheDir", () => {
   test("returns registry-index subdir under cache dir", () => {
-    process.env.XDG_CACHE_HOME = "/cache"
-    expect(getRegistryIndexCacheDir()).toBe(path.join("/cache", "agentikit", "registry-index"))
-  })
-})
+    process.env.XDG_CACHE_HOME = "/cache";
+    expect(getRegistryIndexCacheDir()).toBe(path.join("/cache", "agentikit", "registry-index"));
+  });
+});
 
 // ── getBinDir ───────────────────────────────────────────────────────────────
 
 describe("getBinDir", () => {
   test("returns bin subdir under cache dir", () => {
-    process.env.XDG_CACHE_HOME = "/cache"
-    expect(getBinDir()).toBe(path.join("/cache", "agentikit", "bin"))
-  })
-})
+    process.env.XDG_CACHE_HOME = "/cache";
+    expect(getBinDir()).toBe(path.join("/cache", "agentikit", "bin"));
+  });
+});
 
 // ── getDefaultStashDir ──────────────────────────────────────────────────────
 
 describe("getDefaultStashDir", () => {
   test("returns HOME/agentikit on Unix", () => {
-    process.env.HOME = "/home/user"
-    const result = getDefaultStashDir()
-    expect(result).toBe(path.join("/home/user", "agentikit"))
-  })
+    process.env.HOME = "/home/user";
+    const result = getDefaultStashDir();
+    expect(result).toBe(path.join("/home/user", "agentikit"));
+  });
 
   test("throws when HOME is unset on Unix", () => {
-    delete process.env.HOME
-    expect(() => getDefaultStashDir()).toThrow(
-      "Unable to determine default stash directory. Set HOME."
-    )
-  })
-})
+    delete process.env.HOME;
+    expect(() => getDefaultStashDir()).toThrow("Unable to determine default stash directory. Set HOME.");
+  });
+});

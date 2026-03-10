@@ -1,79 +1,79 @@
-export type RegistrySource = "npm" | "github" | "git" | "local"
+export type RegistrySource = "npm" | "github" | "git" | "local";
 
 export interface RegistryRefBase {
-  source: RegistrySource
-  ref: string
-  id: string
+  source: RegistrySource;
+  ref: string;
+  id: string;
 }
 
 export interface ParsedNpmRef extends RegistryRefBase {
-  source: "npm"
-  packageName: string
-  requestedVersionOrTag?: string
+  source: "npm";
+  packageName: string;
+  requestedVersionOrTag?: string;
 }
 
 export interface ParsedGithubRef extends RegistryRefBase {
-  source: "github"
-  owner: string
-  repo: string
-  requestedRef?: string
+  source: "github";
+  owner: string;
+  repo: string;
+  requestedRef?: string;
 }
 
 export interface ParsedGitRef extends RegistryRefBase {
-  source: "git"
-  url: string
-  requestedRef?: string
+  source: "git";
+  url: string;
+  requestedRef?: string;
 }
 
 export interface ParsedLocalRef extends RegistryRefBase {
-  source: "local"
-  repoRoot?: string
-  sourcePath: string
+  source: "local";
+  repoRoot?: string;
+  sourcePath: string;
 }
 
-export type ParsedRegistryRef = ParsedNpmRef | ParsedGithubRef | ParsedGitRef | ParsedLocalRef
+export type ParsedRegistryRef = ParsedNpmRef | ParsedGithubRef | ParsedGitRef | ParsedLocalRef;
 
 export interface ResolvedRegistryArtifact {
-  id: string
-  source: RegistrySource
-  ref: string
-  artifactUrl: string
-  resolvedVersion?: string
-  resolvedRevision?: string
+  id: string;
+  source: RegistrySource;
+  ref: string;
+  artifactUrl: string;
+  resolvedVersion?: string;
+  resolvedRevision?: string;
 }
 
 export interface RegistryInstalledEntry {
-  id: string
-  source: RegistrySource
-  ref: string
-  resolvedVersion?: string
-  resolvedRevision?: string
-  artifactUrl: string
-  stashRoot: string
-  cacheDir: string
-  installedAt: string
+  id: string;
+  source: RegistrySource;
+  ref: string;
+  resolvedVersion?: string;
+  resolvedRevision?: string;
+  artifactUrl: string;
+  stashRoot: string;
+  cacheDir: string;
+  installedAt: string;
 }
 
 export interface RegistryInstallResult extends RegistryInstalledEntry {
-  extractedDir: string
-  integrity?: string
+  extractedDir: string;
+  integrity?: string;
 }
 
 export interface RegistrySearchHit {
-  source: RegistrySource
-  id: string
-  title: string
-  description?: string
-  ref: string
-  homepage?: string
-  score?: number
-  metadata?: Record<string, string>
+  source: RegistrySource;
+  id: string;
+  title: string;
+  description?: string;
+  ref: string;
+  homepage?: string;
+  score?: number;
+  metadata?: Record<string, string>;
   /** Whether this entry was manually reviewed and approved */
-  curated?: boolean
+  curated?: boolean;
 }
 
 export interface RegistrySearchResponse {
-  query: string
-  hits: RegistrySearchHit[]
-  warnings: string[]
+  query: string;
+  hits: RegistrySearchHit[];
+  warnings: string[];
 }

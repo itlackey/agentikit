@@ -103,7 +103,7 @@ jobs:
       - run: bun install
 
       - name: Compile binary
-        run: bun build ./src/cli.ts --compile --target=${{ matrix.target }} --outfile ${{ matrix.artifact }}
+        run: bun build ./src/cli.ts --compile --target=${{ matrix.target }} --outfile ${{ matrix.artifact }} --define "AKM_VERSION='${{ inputs.version }}'"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1,5 +1,9 @@
 # Agent-i-Kit
 
+[![npm version](https://img.shields.io/npm/v/agentikit)](https://www.npmjs.com/package/agentikit)
+[![CI](https://github.com/itlackey/agentikit/actions/workflows/ci.yml/badge.svg)](https://github.com/itlackey/agentikit/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/agentikit)](LICENSE)
+
 A package manager for AI agent capabilities — tools, skills, commands, agents,
 knowledge, and scripts — that works with any AI coding assistant that can run
 shell commands.
@@ -281,10 +285,9 @@ akm upgrade --check   # Check for updates without installing
 
 ## Status
 
-Agent-i-Kit is in early development (v0.0.x). The core CLI, stash model, and
-registry are functional and in daily use. Feedback, issues, and PRs welcome —
-especially around real-world usage patterns and integrations with different
-AI coding assistants.
+Agent-i-Kit is approaching v1.0. The core CLI, stash model, and registry are
+stable and in daily use. Feedback, issues, and PRs welcome — especially around
+real-world usage patterns and integrations with different AI coding assistants.
 
 ## License
 

@@ -1,28 +1,37 @@
-import path from "node:path"
-import type { AgentikitAssetType } from "./common"
-import { toPosix } from "./common"
-import { tryGetHandler } from "./asset-type-handler"
+import path from "node:path";
+import { tryGetHandler } from "./asset-type-handler";
+import type { AgentikitAssetType } from "./common";
+import { toPosix } from "./common";
 
-export const SCRIPT_EXTENSIONS = new Set([".sh", ".ts", ".js", ".ps1", ".cmd", ".bat"])
+export const SCRIPT_EXTENSIONS = new Set([".sh", ".ts", ".js", ".ps1", ".cmd", ".bat"]);
 
 export interface AssetSpec {
-  stashDir: string
-  isRelevantFile: (fileName: string) => boolean
-  toCanonicalName: (typeRoot: string, filePath: string) => string | undefined
-  toAssetPath: (typeRoot: string, name: string) => string
+  stashDir: string;
+  isRelevantFile: (fileName: string) => boolean;
+  toCanonicalName: (typeRoot: string, filePath: string) => string | undefined;
+  toAssetPath: (typeRoot: string, name: string) => string;
 }
 
 const markdownSpec: Omit<AssetSpec, "stashDir"> = {
   isRelevantFile: (fileName) => path.extname(fileName).toLowerCase() === ".md",
   toCanonicalName: (typeRoot, filePath) => toPosix(path.relative(typeRoot, filePath)),
   toAssetPath: (typeRoot, name) => path.join(typeRoot, name),
-}
+};
 
 /** Extended set of script extensions for the script asset type */
 export const SCRIPT_EXTENSIONS_BROAD = new Set([
   ...SCRIPT_EXTENSIONS,
-  ".py", ".rb", ".go", ".pl", ".php", ".lua", ".r", ".swift", ".kt", ".kts",
-])
+  ".py",
+  ".rb",
+  ".go",
+  ".pl",
+  ".php",
+  ".lua",
+  ".r",
+  ".swift",
+  ".kt",
+  ".kts",
+]);
 
 export const ASSET_SPECS: Record<AgentikitAssetType, AssetSpec> = {
   tool: {
@@ -35,9 +44,9 @@ export const ASSET_SPECS: Record<AgentikitAssetType, AssetSpec> = {
     stashDir: "skills",
     isRelevantFile: (fileName) => fileName === "SKILL.md",
     toCanonicalName: (typeRoot, filePath) => {
-      const relDir = toPosix(path.dirname(path.relative(typeRoot, filePath)))
-      if (!relDir || relDir === ".") return undefined
-      return relDir
+      const relDir = toPosix(path.dirname(path.relative(typeRoot, filePath)));
+      if (!relDir || relDir === ".") return undefined;
+      return relDir;
     },
     toAssetPath: (typeRoot, name) => path.join(typeRoot, name, "SKILL.md"),
   },
@@ -50,22 +59,22 @@ export const ASSET_SPECS: Record<AgentikitAssetType, AssetSpec> = {
     toCanonicalName: (typeRoot, filePath) => toPosix(path.relative(typeRoot, filePath)),
     toAssetPath: (typeRoot, name) => path.join(typeRoot, name),
   },
-}
+};
 
-export const ASSET_TYPES = Object.keys(ASSET_SPECS) as AgentikitAssetType[]
+export const ASSET_TYPES = Object.keys(ASSET_SPECS) as AgentikitAssetType[];
 
 export const TYPE_DIRS: Record<AgentikitAssetType, string> = ASSET_TYPES.reduce(
   (acc, type) => {
-    acc[type] = ASSET_SPECS[type].stashDir
-    return acc
+    acc[type] = ASSET_SPECS[type].stashDir;
+    return acc;
   },
   {} as Record<AgentikitAssetType, string>,
-)
+);
 
 export function isRelevantAssetFile(assetType: AgentikitAssetType, fileName: string): boolean {
-  const handler = tryGetHandler(assetType)
-  if (handler) return handler.isRelevantFile(fileName)
-  return ASSET_SPECS[assetType].isRelevantFile(fileName)
+  const handler = tryGetHandler(assetType);
+  if (handler) return handler.isRelevantFile(fileName);
+  return ASSET_SPECS[assetType].isRelevantFile(fileName);
 }
 
 export function deriveCanonicalAssetName(
@@ -73,13 +82,13 @@ export function deriveCanonicalAssetName(
   typeRoot: string,
   filePath: string,
 ): string | undefined {
-  const handler = tryGetHandler(assetType)
-  if (handler) return handler.toCanonicalName(typeRoot, filePath)
-  return ASSET_SPECS[assetType].toCanonicalName(typeRoot, filePath)
+  const handler = tryGetHandler(assetType);
+  if (handler) return handler.toCanonicalName(typeRoot, filePath);
+  return ASSET_SPECS[assetType].toCanonicalName(typeRoot, filePath);
 }
 
 export function resolveAssetPathFromName(assetType: AgentikitAssetType, typeRoot: string, name: string): string {
-  const handler = tryGetHandler(assetType)
-  if (handler) return handler.toAssetPath(typeRoot, name)
-  return ASSET_SPECS[assetType].toAssetPath(typeRoot, name)
+  const handler = tryGetHandler(assetType);
+  if (handler) return handler.toAssetPath(typeRoot, name);
+  return ASSET_SPECS[assetType].toAssetPath(typeRoot, name);
 }

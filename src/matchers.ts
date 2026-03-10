@@ -17,9 +17,9 @@
  *   frontmatter, `$ARGUMENTS`/`$1`-`$3` placeholders) return 18.
  */
 
-import { SCRIPT_EXTENSIONS_BROAD } from "./asset-spec"
-import { registerMatcher } from "./file-context"
-import type { AssetMatcher, FileContext, MatchResult } from "./file-context"
+import { SCRIPT_EXTENSIONS_BROAD } from "./asset-spec";
+import type { AssetMatcher, FileContext, MatchResult } from "./file-context";
+import { registerMatcher } from "./file-context";
 
 // ── extensionMatcher (specificity: 3) ────────────────────────────────────────
 
@@ -36,15 +36,15 @@ import type { AssetMatcher, FileContext, MatchResult } from "./file-context"
 export function extensionMatcher(ctx: FileContext): MatchResult | null {
   // SKILL.md is a skill regardless of location
   if (ctx.fileName === "SKILL.md") {
-    return { type: "skill", specificity: 3, renderer: "skill-md" }
+    return { type: "skill", specificity: 3, renderer: "skill-md" };
   }
 
   // Known script extensions (excluding .md, handled by smartMdMatcher)
   if (SCRIPT_EXTENSIONS_BROAD.has(ctx.ext)) {
-    return { type: "script", specificity: 3, renderer: "script-source" }
+    return { type: "script", specificity: 3, renderer: "script-source" };
   }
 
-  return null
+  return null;
 }
 
 // ── directoryMatcher (specificity: 10) ──────────────────────────────────────
@@ -57,32 +57,32 @@ export function extensionMatcher(ctx: FileContext): MatchResult | null {
  * directories -- the distinction is purely organizational.
  */
 export function directoryMatcher(ctx: FileContext): MatchResult | null {
-  const topDir = ctx.ancestorDirs[0]
-  if (!topDir) return null
+  const topDir = ctx.ancestorDirs[0];
+  if (!topDir) return null;
 
-  const ext = ctx.ext
+  const ext = ctx.ext;
 
   if ((topDir === "tools" || topDir === "scripts") && SCRIPT_EXTENSIONS_BROAD.has(ext)) {
-    return { type: "script", specificity: 10, renderer: "script-source" }
+    return { type: "script", specificity: 10, renderer: "script-source" };
   }
 
   if (topDir === "skills" && ctx.fileName === "SKILL.md") {
-    return { type: "skill", specificity: 10, renderer: "skill-md" }
+    return { type: "skill", specificity: 10, renderer: "skill-md" };
   }
 
   if (topDir === "commands" && ext === ".md") {
-    return { type: "command", specificity: 10, renderer: "command-md" }
+    return { type: "command", specificity: 10, renderer: "command-md" };
   }
 
   if (topDir === "agents" && ext === ".md") {
-    return { type: "agent", specificity: 10, renderer: "agent-md" }
+    return { type: "agent", specificity: 10, renderer: "agent-md" };
   }
 
   if (topDir === "knowledge" && ext === ".md") {
-    return { type: "knowledge", specificity: 10, renderer: "knowledge-md" }
+    return { type: "knowledge", specificity: 10, renderer: "knowledge-md" };
   }
 
-  return null
+  return null;
 }
 
 // ── parentDirHintMatcher (specificity: 15) ──────────────────────────────────
@@ -96,35 +96,35 @@ export function directoryMatcher(ctx: FileContext): MatchResult | null {
  * Accepts ALL known script extensions in both `tools/` and `scripts/`.
  */
 export function parentDirHintMatcher(ctx: FileContext): MatchResult | null {
-  const { parentDir, ext, fileName } = ctx
+  const { parentDir, ext, fileName } = ctx;
 
   if ((parentDir === "tools" || parentDir === "scripts") && SCRIPT_EXTENSIONS_BROAD.has(ext)) {
-    return { type: "script", specificity: 15, renderer: "script-source" }
+    return { type: "script", specificity: 15, renderer: "script-source" };
   }
 
   if (parentDir === "skills" && fileName === "SKILL.md") {
-    return { type: "skill", specificity: 15, renderer: "skill-md" }
+    return { type: "skill", specificity: 15, renderer: "skill-md" };
   }
 
   if (parentDir === "agents" && ext === ".md") {
-    return { type: "agent", specificity: 15, renderer: "agent-md" }
+    return { type: "agent", specificity: 15, renderer: "agent-md" };
   }
 
   if (parentDir === "commands" && ext === ".md") {
-    return { type: "command", specificity: 15, renderer: "command-md" }
+    return { type: "command", specificity: 15, renderer: "command-md" };
   }
 
   if (parentDir === "knowledge" && ext === ".md") {
-    return { type: "knowledge", specificity: 15, renderer: "knowledge-md" }
+    return { type: "knowledge", specificity: 15, renderer: "knowledge-md" };
   }
 
-  return null
+  return null;
 }
 
 // ── smartMdMatcher (specificity: 20 / 18 / 8 / 5) ──────────────────────────
 
 /** Pattern that matches OpenCode command placeholders in markdown body. */
-const COMMAND_PLACEHOLDER_RE = /\$ARGUMENTS|\$[123]\b/
+const COMMAND_PLACEHOLDER_RE = /\$ARGUMENTS|\$[123]\b/;
 
 /**
  * Content-based matcher for `.md` files. Inspects frontmatter keys and body
@@ -141,29 +141,29 @@ const COMMAND_PLACEHOLDER_RE = /\$ARGUMENTS|\$[123]\b/
  * still win over command signals when both are present.
  */
 export function smartMdMatcher(ctx: FileContext): MatchResult | null {
-  if (ctx.ext !== ".md") return null
+  if (ctx.ext !== ".md") return null;
 
-  const fm = ctx.frontmatter()
+  const fm = ctx.frontmatter();
 
   if (fm) {
     // Agent-exclusive indicators: toolPolicy or tools
     // These return high specificity (20) to override everything else.
     if ("toolPolicy" in fm || "tools" in fm) {
-      return { type: "agent", specificity: 20, renderer: "agent-md" }
+      return { type: "agent", specificity: 20, renderer: "agent-md" };
     }
 
     // Command signal: `agent` frontmatter key names a dispatch target.
     // This is an OpenCode convention specific to commands.
     if ("agent" in fm) {
-      return { type: "command", specificity: 18, renderer: "command-md" }
+      return { type: "command", specificity: 18, renderer: "command-md" };
     }
   }
 
   // Command signal: body contains $ARGUMENTS or $1/$2/$3 placeholders.
   // These are definitively command template patterns (OpenCode convention).
-  const body = ctx.content()
+  const body = ctx.content();
   if (COMMAND_PLACEHOLDER_RE.test(body)) {
-    return { type: "command", specificity: 18, renderer: "command-md" }
+    return { type: "command", specificity: 18, renderer: "command-md" };
   }
 
   if (fm) {
@@ -172,23 +172,18 @@ export function smartMdMatcher(ctx: FileContext): MatchResult | null {
     // when the file lives in commands/, but model still classifies an .md
     // as agent when no directory hint is present.
     if ("model" in fm) {
-      return { type: "agent", specificity: 8, renderer: "agent-md" }
+      return { type: "agent", specificity: 8, renderer: "agent-md" };
     }
   }
 
   // Weak fallback: any .md file is assumed to be knowledge
-  return { type: "knowledge", specificity: 5, renderer: "knowledge-md" }
+  return { type: "knowledge", specificity: 5, renderer: "knowledge-md" };
 }
 
 // ── Registration ────────────────────────────────────────────────────────────
 
 /** All built-in matchers in registration order (later wins ties). */
-const builtinMatchers: AssetMatcher[] = [
-  extensionMatcher,
-  directoryMatcher,
-  parentDirHintMatcher,
-  smartMdMatcher,
-]
+const builtinMatchers: AssetMatcher[] = [extensionMatcher, directoryMatcher, parentDirHintMatcher, smartMdMatcher];
 
 /**
  * Register all built-in matchers with the file-context registry.
@@ -196,6 +191,6 @@ const builtinMatchers: AssetMatcher[] = [
  */
 export function registerBuiltinMatchers(): void {
   for (const matcher of builtinMatchers) {
-    registerMatcher(matcher)
+    registerMatcher(matcher);
   }
 }

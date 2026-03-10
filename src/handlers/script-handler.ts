@@ -1,38 +1,38 @@
-import path from "node:path"
-import { SCRIPT_EXTENSIONS_BROAD } from "../asset-spec"
-import { toPosix } from "../common"
-import { extractDescriptionFromComments } from "../metadata"
-import { getRenderer } from "../file-context"
-import { showInputToRenderContext } from "./handler-bridge"
-import type { AssetTypeHandler, ShowInput } from "../asset-type-handler"
-import type { ShowResponse, LocalSearchHit } from "../stash-types"
-import type { StashEntry } from "../metadata"
+import path from "node:path";
+import { SCRIPT_EXTENSIONS_BROAD } from "../asset-spec";
+import type { AssetTypeHandler, ShowInput } from "../asset-type-handler";
+import { toPosix } from "../common";
+import { getRenderer } from "../file-context";
+import type { StashEntry } from "../metadata";
+import { extractDescriptionFromComments } from "../metadata";
+import type { LocalSearchHit, ShowResponse } from "../stash-types";
+import { showInputToRenderContext } from "./handler-bridge";
 
 export const scriptHandler: AssetTypeHandler = {
   typeName: "script",
   stashDir: "scripts",
 
   isRelevantFile(fileName: string): boolean {
-    return SCRIPT_EXTENSIONS_BROAD.has(path.extname(fileName).toLowerCase())
+    return SCRIPT_EXTENSIONS_BROAD.has(path.extname(fileName).toLowerCase());
   },
 
   toCanonicalName(typeRoot: string, filePath: string): string | undefined {
-    return toPosix(path.relative(typeRoot, filePath))
+    return toPosix(path.relative(typeRoot, filePath));
   },
 
   toAssetPath(typeRoot: string, name: string): string {
-    return path.join(typeRoot, name)
+    return path.join(typeRoot, name);
   },
 
   buildShowResponse(input: ShowInput): ShowResponse {
-    const renderer = getRenderer("script-source")!
-    const ctx = showInputToRenderContext(input, "script-source")
-    return renderer.buildShowResponse(ctx)
+    const renderer = getRenderer("script-source")!;
+    const ctx = showInputToRenderContext(input, "script-source");
+    return renderer.buildShowResponse(ctx);
   },
 
   enrichSearchHit(hit: LocalSearchHit, stashDir: string): void {
-    const renderer = getRenderer("script-source")!
-    renderer.enrichSearchHit!(hit, stashDir)
+    const renderer = getRenderer("script-source")!;
+    renderer.enrichSearchHit!(hit, stashDir);
   },
 
   defaultUsageGuide: [
@@ -42,12 +42,12 @@ export const scriptHandler: AssetTypeHandler = {
 
   extractTypeMetadata(entry: StashEntry, file: string, ext: string): void {
     if (ext !== ".md") {
-      const commentDesc = extractDescriptionFromComments(file)
+      const commentDesc = extractDescriptionFromComments(file);
       if (commentDesc && !entry.description) {
-        entry.description = commentDesc
-        entry.source = "comments"
-        entry.confidence = 0.7
+        entry.description = commentDesc;
+        entry.source = "comments";
+        entry.confidence = 0.7;
       }
     }
   },
-}
+};

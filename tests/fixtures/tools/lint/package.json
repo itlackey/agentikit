@@ -1,5 +1,10 @@
 {
   "name": "agentikit-eslint",
   "description": "ESLint integration for checking code quality and style",
-  "keywords": ["eslint", "lint", "code-quality", "style"]
+  "keywords": [
+    "eslint",
+    "lint",
+    "code-quality",
+    "style"
+  ]
 }
