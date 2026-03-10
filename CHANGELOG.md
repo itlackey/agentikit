@@ -11,9 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Biome linter and formatter configuration
 - README badges (npm version, CI status, license)
 
+### Fixed
+- CLI crash on macOS when running as compiled binary (`package.json` not embedded)
+
 ### Changed
 - Pinned `sqlite-vec` to exact version `0.1.7-alpha.2` (removed caret range)
 - Replaced `(Bun as any).YAML` cast with proper type guard in CLI
+- Version now injected at compile time via `--define AKM_VERSION` with safe runtime fallback
 
 ## [0.0.13] - 2026-03-09
 
