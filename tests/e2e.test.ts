@@ -233,7 +233,9 @@ describe("Scenario: Full lifecycle (index → search → show)", () => {
     expect(result.hits.length).toBeGreaterThan(0);
     // Git tools should rank higher than docker tools for this query
     const topNames = result.hits.slice(0, 5).map((h) => h.name.toLowerCase());
-    const hasGitRelated = topNames.some((n) => n.includes("git") || n.includes("diff") || n.includes("commit") || n.includes("summarize"));
+    const hasGitRelated = topNames.some(
+      (n) => n.includes("git") || n.includes("diff") || n.includes("commit") || n.includes("summarize"),
+    );
     expect(hasGitRelated).toBe(true);
   });
 
@@ -1000,17 +1002,21 @@ describe("Scenario: Zero-config progressive improvement", () => {
     const stashPath = path.join(stashDir, "tools", "format", ".stash.json");
     fs.writeFileSync(
       stashPath,
-      JSON.stringify({
-        entries: [
-          {
-            name: "prettier-check",
-            type: "tool",
-            description: "Check code formatting with Prettier",
-            tags: ["prettier", "format", "style"],
-            entry: "prettier-check.sh",
-          },
-        ],
-      }, null, 2),
+      JSON.stringify(
+        {
+          entries: [
+            {
+              name: "prettier-check",
+              type: "tool",
+              description: "Check code formatting with Prettier",
+              tags: ["prettier", "format", "style"],
+              entry: "prettier-check.sh",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
     );
 
     // Re-index — should use user override

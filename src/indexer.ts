@@ -153,7 +153,13 @@ function indexEntries(
   scannedDirs: number;
   skippedDirs: number;
   generatedCount: number;
-  dirsNeedingLlm: Array<{ dirPath: string; files: string[]; assetType: AgentikitAssetType; currentStashDir: string; stash: StashFile }>;
+  dirsNeedingLlm: Array<{
+    dirPath: string;
+    files: string[];
+    assetType: AgentikitAssetType;
+    currentStashDir: string;
+    stash: StashFile;
+  }>;
 } {
   let scannedDirs = 0;
   let skippedDirs = 0;
@@ -208,7 +214,9 @@ function indexEntries(
 
             // Check for files on disk that aren't covered by existing .stash.json entries.
             // This handles the case where new files are added after the initial index.
-            const coveredFiles = new Set(stash.entries.map((e) => e.entry).filter((e): e is string => !!e));
+            const coveredFiles = new Set(
+              stash.entries.map((e) => (e.entry ? path.basename(e.entry) : "")).filter((e) => !!e),
+            );
             const uncoveredFiles = files.filter((f) => !coveredFiles.has(path.basename(f)));
             if (uncoveredFiles.length > 0) {
               const generated = generateMetadata(dirPath, assetType, uncoveredFiles, typeRoot);
@@ -254,15 +262,25 @@ function indexEntries(
 async function enhanceDirsWithLlm(
   db: import("bun:sqlite").Database,
   config: import("./config").AgentikitConfig,
-  dirsNeedingLlm: Array<{ dirPath: string; files: string[]; assetType: AgentikitAssetType; currentStashDir: string; stash: StashFile }>,
+  dirsNeedingLlm: Array<{
+    dirPath: string;
+    files: string[];
+    assetType: AgentikitAssetType;
+    currentStashDir: string;
+    stash: StashFile;
+  }>,
 ): Promise<void> {
   if (!config.llm || dirsNeedingLlm.length === 0) return;
 
   for (const { dirPath, files, currentStashDir, stash: originalStash } of dirsNeedingLlm) {
-    const stash = await enhanceStashWithLlm(config.llm, originalStash, dirPath, files);
+    // Only enhance generated entries; user-provided overrides should not be overwritten
+    const generatedEntries = originalStash.entries.filter((e) => e.generated);
+    if (generatedEntries.length === 0) continue;
+    const generatedStash: StashFile = { entries: generatedEntries };
+    const enhanced = await enhanceStashWithLlm(config.llm, generatedStash, dirPath, files);
 
-    // Re-upsert enhanced entries
-    for (const entry of stash.entries) {
+    // Re-upsert only the enhanced (generated) entries
+    for (const entry of enhanced.entries) {
       const entryPath = entry.entry ? path.join(dirPath, entry.entry) : files[0] || dirPath;
       const entryKey = `${currentStashDir}:${entry.type}:${entry.name}`;
       const searchText = buildSearchText(entry);
