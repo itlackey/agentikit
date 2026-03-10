@@ -331,7 +331,7 @@ const configCommand = defineCommand({
           if (args.all) {
             let stashDir: string
             try {
-              stashDir = resolveStashDir()
+              stashDir = resolveStashDir({ readOnly: true })
             } catch {
               stashDir = getDefaultStashDir() + " (not initialized)"
             }

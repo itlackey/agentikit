@@ -2,7 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fetchWithRetry } from "./common"
 import type { RegistrySearchHit, RegistrySearchResponse } from "./registry-types"
-import { getCacheDir } from "./paths"
+import { getRegistryIndexCacheDir } from "./paths"
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -140,17 +140,13 @@ function writeCachedIndex(cachePath: string, index: RegistryIndex): void {
 }
 
 function indexCachePath(url: string): string {
-  const cacheRoot = resolveCacheDir()
+  const indexDir = getRegistryIndexCacheDir()
   // Deterministic filename from URL
   const slug = url
     .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 120)
-  return path.join(cacheRoot, "registry-index", `${slug}.json`)
-}
-
-function resolveCacheDir(): string {
-  return getCacheDir()
+  return path.join(indexDir, `${slug}.json`)
 }
 
 function isCacheExpired(mtimeMs: number): boolean {

@@ -28,12 +28,12 @@ export function isAssetType(type: string): type is AgentikitAssetType {
  *
  * Throws if no valid stash directory is found.
  */
-export function resolveStashDir(): string {
+export function resolveStashDir(options?: { readOnly?: boolean }): string {
   // 1. Env var override (for CI, scripts, testing)
   const envDir = process.env.AKM_STASH_DIR?.trim()
   if (envDir) {
     const resolved = validateStashDir(envDir)
-    persistStashDirToConfig(resolved)
+    if (!options?.readOnly) persistStashDirToConfig(resolved)
     return resolved
   }
 

@@ -20,9 +20,10 @@ afterAll(() => {
   }
 })
 
-/** Isolated temp dirs so the CLI never touches real user config/cache. */
+/** Isolated temp dirs so the CLI never touches real user config/cache/home. */
 const xdgCache = makeTempDir()
 const xdgConfig = makeTempDir()
+const isolatedHome = makeTempDir()
 
 function runCli(...args: string[]): { stdout: string; stderr: string; status: number } {
   const result = spawnSync("bun", ["./src/cli.ts", ...args], {
@@ -32,6 +33,7 @@ function runCli(...args: string[]): { stdout: string; stderr: string; status: nu
     env: {
       ...process.env,
       AKM_STASH_DIR: undefined,
+      HOME: isolatedHome,
       XDG_CACHE_HOME: xdgCache,
       XDG_CONFIG_HOME: xdgConfig,
     },

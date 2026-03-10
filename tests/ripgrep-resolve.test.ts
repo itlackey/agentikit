@@ -21,6 +21,8 @@ afterAll(() => {
 })
 
 const origPath = process.env.PATH
+const origXdgCacheHome = process.env.XDG_CACHE_HOME
+const origHome = process.env.HOME
 
 afterEach(() => {
   if (origPath === undefined) {
@@ -28,7 +30,22 @@ afterEach(() => {
   } else {
     process.env.PATH = origPath
   }
+  if (origXdgCacheHome === undefined) {
+    delete process.env.XDG_CACHE_HOME
+  } else {
+    process.env.XDG_CACHE_HOME = origXdgCacheHome
+  }
+  if (origHome === undefined) {
+    delete process.env.HOME
+  } else {
+    process.env.HOME = origHome
+  }
 })
+
+/** Isolate cache so getBinDir() never finds a real rg binary. */
+function isolateCache(): void {
+  process.env.XDG_CACHE_HOME = makeTempDir()
+}
 
 // ── resolveRg ───────────────────────────────────────────────────────────────
 
@@ -53,25 +70,17 @@ describe("resolveRg", () => {
     // Put our fake bin dir at the front of PATH
     process.env.PATH = `${fakeBinDir}${path.delimiter}${origPath}`
 
-    // No stash dir provided -- should find from PATH
+    // No bin dir provided -- should find from PATH
     const result = resolveRg()
     expect(result).toBeTruthy()
   })
 
   test("returns null when not found anywhere", () => {
-    // Empty stash dir with no rg, and an empty PATH
-    const emptyStash = makeTempDir()
+    const emptyDir = makeTempDir()
     process.env.PATH = ""
+    isolateCache()
 
-    const result = resolveRg(emptyStash)
-    expect(result).toBeNull()
-  })
-
-  test("returns null for stash dir without bin subdirectory", () => {
-    const emptyStash = makeTempDir()
-    process.env.PATH = ""
-
-    const result = resolveRg(emptyStash)
+    const result = resolveRg(emptyDir)
     expect(result).toBeNull()
   })
 
@@ -84,6 +93,7 @@ describe("resolveRg", () => {
     fs.chmodSync(rgPath, 0o644)
 
     process.env.PATH = ""
+    isolateCache()
 
     const result = resolveRg(binDir)
     expect(result).toBeNull()
@@ -106,6 +116,7 @@ describe("isRgAvailable", () => {
   test("returns false when resolveRg finds nothing", () => {
     const emptyDir = makeTempDir()
     process.env.PATH = ""
+    isolateCache()
 
     expect(isRgAvailable(emptyDir)).toBe(false)
   })
@@ -113,6 +124,7 @@ describe("isRgAvailable", () => {
   test("boolean result matches resolveRg truthiness", () => {
     const binDir = makeTempDir()
     process.env.PATH = ""
+    isolateCache()
 
     const resolved = resolveRg(binDir)
     const available = isRgAvailable(binDir)
