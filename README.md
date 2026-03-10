@@ -284,4 +284,4 @@ AI coding assistants.
 
 ## License
 
-[CC-BY-4.0](LICENSE)
+[MPL-2.0](LICENSE)
