@@ -5,6 +5,36 @@ search and use. You organize tools, skills, commands, agents, knowledge, and
 scripts into a **stash**, and agents discover what they need through
 `akm` (Agent Kit Manager).
 
+## Installation
+
+Agent-i-Kit requires [Bun](https://bun.sh) (v1.0+) as its runtime. It uses
+Bun-specific APIs (`bun:sqlite`) that are not available in Node.js.
+
+```sh
+# Install Bun if you don't have it
+curl -fsSL https://bun.sh/install | bash
+# Install
+bun install -g agentikit
+```
+
+### Standalone Binary
+
+> **Don't want to install Bun?** Use the standalone binary
+> instead -- it has no runtime dependencies.
+
+The standalone binary bundles everything it needs and does **not** require Bun
+or Node.js.
+
+```sh
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/itlackey/agentikit/main/install.sh | bash
+```
+
+```sh
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/itlackey/agentikit/main/install.ps1 -OutFile install.ps1; ./install.ps1
+```
+
 ## What Is a Kit?
 
 A kit is a shareable package of assets (aka files and directories). You can organize a kit however you
@@ -64,36 +94,6 @@ When you search or open an asset, the working stash takes priority. This
 means you can install a kit and override individual assets by cloning them
 into your working stash (or any directory with `--dest`).
 
-## Prerequisites
-
-Agent-i-Kit requires [Bun](https://bun.sh) (v1.0+) as its runtime. It uses
-Bun-specific APIs (`bun:sqlite`) that are not available in Node.js.
-
-```sh
-# Install Bun if you don't have it
-curl -fsSL https://bun.sh/install | bash
-# Install
-bun install -g agentikit
-```
-
-### Standalone Binary
-
-> **Don't want to install Bun?** Use the standalone binary
-> instead -- it has no runtime dependencies.
-
-The standalone binary bundles everything it needs and does **not** require Bun
-or Node.js.
-
-```sh
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/itlackey/agentikit/main/install.sh | bash
-```
-
-```sh
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/itlackey/agentikit/main/install.ps1 -OutFile install.ps1; ./install.ps1
-```
-
 ## Using With AI Agents
 
 Agent-i-Kit is designed to be called by AI coding agents. The agent searches
@@ -101,15 +101,21 @@ for capabilities, reads the results, and acts on them.
 
 ### OpenCode
 
-In an OpenCode project, add akm as a tool in your configuration. The agent
-can then search the stash and run tools directly:
+Add the [OpenCode Plugin](https://github.com/itlackey/agentikit-plugins?tab=readme-ov-file#agentikit-opencode) to your OpenCode config (opencode.json):
 
-```text
-Search the stash for deployment tools, then run the best match.
+```json
+{
+  "plugin": ["agentikit-opencode"]
+}
 ```
 
-The agent calls `akm search "deploy" --type tool`, picks the top result,
-reads its `runCmd` from `akm show`, and executes it.
+Start a new session and ask opencode to find some tools
+
+```text
+Search the stash for deployment tools, then run the best match to deploy the current project.
+```
+
+The agent calls then `akm_search` tool, picks the top result, reads its `runCmd` from `akm show`, and executes it.
 
 ### Claude Code
 
@@ -130,7 +136,6 @@ consumption. Any agent that can run shell commands can use akm:
 1. `akm search "what you need"` -- Find relevant assets
 2. `akm show <openRef>` -- Get the details
 3. Use the asset (run the `runCmd`, follow the skill instructions, etc.)
-
 
 ## Quick Start
 
