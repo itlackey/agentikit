@@ -252,7 +252,7 @@ describe("agentikitSubmit", () => {
         AKM_SUBMIT_GIT_BIN: gitBin,
       },
       () => withMockedFetch((url) => {
-        if (url === "https://registry.npmjs.org/%40scope%2Flocal-kit") {
+        if (url === "https://registry.npmjs.org/@scope%2Flocal-kit") {
           return new Response("{}", { status: 200 })
         }
         if (url === "https://api.github.com/repos/itlackey/agentikit-registry") {
@@ -491,7 +491,9 @@ describe("agentikitSubmit", () => {
     expect(ghCommands).toContain("repo\tfork\titlackey/agentikit-registry\t--clone\t--remote")
     expect(ghCommands).toContain("api\tuser\t--jq\t.login")
     expect(ghCommands).toContain("pr\tcreate")
-    expect(ghCommands).toContain("repo\tdelete\tmock-user/agentikit-registry\t--yes")
+    // Fork delete is now deferred until after PR merge — not executed during submit
+    expect(ghCommands).not.toContain("repo\tdelete")
+    expect(result.fork?.cleanupCommand).toBe("gh repo delete mock-user/agentikit-registry --yes")
 
     expect(result.commands?.some((command) =>
       command.includes("--body") && command.includes("## New registry entry: owner-kit"),

@@ -143,7 +143,13 @@ function formatHuman(command: string, result: unknown): string {
         return lines.join("\n")
       }
       const prUrl = typeof pr?.url === "string" ? pr.url : "unknown"
-      return `Submitted ${entry?.name ?? entry?.id ?? "registry entry"}.\nPR: ${prUrl}`
+      const fork = r.fork as Record<string, unknown> | undefined
+      const cleanupCmd = typeof fork?.cleanupCommand === "string" ? fork.cleanupCommand : undefined
+      const lines = [`Submitted ${entry?.name ?? entry?.id ?? "registry entry"}.`, `PR: ${prUrl}`]
+      if (cleanupCmd) {
+        lines.push(`\nAfter the PR is merged, clean up the fork with:\n  ${cleanupCmd}`)
+      }
+      return lines.join("\n")
     }
     default:
       return JSON.stringify(result, null, 2)
@@ -463,7 +469,7 @@ const submitCommand = defineCommand({
     license: { type: "string", description: "License identifier" },
     homepage: { type: "string", description: "Homepage URL" },
     "dry-run": { type: "boolean", description: "Preview the entry and gh commands without creating a pull request", default: false },
-    "cleanup-fork": { type: "boolean", description: "Delete the temporary fork after the pull request is created", default: false },
+    "cleanup-fork": { type: "boolean", description: "Show the fork cleanup command after the pull request is created (run it after the PR is merged)", default: false },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {

@@ -119,7 +119,7 @@ forks `itlackey/agentikit-registry`, and opens a pull request with `gh`.
 | `--license` | Override the license |
 | `--homepage` | Override the homepage URL |
 | `--dry-run` | Validate the entry and print the git/gh commands without creating a PR |
-| `--cleanup-fork` | Delete the temporary fork after opening the PR |
+| `--cleanup-fork` | Show the fork cleanup command (run it after the PR is merged) |
 
 `akm submit` requires GitHub CLI (`gh`) and an authenticated GitHub session.
 

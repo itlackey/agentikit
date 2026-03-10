@@ -30,7 +30,7 @@ interface PackageJsonLike {
 export interface SubmitResponse {
   entry: RegistryKitEntry
   pr?: { url: string; number?: number }
-  fork?: { url: string }
+  fork?: { url: string; cleanupCommand?: string }
   dryRun: boolean
   validation: {
     refAccessible: boolean
@@ -120,9 +120,11 @@ export async function agentikitSubmit(options: AgentikitSubmitOptions = {}): Pro
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-submit-"))
   const cloneDir = path.join(tempRoot, REGISTRY_REPO)
 
+  let forkCreated = false
   try {
     progress("Forking and cloning agentikit-registry")
     runCommand(runtime, "gh", ["repo", "fork", `${REGISTRY_OWNER}/${REGISTRY_REPO}`, "--clone", "--remote"], { cwd: tempRoot })
+    forkCreated = true
 
     progress(`Creating branch ${branchName}`)
     runCommand(runtime, "git", ["checkout", "-b", branchName], { cwd: cloneDir })
@@ -140,15 +142,20 @@ export async function agentikitSubmit(options: AgentikitSubmitOptions = {}): Pro
     progress("Opening pull request")
     const pr = createPullRequest({ cloneDir, username, branchName, entry, runtime, pullRequestBody })
 
+    const forkUrl = `https://github.com/${username}/${REGISTRY_REPO}`
+    const cleanupCommand = `gh repo delete ${username}/${REGISTRY_REPO} --yes`
+
     if (options.cleanupFork) {
-      progress("Deleting temporary fork")
-      runCommand(runtime, "gh", ["repo", "delete", `${username}/${REGISTRY_REPO}`, "--yes"], { cwd: cloneDir })
+      progress(`Fork cleanup deferred — the PR source branch lives on the fork. Run \`${cleanupCommand}\` after the PR is merged.`)
     }
 
     return {
       entry,
       pr,
-      fork: { url: `https://github.com/${username}/${REGISTRY_REPO}` },
+      fork: {
+        url: forkUrl,
+        cleanupCommand,
+      },
       dryRun: false,
       validation: {
         refAccessible,
@@ -156,6 +163,11 @@ export async function agentikitSubmit(options: AgentikitSubmitOptions = {}): Pro
       },
       commands,
     }
+  } catch (error) {
+    if (forkCreated) {
+      progress(`A fork was created at https://github.com/${username}/${REGISTRY_REPO} but the submit failed. You can delete it with: gh repo delete ${username}/${REGISTRY_REPO} --yes`)
+    }
+    throw error
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
@@ -186,41 +198,46 @@ export async function buildSubmitEntry(
     || packageJson?.homepage
     || inferHomepage(options.parsed)
 
-  const promptedName = await promptWithDefault("Name", defaultName, interactive)
-  const promptedDescription = await promptWithDefault("Description", defaultDescription, interactive)
-  const promptedTags = await promptWithDefault("Tags (comma-separated)", defaultTags.join(", "), interactive)
-  const promptedAssetTypes = await promptWithDefault("Asset types (comma-separated)", defaultAssetTypes.join(", "), interactive)
-  const promptedAuthor = await promptWithDefault("Author", defaultAuthor, interactive)
-  const promptedLicense = await promptWithDefault("License", defaultLicense, interactive)
-  const promptedHomepage = await promptWithDefault("Homepage", defaultHomepage, interactive)
+  const rl = interactive ? createInterface({ input: process.stdin, output: process.stdout }) : undefined
+  try {
+    const promptedName = await promptWithDefault("Name", defaultName, rl)
+    const promptedDescription = await promptWithDefault("Description", defaultDescription, rl)
+    const promptedTags = await promptWithDefault("Tags (comma-separated)", defaultTags.join(", "), rl)
+    const promptedAssetTypes = await promptWithDefault("Asset types (comma-separated)", defaultAssetTypes.join(", "), rl)
+    const promptedAuthor = await promptWithDefault("Author", defaultAuthor, rl)
+    const promptedLicense = await promptWithDefault("License", defaultLicense, rl)
+    const promptedHomepage = await promptWithDefault("Homepage", defaultHomepage, rl)
 
-  const name = promptedName?.trim() || defaultName
-  if (!name) {
-    throw new Error("Unable to determine a name for the registry entry.")
+    const name = promptedName?.trim() || defaultName
+    if (!name) {
+      throw new Error("Unable to determine a name for the registry entry.")
+    }
+
+    const description = promptedDescription?.trim() || defaultDescription
+    const tags = normalizeTags(promptedTags || defaultTags)
+    const assetTypes = normalizeAssetTypes(promptedAssetTypes || defaultAssetTypes)
+    const author = promptedAuthor?.trim() || defaultAuthor?.trim()
+    const license = promptedLicense?.trim() || defaultLicense?.trim()
+    const homepage = promptedHomepage?.trim() || defaultHomepage?.trim()
+
+    const entry: RegistryKitEntry = {
+      id: options.parsed.id,
+      name,
+      ref: canonicalSubmitRef(options.parsed),
+      source: options.parsed.source,
+    }
+
+    if (description) entry.description = description
+    if (homepage) entry.homepage = homepage
+    if (tags.length > 0) entry.tags = tags
+    if (assetTypes.length > 0) entry.assetTypes = assetTypes
+    if (author) entry.author = author
+    if (license) entry.license = license
+
+    return entry
+  } finally {
+    rl?.close()
   }
-
-  const description = promptedDescription?.trim() || defaultDescription
-  const tags = normalizeTags(promptedTags || defaultTags)
-  const assetTypes = normalizeAssetTypes(promptedAssetTypes || defaultAssetTypes)
-  const author = promptedAuthor?.trim() || defaultAuthor?.trim()
-  const license = promptedLicense?.trim() || defaultLicense?.trim()
-  const homepage = promptedHomepage?.trim() || defaultHomepage?.trim()
-
-  const entry: RegistryKitEntry = {
-    id: options.parsed.id,
-    name,
-    ref: canonicalSubmitRef(options.parsed),
-    source: options.parsed.source,
-  }
-
-  if (description) entry.description = description
-  if (homepage) entry.homepage = homepage
-  if (tags.length > 0) entry.tags = tags
-  if (assetTypes.length > 0) entry.assetTypes = assetTypes
-  if (author) entry.author = author
-  if (license) entry.license = license
-
-  return entry
 }
 
 export function buildSubmitBranchName(entryId: string, now = new Date()): string {
@@ -254,6 +271,9 @@ async function resolveSubmitTarget(rawRef: string | undefined, cwd: string): Pro
   }
   if (parsed.source === "local") {
     return await inferSubmitTargetFromDir(parsed.sourcePath)
+  }
+  if (parsed.source === "git") {
+    throw new Error("`akm submit` does not support generic git URLs. Use a public npm package name or GitHub owner/repo ref instead.")
   }
 
   throw new Error("`akm submit` requires a public npm package or GitHub repository ref.")
@@ -348,9 +368,16 @@ function canonicalSubmitRef(parsed: SupportedSubmitRef): string {
 
 function inferHomepage(parsed: SupportedSubmitRef): string {
   if (parsed.source === "npm") {
-    return `https://www.npmjs.com/package/${encodeURIComponent(parsed.packageName)}`
+    return `https://www.npmjs.com/package/${parsed.packageName}`
   }
   return `https://github.com/${parsed.owner}/${parsed.repo}`
+}
+
+/** Encode a (possibly scoped) npm package name for use in registry.npmjs.org URLs. */
+function encodeNpmPackageName(name: string): string {
+  // Scoped packages need only the slash encoded: @scope%2Fname
+  // encodeURIComponent would also encode the @ which the registry rejects.
+  return name.replace(/\//g, "%2F")
 }
 
 function extractGithubRepoRef(value: string | undefined): string | undefined {
@@ -397,16 +424,11 @@ function isExistingLocalDirectory(ref: string, cwd: string): boolean {
   }
 }
 
-async function promptWithDefault(label: string, value: string | undefined, interactive: boolean): Promise<string | undefined> {
-  if (!interactive) return value
-  const rl = createInterface({ input: process.stdin, output: process.stdout })
-  try {
-    const suffix = value ? ` [${value}]` : ""
-    const answer = await rl.question(`${label}${suffix}: `)
-    return answer.trim() || value
-  } finally {
-    rl.close()
-  }
+async function promptWithDefault(label: string, value: string | undefined, rl: ReturnType<typeof createInterface> | undefined): Promise<string | undefined> {
+  if (!rl) return value
+  const suffix = value ? ` [${value}]` : ""
+  const answer = await rl.question(`${label}${suffix}: `)
+  return answer.trim() || value
 }
 
 function normalizeTags(value: string | string[] | undefined): string[] {
@@ -436,7 +458,7 @@ function normalizeAssetTypes(value: string | string[] | undefined): AgentikitAss
 
 async function isRefAccessible(parsed: SupportedSubmitRef): Promise<boolean> {
   if (parsed.source === "npm") {
-    const url = `https://registry.npmjs.org/${encodeURIComponent(parsed.packageName)}`
+    const url = `https://registry.npmjs.org/${encodeNpmPackageName(parsed.packageName)}`
     const response = await fetchWithRetry(url, undefined, { timeout: 10_000 })
     return response.ok
   }
@@ -484,7 +506,15 @@ function appendManualEntry(cloneDir: string, entry: RegistryKitEntry): void {
 }
 
 function readManualEntriesFile(filePath: string): unknown[] {
-  const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`${MANUAL_ENTRIES_FILE} not found in the fork. The agentikit-registry layout may have changed.`)
+  }
+  let raw: unknown
+  try {
+    raw = JSON.parse(fs.readFileSync(filePath, "utf8"))
+  } catch {
+    throw new Error(`${MANUAL_ENTRIES_FILE} in the fork contains invalid JSON.`)
+  }
   if (!Array.isArray(raw)) {
     throw new Error(`${MANUAL_ENTRIES_FILE} in the fork is not a JSON array.`)
   }
@@ -553,7 +583,7 @@ function buildPlannedCommands(options: {
     formatCommand(["gh", ...buildPullRequestArgs(options.entry, options.username, options.branchName, options.pullRequestBody)]),
   ]
   if (options.cleanupFork) {
-    commands.push(formatCommand(["gh", "repo", "delete", `${options.username}/${REGISTRY_REPO}`, "--yes"]))
+    commands.push(`# After PR is merged: ${formatCommand(["gh", "repo", "delete", `${options.username}/${REGISTRY_REPO}`, "--yes"])}`)
   }
   return commands
 }
