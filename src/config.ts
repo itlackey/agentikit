@@ -65,7 +65,7 @@ export const DEFAULT_CONFIG: AgentikitConfig = {
 
 export function getConfigDir(
   env?: NodeJS.ProcessEnv,
-  platform?: string,
+  platform?: NodeJS.Platform,
 ): string {
   return _getConfigDir(env, platform)
 }
