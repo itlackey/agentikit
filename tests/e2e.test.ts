@@ -808,28 +808,33 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Scenario 3a: CLI upgrade command
+// Scenario 3a: CLI upgrade and update --force commands
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("Scenario: CLI upgrade command", () => {
-  test("cli: akm upgrade --check returns version info as JSON", async () => {
-    const result = runCli("upgrade", "--check")
-    expect(result.exitCode).toBe(0)
-    const json = parseJson(result.stdout)
-    expect(json.currentVersion).toBeTruthy()
-    expect(typeof json.latestVersion).toBe("string")
-    expect(typeof json.updateAvailable).toBe("boolean")
-    expect(["binary", "npm", "unknown"]).toContain(json.installMethod)
+describe("Scenario: upgrade and update --force (no network)", () => {
+  test("upgrade --check returns version info (mocked fetch)", async () => {
+    const { checkForUpdate } = await import("../src/self-update")
+    const result = await withMockedFetch(
+      () => Response.json({ tag_name: "v0.0.14" }),
+      () => checkForUpdate("0.0.13"),
+    )
+    expect(result.currentVersion).toBe("0.0.13")
+    expect(result.latestVersion).toBe("0.0.14")
+    expect(result.updateAvailable).toBe(true)
+    expect(["binary", "npm", "unknown"]).toContain(result.installMethod)
   })
 
-  test("cli: akm upgrade detects non-binary install and shows guidance", async () => {
-    // When run via `bun run`, akm is not a compiled binary
-    const result = runCli("upgrade")
-    expect(result.exitCode).toBe(0)
-    const json = parseJson(result.stdout)
-    expect(json.upgraded).toBe(false)
-    // Should be npm or unknown when running via bun
-    expect(["npm", "unknown"]).toContain(json.installMethod)
+  test("performUpgrade detects non-binary install and returns guidance", async () => {
+    const { performUpgrade } = await import("../src/self-update")
+    const result = await performUpgrade({
+      currentVersion: "0.0.13",
+      latestVersion: "0.0.14",
+      updateAvailable: true,
+      installMethod: "unknown",
+    })
+    expect(result.upgraded).toBe(false)
+    expect(["npm", "unknown"]).toContain(result.installMethod)
+    expect(result.message).toBeTruthy()
   })
 
   test("cli: akm update --help shows --force flag", async () => {
@@ -855,6 +860,16 @@ describe("Scenario: CLI upgrade command", () => {
     } finally {
       fs.rmSync(stashDir, { recursive: true, force: true })
     }
+  })
+
+  test("cli: akm upgrade --help shows --check and --force flags", async () => {
+    const result = spawnSync("bun", [CLI, "upgrade", "--help"], {
+      encoding: "utf8",
+      timeout: 10_000,
+    })
+    const output = (result.stdout ?? "") + (result.stderr ?? "")
+    expect(output).toContain("--check")
+    expect(output).toContain("--force")
   })
 })
 

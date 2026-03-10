@@ -91,6 +91,10 @@ export async function performUpgrade(
     }
   }
 
+  if (!latestVersion) {
+    throw new Error("Unable to determine latest version from GitHub releases. Check https://github.com/itlackey/agentikit/releases")
+  }
+
   const tag = `v${latestVersion}`
   const binaryName = getAkmBinaryName()
   const binaryUrl = `https://github.com/${REPO}/releases/download/${tag}/${binaryName}`
@@ -139,10 +143,15 @@ export async function performUpgrade(
     try {
       fs.renameSync(execPath, oldPath)
     } catch (err) {
-      throw new Error(
-        `Permission denied. Cannot rename ${execPath}.\n` +
-        `Try running as Administrator, or re-download from https://github.com/${REPO}/releases`,
-      )
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === "EPERM" || code === "EACCES") {
+        throw new Error(
+          `Permission denied. Cannot rename ${execPath}.\n` +
+          `Try running as Administrator, or re-download from https://github.com/${REPO}/releases`,
+        )
+      }
+      const detail = err instanceof Error ? err.message : String(err)
+      throw new Error(`Failed to rename ${execPath}: ${detail}`)
     }
     try {
       fs.writeFileSync(execPath, binaryData)
@@ -168,9 +177,8 @@ export async function performUpgrade(
       // Clean up temp file on failure
       try { fs.unlinkSync(tmpPath) } catch { /* ignore */ }
 
-      const isPermissionError = err instanceof Error &&
-        (err.message.includes("EACCES") || err.message.includes("permission denied"))
-      if (isPermissionError) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === "EACCES" || code === "EPERM") {
         throw new Error(
           `Permission denied writing to ${execDir}.\n` +
           `Run: sudo akm upgrade\n` +

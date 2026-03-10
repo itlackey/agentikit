@@ -1,12 +1,38 @@
-import { test, expect, describe } from "bun:test"
-import { detectInstallMethod, getAkmBinaryName } from "../src/self-update"
+import { test, expect, describe, afterEach } from "bun:test"
+import { detectInstallMethod, getAkmBinaryName, checkForUpdate, performUpgrade } from "../src/self-update"
+
+// ── Fetch mocking helper ────────────────────────────────────────────────────
+
+let originalFetch: typeof globalThis.fetch
+
+function mockFetch(handler: (url: string) => Response): void {
+  originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url
+    return handler(url)
+  }) as typeof fetch
+}
+
+afterEach(() => {
+  if (originalFetch) {
+    globalThis.fetch = originalFetch
+  }
+})
+
+function fakeRelease(tagName: string): Response {
+  return Response.json({ tag_name: tagName })
+}
+
+// ── detectInstallMethod ─────────────────────────────────────────────────────
 
 describe("detectInstallMethod", () => {
   test("returns 'unknown' when running via bun run (not compiled)", () => {
-    // When running tests with `bun test`, we're not a compiled binary
     const method = detectInstallMethod()
     // In test context, Bun.main !== process.execPath, so it won't be "binary".
-    // And import.meta.dir won't contain node_modules for this project's own source.
     expect(["unknown", "npm"]).toContain(method)
   })
 
@@ -14,6 +40,8 @@ describe("detectInstallMethod", () => {
     expect(() => detectInstallMethod()).not.toThrow()
   })
 })
+
+// ── getAkmBinaryName ────────────────────────────────────────────────────────
 
 describe("getAkmBinaryName", () => {
   test("returns a string containing 'akm'", () => {
@@ -43,75 +71,85 @@ describe("getAkmBinaryName", () => {
   })
 })
 
+// ── checkForUpdate (mocked fetch) ───────────────────────────────────────────
+
 describe("checkForUpdate", () => {
   test("returns valid UpgradeCheckResponse", async () => {
-    // Import dynamically so we can test the actual network call
-    const { checkForUpdate } = await import("../src/self-update")
+    mockFetch(() => fakeRelease("v0.0.14"))
+
     const result = await checkForUpdate("0.0.13")
 
     expect(result.currentVersion).toBe("0.0.13")
-    expect(typeof result.latestVersion).toBe("string")
-    expect(result.latestVersion.length).toBeGreaterThan(0)
-    expect(typeof result.updateAvailable).toBe("boolean")
+    expect(result.latestVersion).toBe("0.0.14")
+    expect(result.updateAvailable).toBe(true)
     expect(["binary", "npm", "unknown"]).toContain(result.installMethod)
   })
 
   test("updateAvailable is false when current matches latest", async () => {
-    const { checkForUpdate } = await import("../src/self-update")
+    mockFetch(() => fakeRelease("v0.0.13"))
+
     const result = await checkForUpdate("0.0.13")
 
-    // If 0.0.13 is the latest, updateAvailable should be false.
-    // If it's not, updateAvailable should be true. Either is valid.
-    if (result.latestVersion === "0.0.13") {
-      expect(result.updateAvailable).toBe(false)
-    } else {
-      expect(result.updateAvailable).toBe(true)
-    }
+    expect(result.updateAvailable).toBe(false)
+    expect(result.latestVersion).toBe("0.0.13")
   })
 
   test("updateAvailable is true for an old version", async () => {
-    const { checkForUpdate } = await import("../src/self-update")
+    mockFetch(() => fakeRelease("v0.0.14"))
+
     const result = await checkForUpdate("0.0.0")
 
     expect(result.updateAvailable).toBe(true)
     expect(result.currentVersion).toBe("0.0.0")
+    expect(result.latestVersion).toBe("0.0.14")
+  })
+
+  test("handles missing tag_name gracefully", async () => {
+    mockFetch(() => Response.json({}))
+
+    const result = await checkForUpdate("0.0.13")
+
+    expect(result.latestVersion).toBe("")
+    expect(result.updateAvailable).toBe(false)
+  })
+
+  test("throws on non-OK response", async () => {
+    mockFetch(() => new Response("Not Found", { status: 404, statusText: "Not Found" }))
+
+    await expect(checkForUpdate("0.0.13")).rejects.toThrow("Failed to check for updates")
   })
 })
 
-describe("performUpgrade", () => {
-  test("returns guidance message for non-binary installs", async () => {
-    const { performUpgrade } = await import("../src/self-update")
+// ── performUpgrade ──────────────────────────────────────────────────────────
 
-    const npmResult = await performUpgrade({
+describe("performUpgrade", () => {
+  test("returns guidance message for npm installs", async () => {
+    const result = await performUpgrade({
       currentVersion: "0.0.13",
       latestVersion: "0.0.14",
       updateAvailable: true,
       installMethod: "npm",
     })
 
-    expect(npmResult.upgraded).toBe(false)
-    expect(npmResult.installMethod).toBe("npm")
-    expect(npmResult.message).toContain("npm")
+    expect(result.upgraded).toBe(false)
+    expect(result.installMethod).toBe("npm")
+    expect(result.message).toContain("npm")
   })
 
   test("returns guidance message for unknown install method", async () => {
-    const { performUpgrade } = await import("../src/self-update")
-
-    const unknownResult = await performUpgrade({
+    const result = await performUpgrade({
       currentVersion: "0.0.13",
       latestVersion: "0.0.14",
       updateAvailable: true,
       installMethod: "unknown",
     })
 
-    expect(unknownResult.upgraded).toBe(false)
-    expect(unknownResult.installMethod).toBe("unknown")
-    expect(unknownResult.message).toContain("manually")
+    expect(result.upgraded).toBe(false)
+    expect(result.installMethod).toBe("unknown")
+    expect(result.message).toContain("manually")
   })
 
   test("returns already-latest message when no update available", async () => {
-    const { performUpgrade } = await import("../src/self-update")
-
     const result = await performUpgrade({
       currentVersion: "0.0.13",
       latestVersion: "0.0.13",
@@ -121,5 +159,19 @@ describe("performUpgrade", () => {
 
     expect(result.upgraded).toBe(false)
     expect(result.message).toContain("already the latest")
+  })
+
+  test("throws when latestVersion is empty and force is used", async () => {
+    await expect(
+      performUpgrade(
+        {
+          currentVersion: "0.0.13",
+          latestVersion: "",
+          updateAvailable: false,
+          installMethod: "binary",
+        },
+        { force: true },
+      ),
+    ).rejects.toThrow("Unable to determine latest version")
   })
 })
