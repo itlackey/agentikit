@@ -38,7 +38,7 @@ export interface AgentikitConfig {
   stashDir?: string
   /** Whether semantic search is enabled. Default: true */
   semanticSearch: boolean
-  /** User-mounted read-only stash directories */
+  /** User-mounted additional stash directories */
   mountedStashDirs: string[]
   /** OpenAI-compatible embedding endpoint config. If not set, uses local @xenova/transformers */
   embedding?: EmbeddingConnectionConfig

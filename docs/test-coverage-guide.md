@@ -368,7 +368,8 @@ Most show behavior is tested indirectly via `stash.test.ts`. Focus on gaps:
   asset, call show, verify it resolves.
 - `resolves from installed stash directories` -- Similar with installed source.
 - `response includes editable flag` -- Show an asset from working stash,
-  verify `editable: true`. Show from installed, verify `editable: false`.
+  verify `editable: true`. Show from mounted, verify `editable: true`. Show
+  from installed (cache-managed), verify `editable: false` with `editHint`.
 
 ---
 

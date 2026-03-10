@@ -86,9 +86,10 @@ retrieve their details with `akm show`.
 
 The stash is your local library of assets. It combines three sources:
 
-1. **Working stash** -- Your personal assets (`AKM_STASH_DIR`). Read-write.
-2. **Mounted dirs** -- Shared team directories. Read-only.
-3. **Installed kits** -- Kits from npm or GitHub via `akm add`. Read-only.
+1. **Working stash** -- Your personal assets (`AKM_STASH_DIR`).
+2. **Mounted dirs** -- Shared team directories.
+3. **Installed kits** -- Kits from npm or GitHub via `akm add`. Cache-managed
+   (not safe to edit in place; use `akm clone` to get an editable copy).
 
 When you search or open an asset, the working stash takes priority. This
 means you can install a kit and override individual assets by cloning them

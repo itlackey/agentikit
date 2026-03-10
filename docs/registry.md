@@ -174,8 +174,8 @@ akm remove npm:@scope/my-kit
 
 ### Cloning Assets
 
-Installed kits are read-only. To edit an asset from an installed kit, clone
-it into the working stash:
+Installed kits are cache-managed and may be overwritten by `akm update`.
+To edit an asset from an installed kit, clone it into the working stash:
 
 ```bash
 akm clone "npm:@scope/my-kit//tool:deploy.sh"
@@ -206,9 +206,9 @@ an installed kit -- it only extracts the single requested asset.
 
 When multiple sources provide the same asset name, the first match wins:
 
-1. **Working stash** -- `AKM_STASH_DIR` (read-write)
-2. **Mounted stash dirs** -- Additional directories from config (read-only)
-3. **Installed packages** -- Registry kits from `akm add` (read-only)
+1. **Working stash** -- `AKM_STASH_DIR`
+2. **Mounted stash dirs** -- Additional directories from config
+3. **Installed packages** -- Registry kits from `akm add` (cache-managed)
 
 This means local edits and clones always override installed versions.
 

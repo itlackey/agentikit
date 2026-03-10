@@ -129,14 +129,15 @@ matchers override built-in ones.
 The stash is where assets live on disk. Assets are resolved from three
 sources in priority order:
 
-1. **Working stash** (read-write) -- The user's main stash directory
+1. **Working stash** -- The user's main stash directory
    (`AKM_STASH_DIR`). Created by `akm init`.
 
-2. **Mounted stash dirs** (read-only) -- Additional directories listed in
+2. **Mounted stash dirs** -- Additional directories listed in
    config. Useful for sharing assets across teams or projects.
 
-3. **Installed kits** (read-only) -- Kits installed via `akm add`. Stored
-   in the cache directory and tracked in config.
+3. **Installed kits** (cache-managed) -- Kits installed via `akm add`. Stored
+   in the cache directory and tracked in config. Not safe to edit in place
+   because `akm update` may overwrite changes.
 
 The first match wins when searching or showing assets. This means local
 edits always override installed versions.

@@ -372,8 +372,7 @@ mounted stash directories.
    ```
 
 3. Assets from the mounted directory appear in search results immediately --
-   no `akm add` needed. Mounted stash dirs are read-only; to edit an asset,
-   clone it into the working stash:
+   no `akm add` needed. To fork an asset into the working stash, use clone:
 
    ```sh
    akm clone tool:deploy.sh
