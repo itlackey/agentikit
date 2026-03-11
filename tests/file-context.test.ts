@@ -406,7 +406,7 @@ describe("Renderer", () => {
   test("getRenderer('script-source') returns the script renderer (tool-script removed)", () => {
     const renderer = getRenderer("script-source");
     expect(renderer).toBeDefined();
-    expect(renderer!.name).toBe("script-source");
+    expect(renderer?.name).toBe("script-source");
     // tool-script renderer has been removed; tool is an alias for script
     expect(getRenderer("tool-script")).toBeUndefined();
   });

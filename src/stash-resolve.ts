@@ -36,10 +36,9 @@ export function resolveAssetPath(stashDir: string, type: AgentikitAssetType, nam
     // Prefer the primary directory's error when it's about extension validation
     // (i.e., the file was found but had the wrong extension) over a generic
     // "not found" from the alias directory.
-    const errorToThrow =
-      primaryError && primaryError.message.includes("supported script extension")
-        ? primaryError
-        : (lastError ?? new NotFoundError(`Stash asset not found for ref: ${normalizeAssetType(type)}:${name}`));
+    const errorToThrow = primaryError?.message.includes("supported script extension")
+      ? primaryError
+      : (lastError ?? new NotFoundError(`Stash asset not found for ref: ${normalizeAssetType(type)}:${name}`));
     throw errorToThrow;
   }
 
@@ -49,12 +48,7 @@ export function resolveAssetPath(stashDir: string, type: AgentikitAssetType, nam
 /**
  * Try to resolve an asset path within a specific type directory.
  */
-function resolveInTypeDir(
-  stashDir: string,
-  typeDir: string,
-  type: AgentikitAssetType,
-  name: string,
-): string {
+function resolveInTypeDir(stashDir: string, typeDir: string, type: AgentikitAssetType, name: string): string {
   const root = path.join(stashDir, typeDir);
   const target = resolveAssetPathFromName(type, root, name);
   const resolvedRoot = resolveAndValidateTypeRoot(root, type, name);

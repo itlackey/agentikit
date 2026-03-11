@@ -517,7 +517,9 @@ test("agentikitShow throws unsupported tool extension for .txt file", async () =
 
   process.env.AKM_STASH_DIR = stashDir;
   try {
-    await expect(agentikitShow({ ref: "tool:readme.txt" })).rejects.toThrow(/Script ref must resolve to a file with a supported script extension/);
+    await expect(agentikitShow({ ref: "tool:readme.txt" })).rejects.toThrow(
+      /Script ref must resolve to a file with a supported script extension/,
+    );
   } finally {
     if (origStashDir === undefined) delete process.env.AKM_STASH_DIR;
     else process.env.AKM_STASH_DIR = origStashDir;

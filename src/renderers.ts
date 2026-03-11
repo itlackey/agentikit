@@ -183,7 +183,7 @@ function deriveName(ctx: RenderContext): string {
  * Find the stashDir that contains `filePath`, falling back to the first
  * entry in the array when no prefix match is found.
  */
-function findContainingStashDir(stashDirs: string[], filePath: string): string | undefined {
+function _findContainingStashDir(stashDirs: string[], filePath: string): string | undefined {
   return stashDirs.find((d) => path.resolve(filePath).startsWith(path.resolve(d) + path.sep)) ?? stashDirs[0];
 }
 
