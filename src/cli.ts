@@ -7,11 +7,9 @@ import { getConfigPath, loadConfig, saveConfig } from "./config";
 import {
   getConfigValue,
   listConfig,
-  listProviders,
   parseConfigValue,
   setConfigValue,
   unsetConfigValue,
-  useProvider,
 } from "./config-cli";
 import { ConfigError, NotFoundError, UsageError } from "./errors";
 import { agentikitIndex } from "./indexer";
@@ -323,7 +321,7 @@ const showCommand = defineCommand({
 });
 
 const configCommand = defineCommand({
-  meta: { name: "config", description: "Show configuration, get/set keys, and manage embedding/LLM providers" },
+  meta: { name: "config", description: "Show and manage configuration" },
   args: {
     list: { type: "boolean", description: "List current configuration with effective defaults", default: false },
     get: { type: "string", description: "Get a configuration value by key" },
@@ -401,33 +399,6 @@ const configCommand = defineCommand({
       run({ args }) {
         return runWithJsonErrors(() => {
           const updated = unsetConfigValue(loadConfig(), args.key);
-          saveConfig(updated);
-          output("config", listConfig(updated));
-        });
-      },
-    }),
-    providers: defineCommand({
-      meta: { name: "providers", description: "List available embedding or LLM providers" },
-      args: {
-        scope: { type: "positional", required: true, description: "Provider scope: embedding or llm" },
-      },
-      run({ args }) {
-        return runWithJsonErrors(() => {
-          const scope = parseProviderScope(args.scope);
-          output("config", listProviders(scope, loadConfig()));
-        });
-      },
-    }),
-    use: defineCommand({
-      meta: { name: "use", description: "Switch the default embedding or LLM provider" },
-      args: {
-        scope: { type: "positional", required: true, description: "Provider scope: embedding or llm" },
-        provider: { type: "positional", required: true, description: "Provider name" },
-      },
-      run({ args }) {
-        return runWithJsonErrors(() => {
-          const scope = parseProviderScope(args.scope);
-          const updated = useProvider(loadConfig(), scope, args.provider);
           saveConfig(updated);
           output("config", listConfig(updated));
         });
@@ -531,7 +502,7 @@ const main = defineCommand({
 
 const SEARCH_USAGE_MODES: SearchUsageMode[] = ["none", "both", "item", "guide"];
 const SEARCH_SOURCES: SearchSource[] = ["local", "registry", "both"];
-const CONFIG_SUBCOMMAND_SET = new Set(["path", "list", "get", "set", "unset", "providers", "use"]);
+const CONFIG_SUBCOMMAND_SET = new Set(["path", "list", "get", "set", "unset"]);
 
 // citty reads process.argv directly and does not accept a custom argv array,
 // so we must replace process.argv with the normalized version before runMain.
@@ -592,11 +563,6 @@ function buildHint(message: string): string | undefined {
     return 'Quote JSON values in your shell, for example: akm config set embedding \'{"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}\'.';
   }
   return undefined;
-}
-
-function parseProviderScope(value: string): "embedding" | "llm" {
-  if (value === "embedding" || value === "llm") return value;
-  throw new UsageError(`Invalid provider scope: ${value}. Expected one of: embedding|llm`);
 }
 
 function hasConfigSubcommand(args: Record<string, unknown>): boolean {
