@@ -29,7 +29,7 @@ afterAll(() => {
 });
 
 /** Place a dummy rg binary in stashDir/bin so ensureRg skips download */
-function stubRg(stashDir: string): void {
+function _stubRg(stashDir: string): void {
   const binDir = path.join(stashDir, "bin");
   fs.mkdirSync(binDir, { recursive: true });
   const rgPath = path.join(binDir, "rg");
@@ -151,8 +151,8 @@ test("agentikitSearch includes explainability reasons for indexed hits", async (
   // Ranking mode depends on whether semantic search (embeddings) is available.
   // Accept either "semantic similarity" or "fts bm25 relevance".
   expect(
-    result.hits[0].whyMatched!.includes("fts bm25 relevance") ||
-      result.hits[0].whyMatched!.includes("semantic similarity"),
+    result.hits[0].whyMatched?.includes("fts bm25 relevance") ||
+      result.hits[0].whyMatched?.includes("semantic similarity"),
   ).toBe(true);
   expect(result.hits[0].whyMatched).toContain("matched name tokens");
 });
@@ -468,7 +468,9 @@ test("agentikitShow returns helpful message for missing section in knowledge", a
   });
   expect(result.type).toBe("knowledge");
   expect(result.content).toContain('Section "Nonexistent" not found');
-  expect(result.content).toContain("Try --view toc");
+  expect(result.content).toContain("akm show");
+  expect(result.content).toContain("toc");
+  expect(result.content).toContain("discover available headings");
 });
 
 test("agentikitShow for tool type returns run", async () => {

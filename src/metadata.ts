@@ -4,7 +4,7 @@ import { deriveCanonicalAssetName, isRelevantAssetFile } from "./asset-spec";
 import { type AgentikitAssetType, isAssetType } from "./common";
 import { buildFileContext, buildRenderContext, getRenderer, runMatchers } from "./file-context";
 import { parseFrontmatter, toStringOrUndefined } from "./frontmatter";
-import { parseMarkdownToc, type TocHeading } from "./markdown";
+import type { TocHeading } from "./markdown";
 import { warn } from "./warn";
 
 // ── Schema ──────────────────────────────────────────────────────────────────
@@ -78,9 +78,9 @@ export function loadStashFile(dirPath: string): StashFile | null {
 
 export function writeStashFile(dirPath: string, stash: StashFile): void {
   const filePath = stashFilePath(dirPath);
-  const tmpPath = filePath + `.tmp.${process.pid}`;
+  const tmpPath = `${filePath}.tmp.${process.pid}`;
   try {
-    fs.writeFileSync(tmpPath, JSON.stringify(stash, null, 2) + "\n", "utf8");
+    fs.writeFileSync(tmpPath, `${JSON.stringify(stash, null, 2)}\n`, "utf8");
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
     try {

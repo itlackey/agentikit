@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
 import {
-  ASSET_SPECS,
   ASSET_TYPES,
   deriveCanonicalAssetName,
   isRelevantAssetFile,

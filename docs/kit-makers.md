@@ -140,9 +140,13 @@ Use Bearer tokens in the Authorization header.
 Default: 100 requests per minute per API key.
 ```
 
-Agents can request just the table of contents (`--view toc`) or a specific
-section (`--view section --heading "Rate Limits"`) to avoid loading the
-entire document.
+Agents can request just the table of contents (`toc`) or a specific
+section (`section "Rate Limits"`) to avoid loading the entire document:
+
+```sh
+akm show knowledge:api-guide.md toc
+akm show knowledge:api-guide.md section "Rate Limits"
+```
 
 ## Step 3: Add Metadata
 

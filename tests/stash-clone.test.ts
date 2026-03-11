@@ -121,7 +121,7 @@ describe("agentikitClone", () => {
   test("clones from working stash to itself with new name", async () => {
     writeFile(path.join(stashDir, "tools", "original.sh"), "echo original\n");
 
-    const result = await agentikitClone({ sourceRef: "tool:original.sh", newName: "copy.sh" });
+    const _result = await agentikitClone({ sourceRef: "tool:original.sh", newName: "copy.sh" });
 
     expect(fs.existsSync(path.join(stashDir, "tools", "copy.sh"))).toBe(true);
   });
@@ -180,7 +180,7 @@ describe("agentikitClone --dest", () => {
   test("--dest does not require a working stash", async () => {
     writeFile(path.join(searchPathDir, "tools", "deploy.sh"), "echo deploy\n");
     // Point AKM_STASH_DIR to a non-existent directory to simulate no working stash
-    process.env.AKM_STASH_DIR = path.join(os.tmpdir(), "nonexistent-stash-" + Date.now());
+    process.env.AKM_STASH_DIR = path.join(os.tmpdir(), `nonexistent-stash-${Date.now()}`);
 
     const result = await agentikitClone({
       sourceRef: `${searchPathDir}//tool:deploy.sh`,
@@ -236,7 +236,7 @@ describe("agentikitClone remote", () => {
     });
 
     expect(result.remoteFetched).toBeDefined();
-    expect(result.remoteFetched!.origin).toBe(remoteFixtureDir);
+    expect(result.remoteFetched?.origin).toBe(remoteFixtureDir);
     expect(fs.existsSync(path.join(stashDir, "tools", "remote-tool.sh"))).toBe(true);
     expect(fs.readFileSync(path.join(stashDir, "tools", "remote-tool.sh"), "utf8")).toBe("#!/bin/bash\necho remote\n");
   });
@@ -247,8 +247,8 @@ describe("agentikitClone remote", () => {
     });
 
     expect(result.remoteFetched).toBeDefined();
-    expect(result.remoteFetched!.stashRoot).toBeTruthy();
-    expect(result.remoteFetched!.cacheDir).toBeTruthy();
+    expect(result.remoteFetched?.stashRoot).toBeTruthy();
+    expect(result.remoteFetched?.cacheDir).toBeTruthy();
   });
 
   test("throws when remote fetch succeeds but asset not found in package", async () => {

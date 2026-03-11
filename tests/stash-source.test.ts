@@ -88,7 +88,7 @@ describe("resolveStashSources", () => {
       const sources = resolveStashSources();
       const installed = sources.find((s) => s.registryId === "npm:test-pkg");
       expect(installed).toBeDefined();
-      expect(installed!.path).toBe(installedDir);
+      expect(installed?.path).toBe(installedDir);
     } finally {
       fs.rmSync(installedDir, { recursive: true, force: true });
     }
@@ -153,7 +153,7 @@ describe("getPrimarySource", () => {
     const sources = [{ path: stashDir }, { path: "/other/dir" }];
     const primary = getPrimarySource(sources);
     expect(primary).toBeDefined();
-    expect(primary!.path).toBe(stashDir);
+    expect(primary?.path).toBe(stashDir);
   });
 
   test("returns undefined for empty list", () => {
@@ -167,7 +167,7 @@ describe("findSourceForPath", () => {
     const filePath = path.join(stashDir, "tools", "deploy.sh");
     const result = findSourceForPath(filePath, sources);
     expect(result).toBeDefined();
-    expect(result!.path).toBe(stashDir);
+    expect(result?.path).toBe(stashDir);
   });
 
   test("finds correct source for file inside search path", () => {
@@ -177,7 +177,7 @@ describe("findSourceForPath", () => {
       const filePath = path.join(extraDir, "tools", "test.sh");
       const result = findSourceForPath(filePath, sources);
       expect(result).toBeDefined();
-      expect(result!.path).toBe(extraDir);
+      expect(result?.path).toBe(extraDir);
     } finally {
       fs.rmSync(extraDir, { recursive: true, force: true });
     }

@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { ASSET_TYPES, deriveCanonicalAssetName, TYPE_DIRS } from "./asset-spec";
 import type { AgentikitAssetType } from "./common";
-import { getRenderer } from "./file-context";
 import { type AgentikitConfig, loadConfig } from "./config";
 import {
   closeDatabase,
@@ -16,7 +15,7 @@ import {
   searchVec,
 } from "./db";
 import { UsageError } from "./errors";
-import { buildSearchText } from "./indexer";
+import { getRenderer } from "./file-context";
 import { getDbPath } from "./paths";
 import { searchRegistry } from "./registry-search";
 import { makeAssetRef } from "./stash-ref";

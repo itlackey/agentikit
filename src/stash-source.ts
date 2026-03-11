@@ -116,7 +116,7 @@ export function isEditable(filePath: string, config?: AgentikitConfig): boolean 
  * Callers must check `isEditable()` before calling — this function
  * unconditionally returns the hint string.
  */
-export function buildEditHint(filePath: string, assetType: string, assetName: string, origin?: string): string {
+export function buildEditHint(_filePath: string, assetType: string, assetName: string, origin?: string): string {
   const ref = origin ? `${origin}//${assetType}:${assetName}` : `${assetType}:${assetName}`;
   return `This asset is managed by akm and may be overwritten on update. To edit, run: akm clone ${ref}`;
 }

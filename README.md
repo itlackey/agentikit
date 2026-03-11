@@ -80,7 +80,7 @@ What you get back depends on the asset type:
 - **skill** — Instructions to follow (read the full content)
 - **command** — A prompt template with placeholders to fill in
 - **agent** — A system prompt with model and tool hints
-- **knowledge** — A reference doc (use `--view toc` or `--view section --heading "..."` to navigate)
+- **knowledge** — A reference doc (use `toc` or `section "..."` to navigate)
 
 Always search the stash first when you need a capability. Prefer existing
 assets over writing new code.
@@ -200,8 +200,8 @@ akm show tool:docker-build.sh
 For knowledge assets, navigate without loading the entire document:
 
 ```sh
-akm show knowledge:api-guide.md --view toc
-akm show knowledge:api-guide.md --view section --heading "Authentication"
+akm show knowledge:api-guide.md toc
+akm show knowledge:api-guide.md section "Authentication"
 ```
 
 ## Installing and Sharing Kits

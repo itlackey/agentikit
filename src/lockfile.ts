@@ -37,9 +37,9 @@ export function writeLockfile(entries: LockfileEntry[]): void {
   const lockfilePath = getLockfilePath();
   const dir = path.dirname(lockfilePath);
   fs.mkdirSync(dir, { recursive: true });
-  const tmpPath = lockfilePath + `.tmp.${process.pid}`;
+  const tmpPath = `${lockfilePath}.tmp.${process.pid}`;
   try {
-    fs.writeFileSync(tmpPath, JSON.stringify(entries, null, 2) + "\n", "utf8");
+    fs.writeFileSync(tmpPath, `${JSON.stringify(entries, null, 2)}\n`, "utf8");
     fs.renameSync(tmpPath, lockfilePath);
   } catch (err) {
     try {

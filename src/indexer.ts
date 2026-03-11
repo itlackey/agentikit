@@ -146,7 +146,7 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
 function indexEntries(
   db: import("bun:sqlite").Database,
   allStashDirs: string[],
-  stashDir: string,
+  _stashDir: string,
   isIncremental: boolean,
   builtAtMs: number,
 ): {
@@ -391,7 +391,7 @@ function migrateGeneratedSkillMetadata(
 async function enhanceStashWithLlm(
   llmConfig: LlmConnectionConfig,
   stash: StashFile,
-  dirPath: string,
+  _dirPath: string,
   files: string[],
 ): Promise<StashFile> {
   const { enhanceMetadata } = await import("./llm.js");

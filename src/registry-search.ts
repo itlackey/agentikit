@@ -125,7 +125,7 @@ function writeCachedIndex(cachePath: string, index: RegistryIndex): void {
   try {
     const dir = path.dirname(cachePath);
     fs.mkdirSync(dir, { recursive: true });
-    const tmpPath = cachePath + `.tmp.${process.pid}`;
+    const tmpPath = `${cachePath}.tmp.${process.pid}`;
     fs.writeFileSync(tmpPath, JSON.stringify(index), "utf8");
     fs.renameSync(tmpPath, cachePath);
   } catch {

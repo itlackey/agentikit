@@ -53,18 +53,22 @@ Local results include `openRef` for use with `akm show`, plus `score` and
 
 ### show
 
-Display an asset by ref.
+Display an asset by ref. Knowledge assets support view modes as
+positional arguments after the ref.
 
 ```sh
 akm show tool:deploy.sh
 akm show skill:code-review
 akm show agent:architect.md
 akm show command:release.md
-akm show knowledge:guide.md --view toc
-akm show knowledge:guide.md --view section --heading "Authentication"
-akm show knowledge:guide.md --view lines --start 10 --end 30
-akm show knowledge:guide.md --view frontmatter
+akm show knowledge:guide.md toc
+akm show knowledge:guide.md section "Authentication"
+akm show knowledge:guide.md lines 10 30
+akm show knowledge:guide.md frontmatter
 ```
+
+The flag form (`--view toc`, `--view section --heading "Auth"`, etc.)
+is still accepted for backward compatibility.
 
 Returns type-specific payloads:
 

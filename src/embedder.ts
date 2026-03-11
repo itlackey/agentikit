@@ -46,7 +46,7 @@ async function embedLocal(text: string): Promise<EmbeddingVector> {
 async function embedRemote(text: string, config: EmbeddingConnectionConfig): Promise<EmbeddingVector> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (config.apiKey) {
-    headers["Authorization"] = `Bearer ${config.apiKey}`;
+    headers.Authorization = `Bearer ${config.apiKey}`;
   }
 
   const body: { input: string; model: string; dimensions?: number } = {
@@ -123,7 +123,7 @@ async function embedRemoteBatch(texts: string[], config: EmbeddingConnectionConf
   const results: EmbeddingVector[] = [];
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (config.apiKey) {
-    headers["Authorization"] = `Bearer ${config.apiKey}`;
+    headers.Authorization = `Bearer ${config.apiKey}`;
   }
 
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {

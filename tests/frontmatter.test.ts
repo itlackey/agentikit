@@ -97,15 +97,15 @@ describe("parseFrontmatterBlock", () => {
   test("extracts frontmatter and content correctly", () => {
     const result = parseFrontmatterBlock("---\nkey: val\n---\nbody\n");
     expect(result).not.toBeNull();
-    expect(result!.frontmatter).toBe("key: val");
-    expect(result!.content).toBe("body\n");
+    expect(result?.frontmatter).toBe("key: val");
+    expect(result?.content).toBe("body\n");
   });
 
   test("handles frontmatter without trailing content", () => {
     const result = parseFrontmatterBlock("---\nkey: val\n---\n");
     expect(result).not.toBeNull();
-    expect(result!.frontmatter).toBe("key: val");
-    expect(result!.content).toBe("");
+    expect(result?.frontmatter).toBe("key: val");
+    expect(result?.content).toBe("");
   });
 });
 
