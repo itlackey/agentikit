@@ -85,7 +85,7 @@ function walkStashGit(stashRoot: string): FileContext[] | null {
   if (!isInsideGitRepo(stashRoot)) return null;
 
   // Get tracked + untracked (non-ignored) files
-  const result = spawnSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
+  const result = spawnSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."], {
     cwd: stashRoot,
     encoding: "utf8",
     timeout: 30_000,
@@ -98,6 +98,7 @@ function walkStashGit(stashRoot: string): FileContext[] | null {
   const files = result.stdout
     .split("\0")
     .filter((f) => f.length > 0)
+    .filter((f) => !f.startsWith("..") && !path.isAbsolute(f))
     .filter((f) => !SKIP_FILES.has(path.basename(f)))
     .filter((f) => !f.includes("/.") && !f.startsWith(".")); // skip dot-dirs/files
 

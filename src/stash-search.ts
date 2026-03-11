@@ -511,6 +511,7 @@ function assetToSearchHit(
   const editable = isEditable(asset.path, config);
   const ref = makeAssetRef(asset.type, asset.name, source?.registryId);
   const fileSize = readFileSize(asset.path);
+  const size = deriveSize(fileSize);
   const hit: LocalSearchHit = {
     type: normalizeAssetType(asset.type),
     name: asset.name,
@@ -519,7 +520,7 @@ function assetToSearchHit(
     origin: source?.registryId ?? null,
     editable,
     ...(!editable ? { editHint: buildEditHint(asset.path, asset.type, asset.name, source?.registryId) } : {}),
-    ...(deriveSize(fileSize) ? { size: deriveSize(fileSize) } : {}),
+    ...(size ? { size } : {}),
     action: buildLocalAction(normalizeAssetType(asset.type), ref),
   };
   const renderer = rendererForType(asset.type);

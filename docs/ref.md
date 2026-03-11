@@ -27,7 +27,9 @@ Refs currently use this wire format:
 
 - `script:deploy.sh`
 - `skill:code-review`
-- `knowledge:api-guide.md`
+- `knowledge:api-guide`
+- `command:release`
+- `agent:reviewer`
 - `npm:@scope/pkg//script:deploy.sh`
 
 `tool` is accepted as an alias for `script` when reading refs, but emitted refs
@@ -54,7 +56,7 @@ full `ref` only as the lookup token passed back to `show`.
 
 ## Deferred Simplification
 
-Non-script refs still keep their on-disk filenames today, including extensions
-such as `.md`. A future cleanup may simplify some non-script refs when lookup
-remains unambiguous, but that change is intentionally deferred for now so the
-output contract stays stable during the redesign.
+Non-script refs for `command`, `agent`, and `knowledge` are now emitted in a
+simplified canonical form that omits file extensions such as `.md`. The
+resolver still accepts refs that include the on-disk filename with extension on
+input, but normalizes returned refs to the extension-less form.
