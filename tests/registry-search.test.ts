@@ -423,14 +423,14 @@ describe("hit shape", () => {
       const result = await searchRegistry("openkit", { registryUrls: srv.url });
       const hit = result.hits.find((h) => h.id === "npm:@itlackey/openkit");
       expect(hit).toBeDefined();
-      expect(hit!.source).toBe("npm");
-      expect(hit!.title).toBe("@itlackey/openkit");
-      expect(hit!.ref).toBe("@itlackey/openkit");
-      expect(hit!.metadata?.version).toBe("1.2.0");
-      expect(hit!.metadata?.author).toBe("itlackey");
-      expect(hit!.metadata?.license).toBe("MIT");
-      expect(hit!.metadata?.assetTypes).toBe("skill, tool, command");
-      expect(typeof hit!.score).toBe("number");
+      expect(hit?.source).toBe("npm");
+      expect(hit?.title).toBe("@itlackey/openkit");
+      expect(hit?.ref).toBe("@itlackey/openkit");
+      expect(hit?.metadata?.version).toBe("1.2.0");
+      expect(hit?.metadata?.author).toBe("itlackey");
+      expect(hit?.metadata?.license).toBe("MIT");
+      expect(hit?.metadata?.assetTypes).toBe("skill, tool, command");
+      expect(typeof hit?.score).toBe("number");
     } finally {
       srv.close();
     }
@@ -442,11 +442,11 @@ describe("hit shape", () => {
       const result = await searchRegistry("itlackey", { registryUrls: srv.url });
       const curatedHit = result.hits.find((h) => h.id === "github:itlackey/dimm-city-kit");
       expect(curatedHit).toBeDefined();
-      expect(curatedHit!.curated).toBe(true);
+      expect(curatedHit?.curated).toBe(true);
 
       const autoHit = result.hits.find((h) => h.id === "npm:@itlackey/openkit");
       expect(autoHit).toBeDefined();
-      expect(autoHit!.curated).toBeUndefined();
+      expect(autoHit?.curated).toBeUndefined();
     } finally {
       srv.close();
     }

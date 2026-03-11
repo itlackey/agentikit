@@ -111,8 +111,8 @@ describe("agentikitList", () => {
   });
 
   test("reports missing directories in status", async () => {
-    const nonExistentCache = path.join(os.tmpdir(), "agentikit-nonexistent-cache-" + Date.now());
-    const nonExistentStashRoot = path.join(os.tmpdir(), "agentikit-nonexistent-root-" + Date.now());
+    const nonExistentCache = path.join(os.tmpdir(), `agentikit-nonexistent-cache-${Date.now()}`);
+    const nonExistentStashRoot = path.join(os.tmpdir(), `agentikit-nonexistent-root-${Date.now()}`);
 
     saveConfig({
       semanticSearch: false,

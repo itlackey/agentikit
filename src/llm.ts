@@ -16,7 +16,7 @@ interface ChatCompletionResponse {
 async function chatCompletion(config: LlmConnectionConfig, messages: ChatMessage[]): Promise<string> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (config.apiKey) {
-    headers["Authorization"] = `Bearer ${config.apiKey}`;
+    headers.Authorization = `Bearer ${config.apiKey}`;
   }
 
   const response = await fetchWithTimeout(config.endpoint, {
@@ -57,7 +57,7 @@ export async function enhanceMetadata(
   if (entry.tags?.length) contextParts.push(`Current tags: ${entry.tags.join(", ")}`);
   if (fileContent) {
     // Limit content to first 2000 chars to stay within token limits
-    const truncated = fileContent.length > 2000 ? fileContent.slice(0, 2000) + "\n... (truncated)" : fileContent;
+    const truncated = fileContent.length > 2000 ? `${fileContent.slice(0, 2000)}\n... (truncated)` : fileContent;
     contextParts.push(`File content:\n${truncated}`);
   }
 

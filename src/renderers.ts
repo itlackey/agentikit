@@ -14,11 +14,10 @@ import { hasErrnoCode } from "./common";
 import type { AssetRenderer, RenderContext } from "./file-context";
 import { registerRenderer } from "./file-context";
 import { parseFrontmatter, toStringOrUndefined } from "./frontmatter";
-import type { StashEntry } from "./metadata";
-import { extractDescriptionFromComments } from "./metadata";
-import { loadStashFile } from "./metadata";
-import type { KnowledgeView, LocalSearchHit, ShowResponse } from "./stash-types";
 import { extractFrontmatterOnly, extractLineRange, extractSection, formatToc, parseMarkdownToc } from "./markdown";
+import type { StashEntry } from "./metadata";
+import { extractDescriptionFromComments, loadStashFile } from "./metadata";
+import type { KnowledgeView, LocalSearchHit, ShowResponse } from "./stash-types";
 
 // ── ExecHints types ──────────────────────────────────────────────────────────
 
@@ -54,7 +53,7 @@ const INTERPRETER_MAP: Record<string, string> = {
 const SETUP_SIGNALS: Record<string, string> = {
   "package.json": "bun install",
   "requirements.txt": "pip install -r requirements.txt",
-  "Gemfile": "bundle install",
+  Gemfile: "bundle install",
   "go.mod": "go mod download",
 };
 
@@ -354,7 +353,7 @@ const knowledgeMdRenderer: AssetRenderer = {
             type: "knowledge",
             name,
             path: ctx.absPath,
-            content: `Section "${v.heading}" not found in ${name}. Try --view toc to discover available headings.`,
+            content: `Section "${v.heading}" not found in ${name}. Try \`akm show <ref> toc\` to discover available headings.`,
           };
         }
         return { type: "knowledge", name, path: ctx.absPath, content: section.content };
@@ -383,8 +382,8 @@ const knowledgeMdRenderer: AssetRenderer = {
   },
 
   usageGuide: [
-    "Use `akm show <openRef>` to read the document; start with `--view toc` for large files.",
-    "Use `--view section` or `--view lines` to load only the part you need.",
+    "Use `akm show <openRef>` to read the document; append `toc` for large files.",
+    'Use `akm show <openRef> section "Heading"` or `akm show <openRef> lines <start> <end>` to load only the part you need.',
   ],
 };
 

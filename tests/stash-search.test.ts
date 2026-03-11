@@ -126,8 +126,8 @@ describe("Database search path (FTS scoring)", () => {
     expect(localHits.length).toBeGreaterThanOrEqual(1);
     const deployHit = localHits.find((h) => h.name === "deploy");
     expect(deployHit).toBeDefined();
-    expect(deployHit!.score).toBeDefined();
-    expect(deployHit!.score!).toBeGreaterThan(0);
+    expect(deployHit?.score).toBeDefined();
+    expect(deployHit!.score).toBeGreaterThan(0);
   });
 
   test("FTS search filters by asset type", async () => {
@@ -258,8 +258,8 @@ describe("Database search path (FTS scoring)", () => {
     expect(result.hits.length).toBeGreaterThan(0);
     const deployHit = result.hits.find((h) => h.name === "clamp-deploy");
     expect(deployHit).toBeDefined();
-    expect(deployHit!.score).toBeDefined();
-    expect(deployHit!.score!).toBeGreaterThan(0);
+    expect(deployHit?.score).toBeDefined();
+    expect(deployHit!.score).toBeGreaterThan(0);
   });
 });
 
@@ -292,8 +292,8 @@ describe("Score boosts", () => {
     const deployHit = localHits.find((h) => h.name === "deploy");
 
     expect(deployHit).toBeDefined();
-    expect(deployHit!.whyMatched).toBeDefined();
-    expect(deployHit!.whyMatched!).toContain("matched tags");
+    expect(deployHit?.whyMatched).toBeDefined();
+    expect(deployHit!.whyMatched).toContain("matched tags");
   });
 
   test("name match boosts score", async () => {
@@ -321,8 +321,8 @@ describe("Score boosts", () => {
     const hit = localHits.find((h) => h.name === "formatter");
 
     expect(hit).toBeDefined();
-    expect(hit!.whyMatched).toBeDefined();
-    expect(hit!.whyMatched!).toContain("matched name tokens");
+    expect(hit?.whyMatched).toBeDefined();
+    expect(hit!.whyMatched).toContain("matched name tokens");
   });
 
   test("curated metadata gets quality boost", async () => {
@@ -373,13 +373,13 @@ describe("Score boosts", () => {
 
     expect(curatedHit).toBeDefined();
     expect(generatedHit).toBeDefined();
-    expect(curatedHit!.score).toBeDefined();
-    expect(generatedHit!.score).toBeDefined();
+    expect(curatedHit?.score).toBeDefined();
+    expect(generatedHit?.score).toBeDefined();
     // Scores are rounded to 2 decimal places, so small boosts may tie.
     // Verify curated ranks at least as high (sort order preserves pre-rounding order).
-    expect(curatedHit!.score!).toBeGreaterThanOrEqual(generatedHit!.score!);
-    expect(curatedHit!.whyMatched).toBeDefined();
-    expect(curatedHit!.whyMatched!).toContain("curated metadata boost");
+    expect(curatedHit!.score).toBeGreaterThanOrEqual(generatedHit!.score);
+    expect(curatedHit?.whyMatched).toBeDefined();
+    expect(curatedHit!.whyMatched).toContain("curated metadata boost");
   });
 });
 
@@ -401,8 +401,8 @@ describe("Substring fallback", () => {
     const deployHit = localHits.find((h) => h.name.includes("deploy"));
     expect(deployHit).toBeDefined();
     // Substring fallback does not produce score or whyMatched
-    expect(deployHit!.score).toBeUndefined();
-    expect(deployHit!.whyMatched).toBeUndefined();
+    expect(deployHit?.score).toBeUndefined();
+    expect(deployHit?.whyMatched).toBeUndefined();
   });
 
   test("substring search is case-insensitive", async () => {

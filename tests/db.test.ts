@@ -7,7 +7,6 @@ import {
   closeDatabase,
   DB_VERSION,
   deleteEntriesByDir,
-  EMBEDDING_DIM,
   getAllEntries,
   getEntriesByDir,
   getEntryById,
@@ -141,7 +140,7 @@ describe("Schema", () => {
         | { name: string }
         | undefined;
       expect(row).toBeDefined();
-      expect(row!.name).toBe("entries_fts");
+      expect(row?.name).toBe("entries_fts");
     } finally {
       closeDatabase(db);
     }
@@ -221,9 +220,9 @@ describe("Entry CRUD", () => {
 
       const result = getEntryById(db, id);
       expect(result).toBeDefined();
-      expect(result!.entry.name).toBe("fetch-tool");
-      expect(result!.entry.description).toBe("Fetches data");
-      expect(result!.filePath).toBe("/test/dir/fetch-tool.ts");
+      expect(result?.entry.name).toBe("fetch-tool");
+      expect(result?.entry.description).toBe("Fetches data");
+      expect(result?.filePath).toBe("/test/dir/fetch-tool.ts");
 
       // Non-existent ID
       const missing = getEntryById(db, 99999);
@@ -459,7 +458,7 @@ describe("Vector / Embedding integration", () => {
         | { name: string }
         | undefined;
       expect(row).toBeDefined();
-      expect(row!.name).toBe("entries_vec");
+      expect(row?.name).toBe("entries_vec");
     } finally {
       closeDatabase(db);
     }

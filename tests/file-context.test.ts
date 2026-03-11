@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { buildFileContext, buildRenderContext, getAllRenderers, getRenderer, runMatchers } from "../src/file-context";
-import { directoryMatcher, extensionMatcher, smartMdMatcher } from "../src/matchers";
+import { directoryMatcher, smartMdMatcher } from "../src/matchers";
 import { walkStashFlat } from "../src/walker";
 
 // ── Temp directory helpers ──────────────────────────────────────────────────
@@ -77,8 +77,8 @@ describe("buildFileContext", () => {
     const fm = ctx.frontmatter();
 
     expect(fm).not.toBeNull();
-    expect(fm!.description).toBe("Code reviewer");
-    expect(fm!.model).toBe("gpt-4");
+    expect(fm?.description).toBe("Code reviewer");
+    expect(fm?.model).toBe("gpt-4");
   });
 
   test("lazy frontmatter() returns null for .md without frontmatter", () => {
@@ -151,8 +151,8 @@ describe("runMatchers", () => {
     const result = directoryMatcher(ctx);
 
     expect(result).not.toBeNull();
-    expect(result!.type).toBe("script");
-    expect(result!.specificity).toBe(10);
+    expect(result?.type).toBe("script");
+    expect(result?.specificity).toBe(10);
   });
 
   test("directoryMatcher matches SKILL.md under skills/ as 'skill'", () => {
@@ -164,8 +164,8 @@ describe("runMatchers", () => {
     const result = directoryMatcher(ctx);
 
     expect(result).not.toBeNull();
-    expect(result!.type).toBe("skill");
-    expect(result!.specificity).toBe(10);
+    expect(result?.type).toBe("skill");
+    expect(result?.specificity).toBe(10);
   });
 
   test("directoryMatcher matches .md under commands/ as 'command'", () => {
@@ -177,7 +177,7 @@ describe("runMatchers", () => {
     const result = directoryMatcher(ctx);
 
     expect(result).not.toBeNull();
-    expect(result!.type).toBe("command");
+    expect(result?.type).toBe("command");
   });
 
   test("directoryMatcher matches .md under agents/ as 'agent'", () => {
@@ -189,7 +189,7 @@ describe("runMatchers", () => {
     const result = directoryMatcher(ctx);
 
     expect(result).not.toBeNull();
-    expect(result!.type).toBe("agent");
+    expect(result?.type).toBe("agent");
   });
 
   test("directoryMatcher matches .md under knowledge/ as 'knowledge'", () => {
@@ -201,7 +201,7 @@ describe("runMatchers", () => {
     const result = directoryMatcher(ctx);
 
     expect(result).not.toBeNull();
-    expect(result!.type).toBe("knowledge");
+    expect(result?.type).toBe("knowledge");
   });
 
   test("directoryMatcher matches .py under scripts/ as 'script'", () => {
@@ -213,7 +213,7 @@ describe("runMatchers", () => {
     const result = directoryMatcher(ctx);
 
     expect(result).not.toBeNull();
-    expect(result!.type).toBe("script");
+    expect(result?.type).toBe("script");
   });
 
   test("smartMdMatcher matches .md with 'model' frontmatter as 'agent' at specificity 8 (weak signal)", () => {
@@ -226,8 +226,8 @@ describe("runMatchers", () => {
 
     // model alone is a weak agent signal -- commands also use model
     expect(result).not.toBeNull();
-    expect(result!.type).toBe("agent");
-    expect(result!.specificity).toBe(8);
+    expect(result?.type).toBe("agent");
+    expect(result?.specificity).toBe(8);
   });
 
   test("smartMdMatcher matches .md with 'tools' frontmatter as 'agent'", () => {
@@ -239,8 +239,8 @@ describe("runMatchers", () => {
     const result = smartMdMatcher(ctx);
 
     expect(result).not.toBeNull();
-    expect(result!.type).toBe("agent");
-    expect(result!.specificity).toBe(20);
+    expect(result?.type).toBe("agent");
+    expect(result?.specificity).toBe(20);
   });
 
   test("smartMdMatcher classifies .md without agent/command signals as knowledge", () => {
@@ -253,8 +253,8 @@ describe("runMatchers", () => {
 
     // No agent or command signals; falls back to knowledge
     expect(result).not.toBeNull();
-    expect(result!.type).toBe("knowledge");
-    expect(result!.specificity).toBe(5);
+    expect(result?.type).toBe("knowledge");
+    expect(result?.specificity).toBe(5);
   });
 
   test("smartMdMatcher detects 'agent' frontmatter as command signal at specificity 18", () => {
@@ -269,9 +269,9 @@ describe("runMatchers", () => {
     const result = smartMdMatcher(ctx);
 
     expect(result).not.toBeNull();
-    expect(result!.type).toBe("command");
-    expect(result!.specificity).toBe(18);
-    expect(result!.renderer).toBe("command-md");
+    expect(result?.type).toBe("command");
+    expect(result?.specificity).toBe(18);
+    expect(result?.renderer).toBe("command-md");
   });
 
   test("smartMdMatcher detects $ARGUMENTS placeholder as command signal at specificity 18", () => {
@@ -283,8 +283,8 @@ describe("runMatchers", () => {
     const result = smartMdMatcher(ctx);
 
     expect(result).not.toBeNull();
-    expect(result!.type).toBe("command");
-    expect(result!.specificity).toBe(18);
+    expect(result?.type).toBe("command");
+    expect(result?.specificity).toBe(18);
   });
 
   test("smartMdMatcher detects $1/$2/$3 placeholders as command signal", () => {
@@ -296,8 +296,8 @@ describe("runMatchers", () => {
     const result = smartMdMatcher(ctx);
 
     expect(result).not.toBeNull();
-    expect(result!.type).toBe("command");
-    expect(result!.specificity).toBe(18);
+    expect(result?.type).toBe("command");
+    expect(result?.specificity).toBe(18);
   });
 
   test("smartMdMatcher: tools/toolPolicy (20) beats agent frontmatter command signal (18)", () => {
@@ -309,8 +309,8 @@ describe("runMatchers", () => {
     const result = smartMdMatcher(ctx);
 
     // tools is agent-exclusive at 20, wins over agent dispatch at 18
-    expect(result!.type).toBe("agent");
-    expect(result!.specificity).toBe(20);
+    expect(result?.type).toBe("agent");
+    expect(result?.specificity).toBe(20);
   });
 
   test("smartMdMatcher: agent frontmatter (18) beats model-only (8)", () => {
@@ -322,8 +322,8 @@ describe("runMatchers", () => {
     const result = smartMdMatcher(ctx);
 
     // agent frontmatter is a command signal at 18
-    expect(result!.type).toBe("command");
-    expect(result!.specificity).toBe(18);
+    expect(result?.type).toBe("command");
+    expect(result?.specificity).toBe(18);
   });
 
   test("smartMdMatcher falls back to 'knowledge' at specificity 5 for plain .md", () => {
@@ -335,8 +335,8 @@ describe("runMatchers", () => {
     const result = smartMdMatcher(ctx);
 
     expect(result).not.toBeNull();
-    expect(result!.type).toBe("knowledge");
-    expect(result!.specificity).toBe(5);
+    expect(result?.type).toBe("knowledge");
+    expect(result?.specificity).toBe(5);
   });
 
   test("smartMdMatcher returns null for non-.md files", () => {
@@ -357,19 +357,19 @@ describe("runMatchers", () => {
 
     // directoryMatcher says "command" at specificity 10
     const dirResult = directoryMatcher(ctx);
-    expect(dirResult!.type).toBe("command");
-    expect(dirResult!.specificity).toBe(10);
+    expect(dirResult?.type).toBe("command");
+    expect(dirResult?.specificity).toBe(10);
 
     // smartMdMatcher says "agent" at specificity 20 (tools is a strong signal)
     const smartResult = smartMdMatcher(ctx);
-    expect(smartResult!.type).toBe("agent");
-    expect(smartResult!.specificity).toBe(20);
+    expect(smartResult?.type).toBe("agent");
+    expect(smartResult?.specificity).toBe(20);
 
     // runMatchers should pick the higher specificity
     const best = runMatchers(ctx);
     expect(best).not.toBeNull();
-    expect(best!.type).toBe("agent");
-    expect(best!.specificity).toBe(20);
+    expect(best?.type).toBe("agent");
+    expect(best?.specificity).toBe(20);
   });
 
   test("specificity ordering: directoryMatcher(10) beats smartMdMatcher(5) for plain .md", () => {
@@ -380,13 +380,13 @@ describe("runMatchers", () => {
     const ctx = buildFileContext(root, filePath);
 
     // directoryMatcher says "knowledge" at specificity 10
-    expect(directoryMatcher(ctx)!.specificity).toBe(10);
+    expect(directoryMatcher(ctx)?.specificity).toBe(10);
     // smartMdMatcher says "knowledge" at specificity 5
-    expect(smartMdMatcher(ctx)!.specificity).toBe(5);
+    expect(smartMdMatcher(ctx)?.specificity).toBe(5);
 
     // runMatchers should pick specificity 10
     const best = runMatchers(ctx);
-    expect(best!.specificity).toBeGreaterThanOrEqual(10);
+    expect(best?.specificity).toBeGreaterThanOrEqual(10);
   });
 
   test("runMatchers returns null for unmatched file types", () => {
@@ -406,7 +406,7 @@ describe("Renderer", () => {
   test("getRenderer('tool-script') returns the tool renderer", () => {
     const renderer = getRenderer("tool-script");
     expect(renderer).toBeDefined();
-    expect(renderer!.name).toBe("tool-script");
+    expect(renderer?.name).toBe("tool-script");
   });
 
   test("getRenderer('agent-md') builds show response with prompt prefix", () => {
@@ -627,11 +627,11 @@ describe("walkStashFlat", () => {
 
     const deployCtx = results.find((ctx) => ctx.fileName === "deploy.sh");
     expect(deployCtx).toBeDefined();
-    expect(deployCtx!.relPath).toBe("tools/azure/deploy.sh");
-    expect(deployCtx!.ext).toBe(".sh");
-    expect(deployCtx!.parentDir).toBe("azure");
-    expect(deployCtx!.ancestorDirs).toEqual(["tools", "azure"]);
-    expect(deployCtx!.content()).toBe("#!/bin/bash\necho deploy\n");
+    expect(deployCtx?.relPath).toBe("tools/azure/deploy.sh");
+    expect(deployCtx?.ext).toBe(".sh");
+    expect(deployCtx?.parentDir).toBe("azure");
+    expect(deployCtx?.ancestorDirs).toEqual(["tools", "azure"]);
+    expect(deployCtx?.content()).toBe("#!/bin/bash\necho deploy\n");
   });
 
   test("handles multiple files in the same directory", () => {

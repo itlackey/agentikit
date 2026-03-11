@@ -185,12 +185,12 @@ describe("Scenario: Full lifecycle (index → search → show)", () => {
   test("index preserves hand-written .stash.json (docker/ has intent fields)", async () => {
     const dockerStash = loadStashFile(path.join(stashDir, "tools", "docker"));
     expect(dockerStash).not.toBeNull();
-    expect(dockerStash!.entries.length).toBe(2);
+    expect(dockerStash?.entries.length).toBe(2);
 
     // These were hand-written, should NOT have generated flag
-    expect(dockerStash!.entries[0].generated).toBeUndefined();
-    expect(dockerStash!.entries[0].intent).toBeDefined();
-    expect(dockerStash!.entries[0].intent!.when).toBeTruthy();
+    expect(dockerStash?.entries[0].generated).toBeUndefined();
+    expect(dockerStash?.entries[0].intent).toBeDefined();
+    expect(dockerStash?.entries[0].intent?.when).toBeTruthy();
   });
 
   test("index extracts description from code comments", async () => {
@@ -199,8 +199,8 @@ describe("Scenario: Full lifecycle (index → search → show)", () => {
     const diffEntry = entries.find((e) => e.entry.name.includes("summarize-diff"));
     expect(diffEntry).toBeDefined();
     // Should have extracted the JSDoc comment as description
-    expect(diffEntry!.entry.description).toBeTruthy();
-    expect(diffEntry!.entry.description!.toLowerCase()).toContain("git diff");
+    expect(diffEntry?.entry.description).toBeTruthy();
+    expect(diffEntry?.entry.description?.toLowerCase()).toContain("git diff");
     closeDatabase(db);
   });
 
@@ -210,8 +210,8 @@ describe("Scenario: Full lifecycle (index → search → show)", () => {
     const lintEntry = entries.find((e) => e.entry.name.includes("eslint-check"));
     expect(lintEntry).toBeDefined();
     // package.json had description and keywords
-    expect(lintEntry!.entry.description).toContain("ESLint");
-    expect(lintEntry!.entry.tags).toContain("eslint");
+    expect(lintEntry?.entry.description).toContain("ESLint");
+    expect(lintEntry?.entry.tags).toContain("eslint");
     closeDatabase(db);
   });
 
@@ -262,7 +262,7 @@ describe("Scenario: Full lifecycle (index → search → show)", () => {
     const deployHit = searchResult.hits.find((h) => h.hitSource === "local" && h.name.includes("deploy"));
     expect(deployHit).toBeDefined();
 
-    const openResult = await agentikitShow({ ref: deployHit!.openRef! });
+    const openResult = await agentikitShow({ ref: deployHit!.openRef });
     expect(openResult.type).toBe("script");
     expect(openResult.run).toBeTruthy();
     expect(openResult.run).toContain("bash");
@@ -352,7 +352,7 @@ describe("Scenario: Agent discovers capabilities for task", () => {
     expect(testTool).toBeDefined();
 
     // Step 2: Agent reads the tool to get run command for host execution
-    const showResult = await agentikitShow({ ref: testTool!.openRef! });
+    const showResult = await agentikitShow({ ref: testTool!.openRef });
     expect(showResult.run).toBeTruthy();
   });
 });
@@ -699,12 +699,8 @@ describe("Scenario: CLI subprocess execution", () => {
   test("cli: akm config --get/--unset support familiar git-style flags", async () => {
     // Set up llm config via JSON first
     expect(
-      runCli(
-        "config",
-        "set",
-        "llm",
-        '{"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2"}',
-      ).exitCode,
+      runCli("config", "set", "llm", '{"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2"}')
+        .exitCode,
     ).toBe(0);
 
     // Verify --get works for llm
@@ -907,10 +903,10 @@ describe("Scenario: upgrade and update --force (no network)", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Scenario 3b: CLI knowledge --view flags
+// Scenario 3b: CLI knowledge view modes (positional syntax)
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("Scenario: CLI knowledge --view flags", () => {
+describe("Scenario: CLI knowledge view modes (positional)", () => {
   let stashDir: string;
 
   beforeAll(async () => {
@@ -922,8 +918,8 @@ describe("Scenario: CLI knowledge --view flags", () => {
     fs.rmSync(stashDir, { recursive: true, force: true });
   });
 
-  test("cli: show knowledge with --view toc", async () => {
-    const result = runCli("show", "knowledge:guide.md", "--view", "toc");
+  test("cli: show knowledge with positional toc", async () => {
+    const result = runCli("show", "knowledge:guide.md", "toc");
     expect(result.exitCode).toBe(0);
 
     const json = parseJson(result.stdout);
@@ -933,8 +929,8 @@ describe("Scenario: CLI knowledge --view flags", () => {
     expect(json.content).toContain("lines total");
   });
 
-  test("cli: show knowledge with --view section --heading", async () => {
-    const result = runCli("show", "knowledge:guide.md", "--view", "section", "--heading", "Getting Started");
+  test("cli: show knowledge with positional section heading", async () => {
+    const result = runCli("show", "knowledge:guide.md", "section", "Getting Started");
     expect(result.exitCode).toBe(0);
 
     const json = parseJson(result.stdout);
@@ -946,14 +942,36 @@ describe("Scenario: CLI knowledge --view flags", () => {
     expect(json.content).not.toContain("Authentication");
   });
 
-  test("cli: show knowledge with --view lines --start --end", async () => {
-    const result = runCli("show", "knowledge:guide.md", "--view", "lines", "--start", "1", "--end", "5");
+  test("cli: show knowledge with positional lines start end", async () => {
+    const result = runCli("show", "knowledge:guide.md", "lines", "1", "5");
     expect(result.exitCode).toBe(0);
 
     const json = parseJson(result.stdout);
     expect(json.type).toBe("knowledge");
     // Lines 1-5 cover the frontmatter start
     expect(json.content).toContain("---");
+  });
+
+  test("cli: show knowledge with --view flag still works (backward compat)", async () => {
+    const result = runCli("show", "knowledge:guide.md", "--view", "toc");
+    expect(result.exitCode).toBe(0);
+
+    const json = parseJson(result.stdout);
+    expect(json.type).toBe("knowledge");
+    expect(json.content).toContain("# API Reference Guide");
+  });
+
+  test("cli: show knowledge default (no view mode) returns full content", async () => {
+    const result = runCli("show", "knowledge:guide.md");
+    expect(result.exitCode).toBe(0);
+
+    const json = parseJson(result.stdout);
+    expect(json.type).toBe("knowledge");
+    expect(json.content).toBeDefined();
+    // Full content should include everything
+    expect(json.content).toContain("API Reference Guide");
+    expect(json.content).toContain("Getting Started");
+    expect(json.content).toContain("Authentication");
   });
 });
 
@@ -998,8 +1016,8 @@ describe("Scenario: Zero-config progressive improvement", () => {
     const entries = getAllEntries(db, "tool");
     const formatEntry = entries.find((e) => e.entry.name.includes("prettier"));
     expect(formatEntry).toBeDefined();
-    expect(formatEntry!.entry.generated).toBe(true);
-    expect(formatEntry!.entry.description).toContain("Format code");
+    expect(formatEntry?.entry.generated).toBe(true);
+    expect(formatEntry?.entry.description).toContain("Format code");
     closeDatabase(db);
   });
 
@@ -1017,7 +1035,7 @@ describe("Scenario: Zero-config progressive improvement", () => {
     const entries = getAllEntries(db, "tool");
     const migrateEntry = entries.find((e) => e.entry.name.includes("migrate"));
     expect(migrateEntry).toBeDefined();
-    expect(migrateEntry!.entry.description).toContain("database migrations");
+    expect(migrateEntry?.entry.description).toContain("database migrations");
     closeDatabase(db);
   });
 
@@ -1098,7 +1116,7 @@ describe("Scenario: Multi-tool directory with hand-written .stash.json", () => {
     const result = await agentikitSearch({ query: "compose development" });
     const composeHit = result.hits.find((h) => h.name.includes("compose"));
     expect(composeHit).toBeDefined();
-    expect(composeHit!.tags).toContain("compose");
+    expect(composeHit?.tags).toContain("compose");
   });
 });
 

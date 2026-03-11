@@ -1,12 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentikitConfig } from "../src/config";
-import {
-  getConfigValue,
-  listConfig,
-  parseConfigValue,
-  setConfigValue,
-  unsetConfigValue,
-} from "../src/config-cli";
+import { getConfigValue, listConfig, parseConfigValue, setConfigValue, unsetConfigValue } from "../src/config-cli";
 
 describe("config CLI helpers", () => {
   test("listConfig shows null for unconfigured embedding and llm", () => {

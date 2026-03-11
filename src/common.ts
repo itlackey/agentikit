@@ -115,8 +115,8 @@ function persistStashDirToConfig(stashDir: string): void {
       raw.stashDir = stashDir;
       const dir = path.dirname(configPath);
       fs.mkdirSync(dir, { recursive: true });
-      const tmpPath = configPath + `.tmp.${process.pid}`;
-      fs.writeFileSync(tmpPath, JSON.stringify(raw, null, 2) + "\n", "utf8");
+      const tmpPath = `${configPath}.tmp.${process.pid}`;
+      fs.writeFileSync(tmpPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
       fs.renameSync(tmpPath, configPath);
     }
   } catch {
@@ -209,5 +209,5 @@ function parseRetryAfter(response: Response): number | undefined {
   const header = response.headers.get("retry-after");
   if (!header) return undefined;
   const seconds = parseInt(header, 10);
-  return isNaN(seconds) ? undefined : seconds * 1000;
+  return Number.isNaN(seconds) ? undefined : seconds * 1000;
 }

@@ -72,21 +72,21 @@ test("parseMarkdownToc strips trailing hash markers", () => {
 test("extractSection returns content from heading to next same-or-higher level", () => {
   const result = extractSection(SAMPLE_DOC, "Installation");
   expect(result).not.toBeNull();
-  expect(result!.content).toContain("npm install");
-  expect(result!.content).not.toContain("Configuration");
+  expect(result?.content).toContain("npm install");
+  expect(result?.content).not.toContain("Configuration");
 });
 
 test("extractSection returns content including sub-headings", () => {
   const result = extractSection(SAMPLE_DOC, "Configuration");
   expect(result).not.toBeNull();
-  expect(result!.content).toContain("Advanced Config");
-  expect(result!.content).not.toContain("API Reference");
+  expect(result?.content).toContain("Advanced Config");
+  expect(result?.content).not.toContain("API Reference");
 });
 
 test("extractSection is case-insensitive", () => {
   const result = extractSection(SAMPLE_DOC, "installation");
   expect(result).not.toBeNull();
-  expect(result!.content).toContain("npm install");
+  expect(result?.content).toContain("npm install");
 });
 
 test("extractSection returns null for non-existent heading", () => {
@@ -97,7 +97,7 @@ test("extractSection returns null for non-existent heading", () => {
 test("extractSection handles last section (no following heading)", () => {
   const result = extractSection(SAMPLE_DOC, "Endpoints");
   expect(result).not.toBeNull();
-  expect(result!.content).toContain("List of endpoints");
+  expect(result?.content).toContain("List of endpoints");
 });
 
 test("extractLineRange returns correct lines (1-based inclusive)", () => {

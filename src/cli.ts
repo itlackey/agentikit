@@ -4,13 +4,7 @@ import path from "node:path";
 import { defineCommand, runMain } from "citty";
 import { resolveStashDir } from "./common";
 import { getConfigPath, loadConfig, saveConfig } from "./config";
-import {
-  getConfigValue,
-  listConfig,
-  parseConfigValue,
-  setConfigValue,
-  unsetConfigValue,
-} from "./config-cli";
+import { getConfigValue, listConfig, parseConfigValue, setConfigValue, unsetConfigValue } from "./config-cli";
 import { ConfigError, NotFoundError, UsageError } from "./errors";
 import { agentikitIndex } from "./indexer";
 import { agentikitInit } from "./init";
@@ -359,13 +353,19 @@ const upgradeCommand = defineCommand({
 });
 
 const showCommand = defineCommand({
-  meta: { name: "show", description: "Show a stash asset by ref (e.g. agent:bunjs-typescript-coder.md)" },
+  meta: {
+    name: "show",
+    description:
+      "Show a stash asset by ref (e.g. akm show knowledge:guide.md toc, akm show knowledge:guide.md section 'Auth')",
+  },
   args: {
     ref: { type: "positional", description: "Asset ref (type:name)", required: true },
+    // These flags are kept for backward compatibility (--view toc still works)
+    // but the preferred syntax is positional: akm show ref toc
     view: { type: "string", description: "Knowledge view mode (full|toc|frontmatter|section|lines)" },
-    heading: { type: "string", description: "Section heading (for --view section)" },
-    start: { type: "string", description: "Start line (for --view lines)" },
-    end: { type: "string", description: "End line (for --view lines)" },
+    heading: { type: "string", description: "Section heading (for section view)" },
+    start: { type: "string", description: "Start line (for lines view)" },
+    end: { type: "string", description: "End line (for lines view)" },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
@@ -421,7 +421,7 @@ const configCommand = defineCommand({
             try {
               stashDir = resolveStashDir({ readOnly: true });
             } catch {
-              stashDir = getDefaultStashDir() + " (not initialized)";
+              stashDir = `${getDefaultStashDir()} (not initialized)`;
             }
             const cacheDir = getCacheDir();
             const result = {
@@ -582,10 +582,11 @@ const main = defineCommand({
 const SEARCH_USAGE_MODES: SearchUsageMode[] = ["none", "both", "item", "guide"];
 const SEARCH_SOURCES: SearchSource[] = ["local", "registry", "both"];
 const CONFIG_SUBCOMMAND_SET = new Set(["path", "list", "get", "set", "unset"]);
+const SHOW_VIEW_MODES = new Set(["toc", "frontmatter", "full", "section", "lines"]);
 
 // citty reads process.argv directly and does not accept a custom argv array,
 // so we must replace process.argv with the normalized version before runMain.
-process.argv = normalizeConfigArgv(process.argv);
+process.argv = normalizeShowArgv(normalizeConfigArgv(process.argv));
 runMain(main);
 
 function parseSearchUsageMode(value: string): SearchUsageMode {
@@ -688,4 +689,66 @@ function normalizeConfigArgv(argv: string[]): string[] {
   }
 
   return buildResult("set", argAfterCommand, argAfterKey, ...rest);
+}
+
+/**
+ * Normalize argv so positional view-mode arguments after the asset ref
+ * are rewritten into the flag form that citty can parse.
+ *
+ * Converts:
+ *   akm show knowledge:guide.md toc          → akm show knowledge:guide.md --view toc
+ *   akm show knowledge:guide.md section Auth  → akm show knowledge:guide.md --view section --heading Auth
+ *   akm show knowledge:guide.md lines 1 50    → akm show knowledge:guide.md --view lines --start 1 --end 50
+ *
+ * If --view is already present the argv is returned unchanged (backward compat).
+ * Returns a new array; the input is never modified.
+ */
+function normalizeShowArgv(argv: string[]): string[] {
+  // argv[0]=bun argv[1]=script argv[2]=subcommand argv[3]=ref argv[4..]=rest
+  if (argv[2] !== "show") return argv;
+  // If --view is already present, pass through unchanged
+  if (argv.includes("--view")) return argv;
+
+  // Separate global flags from positional/show-specific args
+  const GLOBAL_FLAGS = new Set(["--json", "--quiet", "-q"]);
+  const prefix = argv.slice(0, 3); // [bun, script, show]
+  const rest = argv.slice(3);
+
+  const globalFlags: string[] = [];
+  const showArgs: string[] = [];
+
+  for (const a of rest) {
+    if (GLOBAL_FLAGS.has(a)) {
+      globalFlags.push(a);
+    } else {
+      showArgs.push(a);
+    }
+  }
+
+  // showArgs[0] = ref, showArgs[1] = potential view mode, showArgs[2..] = view params
+  const ref = showArgs[0];
+  const viewMode = showArgs[1];
+
+  if (!ref || !viewMode || !SHOW_VIEW_MODES.has(viewMode)) {
+    return argv;
+  }
+
+  const result = [...prefix, ref, "--view", viewMode];
+
+  if (viewMode === "section") {
+    // Next arg is the heading name
+    const heading = showArgs[2];
+    if (heading) {
+      result.push("--heading", heading);
+    }
+  } else if (viewMode === "lines") {
+    // Next two args are start and end
+    const start = showArgs[2];
+    const end = showArgs[3];
+    if (start) result.push("--start", start);
+    if (end) result.push("--end", end);
+  }
+
+  result.push(...globalFlags);
+  return result;
 }

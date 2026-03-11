@@ -13,9 +13,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { saveConfig } from "../src/config";
-import { closeDatabase, getAllEntries, getEntryCount, openDatabase, searchFts } from "../src/db";
-import { agentikitIndex, buildSearchText } from "../src/indexer";
-import { getDbPath } from "../src/paths";
+import { closeDatabase, getAllEntries, openDatabase, searchFts } from "../src/db";
+import { agentikitIndex } from "../src/indexer";
 import { agentikitSearch } from "../src/stash-search";
 import type { LocalSearchHit } from "../src/stash-types";
 
@@ -254,7 +253,7 @@ describe("Issue #36: buildSearchText includes script content from comments", () 
 
       // The search text should include words from filename AND from the description
       // (which is extracted from the comment header)
-      const searchText = scriptEntry!.searchText;
+      const searchText = scriptEntry?.searchText;
       expect(searchText).toContain("provision");
       expect(searchText).toContain("foundry");
     } finally {

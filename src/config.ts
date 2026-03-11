@@ -121,9 +121,9 @@ export function saveConfig(config: AgentikitConfig): void {
   const dir = path.dirname(configPath);
   fs.mkdirSync(dir, { recursive: true });
   const sanitized = sanitizeConfigForWrite(config);
-  const tmpPath = configPath + `.tmp.${process.pid}`;
+  const tmpPath = `${configPath}.tmp.${process.pid}`;
   try {
-    fs.writeFileSync(tmpPath, JSON.stringify(sanitized, null, 2) + "\n", "utf8");
+    fs.writeFileSync(tmpPath, `${JSON.stringify(sanitized, null, 2)}\n`, "utf8");
     fs.renameSync(tmpPath, configPath);
   } catch (err) {
     try {

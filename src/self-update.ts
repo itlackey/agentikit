@@ -139,7 +139,7 @@ export async function performUpgrade(
 
   if (IS_WINDOWS) {
     // Windows: rename running exe, write new one, clean up old on success
-    const oldPath = execPath + ".old";
+    const oldPath = `${execPath}.old`;
     try {
       fs.renameSync(execPath, oldPath);
     } catch (err) {
@@ -169,7 +169,7 @@ export async function performUpgrade(
   } else {
     // Unix: write to temp file, chmod +x, atomic rename
     const tmpPath = path.join(execDir, `.${execName}.tmp.${process.pid}`);
-    const bakPath = execPath + ".bak";
+    const bakPath = `${execPath}.bak`;
     try {
       fs.writeFileSync(tmpPath, binaryData);
       fs.chmodSync(tmpPath, 0o755);

@@ -46,9 +46,9 @@ describe("walkStash", () => {
     const gitGroup = groups.find((g) => g.dirPath.endsWith("git"));
 
     expect(dockerGroup).toBeDefined();
-    expect(dockerGroup!.files).toHaveLength(2);
+    expect(dockerGroup?.files).toHaveLength(2);
     expect(gitGroup).toBeDefined();
-    expect(gitGroup!.files).toHaveLength(1);
+    expect(gitGroup?.files).toHaveLength(1);
   });
 
   test("skips .stash.json files", () => {
