@@ -1,6 +1,6 @@
 # Concepts
 
-Agentikit is a capability discovery system for AI agents. Instead of searching
+Agent-i-Kit (akm) is a capability discovery system for AI agents. Instead of searching
 files, agents discover capabilities -- tools, skills, commands, agents,
 knowledge, and scripts -- through indexed metadata and hybrid search.
 
@@ -30,7 +30,7 @@ described below.
 
 ## Asset Types
 
-Agentikit organizes capabilities into five primary asset types:
+akm organizes capabilities into five primary asset types:
 
 | Type | Classified by | Preferred Directory | Purpose |
 | --- | --- | --- | --- |
@@ -57,7 +57,7 @@ Organize your kit however makes sense for your project.
 
 ## Asset Classification
 
-Agentikit uses a two-layer classification system: **matchers** determine
+akm uses a two-layer classification system: **matchers** determine
 what an asset is, and **renderers** determine how it is presented.
 
 ### Matchers
@@ -133,7 +133,7 @@ See [filesystem.md](filesystem.md) for the full field reference.
 
 ## Script Execution (ExecHints)
 
-For script assets, agentikit resolves execution hints with three
+For script assets, akm resolves execution hints with three
 levels of precedence:
 
 1. **`.stash.json`** fields (`run`/`setup`/`cwd`) take highest priority

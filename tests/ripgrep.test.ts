@@ -7,7 +7,7 @@ import { isRgAvailable, resolveRg } from "../src/ripgrep";
 const createdTmpDirs: string[] = [];
 
 function tmpDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-rg-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-rg-"));
   createdTmpDirs.push(dir);
   return dir;
 }

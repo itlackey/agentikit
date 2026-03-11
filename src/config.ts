@@ -46,7 +46,7 @@ export interface AgentikitConfig {
   llm?: LlmConnectionConfig;
   /** Installed registry sources and local cache metadata */
   registry?: RegistryConfig;
-  /** Registry index URLs for kit discovery. Default: official agentikit-registry on GitHub */
+  /** Registry index URLs for kit discovery. Default: official akm-registry on GitHub */
   registryUrls?: string[];
 }
 

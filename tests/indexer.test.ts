@@ -19,7 +19,7 @@ beforeEach(() => {
 });
 
 function tmpStash(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-idx-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-idx-"));
   for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
     fs.mkdirSync(path.join(dir, sub), { recursive: true });
   }

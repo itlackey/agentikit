@@ -1,11 +1,13 @@
 # Configuration
 
-Agentikit stores configuration in a platform-standard config directory:
+akm stores configuration in a platform-standard config directory:
 
 | Platform | Path |
 | --- | --- |
-| Linux / macOS | `$XDG_CONFIG_HOME/agentikit/config.json` (default `~/.config/agentikit/config.json`) |
-| Windows | `%APPDATA%\agentikit\config.json` |
+| Linux / macOS | `$XDG_CONFIG_HOME/akm/config.json` (default `~/.config/akm/config.json`) |
+| Windows | `%APPDATA%\akm\config.json` |
+
+Override with `AKM_CONFIG_DIR`.
 
 ## Managing Config
 
@@ -33,7 +35,7 @@ Two backends are supported for generating search embeddings.
 
 ### Local (default)
 
-When `embedding` is not configured (null), Agentikit uses `@xenova/transformers`
+When `embedding` is not configured (null), akm uses `@xenova/transformers`
 with the `Xenova/all-MiniLM-L6-v2` model. Runs on CPU with no external
 dependencies. Produces 384-dimensional vectors.
 
@@ -89,7 +91,7 @@ API. After installing Ollama:
 ollama pull nomic-embed-text
 ollama pull llama3.2
 
-# Configure agentikit
+# Configure akm
 akm config set embedding '{"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text","dimension":384}'
 akm config set llm '{"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2","temperature":0.3,"maxTokens":512}'
 
@@ -99,7 +101,7 @@ akm index --full
 
 ## sqlite-vec Extension
 
-Agentikit uses [sqlite-vec](https://github.com/asg017/sqlite-vec) for fast
+akm uses [sqlite-vec](https://github.com/asg017/sqlite-vec) for fast
 vector similarity search. When sqlite-vec is not available (common in compiled
 binaries on macOS), semantic search falls back to a pure JS implementation
 that computes cosine similarity over BLOB-stored embeddings.
@@ -119,7 +121,7 @@ bun add sqlite-vec
 ```
 
 On macOS, Apple's built-in SQLite disables extension loading. If you installed
-agentikit as a compiled binary, you may need to install a full SQLite build
+akm as a compiled binary, you may need to install a full SQLite build
 (e.g. via Homebrew) and point Bun to it:
 
 ```sh

@@ -22,7 +22,7 @@ import os from "node:os"
 import path from "node:path"
 
 const createdTmpDirs: string[] = []
-function tmpDir(prefix = "agentikit-test-"): string {
+function tmpDir(prefix = "akm-test-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
   createdTmpDirs.push(dir)
   return dir
@@ -127,7 +127,7 @@ async function buildTestIndex(stashDir: string, files: Record<string, string>) {
   }
   process.env.AKM_STASH_DIR = stashDir
   saveConfig({ semanticSearch: false, searchPaths: [] })
-  await agentikitIndex({ stashDir, full: true })
+  await akmIndex({ stashDir, full: true })
 }
 ```
 
@@ -157,7 +157,7 @@ async function buildTestIndex(stashDir: string, files: Record<string, string>) {
 ### 2.3 Substring fallback
 
 - `falls back to substring search when no index exists` -- Do NOT call
-  `agentikitIndex`. Search, verify results come from filesystem walk.
+  `akmIndex`. Search, verify results come from filesystem walk.
 - `substring search is case-insensitive` -- Create `Deploy.sh`, search for
   "deploy", verify match.
 
@@ -292,20 +292,20 @@ import { toolHandler } from "../src/handlers/tool-handler"
 
 These tests require careful isolation since they mutate config.
 
-### 6.1 agentikitList
+### 6.1 akmList
 
 - `returns empty list when no registry installed` -- Load default config,
-  call `agentikitList`. Verify `totalInstalled` is 0.
+  call `akmList`. Verify `totalInstalled` is 0.
 - `returns installed entries with status` -- Save a config with one installed
-  entry pointing to real dirs. Call `agentikitList`. Verify the entry and its
+  entry pointing to real dirs. Call `akmList`. Verify the entry and its
   `cacheDirExists`/`stashRootExists` flags.
 - `reports missing directories in status` -- Save config with entries pointing
   to non-existent dirs. Verify `cacheDirExists: false`.
 
-### 6.2 agentikitRemove
+### 6.2 akmRemove
 
 - `removes entry by id` -- Save config with an installed entry. Call
-  `agentikitRemove({ target: entry.id })`. Verify config no longer contains it.
+  `akmRemove({ target: entry.id })`. Verify config no longer contains it.
 - `removes entry by ref` -- Same but pass the ref string.
 - `throws for unknown target` -- Pass a target that doesn't match any entry.
 - `cleans up cache directory` -- Verify the cache dir is deleted.

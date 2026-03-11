@@ -4,7 +4,7 @@ export function githubHeaders(): HeadersInit {
   const token = process.env.GITHUB_TOKEN?.trim();
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
-    "User-Agent": "agentikit-registry",
+    "User-Agent": "akm-registry",
   };
   if (token) headers.Authorization = `Bearer ${token}`;
   return headers;

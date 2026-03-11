@@ -7,7 +7,7 @@ import { agentikitShow } from "../src/stash-show";
 
 const createdTmpDirs: string[] = [];
 
-function createTmpDir(prefix = "agentikit-show-"): string {
+function createTmpDir(prefix = "akm-show-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   createdTmpDirs.push(dir);
   return dir;
@@ -32,9 +32,9 @@ let testConfigDir = "";
 let stashDir = "";
 
 beforeEach(() => {
-  testCacheDir = createTmpDir("agentikit-show-cache-");
-  testConfigDir = createTmpDir("agentikit-show-config-");
-  stashDir = createTmpDir("agentikit-show-stash-");
+  testCacheDir = createTmpDir("akm-show-cache-");
+  testConfigDir = createTmpDir("akm-show-config-");
+  stashDir = createTmpDir("akm-show-stash-");
   for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
     fs.mkdirSync(path.join(stashDir, sub), { recursive: true });
   }
@@ -73,7 +73,7 @@ afterEach(() => {
 
 describe("agentikitShow installed ref", () => {
   test("throws with installCmd when registryId present and asset not found", async () => {
-    const installedStashRoot = createTmpDir("agentikit-show-installed-root-");
+    const installedStashRoot = createTmpDir("akm-show-installed-root-");
     // Create the type subdirectory so it is a valid stash root, but do NOT
     // create the actual asset file.
     fs.mkdirSync(path.join(installedStashRoot, "tools"), { recursive: true });
@@ -106,7 +106,7 @@ describe("agentikitShow installed ref", () => {
 
 describe("agentikitShow search path", () => {
   test("resolves from search path directories", async () => {
-    const searchPathDir = createTmpDir("agentikit-show-searchpath-");
+    const searchPathDir = createTmpDir("akm-show-searchpath-");
     writeFile(path.join(searchPathDir, "tools", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n");
 
     saveConfig({ semanticSearch: false, searchPaths: [searchPathDir] });
@@ -135,7 +135,7 @@ describe("agentikitShow editability", () => {
   });
 
   test("search path asset has editable true", async () => {
-    const searchPathDir = createTmpDir("agentikit-show-searchpath-editable-");
+    const searchPathDir = createTmpDir("akm-show-searchpath-editable-");
     writeFile(path.join(searchPathDir, "tools", "remote.sh"), "#!/usr/bin/env bash\necho remote\n");
 
     saveConfig({ semanticSearch: false, searchPaths: [searchPathDir] });
@@ -148,7 +148,7 @@ describe("agentikitShow editability", () => {
   });
 
   test("installed (cache-managed) asset has editable false with editHint", async () => {
-    const installedStashRoot = createTmpDir("agentikit-show-installed-resolve-");
+    const installedStashRoot = createTmpDir("akm-show-installed-resolve-");
     writeFile(path.join(installedStashRoot, "tools", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n");
 
     saveConfig({

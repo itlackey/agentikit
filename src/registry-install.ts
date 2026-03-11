@@ -418,10 +418,10 @@ function readAgentikitIncludeConfigAtDir(dirPath: string): { baseDir: string; in
   }
   if (typeof pkg !== "object" || pkg === null || Array.isArray(pkg)) return undefined;
 
-  const agentikit = (pkg as Record<string, unknown>).agentikit;
-  if (typeof agentikit !== "object" || agentikit === null || Array.isArray(agentikit)) return undefined;
+  const akmConfig = (pkg as Record<string, unknown>).akm;
+  if (typeof akmConfig !== "object" || akmConfig === null || Array.isArray(akmConfig)) return undefined;
 
-  const include = (agentikit as Record<string, unknown>).include;
+  const include = (akmConfig as Record<string, unknown>).include;
   if (!Array.isArray(include)) return undefined;
 
   const parsedInclude = include
@@ -455,10 +455,10 @@ function copyIncludedPaths(baseDir: string, include: string[], destinationDir: s
   for (const entry of include) {
     const resolvedSource = path.resolve(baseDir, entry);
     if (!isWithin(resolvedSource, baseDir)) {
-      throw new Error(`Path in agentikit.include escapes the package root: ${entry}`);
+      throw new Error(`Path in akm.include escapes the package root: ${entry}`);
     }
     if (!fs.existsSync(resolvedSource)) {
-      throw new Error(`Path in agentikit.include does not exist: ${entry}`);
+      throw new Error(`Path in akm.include does not exist: ${entry}`);
     }
     if (path.basename(resolvedSource) === ".git") {
       continue;

@@ -1,5 +1,5 @@
 /**
- * Built-in asset matchers for the agentikit file classification system.
+ * Built-in asset matchers for the akm file classification system.
  *
  * Four matchers are registered at module load time, each at a different
  * specificity level. Extension and content determine type; directories are

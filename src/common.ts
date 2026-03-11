@@ -32,7 +32,7 @@ export function isAssetType(type: string): type is AgentikitAssetType {
  * Resolve the stash directory using a three-level fallback chain:
  *   1. AKM_STASH_DIR environment variable (override for CI/scripts)
  *   2. stashDir field in config.json
- *   3. Platform default (~/agentikit or ~/Documents/agentikit on Windows)
+ *   3. Platform default (~/akm or ~/Documents/akm on Windows)
  *
  * Throws if no valid stash directory is found.
  */

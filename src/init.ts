@@ -1,5 +1,5 @@
 /**
- * Agentikit initialization logic.
+ * akm initialization logic.
  *
  * Creates the working stash directory structure, persists the stashDir
  * in config.json, and ensures ripgrep is available.

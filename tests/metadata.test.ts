@@ -19,7 +19,7 @@ import {
 const createdTmpDirs: string[] = [];
 
 function tmpDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-meta-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-meta-"));
   createdTmpDirs.push(dir);
   return dir;
 }

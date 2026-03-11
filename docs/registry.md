@@ -23,7 +23,7 @@ Registry search queries npm and GitHub in parallel.
 
 ### Filtering
 
-Not every npm package or GitHub repo is an agentikit kit. To keep results
+Not every npm package or GitHub repo is an akm kit. To keep results
 relevant, the registry enforces tag-based filtering:
 
 - **npm** -- Only packages whose `keywords` array in `package.json` includes
@@ -100,14 +100,14 @@ akm add file:///absolute/path/to/kit
    tarball URL is resolved. For GitHub, the latest release tarball is used, or
    the default branch if no releases exist. For git, the repo is shallow-cloned.
 3. **Download and extract** -- The tarball is downloaded (or repo cloned) to a
-   cache directory under `~/.cache/agentikit/registry/` and extracted securely
+   cache directory under `~/.cache/akm/registry/` and extracted securely
    (path traversal is rejected).
 4. **Stash root detection** -- The extracted contents are scanned for asset
    type directories (`tools/`, `skills/`, etc.) or a `.stash/` marker. If the
    kit nests its stash under an `opencode/` subdirectory, that is detected
    automatically.
 5. **Selective include** -- If the package's `package.json` contains an
-   `agentikit.include` array, only the listed paths are copied into the
+   `akm.include` array, only the listed paths are copied into the
    install cache. This lets a kit ship a subset of its repo as the stash.
 6. **Config registration** -- The installed entry is saved to
    `config.registry.installed` with its id, source, ref, resolved version,
@@ -121,7 +121,7 @@ A kit can declare which paths to include via `package.json`:
 
 ```jsonc
 {
-  "agentikit": {
+  "akm": {
     "include": [
       "tools",
       "skills",
@@ -218,15 +218,15 @@ can submit kits by opening a pull request directly against the
 
 ## Cache Layout
 
-Installed kits are cached under `~/.cache/agentikit/registry/`:
+Installed kits are cached under `~/.cache/akm/registry/`:
 
 ```
-~/.cache/agentikit/registry/
+~/.cache/akm/registry/
   npm-@scope-my-kit/
     <timestamp>-<random>/
       artifact.tar.gz     # Downloaded archive
       extracted/           # Extracted contents
-      selected/            # Subset from agentikit.include (if applicable)
+      selected/            # Subset from akm.include (if applicable)
 ```
 
 Each install creates a new timestamped directory. Previous versions are

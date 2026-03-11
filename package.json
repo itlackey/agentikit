@@ -1,10 +1,11 @@
 {
-  "name": "agentikit",
-  "version": "0.0.15",
+  "name": "akm-cli",
+  "version": "0.1.0",
   "type": "module",
-  "description": "CLI tool to search, open, and run extension assets from an agentikit stash directory.",
+  "description": "CLI tool to search, open, and run extension assets from an akm stash directory.",
   "keywords": [
-    "agentikit",
+    "akm",
+    "agent-i-kit",
     "ai-agent",
     "agent-framework",
     "developer-tools",

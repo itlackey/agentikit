@@ -1,5 +1,5 @@
 /**
- * Shared filesystem walker for agentikit stash directories.
+ * Shared filesystem walker for akm stash directories.
  *
  * Provides a single implementation used by both the search fallback
  * (stash.ts) and the indexer (indexer.ts) to walk type-specific asset

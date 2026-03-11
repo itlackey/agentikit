@@ -5,7 +5,7 @@ can install it with `akm add`.
 
 ## Step 1: Organize Your Assets
 
-You can organize a kit however you like. Agentikit classifies assets by
+You can organize a kit however you like. akm classifies assets by
 **file extension and content**, so directory names are not required to
 follow any particular pattern.
 
@@ -247,7 +247,7 @@ akm show script:deploy.sh
    ```
 
 2. If your repo contains files that should not be part of the kit (source
-   code, tests, CI config), use `agentikit.include` to declare which paths
+   code, tests, CI config), use `akm.include` to declare which paths
    to ship:
 
    ```json
@@ -255,7 +255,7 @@ akm show script:deploy.sh
      "name": "@your-scope/my-kit",
      "version": "1.0.0",
      "keywords": ["akm"],
-     "agentikit": {
+     "akm": {
        "include": ["tools", "skills", "knowledge"]
      }
    }
@@ -301,7 +301,7 @@ search paths.
    akm config set searchPaths '["/mnt/shared/team-kit"]'
    ```
 
-   Or add it directly to `~/.config/agentikit/config.json`:
+   Or add it directly to `~/.config/akm/config.json`:
 
    ```json
    {

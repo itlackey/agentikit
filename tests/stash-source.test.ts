@@ -17,8 +17,8 @@ let testConfigDir = "";
 let stashDir = "";
 
 beforeEach(() => {
-  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-source-config-"));
-  stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-source-stash-"));
+  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-source-config-"));
+  stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-source-stash-"));
   for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
     fs.mkdirSync(path.join(stashDir, sub), { recursive: true });
   }
@@ -47,7 +47,7 @@ describe("resolveStashSources", () => {
   });
 
   test("includes valid search paths", () => {
-    const extraDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-extra-"));
+    const extraDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-extra-"));
     try {
       saveConfig({ semanticSearch: false, searchPaths: [extraDir] });
       const sources = resolveStashSources();
@@ -66,7 +66,7 @@ describe("resolveStashSources", () => {
   });
 
   test("includes installed registry entries with registryId", () => {
-    const installedDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-installed-"));
+    const installedDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-installed-"));
     try {
       saveConfig({
         semanticSearch: false,
@@ -95,8 +95,8 @@ describe("resolveStashSources", () => {
   });
 
   test("preserves ordering: primary, search paths, installed", () => {
-    const extraDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-extra-"));
-    const installedDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-installed-"));
+    const extraDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-extra-"));
+    const installedDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-installed-"));
     try {
       saveConfig({
         semanticSearch: false,
@@ -129,7 +129,7 @@ describe("resolveStashSources", () => {
   });
 
   test("accepts overrideStashDir parameter", () => {
-    const overrideDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-override-"));
+    const overrideDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-override-"));
     try {
       saveConfig({ semanticSearch: false, searchPaths: [] });
       const sources = resolveStashSources(overrideDir);
@@ -171,7 +171,7 @@ describe("findSourceForPath", () => {
   });
 
   test("finds correct source for file inside search path", () => {
-    const extraDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-extra-"));
+    const extraDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-extra-"));
     try {
       const sources = [{ path: stashDir }, { path: extraDir }];
       const filePath = path.join(extraDir, "tools", "test.sh");
@@ -198,7 +198,7 @@ describe("isEditable", () => {
   });
 
   test("files in search paths are editable", () => {
-    const extraDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-extra-"));
+    const extraDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-extra-"));
     try {
       saveConfig({ semanticSearch: false, searchPaths: [extraDir] });
       const filePath = path.join(extraDir, "tools", "deploy.sh");
@@ -209,7 +209,7 @@ describe("isEditable", () => {
   });
 
   test("files in cache-managed dirs are NOT editable", () => {
-    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-cache-"));
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-cache-"));
     try {
       saveConfig({
         semanticSearch: false,

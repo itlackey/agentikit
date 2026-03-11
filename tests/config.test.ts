@@ -5,7 +5,7 @@ import path from "node:path";
 import { DEFAULT_CONFIG, getConfigDir, getConfigPath, loadConfig, saveConfig, updateConfig } from "../src/config";
 
 function makeTmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-config-test-"));
+  return fs.mkdtempSync(path.join(os.tmpdir(), "akm-config-test-"));
 }
 
 function cleanup(dir: string): void {
@@ -56,31 +56,31 @@ afterEach(() => {
 
 describe("getConfigPath", () => {
   test("returns config.json under XDG_CONFIG_HOME", () => {
-    expect(getConfigPath()).toBe(path.join(testConfigHome, "agentikit", "config.json"));
+    expect(getConfigPath()).toBe(path.join(testConfigHome, "akm", "config.json"));
   });
 
-  test("defaults to ~/.config/agentikit when XDG_CONFIG_HOME is unset", () => {
+  test("defaults to ~/.config/akm when XDG_CONFIG_HOME is unset", () => {
     const home = makeTmpDir();
     delete process.env.XDG_CONFIG_HOME;
     process.env.HOME = home;
 
-    expect(getConfigPath()).toBe(path.join(home, ".config", "agentikit", "config.json"));
+    expect(getConfigPath()).toBe(path.join(home, ".config", "akm", "config.json"));
 
     cleanup(home);
   });
 
   test("uses APPDATA on Windows", () => {
     const appData = String.raw`C:\Users\alice\AppData\Roaming`;
-    expect(getConfigDir({ APPDATA: appData }, "win32")).toBe(path.join(appData, "agentikit"));
+    expect(getConfigDir({ APPDATA: appData }, "win32")).toBe(path.join(appData, "akm"));
     expect(path.join(getConfigDir({ APPDATA: appData }, "win32"), "config.json")).toBe(
-      path.join(appData, "agentikit", "config.json"),
+      path.join(appData, "akm", "config.json"),
     );
   });
 
   test("falls back to USERPROFILE AppData Roaming on Windows", () => {
     const userProfile = String.raw`C:\Users\alice`;
     expect(getConfigDir({ USERPROFILE: userProfile }, "win32")).toBe(
-      path.join(userProfile, "AppData", "Roaming", "agentikit"),
+      path.join(userProfile, "AppData", "Roaming", "akm"),
     );
   });
 

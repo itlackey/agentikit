@@ -1,28 +1,28 @@
-# Agent-i-Kit
+# akm — the Agent-i-Kit Manager
 
-[![npm version](https://img.shields.io/npm/v/agentikit)](https://www.npmjs.com/package/agentikit)
+[![npm version](https://img.shields.io/npm/v/akm-cli)](https://www.npmjs.com/package/akm-cli)
 [![CI](https://github.com/itlackey/agentikit/actions/workflows/ci.yml/badge.svg)](https://github.com/itlackey/agentikit/actions/workflows/ci.yml)
-[![license](https://img.shields.io/npm/l/agentikit)](LICENSE)
+[![license](https://img.shields.io/npm/l/akm-cli)](LICENSE)
 
 A package manager for AI agent capabilities — tools, skills, commands, agents,
 knowledge, and scripts — that works with any AI coding assistant that can run
 shell commands.
 
-You build up useful scripts, prompts, and agent configs. Agent-i-Kit lets you
-organize them into a searchable **stash**, share them as installable **kits**,
-and give any model a way to discover and use them through `akm` (Agent Kit
-Manager). No plugins required — just CLI output any tool-calling model can read.
+You build up useful scripts, prompts, and agent configs. `akm` (the Agent-i-Kit
+Manager) lets you organize them into a searchable **stash**, share them as
+installable **kits**, and give any model a way to discover and use them. No
+plugins required — just CLI output any tool-calling model can read.
 
 ## Requirements
 
-Agent-i-Kit requires [Bun](https://bun.sh) v1.0+ as its runtime. It uses
-Bun-specific APIs (`bun:sqlite`) that are **not available in Node.js**.
+`akm` requires [Bun](https://bun.sh) v1.0+ as its runtime. It uses Bun-specific
+APIs (`bun:sqlite`) that are **not available in Node.js**.
 
 ## Quick Start
 
 ```sh
 # Install (requires Bun v1.0+)
-bun install -g agentikit
+bun install -g akm-cli
 
 # Initialize your stash
 akm init
@@ -42,8 +42,8 @@ akm show script:deploy.sh
 
 ## Using With Any AI Agent
 
-Agent-i-Kit is platform agnostic. Any model that can execute shell commands can
-search your stash and use what it finds. The workflow is three commands:
+`akm` is platform agnostic. Any model that can execute shell commands can search
+your stash and use what it finds. The workflow is three commands:
 
 1. `akm search "what you need"` — find relevant assets (returns JSON)
 2. `akm show <openRef>` — get the details (run command, instructions, prompt, etc.)
@@ -98,11 +98,11 @@ For tighter integration, plugins are available for some platforms. These add
 native tool bindings so the agent doesn't need to shell out, but they're
 purely optional — the CLI works everywhere.
 
-**OpenCode** — Add the [OpenCode plugin](https://github.com/itlackey/agentikit-plugins?tab=readme-ov-file#agentikit-opencode) to your `opencode.json`:
+**OpenCode** — Add the [OpenCode plugin](https://github.com/itlackey/agentikit-plugins?tab=readme-ov-file#akm-opencode) to your `opencode.json`:
 
 ```json
 {
-  "plugin": ["agentikit-opencode"]
+  "plugin": ["akm-opencode"]
 }
 ```
 
@@ -115,8 +115,8 @@ Add the prompt snippet to whatever instruction mechanism your platform uses.
 ## What's In a Kit?
 
 A kit is a directory of assets you can share and install. There's no required
-structure — agentikit classifies assets by **file extension and content**, not
-by directory name. A `.sh` file is a script whether it lives in `scripts/`,
+structure — `akm` classifies assets by **file extension and content**, not by
+directory name. A `.sh` file is a script whether it lives in `scripts/`,
 `deploy/`, or at the root. A `.md` file with `tools` in its frontmatter is an
 agent definition wherever you put it.
 
@@ -234,22 +234,22 @@ akm clone tool:deploy.sh        # Fork an asset into your stash for editing
 
 1. Organize your assets (directory conventions are optional)
 2. Add `"akm"` to `keywords` in `package.json` or add the `akm` topic to your GitHub repo
-3. Optionally add `agentikit.include` to control what gets installed
+3. Optionally add `akm.include` in `package.json` to control what gets installed
 4. Publish to npm or push to GitHub
 
 See the [Kit Maker's Guide](docs/kit-makers.md) for a full walkthrough.
 
 ## Installation
 
-Agent-i-Kit requires [Bun](https://bun.sh) v1.0+ as its runtime. It uses
-Bun-specific APIs (`bun:sqlite`) that are not available in Node.js.
+`akm` requires [Bun](https://bun.sh) v1.0+ as its runtime. It uses Bun-specific
+APIs (`bun:sqlite`) that are not available in Node.js.
 
 ```sh
 # Install Bun if you don't have it
 curl -fsSL https://bun.sh/install | bash
 
-# Install agentikit
-bun install -g agentikit
+# Install akm
+bun install -g akm-cli
 ```
 
 ### Standalone binary
@@ -289,8 +289,8 @@ akm upgrade --check   # Check for updates without installing
 
 ## Status
 
-Agent-i-Kit is approaching v1.0. The core CLI, stash model, and registry are
-stable and in daily use. Feedback, issues, and PRs welcome — especially around
+`akm` is approaching v1.0. The core CLI, stash model, and registry are stable
+and in daily use. Feedback, issues, and PRs welcome — especially around
 real-world usage patterns and integrations with different AI coding assistants.
 
 ## License

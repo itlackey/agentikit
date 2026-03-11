@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Agentikit Registry Index",
+  "title": "akm Registry Index",
   "description": "Static index of discoverable kits for akm search --source registry",
   "type": "object",
   "required": ["version", "updatedAt", "kits"],
