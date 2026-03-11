@@ -110,9 +110,10 @@ function formatPlain(command: string, result: unknown, verbose = false): string 
       return formatSearchPlain(r, verbose);
     }
     case "add": {
-      const installed = r.installed as Record<string, unknown> | undefined;
-      const indexed = installed?.indexed ?? r.indexed ?? 0;
-      return `Installed ${r.ref} (${indexed} assets indexed)`;
+      const index = r.index as Record<string, unknown> | undefined;
+      const scanned = index?.directoriesScanned ?? 0;
+      const total = index?.totalEntries ?? 0;
+      return `Installed ${r.ref} (${scanned} new, ${total} total assets indexed)`;
     }
     case "remove": {
       const target = r.target ?? r.ref ?? "";
@@ -187,6 +188,10 @@ function formatSearchPlain(r: Record<string, unknown>, verbose: boolean): string
     return r.tip ? String(r.tip) : "No results found.";
   }
 
+  // Check if all hits share the same registryId — if so, omit origin from ref display
+  const registryIds = new Set(hits.map((h) => h.registryId ?? ""));
+  const singleSource = registryIds.size === 1;
+
   const lines: string[] = [];
 
   for (const hit of hits) {
@@ -199,11 +204,18 @@ function formatSearchPlain(r: Record<string, unknown>, verbose: boolean): string
     if (desc) lines.push(desc);
 
     if (hit.run) lines.push(`  run: ${hit.run}`);
-    if (hit.openRef) lines.push(`  ref: ${hit.openRef}`);
+
+    // Show ref: in compact form when all hits share the same source
+    if (hit.openRef) {
+      const ref = String(hit.openRef);
+      const displayRef = singleSource && ref.includes("//") ? ref.slice(ref.indexOf("//") + 2) : ref;
+      lines.push(`  ref: ${displayRef}`);
+    }
     if (hit.installCmd) lines.push(`  install: ${hit.installCmd}`);
 
     if (verbose) {
       if (hit.hitSource) lines.push(`  source: ${hit.hitSource}`);
+      if (hit.registryId) lines.push(`  origin: ${hit.registryId}`);
       if (hit.editable != null) lines.push(`  editable: ${hit.editable}`);
       if (hit.editHint) lines.push(`  editHint: ${hit.editHint}`);
       const whyMatched = hit.whyMatched as string[] | undefined;
@@ -213,6 +225,10 @@ function formatSearchPlain(r: Record<string, unknown>, verbose: boolean): string
     }
 
     lines.push(""); // blank line between hits
+  }
+
+  if (singleSource && registryIds.values().next().value) {
+    lines.push(`source: ${registryIds.values().next().value}`);
   }
 
   if (verbose && r.timing) {
@@ -259,7 +275,7 @@ const indexCommand = defineCommand({
 const searchCommand = defineCommand({
   meta: { name: "search", description: "Search the stash" },
   args: {
-    query: { type: "positional", description: "Search query", required: false, default: "" },
+    query: { type: "positional", description: "Search query (omit to list all assets)", required: false, default: "" },
     type: {
       type: "string",
       description:

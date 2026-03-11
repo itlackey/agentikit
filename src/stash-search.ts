@@ -469,7 +469,11 @@ function buildDbHit(input: {
 }): LocalSearchHit {
   const entryStashDir = findSourceForPath(input.path, input.sources)?.path ?? input.defaultStashDir;
   const typeRoot = path.join(entryStashDir, TYPE_DIRS[input.entry.type]);
-  const openRefName = deriveCanonicalAssetName(input.entry.type, typeRoot, input.path) ?? input.entry.name;
+  const canonical = deriveCanonicalAssetName(input.entry.type, typeRoot, input.path);
+  // Guard against path traversal when the file is outside the expected type root
+  // (e.g. source detection fell back to defaultStashDir for a file from another source)
+  const openRefName =
+    canonical && !canonical.startsWith("../") && !canonical.startsWith("..\\") ? canonical : input.entry.name;
 
   const qualityBoost = input.entry.quality === "generated" ? 0 : 0.05;
   const confidenceBoost =

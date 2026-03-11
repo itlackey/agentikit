@@ -145,11 +145,14 @@ test("search pipeline returns ranked results when index exists", async () => {
     }),
   );
 
-  // Isolation: ensure index cache is written to a temp directory
+  // Isolation: ensure index cache and config are written to temp directories
   const oldXdgCacheHome = process.env.XDG_CACHE_HOME;
+  const oldXdgConfigHome = process.env.XDG_CONFIG_HOME;
   const oldAkmStashDir = process.env.AKM_STASH_DIR;
   const tempCacheDir = tmpDir();
+  const tempConfigDir = tmpDir();
   process.env.XDG_CACHE_HOME = tempCacheDir;
+  process.env.XDG_CONFIG_HOME = tempConfigDir;
 
   try {
     // Build index
@@ -167,6 +170,8 @@ test("search pipeline returns ranked results when index exists", async () => {
   } finally {
     if (oldXdgCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
     else process.env.XDG_CACHE_HOME = oldXdgCacheHome;
+    if (oldXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = oldXdgConfigHome;
     if (oldAkmStashDir === undefined) delete process.env.AKM_STASH_DIR;
     else process.env.AKM_STASH_DIR = oldAkmStashDir;
   }

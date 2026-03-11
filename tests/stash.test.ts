@@ -380,7 +380,7 @@ test("agentikitSearch finds knowledge assets", async () => {
 
   expect(result.hits.length).toBe(1);
   expect(result.hits[0].type).toBe("knowledge");
-  expect(result.hits[0].name).toBe("api-guide.md");
+  expect(result.hits[0].name).toBe("api-guide");
 });
 
 test("agentikitShow returns full content for knowledge by default", async () => {

@@ -98,10 +98,17 @@ let testConfigDir = "";
 
 beforeAll(async () => {
   testCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-cache-"));
+  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-config-"));
   process.env.XDG_CACHE_HOME = testCacheDir;
+  process.env.XDG_CONFIG_HOME = testConfigDir;
 });
 
 beforeEach(() => {
+  // Re-create per-test config dir for isolation (describe-level beforeAll
+  // already set XDG_CONFIG_HOME so agentikitIndex doesn't read real user config)
+  if (testConfigDir && fs.existsSync(testConfigDir)) {
+    fs.rmSync(testConfigDir, { recursive: true, force: true });
+  }
   testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-config-"));
   process.env.XDG_CONFIG_HOME = testConfigDir;
 });
@@ -112,18 +119,25 @@ afterAll(() => {
   } else {
     process.env.XDG_CACHE_HOME = originalXdgCacheHome;
   }
-  if (testCacheDir) {
-    fs.rmSync(testCacheDir, { recursive: true, force: true });
-    testCacheDir = "";
-  }
-});
-
-afterEach(() => {
   if (originalXdgConfigHome === undefined) {
     delete process.env.XDG_CONFIG_HOME;
   } else {
     process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
   }
+  if (testCacheDir) {
+    fs.rmSync(testCacheDir, { recursive: true, force: true });
+    testCacheDir = "";
+  }
+  if (testConfigDir) {
+    fs.rmSync(testConfigDir, { recursive: true, force: true });
+    testConfigDir = "";
+  }
+});
+
+afterEach(() => {
+  // Don't restore XDG_CONFIG_HOME here — it's managed by beforeAll/afterAll.
+  // Restoring it between tests would expose real user config to describe-level
+  // beforeAll hooks that run between describe blocks.
   if (testConfigDir) {
     fs.rmSync(testConfigDir, { recursive: true, force: true });
     testConfigDir = "";

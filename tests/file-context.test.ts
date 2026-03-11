@@ -142,7 +142,7 @@ describe("buildFileContext", () => {
 // ── 2. runMatchers tests ────────────────────────────────────────────────────
 
 describe("runMatchers", () => {
-  test("directoryMatcher matches .sh file under tools/ as 'script'", () => {
+  test("directoryMatcher matches .sh file under tools/ as 'tool'", () => {
     const root = tmpDir();
     const filePath = path.join(root, "tools", "deploy.sh");
     writeFile(filePath, "#!/bin/bash\necho deploy\n");
@@ -151,7 +151,7 @@ describe("runMatchers", () => {
     const result = directoryMatcher(ctx);
 
     expect(result).not.toBeNull();
-    expect(result?.type).toBe("script");
+    expect(result?.type).toBe("tool");
     expect(result?.specificity).toBe(10);
   });
 
