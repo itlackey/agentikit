@@ -532,7 +532,7 @@ describe("Scenario: CLI subprocess execution", () => {
   });
 
   test("cli: akm search default source is local", async () => {
-    const result = runCli("search", "docker");
+    const result = runCli("search", "docker", "--verbose");
     expect(result.exitCode).toBe(0);
 
     const json = parseJson(result.stdout);
@@ -590,6 +590,34 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(result.exitCode).not.toBe(0);
     const output = result.stdout + result.stderr;
     expect(output).toContain("Invalid value for --source: bad. Expected one of: local|registry|both");
+  });
+
+  test("cli: akm search default output excludes verbose fields", async () => {
+    const result = runCli("search", "docker");
+    expect(result.exitCode).toBe(0);
+
+    const json = parseJson(result.stdout);
+    expect(json.hits.length).toBeGreaterThan(0);
+    // Default JSON output should not include verbose-only fields
+    for (const hit of json.hits) {
+      expect(hit.whyMatched).toBeUndefined();
+      expect(hit.editable).toBeUndefined();
+      expect(hit.editHint).toBeUndefined();
+      expect(hit.hitSource).toBeUndefined();
+    }
+    expect(json.timing).toBeUndefined();
+  });
+
+  test("cli: akm search --verbose includes verbose fields", async () => {
+    const result = runCli("search", "docker", "--verbose");
+    expect(result.exitCode).toBe(0);
+
+    const json = parseJson(result.stdout);
+    expect(json.hits.length).toBeGreaterThan(0);
+    // Verbose JSON output should include verbose fields
+    expect(json.timing).toBeDefined();
+    expect(json.hits.some((h: any) => h.hitSource !== undefined)).toBe(true);
+    expect(json.hits.some((h: any) => h.whyMatched !== undefined)).toBe(true);
   });
 
   test("cli: akm show returns asset content", async () => {
