@@ -45,7 +45,7 @@ describe("enhanceMetadata", () => {
     const { url, server } = createMockServer(
       JSON.stringify({
         description: "Builds Docker images from Dockerfiles",
-        intents: ["build a docker image", "create container image", "package application"],
+        searchHints: ["build a docker image", "create container image", "package application"],
         tags: ["docker", "container", "build", "image"],
       }),
     );
@@ -54,7 +54,7 @@ describe("enhanceMetadata", () => {
       const entry: StashEntry = { name: "build-image", type: "tool", description: "build image" };
       const result = await enhanceMetadata(config, entry);
       expect(result.description).toBe("Builds Docker images from Dockerfiles");
-      expect(result.intents).toHaveLength(3);
+      expect(result.searchHints).toHaveLength(3);
       expect(result.tags).toContain("docker");
     } finally {
       server.stop();
@@ -63,14 +63,14 @@ describe("enhanceMetadata", () => {
 
   test("handles markdown-fenced JSON response", async () => {
     const { url, server } = createMockServer(
-      '```json\n{"description":"test desc","intents":["do thing"],"tags":["tag1"]}\n```',
+      '```json\n{"description":"test desc","searchHints":["do thing"],"tags":["tag1"]}\n```',
     );
     try {
       const config: LlmConnectionConfig = { endpoint: url, model: "test-model" };
       const entry: StashEntry = { name: "test", type: "tool" };
       const result = await enhanceMetadata(config, entry);
       expect(result.description).toBe("test desc");
-      expect(result.intents).toEqual(["do thing"]);
+      expect(result.searchHints).toEqual(["do thing"]);
     } finally {
       server.stop();
     }
@@ -123,26 +123,26 @@ describe("enhanceMetadata", () => {
     }
   });
 
-  test("caps intents at 8 items", async () => {
+  test("caps searchHints at 8 items", async () => {
     const { url, server } = createMockServer(
       JSON.stringify({
-        intents: ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"],
+        searchHints: ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"],
       }),
     );
     try {
       const config: LlmConnectionConfig = { endpoint: url, model: "test-model" };
       const entry: StashEntry = { name: "test", type: "tool" };
       const result = await enhanceMetadata(config, entry);
-      expect(result.intents?.length).toBeLessThanOrEqual(8);
+      expect(result.searchHints?.length).toBeLessThanOrEqual(8);
     } finally {
       server.stop();
     }
   });
 
-  test("filters non-string values from intents and tags", async () => {
+  test("filters non-string values from searchHints and tags", async () => {
     const { url, server } = createMockServer(
       JSON.stringify({
-        intents: ["valid", 123, null, "also valid"],
+        searchHints: ["valid", 123, null, "also valid"],
         tags: ["good", false, "fine"],
       }),
     );
@@ -150,7 +150,7 @@ describe("enhanceMetadata", () => {
       const config: LlmConnectionConfig = { endpoint: url, model: "test-model" };
       const entry: StashEntry = { name: "test", type: "tool" };
       const result = await enhanceMetadata(config, entry);
-      expect(result.intents).toEqual(["valid", "also valid"]);
+      expect(result.searchHints).toEqual(["valid", "also valid"]);
       expect(result.tags).toEqual(["good", "fine"]);
     } finally {
       server.stop();

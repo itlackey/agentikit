@@ -46,7 +46,7 @@ test("loadStashFile reads valid .stash.json", () => {
         type: "tool",
         description: "build docker images",
         tags: ["docker", "build"],
-        entry: "docker-build.ts",
+        filename: "docker-build.ts",
       },
     ],
   };
@@ -85,7 +85,7 @@ test("loadStashFile parses intent field", () => {
         name: "deploy",
         type: "tool",
         intent: { when: "user needs to deploy", input: "service name", output: "deployment status" },
-        entry: "deploy.sh",
+        filename: "deploy.sh",
       },
     ],
   };
@@ -104,14 +104,14 @@ test("loadStashFile parses intent field", () => {
 test("writeStashFile persists .stash.json to disk", () => {
   const dir = tmpDir();
   const stash: StashFile = {
-    entries: [{ name: "test", type: "tool", generated: true }],
+    entries: [{ name: "test", type: "tool", quality: "generated" }],
   };
   writeStashFile(dir, stash);
 
   const raw = fs.readFileSync(path.join(dir, ".stash.json"), "utf8");
   const parsed = JSON.parse(raw);
   expect(parsed.entries[0].name).toBe("test");
-  expect(parsed.entries[0].generated).toBe(true);
+  expect(parsed.entries[0].quality).toBe("generated");
 });
 
 // ── validateStashEntry ──────────────────────────────────────────────────────
@@ -231,12 +231,11 @@ test("generateMetadata creates entries from script files with filename heuristic
   expect(stash.entries[0].name).toBe("summarize-diff.ts");
   expect(stash.entries[0].type).toBe("tool");
   expect(stash.entries[0].description).toBe("summarize diff");
-  expect(stash.entries[0].generated).toBe(true);
   expect(stash.entries[0].quality).toBe("generated");
   expect(stash.entries[0].source).toBe("filename");
   expect(stash.entries[0].confidence).toBe(0.55);
   expect(stash.entries[0].aliases).toContain("summarize diff");
-  expect(stash.entries[0].entry).toBe("summarize-diff.ts");
+  expect(stash.entries[0].filename).toBe("summarize-diff.ts");
 });
 
 test("generateMetadata extracts description from code comments", () => {
@@ -289,36 +288,36 @@ test("generateMetadata handles multi-tool directories", () => {
   expect(stash.entries[1].description).toBe("Generate docker compose stacks");
 });
 
-// ── validateStashEntry with intents ─────────────────────────────────────────
+// ── validateStashEntry with searchHints ─────────────────────────────────────────
 
-test("validateStashEntry accepts entries with intents array", () => {
+test("validateStashEntry accepts entries with searchHints array", () => {
   const result = validateStashEntry({
     name: "test",
     type: "tool",
-    intents: ["summarize commits", "explain changes"],
+    searchHints: ["summarize commits", "explain changes"],
   });
   expect(result).not.toBeNull();
-  expect(result?.intents).toEqual(["summarize commits", "explain changes"]);
+  expect(result?.searchHints).toEqual(["summarize commits", "explain changes"]);
 });
 
-test("validateStashEntry filters non-string elements from intents", () => {
+test("validateStashEntry filters non-string elements from searchHints", () => {
   const result = validateStashEntry({
     name: "test",
     type: "tool",
-    intents: ["valid", 42, "", "also valid", null],
+    searchHints: ["valid", 42, "", "also valid", null],
   });
   expect(result).not.toBeNull();
-  expect(result?.intents).toEqual(["valid", "also valid"]);
+  expect(result?.searchHints).toEqual(["valid", "also valid"]);
 });
 
-test("validateStashEntry omits intents if all filtered out", () => {
+test("validateStashEntry omits searchHints if all filtered out", () => {
   const result = validateStashEntry({
     name: "test",
     type: "tool",
-    intents: ["", "  "],
+    searchHints: ["", "  "],
   });
   expect(result).not.toBeNull();
-  expect(result?.intents).toBeUndefined();
+  expect(result?.searchHints).toBeUndefined();
 });
 
 test("validateStashEntry accepts usage as string", () => {
@@ -349,7 +348,7 @@ test("loadStashFile parses usage field", () => {
         name: "git-diff",
         type: "tool",
         usage: ["Run after fetching main", "Use --stat for quick output"],
-        entry: "run.ts",
+        filename: "run.ts",
       },
     ],
   };
@@ -359,32 +358,32 @@ test("loadStashFile parses usage field", () => {
   expect(result?.entries[0].usage).toEqual(["Run after fetching main", "Use --stat for quick output"]);
 });
 
-test("loadStashFile parses intents field", () => {
+test("loadStashFile parses searchHints field", () => {
   const dir = tmpDir();
   const stash: StashFile = {
     entries: [
       {
         name: "git-diff",
         type: "tool",
-        intents: ["summarize git commits", "explain what changed"],
-        entry: "run.ts",
+        searchHints: ["summarize git commits", "explain what changed"],
+        filename: "run.ts",
       },
     ],
   };
   writeFile(path.join(dir, ".stash.json"), JSON.stringify(stash));
 
   const result = loadStashFile(dir);
-  expect(result?.entries[0].intents).toEqual(["summarize git commits", "explain what changed"]);
+  expect(result?.entries[0].searchHints).toEqual(["summarize git commits", "explain what changed"]);
 });
 
-// ── generateMetadata populates intents ──────────────────────────────────────
+// ── generateMetadata populates searchHints ──────────────────────────────────────
 
-test("generateMetadata does not generate heuristic intents (LLM-only)", () => {
+test("generateMetadata does not generate heuristic searchHints (LLM-only)", () => {
   const dir = tmpDir();
   const tool = path.join(dir, "summarize-diff.ts");
   writeFile(tool, `/**\n * Summarize git diff changes\n */\n`);
 
   const stash = generateMetadata(dir, "tool", [tool]);
-  // Intents are only generated when LLM is configured, not heuristically
-  expect(stash.entries[0].intents).toBeUndefined();
+  // Search hints are only generated when LLM is configured, not heuristically
+  expect(stash.entries[0].searchHints).toBeUndefined();
 });

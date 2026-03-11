@@ -175,9 +175,9 @@ describe("Scenario: Full lifecycle (index → search → show)", () => {
 
     // Each generated entry should be marked
     for (const e of gitEntries) {
-      expect(e.entry.generated).toBe(true);
+      expect(e.entry.quality).toBe("generated");
       expect(e.entry.type).toBe("tool");
-      expect(e.entry.entry).toBeTruthy();
+      expect(e.entry.filename).toBeTruthy();
     }
     closeDatabase(db);
   });
@@ -188,7 +188,7 @@ describe("Scenario: Full lifecycle (index → search → show)", () => {
     expect(dockerStash?.entries.length).toBe(2);
 
     // These were hand-written, should NOT have generated flag
-    expect(dockerStash?.entries[0].generated).toBeUndefined();
+    expect(dockerStash?.entries[0].quality).not.toBe("generated");
     expect(dockerStash?.entries[0].intent).toBeDefined();
     expect(dockerStash?.entries[0].intent?.when).toBeTruthy();
   });
@@ -1016,7 +1016,7 @@ describe("Scenario: Zero-config progressive improvement", () => {
     const entries = getAllEntries(db, "tool");
     const formatEntry = entries.find((e) => e.entry.name.includes("prettier"));
     expect(formatEntry).toBeDefined();
-    expect(formatEntry?.entry.generated).toBe(true);
+    expect(formatEntry?.entry.quality).toBe("generated");
     expect(formatEntry?.entry.description).toContain("Format code");
     closeDatabase(db);
   });
@@ -1052,7 +1052,7 @@ describe("Scenario: Zero-config progressive improvement", () => {
               type: "tool",
               description: "Check code formatting with Prettier",
               tags: ["prettier", "format", "style"],
-              entry: "prettier-check.sh",
+              filename: "prettier-check.sh",
             },
           ],
         },
@@ -1067,7 +1067,7 @@ describe("Scenario: Zero-config progressive improvement", () => {
     const reloaded = loadStashFile(path.join(stashDir, "tools", "format"))!;
     expect(reloaded.entries[0].description).toBe("Check code formatting with Prettier");
     expect(reloaded.entries[0].tags).toContain("prettier");
-    expect(reloaded.entries[0].generated).toBeUndefined();
+    expect(reloaded.entries[0].quality).not.toBe("generated");
   });
 
   test("semantic search finds user-edited metadata after re-index", async () => {

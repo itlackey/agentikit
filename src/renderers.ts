@@ -195,7 +195,7 @@ function findStashEntryForFile(filePath: string): StashEntry | undefined {
   const stashFile = loadStashFile(dir);
   if (!stashFile) return undefined;
   const fileName = path.basename(filePath);
-  return stashFile.entries.find((e) => e.entry === fileName);
+  return stashFile.entries.find((e) => e.filename === fileName);
 }
 
 // ── 1. skill-md ──────────────────────────────────────────────────────────────

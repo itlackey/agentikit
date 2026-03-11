@@ -349,12 +349,12 @@ async function searchDatabase(
         }
       }
     }
-    // Intent boost
-    if (entry.intents) {
-      for (const intent of entry.intents) {
-        const intentLower = intent.toLowerCase();
+    // Search hint boost
+    if (entry.searchHints) {
+      for (const hint of entry.searchHints) {
+        const hintLower = hint.toLowerCase();
         for (const token of queryTokens) {
-          if (intentLower.includes(token)) {
+          if (hintLower.includes(token)) {
             boostSum += 0.12;
             break;
           }
@@ -467,7 +467,7 @@ function buildDbHit(input: {
   const typeRoot = path.join(entryStashDir, TYPE_DIRS[input.entry.type]);
   const openRefName = deriveCanonicalAssetName(input.entry.type, typeRoot, input.path) ?? input.entry.name;
 
-  const qualityBoost = input.entry.generated === true ? 0 : 0.05;
+  const qualityBoost = input.entry.quality === "generated" ? 0 : 0.05;
   const confidenceBoost =
     typeof input.entry.confidence === "number" ? Math.min(0.05, Math.max(0, input.entry.confidence) * 0.05) : 0;
   const score = Math.round(input.score * (1 + qualityBoost + confidenceBoost) * 100) / 100;
@@ -516,12 +516,12 @@ function buildWhyMatched(
 
   const name = entry.name.toLowerCase();
   const tags = entry.tags?.join(" ").toLowerCase() ?? "";
-  const intents = entry.intents?.join(" ").toLowerCase() ?? "";
+  const searchHints = entry.searchHints?.join(" ").toLowerCase() ?? "";
   const aliases = entry.aliases?.join(" ").toLowerCase() ?? "";
 
   if (tokens.some((t) => name.includes(t))) reasons.push("matched name tokens");
   if (tokens.some((t) => tags.includes(t))) reasons.push("matched tags");
-  if (tokens.some((t) => intents.includes(t))) reasons.push("matched intents");
+  if (tokens.some((t) => searchHints.includes(t))) reasons.push("matched searchHints");
   if (tokens.some((t) => aliases.includes(t))) reasons.push("matched aliases");
   if (qualityBoost > 0) reasons.push("curated metadata boost");
   if (confidenceBoost > 0) reasons.push("metadata confidence boost");

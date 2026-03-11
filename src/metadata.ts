@@ -21,10 +21,9 @@ export interface StashEntry {
   description?: string;
   tags?: string[];
   examples?: string[];
-  intents?: string[];
+  searchHints?: string[];
   intent?: StashIntent;
-  entry?: string;
-  generated?: boolean;
+  filename?: string;
   quality?: "generated" | "curated";
   confidence?: number;
   source?: "package" | "frontmatter" | "comments" | "filename" | "manual" | "llm";
@@ -105,9 +104,9 @@ export function validateStashEntry(entry: unknown): StashEntry | null {
   if (typeof e.description === "string" && e.description) result.description = e.description;
   if (Array.isArray(e.tags)) result.tags = e.tags.filter((t): t is string => typeof t === "string");
   if (Array.isArray(e.examples)) result.examples = e.examples.filter((x): x is string => typeof x === "string");
-  if (Array.isArray(e.intents)) {
-    const filtered = e.intents.filter((s): s is string => typeof s === "string" && s.trim().length > 0);
-    if (filtered.length > 0) result.intents = filtered;
+  if (Array.isArray(e.searchHints)) {
+    const filtered = e.searchHints.filter((s): s is string => typeof s === "string" && s.trim().length > 0);
+    if (filtered.length > 0) result.searchHints = filtered;
   }
   if (typeof e.intent === "object" && e.intent !== null) {
     const intent = e.intent as Record<string, unknown>;
@@ -116,8 +115,7 @@ export function validateStashEntry(entry: unknown): StashEntry | null {
     if (typeof intent.input === "string") result.intent.input = intent.input;
     if (typeof intent.output === "string") result.intent.output = intent.output;
   }
-  if (typeof e.entry === "string" && e.entry) result.entry = e.entry;
-  if (e.generated === true) result.generated = true;
+  if (typeof e.filename === "string" && e.filename) result.filename = e.filename;
   if (e.quality === "generated" || e.quality === "curated") result.quality = e.quality;
   if (typeof e.confidence === "number" && Number.isFinite(e.confidence))
     result.confidence = Math.max(0, Math.min(1, e.confidence));
@@ -185,7 +183,6 @@ export function generateMetadata(
     const entry: StashEntry = {
       name: canonicalName,
       type: assetType,
-      generated: true,
       quality: "generated",
       confidence: 0.55,
       source: "filename",
@@ -235,10 +232,10 @@ export function generateMetadata(
     entry.tags = normalizeTerms(entry.tags ?? []);
     entry.aliases = buildAliases(canonicalName, entry.tags);
 
-    // Intents are only generated when LLM is configured (via enhanceStashWithLlm)
-    // Heuristic intents are too noisy to be useful for search quality
+    // Search hints are only generated when LLM is configured (via enhanceStashWithLlm)
+    // Heuristic search hints are too noisy to be useful for search quality
 
-    entry.entry = path.basename(file);
+    entry.filename = path.basename(file);
     entries.push(entry);
   }
 

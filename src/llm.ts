@@ -45,13 +45,13 @@ const SYSTEM_PROMPT = `You are a metadata generator for a developer tool registr
 
 /**
  * Use an LLM to enhance a stash entry's metadata: improve description,
- * generate intents, and suggest tags.
+ * generate searchHints, and suggest tags.
  */
 export async function enhanceMetadata(
   config: LlmConnectionConfig,
   entry: StashEntry,
   fileContent?: string,
-): Promise<{ description?: string; intents?: string[]; tags?: string[] }> {
+): Promise<{ description?: string; searchHints?: string[]; tags?: string[] }> {
   const contextParts = [`Name: ${entry.name}`, `Type: ${entry.type}`];
   if (entry.description) contextParts.push(`Current description: ${entry.description}`);
   if (entry.tags?.length) contextParts.push(`Current tags: ${entry.tags.join(", ")}`);
@@ -65,7 +65,7 @@ export async function enhanceMetadata(
 
 Generate improved metadata for this ${entry.type}. Return JSON with these fields:
 - "description": a clear, concise one-sentence description of what this does
-- "intents": an array of 3-6 natural language task phrases an agent might use to find this (e.g. "deploy a docker container", "run database migrations")
+- "searchHints": an array of 3-6 natural language task phrases an agent might use to find this (e.g. "deploy a docker container", "run database migrations")
 - "tags": an array of 3-8 relevant keyword tags
 
 Return ONLY the JSON object, no explanation.`;
@@ -79,13 +79,13 @@ Return ONLY the JSON object, no explanation.`;
     // Strip markdown code fences if present
     const cleaned = raw.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "");
     const parsed = JSON.parse(cleaned) as Record<string, unknown>;
-    const result: { description?: string; intents?: string[]; tags?: string[] } = {};
+    const result: { description?: string; searchHints?: string[]; tags?: string[] } = {};
 
     if (typeof parsed.description === "string" && parsed.description) {
       result.description = parsed.description;
     }
-    if (Array.isArray(parsed.intents)) {
-      result.intents = parsed.intents
+    if (Array.isArray(parsed.searchHints)) {
+      result.searchHints = parsed.searchHints
         .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
         .slice(0, 8);
     }

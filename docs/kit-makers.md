@@ -170,13 +170,13 @@ For better search quality, add a `.stash.json` in any asset type directory:
       "type": "script",
       "description": "Deploy the application to production",
       "tags": ["deploy", "infrastructure", "ci"],
-      "intents": [
+      "searchHints": [
         "deploy the app",
         "push to production",
         "ship a release"
       ],
       "usage": ["Pass a release tag as the first argument"],
-      "entry": "deploy.sh",
+      "filename": "deploy.sh",
       "quality": "curated",
       "source": "manual",
       "confidence": 1.0
@@ -185,7 +185,7 @@ For better search quality, add a `.stash.json` in any asset type directory:
 }
 ```
 
-Good `description`, `tags`, and `intents` values make the biggest difference
+Good `description`, `tags`, and `searchHints` values make the biggest difference
 in search ranking. See [filesystem.md](filesystem.md) for the full field
 reference.
 
@@ -340,7 +340,7 @@ after the working stash.
 
 - **Test the search experience.** After installing your kit, search for it
   using the terms you expect users to try. If results are poor, improve the
-  descriptions, tags, and intents.
+  descriptions, tags, and searchHints.
 
 - **Document usage in the asset itself.** For skills, put the instructions in
   `SKILL.md`. For commands, put the workflow in the markdown body. The agent
