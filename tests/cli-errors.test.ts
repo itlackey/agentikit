@@ -70,7 +70,7 @@ describe("CLI error handling", () => {
     expect(stderr).toContain("hint");
   });
 
-  test("config path --detail invalid prints hint about detail", () => {
+  test("search --detail invalid prints hint about detail", () => {
     const stashDir = makeTempDir();
     for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
       fs.mkdirSync(path.join(stashDir, sub), { recursive: true });

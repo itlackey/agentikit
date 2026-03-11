@@ -93,12 +93,20 @@ function walkStashGit(stashRoot: string): FileContext[] | null {
   });
   if (result.status !== 0) return null;
 
+  const SKIP_DIRS = new Set([".git", "node_modules", "bin", ".cache"]);
   const SKIP_FILES = new Set([".stash.json", ".gitignore", ".gitattributes"]);
 
   const files = result.stdout
     .split("\0")
     .filter((f) => f.length > 0)
     .filter((f) => !f.startsWith("..") && !path.isAbsolute(f))
+    .filter((f) => {
+      const dirParts = path
+        .dirname(f)
+        .split(/[\\/]+/)
+        .filter(Boolean);
+      return !dirParts.some((part) => SKIP_DIRS.has(part) || part.startsWith("."));
+    })
     .filter((f) => !SKIP_FILES.has(path.basename(f)))
     .filter((f) => !f.includes("/.") && !f.startsWith(".")); // skip dot-dirs/files
 

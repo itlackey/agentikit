@@ -100,11 +100,11 @@ field.
 
 | Mode | Command | Content |
 | --- | --- | --- |
-| `full` (default) | `akm show knowledge:guide.md` | Full document text |
-| `toc` | `akm show knowledge:guide.md toc` | Formatted table of contents |
-| `frontmatter` | `akm show knowledge:guide.md frontmatter` | Raw YAML frontmatter block |
-| `section` | `akm show knowledge:guide.md section "Auth"` | Content under the named heading |
-| `lines` | `akm show knowledge:guide.md lines 10 30` | Lines 10 through 30 |
+| `full` (default) | `akm show knowledge:guide` | Full document text |
+| `toc` | `akm show knowledge:guide toc` | Formatted table of contents |
+| `frontmatter` | `akm show knowledge:guide frontmatter` | Raw YAML frontmatter block |
+| `section` | `akm show knowledge:guide section "Auth"` | Content under the named heading |
+| `lines` | `akm show knowledge:guide lines 10 30` | Lines 10 through 30 |
 
 ## Example Responses
 
@@ -144,7 +144,7 @@ An agent:
 ```json
 {
   "type": "agent",
-  "name": "reviewer.md",
+  "name": "reviewer",
   "origin": null,
   "action": "Dispatch using the prompt below verbatim. Use modelHint and toolPolicy if present.",
   "prompt": "You are a code reviewer...",
@@ -158,7 +158,7 @@ A knowledge asset with `toc` view:
 ```json
 {
   "type": "knowledge",
-  "name": "api-guide.md",
+  "name": "api-guide",
   "origin": null,
   "action": "Reference material - read the content below. Use 'toc' view for large documents.",
   "content": "# Table of Contents\n- Authentication\n- Endpoints\n- Error Handling"

@@ -41,7 +41,7 @@ When present, `origin` narrows lookup to a specific installed source:
 
 ```text
 npm:@scope/pkg//script:deploy.sh
-github:owner/repo//knowledge:guide.md
+github:owner/repo//knowledge:guide
 ```
 
 When absent, `akm show` resolves the asset across stash sources in priority

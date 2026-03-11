@@ -278,7 +278,7 @@ function formatPlain(command: string, result: unknown, detail: DetailLevel): str
       const index = r.index as Record<string, unknown> | undefined;
       const scanned = index?.directoriesScanned ?? 0;
       const total = index?.totalEntries ?? 0;
-      return `Installed ${r.ref} (${scanned} new, ${total} total assets indexed)`;
+      return `Installed ${r.ref} (${scanned} directories scanned, ${total} total assets indexed)`;
     }
     case "remove": {
       const target = r.target ?? r.ref ?? "";

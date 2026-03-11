@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
@@ -40,6 +41,42 @@ function runCli(stashDir: string, args: string[], config?: Record<string, unknow
   });
   expect(result.status).toBe(0);
   return result.stdout.trim();
+}
+
+async function runCliAsync(stashDir: string, args: string[], config?: Record<string, unknown>): Promise<string> {
+  const xdgCache = makeTempDir("akm-output-cache-");
+  const xdgConfig = makeTempDir("akm-output-config-");
+  if (config) writeConfig(xdgConfig, config);
+
+  const child = spawn("bun", [CLI, ...args], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      AKM_STASH_DIR: stashDir,
+      XDG_CACHE_HOME: xdgCache,
+      XDG_CONFIG_HOME: xdgConfig,
+    },
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += String(chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => resolve(code ?? 1));
+  });
+
+  expect(exitCode).toBe(0);
+  if (stderr.trim()) {
+    expect(stderr.trim()).toBe("");
+  }
+  return stdout.trim();
 }
 
 afterEach(() => {
@@ -192,17 +229,29 @@ describe("output baseline", () => {
         ],
       }),
     );
-    const port = 19000 + Math.floor(Math.random() * 1000);
-    const server = spawn("python3", ["-m", "http.server", String(port), "--bind", "127.0.0.1"], {
-      cwd: registryDir,
-      stdio: "ignore",
+    const server = http.createServer((req, res) => {
+      if (req.url === "/index.json") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(fs.readFileSync(path.join(registryDir, "index.json"), "utf8"));
+        return;
+      }
+      res.writeHead(404);
+      res.end("not found");
     });
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Failed to start test registry server");
+    }
 
     try {
-      const output = runCli(stashDir, ["search", "deploy", "--format=json", "--detail=brief", "--source=both"], {
-        registryUrls: [`http://127.0.0.1:${port}/index.json`],
-      });
+      const output = await runCliAsync(
+        stashDir,
+        ["search", "deploy", "--format=json", "--detail=brief", "--source=both"],
+        {
+          registryUrls: [`http://127.0.0.1:${address.port}/index.json`],
+        },
+      );
       const json = JSON.parse(output) as { hits: Array<Record<string, unknown>> };
       const localHit = json.hits.find((hit) => hit.type === "script");
       const registryHit = json.hits.find((hit) => hit.type === "registry");
@@ -210,7 +259,7 @@ describe("output baseline", () => {
       expect(localHit?.action).toBeTruthy();
       expect(registryHit?.action).toBeTruthy();
     } finally {
-      server.kill("SIGTERM");
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
   });
 });
