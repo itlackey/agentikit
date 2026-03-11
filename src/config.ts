@@ -6,7 +6,7 @@ import type { RegistryInstalledEntry, RegistrySource } from "./registry-types";
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export interface EmbeddingConnectionConfig {
-  /** Provider name for display/CLI switching (e.g. "openai", "ollama") */
+  /** Provider name for display (e.g. "openai", "ollama") */
   provider?: string;
   /** OpenAI-compatible embeddings endpoint (e.g. "http://localhost:11434/v1/embeddings") */
   endpoint: string;
@@ -19,7 +19,7 @@ export interface EmbeddingConnectionConfig {
 }
 
 export interface LlmConnectionConfig {
-  /** Provider name for display/CLI switching (e.g. "openai", "ollama") */
+  /** Provider name for display (e.g. "openai", "ollama") */
   provider?: string;
   /** OpenAI-compatible chat completions endpoint (e.g. "http://localhost:11434/v1/chat/completions") */
   endpoint: string;

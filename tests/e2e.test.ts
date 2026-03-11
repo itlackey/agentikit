@@ -628,22 +628,13 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.mode).toBe("full");
   });
 
-  test("cli: akm config providers embedding lists known providers", async () => {
-    const result = runCli("config", "providers", "embedding");
-    expect(result.exitCode).toBe(0);
-
-    const json = parseJson(result.stdout);
-    expect(json).toBeInstanceOf(Array);
-    expect(json.some((provider: any) => provider.name === "local" && provider.current === true)).toBe(true);
-    expect(json.some((provider: any) => provider.name === "ollama")).toBe(true);
-    expect(json.some((provider: any) => provider.name === "openai")).toBe(true);
-  });
-
-  test("cli: akm config use/set/get manages llm settings", async () => {
-    const useResult = runCli("config", "use", "llm", "ollama");
-    expect(useResult.exitCode).toBe(0);
-
-    const setResult = runCli("config", "set", "llm.maxTokens", "256");
+  test("cli: akm config set/get manages llm settings via JSON", async () => {
+    const setResult = runCli(
+      "config",
+      "set",
+      "llm",
+      '{"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2","maxTokens":256}',
+    );
     expect(setResult.exitCode).toBe(0);
 
     const getResult = runCli("config", "get", "llm");
@@ -651,46 +642,50 @@ describe("Scenario: CLI subprocess execution", () => {
 
     const json = parseJson(getResult.stdout);
     expect(json).toMatchObject({
-      provider: "ollama",
+      endpoint: "http://localhost:11434/v1/chat/completions",
       model: "llama3.2",
       maxTokens: 256,
     });
   });
 
-  test("cli: akm config <key> [value] supports git-style get/set", async () => {
-    const providerResult = runCli("config", "embedding.provider", "ollama");
-    expect(providerResult.exitCode).toBe(0);
-
-    const dimensionResult = runCli("config", "embedding.dimension", "384");
-    expect(dimensionResult.exitCode).toBe(0);
+  test("cli: akm config <key> [value] supports git-style get/set via JSON", async () => {
+    const setResult = runCli(
+      "config",
+      "embedding",
+      '{"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text","dimension":384}',
+    );
+    expect(setResult.exitCode).toBe(0);
 
     const getResult = runCli("config", "embedding");
     expect(getResult.exitCode).toBe(0);
 
     const json = parseJson(getResult.stdout);
     expect(json).toMatchObject({
-      provider: "ollama",
+      endpoint: "http://localhost:11434/v1/embeddings",
       model: "nomic-embed-text",
       dimension: 384,
     });
   });
 
   test("cli: akm config --get/--unset support familiar git-style flags", async () => {
-    expect(runCli("config", "llm.provider", "ollama").exitCode).toBe(0);
+    // Set up llm config via JSON first
+    expect(
+      runCli(
+        "config",
+        "set",
+        "llm",
+        '{"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2"}',
+      ).exitCode,
+    ).toBe(0);
 
-    // apiKey is intentionally stripped from disk by saveConfig (use env vars instead),
-    // so --get returns null across subprocess boundaries.
-    const getResult = runCli("config", "--get", "llm.apiKey");
+    // Verify --get works for llm
+    const getResult = runCli("config", "--get", "llm");
     expect(getResult.exitCode).toBe(0);
-    expect(parseJson(getResult.stdout)).toBeNull();
-
-    // Verify --get works for a persisted key
-    const providerResult = runCli("config", "--get", "llm.provider");
-    expect(providerResult.exitCode).toBe(0);
-    expect(parseJson(providerResult.stdout)).toBe("ollama");
+    const json = parseJson(getResult.stdout);
+    expect(json).toMatchObject({ model: "llama3.2" });
 
     // Verify --unset completes successfully
-    const unsetResult = runCli("config", "--unset", "llm.temperature");
+    const unsetResult = runCli("config", "--unset", "llm");
     expect(unsetResult.exitCode).toBe(0);
   });
 

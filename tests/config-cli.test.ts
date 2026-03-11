@@ -3,28 +3,19 @@ import type { AgentikitConfig } from "../src/config";
 import {
   getConfigValue,
   listConfig,
-  listProviders,
   parseConfigValue,
   setConfigValue,
   unsetConfigValue,
-  useProvider,
 } from "../src/config-cli";
-import { EMBEDDING_DIM } from "../src/db";
 
 describe("config CLI helpers", () => {
-  test("listConfig shows effective local embedding and disabled llm defaults", () => {
+  test("listConfig shows null for unconfigured embedding and llm", () => {
     const config = listConfig({ semanticSearch: true, searchPaths: [] });
-    expect(config.embedding).toMatchObject({
-      provider: "local",
-      model: "Xenova/all-MiniLM-L6-v2",
-      dimension: EMBEDDING_DIM,
-    });
-    expect(config.llm).toMatchObject({
-      provider: "disabled",
-    });
+    expect(config.embedding).toBeNull();
+    expect(config.llm).toBeNull();
   });
 
-  test("parseConfigValue supports embedding dimensions and llm sampling fields", () => {
+  test("parseConfigValue supports embedding JSON with dimensions", () => {
     expect(
       parseConfigValue(
         "embedding",
@@ -37,7 +28,9 @@ describe("config CLI helpers", () => {
         dimension: 384,
       },
     });
+  });
 
+  test("parseConfigValue supports llm JSON with sampling fields", () => {
     expect(
       parseConfigValue(
         "llm",
@@ -53,81 +46,84 @@ describe("config CLI helpers", () => {
     });
   });
 
-  test("useProvider seeds config with provider defaults", () => {
+  test("setConfigValue sets embedding via JSON", () => {
     const base: AgentikitConfig = { semanticSearch: true, searchPaths: [] };
-    const updated = useProvider(base, "embedding", "openai");
-    expect(updated.embedding).toMatchObject({
-      provider: "openai",
-      endpoint: "https://api.openai.com/v1/embeddings",
-      model: "text-embedding-3-small",
-      dimension: EMBEDDING_DIM,
+    const updated = setConfigValue(
+      base,
+      "embedding",
+      '{"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}',
+    );
+    expect(updated.embedding).toEqual({
+      endpoint: "http://localhost:11434/v1/embeddings",
+      model: "nomic-embed-text",
     });
   });
 
-  test("setConfigValue updates nested llm settings after provider selection", () => {
+  test("setConfigValue sets llm via JSON", () => {
     const base: AgentikitConfig = { semanticSearch: true, searchPaths: [] };
-    const enabled = useProvider(base, "llm", "ollama");
-    const updated = setConfigValue(enabled, "llm.temperature", "0.9");
-    expect(updated.llm).toMatchObject({
-      provider: "ollama",
-      temperature: 0.9,
+    const updated = setConfigValue(
+      base,
+      "llm",
+      '{"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2","temperature":0.3}',
+    );
+    expect(updated.llm).toEqual({
+      endpoint: "http://localhost:11434/v1/chat/completions",
+      model: "llama3.2",
+      temperature: 0.3,
     });
-    expect(getConfigValue(updated, "llm.temperature")).toBe(0.9);
   });
 
-  test("unsetConfigValue removes optional keys without removing provider config", () => {
-    const base: AgentikitConfig = {
-      semanticSearch: true,
-      searchPaths: [],
-      llm: {
-        provider: "openai",
-        endpoint: "https://api.openai.com/v1/chat/completions",
-        model: "gpt-4o-mini",
-        temperature: 0.4,
-        maxTokens: 128,
-        apiKey: "secret",
-      },
-    };
-    const updated = unsetConfigValue(base, "llm.apiKey");
-    expect(updated.llm?.apiKey).toBeUndefined();
-    expect(getConfigValue(updated, "llm.apiKey")).toBeNull();
+  test("getConfigValue returns null for unconfigured embedding/llm", () => {
+    const base: AgentikitConfig = { semanticSearch: true, searchPaths: [] };
+    expect(getConfigValue(base, "embedding")).toBeNull();
+    expect(getConfigValue(base, "llm")).toBeNull();
   });
 
-  test("listProviders marks the current provider", () => {
-    const config: AgentikitConfig = {
-      semanticSearch: true,
-      searchPaths: [],
-      embedding: {
-        provider: "ollama",
-        endpoint: "http://localhost:11434/v1/embeddings",
-        model: "nomic-embed-text",
-      },
-    };
-    const providers = listProviders("embedding", config);
-    expect(providers.find((provider) => provider.name === "ollama")).toMatchObject({ current: true });
-    expect(providers.find((provider) => provider.name === "openai")).toMatchObject({ current: false });
-    expect(providers.find((provider) => provider.name === "ollama")).toMatchObject({ dimension: EMBEDDING_DIM });
-  });
-
-  test("setConfigValue rejects non-canonical positive integers", () => {
+  test("getConfigValue returns configured embedding/llm objects", () => {
     const base: AgentikitConfig = {
       semanticSearch: true,
       searchPaths: [],
       embedding: {
-        provider: "openai",
         endpoint: "https://api.openai.com/v1/embeddings",
         model: "text-embedding-3-small",
       },
       llm: {
-        provider: "openai",
-        endpoint: "https://api.openai.com/v1/chat/completions",
-        model: "gpt-4o-mini",
+        endpoint: "http://localhost:11434/v1/chat/completions",
+        model: "llama3.2",
+        temperature: 0.3,
       },
     };
+    expect(getConfigValue(base, "embedding")).toEqual(base.embedding);
+    expect(getConfigValue(base, "llm")).toEqual(base.llm);
+  });
 
-    expect(() => setConfigValue(base, "embedding.dimension", "256.5")).toThrow("expected a positive integer");
-    expect(() => setConfigValue(base, "llm.maxTokens", "1e3")).toThrow("expected a positive integer");
-    expect(() => setConfigValue(base, "llm.maxTokens", "0384")).toThrow("expected a positive integer");
+  test("unsetConfigValue clears embedding and llm", () => {
+    const base: AgentikitConfig = {
+      semanticSearch: true,
+      searchPaths: [],
+      embedding: {
+        endpoint: "https://api.openai.com/v1/embeddings",
+        model: "text-embedding-3-small",
+      },
+      llm: {
+        endpoint: "http://localhost:11434/v1/chat/completions",
+        model: "llama3.2",
+      },
+    };
+    const noEmbed = unsetConfigValue(base, "embedding");
+    expect(noEmbed.embedding).toBeUndefined();
+
+    const noLlm = unsetConfigValue(base, "llm");
+    expect(noLlm.llm).toBeUndefined();
+  });
+
+  test("setConfigValue rejects unknown keys", () => {
+    const base: AgentikitConfig = { semanticSearch: true, searchPaths: [] };
+    expect(() => setConfigValue(base, "embedding.provider", "ollama")).toThrow("Unknown config key");
+    expect(() => setConfigValue(base, "llm.temperature", "0.5")).toThrow("Unknown config key");
+  });
+
+  test("parseConfigValue rejects non-integer embedding dimension in JSON", () => {
     expect(() =>
       parseConfigValue(
         "embedding",

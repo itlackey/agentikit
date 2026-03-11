@@ -11,10 +11,10 @@ Agentikit stores configuration in a platform-standard config directory:
 
 ```sh
 akm config                          # Show current config
-akm config list                     # List with effective provider defaults
-akm config get embedding.provider   # Read a single key
-akm config set llm.maxTokens 512    # Set a single key
-akm config unset llm.apiKey         # Remove an optional key
+akm config list                     # List current config
+akm config get embedding            # Read a single key
+akm config set llm '{"endpoint":"...","model":"llama3.2"}'  # Set a key
+akm config unset llm                # Remove an optional key
 ```
 
 ## Config Reference
@@ -23,40 +23,32 @@ akm config unset llm.apiKey         # Remove an optional key
 | --- | --- | --- | --- |
 | `semanticSearch` | boolean | `true` | Enable semantic vector search |
 | `searchPaths` | string[] | `[]` | Additional stash directories to search |
-| `embedding` | object | local provider | Embedding provider settings |
-| `llm` | object | disabled | LLM provider for metadata enhancement |
+| `embedding` | object | null (local) | Embedding connection settings |
+| `llm` | object | null (disabled) | LLM connection for metadata enhancement |
 | `registry.installed` | array | `[]` | Installed kit metadata (managed by akm) |
 
-## Embedding Providers
+## Embedding Configuration
 
 Two backends are supported for generating search embeddings.
 
 ### Local (default)
 
-Uses `@xenova/transformers` with the `Xenova/all-MiniLM-L6-v2` model. Runs
-on CPU with no external dependencies. Produces 384-dimensional vectors.
+When `embedding` is not configured (null), Agentikit uses `@xenova/transformers`
+with the `Xenova/all-MiniLM-L6-v2` model. Runs on CPU with no external
+dependencies. Produces 384-dimensional vectors.
 
 ### Remote
 
-Any OpenAI-compatible embedding endpoint. Configure with:
-
-```sh
-akm config providers embedding       # List available providers
-akm config use embedding ollama       # Switch to a provider preset
-```
-
-Or set fields directly:
-
-```sh
-akm config set embedding.provider ollama
-akm config set embedding.model nomic-embed-text
-akm config set embedding.dimension 384
-```
-
-Or pass a JSON object:
+Any OpenAI-compatible embedding endpoint. Configure with a JSON object:
 
 ```sh
 akm config set embedding '{"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text","dimension":384}'
+```
+
+For an OpenAI endpoint:
+
+```sh
+akm config set embedding '{"endpoint":"https://api.openai.com/v1/embeddings","model":"text-embedding-3-small","dimension":384}'
 ```
 
 To revert to the built-in local provider:
@@ -65,26 +57,16 @@ To revert to the built-in local provider:
 akm config unset embedding
 ```
 
-When using a remote provider, `embedding.dimension` must match the index
-vector size (384). Built-in presets set this automatically.
+When using a remote provider, `dimension` must match the index vector size
+(384).
 
-## LLM Provider
+## LLM Configuration
 
 When configured, the indexer uses an LLM to generate richer descriptions,
 intent phrases, and tags during `akm index`.
 
 ```sh
-akm config providers llm             # List available providers
-akm config use llm ollama            # Switch to a provider preset
-```
-
-Or set fields directly:
-
-```sh
-akm config set llm.provider ollama
-akm config set llm.model llama3.2
-akm config set llm.temperature 0.3
-akm config set llm.maxTokens 512
+akm config set llm '{"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2","temperature":0.3,"maxTokens":512}'
 ```
 
 To disable:
@@ -93,8 +75,9 @@ To disable:
 akm config unset llm
 ```
 
-Both `embedding` and `llm` accept an optional `apiKey` for authenticated
-endpoints.
+Both `embedding` and `llm` accept an optional `apiKey` field, but API keys
+should preferably be provided via environment variables `AKM_EMBED_API_KEY`
+and `AKM_LLM_API_KEY` rather than stored in the config file.
 
 ## Using Ollama
 
@@ -107,11 +90,8 @@ ollama pull nomic-embed-text
 ollama pull llama3.2
 
 # Configure agentikit
-akm config use embedding ollama
-akm config set embedding.model nomic-embed-text
-akm config set embedding.dimension 384
-akm config use llm ollama
-akm config set llm.model llama3.2
+akm config set embedding '{"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text","dimension":384}'
+akm config set llm '{"endpoint":"http://localhost:11434/v1/chat/completions","model":"llama3.2","temperature":0.3,"maxTokens":512}'
 
 # Rebuild the index with enhanced metadata
 akm index --full
