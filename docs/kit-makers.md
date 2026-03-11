@@ -43,9 +43,10 @@ set -euo pipefail
 echo "Deploying $1..."
 ```
 
-When an agent runs `akm show script:deploy.sh`, it gets back a `runCmd` it
-can execute directly. For extensions without built-in runtime support (e.g.
-`.py`, `.rb`), the file content is returned instead.
+When an agent runs `akm show script:deploy.sh`, it gets back a `run` command
+it can execute directly. Interpreters are auto-detected for a wide range of
+extensions (`.sh`, `.ts`, `.js`, `.py`, `.rb`, `.go`, `.pl`, `.php`, `.lua`,
+`.r`, `.swift`, `.kt`/`.kts`, `.ps1`, `.cmd`/`.bat`).
 
 If your script has dependencies, add a `package.json` in the script's
 directory or a parent. When akm detects a `package.json`, it sets the

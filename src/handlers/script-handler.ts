@@ -36,7 +36,7 @@ export const scriptHandler: AssetTypeHandler = {
   },
 
   defaultUsageGuide: [
-    "Use the hit's runCmd for execution when available, or run the script directly with the appropriate interpreter.",
+    "Use the hit's run command for execution when available, or run the script directly with the appropriate interpreter.",
     "Use `akm show <openRef>` to inspect the script before running it.",
   ],
 

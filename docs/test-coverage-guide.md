@@ -191,15 +191,15 @@ directly tested.
 import { toolHandler } from "../src/handlers/tool-handler"
 ```
 
-- `buildShowResponse returns runCmd for .sh file` -- Create a real .sh file in
+- `buildShowResponse returns run for .sh file` -- Create a real .sh file in
   a stash dir, call `buildShowResponse({ name, path, content, stashDirs })`.
-  Verify `runCmd` contains `bash` and `kind` is `"bash"`.
-- `buildShowResponse returns runCmd for .ts file` -- Same but .ts. Verify
-  `kind` is `"bun"`.
+  Verify `run` contains `bash`.
+- `buildShowResponse returns run for .ts file` -- Same but .ts. Verify
+  `run` contains `bun`.
 - `buildShowResponse without stashDirs returns content` -- Call without
-  `stashDirs`. Verify `content` is present and `runCmd` is absent.
-- `enrichSearchHit sets runCmd and kind on hit` -- Create a hit object, call
-  `enrichSearchHit`. Verify `hit.runCmd` and `hit.kind` are populated.
+  `stashDirs`. Verify `content` is present and `run` is absent.
+- `enrichSearchHit sets run on hit` -- Create a hit object, call
+  `enrichSearchHit`. Verify `hit.run` is populated.
 - `enrichSearchHit ignores ENOENT` -- Pass a hit with a non-existent path.
   Verify no error thrown.
 - `isRelevantFile accepts .sh .ts .js .ps1 .cmd .bat` -- Test each extension.
@@ -207,8 +207,8 @@ import { toolHandler } from "../src/handlers/tool-handler"
 
 ### 3.2 Script handler
 
-- `buildShowResponse returns runCmd for runnable extensions` -- .sh, .ts, .js.
-- `buildShowResponse returns content for non-runnable extensions` -- .py, .rb.
+- `buildShowResponse returns run for runnable extensions` -- .sh, .ts, .js.
+- `buildShowResponse returns run for non-runnable extensions (now detected)` -- .py, .rb now auto-detected.
 - `isRelevantFile accepts broad script extensions` -- .py, .rb, .go, .lua, etc.
 
 ### 3.3 Skill handler

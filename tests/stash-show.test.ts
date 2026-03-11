@@ -247,8 +247,8 @@ describe("agentikitShow content-based classification", () => {
     const result = await agentikitShow({ ref: "tool:build.sh" });
 
     expect(result.type).toBe("script");
-    expect(result.runCmd).toBeDefined();
-    expect(result.runCmd).toContain("bash");
+    expect(result.run).toBeDefined();
+    expect(result.run).toContain("bash");
   });
 
   test("$ARGUMENTS in body classifies .md as command even outside commands/", async () => {

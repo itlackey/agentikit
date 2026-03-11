@@ -36,7 +36,7 @@ export const toolHandler: AssetTypeHandler = {
   },
 
   defaultUsageGuide: [
-    "Use the hit's runCmd for execution so runtime and working directory stay correct.",
+    "Use the hit's run command for execution so runtime and working directory stay correct.",
     "Use `akm show <openRef>` to inspect the tool before running it.",
   ],
 

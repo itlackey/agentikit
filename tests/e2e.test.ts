@@ -257,15 +257,15 @@ describe("Scenario: Full lifecycle (index → search → show)", () => {
     expect(result.hits.length).toBeLessThanOrEqual(3);
   });
 
-  test("show a tool returns runCmd and kind", async () => {
+  test("show a tool returns run", async () => {
     const searchResult = await agentikitSearch({ query: "deploy", type: "tool" });
     const deployHit = searchResult.hits.find((h) => h.hitSource === "local" && h.name.includes("deploy"));
     expect(deployHit).toBeDefined();
 
     const openResult = await agentikitShow({ ref: deployHit!.openRef! });
     expect(openResult.type).toBe("script");
-    expect(openResult.runCmd).toBeTruthy();
-    expect(openResult.kind).toBe("bash");
+    expect(openResult.run).toBeTruthy();
+    expect(openResult.run).toContain("bash");
   });
 
   test("show a skill returns full SKILL.md content", async () => {
@@ -351,9 +351,9 @@ describe("Scenario: Agent discovers capabilities for task", () => {
     );
     expect(testTool).toBeDefined();
 
-    // Step 2: Agent reads the tool to get runCmd for host execution
+    // Step 2: Agent reads the tool to get run command for host execution
     const showResult = await agentikitShow({ ref: testTool!.openRef! });
-    expect(showResult.runCmd).toBeTruthy();
+    expect(showResult.run).toBeTruthy();
   });
 });
 
@@ -1273,12 +1273,11 @@ describe("Scenario: Cross-type discovery", () => {
     }
   });
 
-  test("tool hits have runCmd, non-tool hits do not", async () => {
+  test("tool hits have run, non-tool hits do not", async () => {
     const result = await agentikitSearch({ query: "", type: "any" });
     for (const hit of result.hits) {
       if (hit.type === "tool") {
-        expect(hit.runCmd).toBeTruthy();
-        expect(hit.kind).toBeTruthy();
+        expect(hit.run).toBeTruthy();
       }
     }
   });
