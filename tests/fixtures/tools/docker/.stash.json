@@ -15,7 +15,7 @@
         "Run from the repository root or pass an explicit build context.",
         "Tag the image before pushing to a registry."
       ],
-      "entry": "build-image.sh"
+      "filename": "build-image.sh"
     },
     {
       "name": "docker-compose",
@@ -28,7 +28,7 @@
         "input": "docker-compose.yml location",
         "output": "running service containers"
       },
-      "entry": "compose-up.sh"
+      "filename": "compose-up.sh"
     }
   ]
 }

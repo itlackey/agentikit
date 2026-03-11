@@ -215,7 +215,7 @@ function indexEntries(
             // Check for files on disk that aren't covered by existing .stash.json entries.
             // This handles the case where new files are added after the initial index.
             const coveredFiles = new Set(
-              stash.entries.map((e) => (e.entry ? path.basename(e.entry) : "")).filter((e) => !!e),
+              stash.entries.map((e) => (e.filename ? path.basename(e.filename) : "")).filter((e) => !!e),
             );
             const uncoveredFiles = files.filter((f) => !coveredFiles.has(path.basename(f)));
             if (uncoveredFiles.length > 0) {
@@ -237,7 +237,7 @@ function indexEntries(
 
           if (stash) {
             for (const entry of stash.entries) {
-              const entryPath = entry.entry ? path.join(dirPath, entry.entry) : files[0] || dirPath;
+              const entryPath = entry.filename ? path.join(dirPath, entry.filename) : files[0] || dirPath;
               const entryKey = `${currentStashDir}:${entry.type}:${entry.name}`;
               const searchText = buildSearchText(entry);
 
@@ -245,7 +245,7 @@ function indexEntries(
             }
 
             // Collect dirs needing LLM enhancement during the first walk
-            if (stash.entries.some((e) => e.generated)) {
+            if (stash.entries.some((e) => e.quality === "generated")) {
               dirsNeedingLlm.push({ dirPath, files, assetType, currentStashDir, stash });
             }
           }
@@ -274,14 +274,14 @@ async function enhanceDirsWithLlm(
 
   for (const { dirPath, files, currentStashDir, stash: originalStash } of dirsNeedingLlm) {
     // Only enhance generated entries; user-provided overrides should not be overwritten
-    const generatedEntries = originalStash.entries.filter((e) => e.generated);
+    const generatedEntries = originalStash.entries.filter((e) => e.quality === "generated");
     if (generatedEntries.length === 0) continue;
     const generatedStash: StashFile = { entries: generatedEntries };
     const enhanced = await enhanceStashWithLlm(config.llm, generatedStash, dirPath, files);
 
     // Re-upsert only the enhanced (generated) entries
     for (const entry of enhanced.entries) {
-      const entryPath = entry.entry ? path.join(dirPath, entry.entry) : files[0] || dirPath;
+      const entryPath = entry.filename ? path.join(dirPath, entry.filename) : files[0] || dirPath;
       const entryKey = `${currentStashDir}:${entry.type}:${entry.name}`;
       const searchText = buildSearchText(entry);
       upsertEntry(db, entryKey, dirPath, entryPath, currentStashDir, entry, searchText);
@@ -329,7 +329,7 @@ function isDirStale(
   builtAtMs: number,
 ): boolean {
   // Check if file set changed (additions or deletions)
-  const prevFileNames = new Set(previousEntries.map((ie) => ie.entry.entry).filter((e): e is string => !!e));
+  const prevFileNames = new Set(previousEntries.map((ie) => ie.entry.filename).filter((e): e is string => !!e));
   const currFileNames = new Set(currentFiles.map((f) => path.basename(f)));
   if (prevFileNames.size !== currFileNames.size) return true;
   for (const name of currFileNames) {
@@ -365,9 +365,9 @@ function migrateGeneratedSkillMetadata(
   let changed = false;
 
   const entries = stash.entries.map((entry) => {
-    if (entry.type !== "skill" || entry.generated !== true) return entry;
+    if (entry.type !== "skill" || entry.quality !== "generated") return entry;
 
-    const hintedFilePath = entry.entry ? fileByBaseName.get(path.basename(entry.entry)) : undefined;
+    const hintedFilePath = entry.filename ? fileByBaseName.get(path.basename(entry.filename)) : undefined;
     const skillFilePath = hintedFilePath ?? fileByBaseName.get("SKILL.md");
     if (!skillFilePath) return entry;
 
@@ -399,7 +399,7 @@ async function enhanceStashWithLlm(
   const enhanced: StashEntry[] = [];
   for (const entry of stash.entries) {
     try {
-      const entryFile = entry.entry ? (files.find((f) => path.basename(f) === entry.entry) ?? files[0]) : files[0];
+      const entryFile = entry.filename ? (files.find((f) => path.basename(f) === entry.filename) ?? files[0]) : files[0];
       let fileContent: string | undefined;
       if (entryFile) {
         try {
@@ -412,7 +412,7 @@ async function enhanceStashWithLlm(
       const improvements = await enhanceMetadata(llmConfig, entry, fileContent);
       const updated = { ...entry };
       if (improvements.description) updated.description = improvements.description;
-      if (improvements.intents?.length) updated.intents = improvements.intents;
+      if (improvements.searchHints?.length) updated.searchHints = improvements.searchHints;
       if (improvements.tags?.length) updated.tags = improvements.tags;
       enhanced.push(updated);
     } catch {
@@ -428,7 +428,7 @@ export function buildSearchText(entry: StashEntry): string {
   if (entry.tags) parts.push(entry.tags.join(" "));
   if (entry.examples) parts.push(entry.examples.join(" "));
   if (entry.aliases) parts.push(entry.aliases.join(" "));
-  if (entry.intents) parts.push(entry.intents.join(" "));
+  if (entry.searchHints) parts.push(entry.searchHints.join(" "));
   if (entry.intent) {
     if (entry.intent.when) parts.push(entry.intent.when);
     if (entry.intent.input) parts.push(entry.intent.input);

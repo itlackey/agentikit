@@ -9,7 +9,7 @@ import { getDbPath } from "../src/paths";
 // Each test gets a fresh database
 beforeEach(() => {
   const dbPath = getDbPath();
-  for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+  for (const f of [dbPath, dbPath + "-wal", dbPath + "-shm"]) {
     try {
       fs.unlinkSync(f);
     } catch {
@@ -55,7 +55,7 @@ test("agentikitIndex scans directories and builds index", async () => {
   expect(entries.length).toBe(2);
   const deployEntry = entries.find((e) => e.entry.name.includes("deploy"));
   expect(deployEntry).toBeDefined();
-  expect(deployEntry?.entry.generated).toBe(true);
+  expect(deployEntry!.entry.quality).toBe("generated");
   closeDatabase(db);
 });
 
@@ -71,7 +71,7 @@ test("agentikitIndex preserves manually-written .stash.json", async () => {
           type: "tool",
           description: "Summarize git changes",
           tags: ["git", "summary"],
-          entry: "summarize.ts",
+          filename: "summarize.ts",
         },
       ],
     }),
@@ -85,7 +85,7 @@ test("agentikitIndex preserves manually-written .stash.json", async () => {
   // Verify the manual .stash.json was not overwritten
   const stash = JSON.parse(fs.readFileSync(path.join(stashDir, "tools", "git", ".stash.json"), "utf8"));
   expect(stash.entries[0].name).toBe("git-summarize");
-  expect(stash.entries[0].generated).toBeUndefined();
+  expect(stash.entries[0].quality).toBeUndefined();
 });
 
 test("agentikitIndex migrates generated skill metadata name to canonical directory name", async () => {
@@ -98,8 +98,8 @@ test("agentikitIndex migrates generated skill metadata name to canonical directo
         {
           name: "SKILL",
           type: "skill",
-          generated: true,
-          entry: "SKILL.md",
+          quality: "generated",
+          filename: "SKILL.md",
           description: "legacy generated skill metadata",
         },
       ],
@@ -173,9 +173,9 @@ test("agentikitIndex generates TOC in database for knowledge entries", async () 
   const entries = getAllEntries(db, "knowledge");
   expect(entries.length).toBe(1);
   expect(entries[0].entry.toc).toBeDefined();
-  expect(entries[0].entry.toc?.length).toBe(2);
-  expect(entries[0].entry.toc?.[0].text).toBe("Getting Started");
-  expect(entries[0].entry.toc?.[1].text).toBe("Installation");
+  expect(entries[0].entry.toc!.length).toBe(2);
+  expect(entries[0].entry.toc![0].text).toBe("Getting Started");
+  expect(entries[0].entry.toc![1].text).toBe("Installation");
   closeDatabase(db);
 });
 
@@ -232,12 +232,12 @@ test("buildSearchText includes TOC heading text for knowledge entries", async ()
   expect(text).toContain("installation");
 });
 
-test("buildSearchText includes intents array content", () => {
+test("buildSearchText includes searchHints array content", () => {
   const entry = {
     name: "git-diff",
     type: "tool" as const,
     description: "summarize git changes",
-    intents: ["explain what changed in a repository", "show commit summary"],
+    searchHints: ["explain what changed in a repository", "show commit summary"],
   };
 
   const text = buildSearchText(entry);
@@ -245,12 +245,12 @@ test("buildSearchText includes intents array content", () => {
   expect(text).toContain("show commit summary");
 });
 
-test("buildSearchText handles entries with both intents and intent fields", () => {
+test("buildSearchText handles entries with both searchHints and intent fields", () => {
   const entry = {
     name: "deploy",
     type: "tool" as const,
     description: "deploy services",
-    intents: ["deploy to production", "push services live"],
+    searchHints: ["deploy to production", "push services live"],
     intent: { when: "user needs to deploy", input: "service name", output: "status" },
   };
 
@@ -261,7 +261,7 @@ test("buildSearchText handles entries with both intents and intent fields", () =
   expect(text).toContain("service name");
 });
 
-test("agentikitIndex does not generate heuristic intents (LLM-only)", async () => {
+test("agentikitIndex does not generate heuristic searchHints (LLM-only)", async () => {
   const stashDir = tmpStash();
   writeFile(
     path.join(stashDir, "tools", "deploy", "deploy.sh"),
@@ -274,6 +274,6 @@ test("agentikitIndex does not generate heuristic intents (LLM-only)", async () =
   const db = openDatabase();
   const entries = getAllEntries(db, "tool");
   expect(entries.length).toBe(1);
-  expect(entries[0].entry.intents).toBeUndefined();
+  expect(entries[0].entry.searchHints).toBeUndefined();
   closeDatabase(db);
 });

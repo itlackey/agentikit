@@ -112,7 +112,7 @@ describe("Database search path (FTS scoring)", () => {
             name: "deploy",
             type: "tool",
             description: "Deploy application to production servers",
-            entry: "deploy.sh",
+            filename: "deploy.sh",
           },
         ],
       }),
@@ -142,7 +142,7 @@ describe("Database search path (FTS scoring)", () => {
             name: "lint",
             type: "tool",
             description: "Lint source code for errors",
-            entry: "lint.sh",
+            filename: "lint.sh",
           },
         ],
       }),
@@ -157,7 +157,7 @@ describe("Database search path (FTS scoring)", () => {
             name: "code-review",
             type: "skill",
             description: "Review code for quality issues",
-            entry: "SKILL.md",
+            filename: "SKILL.md",
           },
         ],
       }),
@@ -180,7 +180,7 @@ describe("Database search path (FTS scoring)", () => {
     writeFile(
       path.join(stashDir, "tools", "alpha", ".stash.json"),
       JSON.stringify({
-        entries: [{ name: "alpha", type: "tool", description: "Alpha tool", entry: "alpha.sh" }],
+        entries: [{ name: "alpha", type: "tool", description: "Alpha tool", filename: "alpha.sh" }],
       }),
     );
 
@@ -188,7 +188,7 @@ describe("Database search path (FTS scoring)", () => {
     writeFile(
       path.join(stashDir, "tools", "beta", ".stash.json"),
       JSON.stringify({
-        entries: [{ name: "beta", type: "tool", description: "Beta tool", entry: "beta.sh" }],
+        entries: [{ name: "beta", type: "tool", description: "Beta tool", filename: "beta.sh" }],
       }),
     );
 
@@ -196,7 +196,7 @@ describe("Database search path (FTS scoring)", () => {
     writeFile(
       path.join(stashDir, "tools", "gamma", ".stash.json"),
       JSON.stringify({
-        entries: [{ name: "gamma", type: "tool", description: "Gamma tool", entry: "gamma.sh" }],
+        entries: [{ name: "gamma", type: "tool", description: "Gamma tool", filename: "gamma.sh" }],
       }),
     );
 
@@ -217,7 +217,7 @@ describe("Database search path (FTS scoring)", () => {
       writeFile(
         path.join(stashDir, "tools", name, ".stash.json"),
         JSON.stringify({
-          entries: [{ name, type: "tool", description: `${name} tool for testing`, entry: `${name}.sh` }],
+          entries: [{ name, type: "tool", description: `${name} tool for testing`, filename: `${name}.sh` }],
         }),
       );
     }
@@ -233,7 +233,7 @@ describe("Database search path (FTS scoring)", () => {
   test("scores use multiplicative boosts without clamping", async () => {
     const stashDir = tmpStash();
 
-    // Create an entry with tags, intents, and name all matching the query
+    // Create an entry with tags, searchHints, and name all matching the query
     writeFile(path.join(stashDir, "tools", "clamp-deploy", "clamp-deploy.sh"), "#!/bin/bash\necho deploy\n");
     writeFile(
       path.join(stashDir, "tools", "clamp-deploy", ".stash.json"),
@@ -244,8 +244,8 @@ describe("Database search path (FTS scoring)", () => {
             type: "tool",
             description: "Deploy deploy deploy application",
             tags: ["deploy", "deployment"],
-            intents: ["deploy services", "deploy to production"],
-            entry: "clamp-deploy.sh",
+            searchHints: ["deploy services", "deploy to production"],
+            filename: "clamp-deploy.sh",
           },
         ],
       }),
@@ -279,7 +279,7 @@ describe("Score boosts", () => {
             type: "tool",
             description: "Deploy application",
             tags: ["deploy", "production"],
-            entry: "deploy.sh",
+            filename: "deploy.sh",
           },
         ],
       }),
@@ -308,7 +308,7 @@ describe("Score boosts", () => {
             name: "formatter",
             type: "tool",
             description: "Format source files",
-            entry: "formatter.sh",
+            filename: "formatter.sh",
           },
         ],
       }),
@@ -328,7 +328,7 @@ describe("Score boosts", () => {
   test("curated metadata gets quality boost", async () => {
     const stashDir = tmpStash();
 
-    // Curated entry (generated: false or absent)
+    // Curated entry (quality absent or "curated")
     writeFile(path.join(stashDir, "tools", "curated", "curated.sh"), "#!/bin/bash\necho curated\n");
     writeFile(
       path.join(stashDir, "tools", "curated", ".stash.json"),
@@ -338,15 +338,15 @@ describe("Score boosts", () => {
             name: "curated",
             type: "tool",
             description: "A testing utility",
-            generated: false,
-            entry: "curated.sh",
+            quality: "curated",
+            filename: "curated.sh",
           },
         ],
       }),
     );
 
     // Generated entry — identical description so FTS score is the same;
-    // only the `generated` flag differs, isolating the curated boost.
+    // only the `quality` field differs, isolating the curated boost.
     writeFile(path.join(stashDir, "tools", "generated", "generated.sh"), "#!/bin/bash\necho generated\n");
     writeFile(
       path.join(stashDir, "tools", "generated", ".stash.json"),
@@ -356,8 +356,8 @@ describe("Score boosts", () => {
             name: "generated",
             type: "tool",
             description: "A testing utility",
-            generated: true,
-            entry: "generated.sh",
+            quality: "generated",
+            filename: "generated.sh",
           },
         ],
       }),
@@ -437,7 +437,7 @@ describe("Source filtering", () => {
             name: "local-tool",
             type: "tool",
             description: "A local tool",
-            entry: "local-tool.sh",
+            filename: "local-tool.sh",
           },
         ],
       }),
@@ -497,7 +497,7 @@ describe("Edge cases", () => {
             name: "safe",
             type: "tool",
             description: "A safe tool",
-            entry: "safe.sh",
+            filename: "safe.sh",
           },
         ],
       }),
@@ -523,7 +523,7 @@ describe("Edge cases", () => {
             name: "simple",
             type: "tool",
             description: "A simple tool",
-            entry: "simple.sh",
+            filename: "simple.sh",
           },
         ],
       }),

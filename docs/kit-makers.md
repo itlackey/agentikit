@@ -170,13 +170,13 @@ For better search quality, add a `.stash.json` in any asset type directory:
       "type": "script",
       "description": "Deploy the application to production",
       "tags": ["deploy", "infrastructure", "ci"],
-      "intents": [
+      "searchHints": [
         "deploy the app",
         "push to production",
         "ship a release"
       ],
       "usage": ["Pass a release tag as the first argument"],
-      "entry": "deploy.sh",
+      "filename": "deploy.sh",
       "quality": "curated",
       "source": "manual",
       "confidence": 1.0
@@ -185,7 +185,7 @@ For better search quality, add a `.stash.json` in any asset type directory:
 }
 ```
 
-Good `description`, `tags`, and `intents` values make the biggest difference
+Good `description`, `tags`, and `searchHints` values make the biggest difference
 in search ranking. See [filesystem.md](filesystem.md) for the full field
 reference.
 

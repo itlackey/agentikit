@@ -51,7 +51,7 @@ auto-generated metadata from filenames, comments, and `package.json`.
       "type": "script",
       "description": "Deploy the application to production",
       "tags": ["deploy", "infrastructure"],
-      "entry": "deploy.sh",
+      "filename": "deploy.sh",
       "quality": "curated",
       "source": "manual",
       "confidence": 1.0,
@@ -69,7 +69,7 @@ auto-generated metadata from filenames, comments, and `package.json`.
         "deploy the app",
         "ship latest to production"
       ],
-      "intents": [
+      "searchHints": [
         "deploy application",
         "push to production"
       ]
@@ -86,7 +86,7 @@ auto-generated metadata from filenames, comments, and `package.json`.
 | `type` | string | yes | One of `script`, `skill`, `command`, `agent`, `knowledge` (`tool` accepted as alias for `script`) |
 | `description` | string | no | Human-readable summary of what the asset does |
 | `tags` | string[] | no | Keywords for search and categorization |
-| `entry` | string | no | Filename of the asset relative to this directory |
+| `filename` | string | no | Filename of the asset relative to this directory |
 | `quality` | string | no | `"curated"` (hand-written) or `"generated"` (auto-created) |
 | `source` | string | no | Origin of metadata: `"manual"`, `"package"`, `"frontmatter"`, `"comments"`, `"filename"`, `"llm"` |
 | `confidence` | number | no | `0.0`-`1.0` confidence score (curated entries should use `1.0`) |
@@ -94,7 +94,7 @@ auto-generated metadata from filenames, comments, and `package.json`.
 | `usage` | string[] | no | Per-asset usage instructions shown alongside search results |
 | `intent` | object | no | Structured intent with `when`, `input`, `output` fields |
 | `examples` | string[] | no | Example queries or phrases a user might type |
-| `intents` | string[] | no | Search phrases used for intent-based matching |
+| `searchHints` | string[] | no | Search phrases used for intent-based matching |
 | `toc` | object[] | no | Table of contents (knowledge type only, usually auto-generated) |
 | `run` | string | no | Explicit run command (e.g. `"bash deploy.sh"`), overrides auto-detection |
 | `setup` | string | no | Setup command to run before execution (e.g. `"bun install"`) |
@@ -118,7 +118,7 @@ auto-generated metadata from filenames, comments, and `package.json`.
 - Good `description` and `tags` values significantly improve search quality.
 - The `usage` field is surfaced in search results to guide consumers on how
   to use the asset correctly.
-- The `entry` field tells the indexer which file in the directory this entry
+- The `filename` field tells the indexer which file in the directory this entry
   maps to. Without it, the indexer defaults to the first file found.
 
 ## Config
