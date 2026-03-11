@@ -10,7 +10,7 @@ parallel:
 
 1. **FTS5 (lexical)** -- SQLite full-text search with Porter stemming.
    Matches against a combined search text built from name, description, tags,
-   intents, examples, and aliases.
+   searchHints, examples, and aliases.
 
 2. **Semantic (vector)** -- Cosine similarity between query embedding and
    stored entry embeddings via sqlite-vec (384 dimensions). Requires an
@@ -25,7 +25,7 @@ After blending, quality boosts are applied:
 | Boost | Value |
 | --- | --- |
 | Tag exact match | +0.15 |
-| Intent token match | +0.12 |
+| Search hint token match | +0.12 |
 | Name token match | +0.10 |
 | Curated metadata | +0.05 |
 | Confidence score | up to +0.05 |

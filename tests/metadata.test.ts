@@ -383,6 +383,6 @@ test("generateMetadata does not generate heuristic searchHints (LLM-only)", () =
   writeFile(tool, `/**\n * Summarize git diff changes\n */\n`);
 
   const stash = generateMetadata(dir, "tool", [tool]);
-  // Intents are only generated when LLM is configured, not heuristically
+  // Search hints are only generated when LLM is configured, not heuristically
   expect(stash.entries[0].searchHints).toBeUndefined();
 });

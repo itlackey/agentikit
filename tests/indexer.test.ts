@@ -270,7 +270,7 @@ test("agentikitIndex does not generate heuristic searchHints (LLM-only)", async 
 
   await agentikitIndex({ stashDir });
 
-  // Intents are only generated when LLM is configured
+  // Search hints are only generated when LLM is configured
   const db = openDatabase();
   const entries = getAllEntries(db, "tool");
   expect(entries.length).toBe(1);

@@ -340,7 +340,7 @@ after the working stash.
 
 - **Test the search experience.** After installing your kit, search for it
   using the terms you expect users to try. If results are poor, improve the
-  descriptions, tags, and intents.
+  descriptions, tags, and searchHints.
 
 - **Document usage in the asset itself.** For skills, put the instructions in
   `SKILL.md`. For commands, put the workflow in the markdown body. The agent
