@@ -323,7 +323,7 @@ const showCommand = defineCommand({
 const configCommand = defineCommand({
   meta: { name: "config", description: "Show and manage configuration" },
   args: {
-    list: { type: "boolean", description: "List current configuration with effective defaults", default: false },
+    list: { type: "boolean", description: "List current configuration", default: false },
     get: { type: "string", description: "Get a configuration value by key" },
     unset: { type: "string", description: "Unset an optional configuration key or whole embedding/llm section" },
     set: { type: "string", description: "Back-compat alias for updating a key (key=value format)" },
@@ -359,7 +359,7 @@ const configCommand = defineCommand({
       },
     }),
     list: defineCommand({
-      meta: { name: "list", description: "List current configuration with effective embedding/LLM settings" },
+      meta: { name: "list", description: "List current configuration" },
       run() {
         return runWithJsonErrors(() => {
           output("config", listConfig(loadConfig()));
@@ -369,7 +369,7 @@ const configCommand = defineCommand({
     get: defineCommand({
       meta: { name: "get", description: "Get a configuration value by key" },
       args: {
-        key: { type: "positional", required: true, description: "Config key (for example: embedding.provider)" },
+        key: { type: "positional", required: true, description: "Config key (for example: embedding, stashDir)" },
       },
       run({ args }) {
         return runWithJsonErrors(() => {
@@ -380,7 +380,7 @@ const configCommand = defineCommand({
     set: defineCommand({
       meta: { name: "set", description: "Set a configuration value by key" },
       args: {
-        key: { type: "positional", required: true, description: "Config key (for example: llm.temperature)" },
+        key: { type: "positional", required: true, description: "Config key (for example: embedding, llm)" },
         value: { type: "positional", required: true, description: "Config value" },
       },
       run({ args }) {
