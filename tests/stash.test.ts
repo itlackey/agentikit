@@ -468,6 +468,7 @@ test("agentikitShow returns helpful message for missing section in knowledge", a
   });
   expect(result.type).toBe("knowledge");
   expect(result.content).toContain('Section "Nonexistent" not found');
+  expect(result.content).toContain("akm show");
   expect(result.content).toContain("toc");
   expect(result.content).toContain("discover available headings");
 });

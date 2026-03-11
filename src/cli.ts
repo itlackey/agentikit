@@ -736,11 +736,10 @@ function normalizeShowArgv(argv: string[]): string[] {
   const result = [...prefix, ref, "--view", viewMode];
 
   if (viewMode === "section") {
-    // Next arg is the heading name
-    const heading = showArgs[2];
-    if (heading) {
-      result.push("--heading", heading);
-    }
+    // Next arg is the heading name; pass empty string when missing so the
+    // show handler can produce a clear "section not found" error.
+    const heading = showArgs[2] ?? "";
+    result.push("--heading", heading);
   } else if (viewMode === "lines") {
     // Next two args are start and end
     const start = showArgs[2];
