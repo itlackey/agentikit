@@ -47,7 +47,7 @@ search your stash and use what it finds. The workflow is three commands:
 
 1. `akm search "what you need"` — find relevant assets (returns JSON)
 2. `akm show <openRef>` — get the details (run command, instructions, prompt, etc.)
-3. Use the asset — execute the `runCmd`, follow the skill instructions, fill in the template
+3. Use the asset — execute the `run` command, follow the skill instructions, fill in the template
 
 ### Drop-in prompt snippet
 
@@ -76,7 +76,7 @@ akm show <openRef>                # Get full asset details
 ```
 
 What you get back depends on the asset type:
-- **script** — A `runCmd` you can execute directly
+- **script** — A `run` command you can execute directly
 - **skill** — Instructions to follow (read the full content)
 - **command** — A prompt template with placeholders to fill in
 - **agent** — A system prompt with model and tool hints
@@ -136,7 +136,7 @@ my-kit/
 
 | Type | What it is | What the agent gets |
 | --- | --- | --- |
-| **script** | An executable script | A `runCmd` the agent can execute, or source for unsupported runtimes |
+| **script** | An executable script | A `run` command with auto-detected interpreter, plus optional `setup` and `cwd` |
 | **skill** | A set of instructions | Step-by-step guidance the agent follows |
 | **command** | A prompt template | A template with placeholders to fill in |
 | **agent** | An agent definition | A system prompt, model hint, and tool policy |
@@ -191,8 +191,9 @@ akm show tool:docker-build.sh
 {
   "type": "tool",
   "name": "docker-build.sh",
-  "runCmd": "cd \"/path/to/tools\" && bash \"/path/to/tools/docker-build.sh\"",
-  "kind": "bash"
+  "run": "bash /path/to/tools/docker-build.sh",
+  "setup": "bun install",
+  "cwd": "/path/to/tools"
 }
 ```
 

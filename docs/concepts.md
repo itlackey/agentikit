@@ -91,8 +91,8 @@ Each asset type has a dedicated renderer:
 
 | Renderer | Asset Type | Output |
 | --- | --- | --- |
-| `script-source` | script | `runCmd` for supported extensions, source for others |
-| `tool-script` | tool | `runCmd` with runtime and working directory (same behavior as script-source) |
+| `script-source` | script | `run` command for supported extensions, source for others |
+| `tool-script` | tool | `run` command with runtime and working directory |
 | `skill-md` | skill | Full SKILL.md content |
 | `command-md` | command | Extracted template and description |
 | `agent-md` | agent | Prompt with dispatch prefix, model hint, tool policy |
@@ -130,19 +130,44 @@ structured metadata. When no `.stash.json` exists, the indexer generates one
 automatically from filenames, code comments, frontmatter, and package.json.
 See [filesystem.md](filesystem.md) for the full field reference.
 
-## Script Execution
+## Script Execution (ExecHints)
 
-For script (and tool) assets, agentikit generates execution metadata:
+For script (and tool) assets, agentikit resolves execution hints with three
+levels of precedence:
 
-| Extension | Runtime | Example `runCmd` |
-| --- | --- | --- |
-| `.sh` | bash | `cd "/path/to/tools" && bash "/path/to/deploy.sh"` |
-| `.ts`, `.js` | bun | `cd "/path/to/tools" && bun "/path/to/run.ts"` |
-| `.ps1` | powershell | `powershell -ExecutionPolicy Bypass -File ...` |
-| `.cmd`, `.bat` | cmd | `cmd /c ...` |
+1. **`.stash.json`** fields (`run`/`setup`/`cwd`) take highest priority
+2. **Header comment tags** (`@run`/`@setup`/`@cwd`) in the script file
+3. **Auto-detection** from extension + nearby dependency files
 
-When a `package.json` is found in the tool's directory tree, the working
-directory is set to that package root.
+### Interpreter auto-detection
+
+| Extension | Interpreter |
+| --- | --- |
+| `.sh` | bash |
+| `.ts`, `.js` | bun |
+| `.py` | python |
+| `.rb` | ruby |
+| `.go` | go run |
+| `.ps1` | powershell -File |
+| `.cmd`, `.bat` | cmd /c |
+| `.pl` | perl |
+| `.php` | php |
+| `.lua` | lua |
+| `.r` | Rscript |
+| `.swift` | swift |
+| `.kt`, `.kts` | kotlin |
+
+### Setup signal detection
+
+When a dependency file is found in the script's directory, a setup command
+is auto-suggested:
+
+| File | Setup command |
+| --- | --- |
+| `package.json` | `bun install` |
+| `requirements.txt` | `pip install -r requirements.txt` |
+| `Gemfile` | `bundle install` |
+| `go.mod` | `go mod download` |
 
 ## Further Reading
 

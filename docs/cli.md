@@ -70,7 +70,7 @@ Returns type-specific payloads:
 
 | Type | Key fields |
 | --- | --- |
-| tool / script | `runCmd`, `kind` |
+| tool / script | `run`, `setup`, `cwd` |
 | skill | `content` (full SKILL.md) |
 | command | `template`, `description` |
 | agent | `prompt`, `description`, `modelHint` |

@@ -103,7 +103,7 @@ function formatPlain(command: string, result: unknown): string | null {
     }
     case "show": {
       if (r.content != null) return String(r.content);
-      if (r.runCmd != null) return String(r.runCmd);
+      if (r.run != null) return String(r.run);
       if (r.prompt != null) return String(r.prompt);
       return null; // fall through to YAML
     }

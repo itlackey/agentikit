@@ -7,17 +7,162 @@
  * importing this module is sufficient to make them available.
  */
 
+import fs from "node:fs";
 import path from "node:path";
 import { SCRIPT_EXTENSIONS } from "./asset-spec";
 import { hasErrnoCode } from "./common";
 import type { AssetRenderer, RenderContext } from "./file-context";
 import { registerRenderer } from "./file-context";
 import { parseFrontmatter, toStringOrUndefined } from "./frontmatter";
-import { extractFrontmatterOnly, extractLineRange, extractSection, formatToc, parseMarkdownToc } from "./markdown";
 import type { StashEntry } from "./metadata";
 import { extractDescriptionFromComments } from "./metadata";
+import { loadStashFile } from "./metadata";
 import type { KnowledgeView, LocalSearchHit, ShowResponse } from "./stash-types";
-import { buildToolInfo } from "./tool-runner";
+import { extractFrontmatterOnly, extractLineRange, extractSection, formatToc, parseMarkdownToc } from "./markdown";
+
+// ── ExecHints types ──────────────────────────────────────────────────────────
+
+export interface ExecHints {
+  run?: string;
+  setup?: string;
+  cwd?: string;
+}
+
+// ── Interpreter auto-detection map ───────────────────────────────────────────
+
+const INTERPRETER_MAP: Record<string, string> = {
+  ".sh": "bash",
+  ".ts": "bun",
+  ".js": "bun",
+  ".py": "python",
+  ".rb": "ruby",
+  ".go": "go run",
+  ".ps1": "powershell -File",
+  ".cmd": "cmd /c",
+  ".bat": "cmd /c",
+  ".pl": "perl",
+  ".php": "php",
+  ".lua": "lua",
+  ".r": "Rscript",
+  ".swift": "swift",
+  ".kt": "kotlin",
+  ".kts": "kotlin",
+};
+
+// ── Setup signal map ─────────────────────────────────────────────────────────
+
+const SETUP_SIGNALS: Record<string, string> = {
+  "package.json": "bun install",
+  "requirements.txt": "pip install -r requirements.txt",
+  "Gemfile": "bundle install",
+  "go.mod": "go mod download",
+};
+
+// ── Comment tag extraction ───────────────────────────────────────────────────
+
+/**
+ * Extract `@run`, `@setup`, `@cwd` tags from script file header comments.
+ *
+ * Scans the first 50 lines of the file for comment lines containing
+ * `@run <value>`, `@setup <value>`, or `@cwd <value>`.
+ */
+export function extractCommentTags(filePath: string): ExecHints {
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, "utf8");
+  } catch {
+    return {};
+  }
+
+  const lines = content.split(/\r?\n/).slice(0, 50);
+  const hints: ExecHints = {};
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Match lines starting with comment markers: //, #, /*, *, ;, --
+    if (!/^(?:\/\/|#|\/?\*|;|--)/.test(trimmed) && !trimmed.startsWith("'")) continue;
+
+    // Strip comment prefix
+    const cleaned = trimmed
+      .replace(/^(?:\/\/|##?|\/?\*\*?\/?|;|--)\s*/, "")
+      .replace(/\*\/\s*$/, "")
+      .trim();
+
+    const runMatch = cleaned.match(/^@run\s+(.+)/);
+    if (runMatch) hints.run = runMatch[1].trim();
+
+    const setupMatch = cleaned.match(/^@setup\s+(.+)/);
+    if (setupMatch) hints.setup = setupMatch[1].trim();
+
+    const cwdMatch = cleaned.match(/^@cwd\s+(.+)/);
+    if (cwdMatch) hints.cwd = cwdMatch[1].trim();
+  }
+
+  return hints;
+}
+
+// ── Auto-detection ───────────────────────────────────────────────────────────
+
+/**
+ * Auto-detect execution hints from the file extension and nearby files.
+ *
+ * 1. Maps the file extension to an interpreter via INTERPRETER_MAP.
+ * 2. Scans the file's directory for dependency signal files (package.json,
+ *    requirements.txt, etc.) to suggest a setup command.
+ */
+export function detectExecHints(filePath: string): ExecHints {
+  const ext = path.extname(filePath).toLowerCase();
+  const hints: ExecHints = {};
+
+  // Interpreter from extension
+  const interpreter = INTERPRETER_MAP[ext];
+  if (interpreter) {
+    hints.run = `${interpreter} ${filePath}`;
+  }
+
+  // Setup from nearby dependency files
+  const dir = path.dirname(filePath);
+  try {
+    for (const [file, cmd] of Object.entries(SETUP_SIGNALS)) {
+      if (fs.existsSync(path.join(dir, file))) {
+        hints.setup = cmd;
+        hints.cwd = dir;
+        break;
+      }
+    }
+  } catch {
+    // Non-fatal: skip setup detection on FS errors
+  }
+
+  return hints;
+}
+
+// ── Resolution ───────────────────────────────────────────────────────────────
+
+/**
+ * Resolve execution hints for a script/tool asset.
+ *
+ * Resolution order (first non-empty value wins for each field):
+ * 1. `.stash.json` fields (`run`/`setup`/`cwd`) take priority
+ * 2. Script file header comments (`@run`/`@setup`/`@cwd`) second
+ * 3. Auto-detection from extension + dependency files last
+ */
+export function resolveExecHints(stashEntry: StashEntry | undefined, filePath: string): ExecHints {
+  const stashHints: ExecHints = {
+    run: stashEntry?.run,
+    setup: stashEntry?.setup,
+    cwd: stashEntry?.cwd,
+  };
+
+  const commentHints = extractCommentTags(filePath);
+  const autoHints = detectExecHints(filePath);
+
+  return {
+    run: stashHints.run || commentHints.run || autoHints.run,
+    setup: stashHints.setup || commentHints.setup || autoHints.setup,
+    cwd: stashHints.cwd || commentHints.cwd || autoHints.cwd,
+  };
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -44,6 +189,17 @@ function findContainingStashDir(stashDirs: string[], filePath: string): string |
   return stashDirs.find((d) => path.resolve(filePath).startsWith(path.resolve(d) + path.sep)) ?? stashDirs[0];
 }
 
+/**
+ * Load the matching StashEntry for a file path from the directory's .stash.json.
+ */
+function findStashEntryForFile(filePath: string): StashEntry | undefined {
+  const dir = path.dirname(filePath);
+  const stashFile = loadStashFile(dir);
+  if (!stashFile) return undefined;
+  const fileName = path.basename(filePath);
+  return stashFile.entries.find((e) => e.entry === fileName);
+}
+
 // ── 1. tool-script ───────────────────────────────────────────────────────────
 
 const toolScriptRenderer: AssetRenderer = {
@@ -58,21 +214,24 @@ const toolScriptRenderer: AssetRenderer = {
       return { type: "tool", name, path: ctx.absPath, content: ctx.content() };
     }
 
-    const toolInfo = buildToolInfo(assetStashDir, ctx.absPath);
+    const stashEntry = findStashEntryForFile(ctx.absPath);
+    const hints = resolveExecHints(stashEntry, ctx.absPath);
+
     return {
       type: "tool",
       name,
       path: ctx.absPath,
-      runCmd: toolInfo.runCmd,
-      kind: toolInfo.kind,
+      run: hints.run,
+      setup: hints.setup,
+      cwd: hints.cwd,
     };
   },
 
-  enrichSearchHit(hit: LocalSearchHit, stashDir: string): void {
+  enrichSearchHit(hit: LocalSearchHit, _stashDir: string): void {
     try {
-      const toolInfo = buildToolInfo(stashDir, hit.path);
-      hit.runCmd = toolInfo.runCmd;
-      hit.kind = toolInfo.kind;
+      const stashEntry = findStashEntryForFile(hit.path);
+      const hints = resolveExecHints(stashEntry, hit.path);
+      hit.run = hints.run;
     } catch (error: unknown) {
       if (!hasErrnoCode(error, "ENOENT")) throw error;
     }
@@ -90,7 +249,7 @@ const toolScriptRenderer: AssetRenderer = {
   },
 
   usageGuide: [
-    "Use the hit's runCmd for execution so runtime and working directory stay correct.",
+    "Use the hit's run command for execution so runtime and working directory stay correct.",
     "Use `akm show <openRef>` to inspect the tool before running it.",
   ],
 };
@@ -231,9 +390,6 @@ const knowledgeMdRenderer: AssetRenderer = {
 
 // ── 6. script-source ─────────────────────────────────────────────────────────
 
-/** Extensions that buildToolInfo can handle (tool-runner supported) */
-const RUNNABLE_EXTENSIONS = SCRIPT_EXTENSIONS;
-
 const scriptSourceRenderer: AssetRenderer = {
   name: "script-source",
 
@@ -241,28 +397,24 @@ const scriptSourceRenderer: AssetRenderer = {
     const name = deriveName(ctx);
     const ext = path.extname(ctx.absPath).toLowerCase();
 
-    // For extensions supported by tool-runner, show runCmd
-    if (RUNNABLE_EXTENSIONS.has(ext)) {
-      const stashDirs = ctx.stashDirs;
-      const assetStashDir = findContainingStashDir(stashDirs, ctx.absPath);
+    // For extensions with a known interpreter, show exec hints
+    if (INTERPRETER_MAP[ext]) {
+      const stashEntry = findStashEntryForFile(ctx.absPath);
+      const hints = resolveExecHints(stashEntry, ctx.absPath);
 
-      if (assetStashDir) {
-        try {
-          const toolInfo = buildToolInfo(assetStashDir, ctx.absPath);
-          return {
-            type: "script",
-            name,
-            path: ctx.absPath,
-            runCmd: toolInfo.runCmd,
-            kind: toolInfo.kind,
-          };
-        } catch {
-          // Fall through to content display
-        }
+      if (hints.run) {
+        return {
+          type: "script",
+          name,
+          path: ctx.absPath,
+          run: hints.run,
+          setup: hints.setup,
+          cwd: hints.cwd,
+        };
       }
     }
 
-    // For other extensions or when buildToolInfo fails, show file content
+    // For other extensions or when no hints are available, show file content
     return {
       type: "script",
       name,
@@ -271,14 +423,14 @@ const scriptSourceRenderer: AssetRenderer = {
     };
   },
 
-  enrichSearchHit(hit: LocalSearchHit, stashDir: string): void {
+  enrichSearchHit(hit: LocalSearchHit, _stashDir: string): void {
     const ext = path.extname(hit.path).toLowerCase();
-    if (!RUNNABLE_EXTENSIONS.has(ext)) return;
+    if (!INTERPRETER_MAP[ext]) return;
 
     try {
-      const toolInfo = buildToolInfo(stashDir, hit.path);
-      hit.runCmd = toolInfo.runCmd;
-      hit.kind = toolInfo.kind;
+      const stashEntry = findStashEntryForFile(hit.path);
+      const hints = resolveExecHints(stashEntry, hit.path);
+      hit.run = hints.run;
     } catch (error: unknown) {
       if (!hasErrnoCode(error, "ENOENT")) throw error;
     }
@@ -296,7 +448,7 @@ const scriptSourceRenderer: AssetRenderer = {
   },
 
   usageGuide: [
-    "Use the hit's runCmd for execution when available, or run the script directly with the appropriate interpreter.",
+    "Use the hit's run command for execution when available, or run the script directly with the appropriate interpreter.",
     "Use `akm show <openRef>` to inspect the script before running it.",
   ],
 };
@@ -332,4 +484,6 @@ export {
   agentMdRenderer,
   knowledgeMdRenderer,
   scriptSourceRenderer,
+  INTERPRETER_MAP,
+  SETUP_SIGNALS,
 };

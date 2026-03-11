@@ -1,6 +1,5 @@
 import type { AgentikitAssetType } from "./common";
 import type { RegistrySource } from "./registry-types";
-import type { ToolKind } from "./tool-runner";
 
 export type AgentikitSearchType = AgentikitAssetType | "any";
 export type SearchUsageMode = "none" | "both" | "item" | "guide";
@@ -22,8 +21,7 @@ export interface LocalSearchHit {
   tags?: string[];
   score?: number;
   whyMatched?: string[];
-  runCmd?: string;
-  kind?: ToolKind;
+  run?: string;
   usage?: string[];
 }
 
@@ -41,8 +39,7 @@ export interface RegistrySearchResultHit {
   homepage?: string;
   score?: number;
   whyMatched?: string[];
-  runCmd?: string;
-  kind?: ToolKind;
+  run?: string;
   usage?: string[];
   metadata?: Record<string, string>;
   installRef: string;
@@ -199,8 +196,12 @@ export interface ShowResponse {
   modelHint?: unknown;
   /** For commands: which agent should execute this command (OpenCode convention) */
   agent?: string;
-  runCmd?: string;
-  kind?: ToolKind;
+  /** How to run this script/tool (e.g. "bash deploy.sh", "bun run.ts") */
+  run?: string;
+  /** Setup command to run before execution (e.g. "bun install") */
+  setup?: string;
+  /** Working directory for execution */
+  cwd?: string;
   /** For installed sources, the registry id */
   registryId?: string;
   /** Whether this asset is safe to edit in place (false only for cache-managed files) */

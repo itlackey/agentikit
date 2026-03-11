@@ -10,6 +10,14 @@ import { isMarkdownFile, markdownAssetPath, markdownCanonicalName } from "../src
 import { scriptHandler } from "../src/handlers/script-handler";
 import { skillHandler } from "../src/handlers/skill-handler";
 import { toolHandler } from "../src/handlers/tool-handler";
+import {
+  resolveExecHints,
+  detectExecHints,
+  extractCommentTags,
+  INTERPRETER_MAP,
+  SETUP_SIGNALS,
+} from "../src/renderers";
+import type { StashEntry } from "../src/metadata";
 import type { LocalSearchHit } from "../src/stash-types";
 
 // ── Temp directory helpers ──────────────────────────────────────────────────
@@ -51,7 +59,7 @@ afterEach(() => {
 // ── 3.1 Tool handler ───────────────────────────────────────────────────────
 
 describe("toolHandler", () => {
-  test("buildShowResponse returns runCmd for .sh file", () => {
+  test("buildShowResponse returns run for .sh file", () => {
     const stashDir = tmpDir();
     const toolPath = path.join(stashDir, "tools", "deploy.sh");
     writeFile(toolPath, "#!/bin/bash\necho deploy\n");
@@ -63,12 +71,12 @@ describe("toolHandler", () => {
       stashDirs: [stashDir],
     });
 
-    expect(res.runCmd).toBeDefined();
-    expect(res.runCmd).toContain("bash");
-    expect(res.kind).toBe("bash");
+    expect(res.run).toBeDefined();
+    expect(res.run).toContain("bash");
+    expect(res.run).toContain("deploy.sh");
   });
 
-  test("buildShowResponse returns runCmd for .ts file", () => {
+  test("buildShowResponse returns run for .ts file", () => {
     const stashDir = tmpDir();
     const toolPath = path.join(stashDir, "tools", "run.ts");
     writeFile(toolPath, "console.log('hi')\n");
@@ -80,9 +88,9 @@ describe("toolHandler", () => {
       stashDirs: [stashDir],
     });
 
-    expect(res.runCmd).toBeDefined();
-    expect(res.runCmd).toContain("bun");
-    expect(res.kind).toBe("bun");
+    expect(res.run).toBeDefined();
+    expect(res.run).toContain("bun");
+    expect(res.run).toContain("run.ts");
   });
 
   test("buildShowResponse without stashDirs returns content", () => {
@@ -93,10 +101,10 @@ describe("toolHandler", () => {
     });
 
     expect(res.content).toBe("#!/bin/bash\necho deploy\n");
-    expect(res.runCmd).toBeUndefined();
+    expect(res.run).toBeUndefined();
   });
 
-  test("enrichSearchHit sets runCmd and kind on hit", () => {
+  test("enrichSearchHit sets run on hit", () => {
     const stashDir = tmpDir();
     const toolPath = path.join(stashDir, "tools", "deploy.sh");
     writeFile(toolPath, "#!/bin/bash\necho deploy\n");
@@ -112,9 +120,9 @@ describe("toolHandler", () => {
 
     toolHandler.enrichSearchHit!(hit, stashDir);
 
-    expect(hit.runCmd).toBeDefined();
-    expect(hit.runCmd).toContain("bash");
-    expect(hit.kind).toBe("bash");
+    expect(hit.run).toBeDefined();
+    expect(hit.run).toContain("bash");
+    expect(hit.run).toContain("deploy.sh");
   });
 
   test("enrichSearchHit ignores ENOENT", () => {
@@ -148,7 +156,7 @@ describe("toolHandler", () => {
 // ── 3.2 Script handler ─────────────────────────────────────────────────────
 
 describe("scriptHandler", () => {
-  test("buildShowResponse returns runCmd for runnable extensions", () => {
+  test("buildShowResponse returns run for runnable extensions", () => {
     for (const ext of [".sh", ".ts", ".js"]) {
       const stashDir = tmpDir();
       const scriptPath = path.join(stashDir, "scripts", `run${ext}`);
@@ -161,17 +169,17 @@ describe("scriptHandler", () => {
         stashDirs: [stashDir],
       });
 
-      expect(res.runCmd).toBeDefined();
+      expect(res.run).toBeDefined();
       expect(res.type).toBe("script");
       if (ext === ".sh") {
-        expect(res.kind).toBe("bash");
+        expect(res.run).toContain("bash");
       } else {
-        expect(res.kind).toBe("bun");
+        expect(res.run).toContain("bun");
       }
     }
   });
 
-  test("buildShowResponse returns content for non-runnable extensions", () => {
+  test("buildShowResponse returns run for non-runnable extensions (now detected)", () => {
     for (const ext of [".py", ".rb"]) {
       const stashDir = tmpDir();
       const scriptPath = path.join(stashDir, "scripts", `run${ext}`);
@@ -184,9 +192,14 @@ describe("scriptHandler", () => {
         stashDirs: [stashDir],
       });
 
-      expect(res.content).toBe("print('hi')\n");
-      expect(res.runCmd).toBeUndefined();
+      // With exec hints, .py and .rb now get auto-detected interpreters
+      expect(res.run).toBeDefined();
       expect(res.type).toBe("script");
+      if (ext === ".py") {
+        expect(res.run).toContain("python");
+      } else {
+        expect(res.run).toContain("ruby");
+      }
     }
   });
 
@@ -506,7 +519,7 @@ describe("markdown helpers", () => {
 // to the legacy handlers above.
 
 describe("tool-script renderer", () => {
-  test("buildShowResponse returns runCmd for .sh file", () => {
+  test("buildShowResponse returns run for .sh file", () => {
     const stashDir = tmpDir();
     const toolPath = path.join(stashDir, "tools", "deploy.sh");
     writeFile(toolPath, "#!/bin/bash\necho deploy\n");
@@ -517,12 +530,12 @@ describe("tool-script renderer", () => {
     const renderCtx = buildRenderContext(ctx, match, [stashDir]);
     const res = renderer.buildShowResponse(renderCtx);
 
-    expect(res.runCmd).toBeDefined();
-    expect(res.runCmd).toContain("bash");
+    expect(res.run).toBeDefined();
+    expect(res.run).toContain("bash");
     expect(res.type).toBe("tool");
   });
 
-  test("buildShowResponse returns runCmd for .ts file", () => {
+  test("buildShowResponse returns run for .ts file", () => {
     const stashDir = tmpDir();
     const toolPath = path.join(stashDir, "tools", "run.ts");
     writeFile(toolPath, "console.log('hi')\n");
@@ -533,8 +546,8 @@ describe("tool-script renderer", () => {
     const renderCtx = buildRenderContext(ctx, match, [stashDir]);
     const res = renderer.buildShowResponse(renderCtx);
 
-    expect(res.runCmd).toBeDefined();
-    expect(res.runCmd).toContain("bun");
+    expect(res.run).toBeDefined();
+    expect(res.run).toContain("bun");
     expect(res.type).toBe("tool");
   });
 });
@@ -677,7 +690,7 @@ describe("knowledge-md renderer", () => {
 });
 
 describe("script-source renderer", () => {
-  test("buildShowResponse returns runCmd for .sh file", () => {
+  test("buildShowResponse returns run for .sh file", () => {
     const stashDir = tmpDir();
     const scriptPath = path.join(stashDir, "scripts", "run.sh");
     writeFile(scriptPath, "echo hello\n");
@@ -688,11 +701,11 @@ describe("script-source renderer", () => {
     const renderCtx = buildRenderContext(ctx, match, [stashDir]);
     const res = renderer.buildShowResponse(renderCtx);
 
-    expect(res.runCmd).toBeDefined();
+    expect(res.run).toBeDefined();
     expect(res.type).toBe("script");
   });
 
-  test("buildShowResponse returns content for non-runnable extensions", () => {
+  test("buildShowResponse returns run for .py files (auto-detected interpreter)", () => {
     const stashDir = tmpDir();
     const scriptPath = path.join(stashDir, "scripts", "run.py");
     writeFile(scriptPath, "print('hi')\n");
@@ -703,8 +716,245 @@ describe("script-source renderer", () => {
     const renderCtx = buildRenderContext(ctx, match, [stashDir]);
     const res = renderer.buildShowResponse(renderCtx);
 
-    expect(res.content).toBe("print('hi')\n");
-    expect(res.runCmd).toBeUndefined();
+    expect(res.run).toBeDefined();
+    expect(res.run).toContain("python");
     expect(res.type).toBe("script");
+  });
+
+  test("buildShowResponse returns content for unknown extensions", () => {
+    const stashDir = tmpDir();
+    const scriptPath = path.join(stashDir, "scripts", "run.xyz");
+    writeFile(scriptPath, "some content\n");
+
+    const renderer = getRenderer("script-source")!;
+    const ctx = buildFileContext(stashDir, scriptPath);
+    const match = { type: "script", specificity: 10, renderer: "script-source", meta: { name: "run.xyz" } };
+    const renderCtx = buildRenderContext(ctx, match, [stashDir]);
+    const res = renderer.buildShowResponse(renderCtx);
+
+    expect(res.content).toBe("some content\n");
+    expect(res.run).toBeUndefined();
+    expect(res.type).toBe("script");
+  });
+});
+
+// ── ExecHints: interpreter auto-detection ────────────────────────────────────
+
+describe("INTERPRETER_MAP", () => {
+  test("maps all expected extensions", () => {
+    expect(INTERPRETER_MAP[".sh"]).toBe("bash");
+    expect(INTERPRETER_MAP[".ts"]).toBe("bun");
+    expect(INTERPRETER_MAP[".js"]).toBe("bun");
+    expect(INTERPRETER_MAP[".py"]).toBe("python");
+    expect(INTERPRETER_MAP[".rb"]).toBe("ruby");
+    expect(INTERPRETER_MAP[".go"]).toBe("go run");
+    expect(INTERPRETER_MAP[".ps1"]).toBe("powershell -File");
+    expect(INTERPRETER_MAP[".cmd"]).toBe("cmd /c");
+    expect(INTERPRETER_MAP[".bat"]).toBe("cmd /c");
+    expect(INTERPRETER_MAP[".pl"]).toBe("perl");
+    expect(INTERPRETER_MAP[".php"]).toBe("php");
+    expect(INTERPRETER_MAP[".lua"]).toBe("lua");
+    expect(INTERPRETER_MAP[".r"]).toBe("Rscript");
+    expect(INTERPRETER_MAP[".swift"]).toBe("swift");
+    expect(INTERPRETER_MAP[".kt"]).toBe("kotlin");
+    expect(INTERPRETER_MAP[".kts"]).toBe("kotlin");
+  });
+
+  test("does not map unknown extensions", () => {
+    expect(INTERPRETER_MAP[".xyz"]).toBeUndefined();
+    expect(INTERPRETER_MAP[".md"]).toBeUndefined();
+    expect(INTERPRETER_MAP[".json"]).toBeUndefined();
+  });
+});
+
+// ── ExecHints: detectExecHints ───────────────────────────────────────────────
+
+describe("detectExecHints", () => {
+  test("detects interpreter from file extension", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.py");
+    writeFile(filePath, "print('hi')\n");
+
+    const hints = detectExecHints(filePath);
+    expect(hints.run).toBe(`python ${filePath}`);
+  });
+
+  test("detects setup from package.json", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.ts");
+    writeFile(filePath, "console.log('hi')\n");
+    writeFile(path.join(dir, "package.json"), '{"name":"test"}');
+
+    const hints = detectExecHints(filePath);
+    expect(hints.run).toBe(`bun ${filePath}`);
+    expect(hints.setup).toBe("bun install");
+    expect(hints.cwd).toBe(dir);
+  });
+
+  test("detects setup from requirements.txt", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.py");
+    writeFile(filePath, "print('hi')\n");
+    writeFile(path.join(dir, "requirements.txt"), "requests\n");
+
+    const hints = detectExecHints(filePath);
+    expect(hints.setup).toBe("pip install -r requirements.txt");
+    expect(hints.cwd).toBe(dir);
+  });
+
+  test("detects setup from Gemfile", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.rb");
+    writeFile(filePath, "puts 'hi'\n");
+    writeFile(path.join(dir, "Gemfile"), "source 'https://rubygems.org'\n");
+
+    const hints = detectExecHints(filePath);
+    expect(hints.setup).toBe("bundle install");
+  });
+
+  test("detects setup from go.mod", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "main.go");
+    writeFile(filePath, "package main\n");
+    writeFile(path.join(dir, "go.mod"), "module test\n");
+
+    const hints = detectExecHints(filePath);
+    expect(hints.setup).toBe("go mod download");
+  });
+
+  test("returns empty for unknown extensions", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.xyz");
+    writeFile(filePath, "something\n");
+
+    const hints = detectExecHints(filePath);
+    expect(hints.run).toBeUndefined();
+  });
+});
+
+// ── ExecHints: extractCommentTags ────────────────────────────────────────────
+
+describe("extractCommentTags", () => {
+  test("extracts @run from JS-style comments", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.ts");
+    writeFile(filePath, "// @run bun run --hot run.ts\nconsole.log('hi')\n");
+
+    const hints = extractCommentTags(filePath);
+    expect(hints.run).toBe("bun run --hot run.ts");
+  });
+
+  test("extracts @setup from hash comments", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.sh");
+    writeFile(filePath, "#!/bin/bash\n# @setup apt-get install -y curl\necho hi\n");
+
+    const hints = extractCommentTags(filePath);
+    expect(hints.setup).toBe("apt-get install -y curl");
+  });
+
+  test("extracts @cwd from block comments", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.ts");
+    writeFile(filePath, "/**\n * @cwd /opt/app\n */\nconsole.log('hi')\n");
+
+    const hints = extractCommentTags(filePath);
+    expect(hints.cwd).toBe("/opt/app");
+  });
+
+  test("extracts all three tags from same file", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.py");
+    writeFile(filePath, "# @run python3 run.py --fast\n# @setup pip install -r reqs.txt\n# @cwd /tmp\nprint('hi')\n");
+
+    const hints = extractCommentTags(filePath);
+    expect(hints.run).toBe("python3 run.py --fast");
+    expect(hints.setup).toBe("pip install -r reqs.txt");
+    expect(hints.cwd).toBe("/tmp");
+  });
+
+  test("returns empty for files without tags", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.sh");
+    writeFile(filePath, "#!/bin/bash\necho hello\n");
+
+    const hints = extractCommentTags(filePath);
+    expect(hints.run).toBeUndefined();
+    expect(hints.setup).toBeUndefined();
+    expect(hints.cwd).toBeUndefined();
+  });
+
+  test("returns empty for missing files", () => {
+    const hints = extractCommentTags("/nonexistent/path/run.sh");
+    expect(hints.run).toBeUndefined();
+  });
+});
+
+// ── ExecHints: resolveExecHints resolution order ─────────────────────────────
+
+describe("resolveExecHints", () => {
+  test("stash entry fields take priority", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.sh");
+    writeFile(filePath, "# @run custom-from-comment\necho hi\n");
+
+    const stashEntry: StashEntry = {
+      name: "run",
+      type: "tool",
+      run: "custom-stash-run",
+      setup: "custom-stash-setup",
+      cwd: "/custom/stash/cwd",
+    };
+
+    const hints = resolveExecHints(stashEntry, filePath);
+    expect(hints.run).toBe("custom-stash-run");
+    expect(hints.setup).toBe("custom-stash-setup");
+    expect(hints.cwd).toBe("/custom/stash/cwd");
+  });
+
+  test("comment tags take priority over auto-detection", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.sh");
+    writeFile(filePath, "# @run custom-comment-run\necho hi\n");
+
+    const hints = resolveExecHints(undefined, filePath);
+    expect(hints.run).toBe("custom-comment-run");
+  });
+
+  test("auto-detection is used when no stash entry or comment tags", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.py");
+    writeFile(filePath, "print('hi')\n");
+
+    const hints = resolveExecHints(undefined, filePath);
+    expect(hints.run).toBe(`python ${filePath}`);
+  });
+
+  test("stash entry partially overrides: stash.run wins, auto-detect fills setup", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.ts");
+    writeFile(filePath, "console.log('hi')\n");
+    writeFile(path.join(dir, "package.json"), '{"name":"test"}');
+
+    const stashEntry: StashEntry = {
+      name: "run",
+      type: "tool",
+      run: "bun run --hot run.ts",
+      // setup and cwd not specified -- should fall through to auto-detection
+    };
+
+    const hints = resolveExecHints(stashEntry, filePath);
+    expect(hints.run).toBe("bun run --hot run.ts");
+    expect(hints.setup).toBe("bun install");
+    expect(hints.cwd).toBe(dir);
+  });
+
+  test("handles undefined stash entry gracefully", () => {
+    const dir = tmpDir();
+    const filePath = path.join(dir, "run.sh");
+    writeFile(filePath, "echo hi\n");
+
+    const hints = resolveExecHints(undefined, filePath);
+    expect(hints.run).toContain("bash");
   });
 });

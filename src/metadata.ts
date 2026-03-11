@@ -31,6 +31,12 @@ export interface StashEntry {
   aliases?: string[];
   toc?: TocHeading[];
   usage?: string[];
+  /** How to run this asset (e.g. "bash deploy.sh", "bun run.ts") */
+  run?: string;
+  /** Setup command to run before execution (e.g. "bun install") */
+  setup?: string;
+  /** Working directory for execution */
+  cwd?: string;
 }
 
 export interface StashFile {
@@ -135,6 +141,9 @@ export function validateStashEntry(entry: unknown): StashEntry | null {
   }
   const usage = normalizeNonEmptyStringList(e.usage);
   if (usage) result.usage = usage;
+  if (typeof e.run === "string" && e.run.trim()) result.run = e.run.trim();
+  if (typeof e.setup === "string" && e.setup.trim()) result.setup = e.setup.trim();
+  if (typeof e.cwd === "string" && e.cwd.trim()) result.cwd = e.cwd.trim();
 
   return result;
 }

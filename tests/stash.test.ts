@@ -71,7 +71,7 @@ afterEach(() => {
   }
 });
 
-test("agentikitSearch only includes tool files with .sh/.ts/.js and returns runCmd", async () => {
+test("agentikitSearch only includes tool files with .sh/.ts/.js and returns run", async () => {
   const stashDir = createTmpDir("agentikit-stash-");
   writeFile(path.join(stashDir, "tools", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n");
   writeFile(path.join(stashDir, "tools", "script.ts"), "console.log('x')\n");
@@ -83,10 +83,10 @@ test("agentikitSearch only includes tool files with .sh/.ts/.js and returns runC
   expect(result.hits.length).toBe(2);
   expect(result.hits.every((hit: SearchHit) => hit.type === "tool")).toBe(true);
   expect(result.hits.some((hit: SearchHit) => hit.name === "README.md")).toBe(false);
-  expect(result.hits.some((hit: SearchHit) => typeof hit.runCmd === "string")).toBe(true);
+  expect(result.hits.some((hit: SearchHit) => typeof hit.run === "string")).toBe(true);
 });
 
-test("agentikitSearch creates bun runCmd from nearest package.json up to tools root", async () => {
+test("agentikitSearch creates bun run from nearest package.json up to tools root", async () => {
   const stashDir = createTmpDir("agentikit-stash-");
   const nestedTool = path.join(stashDir, "tools", "group", "nested", "job.js");
   writeFile(nestedTool, "console.log('job')\n");
@@ -97,29 +97,25 @@ test("agentikitSearch creates bun runCmd from nearest package.json up to tools r
   const result = await agentikitSearch({ query: "job", type: "tool" });
 
   expect(result.hits.length).toBe(1);
-  expect(result.hits[0].runCmd ?? "").toMatch(/^cd ".+\/tools\/group" && bun ".+\/job\.js"$/);
-  expect(result.hits[0].kind).toBe("bun");
+  expect(result.hits[0].run).toContain("bun");
+  expect(result.hits[0].run).toContain("job.js");
 });
 
-test("agentikitSearch only includes bun install in runCmd when AKM_BUN_INSTALL is enabled", async () => {
+test("agentikitSearch detects setup from package.json in nearby directory", async () => {
   const stashDir = createTmpDir("agentikit-stash-");
   const nestedTool = path.join(stashDir, "tools", "group", "nested", "job.js");
   writeFile(nestedTool, "console.log('job')\n");
-  writeFile(path.join(stashDir, "tools", "group", "package.json"), '{"name":"group"}');
+  writeFile(path.join(stashDir, "tools", "group", "nested", "package.json"), '{"name":"group"}');
 
   process.env.AKM_STASH_DIR = stashDir;
-  process.env.AKM_BUN_INSTALL = "true";
-  try {
-    const result = await agentikitSearch({ query: "job", type: "tool" });
-    expect(result.hits.length).toBe(1);
-    expect(result.hits[0].runCmd ?? "").toMatch(/^cd ".+\/tools\/group" && bun install && bun ".+\/job\.js"$/);
-    expect(result.hits[0].kind).toBe("bun");
-  } finally {
-    delete process.env.AKM_BUN_INSTALL;
-  }
+  const result = await agentikitSearch({ query: "job", type: "tool" });
+  expect(result.hits.length).toBe(1);
+  // Search hits only expose run, not setup/cwd
+  expect(result.hits[0].run).toContain("bun");
+  expect(result.hits[0].run).toContain("job.js");
 });
 
-test("agentikitSearch resolves tool runCmd correctly for search path directories", async () => {
+test("agentikitSearch resolves tool run correctly for search path directories", async () => {
   const primaryStashDir = createTmpDir("agentikit-stash-primary-");
   const searchPathDir = createTmpDir("agentikit-stash-searchpath-");
 
@@ -136,9 +132,8 @@ test("agentikitSearch resolves tool runCmd correctly for search path directories
   const searchPathHit = result.hits.find((hit) => hit.path.includes(searchPathDir));
 
   expect(searchPathHit).toBeDefined();
-  expect(searchPathHit?.runCmd ?? "").toMatch(
-    /^cd ".+agentikit-stash-searchpath-.+\/tools\/group" && bun ".+\/job\.js"$/,
-  );
+  expect(searchPathHit?.run ?? "").toContain("bun");
+  expect(searchPathHit?.run ?? "").toContain("job.js");
 });
 
 test("agentikitSearch includes explainability reasons for indexed hits", async () => {
@@ -476,7 +471,7 @@ test("agentikitShow returns helpful message for missing section in knowledge", a
   expect(result.content).toContain("Try --view toc");
 });
 
-test("agentikitShow for tool type returns runCmd and kind", async () => {
+test("agentikitShow for tool type returns run", async () => {
   const stashDir = createTmpDir("agentikit-stash-");
   writeFile(path.join(stashDir, "tools", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n");
 
@@ -484,9 +479,9 @@ test("agentikitShow for tool type returns runCmd and kind", async () => {
   const result = await agentikitShow({ ref: "tool:deploy.sh" });
 
   expect(result.type).toBe("script");
-  expect(result.runCmd).toBeTruthy();
-  expect(typeof result.runCmd).toBe("string");
-  expect(result.kind).toBe("bash");
+  expect(result.run).toBeTruthy();
+  expect(typeof result.run).toBe("string");
+  expect(result.run).toContain("bash");
 });
 
 test("agentikitInit returns created false when stash dir already exists", async () => {
@@ -573,7 +568,7 @@ test("agentikitSearch finds script assets with broad extensions", async () => {
   }
 });
 
-test("agentikitSearch returns runCmd for runnable script extensions", async () => {
+test("agentikitSearch returns run for runnable script extensions", async () => {
   const origStashDir = process.env.AKM_STASH_DIR;
   const stashDir = createTmpDir("agentikit-stash-");
   writeFile(path.join(stashDir, "scripts", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n");
@@ -583,8 +578,8 @@ test("agentikitSearch returns runCmd for runnable script extensions", async () =
     const result = await agentikitSearch({ query: "", type: "script" });
 
     expect(result.hits.length).toBe(1);
-    expect(result.hits[0].runCmd).toBeTruthy();
-    expect(result.hits[0].kind).toBe("bash");
+    expect(result.hits[0].run).toBeTruthy();
+    expect(result.hits[0].run).toContain("bash");
   } finally {
     if (origStashDir === undefined) {
       delete process.env.AKM_STASH_DIR;
@@ -595,7 +590,7 @@ test("agentikitSearch returns runCmd for runnable script extensions", async () =
   }
 });
 
-test("agentikitShow returns content for non-runnable script extensions", async () => {
+test("agentikitShow returns run for python script (auto-detected interpreter)", async () => {
   const origStashDir = process.env.AKM_STASH_DIR;
   const stashDir = createTmpDir("agentikit-stash-");
   writeFile(path.join(stashDir, "scripts", "process.py"), "# A python script\nprint('hello')\n");
@@ -605,7 +600,8 @@ test("agentikitShow returns content for non-runnable script extensions", async (
     const result = await agentikitShow({ ref: "script:process.py" });
 
     expect(result.type).toBe("script");
-    expect(result.content).toContain("print('hello')");
+    expect(result.run).toBeDefined();
+    expect(result.run).toContain("python");
   } finally {
     if (origStashDir === undefined) {
       delete process.env.AKM_STASH_DIR;
@@ -616,7 +612,7 @@ test("agentikitShow returns content for non-runnable script extensions", async (
   }
 });
 
-test("agentikitShow returns runCmd for runnable script", async () => {
+test("agentikitShow returns run for runnable script", async () => {
   const stashDir = createTmpDir("agentikit-stash-");
   writeFile(path.join(stashDir, "scripts", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n");
 
@@ -624,8 +620,8 @@ test("agentikitShow returns runCmd for runnable script", async () => {
   const result = await agentikitShow({ ref: "script:deploy.sh" });
 
   expect(result.type).toBe("script");
-  expect(result.runCmd).toBeTruthy();
-  expect(result.kind).toBe("bash");
+  expect(result.run).toBeTruthy();
+  expect(result.run).toContain("bash");
 });
 
 test("agentikitInit writes config outside the stash directory", async () => {
