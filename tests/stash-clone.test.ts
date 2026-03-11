@@ -27,10 +27,10 @@ function createStashDir(prefix: string): string {
 }
 
 beforeEach(() => {
-  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-clone-config-"));
-  testCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-clone-cache-"));
-  stashDir = createStashDir("agentikit-clone-working-");
-  searchPathDir = createStashDir("agentikit-clone-searchpath-");
+  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-clone-config-"));
+  testCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-clone-cache-"));
+  stashDir = createStashDir("akm-clone-working-");
+  searchPathDir = createStashDir("akm-clone-searchpath-");
   process.env.XDG_CONFIG_HOME = testConfigDir;
   process.env.XDG_CACHE_HOME = testCacheDir;
   process.env.AKM_STASH_DIR = stashDir;
@@ -147,7 +147,7 @@ describe("agentikitClone --dest", () => {
   let customDest: string;
 
   beforeEach(() => {
-    customDest = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-clone-dest-"));
+    customDest = fs.mkdtempSync(path.join(os.tmpdir(), "akm-clone-dest-"));
   });
 
   afterEach(() => {
@@ -220,7 +220,7 @@ describe("agentikitClone remote", () => {
 
   beforeEach(() => {
     // Create a fixture directory that simulates a remote package
-    remoteFixtureDir = createStashDir("agentikit-clone-remote-fixture-");
+    remoteFixtureDir = createStashDir("akm-clone-remote-fixture-");
     writeFile(path.join(remoteFixtureDir, "tools", "remote-tool.sh"), "#!/bin/bash\necho remote\n");
     writeFile(path.join(remoteFixtureDir, "skills", "remote-skill", "SKILL.md"), "# Remote Skill\n");
   });
@@ -258,7 +258,7 @@ describe("agentikitClone remote", () => {
   });
 
   test("clones from remote origin to custom destination", async () => {
-    const customDest = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-clone-remote-dest-"));
+    const customDest = fs.mkdtempSync(path.join(os.tmpdir(), "akm-clone-remote-dest-"));
     try {
       const result = await agentikitClone({
         sourceRef: `${remoteFixtureDir}//tool:remote-tool.sh`,

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="itlackey/agentikit"
-INSTALL_DIR="${AGENTIKIT_INSTALL_DIR:-/usr/local/bin}"
+INSTALL_DIR="${AKM_INSTALL_DIR:-/usr/local/bin}"
 
 # Detect OS
 OS="$(uname -s)"

@@ -1,6 +1,6 @@
 # Filesystem Layout
 
-Quick reference for where agentikit stores files.
+Quick reference for where akm stores files.
 
 ## Stash Directory
 
@@ -9,8 +9,8 @@ The main working directory for all assets.
 | Env / Default | Path |
 |---|---|
 | `AKM_STASH_DIR` | User-defined |
-| Linux / macOS | `~/agentikit` |
-| Windows | `%USERPROFILE%\Documents\agentikit` |
+| Linux / macOS | `~/akm` |
+| Windows | `%USERPROFILE%\Documents\akm` |
 
 ### Preferred Directories
 
@@ -127,8 +127,10 @@ Stored outside the stash directory, following XDG conventions.
 
 | Platform | Path |
 |---|---|
-| Linux / macOS | `$XDG_CONFIG_HOME/agentikit/config.json` (default `~/.config/agentikit/config.json`) |
-| Windows | `%APPDATA%\agentikit\config.json` |
+| Linux / macOS | `$XDG_CONFIG_HOME/akm/config.json` (default `~/.config/akm/config.json`) |
+| Windows | `%APPDATA%\akm\config.json` |
+
+Override with `AKM_CONFIG_DIR`.
 
 ## Cache
 
@@ -136,5 +138,7 @@ Used for SQLite indexes and registry downloads.
 
 | Purpose | Path |
 |---|---|
-| Index DB | `$XDG_CACHE_HOME/agentikit/` (default `~/.cache/agentikit/`) |
-| Registry cache | `~/.cache/agentikit/registry/` |
+| Index DB | `$XDG_CACHE_HOME/akm/` (default `~/.cache/akm/`) |
+| Registry cache | `~/.cache/akm/registry/` |
+
+Override with `AKM_CACHE_DIR`.

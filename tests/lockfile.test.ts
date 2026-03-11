@@ -11,11 +11,11 @@ const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
 let testConfigDir = "";
 
 function makeTmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-lockfile-test-"));
+  return fs.mkdtempSync(path.join(os.tmpdir(), "akm-lockfile-test-"));
 }
 
 function getLockfilePath(): string {
-  return path.join(testConfigDir, "agentikit", "stash.lock");
+  return path.join(testConfigDir, "akm", "stash.lock");
 }
 
 function writeRawLockfile(content: string): void {

@@ -7,7 +7,7 @@ import { agentikitList, agentikitRemove, agentikitUpdate } from "../src/stash-re
 
 const createdTmpDirs: string[] = [];
 
-function createTmpDir(prefix = "agentikit-registry-"): string {
+function createTmpDir(prefix = "akm-registry-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   createdTmpDirs.push(dir);
   return dir;
@@ -27,9 +27,9 @@ let testConfigDir = "";
 let stashDir = "";
 
 beforeEach(() => {
-  testCacheDir = createTmpDir("agentikit-registry-cache-");
-  testConfigDir = createTmpDir("agentikit-registry-config-");
-  stashDir = createTmpDir("agentikit-registry-stash-");
+  testCacheDir = createTmpDir("akm-registry-cache-");
+  testConfigDir = createTmpDir("akm-registry-config-");
+  stashDir = createTmpDir("akm-registry-stash-");
   for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
     fs.mkdirSync(path.join(stashDir, sub), { recursive: true });
   }
@@ -78,8 +78,8 @@ describe("agentikitList", () => {
   });
 
   test("returns installed entries with status", async () => {
-    const cacheDir = createTmpDir("agentikit-registry-cache-entry-");
-    const stashRoot = createTmpDir("agentikit-registry-stashroot-");
+    const cacheDir = createTmpDir("akm-registry-cache-entry-");
+    const stashRoot = createTmpDir("akm-registry-stashroot-");
 
     saveConfig({
       semanticSearch: false,
@@ -111,8 +111,8 @@ describe("agentikitList", () => {
   });
 
   test("reports missing directories in status", async () => {
-    const nonExistentCache = path.join(os.tmpdir(), `agentikit-nonexistent-cache-${Date.now()}`);
-    const nonExistentStashRoot = path.join(os.tmpdir(), `agentikit-nonexistent-root-${Date.now()}`);
+    const nonExistentCache = path.join(os.tmpdir(), `akm-nonexistent-cache-${Date.now()}`);
+    const nonExistentStashRoot = path.join(os.tmpdir(), `akm-nonexistent-root-${Date.now()}`);
 
     saveConfig({
       semanticSearch: false,
@@ -164,8 +164,8 @@ describe("agentikitRemove", () => {
   });
 
   test("removes entry by id", async () => {
-    const cacheDir = createTmpDir("agentikit-registry-remove-cache-");
-    const stashRoot = createTmpDir("agentikit-registry-remove-root-");
+    const cacheDir = createTmpDir("akm-registry-remove-cache-");
+    const stashRoot = createTmpDir("akm-registry-remove-root-");
     for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
       fs.mkdirSync(path.join(stashRoot, sub), { recursive: true });
     }
@@ -196,8 +196,8 @@ describe("agentikitRemove", () => {
   });
 
   test("removes entry by ref", async () => {
-    const cacheDir = createTmpDir("agentikit-registry-remove-cache-ref-");
-    const stashRoot = createTmpDir("agentikit-registry-remove-root-ref-");
+    const cacheDir = createTmpDir("akm-registry-remove-cache-ref-");
+    const stashRoot = createTmpDir("akm-registry-remove-root-ref-");
     for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
       fs.mkdirSync(path.join(stashRoot, sub), { recursive: true });
     }
@@ -228,8 +228,8 @@ describe("agentikitRemove", () => {
   });
 
   test("cleans up cache directory", async () => {
-    const cacheDir = createTmpDir("agentikit-registry-remove-cache-cleanup-");
-    const stashRoot = createTmpDir("agentikit-registry-remove-root-cleanup-");
+    const cacheDir = createTmpDir("akm-registry-remove-cache-cleanup-");
+    const stashRoot = createTmpDir("akm-registry-remove-root-cleanup-");
     for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
       fs.mkdirSync(path.join(stashRoot, sub), { recursive: true });
     }
@@ -274,7 +274,7 @@ describe("selectTargets via agentikitUpdate", () => {
   });
 
   test("--all selects all installed entries", async () => {
-    const stashRoot = createTmpDir("agentikit-registry-all-root-");
+    const stashRoot = createTmpDir("akm-registry-all-root-");
     for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
       fs.mkdirSync(path.join(stashRoot, sub), { recursive: true });
     }

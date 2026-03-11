@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $Repo = "itlackey/agentikit"
-$InstallDir = if ($env:AGENTIKIT_INSTALL_DIR) { $env:AGENTIKIT_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "agentikit" }
+$InstallDir = if ($env:AKM_INSTALL_DIR) { $env:AKM_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "akm" }
 
 # Detect architecture
 $Arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture

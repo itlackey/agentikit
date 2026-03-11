@@ -233,7 +233,7 @@ const initCommand = defineCommand({
     description: "Initialize Agent-i-Kit's working stash directory and persist stashDir in config",
   },
   args: {
-    dir: { type: "string", description: "Custom stash directory path (default: ~/agentikit)" },
+    dir: { type: "string", description: "Custom stash directory path (default: ~/akm)" },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {

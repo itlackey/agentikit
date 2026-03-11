@@ -5,7 +5,7 @@ the most relevant assets for a query.
 
 ## Indexed Search (primary)
 
-When an index exists (`~/.cache/agentikit/index.db`), two strategies run in
+When an index exists (`~/.cache/akm/index.db`), two strategies run in
 parallel:
 
 1. **FTS5 (lexical)** -- SQLite full-text search with Porter stemming.

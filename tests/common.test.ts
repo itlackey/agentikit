@@ -13,7 +13,7 @@ describe("resolveStashDir", () => {
   let testConfigHome: string;
 
   beforeEach(() => {
-    testConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-common-test-config-"));
+    testConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-config-"));
     process.env.XDG_CONFIG_HOME = testConfigHome;
   });
 
@@ -40,8 +40,8 @@ describe("resolveStashDir", () => {
 
   test("throws when no stash dir is configured and default does not exist", () => {
     delete process.env.AKM_STASH_DIR;
-    // Point HOME to a tmp dir without an agentikit subdirectory
-    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-common-test-home-"));
+    // Point HOME to a tmp dir without an akm subdirectory
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-home-"));
     process.env.HOME = tmpHome;
     try {
       expect(() => resolveStashDir()).toThrow("No stash directory found");
@@ -56,7 +56,7 @@ describe("resolveStashDir", () => {
   });
 
   test("throws when AKM_STASH_DIR path is a file, not a directory", () => {
-    const tmpFile = path.join(os.tmpdir(), `agentikit-common-test-file-${Date.now()}`);
+    const tmpFile = path.join(os.tmpdir(), `akm-common-test-file-${Date.now()}`);
     fs.writeFileSync(tmpFile, "not a directory");
     try {
       process.env.AKM_STASH_DIR = tmpFile;
@@ -67,7 +67,7 @@ describe("resolveStashDir", () => {
   });
 
   test("returns resolved path for valid AKM_STASH_DIR", () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-common-test-"));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-"));
     try {
       process.env.AKM_STASH_DIR = tmpDir;
       const result = resolveStashDir();
@@ -79,9 +79,9 @@ describe("resolveStashDir", () => {
 
   test("reads stashDir from config.json when env var is not set", () => {
     delete process.env.AKM_STASH_DIR;
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-common-test-stash-"));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-stash-"));
     try {
-      const configDir = path.join(testConfigHome, "agentikit");
+      const configDir = path.join(testConfigHome, "akm");
       fs.mkdirSync(configDir, { recursive: true });
       fs.writeFileSync(path.join(configDir, "config.json"), JSON.stringify({ stashDir: tmpDir }));
       const result = resolveStashDir();
@@ -93,8 +93,8 @@ describe("resolveStashDir", () => {
 
   test("uses default stash dir when it exists", () => {
     delete process.env.AKM_STASH_DIR;
-    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-common-test-home-"));
-    const defaultStash = path.join(tmpHome, "agentikit");
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-home-"));
+    const defaultStash = path.join(tmpHome, "akm");
     fs.mkdirSync(defaultStash, { recursive: true });
     process.env.HOME = tmpHome;
     try {
@@ -106,12 +106,12 @@ describe("resolveStashDir", () => {
   });
 
   test("env var takes precedence over config.json stashDir", () => {
-    const envDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-common-test-env-"));
-    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-common-test-cfg-"));
+    const envDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-env-"));
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-cfg-"));
     try {
       process.env.AKM_STASH_DIR = envDir;
 
-      const configRoot = path.join(testConfigHome, "agentikit");
+      const configRoot = path.join(testConfigHome, "akm");
       fs.mkdirSync(configRoot, { recursive: true });
       fs.writeFileSync(path.join(configRoot, "config.json"), JSON.stringify({ stashDir: configDir }));
 

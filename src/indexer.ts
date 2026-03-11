@@ -141,7 +141,7 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
   }
 }
 
-// ── Extracted helpers for agentikitIndex ─────────────────────────────────────
+// ── Extracted helpers for indexing ────────────────────────────────────────────
 
 function indexEntries(
   db: import("bun:sqlite").Database,

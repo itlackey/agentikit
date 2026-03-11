@@ -10,7 +10,7 @@ import type { StashSource } from "../src/stash-source";
 let tmpDirs: string[] = [];
 
 function makeTmpDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-origin-test-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-origin-test-"));
   tmpDirs.push(dir);
   return dir;
 }

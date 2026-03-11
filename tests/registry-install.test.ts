@@ -39,7 +39,7 @@ const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
 let testConfigDir = "";
 
 beforeEach(() => {
-  testConfigDir = makeTempDir("agentikit-registry-config-");
+  testConfigDir = makeTempDir("akm-registry-config-");
   process.env.XDG_CONFIG_HOME = testConfigDir;
 });
 
@@ -57,8 +57,8 @@ afterEach(() => {
 
 function initGitRepo(repoDir: string): void {
   runGit(["init"], repoDir);
-  runGit(["config", "user.name", "Agentikit Tests"], repoDir);
-  runGit(["config", "user.email", "agentikit@example.test"], repoDir);
+  runGit(["config", "user.name", "AKM Tests"], repoDir);
+  runGit(["config", "user.email", "akm@example.test"], repoDir);
   runGit(["config", "commit.gpgsign", "false"], repoDir);
   runGit(["add", "."], repoDir);
   runGit(["commit", "-m", "initial"], repoDir);
@@ -111,9 +111,9 @@ function createTarGz(sourceDir: string, archivePath: string): void {
 
 describe("local directory installs", () => {
   test("agentikitAdd installs a subdirectory inside a git repository", async () => {
-    const stashDir = createEmptyStashDir("agentikit-git-stash-");
-    const cacheHome = makeTempDir("agentikit-git-cache-");
-    const repoDir = makeTempDir("agentikit-git-repo-");
+    const stashDir = createEmptyStashDir("akm-git-stash-");
+    const cacheHome = makeTempDir("akm-git-cache-");
+    const repoDir = makeTempDir("akm-git-repo-");
     const kitDir = path.join(repoDir, "kits", "sample");
     writeFile(path.join(kitDir, "tools", "hello.sh"), "#!/usr/bin/env bash\necho hello\n");
     writeFile(path.join(repoDir, "README.md"), "# Example repo\n");
@@ -144,16 +144,16 @@ describe("local directory installs", () => {
     }
   });
 
-  test("agentikitAdd honors package.json agentikit.include during install", async () => {
-    const stashDir = createEmptyStashDir("agentikit-include-stash-");
-    const cacheHome = makeTempDir("agentikit-include-cache-");
-    const repoDir = makeTempDir("agentikit-include-repo-");
+  test("agentikitAdd honors package.json akm.include during install", async () => {
+    const stashDir = createEmptyStashDir("akm-include-stash-");
+    const cacheHome = makeTempDir("akm-include-cache-");
+    const repoDir = makeTempDir("akm-include-repo-");
     writeFile(
       path.join(repoDir, "package.json"),
       JSON.stringify(
         {
           name: "include-kit",
-          agentikit: {
+          akm: {
             include: ["tools", "README.md"],
           },
         },
@@ -183,9 +183,9 @@ describe("local directory installs", () => {
   });
 
   test("agentikitAdd installs a plain directory without git", async () => {
-    const stashDir = createEmptyStashDir("agentikit-nogit-stash-");
-    const cacheHome = makeTempDir("agentikit-nogit-cache-");
-    const kitDir = makeTempDir("agentikit-nogit-kit-");
+    const stashDir = createEmptyStashDir("akm-nogit-stash-");
+    const cacheHome = makeTempDir("akm-nogit-cache-");
+    const kitDir = makeTempDir("akm-nogit-kit-");
     writeFile(path.join(kitDir, "tools", "hello.sh"), "#!/usr/bin/env bash\necho hello\n");
 
     try {
@@ -204,7 +204,7 @@ describe("local directory installs", () => {
   });
 
   test("parseRegistryRef ignores non-path-like local directory names", () => {
-    const tempDir = makeTempDir("agentikit-parse-registry-");
+    const tempDir = makeTempDir("akm-parse-registry-");
     const previousCwd = process.cwd();
     fs.mkdirSync(path.join(tempDir, "local-kit"));
 
@@ -220,7 +220,7 @@ describe("local directory installs", () => {
   });
 
   test("parseRegistryRef rejects missing explicit local paths", () => {
-    const tempDir = makeTempDir("agentikit-missing-local-path-");
+    const tempDir = makeTempDir("akm-missing-local-path-");
     const previousCwd = process.cwd();
 
     try {
@@ -270,7 +270,7 @@ describe("local directory installs", () => {
   });
 
   test("parseRegistryRef parses file: prefix as local source", () => {
-    const tempDir = makeTempDir("agentikit-file-uri-");
+    const tempDir = makeTempDir("akm-file-uri-");
     try {
       const parsed = parseRegistryRef(`file:${tempDir}`);
       expect(parsed.source).toBe("local");
@@ -283,7 +283,7 @@ describe("local directory installs", () => {
   });
 
   test("parseRegistryRef parses file:/// absolute URI as local source", () => {
-    const tempDir = makeTempDir("agentikit-file-abs-uri-");
+    const tempDir = makeTempDir("akm-file-abs-uri-");
     try {
       const parsed = parseRegistryRef(`file://${tempDir}`);
       expect(parsed.source).toBe("local");
@@ -296,9 +296,9 @@ describe("local directory installs", () => {
   });
 
   test("applies include from nearest package.json for nested kit roots", async () => {
-    const cacheHome = makeTempDir("agentikit-nested-include-cache-");
-    const packageDir = makeTempDir("agentikit-nested-include-package-");
-    const archivePath = path.join(makeTempDir("agentikit-nested-archive-"), "kit.tgz");
+    const cacheHome = makeTempDir("akm-nested-include-cache-");
+    const packageDir = makeTempDir("akm-nested-include-package-");
+    const archivePath = path.join(makeTempDir("akm-nested-archive-"), "kit.tgz");
     const tarRoot = path.join(packageDir, "kit");
     fs.mkdirSync(path.join(tarRoot, "opencode", "tools"), { recursive: true });
     fs.mkdirSync(path.join(tarRoot, "opencode", "docs"), { recursive: true });
@@ -307,7 +307,7 @@ describe("local directory installs", () => {
       JSON.stringify(
         {
           name: "nested-kit",
-          agentikit: {
+          akm: {
             include: ["tools"],
           },
         },

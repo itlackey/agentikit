@@ -66,7 +66,7 @@ export async function performUpgrade(
       newVersion: latestVersion,
       upgraded: false,
       installMethod,
-      message: `akm installed via npm. Run: bun install -g agentikit@latest`,
+      message: `akm installed via npm. Run: bun install -g akm-cli@latest`,
     };
   }
 

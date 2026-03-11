@@ -1,5 +1,5 @@
 /**
- * End-to-end tests that replicate real-world usage of agentikit.
+ * End-to-end tests that replicate real-world usage of akm.
  *
  * Uses realistic fixtures in tests/fixtures/ representing a typical user's
  * stash directory with tools, skills, commands, and agents.
@@ -32,7 +32,7 @@ const FIXTURES = path.join(__dirname, "fixtures");
 const CLI = path.join(__dirname, "..", "src", "cli.ts");
 
 function copyFixturesToTmp(): string {
-  const tmpStash = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-"));
+  const tmpStash = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-"));
   copyDirRecursive(FIXTURES, tmpStash);
   return tmpStash;
 }
@@ -97,12 +97,12 @@ let testCacheDir = "";
 let testConfigDir = "";
 
 beforeAll(async () => {
-  testCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-cache-"));
+  testCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-cache-"));
   process.env.XDG_CACHE_HOME = testCacheDir;
 });
 
 beforeEach(() => {
-  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-config-"));
+  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-config-"));
   process.env.XDG_CONFIG_HOME = testConfigDir;
 });
 
@@ -371,7 +371,7 @@ describe("Scenario: Mixed local + registry search compatibility", () => {
   // aren't shadowed by a cached index from a previous test.
   beforeEach(() => {
     savedCacheDir = process.env.XDG_CACHE_HOME ?? "";
-    process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-reg-cache-"));
+    process.env.XDG_CACHE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-reg-cache-"));
   });
 
   afterEach(() => {
@@ -731,7 +731,7 @@ describe("Scenario: CLI subprocess execution", () => {
 
 describe("Scenario: Registry lifecycle CLI (no network)", () => {
   test("cli: akm list returns empty installed set when none configured", async () => {
-    const stashDir = createEmptyStashDir("agentikit-e2e-registry-empty-");
+    const stashDir = createEmptyStashDir("akm-e2e-registry-empty-");
     process.env.AKM_STASH_DIR = stashDir;
     saveConfig({ semanticSearch: false, searchPaths: [] });
 
@@ -748,9 +748,9 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
   });
 
   test("cli: akm remove resolves parsed ref id and removes cache directory", async () => {
-    const stashDir = createEmptyStashDir("agentikit-e2e-registry-remove-");
+    const stashDir = createEmptyStashDir("akm-e2e-registry-remove-");
     const stashRoot = path.join(stashDir, "registry-kit");
-    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-cache-remove-"));
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-cache-remove-"));
     fs.mkdirSync(path.join(stashRoot, "tools"), { recursive: true });
     process.env.AKM_STASH_DIR = stashDir;
 
@@ -791,7 +791,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
   });
 
   test("cli: akm update requires target or --all", async () => {
-    const stashDir = createEmptyStashDir("agentikit-e2e-registry-update-");
+    const stashDir = createEmptyStashDir("akm-e2e-registry-update-");
     process.env.AKM_STASH_DIR = stashDir;
     saveConfig({ semanticSearch: false, searchPaths: [] });
 
@@ -806,7 +806,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
   });
 
   test("cli: akm update rejects target with --all", async () => {
-    const stashDir = createEmptyStashDir("agentikit-e2e-registry-update-both-");
+    const stashDir = createEmptyStashDir("akm-e2e-registry-update-both-");
     process.env.AKM_STASH_DIR = stashDir;
     saveConfig({ semanticSearch: false, searchPaths: [] });
 
@@ -821,7 +821,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
   });
 
   test("cli: akm update missing target returns stable not-installed error", async () => {
-    const stashDir = createEmptyStashDir("agentikit-e2e-registry-missing-");
+    const stashDir = createEmptyStashDir("akm-e2e-registry-missing-");
     process.env.AKM_STASH_DIR = stashDir;
     saveConfig({ semanticSearch: false, searchPaths: [] });
 
@@ -877,7 +877,7 @@ describe("Scenario: upgrade and update --force (no network)", () => {
   });
 
   test("cli: akm update --force requires target or --all", async () => {
-    const stashDir = createEmptyStashDir("agentikit-e2e-update-force-");
+    const stashDir = createEmptyStashDir("akm-e2e-update-force-");
     process.env.AKM_STASH_DIR = stashDir;
     saveConfig({ semanticSearch: false, mountedStashDirs: [] });
 
@@ -983,7 +983,7 @@ describe("Scenario: Zero-config progressive improvement", () => {
   let stashDir: string;
 
   beforeAll(async () => {
-    stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-prog-"));
+    stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-prog-"));
     for (const sub of ["tools", "skills", "commands", "agents"]) {
       fs.mkdirSync(path.join(stashDir, sub), { recursive: true });
     }
@@ -1204,8 +1204,8 @@ describe("Scenario: Error handling and edge cases", () => {
     const orig = process.env.AKM_STASH_DIR;
     const origHome = process.env.HOME;
     delete process.env.AKM_STASH_DIR;
-    // Point HOME somewhere without an agentikit directory to force the "no stash" error
-    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-nohome-"));
+    // Point HOME somewhere without an akm directory to force the "no stash" error
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-nohome-"));
     process.env.HOME = tmpHome;
     try {
       await expect(agentikitSearch({ query: "test" })).rejects.toThrow(/No stash directory found/);
@@ -1219,7 +1219,7 @@ describe("Scenario: Error handling and edge cases", () => {
   });
 
   test("show with invalid ref format throws", async () => {
-    const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-err-"));
+    const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-err-"));
     process.env.AKM_STASH_DIR = stashDir;
     try {
       await expect(agentikitShow({ ref: "badref" })).rejects.toThrow(/Invalid ref/);
@@ -1229,7 +1229,7 @@ describe("Scenario: Error handling and edge cases", () => {
   });
 
   test("show with unknown type throws", async () => {
-    const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-err-"));
+    const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-err-"));
     process.env.AKM_STASH_DIR = stashDir;
     try {
       await expect(agentikitShow({ ref: "widget:foo" })).rejects.toThrow(/Invalid asset type/);
@@ -1239,7 +1239,7 @@ describe("Scenario: Error handling and edge cases", () => {
   });
 
   test("show with path traversal attempt throws", async () => {
-    const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-err-"));
+    const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-err-"));
     fs.mkdirSync(path.join(stashDir, "tools"), { recursive: true });
     process.env.AKM_STASH_DIR = stashDir;
     try {
@@ -1250,7 +1250,7 @@ describe("Scenario: Error handling and edge cases", () => {
   });
 
   test("search on empty stash returns no hits with tip", async () => {
-    const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-empty-"));
+    const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-empty-"));
     for (const sub of ["tools", "skills", "commands", "agents"]) {
       fs.mkdirSync(path.join(stashDir, sub), { recursive: true });
     }
@@ -1265,7 +1265,7 @@ describe("Scenario: Error handling and edge cases", () => {
   });
 
   test("index on empty stash succeeds with zero entries", async () => {
-    const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-e2e-empty-"));
+    const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-e2e-empty-"));
     for (const sub of ["tools", "skills", "commands", "agents"]) {
       fs.mkdirSync(path.join(stashDir, sub), { recursive: true });
     }

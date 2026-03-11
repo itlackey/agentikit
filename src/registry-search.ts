@@ -7,7 +7,7 @@ import type { RegistrySearchHit, RegistrySearchResponse } from "./registry-types
 // ── Constants ───────────────────────────────────────────────────────────────
 
 /** Default registry index URL. Override via config or AKM_REGISTRY_URL env var. */
-const DEFAULT_REGISTRY_URL = "https://raw.githubusercontent.com/itlackey/agentikit-registry/main/index.json";
+const DEFAULT_REGISTRY_URL = "https://raw.githubusercontent.com/itlackey/akm-registry/main/index.json";
 
 /** Cache TTL in milliseconds (1 hour). */
 const CACHE_TTL_MS = 60 * 60 * 1000;

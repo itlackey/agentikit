@@ -22,7 +22,7 @@ import type { LocalSearchHit } from "../src/stash-types";
 
 const createdTmpDirs: string[] = [];
 
-function createTmpDir(prefix = "agentikit-issue36-"): string {
+function createTmpDir(prefix = "akm-issue36-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   createdTmpDirs.push(dir);
   return dir;
@@ -42,7 +42,7 @@ function writeFile(filePath: string, content = "") {
 }
 
 function tmpStash(): string {
-  const dir = createTmpDir("agentikit-issue36-stash-");
+  const dir = createTmpDir("akm-issue36-stash-");
   for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
     fs.mkdirSync(path.join(dir, sub), { recursive: true });
   }
@@ -69,8 +69,8 @@ let testCacheDir = "";
 let testConfigDir = "";
 
 beforeEach(() => {
-  testCacheDir = createTmpDir("agentikit-issue36-cache-");
-  testConfigDir = createTmpDir("agentikit-issue36-config-");
+  testCacheDir = createTmpDir("akm-issue36-cache-");
+  testConfigDir = createTmpDir("akm-issue36-config-");
   process.env.XDG_CACHE_HOME = testCacheDir;
   process.env.XDG_CONFIG_HOME = testConfigDir;
 });

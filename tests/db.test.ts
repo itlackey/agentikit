@@ -28,7 +28,7 @@ import type { StashEntry } from "../src/metadata";
 const createdTmpDirs: string[] = [];
 
 function tmpDir(label = "db"): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `agentikit-${label}-`));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `akm-${label}-`));
   createdTmpDirs.push(dir);
   return dir;
 }

@@ -28,7 +28,7 @@ describe("githubHeaders", () => {
     delete process.env.GITHUB_TOKEN;
     const headers = githubHeaders() as Record<string, string>;
     expect(headers.Accept).toBe("application/vnd.github+json");
-    expect(headers["User-Agent"]).toBe("agentikit-registry");
+    expect(headers["User-Agent"]).toBe("akm-registry");
   });
 
   test("does not include Authorization when GITHUB_TOKEN is unset", () => {

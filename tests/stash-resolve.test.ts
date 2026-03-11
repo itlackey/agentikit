@@ -6,7 +6,7 @@ import { resolveAssetPath } from "../src/stash-resolve";
 
 const createdTmpDirs: string[] = [];
 
-function createTmpDir(prefix = "agentikit-resolve-"): string {
+function createTmpDir(prefix = "akm-resolve-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   createdTmpDirs.push(dir);
   return dir;
@@ -69,7 +69,7 @@ describe("resolveAssetPath", () => {
     fs.mkdirSync(toolsDir, { recursive: true });
 
     // Create a file outside the stash entirely
-    const outsideDir = createTmpDir("agentikit-outside-");
+    const outsideDir = createTmpDir("akm-outside-");
     const outsideFile = path.join(outsideDir, "escaped.sh");
     writeFile(outsideFile, "#!/bin/sh\necho escaped");
 

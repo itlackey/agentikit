@@ -11,7 +11,7 @@ import type { LocalSearchHit } from "../src/stash-types";
 
 const createdTmpDirs: string[] = [];
 
-function createTmpDir(prefix = "agentikit-search-"): string {
+function createTmpDir(prefix = "akm-search-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   createdTmpDirs.push(dir);
   return dir;
@@ -34,7 +34,7 @@ function writeFile(filePath: string, content = "") {
  * Create a stash directory with all required subdirectories.
  */
 function tmpStash(): string {
-  const dir = createTmpDir("agentikit-search-stash-");
+  const dir = createTmpDir("akm-search-stash-");
   for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
     fs.mkdirSync(path.join(dir, sub), { recursive: true });
   }
@@ -65,8 +65,8 @@ let testCacheDir = "";
 let testConfigDir = "";
 
 beforeEach(() => {
-  testCacheDir = createTmpDir("agentikit-search-cache-");
-  testConfigDir = createTmpDir("agentikit-search-config-");
+  testCacheDir = createTmpDir("akm-search-cache-");
+  testConfigDir = createTmpDir("akm-search-config-");
   process.env.XDG_CACHE_HOME = testCacheDir;
   process.env.XDG_CONFIG_HOME = testConfigDir;
 });

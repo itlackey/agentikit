@@ -64,7 +64,7 @@ const FIXTURE_INDEX: RegistryIndex = {
 
 const createdTmpDirs: string[] = [];
 
-function createTmpDir(prefix = "agentikit-search-"): string {
+function createTmpDir(prefix = "akm-search-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   createdTmpDirs.push(dir);
   return dir;
@@ -112,7 +112,7 @@ const originalRegistryUrl = process.env.AKM_REGISTRY_URL;
 
 beforeEach(() => {
   // Isolate cache per test
-  process.env.XDG_CACHE_HOME = createTmpDir("agentikit-search-cache-");
+  process.env.XDG_CACHE_HOME = createTmpDir("akm-search-cache-");
   delete process.env.AKM_REGISTRY_URL;
 });
 

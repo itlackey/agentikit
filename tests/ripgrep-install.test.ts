@@ -11,7 +11,7 @@ import path from "node:path";
 let tmpDirs: string[] = [];
 
 function makeTmpDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-rg-install-test-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-rg-install-test-"));
   tmpDirs.push(dir);
   return dir;
 }

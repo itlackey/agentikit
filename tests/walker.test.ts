@@ -7,7 +7,7 @@ import { walkStash, walkStashFlat } from "../src/walker";
 const createdTmpDirs: string[] = [];
 
 function tmpDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentikit-walker-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-walker-"));
   createdTmpDirs.push(dir);
   return dir;
 }

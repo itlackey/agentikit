@@ -68,7 +68,7 @@ function resolveInTypeDir(stashDir: string, typeDir: string, type: AgentikitAsse
   if (!isRelevantAssetFile(relevanceType, path.basename(resolvedTarget))) {
     if (type === "tool" || type === "script") {
       throw new NotFoundError(
-        "Script ref must resolve to a file with a supported script extension. Refer to the Agentikit documentation for the complete list of supported script extensions.",
+        "Script ref must resolve to a file with a supported script extension. Refer to the akm documentation for the complete list of supported script extensions.",
       );
     }
     throw new NotFoundError(`Stash asset not found for ref: ${normalizeAssetType(type)}:${name}`);
