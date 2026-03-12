@@ -1,24 +1,24 @@
-# akm — the Agent-i-Kit Manager
+# akm -- the Agent-i-Kit Manager
 
 [![npm version](https://img.shields.io/npm/v/akm-cli)](https://www.npmjs.com/package/akm-cli)
 [![CI](https://github.com/itlackey/agentikit/actions/workflows/ci.yml/badge.svg)](https://github.com/itlackey/agentikit/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/akm-cli)](LICENSE)
 
-A package manager for AI agent capabilities — scripts, skills, commands, agents,
-and knowledge — that works with any AI coding assistant that can run shell
-commands.
+A package manager for AI agent capabilities -- scripts, skills, commands,
+agents, and knowledge -- that works with any AI coding assistant that can run
+shell commands.
 
-You build up useful scripts, prompts, and agent configs. `akm` (the Agent-i-Kit
-Manager) lets you organize them into a searchable **stash**, share them as
-installable **kits**, and give any model a way to discover and use them. No
-plugins required — just CLI output any tool-calling model can read.
+`akm` organizes reusable scripts, prompts, and agent configs into a searchable
+**stash**, shares them as installable **kits** via **registries**, and gives
+any model a way to discover and use them. No plugins required -- just CLI
+output any tool-calling model can read.
 
 ## Requirements
 
 `akm` requires [Bun](https://bun.sh) v1.0+ as its runtime. It uses Bun-specific
 APIs (`bun:sqlite`) that are **not available in Node.js**.
 
-> **Don't want Bun?** Use the [standalone binary](#standalone-binary) instead — it
+> **Don't want Bun?** Use the [standalone binary](#standalone-binary) instead -- it
 > bundles everything and has no runtime dependencies.
 
 ## Quick Start
@@ -33,6 +33,9 @@ akm init
 # Add a kit from GitHub
 akm add github:owner/repo
 
+# Clone an asset to a specific directory
+akm clone script:deploy.sh --dest ./project/.claude
+
 # Search for assets
 akm search "deploy"
 
@@ -45,9 +48,9 @@ akm show script:deploy.sh
 `akm` is platform agnostic. Any model that can execute shell commands can search
 your stash and use what it finds. The workflow is three commands:
 
-1. `akm search "what you need"` — find relevant assets (returns JSON by default)
-2. `akm show <ref>` — get the details (run command, instructions, prompt, etc.)
-3. Use the asset — execute the `run` command, follow the skill instructions, fill in the template
+1. `akm search "what you need"` -- find relevant assets (returns JSON by default)
+2. `akm show <ref>` -- get the details (run command, instructions, prompt, etc.)
+3. Use the asset -- execute the `run` command, follow the skill instructions, fill in the template
 
 ### Drop-in prompt snippet
 
@@ -57,7 +60,7 @@ file to give your agent access to your stash without any additional setup:
 ~~~markdown
 ## Resources & Capabilities
 
-You have access to a searchable library of tools, skills, commands, agents, and knowledge documents via the `akm` CLI tool. Use it to find and use capabilities before writing something from scratch. Always search the stash first when you need a capability.
+You have access to a searchable library of scripts, skills, commands, agents, and knowledge documents via the `akm` CLI. Use it to find and use capabilities before writing something from scratch. Always search the stash first when you need a capability.
 
 Use `akm -h` for more information about searching and using assets.
 ~~~
@@ -69,9 +72,9 @@ output from `akm` and acts on it. If you would like more detailed instructions, 
 
 For tighter integration, plugins are available for some platforms. These add
 native tool bindings so the agent doesn't need to shell out, but they're
-purely optional — the CLI works everywhere.
+purely optional -- the CLI works everywhere.
 
-**OpenCode** — Add the [OpenCode plugin](https://github.com/itlackey/akm-plugins?tab=readme-ov-file#opencode) to your `opencode.json`:
+**OpenCode** -- Add the [OpenCode plugin](https://github.com/itlackey/akm-plugins?tab=readme-ov-file#opencode) to your `opencode.json`:
 
 ```json
 {
@@ -79,10 +82,10 @@ purely optional — the CLI works everywhere.
 }
 ```
 
-**Claude Code** — Add the prompt snippet above to your `CLAUDE.md` or
+**Claude Code** -- Add the prompt snippet above to your `CLAUDE.md` or
 project instructions. Claude Code can run `akm` commands directly.
 
-**Everything else** — If your agent can run shell commands, it can use `akm`.
+**Everything else** -- If your agent can run shell commands, it can use `akm`.
 Add the prompt snippet above or in [AGENTS.md](docs/AGENTS.md) to whatever instruction/rules mechanism your platform uses.
 
 ## The Stash
@@ -90,12 +93,31 @@ Add the prompt snippet above or in [AGENTS.md](docs/AGENTS.md) to whatever instr
 Your stash is the local library where assets live. It combines three sources
 in priority order:
 
-1. **Primary stash** — Your personal assets (`AKM_STASH_DIR`), created by `akm init`
-2. **Search paths** — Additional directories (team shares, project dirs, etc.)
-3. **Installed kits** — Kits from npm, GitHub, or git via `akm add` (cache-managed)
+1. **Primary stash** -- Your personal assets (`AKM_STASH_DIR`), created by `akm init`
+2. **Search paths** -- Additional directories (team shares, project dirs, etc.)
+3. **Installed kits** -- Kits from npm, GitHub, or git via `akm add` (cache-managed)
 
 The first match wins, so local assets always override installed ones. Use
 `akm clone` to fork an installed asset into your stash for editing.
+
+## Registries
+
+Registries are indexes of available kits. akm ships with the official
+[akm-registry](https://github.com/itlackey/akm-registry) pre-configured.
+
+```sh
+# Search the official registry
+akm registry search "code review"
+
+# Add a third-party registry
+akm registry add https://example.com/registry/index.json --name team
+
+# List configured registries
+akm registry list
+```
+
+See the [Registry docs](docs/registry.md) for hosting your own registry,
+the v2 index format with asset-level metadata, and more.
 
 ## Searching and Showing Assets
 
@@ -155,12 +177,6 @@ akm add git+https://gitlab.com/org/kit      # Any git repo
 akm add ./path/to/local/kit                 # Local directory
 ```
 
-Search the [akm registry](https://github.com/itlackey/akm-registry) for community kits:
-
-```sh
-akm search "code review" --source registry
-```
-
 Manage installed kits:
 
 ```sh
@@ -194,7 +210,7 @@ bun install -g akm-cli
 
 ### Standalone binary
 
-The standalone binary bundles everything and has **no runtime dependencies** —
+The standalone binary bundles everything and has **no runtime dependencies** --
 no Bun, no Node.js.
 
 ```sh
@@ -223,12 +239,12 @@ akm upgrade --check   # Check for updates without installing
 | [Configuration](docs/configuration.md) | Providers, settings, and Ollama setup |
 | [Concepts](docs/concepts.md) | Asset types, classification, stash sources, metadata |
 | [Kit Maker's Guide](docs/kit-makers.md) | Build and share a kit on GitHub, npm, or a network share |
-| [Registry](docs/registry.md) | Finding, installing, and publishing kits |
+| [Registry](docs/registry.md) | Registries, search, and managing kits |
 
 ## Status
 
 `akm` is approaching v1.0. The core CLI, stash model, and registry are generally stable
-and in daily use. Feedback, issues, and PRs welcome — especially around
+and in daily use. Feedback, issues, and PRs welcome -- especially around
 real-world usage patterns and integrations with different AI coding assistants.
 
 ## License

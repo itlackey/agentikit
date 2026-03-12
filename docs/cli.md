@@ -198,6 +198,57 @@ When `--dest` is provided, the working stash (`AKM_STASH_DIR`) is not
 required. This makes clone usable in CI or fresh environments without
 running `akm init` first.
 
+### registry
+
+Manage kit registries. The `registry` command has four subcommands:
+
+#### registry list
+
+List all configured registries and their status.
+
+```sh
+akm registry list
+```
+
+#### registry add
+
+Add a third-party registry by URL.
+
+```sh
+akm registry add https://example.com/registry/index.json
+akm registry add https://example.com/registry/index.json --name my-team
+```
+
+| Flag | Description |
+| --- | --- |
+| `--name` | Human-friendly label for the registry |
+
+Duplicate URLs are rejected.
+
+#### registry remove
+
+Remove a registry by URL or name.
+
+```sh
+akm registry remove https://example.com/registry/index.json
+akm registry remove my-team
+```
+
+#### registry search
+
+Search all enabled registries for kits.
+
+```sh
+akm registry search "deploy"
+akm registry search "code review" --assets
+akm registry search "docker" --limit 5
+```
+
+| Flag | Description |
+| --- | --- |
+| `--limit` | Maximum number of results |
+| `--assets` | Include asset-level results from v2 registry indexes |
+
 ### sources
 
 List all resolved stash sources in priority order.

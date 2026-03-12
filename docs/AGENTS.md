@@ -1,7 +1,7 @@
 
 ## Resources & Capabilities
 
-You have access to a searchable library of tools, skills, commands, agents, and knowledge documents via `akm`. Use it to find and use capabilities before writing something from scratch. Always search the stash first when 
+You have access to a searchable library of scripts, skills, commands, agents, and knowledge documents via `akm`. Use it to find and use capabilities before writing something from scratch. Always search the stash first when you need a capability.
 
 **Finding assets:**
 ```sh
