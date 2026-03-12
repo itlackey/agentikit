@@ -723,6 +723,7 @@ const registryCommand = defineCommand({
       args: {
         url: { type: "positional", description: "Registry index URL", required: true },
         name: { type: "string", description: "Human-friendly name for the registry" },
+        provider: { type: "string", description: "Provider type (e.g. static-index, skills-sh)" },
       },
       run({ args }) {
         return runWithJsonErrors(() => {
@@ -738,6 +739,7 @@ const registryCommand = defineCommand({
           }
           const entry: RegistryConfigEntry = { url: args.url };
           if (args.name) entry.name = args.name;
+          if (args.provider) entry.provider = args.provider;
           registries.push(entry);
           saveConfig({ ...config, registries });
           output("registry-add", { registries, added: true });
