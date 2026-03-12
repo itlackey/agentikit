@@ -1,4 +1,4 @@
-# akm - Agent Kit Manager
+# Agent Kit Manager
 
 > Agent-i-Kit
 
