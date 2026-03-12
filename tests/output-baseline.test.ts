@@ -249,7 +249,7 @@ describe("output baseline", () => {
         stashDir,
         ["search", "deploy", "--format=json", "--detail=brief", "--source=both"],
         {
-          registryUrls: [`http://127.0.0.1:${address.port}/index.json`],
+          registries: [{ url: `http://127.0.0.1:${address.port}/index.json` }],
         },
       );
       const json = JSON.parse(output) as { hits: Array<Record<string, unknown>> };

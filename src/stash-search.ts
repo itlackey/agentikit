@@ -79,7 +79,7 @@ export async function agentikitSearch(input: {
         });
 
   const registryResult =
-    source === "local" ? undefined : await searchRegistry(query, { limit, registryUrls: config.registryUrls });
+    source === "local" ? undefined : await searchRegistry(query, { limit, registries: config.registries });
 
   if (source === "local") {
     return {

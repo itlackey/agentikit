@@ -33,6 +33,15 @@ export interface LlmConnectionConfig {
   apiKey?: string;
 }
 
+export interface RegistryConfigEntry {
+  /** URL of the registry index */
+  url: string;
+  /** Human-friendly label for this registry */
+  name?: string;
+  /** Whether this registry is active. Default: true */
+  enabled?: boolean;
+}
+
 export interface AgentikitConfig {
   /** Path to the working stash directory. Resolved from env → config → default. */
   stashDir?: string;
@@ -46,8 +55,8 @@ export interface AgentikitConfig {
   llm?: LlmConnectionConfig;
   /** Installed kits (from npm, GitHub, git, or local sources) */
   installed?: InstalledKitEntry[];
-  /** Registry index URLs for kit discovery. Default: official akm-registry on GitHub */
-  registryUrls?: string[];
+  /** Configured registries for kit discovery */
+  registries?: RegistryConfigEntry[];
   /** Output defaults for CLI rendering */
   output?: OutputConfig;
 }
@@ -62,6 +71,7 @@ export interface OutputConfig {
 export const DEFAULT_CONFIG: AgentikitConfig = {
   semanticSearch: true,
   searchPaths: [],
+  registries: [{ url: "https://raw.githubusercontent.com/itlackey/akm-registry/main/index.json", name: "official" }],
   output: {
     format: "json",
     detail: "brief",
@@ -193,9 +203,8 @@ function pickKnownKeys(raw: Record<string, unknown>): AgentikitConfig {
   const installed = parseInstalledEntries(raw.installed);
   if (installed) config.installed = installed;
 
-  if (Array.isArray(raw.registryUrls)) {
-    config.registryUrls = raw.registryUrls.filter((u): u is string => typeof u === "string" && u.startsWith("http"));
-  }
+  const registries = parseRegistriesConfig(raw.registries);
+  if (registries) config.registries = registries;
 
   const output = parseOutputConfig(raw.output);
   if (output) config.output = output;
@@ -384,4 +393,30 @@ function asNonEmptyString(value: unknown): string | undefined {
 function asKitSource(value: unknown): KitSource | undefined {
   if (value === "npm" || value === "github" || value === "git" || value === "local") return value as KitSource;
   return undefined;
+}
+
+function parseRegistriesConfig(value: unknown): RegistryConfigEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+
+  const entries = value
+    .map((entry) => parseRegistryConfigEntry(entry))
+    .filter((entry): entry is RegistryConfigEntry => entry !== undefined);
+
+  // Return the array even if empty — an explicit empty array means "no registries"
+  // which overrides the default. Only return undefined if the field was not an array.
+  return entries;
+}
+
+function parseRegistryConfigEntry(value: unknown): RegistryConfigEntry | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const obj = value as Record<string, unknown>;
+
+  const url = asNonEmptyString(obj.url);
+  if (!url || !url.startsWith("http")) return undefined;
+
+  const entry: RegistryConfigEntry = { url };
+  const name = asNonEmptyString(obj.name);
+  if (name) entry.name = name;
+  if (typeof obj.enabled === "boolean") entry.enabled = obj.enabled;
+  return entry;
 }

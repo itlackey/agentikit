@@ -3,12 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { defineCommand, runMain } from "citty";
 import { resolveStashDir } from "./common";
+import type { RegistryConfigEntry } from "./config";
 import { getConfigPath, loadConfig, saveConfig } from "./config";
 import { getConfigValue, listConfig, setConfigValue, unsetConfigValue } from "./config-cli";
 import { ConfigError, NotFoundError, UsageError } from "./errors";
 import { agentikitIndex } from "./indexer";
 import { agentikitInit } from "./init";
 import { getCacheDir, getDbPath, getDefaultStashDir } from "./paths";
+import { searchRegistry } from "./registry-search";
 import { checkForUpdate, performUpgrade } from "./self-update";
 import { agentikitAdd } from "./stash-add";
 import { agentikitClone } from "./stash-clone";
@@ -669,12 +671,88 @@ const cloneCommand = defineCommand({
   },
 });
 
+const registryCommand = defineCommand({
+  meta: { name: "registry", description: "Manage kit registries" },
+  subCommands: {
+    list: defineCommand({
+      meta: { name: "list", description: "List configured registries" },
+      run() {
+        return runWithJsonErrors(() => {
+          const config = loadConfig();
+          const registries = config.registries ?? [];
+          output("registry-list", { registries });
+        });
+      },
+    }),
+    add: defineCommand({
+      meta: { name: "add", description: "Add a registry by URL" },
+      args: {
+        url: { type: "positional", description: "Registry index URL", required: true },
+        name: { type: "string", description: "Human-friendly name for the registry" },
+      },
+      run({ args }) {
+        return runWithJsonErrors(() => {
+          const config = loadConfig();
+          const registries = [...(config.registries ?? [])];
+          // Deduplicate by URL
+          if (registries.some((r) => r.url === args.url)) {
+            output("registry-add", { registries, added: false, message: "Registry URL already configured" });
+            return;
+          }
+          const entry: RegistryConfigEntry = { url: args.url };
+          if (args.name) entry.name = args.name;
+          registries.push(entry);
+          saveConfig({ ...config, registries });
+          output("registry-add", { registries, added: true });
+        });
+      },
+    }),
+    remove: defineCommand({
+      meta: { name: "remove", description: "Remove a registry by URL or name" },
+      args: {
+        target: { type: "positional", description: "Registry URL or name to remove", required: true },
+      },
+      run({ args }) {
+        return runWithJsonErrors(() => {
+          const config = loadConfig();
+          const registries = [...(config.registries ?? [])];
+          const idx = registries.findIndex((r) => r.url === args.target || r.name === args.target);
+          if (idx === -1) {
+            output("registry-remove", { registries, removed: false, message: "No matching registry found" });
+            return;
+          }
+          const removed = registries.splice(idx, 1)[0];
+          saveConfig({ ...config, registries });
+          output("registry-remove", { registries, removed: true, entry: removed });
+        });
+      },
+    }),
+    search: defineCommand({
+      meta: { name: "search", description: "Search enabled registries for kits" },
+      args: {
+        query: { type: "positional", description: "Search query", required: true },
+        type: { type: "string", description: "Asset type filter" },
+        limit: { type: "string", description: "Maximum number of results" },
+      },
+      async run({ args }) {
+        await runWithJsonErrors(async () => {
+          const limit = args.limit ? parseInt(args.limit, 10) : undefined;
+          const result = await searchRegistry(args.query, { limit });
+          output("registry-search", result);
+        });
+      },
+    }),
+  },
+});
+
 const sourcesCommand = defineCommand({
   meta: { name: "sources", description: "List all stash search paths and their status" },
   run() {
     return runWithJsonErrors(() => {
+      const config = loadConfig();
       const sources = resolveStashSources();
-      output("sources", { sources });
+      const registries = config.registries ?? [];
+      output("sources", { sources, registries });
     });
   },
 });
@@ -702,6 +780,7 @@ const main = defineCommand({
     show: showCommand,
     clone: cloneCommand,
     sources: sourcesCommand,
+    registry: registryCommand,
     config: configCommand,
   },
 });
