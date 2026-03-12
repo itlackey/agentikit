@@ -448,7 +448,7 @@ const addCommand = defineCommand({
 });
 
 const listCommand = defineCommand({
-  meta: { name: "list", description: "List installed registry packages from config" },
+  meta: { name: "list", description: "List installed kits" },
   async run() {
     await runWithJsonErrors(async () => {
       const result = await agentikitList();
@@ -458,7 +458,7 @@ const listCommand = defineCommand({
 });
 
 const removeCommand = defineCommand({
-  meta: { name: "remove", description: "Remove an installed registry package by id or ref" },
+  meta: { name: "remove", description: "Remove an installed kit by id or ref" },
   args: {
     target: { type: "positional", description: "Installed target (id or ref)", required: true },
   },
@@ -471,7 +471,7 @@ const removeCommand = defineCommand({
 });
 
 const updateCommand = defineCommand({
-  meta: { name: "update", description: "Update one or all installed registry packages" },
+  meta: { name: "update", description: "Update one or all installed kits" },
   args: {
     target: { type: "positional", description: "Installed target (id or ref)", required: false },
     all: { type: "boolean", description: "Update all installed entries", default: false },
@@ -754,7 +754,7 @@ function buildHint(message: string): string | undefined {
   if (message.includes("Either <target> or --all is required"))
     return "Use `akm update --all` or pass a target like `akm update npm:@scope/pkg`.";
   if (message.includes("Specify either <target> or --all")) return "Use only one: a positional target or `--all`.";
-  if (message.includes("No installed registry entry matched target"))
+  if (message.includes("No installed kit matched target"))
     return "Run `akm list` to view installed ids/refs, then retry with one of those values.";
   if (message.includes("remote package fetched but asset not found"))
     return "The remote package was fetched but doesn't contain the requested asset. Check the asset name and type.";

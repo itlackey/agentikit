@@ -13,7 +13,7 @@ export async function agentikitAdd(input: { ref: string }): Promise<AddResponse>
 
   const stashDir = resolveStashDir();
   const installed = await installRegistryRef(ref);
-  const replaced = loadConfig().registry?.installed.find((entry) => entry.id === installed.id);
+  const replaced = (loadConfig().installed ?? []).find((entry) => entry.id === installed.id);
   const config = upsertInstalledRegistryEntry({
     id: installed.id,
     source: installed.source,
@@ -64,7 +64,7 @@ export async function agentikitAdd(input: { ref: string }): Promise<AddResponse>
     },
     config: {
       searchPaths: config.searchPaths,
-      installedRegistryCount: config.registry?.installed.length ?? 0,
+      installedRegistryCount: config.installed?.length ?? 0,
     },
     index: {
       mode: index.mode,

@@ -130,7 +130,7 @@ describe("local directory installs", () => {
       expect(fs.existsSync(path.join(result.installed.stashRoot, "scripts", "hello.sh"))).toBe(true);
 
       const config = loadConfig();
-      const installedRoots = (config.registry?.installed ?? []).map((e: { stashRoot: string }) => e.stashRoot);
+      const installedRoots = (config.installed ?? []).map((e: { stashRoot: string }) => e.stashRoot);
       expect(installedRoots).toContain(result.installed.stashRoot);
 
       const shown = await withEnv({ AKM_STASH_DIR: stashDir, XDG_CACHE_HOME: cacheHome }, () =>

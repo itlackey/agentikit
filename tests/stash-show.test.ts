@@ -81,19 +81,17 @@ describe("agentikitShow installed ref", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [],
-      registry: {
-        installed: [
-          {
-            id: "test-pkg",
-            source: "npm",
-            ref: "test-pkg",
-            artifactUrl: "https://example.com/test-pkg.tgz",
-            stashRoot: installedStashRoot,
-            cacheDir: installedStashRoot,
-            installedAt: new Date().toISOString(),
-          },
-        ],
-      },
+      installed: [
+        {
+          id: "test-pkg",
+          source: "npm",
+          ref: "test-pkg",
+          artifactUrl: "https://example.com/test-pkg.tgz",
+          stashRoot: installedStashRoot,
+          cacheDir: installedStashRoot,
+          installedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     // Use an origin that is NOT installed so resolveSourcesForOrigin returns
@@ -157,19 +155,17 @@ describe("agentikitShow editability", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [],
-      registry: {
-        installed: [
-          {
-            id: "installed-pkg",
-            source: "npm",
-            ref: "npm:installed-pkg",
-            artifactUrl: "https://example.com/installed-pkg.tgz",
-            stashRoot: installedStashRoot,
-            cacheDir: installedStashRoot,
-            installedAt: new Date().toISOString(),
-          },
-        ],
-      },
+      installed: [
+        {
+          id: "installed-pkg",
+          source: "npm",
+          ref: "npm:installed-pkg",
+          artifactUrl: "https://example.com/installed-pkg.tgz",
+          stashRoot: installedStashRoot,
+          cacheDir: installedStashRoot,
+          installedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     const result = await agentikitShow({ ref: "script:deploy.sh" });

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getConfigDir as _getConfigDir, getConfigPath as _getConfigPath } from "./paths";
-import type { RegistryInstalledEntry, RegistrySource } from "./registry-types";
+import type { InstalledKitEntry, KitSource } from "./registry-types";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -44,8 +44,8 @@ export interface AgentikitConfig {
   embedding?: EmbeddingConnectionConfig;
   /** OpenAI-compatible LLM endpoint config for metadata generation. If not set, uses heuristic generation */
   llm?: LlmConnectionConfig;
-  /** Installed registry sources and local cache metadata */
-  registry?: RegistryConfig;
+  /** Installed kits (from npm, GitHub, git, or local sources) */
+  installed?: InstalledKitEntry[];
   /** Registry index URLs for kit discovery. Default: official akm-registry on GitHub */
   registryUrls?: string[];
   /** Output defaults for CLI rendering */
@@ -55,10 +55,6 @@ export interface AgentikitConfig {
 export interface OutputConfig {
   format?: "json" | "yaml" | "text";
   detail?: "brief" | "normal" | "full";
-}
-
-export interface RegistryConfig {
-  installed: RegistryInstalledEntry[];
 }
 
 // ── Defaults ────────────────────────────────────────────────────────────────
@@ -194,8 +190,8 @@ function pickKnownKeys(raw: Record<string, unknown>): AgentikitConfig {
   const llm = parseLlmConfig(raw.llm);
   if (llm) config.llm = llm;
 
-  const registry = parseRegistryConfig(raw.registry);
-  if (registry) config.registry = registry;
+  const installed = parseInstalledEntries(raw.installed);
+  if (installed) config.installed = installed;
 
   if (Array.isArray(raw.registryUrls)) {
     config.registryUrls = raw.registryUrls.filter((u): u is string => typeof u === "string" && u.startsWith("http"));
@@ -342,24 +338,22 @@ function parseLlmConfig(value: unknown): LlmConnectionConfig | undefined {
   return result;
 }
 
-function parseRegistryConfig(value: unknown): RegistryConfig | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  const obj = value as Record<string, unknown>;
-  if (!Array.isArray(obj.installed)) return undefined;
+function parseInstalledEntries(value: unknown): InstalledKitEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined;
 
-  const installed = obj.installed
-    .map((entry) => parseRegistryInstalledEntry(entry))
-    .filter((entry): entry is RegistryInstalledEntry => entry !== undefined);
+  const entries = value
+    .map((entry) => parseInstalledKitEntry(entry))
+    .filter((entry): entry is InstalledKitEntry => entry !== undefined);
 
-  return { installed };
+  return entries.length > 0 ? entries : undefined;
 }
 
-function parseRegistryInstalledEntry(value: unknown): RegistryInstalledEntry | undefined {
+function parseInstalledKitEntry(value: unknown): InstalledKitEntry | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const obj = value as Record<string, unknown>;
 
   const id = asNonEmptyString(obj.id);
-  const source = asRegistrySource(obj.source);
+  const source = asKitSource(obj.source);
   const ref = asNonEmptyString(obj.ref);
   const artifactUrl = asNonEmptyString(obj.artifactUrl);
   const stashRoot = asNonEmptyString(obj.stashRoot);
@@ -367,7 +361,7 @@ function parseRegistryInstalledEntry(value: unknown): RegistryInstalledEntry | u
   const installedAt = asNonEmptyString(obj.installedAt);
   if (!id || !source || !ref || !artifactUrl || !stashRoot || !cacheDir || !installedAt) return undefined;
 
-  const entry: RegistryInstalledEntry = {
+  const entry: InstalledKitEntry = {
     id,
     source,
     ref,
@@ -387,7 +381,7 @@ function asNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 
-function asRegistrySource(value: unknown): RegistrySource | undefined {
-  if (value === "npm" || value === "github" || value === "git" || value === "local") return value as RegistrySource;
+function asKitSource(value: unknown): KitSource | undefined {
+  if (value === "npm" || value === "github" || value === "git" || value === "local") return value as KitSource;
   return undefined;
 }

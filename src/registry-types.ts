@@ -1,7 +1,7 @@
-export type RegistrySource = "npm" | "github" | "git" | "local";
+export type KitSource = "npm" | "github" | "git" | "local";
 
 export interface RegistryRefBase {
-  source: RegistrySource;
+  source: KitSource;
   ref: string;
   id: string;
 }
@@ -35,16 +35,16 @@ export type ParsedRegistryRef = ParsedNpmRef | ParsedGithubRef | ParsedGitRef | 
 
 export interface ResolvedRegistryArtifact {
   id: string;
-  source: RegistrySource;
+  source: KitSource;
   ref: string;
   artifactUrl: string;
   resolvedVersion?: string;
   resolvedRevision?: string;
 }
 
-export interface RegistryInstalledEntry {
+export interface InstalledKitEntry {
   id: string;
-  source: RegistrySource;
+  source: KitSource;
   ref: string;
   resolvedVersion?: string;
   resolvedRevision?: string;
@@ -54,13 +54,13 @@ export interface RegistryInstalledEntry {
   installedAt: string;
 }
 
-export interface RegistryInstallResult extends RegistryInstalledEntry {
+export interface KitInstallResult extends InstalledKitEntry {
   extractedDir: string;
   integrity?: string;
 }
 
 export interface RegistrySearchHit {
-  source: RegistrySource;
+  source: KitSource;
   id: string;
   title: string;
   description?: string;

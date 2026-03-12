@@ -84,19 +84,17 @@ describe("agentikitList", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [stashRoot],
-      registry: {
-        installed: [
-          {
-            id: "test-pkg",
-            source: "npm",
-            ref: "test-pkg",
-            artifactUrl: "https://example.com/test-pkg.tgz",
-            stashRoot: stashRoot,
-            cacheDir: cacheDir,
-            installedAt: new Date().toISOString(),
-          },
-        ],
-      },
+      installed: [
+        {
+          id: "test-pkg",
+          source: "npm",
+          ref: "test-pkg",
+          artifactUrl: "https://example.com/test-pkg.tgz",
+          stashRoot: stashRoot,
+          cacheDir: cacheDir,
+          installedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     const result = await agentikitList({ stashDir });
@@ -117,19 +115,17 @@ describe("agentikitList", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [],
-      registry: {
-        installed: [
-          {
-            id: "missing-pkg",
-            source: "npm",
-            ref: "missing-pkg",
-            artifactUrl: "https://example.com/missing-pkg.tgz",
-            stashRoot: nonExistentStashRoot,
-            cacheDir: nonExistentCache,
-            installedAt: new Date().toISOString(),
-          },
-        ],
-      },
+      installed: [
+        {
+          id: "missing-pkg",
+          source: "npm",
+          ref: "missing-pkg",
+          artifactUrl: "https://example.com/missing-pkg.tgz",
+          stashRoot: nonExistentStashRoot,
+          cacheDir: nonExistentCache,
+          installedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     const result = await agentikitList({ stashDir });
@@ -159,7 +155,7 @@ describe("agentikitRemove", () => {
     saveConfig({ semanticSearch: false, searchPaths: [] });
 
     await expect(agentikitRemove({ target: "nonexistent-package", stashDir })).rejects.toThrow(
-      "No installed registry entry matched target",
+      "No installed kit matched target",
     );
   });
 
@@ -183,7 +179,7 @@ describe("agentikitRemove", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [stashRoot],
-      registry: { installed: [entry] },
+      installed: [entry],
     });
 
     const result = await agentikitRemove({ target: entry.id, stashDir });
@@ -191,7 +187,7 @@ describe("agentikitRemove", () => {
     expect(result.removed.id).toBe(entry.id);
 
     const config = loadConfig();
-    const remaining = config.registry?.installed ?? [];
+    const remaining = config.installed ?? [];
     expect(remaining.find((e) => e.id === entry.id)).toBeUndefined();
   });
 
@@ -215,7 +211,7 @@ describe("agentikitRemove", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [stashRoot],
-      registry: { installed: [entry] },
+      installed: [entry],
     });
 
     const result = await agentikitRemove({ target: entry.ref, stashDir });
@@ -223,7 +219,7 @@ describe("agentikitRemove", () => {
     expect(result.removed.id).toBe(entry.id);
 
     const config = loadConfig();
-    const remaining = config.registry?.installed ?? [];
+    const remaining = config.installed ?? [];
     expect(remaining.find((e) => e.id === entry.id)).toBeUndefined();
   });
 
@@ -247,7 +243,7 @@ describe("agentikitRemove", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [stashRoot],
-      registry: { installed: [entry] },
+      installed: [entry],
     });
 
     await agentikitRemove({ target: entry.id, stashDir });
@@ -272,7 +268,7 @@ describe("agentikitRemove", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [localDir],
-      registry: { installed: [entry] },
+      installed: [entry],
     });
 
     await agentikitRemove({ target: entry.id, stashDir });
@@ -307,28 +303,26 @@ describe("selectTargets via agentikitUpdate", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [firstLocalDir, secondLocalDir],
-      registry: {
-        installed: [
-          {
-            id: `local:${path.basename(firstLocalDir)}`,
-            source: "local" as const,
-            ref: firstLocalDir,
-            artifactUrl: `file://${firstLocalDir}`,
-            stashRoot: firstLocalDir,
-            cacheDir: firstLocalDir,
-            installedAt: new Date().toISOString(),
-          },
-          {
-            id: `local:${path.basename(secondLocalDir)}`,
-            source: "local" as const,
-            ref: secondLocalDir,
-            artifactUrl: `file://${secondLocalDir}`,
-            stashRoot: secondLocalDir,
-            cacheDir: secondLocalDir,
-            installedAt: new Date().toISOString(),
-          },
-        ],
-      },
+      installed: [
+        {
+          id: `local:${path.basename(firstLocalDir)}`,
+          source: "local" as const,
+          ref: firstLocalDir,
+          artifactUrl: `file://${firstLocalDir}`,
+          stashRoot: firstLocalDir,
+          cacheDir: firstLocalDir,
+          installedAt: new Date().toISOString(),
+        },
+        {
+          id: `local:${path.basename(secondLocalDir)}`,
+          source: "local" as const,
+          ref: secondLocalDir,
+          artifactUrl: `file://${secondLocalDir}`,
+          stashRoot: secondLocalDir,
+          cacheDir: secondLocalDir,
+          installedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     const result = await agentikitUpdate({ all: true, stashDir });
@@ -343,19 +337,17 @@ describe("selectTargets via agentikitUpdate", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [localDir],
-      registry: {
-        installed: [
-          {
-            id: `local:${path.basename(localDir)}`,
-            source: "local" as const,
-            ref: localDir,
-            artifactUrl: `file://${localDir}`,
-            stashRoot: localDir,
-            cacheDir: localDir,
-            installedAt: new Date().toISOString(),
-          },
-        ],
-      },
+      installed: [
+        {
+          id: `local:${path.basename(localDir)}`,
+          source: "local" as const,
+          ref: localDir,
+          artifactUrl: `file://${localDir}`,
+          stashRoot: localDir,
+          cacheDir: localDir,
+          installedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     const result = await agentikitUpdate({ target: localDir, force: true, stashDir });
@@ -371,19 +363,17 @@ describe("selectTargets via agentikitUpdate", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [localDir],
-      registry: {
-        installed: [
-          {
-            id: `local:${path.basename(localDir)}`,
-            source: "local" as const,
-            ref: localDir,
-            artifactUrl: `file://${localDir}`,
-            stashRoot: localDir,
-            cacheDir: path.join(localDir, "."),
-            installedAt: new Date().toISOString(),
-          },
-        ],
-      },
+      installed: [
+        {
+          id: `local:${path.basename(localDir)}`,
+          source: "local" as const,
+          ref: localDir,
+          artifactUrl: `file://${localDir}`,
+          stashRoot: localDir,
+          cacheDir: path.join(localDir, "."),
+          installedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     const result = await agentikitUpdate({ target: localDir, stashDir });

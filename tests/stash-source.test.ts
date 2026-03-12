@@ -71,19 +71,17 @@ describe("resolveStashSources", () => {
       saveConfig({
         semanticSearch: false,
         searchPaths: [],
-        registry: {
-          installed: [
-            {
-              id: "npm:test-pkg",
-              source: "npm",
-              ref: "npm:test-pkg@1.0.0",
-              artifactUrl: "https://example.test/test-pkg.tgz",
-              stashRoot: installedDir,
-              cacheDir: installedDir,
-              installedAt: new Date().toISOString(),
-            },
-          ],
-        },
+        installed: [
+          {
+            id: "npm:test-pkg",
+            source: "npm",
+            ref: "npm:test-pkg@1.0.0",
+            artifactUrl: "https://example.test/test-pkg.tgz",
+            stashRoot: installedDir,
+            cacheDir: installedDir,
+            installedAt: new Date().toISOString(),
+          },
+        ],
       });
       const sources = resolveStashSources();
       const installed = sources.find((s) => s.registryId === "npm:test-pkg");
@@ -101,19 +99,17 @@ describe("resolveStashSources", () => {
       saveConfig({
         semanticSearch: false,
         searchPaths: [extraDir],
-        registry: {
-          installed: [
-            {
-              id: "npm:test-pkg",
-              source: "npm",
-              ref: "npm:test-pkg@1.0.0",
-              artifactUrl: "https://example.test/test-pkg.tgz",
-              stashRoot: installedDir,
-              cacheDir: installedDir,
-              installedAt: new Date().toISOString(),
-            },
-          ],
-        },
+        installed: [
+          {
+            id: "npm:test-pkg",
+            source: "npm",
+            ref: "npm:test-pkg@1.0.0",
+            artifactUrl: "https://example.test/test-pkg.tgz",
+            stashRoot: installedDir,
+            cacheDir: installedDir,
+            installedAt: new Date().toISOString(),
+          },
+        ],
       });
       const sources = resolveStashSources();
       expect(sources[0].path).toBe(stashDir);
@@ -214,19 +210,17 @@ describe("isEditable", () => {
       saveConfig({
         semanticSearch: false,
         searchPaths: [],
-        registry: {
-          installed: [
-            {
-              id: "npm:test-pkg",
-              source: "npm",
-              ref: "npm:test-pkg@1.0.0",
-              artifactUrl: "https://example.test/test-pkg.tgz",
-              stashRoot: cacheDir,
-              cacheDir: cacheDir,
-              installedAt: new Date().toISOString(),
-            },
-          ],
-        },
+        installed: [
+          {
+            id: "npm:test-pkg",
+            source: "npm",
+            ref: "npm:test-pkg@1.0.0",
+            artifactUrl: "https://example.test/test-pkg.tgz",
+            stashRoot: cacheDir,
+            cacheDir: cacheDir,
+            installedAt: new Date().toISOString(),
+          },
+        ],
       });
       const filePath = path.join(cacheDir, "scripts", "deploy.sh");
       expect(isEditable(filePath)).toBe(false);

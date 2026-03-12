@@ -1,5 +1,5 @@
 import type { AgentikitAssetType } from "./common";
-import type { RegistrySource } from "./registry-types";
+import type { KitSource } from "./registry-types";
 
 export type AgentikitSearchType = AgentikitAssetType | "any";
 export type SearchSource = "local" | "registry" | "both";
@@ -56,7 +56,7 @@ export interface AddResponse {
   ref: string;
   installed: {
     id: string;
-    source: RegistrySource;
+    source: KitSource;
     ref: string;
     artifactUrl: string;
     resolvedVersion?: string;
@@ -78,9 +78,9 @@ export interface AddResponse {
   };
 }
 
-export interface RegistryInstallStatus {
+export interface KitInstallStatus {
   id: string;
-  source: RegistrySource;
+  source: KitSource;
   ref: string;
   artifactUrl: string;
   resolvedVersion?: string;
@@ -91,9 +91,9 @@ export interface RegistryInstallStatus {
   installedAt: string;
 }
 
-export interface RegistryListEntry {
+export interface InstalledKitListEntry {
   id: string;
-  source: RegistrySource;
+  source: KitSource;
   ref: string;
   artifactUrl: string;
   resolvedVersion?: string;
@@ -110,7 +110,7 @@ export interface RegistryListEntry {
 export interface ListResponse {
   schemaVersion: number;
   stashDir: string;
-  installed: RegistryListEntry[];
+  installed: InstalledKitListEntry[];
   totalInstalled: number;
 }
 
@@ -120,7 +120,7 @@ export interface RemoveResponse {
   target: string;
   removed: {
     id: string;
-    source: RegistrySource;
+    source: KitSource;
     ref: string;
     cacheDir: string;
     stashRoot: string;
@@ -139,14 +139,14 @@ export interface RemoveResponse {
 
 export interface UpdateResultItem {
   id: string;
-  source: RegistrySource;
+  source: KitSource;
   ref: string;
   previous: {
     resolvedVersion?: string;
     resolvedRevision?: string;
     cacheDir: string;
   };
-  installed: RegistryInstallStatus;
+  installed: KitInstallStatus;
   changed: {
     version: boolean;
     revision: boolean;

@@ -787,21 +787,19 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [],
-      registry: {
-        installed: [
-          {
-            id: "npm:@scope/kit",
-            source: "npm",
-            ref: "npm:@scope/kit@1.0.0",
-            artifactUrl: "https://registry.npmjs.org/@scope/kit/-/kit-1.0.0.tgz",
-            resolvedVersion: "1.0.0",
-            resolvedRevision: "abc123",
-            stashRoot,
-            cacheDir,
-            installedAt: new Date().toISOString(),
-          },
-        ],
-      },
+      installed: [
+        {
+          id: "npm:@scope/kit",
+          source: "npm",
+          ref: "npm:@scope/kit@1.0.0",
+          artifactUrl: "https://registry.npmjs.org/@scope/kit/-/kit-1.0.0.tgz",
+          resolvedVersion: "1.0.0",
+          resolvedRevision: "abc123",
+          stashRoot,
+          cacheDir,
+          installedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     try {
@@ -812,7 +810,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
       expect(expectDefined(json.removed).id).toBe("npm:@scope/kit");
 
       const config = loadConfig();
-      expect(config.registry).toBeUndefined();
+      expect(config.installed).toBeUndefined();
       expect(fs.existsSync(cacheDir)).toBe(false);
     } finally {
       fs.rmSync(stashDir, { recursive: true, force: true });
@@ -859,7 +857,7 @@ describe("Scenario: Registry lifecycle CLI (no network)", () => {
       const result = runCli("update", "npm:@scope/kit");
       expect(result.exitCode).not.toBe(0);
       const output = result.stdout + result.stderr;
-      expect(output).toContain("No installed registry entry matched target: npm:@scope/kit");
+      expect(output).toContain("No installed kit matched target: npm:@scope/kit");
     } finally {
       fs.rmSync(stashDir, { recursive: true, force: true });
     }

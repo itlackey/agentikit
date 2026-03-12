@@ -6,13 +6,13 @@ import { agentikitIndex } from "./indexer";
 import { removeLockEntry, upsertLockEntry } from "./lockfile";
 import { installRegistryRef, removeInstalledRegistryEntry, upsertInstalledRegistryEntry } from "./registry-install";
 import { parseRegistryRef } from "./registry-resolve";
-import type { RegistryInstalledEntry } from "./registry-types";
-import type { ListResponse, RegistryInstallStatus, RemoveResponse, UpdateResponse } from "./stash-types";
+import type { InstalledKitEntry } from "./registry-types";
+import type { KitInstallStatus, ListResponse, RemoveResponse, UpdateResponse } from "./stash-types";
 
 export async function agentikitList(input?: { stashDir?: string }): Promise<ListResponse> {
   const stashDir = input?.stashDir ?? resolveStashDir();
   const config = loadConfig();
-  const installed = config.registry?.installed ?? [];
+  const installed = config.installed ?? [];
 
   return {
     schemaVersion: 1,
@@ -34,7 +34,7 @@ export async function agentikitRemove(input: { target: string; stashDir?: string
 
   const stashDir = input.stashDir ?? resolveStashDir();
   const config = loadConfig();
-  const installed = config.registry?.installed ?? [];
+  const installed = config.installed ?? [];
   const entry = resolveInstalledTarget(installed, target);
 
   const updatedConfig = removeInstalledRegistryEntry(entry.id);
@@ -59,7 +59,7 @@ export async function agentikitRemove(input: { target: string; stashDir?: string
     },
     config: {
       searchPaths: updatedConfig.searchPaths,
-      installedRegistryCount: updatedConfig.registry?.installed.length ?? 0,
+      installedRegistryCount: updatedConfig.installed?.length ?? 0,
     },
     index: {
       mode: index.mode,
@@ -80,7 +80,7 @@ export async function agentikitUpdate(input?: {
   const target = input?.target?.trim();
   const all = input?.all === true;
   const force = input?.force === true;
-  const installedEntries = loadConfig().registry?.installed ?? [];
+  const installedEntries = loadConfig().installed ?? [];
   const selectedEntries = selectTargets(installedEntries, target, all);
 
   const processed: UpdateResponse["processed"] = [];
@@ -134,7 +134,7 @@ export async function agentikitUpdate(input?: {
     processed,
     config: {
       searchPaths: config.searchPaths,
-      installedRegistryCount: config.registry?.installed.length ?? 0,
+      installedRegistryCount: config.installed?.length ?? 0,
     },
     index: {
       mode: index.mode,
@@ -145,11 +145,7 @@ export async function agentikitUpdate(input?: {
   };
 }
 
-function selectTargets(
-  installed: RegistryInstalledEntry[],
-  target: string | undefined,
-  all: boolean,
-): RegistryInstalledEntry[] {
+function selectTargets(installed: InstalledKitEntry[], target: string | undefined, all: boolean): InstalledKitEntry[] {
   if (all && target) {
     throw new UsageError("Specify either <target> or --all, not both.");
   }
@@ -160,7 +156,7 @@ function selectTargets(
   return [resolveInstalledTarget(installed, target)];
 }
 
-function resolveInstalledTarget(installed: RegistryInstalledEntry[], target: string): RegistryInstalledEntry {
+function resolveInstalledTarget(installed: InstalledKitEntry[], target: string): InstalledKitEntry {
   const byId = installed.find((entry) => entry.id === target);
   if (byId) return byId;
 
@@ -178,10 +174,10 @@ function resolveInstalledTarget(installed: RegistryInstalledEntry[], target: str
     if (byParsedId) return byParsedId;
   }
 
-  throw new NotFoundError(`No installed registry entry matched target: ${target}`);
+  throw new NotFoundError(`No installed kit matched target: ${target}`);
 }
 
-function toInstalledEntry(status: RegistryInstallStatus): RegistryInstalledEntry {
+function toInstalledEntry(status: KitInstallStatus): InstalledKitEntry {
   return {
     id: status.id,
     source: status.source,
@@ -195,7 +191,7 @@ function toInstalledEntry(status: RegistryInstallStatus): RegistryInstalledEntry
   };
 }
 
-function toInstallStatus(status: RegistryInstallStatus): RegistryInstallStatus {
+function toInstallStatus(status: KitInstallStatus): KitInstallStatus {
   return {
     id: status.id,
     source: status.source,
@@ -218,7 +214,7 @@ function cleanupDirectoryBestEffort(target: string): void {
   }
 }
 
-function shouldCleanupCache(entry: RegistryInstalledEntry): boolean {
+function shouldCleanupCache(entry: InstalledKitEntry): boolean {
   return entry.source !== "local";
 }
 

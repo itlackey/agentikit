@@ -22,7 +22,7 @@ export interface StashSource {
  *   3. Installed kit paths (cache-managed, from registry)
  *
  * The first entry is always the primary stash. Additional entries come
- * from `searchPaths` config and `registry.installed` entries.
+ * from `searchPaths` config and `installed` kit entries.
  */
 export function resolveStashSources(overrideStashDir?: string, existingConfig?: AgentikitConfig): StashSource[] {
   const stashDir = overrideStashDir ?? resolveStashDir();
@@ -39,7 +39,7 @@ export function resolveStashSources(overrideStashDir?: string, existingConfig?: 
     }
   }
 
-  for (const entry of config.registry?.installed ?? []) {
+  for (const entry of config.installed ?? []) {
     if (isSuspiciousStashRoot(entry.stashRoot)) {
       warn(`Warning: stash root "${entry.stashRoot}" appears to be a system directory. This may be unintentional.`);
     }
@@ -86,7 +86,7 @@ export function getPrimarySource(sources: StashSource[]): StashSource | undefine
  * Determine whether a file is safe to edit in place.
  *
  * The only files that are NOT editable are those inside a cache directory
- * managed by the package manager (`registry.installed[].cacheDir`). These
+ * managed by the package manager (`installed[].cacheDir`). These
  * will be overwritten by `akm update` without warning.
  *
  * Everything else — working stash, search paths, local project dirs — is
@@ -95,7 +95,7 @@ export function getPrimarySource(sources: StashSource[]): StashSource | undefine
 export function isEditable(filePath: string, config?: AgentikitConfig): boolean {
   const cfg = config ?? loadConfig();
   const resolved = path.resolve(filePath);
-  const cacheManaged = cfg.registry?.installed ?? [];
+  const cacheManaged = cfg.installed ?? [];
   const isWin = process.platform === "win32";
 
   for (const entry of cacheManaged) {

@@ -212,19 +212,17 @@ test("agentikitSearch includes origin for installed-source hits", async () => {
   saveConfig({
     semanticSearch: false,
     searchPaths: [],
-    registry: {
-      installed: [
-        {
-          id: "npm:@scope/deploy-kit",
-          source: "npm",
-          ref: "@scope/deploy-kit",
-          artifactUrl: "https://example.com/deploy-kit.tgz",
-          stashRoot: installedStash,
-          cacheDir: installedStash,
-          installedAt: new Date().toISOString(),
-        },
-      ],
-    },
+    installed: [
+      {
+        id: "npm:@scope/deploy-kit",
+        source: "npm",
+        ref: "@scope/deploy-kit",
+        artifactUrl: "https://example.com/deploy-kit.tgz",
+        stashRoot: installedStash,
+        cacheDir: installedStash,
+        installedAt: new Date().toISOString(),
+      },
+    ],
   });
   process.env.AKM_STASH_DIR = stashDir;
 
