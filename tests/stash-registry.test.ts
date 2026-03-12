@@ -30,7 +30,7 @@ beforeEach(() => {
   testCacheDir = createTmpDir("akm-registry-cache-");
   testConfigDir = createTmpDir("akm-registry-config-");
   stashDir = createTmpDir("akm-registry-stash-");
-  for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
+  for (const sub of ["scripts", "skills", "commands", "agents", "knowledge"]) {
     fs.mkdirSync(path.join(stashDir, sub), { recursive: true });
   }
   process.env.XDG_CACHE_HOME = testCacheDir;
@@ -84,19 +84,17 @@ describe("agentikitList", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [stashRoot],
-      registry: {
-        installed: [
-          {
-            id: "test-pkg",
-            source: "npm",
-            ref: "test-pkg",
-            artifactUrl: "https://example.com/test-pkg.tgz",
-            stashRoot: stashRoot,
-            cacheDir: cacheDir,
-            installedAt: new Date().toISOString(),
-          },
-        ],
-      },
+      installed: [
+        {
+          id: "test-pkg",
+          source: "npm",
+          ref: "test-pkg",
+          artifactUrl: "https://example.com/test-pkg.tgz",
+          stashRoot: stashRoot,
+          cacheDir: cacheDir,
+          installedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     const result = await agentikitList({ stashDir });
@@ -117,19 +115,17 @@ describe("agentikitList", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [],
-      registry: {
-        installed: [
-          {
-            id: "missing-pkg",
-            source: "npm",
-            ref: "missing-pkg",
-            artifactUrl: "https://example.com/missing-pkg.tgz",
-            stashRoot: nonExistentStashRoot,
-            cacheDir: nonExistentCache,
-            installedAt: new Date().toISOString(),
-          },
-        ],
-      },
+      installed: [
+        {
+          id: "missing-pkg",
+          source: "npm",
+          ref: "missing-pkg",
+          artifactUrl: "https://example.com/missing-pkg.tgz",
+          stashRoot: nonExistentStashRoot,
+          cacheDir: nonExistentCache,
+          installedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     const result = await agentikitList({ stashDir });
@@ -159,14 +155,14 @@ describe("agentikitRemove", () => {
     saveConfig({ semanticSearch: false, searchPaths: [] });
 
     await expect(agentikitRemove({ target: "nonexistent-package", stashDir })).rejects.toThrow(
-      "No installed registry entry matched target",
+      "No installed kit matched target",
     );
   });
 
   test("removes entry by id", async () => {
     const cacheDir = createTmpDir("akm-registry-remove-cache-");
     const stashRoot = createTmpDir("akm-registry-remove-root-");
-    for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
+    for (const sub of ["scripts", "skills", "commands", "agents", "knowledge"]) {
       fs.mkdirSync(path.join(stashRoot, sub), { recursive: true });
     }
 
@@ -183,7 +179,7 @@ describe("agentikitRemove", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [stashRoot],
-      registry: { installed: [entry] },
+      installed: [entry],
     });
 
     const result = await agentikitRemove({ target: entry.id, stashDir });
@@ -191,14 +187,14 @@ describe("agentikitRemove", () => {
     expect(result.removed.id).toBe(entry.id);
 
     const config = loadConfig();
-    const remaining = config.registry?.installed ?? [];
+    const remaining = config.installed ?? [];
     expect(remaining.find((e) => e.id === entry.id)).toBeUndefined();
   });
 
   test("removes entry by ref", async () => {
     const cacheDir = createTmpDir("akm-registry-remove-cache-ref-");
     const stashRoot = createTmpDir("akm-registry-remove-root-ref-");
-    for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
+    for (const sub of ["scripts", "skills", "commands", "agents", "knowledge"]) {
       fs.mkdirSync(path.join(stashRoot, sub), { recursive: true });
     }
 
@@ -215,7 +211,7 @@ describe("agentikitRemove", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [stashRoot],
-      registry: { installed: [entry] },
+      installed: [entry],
     });
 
     const result = await agentikitRemove({ target: entry.ref, stashDir });
@@ -223,14 +219,14 @@ describe("agentikitRemove", () => {
     expect(result.removed.id).toBe(entry.id);
 
     const config = loadConfig();
-    const remaining = config.registry?.installed ?? [];
+    const remaining = config.installed ?? [];
     expect(remaining.find((e) => e.id === entry.id)).toBeUndefined();
   });
 
   test("cleans up cache directory", async () => {
     const cacheDir = createTmpDir("akm-registry-remove-cache-cleanup-");
     const stashRoot = createTmpDir("akm-registry-remove-root-cleanup-");
-    for (const sub of ["tools", "skills", "commands", "agents", "knowledge", "scripts"]) {
+    for (const sub of ["scripts", "skills", "commands", "agents", "knowledge"]) {
       fs.mkdirSync(path.join(stashRoot, sub), { recursive: true });
     }
 
@@ -247,7 +243,7 @@ describe("agentikitRemove", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [stashRoot],
-      registry: { installed: [entry] },
+      installed: [entry],
     });
 
     await agentikitRemove({ target: entry.id, stashDir });
@@ -257,7 +253,7 @@ describe("agentikitRemove", () => {
 
   test("does not delete local source directories", async () => {
     const localDir = createTmpDir("akm-registry-remove-local-");
-    fs.mkdirSync(path.join(localDir, "tools"), { recursive: true });
+    fs.mkdirSync(path.join(localDir, "scripts"), { recursive: true });
 
     const entry = {
       id: `local:${path.basename(localDir)}`,
@@ -272,7 +268,7 @@ describe("agentikitRemove", () => {
     saveConfig({
       semanticSearch: false,
       searchPaths: [localDir],
-      registry: { installed: [entry] },
+      installed: [entry],
     });
 
     await agentikitRemove({ target: entry.id, stashDir });
@@ -301,34 +297,32 @@ describe("selectTargets via agentikitUpdate", () => {
   test("--all selects all installed entries", async () => {
     const firstLocalDir = createTmpDir("akm-registry-all-local-1-");
     const secondLocalDir = createTmpDir("akm-registry-all-local-2-");
-    fs.mkdirSync(path.join(firstLocalDir, "tools"), { recursive: true });
-    fs.mkdirSync(path.join(secondLocalDir, "tools"), { recursive: true });
+    fs.mkdirSync(path.join(firstLocalDir, "scripts"), { recursive: true });
+    fs.mkdirSync(path.join(secondLocalDir, "scripts"), { recursive: true });
 
     saveConfig({
       semanticSearch: false,
       searchPaths: [firstLocalDir, secondLocalDir],
-      registry: {
-        installed: [
-          {
-            id: `local:${path.basename(firstLocalDir)}`,
-            source: "local" as const,
-            ref: firstLocalDir,
-            artifactUrl: `file://${firstLocalDir}`,
-            stashRoot: firstLocalDir,
-            cacheDir: firstLocalDir,
-            installedAt: new Date().toISOString(),
-          },
-          {
-            id: `local:${path.basename(secondLocalDir)}`,
-            source: "local" as const,
-            ref: secondLocalDir,
-            artifactUrl: `file://${secondLocalDir}`,
-            stashRoot: secondLocalDir,
-            cacheDir: secondLocalDir,
-            installedAt: new Date().toISOString(),
-          },
-        ],
-      },
+      installed: [
+        {
+          id: `local:${path.basename(firstLocalDir)}`,
+          source: "local" as const,
+          ref: firstLocalDir,
+          artifactUrl: `file://${firstLocalDir}`,
+          stashRoot: firstLocalDir,
+          cacheDir: firstLocalDir,
+          installedAt: new Date().toISOString(),
+        },
+        {
+          id: `local:${path.basename(secondLocalDir)}`,
+          source: "local" as const,
+          ref: secondLocalDir,
+          artifactUrl: `file://${secondLocalDir}`,
+          stashRoot: secondLocalDir,
+          cacheDir: secondLocalDir,
+          installedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     const result = await agentikitUpdate({ all: true, stashDir });
@@ -338,24 +332,22 @@ describe("selectTargets via agentikitUpdate", () => {
 
   test("--force does not delete local source directories", async () => {
     const localDir = createTmpDir("akm-registry-update-local-force-");
-    fs.mkdirSync(path.join(localDir, "tools"), { recursive: true });
+    fs.mkdirSync(path.join(localDir, "scripts"), { recursive: true });
 
     saveConfig({
       semanticSearch: false,
       searchPaths: [localDir],
-      registry: {
-        installed: [
-          {
-            id: `local:${path.basename(localDir)}`,
-            source: "local" as const,
-            ref: localDir,
-            artifactUrl: `file://${localDir}`,
-            stashRoot: localDir,
-            cacheDir: localDir,
-            installedAt: new Date().toISOString(),
-          },
-        ],
-      },
+      installed: [
+        {
+          id: `local:${path.basename(localDir)}`,
+          source: "local" as const,
+          ref: localDir,
+          artifactUrl: `file://${localDir}`,
+          stashRoot: localDir,
+          cacheDir: localDir,
+          installedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     const result = await agentikitUpdate({ target: localDir, force: true, stashDir });
@@ -366,24 +358,22 @@ describe("selectTargets via agentikitUpdate", () => {
 
   test("does not delete local directories when cache path string changes", async () => {
     const localDir = createTmpDir("akm-registry-update-local-cache-change-");
-    fs.mkdirSync(path.join(localDir, "tools"), { recursive: true });
+    fs.mkdirSync(path.join(localDir, "scripts"), { recursive: true });
 
     saveConfig({
       semanticSearch: false,
       searchPaths: [localDir],
-      registry: {
-        installed: [
-          {
-            id: `local:${path.basename(localDir)}`,
-            source: "local" as const,
-            ref: localDir,
-            artifactUrl: `file://${localDir}`,
-            stashRoot: localDir,
-            cacheDir: path.join(localDir, "."),
-            installedAt: new Date().toISOString(),
-          },
-        ],
-      },
+      installed: [
+        {
+          id: `local:${path.basename(localDir)}`,
+          source: "local" as const,
+          ref: localDir,
+          artifactUrl: `file://${localDir}`,
+          stashRoot: localDir,
+          cacheDir: path.join(localDir, "."),
+          installedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     const result = await agentikitUpdate({ target: localDir, stashDir });

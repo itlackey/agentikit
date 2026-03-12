@@ -20,6 +20,17 @@ The winning match determines two things:
 2. **Renderer** -- How the asset is presented in `akm show` and search
    results.
 
+## Asset Type Taxonomy
+
+The five asset types fall into three classification strategies:
+
+- **By what they are:** `script` (executable code with a known extension) and
+  `knowledge` (plain markdown reference documents).
+- **By how an LLM should use them:** `command` (prompt template with
+  placeholders) and `agent` (system prompt with model/tool configuration).
+- **By packaging convention:** `skill` (a directory containing a `SKILL.md`
+  file).
+
 ## Specificity Ranges
 
 Specificity scores are divided into defined ranges. Each range corresponds
@@ -57,7 +68,7 @@ with a known extension gets a type, regardless of directory.
 Boosts specificity when the first ancestor directory segment from the stash
 root matches a known type name:
 
-- `scripts/` or `tools/` -- script (for files with known script extensions)
+- `scripts/` -- script (for files with known script extensions)
 - `skills/` -- skill (for `SKILL.md` files)
 - `commands/` -- command (for `.md` files)
 - `agents/` -- agent (for `.md` files)

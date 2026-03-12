@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { deriveCanonicalAssetName, TYPE_DIRS } from "./asset-spec";
-import { type AgentikitAssetType, normalizeAssetType } from "./common";
+import type { AgentikitAssetType } from "./common";
 import { type AgentikitConfig, loadConfig } from "./config";
 import {
   closeDatabase,
@@ -79,7 +79,7 @@ export async function agentikitSearch(input: {
         });
 
   const registryResult =
-    source === "local" ? undefined : await searchRegistry(query, { limit, registryUrls: config.registryUrls });
+    source === "local" ? undefined : await searchRegistry(query, { limit, registries: config.registries });
 
   if (source === "local") {
     return {
@@ -104,6 +104,7 @@ export async function agentikitSearch(input: {
       action: `akm add ${installRef} -> then search again`,
       score: hit.score,
       curated: hit.curated,
+      registryName: hit.registryName,
     };
   });
 
@@ -449,7 +450,7 @@ function buildDbHit(input: {
 
   const editable = isEditable(input.path, input.config);
   const hit: LocalSearchHit = {
-    type: normalizeAssetType(input.entry.type),
+    type: input.entry.type,
     name: input.entry.name,
     path: input.path,
     ref: makeAssetRef(input.entry.type, refName, source?.registryId),
@@ -459,10 +460,7 @@ function buildDbHit(input: {
     description: input.entry.description,
     tags: input.entry.tags,
     size: deriveSize(input.entry.fileSize),
-    action: buildLocalAction(
-      normalizeAssetType(input.entry.type),
-      makeAssetRef(input.entry.type, refName, source?.registryId),
-    ),
+    action: buildLocalAction(input.entry.type, makeAssetRef(input.entry.type, refName, source?.registryId)),
     score,
     whyMatched,
   };
@@ -514,7 +512,7 @@ function assetToSearchHit(
   const fileSize = readFileSize(asset.path);
   const size = deriveSize(fileSize);
   const hit: LocalSearchHit = {
-    type: normalizeAssetType(asset.entry.type),
+    type: asset.entry.type,
     name: asset.entry.name,
     path: asset.path,
     ref,
@@ -526,7 +524,7 @@ function assetToSearchHit(
     description: asset.entry.description,
     tags: asset.entry.tags,
     ...(size ? { size } : {}),
-    action: buildLocalAction(normalizeAssetType(asset.entry.type), ref),
+    action: buildLocalAction(asset.entry.type, ref),
   };
   const renderer = rendererForType(asset.entry.type);
   if (renderer?.enrichSearchHit) {
@@ -560,7 +558,6 @@ function mergeSearchHits(
 
 /** Map asset types to their primary renderer names. */
 const TYPE_TO_RENDERER: Record<AgentikitAssetType, string> = {
-  tool: "script-source",
   script: "script-source",
   skill: "skill-md",
   command: "command-md",
@@ -584,8 +581,6 @@ function buildLocalAction(type: AgentikitAssetType, ref: string): string {
       return `akm show ${ref} -> dispatch with full prompt`;
     case "knowledge":
       return `akm show ${ref} -> read reference material`;
-    case "tool":
-      return `akm show ${ref} -> execute the run command`;
   }
 }
 
@@ -606,7 +601,7 @@ function readFileSize(filePath: string): number | undefined {
 
 function indexAssets(stashDir: string, type: AgentikitSearchType): IndexedAsset[] {
   const assets: IndexedAsset[] = [];
-  const filterType = type === "any" ? undefined : normalizeAssetType(type);
+  const filterType = type === "any" ? undefined : type;
   const fileContexts = walkStashFlat(stashDir);
   const dirGroups = new Map<string, string[]>();
 
@@ -637,8 +632,7 @@ function indexAssets(stashDir: string, type: AgentikitSearchType): IndexedAsset[
     }
 
     for (const entry of stash.entries) {
-      const normalizedType = normalizeAssetType(entry.type);
-      if (filterType && normalizedType !== filterType) continue;
+      if (filterType && entry.type !== filterType) continue;
       const entryPath = entry.filename ? path.join(dirPath, entry.filename) : files[0] || dirPath;
       assets.push({ entry, path: entryPath });
     }

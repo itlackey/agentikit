@@ -102,11 +102,11 @@ describe("loadConfig", () => {
     delete process.env.AKM_STASH_DIR;
     writeRawConfig(getConfigPath(), JSON.stringify({ semanticSearch: false }));
 
-    expect(loadConfig()).toEqual({
-      semanticSearch: false,
-      searchPaths: [],
-      output: { format: "json", detail: "brief" },
-    });
+    const config = loadConfig();
+    expect(config.semanticSearch).toBe(false);
+    expect(config.searchPaths).toEqual([]);
+    expect(config.output).toEqual({ format: "json", detail: "brief" });
+    expect(config.registries).toEqual(DEFAULT_CONFIG.registries);
   });
 
   test("merges partial config with defaults", () => {
@@ -135,11 +135,10 @@ describe("loadConfig", () => {
   test("drops unknown keys", () => {
     writeRawConfig(getConfigPath(), JSON.stringify({ semanticSearch: false, futureKey: "hello", anotherKey: 42 }));
     const config = loadConfig();
-    expect(config).toEqual({
-      semanticSearch: false,
-      searchPaths: [],
-      output: { format: "json", detail: "brief" },
-    });
+    expect(config.semanticSearch).toBe(false);
+    expect(config.searchPaths).toEqual([]);
+    expect(config.output).toEqual({ format: "json", detail: "brief" });
+    expect(config.registries).toEqual(DEFAULT_CONFIG.registries);
     expect((config as unknown as Record<string, unknown>).futureKey).toBeUndefined();
     expect((config as unknown as Record<string, unknown>).anotherKey).toBeUndefined();
   });
@@ -184,7 +183,10 @@ describe("saveConfig", () => {
   test("roundtrips with loadConfig", () => {
     const config = { semanticSearch: false, searchPaths: ["/a", "/b"] };
     saveConfig(config);
-    expect(loadConfig()).toEqual({ ...config, output: { format: "json", detail: "brief" } });
+    const loaded = loadConfig();
+    expect(loaded.semanticSearch).toBe(false);
+    expect(loaded.searchPaths).toEqual(["/a", "/b"]);
+    expect(loaded.output).toEqual({ format: "json", detail: "brief" });
   });
 
   test("roundtrips output config", () => {

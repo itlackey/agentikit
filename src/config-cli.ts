@@ -4,6 +4,7 @@ import {
   type EmbeddingConnectionConfig,
   type LlmConnectionConfig,
   type OutputConfig,
+  type RegistryConfigEntry,
 } from "./config";
 import { UsageError } from "./errors";
 
@@ -28,6 +29,8 @@ export function parseConfigValue(key: string, value: string): Partial<AgentikitC
       return { embedding: parseEmbeddingConnectionValue(value) };
     case "llm":
       return { llm: parseLlmConnectionValue(value) };
+    case "registries":
+      return { registries: parseRegistriesValue(value) };
     case "output.format":
       return { output: { format: parseOutputFormat(value) } };
     case "output.detail":
@@ -49,6 +52,8 @@ export function getConfigValue(config: AgentikitConfig, key: string): unknown {
       return config.embedding ?? null;
     case "llm":
       return config.llm ?? null;
+    case "registries":
+      return config.registries ?? DEFAULT_CONFIG.registries ?? [];
     case "output.format":
       return config.output?.format ?? null;
     case "output.detail":
@@ -65,6 +70,7 @@ export function setConfigValue(config: AgentikitConfig, key: string, rawValue: s
     case "searchPaths":
     case "embedding":
     case "llm":
+    case "registries":
     case "output.format":
     case "output.detail":
       return mergeConfigValue(config, parseConfigValue(key, rawValue));
@@ -81,6 +87,8 @@ export function unsetConfigValue(config: AgentikitConfig, key: string): Agentiki
       return { ...config, embedding: undefined };
     case "llm":
       return { ...config, llm: undefined };
+    case "registries":
+      return { ...config, registries: undefined };
     case "output.format":
       return { ...config, output: mergeOutputConfig(config.output, { format: undefined }) };
     case "output.detail":
@@ -98,6 +106,7 @@ export function listConfig(config: AgentikitConfig): Record<string, unknown> {
     stashDir: config.stashDir ?? null,
     embedding: config.embedding ?? null,
     llm: config.llm ?? null,
+    registries: config.registries ?? DEFAULT_CONFIG.registries ?? [],
   };
 }
 
@@ -125,6 +134,35 @@ function parseOutputFormat(value: string): OutputConfig["format"] {
 function parseOutputDetail(value: string): OutputConfig["detail"] {
   if (value === "brief" || value === "normal" || value === "full") return value;
   throw new UsageError(`Invalid value for output.detail: expected one of brief|normal|full`);
+}
+
+function parseRegistriesValue(value: string): RegistryConfigEntry[] | undefined {
+  if (value === "null" || value === "") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new UsageError(
+      `Invalid value for registries: expected JSON array of {url, name?, enabled?} objects` +
+        ` (e.g. '[{"url":"https://example.com/index.json","name":"my-registry"}]')`,
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new UsageError(`Invalid value for registries: expected a JSON array`);
+  }
+  return parsed.map((entry: unknown, i: number) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new UsageError(`Invalid value for registries[${i}]: expected an object with a "url" field`);
+    }
+    const obj = entry as Record<string, unknown>;
+    if (typeof obj.url !== "string" || !obj.url) {
+      throw new UsageError(`Invalid value for registries[${i}]: "url" is required`);
+    }
+    const result: RegistryConfigEntry = { url: obj.url };
+    if (typeof obj.name === "string" && obj.name) result.name = obj.name;
+    if (typeof obj.enabled === "boolean") result.enabled = obj.enabled;
+    return result;
+  });
 }
 
 function parseEmbeddingConnectionValue(value: string): EmbeddingConnectionConfig | undefined {

@@ -15,8 +15,8 @@ Create the stash directory structure and config file.
 akm init
 ```
 
-Creates `tools/`, `skills/`, `commands/`, `agents/`, `knowledge/`, and
-`scripts/` subdirectories under the stash path. See
+Creates `scripts/`, `skills/`, `commands/`, `agents/`, and `knowledge/`
+subdirectories under the stash path. See
 [technical/filesystem.md](technical/filesystem.md) for config file locations.
 
 ### index
@@ -44,18 +44,19 @@ akm search "docker" --source both --detail full
 
 | Flag | Values | Default | Description |
 | --- | --- | --- | --- |
-| `--type` | `skill`, `command`, `agent`, `knowledge`, `script`, `any` (`tool` accepted as alias for `script`) | `any` | Filter by asset type |
+| `--type` | `skill`, `command`, `agent`, `knowledge`, `script`, `any` | `any` | Filter by asset type |
 | `--limit` | number | `20` | Maximum results |
 | `--source` | `local`, `registry`, `both` | `local` | Where to search |
 | `--format` | `json`, `text`, `yaml` | `json` | Output format |
 | `--detail` | `brief`, `normal`, `full` | `brief` | Output detail level |
 
 Local hits include a `ref` handle for use with `akm show`. The default brief
-shape is intentionally small: local hits expose `type`, `name`, `ref`,
-`description`, `size`, and `action`; registry hits expose `type`, `name`, `id`,
+shape is intentionally small: local hits expose `type`, `name`,
+`description`, and `action`; registry hits expose `type`, `name`, `id`,
 `description`, `action`, and `curated`. `--detail normal` adds commonly useful
-fields like `origin` and `tags`. `--detail full` includes debug-oriented fields
-such as scores, match explanations, timings, and stash metadata.
+fields like `ref`, `origin`, `size`, and `tags`. `--detail full` includes
+debug-oriented fields such as scores, match explanations, timings, and stash
+metadata.
 
 ### show
 
@@ -81,7 +82,7 @@ Returns type-specific payloads:
 
 | Type | Key fields |
 | --- | --- |
-| script (alias: tool) | `run`, `setup`, `cwd` |
+| script | `run`, `setup`, `cwd` |
 | skill | `content` (full SKILL.md) |
 | command | `template`, `description` |
 | agent | `prompt`, `description`, `modelHint` |
@@ -176,7 +177,7 @@ akm clone "npm:@scope/pkg//script:deploy.sh" --dest /tmp/preview
 | --- | --- |
 | `--name` | New name for the cloned asset |
 | `--force` | Overwrite if the asset already exists at the destination |
-| `--dest` | Destination directory (default: working stash). The type subdirectory (`tools/`, `skills/`, etc.) is appended automatically |
+| `--dest` | Destination directory (default: working stash). The type subdirectory (`scripts/`, `skills/`, etc.) is appended automatically |
 
 Skills (directories) are copied recursively. Other types copy a single file.
 
@@ -198,6 +199,57 @@ When `--dest` is provided, the working stash (`AKM_STASH_DIR`) is not
 required. This makes clone usable in CI or fresh environments without
 running `akm init` first.
 
+### registry
+
+Manage kit registries. The `registry` command has four subcommands:
+
+#### registry list
+
+List all configured registries and their status.
+
+```sh
+akm registry list
+```
+
+#### registry add
+
+Add a third-party registry by URL.
+
+```sh
+akm registry add https://example.com/registry/index.json
+akm registry add https://example.com/registry/index.json --name my-team
+```
+
+| Flag | Description |
+| --- | --- |
+| `--name` | Human-friendly label for the registry |
+
+Duplicate URLs are rejected.
+
+#### registry remove
+
+Remove a registry by URL or name.
+
+```sh
+akm registry remove https://example.com/registry/index.json
+akm registry remove my-team
+```
+
+#### registry search
+
+Search all enabled registries for kits.
+
+```sh
+akm registry search "deploy"
+akm registry search "code review" --assets
+akm registry search "docker" --limit 5
+```
+
+| Flag | Description |
+| --- | --- |
+| `--limit` | Maximum number of results |
+| `--assets` | Include asset-level results from v2 registry indexes |
+
 ### sources
 
 List all resolved stash sources in priority order.
@@ -216,6 +268,8 @@ akm config list                     # List current config
 akm config get output.format        # Read one key
 akm config set output.detail full   # Set one key
 akm config unset llm                # Remove an optional key
+akm config path                     # Print path to config file
+akm config path --all               # Print all config-related paths
 ```
 
 See [configuration.md](configuration.md) for details.

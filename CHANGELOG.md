@@ -29,7 +29,7 @@ cleans up the CLI surface, and renames the package from `agentikit` to `akm-cli`
 - **Rebrand**: registry `agentikit-registry` renamed to `akm-registry`
 - **Rebrand**: default paths changed (`~/agentikit` to `~/akm`, `~/.config/agentikit` to `~/.config/akm`)
 - **Rebrand**: environment variables `AGENTIKIT_*` renamed to `AKM_*`
-- Merged `tool` type into `script` (tool is now a transparent alias)
+- Removed `tool` asset type entirely; `script` is the only script-like type
 - `.stash.json` field renames: `intents` to `searchHints`, `entry` to `filename`; removed `generated` boolean
 - `show` command: `--view` flag replaced with positional syntax (`akm show <ref> toc`)
 - Collapsed `AssetTypeHandler` handlers into a unified renderer pipeline
@@ -46,6 +46,37 @@ cleans up the CLI surface, and renames the package from `agentikit` to `akm-cli`
 ### Fixed
 - CLI crash on macOS when running as compiled binary (`package.json` not embedded)
 - Cleaned up search output formatting
+
+## [0.0.17] - 2026-03-12
+
+Registry refactor and documentation overhaul. This release introduces a
+first-class registry management CLI, modernizes the config schema, and
+rewrites all documentation against the final asset model.
+
+### Added
+- `akm registry` subcommand group with `list`, `add`, `remove`, and `search` subcommands
+- `akm registry search --assets` flag for asset-level search against v2 registry indexes
+- `registries` config field (`RegistryConfigEntry[]`) with `url`, `name`, and `enabled` properties
+- Registry Index v2 schema with optional `assets` array on kit entries for asset-level discovery
+- Official registry pre-configured by default in new installations
+- Type names: `KitSource`, `InstalledKitEntry`, `KitInstallResult`, `KitInstallStatus`, `InstalledKitListEntry`
+
+### Changed
+- Config: `installed` is now a top-level field (`config.installed`) instead of nested under `config.registry.installed`
+- Config: registry URLs configured via `registries` array instead of `registryUrls`
+- Documentation: complete rewrite of concepts, registry, CLI reference, README, and all technical docs
+- Documentation: added "Mental Model" (registries --> kits --> stash --> assets) to concepts
+- Documentation: added asset classification taxonomy description
+- Documentation: merged ref format documentation into concepts (removed "opaque handle" framing)
+- Documentation: revised apt analogy in core principles to map registries, kits, stash, and assets
+- Documentation: added `akm registry` subcommand group to CLI reference
+- Documentation: added registry hosting and v2 index format guides
+
+### Removed
+- `tool` asset type (fully removed across all documentation and code)
+- `registryUrls` config field (replaced by `registries`)
+- `config.registry.installed` nesting (replaced by `config.installed`)
+- All `tools/` directory references from documentation
 
 ## [0.0.13] - 2026-03-09
 

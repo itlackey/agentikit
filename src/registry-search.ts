@@ -1,13 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fetchWithRetry } from "./common";
+import { DEFAULT_CONFIG, loadConfig, type RegistryConfigEntry } from "./config";
 import { getRegistryIndexCacheDir } from "./paths";
-import type { RegistrySearchHit, RegistrySearchResponse } from "./registry-types";
+import type {
+  RegistryAssetEntry,
+  RegistryAssetSearchHit,
+  RegistrySearchHit,
+  RegistrySearchResponse,
+} from "./registry-types";
 
 // ── Constants ───────────────────────────────────────────────────────────────
-
-/** Default registry index URL. Override via config or AKM_REGISTRY_URL env var. */
-const DEFAULT_REGISTRY_URL = "https://raw.githubusercontent.com/itlackey/akm-registry/main/index.json";
 
 /** Cache TTL in milliseconds (1 hour). */
 const CACHE_TTL_MS = 60 * 60 * 1000;
@@ -32,6 +35,7 @@ export interface RegistryKitEntry {
   homepage?: string;
   tags?: string[];
   assetTypes?: string[];
+  assets?: RegistryAssetEntry[];
   author?: string;
   license?: string;
   latestVersion?: string;
@@ -41,9 +45,13 @@ export interface RegistryKitEntry {
 
 export interface RegistrySearchOptions {
   limit?: number;
-  /** Override registry URL(s). Accepts a single URL or an array. */
-  registryUrls?: string | string[];
+  /** Override registries. Accepts an array of RegistryConfigEntry objects. */
+  registries?: RegistryConfigEntry[];
+  /** When true, also search asset-level metadata within kits. */
+  includeAssets?: boolean;
 }
+
+export type { RegistryAssetSearchHit } from "./registry-types";
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -54,32 +62,67 @@ export async function searchRegistry(query: string, options?: RegistrySearchOpti
   }
 
   const limit = clampLimit(options?.limit);
-  const urls = resolveRegistryUrls(options?.registryUrls);
+  const entries = (options?.registries ?? resolveRegistries()).filter((r) => r.enabled !== false);
   const warnings: string[] = [];
 
   // Load index from all configured registries, merge kits
-  const allKits: RegistryKitEntry[] = [];
-  for (const url of urls) {
+  const allKits: Array<{ kit: RegistryKitEntry; registryName?: string }> = [];
+  for (const entry of entries) {
     try {
-      const index = await loadIndex(url);
+      const index = await loadIndex(entry);
       if (index) {
-        allKits.push(...index.kits);
+        const regName = entry.name;
+        for (const kit of index.kits) {
+          allKits.push({ kit, registryName: regName });
+        }
       }
     } catch (err) {
-      warnings.push(`Registry ${url}: ${toErrorMessage(err)}`);
+      const label = entry.name ? `${entry.name} (${entry.url})` : entry.url;
+      warnings.push(`Registry ${label}: ${toErrorMessage(err)}`);
     }
   }
 
   // Score and rank
   const hits = scoreKits(allKits, trimmed, limit);
 
-  return { query: trimmed, hits, warnings };
+  // When includeAssets is enabled, also search asset-level metadata
+  let assetHits: RegistryAssetSearchHit[] = [];
+  if (options?.includeAssets) {
+    assetHits = scoreAssets(allKits, trimmed, limit);
+  }
+
+  return { query: trimmed, hits, warnings, assetHits: assetHits.length > 0 ? assetHits : undefined };
+}
+
+// ── Registry resolution ─────────────────────────────────────────────────────
+
+/**
+ * Resolve the list of enabled registries.
+ *
+ * Priority:
+ * 1. AKM_REGISTRY_URL env var (CI override, comma-separated)
+ * 2. config.registries (filtered by enabled !== false)
+ * 3. Default registries from DEFAULT_CONFIG
+ */
+export function resolveRegistries(configRegistries?: RegistryConfigEntry[]): RegistryConfigEntry[] {
+  // Allow env var override (comma-separated URLs) — CI escape hatch
+  const envUrls = process.env.AKM_REGISTRY_URL?.trim();
+  if (envUrls) {
+    return envUrls
+      .split(",")
+      .map((u) => u.trim())
+      .filter(Boolean)
+      .map((url) => ({ url }));
+  }
+
+  const registries = configRegistries ?? loadConfig().registries ?? DEFAULT_CONFIG.registries ?? [];
+  return registries.filter((r) => r.enabled !== false);
 }
 
 // ── Index loading with cache ────────────────────────────────────────────────
 
-async function loadIndex(url: string): Promise<RegistryIndex | null> {
-  const cachePath = indexCachePath(url);
+async function loadIndex(entry: RegistryConfigEntry): Promise<RegistryIndex | null> {
+  const cachePath = indexCachePath(entry.url);
   const cached = readCachedIndex(cachePath);
 
   // Fresh cache: return immediately
@@ -89,7 +132,7 @@ async function loadIndex(url: string): Promise<RegistryIndex | null> {
 
   // Try to fetch fresh index
   try {
-    const response = await fetchWithRetry(url, undefined, { timeout: 10_000 });
+    const response = await fetchWithRetry(entry.url, undefined, { timeout: 10_000 });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -157,7 +200,7 @@ function parseRegistryIndex(data: unknown): RegistryIndex | null {
   if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
   const obj = data as Record<string, unknown>;
 
-  if (typeof obj.version !== "number" || obj.version !== 1) return null;
+  if (typeof obj.version !== "number" || (obj.version !== 1 && obj.version !== 2)) return null;
   if (typeof obj.updatedAt !== "string") return null;
   if (!Array.isArray(obj.kits)) return null;
 
@@ -166,7 +209,7 @@ function parseRegistryIndex(data: unknown): RegistryIndex | null {
     return kit ? [kit] : [];
   });
 
-  return { version: 1, updatedAt: obj.updatedAt, kits };
+  return { version: obj.version, updatedAt: obj.updatedAt, kits };
 }
 
 function parseKitEntry(raw: unknown): RegistryKitEntry | null {
@@ -188,6 +231,7 @@ function parseKitEntry(raw: unknown): RegistryKitEntry | null {
     homepage: asString(obj.homepage),
     tags: asStringArray(obj.tags),
     assetTypes: asStringArray(obj.assetTypes),
+    assets: parseAssets(obj.assets),
     author: asString(obj.author),
     license: asString(obj.license),
     latestVersion: asString(obj.latestVersion),
@@ -197,21 +241,25 @@ function parseKitEntry(raw: unknown): RegistryKitEntry | null {
 
 // ── Scoring ─────────────────────────────────────────────────────────────────
 
-function scoreKits(kits: RegistryKitEntry[], query: string, limit: number): RegistrySearchHit[] {
+function scoreKits(
+  kits: Array<{ kit: RegistryKitEntry; registryName?: string }>,
+  query: string,
+  limit: number,
+): RegistrySearchHit[] {
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
 
-  const scored: Array<{ kit: RegistryKitEntry; score: number }> = [];
+  const scored: Array<{ kit: RegistryKitEntry; registryName?: string; score: number }> = [];
 
-  for (const kit of kits) {
+  for (const { kit, registryName } of kits) {
     const score = scoreKit(kit, tokens);
     if (score > 0) {
-      scored.push({ kit, score });
+      scored.push({ kit, registryName, score });
     }
   }
 
   scored.sort((a, b) => b.score - a.score);
 
-  return scored.slice(0, limit).map(({ kit, score }) => toSearchHit(kit, score));
+  return scored.slice(0, limit).map(({ kit, registryName, score }) => toSearchHit(kit, score, registryName));
 }
 
 function scoreKit(kit: RegistryKitEntry, tokens: string[]): number {
@@ -250,7 +298,7 @@ function scoreKit(kit: RegistryKitEntry, tokens: string[]): number {
   return tokens.length > 0 ? score / tokens.length : 0;
 }
 
-function toSearchHit(kit: RegistryKitEntry, score: number): RegistrySearchHit {
+function toSearchHit(kit: RegistryKitEntry, score: number, registryName?: string): RegistrySearchHit {
   const metadata: Record<string, string> = {};
   if (kit.latestVersion) metadata.version = kit.latestVersion;
   if (kit.author) metadata.author = kit.author;
@@ -267,27 +315,117 @@ function toSearchHit(kit: RegistryKitEntry, score: number): RegistrySearchHit {
     score: Math.round(score * 1000) / 1000,
     metadata,
     curated: kit.curated,
+    registryName,
   };
 }
 
-// ── Registry URL resolution ─────────────────────────────────────────────────
+// ── Asset parsing ────────────────────────────────────────────────────────────
 
-function resolveRegistryUrls(override?: string | string[]): string[] {
-  if (override) {
-    const urls = Array.isArray(override) ? override : [override];
-    return urls.filter(Boolean);
+function parseAssets(raw: unknown): RegistryAssetEntry[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const parsed = raw.flatMap((item): RegistryAssetEntry[] => {
+    const entry = parseAssetEntry(item);
+    return entry ? [entry] : [];
+  });
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+function parseAssetEntry(raw: unknown): RegistryAssetEntry | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+
+  const type = asString(obj.type);
+  const name = asString(obj.name);
+  if (!type || !name) return null;
+
+  return {
+    type,
+    name,
+    description: asString(obj.description),
+    tags: asStringArray(obj.tags),
+  };
+}
+
+// ── Asset-level scoring ──────────────────────────────────────────────────────
+
+function scoreAssets(
+  kits: Array<{ kit: RegistryKitEntry; registryName?: string }>,
+  query: string,
+  limit: number,
+): RegistryAssetSearchHit[] {
+  const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return [];
+
+  const scored: Array<{ hit: RegistryAssetSearchHit; score: number }> = [];
+
+  for (const { kit, registryName } of kits) {
+    if (!kit.assets || kit.assets.length === 0) continue;
+
+    const installRef =
+      kit.source === "npm"
+        ? `npm:${kit.ref}`
+        : kit.source === "git"
+          ? `git+${kit.ref}`
+          : kit.source === "local"
+            ? kit.ref
+            : `github:${kit.ref}`;
+
+    for (const asset of kit.assets) {
+      const score = scoreAsset(asset, tokens);
+      if (score > 0) {
+        scored.push({
+          hit: {
+            type: "registry-asset",
+            assetType: asset.type,
+            assetName: asset.name,
+            description: asset.description,
+            kit: { id: kit.id, name: kit.name },
+            registryName,
+            action: `akm add ${installRef}`,
+            score: Math.round(score * 1000) / 1000,
+          },
+          score,
+        });
+      }
+    }
   }
 
-  // Allow env var override (comma-separated)
-  const envUrls = process.env.AKM_REGISTRY_URL?.trim();
-  if (envUrls) {
-    return envUrls
-      .split(",")
-      .map((u) => u.trim())
-      .filter(Boolean);
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit).map(({ hit }) => hit);
+}
+
+function scoreAsset(asset: RegistryAssetEntry, tokens: string[]): number {
+  let score = 0;
+  const nameLower = asset.name.toLowerCase();
+  const descLower = (asset.description ?? "").toLowerCase();
+  const tagsLower = (asset.tags ?? []).map((t) => t.toLowerCase());
+  const typeLower = asset.type.toLowerCase();
+
+  for (const token of tokens) {
+    if (nameLower === token) {
+      score += 1.0;
+    } else if (nameLower.includes(token)) {
+      score += 0.6;
+    }
+
+    if (typeLower === token) {
+      score += 0.4;
+    } else if (typeLower.includes(token)) {
+      score += 0.2;
+    }
+
+    if (tagsLower.some((tag) => tag === token)) {
+      score += 0.5;
+    } else if (tagsLower.some((tag) => tag.includes(token))) {
+      score += 0.25;
+    }
+
+    if (descLower.includes(token)) {
+      score += 0.2;
+    }
   }
 
-  return [DEFAULT_REGISTRY_URL];
+  return tokens.length > 0 ? score / tokens.length : 0;
 }
 
 // ── Utilities ───────────────────────────────────────────────────────────────

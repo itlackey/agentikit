@@ -3,12 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { defineCommand, runMain } from "citty";
 import { resolveStashDir } from "./common";
+import type { RegistryConfigEntry } from "./config";
 import { getConfigPath, loadConfig, saveConfig } from "./config";
 import { getConfigValue, listConfig, setConfigValue, unsetConfigValue } from "./config-cli";
 import { ConfigError, NotFoundError, UsageError } from "./errors";
 import { agentikitIndex } from "./indexer";
 import { agentikitInit } from "./init";
 import { getCacheDir, getDbPath, getDefaultStashDir } from "./paths";
+import { searchRegistry } from "./registry-search";
 import { checkForUpdate, performUpgrade } from "./self-update";
 import { agentikitAdd } from "./stash-add";
 import { agentikitClone } from "./stash-clone";
@@ -120,6 +122,8 @@ function shapeForCommand(command: string, result: unknown, detail: DetailLevel):
   switch (command) {
     case "search":
       return shapeSearchOutput(result as Record<string, unknown>, detail);
+    case "registry-search":
+      return shapeRegistrySearchOutput(result as Record<string, unknown>, detail);
     case "show":
       return shapeShowOutput(result as Record<string, unknown>, detail);
     default:
@@ -150,6 +154,27 @@ function shapeSearchOutput(result: Record<string, unknown>, detail: DetailLevel)
   };
 }
 
+function shapeRegistrySearchOutput(result: Record<string, unknown>, detail: DetailLevel): Record<string, unknown> {
+  const hits = Array.isArray(result.hits) ? (result.hits as Record<string, unknown>[]) : [];
+  const assetHits = Array.isArray(result.assetHits) ? (result.assetHits as Record<string, unknown>[]) : [];
+
+  // Shape kit hits as registry type
+  const shapedKitHits = hits.map((hit) => shapeSearchHit({ ...hit, type: "registry" }, detail));
+  const shapedAssetHits = assetHits.map((hit) => shapeSearchHit(hit, detail));
+
+  const shaped: Record<string, unknown> = {
+    hits: shapedKitHits,
+    ...(shapedAssetHits.length > 0 ? { assetHits: shapedAssetHits } : {}),
+    ...(Array.isArray(result.warnings) && result.warnings.length > 0 ? { warnings: result.warnings } : {}),
+  };
+
+  if (detail === "full") {
+    shaped.query = result.query;
+  }
+
+  return shaped;
+}
+
 function shapeSearchHit(hit: Record<string, unknown>, detail: DetailLevel): Record<string, unknown> {
   // Keep local and registry hit models separate internally so search and
   // ranking logic can carry source-specific metadata. Normalize the external
@@ -158,6 +183,17 @@ function shapeSearchHit(hit: Record<string, unknown>, detail: DetailLevel): Reco
     const brief = withTruncatedDescription(pickFields(hit, ["type", "name", "id", "description", "action", "curated"]));
     if (detail === "brief") return brief;
     if (detail === "normal") return pickFields(hit, ["type", "name", "id", "description", "tags", "action", "curated"]);
+    return hit;
+  }
+
+  if (hit.type === "registry-asset") {
+    const brief = withTruncatedDescription(
+      pickFields(hit, ["type", "assetType", "assetName", "description", "kit", "action"]),
+    );
+    if (detail === "brief") return brief;
+    if (detail === "normal") {
+      return pickFields(hit, ["type", "assetType", "assetName", "description", "kit", "registryName", "action"]);
+    }
     return hit;
   }
 
@@ -412,8 +448,7 @@ const searchCommand = defineCommand({
     query: { type: "positional", description: "Search query (omit to list all assets)", required: false, default: "" },
     type: {
       type: "string",
-      description:
-        "Asset type filter (skill|command|agent|knowledge|script|any). 'tool' is accepted as alias for 'script'.",
+      description: "Asset type filter (skill|command|agent|knowledge|script|any).",
     },
     limit: { type: "string", description: "Maximum number of results" },
     source: { type: "string", description: "Search source (local|registry|both)", default: "local" },
@@ -422,7 +457,7 @@ const searchCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      const type = args.type as "tool" | "skill" | "command" | "agent" | "knowledge" | "script" | "any" | undefined;
+      const type = args.type as "skill" | "command" | "agent" | "knowledge" | "script" | "any" | undefined;
       const limit = args.limit ? parseInt(args.limit, 10) : undefined;
       const source = parseSearchSource(args.source);
       const result = await agentikitSearch({ query: args.query, type, limit, source });
@@ -449,7 +484,7 @@ const addCommand = defineCommand({
 });
 
 const listCommand = defineCommand({
-  meta: { name: "list", description: "List installed registry packages from config" },
+  meta: { name: "list", description: "List installed kits" },
   async run() {
     await runWithJsonErrors(async () => {
       const result = await agentikitList();
@@ -459,7 +494,7 @@ const listCommand = defineCommand({
 });
 
 const removeCommand = defineCommand({
-  meta: { name: "remove", description: "Remove an installed registry package by id or ref" },
+  meta: { name: "remove", description: "Remove an installed kit by id or ref" },
   args: {
     target: { type: "positional", description: "Installed target (id or ref)", required: true },
   },
@@ -472,7 +507,7 @@ const removeCommand = defineCommand({
 });
 
 const updateCommand = defineCommand({
-  meta: { name: "update", description: "Update one or all installed registry packages" },
+  meta: { name: "update", description: "Update one or all installed kits" },
   args: {
     target: { type: "positional", description: "Installed target (id or ref)", required: false },
     all: { type: "boolean", description: "Update all installed entries", default: false },
@@ -652,7 +687,7 @@ const cloneCommand = defineCommand({
     description: "Clone an asset from any stash source into the working stash or a custom destination",
   },
   args: {
-    ref: { type: "positional", description: "Asset ref (e.g. @installed:pkg/tool:script.sh)", required: true },
+    ref: { type: "positional", description: "Asset ref (e.g. npm:@scope/pkg//script:deploy.sh)", required: true },
     name: { type: "string", description: "New name for the cloned asset" },
     force: { type: "boolean", description: "Overwrite if asset already exists in working stash", default: false },
     dest: { type: "string", description: "Destination directory (default: working stash)" },
@@ -670,12 +705,91 @@ const cloneCommand = defineCommand({
   },
 });
 
+const registryCommand = defineCommand({
+  meta: { name: "registry", description: "Manage kit registries" },
+  subCommands: {
+    list: defineCommand({
+      meta: { name: "list", description: "List configured registries" },
+      run() {
+        return runWithJsonErrors(() => {
+          const config = loadConfig();
+          const registries = config.registries ?? [];
+          output("registry-list", { registries });
+        });
+      },
+    }),
+    add: defineCommand({
+      meta: { name: "add", description: "Add a registry by URL" },
+      args: {
+        url: { type: "positional", description: "Registry index URL", required: true },
+        name: { type: "string", description: "Human-friendly name for the registry" },
+      },
+      run({ args }) {
+        return runWithJsonErrors(() => {
+          if (!args.url.startsWith("http")) {
+            throw new UsageError("Registry URL must start with http:// or https://");
+          }
+          const config = loadConfig();
+          const registries = [...(config.registries ?? [])];
+          // Deduplicate by URL
+          if (registries.some((r) => r.url === args.url)) {
+            output("registry-add", { registries, added: false, message: "Registry URL already configured" });
+            return;
+          }
+          const entry: RegistryConfigEntry = { url: args.url };
+          if (args.name) entry.name = args.name;
+          registries.push(entry);
+          saveConfig({ ...config, registries });
+          output("registry-add", { registries, added: true });
+        });
+      },
+    }),
+    remove: defineCommand({
+      meta: { name: "remove", description: "Remove a registry by URL or name" },
+      args: {
+        target: { type: "positional", description: "Registry URL or name to remove", required: true },
+      },
+      run({ args }) {
+        return runWithJsonErrors(() => {
+          const config = loadConfig();
+          const registries = [...(config.registries ?? [])];
+          const idx = registries.findIndex((r) => r.url === args.target || r.name === args.target);
+          if (idx === -1) {
+            output("registry-remove", { registries, removed: false, message: "No matching registry found" });
+            return;
+          }
+          const removed = registries.splice(idx, 1)[0];
+          saveConfig({ ...config, registries });
+          output("registry-remove", { registries, removed: true, entry: removed });
+        });
+      },
+    }),
+    search: defineCommand({
+      meta: { name: "search", description: "Search enabled registries for kits" },
+      args: {
+        query: { type: "positional", description: "Search query", required: true },
+        limit: { type: "string", description: "Maximum number of results" },
+        assets: { type: "boolean", description: "Include asset-level search results", default: false },
+      },
+      async run({ args }) {
+        await runWithJsonErrors(async () => {
+          const limit = args.limit ? parseInt(args.limit, 10) : undefined;
+          const result = await searchRegistry(args.query, { limit, includeAssets: args.assets });
+          output("registry-search", result);
+        });
+      },
+    }),
+  },
+});
+
 const sourcesCommand = defineCommand({
   meta: { name: "sources", description: "List all stash search paths and their status" },
   run() {
     return runWithJsonErrors(() => {
+      const config = loadConfig();
       const sources = resolveStashSources();
-      output("sources", { sources });
+      const registries = config.registries ?? [];
+      output("sources", { sources, registries });
     });
   },
 });
@@ -703,6 +817,7 @@ const main = defineCommand({
     show: showCommand,
     clone: cloneCommand,
     sources: sourcesCommand,
+    registry: registryCommand,
     config: configCommand,
   },
 });
@@ -755,7 +870,7 @@ function buildHint(message: string): string | undefined {
   if (message.includes("Either <target> or --all is required"))
     return "Use `akm update --all` or pass a target like `akm update npm:@scope/pkg`.";
   if (message.includes("Specify either <target> or --all")) return "Use only one: a positional target or `--all`.";
-  if (message.includes("No installed registry entry matched target"))
+  if (message.includes("No installed kit matched target"))
     return "Run `akm list` to view installed ids/refs, then retry with one of those values.";
   if (message.includes("remote package fetched but asset not found"))
     return "The remote package was fetched but doesn't contain the requested asset. Check the asset name and type.";

@@ -1,13 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getConfigDir } from "./config";
-import type { RegistrySource } from "./registry-types";
+import type { KitSource } from "./registry-types";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export interface LockfileEntry {
   id: string;
-  source: RegistrySource;
+  source: KitSource;
   ref: string;
   resolvedVersion?: string;
   resolvedRevision?: string;

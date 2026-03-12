@@ -7,13 +7,7 @@ import { fetchWithRetry, isWithin } from "./common";
 import { type AgentikitConfig, loadConfig, saveConfig } from "./config";
 import { getRegistryCacheDir as _getRegistryCacheDir } from "./paths";
 import { parseRegistryRef, resolveRegistryArtifact } from "./registry-resolve";
-import type {
-  ParsedGitRef,
-  ParsedLocalRef,
-  RegistryInstalledEntry,
-  RegistryInstallResult,
-  RegistrySource,
-} from "./registry-types";
+import type { InstalledKitEntry, KitInstallResult, KitSource, ParsedGitRef, ParsedLocalRef } from "./registry-types";
 
 const REGISTRY_STASH_DIR_NAMES = new Set<string>(Object.values(TYPE_DIRS));
 
@@ -22,10 +16,7 @@ export interface InstallRegistryRefOptions {
   now?: Date;
 }
 
-export async function installRegistryRef(
-  ref: string,
-  options?: InstallRegistryRefOptions,
-): Promise<RegistryInstallResult> {
+export async function installRegistryRef(ref: string, options?: InstallRegistryRefOptions): Promise<KitInstallResult> {
   const parsed = parseRegistryRef(ref);
   if (parsed.source === "local") {
     return installLocalRegistryRef(parsed, options);
@@ -100,7 +91,7 @@ export async function installRegistryRef(
 async function installLocalRegistryRef(
   parsed: ParsedLocalRef,
   options?: InstallRegistryRefOptions,
-): Promise<RegistryInstallResult> {
+): Promise<KitInstallResult> {
   const resolved = await resolveRegistryArtifact(parsed);
   const installedAt = (options?.now ?? new Date()).toISOString();
 
@@ -125,7 +116,7 @@ async function installLocalRegistryRef(
 async function installGitRegistryRef(
   parsed: ParsedGitRef,
   options?: InstallRegistryRefOptions,
-): Promise<RegistryInstallResult> {
+): Promise<KitInstallResult> {
   const resolved = await resolveRegistryArtifact(parsed);
   const installedAt = (options?.now ?? new Date()).toISOString();
   const cacheRootDir = options?.cacheRootDir ?? getRegistryCacheRootDir();
@@ -197,15 +188,15 @@ async function installGitRegistryRef(
   };
 }
 
-export function upsertInstalledRegistryEntry(entry: RegistryInstalledEntry): AgentikitConfig {
+export function upsertInstalledRegistryEntry(entry: InstalledKitEntry): AgentikitConfig {
   const current = loadConfig();
-  const currentInstalled = current.registry?.installed ?? [];
+  const currentInstalled = current.installed ?? [];
   const withoutExisting = currentInstalled.filter((item) => item.id !== entry.id);
   const nextInstalled = [...withoutExisting, normalizeInstalledEntry(entry)];
 
   const nextConfig: AgentikitConfig = {
     ...current,
-    registry: { installed: nextInstalled },
+    installed: nextInstalled,
   };
   saveConfig(nextConfig);
   return nextConfig;
@@ -213,12 +204,12 @@ export function upsertInstalledRegistryEntry(entry: RegistryInstalledEntry): Age
 
 export function removeInstalledRegistryEntry(id: string): AgentikitConfig {
   const current = loadConfig();
-  const currentInstalled = current.registry?.installed ?? [];
+  const currentInstalled = current.installed ?? [];
   const nextInstalled = currentInstalled.filter((item) => item.id !== id);
 
   const nextConfig: AgentikitConfig = {
     ...current,
-    registry: nextInstalled.length > 0 ? { installed: nextInstalled } : undefined,
+    installed: nextInstalled.length > 0 ? nextInstalled : undefined,
   };
   saveConfig(nextConfig);
   return nextConfig;
@@ -251,7 +242,7 @@ export function detectStashRoot(extractedDir: string): string {
   return root;
 }
 
-function buildInstallCacheDir(cacheRootDir: string, source: RegistrySource, id: string, version?: string): string {
+function buildInstallCacheDir(cacheRootDir: string, source: KitSource, id: string, version?: string): string {
   const slug = `${source}-${id.replace(/[^a-zA-Z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "")}`;
   const versionSlug =
     source === "local"
@@ -293,11 +284,7 @@ async function downloadArchive(url: string, destination: string): Promise<void> 
   }
 }
 
-export function verifyArchiveIntegrity(
-  archivePath: string,
-  expected: string | undefined,
-  source?: RegistrySource,
-): void {
+export function verifyArchiveIntegrity(archivePath: string, expected: string | undefined, source?: KitSource): void {
   if (!expected) return;
 
   // For GitHub and git sources, resolvedRevision is a commit SHA, not a content hash.
@@ -491,7 +478,7 @@ function countStashDirs(dirPath: string): number {
 /**
  * BFS to find the shallowest directory that looks like a stash root.
  * Checks for both `.stash` directories and well-known type directories
- * (tools/, skills/, etc.), so nested layouts like `project/my-kit/tools/`
+ * (scripts/, skills/, etc.), so nested layouts like `project/my-kit/scripts/`
  * are discovered even without a `.stash` marker.
  *
  * Skips `root` itself since the caller already checked it via `hasStashDirs`.
@@ -529,7 +516,7 @@ function findShallowestStashRoot(root: string): string | undefined {
   return undefined;
 }
 
-function normalizeInstalledEntry(entry: RegistryInstalledEntry): RegistryInstalledEntry {
+function normalizeInstalledEntry(entry: InstalledKitEntry): InstalledKitEntry {
   return {
     ...entry,
     stashRoot: path.resolve(entry.stashRoot),

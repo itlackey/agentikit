@@ -1,15 +1,33 @@
 # Concepts
 
-`akm` is built around a small stash of kits that contain reusable assets that agents can search,
-inspect, and execute.
+`akm` is a package manager for AI agent capabilities. It organizes scripts,
+skills, commands, agents, and knowledge documents into a searchable library
+that any AI coding assistant can use.
+
+## Mental Model
+
+Four layers, from broadest to most specific:
+
+```text
+registries --> kits --> stash --> assets
+```
+
+1. **Registries** are indexes of available kits. The official registry ships
+   by default; you can add third-party registries with `akm registry add`.
+2. **Kits** are installable packages of assets. Install them with `akm add`
+   from npm, GitHub, any git host, or a local directory.
+3. **The stash** is the local library where assets live. It merges your
+   personal assets, search-path directories, and installed kits into a
+   single searchable collection.
+4. **Assets** are the individual capabilities an agent discovers and uses:
+   scripts, skills, commands, agents, and knowledge documents.
 
 ## What's In a Kit?
 
 A kit is a directory of assets you can share and install. There's no required
-structure — `akm` classifies assets by **file extension and content**, not by
+structure -- `akm` classifies assets by **file extension and content**, not by
 directory name. A `.sh` file is a script whether it lives in `scripts/`,
-`deploy/`, or at the root. A `.md` file with `tools` in its frontmatter is an
-agent definition wherever you put it.
+`deploy/`, or at the root.
 
 That said, using these directory names as an opt-in convention improves
 indexing confidence:
@@ -25,7 +43,7 @@ my-kit/
 
 ## Asset Types
 
-There are five primary asset types:
+There are five asset types:
 
 | Type | Purpose | What the agent gets |
 | --- | --- | --- |
@@ -35,9 +53,42 @@ There are five primary asset types:
 | **agent** | An agent definition | A system prompt, model hint, and tool policy |
 | **knowledge** | A reference document | Navigable content with TOC and section views |
 
-Assets are identified by a `ref` handle (for example `script:deploy.sh` or
-`agent:reviewer`). An agent discovers assets through `akm search` and
-retrieves full details with `akm show`.
+### Classification Taxonomy
+
+Scripts and knowledge are classified by **what they are**: a `.sh` file is a
+script; a plain `.md` file is knowledge. Commands and agents are classified by
+**how an LLM should use them**: a `.md` file with `$ARGUMENTS` placeholders is
+a command template; one with `tools` or `toolPolicy` in its frontmatter is an
+agent definition. Skills are a **packaging convention**: a directory containing
+a `SKILL.md` file.
+
+See [technical/classification.md](technical/classification.md) for the full
+specificity-based matching system.
+
+## Refs
+
+Assets are identified by a **ref** -- a compact handle returned by
+`akm search` and consumed by `akm show`. The format is:
+
+```text
+type:name
+```
+
+For example: `script:deploy.sh`, `agent:reviewer`, `knowledge:api-guide`.
+
+When an asset comes from an installed kit, refs can include an **origin**
+prefix to narrow lookup to that specific source:
+
+```text
+origin//type:name
+```
+
+For example: `npm:@scope/pkg//script:deploy.sh`,
+`github:owner/repo//knowledge:guide`.
+
+Agents should treat refs as opaque tokens -- get them from search, pass them
+to show. The structured fields `type`, `name`, and `origin` in search results
+provide the same information in a parseable form.
 
 ## Stash Sources
 

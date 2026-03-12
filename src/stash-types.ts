@@ -1,5 +1,5 @@
 import type { AgentikitAssetType } from "./common";
-import type { RegistrySource } from "./registry-types";
+import type { KitSource } from "./registry-types";
 
 export type AgentikitSearchType = AgentikitAssetType | "any";
 export type SearchSource = "local" | "registry" | "both";
@@ -35,6 +35,8 @@ export interface RegistrySearchResultHit {
   whyMatched?: string[];
   /** Whether this entry was manually reviewed and approved */
   curated?: boolean;
+  /** Name of the registry that provided this hit (provenance tracking) */
+  registryName?: string;
 }
 
 export type SearchHit = LocalSearchHit | RegistrySearchResultHit;
@@ -56,7 +58,7 @@ export interface AddResponse {
   ref: string;
   installed: {
     id: string;
-    source: RegistrySource;
+    source: KitSource;
     ref: string;
     artifactUrl: string;
     resolvedVersion?: string;
@@ -68,7 +70,7 @@ export interface AddResponse {
   };
   config: {
     searchPaths: string[];
-    installedRegistryCount: number;
+    installedKitCount: number;
   };
   index: {
     mode: "full" | "incremental";
@@ -78,9 +80,9 @@ export interface AddResponse {
   };
 }
 
-export interface RegistryInstallStatus {
+export interface KitInstallStatus {
   id: string;
-  source: RegistrySource;
+  source: KitSource;
   ref: string;
   artifactUrl: string;
   resolvedVersion?: string;
@@ -91,9 +93,9 @@ export interface RegistryInstallStatus {
   installedAt: string;
 }
 
-export interface RegistryListEntry {
+export interface InstalledKitListEntry {
   id: string;
-  source: RegistrySource;
+  source: KitSource;
   ref: string;
   artifactUrl: string;
   resolvedVersion?: string;
@@ -110,7 +112,7 @@ export interface RegistryListEntry {
 export interface ListResponse {
   schemaVersion: number;
   stashDir: string;
-  installed: RegistryListEntry[];
+  installed: InstalledKitListEntry[];
   totalInstalled: number;
 }
 
@@ -120,14 +122,14 @@ export interface RemoveResponse {
   target: string;
   removed: {
     id: string;
-    source: RegistrySource;
+    source: KitSource;
     ref: string;
     cacheDir: string;
     stashRoot: string;
   };
   config: {
     searchPaths: string[];
-    installedRegistryCount: number;
+    installedKitCount: number;
   };
   index: {
     mode: "full" | "incremental";
@@ -139,14 +141,14 @@ export interface RemoveResponse {
 
 export interface UpdateResultItem {
   id: string;
-  source: RegistrySource;
+  source: KitSource;
   ref: string;
   previous: {
     resolvedVersion?: string;
     resolvedRevision?: string;
     cacheDir: string;
   };
-  installed: RegistryInstallStatus;
+  installed: KitInstallStatus;
   changed: {
     version: boolean;
     revision: boolean;
@@ -162,7 +164,7 @@ export interface UpdateResponse {
   processed: UpdateResultItem[];
   config: {
     searchPaths: string[];
-    installedRegistryCount: number;
+    installedKitCount: number;
   };
   index: {
     mode: "full" | "incremental";
@@ -190,7 +192,7 @@ export interface ShowResponse {
   modelHint?: unknown;
   /** For commands: which agent should execute this command (OpenCode convention) */
   agent?: string;
-  /** How to run this script/tool (e.g. "bash deploy.sh", "bun run.ts") */
+  /** How to run this script (e.g. "bash deploy.sh", "bun run.ts") */
   run?: string;
   /** Setup command to run before execution (e.g. "bun install") */
   setup?: string;

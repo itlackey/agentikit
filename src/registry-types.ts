@@ -1,7 +1,7 @@
-export type RegistrySource = "npm" | "github" | "git" | "local";
+export type KitSource = "npm" | "github" | "git" | "local";
 
 export interface RegistryRefBase {
-  source: RegistrySource;
+  source: KitSource;
   ref: string;
   id: string;
 }
@@ -35,16 +35,16 @@ export type ParsedRegistryRef = ParsedNpmRef | ParsedGithubRef | ParsedGitRef | 
 
 export interface ResolvedRegistryArtifact {
   id: string;
-  source: RegistrySource;
+  source: KitSource;
   ref: string;
   artifactUrl: string;
   resolvedVersion?: string;
   resolvedRevision?: string;
 }
 
-export interface RegistryInstalledEntry {
+export interface InstalledKitEntry {
   id: string;
-  source: RegistrySource;
+  source: KitSource;
   ref: string;
   resolvedVersion?: string;
   resolvedRevision?: string;
@@ -54,13 +54,20 @@ export interface RegistryInstalledEntry {
   installedAt: string;
 }
 
-export interface RegistryInstallResult extends RegistryInstalledEntry {
+export interface KitInstallResult extends InstalledKitEntry {
   extractedDir: string;
   integrity?: string;
 }
 
+export interface RegistryAssetEntry {
+  type: string;
+  name: string;
+  description?: string;
+  tags?: string[];
+}
+
 export interface RegistrySearchHit {
-  source: RegistrySource;
+  source: KitSource;
   id: string;
   title: string;
   description?: string;
@@ -70,10 +77,24 @@ export interface RegistrySearchHit {
   metadata?: Record<string, string>;
   /** Whether this entry was manually reviewed and approved */
   curated?: boolean;
+  /** Name of the registry that provided this hit (provenance tracking) */
+  registryName?: string;
+}
+
+export interface RegistryAssetSearchHit {
+  type: "registry-asset";
+  assetType: string;
+  assetName: string;
+  description?: string;
+  kit: { id: string; name: string };
+  registryName?: string;
+  action: string;
+  score?: number;
 }
 
 export interface RegistrySearchResponse {
   query: string;
   hits: RegistrySearchHit[];
   warnings: string[];
+  assetHits?: RegistryAssetSearchHit[];
 }

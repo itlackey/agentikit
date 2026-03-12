@@ -19,7 +19,7 @@ const FIXTURE_INDEX: RegistryIndex = {
       source: "npm",
       homepage: "https://github.com/itlackey/openkit-starter",
       tags: ["opencode", "bun", "typescript", "starter"],
-      assetTypes: ["skill", "tool", "command"],
+      assetTypes: ["skill", "script", "command"],
       author: "itlackey",
       license: "MIT",
       latestVersion: "1.2.0",
@@ -43,7 +43,7 @@ const FIXTURE_INDEX: RegistryIndex = {
       ref: "someone/azure-ops-kit",
       source: "github",
       tags: ["azure", "devops", "container-apps", "infrastructure"],
-      assetTypes: ["skill", "tool"],
+      assetTypes: ["skill", "script"],
       author: "someone",
       license: "MIT",
       latestVersion: "v0.3.1",
@@ -150,7 +150,7 @@ describe("scoring", () => {
     const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("Azure Ops Kit", {
-        registryUrls: srv.url,
+        registries: [{ url: srv.url }],
       });
       expect(result.hits.length).toBeGreaterThan(0);
       expect(result.hits[0].id).toBe("github:someone/azure-ops-kit");
@@ -163,7 +163,7 @@ describe("scoring", () => {
     const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("creaturepunk", {
-        registryUrls: srv.url,
+        registries: [{ url: srv.url }],
       });
       expect(result.hits.length).toBeGreaterThan(0);
       expect(result.hits[0].id).toBe("github:itlackey/dimm-city-kit");
@@ -176,7 +176,7 @@ describe("scoring", () => {
     const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("Container Apps", {
-        registryUrls: srv.url,
+        registries: [{ url: srv.url }],
       });
       expect(result.hits.some((h) => h.id === "github:someone/azure-ops-kit")).toBe(true);
     } finally {
@@ -188,7 +188,7 @@ describe("scoring", () => {
     const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("zzz-nonexistent-xxy", {
-        registryUrls: srv.url,
+        registries: [{ url: srv.url }],
       });
       expect(result.hits).toEqual([]);
       expect(result.warnings).toEqual([]);
@@ -201,7 +201,7 @@ describe("scoring", () => {
     const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("bun typescript starter", {
-        registryUrls: srv.url,
+        registries: [{ url: srv.url }],
       });
       expect(result.hits.length).toBeGreaterThan(0);
       // openkit has all three in its tags
@@ -215,7 +215,7 @@ describe("scoring", () => {
     const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("devperson", {
-        registryUrls: srv.url,
+        registries: [{ url: srv.url }],
       });
       expect(result.hits.length).toBe(1);
       expect(result.hits[0].id).toBe("npm:generic-agent-utils");
@@ -232,7 +232,7 @@ describe("limit enforcement", () => {
     const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("kit", {
-        registryUrls: srv.url,
+        registries: [{ url: srv.url }],
         limit: 1,
       });
       expect(result.hits.length).toBeLessThanOrEqual(1);
@@ -245,7 +245,7 @@ describe("limit enforcement", () => {
     const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("kit", {
-        registryUrls: srv.url,
+        registries: [{ url: srv.url }],
         limit: 0,
       });
       // Should not crash, uses default of 20
@@ -259,7 +259,7 @@ describe("limit enforcement", () => {
     const srv = serveIndex(FIXTURE_INDEX);
     try {
       const result = await searchRegistry("kit", {
-        registryUrls: srv.url,
+        registries: [{ url: srv.url }],
         limit: NaN,
       });
       expect(result.hits.length).toBeLessThanOrEqual(20);
@@ -277,14 +277,14 @@ describe("caching", () => {
     const url = srv.url;
 
     // First call — fetches from server
-    const result1 = await searchRegistry("openkit", { registryUrls: url });
+    const result1 = await searchRegistry("openkit", { registries: [{ url }] });
     expect(result1.hits.length).toBeGreaterThan(0);
 
     // Kill the server
     srv.close();
 
     // Second call — should use cache
-    const result2 = await searchRegistry("openkit", { registryUrls: url });
+    const result2 = await searchRegistry("openkit", { registries: [{ url }] });
     expect(result2.hits.length).toBeGreaterThan(0);
     expect(result2.hits[0].id).toBe(result1.hits[0].id);
   });
@@ -296,7 +296,7 @@ describe("error handling", () => {
   test("server error produces warning, not exception", async () => {
     const srv = serveError(500);
     try {
-      const result = await searchRegistry("test", { registryUrls: srv.url });
+      const result = await searchRegistry("test", { registries: [{ url: srv.url }] });
       expect(result.hits).toEqual([]);
       expect(result.warnings.length).toBe(1);
       expect(result.warnings[0]).toContain("HTTP 500");
@@ -307,7 +307,7 @@ describe("error handling", () => {
 
   test("unreachable server produces warning", async () => {
     const result = await searchRegistry("test", {
-      registryUrls: "http://127.0.0.1:1/nonexistent",
+      registries: [{ url: "http://127.0.0.1:1/nonexistent" }],
     });
     expect(result.hits).toEqual([]);
     expect(result.warnings.length).toBe(1);
@@ -324,7 +324,7 @@ describe("error handling", () => {
     });
     try {
       const result = await searchRegistry("test", {
-        registryUrls: `http://localhost:${server.port}/index.json`,
+        registries: [{ url: `http://localhost:${server.port}/index.json` }],
       });
       expect(result.hits).toEqual([]);
       expect(result.warnings.length).toBe(1);
@@ -371,7 +371,7 @@ describe("multiple registries", () => {
     const srv2 = serveIndex(index2);
     try {
       const result = await searchRegistry("deploy", {
-        registryUrls: [srv1.url, srv2.url],
+        registries: [{ url: srv1.url }, { url: srv2.url }],
       });
       expect(result.hits.length).toBe(2);
       const ids = result.hits.map((h) => h.id);
@@ -402,7 +402,7 @@ describe("multiple registries", () => {
     const bad = serveError(500);
     try {
       const result = await searchRegistry("works", {
-        registryUrls: [good.url, bad.url],
+        registries: [{ url: good.url }, { url: bad.url }],
       });
       expect(result.hits.length).toBe(1);
       expect(result.hits[0].id).toBe("npm:good-kit");
@@ -420,7 +420,7 @@ describe("hit shape", () => {
   test("includes metadata fields from index", async () => {
     const srv = serveIndex(FIXTURE_INDEX);
     try {
-      const result = await searchRegistry("openkit", { registryUrls: srv.url });
+      const result = await searchRegistry("openkit", { registries: [{ url: srv.url }] });
       const hit = result.hits.find((h) => h.id === "npm:@itlackey/openkit");
       expect(hit).toBeDefined();
       expect(hit?.source).toBe("npm");
@@ -429,7 +429,7 @@ describe("hit shape", () => {
       expect(hit?.metadata?.version).toBe("1.2.0");
       expect(hit?.metadata?.author).toBe("itlackey");
       expect(hit?.metadata?.license).toBe("MIT");
-      expect(hit?.metadata?.assetTypes).toBe("skill, tool, command");
+      expect(hit?.metadata?.assetTypes).toBe("skill, script, command");
       expect(typeof hit?.score).toBe("number");
     } finally {
       srv.close();
@@ -439,7 +439,7 @@ describe("hit shape", () => {
   test("curated field is true for manual entries and undefined for auto-discovered", async () => {
     const srv = serveIndex(FIXTURE_INDEX);
     try {
-      const result = await searchRegistry("itlackey", { registryUrls: srv.url });
+      const result = await searchRegistry("itlackey", { registries: [{ url: srv.url }] });
       const curatedHit = result.hits.find((h) => h.id === "github:itlackey/dimm-city-kit");
       expect(curatedHit).toBeDefined();
       expect(curatedHit?.curated).toBe(true);
@@ -491,6 +491,36 @@ describe("AKM_REGISTRY_URL env var", () => {
     } finally {
       srv1.close();
       srv2.close();
+    }
+  });
+});
+
+// ── Provenance tagging ──────────────────────────────────────────────────────
+
+describe("provenance tagging", () => {
+  test("hits include registryName from entry config", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("openkit", {
+        registries: [{ url: srv.url, name: "test-registry" }],
+      });
+      expect(result.hits.length).toBeGreaterThan(0);
+      expect(result.hits[0].registryName).toBe("test-registry");
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("registryName is undefined when entry has no name", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("openkit", {
+        registries: [{ url: srv.url }],
+      });
+      expect(result.hits.length).toBeGreaterThan(0);
+      expect(result.hits[0].registryName).toBeUndefined();
+    } finally {
+      srv.close();
     }
   });
 });
