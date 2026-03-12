@@ -110,7 +110,7 @@ akm add file:///absolute/path/to/kit
    `akm.include` array, only the listed paths are copied into the
    install cache. This lets a kit ship a subset of its repo as the stash.
 6. **Config registration** -- The installed entry is saved to
-   `config.registry.installed` with its id, source, ref, resolved version,
+   `config.installed` with its id, source, ref, resolved version,
    cache path, and install timestamp.
 7. **Re-index** -- `akm index` runs automatically so the new assets appear in
    search immediately.

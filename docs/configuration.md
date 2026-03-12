@@ -31,7 +31,7 @@ akm config unset llm                # Remove an optional key
 | `llm` | object | null (disabled) | LLM connection for metadata enhancement |
 | `output.format` | string | `json` | Default output format (`json`, `text`, `yaml`) |
 | `output.detail` | string | `brief` | Default output detail (`brief`, `normal`, `full`) |
-| `registry.installed` | array | `[]` | Installed kit metadata (managed by akm) |
+| `installed` | array | `[]` | Installed kit metadata (managed by akm) |
 
 ## Embedding Configuration
 

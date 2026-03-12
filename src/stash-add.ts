@@ -64,7 +64,7 @@ export async function agentikitAdd(input: { ref: string }): Promise<AddResponse>
     },
     config: {
       searchPaths: config.searchPaths,
-      installedRegistryCount: config.installed?.length ?? 0,
+      installedKitCount: config.installed?.length ?? 0,
     },
     index: {
       mode: index.mode,

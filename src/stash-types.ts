@@ -68,7 +68,7 @@ export interface AddResponse {
   };
   config: {
     searchPaths: string[];
-    installedRegistryCount: number;
+    installedKitCount: number;
   };
   index: {
     mode: "full" | "incremental";
@@ -127,7 +127,7 @@ export interface RemoveResponse {
   };
   config: {
     searchPaths: string[];
-    installedRegistryCount: number;
+    installedKitCount: number;
   };
   index: {
     mode: "full" | "incremental";
@@ -162,7 +162,7 @@ export interface UpdateResponse {
   processed: UpdateResultItem[];
   config: {
     searchPaths: string[];
-    installedRegistryCount: number;
+    installedKitCount: number;
   };
   index: {
     mode: "full" | "incremental";

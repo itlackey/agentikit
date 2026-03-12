@@ -59,7 +59,7 @@ export async function agentikitRemove(input: { target: string; stashDir?: string
     },
     config: {
       searchPaths: updatedConfig.searchPaths,
-      installedRegistryCount: updatedConfig.installed?.length ?? 0,
+      installedKitCount: updatedConfig.installed?.length ?? 0,
     },
     index: {
       mode: index.mode,
@@ -134,7 +134,7 @@ export async function agentikitUpdate(input?: {
     processed,
     config: {
       searchPaths: config.searchPaths,
-      installedRegistryCount: config.installed?.length ?? 0,
+      installedKitCount: config.installed?.length ?? 0,
     },
     index: {
       mode: index.mode,

@@ -9,7 +9,7 @@ import { warn } from "./warn";
 
 export interface StashSource {
   path: string;
-  /** For installed sources, the registry entry id */
+  /** For installed sources, the installed kit id */
   registryId?: string;
 }
 
