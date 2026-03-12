@@ -142,11 +142,6 @@ my-kit/
 | **agent** | An agent definition | A system prompt, model hint, and tool policy |
 | **knowledge** | A reference document | Navigable content with TOC and section views |
 
-Assets are referenced by type and name (e.g. `script:deploy.sh`,
-`knowledge:api-guide`). In practice, agents should treat the `ref` returned
-by search as an opaque handle and pass it back to `akm show`. See
-[Concepts](docs/concepts.md) and [Ref Format](docs/ref.md).
-
 ## The Stash
 
 Your stash is the local library where assets live. It combines three sources
