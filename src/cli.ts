@@ -797,7 +797,10 @@ const sourcesCommand = defineCommand({
 });
 
 const hintsCommand = defineCommand({
-  meta: { name: "hints", description: "Print agent instructions on how to use akm, use --detail full for a complete guide" },
+  meta: {
+    name: "hints",
+    description: "Print agent instructions on how to use akm, use --detail full for a complete guide",
+  },
   args: {
     detail: { type: "string", description: "Detail level (normal|full)", default: "normal" },
   },
