@@ -129,7 +129,7 @@ edits always override installed versions.
 Each asset type directory can contain a `.stash.json` sidecar file with
 structured metadata. When no `.stash.json` exists, the indexer generates one
 automatically from filenames, code comments, frontmatter, and package.json.
-See [filesystem.md](filesystem.md) for the full field reference.
+See [technical/filesystem.md](technical/filesystem.md) for the full field reference.
 
 ## Script Execution (ExecHints)
 
@@ -175,7 +175,7 @@ is auto-suggested:
 - [CLI Reference](cli.md)
 - [Kit Maker's Guide](kit-makers.md) -- How to build and share a kit
 - [Registry](registry.md) -- Finding and installing kits
-- [Search Architecture](search.md) -- Hybrid search details
-- [Indexing](indexing.md) -- How the search index is built
-- [Filesystem Layout](filesystem.md) -- Directory structure and metadata schema
+- [Search Architecture](technical/search.md) -- Hybrid search details
+- [Indexing](technical/indexing.md) -- How the search index is built
+- [Filesystem Layout](technical/filesystem.md) -- Directory structure and metadata schema
 - [Configuration](configuration.md) -- Providers and settings

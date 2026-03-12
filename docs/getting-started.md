@@ -24,7 +24,7 @@ akm init
 
 This creates `~/akm` with subdirectories for each asset type: `scripts/`,
 `skills/`, `commands/`, `agents/`, `knowledge/`, and `tools/`. See
-[filesystem.md](filesystem.md) for platform-specific paths and environment
+[technical/filesystem.md](technical/filesystem.md) for platform-specific paths and environment
 variable overrides.
 
 ## Add Your First Asset
@@ -86,7 +86,7 @@ The output is structured JSON containing everything an agent needs to use
 the asset. For scripts, this includes a `run` command and `cwd`. For agents,
 a `prompt` payload. For knowledge, navigable `content` with view modes.
 
-See [show-response.md](show-response.md) for the full per-type field
+See [technical/show-response.md](technical/show-response.md) for the full per-type field
 reference.
 
 ## Install a Kit
@@ -109,5 +109,5 @@ ref formats.
 
 - [Concepts](concepts.md) -- Asset types, classification, and the stash
 - [CLI Reference](cli.md) -- All commands and flags
-- [openRef Format](openref.md) -- How asset references work
+- [Ref Format](technical/ref.md) -- How asset references work
 - [Kit Maker's Guide](kit-makers.md) -- Build and share your own kits

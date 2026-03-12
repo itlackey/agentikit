@@ -186,7 +186,7 @@ For better search quality, add a `.stash.json` in any asset type directory:
 ```
 
 Good `description`, `tags`, and `searchHints` values make the biggest difference
-in search ranking. See [filesystem.md](filesystem.md) for the full field
+in search ranking. See [technical/filesystem.md](technical/filesystem.md) for the full field
 reference.
 
 ## Step 4: Test Locally

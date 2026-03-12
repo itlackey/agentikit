@@ -282,9 +282,9 @@ akm upgrade --check   # Check for updates without installing
 | [CLI Reference](docs/cli.md) | All `akm` commands and flags |
 | [Kit Maker's Guide](docs/kit-makers.md) | Build and share a kit on GitHub, npm, or a network share |
 | [Registry](docs/registry.md) | Finding, installing, and publishing kits |
-| [Search](docs/search.md) | Hybrid search architecture and scoring |
-| [Indexing](docs/indexing.md) | How the search index is built |
-| [Filesystem](docs/filesystem.md) | Directory layout and `.stash.json` schema |
+| [Search](docs/technical/search.md) | Hybrid search architecture and scoring |
+| [Indexing](docs/technical/indexing.md) | How the search index is built |
+| [Filesystem](docs/technical/filesystem.md) | Directory layout and `.stash.json` schema |
 | [Configuration](docs/configuration.md) | Providers, settings, and Ollama setup |
 
 ## Status
