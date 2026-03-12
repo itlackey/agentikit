@@ -63,4 +63,4 @@ metadata by:
 This runs against an OpenAI-compatible chat endpoint with low temperature
 (0.3) for consistency. Enhancement is optional and degrades gracefully.
 
-See [configuration.md](configuration.md) for setting up an LLM provider.
+See [../configuration.md](../configuration.md) for setting up an LLM provider.

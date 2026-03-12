@@ -17,7 +17,7 @@ akm init
 
 Creates `tools/`, `skills/`, `commands/`, `agents/`, `knowledge/`, and
 `scripts/` subdirectories under the stash path. See
-[filesystem.md](filesystem.md) for config file locations.
+[technical/filesystem.md](technical/filesystem.md) for config file locations.
 
 ### index
 

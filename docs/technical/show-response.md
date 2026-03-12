@@ -52,7 +52,7 @@ hints. Scripts with unrecognized extensions fall back to raw content.
 Execution hints are resolved in priority order: `.stash.json` fields,
 then `@run`/`@setup`/`@cwd` header comment tags, then auto-detection from
 the file extension and nearby dependency files. See
-[concepts.md](concepts.md) for details.
+[../concepts.md](../concepts.md) for details.
 
 ### skill
 

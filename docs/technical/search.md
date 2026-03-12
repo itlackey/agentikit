@@ -44,7 +44,7 @@ When both local and registry sources are enabled, the CLI combines the two hit
 lists and sorts the final results by score.
 
 Registry results are filtered to only include packages and repos tagged with
-`akm` or `agentikit`. See [registry.md](registry.md) for details.
+`akm` or `agentikit`. See [../registry.md](../registry.md) for details.
 
 ## External Output Shape
 

@@ -142,11 +142,6 @@ my-kit/
 | **agent** | An agent definition | A system prompt, model hint, and tool policy |
 | **knowledge** | A reference document | Navigable content with TOC and section views |
 
-Assets are referenced by type and name (e.g. `script:deploy.sh`,
-`knowledge:api-guide`). In practice, agents should treat the `ref` returned
-by search as an opaque handle and pass it back to `akm show`. See
-[Concepts](docs/concepts.md) and [Ref Format](docs/ref.md).
-
 ## The Stash
 
 Your stash is the local library where assets live. It combines three sources
@@ -284,11 +279,11 @@ akm upgrade --check   # Check for updates without installing
 | [CLI Reference](docs/cli.md) | All `akm` commands and flags |
 | [Kit Maker's Guide](docs/kit-makers.md) | Build and share a kit on GitHub, npm, or a network share |
 | [Registry](docs/registry.md) | Finding, installing, and publishing kits |
-| [Search](docs/search.md) | Hybrid search architecture and scoring |
-| [Indexing](docs/indexing.md) | How the search index is built |
-| [Filesystem](docs/filesystem.md) | Directory layout and `.stash.json` schema |
+| [Search](docs/technical/search.md) | Hybrid search architecture and scoring |
+| [Indexing](docs/technical/indexing.md) | How the search index is built |
+| [Filesystem](docs/technical/filesystem.md) | Directory layout and `.stash.json` schema |
 | [Configuration](docs/configuration.md) | Providers, settings, and Ollama setup |
-| [Ref Format](docs/ref.md) | Opaque asset handles returned by `search` and consumed by `show` |
+| [Ref Format](docs/technical/ref.md) | Opaque asset handles returned by `search` and consumed by `show` |
 
 ## Status
 

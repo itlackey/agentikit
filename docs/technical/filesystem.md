@@ -31,7 +31,7 @@ are classified by file extension and content regardless of directory.
 
 A `.py` file placed in `scripts/` is classified at higher confidence than
 one placed in `random/`, but both are recognized as scripts. See
-[Concepts](concepts.md) for details on how classification works.
+[Concepts](../concepts.md) for details on how classification works.
 
 Each type directory may contain a `.stash.json` with per-asset metadata (see below).
 

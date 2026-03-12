@@ -10,9 +10,15 @@
 - [CLI](cli.md) -- All `akm` commands and flags
 - [Registry](registry.md) -- Finding, installing, and managing kits
 - [Configuration](configuration.md) -- Providers, settings, and Ollama setup
-- [Filesystem](filesystem.md) -- Directory layout and `.stash.json` schema
-- [Ref Format](ref.md) -- Opaque asset handles returned by `search` and consumed by `show`
+- [Filesystem](technical/filesystem.md) -- Directory layout and `.stash.json` schema
+- [Ref Format](technical/ref.md) -- Opaque asset handles returned by `search` and consumed by `show`
+
 ## Internals
 
-- [Search](search.md) -- Hybrid search architecture and scoring
-- [Indexing](indexing.md) -- How the search index is built
+- [Search](technical/search.md) -- Hybrid search architecture and scoring
+- [Indexing](technical/indexing.md) -- How the search index is built
+- [Classification](technical/classification.md) -- Matcher and renderer behavior
+- [Show Response](technical/show-response.md) -- `akm show` output fields by asset type
+- [Ref Format](technical/ref.md) -- Opaque asset handles returned by `search`
+- [Test Coverage Guide](technical/test-coverage-guide.md) -- High-value testing areas
+- [Core Principles](technical/akm-core-principles.md) -- Design principles and constraints
