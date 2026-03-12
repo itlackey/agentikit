@@ -1,4 +1,6 @@
-# akm -- the Agent-i-Kit Manager
+# akm - Agent Kit Manager
+
+> Agent-i-Kit
 
 [![npm version](https://img.shields.io/npm/v/akm-cli)](https://www.npmjs.com/package/akm-cli)
 [![CI](https://github.com/itlackey/agentikit/actions/workflows/ci.yml/badge.svg)](https://github.com/itlackey/agentikit/actions/workflows/ci.yml)
