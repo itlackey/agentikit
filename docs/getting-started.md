@@ -65,8 +65,8 @@ Find assets by keyword:
 akm search "hello"
 ```
 
-Results include an `openRef` field (e.g. `script:hello.sh`) that you pass
-to `akm show`. Filter by type or limit results:
+Results include a `ref` field (for example `script:hello.sh`) that you pass
+directly to `akm show`. Filter by type or limit results:
 
 ```sh
 akm search "deploy" --type script --limit 5
@@ -83,8 +83,9 @@ akm show script:hello.sh
 ```
 
 The output is structured JSON containing everything an agent needs to use
-the asset. For scripts, this includes a `run` command and `cwd`. For agents,
-a `prompt` payload. For knowledge, navigable `content` with view modes.
+the asset. For scripts, this includes a `run` command plus optional `cwd`
+and `setup`. For agents, a `prompt` payload. For knowledge, navigable
+`content` with view modes.
 
 See [technical/show-response.md](technical/show-response.md) for the full per-type field
 reference.

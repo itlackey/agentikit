@@ -48,6 +48,13 @@ export interface AgentikitConfig {
   registry?: RegistryConfig;
   /** Registry index URLs for kit discovery. Default: official akm-registry on GitHub */
   registryUrls?: string[];
+  /** Output defaults for CLI rendering */
+  output?: OutputConfig;
+}
+
+export interface OutputConfig {
+  format?: "json" | "yaml" | "text";
+  detail?: "brief" | "normal" | "full";
 }
 
 export interface RegistryConfig {
@@ -59,6 +66,10 @@ export interface RegistryConfig {
 export const DEFAULT_CONFIG: AgentikitConfig = {
   semanticSearch: true,
   searchPaths: [],
+  output: {
+    format: "json",
+    detail: "brief",
+  },
 };
 
 // ── Paths ───────────────────────────────────────────────────────────────────
@@ -177,15 +188,6 @@ function pickKnownKeys(raw: Record<string, unknown>): AgentikitConfig {
     config.searchPaths = raw.searchPaths.filter((d): d is string => typeof d === "string");
   }
 
-  // Backward compat: merge legacy mountedStashDirs into searchPaths
-  if (Array.isArray(raw.mountedStashDirs)) {
-    const legacy = raw.mountedStashDirs.filter((d): d is string => typeof d === "string");
-    const existing = new Set(config.searchPaths);
-    for (const d of legacy) {
-      if (!existing.has(d)) config.searchPaths.push(d);
-    }
-  }
-
   const embedding = parseEmbeddingConfig(raw.embedding);
   if (embedding) config.embedding = embedding;
 
@@ -199,7 +201,26 @@ function pickKnownKeys(raw: Record<string, unknown>): AgentikitConfig {
     config.registryUrls = raw.registryUrls.filter((u): u is string => typeof u === "string" && u.startsWith("http"));
   }
 
+  const output = parseOutputConfig(raw.output);
+  if (output) config.output = output;
+
   return config;
+}
+
+function parseOutputConfig(value: unknown): OutputConfig | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const obj = value as Record<string, unknown>;
+  const output: OutputConfig = {};
+
+  if (obj.format === "json" || obj.format === "yaml" || obj.format === "text") {
+    output.format = obj.format;
+  }
+
+  if (obj.detail === "brief" || obj.detail === "normal" || obj.detail === "full") {
+    output.detail = obj.detail;
+  }
+
+  return Object.keys(output).length > 0 ? output : undefined;
 }
 
 function readConfigObject(configPath: string): Record<string, unknown> | undefined {

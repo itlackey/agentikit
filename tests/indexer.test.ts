@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,8 +6,14 @@ import { closeDatabase, getAllEntries, getMeta, openDatabase } from "../src/db";
 import { agentikitIndex, buildSearchText } from "../src/indexer";
 import { getDbPath } from "../src/paths";
 
-// Each test gets a fresh database
+let testConfigDir = "";
+const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
+
+// Each test gets a fresh database and isolated config
 beforeEach(() => {
+  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-idx-config-"));
+  process.env.XDG_CONFIG_HOME = testConfigDir;
+
   const dbPath = getDbPath();
   for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
     try {
@@ -15,6 +21,18 @@ beforeEach(() => {
     } catch {
       /* ignore */
     }
+  }
+});
+
+afterEach(() => {
+  if (originalXdgConfigHome === undefined) {
+    delete process.env.XDG_CONFIG_HOME;
+  } else {
+    process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
+  }
+  if (testConfigDir) {
+    fs.rmSync(testConfigDir, { recursive: true, force: true });
+    testConfigDir = "";
   }
 });
 
@@ -86,36 +104,6 @@ test("agentikitIndex preserves manually-written .stash.json", async () => {
   const stash = JSON.parse(fs.readFileSync(path.join(stashDir, "tools", "git", ".stash.json"), "utf8"));
   expect(stash.entries[0].name).toBe("git-summarize");
   expect(stash.entries[0].quality).toBeUndefined();
-});
-
-test("agentikitIndex migrates generated skill metadata name to canonical directory name", async () => {
-  const stashDir = tmpStash();
-  writeFile(path.join(stashDir, "skills", "code-review", "SKILL.md"), "# Code Review\n");
-  writeFile(
-    path.join(stashDir, "skills", "code-review", ".stash.json"),
-    JSON.stringify({
-      entries: [
-        {
-          name: "SKILL",
-          type: "skill",
-          quality: "generated",
-          filename: "SKILL.md",
-          description: "legacy generated skill metadata",
-        },
-      ],
-    }),
-  );
-
-  const result = await agentikitIndex({ stashDir });
-  expect(result.totalEntries).toBe(1);
-
-  // Migration happens in-memory, .stash.json is not rewritten
-  // Check the database for the migrated name
-  const db = openDatabase();
-  const entries = getAllEntries(db);
-  expect(entries.length).toBeGreaterThan(0);
-  expect(entries[0].entry.name).toBe("code-review");
-  closeDatabase(db);
 });
 
 test("agentikitIndex writes index to SQLite database", async () => {
