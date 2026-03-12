@@ -796,6 +796,13 @@ const sourcesCommand = defineCommand({
   },
 });
 
+const hintsCommand = defineCommand({
+  meta: { name: "hints", description: "Print agent hints (AGENTS.md) for use in system prompts" },
+  run() {
+    process.stdout.write(loadHints());
+  },
+});
+
 const main = defineCommand({
   meta: {
     name: "akm",
@@ -821,6 +828,7 @@ const main = defineCommand({
     sources: sourcesCommand,
     registry: registryCommand,
     config: configCommand,
+    hints: hintsCommand,
   },
 });
 
@@ -965,3 +973,48 @@ function normalizeShowArgv(argv: string[]): string[] {
   result.push(...globalFlags);
   return result;
 }
+
+// ── Hints (embedded AGENTS.md) ──────────────────────────────────────────────
+
+function loadHints(): string {
+  // Try reading from the docs/ directory (works in dev and when installed via npm)
+  try {
+    const docsPath = path.resolve(import.meta.dir ?? __dirname, "../docs/AGENTS.md");
+    if (fs.existsSync(docsPath)) {
+      return fs.readFileSync(docsPath, "utf8");
+    }
+  } catch {
+    // fall through
+  }
+  // Fallback for compiled binary — inline content
+  return EMBEDDED_HINTS;
+}
+
+const EMBEDDED_HINTS = `# akm — Agent Kit Manager
+
+You have access to a searchable library of scripts, skills, commands, agents, and knowledge documents via \`akm\`. Search the stash first before writing something from scratch.
+
+## Quick Reference
+
+\`\`\`sh
+akm search "<query>"                          # Search for assets
+akm search "<query>" --type skill             # Filter by type
+akm search "<query>" --source registry        # Search registries only
+akm show <ref>                                # View asset details
+akm add <ref>                                 # Install a kit (npm, GitHub, git, local)
+akm clone <ref>                               # Copy an asset to the working stash
+akm registry search "<query>"                 # Search all registries
+\`\`\`
+
+## Asset Types
+
+| Type | What \`akm show\` returns |
+| --- | --- |
+| script | A \`run\` command you can execute directly |
+| skill | Instructions to follow (read the full content) |
+| command | A prompt template with placeholders to fill in |
+| agent | A system prompt with model and tool hints |
+| knowledge | A reference doc (use \`toc\` or \`section "..."\` to navigate) |
+
+Run \`akm -h\` for the full command reference.
+`;
