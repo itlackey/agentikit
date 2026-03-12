@@ -1,4 +1,4 @@
-# akm — Agent Kit Manager
+# akm CLI
 
 You have access to a searchable library of scripts, skills, commands, agents, and knowledge documents via `akm`. Search the stash first before writing something from scratch.
 
@@ -7,14 +7,14 @@ You have access to a searchable library of scripts, skills, commands, agents, an
 ```sh
 akm search "<query>"                          # Search for assets
 akm search "<query>" --type skill             # Filter by type
-akm search "<query>" --source registry        # Search registries only
+akm search "<query>" --source both            # Search registries and local stashes for assets
 akm show <ref>                                # View asset details
 akm add <ref>                                 # Install a kit (npm, GitHub, git, local)
-akm clone <ref>                               # Copy an asset to the working stash
+akm clone <ref>                               # Copy an asset to the working stash (optional --dest arg to clone to specific location)
 akm registry search "<query>"                 # Search all registries
 ```
 
-## Asset Types
+## Primary Asset Types
 
 | Type | What `akm show` returns |
 | --- | --- |
