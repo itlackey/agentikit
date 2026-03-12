@@ -128,6 +128,7 @@ describe("parser: v1 index compatibility", () => {
     const srv = serveIndex(V1_INDEX);
     try {
       const result = await searchRegistry("legacy", { registries: [{ url: srv.url }] });
+      expect(result.warnings).toEqual([]);
       expect(result.hits.length).toBe(1);
       expect(result.hits[0].id).toBe("npm:legacy-kit");
       expect(result.hits[0].title).toBe("Legacy Kit");
@@ -155,6 +156,7 @@ describe("parser: v2 index with assets", () => {
     const srv = serveIndex(V2_INDEX);
     try {
       const result = await searchRegistry("automation", { registries: [{ url: srv.url }] });
+      expect(result.warnings).toEqual([]);
       expect(result.hits.length).toBeGreaterThan(0);
       expect(result.hits[0].id).toBe("github:owner/my-kit");
     } finally {
@@ -166,6 +168,7 @@ describe("parser: v2 index with assets", () => {
     const srv = serveIndex(V2_INDEX);
     try {
       const result = await searchRegistry("deploy", { registries: [{ url: srv.url }], includeAssets: true });
+      expect(result.warnings).toEqual([]);
       expect(result.assetHits).toBeDefined();
       expect(result.assetHits?.length).toBeGreaterThan(0);
 
@@ -193,6 +196,7 @@ describe("asset-level search", () => {
         registries: [{ url: srv.url, name: "test-reg" }],
         includeAssets: true,
       });
+      expect(result.warnings).toEqual([]);
       expect(result.assetHits).toBeDefined();
       const reviewHit = result.assetHits?.find((h) => h.assetName === "code-review");
       expect(reviewHit).toBeDefined();
@@ -212,11 +216,7 @@ describe("asset-level search", () => {
       });
       // "utility" matches the no-assets-kit but not any asset
       // Asset hits should not include anything from kits without assets
-      if (result.assetHits) {
-        for (const assetHit of result.assetHits) {
-          expect(assetHit.kit.id).not.toBe("npm:no-assets-kit");
-        }
-      }
+      expect(result.assetHits).toBeUndefined();
     } finally {
       srv.close();
     }
@@ -229,11 +229,8 @@ describe("asset-level search", () => {
         registries: [{ url: srv.url }],
         includeAssets: true,
       });
-      if (result.assetHits) {
-        for (const assetHit of result.assetHits) {
-          expect(assetHit.kit.id).not.toBe("github:owner/empty-assets-kit");
-        }
-      }
+      // "test" only matches the empty-assets-kit tag, which has no assets
+      expect(result.assetHits).toBeUndefined();
     } finally {
       srv.close();
     }
@@ -260,6 +257,50 @@ describe("asset-level search", () => {
       expect(result.assetHits?.length).toBeGreaterThan(0);
       // The deploy.sh asset should score higher than code-review for this query
       expect(result.assetHits?.[0].assetName).toBe("deploy.sh");
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("local source kit uses raw ref in action string", async () => {
+    const localIndex: RegistryIndex = {
+      version: 2,
+      updatedAt: "2026-03-12T00:00:00Z",
+      kits: [
+        {
+          id: "local:my-local-kit",
+          name: "Local Kit",
+          description: "A kit from a local path",
+          ref: "/home/user/kits/my-local-kit",
+          source: "local",
+          tags: ["local", "dev"],
+          assets: [
+            {
+              type: "script",
+              name: "setup.sh",
+              description: "Setup script for local development",
+              tags: ["setup"],
+            },
+          ],
+        },
+      ],
+    };
+    const srv = serveIndex(localIndex);
+    try {
+      const result = await searchRegistry("setup", {
+        registries: [{ url: srv.url }],
+        includeAssets: true,
+      });
+      expect(result.warnings).toEqual([]);
+      expect(result.assetHits).toBeDefined();
+      expect(result.assetHits?.length).toBe(1);
+      const hit = result.assetHits?.[0];
+      expect(hit).toBeDefined();
+      expect(hit?.assetName).toBe("setup.sh");
+      expect(hit?.kit.id).toBe("local:my-local-kit");
+      // Local source should use the raw ref, not prefixed with "github:"
+      expect(hit?.action).toBe("akm add /home/user/kits/my-local-kit");
+      expect(hit?.action).not.toContain("github:");
     } finally {
       srv.close();
     }

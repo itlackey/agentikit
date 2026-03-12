@@ -362,7 +362,13 @@ function scoreAssets(
     if (!kit.assets || kit.assets.length === 0) continue;
 
     const installRef =
-      kit.source === "npm" ? `npm:${kit.ref}` : kit.source === "git" ? `git+${kit.ref}` : `github:${kit.ref}`;
+      kit.source === "npm"
+        ? `npm:${kit.ref}`
+        : kit.source === "git"
+          ? `git+${kit.ref}`
+          : kit.source === "local"
+            ? kit.ref
+            : `github:${kit.ref}`;
 
     for (const asset of kit.assets) {
       const score = scoreAsset(asset, tokens);

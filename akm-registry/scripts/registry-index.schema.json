@@ -43,7 +43,7 @@
         },
         "source": {
           "type": "string",
-          "enum": ["npm", "github", "git"],
+          "enum": ["npm", "github", "git", "local"],
           "description": "Registry source type"
         },
         "homepage": {
