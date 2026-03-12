@@ -45,7 +45,7 @@ export interface RegistryKitEntry {
 
 export interface RegistrySearchOptions {
   limit?: number;
-  /** Override registries. Accepts RegistryConfigEntry[] or legacy string/string[] URLs. */
+  /** Override registries. Accepts an array of RegistryConfigEntry objects. */
   registries?: RegistryConfigEntry[];
   /** When true, also search asset-level metadata within kits. */
   includeAssets?: boolean;
