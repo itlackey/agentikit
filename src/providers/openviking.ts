@@ -5,7 +5,7 @@ import type { RegistryConfigEntry } from "../config";
 import { getRegistryIndexCacheDir } from "../paths";
 import { registerProvider } from "../provider-registry";
 import type { RegistryProvider, RegistryProviderResult, RegistryProviderSearchOptions } from "../registry-provider";
-import type { RegistryAssetSearchHit, RegistrySearchHit } from "../registry-types";
+import type { RegistryAssetSearchHit } from "../registry-types";
 
 /** Per-query cache TTL in milliseconds (5 minutes). */
 const QUERY_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -56,12 +56,10 @@ class OpenVikingProvider implements RegistryProvider {
     try {
       const entries = await this.fetchResults(options.query, options.limit);
       const limited = entries.slice(0, options.limit);
-      const hits = this.mapToHits(limited);
-      let assetHits: RegistryAssetSearchHit[] | undefined;
-      if (options.includeAssets) {
-        assetHits = this.mapToAssetHits(limited);
-      }
-      return { hits, assetHits };
+      // OV results are not installable via `akm add`, so we return them
+      // exclusively as asset hits (action = `akm show viking://...`).
+      const assetHits = this.mapToAssetHits(limited);
+      return { hits: [], assetHits };
     } catch (err) {
       const label = this.config.name ?? "openviking";
       const message = err instanceof Error ? err.message : String(err);
@@ -117,30 +115,6 @@ class OpenVikingProvider implements RegistryProvider {
     }
   }
 
-  private mapToHits(entries: OVSearchEntry[]): RegistrySearchHit[] {
-    if (entries.length === 0) return [];
-
-    const maxScore = Math.max(...entries.map((e) => e.score), 0.01);
-    const registryName = this.config.name ?? "openviking";
-
-    return entries.map((entry) => {
-      const score = Math.round((entry.score / maxScore) * 1000) / 1000;
-      const ref = uriToVikingRef(entry.uri);
-
-      return {
-        source: "local" as const,
-        id: `openviking:${entry.uri}`,
-        title: entry.name,
-        description: entry.abstract,
-        ref,
-        installRef: ref,
-        score,
-        registryName,
-        metadata: entry.type ? { ovType: entry.type } : undefined,
-      };
-    });
-  }
-
   private mapToAssetHits(entries: OVSearchEntry[]): RegistryAssetSearchHit[] | undefined {
     if (entries.length === 0) return undefined;
 
@@ -172,6 +146,12 @@ class OpenVikingProvider implements RegistryProvider {
     hasher.update(query.trim().toLowerCase());
     hasher.update("\0");
     hasher.update(String(limit));
+    hasher.update("\0");
+    const searchType = (this.config.options?.searchType as string) ?? "semantic";
+    hasher.update(searchType);
+    hasher.update("\0");
+    const apiKey = (this.config.options?.apiKey as string) ?? "";
+    hasher.update(apiKey);
     const hash = hasher.digest("hex");
     return path.join(cacheDir, `openviking-search-${hash}.json`);
   }

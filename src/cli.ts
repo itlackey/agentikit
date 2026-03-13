@@ -10,6 +10,7 @@ import { ConfigError, NotFoundError, UsageError } from "./errors";
 import { agentikitIndex } from "./indexer";
 import { agentikitInit } from "./init";
 import { getCacheDir, getDbPath, getDefaultStashDir } from "./paths";
+import { buildRegistryIndex, writeRegistryIndex } from "./registry-build-index";
 import { searchRegistry } from "./registry-search";
 import { checkForUpdate, performUpgrade } from "./self-update";
 import { agentikitAdd } from "./stash-add";
@@ -791,6 +792,33 @@ const registryCommand = defineCommand({
         });
       },
     }),
+    "build-index": defineCommand({
+      meta: { name: "build-index", description: "Build a v2 registry index from discovery and manual entries" },
+      args: {
+        out: { type: "string", description: "Output path for the generated index", default: "index.json" },
+        manual: { type: "string", description: "Manual entries JSON file", default: "manual-entries.json" },
+        npmRegistry: { type: "string", description: "Override npm registry base URL" },
+        githubApi: { type: "string", description: "Override GitHub API base URL" },
+      },
+      async run({ args }) {
+        await runWithJsonErrors(async () => {
+          const result = await buildRegistryIndex({
+            manualEntriesPath: args.manual,
+            npmRegistryBase: args.npmRegistry,
+            githubApiBase: args.githubApi,
+          });
+          const outPath = writeRegistryIndex(result.index, args.out);
+          output("registry-build-index", {
+            outPath,
+            version: result.index.version,
+            updatedAt: result.index.updatedAt,
+            totalKits: result.counts.total,
+            counts: result.counts,
+            manualEntriesPath: result.paths.manualEntriesPath,
+          });
+        });
+      },
+    }),
   },
 });
 
@@ -1123,6 +1151,8 @@ akm registry add <url> --provider skills-sh   # Specify provider type
 akm registry remove <url-or-name>             # Remove a registry
 akm registry search "<query>"                 # Search all registries
 akm registry search "<query>" --assets        # Include asset-level results
+akm registry build-index                      # Build ./index.json
+akm registry build-index --out dist/index.json # Build to a custom path
 \`\`\`
 
 ## Configuration

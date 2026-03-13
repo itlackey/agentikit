@@ -15,16 +15,16 @@ export function isVikingRef(ref: string): boolean {
 export async function agentikitShowRemote(input: { ref: string }): Promise<ShowResponse> {
   const uri = input.ref.trim();
   const config = loadConfig();
-  const baseUrl = resolveOVBaseUrl(config.registries);
-  if (!baseUrl) {
+  const ovRegistry = resolveOVRegistry(config.registries);
+  if (!ovRegistry) {
     throw new UsageError(
       "No OpenViking registry configured. Run: akm registry add http://localhost:1933 --name openviking --provider openviking",
     );
   }
 
+  const baseUrl = ovRegistry.url?.replace(/\/+$/, "") ?? "";
   const headers: Record<string, string> = {};
-  const ovRegistry = config.registries?.find((r) => r.provider === "openviking");
-  const apiKey = (ovRegistry?.options?.apiKey as string) ?? undefined;
+  const apiKey = (ovRegistry.options?.apiKey as string) ?? undefined;
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
   // Fetch metadata and content in parallel
@@ -32,6 +32,18 @@ export async function agentikitShowRemote(input: { ref: string }): Promise<ShowR
     fetchOVJson(`${baseUrl}/api/v1/fs/stat?uri=${encodeURIComponent(uri)}`, headers),
     fetchOVJson(`${baseUrl}/api/v1/content/read?uri=${encodeURIComponent(uri)}&offset=0&limit=-1`, headers),
   ]);
+
+  // Fail loudly when the OpenViking server is unreachable or the resource is missing
+  if (statResult == null && contentResult == null) {
+    throw new NotFoundError(
+      `Could not fetch remote asset "${uri}". The OpenViking server at ${baseUrl} may be unreachable or the resource does not exist.`,
+    );
+  }
+  if (contentResult == null) {
+    throw new NotFoundError(
+      `Content not found for remote asset "${uri}". The server returned metadata but no content.`,
+    );
+  }
 
   const stat = (typeof statResult === "object" && statResult !== null ? statResult : {}) as Record<string, unknown>;
   const uriPath = uri.replace(/^viking:\/\//, "");
@@ -52,9 +64,8 @@ export async function agentikitShowRemote(input: { ref: string }): Promise<ShowR
   };
 }
 
-function resolveOVBaseUrl(registries?: RegistryConfigEntry[]): string | undefined {
-  const entry = registries?.find((r) => r.provider === "openviking" && r.enabled !== false);
-  return entry?.url?.replace(/\/+$/, "");
+function resolveOVRegistry(registries?: RegistryConfigEntry[]): RegistryConfigEntry | undefined {
+  return registries?.find((r) => r.provider === "openviking" && r.enabled !== false);
 }
 
 async function fetchOVJson(url: string, headers: Record<string, string>): Promise<unknown> {

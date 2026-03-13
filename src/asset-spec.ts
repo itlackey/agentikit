@@ -71,13 +71,14 @@ export const ASSET_SPECS: Record<string, AssetSpec> = ASSET_SPECS_INTERNAL;
 export function registerAssetType(type: string, spec: AssetSpec): void {
   ASSET_SPECS_INTERNAL[type] = spec;
   TYPE_DIRS[type] = spec.stashDir;
+  ASSET_TYPES = getAssetTypes();
 }
 
 export function getAssetTypes(): string[] {
   return Object.keys(ASSET_SPECS_INTERNAL);
 }
 
-export const ASSET_TYPES: string[] = getAssetTypes();
+export let ASSET_TYPES: string[] = getAssetTypes();
 
 export const TYPE_DIRS: Record<string, string> = Object.fromEntries(
   Object.entries(ASSET_SPECS_INTERNAL).map(([type, spec]) => [type, spec.stashDir]),
