@@ -28,4 +28,6 @@ services:
     volumes:
       - ../../../.dev/workspace:/workspace
       - ./ov.conf:/config/ov.conf:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
