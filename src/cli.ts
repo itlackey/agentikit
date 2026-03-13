@@ -16,7 +16,7 @@ import { agentikitAdd } from "./stash-add";
 import { agentikitClone } from "./stash-clone";
 import { agentikitList, agentikitRemove, agentikitUpdate } from "./stash-registry";
 import { agentikitSearch } from "./stash-search";
-import { agentikitShow } from "./stash-show";
+import { agentikitShow, agentikitShowRemote, isVikingRef } from "./stash-show";
 import { resolveStashSources } from "./stash-source";
 import type { KnowledgeView, SearchSource } from "./stash-types";
 import { setQuiet, warn } from "./warn";
@@ -448,7 +448,7 @@ const searchCommand = defineCommand({
     query: { type: "positional", description: "Search query (omit to list all assets)", required: false, default: "" },
     type: {
       type: "string",
-      description: "Asset type filter (skill|command|agent|knowledge|script|any).",
+      description: "Asset type filter (e.g. skill, command, agent, knowledge, script, memory, or any).",
     },
     limit: { type: "string", description: "Maximum number of results" },
     source: { type: "string", description: "Search source (local|registry|both)", default: "local" },
@@ -457,7 +457,7 @@ const searchCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      const type = args.type as "skill" | "command" | "agent" | "knowledge" | "script" | "any" | undefined;
+      const type = args.type as string | undefined;
       const limit = args.limit ? parseInt(args.limit, 10) : undefined;
       const source = parseSearchSource(args.source);
       const result = await agentikitSearch({ query: args.query, type, limit, source });
@@ -581,7 +581,9 @@ const showCommand = defineCommand({
             );
         }
       }
-      const result = await agentikitShow({ ref: args.ref, view });
+      const result = isVikingRef(args.ref)
+        ? await agentikitShowRemote({ ref: args.ref })
+        : await agentikitShow({ ref: args.ref, view });
       output("show", result);
     });
   },
@@ -724,6 +726,7 @@ const registryCommand = defineCommand({
         url: { type: "positional", description: "Registry index URL", required: true },
         name: { type: "string", description: "Human-friendly name for the registry" },
         provider: { type: "string", description: "Provider type (e.g. static-index, skills-sh)" },
+        options: { type: "string", description: 'Provider options as JSON (e.g. \'{"apiKey":"key"}\').' },
       },
       run({ args }) {
         return runWithJsonErrors(() => {
@@ -740,6 +743,13 @@ const registryCommand = defineCommand({
           const entry: RegistryConfigEntry = { url: args.url };
           if (args.name) entry.name = args.name;
           if (args.provider) entry.provider = args.provider;
+          if (args.options) {
+            try {
+              entry.options = JSON.parse(args.options);
+            } catch {
+              throw new UsageError("--options must be valid JSON");
+            }
+          }
           registries.push(entry);
           saveConfig({ ...config, registries });
           output("registry-add", { registries, added: true });
@@ -1046,7 +1056,7 @@ akm search "<query>" --detail full            # Include scores, paths, timing
 
 | Flag | Values | Default |
 | --- | --- | --- |
-| \`--type\` | \`skill\`, \`command\`, \`agent\`, \`knowledge\`, \`script\`, \`any\` | \`any\` |
+| \`--type\` | \`skill\`, \`command\`, \`agent\`, \`knowledge\`, \`script\`, \`memory\`, \`any\` | \`any\` |
 | \`--source\` | \`local\`, \`registry\`, \`both\` | \`local\` |
 | \`--limit\` | number | \`20\` |
 | \`--format\` | \`json\`, \`text\`, \`yaml\` | \`json\` |
@@ -1064,6 +1074,7 @@ akm show agent:architect                      # Show agent (returns system promp
 akm show knowledge:guide toc                  # Table of contents
 akm show knowledge:guide section "Auth"       # Specific section
 akm show knowledge:guide lines 10 30          # Line range
+akm show viking://resources/my-doc           # Show remote OpenViking content
 \`\`\`
 
 | Type | Key fields returned |
@@ -1073,6 +1084,7 @@ akm show knowledge:guide lines 10 30          # Line range
 | command | \`template\`, \`description\`, \`parameters\` |
 | agent | \`prompt\`, \`description\`, \`modelHint\`, \`toolPolicy\` |
 | knowledge | \`content\` (with view modes: \`full\`, \`toc\`, \`frontmatter\`, \`section\`, \`lines\`) |
+| memory | \`content\` (recalled context) |
 
 ## Install & Manage Kits
 

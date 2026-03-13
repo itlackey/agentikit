@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { deriveCanonicalAssetNameFromStashRoot } from "./asset-spec";
-import type { AgentikitAssetType } from "./common";
 import { type AgentikitConfig, loadConfig } from "./config";
 import {
   closeDatabase,
@@ -556,31 +555,40 @@ function mergeSearchHits(
 }
 
 /** Map asset types to their primary renderer names. */
-const TYPE_TO_RENDERER: Record<AgentikitAssetType, string> = {
+const TYPE_TO_RENDERER: Record<string, string> = {
   script: "script-source",
   skill: "skill-md",
   command: "command-md",
   agent: "agent-md",
   knowledge: "knowledge-md",
+  memory: "memory-md",
 };
 
-function rendererForType(type: AgentikitAssetType) {
-  return getRenderer(TYPE_TO_RENDERER[type]);
+export function registerTypeRenderer(type: string, rendererName: string): void {
+  TYPE_TO_RENDERER[type] = rendererName;
 }
 
-function buildLocalAction(type: AgentikitAssetType, ref: string): string {
-  switch (type) {
-    case "script":
-      return `akm show ${ref} -> execute the run command`;
-    case "skill":
-      return `akm show ${ref} -> follow the instructions`;
-    case "command":
-      return `akm show ${ref} -> fill placeholders and dispatch`;
-    case "agent":
-      return `akm show ${ref} -> dispatch with full prompt`;
-    case "knowledge":
-      return `akm show ${ref} -> read reference material`;
-  }
+function rendererForType(type: string) {
+  const name = TYPE_TO_RENDERER[type];
+  return name ? getRenderer(name) : undefined;
+}
+
+const ACTION_BUILDERS: Record<string, (ref: string) => string> = {
+  script: (ref) => `akm show ${ref} -> execute the run command`,
+  skill: (ref) => `akm show ${ref} -> follow the instructions`,
+  command: (ref) => `akm show ${ref} -> fill placeholders and dispatch`,
+  agent: (ref) => `akm show ${ref} -> dispatch with full prompt`,
+  knowledge: (ref) => `akm show ${ref} -> read reference material`,
+  memory: (ref) => `akm show ${ref} -> recall context`,
+};
+
+export function registerActionBuilder(type: string, builder: (ref: string) => string): void {
+  ACTION_BUILDERS[type] = builder;
+}
+
+function buildLocalAction(type: string, ref: string): string {
+  const builder = ACTION_BUILDERS[type];
+  return builder ? builder(ref) : `akm show ${ref}`;
 }
 
 function deriveSize(bytes?: number): SearchHitSize | undefined {

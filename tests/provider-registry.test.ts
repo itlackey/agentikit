@@ -25,4 +25,9 @@ describe("provider-registry", () => {
     await import("../src/providers/skills-sh");
     expect(resolveProviderFactory("skills-sh")).not.toBeNull();
   });
+
+  test("openviking is registered after import", async () => {
+    await import("../src/providers/openviking");
+    expect(resolveProviderFactory("openviking")).not.toBeNull();
+  });
 });

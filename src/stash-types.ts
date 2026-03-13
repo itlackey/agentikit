@@ -1,12 +1,11 @@
-import type { AgentikitAssetType } from "./common";
 import type { KitSource } from "./registry-types";
 
-export type AgentikitSearchType = AgentikitAssetType | "any";
+export type AgentikitSearchType = string;
 export type SearchSource = "local" | "registry" | "both";
 export type SearchHitSize = "small" | "medium" | "large";
 
 export interface LocalSearchHit {
-  type: AgentikitAssetType;
+  type: string;
   name: string;
   path: string;
   ref: string;
@@ -176,7 +175,7 @@ export interface UpdateResponse {
 
 export interface ShowResponse {
   schemaVersion?: number;
-  type: AgentikitAssetType | string;
+  type: string;
   name: string;
   path: string;
   content?: string;

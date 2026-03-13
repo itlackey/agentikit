@@ -6,6 +6,7 @@ import type { RegistryAssetSearchHit, RegistrySearchHit, RegistrySearchResponse 
 
 import "./providers/static-index";
 import "./providers/skills-sh";
+import "./providers/openviking";
 
 // ── Re-exports for backward compatibility ───────────────────────────────────
 

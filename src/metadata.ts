@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { deriveCanonicalAssetName, deriveCanonicalAssetNameFromStashRoot, isRelevantAssetFile } from "./asset-spec";
-import { type AgentikitAssetType, isAssetType } from "./common";
+import { isAssetType } from "./common";
 import { buildFileContext, buildRenderContext, getRenderer, runMatchers } from "./file-context";
 import { parseFrontmatter, toStringOrUndefined } from "./frontmatter";
 import type { TocHeading } from "./markdown";
@@ -17,7 +17,7 @@ export interface StashIntent {
 
 export interface StashEntry {
   name: string;
-  type: AgentikitAssetType;
+  type: string;
   description?: string;
   tags?: string[];
   examples?: string[];
@@ -101,7 +101,7 @@ export function validateStashEntry(entry: unknown): StashEntry | null {
 
   const result: StashEntry = {
     name: e.name,
-    type: e.type as AgentikitAssetType,
+    type: e.type as string,
   };
   if (typeof e.description === "string" && e.description) result.description = e.description;
   if (Array.isArray(e.tags)) result.tags = e.tags.filter((t): t is string => typeof t === "string");
@@ -164,12 +164,7 @@ function normalizeNonEmptyStringList(value: unknown): string[] | undefined {
 
 // ── Metadata Generation ─────────────────────────────────────────────────────
 
-export function generateMetadata(
-  dirPath: string,
-  assetType: AgentikitAssetType,
-  files: string[],
-  typeRoot = dirPath,
-): StashFile {
+export function generateMetadata(dirPath: string, assetType: string, files: string[], typeRoot = dirPath): StashFile {
   const entries: StashEntry[] = [];
   const pkgMeta = extractPackageMetadata(dirPath);
 
@@ -261,7 +256,7 @@ export function generateMetadataFlat(stashRoot: string, files: string[]): StashF
     const match = runMatchers(ctx);
     if (!match) continue;
 
-    const assetType = match.type as AgentikitAssetType;
+    const assetType = match.type;
     if (!isAssetType(assetType)) continue;
 
     // If the file lives under a known type directory, use that as the root

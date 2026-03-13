@@ -1,4 +1,5 @@
-import { loadConfig } from "./config";
+import { fetchWithRetry } from "./common";
+import { loadConfig, type RegistryConfigEntry } from "./config";
 import { NotFoundError, UsageError } from "./errors";
 import { buildFileContext, buildRenderContext, getRenderer, runMatchers } from "./file-context";
 import { resolveSourcesForOrigin } from "./origin-resolve";
@@ -6,6 +7,101 @@ import { parseAssetRef } from "./stash-ref";
 import { resolveAssetPath } from "./stash-resolve";
 import { buildEditHint, findSourceForPath, isEditable, resolveStashSources } from "./stash-source";
 import type { KnowledgeView, ShowResponse } from "./stash-types";
+
+export function isVikingRef(ref: string): boolean {
+  return ref.trim().startsWith("viking://");
+}
+
+export async function agentikitShowRemote(input: { ref: string }): Promise<ShowResponse> {
+  const uri = input.ref.trim();
+  const config = loadConfig();
+  const baseUrl = resolveOVBaseUrl(config.registries);
+  if (!baseUrl) {
+    throw new UsageError(
+      "No OpenViking registry configured. Run: akm registry add http://localhost:1933 --name openviking --provider openviking",
+    );
+  }
+
+  const headers: Record<string, string> = {};
+  const ovRegistry = config.registries?.find((r) => r.provider === "openviking");
+  const apiKey = (ovRegistry?.options?.apiKey as string) ?? undefined;
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
+  // Fetch metadata and content in parallel
+  const [statResult, contentResult] = await Promise.all([
+    fetchOVJson(`${baseUrl}/api/v1/fs/stat?uri=${encodeURIComponent(uri)}`, headers),
+    fetchOVJson(`${baseUrl}/api/v1/content/read?uri=${encodeURIComponent(uri)}&offset=0&limit=-1`, headers),
+  ]);
+
+  const stat = (typeof statResult === "object" && statResult !== null ? statResult : {}) as Record<string, unknown>;
+  const uriPath = uri.replace(/^viking:\/\//, "");
+  const name = (stat.name as string) ?? uriPath.split("/").pop() ?? "unknown";
+  const ovType = (stat.type as string) ?? inferTypeFromUri(uri);
+  const assetType = mapOVType(ovType);
+  // content/read returns result as a raw string
+  const content = typeof contentResult === "string" ? contentResult : "";
+
+  return {
+    type: assetType,
+    name,
+    path: uri,
+    action: `Remote content from OpenViking — ${uri}`,
+    content,
+    description: (stat.abstract as string) ?? undefined,
+    editable: false,
+  };
+}
+
+function resolveOVBaseUrl(registries?: RegistryConfigEntry[]): string | undefined {
+  const entry = registries?.find((r) => r.provider === "openviking" && r.enabled !== false);
+  return entry?.url?.replace(/\/+$/, "");
+}
+
+async function fetchOVJson(url: string, headers: Record<string, string>): Promise<unknown> {
+  try {
+    const response = await fetchWithRetry(url, { headers }, { timeout: 10_000, retries: 1 });
+    if (!response.ok) return null;
+    const data = (await response.json()) as Record<string, unknown>;
+    if (data.status !== "ok") return null;
+    return data.result ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function inferTypeFromUri(uri: string): string {
+  const path = uri.replace(/^viking:\/\//, "");
+  const firstSegment = path.split("/")[0];
+  const typeMap: Record<string, string> = {
+    memories: "memory",
+    skills: "skill",
+    resources: "knowledge",
+    agents: "agent",
+    commands: "command",
+    scripts: "script",
+    knowledge: "knowledge",
+  };
+  return typeMap[firstSegment] ?? "knowledge";
+}
+
+function mapOVType(ovType: string): string {
+  const map: Record<string, string> = {
+    memory: "memory",
+    memories: "memory",
+    skill: "skill",
+    skills: "skill",
+    resource: "knowledge",
+    resources: "knowledge",
+    knowledge: "knowledge",
+    agent: "agent",
+    agents: "agent",
+    command: "command",
+    commands: "command",
+    script: "script",
+    scripts: "script",
+  };
+  return map[ovType] ?? "knowledge";
+}
 
 export async function agentikitShow(input: { ref: string; view?: KnowledgeView }): Promise<ShowResponse> {
   const parsed = parseAssetRef(input.ref);

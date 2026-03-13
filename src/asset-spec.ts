@@ -1,5 +1,4 @@
 import path from "node:path";
-import type { AgentikitAssetType } from "./common";
 import { toPosix } from "./common";
 
 export interface AssetSpec {
@@ -49,7 +48,7 @@ const scriptSpec: Omit<AssetSpec, "stashDir"> = {
   toAssetPath: (typeRoot, name) => path.join(typeRoot, name),
 };
 
-export const ASSET_SPECS: Record<AgentikitAssetType, AssetSpec> = {
+const ASSET_SPECS_INTERNAL: Record<string, AssetSpec> = {
   skill: {
     stashDir: "skills",
     isRelevantFile: (fileName) => fileName === "SKILL.md",
@@ -64,32 +63,36 @@ export const ASSET_SPECS: Record<AgentikitAssetType, AssetSpec> = {
   agent: { stashDir: "agents", ...markdownSpec },
   knowledge: { stashDir: "knowledge", ...markdownSpec },
   script: { stashDir: "scripts", ...scriptSpec },
+  memory: { stashDir: "memories", ...markdownSpec },
 };
 
-export const ASSET_TYPES = Object.keys(ASSET_SPECS) as AgentikitAssetType[];
+export const ASSET_SPECS: Record<string, AssetSpec> = ASSET_SPECS_INTERNAL;
 
-export const TYPE_DIRS: Record<AgentikitAssetType, string> = ASSET_TYPES.reduce(
-  (acc, type) => {
-    acc[type] = ASSET_SPECS[type].stashDir;
-    return acc;
-  },
-  {} as Record<AgentikitAssetType, string>,
-);
-
-export function isRelevantAssetFile(assetType: AgentikitAssetType, fileName: string): boolean {
-  return ASSET_SPECS[assetType].isRelevantFile(fileName);
+export function registerAssetType(type: string, spec: AssetSpec): void {
+  ASSET_SPECS_INTERNAL[type] = spec;
+  TYPE_DIRS[type] = spec.stashDir;
 }
 
-export function deriveCanonicalAssetName(
-  assetType: AgentikitAssetType,
-  typeRoot: string,
-  filePath: string,
-): string | undefined {
-  return ASSET_SPECS[assetType].toCanonicalName(typeRoot, filePath);
+export function getAssetTypes(): string[] {
+  return Object.keys(ASSET_SPECS_INTERNAL);
+}
+
+export const ASSET_TYPES: string[] = getAssetTypes();
+
+export const TYPE_DIRS: Record<string, string> = Object.fromEntries(
+  Object.entries(ASSET_SPECS_INTERNAL).map(([type, spec]) => [type, spec.stashDir]),
+);
+
+export function isRelevantAssetFile(assetType: string, fileName: string): boolean {
+  return ASSET_SPECS[assetType]?.isRelevantFile(fileName) ?? false;
+}
+
+export function deriveCanonicalAssetName(assetType: string, typeRoot: string, filePath: string): string | undefined {
+  return ASSET_SPECS[assetType]?.toCanonicalName(typeRoot, filePath);
 }
 
 export function deriveCanonicalAssetNameFromStashRoot(
-  assetType: AgentikitAssetType,
+  assetType: string,
   stashRoot: string,
   filePath: string,
 ): string | undefined {
@@ -99,6 +102,8 @@ export function deriveCanonicalAssetNameFromStashRoot(
   return deriveCanonicalAssetName(assetType, typeRoot, filePath);
 }
 
-export function resolveAssetPathFromName(assetType: AgentikitAssetType, typeRoot: string, name: string): string {
-  return ASSET_SPECS[assetType].toAssetPath(typeRoot, name);
+export function resolveAssetPathFromName(assetType: string, typeRoot: string, name: string): string {
+  const spec = ASSET_SPECS[assetType];
+  if (!spec) throw new Error(`Unknown asset type: "${assetType}"`);
+  return spec.toAssetPath(typeRoot, name);
 }

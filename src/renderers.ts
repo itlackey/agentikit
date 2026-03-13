@@ -356,7 +356,24 @@ const knowledgeMdRenderer: AssetRenderer = {
   },
 };
 
-// ── 5. script-source ─────────────────────────────────────────────────────────
+// ── 5. memory-md ─────────────────────────────────────────────────────────────
+
+const memoryMdRenderer: AssetRenderer = {
+  name: "memory-md",
+
+  buildShowResponse(ctx: RenderContext): ShowResponse {
+    const name = deriveName(ctx);
+    return {
+      type: "memory",
+      name,
+      path: ctx.absPath,
+      action: "Recall context — read the content below",
+      content: ctx.content(),
+    };
+  },
+};
+
+// ── 6. script-source ─────────────────────────────────────────────────────────
 
 const scriptSourceRenderer: AssetRenderer = {
   name: "script-source",
@@ -426,6 +443,7 @@ const builtinRenderers: AssetRenderer[] = [
   commandMdRenderer,
   agentMdRenderer,
   knowledgeMdRenderer,
+  memoryMdRenderer,
   scriptSourceRenderer,
 ];
 
@@ -446,6 +464,7 @@ export {
   commandMdRenderer,
   agentMdRenderer,
   knowledgeMdRenderer,
+  memoryMdRenderer,
   scriptSourceRenderer,
   INTERPRETER_MAP,
   SETUP_SIGNALS,

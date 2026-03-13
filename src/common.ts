@@ -6,7 +6,7 @@ import { getConfigPath, getDefaultStashDir } from "./paths";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-export type AgentikitAssetType = "skill" | "command" | "agent" | "knowledge" | "script";
+export type AgentikitAssetType = string;
 
 // ── Constants ───────────────────────────────────────────────────────────────
 

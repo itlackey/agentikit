@@ -10,7 +10,6 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { isRelevantAssetFile } from "./asset-spec";
-import type { AgentikitAssetType } from "./common";
 import { buildFileContext, type FileContext } from "./file-context";
 
 export interface DirectoryGroup {
@@ -24,7 +23,7 @@ export interface DirectoryGroup {
  * Only files relevant to the given `assetType` are included (e.g. `.md` for
  * commands, script extensions for scripts, `SKILL.md` for skills).
  */
-export function walkStash(typeRoot: string, assetType: AgentikitAssetType): DirectoryGroup[] {
+export function walkStash(typeRoot: string, assetType: string): DirectoryGroup[] {
   if (!fs.existsSync(typeRoot)) return [];
 
   const groups = new Map<string, string[]>();

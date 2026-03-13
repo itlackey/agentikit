@@ -26,13 +26,14 @@ describe("SCRIPT_EXTENSIONS", () => {
 });
 
 describe("ASSET_TYPES", () => {
-  test("contains all five types", () => {
+  test("contains all built-in types", () => {
     expect(ASSET_TYPES).toContain("skill");
     expect(ASSET_TYPES).toContain("command");
     expect(ASSET_TYPES).toContain("agent");
     expect(ASSET_TYPES).toContain("knowledge");
     expect(ASSET_TYPES).toContain("script");
-    expect(ASSET_TYPES).toHaveLength(5);
+    expect(ASSET_TYPES).toContain("memory");
+    expect(ASSET_TYPES).toHaveLength(6);
   });
 });
 
@@ -43,6 +44,7 @@ describe("TYPE_DIRS", () => {
     expect(TYPE_DIRS.agent).toBe("agents");
     expect(TYPE_DIRS.knowledge).toBe("knowledge");
     expect(TYPE_DIRS.script).toBe("scripts");
+    expect(TYPE_DIRS.memory).toBe("memories");
   });
 });
 

@@ -6,7 +6,7 @@ import {
   resolveAssetPathFromName,
   TYPE_DIRS,
 } from "./asset-spec";
-import { type AgentikitAssetType, hasErrnoCode, isWithin } from "./common";
+import { hasErrnoCode, isWithin } from "./common";
 import { NotFoundError, UsageError } from "./errors";
 import { runMatchers } from "./file-context";
 import { walkStashFlat } from "./walker";
@@ -14,7 +14,7 @@ import { walkStashFlat } from "./walker";
 /**
  * Resolve an asset path from a stash directory, type, and name.
  */
-export function resolveAssetPath(stashDir: string, type: AgentikitAssetType, name: string): string {
+export function resolveAssetPath(stashDir: string, type: string, name: string): string {
   try {
     return resolveInTypeDir(stashDir, TYPE_DIRS[type], type, name);
   } catch (error) {
@@ -30,7 +30,7 @@ export function resolveAssetPath(stashDir: string, type: AgentikitAssetType, nam
 /**
  * Try to resolve an asset path within a specific type directory.
  */
-function resolveInTypeDir(stashDir: string, typeDir: string, type: AgentikitAssetType, name: string): string {
+function resolveInTypeDir(stashDir: string, typeDir: string, type: string, name: string): string {
   const root = path.join(stashDir, typeDir);
   const target = resolveAssetPathFromName(type, root, name);
   const resolvedRoot = resolveAndValidateTypeRoot(root, type, name);
@@ -56,7 +56,7 @@ function resolveInTypeDir(stashDir: string, typeDir: string, type: AgentikitAsse
   return realTarget;
 }
 
-function resolveAndValidateTypeRoot(root: string, type: AgentikitAssetType, name: string): string {
+function resolveAndValidateTypeRoot(root: string, type: string, name: string): string {
   const rootStat = readTypeRootStat(root, type, name);
   if (!rootStat.isDirectory()) {
     throw new NotFoundError(`Stash type root is not a directory for ref: ${type}:${name}`);
@@ -64,7 +64,7 @@ function resolveAndValidateTypeRoot(root: string, type: AgentikitAssetType, name
   return fs.realpathSync(root);
 }
 
-function readTypeRootStat(root: string, type: AgentikitAssetType, name: string): fs.Stats {
+function readTypeRootStat(root: string, type: string, name: string): fs.Stats {
   try {
     return fs.statSync(root);
   } catch (error: unknown) {
@@ -75,7 +75,7 @@ function readTypeRootStat(root: string, type: AgentikitAssetType, name: string):
   }
 }
 
-function resolveByCanonicalName(stashDir: string, type: AgentikitAssetType, name: string): string | undefined {
+function resolveByCanonicalName(stashDir: string, type: string, name: string): string | undefined {
   const normalizedName = name.replace(/\\/g, "/");
 
   for (const ctx of walkStashFlat(stashDir)) {

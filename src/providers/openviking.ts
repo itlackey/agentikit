@@ -1,0 +1,234 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fetchWithRetry } from "../common";
+import type { RegistryConfigEntry } from "../config";
+import { getRegistryIndexCacheDir } from "../paths";
+import { registerProvider } from "../provider-registry";
+import type { RegistryProvider, RegistryProviderResult, RegistryProviderSearchOptions } from "../registry-provider";
+import type { RegistryAssetSearchHit, RegistrySearchHit } from "../registry-types";
+
+/** Per-query cache TTL in milliseconds (5 minutes). */
+const QUERY_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** Maximum age before query cache is considered stale but still usable (1 hour). */
+const QUERY_CACHE_STALE_MS = 60 * 60 * 1000;
+
+interface OVSearchEntry {
+  uri: string;
+  name: string;
+  score: number;
+  type?: string;
+  abstract?: string;
+}
+
+interface OVResponse {
+  status: "ok" | "error";
+  result: unknown;
+  time?: number;
+  error?: string;
+}
+
+const OV_TYPE_TO_ASSET: Record<string, string> = {
+  skill: "skill",
+  skills: "skill",
+  memory: "memory",
+  memories: "memory",
+  resource: "knowledge",
+  resources: "knowledge",
+  knowledge: "knowledge",
+  agent: "agent",
+  agents: "agent",
+  command: "command",
+  commands: "command",
+  script: "script",
+  scripts: "script",
+};
+
+class OpenVikingProvider implements RegistryProvider {
+  readonly type = "openviking";
+  private readonly config: RegistryConfigEntry;
+
+  constructor(config: RegistryConfigEntry) {
+    this.config = config;
+  }
+
+  async search(options: RegistryProviderSearchOptions): Promise<RegistryProviderResult> {
+    try {
+      const entries = await this.fetchResults(options.query, options.limit);
+      const limited = entries.slice(0, options.limit);
+      const hits = this.mapToHits(limited);
+      let assetHits: RegistryAssetSearchHit[] | undefined;
+      if (options.includeAssets) {
+        assetHits = this.mapToAssetHits(limited);
+      }
+      return { hits, assetHits };
+    } catch (err) {
+      const label = this.config.name ?? "openviking";
+      const message = err instanceof Error ? err.message : String(err);
+      return { hits: [], warnings: [`Registry ${label}: ${message}`] };
+    }
+  }
+
+  private async fetchResults(query: string, limit: number): Promise<OVSearchEntry[]> {
+    const cachePath = this.queryCachePath(query, limit);
+    const cached = this.readQueryCache(cachePath);
+
+    if (cached && !isExpired(cached.mtime, QUERY_CACHE_TTL_MS)) {
+      return cached.entries;
+    }
+
+    const baseUrl = this.config.url.replace(/\/+$/, "");
+    const searchType = (this.config.options?.searchType as string) ?? "semantic";
+
+    try {
+      let url: string;
+      let body: string;
+
+      if (searchType === "text") {
+        url = `${baseUrl}/api/v1/search/grep`;
+        body = JSON.stringify({ uri: "viking://", pattern: query, case_insensitive: true });
+      } else {
+        url = `${baseUrl}/api/v1/search/find`;
+        body = JSON.stringify({ query, limit });
+      }
+
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const apiKey = (this.config.options?.apiKey as string) ?? undefined;
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
+      const response = await fetchWithRetry(url, { method: "POST", headers, body }, { timeout: 10_000, retries: 1 });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = (await response.json()) as OVResponse;
+      if (data.status !== "ok") {
+        throw new Error(data.error ?? "OpenViking returned error status");
+      }
+
+      const entries = parseOVSearchResponse(data.result);
+      this.writeQueryCache(cachePath, entries);
+      return entries;
+    } catch (err) {
+      if (cached && !isExpired(cached.mtime, QUERY_CACHE_STALE_MS)) {
+        return cached.entries;
+      }
+      throw err;
+    }
+  }
+
+  private mapToHits(entries: OVSearchEntry[]): RegistrySearchHit[] {
+    if (entries.length === 0) return [];
+
+    const maxScore = Math.max(...entries.map((e) => e.score), 0.01);
+    const registryName = this.config.name ?? "openviking";
+
+    return entries.map((entry) => {
+      const score = Math.round((entry.score / maxScore) * 1000) / 1000;
+      const ref = uriToVikingRef(entry.uri);
+
+      return {
+        source: "local" as const,
+        id: `openviking:${entry.uri}`,
+        title: entry.name,
+        description: entry.abstract,
+        ref,
+        installRef: ref,
+        score,
+        registryName,
+        metadata: entry.type ? { ovType: entry.type } : undefined,
+      };
+    });
+  }
+
+  private mapToAssetHits(entries: OVSearchEntry[]): RegistryAssetSearchHit[] | undefined {
+    if (entries.length === 0) return undefined;
+
+    const registryName = this.config.name ?? "openviking";
+    const maxScore = Math.max(...entries.map((e) => e.score), 0.01);
+
+    const hits: RegistryAssetSearchHit[] = entries.map((entry) => {
+      const assetType = OV_TYPE_TO_ASSET[entry.type ?? ""] ?? "knowledge";
+      const ref = uriToVikingRef(entry.uri);
+      return {
+        type: "registry-asset" as const,
+        assetType,
+        assetName: entry.name,
+        kit: { id: `openviking:${entry.uri}`, name: entry.name },
+        registryName,
+        action: `akm show ${ref}`,
+        score: Math.round((entry.score / maxScore) * 1000) / 1000,
+      };
+    });
+
+    return hits.length > 0 ? hits : undefined;
+  }
+
+  private queryCachePath(query: string, limit: number): string {
+    const cacheDir = getRegistryIndexCacheDir();
+    const hasher = new Bun.CryptoHasher("md5");
+    hasher.update(this.config.url);
+    hasher.update("\0");
+    hasher.update(query.trim().toLowerCase());
+    hasher.update("\0");
+    hasher.update(String(limit));
+    const hash = hasher.digest("hex");
+    return path.join(cacheDir, `openviking-search-${hash}.json`);
+  }
+
+  private readQueryCache(cachePath: string): { entries: OVSearchEntry[]; mtime: number } | null {
+    try {
+      const stat = fs.statSync(cachePath);
+      const raw = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+      if (!Array.isArray(raw)) return null;
+      const entries = raw.filter(isValidOVEntry);
+      return { entries, mtime: stat.mtimeMs };
+    } catch {
+      return null;
+    }
+  }
+
+  private writeQueryCache(cachePath: string, entries: OVSearchEntry[]): void {
+    try {
+      const dir = path.dirname(cachePath);
+      fs.mkdirSync(dir, { recursive: true });
+      const tmpPath = `${cachePath}.tmp.${process.pid}`;
+      fs.writeFileSync(tmpPath, JSON.stringify(entries), "utf8");
+      fs.renameSync(tmpPath, cachePath);
+    } catch {
+      // Best-effort caching
+    }
+  }
+}
+
+// ── Self-register ───────────────────────────────────────────────────────────
+
+registerProvider("openviking", (config) => new OpenVikingProvider(config));
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function uriToVikingRef(uri: string): string {
+  // Convert "viking://path/to/thing" → "viking://path/to/thing"
+  // If URI doesn't have the scheme, add it
+  if (uri.startsWith("viking://")) return uri;
+  return `viking://${uri.replace(/^\/+/, "")}`;
+}
+
+function parseOVSearchResponse(result: unknown): OVSearchEntry[] {
+  if (!Array.isArray(result)) return [];
+  return result.filter(isValidOVEntry);
+}
+
+function isValidOVEntry(entry: unknown): entry is OVSearchEntry {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return false;
+  const obj = entry as Record<string, unknown>;
+  return typeof obj.uri === "string" && typeof obj.name === "string" && typeof obj.score === "number";
+}
+
+function isExpired(mtimeMs: number, ttlMs: number): boolean {
+  return Date.now() - mtimeMs > ttlMs;
+}
+
+// ── Exports for testing ─────────────────────────────────────────────────────
+
+export { OpenVikingProvider, uriToVikingRef, parseOVSearchResponse };
