@@ -46,6 +46,21 @@ export interface RegistryConfigEntry {
   options?: Record<string, unknown>;
 }
 
+export interface StashConfigEntry {
+  /** Provider type (e.g. "filesystem", "openviking") */
+  type: string;
+  /** Filesystem path (for type: "filesystem") */
+  path?: string;
+  /** URL (for remote providers like openviking) */
+  url?: string;
+  /** Human-friendly label */
+  name?: string;
+  /** Whether this stash is active. Default: true */
+  enabled?: boolean;
+  /** Arbitrary provider-specific options */
+  options?: Record<string, unknown>;
+}
+
 export interface AgentikitConfig {
   /** Path to the working stash directory. Resolved from env → config → default. */
   stashDir?: string;
@@ -61,8 +76,10 @@ export interface AgentikitConfig {
   installed?: InstalledKitEntry[];
   /** Configured registries for kit discovery */
   registries?: RegistryConfigEntry[];
-  /** Remote stash sources searched alongside local stash (e.g. OpenViking) */
+  /** @deprecated Use stashes instead. Legacy remote stash sources. */
   remoteStashSources?: RegistryConfigEntry[];
+  /** Additional stash sources (filesystem paths and remote providers) */
+  stashes?: StashConfigEntry[];
   /** Output defaults for CLI rendering */
   output?: OutputConfig;
 }
@@ -217,6 +234,9 @@ function pickKnownKeys(raw: Record<string, unknown>): AgentikitConfig {
 
   const remoteStash = parseRegistriesConfig(raw.remoteStashSources);
   if (remoteStash) config.remoteStashSources = remoteStash;
+
+  const stashes = parseStashesConfig(raw.stashes);
+  if (stashes) config.stashes = stashes;
 
   const output = parseOutputConfig(raw.output);
   if (output) config.output = output;
@@ -417,6 +437,37 @@ function parseRegistriesConfig(value: unknown): RegistryConfigEntry[] | undefine
   // Return the array even if empty — an explicit empty array means "no registries"
   // which overrides the default. Only return undefined if the field was not an array.
   return entries;
+}
+
+function parseStashesConfig(value: unknown): StashConfigEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+
+  const entries = value
+    .map((entry) => parseStashConfigEntry(entry))
+    .filter((entry): entry is StashConfigEntry => entry !== undefined);
+
+  return entries;
+}
+
+function parseStashConfigEntry(value: unknown): StashConfigEntry | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const obj = value as Record<string, unknown>;
+
+  const type = asNonEmptyString(obj.type);
+  if (!type) return undefined;
+
+  const entry: StashConfigEntry = { type };
+  const entryPath = asNonEmptyString(obj.path);
+  if (entryPath) entry.path = entryPath;
+  const url = asNonEmptyString(obj.url);
+  if (url) entry.url = url;
+  const name = asNonEmptyString(obj.name);
+  if (name) entry.name = name;
+  if (typeof obj.enabled === "boolean") entry.enabled = obj.enabled;
+  if (typeof obj.options === "object" && obj.options !== null && !Array.isArray(obj.options)) {
+    entry.options = obj.options as Record<string, unknown>;
+  }
+  return entry;
 }
 
 function parseRegistryConfigEntry(value: unknown): RegistryConfigEntry | undefined {

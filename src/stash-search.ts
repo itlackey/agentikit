@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { deriveCanonicalAssetNameFromStashRoot } from "./asset-spec";
-import { type AgentikitConfig, loadConfig, type RegistryConfigEntry } from "./config";
+import { type AgentikitConfig, loadConfig } from "./config";
+import type { StashProvider } from "./stash-provider";
+import { resolveStashProviderFactory } from "./stash-provider-registry";
+
+// Eagerly import stash providers to trigger self-registration
+import "./stash-providers/openviking";
 import {
   closeDatabase,
   type DbSearchResult,
@@ -23,12 +28,12 @@ import { makeAssetRef } from "./stash-ref";
 import { buildEditHint, findSourceForPath, isEditable, resolveStashSources, type StashSource } from "./stash-source";
 import type {
   AgentikitSearchType,
-  LocalSearchHit,
   RegistrySearchResultHit,
   SearchHit,
   SearchHitSize,
   SearchResponse,
   SearchSource,
+  StashSearchHit,
 } from "./stash-types";
 import { walkStashFlat } from "./walker";
 import { warn } from "./warn";
@@ -66,9 +71,8 @@ export async function agentikitSearch(input: {
   }
   const stashDir = sources[0].path;
 
-  // Remote stash sources (e.g. OpenViking) are searched alongside local stash.
-  // Registries are for kit discovery only (static-index, skills-sh, etc.).
-  const remoteStashEntries = resolveRemoteStashSources(config);
+  // Resolve additional stash providers (e.g. OpenViking) from config
+  const additionalStashProviders = resolveAdditionalStashProviders(config);
 
   const localResult =
     source === "registry"
@@ -82,31 +86,39 @@ export async function agentikitSearch(input: {
           config,
         });
 
-  // Query remote stash sources (e.g. OpenViking) as part of local search
-  const remoteStashResult =
-    source === "registry" || remoteStashEntries.length === 0 || !query
-      ? undefined
-      : await searchRegistry(query, { limit, registries: remoteStashEntries, includeAssets: true });
+  // Query additional stash providers (e.g. OpenViking)
+  const additionalStashResults =
+    source === "registry" || additionalStashProviders.length === 0 || !query
+      ? []
+      : await Promise.all(
+          additionalStashProviders.map(async (provider) => {
+            try {
+              return await provider.search({ query, type: searchType === "any" ? undefined : searchType, limit });
+            } catch (err) {
+              return {
+                hits: [] as StashSearchHit[],
+                warnings: [`Stash ${provider.name}: ${err instanceof Error ? err.message : String(err)}`],
+              };
+            }
+          }),
+        );
+
+  // Merge stash hits from all providers
+  const additionalHits = additionalStashResults.flatMap((r) => r.hits);
+  const additionalWarnings = additionalStashResults.flatMap((r) => r.warnings ?? []);
 
   const registryResult =
-    source === "local"
-      ? undefined
-      : await searchRegistry(query, { limit, registries: config.registries, includeAssets: true });
+    source === "stash" ? undefined : await searchRegistry(query, { limit, registries: config.registries });
 
-  // Merge asset hits from remote stash sources and registries
-  const remoteStashAssetHits = remoteStashResult?.assetHits ?? [];
-  const registryAssetHits = registryResult?.assetHits ?? [];
-  const allAssetHits = [...remoteStashAssetHits, ...registryAssetHits];
-
-  if (source === "local") {
-    const localWarnings = [...(localResult?.warnings ?? []), ...(remoteStashResult?.warnings ?? [])];
-    const hasResults = (localResult?.hits ?? []).length > 0 || remoteStashAssetHits.length > 0;
+  if (source === "stash") {
+    const allStashHits = mergeStashHits(localResult?.hits ?? [], additionalHits, limit);
+    const localWarnings = [...(localResult?.warnings ?? []), ...additionalWarnings];
+    const hasResults = allStashHits.length > 0;
     return {
       schemaVersion: 1,
       stashDir,
       source,
-      hits: localResult?.hits ?? [],
-      ...(remoteStashAssetHits.length > 0 ? { assetHits: remoteStashAssetHits } : {}),
+      hits: allStashHits,
       tip: hasResults ? undefined : localResult?.tip,
       warnings: localWarnings.length > 0 ? localWarnings : undefined,
       timing: { totalMs: Date.now() - t0, rankMs: localResult?.rankMs, embedMs: localResult?.embedMs },
@@ -130,13 +142,12 @@ export async function agentikitSearch(input: {
 
   if (source === "registry") {
     const hits = registryHits.slice(0, limit);
-    const hasResults = hits.length > 0 || registryAssetHits.length > 0;
+    const hasResults = hits.length > 0;
     return {
       schemaVersion: 1,
       stashDir,
       source,
       hits,
-      ...(registryAssetHits.length > 0 ? { assetHits: registryAssetHits } : {}),
       tip: hasResults ? undefined : "No matching registry entries were found.",
       warnings: registryResult?.warnings.length ? registryResult.warnings : undefined,
       timing: { totalMs: Date.now() - t0 },
@@ -144,27 +155,23 @@ export async function agentikitSearch(input: {
   }
 
   // source === "both"
-  const mergedHits = mergeSearchHits(localResult?.hits ?? [], registryHits, limit);
-  const warnings = [
-    ...(localResult?.warnings ?? []),
-    ...(remoteStashResult?.warnings ?? []),
-    ...(registryResult?.warnings ?? []),
-  ];
-  const hasResults = mergedHits.length > 0 || allAssetHits.length > 0;
+  const allStashHits = mergeStashHits(localResult?.hits ?? [], additionalHits, limit * 2);
+  const mergedHits = mergeSearchHits(allStashHits, registryHits, limit);
+  const warnings = [...(localResult?.warnings ?? []), ...additionalWarnings, ...(registryResult?.warnings ?? [])];
+  const hasResults = mergedHits.length > 0;
 
   return {
     schemaVersion: 1,
     stashDir,
     source,
     hits: mergedHits,
-    ...(allAssetHits.length > 0 ? { assetHits: allAssetHits } : {}),
     tip: hasResults ? undefined : "No matching stash assets or registry entries were found.",
     warnings: warnings.length ? warnings : undefined,
     timing: { totalMs: Date.now() - t0 },
   };
 }
 
-async function searchLocal(input: {
+export async function searchLocal(input: {
   query: string;
   searchType: AgentikitSearchType;
   limit: number;
@@ -172,7 +179,7 @@ async function searchLocal(input: {
   sources: StashSource[];
   config: AgentikitConfig;
 }): Promise<{
-  hits: LocalSearchHit[];
+  hits: StashSearchHit[];
   tip?: string;
   warnings?: string[];
   embedMs?: number;
@@ -243,7 +250,7 @@ async function searchDatabase(
   config: import("./config").AgentikitConfig,
   sources: StashSource[],
 ): Promise<{
-  hits: LocalSearchHit[];
+  hits: StashSearchHit[];
   embedMs?: number;
   rankMs?: number;
 }> {
@@ -438,7 +445,7 @@ function substringSearch(
   stashDir: string,
   sources: StashSource[],
   config?: import("./config").AgentikitConfig,
-): LocalSearchHit[] {
+): StashSearchHit[] {
   const assets = indexAssets(stashDir, searchType);
   return assets
     .filter((asset) => !query || buildSearchText(asset.entry).includes(query))
@@ -459,7 +466,7 @@ function buildDbHit(input: {
   allStashDirs: string[];
   sources: StashSource[];
   config?: import("./config").AgentikitConfig;
-}): LocalSearchHit {
+}): StashSearchHit {
   const entryStashDir = findSourceForPath(input.path, input.sources)?.path ?? input.defaultStashDir;
   const canonical = deriveCanonicalAssetNameFromStashRoot(input.entry.type, entryStashDir, input.path);
   // Guard against path traversal when the file is outside the expected type root
@@ -477,7 +484,7 @@ function buildDbHit(input: {
   const source = findSourceForPath(input.path, input.sources);
 
   const editable = isEditable(input.path, input.config);
-  const hit: LocalSearchHit = {
+  const hit: StashSearchHit = {
     type: input.entry.type,
     name: input.entry.name,
     path: input.path,
@@ -533,13 +540,13 @@ function assetToSearchHit(
   stashDir: string,
   sources: StashSource[],
   config?: import("./config").AgentikitConfig,
-): LocalSearchHit {
+): StashSearchHit {
   const source = findSourceForPath(asset.path, sources);
   const editable = isEditable(asset.path, config);
   const ref = makeAssetRef(asset.entry.type, asset.entry.name, source?.registryId);
   const fileSize = readFileSize(asset.path);
   const size = deriveSize(fileSize);
-  const hit: LocalSearchHit = {
+  const hit: StashSearchHit = {
     type: asset.entry.type,
     name: asset.entry.name,
     path: asset.path,
@@ -553,6 +560,7 @@ function assetToSearchHit(
     tags: asset.entry.tags,
     ...(size ? { size } : {}),
     action: buildLocalAction(asset.entry.type, ref),
+    score: 1,
   };
   const renderer = rendererForType(asset.entry.type);
   if (renderer?.enrichSearchHit) {
@@ -561,8 +569,56 @@ function assetToSearchHit(
   return hit;
 }
 
-function resolveRemoteStashSources(config: AgentikitConfig): RegistryConfigEntry[] {
-  return (config.remoteStashSources ?? []).filter((r) => r.enabled !== false);
+/**
+ * Resolve additional stash providers from config.
+ * Sources come from `stashes` (new) or `remoteStashSources` (legacy).
+ */
+function resolveAdditionalStashProviders(config: AgentikitConfig): StashProvider[] {
+  const providers: StashProvider[] = [];
+
+  // New config: stashes[]
+  if (config.stashes) {
+    for (const entry of config.stashes) {
+      if (entry.enabled === false) continue;
+      const factory = resolveStashProviderFactory(entry.type);
+      if (factory) {
+        providers.push(factory(entry));
+      }
+    }
+  }
+
+  // Legacy config: remoteStashSources[] → map to stash providers
+  if (!config.stashes && config.remoteStashSources) {
+    for (const entry of config.remoteStashSources) {
+      if (entry.enabled === false) continue;
+      const providerType = entry.provider ?? "openviking";
+      const factory = resolveStashProviderFactory(providerType);
+      if (factory) {
+        providers.push(
+          factory({
+            type: providerType,
+            url: entry.url,
+            name: entry.name,
+            enabled: entry.enabled,
+            options: entry.options,
+          }),
+        );
+      }
+    }
+  }
+
+  return providers;
+}
+
+function mergeStashHits(
+  localHits: StashSearchHit[],
+  additionalHits: StashSearchHit[],
+  limit: number,
+): StashSearchHit[] {
+  if (additionalHits.length === 0) return localHits.slice(0, limit);
+  const all = [...localHits, ...additionalHits];
+  all.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  return all.slice(0, limit);
 }
 
 function normalizeLimit(limit?: number): number {
@@ -572,14 +628,16 @@ function normalizeLimit(limit?: number): number {
   return Math.min(Math.floor(limit), 200);
 }
 
-function parseSearchSource(source: SearchSource | undefined): SearchSource {
-  if (source === "local" || source === "registry" || source === "both") return source;
-  if (typeof source === "undefined") return "local";
-  throw new UsageError(`Invalid search source: ${String(source)}. Expected one of: local|registry|both`);
+function parseSearchSource(source: SearchSource | string | undefined): SearchSource {
+  if (source === "stash" || source === "registry" || source === "both") return source;
+  // Accept "local" as alias for "stash"
+  if (source === "local") return "stash";
+  if (typeof source === "undefined") return "stash";
+  throw new UsageError(`Invalid search source: ${String(source)}. Expected one of: stash|registry|both`);
 }
 
 function mergeSearchHits(
-  localHits: LocalSearchHit[],
+  localHits: StashSearchHit[],
   registryHits: RegistrySearchResultHit[],
   limit: number,
 ): SearchHit[] {

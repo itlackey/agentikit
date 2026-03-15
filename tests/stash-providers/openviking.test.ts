@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { resolveProviderFactory } from "../../src/provider-registry";
+import { resolveStashProviderFactory } from "../../src/stash-provider-registry";
 
 // Trigger self-registration
-import "../../src/providers/openviking";
+import "../../src/stash-providers/openviking";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@ function serveJson(body: unknown, statusCode = 200): { url: string; close: () =>
 }
 
 function getFactory() {
-  const factory = resolveProviderFactory("openviking");
+  const factory = resolveStashProviderFactory("openviking");
   expect(factory).toBeTruthy();
   // biome-ignore lint/style/noNonNullAssertion: factory is guaranteed by the expect above
   return factory!;
@@ -59,65 +59,63 @@ afterAll(() => {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe("OpenVikingProvider", () => {
+describe("OpenVikingStashProvider", () => {
   test("self-registers as 'openviking'", () => {
-    const factory = resolveProviderFactory("openviking");
+    const factory = resolveStashProviderFactory("openviking");
     expect(factory).toBeTruthy();
   });
 
   test("creates a provider with the correct type", () => {
     const factory = getFactory();
-    const provider = factory({ url: "http://localhost:1933" });
+    const provider = factory({ type: "openviking", url: "http://localhost:1933" });
     expect(provider.type).toBe("openviking");
+    expect(provider.name).toBe("openviking");
   });
 
-  test("returns results as asset hits, not installable kit hits", async () => {
+  test("returns results as StashSearchHit[] with correct shape", async () => {
     const { url, close } = serveJson(FIXTURE_RESPONSE);
     try {
       const factory = getFactory();
-      const provider = factory({ url, name: "test-ov" });
+      const provider = factory({ type: "openviking", url, name: "test-ov" });
       const result = await provider.search({ query: "project context", limit: 10 });
 
-      // OV results are not installable, so hits must be empty
-      expect(result.hits).toHaveLength(0);
+      expect(result.hits).toHaveLength(3);
       expect(result.warnings).toBeUndefined();
 
-      // Results appear as asset hits instead
-      const assetHits = result.assetHits ?? [];
-      expect(assetHits).toHaveLength(3);
-
-      const first = assetHits[0];
-      expect(first.kit.id).toBe("openviking:viking://memories/project-context");
-      expect(first.assetName).toBe("project-context");
+      const first = result.hits[0];
+      expect(first.type).toBe("memory");
+      expect(first.name).toBe("project-context");
+      expect(first.ref).toBe("viking://memories/project-context");
+      expect(first.path).toBe("viking://memories/project-context");
       expect(first.action).toBe("akm show viking://memories/project-context");
-      expect(first.registryName).toBe("test-ov");
+      expect(first.origin).toBe("test-ov");
+      expect(first.editable).toBe(false);
       expect(first.score).toBeGreaterThan(0);
     } finally {
       close();
     }
   });
 
-  test("returns asset hits with correct asset types", async () => {
+  test("returns hits with correct asset types", async () => {
     const { url, close } = serveJson(FIXTURE_RESPONSE);
     try {
       const factory = getFactory();
-      const provider = factory({ url, name: "test-ov" });
+      const provider = factory({ type: "openviking", url, name: "test-ov" });
       const result = await provider.search({ query: "context", limit: 10 });
 
-      const assetHits = result.assetHits ?? [];
-      expect(assetHits).toHaveLength(3);
+      expect(result.hits).toHaveLength(3);
 
-      const memoryHit = assetHits.find((h) => h.assetName === "project-context");
+      const memoryHit = result.hits.find((h) => h.name === "project-context");
       expect(memoryHit).toBeDefined();
-      expect(memoryHit?.assetType).toBe("memory");
+      expect(memoryHit?.type).toBe("memory");
 
-      const skillHit = assetHits.find((h) => h.assetName === "code-review");
+      const skillHit = result.hits.find((h) => h.name === "code-review");
       expect(skillHit).toBeDefined();
-      expect(skillHit?.assetType).toBe("skill");
+      expect(skillHit?.type).toBe("skill");
 
-      const resourceHit = assetHits.find((h) => h.assetName === "api-docs");
+      const resourceHit = result.hits.find((h) => h.name === "api-docs");
       expect(resourceHit).toBeDefined();
-      expect(resourceHit?.assetType).toBe("knowledge");
+      expect(resourceHit?.type).toBe("knowledge");
     } finally {
       close();
     }
@@ -127,7 +125,7 @@ describe("OpenVikingProvider", () => {
     const { url, close } = serveJson(EMPTY_RESPONSE);
     try {
       const factory = getFactory();
-      const provider = factory({ url });
+      const provider = factory({ type: "openviking", url });
       const result = await provider.search({ query: "nothing", limit: 10 });
 
       expect(result.hits).toHaveLength(0);
@@ -140,7 +138,7 @@ describe("OpenVikingProvider", () => {
     const { url, close } = serveJson(ERROR_RESPONSE);
     try {
       const factory = getFactory();
-      const provider = factory({ url, name: "bad-ov" });
+      const provider = factory({ type: "openviking", url, name: "bad-ov" });
       const result = await provider.search({ query: "test", limit: 10 });
 
       expect(result.hits).toHaveLength(0);
@@ -155,7 +153,7 @@ describe("OpenVikingProvider", () => {
     const { url, close } = serveJson({ error: "not found" }, 404);
     try {
       const factory = getFactory();
-      const provider = factory({ url, name: "error-ov" });
+      const provider = factory({ type: "openviking", url, name: "error-ov" });
       const result = await provider.search({ query: "test", limit: 10 });
 
       expect(result.hits).toHaveLength(0);
@@ -168,7 +166,7 @@ describe("OpenVikingProvider", () => {
 
   test("returns warning when server is unreachable", async () => {
     const factory = getFactory();
-    const provider = factory({ url: "http://127.0.0.1:19339", name: "offline-ov" });
+    const provider = factory({ type: "openviking", url: "http://127.0.0.1:19339", name: "offline-ov" });
     const result = await provider.search({ query: "test", limit: 5 });
 
     expect(result.hits).toHaveLength(0);
@@ -180,15 +178,22 @@ describe("OpenVikingProvider", () => {
     const { url, close } = serveJson(FIXTURE_RESPONSE);
     try {
       const factory = getFactory();
-      const provider = factory({ url });
+      const provider = factory({ type: "openviking", url });
       const result = await provider.search({ query: "test", limit: 2 });
 
-      expect(result.hits).toHaveLength(0);
-      const assetHits = result.assetHits ?? [];
-      expect(assetHits.length).toBeLessThanOrEqual(2);
+      expect(result.hits.length).toBeLessThanOrEqual(2);
     } finally {
       close();
     }
+  });
+
+  test("canShow returns true for viking:// URIs", () => {
+    const factory = getFactory();
+    const provider = factory({ type: "openviking", url: "http://localhost:1933" });
+    expect(provider.canShow("viking://memories/foo")).toBe(true);
+    expect(provider.canShow("  viking://skills/bar")).toBe(true);
+    expect(provider.canShow("script:deploy.sh")).toBe(false);
+    expect(provider.canShow("skill:ops")).toBe(false);
   });
 
   test("uses text search when searchType is 'text'", async () => {
@@ -207,6 +212,7 @@ describe("OpenVikingProvider", () => {
     try {
       const factory = getFactory();
       const provider = factory({
+        type: "openviking",
         url: `http://localhost:${server.port}`,
         options: { searchType: "text" },
       });
@@ -233,7 +239,7 @@ describe("OpenVikingProvider", () => {
 
     try {
       const factory = getFactory();
-      const provider = factory({ url: `http://localhost:${server.port}` });
+      const provider = factory({ type: "openviking", url: `http://localhost:${server.port}` });
       await provider.search({ query: "test", limit: 10 });
 
       expect(capturedPath).toBe("/api/v1/search/find");

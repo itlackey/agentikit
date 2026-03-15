@@ -207,8 +207,8 @@ describe("Scenario: Full lifecycle (index → search → show)", () => {
 
     expect(result.hits.length).toBeGreaterThan(0);
     expect(result.hits.some((h) => h.name.includes("deploy"))).toBe(true);
-    // No score field in substring mode
-    expect(result.hits[0].score).toBeUndefined();
+    // Substring mode assigns a default score of 1
+    expect(result.hits[0].score).toBe(1);
   });
 
   test("index generates metadata and builds search index", async () => {
@@ -449,7 +449,7 @@ describe("Scenario: Mixed local + registry search compatibility", () => {
       () => agentikitSearch({ query: "docker", source: "local" }),
     );
 
-    expect(result.source).toBe("local");
+    expect(result.source).toBe("stash");
     expect(result.hits.length).toBeGreaterThan(0);
     expect(result.hits.every((h) => h.type !== "registry")).toBe(true);
   });
@@ -591,21 +591,21 @@ describe("Scenario: CLI subprocess execution", () => {
     expect(json.hits.every((h: CliJsonHit) => h.action !== undefined)).toBe(true);
   });
 
-  test("cli: akm search default source is local", async () => {
+  test("cli: akm search default source is stash", async () => {
     const result = runCli("search", "docker", "--detail", "full");
     expect(result.exitCode).toBe(0);
 
     const json = parseJson(result.stdout);
-    expect(json.source).toBe("local");
+    expect(json.source).toBe("stash");
     expect(json.hits.every((h: CliJsonHit) => h.type !== "registry")).toBe(true);
   });
 
-  test("cli: akm search --detail normal includes origin and run", async () => {
+  test("cli: akm search --detail normal includes score and description", async () => {
     const result = runCli("search", "docker", "--type", "script", "--detail", "normal");
     expect(result.exitCode).toBe(0);
 
     const json = parseJson(result.stdout);
-    expect(json.hits.some((h: CliJsonHit) => h.origin !== undefined || h.origin === null)).toBe(true);
+    expect(json.hits.some((h: CliJsonHit) => h.score !== undefined)).toBe(true);
     expect(json.hits.some((h: CliJsonHit) => h.action !== undefined)).toBe(true);
   });
 
@@ -660,7 +660,7 @@ describe("Scenario: CLI subprocess execution", () => {
     const result = runCli("search", "docker", "--source", "bad");
     expect(result.exitCode).not.toBe(0);
     const output = result.stdout + result.stderr;
-    expect(output).toContain("Invalid value for --source: bad. Expected one of: local|registry|both");
+    expect(output).toContain("Invalid value for --source: bad. Expected one of: stash|registry|both");
   });
 
   test("cli: akm search default output excludes full-detail fields", async () => {

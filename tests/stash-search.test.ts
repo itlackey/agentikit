@@ -411,8 +411,8 @@ describe("Substring fallback", () => {
     expect(localHits.length).toBeGreaterThanOrEqual(1);
     const deployHit = localHits.find((h) => h.name.includes("deploy"));
     expect(deployHit).toBeDefined();
-    // Substring fallback does not produce score or whyMatched
-    expect(deployHit?.score).toBeUndefined();
+    // Substring fallback sets score to 1 (all matches equal) and has no whyMatched
+    expect(deployHit?.score).toBe(1);
     expect(deployHit?.whyMatched).toBeUndefined();
   });
 

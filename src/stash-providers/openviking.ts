@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fetchWithRetry } from "../common";
-import type { RegistryConfigEntry } from "../config";
+import type { StashConfigEntry } from "../config";
+import { NotFoundError } from "../errors";
 import { getRegistryIndexCacheDir } from "../paths";
-import { registerProvider } from "../provider-registry";
-import type { RegistryProvider, RegistryProviderResult, RegistryProviderSearchOptions } from "../registry-provider";
-import type { RegistryAssetSearchHit } from "../registry-types";
+import type { StashProvider, StashSearchOptions, StashSearchResult } from "../stash-provider";
+import { registerStashProvider } from "../stash-provider-registry";
+import type { KnowledgeView, ShowResponse, StashSearchHit } from "../stash-types";
 
 /** Per-query cache TTL in milliseconds (5 minutes). */
 const QUERY_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -44,27 +45,80 @@ const OV_TYPE_TO_ASSET: Record<string, string> = {
   scripts: "script",
 };
 
-class OpenVikingProvider implements RegistryProvider {
+class OpenVikingStashProvider implements StashProvider {
   readonly type = "openviking";
-  private readonly config: RegistryConfigEntry;
+  readonly name: string;
+  private readonly config: StashConfigEntry;
 
-  constructor(config: RegistryConfigEntry) {
+  constructor(config: StashConfigEntry) {
     this.config = config;
+    this.name = config.name ?? "openviking";
   }
 
-  async search(options: RegistryProviderSearchOptions): Promise<RegistryProviderResult> {
+  async search(options: StashSearchOptions): Promise<StashSearchResult> {
     try {
       const entries = await this.fetchResults(options.query, options.limit);
       const limited = entries.slice(0, options.limit);
-      // OV results are not installable via `akm add`, so we return them
-      // exclusively as asset hits (action = `akm show viking://...`).
-      const assetHits = this.mapToAssetHits(limited);
-      return { hits: [], assetHits };
+      const hits = this.mapToStashHits(limited);
+      return { hits };
     } catch (err) {
-      const label = this.config.name ?? "openviking";
       const message = err instanceof Error ? err.message : String(err);
-      return { hits: [], warnings: [`Registry ${label}: ${message}`] };
+      return { hits: [], warnings: [`Stash ${this.name}: ${message}`] };
     }
+  }
+
+  async show(ref: string, _view?: KnowledgeView): Promise<ShowResponse> {
+    const uri = ref.trim();
+    const baseUrl = this.baseUrl;
+    const headers = this.authHeaders;
+
+    const [statResult, contentResult] = await Promise.all([
+      fetchOVJson(`${baseUrl}/api/v1/fs/stat?uri=${encodeURIComponent(uri)}`, headers),
+      fetchOVJson(`${baseUrl}/api/v1/content/read?uri=${encodeURIComponent(uri)}&offset=0&limit=-1`, headers),
+    ]);
+
+    if (statResult == null && contentResult == null) {
+      throw new NotFoundError(
+        `Could not fetch remote asset "${uri}". The OpenViking server at ${baseUrl} may be unreachable or the resource does not exist.`,
+      );
+    }
+    if (contentResult == null) {
+      throw new NotFoundError(
+        `Content not found for remote asset "${uri}". The server returned metadata but no content.`,
+      );
+    }
+
+    const stat = (typeof statResult === "object" && statResult !== null ? statResult : {}) as Record<string, unknown>;
+    const uriPath = uri.replace(/^viking:\/\//, "");
+    const name = (stat.name as string) ?? uriPath.split("/").pop() ?? "unknown";
+    const ovType = (stat.type as string) ?? inferTypeFromUri(uri);
+    const assetType = mapOVType(ovType);
+    const content = typeof contentResult === "string" ? contentResult : "";
+
+    return {
+      type: assetType,
+      name,
+      path: uri,
+      action: `Remote content from OpenViking — ${uri}`,
+      content,
+      description: (stat.abstract as string) ?? undefined,
+      editable: false,
+    };
+  }
+
+  canShow(ref: string): boolean {
+    return ref.trim().startsWith("viking://");
+  }
+
+  private get baseUrl(): string {
+    return (this.config.url ?? "").replace(/\/+$/, "");
+  }
+
+  private get authHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    const apiKey = (this.config.options?.apiKey as string) ?? undefined;
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    return headers;
   }
 
   private async fetchResults(query: string, limit: number): Promise<OVSearchEntry[]> {
@@ -75,7 +129,7 @@ class OpenVikingProvider implements RegistryProvider {
       return cached.entries;
     }
 
-    const baseUrl = this.config.url.replace(/\/+$/, "");
+    const baseUrl = this.baseUrl;
     const searchType = (this.config.options?.searchType as string) ?? "semantic";
 
     try {
@@ -90,9 +144,7 @@ class OpenVikingProvider implements RegistryProvider {
         body = JSON.stringify({ query, limit });
       }
 
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      const apiKey = (this.config.options?.apiKey as string) ?? undefined;
-      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      const headers: Record<string, string> = { "Content-Type": "application/json", ...this.authHeaders };
 
       const response = await fetchWithRetry(url, { method: "POST", headers, body }, { timeout: 10_000, retries: 1 });
       if (!response.ok) {
@@ -115,33 +167,32 @@ class OpenVikingProvider implements RegistryProvider {
     }
   }
 
-  private mapToAssetHits(entries: OVSearchEntry[]): RegistryAssetSearchHit[] | undefined {
-    if (entries.length === 0) return undefined;
+  private mapToStashHits(entries: OVSearchEntry[]): StashSearchHit[] {
+    if (entries.length === 0) return [];
 
-    const registryName = this.config.name ?? "openviking";
     const maxScore = Math.max(...entries.map((e) => e.score), 0.01);
 
-    const hits: RegistryAssetSearchHit[] = entries.map((entry) => {
+    return entries.map((entry) => {
       const assetType = OV_TYPE_TO_ASSET[entry.type ?? ""] ?? "knowledge";
       const ref = uriToVikingRef(entry.uri);
       return {
-        type: "registry-asset" as const,
-        assetType,
-        assetName: entry.name,
-        kit: { id: `openviking:${entry.uri}`, name: entry.name },
-        registryName,
+        type: assetType,
+        name: entry.name,
+        path: ref,
+        ref,
+        origin: this.name,
+        editable: false,
+        description: entry.abstract,
         action: `akm show ${ref}`,
         score: Math.round((entry.score / maxScore) * 1000) / 1000,
       };
     });
-
-    return hits.length > 0 ? hits : undefined;
   }
 
   private queryCachePath(query: string, limit: number): string {
     const cacheDir = getRegistryIndexCacheDir();
     const hasher = new Bun.CryptoHasher("md5");
-    hasher.update(this.config.url);
+    hasher.update(this.config.url ?? "");
     hasher.update("\0");
     hasher.update(query.trim().toLowerCase());
     hasher.update("\0");
@@ -183,26 +234,21 @@ class OpenVikingProvider implements RegistryProvider {
 
 // ── Self-register ───────────────────────────────────────────────────────────
 
-registerProvider("openviking", (config) => new OpenVikingProvider(config));
+registerStashProvider("openviking", (config) => new OpenVikingStashProvider(config));
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function uriToVikingRef(uri: string): string {
-  // Convert "viking://path/to/thing" → "viking://path/to/thing"
-  // If URI doesn't have the scheme, add it
   if (uri.startsWith("viking://")) return uri;
   return `viking://${uri.replace(/^\/+/, "")}`;
 }
 
 function parseOVSearchResponse(result: unknown): OVSearchEntry[] {
-  // OV search/find returns grouped results: { memories: [...], resources: [...], skills: [...] }
-  // OV search/grep returns: { matches: [{ line, uri, content }], count }
   if (Array.isArray(result)) return result.filter(isValidOVEntry);
   if (typeof result !== "object" || result === null) return [];
 
   const grouped = result as Record<string, unknown>;
 
-  // Handle grep response: { matches: [...], count: N }
   if (Array.isArray(grouped.matches)) {
     return deduplicateGrepMatches(grouped.matches);
   }
@@ -237,7 +283,6 @@ function isValidGrepMatch(item: unknown): item is OVGrepMatch {
   return typeof obj.uri === "string" && typeof obj.content === "string";
 }
 
-/** Deduplicate grep matches by URI, keeping the first match content and counting occurrences for score. */
 function deduplicateGrepMatches(matches: unknown[]): OVSearchEntry[] {
   const byUri = new Map<string, { content: string; count: number; type: string }>();
   for (const m of matches) {
@@ -246,7 +291,6 @@ function deduplicateGrepMatches(matches: unknown[]): OVSearchEntry[] {
     if (existing) {
       existing.count++;
     } else {
-      // Infer type from URI path (e.g. viking://resources/... → resource)
       const pathSegment = m.uri.replace(/^viking:\/\//, "").split("/")[0] ?? "";
       byUri.set(m.uri, { content: m.content, count: 1, type: pathSegment });
     }
@@ -262,7 +306,6 @@ function deduplicateGrepMatches(matches: unknown[]): OVSearchEntry[] {
       abstract: content.slice(0, 200),
     });
   }
-  // Sort by score descending (most matches first)
   entries.sort((a, b) => b.score - a.score);
   return entries;
 }
@@ -287,9 +330,8 @@ function isValidOVSearchItem(item: unknown): item is OVSearchItem {
 }
 
 function extractNameFromUri(uri: string): string {
-  const path = uri.replace(/^viking:\/\//, "");
-  const segments = path.split("/").filter(Boolean);
-  // Use last non-empty segment, strip extension
+  const uriPath = uri.replace(/^viking:\/\//, "");
+  const segments = uriPath.split("/").filter(Boolean);
   const last = segments[segments.length - 1] ?? "unknown";
   return last.replace(/\.[^.]+$/, "");
 }
@@ -298,6 +340,52 @@ function isExpired(mtimeMs: number, ttlMs: number): boolean {
   return Date.now() - mtimeMs > ttlMs;
 }
 
+async function fetchOVJson(url: string, headers: Record<string, string>): Promise<unknown> {
+  try {
+    const response = await fetchWithRetry(url, { headers }, { timeout: 10_000, retries: 1 });
+    if (!response.ok) return null;
+    const data = (await response.json()) as Record<string, unknown>;
+    if (data.status !== "ok") return null;
+    return data.result ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function inferTypeFromUri(uri: string): string {
+  const uriPath = uri.replace(/^viking:\/\//, "");
+  const firstSegment = uriPath.split("/")[0];
+  const typeMap: Record<string, string> = {
+    memories: "memory",
+    skills: "skill",
+    resources: "knowledge",
+    agents: "agent",
+    commands: "command",
+    scripts: "script",
+    knowledge: "knowledge",
+  };
+  return typeMap[firstSegment] ?? "knowledge";
+}
+
+function mapOVType(ovType: string): string {
+  const map: Record<string, string> = {
+    memory: "memory",
+    memories: "memory",
+    skill: "skill",
+    skills: "skill",
+    resource: "knowledge",
+    resources: "knowledge",
+    knowledge: "knowledge",
+    agent: "agent",
+    agents: "agent",
+    command: "command",
+    commands: "command",
+    script: "script",
+    scripts: "script",
+  };
+  return map[ovType] ?? "knowledge";
+}
+
 // ── Exports for testing ─────────────────────────────────────────────────────
 
-export { OpenVikingProvider, uriToVikingRef, parseOVSearchResponse };
+export { OpenVikingStashProvider, uriToVikingRef, parseOVSearchResponse };

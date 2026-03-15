@@ -1,10 +1,10 @@
-import type { KitSource, RegistryAssetSearchHit } from "./registry-types";
+import type { KitSource } from "./registry-types";
 
 export type AgentikitSearchType = string;
-export type SearchSource = "local" | "registry" | "both";
+export type SearchSource = "stash" | "registry" | "both";
 export type SearchHitSize = "small" | "medium" | "large";
 
-export interface LocalSearchHit {
+export interface StashSearchHit {
   type: string;
   name: string;
   path: string;
@@ -38,15 +38,16 @@ export interface RegistrySearchResultHit {
   registryName?: string;
 }
 
-export type SearchHit = LocalSearchHit | RegistrySearchResultHit;
+/** @deprecated Use StashSearchHit instead */
+export type LocalSearchHit = StashSearchHit;
+
+export type SearchHit = StashSearchHit | RegistrySearchResultHit;
 
 export interface SearchResponse {
   schemaVersion: number;
   stashDir: string;
   source: SearchSource;
   hits: SearchHit[];
-  /** Asset-level hits from registry providers (e.g. OpenViking). */
-  assetHits?: RegistryAssetSearchHit[];
   tip?: string;
   warnings?: string[];
   /** Timing counters in milliseconds */

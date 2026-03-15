@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { registerProvider, resolveProviderFactory } from "../src/provider-registry";
+import { resolveStashProviderFactory } from "../src/stash-provider-registry";
 
 describe("provider-registry", () => {
   test("resolveProviderFactory returns null for unknown type", () => {
@@ -26,8 +27,8 @@ describe("provider-registry", () => {
     expect(resolveProviderFactory("skills-sh")).not.toBeNull();
   });
 
-  test("openviking is registered after import", async () => {
-    await import("../src/providers/openviking");
-    expect(resolveProviderFactory("openviking")).not.toBeNull();
+  test("openviking stash provider is registered after import", async () => {
+    await import("../src/stash-providers/openviking");
+    expect(resolveStashProviderFactory("openviking")).not.toBeNull();
   });
 });
