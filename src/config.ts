@@ -130,8 +130,9 @@ let cachedConfig: { config: AgentikitConfig; path: string; mtime: number } | und
 export function loadConfig(): AgentikitConfig {
   const configPath = getConfigPath();
 
+  let stat: fs.Stats;
   try {
-    const stat = fs.statSync(configPath);
+    stat = fs.statSync(configPath);
     if (cachedConfig && cachedConfig.path === configPath && cachedConfig.mtime === stat.mtimeMs) {
       return cachedConfig.config;
     }
@@ -163,12 +164,7 @@ export function loadConfig(): AgentikitConfig {
 
   // Cache the parsed config with its path and mtime for subsequent calls.
   // Reuse the stat already obtained above (avoids a second syscall + TOCTOU gap).
-  try {
-    const freshStat = fs.statSync(configPath);
-    cachedConfig = { config, path: configPath, mtime: freshStat.mtimeMs };
-  } catch {
-    // If we can't stat (unlikely since we just read it), skip caching
-  }
+  cachedConfig = { config, path: configPath, mtime: stat.mtimeMs };
 
   return config;
 }

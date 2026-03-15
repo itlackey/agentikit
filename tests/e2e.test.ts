@@ -25,7 +25,7 @@ import { agentikitIndex } from "../src/indexer";
 import { loadStashFile } from "../src/metadata";
 import { agentikitSearch } from "../src/stash-search";
 import { agentikitShow } from "../src/stash-show";
-import type { LocalSearchHit, SearchHit } from "../src/stash-types";
+import type { SearchHit, StashSearchHit } from "../src/stash-types";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ function expectDefined<T>(value: T | null | undefined): T {
   return value;
 }
 
-function isLocalHit(hit: SearchHit): hit is LocalSearchHit {
+function isLocalHit(hit: SearchHit): hit is StashSearchHit {
   return hit.type !== "registry";
 }
 
@@ -317,7 +317,7 @@ describe("Scenario: Full lifecycle (index → search → show)", () => {
 
   test("show a script returns run", async () => {
     const searchResult = await agentikitSearch({ query: "deploy", type: "script" });
-    const deployHit = searchResult.hits.find((h): h is LocalSearchHit => isLocalHit(h) && h.name.includes("deploy"));
+    const deployHit = searchResult.hits.find((h): h is StashSearchHit => isLocalHit(h) && h.name.includes("deploy"));
     const resolvedDeployHit = expectDefined(deployHit);
 
     const openResult = await agentikitShow({ ref: expectDefined(resolvedDeployHit.ref) });
@@ -403,7 +403,7 @@ describe("Scenario: Agent discovers capabilities for task", () => {
     const searchResult = await agentikitSearch({ query: "run tests" });
     expect(searchResult.hits.length).toBeGreaterThan(0);
     const testScript = searchResult.hits.find(
-      (h): h is LocalSearchHit => isLocalHit(h) && h.type === "script" && h.name.includes("test"),
+      (h): h is StashSearchHit => isLocalHit(h) && h.type === "script" && h.name.includes("test"),
     );
     const resolvedTestScript = expectDefined(testScript);
 

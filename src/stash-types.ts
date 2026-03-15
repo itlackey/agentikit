@@ -38,9 +38,6 @@ export interface RegistrySearchResultHit {
   registryName?: string;
 }
 
-/** @deprecated Use StashSearchHit instead */
-export type LocalSearchHit = StashSearchHit;
-
 export type SearchHit = StashSearchHit | RegistrySearchResultHit;
 
 export interface SearchResponse {
