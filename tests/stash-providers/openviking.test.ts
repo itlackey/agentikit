@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { ConfigError } from "../../src/errors";
 import { resolveStashProviderFactory } from "../../src/stash-provider-factory";
-import { OpenVikingStashProvider, parseOVSearchResponse } from "../../src/stash-providers/openviking";
+import { OpenVikingStashProvider, parseOVSearchResponse, uriToVikingRef } from "../../src/stash-providers/openviking";
 
 // Trigger self-registration
 import "../../src/stash-providers/openviking";
@@ -425,5 +425,94 @@ describe("OpenVikingStashProvider", () => {
     // The name field here should be accessible without crashing
     expect(entries).toHaveLength(1);
     expect(typeof entries[0].name).toBe("string");
+  });
+});
+
+// ── R3.3: OV type map consolidation ─────────────────────────────────────────
+//
+// OV_TYPE_MAP is an internal (non-exported) constant, so we test type mapping
+// indirectly through the public API:
+//   • parseOVSearchResponse() for the raw entry shape
+//   • provider.search() for the mapped StashSearchHit.type
+//
+// This ensures the single OV_TYPE_MAP used by both search and show is correct.
+
+describe("mapOVType", () => {
+  // Helper: create a minimal flat response containing a single entry with the
+  // given OV type string, then run provider.search() and return the first hit.
+  async function hitForOVType(ovType: string): Promise<{ type: string }> {
+    const response = {
+      status: "ok",
+      result: [{ uri: `viking://${ovType}/sample`, name: "sample", score: 0.9, type: ovType }],
+      time: 0.001,
+    };
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(JSON.stringify(response), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+    servers.push(server);
+    try {
+      const factory = getFactory();
+      const provider = factory({ type: "openviking", url: `http://localhost:${server.port}` });
+      const result = await provider.search({ query: "sample", limit: 5 });
+      return { type: result.hits[0]?.type ?? "missing" };
+    } finally {
+      server.stop(true);
+    }
+  }
+
+  test("'skill' and 'skills' map to 'skill'", async () => {
+    expect((await hitForOVType("skill")).type).toBe("skill");
+    expect((await hitForOVType("skills")).type).toBe("skill");
+  });
+
+  test("'memory' and 'memories' map to 'memory'", async () => {
+    expect((await hitForOVType("memory")).type).toBe("memory");
+    expect((await hitForOVType("memories")).type).toBe("memory");
+  });
+
+  test("'resource' and 'resources' map to 'knowledge'", async () => {
+    expect((await hitForOVType("resource")).type).toBe("knowledge");
+    expect((await hitForOVType("resources")).type).toBe("knowledge");
+  });
+
+  test("'knowledge' maps to 'knowledge'", async () => {
+    expect((await hitForOVType("knowledge")).type).toBe("knowledge");
+  });
+
+  test("'agent' and 'agents' map to 'agent'", async () => {
+    expect((await hitForOVType("agent")).type).toBe("agent");
+    expect((await hitForOVType("agents")).type).toBe("agent");
+  });
+
+  test("'command' and 'commands' map to 'command'", async () => {
+    expect((await hitForOVType("command")).type).toBe("command");
+    expect((await hitForOVType("commands")).type).toBe("command");
+  });
+
+  test("'script' and 'scripts' map to 'script'", async () => {
+    expect((await hitForOVType("script")).type).toBe("script");
+    expect((await hitForOVType("scripts")).type).toBe("script");
+  });
+
+  test("unknown types default to 'knowledge'", async () => {
+    expect((await hitForOVType("document")).type).toBe("knowledge");
+    expect((await hitForOVType("note")).type).toBe("knowledge");
+    expect((await hitForOVType("collection")).type).toBe("knowledge");
+    expect((await hitForOVType("prompt_template")).type).toBe("knowledge");
+    expect((await hitForOVType("tool")).type).toBe("knowledge");
+    expect((await hitForOVType("assistant")).type).toBe("knowledge");
+    expect((await hitForOVType("persona")).type).toBe("knowledge");
+    expect((await hitForOVType("completely_unknown_type")).type).toBe("knowledge");
+  });
+
+  test("uriToVikingRef normalises plain URIs to viking:// scheme", () => {
+    expect(uriToVikingRef("viking://skills/foo")).toBe("viking://skills/foo");
+    expect(uriToVikingRef("skills/foo")).toBe("viking://skills/foo");
+    expect(uriToVikingRef("/skills/foo")).toBe("viking://skills/foo");
   });
 });
