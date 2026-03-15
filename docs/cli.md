@@ -33,7 +33,7 @@ Returns stats: `totalEntries`, `generatedMetadata`, `directoriesScanned`,
 
 ### search
 
-Search local stash assets, registry kits, or both.
+Search stash assets, registry kits, or both.
 
 ```sh
 akm search "deploy"
@@ -46,7 +46,7 @@ akm search "docker" --source both --detail full
 | --- | --- | --- | --- |
 | `--type` | `skill`, `command`, `agent`, `knowledge`, `memory`, `script`, `any` | `any` | Filter by asset type |
 | `--limit` | number | `20` | Maximum results |
-| `--source` | `local`, `registry`, `both` | `local` | Where to search |
+| `--source` | `stash`, `registry`, `both` | `stash` | Where to search (`local` is an alias for `stash`) |
 | `--format` | `json`, `text`, `yaml` | `json` | Output format |
 | `--detail` | `brief`, `normal`, `full` | `brief` | Output detail level |
 
@@ -233,7 +233,7 @@ akm registry add https://skills.sh --name skills.sh --provider skills-sh
 | `--options` | Provider-specific options as JSON (e.g. `'{"apiKey":"key"}'`) |
 
 ```sh
-akm registry add http://localhost:1933 --name openviking --provider openviking --options '{"apiKey":"key"}'
+akm sources add http://localhost:1933 --provider openviking --options '{"apiKey":"key"}'
 ```
 
 Duplicate URLs are rejected.

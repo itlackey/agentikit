@@ -1,6 +1,6 @@
 # OpenViking Test Fixture
 
-Local OpenViking server for manual testing of the `openviking` registry provider
+Local OpenViking server for manual testing of the `openviking` stash provider
 and `akm show viking://...` remote show support.
 
 ## Prerequisites
@@ -19,7 +19,7 @@ docker compose up -d
 ./seed.sh
 
 # Register with akm
-akm registry add http://localhost:1933 --name openviking --provider openviking
+akm sources add http://localhost:1933 --provider openviking
 
 # Test remote show
 akm show viking://resources/project-context/project-context.md
@@ -39,8 +39,7 @@ docker compose down
 
 To use with akm's openviking provider including auth:
 ```sh
-akm registry add http://localhost:1933 \
-  --name openviking \
+akm sources add http://localhost:1933 \
   --provider openviking \
   --options '{"apiKey":"akm-test-key"}'
 ```

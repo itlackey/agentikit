@@ -16,7 +16,7 @@ akm search "<query>" --detail full            # Include scores, paths, timing
 | Flag | Values | Default |
 | --- | --- | --- |
 | `--type` | `skill`, `command`, `agent`, `knowledge`, `script`, `memory`, `any` | `any` |
-| `--source` | `local`, `registry`, `both` | `local` |
+| `--source` | `stash`, `registry`, `both` | `stash` |
 | `--limit` | number | `20` |
 | `--format` | `json`, `text`, `yaml` | `json` |
 | `--detail` | `brief`, `normal`, `full` | `brief` |

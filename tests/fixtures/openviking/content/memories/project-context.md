@@ -6,7 +6,7 @@ needed, keep it simple.
 
 ## Current Focus
 
-- OpenViking integration as a registry provider
+- OpenViking integration as a stash provider
 - Flexible asset type system (extensible without code changes)
 - Memory as a first-class asset type
 

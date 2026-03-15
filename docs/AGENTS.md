@@ -7,7 +7,7 @@ You have access to a searchable library of scripts, skills, commands, agents, kn
 ```sh
 akm search "<query>"                          # Search for assets
 akm search "<query>" --type skill             # Filter by type
-akm search "<query>" --source both            # Search registries and local stashes for assets
+akm search "<query>" --source both            # Search stashes and registries for assets
 akm show <ref>                                # View asset details
 akm show viking://resources/my-doc           # Show remote OpenViking content
 akm add <ref>                                 # Install a kit (npm, GitHub, git, local)

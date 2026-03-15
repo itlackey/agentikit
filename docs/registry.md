@@ -31,8 +31,8 @@ akm registry add https://example.com/registry/index.json --name my-team
 # Add a skills.sh registry
 akm registry add https://skills.sh --name skills.sh --provider skills-sh
 
-# Add an OpenViking registry with provider-specific options
-akm registry add http://localhost:1933 --name openviking --provider openviking --options '{"apiKey":"my-key"}'
+# Add an OpenViking stash source
+akm sources add http://localhost:1933 --provider openviking --options '{"apiKey":"my-key"}'
 
 # Remove a registry by URL or name
 akm registry remove my-team
@@ -315,19 +315,22 @@ To install a skill found via skills.sh, use the `ref` field (GitHub
 akm add vercel-labs/agent-skills
 ```
 
-#### `openviking`
+#### `openviking` (stash provider)
 
 Connects to an [OpenViking](https://github.com/volcengine/openviking) server
 for context management. OpenViking is ByteDance's open-source context file
 system for AI agents, using `viking://` URIs.
 
+> **Note:** OpenViking is a *stash provider*, not a registry provider. Configure
+> it via `akm sources add`, not `akm registry add`.
+
 ```bash
-akm registry add http://localhost:1933 --name openviking --provider openviking --options '{"apiKey":"my-key"}'
+akm sources add http://localhost:1933 --provider openviking --options '{"apiKey":"my-key"}'
 ```
 
 Key behaviors:
 - Semantic search via `POST /api/v1/search/find` (or text search via `POST /api/v1/search/grep`)
-- Results returned as asset-level hits (not installable via `akm add`)
+- Results returned as stash hits in the unified `hits[]` array (not installable via `akm add`)
 - `viking://` URIs viewable with `akm show viking://path`
 - Per-query response caching with 5-minute TTL
 - Stale cache fallback (up to 1 hour) on network failure

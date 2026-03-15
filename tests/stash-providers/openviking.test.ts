@@ -247,4 +247,106 @@ describe("OpenVikingStashProvider", () => {
       server.stop(true);
     }
   });
+
+  // ── show() tests ────────────────────────────────────────────────────────
+
+  test("show returns content for viking:// URI", async () => {
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const url = new URL(req.url);
+        if (url.pathname === "/api/v1/fs/stat") {
+          return new Response(
+            JSON.stringify({ status: "ok", result: { name: "my-doc", type: "resources", abstract: "A test doc" } }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.pathname === "/api/v1/content/read") {
+          return new Response(JSON.stringify({ status: "ok", result: "# My Doc\n\nHello world" }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("Not found", { status: 404 });
+      },
+    });
+    servers.push(server);
+
+    try {
+      const factory = getFactory();
+      const provider = factory({ type: "openviking", url: `http://localhost:${server.port}` });
+      const result = await provider.show("viking://resources/my-doc");
+
+      expect(result.name).toBe("my-doc");
+      expect(result.type).toBe("knowledge");
+      expect(result.content).toBe("# My Doc\n\nHello world");
+      expect(result.editable).toBe(false);
+      expect(result.description).toBe("A test doc");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("show sends Authorization header when apiKey is configured", async () => {
+    let capturedAuth = "";
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        capturedAuth = req.headers.get("authorization") ?? "";
+        return new Response(JSON.stringify({ status: "ok", result: { name: "test", type: "memories" } }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+    servers.push(server);
+
+    try {
+      const factory = getFactory();
+      const provider = factory({
+        type: "openviking",
+        url: `http://localhost:${server.port}`,
+        options: { apiKey: "test-key-123" },
+      });
+      await provider.show("viking://memories/test");
+
+      expect(capturedAuth).toBe("Bearer test-key-123");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("show throws NotFoundError when server is unreachable", async () => {
+    const factory = getFactory();
+    const provider = factory({ type: "openviking", url: "http://127.0.0.1:19339" });
+
+    await expect(provider.show("viking://memories/missing")).rejects.toThrow(/Could not fetch remote asset/);
+  });
+
+  test("show throws NotFoundError when content is missing", async () => {
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const url = new URL(req.url);
+        if (url.pathname === "/api/v1/fs/stat") {
+          return new Response(JSON.stringify({ status: "ok", result: { name: "partial", type: "resources" } }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        // Content endpoint returns error
+        return new Response(JSON.stringify({ status: "error", error: "not found" }), {
+          status: 404,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+    servers.push(server);
+
+    try {
+      const factory = getFactory();
+      const provider = factory({ type: "openviking", url: `http://localhost:${server.port}` });
+
+      await expect(provider.show("viking://resources/partial")).rejects.toThrow(/Content not found/);
+    } finally {
+      server.stop(true);
+    }
+  });
 });

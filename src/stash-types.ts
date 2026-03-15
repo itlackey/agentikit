@@ -58,7 +58,8 @@ export interface AddResponse {
   schemaVersion: number;
   stashDir: string;
   ref: string;
-  installed: {
+  /** Present for registry kit installs (npm, github, git) */
+  installed?: {
     id: string;
     source: KitSource;
     ref: string;
@@ -69,6 +70,13 @@ export interface AddResponse {
     cacheDir: string;
     extractedDir: string;
     installedAt: string;
+  };
+  /** Present for local directory adds (routed to stashes config) */
+  stashSource?: {
+    type: "filesystem";
+    path: string;
+    name?: string;
+    stashRoot: string;
   };
   config: {
     searchPaths: string[];

@@ -6,7 +6,7 @@ import { fetchWithRetry } from "./common";
 import { GITHUB_API_BASE, githubHeaders } from "./github";
 import { generateMetadataFlat, loadStashFile, type StashEntry } from "./metadata";
 import { parseRegistryIndex, type RegistryIndex, type RegistryKitEntry } from "./providers/static-index";
-import { detectStashRoot } from "./registry-install";
+import { detectStashRoot, validateTarEntries } from "./registry-install";
 import { walkStashFlat } from "./walker";
 
 const DEFAULT_NPM_REGISTRY_BASE = "https://registry.npmjs.org";
@@ -272,9 +272,15 @@ async function inspectArchive(url: string, headers?: HeadersInit): Promise<Packa
     if (!response.ok) {
       throw new Error(`Failed to fetch archive (${response.status}) from ${url}`);
     }
-    const arrayBuffer = await response.arrayBuffer();
     fs.mkdirSync(extractDir, { recursive: true });
-    fs.writeFileSync(archivePath, Buffer.from(arrayBuffer));
+    await Bun.write(archivePath, response);
+
+    // Validate tar entries for path traversal before extracting
+    const listResult = spawnSync("tar", ["tzf", archivePath], { encoding: "utf8", timeout: 120_000 });
+    if (listResult.status !== 0) {
+      throw new Error(listResult.stderr?.trim() || `tar list failed with ${listResult.status}`);
+    }
+    validateTarEntries(listResult.stdout);
 
     const result = spawnSync("tar", ["xzf", archivePath, "-C", extractDir], { encoding: "utf8", timeout: 120_000 });
     if (result.status !== 0) {

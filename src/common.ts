@@ -15,7 +15,7 @@ export const IS_WINDOWS = process.platform === "win32";
 // ── Validators ──────────────────────────────────────────────────────────────
 
 export function isAssetType(type: string): type is AgentikitAssetType {
-  return type in TYPE_DIRS;
+  return Object.hasOwn(TYPE_DIRS, type);
 }
 
 // ── Utilities ───────────────────────────────────────────────────────────────

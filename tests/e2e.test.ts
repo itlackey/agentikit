@@ -207,8 +207,9 @@ describe("Scenario: Full lifecycle (index → search → show)", () => {
 
     expect(result.hits.length).toBeGreaterThan(0);
     expect(result.hits.some((h) => h.name.includes("deploy"))).toBe(true);
-    // Substring mode assigns a default score of 1
-    expect(result.hits[0].score).toBe(1);
+    // Substring mode computes a relevance score
+    expect(result.hits[0].score).toBeGreaterThan(0);
+    expect(result.hits[0].score).toBeLessThanOrEqual(1);
   });
 
   test("index generates metadata and builds search index", async () => {

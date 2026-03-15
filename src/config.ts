@@ -133,11 +133,10 @@ export function loadConfig(): AgentikitConfig {
   }
 
   const raw = readConfigObject(configPath);
-  const config = raw ? pickKnownKeys(raw) : { ...DEFAULT_CONFIG };
+  const expanded = raw ? expandEnvVars(raw) : undefined;
+  const config = expanded ? pickKnownKeys(expanded) : { ...DEFAULT_CONFIG };
 
-  // Inject API keys from environment variables.
-  // API keys should be provided via AKM_EMBED_API_KEY and AKM_LLM_API_KEY
-  // rather than stored in the config file.
+  // Legacy: inject API keys from well-known env vars when not set via ${} substitution
   if (config.embedding && !config.embedding.apiKey) {
     const envKey = process.env.AKM_EMBED_API_KEY?.trim();
     if (envKey) config.embedding.apiKey = envKey;
@@ -146,6 +145,12 @@ export function loadConfig(): AgentikitConfig {
     const envKey = process.env.AKM_LLM_API_KEY?.trim();
     if (envKey) config.llm.apiKey = envKey;
   }
+
+  // Migrate installed[source: "local"] → stashes[type: "filesystem"]
+  migrateLocalInstalledToStashes(config);
+
+  // Migrate remoteStashSources → stashes[]
+  migrateRemoteStashSourcesToStashes(config);
 
   // Cache the parsed config with its path and mtime for subsequent calls
   try {
@@ -156,6 +161,81 @@ export function loadConfig(): AgentikitConfig {
   }
 
   return config;
+}
+
+/**
+ * Migrate installed entries with source "local" to stashes[] as filesystem entries.
+ * Local directories are search paths, not registry kits — they don't need version
+ * tracking, cache management, or update support.
+ *
+ * Mutates the config in place and persists to disk if any entries are migrated.
+ */
+function migrateLocalInstalledToStashes(config: AgentikitConfig): void {
+  const installed = config.installed;
+  if (!installed) return;
+
+  const localEntries = installed.filter((e) => e.source === "local");
+  if (localEntries.length === 0) return;
+
+  const stashes = [...(config.stashes ?? [])];
+  const existingPaths = new Set(
+    stashes.filter((s): s is StashConfigEntry & { path: string } => !!s.path).map((s) => path.resolve(s.path)),
+  );
+
+  let migrated = 0;
+  for (const entry of localEntries) {
+    const resolved = path.resolve(entry.stashRoot);
+    if (existingPaths.has(resolved)) continue;
+    stashes.push({
+      type: "filesystem",
+      path: resolved,
+      name: entry.id,
+    });
+    existingPaths.add(resolved);
+    migrated++;
+  }
+
+  if (migrated === 0) return;
+
+  // Remove local entries from installed, add to stashes
+  config.installed = installed.filter((e) => e.source !== "local");
+  config.stashes = stashes;
+  saveConfig(config);
+}
+
+/**
+ * Migrate remoteStashSources[] to stashes[] entries.
+ * Each remote source becomes a typed stash entry (e.g. type: "openviking").
+ *
+ * Mutates the config in place and persists to disk if any entries are migrated.
+ */
+function migrateRemoteStashSourcesToStashes(config: AgentikitConfig): void {
+  const remoteSources = config.remoteStashSources;
+  if (!remoteSources || remoteSources.length === 0) return;
+
+  const stashes = [...(config.stashes ?? [])];
+  const existingUrls = new Set(
+    stashes.filter((s): s is StashConfigEntry & { url: string } => !!s.url).map((s) => s.url),
+  );
+
+  let migrated = 0;
+  for (const entry of remoteSources) {
+    if (!entry.url || existingUrls.has(entry.url)) continue;
+    stashes.push({
+      type: entry.provider ?? "openviking",
+      url: entry.url,
+      name: entry.name,
+      options: entry.options,
+    });
+    existingUrls.add(entry.url);
+    migrated++;
+  }
+
+  if (migrated === 0) return;
+
+  config.stashes = stashes;
+  config.remoteStashSources = undefined;
+  saveConfig(config);
 }
 
 export function saveConfig(config: AgentikitConfig): void {
@@ -183,16 +263,19 @@ export function saveConfig(config: AgentikitConfig): void {
  * API keys should be provided via environment variables
  * AKM_EMBED_API_KEY and AKM_LLM_API_KEY.
  */
-function sanitizeConfigForWrite(config: AgentikitConfig): AgentikitConfig {
-  const sanitized = { ...config };
-  if (sanitized.embedding) {
-    const { apiKey, ...rest } = sanitized.embedding;
-    sanitized.embedding = rest as EmbeddingConnectionConfig;
+function sanitizeConfigForWrite(config: AgentikitConfig): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = { ...config };
+  if (config.embedding) {
+    const { apiKey, ...rest } = config.embedding;
+    sanitized.embedding = rest;
   }
-  if (sanitized.llm) {
-    const { apiKey, ...rest } = sanitized.llm;
-    sanitized.llm = rest as LlmConnectionConfig;
+  if (config.llm) {
+    const { apiKey, ...rest } = config.llm;
+    sanitized.llm = rest;
   }
+  // Drop empty/migrated keys to keep config clean
+  if (!config.searchPaths?.length) delete sanitized.searchPaths;
+  if (!config.remoteStashSources?.length) delete sanitized.remoteStashSources;
   return sanitized;
 }
 
@@ -258,6 +341,35 @@ function parseOutputConfig(value: unknown): OutputConfig | undefined {
   }
 
   return Object.keys(output).length > 0 ? output : undefined;
+}
+
+/**
+ * Recursively expand `${VAR}` references in all string values.
+ * Supports `${VAR}`, `${VAR:-default}`, and bare `$VAR` at the start of a value.
+ * Non-string values pass through unchanged.
+ */
+function expandEnvVars<T>(value: T): T {
+  if (typeof value === "string") {
+    return value.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, bare) => {
+      if (braced) {
+        const [name, ...rest] = braced.split(":-");
+        const fallback = rest.join(":-");
+        return process.env[name] ?? fallback ?? "";
+      }
+      return process.env[bare] ?? "";
+    }) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => expandEnvVars(item)) as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = expandEnvVars(v);
+    }
+    return out as T;
+  }
+  return value;
 }
 
 function readConfigObject(configPath: string): Record<string, unknown> | undefined {

@@ -89,8 +89,8 @@ Registries are indexes of available kits. The official
 ```sh
 akm registry search "code review"                                        # Search registries
 akm registry add https://example.com/registry/index.json --name team     # Add a registry
-akm registry add http://host:1933 --name ov --provider openviking \
-  --options '{"apiKey":"key"}'                                            # Add an OpenViking registry
+akm sources add http://host:1933 --provider openviking \
+  --options '{"apiKey":"key"}'                                            # Add an OpenViking stash source
 akm registry list                                                        # List configured registries
 akm show viking://resources/my-doc                                       # Fetch remote content from OpenViking
 ```
@@ -98,7 +98,7 @@ akm show viking://resources/my-doc                                       # Fetch
 Private access is supported through:
 - **GitHub tokens** -- Set `GITHUB_TOKEN` to access private GitHub repos when installing kits
 - **Provider options** -- `--options` flag accepts JSON for provider-specific configuration (API keys, custom headers)
-- **Pluggable providers** -- Built-in providers include `static-index`, `skills-sh`, and `openviking`; custom providers can implement their own authentication
+- **Pluggable providers** -- Built-in registry providers include `static-index` and `skills-sh`; stash providers include `filesystem` and `openviking`; custom providers can implement their own authentication
 
 See the [Registry docs](docs/registry.md) for hosting your own registry and
 the v2 index format.

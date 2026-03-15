@@ -10,6 +10,7 @@ import { buildEditHint, findSourceForPath, isEditable, resolveStashSources } fro
 import type { KnowledgeView, ShowResponse } from "./stash-types";
 
 // Eagerly import stash providers to trigger self-registration
+import "./stash-providers/filesystem";
 import "./stash-providers/openviking";
 
 /**

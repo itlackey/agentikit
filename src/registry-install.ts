@@ -342,7 +342,7 @@ function extractTarGzSecure(archivePath: string, destinationDir: string): void {
   }
 }
 
-function validateTarEntries(listOutput: string): void {
+export function validateTarEntries(listOutput: string): void {
   const lines = listOutput.split(/\r?\n/).filter(Boolean);
   for (const rawLine of lines) {
     const entry = rawLine.trim();

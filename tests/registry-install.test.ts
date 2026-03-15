@@ -110,7 +110,7 @@ function createTarGz(sourceDir: string, archivePath: string): void {
 }
 
 describe("local directory installs", () => {
-  test("agentikitAdd installs a subdirectory inside a git repository", async () => {
+  test("agentikitAdd adds a local directory as a stash source", async () => {
     const stashDir = createEmptyStashDir("akm-git-stash-");
     const cacheHome = makeTempDir("akm-git-cache-");
     const repoDir = makeTempDir("akm-git-repo-");
@@ -124,20 +124,22 @@ describe("local directory installs", () => {
         agentikitAdd({ ref: kitDir }),
       );
 
-      expect(result.installed.source).toBe("local");
-      // Local installs reference the original path directly (no cache copy)
-      expect(result.installed.stashRoot).toBe(kitDir);
-      expect(fs.existsSync(path.join(result.installed.stashRoot, "scripts", "hello.sh"))).toBe(true);
+      // Local adds now create stash sources, not installed entries
+      expect(result.stashSource).toBeDefined();
+      expect(result.stashSource?.type).toBe("filesystem");
+      expect(result.stashSource?.stashRoot).toBe(kitDir);
+      expect(result.installed).toBeUndefined();
+      expect(fs.existsSync(path.join(result.stashSource?.stashRoot, "scripts", "hello.sh"))).toBe(true);
 
       const config = loadConfig();
-      const installedRoots = (config.installed ?? []).map((e: { stashRoot: string }) => e.stashRoot);
-      expect(installedRoots).toContain(result.installed.stashRoot);
+      const stashPaths = (config.stashes ?? []).map((s) => s.path);
+      expect(stashPaths).toContain(result.stashSource?.stashRoot);
 
       const shown = await withEnv({ AKM_STASH_DIR: stashDir, XDG_CACHE_HOME: cacheHome }, () =>
         agentikitShow({ ref: "script:hello.sh" }),
       );
       expect(shown.type).toBe("script");
-      expect(shown.path).toContain(result.installed.stashRoot);
+      expect(shown.path).toContain(result.stashSource?.stashRoot);
     } finally {
       fs.rmSync(stashDir, { recursive: true, force: true });
       fs.rmSync(cacheHome, { recursive: true, force: true });
@@ -156,10 +158,11 @@ describe("local directory installs", () => {
         agentikitAdd({ ref: kitDir }),
       );
 
-      expect(result.installed.source).toBe("local");
+      expect(result.stashSource).toBeDefined();
+      expect(result.stashSource?.type).toBe("filesystem");
       // stashRoot points directly at the source, no cache directory
-      expect(result.installed.stashRoot).toBe(kitDir);
-      expect(fs.existsSync(path.join(result.installed.stashRoot, "scripts", "hello.sh"))).toBe(true);
+      expect(result.stashSource?.stashRoot).toBe(kitDir);
+      expect(fs.existsSync(path.join(result.stashSource?.stashRoot, "scripts", "hello.sh"))).toBe(true);
     } finally {
       fs.rmSync(stashDir, { recursive: true, force: true });
       fs.rmSync(cacheHome, { recursive: true, force: true });
@@ -181,11 +184,11 @@ describe("local directory installs", () => {
         agentikitAdd({ ref: projectDir }),
       );
 
-      expect(result.installed.source).toBe("local");
+      expect(result.stashSource).toBeDefined();
       // stashRoot should point to the nested my-kit dir, not the project root
-      expect(result.installed.stashRoot).toBe(path.join(projectDir, "my-kit"));
-      expect(fs.existsSync(path.join(result.installed.stashRoot, "scripts", "hello.sh"))).toBe(true);
-      expect(fs.existsSync(path.join(result.installed.stashRoot, "skills", "review", "SKILL.md"))).toBe(true);
+      expect(result.stashSource?.stashRoot).toBe(path.join(projectDir, "my-kit"));
+      expect(fs.existsSync(path.join(result.stashSource?.stashRoot, "scripts", "hello.sh"))).toBe(true);
+      expect(fs.existsSync(path.join(result.stashSource?.stashRoot, "skills", "review", "SKILL.md"))).toBe(true);
     } finally {
       fs.rmSync(stashDir, { recursive: true, force: true });
       fs.rmSync(cacheHome, { recursive: true, force: true });
@@ -208,9 +211,9 @@ describe("local directory installs", () => {
         agentikitAdd({ ref: srcDir }),
       );
 
-      expect(result.installed.source).toBe("local");
+      expect(result.stashSource).toBeDefined();
       // stashRoot is the source dir itself — indexer detects basename "knowledge" matches a type dir
-      expect(result.installed.stashRoot).toBe(srcDir);
+      expect(result.stashSource?.stashRoot).toBe(srcDir);
       expect(result.index.totalEntries).toBeGreaterThanOrEqual(3);
     } finally {
       fs.rmSync(stashDir, { recursive: true, force: true });

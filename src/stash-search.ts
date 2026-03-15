@@ -6,6 +6,7 @@ import type { StashProvider } from "./stash-provider";
 import { resolveStashProviderFactory } from "./stash-provider-registry";
 
 // Eagerly import stash providers to trigger self-registration
+import "./stash-providers/filesystem";
 import "./stash-providers/openviking";
 import {
   closeDatabase,
@@ -447,11 +448,58 @@ function substringSearch(
   config?: import("./config").AgentikitConfig,
 ): StashSearchHit[] {
   const assets = indexAssets(stashDir, searchType);
-  return assets
-    .filter((asset) => !query || buildSearchText(asset.entry).includes(query))
-    .sort(compareAssets)
+  const matched = assets.filter((asset) => !query || buildSearchText(asset.entry).includes(query));
+
+  if (!query) {
+    return matched
+      .sort(compareAssets)
+      .slice(0, limit)
+      .map((asset) => assetToSearchHit(asset, query, stashDir, sources, config));
+  }
+
+  // Score and sort by relevance
+  const scored = matched.map((asset) => ({ asset, score: scoreSubstringMatch(asset.entry, query) }));
+  scored.sort((a, b) => b.score - a.score || compareAssets(a.asset, b.asset));
+
+  return scored
     .slice(0, limit)
-    .map((asset) => assetToSearchHit(asset, stashDir, sources, config));
+    .map(({ asset, score }) => assetToSearchHit(asset, query, stashDir, sources, config, score));
+}
+
+/**
+ * Compute a 0–1 relevance score for a substring match.
+ * Higher scores for name matches, tag matches, and description matches.
+ */
+function scoreSubstringMatch(entry: import("./metadata").StashEntry, query: string): number {
+  const tokens = query.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return 0.5;
+
+  let score = 0.3; // base score for any match
+
+  const nameLower = entry.name.toLowerCase().replace(/[-_]/g, " ");
+  const descLower = (entry.description ?? "").toLowerCase();
+  const tagsLower = (entry.tags ?? []).join(" ").toLowerCase();
+
+  // Exact name match is highest signal
+  if (nameLower === query) {
+    score += 0.5;
+  } else if (nameLower.includes(query)) {
+    score += 0.35;
+  } else if (tokens.some((t) => nameLower.includes(t))) {
+    score += 0.2;
+  }
+
+  // Tag match
+  if (tokens.some((t) => tagsLower.includes(t))) {
+    score += 0.1;
+  }
+
+  // Description match (weaker signal)
+  if (tokens.some((t) => descLower.includes(t))) {
+    score += 0.05;
+  }
+
+  return Math.round(Math.min(1, score) * 100) / 100;
 }
 
 // ── Hit building ────────────────────────────────────────────────────────────
@@ -537,9 +585,11 @@ function buildWhyMatched(
 
 function assetToSearchHit(
   asset: IndexedAsset,
+  _query: string,
   stashDir: string,
   sources: StashSource[],
   config?: import("./config").AgentikitConfig,
+  score?: number,
 ): StashSearchHit {
   const source = findSourceForPath(asset.path, sources);
   const editable = isEditable(asset.path, config);
@@ -560,7 +610,7 @@ function assetToSearchHit(
     tags: asset.entry.tags,
     ...(size ? { size } : {}),
     action: buildLocalAction(asset.entry.type, ref),
-    score: 1,
+    ...(score !== undefined ? { score } : {}),
   };
   const renderer = rendererForType(asset.entry.type);
   if (renderer?.enrichSearchHit) {
@@ -577,9 +627,11 @@ function resolveAdditionalStashProviders(config: AgentikitConfig): StashProvider
   const providers: StashProvider[] = [];
 
   // New config: stashes[]
+  // Skip "filesystem" entries — they're handled by resolveStashSources() as search paths.
   if (config.stashes) {
     for (const entry of config.stashes) {
       if (entry.enabled === false) continue;
+      if (entry.type === "filesystem") continue;
       const factory = resolveStashProviderFactory(entry.type);
       if (factory) {
         providers.push(factory(entry));

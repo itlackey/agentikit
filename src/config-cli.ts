@@ -114,17 +114,20 @@ export function unsetConfigValue(config: AgentikitConfig, key: string): Agentiki
 }
 
 export function listConfig(config: AgentikitConfig): Record<string, unknown> {
-  return {
-    ...DEFAULT_CONFIG,
-    ...config,
+  const result: Record<string, unknown> = {
+    semanticSearch: config.semanticSearch,
+    registries: config.registries ?? DEFAULT_CONFIG.registries ?? [],
     output: mergeOutputConfig(DEFAULT_CONFIG.output, config.output) ?? null,
     stashDir: config.stashDir ?? null,
-    embedding: config.embedding ?? null,
-    llm: config.llm ?? null,
-    registries: config.registries ?? DEFAULT_CONFIG.registries ?? [],
-    remoteStashSources: config.remoteStashSources ?? [],
+    installed: config.installed ?? [],
     stashes: config.stashes ?? [],
   };
+  if (config.embedding) result.embedding = config.embedding;
+  if (config.llm) result.llm = config.llm;
+  // Show legacy keys only if they still have content
+  if (config.searchPaths?.length) result.searchPaths = config.searchPaths;
+  if (config.remoteStashSources?.length) result.remoteStashSources = config.remoteStashSources;
+  return result;
 }
 
 function mergeConfigValue(config: AgentikitConfig, partial: Partial<AgentikitConfig>): AgentikitConfig {
