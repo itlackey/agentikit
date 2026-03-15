@@ -9,13 +9,13 @@ import { getConfigValue, listConfig, setConfigValue, unsetConfigValue } from "./
 import { ConfigError, NotFoundError, UsageError } from "./errors";
 import { agentikitIndex } from "./indexer";
 import { agentikitInit } from "./init";
+import { agentikitList, agentikitRemove, agentikitUpdate } from "./installed-kits";
 import { getCacheDir, getDbPath, getDefaultStashDir } from "./paths";
 import { buildRegistryIndex, writeRegistryIndex } from "./registry-build-index";
 import { searchRegistry } from "./registry-search";
 import { checkForUpdate, performUpgrade } from "./self-update";
 import { agentikitAdd } from "./stash-add";
 import { agentikitClone } from "./stash-clone";
-import { agentikitList, agentikitRemove, agentikitUpdate } from "./stash-registry";
 import { agentikitSearch } from "./stash-search";
 import { agentikitShowUnified } from "./stash-show";
 import { resolveStashSources } from "./stash-source";
@@ -445,7 +445,11 @@ const searchCommand = defineCommand({
   async run({ args }) {
     await runWithJsonErrors(async () => {
       const type = args.type as string | undefined;
-      const limit = args.limit ? parseInt(args.limit, 10) : undefined;
+      const limitRaw = args.limit ? parseInt(args.limit, 10) : undefined;
+      if (limitRaw !== undefined && Number.isNaN(limitRaw)) {
+        throw new UsageError(`Invalid --limit value: "${args.limit}". Must be a positive integer.`);
+      }
+      const limit = limitRaw;
       const source = parseSearchSource(args.source);
       const result = await agentikitSearch({ query: args.query, type, limit, source });
       output("search", result);
@@ -718,6 +722,11 @@ const registryCommand = defineCommand({
           if (!args.url.startsWith("http")) {
             throw new UsageError("Registry URL must start with http:// or https://");
           }
+          if (args.url.startsWith("http://")) {
+            warn(
+              "Warning: registry URL uses plain HTTP (not HTTPS). For security, prefer https:// to protect against eavesdropping and tampering.",
+            );
+          }
           const config = loadConfig();
           const registries = [...(config.registries ?? [])];
           // Deduplicate by URL
@@ -770,8 +779,11 @@ const registryCommand = defineCommand({
       },
       async run({ args }) {
         await runWithJsonErrors(async () => {
-          const limit = args.limit ? parseInt(args.limit, 10) : undefined;
-          const result = await searchRegistry(args.query, { limit, includeAssets: args.assets });
+          const limitRaw = args.limit ? parseInt(args.limit, 10) : undefined;
+          if (limitRaw !== undefined && Number.isNaN(limitRaw)) {
+            throw new UsageError(`Invalid --limit value: "${args.limit}". Must be a positive integer.`);
+          }
+          const result = await searchRegistry(args.query, { limit: limitRaw, includeAssets: args.assets });
           output("registry-search", result);
         });
       },
@@ -841,6 +853,11 @@ const sourcesCommand = defineCommand({
           const isUrl = args.target.startsWith("http://") || args.target.startsWith("https://");
 
           if (isUrl) {
+            if (args.target.startsWith("http://")) {
+              warn(
+                "Warning: source URL uses plain HTTP (not HTTPS). For security, prefer https:// to protect against eavesdropping and tampering.",
+              );
+            }
             const providerType = args.provider;
             if (!providerType) {
               throw new UsageError("--provider is required for URL sources (e.g. --provider openviking)");

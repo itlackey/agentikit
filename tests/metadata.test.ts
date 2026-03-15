@@ -145,7 +145,9 @@ test("validateStashEntry parses quality, confidence, source, and aliases", () =>
   expect(result?.quality).toBe("curated");
   expect(result?.confidence).toBe(1);
   expect(result?.source).toBe("manual");
-  expect(result?.aliases).toEqual(["lint", "linters", "linter"]);
+  // R4.6: de-pluralization heuristic removed; FTS5 porter stemmer handles stemming.
+  // "linters" is preserved as-is; "linter" is no longer generated.
+  expect(result?.aliases).toEqual(["lint", "linters"]);
 });
 
 // ── extractDescriptionFromComments ──────────────────────────────────────────

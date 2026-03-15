@@ -6,8 +6,9 @@ import { TYPE_DIRS } from "./asset-spec";
 import { fetchWithRetry, isWithin } from "./common";
 import { type AgentikitConfig, loadConfig, saveConfig } from "./config";
 import { getRegistryCacheDir as _getRegistryCacheDir } from "./paths";
-import { parseRegistryRef, resolveRegistryArtifact } from "./registry-resolve";
+import { parseRegistryRef, resolveRegistryArtifact, validateGitRef, validateGitUrl } from "./registry-resolve";
 import type { InstalledKitEntry, KitInstallResult, KitSource, ParsedGitRef, ParsedLocalRef } from "./registry-types";
+import { warn } from "./warn";
 
 const REGISTRY_STASH_DIR_NAMES = new Set<string>(Object.values(TYPE_DIRS));
 
@@ -64,14 +65,29 @@ export async function installRegistryRef(ref: string, options?: InstallRegistryR
 
   fs.mkdirSync(cacheDir, { recursive: true });
 
-  await downloadArchive(resolved.artifactUrl, archivePath);
-  verifyArchiveIntegrity(archivePath, resolved.resolvedRevision, resolved.source);
-  const integrity = await computeFileHash(archivePath);
-  extractTarGzSecure(archivePath, extractedDir);
+  let integrity: string;
+  let provisionalKitRoot: string;
+  let installRoot: string;
+  let stashRoot: string;
+  try {
+    await downloadArchive(resolved.artifactUrl, archivePath);
+    verifyArchiveIntegrity(archivePath, resolved.resolvedRevision, resolved.source);
+    integrity = await computeFileHash(archivePath);
+    extractTarGzSecure(archivePath, extractedDir);
 
-  const provisionalKitRoot = detectStashRoot(extractedDir);
-  const installRoot = applyAgentikitIncludeConfig(provisionalKitRoot, cacheDir, extractedDir) ?? provisionalKitRoot;
-  const stashRoot = detectStashRoot(installRoot);
+    provisionalKitRoot = detectStashRoot(extractedDir);
+    installRoot = applyAgentikitIncludeConfig(provisionalKitRoot, cacheDir, extractedDir) ?? provisionalKitRoot;
+    stashRoot = detectStashRoot(installRoot);
+  } catch (err) {
+    // Clean up the cache directory so stale or partially-extracted artifacts
+    // don't cause false cache hits on the next install attempt.
+    try {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup; ignore errors
+    }
+    throw err;
+  }
 
   return {
     id: resolved.id,
@@ -150,6 +166,10 @@ async function installGitRegistryRef(
   }
 
   fs.mkdirSync(cacheDir, { recursive: true });
+
+  // Validate URL and ref before passing to git to prevent command injection
+  validateGitUrl(parsed.url);
+  if (parsed.requestedRef) validateGitRef(parsed.requestedRef);
 
   const cloneArgs = ["clone", "--depth", "1"];
   if (parsed.requestedRef) {
@@ -318,7 +338,8 @@ export function verifyArchiveIntegrity(archivePath: string, expected: string | u
     return;
   }
 
-  // Unrecognized format — skip verification
+  // Unrecognized format — warn and skip verification
+  warn("Unrecognized integrity format: %s — verification skipped", expected);
 }
 
 function extractTarGzSecure(archivePath: string, destinationDir: string): void {
@@ -339,6 +360,28 @@ function extractTarGzSecure(archivePath: string, destinationDir: string): void {
   if (extractResult.status !== 0) {
     const err = extractResult.stderr?.trim() || extractResult.error?.message || "unknown error";
     throw new Error(`Failed to extract archive ${archivePath}: ${err}`);
+  }
+
+  // Post-extraction scan: verify all extracted files are within destinationDir
+  // This mitigates TOCTOU between validateTarEntries (list) and tar extract.
+  scanExtractedFiles(destinationDir, destinationDir);
+}
+
+function scanExtractedFiles(dir: string, root: string): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (!isWithin(fullPath, root)) {
+      throw new Error(`Post-extraction scan: file outside destination directory: ${fullPath}`);
+    }
+    if (entry.isDirectory()) {
+      scanExtractedFiles(fullPath, root);
+    }
   }
 }
 

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadConfig, saveConfig } from "../src/config";
-import { installRegistryRef } from "../src/registry-install";
+import { installRegistryRef, validateTarEntries } from "../src/registry-install";
 import { parseRegistryRef } from "../src/registry-resolve";
 import { agentikitAdd } from "../src/stash-add";
 import { agentikitShow } from "../src/stash-show";
@@ -416,5 +416,53 @@ describe("local directory installs", () => {
       fs.rmSync(packageDir, { recursive: true, force: true });
       fs.rmSync(path.dirname(archivePath), { recursive: true, force: true });
     }
+  });
+});
+
+// ── Security: validateTarEntries adversarial cases ───────────────────────────
+
+describe("validateTarEntries", () => {
+  test("accepts normal relative entries", () => {
+    const output = ["kit-v1.0.0/README.md", "kit-v1.0.0/agents/deploy.md", "kit-v1.0.0/scripts/run.sh"].join("\n");
+    expect(() => validateTarEntries(output)).not.toThrow();
+  });
+
+  test("rejects entry with absolute path", () => {
+    const output = "kit-v1.0.0/README.md\n/etc/passwd";
+    expect(() => validateTarEntries(output)).toThrow(/absolute path/);
+  });
+
+  test("rejects entry with ../ traversal at root level", () => {
+    const output = "kit-v1.0.0/README.md\n../../evil";
+    expect(() => validateTarEntries(output)).toThrow(/path traversal/);
+  });
+
+  test("rejects entry that escapes after strip-components (a/../../../evil)", () => {
+    // After normalization, kit-v1.0.0/../../../evil becomes ../../evil which
+    // starts with ".." — caught by the path traversal check before strip.
+    const output = "kit-v1.0.0/../../../evil";
+    expect(() => validateTarEntries(output)).toThrow(/path traversal|unsafe entry/);
+  });
+
+  test("rejects entry that escapes after strip-components (clean first part)", () => {
+    // "a/b/../../../../evil" normalizes to "../../evil" which starts with ".."
+    // and is caught by the path traversal check (same as other traversal cases).
+    const output = "a/b/../../../../evil";
+    expect(() => validateTarEntries(output)).toThrow(/path traversal|unsafe entry/);
+  });
+
+  test("rejects entry with null byte in name", () => {
+    const output = "kit-v1.0.0/README\0.md";
+    expect(() => validateTarEntries(output)).toThrow(/invalid entry/);
+  });
+
+  test("accepts entries with dots in filenames", () => {
+    const output = ["kit-v1.0.0/.env.example", "kit-v1.0.0/v2.1.0/notes.md"].join("\n");
+    expect(() => validateTarEntries(output)).not.toThrow();
+  });
+
+  test("accepts empty output without throwing", () => {
+    expect(() => validateTarEntries("")).not.toThrow();
+    expect(() => validateTarEntries("\n\n")).not.toThrow();
   });
 });

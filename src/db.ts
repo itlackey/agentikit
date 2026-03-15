@@ -86,7 +86,9 @@ export function isVecAvailable(db: Database): boolean {
 
 const VEC_DOCS_URL = "https://github.com/itlackey/agentikit/blob/main/docs/configuration.md#sqlite-vec-extension";
 const VEC_FALLBACK_THRESHOLD = 10_000;
-let vecInitWarned = false;
+// Per-database warning state: tracks which databases have already emitted the
+// vec-missing warning so we don't spam on every openDatabase() call.
+const vecInitWarnedDbs = new WeakSet<Database>();
 
 /**
  * Warn if sqlite-vec is unavailable and embedding count exceeds threshold.
@@ -94,7 +96,7 @@ let vecInitWarned = false;
  */
 export function warnIfVecMissing(db: Database, { once }: { once: boolean } = { once: false }): void {
   if (isVecAvailable(db)) return;
-  if (once && vecInitWarned) return;
+  if (once && vecInitWarnedDbs.has(db)) return;
 
   try {
     const row = db.prepare("SELECT COUNT(*) AS cnt FROM embeddings").get() as { cnt: number } | undefined;
@@ -105,7 +107,7 @@ export function warnIfVecMissing(db: Database, { once }: { once: boolean } = { o
         count,
         VEC_DOCS_URL,
       );
-      if (once) vecInitWarned = true;
+      if (once) vecInitWarnedDbs.add(db);
     }
   } catch {
     /* embeddings table may not exist yet during init */
@@ -186,6 +188,9 @@ function ensureSchema(db: Database, embeddingDim: number): void {
 
     const vecExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entries_vec'").get();
     if (!vecExists) {
+      if (!Number.isInteger(embeddingDim) || embeddingDim <= 0 || embeddingDim > 4096) {
+        throw new Error(`Invalid embedding dimension: ${embeddingDim}`);
+      }
       db.exec(`
         CREATE VIRTUAL TABLE entries_vec USING vec0(
           id       INTEGER PRIMARY KEY,
@@ -238,32 +243,46 @@ export function upsertEntry(
   `);
   stmt.run(entryKey, dirPath, filePath, stashDir, JSON.stringify(entry), searchText, entry.type);
   // Fetch the row id explicitly since last_insert_rowid() is unreliable for ON CONFLICT DO UPDATE
-  const row = db.prepare("SELECT id FROM entries WHERE entry_key = ?").get(entryKey) as { id: number };
+  const row = db.prepare("SELECT id FROM entries WHERE entry_key = ?").get(entryKey) as { id: number } | undefined;
+  if (!row) throw new Error("upsertEntry: entry_key not found after upsert");
   return row.id;
 }
 
 export function deleteEntriesByDir(db: Database, dirPath: string): void {
-  const ids = db.prepare("SELECT id FROM entries WHERE dir_path = ?").all(dirPath) as Array<{ id: number }>;
-  deleteRelatedRows(db, ids);
-  db.prepare("DELETE FROM entries WHERE dir_path = ?").run(dirPath);
+  db.transaction(() => {
+    const ids = db.prepare("SELECT id FROM entries WHERE dir_path = ?").all(dirPath) as Array<{ id: number }>;
+    deleteRelatedRows(db, ids);
+    db.prepare("DELETE FROM entries WHERE dir_path = ?").run(dirPath);
+  })();
 }
 
 export function deleteEntriesByStashDir(db: Database, stashDir: string): void {
-  const ids = db.prepare("SELECT id FROM entries WHERE stash_dir = ?").all(stashDir) as Array<{ id: number }>;
-  deleteRelatedRows(db, ids);
-  db.prepare("DELETE FROM entries WHERE stash_dir = ?").run(stashDir);
+  db.transaction(() => {
+    const ids = db.prepare("SELECT id FROM entries WHERE stash_dir = ?").all(stashDir) as Array<{ id: number }>;
+    deleteRelatedRows(db, ids);
+    db.prepare("DELETE FROM entries WHERE stash_dir = ?").run(stashDir);
+  })();
 }
 
+const SQLITE_CHUNK_SIZE = 500;
+
 function deleteRelatedRows(db: Database, ids: Array<{ id: number }>): void {
-  for (const { id } of ids) {
+  if (ids.length === 0) return;
+  const numericIds = ids.map((r) => r.id);
+  const vecAvail = isVecAvailable(db);
+
+  // Process in chunks to stay within SQLITE_MAX_VARIABLE_NUMBER
+  for (let i = 0; i < numericIds.length; i += SQLITE_CHUNK_SIZE) {
+    const chunk = numericIds.slice(i, i + SQLITE_CHUNK_SIZE);
+    const placeholders = chunk.map(() => "?").join(",");
     try {
-      db.prepare("DELETE FROM embeddings WHERE id = ?").run(id);
+      db.prepare(`DELETE FROM embeddings WHERE id IN (${placeholders})`).run(...chunk);
     } catch {
       /* ignore */
     }
-    if (isVecAvailable(db)) {
+    if (vecAvail) {
       try {
-        db.prepare("DELETE FROM entries_vec WHERE id = ?").run(id);
+        db.prepare(`DELETE FROM entries_vec WHERE id IN (${placeholders})`).run(...chunk);
       } catch {
         /* ignore */
       }
@@ -407,7 +426,7 @@ function sanitizeFtsQuery(query: string): string {
   const tokens = query
     .replace(/[^a-zA-Z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter((t) => t.length >= 1);
+    .filter((t) => t.length >= 2);
   if (tokens.length === 0) return "";
   // Use unquoted tokens so the porter stemmer can normalize word forms
   return tokens.join(" ");

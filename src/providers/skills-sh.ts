@@ -3,7 +3,7 @@ import path from "node:path";
 import { fetchWithRetry } from "../common";
 import type { RegistryConfigEntry } from "../config";
 import { getRegistryIndexCacheDir } from "../paths";
-import { registerProvider } from "../provider-registry";
+import { registerProvider } from "../registry-factory";
 import type { RegistryProvider, RegistryProviderResult, RegistryProviderSearchOptions } from "../registry-provider";
 import type { RegistryAssetSearchHit, RegistrySearchHit } from "../registry-types";
 

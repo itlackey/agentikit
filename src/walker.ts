@@ -6,7 +6,6 @@
  * directories and group files by parent directory.
  */
 
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { isRelevantAssetFile } from "./asset-spec";
@@ -84,18 +83,17 @@ function walkStashGit(stashRoot: string): FileContext[] | null {
   if (!isInsideGitRepo(stashRoot)) return null;
 
   // Get tracked + untracked (non-ignored) files
-  const result = spawnSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."], {
+  const result = Bun.spawnSync(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."], {
     cwd: stashRoot,
-    encoding: "utf8",
-    timeout: 30_000,
-    maxBuffer: 10 * 1024 * 1024, // 10MB
   });
-  if (result.status !== 0) return null;
+  // result.success is false if the process exited non-zero OR git was not found
+  if (!result.success) return null;
 
   const SKIP_DIRS = new Set([".git", "node_modules", "bin", ".cache"]);
   const SKIP_FILES = new Set([".stash.json", ".gitignore", ".gitattributes"]);
 
-  const files = result.stdout
+  const stdout = Buffer.isBuffer(result.stdout) ? result.stdout.toString("utf8") : String(result.stdout ?? "");
+  const files = stdout
     .split("\0")
     .filter((f) => f.length > 0)
     .filter((f) => !f.startsWith("..") && !path.isAbsolute(f))
@@ -156,6 +154,10 @@ function walkStashManual(stashRoot: string): FileContext[] {
     for (const entry of entries) {
       if (entry.name === ".stash.json") continue;
       const fullPath = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        // Skip symlinks entirely to prevent potential path traversal outside stashRoot
+        continue;
+      }
       if (entry.isDirectory()) {
         if (SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
         stack.push(fullPath);

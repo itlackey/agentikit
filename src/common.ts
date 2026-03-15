@@ -115,7 +115,7 @@ function persistStashDirToConfig(stashDir: string): void {
       raw.stashDir = stashDir;
       const dir = path.dirname(configPath);
       fs.mkdirSync(dir, { recursive: true });
-      const tmpPath = `${configPath}.tmp.${process.pid}`;
+      const tmpPath = `${configPath}.tmp.${process.pid}.${Math.random().toString(36).slice(2)}`;
       fs.writeFileSync(tmpPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
       fs.renameSync(tmpPath, configPath);
     }

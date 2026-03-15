@@ -331,9 +331,9 @@ function normalizeTerms(values: string[]): string[] {
     const cleaned = value.toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
     if (!cleaned) continue;
     normalized.add(cleaned);
-    if (cleaned.endsWith("s") && cleaned.length > 3) {
-      normalized.add(cleaned.slice(0, -1));
-    }
+    // De-pluralization heuristic removed: the FTS5 porter stemmer (configured
+    // with `tokenize='porter unicode61'`) handles stemming correctly, including
+    // edge cases like "kubernetes" and "status" that the naive s-strip mangled.
   }
   return Array.from(normalized);
 }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { registerProvider, resolveProviderFactory } from "../src/provider-registry";
-import { resolveStashProviderFactory } from "../src/stash-provider-registry";
+import { registerProvider, resolveProviderFactory } from "../src/registry-factory";
+import { resolveStashProviderFactory } from "../src/stash-provider-factory";
 
 describe("provider-registry", () => {
   test("resolveProviderFactory returns null for unknown type", () => {

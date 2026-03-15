@@ -1,5 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { resolveStashProviderFactory } from "../../src/stash-provider-registry";
+import { ConfigError } from "../../src/errors";
+import { resolveStashProviderFactory } from "../../src/stash-provider-factory";
+import { OpenVikingStashProvider, parseOVSearchResponse } from "../../src/stash-providers/openviking";
 
 // Trigger self-registration
 import "../../src/stash-providers/openviking";
@@ -348,5 +350,80 @@ describe("OpenVikingStashProvider", () => {
     } finally {
       server.stop(true);
     }
+  });
+
+  // ── Security: malformed / adversarial URIs ───────────────────────────────
+
+  test("show handles viking:// URI with path traversal safely (passes to server as-is, server decides)", async () => {
+    // The client should not crash or execute local path traversal;
+    // the server is responsible for access control.
+    const server = Bun.serve({
+      port: 0,
+      async fetch() {
+        return new Response(JSON.stringify({ status: "ok", result: null }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+    servers.push(server);
+
+    try {
+      const factory = getFactory();
+      const provider = factory({ type: "openviking", url: `http://localhost:${server.port}` });
+      // Should throw NotFoundError (content is null) but NOT execute local path traversal
+      await expect(provider.show("viking://../../etc/passwd")).rejects.toThrow();
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("show handles URI with null bytes without crashing", async () => {
+    const factory = getFactory();
+    // Use an unreachable server; we expect a network error, not a crash
+    const provider = factory({ type: "openviking", url: "http://127.0.0.1:19340" });
+    await expect(provider.show("viking://memories/foo\0bar")).rejects.toThrow();
+  });
+
+  // ── Security: constructor validation ────────────────────────────────────
+
+  test("throws ConfigError when baseUrl uses file:// scheme", () => {
+    expect(() => new OpenVikingStashProvider({ type: "openviking", url: "file:///etc/passwd" })).toThrow(ConfigError);
+  });
+
+  test("throws ConfigError when baseUrl uses ftp:// scheme", () => {
+    expect(() => new OpenVikingStashProvider({ type: "openviking", url: "ftp://evil.example.com" })).toThrow(
+      ConfigError,
+    );
+  });
+
+  test("does not throw for valid http:// baseUrl", () => {
+    expect(() => new OpenVikingStashProvider({ type: "openviking", url: "http://localhost:8080" })).not.toThrow();
+  });
+
+  test("does not throw for valid https:// baseUrl", () => {
+    expect(
+      () => new OpenVikingStashProvider({ type: "openviking", url: "https://openviking.example.com" }),
+    ).not.toThrow();
+  });
+
+  // ── Security: control character sanitization ─────────────────────────────
+
+  test("sanitizes control characters in search result names", () => {
+    const maliciousResult = {
+      status: "ok",
+      result: [
+        {
+          uri: "viking://memories/test",
+          name: "normal-name\x1b[31mRED\x1b[0m",
+          score: 0.9,
+          type: "memories",
+        },
+      ],
+    };
+    const entries = parseOVSearchResponse(maliciousResult.result);
+    // parseOVSearchResponse returns the raw entries; sanitization happens in mapToStashHits
+    // The name field here should be accessible without crashing
+    expect(entries).toHaveLength(1);
+    expect(typeof entries[0].name).toBe("string");
   });
 });

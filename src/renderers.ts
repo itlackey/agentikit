@@ -16,7 +16,7 @@ import { parseFrontmatter, toStringOrUndefined } from "./frontmatter";
 import { extractFrontmatterOnly, extractLineRange, extractSection, formatToc, parseMarkdownToc } from "./markdown";
 import type { StashEntry } from "./metadata";
 import { extractDescriptionFromComments, loadStashFile } from "./metadata";
-import type { KnowledgeView, LocalSearchHit, ShowResponse } from "./stash-types";
+import type { KnowledgeView, ShowResponse, StashSearchHit } from "./stash-types";
 
 // ── ExecHints types ──────────────────────────────────────────────────────────
 
@@ -410,7 +410,7 @@ const scriptSourceRenderer: AssetRenderer = {
     };
   },
 
-  enrichSearchHit(hit: LocalSearchHit, _stashDir: string): void {
+  enrichSearchHit(hit: StashSearchHit, _stashDir: string): void {
     const ext = path.extname(hit.path).toLowerCase();
     if (!INTERPRETER_MAP[ext]) return;
 

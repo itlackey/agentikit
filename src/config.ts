@@ -74,10 +74,19 @@ export interface AgentikitConfig {
   llm?: LlmConnectionConfig;
   /** Installed kits (from npm, GitHub, git, or local sources) */
   installed?: InstalledKitEntry[];
-  /** Configured registries for kit discovery */
+  /**
+   * Configured registries for kit discovery.
+   * - `undefined` (field absent): use the built-in default registries.
+   * - `[]` (explicit empty array): disable all registries (no registry search).
+   * - `[...]` (non-empty array): use exactly the listed registries, overriding defaults.
+   */
   registries?: RegistryConfigEntry[];
-  /** @deprecated Use stashes instead. Legacy remote stash sources. */
-  remoteStashSources?: RegistryConfigEntry[];
+  /**
+   * @deprecated Use stashes instead. Legacy remote stash sources.
+   * Typed as StashConfigEntry[] because the migration reads them as stash entries.
+   * Will be removed after one release cycle.
+   */
+  remoteStashSources?: StashConfigEntry[];
   /** Additional stash sources (filesystem paths and remote providers) */
   stashes?: StashConfigEntry[];
   /** Output defaults for CLI rendering */
@@ -152,10 +161,11 @@ export function loadConfig(): AgentikitConfig {
   // Migrate remoteStashSources → stashes[]
   migrateRemoteStashSourcesToStashes(config);
 
-  // Cache the parsed config with its path and mtime for subsequent calls
+  // Cache the parsed config with its path and mtime for subsequent calls.
+  // Reuse the stat already obtained above (avoids a second syscall + TOCTOU gap).
   try {
-    const stat = fs.statSync(configPath);
-    cachedConfig = { config, path: configPath, mtime: stat.mtimeMs };
+    const freshStat = fs.statSync(configPath);
+    cachedConfig = { config, path: configPath, mtime: freshStat.mtimeMs };
   } catch {
     // If we can't stat (unlikely since we just read it), skip caching
   }
@@ -222,7 +232,7 @@ function migrateRemoteStashSourcesToStashes(config: AgentikitConfig): void {
   for (const entry of remoteSources) {
     if (!entry.url || existingUrls.has(entry.url)) continue;
     stashes.push({
-      type: entry.provider ?? "openviking",
+      type: entry.type ?? "openviking",
       url: entry.url,
       name: entry.name,
       options: entry.options,
@@ -244,7 +254,7 @@ export function saveConfig(config: AgentikitConfig): void {
   const dir = path.dirname(configPath);
   fs.mkdirSync(dir, { recursive: true });
   const sanitized = sanitizeConfigForWrite(config);
-  const tmpPath = `${configPath}.tmp.${process.pid}`;
+  const tmpPath = `${configPath}.tmp.${process.pid}.${Math.random().toString(36).slice(2)}`;
   try {
     fs.writeFileSync(tmpPath, `${JSON.stringify(sanitized, null, 2)}\n`, "utf8");
     fs.renameSync(tmpPath, configPath);
@@ -315,7 +325,7 @@ function pickKnownKeys(raw: Record<string, unknown>): AgentikitConfig {
   const registries = parseRegistriesConfig(raw.registries);
   if (registries) config.registries = registries;
 
-  const remoteStash = parseRegistriesConfig(raw.remoteStashSources);
+  const remoteStash = parseStashesConfig(raw.remoteStashSources);
   if (remoteStash) config.remoteStashSources = remoteStash;
 
   const stashes = parseStashesConfig(raw.stashes);
@@ -347,6 +357,12 @@ function parseOutputConfig(value: unknown): OutputConfig | undefined {
  * Recursively expand `${VAR}` references in all string values.
  * Supports `${VAR}`, `${VAR:-default}`, and bare `$VAR` at the start of a value.
  * Non-string values pass through unchanged.
+ *
+ * SECURITY NOTE: Env var expansion applies to all string fields in the config,
+ * including URL-type fields. A shared or world-readable config file could be
+ * used to exfiltrate environment variables (e.g. via a URL pointing to an
+ * attacker-controlled server). Ensure config files have restrictive permissions
+ * (chmod 600) and are not shared with untrusted parties.
  */
 function expandEnvVars<T>(value: T): T {
   if (typeof value === "string") {
@@ -392,7 +408,6 @@ export function stripJsonComments(text: string): string {
   let result = "";
   let i = 0;
   let inString = false;
-  let stringChar = "";
   while (i < text.length) {
     if (inString) {
       if (text[i] === "\\") {
@@ -400,16 +415,16 @@ export function stripJsonComments(text: string): string {
         i += 2;
         continue;
       }
-      if (text[i] === stringChar) {
+      if (text[i] === '"') {
         inString = false;
       }
       result += text[i];
       i++;
       continue;
     }
-    if (text[i] === '"' || text[i] === "'") {
+    // JSON only uses double-quoted strings; single quotes are not valid JSON
+    if (text[i] === '"') {
       inString = true;
-      stringChar = text[i];
       result += text[i];
       i++;
       continue;

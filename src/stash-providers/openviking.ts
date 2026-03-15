@@ -2,11 +2,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { fetchWithRetry } from "../common";
 import type { StashConfigEntry } from "../config";
-import { NotFoundError } from "../errors";
+import { ConfigError, NotFoundError } from "../errors";
 import { getRegistryIndexCacheDir } from "../paths";
 import type { StashProvider, StashSearchOptions, StashSearchResult } from "../stash-provider";
-import { registerStashProvider } from "../stash-provider-registry";
+import { registerStashProvider } from "../stash-provider-factory";
 import type { KnowledgeView, ShowResponse, StashSearchHit } from "../stash-types";
+
+/** Strip terminal control characters from untrusted strings. */
+function sanitizeString(value: unknown, maxLength = 255): string {
+  if (typeof value !== "string") return "";
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — strip control chars from untrusted remote data
+  return value.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, maxLength);
+}
 
 /** Per-query cache TTL in milliseconds (5 minutes). */
 const QUERY_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -29,7 +36,11 @@ interface OVResponse {
   error?: string;
 }
 
-const OV_TYPE_TO_ASSET: Record<string, string> = {
+/**
+ * Single source of truth for OpenViking type → agentikit asset type mapping.
+ * Used by both search hit mapping and show response mapping.
+ */
+const OV_TYPE_MAP: Record<string, string> = {
   skill: "skill",
   skills: "skill",
   memory: "memory",
@@ -53,6 +64,21 @@ class OpenVikingStashProvider implements StashProvider {
   constructor(config: StashConfigEntry) {
     this.config = config;
     this.name = config.name ?? "openviking";
+    // Validate baseUrl scheme to prevent SSRF via file:// or other non-HTTP schemes
+    const rawUrl = config.url ?? "";
+    if (rawUrl) {
+      try {
+        const parsed = new URL(rawUrl);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          throw new ConfigError(
+            `OpenViking baseUrl must use http:// or https://, got "${parsed.protocol}" in "${rawUrl}"`,
+          );
+        }
+      } catch (err) {
+        if (err instanceof ConfigError) throw err;
+        throw new ConfigError(`OpenViking baseUrl is not a valid URL: "${rawUrl}"`);
+      }
+    }
   }
 
   async search(options: StashSearchOptions): Promise<StashSearchResult> {
@@ -90,10 +116,12 @@ class OpenVikingStashProvider implements StashProvider {
 
     const stat = (typeof statResult === "object" && statResult !== null ? statResult : {}) as Record<string, unknown>;
     const uriPath = uri.replace(/^viking:\/\//, "");
-    const name = (stat.name as string) ?? uriPath.split("/").pop() ?? "unknown";
-    const ovType = (stat.type as string) ?? inferTypeFromUri(uri);
-    const assetType = mapOVType(ovType);
+    // Sanitize untrusted fields to strip terminal control characters
+    const name = sanitizeString(stat.name) || uriPath.split("/").pop() || "unknown";
+    const ovType = sanitizeString(stat.type) || inferTypeFromUri(uri);
+    const assetType = OV_TYPE_MAP[ovType] ?? "knowledge";
     const content = typeof contentResult === "string" ? contentResult : "";
+    const description = sanitizeString(stat.abstract, 1000) || undefined;
 
     return {
       type: assetType,
@@ -101,8 +129,9 @@ class OpenVikingStashProvider implements StashProvider {
       path: uri,
       action: `Remote content from OpenViking — ${uri}`,
       content,
-      description: (stat.abstract as string) ?? undefined,
+      description,
       editable: false,
+      origin: "remote" as const,
     };
   }
 
@@ -173,7 +202,7 @@ class OpenVikingStashProvider implements StashProvider {
     const maxScore = Math.max(...entries.map((e) => e.score), 0.01);
 
     return entries.map((entry) => {
-      const assetType = OV_TYPE_TO_ASSET[entry.type ?? ""] ?? "knowledge";
+      const assetType = OV_TYPE_MAP[entry.type ?? ""] ?? "knowledge";
       const ref = uriToVikingRef(entry.uri);
       return {
         type: assetType,
@@ -223,8 +252,9 @@ class OpenVikingStashProvider implements StashProvider {
     try {
       const dir = path.dirname(cachePath);
       fs.mkdirSync(dir, { recursive: true });
-      const tmpPath = `${cachePath}.tmp.${process.pid}`;
-      fs.writeFileSync(tmpPath, JSON.stringify(entries), "utf8");
+      const tmpPath = `${cachePath}.tmp.${process.pid}.${Math.random().toString(36).slice(2)}`;
+      // 0o600: owner read/write only — cache may contain search terms tied to API keys
+      fs.writeFileSync(tmpPath, JSON.stringify(entries), { encoding: "utf8", mode: 0o600 });
       fs.renameSync(tmpPath, cachePath);
     } catch {
       // Best-effort caching
@@ -354,36 +384,8 @@ async function fetchOVJson(url: string, headers: Record<string, string>): Promis
 
 function inferTypeFromUri(uri: string): string {
   const uriPath = uri.replace(/^viking:\/\//, "");
-  const firstSegment = uriPath.split("/")[0];
-  const typeMap: Record<string, string> = {
-    memories: "memory",
-    skills: "skill",
-    resources: "knowledge",
-    agents: "agent",
-    commands: "command",
-    scripts: "script",
-    knowledge: "knowledge",
-  };
-  return typeMap[firstSegment] ?? "knowledge";
-}
-
-function mapOVType(ovType: string): string {
-  const map: Record<string, string> = {
-    memory: "memory",
-    memories: "memory",
-    skill: "skill",
-    skills: "skill",
-    resource: "knowledge",
-    resources: "knowledge",
-    knowledge: "knowledge",
-    agent: "agent",
-    agents: "agent",
-    command: "command",
-    commands: "command",
-    script: "script",
-    scripts: "script",
-  };
-  return map[ovType] ?? "knowledge";
+  const firstSegment = uriPath.split("/")[0] ?? "";
+  return OV_TYPE_MAP[firstSegment] ?? "knowledge";
 }
 
 // ── Exports for testing ─────────────────────────────────────────────────────

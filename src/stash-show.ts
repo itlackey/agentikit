@@ -2,16 +2,14 @@ import { loadConfig } from "./config";
 import { NotFoundError, UsageError } from "./errors";
 import { buildFileContext, buildRenderContext, getRenderer, runMatchers } from "./file-context";
 import { resolveSourcesForOrigin } from "./origin-resolve";
-import type { StashProvider } from "./stash-provider";
-import { resolveStashProviderFactory } from "./stash-provider-registry";
+import { resolveStashProviders } from "./stash-provider-factory";
 import { parseAssetRef } from "./stash-ref";
 import { resolveAssetPath } from "./stash-resolve";
 import { buildEditHint, findSourceForPath, isEditable, resolveStashSources } from "./stash-source";
 import type { KnowledgeView, ShowResponse } from "./stash-types";
 
 // Eagerly import stash providers to trigger self-registration
-import "./stash-providers/filesystem";
-import "./stash-providers/openviking";
+import "./stash-providers/index";
 
 /**
  * Unified show: routes to the first stash provider that can handle the ref.
@@ -21,53 +19,14 @@ export async function agentikitShowUnified(input: { ref: string; view?: Knowledg
   const ref = input.ref.trim();
 
   // Try stash providers first (e.g. OpenViking for viking:// URIs)
-  const provider = resolveShowProvider(ref);
+  const config = loadConfig();
+  const provider = resolveStashProviders(config).find((p) => p.canShow(ref));
   if (provider) {
     return provider.show(ref, input.view);
   }
 
   // Default: local filesystem show
   return agentikitShow(input);
-}
-
-/**
- * Check if any registered stash provider can handle this ref.
- */
-function resolveShowProvider(ref: string): StashProvider | null {
-  const config = loadConfig();
-
-  // Check stashes config
-  if (config.stashes) {
-    for (const entry of config.stashes) {
-      if (entry.enabled === false) continue;
-      const factory = resolveStashProviderFactory(entry.type);
-      if (factory) {
-        const provider = factory(entry);
-        if (provider.canShow(ref)) return provider;
-      }
-    }
-  }
-
-  // Legacy: check remoteStashSources
-  if (!config.stashes && config.remoteStashSources) {
-    for (const entry of config.remoteStashSources) {
-      if (entry.enabled === false) continue;
-      const providerType = entry.provider ?? "openviking";
-      const factory = resolveStashProviderFactory(providerType);
-      if (factory) {
-        const provider = factory({
-          type: providerType,
-          url: entry.url,
-          name: entry.name,
-          enabled: entry.enabled,
-          options: entry.options,
-        });
-        if (provider.canShow(ref)) return provider;
-      }
-    }
-  }
-
-  return null;
 }
 
 export async function agentikitShow(input: { ref: string; view?: KnowledgeView }): Promise<ShowResponse> {

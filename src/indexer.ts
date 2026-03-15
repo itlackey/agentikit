@@ -65,27 +65,40 @@ export async function agentikitIndex(options?: { stashDir?: string; full?: boole
 
     if (options?.full || !isIncremental) {
       // Wipe all entries for full rebuild or stashDir change
-      // Delete from child tables first to respect foreign key constraints
-      try {
-        db.exec("DELETE FROM embeddings");
-      } catch {
-        /* ignore */
-      }
-      if (isVecAvailable(db)) {
+      // All deletes wrapped in a transaction so a crash cannot leave a half-empty DB.
+      db.transaction(() => {
+        // Delete from child tables first to respect foreign key constraints
         try {
-          db.exec("DELETE FROM entries_vec");
+          db.exec("DELETE FROM embeddings");
         } catch {
           /* ignore */
         }
-      }
-      db.exec("DELETE FROM entries_fts");
-      db.exec("DELETE FROM entries");
+        if (isVecAvailable(db)) {
+          try {
+            db.exec("DELETE FROM entries_vec");
+          } catch {
+            /* ignore */
+          }
+        }
+        db.exec("DELETE FROM entries_fts");
+        db.exec("DELETE FROM entries");
+      })();
     } else {
       // Incremental: purge entries from stash dirs that have been removed
       // (e.g. after `akm remove`) so orphaned entries don't linger.
       const prevStashDirsJson = getMeta(db, "stashDirs");
       if (prevStashDirsJson) {
-        const prevStashDirs: string[] = JSON.parse(prevStashDirsJson);
+        let prevStashDirs: string[] = [];
+        try {
+          const parsed: unknown = JSON.parse(prevStashDirsJson);
+          if (Array.isArray(parsed)) {
+            prevStashDirs = parsed.filter((d): d is string => typeof d === "string");
+          } else {
+            warn("index_meta stashDirs value is not an array — treating as empty");
+          }
+        } catch {
+          warn("index_meta stashDirs value is corrupt JSON — treating as empty");
+        }
         const currentSet = new Set(allStashDirs);
         for (const dir of prevStashDirs) {
           if (!currentSet.has(dir)) {

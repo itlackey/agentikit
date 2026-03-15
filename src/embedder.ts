@@ -1,5 +1,6 @@
 import { fetchWithTimeout } from "./common";
 import type { EmbeddingConnectionConfig } from "./config";
+import { warn } from "./warn";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -16,26 +17,27 @@ type TransformerPipeline = (
   options: { pooling: string; normalize: boolean },
 ) => Promise<{ data: Float32Array }>;
 
-let localEmbedder: TransformerPipeline | undefined;
+// Cache the promise itself (not the resolved result) so concurrent calls share
+// the same initialisation work and never download the model twice.
+let localEmbedderPromise: Promise<TransformerPipeline> | undefined;
 
 async function getLocalEmbedder(): Promise<TransformerPipeline> {
-  if (!localEmbedder) {
-    let pipeline: unknown;
-    try {
-      const mod = await import("@xenova/transformers");
-      pipeline = mod.pipeline as unknown;
-    } catch {
-      throw new Error(
-        "Semantic search requires @xenova/transformers. Install it with: npm install @xenova/transformers",
-      );
-    }
-    const pipelineFn = pipeline as (task: string, model: string) => Promise<TransformerPipeline>;
-    localEmbedder = await pipelineFn("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+  if (!localEmbedderPromise) {
+    localEmbedderPromise = (async () => {
+      let pipeline: unknown;
+      try {
+        const mod = await import("@xenova/transformers");
+        pipeline = mod.pipeline as unknown;
+      } catch {
+        throw new Error(
+          "Semantic search requires @xenova/transformers. Install it with: npm install @xenova/transformers",
+        );
+      }
+      const pipelineFn = pipeline as (task: string, model: string) => Promise<TransformerPipeline>;
+      return pipelineFn("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+    })();
   }
-  if (!localEmbedder) {
-    throw new Error("Failed to initialize local embedder.");
-  }
-  return localEmbedder;
+  return localEmbedderPromise;
 }
 
 async function embedLocal(text: string): Promise<EmbeddingVector> {
@@ -160,7 +162,12 @@ async function embedRemoteBatch(texts: string[], config: EmbeddingConnectionConf
       );
     }
 
-    results.push(...json.data.map((d) => d.embedding));
+    for (const [idx, d] of json.data.entries()) {
+      if (!Array.isArray(d.embedding)) {
+        throw new Error(`Unexpected embedding at batch index ${idx}: missing or invalid`);
+      }
+      results.push(d.embedding);
+    }
   }
 
   return results;
@@ -169,6 +176,9 @@ async function embedRemoteBatch(texts: string[], config: EmbeddingConnectionConf
 // ── Similarity ──────────────────────────────────────────────────────────────
 
 export function cosineSimilarity(a: EmbeddingVector, b: EmbeddingVector): number {
+  if (a.length !== b.length) {
+    warn("cosineSimilarity: vector dimension mismatch (%d vs %d) — re-index recommended", a.length, b.length);
+  }
   const len = Math.min(a.length, b.length);
   if (len === 0) return 0;
   let dot = 0,

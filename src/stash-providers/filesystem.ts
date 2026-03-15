@@ -1,9 +1,9 @@
 import { resolveStashDir } from "../common";
 import type { AgentikitConfig, StashConfigEntry } from "../config";
 import { loadConfig } from "../config";
+import { searchLocal } from "../local-search";
 import type { StashProvider, StashSearchOptions, StashSearchResult } from "../stash-provider";
-import { registerStashProvider } from "../stash-provider-registry";
-import { searchLocal } from "../stash-search";
+import { registerStashProvider } from "../stash-provider-factory";
 import { agentikitShow } from "../stash-show";
 import { resolveStashSources } from "../stash-source";
 import type { KnowledgeView, ShowResponse } from "../stash-types";

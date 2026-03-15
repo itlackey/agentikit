@@ -10,7 +10,7 @@ import path from "node:path";
 import { toPosix } from "./common";
 import { parseFrontmatter } from "./frontmatter";
 import type { StashEntry } from "./metadata";
-import type { LocalSearchHit, ShowResponse } from "./stash-types";
+import type { ShowResponse, StashSearchHit } from "./stash-types";
 
 // ── FileContext ──────────────────────────────────────────────────────────────
 
@@ -164,8 +164,8 @@ export interface AssetRenderer {
   name: string;
   /** Build the full ShowResponse for the `akm show` command */
   buildShowResponse(ctx: RenderContext): ShowResponse;
-  /** Optionally enrich a LocalSearchHit with renderer-specific fields */
-  enrichSearchHit?(hit: LocalSearchHit, stashDir: string): void;
+  /** Optionally enrich a StashSearchHit with renderer-specific fields */
+  enrichSearchHit?(hit: StashSearchHit, stashDir: string): void;
   /** Optionally extract/augment metadata for a StashEntry */
   extractMetadata?(entry: StashEntry, ctx: RenderContext): void;
 }

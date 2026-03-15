@@ -1,0 +1,239 @@
+/**
+ * Installed-kit operations: list, remove, update.
+ *
+ * Manages the set of kits that have been added to the local stash via
+ * `akm add`. Each installed kit has a cache directory and a stash root that
+ * is added to the search path.
+ *
+ * Not to be confused with:
+ *   - registry-factory.ts   — factory map for kit-discovery registry providers
+ *   - stash-provider-factory.ts — factory map for runtime stash data sources
+ */
+
+import fs from "node:fs";
+import { resolveStashDir } from "./common";
+import { loadConfig } from "./config";
+import { NotFoundError, UsageError } from "./errors";
+import { agentikitIndex } from "./indexer";
+import { removeLockEntry, upsertLockEntry } from "./lockfile";
+import { installRegistryRef, removeInstalledRegistryEntry, upsertInstalledRegistryEntry } from "./registry-install";
+import { parseRegistryRef } from "./registry-resolve";
+import type { InstalledKitEntry } from "./registry-types";
+import type { KitInstallStatus, ListResponse, RemoveResponse, UpdateResponse } from "./stash-types";
+
+export async function agentikitList(input?: { stashDir?: string }): Promise<ListResponse> {
+  const stashDir = input?.stashDir ?? resolveStashDir();
+  const config = loadConfig();
+  const installed = config.installed ?? [];
+
+  return {
+    schemaVersion: 1,
+    stashDir,
+    installed: installed.map((entry) => ({
+      ...entry,
+      status: {
+        cacheDirExists: directoryExists(entry.cacheDir),
+        stashRootExists: directoryExists(entry.stashRoot),
+      },
+    })),
+    totalInstalled: installed.length,
+  };
+}
+
+export async function agentikitRemove(input: { target: string; stashDir?: string }): Promise<RemoveResponse> {
+  const target = input.target.trim();
+  if (!target) throw new UsageError("Target is required.");
+
+  const stashDir = input.stashDir ?? resolveStashDir();
+  const config = loadConfig();
+  const installed = config.installed ?? [];
+  const entry = resolveInstalledTarget(installed, target);
+
+  const updatedConfig = removeInstalledRegistryEntry(entry.id);
+  removeLockEntry(entry.id);
+  // Only clean up cache for non-local sources — local sources point to the
+  // user's real directory on disk and must never be deleted.
+  if (entry.source !== "local") {
+    cleanupDirectoryBestEffort(entry.cacheDir);
+  }
+  const index = await agentikitIndex({ stashDir });
+
+  return {
+    schemaVersion: 1,
+    stashDir,
+    target,
+    removed: {
+      id: entry.id,
+      source: entry.source,
+      ref: entry.ref,
+      cacheDir: entry.cacheDir,
+      stashRoot: entry.stashRoot,
+    },
+    config: {
+      searchPaths: updatedConfig.searchPaths,
+      installedKitCount: updatedConfig.installed?.length ?? 0,
+    },
+    index: {
+      mode: index.mode,
+      totalEntries: index.totalEntries,
+      directoriesScanned: index.directoriesScanned,
+      directoriesSkipped: index.directoriesSkipped,
+    },
+  };
+}
+
+export async function agentikitUpdate(input?: {
+  target?: string;
+  all?: boolean;
+  force?: boolean;
+  stashDir?: string;
+}): Promise<UpdateResponse> {
+  const stashDir = input?.stashDir ?? resolveStashDir();
+  const target = input?.target?.trim();
+  const all = input?.all === true;
+  const force = input?.force === true;
+  const installedEntries = loadConfig().installed ?? [];
+  const selectedEntries = selectTargets(installedEntries, target, all);
+
+  const processed: UpdateResponse["processed"] = [];
+  for (const entry of selectedEntries) {
+    if (force && shouldCleanupCache(entry)) {
+      cleanupDirectoryBestEffort(entry.cacheDir);
+    }
+    const installed = await installRegistryRef(entry.ref);
+    upsertInstalledRegistryEntry(toInstalledEntry(installed));
+    upsertLockEntry({
+      id: installed.id,
+      source: installed.source,
+      ref: installed.ref,
+      resolvedVersion: installed.resolvedVersion,
+      resolvedRevision: installed.resolvedRevision,
+      integrity: installed.integrity ?? (installed.source === "local" ? "local" : undefined),
+    });
+    if (entry.cacheDir !== installed.cacheDir && shouldCleanupCache(entry)) {
+      cleanupDirectoryBestEffort(entry.cacheDir);
+    }
+
+    const versionChanged = (entry.resolvedVersion ?? "") !== (installed.resolvedVersion ?? "");
+    const revisionChanged = (entry.resolvedRevision ?? "") !== (installed.resolvedRevision ?? "");
+
+    processed.push({
+      id: entry.id,
+      source: entry.source,
+      ref: entry.ref,
+      previous: {
+        resolvedVersion: entry.resolvedVersion,
+        resolvedRevision: entry.resolvedRevision,
+        cacheDir: entry.cacheDir,
+      },
+      installed: toInstallStatus(installed),
+      changed: {
+        version: versionChanged,
+        revision: revisionChanged,
+        any: versionChanged || revisionChanged,
+      },
+    });
+  }
+
+  const index = await agentikitIndex({ stashDir });
+  const config = loadConfig();
+
+  return {
+    schemaVersion: 1,
+    stashDir,
+    target,
+    all,
+    processed,
+    config: {
+      searchPaths: config.searchPaths,
+      installedKitCount: config.installed?.length ?? 0,
+    },
+    index: {
+      mode: index.mode,
+      totalEntries: index.totalEntries,
+      directoriesScanned: index.directoriesScanned,
+      directoriesSkipped: index.directoriesSkipped,
+    },
+  };
+}
+
+function selectTargets(installed: InstalledKitEntry[], target: string | undefined, all: boolean): InstalledKitEntry[] {
+  if (all && target) {
+    throw new UsageError("Specify either <target> or --all, not both.");
+  }
+  if (all) return installed;
+  if (!target) {
+    throw new UsageError("Either <target> or --all is required.");
+  }
+  return [resolveInstalledTarget(installed, target)];
+}
+
+function resolveInstalledTarget(installed: InstalledKitEntry[], target: string): InstalledKitEntry {
+  const byId = installed.find((entry) => entry.id === target);
+  if (byId) return byId;
+
+  const byRef = installed.find((entry) => entry.ref === target);
+  if (byRef) return byRef;
+
+  let parsedId: string | undefined;
+  try {
+    parsedId = parseRegistryRef(target).id;
+  } catch {
+    parsedId = undefined;
+  }
+  if (parsedId) {
+    const byParsedId = installed.find((entry) => entry.id === parsedId);
+    if (byParsedId) return byParsedId;
+  }
+
+  throw new NotFoundError(`No installed kit matched target: ${target}`);
+}
+
+function toInstalledEntry(status: KitInstallStatus): InstalledKitEntry {
+  return {
+    id: status.id,
+    source: status.source,
+    ref: status.ref,
+    artifactUrl: status.artifactUrl,
+    resolvedVersion: status.resolvedVersion,
+    resolvedRevision: status.resolvedRevision,
+    stashRoot: status.stashRoot,
+    cacheDir: status.cacheDir,
+    installedAt: status.installedAt,
+  };
+}
+
+function toInstallStatus(status: KitInstallStatus): KitInstallStatus {
+  return {
+    id: status.id,
+    source: status.source,
+    ref: status.ref,
+    artifactUrl: status.artifactUrl,
+    resolvedVersion: status.resolvedVersion,
+    resolvedRevision: status.resolvedRevision,
+    stashRoot: status.stashRoot,
+    cacheDir: status.cacheDir,
+    extractedDir: status.extractedDir,
+    installedAt: status.installedAt,
+  };
+}
+
+function cleanupDirectoryBestEffort(target: string): void {
+  try {
+    fs.rmSync(target, { recursive: true, force: true });
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+function shouldCleanupCache(entry: InstalledKitEntry): boolean {
+  return entry.source !== "local";
+}
+
+function directoryExists(target: string): boolean {
+  try {
+    return fs.statSync(target).isDirectory();
+  } catch {
+    return false;
+  }
+}

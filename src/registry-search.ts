@@ -1,5 +1,5 @@
 import { DEFAULT_CONFIG, loadConfig, type RegistryConfigEntry } from "./config";
-import { resolveProviderFactory } from "./provider-registry";
+import { resolveProviderFactory } from "./registry-factory";
 import type { RegistryAssetSearchHit, RegistrySearchHit, RegistrySearchResponse } from "./registry-types";
 
 // ── Eagerly import providers to trigger self-registration ───────────────────

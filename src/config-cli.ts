@@ -33,7 +33,7 @@ export function parseConfigValue(key: string, value: string): Partial<AgentikitC
     case "registries":
       return { registries: parseRegistriesValue(value) };
     case "remoteStashSources":
-      return { remoteStashSources: parseRegistriesValue(value) };
+      return { remoteStashSources: parseStashesValue(value) };
     case "stashes":
       return { stashes: parseStashesValue(value) };
     case "output.format":
