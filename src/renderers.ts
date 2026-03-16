@@ -16,7 +16,7 @@ import { parseFrontmatter, toStringOrUndefined } from "./frontmatter";
 import { extractFrontmatterOnly, extractLineRange, extractSection, formatToc, parseMarkdownToc } from "./markdown";
 import type { StashEntry } from "./metadata";
 import { extractDescriptionFromComments, loadStashFile } from "./metadata";
-import type { KnowledgeView, LocalSearchHit, ShowResponse } from "./stash-types";
+import type { KnowledgeView, ShowResponse, StashSearchHit } from "./stash-types";
 
 // ── ExecHints types ──────────────────────────────────────────────────────────
 
@@ -112,10 +112,11 @@ export function detectExecHints(filePath: string): ExecHints {
   const ext = path.extname(filePath).toLowerCase();
   const hints: ExecHints = {};
 
-  // Interpreter from extension
+  // Interpreter from extension — use basename so the run command is portable
+  // relative to the stash root (callers set cwd to the file's directory).
   const interpreter = INTERPRETER_MAP[ext];
   if (interpreter) {
-    hints.run = `${interpreter} ${filePath}`;
+    hints.run = `${interpreter} ${path.basename(filePath)}`;
   }
 
   // Setup from nearby dependency files
@@ -356,7 +357,24 @@ const knowledgeMdRenderer: AssetRenderer = {
   },
 };
 
-// ── 5. script-source ─────────────────────────────────────────────────────────
+// ── 5. memory-md ─────────────────────────────────────────────────────────────
+
+const memoryMdRenderer: AssetRenderer = {
+  name: "memory-md",
+
+  buildShowResponse(ctx: RenderContext): ShowResponse {
+    const name = deriveName(ctx);
+    return {
+      type: "memory",
+      name,
+      path: ctx.absPath,
+      action: "Recall context — read the content below",
+      content: ctx.content(),
+    };
+  },
+};
+
+// ── 6. script-source ─────────────────────────────────────────────────────────
 
 const scriptSourceRenderer: AssetRenderer = {
   name: "script-source",
@@ -393,7 +411,7 @@ const scriptSourceRenderer: AssetRenderer = {
     };
   },
 
-  enrichSearchHit(hit: LocalSearchHit, _stashDir: string): void {
+  enrichSearchHit(hit: StashSearchHit, _stashDir: string): void {
     const ext = path.extname(hit.path).toLowerCase();
     if (!INTERPRETER_MAP[ext]) return;
 
@@ -426,6 +444,7 @@ const builtinRenderers: AssetRenderer[] = [
   commandMdRenderer,
   agentMdRenderer,
   knowledgeMdRenderer,
+  memoryMdRenderer,
   scriptSourceRenderer,
 ];
 
@@ -446,6 +465,7 @@ export {
   commandMdRenderer,
   agentMdRenderer,
   knowledgeMdRenderer,
+  memoryMdRenderer,
   scriptSourceRenderer,
   INTERPRETER_MAP,
   SETUP_SIGNALS,

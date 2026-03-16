@@ -1,5 +1,5 @@
 import { DEFAULT_CONFIG, loadConfig, type RegistryConfigEntry } from "./config";
-import { resolveProviderFactory } from "./provider-registry";
+import { resolveProviderFactory } from "./registry-factory";
 import type { RegistryAssetSearchHit, RegistrySearchHit, RegistrySearchResponse } from "./registry-types";
 
 // ── Eagerly import providers to trigger self-registration ───────────────────
@@ -91,11 +91,17 @@ export function resolveRegistries(configRegistries?: RegistryConfigEntry[]): Reg
   // Allow env var override (comma-separated URLs) — CI escape hatch
   const envUrls = process.env.AKM_REGISTRY_URL?.trim();
   if (envUrls) {
-    return envUrls
-      .split(",")
-      .map((u) => u.trim())
-      .filter(Boolean)
-      .map((url) => ({ url }));
+    const entries: RegistryConfigEntry[] = [];
+    for (const raw of envUrls.split(",")) {
+      const url = raw.trim();
+      if (!url) continue;
+      if (!url.startsWith("http://") && !url.startsWith("https://")) {
+        console.warn(`[agentikit] Ignoring AKM_REGISTRY_URL entry: must start with http:// or https://, got "${url}"`);
+        continue;
+      }
+      entries.push({ url });
+    }
+    return entries;
   }
 
   const registries = configRegistries ?? loadConfig().registries ?? DEFAULT_CONFIG.registries ?? [];

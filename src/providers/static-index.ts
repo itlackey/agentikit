@@ -2,8 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fetchWithRetry } from "../common";
 import type { RegistryConfigEntry } from "../config";
+import { asString } from "../github";
 import { getRegistryIndexCacheDir } from "../paths";
-import { registerProvider } from "../provider-registry";
+import { registerProvider } from "../registry-factory";
 import type { RegistryProvider, RegistryProviderResult, RegistryProviderSearchOptions } from "../registry-provider";
 import type { RegistryAssetEntry, RegistryAssetSearchHit, RegistrySearchHit } from "../registry-types";
 
@@ -391,10 +392,6 @@ function scoreAsset(asset: RegistryAssetEntry, tokens: string[]): number {
 }
 
 // ── Utilities ───────────────────────────────────────────────────────────────
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value ? value : undefined;
-}
 
 function asSource(value: unknown): "npm" | "github" | "git" | "local" | undefined {
   if (value === "npm" || value === "github" || value === "git" || value === "local") return value;

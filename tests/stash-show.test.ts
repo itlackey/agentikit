@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { saveConfig } from "../src/config";
-import { agentikitShow } from "../src/stash-show";
+import { agentikitShowUnified as agentikitShow } from "../src/stash-show";
 
 const createdTmpDirs: string[] = [];
 

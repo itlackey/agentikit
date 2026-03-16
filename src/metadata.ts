@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { deriveCanonicalAssetName, deriveCanonicalAssetNameFromStashRoot, isRelevantAssetFile } from "./asset-spec";
-import { type AgentikitAssetType, isAssetType } from "./common";
+import { isAssetType } from "./common";
 import { buildFileContext, buildRenderContext, getRenderer, runMatchers } from "./file-context";
 import { parseFrontmatter, toStringOrUndefined } from "./frontmatter";
 import type { TocHeading } from "./markdown";
@@ -17,7 +17,7 @@ export interface StashIntent {
 
 export interface StashEntry {
   name: string;
-  type: AgentikitAssetType;
+  type: string;
   description?: string;
   tags?: string[];
   examples?: string[];
@@ -101,7 +101,7 @@ export function validateStashEntry(entry: unknown): StashEntry | null {
 
   const result: StashEntry = {
     name: e.name,
-    type: e.type as AgentikitAssetType,
+    type: e.type as string,
   };
   if (typeof e.description === "string" && e.description) result.description = e.description;
   if (Array.isArray(e.tags)) result.tags = e.tags.filter((t): t is string => typeof t === "string");
@@ -141,6 +141,8 @@ export function validateStashEntry(entry: unknown): StashEntry | null {
   }
   const usage = normalizeNonEmptyStringList(e.usage);
   if (usage) result.usage = usage;
+  // SECURITY NOTE: run, setup, and cwd are advisory metadata fields for AI agent consumers.
+  // They are NOT executed by akm directly. Consumers should validate and sanitize before execution.
   if (typeof e.run === "string" && e.run.trim()) result.run = e.run.trim();
   if (typeof e.setup === "string" && e.setup.trim()) result.setup = e.setup.trim();
   if (typeof e.cwd === "string" && e.cwd.trim()) result.cwd = e.cwd.trim();
@@ -164,12 +166,12 @@ function normalizeNonEmptyStringList(value: unknown): string[] | undefined {
 
 // ── Metadata Generation ─────────────────────────────────────────────────────
 
-export function generateMetadata(
+export async function generateMetadata(
   dirPath: string,
-  assetType: AgentikitAssetType,
+  assetType: string,
   files: string[],
   typeRoot = dirPath,
-): StashFile {
+): Promise<StashFile> {
   const entries: StashEntry[] = [];
   const pkgMeta = extractPackageMetadata(dirPath);
 
@@ -213,9 +215,9 @@ export function generateMetadata(
 
     // Priority 3: Type-specific metadata extraction (e.g. TOC for knowledge, comments for scripts)
     const fileCtx = buildFileContext(typeRoot, file);
-    const match = runMatchers(fileCtx);
+    const match = await runMatchers(fileCtx);
     if (match) {
-      const renderer = getRenderer(match.renderer);
+      const renderer = await getRenderer(match.renderer);
       if (renderer?.extractMetadata) {
         const renderCtx = buildRenderContext(fileCtx, match, [typeRoot]);
         renderer.extractMetadata(entry, renderCtx);
@@ -252,16 +254,16 @@ export function generateMetadata(
  * file via `runMatchers()` and uses the matched type for canonical naming.
  * Files that no matcher claims are silently skipped.
  */
-export function generateMetadataFlat(stashRoot: string, files: string[]): StashFile {
+export async function generateMetadataFlat(stashRoot: string, files: string[]): Promise<StashFile> {
   const entries: StashEntry[] = [];
   const pkgMetaCache = new Map<string, ReturnType<typeof extractPackageMetadata>>();
 
   for (const file of files) {
     const ctx = buildFileContext(stashRoot, file);
-    const match = runMatchers(ctx);
+    const match = await runMatchers(ctx);
     if (!match) continue;
 
-    const assetType = match.type as AgentikitAssetType;
+    const assetType = match.type;
     if (!isAssetType(assetType)) continue;
 
     // If the file lives under a known type directory, use that as the root
@@ -305,7 +307,7 @@ export function generateMetadataFlat(stashRoot: string, files: string[]): StashF
     }
 
     // Renderer metadata extraction
-    const renderer = getRenderer(match.renderer);
+    const renderer = await getRenderer(match.renderer);
     if (renderer?.extractMetadata) {
       const renderCtx = buildRenderContext(ctx, match, [stashRoot]);
       renderer.extractMetadata(entry, renderCtx);
@@ -336,9 +338,9 @@ function normalizeTerms(values: string[]): string[] {
     const cleaned = value.toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
     if (!cleaned) continue;
     normalized.add(cleaned);
-    if (cleaned.endsWith("s") && cleaned.length > 3) {
-      normalized.add(cleaned.slice(0, -1));
-    }
+    // De-pluralization heuristic removed: the FTS5 porter stemmer (configured
+    // with `tokenize='porter unicode61'`) handles stemming correctly, including
+    // edge cases like "kubernetes" and "status" that the naive s-strip mangled.
   }
   return Array.from(normalized);
 }
