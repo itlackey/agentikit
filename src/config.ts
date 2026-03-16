@@ -127,7 +127,7 @@ export function getConfigPath(): string {
 
 let cachedConfig: { config: AgentikitConfig; path: string; mtime: number } | undefined;
 
-export function loadConfig(): AgentikitConfig {
+export function loadConfig(opts?: { readOnly?: boolean }): AgentikitConfig {
   const configPath = getConfigPath();
 
   let stat: fs.Stats;
@@ -156,11 +156,27 @@ export function loadConfig(): AgentikitConfig {
     if (envKey) config.llm.apiKey = envKey;
   }
 
-  // Migrate installed[source: "local"] → stashes[type: "filesystem"]
-  migrateLocalInstalledToStashes(config);
+  if (!opts?.readOnly) {
+    // Migrate installed[source: "local"] → stashes[type: "filesystem"]
+    try {
+      migrateLocalInstalledToStashes(config);
+    } catch (err) {
+      console.warn(
+        "[agentikit] Warning: config migration (local→stashes) failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
 
-  // Migrate remoteStashSources → stashes[]
-  migrateRemoteStashSourcesToStashes(config);
+    // Migrate remoteStashSources → stashes[]
+    try {
+      migrateRemoteStashSourcesToStashes(config);
+    } catch (err) {
+      console.warn(
+        "[agentikit] Warning: config migration (remoteStashSources→stashes) failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
 
   // Cache the parsed config with its path and mtime for subsequent calls.
   // Reuse the stat already obtained above (avoids a second syscall + TOCTOU gap).
@@ -287,7 +303,20 @@ function sanitizeConfigForWrite(config: AgentikitConfig): Record<string, unknown
 
 export function updateConfig(partial: Partial<AgentikitConfig>): AgentikitConfig {
   const current = loadConfig();
+  // Shallow-merge for top-level scalar fields; deep-merge known object-type config keys.
   const merged: AgentikitConfig = { ...current, ...partial };
+  // Deep-merge output — partial update should not wipe sibling keys
+  if (current.output && partial.output && partial.output !== current.output) {
+    merged.output = { ...current.output, ...partial.output };
+  }
+  // Deep-merge embedding — only when both sides are objects and partial does not intend to clear
+  if (current.embedding && partial.embedding && partial.embedding !== current.embedding) {
+    merged.embedding = { ...current.embedding, ...partial.embedding };
+  }
+  // Deep-merge llm — same pattern
+  if (current.llm && partial.llm && partial.llm !== current.llm) {
+    merged.llm = { ...current.llm, ...partial.llm };
+  }
   saveConfig(merged);
   return merged;
 }
@@ -350,18 +379,30 @@ function parseOutputConfig(value: unknown): OutputConfig | undefined {
 }
 
 /**
+ * Field names that hold URLs and must NOT have env var substitution applied.
+ * Expanding ${VAR} inside a URL could leak secrets by redirecting requests to
+ * an attacker-controlled server if the config file is world-readable.
+ */
+const URL_FIELD_NAMES = new Set(["url", "endpoint", "artifactUrl"]);
+
+/**
  * Recursively expand `${VAR}` references in all string values.
  * Supports `${VAR}`, `${VAR:-default}`, and bare `$VAR` at the start of a value.
  * Non-string values pass through unchanged.
  *
- * SECURITY NOTE: Env var expansion applies to all string fields in the config,
- * including URL-type fields. A shared or world-readable config file could be
- * used to exfiltrate environment variables (e.g. via a URL pointing to an
- * attacker-controlled server). Ensure config files have restrictive permissions
- * (chmod 600) and are not shared with untrusted parties.
+ * URL-type fields (named `url`, `endpoint`, `artifactUrl`, or whose value starts
+ * with `http://` / `https://`) are skipped to prevent secret injection into URLs.
  */
-function expandEnvVars<T>(value: T): T {
+function expandEnvVars<T>(value: T, fieldName?: string): T {
   if (typeof value === "string") {
+    // Skip URL-type fields by name or by value prefix
+    if (
+      (fieldName !== undefined && URL_FIELD_NAMES.has(fieldName)) ||
+      value.startsWith("http://") ||
+      value.startsWith("https://")
+    ) {
+      return value;
+    }
     return value.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, bare) => {
       if (braced) {
         const [name, ...rest] = braced.split(":-");
@@ -377,7 +418,7 @@ function expandEnvVars<T>(value: T): T {
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
-      out[k] = expandEnvVars(v);
+      out[k] = expandEnvVars(v, k);
     }
     return out as T;
   }
@@ -445,6 +486,12 @@ function parseEmbeddingConfig(value: unknown): EmbeddingConnectionConfig | undef
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const obj = value as Record<string, unknown>;
   if (typeof obj.endpoint !== "string" || !obj.endpoint) return undefined;
+  if (!obj.endpoint.startsWith("http://") && !obj.endpoint.startsWith("https://")) {
+    console.warn(
+      `[agentikit] Ignoring embedding config: endpoint must start with http:// or https://, got "${obj.endpoint}"`,
+    );
+    return undefined;
+  }
   if (typeof obj.model !== "string" || !obj.model) return undefined;
   const result: EmbeddingConnectionConfig = {
     endpoint: obj.endpoint,
@@ -474,6 +521,12 @@ function parseLlmConfig(value: unknown): LlmConnectionConfig | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const obj = value as Record<string, unknown>;
   if (typeof obj.endpoint !== "string" || !obj.endpoint) return undefined;
+  if (!obj.endpoint.startsWith("http://") && !obj.endpoint.startsWith("https://")) {
+    console.warn(
+      `[agentikit] Ignoring llm config: endpoint must start with http:// or https://, got "${obj.endpoint}"`,
+    );
+    return undefined;
+  }
   if (typeof obj.model !== "string" || !obj.model) return undefined;
   const result: LlmConnectionConfig = {
     endpoint: obj.endpoint,

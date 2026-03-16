@@ -7,7 +7,7 @@ import { loadConfig, saveConfig } from "../src/config";
 import { installRegistryRef, validateTarEntries } from "../src/registry-install";
 import { parseRegistryRef } from "../src/registry-resolve";
 import { agentikitAdd } from "../src/stash-add";
-import { agentikitShow } from "../src/stash-show";
+import { agentikitShowUnified as agentikitShow } from "../src/stash-show";
 
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));

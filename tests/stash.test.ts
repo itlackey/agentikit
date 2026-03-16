@@ -7,7 +7,7 @@ import { agentikitIndex } from "../src/indexer";
 import { agentikitInit } from "../src/init";
 import { getBinDir } from "../src/paths";
 import { agentikitSearch } from "../src/stash-search";
-import { agentikitShow } from "../src/stash-show";
+import { agentikitShowUnified as agentikitShow } from "../src/stash-show";
 import type { SearchHit, StashSearchHit } from "../src/stash-types";
 
 const createdTmpDirs: string[] = [];

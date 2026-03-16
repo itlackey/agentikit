@@ -71,7 +71,7 @@ _setAssetTypeHooks(
   },
 );
 
-export function rendererForType(type: string) {
+export async function rendererForType(type: string) {
   const name = TYPE_TO_RENDERER[type];
   return name ? getRenderer(name) : undefined;
 }
@@ -141,9 +141,10 @@ export async function searchLocal(input: {
     );
   }
 
-  const hits = allStashDirs
-    .flatMap((dir) => substringSearch(query, searchType, limit, dir, sources, config))
-    .slice(0, limit);
+  const hitArrays = await Promise.all(
+    allStashDirs.map((dir) => substringSearch(query, searchType, limit, dir, sources, config)),
+  );
+  const hits = hitArrays.flat().slice(0, limit);
   return {
     hits,
     tip: hits.length === 0 ? "No matching stash assets were found. Try running 'akm index' to rebuild." : undefined,
@@ -171,18 +172,20 @@ async function searchDatabase(
     const typeFilter = searchType === "any" ? undefined : searchType;
     const allEntries = getAllEntries(db, typeFilter);
     const selected = allEntries.slice(0, limit);
-    const hits = selected.map((ie) =>
-      buildDbHit({
-        entry: ie.entry,
-        path: ie.filePath,
-        score: 1,
-        query,
-        rankingMode: "fts",
-        defaultStashDir: stashDir,
-        allStashDirs,
-        sources,
-        config,
-      }),
+    const hits = await Promise.all(
+      selected.map((ie) =>
+        buildDbHit({
+          entry: ie.entry,
+          path: ie.filePath,
+          score: 1,
+          query,
+          rankingMode: "fts",
+          defaultStashDir: stashDir,
+          allStashDirs,
+          sources,
+          config,
+        }),
+      ),
     );
     return { hits };
   }
@@ -294,18 +297,20 @@ async function searchDatabase(
   const rankMs = Date.now() - tRank0;
 
   const selected = scored.slice(0, limit);
-  const hits = selected.map(({ entry, filePath, score, rankingMode }) =>
-    buildDbHit({
-      entry,
-      path: filePath,
-      score: Math.round(score * 100) / 100,
-      query,
-      rankingMode,
-      defaultStashDir: stashDir,
-      allStashDirs,
-      sources,
-      config,
-    }),
+  const hits = await Promise.all(
+    selected.map(({ entry, filePath, score, rankingMode }) =>
+      buildDbHit({
+        entry,
+        path: filePath,
+        score: Math.round(score * 100) / 100,
+        query,
+        rankingMode,
+        defaultStashDir: stashDir,
+        allStashDirs,
+        sources,
+        config,
+      }),
+    ),
   );
 
   return { embedMs, rankMs, hits };
@@ -343,31 +348,33 @@ async function tryVecScores(
 
 // ── Substring fallback (no index) ───────────────────────────────────────────
 
-function substringSearch(
+async function substringSearch(
   query: string,
   searchType: AgentikitSearchType,
   limit: number,
   stashDir: string,
   sources: StashSource[],
   config?: AgentikitConfig,
-): StashSearchHit[] {
-  const assets = indexAssets(stashDir, searchType);
+): Promise<StashSearchHit[]> {
+  const assets = await indexAssets(stashDir, searchType);
   const matched = assets.filter((asset) => !query || buildSearchText(asset.entry).includes(query));
 
   if (!query) {
-    return matched
-      .sort(compareAssets)
-      .slice(0, limit)
-      .map((asset) => assetToSearchHit(asset, query, stashDir, sources, config));
+    return Promise.all(
+      matched
+        .sort(compareAssets)
+        .slice(0, limit)
+        .map((asset) => assetToSearchHit(asset, query, stashDir, sources, config)),
+    );
   }
 
   // Score and sort by relevance
   const scored = matched.map((asset) => ({ asset, score: scoreSubstringMatch(asset.entry, query) }));
   scored.sort((a, b) => b.score - a.score || compareAssets(a.asset, b.asset));
 
-  return scored
-    .slice(0, limit)
-    .map(({ asset, score }) => assetToSearchHit(asset, query, stashDir, sources, config, score));
+  return Promise.all(
+    scored.slice(0, limit).map(({ asset, score }) => assetToSearchHit(asset, query, stashDir, sources, config, score)),
+  );
 }
 
 function scoreSubstringMatch(entry: StashEntry, query: string): number {
@@ -401,7 +408,7 @@ function scoreSubstringMatch(entry: StashEntry, query: string): number {
 
 // ── Hit building ────────────────────────────────────────────────────────────
 
-export function buildDbHit(input: {
+export async function buildDbHit(input: {
   entry: StashEntry;
   path: string;
   score: number;
@@ -411,7 +418,7 @@ export function buildDbHit(input: {
   allStashDirs: string[];
   sources: StashSource[];
   config?: AgentikitConfig;
-}): StashSearchHit {
+}): Promise<StashSearchHit> {
   const entryStashDir = findSourceForPath(input.path, input.sources)?.path ?? input.defaultStashDir;
   const canonical = deriveCanonicalAssetNameFromStashRoot(input.entry.type, entryStashDir, input.path);
   const refName =
@@ -443,7 +450,7 @@ export function buildDbHit(input: {
     whyMatched,
   };
 
-  const renderer = rendererForType(input.entry.type);
+  const renderer = await rendererForType(input.entry.type);
   if (renderer?.enrichSearchHit) {
     renderer.enrichSearchHit(hit, entryStashDir);
   }
@@ -476,14 +483,14 @@ export function buildWhyMatched(
   return reasons;
 }
 
-function assetToSearchHit(
+async function assetToSearchHit(
   asset: IndexedAsset,
   _query: string,
   stashDir: string,
   sources: StashSource[],
   config?: AgentikitConfig,
   score?: number,
-): StashSearchHit {
+): Promise<StashSearchHit> {
   const source = findSourceForPath(asset.path, sources);
   const editable = isEditable(asset.path, config);
   const ref = makeAssetRef(asset.entry.type, asset.entry.name, source?.registryId);
@@ -505,7 +512,7 @@ function assetToSearchHit(
     action: buildLocalAction(asset.entry.type, ref),
     ...(score !== undefined ? { score } : {}),
   };
-  const renderer = rendererForType(asset.entry.type);
+  const renderer = await rendererForType(asset.entry.type);
   if (renderer?.enrichSearchHit) {
     renderer.enrichSearchHit(hit, stashDir);
   }
@@ -529,7 +536,7 @@ function readFileSize(filePath: string): number | undefined {
   }
 }
 
-function indexAssets(stashDir: string, type: AgentikitSearchType): IndexedAsset[] {
+async function indexAssets(stashDir: string, type: AgentikitSearchType): Promise<IndexedAsset[]> {
   const assets: IndexedAsset[] = [];
   const filterType = type === "any" ? undefined : type;
   const fileContexts = walkStashFlat(stashDir);
@@ -550,13 +557,13 @@ function indexAssets(stashDir: string, type: AgentikitSearchType): IndexedAsset[
       );
       const uncoveredFiles = files.filter((file) => !coveredFiles.has(path.basename(file)));
       if (uncoveredFiles.length > 0) {
-        const generated = generateMetadataFlat(stashDir, uncoveredFiles);
+        const generated = await generateMetadataFlat(stashDir, uncoveredFiles);
         if (generated.entries.length > 0) {
           stash = { entries: [...stash.entries, ...generated.entries] };
         }
       }
     } else {
-      const generated = generateMetadataFlat(stashDir, files);
+      const generated = await generateMetadataFlat(stashDir, files);
       if (generated.entries.length === 0) continue;
       stash = generated;
     }

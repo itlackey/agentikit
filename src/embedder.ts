@@ -36,6 +36,11 @@ async function getLocalEmbedder(): Promise<TransformerPipeline> {
       const pipelineFn = pipeline as (task: string, model: string) => Promise<TransformerPipeline>;
       return pipelineFn("feature-extraction", "Xenova/all-MiniLM-L6-v2");
     })();
+    // HI-13: Clear the cached promise on failure so the next call retries
+    // instead of permanently rejecting every subsequent call with the same error.
+    localEmbedderPromise.catch(() => {
+      localEmbedderPromise = undefined;
+    });
   }
   return localEmbedderPromise;
 }
@@ -177,9 +182,12 @@ async function embedRemoteBatch(texts: string[], config: EmbeddingConnectionConf
 
 export function cosineSimilarity(a: EmbeddingVector, b: EmbeddingVector): number {
   if (a.length !== b.length) {
+    // MD-4: Return 0 on dimension mismatch rather than silently computing on a
+    // truncated view, which would produce meaningless similarity scores.
     warn("cosineSimilarity: vector dimension mismatch (%d vs %d) — re-index recommended", a.length, b.length);
+    return 0;
   }
-  const len = Math.min(a.length, b.length);
+  const len = a.length;
   if (len === 0) return 0;
   let dot = 0,
     magA = 0,

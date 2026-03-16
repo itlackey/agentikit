@@ -26,14 +26,19 @@ export async function agentikitShowUnified(input: { ref: string; view?: Knowledg
   }
 
   // Default: local filesystem show
-  return agentikitShow(input);
+  return showLocal(input);
 }
 
-export async function agentikitShow(input: { ref: string; view?: KnowledgeView }): Promise<ShowResponse> {
+/** @internal Use agentikitShowUnified() for all external callers. */
+export async function showLocal(input: {
+  ref: string;
+  view?: KnowledgeView;
+  stashDir?: string;
+}): Promise<ShowResponse> {
   const parsed = parseAssetRef(input.ref);
   const displayType = parsed.type;
   const config = loadConfig();
-  const allSources = resolveStashSources();
+  const allSources = resolveStashSources(input.stashDir);
   const searchSources = resolveSourcesForOrigin(parsed.origin, allSources);
 
   const allStashDirs = searchSources.map((s) => s.path);
@@ -42,7 +47,7 @@ export async function agentikitShow(input: { ref: string; view?: KnowledgeView }
   let lastError: Error | undefined;
   for (const dir of allStashDirs) {
     try {
-      assetPath = resolveAssetPath(dir, parsed.type, parsed.name);
+      assetPath = await resolveAssetPath(dir, parsed.type, parsed.name);
       break;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
@@ -69,7 +74,7 @@ export async function agentikitShow(input: { ref: string; view?: KnowledgeView }
   }
 
   const fileCtx = buildFileContext(sourceStashDir, assetPath);
-  const match = runMatchers(fileCtx);
+  const match = await runMatchers(fileCtx);
   if (!match) {
     throw new UsageError(
       `Could not display asset "${displayType}:${parsed.name}" — unsupported file type or unrecognized layout`,
@@ -77,7 +82,7 @@ export async function agentikitShow(input: { ref: string; view?: KnowledgeView }
   }
 
   match.meta = { ...match.meta, name: parsed.name, view: input.view };
-  const renderer = getRenderer(match.renderer);
+  const renderer = await getRenderer(match.renderer);
   if (!renderer) {
     throw new UsageError(`Renderer "${match.renderer}" not found for asset: ${displayType}:${parsed.name}`);
   }

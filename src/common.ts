@@ -26,6 +26,11 @@ export function isAssetType(type: string): type is AgentikitAssetType {
  *   2. stashDir field in config.json
  *   3. Platform default (~/akm or ~/Documents/akm on Windows)
  *
+ * WARNING: May write to config file as a side effect when AKM_STASH_DIR is set.
+ * Specifically, when AKM_STASH_DIR is set and `options.readOnly` is not true,
+ * this function calls `persistStashDirToConfig()` which writes the resolved
+ * path into config.json on disk.
+ *
  * Throws if no valid stash directory is found.
  */
 export function resolveStashDir(options?: { readOnly?: boolean }): string {
@@ -96,6 +101,11 @@ function readStashDirFromConfig(): string | undefined {
 /**
  * Persist stashDir to config.json if not already set, so users can
  * transition away from relying on the AKM_STASH_DIR env var.
+ *
+ * WARNING: This function writes to disk (config.json). It is called as a side
+ * effect of `resolveStashDir()` when AKM_STASH_DIR is set and `readOnly` is
+ * not true. Callers that must not touch the filesystem should pass
+ * `{ readOnly: true }` to `resolveStashDir()`.
  */
 function persistStashDirToConfig(stashDir: string): void {
   try {

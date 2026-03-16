@@ -95,7 +95,7 @@ async function addRegistryKit(ref: string, stashDir: string): Promise<AddRespons
     installedAt: installed.installedAt,
   });
 
-  upsertLockEntry({
+  await upsertLockEntry({
     id: installed.id,
     source: installed.source,
     ref: installed.ref,

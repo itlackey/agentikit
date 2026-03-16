@@ -14,13 +14,13 @@ import { walkStashFlat } from "./walker";
 /**
  * Resolve an asset path from a stash directory, type, and name.
  */
-export function resolveAssetPath(stashDir: string, type: string, name: string): string {
+export async function resolveAssetPath(stashDir: string, type: string, name: string): Promise<string> {
   try {
     return resolveInTypeDir(stashDir, TYPE_DIRS[type], type, name);
   } catch (error) {
     if (!(error instanceof NotFoundError)) throw error;
 
-    const fallback = resolveByCanonicalName(stashDir, type, name);
+    const fallback = await resolveByCanonicalName(stashDir, type, name);
     if (fallback) return fallback;
 
     throw error;
@@ -75,11 +75,11 @@ function readTypeRootStat(root: string, type: string, name: string): fs.Stats {
   }
 }
 
-function resolveByCanonicalName(stashDir: string, type: string, name: string): string | undefined {
+async function resolveByCanonicalName(stashDir: string, type: string, name: string): Promise<string | undefined> {
   const normalizedName = name.replace(/\\/g, "/");
 
   for (const ctx of walkStashFlat(stashDir)) {
-    const match = runMatchers(ctx);
+    const match = await runMatchers(ctx);
     if (!match || match.type !== type) continue;
 
     const canonicalName = deriveCanonicalAssetNameFromStashRoot(type, stashDir, ctx.absPath);

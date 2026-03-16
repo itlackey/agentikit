@@ -141,6 +141,8 @@ export function validateStashEntry(entry: unknown): StashEntry | null {
   }
   const usage = normalizeNonEmptyStringList(e.usage);
   if (usage) result.usage = usage;
+  // SECURITY NOTE: run, setup, and cwd are advisory metadata fields for AI agent consumers.
+  // They are NOT executed by akm directly. Consumers should validate and sanitize before execution.
   if (typeof e.run === "string" && e.run.trim()) result.run = e.run.trim();
   if (typeof e.setup === "string" && e.setup.trim()) result.setup = e.setup.trim();
   if (typeof e.cwd === "string" && e.cwd.trim()) result.cwd = e.cwd.trim();
@@ -164,7 +166,12 @@ function normalizeNonEmptyStringList(value: unknown): string[] | undefined {
 
 // ── Metadata Generation ─────────────────────────────────────────────────────
 
-export function generateMetadata(dirPath: string, assetType: string, files: string[], typeRoot = dirPath): StashFile {
+export async function generateMetadata(
+  dirPath: string,
+  assetType: string,
+  files: string[],
+  typeRoot = dirPath,
+): Promise<StashFile> {
   const entries: StashEntry[] = [];
   const pkgMeta = extractPackageMetadata(dirPath);
 
@@ -208,9 +215,9 @@ export function generateMetadata(dirPath: string, assetType: string, files: stri
 
     // Priority 3: Type-specific metadata extraction (e.g. TOC for knowledge, comments for scripts)
     const fileCtx = buildFileContext(typeRoot, file);
-    const match = runMatchers(fileCtx);
+    const match = await runMatchers(fileCtx);
     if (match) {
-      const renderer = getRenderer(match.renderer);
+      const renderer = await getRenderer(match.renderer);
       if (renderer?.extractMetadata) {
         const renderCtx = buildRenderContext(fileCtx, match, [typeRoot]);
         renderer.extractMetadata(entry, renderCtx);
@@ -247,13 +254,13 @@ export function generateMetadata(dirPath: string, assetType: string, files: stri
  * file via `runMatchers()` and uses the matched type for canonical naming.
  * Files that no matcher claims are silently skipped.
  */
-export function generateMetadataFlat(stashRoot: string, files: string[]): StashFile {
+export async function generateMetadataFlat(stashRoot: string, files: string[]): Promise<StashFile> {
   const entries: StashEntry[] = [];
   const pkgMetaCache = new Map<string, ReturnType<typeof extractPackageMetadata>>();
 
   for (const file of files) {
     const ctx = buildFileContext(stashRoot, file);
-    const match = runMatchers(ctx);
+    const match = await runMatchers(ctx);
     if (!match) continue;
 
     const assetType = match.type;
@@ -300,7 +307,7 @@ export function generateMetadataFlat(stashRoot: string, files: string[]): StashF
     }
 
     // Renderer metadata extraction
-    const renderer = getRenderer(match.renderer);
+    const renderer = await getRenderer(match.renderer);
     if (renderer?.extractMetadata) {
       const renderCtx = buildRenderContext(ctx, match, [stashRoot]);
       renderer.extractMetadata(entry, renderCtx);

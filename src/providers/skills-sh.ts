@@ -162,7 +162,8 @@ class SkillsShProvider implements RegistryProvider {
       const dir = path.dirname(cachePath);
       fs.mkdirSync(dir, { recursive: true });
       const tmpPath = `${cachePath}.tmp.${process.pid}`;
-      fs.writeFileSync(tmpPath, JSON.stringify(entries), "utf8");
+      // 0o600: owner read/write only — cache may contain search terms tied to API keys
+      fs.writeFileSync(tmpPath, JSON.stringify(entries), { encoding: "utf8", mode: 0o600 });
       fs.renameSync(tmpPath, cachePath);
     } catch {
       // Best-effort caching

@@ -4,7 +4,7 @@ import { loadConfig } from "../config";
 import { searchLocal } from "../local-search";
 import type { StashProvider, StashSearchOptions, StashSearchResult } from "../stash-provider";
 import { registerStashProvider } from "../stash-provider-factory";
-import { agentikitShow } from "../stash-show";
+import { showLocal } from "../stash-show";
 import { resolveStashSources } from "../stash-source";
 import type { KnowledgeView, ShowResponse } from "../stash-types";
 
@@ -39,7 +39,7 @@ class FilesystemStashProvider implements StashProvider {
   }
 
   async show(ref: string, view?: KnowledgeView): Promise<ShowResponse> {
-    return agentikitShow({ ref, view });
+    return showLocal({ ref, view });
   }
 
   canShow(ref: string): boolean {

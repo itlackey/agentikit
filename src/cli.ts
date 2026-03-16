@@ -4,7 +4,7 @@ import path from "node:path";
 import { defineCommand, runMain } from "citty";
 import { resolveStashDir } from "./common";
 import type { RegistryConfigEntry, StashConfigEntry } from "./config";
-import { getConfigPath, loadConfig, saveConfig } from "./config";
+import { DEFAULT_CONFIG, getConfigPath, loadConfig, saveConfig } from "./config";
 import { getConfigValue, listConfig, setConfigValue, unsetConfigValue } from "./config-cli";
 import { ConfigError, NotFoundError, UsageError } from "./errors";
 import { agentikitIndex } from "./indexer";
@@ -400,6 +400,14 @@ function formatSearchPlain(r: Record<string, unknown>, detail: DetailLevel): str
   return lines.join("\n").trimEnd();
 }
 
+/**
+ * Naming Conventions:
+ * - stash-*     : Operations on the user's local asset store (stash-show, stash-add, stash-clone)
+ * - stash-provider-* : Runtime data source providers (filesystem, openviking)
+ * - registry-*  : Kit discovery from remote registries (npm, GitHub, OpenViking index)
+ * - installed-kits : Management of kits already installed locally
+ */
+
 const initCommand = defineCommand({
   meta: {
     name: "init",
@@ -517,6 +525,11 @@ const upgradeCommand = defineCommand({
   args: {
     check: { type: "boolean", description: "Check for updates without installing", default: false },
     force: { type: "boolean", description: "Force upgrade even if on latest", default: false },
+    skipChecksum: {
+      type: "boolean",
+      description: "Skip checksum verification (not recommended)",
+      default: false,
+    },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
@@ -525,7 +538,7 @@ const upgradeCommand = defineCommand({
         output("upgrade", check);
         return;
       }
-      const result = await performUpgrade(check, { force: args.force });
+      const result = await performUpgrade(check, { force: args.force, skipChecksum: args.skipChecksum });
       output("upgrade", result);
     });
   },
@@ -704,7 +717,7 @@ const registryCommand = defineCommand({
       run() {
         return runWithJsonErrors(() => {
           const config = loadConfig();
-          const registries = config.registries ?? [];
+          const registries = config.registries ?? DEFAULT_CONFIG.registries;
           output("registry-list", { registries });
         });
       },
@@ -904,7 +917,7 @@ const sourcesCommand = defineCommand({
         return runWithJsonErrors(() => {
           const config = loadConfig();
           const stashes = [...(config.stashes ?? [])];
-          const resolvedTarget = args.target.startsWith("/") ? path.resolve(args.target) : args.target;
+          const resolvedTarget = args.target.startsWith("http") ? args.target : path.resolve(args.target);
           const idx = stashes.findIndex(
             (s) => s.url === resolvedTarget || s.path === resolvedTarget || s.name === resolvedTarget,
           );

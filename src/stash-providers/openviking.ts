@@ -199,7 +199,7 @@ class OpenVikingStashProvider implements StashProvider {
   private mapToStashHits(entries: OVSearchEntry[]): StashSearchHit[] {
     if (entries.length === 0) return [];
 
-    const maxScore = Math.max(...entries.map((e) => e.score), 0.01);
+    const maxScore = entries.reduce((max, e) => Math.max(max, e.score), 0.01);
 
     return entries.map((entry) => {
       const assetType = OV_TYPE_MAP[entry.type ?? ""] ?? "knowledge";

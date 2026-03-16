@@ -68,11 +68,17 @@ export function parseFrontmatter(raw: string): {
 export function parseFrontmatterBlock(
   raw: string,
 ): { frontmatter: string; content: string; bodyStartLine: number } | null {
-  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  // Handle both LF and CRLF line endings throughout.
+  // The closing --- may be preceded by \r\n; capture and strip trailing \r
+  // from the frontmatter block so key parsing sees clean LF-terminated lines.
+  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r\n|\r|\n|$)([\s\S]*)$/);
   if (!match) return null;
+  // Strip any \r characters from the frontmatter block to normalise CRLF → LF
+  const frontmatter = match[1].replace(/\r/g, "");
+  const content = match[2];
   return {
-    frontmatter: match[1],
-    content: match[2],
+    frontmatter,
+    content,
     bodyStartLine: countLines(raw.slice(0, match[0].length - match[2].length)) + 1,
   };
 }

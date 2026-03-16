@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fetchWithRetry } from "./common";
-import { GITHUB_API_BASE, githubHeaders } from "./github";
+import { asRecord, asString, GITHUB_API_BASE, githubHeaders } from "./github";
+import { copyIncludedPaths, findNearestIncludeConfig } from "./kit-include";
 import { generateMetadataFlat, loadStashFile, type StashEntry } from "./metadata";
 import { parseRegistryIndex, type RegistryIndex, type RegistryKitEntry } from "./providers/static-index";
 import { detectStashRoot, validateTarEntries } from "./registry-install";
@@ -82,7 +83,6 @@ interface PackageInspection {
 }
 
 const EMPTY_INSPECTION: PackageInspection = {};
-const INCLUDE_CONFIG_KEYS = ["akm", "agentikit"] as const;
 
 export async function buildRegistryIndex(options?: BuildRegistryIndexOptions): Promise<BuildRegistryIndexResult> {
   const manualEntriesPath = path.resolve(options?.manualEntriesPath ?? DEFAULT_MANUAL_ENTRIES_PATH);
@@ -289,7 +289,7 @@ async function inspectArchive(url: string, headers?: HeadersInit): Promise<Packa
 
     const stashRoot = detectStashRoot(extractDir);
     const inspectionRoot = applyIncludeConfigForInspection(stashRoot, tempDir, extractDir) ?? stashRoot;
-    const metadata = enumerateAssets(inspectionRoot);
+    const metadata = await enumerateAssets(inspectionRoot);
     const packageMetadata = readNearestPackageJson(extractDir, inspectionRoot);
     const assets = metadata.map((entry) => ({
       type: entry.type,
@@ -327,7 +327,7 @@ function readNearestPackageJson(extractDir: string, stashRoot: string): Record<s
   return {};
 }
 
-function enumerateAssets(stashRoot: string): StashEntry[] {
+async function enumerateAssets(stashRoot: string): Promise<StashEntry[]> {
   const fileContexts = walkStashFlat(stashRoot);
   const dirGroups = new Map<string, string[]>();
 
@@ -345,13 +345,13 @@ function enumerateAssets(stashRoot: string): StashEntry[] {
       const covered = new Set(stash.entries.map((entry) => entry.filename).filter((value): value is string => !!value));
       const uncoveredFiles = files.filter((file) => !covered.has(path.basename(file)));
       if (uncoveredFiles.length > 0) {
-        const generated = generateMetadataFlat(stashRoot, uncoveredFiles);
+        const generated = await generateMetadataFlat(stashRoot, uncoveredFiles);
         if (generated.entries.length > 0) {
           stash = { entries: [...stash.entries, ...generated.entries] };
         }
       }
     } else {
-      const generated = generateMetadataFlat(stashRoot, files);
+      const generated = await generateMetadataFlat(stashRoot, files);
       if (generated.entries.length === 0) continue;
       stash = generated;
     }
@@ -369,74 +369,8 @@ function applyIncludeConfigForInspection(stashRoot: string, tempDir: string, sea
   const selectedDir = path.join(tempDir, "selected");
   fs.rmSync(selectedDir, { recursive: true, force: true });
   fs.mkdirSync(selectedDir, { recursive: true });
-  copyIncludedPaths(includeConfig.baseDir, includeConfig.include, selectedDir);
+  copyIncludedPaths(includeConfig.include, includeConfig.baseDir, selectedDir);
   return selectedDir;
-}
-
-function findNearestIncludeConfig(
-  sourceRoot: string,
-  searchRoot: string,
-): { baseDir: string; include: string[] } | undefined {
-  const normalizedSource = path.resolve(sourceRoot);
-  const normalizedSearch = path.resolve(searchRoot);
-  let current = normalizedSource;
-
-  while (current.startsWith(normalizedSearch)) {
-    const pkg = readPackageJson(current);
-    const include = extractIncludeList(pkg);
-    if (include && include.length > 0) {
-      return { baseDir: current, include };
-    }
-    if (current === normalizedSearch) break;
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-
-  return undefined;
-}
-
-function readPackageJson(dirPath: string): Record<string, unknown> | undefined {
-  try {
-    return asRecord(JSON.parse(fs.readFileSync(path.join(dirPath, "package.json"), "utf8")));
-  } catch {
-    return undefined;
-  }
-}
-
-function extractIncludeList(pkg: Record<string, unknown> | undefined): string[] | undefined {
-  if (!pkg) return undefined;
-
-  for (const key of INCLUDE_CONFIG_KEYS) {
-    const config = asRecord(pkg[key]);
-    if (!Array.isArray(config.include)) continue;
-    const include = config.include
-      .filter((value): value is string => typeof value === "string")
-      .map((value) => value.trim())
-      .filter(Boolean);
-    if (include.length > 0) return include;
-  }
-
-  return undefined;
-}
-
-function copyIncludedPaths(baseDir: string, include: string[], destinationDir: string): void {
-  const seen = new Set<string>();
-  for (const relPath of include) {
-    const normalized = path.normalize(relPath).replace(/^([.][/])+/, "");
-    if (!normalized || normalized === ".") continue;
-    if (seen.has(normalized)) continue;
-    seen.add(normalized);
-
-    const sourcePath = path.resolve(baseDir, normalized);
-    const relative = path.relative(baseDir, sourcePath);
-    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue;
-    if (!fs.existsSync(sourcePath)) continue;
-
-    const destinationPath = path.join(destinationDir, relative);
-    fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
-    fs.cpSync(sourcePath, destinationPath, { recursive: true, force: true });
-  }
 }
 
 async function loadManualEntries(manualEntriesPath: string): Promise<RegistryKitEntry[]> {
@@ -538,12 +472,4 @@ function sortAssets(assets: NonNullable<RegistryKitEntry["assets"]>): NonNullabl
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }

@@ -1,4 +1,4 @@
-import type { KitSource } from "./registry-types";
+import type { InstalledKitEntry, KitSource } from "./registry-types";
 
 export type AgentikitSearchType = string;
 export type SearchSource = "stash" | "registry" | "both";
@@ -87,17 +87,8 @@ export interface AddResponse {
   };
 }
 
-export interface KitInstallStatus {
-  id: string;
-  source: KitSource;
-  ref: string;
-  artifactUrl: string;
-  resolvedVersion?: string;
-  resolvedRevision?: string;
-  stashRoot: string;
-  cacheDir: string;
+export interface KitInstallStatus extends InstalledKitEntry {
   extractedDir: string;
-  installedAt: string;
 }
 
 export interface InstalledKitListEntry {
