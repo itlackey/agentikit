@@ -99,19 +99,25 @@ cross-project reuse.
 
 ## Renames and evolution
 
-- **A ref is chosen once. Default to not renaming.** A manual rename dangles
+- **A ref is chosen once. Default to not renaming.** A rename dangles
   inbound xrefs silently at write time — nothing catches the breakage until
   the next `akm lint` run flags the dead frontmatter refs (`missing-ref`) —
-  while the dead ref string keeps scoring in FTS, and a manually renamed file
+  while the dead ref string keeps scoring in FTS, and a renamed file
   is a new index entry, so the asset's accumulated usage-ranking history
   resets.
-- If a rename is truly unavoidable, prefer `akm mv <ref> <new-name>`
-  (Experimental): it moves the file, rewrites inbound references across the
-  writable stash in the same pass, and keeps the asset's usage-ranking
-  history. Citing files in read-only sources are reported for manual
-  follow-up. On an older CLI without `akm mv`, treat the rename as an
-  xref-fixing operation: grep the stash for the old ref string and fix every
-  inbound reference in the same pass.
+- **A rename is delete plus create.** There is no command that preserves an
+  asset's identity or learned state across one. If a rename is truly
+  unavoidable, treat it as an xref-fixing operation:
+
+  ```sh
+  mv <stash>/memories/old-note.md <stash>/memories/new-note.md
+  # grep the stash for the old ref and fix every inbound reference
+  akm index
+  akm lint          # confirms nothing dangles
+  ```
+
+  A memory's `.derived.md` twin moves with its base. Citing files in read-only
+  sources cannot be fixed — that is another reason not to rename.
 - When a project-scoped note turns out to be domain-general, **append, don't
   promote**: write a new `knowledge/<domain>/…` asset that xrefs the originating
   memory. Never rename the memory up a rung — that breaks its ref. The atomic

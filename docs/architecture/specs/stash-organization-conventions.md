@@ -4,6 +4,22 @@ Status: accepted (conventions shipped in the stash skeleton)
 Author: akm
 Date: 2026-07-11
 
+> **Amended by the 0.9.0 surface decisions.** Two mechanisms this document
+> records as closed are superseded; the sections below that narrate the
+> 2026-07-12 amendments are kept as a historical record, not current guidance:
+> - **A tooled rename** (`akm mv`, SPEC-7) — the command is removed. A rename
+>   is delete plus create: the destination is a new identity and learned state
+>   does not follow it. The forced-rename procedure is the manual one (move,
+>   fix inbound refs, `akm index`, `akm lint`). See
+>   [0.9.0-decisions.md D3](0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-is-removed).
+> - **The ref-prefix filter** (SPEC-4) — the `<type>:<prefix>/` spelling is
+>   retired in favour of conceptId prefixes (`memories/projecta/`,
+>   `bundle//skills/`). See
+>   [0.9.0-decisions.md D4](0.9.0-decisions.md#d4--browse-uses-conceptid-prefixes-not-type).
+>
+> The no-rename default this document argues for is therefore *stronger* under
+> 0.9.0, not weaker: there is no tool that makes a rename cheap.
+
 ## Problem
 
 The stash skeleton already ships per-type authoring conventions
@@ -58,9 +74,9 @@ load-bearing facts, each verified in code:
    keyed by a cwd-anchor (a hash of the querying project root), not the asset's
    path. It is NOT rename-proof for the asset: `entry_key` includes the full
    name, so renaming a file mints a new entry row and orphans its accumulated
-   global + scoped utility history — unless the rename goes through `akm mv`
-   (SPEC-7, Experimental; amended 2026-07-12), which re-keys the index row in
-   place so the id-keyed utility/embedding/salience history survives. A
+   global + scoped utility history. As of 0.9.0 that is the defined semantics —
+   a rename is delete plus create, and no command preserves learned state
+   across one (see 0.9.0-decisions.md D3). A
    reusable asset does not need the *project* baked into its path to rank well
    inside a project — and a manual rename costs learned ranking.
 6. **Directory (scope/domain) tokens always merge into `tags`** — since SPEC-2
@@ -80,11 +96,12 @@ load-bearing facts, each verified in code:
 9. **Non-wiki xref breakage is caught by `akm lint`, not at write time.** The
    deterministic `missing-ref` check covers body refs, the `refs:` frontmatter
    array, and (since SPEC-1 landed) the `xrefs:`/`supersededBy:`/
-   `contradictedBy:` frontmatter channels. A *manual* rename still dangles
-   non-wiki inbound links silently — nothing catches them until the next
-   `akm lint` run flags them; since SPEC-7 landed (amended 2026-07-12),
-   `akm mv` rewrites inbound refs across the writable stash in the same pass
-   as the move. Wikis are excluded from `akm lint` and instead get their own
+   `contradictedBy:` frontmatter channels. A rename dangles inbound links
+   silently — nothing catches them until the next `akm lint` run flags them, so
+   run `akm lint` as the last step of any rename. (`akm mv` briefly automated
+   this and was removed in 0.9.0; its rewriting was inverted relative to the
+   body-ref grammar — see 0.9.0-decisions.md D3.) Wikis are excluded from
+   `akm lint` and instead get their own
    orphan/broken-xref/broken-source/stale-index/uncited-raw checks via
    `akm wiki lint`.
 
@@ -184,9 +201,9 @@ Supporting rules, all shipped as convention facts:
 - Hubs are optional wiki assets for a few high-traffic domains, never a per-write
   obligation. The FTS index is the catalog.
 - A ref is an address chosen once: **default to not renaming**; if unavoidable,
-  grep the stash for the old ref and fix inbound xrefs in the same pass (since
-  SPEC-7 landed, `akm mv` performs that whole pass mechanically — amended
-  2026-07-12).
+  move the file, grep the stash for the old ref and fix inbound xrefs in the
+  same pass, then `akm index` and `akm lint`. The destination is a new identity
+  and starts with fresh learned state.
 
 Rejected over-builds: mandatory dense/bidirectional xrefs, per-namespace hub
 wikis, the per-asset scope ladder, and any hand-maintained catalog.
@@ -240,11 +257,10 @@ corrections, each code-verified or empirically tested:
   and human readers.
 - **"Rename-proof" was misleading** — a rename orphans the asset's utility
   history (new `entry_key` row), strengthening the no-rename rule.
-  *Amendment (2026-07-12): true for manual renames only since SPEC-7 landed —
-  `akm mv` rewrites inbound refs and re-keys the index row in place, so a
-  tooled rename preserves the learned ranking history. The no-rename default
-  stands: mv cannot fix citers in read-only sources (it reports them as
-  `readOnlyCiters` manual follow-ups).*
+  *Amendment (2026-07-12): SPEC-7 (`akm mv`) briefly made a tooled rename
+  preserve that history.* **Superseded (0.9.0): `akm mv` is removed and every
+  rename — manual or otherwise — orphans the utility history. The original
+  finding stands unqualified.**
 - **Corrections now pair with `beliefState: superseded`/`supersededBy`**
   (parsed for all markdown types, demoted at rank time), and immutability was
   rescoped to ingested material only, resolving a contradiction with the
@@ -305,17 +321,13 @@ provenance channel.
   optimization). Whether the skeleton convention facts should re-adopt the
   idiom over `akm search "<slug>" --type <type>` stays deferred one release so
   older CLI versions aren't taught a query shape they don't support.
-- **A tooled rename.** Closed by SPEC-7 in
-  [stash-conventions-code-spec.md](stash-conventions-code-spec.md)
-  (implemented, Experimental: `akm mv <ref> <new-name>` moves the file — a
-  memory's `.derived.md` twin moves with it — rewrites inbound refs across
-  the writable stash in the same pass, covering body prose, frontmatter ref
-  lists, and fenced examples, and re-keys the index row in place so the
-  asset's accumulated utility/embedding/salience history survives). The
-  no-rename default stands: read-only sources are scanned but never written —
-  their citing files surface as `readOnlyCiters` manual follow-ups — and the
-  skeleton organization fact now names `akm mv` as the forced-rename tool
-  (with the manual grep-and-fix procedure kept as the older-CLI fallback).
+- **A tooled rename.** Closed by SPEC-7, then **re-opened and answered "no"
+  in 0.9.0**: `akm mv` is removed and a rename is delete plus create. The
+  forced-rename procedure is the manual one this document originally
+  prescribed — move the file (a memory's `.derived.md` twin moves with it),
+  grep and fix inbound refs in the same pass, then `akm index` and `akm lint`.
+  The no-rename default is now the only defence, which strengthens it. See
+  [0.9.0-decisions.md D3](0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-is-removed).
 - **Index self-situating body text.** Closed by SPEC-8 in
   [stash-conventions-code-spec.md](stash-conventions-code-spec.md)
   (implemented, default-off: the `index.indexBodyOpening` config flag makes

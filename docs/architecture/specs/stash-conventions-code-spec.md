@@ -1,6 +1,19 @@
 # Spec: code changes for the stash organization & back-linking conventions
 
 Status: implemented (SPEC-1..8 landed 2026-07-11/12; SPEC-6 shipped capture-only — the rank-time demotion was dropped after the spec's own prescribed curate-golden measurement showed no crowding, with tests/search-convention-fact-demotion.test.ts pinning that invariant; see CHANGELOG.md for per-spec outcomes)
+
+> **Partially superseded by the 0.9.0 surface decisions.** This document is a
+> historical implementation record; two of its specs no longer describe the
+> intended surface:
+> - **SPEC-4** (`akm search "<type>:<prefix>/"`) — superseded by conceptId-prefix
+>   enumeration (`akm search "memories/projecta/"`, `"bundle//skills/"`). See
+>   [0.9.0-decisions.md D4](./0.9.0-decisions.md#d4--browse-uses-conceptid-prefixes-not-type).
+> - **SPEC-7** (`akm mv`) — the command is removed; a rename is delete plus
+>   create. See
+>   [0.9.0-decisions.md D3](./0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-is-removed).
+>
+> The normative surface lives in [`ref.md`](./ref.md) and
+> [`../../../STABILITY.md`](../../../STABILITY.md).
 Author: akm
 Date: 2026-07-11
 Companion: [stash-organization-conventions.md](stash-organization-conventions.md)
@@ -94,6 +107,12 @@ Implementation specs for the code changes the finalized stash-organization/back-
 
 ### SPEC-4 — Real ref-prefix filter: akm search "<type>:<prefix>/" translates to typed enumeration with name-prefix narrowing
 
+> **SUPERSEDED (0.9.0).** The `<type>:` spelling is retired. Enumeration is now
+> a conceptId prefix (`akm search "memories/projecta/"`, `"bundle//skills/"`),
+> which covers every adapter's items and matches the grammar refs are emitted
+> in. See [0.9.0-decisions.md D4](./0.9.0-decisions.md#d4--browse-uses-conceptid-prefixes-not-type).
+> The text below is retained as the historical record of the original design.
+
 **Priority:** P1 · **Sizing:** M — parser is trivial; the enumerate-path refactor plus doc/consistency coordination is the bulk.
 
 **Problem.** The idiom the conventions were originally written around does not exist: sanitizeFtsQuery (src/indexer/search/fts-query.ts:21-35) strips ':' and '/', and entry_type is not an FTS column, so `akm search "memory:projectA/"` degenerates to the AND-query 'memory projectA' (noise). Task #5 ships docs stating the negative; the finalized open-questions intake item 1 asks to make the natural idiom real: 'Detect type:prefix/-shaped queries in search and translate to entry_type + entry_key LIKE'.
@@ -166,6 +185,14 @@ Implementation specs for the code changes the finalized stash-organization/back-
 **Risks.** Demotes user-authored convention facts they might genuinely search for — mitigated by exact-name and typed search; magnitude (-0.25) is a guess pending measurement — land AFTER a curate-golden measurement run (curate-golden-eval.test.ts) confirms crowding is real; if it isn't, drop this spec entirely (it is the most speculative of the intake items).
 
 ### SPEC-7 — akm mv: rename with inbound-xref rewrite and utility-history preservation
+
+> **SUPERSEDED (0.9.0) — the command is removed.** Its inbound-ref rewriting
+> was implemented inverted relative to the body-ref grammar (it rewrote bare
+> conceptIds, which are not refs, and matched no `bundle//` form at all), and
+> the utility-history preservation it bought was preservation of a regenerable
+> cache whose embedding went stale anyway. A rename is now delete plus create.
+> See [0.9.0-decisions.md D3](./0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-is-removed).
+> The text below is retained as the historical record of the original design.
 
 **Priority:** P2 · **Sizing:** L — new verb, FS+DB coordination, contract/spec/doc updates, wide test matrix.
 

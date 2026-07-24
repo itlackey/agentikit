@@ -25,11 +25,12 @@ akm curate "<task>"                          # Curate the best matches for a tas
 | `--detail` | `brief`, `normal`, `full` | `brief` |
 | `--shape` | `human`, `agent`, `summary` (`summary` only on `show`) | `human` |
 
-Ref-prefix queries (`"<type>:<prefix>/"` or a bare `"<type>:"`) return a
-deterministic listing, not a relevance ranking. A full ref without the
+Ref-prefix queries (a conceptId prefix ending in `/`, optionally
+bundle-qualified — `"memories/projectA/"`, `"team-catalog//skills/"`) return a
+deterministic listing, not a relevance ranking. A complete ref without the
 trailing slash (`memories/projectA/auth-tip`) stays an ordinary keyword search —
-resolving a single ref is `akm show`'s job — and an explicit `--type` flag
-wins over the type parsed from the query.
+resolving a single ref is `akm show`'s job. Prefixes match conceptIds, so a ref
+prefix copied from search output works as a query verbatim.
 
 ## Show
 
@@ -193,27 +194,27 @@ akm clone "npm:@scope/pkg//scripts/deploy.sh"  # Clone from remote package
 
 When `--dest` is provided, `akm setup` is not required first.
 
-## Move / Rename (Experimental)
+## Move / Rename
 
-Rename an asset within its type directory in the primary writable stash. Prefer
-NOT renaming (a ref is chosen once); when a rename is forced, `akm mv` does the
-whole convention pass: it moves the file (a memory's `.derived.md` twin moves
-together), rewrites inbound refs across the writable stash — body prose,
-frontmatter ref lists (`xrefs:`/`refs:`/`supersededBy:`), and fenced examples —
-and re-keys the index row in place so the asset's learned ranking history
-survives.
+There is no rename command. **A rename is delete plus create**: the new path is
+a new identity, so the destination starts with fresh learned state (utility,
+salience, usage history) and inbound refs to the old path dangle. Prefer NOT
+renaming — a ref is chosen once. When a rename is unavoidable:
 
 ```sh
-akm mv memories/projectA/old-note projectA/new-note  # Rename; subdirectories allowed in the new name
-akm mv memories/solo memories/renamed-solo             # Same-type ref-shaped target also accepted
+mv ~/akm/memories/projectA/old-note.md ~/akm/memories/projectA/new-note.md
+# update any intentional refs (fully qualified: bundle//memories/projectA/old-note)
+akm index
+akm lint                                             # confirms nothing dangles
 ```
 
-Wiki refs, cross-type targets, existing targets, `../` escapes, non-canonical
-source spellings (the error names the canonical ref), `.derived` twin sources
-(rename the base — the twin follows), and `.derived`-suffixed target names are
-rejected (exit 2, nothing moved). Read-only sources are scanned but never
-written — their citing files come back in `readOnlyCiters` as manual
-follow-ups. Verify with `akm lint` (missing-ref) afterwards.
+A memory's `.derived.md` twin must move with its base. Moving an item between
+bundles is `akm clone` (or a copy) followed by deleting the source — both the
+bundle and the concept identity change.
+
+(`akm mv` existed through 0.9.0-rc and was removed: it rewrote bare conceptIds,
+which are prose rather than refs, and matched no fully-qualified `bundle//`
+form at all.)
 
 ## Sync
 

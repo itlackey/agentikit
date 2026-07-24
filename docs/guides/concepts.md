@@ -230,23 +230,48 @@ knowledge/clientX/api-guide.md   →  knowledge/clientX/api-guide
 This works for **any** asset type. The subpath segments become part of the
 conceptId, so `akm search "projectA" --type memory` narrows results to
 that subtree, and `akm show memories/projectA/auth-tip` resolves the full ref.
-There is also a **ref-prefix query syntax**: `akm search "memory:projectA/"`
-enumerates exactly that subtree (recursive, `/`-boundary exact — a
-sibling `projectAlpha/` scope does not leak), and a bare `akm search
-"memory:"` lists every memory. Ref-prefix hits are a deterministic listing
-with the fixed browse score `1`, not a relevance ranking. A full ref
-(`memories/projectA/auth-tip`) stays an ordinary keyword search — resolving a
-single ref is `akm show`'s job — and an explicit `--type` flag always wins
-over the type parsed from the query. See [cli.md](../reference/cli.md#search) for the
-full ref-prefix query rules.
+
+There is also a **ref-prefix query syntax** — a query that is a conceptId
+prefix ending in `/` enumerates that subtree instead of keyword-matching:
+
+```sh
+akm search "memories/"                  # every memory
+akm search "memories/projectA/"         # exactly that subtree
+akm search "team-catalog//"             # every item in one bundle
+akm search "team-catalog//skills/"      # one subtree of one bundle
+```
+
+Enumeration is `/`-boundary exact — a sibling `projectAlpha/` scope does not
+leak — and hits are a deterministic listing with the fixed browse score `1`,
+not a relevance ranking. Because it matches conceptIds, it works for items
+from every adapter, and you can copy a ref prefix straight out of search
+output and paste it back as a query. A complete ref
+(`memories/projectA/auth-tip`, no trailing `/`) stays an ordinary keyword
+search — resolving a single ref is `akm show`'s job.
+
+(Before 0.9.0 this syntax was spelled `memory:projectA/`, using the retired
+singular type token. That spelling is gone; use the conceptId prefix.)
 
 **Recommendation:** use physical subdirectories now to organize multi-project
 or multi-team stashes. They sort cleanly on disk and require no configuration.
-Treat the resulting ref as permanent — a raw file rename breaks inbound refs
-and resets the asset's usage-ranking history. When a rename is unavoidable,
-use `akm mv <ref> <new-name>` (Experimental): it rewrites inbound refs across
-the writable stash and re-keys the index row in place so the learned ranking
-history survives. See [cli.md](../reference/cli.md#mv-experimental).
+
+**Treat a ref as permanent.** A rename is **delete plus create**: the new path
+is a new identity, so the destination starts with fresh learned state
+(utility, salience, usage history) and any inbound refs to the old path
+dangle. When you must rename:
+
+```sh
+mv ~/akm/memories/old-note.md ~/akm/memories/new-note.md
+# update any intentional refs (they are fully qualified: bundle//memories/old-note)
+akm index
+akm lint          # confirms nothing dangles
+```
+
+Moving an item between bundles is copy/import followed by deletion from the
+source — both the bundle and the concept identity change. (0.9.0 removed the
+`akm mv` command, which promised identity-preserving renames but implemented
+prose-ref rewriting inverted; see
+[the decision record](../architecture/specs/0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-is-removed).)
 
 **Which subdirectory?** Choose the partition axis by asset **type**:
 scope-born types (`memory`, `lesson`, `task`, `env`, `secret`) take the current

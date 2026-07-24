@@ -93,6 +93,18 @@ User-facing item refs are path-identified:
 - optional `bundle//` narrows input lookup to a configured bundle
 - refs are parsed by `parseBundleRef` in `src/core/asset/asset-ref.ts`
 - markdown-backed items strip `.md` from canonical names
+- `#fragment` is input-only and never stored: on markdown-document items the
+  core resolves it as a section selector (`knowledge/api-guide#authentication`);
+  elsewhere it is an adapter-owned selector opaque to the core
+- refs embedded in prose must be fully qualified (`bundle//conceptId`) or a
+  native adapter link form — a bare conceptId in prose is ordinary text, and no
+  tool rewrites it
+- a rename is delete plus create: the new path is a new identity and learned
+  state does not follow it
+
+See [`specs/ref.md`](./specs/ref.md) for the normative grammar and
+[`specs/0.9.0-decisions.md`](./specs/0.9.0-decisions.md) for the rationale
+behind the 0.9.0 changes.
 
 Each indexed entry stores that identity as `item_ref`, with `bundle_id` and
 `concept_id` provenance, and stores its absolute materialized local file as
