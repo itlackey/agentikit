@@ -30,9 +30,19 @@ Item refs use this wire format:
 | `conceptId` | yes | Subdir-qualified item id: the placement subdirectory followed by the item's canonical name, `/`-separated, extension-stripped. Examples: `knowledge/http-caching`, `skills/code-review`, `scripts/db/migrate/run.sh`. |
 | `fragment` | no | Selector for a part of the item. For markdown-document items the core interprets it as a **section selector**; for every other item kind it is an adapter-owned selector, opaque to the core. See [Fragments](#fragments). |
 
-`type` is **no longer part of a ref**. Identity is a path (`subdir/name`), not a
-`type:name` pair. The subdirectory *is* the type signal — `skills/deploy` and
-`workflows/deploy` are distinct concepts that never collide.
+`type` is **no longer part of a ref**. Identity is a path, not a `type:name`
+pair, and a conceptId is an **opaque path** — akm does not parse meaning out of
+its segments. `skills/deploy` and `workflows/deploy` are distinct concepts that
+never collide because their paths differ, not because their first segment is a
+recognized word.
+
+An item's `type` is an **attribute of the resolved item**, read from its own
+frontmatter (OKF's model), never a predicate parsed out of the ref string. In
+an akm-profile bundle the placement directory supplies a *default* type when
+frontmatter omits one; frontmatter always wins. This is why a ref into any
+bundle — `okfbundle//tables/customers`, `wiki//pages/attention` — is just as
+addressable as `personal//memories/vpn-note`. See
+[`okf-foundational.md`](./okf-foundational.md).
 
 Refs are parsed by `parseBundleRef` in `src/core/asset/asset-ref.ts`. The
 grammar (normative spec §11.1) is:
@@ -68,12 +78,15 @@ The subdirectory prefix is the item's placement directory:
 | `secrets/` | Single sensitive values | `secrets/deploy-token` |
 | `tasks/` | Scheduled / on-demand tasks | `tasks/nightly-sync` |
 
-These are the subdirs the **`akm` adapter** places into. They are not the
-universe of item kinds: other adapters own their own layouts, and their
-conceptIds are whatever path the adapter declares (an LLM-wiki bundle emits
-`pages/attention`, a website snapshot emits its crawled path). A conceptId's
-leading segment is a placement signal only within a bundle whose adapter
-declares it.
+These are the subdirs the **`akm` adapter** places into, and they are a
+**convention, not a grammar**. Other bundles use whatever paths their content
+uses — an OKF bundle emits `tables/customers`, an LLM wiki emits
+`pages/attention`, a website snapshot emits its crawled path — and every one of
+those is an equally valid conceptId. akm must be able to address any of them;
+the leading segment is never required to be a recognized word.
+
+Within an akm-profile bundle the subdir additionally supplies a default `type`
+for files whose frontmatter omits one.
 
 ### Examples
 
@@ -178,9 +191,12 @@ adapter's items uniformly, and `bundle//` enumeration replaces the removed
 ## Asset types are free-form
 
 `type` is metadata that presents, ranks, and filters — it never executes and
-never identifies. `IndexDocument.type` is an open string by contract, and
-adapters emit types outside the `akm` adapter's placement set (`website`,
-`wiki-source`, an LLM-wiki page's `pageKind`, `instruction`).
+never identifies. It is OKF's open `type` field: read from the item's own
+frontmatter, defaulting to `knowledge` when absent (or, in an akm-profile
+bundle, to the placement directory's type). `IndexDocument.type` is an open
+string by contract, and adapters emit types outside the `akm` adapter's
+placement set (`website`, `wiki-source`, an LLM-wiki page's `pageKind`,
+`instruction`, and anything an OKF bundle author writes).
 
 Consequently `akm search --type <t>` is an **exact string match against an open
 set, deliberately unvalidated**: an unrecognized type returns zero hits rather

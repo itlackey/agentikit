@@ -52,7 +52,9 @@ Workspace
 └── proposals and verified file changes
 ```
 
-OKF is a flagship built-in adapter and preferred neutral interchange format. It is not AKM's internal schema and is not an AKM asset type.
+**AMENDED (0.9.0) — see [okf-foundational.md](okf-foundational.md).** OKF is now the FOUNDATIONAL content model, not one adapter among many: every indexed item is an OKF concept (path identity, open `type` read from its own frontmatter, markdown links), and adapters are extensions that project native formats *into* that model. OKF remains not an AKM asset type, and native files still stay native — no adapter rewrites a Claude command, a `SKILL.md`, or a `.env` into OKF shape. What changed is the direction of the mapping: the akm stash layout is an OKF *profile* (conventional directories + akm frontmatter keys), so a directory name is a DEFAULT for `type` when frontmatter omits it, never an override.
+
+*(Superseded text: "OKF is a flagship built-in adapter and preferred neutral interchange format. It is not AKM's internal schema and is not an AKM asset type.")*
 
 ---
 
