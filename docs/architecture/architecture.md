@@ -64,6 +64,12 @@ Providers do **not** implement `search`, `show`, `canShow`, or any read method.
 The indexer walks `path()`, classifies files, and answers all queries from the
 local FTS5 index.
 
+File semantics are owned by the selected bundle adapter. OKF is a first-class
+supported format through the built-in `okf` adapter; it is not AKM's internal
+content model or the default adapter for an AKM workspace. The `akm`,
+`llm-wiki`, Claude, OpenCode, Agent Skills, workflow, task, dotenv, website,
+and other adapters retain their native recognition and metadata rules.
+
 The legacy `LiveStashProvider` / `SyncableStashProvider` split is gone, as is
 any "remote-only" provider tier. API-backed sources (mem0, Notion, etc.) are
 deferred to a separate `QuerySource` tier post-v1.

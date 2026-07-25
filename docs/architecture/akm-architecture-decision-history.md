@@ -48,7 +48,7 @@ Workspace
 
 The major decisions are:
 
-1. **OKF is a flagship adapter and preferred interchange format, not AKM's internal schema and not an asset type.**
+1. **OKF is a first-class supported format, not AKM's internal schema and not an asset type.**
 2. **The closed asset-type system is removed.** Native formats and adapters own file semantics.
 3. **A bundle may contain multiple components**, each governed by one adapter.
 4. **Conventions and authoring rules move into adapters.** They are not deleted.
@@ -118,7 +118,8 @@ asset type
 
 This would make OKF a bolt-on and leave both `wiki` and `okf` as overlapping generic knowledge abstractions.
 
-**First correction:** remove `wiki` as a core asset type and use OKF compatibility as a foundation rather than a sibling type.
+**First correction:** remove `wiki` as a core asset type and support OKF through
+a dedicated adapter rather than a sibling asset type.
 
 ### 4.2 OKF-native direction
 
@@ -466,7 +467,7 @@ interface IndexDocument {
 
 **Consequence:** OKF, LLM Wiki, Claude, OpenCode, Agent Skills, website snapshots, workflows, tasks, environments, and future standards are integrated through adapters and runtime codecs.
 
-### D2. OKF is a flagship adapter, not the kernel schema
+### D2. OKF is a first-class supported format, not the kernel schema
 
 **Decision:** AKM provides excellent OKF production, consumption, validation, search, conversion, and improvement support without forcing other formats through OKF.
 

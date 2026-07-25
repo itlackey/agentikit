@@ -13,7 +13,7 @@ subsystem internals.
 
 Normative specifications and binding conventions.
 
-- [OKF as the foundational format](specs/okf-foundational.md) -- **Start here.** OKF is akm's content model; adapters are extensions that project native formats into it
+- [OKF format support](specs/okf-support.md) -- OKF is a first-class format supported through the built-in `okf` adapter
 - [0.9.0 surface decisions](specs/0.9.0-decisions.md) -- The decision record (D1-D11) behind the 0.9.0 breaking changes
 - [Bundle & Adapter Spec (0.9.0)](specs/akm-0.9.0-bundle-adapter-spec.md) -- Normative spec for bundles, adapters, and stash recognition
 - [Ref Grammar Decision (0.9.0)](specs/akm-0.9.0-ref-grammar-decision.md) -- The `[bundle//]conceptId` ref grammar

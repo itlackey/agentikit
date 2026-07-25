@@ -30,8 +30,8 @@ registration call required. Eleven built-ins, in probe order:
 
 `looksLikeRoot` probes run most-specific-first in the list order above; the
 first match wins and the winner is recorded per component. A root matching no
-probe falls back to `akm` (a recorded deviation from spec §1.2(3)'s `okf`
-fallback — see `FALLBACK_ADAPTER_ID` in `src/indexer/installations.ts`).
+probe falls back to `akm` (see `FALLBACK_ADAPTER_ID` in
+`src/indexer/installations.ts`).
 `generic-files` never participates in probing.
 
 ## Item types
@@ -59,10 +59,10 @@ by the `llm-wiki` adapter, not a per-file type stamped by the classifier.
 
 ## Reserved structural files
 
-`index.md` and `log.md` are reserved structural files at every level of a bundle
-(OKF §3.1/§6/§7). No adapter emits an `IndexDocument` for them — they are bundle
-structure (directory listing, update history), never concept items. This holds for
-the `akm`, `okf`, and `llm-wiki` adapters alike.
+`index.md` and `log.md` are reserved structural files for the `akm`, `okf`, and
+`llm-wiki` adapters. OKF defines their meaning in OKF bundles; AKM and LLM Wiki
+reserve the same names under their own format contracts. Other adapters own
+their reserved-name rules.
 
 ## Adapter-owned filtering (AKM sensitive/infra abstention)
 

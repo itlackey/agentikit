@@ -2,13 +2,9 @@
 
 Use this runbook after changing AKM's adapters, indexing, refs, writes, or lint
 behavior. It is the acceptance procedure for
-[OKF as the foundational format](../specs/okf-foundational.md) — its success
-criteria below are the target state that document specifies. It runs without
+[first-class OKF format support](../specs/okf-support.md). It runs without
 reading or modifying the host's AKM installation, stash, configuration, cache,
 or index.
-
-(The point-in-time audit this runbook originally re-evaluated has been retired;
-its findings are folded into `okf-foundational.md` § Verified misalignments.)
 
 The runbook deliberately tests observable behavior in addition to unit tests.
 Passing adapter-local tests is not enough: the original failures happened
