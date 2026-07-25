@@ -798,6 +798,17 @@ function buildComponentBySource(sources: SearchSource[]): Map<string, BundleComp
   return map;
 }
 
+function componentForSource(components: Map<string, BundleComponent>, sourcePath: string): BundleComponent {
+  return (
+    components.get(sourcePath) ?? {
+      id: sourcePath,
+      adapter: "akm",
+      root: sourcePath,
+      writable: false,
+    }
+  );
+}
+
 /**
  * Phase 1 (async): walk every source directory and pre-generate all metadata
  * outside any transaction, producing the per-directory scan records that
@@ -922,12 +933,7 @@ async function scanSourceDirs(
 
   for (const sourceAdded of allSourceEntries) {
     const currentStashDir = sourceAdded.path;
-    const component = componentBySource.get(currentStashDir) ?? {
-      id: currentStashDir,
-      adapter: "akm",
-      root: currentStashDir,
-      writable: false,
-    };
+    const component = componentForSource(componentBySource, currentStashDir);
     const fileContexts = walkStashFlat(currentStashDir, {
       includeAllDirectories: component.adapter === "okf",
     });

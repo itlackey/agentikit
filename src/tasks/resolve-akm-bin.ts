@@ -62,6 +62,11 @@ export function resolveAkmInvocation(
     return { argv: [execPath], via: "execPath" };
   }
 
+  if (runtime === "node" && mainPath && execPath) {
+    const entry = resolveNodeCliEntry(mainPath);
+    if (entry) return { argv: [execPath, entry], via: "execPath" };
+  }
+
   const cliPath = resolveCliEntry(options.cliEntryUrl ?? import.meta.url);
   if (cliPath && execPath) {
     const entry = runtime === "node" ? resolveNodeCliEntry(cliPath) : cliPath;

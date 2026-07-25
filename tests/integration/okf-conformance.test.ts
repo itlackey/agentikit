@@ -243,7 +243,7 @@ describe("OKF first-class conformance", () => {
       }
     };
 
-    expect(readSwitchRow()).toEqual([{ entryKey: `${okfRoot}:knowledge:switch`, adapterId: "akm" }]);
+    expect(readSwitchRow()).toEqual([{ entryKey: [okfRoot, "knowledge", "switch"].join(":"), adapterId: "akm" }]);
 
     configure("okf");
     resetConfigCache();

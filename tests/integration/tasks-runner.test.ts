@@ -685,6 +685,24 @@ describe("resolveAkmInvocation", () => {
     expect(r.argv).toEqual(["/usr/bin/node", path.join(fixtureDir, "cli-node.mjs")]);
   });
 
+  test("uses the Node wrapper beside the package launcher", () => {
+    const fixtureDir = path.join(tmpRoot, "launcher-dist");
+    fs.mkdirSync(fixtureDir, { recursive: true });
+    const launcher = path.join(fixtureDir, "akm");
+    fs.writeFileSync(launcher, "");
+    fs.writeFileSync(path.join(fixtureDir, "cli-node.mjs"), "");
+
+    const r = resolveAkmInvocation({
+      env: {},
+      runtime: "node",
+      execPath: "/usr/bin/node",
+      mainPath: launcher,
+      cliEntryUrl: pathToFileURL(path.join(fixtureDir, "missing", "resolve-akm-bin.js")).href,
+    });
+
+    expect(r.argv).toEqual(["/usr/bin/node", path.join(fixtureDir, "cli-node.mjs")]);
+  });
+
   test("uses the source CLI entry when running through Bun", () => {
     const r = resolveAkmInvocation({
       env: {},
