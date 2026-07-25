@@ -24,7 +24,6 @@
  *     across proposals with different target refs.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -33,6 +32,7 @@ import {
   type ConsolidatePromoteOp,
   mergePlans,
 } from "../../../../src/commands/improve/consolidate";
+import { cacheHash } from "../../../../src/commands/improve/content-hash";
 import { createProposal, isProposalSkipped, listProposals } from "../../../../src/commands/proposal/repository";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../../../src/indexer/installations";
 
@@ -68,10 +68,6 @@ function makePromoteOp(ref: string, knowledgeRef: string): ConsolidatePromoteOp 
     reason: "test reason",
     description: "test description",
   };
-}
-
-function sha256(content: string): string {
-  return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
 // ── Setup / teardown ─────────────────────────────────────────────────────────
@@ -164,11 +160,11 @@ describe("content-hash dedup — identical content blocked regardless of target 
   /**
    * These tests validate the guard added to Phase B of akmConsolidate:
    *
-   *   const newContentHash = createHash("sha256").update(memoryContent, ...).digest("hex");
+   *   const newContentHash = cacheHash(memoryContent);
    *   const allPendingConsolidateProposals = listProposals(stashDir, { status: "pending" })
    *     .filter((p) => p.source === "consolidate");
    *   const contentDupProposal = allPendingConsolidateProposals.find(
-   *     (p) => createHash("sha256").update(p.payload.content, ...).digest("hex") === newContentHash,
+   *     (p) => cacheHash(p.payload.content) === newContentHash,
    *   );
    *   if (contentDupProposal) { ... skip ... }
    *
@@ -200,13 +196,13 @@ describe("content-hash dedup — identical content blocked regardless of target 
     expect(pending).toHaveLength(1);
 
     // Compute hash of the second (duplicate) payload — same content, different ref.
-    const secondContentHash = sha256(CONTENT_WITH_DESCRIPTION);
+    const secondContentHash = cacheHash(CONTENT_WITH_DESCRIPTION);
     const existingContent = pending[0]?.payload.content ?? "";
-    const existingHash = sha256(existingContent);
+    const existingHash = cacheHash(existingContent);
 
     // The guard should detect the match.
     expect(existingHash).toBe(secondContentHash);
-    const dup = pending.find((p) => sha256(p.payload.content) === secondContentHash);
+    const dup = pending.find((p) => cacheHash(p.payload.content) === secondContentHash);
     expect(dup).toBeDefined();
     expect(dup?.ref).toBe(durableRef(stash, "knowledge", "paged-review-efficiency"));
   });
@@ -227,8 +223,8 @@ describe("content-hash dedup — identical content blocked regardless of target 
 
     // content2 should NOT match the hash of content1.
     const pending = listProposals(stash, { status: "pending" }).filter((p) => p.source === "consolidate");
-    const hash2 = sha256(content2);
-    const dup = pending.find((p) => sha256(p.payload.content) === hash2);
+    const hash2 = cacheHash(content2);
+    const dup = pending.find((p) => cacheHash(p.payload.content) === hash2);
 
     // No match — the second proposal would be allowed through.
     expect(dup).toBeUndefined();
@@ -251,8 +247,8 @@ describe("content-hash dedup — identical content blocked regardless of target 
 
     // The consolidate guard should only check consolidate proposals.
     const pendingConsolidate = listProposals(stash, { status: "pending" }).filter((p) => p.source === "consolidate");
-    const hash = sha256(SHARED_CONTENT);
-    const dup = pendingConsolidate.find((p) => sha256(p.payload.content) === hash);
+    const hash = cacheHash(SHARED_CONTENT);
+    const dup = pendingConsolidate.find((p) => cacheHash(p.payload.content) === hash);
 
     // No consolidate proposals exist yet — dup should be undefined.
     expect(dup).toBeUndefined();
@@ -279,8 +275,8 @@ describe("content-hash dedup — identical content blocked regardless of target 
       // Simulate the Phase B content-hash guard: load all pending consolidate
       // proposals and check for hash match before calling createProposal.
       const pending = listProposals(stash, { status: "pending" }).filter((p) => p.source === "consolidate");
-      const newHash = sha256(IDENTICAL_CONTENT);
-      const contentDup = pending.find((p) => sha256(p.payload.content) === newHash);
+      const newHash = cacheHash(IDENTICAL_CONTENT);
+      const contentDup = pending.find((p) => cacheHash(p.payload.content) === newHash);
 
       if (contentDup) {
         skippedRefs.push(ref);

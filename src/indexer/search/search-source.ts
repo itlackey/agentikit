@@ -5,9 +5,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isSourceWriteActivated } from "../../core/activation-policy";
-import { resolveStashDir } from "../../core/common";
+import { isWithin, resolveStashDir } from "../../core/common";
 import type { AkmConfig, SourceConfigEntry } from "../../core/config/config";
-import { bundlesToSourceEntries, getSources, loadConfig } from "../../core/config/config";
+import { bundleComponentConfig, bundlesToSourceEntries, getSources, loadConfig } from "../../core/config/config";
 import { resolveGitContentRoot, resolveWritable } from "../../core/write-source";
 import { lockContentRootFor } from "../../integrations/lockfile";
 import { resolveSourceProviderFactory } from "../../sources/provider-factory";
@@ -31,6 +31,8 @@ export interface SearchSource {
   writable?: boolean;
   /** Configured provider kind when this source has a config owner. */
   type?: SourceConfigEntry["type"];
+  /** Adapter selected for this bundle component. Index preflight fills and persists missing ownership. */
+  adapterId?: string;
 }
 
 // ── Resolution ──────────────────────────────────────────────────────────────
@@ -64,6 +66,7 @@ export function resolveSourceEntries(overrideStashDir?: string, existingConfig?:
     registryId: string | undefined,
     writable: boolean,
     type: SourceConfigEntry["type"],
+    adapterId?: string,
   ) => {
     const resolved = path.resolve(dir);
     if (seen.has(resolved)) {
@@ -78,6 +81,7 @@ export function resolveSourceEntries(overrideStashDir?: string, existingConfig?:
         if (registryId) existing.registryId = registryId;
         existing.type = type;
         existing.writable = writable;
+        existing.adapterId = adapterId;
       }
       return;
     }
@@ -91,6 +95,7 @@ export function resolveSourceEntries(overrideStashDir?: string, existingConfig?:
         ...(registryId ? { registryId } : {}),
         writable,
         type,
+        ...(adapterId ? { adapterId } : {}),
       });
     }
   };
@@ -103,9 +108,15 @@ export function resolveSourceEntries(overrideStashDir?: string, existingConfig?:
   // == the bundle id. A config with no bundles yields just the primary stash.
   for (const entry of bundlesToSourceEntries(config) ?? []) {
     if (entry.enabled === false) continue;
-    const dir = resolveEntryContentDir(entry);
-    if (dir == null) continue;
-    addSource(dir, entry.name, resolveWritable(entry), entry.type);
+    const contentRoot = resolveEntryContentDir(entry);
+    if (contentRoot == null) continue;
+    const component = bundleComponentConfig(config.bundles?.[entry.name ?? ""]);
+    const dir = path.resolve(contentRoot, component?.root ?? ".");
+    if (!isWithin(dir, contentRoot)) {
+      warn(`Warning: component root "${component?.root}" escapes bundle "${entry.name}"; skipping source.`);
+      continue;
+    }
+    addSource(dir, entry.name, component?.writable ?? resolveWritable(entry), entry.type, component?.adapter);
   }
 
   return sources;

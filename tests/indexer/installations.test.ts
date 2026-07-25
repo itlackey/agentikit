@@ -80,6 +80,11 @@ describe("deriveInstallations — adapter selection (ordered §1.2 probe)", () =
     ]).map((i) => i.components[0]!.adapter);
     expect(adapters).toEqual(["akm", "okf", "llm-wiki"]);
   });
+
+  test("configured adapter ownership wins over filesystem probing", () => {
+    const [inst] = deriveInstallations([{ path: AKM_ROOT, adapterId: "okf" }]);
+    expect(inst!.components[0]!.adapter).toBe("okf");
+  });
 });
 
 describe("deriveInstallations — id / trust / component shape", () => {

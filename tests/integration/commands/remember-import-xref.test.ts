@@ -17,7 +17,8 @@
  *     verified end-to-end through the write-path indexer).
  *   - Merging into MALFORMED frontmatter fails loudly (exit 2, nothing
  *     written) instead of silently flattening list/nested values through the
- *     lenient parser fallback; without --xref the same doc imports verbatim.
+ *     lenient parser fallback; the AKM write boundary rejects the same malformed
+ *     document without `--xref` because it cannot safely add required `type` metadata.
  *   - Type-root writes into a stash with convention facts emit the additive
  *     `hint` output key (spec test-plan item 6); nested/--path writes and
  *     convention-less stashes do not, and the canonical
@@ -562,12 +563,15 @@ describe("import --xref", () => {
     expect(typeof json.code).toBe("string");
     expect(listDirRecursive(path.join(stashDir, "knowledge"))).toEqual(["auth-flow.md"]);
 
-    // WITHOUT --xref the same document imports verbatim — malformed
-    // frontmatter is preserved byte-for-byte for a human to repair.
+    // Without --xref the AKM write boundary still rejects malformed frontmatter
+    // because it cannot safely add the required matching type metadata.
     const plain = await runCliCapture(["import", sourcePath]);
-    expect(plain.code).toBe(0);
-    const plainJson = JSON.parse(plain.stdout) as { path: string };
-    expect(fs.readFileSync(plainJson.path, "utf8")).toBe(malformed);
+    expect(plain.code).toBe(2);
+    const plainJson = JSON.parse(plain.stderr) as { ok: boolean; error: string; code?: string };
+    expect(plainJson.ok).toBe(false);
+    expect(plainJson.error).toContain("malformed YAML frontmatter");
+    expect(plainJson.code).toBe("INVALID_FLAG_VALUE");
+    expect(listDirRecursive(path.join(stashDir, "knowledge"))).toEqual(["auth-flow.md"]);
   });
 });
 

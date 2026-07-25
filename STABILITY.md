@@ -130,9 +130,10 @@ CHANGELOG with a migration note.
   `defaultBundle`. The adapter set, bundle-recognition rules, and the
   `bundles` config shape may still shift. Bundles are inspected through
   `akm list` and enumerated through `akm search "bundle//"` — the separate
-  `akm bundle` noun group was removed in 0.9.0 as duplicative. OKF is a
-  first-class supported format through the built-in `okf` adapter; it is not
-  AKM's internal content model or the default adapter for an AKM workspace.
+  `akm bundle` noun group was removed in 0.9.0 as duplicative. OKF is the
+  first-class baseline for Markdown concept identity and generic reads; every
+  applicable OKF conformance case is required to pass. AKM-authored Markdown is
+  an OKF-compatible superset whose adapter adds native behavior progressively.
 - **LLM Wiki bundles** — the Karpathy-style LLM wiki is a first-class built-in
   bundle format (the `llm-wiki` adapter owns `schema.md` / `index.md` /
   `log.md` / `raw/` / `pages/` and its ingest flow); wiki pages are addressed

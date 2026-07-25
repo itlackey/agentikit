@@ -1,4 +1,5 @@
 ---
+type: fact
 category: convention
 description: Soft authoring conventions for fact assets using pinned-core and just-in-time context principles.
 when_to_use: Surfaced to authoring agents when they write or revise a fact asset.

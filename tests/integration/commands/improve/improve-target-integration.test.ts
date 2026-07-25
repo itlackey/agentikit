@@ -147,7 +147,7 @@ describe("improve named target integration", () => {
       const primary = stash();
       const websiteUrl = "https://example.com/improve-read-only";
       const websitePaths = getWebsiteCachePaths(websiteUrl);
-      const vendor = kind === "website" ? websitePaths.stashDir : stash();
+      const vendor = kind === "website" ? websitePaths.rootDir : stash();
       fs.mkdirSync(vendor, { recursive: true });
       if (kind === "npm") {
         mergeLockEntriesSync([{ id: "vendor", source: "npm", ref: "npm:improve-read-only@1.0.0", localRoot: vendor }]);

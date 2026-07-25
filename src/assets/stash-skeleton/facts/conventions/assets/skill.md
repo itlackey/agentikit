@@ -1,4 +1,5 @@
 ---
+type: fact
 category: convention
 description: Soft authoring conventions for skill assets as reusable, just-in-time procedural rulebooks.
 when_to_use: Surfaced to authoring agents when they write or revise a skill asset.

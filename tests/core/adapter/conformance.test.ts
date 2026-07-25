@@ -177,9 +177,9 @@ describe("conformance — looksLikeRoot own-root-only (§4)", () => {
     expect(akmAdapter.looksLikeRoot?.(LLM_WIKI_ROOT)).toBe(false);
   });
 
-  test("okf.looksLikeRoot fires on the okf-sample root, NOT on the akm/all-types root", () => {
+  test("OKF recognizes its own root and the OKF-compatible AKM superset", () => {
     expect(okfAdapter.looksLikeRoot?.(OKF_ROOT)).toBe(true);
-    expect(okfAdapter.looksLikeRoot?.(AKM_ROOT)).toBe(false);
+    expect(okfAdapter.looksLikeRoot?.(AKM_ROOT)).toBe(true);
   });
 
   test("akm.looksLikeRoot fires on the all-types root, NOT on the okf-sample root", () => {

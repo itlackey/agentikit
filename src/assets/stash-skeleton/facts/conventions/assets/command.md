@@ -1,4 +1,5 @@
 ---
+type: fact
 category: convention
 description: Soft authoring conventions for command assets using repeatable LLM operation patterns.
 when_to_use: Surfaced to authoring agents when they write or revise a command asset.

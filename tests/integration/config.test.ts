@@ -736,6 +736,20 @@ describe("primary stash config", () => {
     expect(primaryBundlePath(loadConfig())).toBe("/home/user/my-stash");
   });
 
+  test("resolves the primary stash from the default bundle's component root", () => {
+    writeCurrentConfig({
+      bundles: {
+        main: {
+          path: "/home/user/package",
+          writable: true,
+          components: { main: { root: "catalog", adapter: "akm" } },
+        },
+      },
+      defaultBundle: "main",
+    });
+    expect(primaryBundlePath(loadConfig())).toBe("/home/user/package/catalog");
+  });
+
   test("primary stash is undefined by default", () => {
     expect(primaryBundlePath(loadConfig())).toBeUndefined();
   });

@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import workflowTemplate from "../../assets/workflows/workflow-template.md" with { type: "text" };
+import { ensureAkmMarkdownType } from "../../core/asset/akm-markdown";
 import { isWithin, resolveStashDir } from "../../core/common";
 import { UsageError } from "../../core/errors";
 import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../../core/recognition-util";
@@ -163,8 +164,9 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
     }
   }
 
+  const authoredContent = isProgram ? content : ensureAkmMarkdownType(content, "workflow");
   fs.mkdirSync(path.dirname(assetPath), { recursive: true });
-  fs.writeFileSync(assetPath, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+  fs.writeFileSync(assetPath, authoredContent.endsWith("\n") ? authoredContent : `${authoredContent}\n`, "utf8");
 
   return {
     ref: `workflows/${normalizedName}`,

@@ -14,7 +14,6 @@ import { parseFrontmatter } from "../../core/asset/frontmatter";
 import type { TocHeading } from "../../core/asset/markdown";
 import { asNonEmptyString } from "../../core/common";
 import { loadUserConfig } from "../../core/config/config";
-import { DEPRECATED_REJECTED_TYPES } from "../../core/recognition-util";
 import { isVerbose, warn } from "../../core/warn";
 import type { buildFileContext } from "../walk/file-context";
 
@@ -83,17 +82,15 @@ export function isProposedQuality(quality: string | undefined): boolean {
 /**
  * Validate and normalize a raw object into a `IndexDocument`.
  *
- * Open type token (chunk 1.5, D1.5-1/D1.5-6): `entry.type` accepts any
- * non-empty string — foreign/adapter types are valid `IndexDocument` data, not
- * just AKM's own built-in set — EXCEPT `DEPRECATED_REJECTED_TYPES`
- * (`tool`/`vault`), which stay rejected so a hand-edited legacy sidecar can't
- * silently resurrect a deliberately-retired type.
+ * Open type token: `entry.type` accepts any non-empty string. Type ownership
+ * and capability decisions belong to the adapter; this format-neutral
+ * projection must not reject a value merely because AKM does not own it.
  */
 export function validateStashEntry(entry: unknown): IndexDocument | null {
   if (typeof entry !== "object" || entry === null) return null;
   const e = entry as Record<string, unknown>;
   if (typeof e.name !== "string" || !e.name) return null;
-  if (typeof e.type !== "string" || !e.type || DEPRECATED_REJECTED_TYPES.has(e.type)) return null;
+  if (typeof e.type !== "string" || !e.type) return null;
 
   const result: IndexDocument = {
     name: e.name,

@@ -18,7 +18,7 @@
  * consumers see a coherent lifecycle trail in a single output.
  */
 
-import { parseRefInput } from "../../core/asset/resolve-ref";
+import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { UsageError } from "../../core/errors";
 import { type EventsContext, readEvents } from "../../core/events";
 import { openStateDatabase } from "../../core/state-db";
@@ -182,8 +182,8 @@ export async function akmHistory(options: HistoryOptions = {}): Promise<HistoryR
     // forms); getUsageEvents bridges the stored entry_ref across both spellings,
     // so the user gets back exactly the asset they asked for regardless of which
     // grammar they typed.
-    parseRefInput(trimmed);
-    normalizedRef = trimmed;
+    const parsed = parseBundleRef(trimmed);
+    normalizedRef = makeBundleRef(parsed.bundle, parsed.conceptId);
   }
 
   const sinceNormalized = options.since !== undefined ? isoToSqlite(parseSinceToIso(options.since)) : undefined;

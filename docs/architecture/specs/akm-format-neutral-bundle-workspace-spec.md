@@ -52,10 +52,12 @@ Workspace
 └── proposals and verified file changes
 ```
 
-OKF is a first-class format supported through the built-in `okf` adapter. It is
-not AKM's internal schema, default adapter, or an AKM asset type. Native file
-semantics remain adapter-owned; the shared `IndexDocument` is a narrow
-cross-format search projection, not an OKF document. See
+OKF is the first-class least-common-denominator for Markdown concepts through
+the built-in `okf` adapter. AKM-authored Markdown is an OKF-compatible superset,
+while non-Markdown serialization and all specialized capabilities remain
+adapter-owned. The shared `IndexDocument` is an additive cross-format
+projection whose basic Markdown fields align with OKF; it is not the database's
+on-disk document format. See
 [okf-support.md](okf-support.md).
 
 ---
@@ -173,7 +175,7 @@ A workspace is not a content bundle and is not a directory that must contain all
 
 ### 7.2 Bundle package
 
-A distribution and versioning unit that contains one or more native component roots. A package may be a Git repository, archive, npm package, filesystem directory, website snapshot, or subdirectory of a larger repository.
+A distribution and versioning unit registered with one native component root. A package may be a Git repository, archive, npm package, filesystem directory, website snapshot, or subdirectory of a larger repository; separately governed roots are registered as separate bundles.
 
 ### 7.3 Bundle installation
 
@@ -181,9 +183,9 @@ A local materialized revision of a bundle package, registered under a stable wor
 
 ### 7.4 Component
 
-A subtree within a bundle installation interpreted by exactly one adapter.
+A bundle installation's configured root, interpreted by exactly one adapter.
 
-Examples:
+Examples of separate bundle component roots:
 
 ```text
 knowledge/  -> OKF adapter
@@ -195,7 +197,7 @@ env/        -> environment adapter
 skills/     -> Agent Skills adapter
 ```
 
-A bundle may have one component or many components.
+Every bundle has exactly one component in 0.9.0.
 
 ### 7.5 Materializer
 
@@ -227,11 +229,11 @@ Example:
 ```text
 team-catalog//tables/orders
 release-automation//workflows/release
-project-claude//.claude/skills/pdf-processing
+project-claude//skills/pdf-processing
 knowledge/http-caching            # short form; CLI input sugar only (§11.1)
 ```
 
-The **component** is not a ref segment. It is a provenance column derived at index time by longest-prefix matching the conceptId's leading path segments against the bundle's configured component roots. Reclassifying a component or re-mounting a root never changes a ref; only moving the file does (§11.2).
+The **component** is not a ref segment. It is provenance supplied by the bundle's single configured component; the adapter derives each conceptId relative to that component root. Reclassifying the component does not change a ref; moving or renaming the native item does (§11.2).
 
 ### 7.9 Export
 
@@ -666,7 +668,10 @@ Workspace policy MUST NOT silently rewrite native format semantics.
 
 ### 14.1 Normalized projection
 
-The common content model ends at `IndexDocument`:
+The additive common projection ends at `IndexDocument`. Its basic Markdown
+surface aligns with OKF so any adapter can supply path identity, an open type,
+content, and links; native adapters may add fields and capabilities without
+narrowing that baseline:
 
 ```ts
 interface IndexDocument {

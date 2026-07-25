@@ -64,11 +64,13 @@ Providers do **not** implement `search`, `show`, `canShow`, or any read method.
 The indexer walks `path()`, classifies files, and answers all queries from the
 local FTS5 index.
 
-File semantics are owned by the selected bundle adapter. OKF is a first-class
-supported format through the built-in `okf` adapter; it is not AKM's internal
-content model or the default adapter for an AKM workspace. The `akm`,
-`llm-wiki`, Claude, OpenCode, Agent Skills, workflow, task, dotenv, website,
-and other adapters retain their native recognition and metadata rules.
+File semantics are owned by the selected bundle adapter. OKF is the first-class
+least-common-denominator for Markdown path identity, open types, content, links,
+and heading fragments. The `akm` format is an OKF-compatible Markdown superset:
+its adapter progressively adds native command, script, workflow, task,
+environment, secret, memory, and lesson behavior. Non-Markdown formats retain
+their native serialization and every adapter retains its own capability,
+validation, redaction, and placement rules.
 
 The legacy `LiveStashProvider` / `SyncableStashProvider` split is gone, as is
 any "remote-only" provider tier. API-backed sources (mem0, Notion, etc.) are
@@ -174,7 +176,8 @@ Local show flow (`src/commands/read/show.ts`):
 3. return the indexed canonical ref and read `file_path` from disk
 4. fall back to on-disk type-dir traversal only when the index has no row
    (covers the "indexed yet?" gap before `akm index` runs)
-5. classify the file and render a response
+5. apply generic Markdown content/fragment presentation for OKF, or the owning
+   adapter's progressively enhanced native presentation
 
 There is **no remote provider fallback**. The fallback is local disk traversal,
 not a provider read.

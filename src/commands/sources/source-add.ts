@@ -4,6 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { isBundleSlug } from "../../core/asset/asset-ref";
 import { isHttpUrl, resolveStashDir } from "../../core/common";
 import type { AkmConfig, BundleConfigEntry, SourceConfigEntry, SourceSpec } from "../../core/config/config";
@@ -78,13 +79,23 @@ async function addLocalSource(
   mutateConfig((config) => {
     const existing = bundleKeyForPath(config, resolvedPath);
     if (existing) {
-      // Already configured — the bundle key is the stable identity; leave it.
       bundleKey = existing;
-      return config;
+      const current = config.bundles?.[existing];
+      if (current?.components) return config;
+      const bundles = { ...(config.bundles ?? {}) };
+      bundles[existing] = {
+        ...current,
+        path: resolvedPath,
+        components: { main: { root: ".", adapter: detectAdapterId(resolvedPath) } },
+      };
+      return { ...config, bundles };
     }
     const bundles: Record<string, BundleConfigEntry> = { ...(config.bundles ?? {}) };
     bundleKey = nextBundleKey(bundles, explicitName, resolvedPath);
-    bundles[bundleKey] = { path: resolvedPath };
+    bundles[bundleKey] = {
+      path: resolvedPath,
+      components: { main: { root: ".", adapter: detectAdapterId(resolvedPath) } },
+    };
     return { ...config, bundles };
   });
 
@@ -130,7 +141,11 @@ async function addWebsiteSource(
     const existingKey = bundleKeyForUrl(config, normalizedUrl);
     const key = existingKey ?? nextBundleKey(bundles, name ?? toWebsiteName(normalizedUrl), normalizedUrl);
     const website = { url: normalizedUrl, ...(maxPages !== undefined ? { maxPages } : {}) };
-    const nextBundle: BundleConfigEntry = { ...(existingKey ? bundles[key] : {}), website };
+    const nextBundle: BundleConfigEntry = {
+      ...(existingKey ? bundles[key] : {}),
+      website,
+      components: { main: { root: ".", adapter: "website-snapshot", writable: false } },
+    };
     if (JSON.stringify(bundles[key]) === JSON.stringify(nextBundle)) {
       entry = bundleEntryToSourceEntry(key, bundles[key]!) as SourceConfigEntry;
       return config;
@@ -271,6 +286,13 @@ export function upsertInstalledRegistryEntry(entry: InstalledBundle): { config: 
       ...descriptor,
       ...(entry.writable === true ? { writable: true } : {}),
       ...(entry.id !== bundleId ? { registryId: entry.id } : {}),
+      components: {
+        main: {
+          root: ".",
+          adapter: detectAdapterId(path.resolve(entry.stashRoot)),
+          writable: entry.writable === true,
+        },
+      },
     };
     return { ...current, bundles };
   }).config;

@@ -125,7 +125,7 @@ function seedProposal(name: string): { id: string; assetPath: string; original: 
     payload: { content },
   });
   if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
-  return { id: proposal.id, assetPath, original, content };
+  return { id: proposal.id, assetPath, original, content: proposal.payload.content };
 }
 
 /** Count of events matching {type, ref}, plus the distinct-idempotency-key shape (brief §3.2). */

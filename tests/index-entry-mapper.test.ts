@@ -13,6 +13,7 @@ function row(overrides: Partial<EntryRow> = {}): EntryRow {
     item_ref: "team//knowledge/guide",
     bundle_id: "team",
     concept_id: "knowledge/guide",
+    adapter_id: "akm",
     ...overrides,
   };
 }
@@ -23,14 +24,19 @@ describe("rowToIndexedEntry provenance", () => {
       itemRef: "team//knowledge/guide",
       bundleId: "team",
       conceptId: "knowledge/guide",
+      adapterId: "akm",
     });
   });
 
   test("keeps nullable pre-flip provenance available as an undefined fallback", () => {
-    const mapped = rowToIndexedEntry(row({ item_ref: null, bundle_id: null, concept_id: null }), "test");
+    const mapped = rowToIndexedEntry(
+      row({ item_ref: null, bundle_id: null, concept_id: null, adapter_id: null }),
+      "test",
+    );
     expect(mapped?.itemRef).toBeUndefined();
     expect(mapped?.bundleId).toBeUndefined();
     expect(mapped?.conceptId).toBeUndefined();
+    expect(mapped?.adapterId).toBeUndefined();
     expect(mapped?.entryKey).toBe("/stash:knowledge:guide");
   });
 });

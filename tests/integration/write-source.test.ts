@@ -22,6 +22,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { SourceConfigEntry } from "../../src/core/config/config";
 import { ConfigError, UsageError } from "../../src/core/errors";
 import {
@@ -140,7 +141,9 @@ describe("writeAssetToSource — filesystem", () => {
 
     expect(result.path).toBe(path.join(dir, "memories", "alpha.md"));
     expect(result.ref).toBe("memories/alpha");
-    expect(fs.readFileSync(result.path, "utf8")).toBe("hello world\n");
+    const written = parseFrontmatter(fs.readFileSync(result.path, "utf8"));
+    expect(written.data.type).toBe("memory");
+    expect(written.content).toBe("hello world\n");
   });
 
   test("creates intermediate directories", async () => {
@@ -159,7 +162,9 @@ describe("writeAssetToSource — filesystem", () => {
     const config: SourceConfigEntry = { type: "filesystem", writable: true };
 
     const result = await writeAssetToSource(source, config, { type: "memory", name: "a" }, "no-newline");
-    expect(fs.readFileSync(result.path, "utf8")).toBe("no-newline\n");
+    const written = parseFrontmatter(fs.readFileSync(result.path, "utf8"));
+    expect(written.data.type).toBe("memory");
+    expect(written.content).toBe("no-newline\n");
   });
 
   test("preserves an existing trailing newline (no double newline)", async () => {
@@ -168,7 +173,9 @@ describe("writeAssetToSource — filesystem", () => {
     const config: SourceConfigEntry = { type: "filesystem", writable: true };
 
     const result = await writeAssetToSource(source, config, { type: "memory", name: "a" }, "with-newline\n");
-    expect(fs.readFileSync(result.path, "utf8")).toBe("with-newline\n");
+    const written = parseFrontmatter(fs.readFileSync(result.path, "utf8"));
+    expect(written.data.type).toBe("memory");
+    expect(written.content).toBe("with-newline\n");
   });
 
   test("refuses to write when source is not writable", async () => {

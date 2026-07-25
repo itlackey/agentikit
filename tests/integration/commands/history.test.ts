@@ -126,7 +126,7 @@ describe("akmHistory programmatic API", () => {
     try {
       ensureUsageEventsSchema(db);
       await expect(akmHistory({ db, ref: "" })).rejects.toThrow();
-      await expect(akmHistory({ db, ref: "not-a-ref" })).rejects.toThrow();
+      await expect(akmHistory({ db, ref: "bundle//../outside" })).rejects.toThrow();
     } finally {
       closeDatabase(db);
     }
@@ -281,11 +281,13 @@ describe("akm history CLI", () => {
   });
 
   test("rejects an invalid ref via the JSON error envelope", async () => {
-    const result = await runCli(["history", "--ref", "not-a-valid-ref", "--format=json"]);
-    expect(result.status).not.toBe(0);
+    sandboxStash();
+    const result = await runCli(["history", "--ref", "bundle//../outside", "--format=json"]);
+    expect(result.status).toBe(2);
     const parsed = parseJsonOutput(result);
     expect(parsed.ok).toBe(false);
     expect(typeof parsed.error).toBe("string");
+    expect(parsed.code).toBe("MISSING_REQUIRED_ARGUMENT");
   });
 });
 

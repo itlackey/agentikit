@@ -17,7 +17,7 @@
 import { getParsedInvocation } from "../../cli/invocation";
 import { parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineJsonCommand, output, parseAllFlagValues } from "../../cli/shared";
-import { parseRefInput } from "../../core/asset/resolve-ref";
+import { parseBundleRef } from "../../core/asset/asset-ref";
 import { parseMetaRef } from "../../core/asset/stash-meta";
 import { UsageError } from "../../core/errors";
 import { resolveUsageEventSource } from "../../indexer/usage/usage-events";
@@ -186,7 +186,7 @@ export const showCommand = defineJsonCommand({
     // `[origin//]meta[:name]` targets the stash `.meta/` convention, which is
     // not a typed asset ref — skip ref validation and let akmShowUnified
     // direct-read it. (the ref parser would reject the non-type `meta`.)
-    if (!parseMetaRef(args.ref)) parseRefInput(args.ref);
+    if (!parseMetaRef(args.ref)) parseBundleRef(args.ref);
     // The knowledge-view positional syntax (`akm show knowledge/foo section "Auth"`)
     // is rewritten to `--akmView` / `--akmHeading` / `--akmStart` / `--akmEnd`
     // by `normalizeShowArgv` before citty parses argv. We read those values

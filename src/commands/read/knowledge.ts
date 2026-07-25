@@ -388,8 +388,9 @@ export function resolveXrefsForWrite(rawXrefs: string[], target?: string): strin
  * scanner and re-serializing that lossy result would destroy list/nested
  * values (`tags: [a, b]` → `tags: ""`). Rather than corrupt data the caller
  * asked to preserve, a block that is not a parseable YAML mapping throws
- * {@link UsageError} (exit 2, before any write) — fix the frontmatter or run
- * the command without `--xref`, which keeps the file verbatim. Known
+ * {@link UsageError} (exit 2, before any write). The AKM write boundary also
+ * rejects malformed frontmatter without `--xref` because it cannot safely add
+ * required type metadata. Known
  * cosmetic limitation: YAML comments and anchors in a VALID block do not
  * survive the round-trip (values are preserved).
  */
@@ -401,7 +402,7 @@ export function mergeXrefsIntoContent(content: string, xrefs: string[]): string 
       throw new UsageError(
         "--xref cannot merge into this document: its frontmatter is not a parseable YAML mapping, and rewriting it would drop the values the parser could not read.",
         "INVALID_FLAG_VALUE",
-        "Fix the document's frontmatter (e.g. an unterminated quote) and retry, or run the command without --xref to keep the file verbatim.",
+        "Fix the document's frontmatter (e.g. an unterminated quote) and retry.",
       );
     }
   }

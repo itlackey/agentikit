@@ -213,7 +213,32 @@ function readStashDirFromConfig(): string | undefined {
       typeof bundles[defaultBundle].path === "string" &&
       bundles[defaultBundle].path.trim()
     ) {
-      return bundles[defaultBundle].path.trim();
+      const bundle = bundles[defaultBundle];
+      const bundlePath = bundle.path.trim();
+      if (bundle.components !== undefined) {
+        if (typeof bundle.components !== "object" || bundle.components === null) {
+          throw new ConfigError("A bundle components map must contain exactly one component.", "INVALID_CONFIG_FILE");
+        }
+        const components = Object.values(bundle.components);
+        if (components.length !== 1) {
+          throw new ConfigError("A bundle components map must contain exactly one component.", "INVALID_CONFIG_FILE");
+        }
+        const component = components[0];
+        if (typeof component === "object" && component !== null) {
+          const componentConfig = component as Record<string, unknown>;
+          if (typeof componentConfig.root !== "string") return bundlePath;
+          const bundleRoot = path.resolve(bundlePath);
+          const componentRoot = path.resolve(bundleRoot, componentConfig.root);
+          if (!isWithin(componentRoot, bundleRoot)) {
+            throw new ConfigError(
+              `Component root "${componentConfig.root}" escapes bundle "${defaultBundle}".`,
+              "INVALID_CONFIG_FILE",
+            );
+          }
+          return componentRoot;
+        }
+      }
+      return bundlePath;
     }
     // Retired pre-cutover shape with no usable bundles path: refuse with the
     // migrate hint (matches the schema's hard-reject, config-schema.ts) instead

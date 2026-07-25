@@ -28,7 +28,7 @@ import type { DbIndexedEntry } from "./index-entry-types";
  * rows.
  */
 export const ENTRY_COLUMNS =
-  "id, entry_key, dir_path, file_path, stash_dir, entry_json, search_text, item_ref, concept_id, bundle_id";
+  "id, entry_key, dir_path, file_path, stash_dir, entry_json, search_text, item_ref, concept_id, bundle_id, adapter_id";
 
 /** A raw row selected via {@link ENTRY_COLUMNS}. */
 export type EntryRow = {
@@ -45,6 +45,8 @@ export type EntryRow = {
   concept_id: string | null;
   /** Durable bundle id (`item_ref` head); NULL on pre-flip / write-back rows. */
   bundle_id: string | null;
+  /** Owning adapter; NULL on pre-adapter rows. */
+  adapter_id: string | null;
 };
 
 /**
@@ -71,5 +73,6 @@ export function rowToIndexedEntry(row: EntryRow, context: string): DbIndexedEntr
     itemRef: row.item_ref ?? undefined,
     conceptId: row.concept_id ?? undefined,
     bundleId: row.bundle_id ?? undefined,
+    adapterId: row.adapter_id ?? undefined,
   };
 }

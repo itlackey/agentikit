@@ -56,6 +56,7 @@ export interface DbIndexedEntry {
    */
   conceptId?: string;
   bundleId?: string;
+  adapterId?: string;
 }
 
 /** One FTS5 search hit joined back to its `entries` row. */
@@ -76,6 +77,7 @@ export interface DbSearchResult {
   /** Indexed provenance used when `item_ref` is temporarily NULL. */
   bundleId?: string | null;
   conceptId?: string | null;
+  adapterId?: string | null;
 }
 
 /** One nearest-neighbour hit from the vector index (id + L2 distance). */

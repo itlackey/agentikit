@@ -1,4 +1,5 @@
 ---
+type: workflow
 description: Describe what this workflow accomplishes
 tags:
   - example

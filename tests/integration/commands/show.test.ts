@@ -102,7 +102,7 @@ describe("akmShow installed ref", () => {
 
     // Use an origin that is NOT installed so resolveSourcesForOrigin returns
     // empty, triggering the add-guidance error path.
-    await expect(akmShow({ ref: "npm:@other/missing-pkg//scripts/missing.sh" })).rejects.toThrow(/akm add/);
+    await expect(akmShow({ ref: "other-pkg//scripts/missing.sh" })).rejects.toThrow(/akm add/);
   });
 
   test("resolves installed-stash style nested agent refs", async () => {
@@ -161,6 +161,22 @@ describe("akmShow installed ref", () => {
     expect(result.origin).toBe("ai-tools");
     expect(result.path).toContain(path.join("tools", "skills", "svelte-code-writer", "SKILL.md"));
     expect(result.content).toContain("# Svelte writer");
+  });
+});
+
+describe("akmShow sensitive fragments", () => {
+  test("rejects secret fragments before reading the secret body", async () => {
+    saveConfig({ semanticSearchMode: "off" });
+    writeFile(path.join(stashDir, "secrets", "leak.md"), "# token\nDO_NOT_PRINT\n");
+
+    await expect(akmShow({ ref: "secrets/leak#token" })).rejects.toThrow(/Fragments are not supported/);
+  });
+
+  test("rejects env fragments before reading values or comments", async () => {
+    saveConfig({ semanticSearchMode: "off" });
+    writeFile(path.join(stashDir, "env", "prod.env"), "# token\nAPI_KEY=DO_NOT_PRINT\n");
+
+    await expect(akmShow({ ref: "env/prod#token" })).rejects.toThrow(/Fragments are not supported/);
   });
 });
 

@@ -199,7 +199,7 @@ describe("output baseline", () => {
     const output = await runCli(stashDir, ["show", "commands/release.md", "--format=json", "--shape=summary"]);
     const json = JSON.parse(output) as Record<string, unknown>;
     expect(json.type).toBe("command");
-    expect(json.name).toBe("release.md");
+    expect(json.name).toBe("release");
     // summary omits the heavyweight template/content body.
     expect(json).not.toHaveProperty("template");
     expect(json).not.toHaveProperty("content");

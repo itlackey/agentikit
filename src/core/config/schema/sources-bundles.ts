@@ -163,6 +163,22 @@ export const BundleConfigEntrySchema = z
         message: "writable: true is only supported on path and git bundle sources",
       });
     }
+    const componentEntries = entry.components ? Object.entries(entry.components) : [];
+    if (entry.components !== undefined && componentEntries.length !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["components"],
+        message: "a bundle components map must contain exactly one component",
+      });
+    }
+    const componentEntry = componentEntries[0];
+    if (componentEntry?.[1].writable === true && (entry.website !== undefined || entry.npm !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["components", componentEntry[0], "writable"],
+        message: "writable: true is only supported on path and git bundle sources",
+      });
+    }
   });
 
 /**

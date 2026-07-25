@@ -1166,7 +1166,7 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     await expect(akmProposalRevert({ stashDir: stash, id: proposalA.id, config })).rejects.toThrow(
       /changed|hash|content/i,
     );
-    expect(fs.readFileSync(assetPath, "utf8")).toBe(bContent);
+    expect(fs.readFileSync(assetPath, "utf8")).toBe(proposalB.payload.content);
     expect(getProposal(stash, proposalA.id).status).toBe("accepted");
   });
 
@@ -1252,8 +1252,8 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     await expect(akmProposalRevert({ stashDir: stash, id: created.id, config, target: "other" })).rejects.toThrow(
       /ambiguous|multiple|more than one/i,
     );
-    expect(fs.readFileSync(assetPath, "utf8")).toBe(VALID_LESSON);
-    expect(fs.readFileSync(otherPath, "utf8")).toBe(VALID_LESSON);
+    expect(fs.readFileSync(assetPath, "utf8")).toBe(created.payload.content);
+    expect(fs.readFileSync(otherPath, "utf8")).toBe(created.payload.content);
     expect(getProposal(stash, created.id).status).toBe("accepted");
   });
 
@@ -1481,7 +1481,7 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     expect(created.changes).toHaveLength(1);
     const change = created.changes[0];
     expect(change?.op).toBe("create");
-    expect(change?.after).toBe(VALID_LESSON);
+    expect(change?.after).toBe(created.payload.content);
     // Mint-time before-state is summarised by beforeHash only — the change
     // body's `before` is a transaction-time capture and must stay unset.
     expect(change?.before).toBeUndefined();
@@ -1568,7 +1568,7 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     state.close();
 
     const reread = getProposal(stash, created.id);
-    expect(reread.changes).toEqual([{ path: "", after: VALID_LESSON, op: "update" }]);
+    expect(reread.changes).toEqual([{ path: "", after: created.payload.content, op: "update" }]);
     expect(reread.beforeHash).toBeUndefined();
   });
 });

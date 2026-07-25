@@ -28,6 +28,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { lockContentRootFor } from "../integrations/lockfile";
 import { getCachePaths, listGitChangedPaths, parseGitRepoUrl, runGit, saveGitStash } from "../sources/providers/git";
+import { detectAdapterId } from "./adapter/detect-adapter";
+import { ensureAkmMarkdownType } from "./asset/akm-markdown";
 import { assetPathForName, stashDirFor } from "./asset/asset-placement";
 import type { AssetRef } from "./asset/resolve-ref";
 import { displayRef } from "./asset/resolve-ref";
@@ -64,6 +66,8 @@ export interface WriteTargetSource {
   readonly path: string;
   /** Git repository root used only for sync/commit boundaries. */
   readonly repoPath?: string;
+  /** Bundle adapter that owns placement and authoring semantics. */
+  readonly adapterId?: string;
 }
 
 /**
@@ -188,10 +192,12 @@ export async function writeAssetToSource(
 ): Promise<{ path: string; ref: string }> {
   ensureWritable(source, config);
   assertSupportedKind(source);
+  assertAkmAssetWrite(source);
 
   const filePath = resolveAssetFilePath(source, ref);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const normalized = content.endsWith("\n") ? content : `${content}\n`;
+  const authored = filePath.toLowerCase().endsWith(".md") ? ensureAkmMarkdownType(content, ref.type) : content;
+  const normalized = authored.endsWith("\n") ? authored : `${authored}\n`;
   fs.writeFileSync(filePath, normalized, "utf8");
   recordWriteTargetPath(source, filePath);
 
@@ -222,6 +228,7 @@ export async function deleteAssetFromSource(
 ): Promise<{ path: string; ref: string }> {
   ensureWritable(source, config);
   assertSupportedKind(source);
+  assertAkmAssetWrite(source);
 
   const filePath = resolveAssetFilePath(source, ref);
   if (!fs.existsSync(filePath)) {
@@ -402,7 +409,7 @@ export function resolveWritableTargets(akmConfig: AkmConfig): ResolvedWriteTarge
     try {
       const stashDir = resolveStashDir({ readOnly: true });
       byRoot.set(path.resolve(stashDir), {
-        source: { kind: "filesystem", name: "stash", path: stashDir },
+        source: { kind: "filesystem", name: "stash", path: stashDir, adapterId: "akm" },
         config: { type: "filesystem", path: stashDir, name: "stash", writable: true },
       });
     } catch {
@@ -510,7 +517,7 @@ export function resolveWriteTarget(
       }
     }
     return {
-      source: { kind: "filesystem", name: "stash", path: stashDir },
+      source: { kind: "filesystem", name: "stash", path: stashDir, adapterId: "akm" },
       config: { type: "filesystem", path: stashDir, name: "stash", writable: true },
     };
   } catch {
@@ -540,6 +547,10 @@ function ensureWritable(source: WriteTargetSource, config: SourceConfigEntry): v
 }
 
 function resolveAssetFilePath(source: WriteTargetSource, ref: AssetRef): string {
+  const basename = path.posix.basename(ref.name.replaceAll("\\", "/")).replace(/\.md$/i, "").toLowerCase();
+  if (basename === "index" || basename === "log") {
+    throw new UsageError(`Reserved concept name "${basename}" cannot be written.`, "INVALID_FLAG_VALUE");
+  }
   const typeDir = stashDirFor(ref.type);
   if (!typeDir) {
     throw new UsageError(`Unknown asset type "${ref.type}". Cannot resolve a write path.`, "INVALID_FLAG_VALUE");
@@ -553,6 +564,14 @@ function resolveAssetFilePath(source: WriteTargetSource, ref: AssetRef): string 
     );
   }
   return assetPath;
+}
+
+export function assertAkmAssetWrite(source: WriteTargetSource): void {
+  if (!source.adapterId || source.adapterId === "akm") return;
+  throw new UsageError(
+    `Bundle "${source.name}" uses adapter "${source.adapterId}", which does not support AKM asset writes.`,
+    "INVALID_FLAG_VALUE",
+  );
 }
 
 /**
@@ -628,10 +647,20 @@ function adaptConfiguredSource(runtime: ConfiguredSource): ResolvedWriteTarget {
     );
   }
 
+  const contentRoot = kind === "git" ? (lockRoot ?? resolveGitContentRoot(repoPath)) : repoPath;
+  const componentRoot = path.resolve(contentRoot, runtime.componentRoot ?? ".");
+  if (!isWithin(componentRoot, contentRoot)) {
+    throw new ConfigError(
+      `Component root "${runtime.componentRoot}" escapes bundle "${runtime.name}".`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const adapterId = runtime.adapterId ?? detectAdapterId(componentRoot);
+
   const config: SourceConfigEntry = {
     type: runtime.type,
     name: runtime.name,
-    path: repoPath,
+    path: componentRoot,
     ...(runtime.writable !== undefined ? { writable: runtime.writable } : {}),
     ...(runtime.options ? { options: runtime.options } : {}),
   };
@@ -641,7 +670,8 @@ function adaptConfiguredSource(runtime: ConfiguredSource): ResolvedWriteTarget {
     source: {
       kind,
       name: runtime.name,
-      path: kind === "git" ? (lockRoot ?? resolveGitContentRoot(repoPath)) : repoPath,
+      path: componentRoot,
+      adapterId,
       ...(kind === "git" ? { repoPath } : {}),
     },
     config,

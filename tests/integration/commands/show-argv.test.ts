@@ -110,7 +110,7 @@ describe("entrypoint global --shape=summary ordering", () => {
     expect(result.stderr).toBe("");
     const json = JSON.parse(result.stdout) as Record<string, unknown>;
     expect(json.type).toBe("command");
-    expect(json.name).toBe("release.md");
+    expect(json.name).toBe("release");
     expect(json.description).toBe("Release");
     expect(json).not.toHaveProperty("template");
   });

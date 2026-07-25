@@ -473,6 +473,7 @@ export function getIndexPassConfig(config: IndexConfig | undefined, passName: st
 
 // Re-export source runtime helpers — implementation lives in config-sources.ts.
 export {
+  bundleComponentConfig,
   bundleEntryToSourceEntry,
   bundlesToSourceEntries,
   installedSourceDescriptor,

@@ -24,8 +24,8 @@ registration call required. Eleven built-ins, in probe order:
 | `akm-workflow` | Workflow-dir component | workflow programs |
 | `akm-task` | Task-dir component | scheduled task definitions |
 | `llm-wiki` | LLM Wiki bundle | a wiki root (`schema.md` + `pages/`) and its pages, raw, xrefs, citations |
-| `okf` | Open Knowledge Format bundle | OKF concept documents |
 | `akm` | The classic AKM stash layout | scripts, skills, commands, agents, knowledge, workflows, memories, lessons, env, secrets, facts, tasks, sessions |
+| `okf` | Open Knowledge Format bundle | OKF concept documents of any open type |
 | `generic-files` | Catch-all file mount | explicit configuration only — never auto-probed |
 
 `looksLikeRoot` probes run most-specific-first in the list order above; the
@@ -34,11 +34,16 @@ probe falls back to `akm` (see `FALLBACK_ADAPTER_ID` in
 `src/indexer/installations.ts`).
 `generic-files` never participates in probing.
 
+Configured adapter ownership wins over probing. `akm add` records the detected
+adapter so later indexing does not reinterpret a bundle. The broad OKF probe
+also recognizes index-less typed Markdown, but strong AKM layout evidence runs
+first because AKM Markdown is an OKF-compatible superset.
+
 ## Item types
 
-The `akm` adapter classifies each file into one of the open type set. Types are
-open strings (validated against `KNOWN_TYPES` for AKM-owned presentation/ranking
-tables, but the data space accepts unknown types with a warn-once fallback):
+`type` is an open descriptive string. The core accepts every non-empty value;
+the owning adapter decides whether a value receives specialized behavior. The
+`akm` adapter emits its defined native set:
 
 - `script`
 - `skill`
@@ -67,8 +72,10 @@ their reserved-name rules.
 ## Adapter-owned filtering (AKM sensitive/infra abstention)
 
 Each adapter decides which walked files it claims and which it abstains on — the
-core walk applies only universal hygiene (`.git`, dot-directories, `node_modules`,
-…). The `akm` adapter's `recognize` abstains (returns `null`) on its own stash's
+core always excludes VCS internals and symlink escapes. An OKF walk includes
+ordinary dot directories and `bin/` because those paths can identify conformant
+concepts; AKM keeps its existing cache/dot-directory hygiene. The `akm`
+adapter's `recognize` abstains (returns `null`) on its own stash's
 non-content files, using **path/stat checks only** so the bytes of sensitive files
 are never read to make the decision:
 

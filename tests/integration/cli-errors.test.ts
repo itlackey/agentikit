@@ -73,16 +73,13 @@ describe("CLI error handling", () => {
     expect(stderr).toContain("hint");
   });
 
-  test("show with invalid ref prints JSON error", async () => {
-    const { stderr, status } = await runCli("show", "invalid-ref-no-colon");
-    expect(status).not.toBe(0);
+  test("show with malformed ref prints JSON usage error", async () => {
+    const { stderr, status } = await runCli("show", "../invalid");
+    expect(status).toBe(2);
     const parsed = JSON.parse(stderr.trim());
     expect(parsed.ok).toBe(false);
     expect(typeof parsed.error).toBe("string");
-    // Chunk-5 flip F1b: a colon-less token is a valid short conceptId in the
-    // 0.9.0 grammar, so it fails as NOT-FOUND (leading segment names no asset
-    // type) rather than an arg-parse error — the "same UX as an unknown type".
-    expect(parsed.code).toBe("ASSET_NOT_FOUND");
+    expect(parsed.code).toBe("MISSING_REQUIRED_ARGUMENT");
   });
 
   test("search --source invalid prints hint about source", async () => {

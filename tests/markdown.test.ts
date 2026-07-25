@@ -4,6 +4,7 @@ import {
   extractLineRange,
   extractSection,
   formatToc,
+  markdownFragmentSlugs,
   parseMarkdownToc,
 } from "../src/core/asset/markdown";
 
@@ -104,6 +105,19 @@ test("extractSection handles last section (no following heading)", () => {
   const result = extractSection(SAMPLE_DOC, "Endpoints");
   expect(result).not.toBeNull();
   expect(result?.content).toContain("List of endpoints");
+});
+
+test("extractSection prefers an exact heading when normalized slugs collide", () => {
+  const content = "# C++\n\nPlus.\n\n# C#\n\nSharp.\n";
+  expect(extractSection(content, "C#")?.content).toContain("Sharp.");
+  expect(extractSection(content, "C#")?.content).not.toContain("Plus.");
+});
+
+test("markdown fragments suffix duplicate and colliding heading slugs", () => {
+  const content = "# C++\n\nPlus.\n\n# C#\n\nSharp.\n\n# C++\n\nPlus again.\n";
+  expect(markdownFragmentSlugs(content)).toEqual(["c", "c-1", "c-2"]);
+  expect(extractSection(content, "c-1")?.content).toContain("Sharp.");
+  expect(extractSection(content, "c-2")?.content).toContain("Plus again.");
 });
 
 test("extractLineRange returns correct lines (1-based inclusive)", () => {

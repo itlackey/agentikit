@@ -54,16 +54,14 @@
  * the loose `akm` stash-shape probe.
  *
  * When NO adapter's probe fires (an empty or not-yet-materialized root), the
- * fallback is **`akm`** (see {@link FALLBACK_ADAPTER_ID}) — a RECORDED DEVIATION
- * from spec §1.2(3), which specifies an `okf` fallback. See that constant's
- * comment for the rationale (workspace-root discipline in the pre-config-adapter
- * transitional model).
+ * fallback is **`akm`** (see {@link FALLBACK_ADAPTER_ID}), preserving workspace
+ * root behavior. Explicit configured ownership always wins over probing.
  */
 
 import crypto from "node:crypto";
 import path from "node:path";
 import { isSourceWriteActivated } from "../core/activation-policy";
-import { getAdapters } from "../core/adapter/registry";
+import { detectAdapterId } from "../core/adapter/detect-adapter";
 import type { BundleInstallation } from "../core/adapter/types";
 import { stashDirFor } from "../core/asset/asset-placement";
 import { isBundleSlug } from "../core/asset/asset-ref";
@@ -73,24 +71,16 @@ import type { SearchSource } from "./search/search-source";
 /**
  * The no-probe-match fallback adapter id.
  *
- * RECORDED DEVIATION from spec §1.2(3) (which specifies an `okf` fallback),
- * kept as the status-quo-preserving choice pending 0.9.1:
+ * The status-quo-preserving default from spec §1.2(3):
  *
  *  - Behavior discipline (spec line 267): the AKM workspace root's own indexing
  *    MUST stay classified `akm`. In this transitional model there is no
- *    config-driven adapter plumbing yet (§1.4) — `deriveInstallations` derives
- *    the adapter SOLELY from this probe, so the workspace-root classification
- *    depends on either `akm.looksLikeRoot` firing (type dirs / `.stash` present)
- *    OR this fallback. A genuinely empty / not-yet-materialized workspace root
- *    (no type dirs) fires no probe; an `okf` fallback would misclassify it as
- *    `okf`, violating that discipline. `akm` keeps it correct.
+ *    depends on either explicit adapter configuration, `akm.looksLikeRoot`
+ *    firing (type dirs / `.stash` present), or this fallback. A genuinely empty
+ *    root fires no probe; `akm` keeps the implicit workspace root correct.
  *  - Status quo: before the registry was wired, `getAdapters()` was empty in
  *    production so EVERY source fell back here — this preserves that exact
  *    fallback value while the probe now genuinely classifies the non-akm shapes.
- *
- * 0.9.1 should flip this to `okf` once the config-default adapter for the
- * workspace root is plumbed from config (§1.4 / spec line 267), which frees this
- * fallback to be the spec §1.2(3) `okf`.
  */
 const FALLBACK_ADAPTER_ID = "akm";
 
@@ -143,17 +133,7 @@ export function deriveBundleId(registryId: string | undefined, sourcePath: strin
  * Resolve the adapter id for a component root via the ordered `looksLikeRoot`
  * probe (spec §1.2), first match wins; falls back to `akm` when no probe fires.
  */
-function detectAdapterId(root: string): string {
-  for (const adapter of getAdapters()) {
-    try {
-      if (adapter.looksLikeRoot?.(root) === true) return adapter.id;
-    } catch {
-      // A probe that throws (unreadable root, race) does not claim the root —
-      // fall through to the next adapter, ultimately to the akm fallback.
-    }
-  }
-  return FALLBACK_ADAPTER_ID;
-}
+export { detectAdapterId } from "../core/adapter/detect-adapter";
 
 /**
  * Derive the durable `BundleInstallation[]` from the transitional
@@ -171,7 +151,7 @@ export function deriveInstallations(sources: SearchSource[]): BundleInstallation
     const id = deriveBundleId(source.registryId, source.path, usedIds);
 
     const writable = isSourceWriteActivated(source);
-    const adapter = detectAdapterId(source.path);
+    const adapter = source.adapterId ?? detectAdapterId(source.path, FALLBACK_ADAPTER_ID);
 
     installations.push({
       id,

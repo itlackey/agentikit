@@ -22,6 +22,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { parseFrontmatter } from "../../../src/core/asset/frontmatter";
 import { resetGraphBoostCache } from "../../../src/indexer/graph/graph-boost";
 import { clearEmbeddingCache, resetLocalEmbedder } from "../../../src/llm/embedder";
 import { runCliCapture } from "../../_helpers/cli";
@@ -243,7 +244,9 @@ describe("import --target", () => {
       const expectedPath = path.join(stashDir, "knowledge", "docs", "guide.md");
       expect(json.path).toBe(expectedPath);
       const body = fs.readFileSync(expectedPath, "utf8");
-      expect(body).toContain('sourceUrl: "http://127.0.0.1:');
+      const parsedBody = parseFrontmatter(body);
+      expect(parsedBody.data.type).toBe("knowledge");
+      expect(parsedBody.data.sourceUrl).toBe(url);
       expect(body).toContain("# Guide Title");
       expect(body).toContain("Hello");
       expect(body).toContain("world");

@@ -29,8 +29,8 @@ const PROBE_ORDER = [
   "akm-workflow",
   "akm-task",
   "llm-wiki",
-  "okf",
   "akm",
+  "okf",
   "generic-files",
 ];
 

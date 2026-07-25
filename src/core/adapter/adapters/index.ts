@@ -52,10 +52,10 @@ export { websiteSnapshotAdapter } from "./website-snapshot-adapter";
  *
  * Probe-precedence rationale (grounds "cannot shadow the existing three"):
  *
- *  - The three loosest probes — `llm-wiki` (schema.md + pages/), `okf` (root
- *    index doc), `akm` (a placement stash subdir / `.stash`) — stay LAST and in
- *    their established order (`llm-wiki` BEFORE `okf`: a wiki root also carries a
- *    root index doc, so the more-specific wiki probe must win the overlap).
+ *  - The three loosest probes — `llm-wiki`, `akm`, and `okf` — stay LAST.
+ *    Native AKM evidence wins before OKF because AKM Markdown is an OKF
+ *    superset; the AKM probe is correspondingly strict enough not to claim an
+ *    OKF bundle merely because it contains one familiar directory name.
  *  - `akm.looksLikeRoot` fires on ANY root carrying a stash-subdir-named
  *    directory — which includes a `.claude`/`.opencode` tool dir (`commands/`,
  *    `agents/`, `skills/`) and a dotenv bundle (`env/`, `secrets/`). So
@@ -81,10 +81,10 @@ export const BUILTIN_ADAPTERS: readonly BundleAdapter[] = Object.freeze([
   // Native akm sub-formats (disjoint content-shape probes).
   akmWorkflowAdapter,
   akmTaskAdapter,
-  // The three established loose probes, in their established order.
+  // Loose probes: specific native layouts before the portable OKF baseline.
   llmWikiAdapter,
-  okfAdapter,
   akmAdapter,
+  okfAdapter,
   // Explicit-config fallback (never auto-selected) — last.
   genericFilesAdapter,
 ]);

@@ -48,6 +48,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { ensureAkmMarkdownType } from "../../core/asset/akm-markdown";
 import { assetPathForName, placementTypes, stashDirFor } from "../../core/asset/asset-placement";
 import { isBundleSlug } from "../../core/asset/asset-ref";
 import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
@@ -78,6 +79,7 @@ import {
 import { withImmediateTransaction, withStateDb } from "../../core/state-db";
 import { warn } from "../../core/warn";
 import {
+  assertAkmAssetWrite,
   commitWriteTargetBoundary,
   type ResolvedWriteTarget,
   resolveWritableTargets,
@@ -572,10 +574,13 @@ export function createProposal(
     // Resolution failure degrades to a best-effort create — never blocks the mint.
     targetRelPath = path.join(stashDirFor(parsedRef.type) as string, parsedRef.name);
   }
+  const proposalContent = targetRelPath.toLowerCase().endsWith(".md")
+    ? ensureAkmMarkdownType(input.payload.content, parsedRef.type)
+    : input.payload.content;
   const mintedChanges: FileChange[] = [
     {
       path: targetRelPath,
-      after: input.payload.content,
+      after: proposalContent,
       op: mintBeforeContent !== undefined ? "update" : "create",
     },
   ];
@@ -589,7 +594,7 @@ export function createProposal(
       source: input.source,
       createdAt: "",
       updatedAt: "",
-      payload: input.payload,
+      payload: { ...input.payload, content: proposalContent },
       changes: mintedChanges,
     });
     if (!report.ok) {
@@ -638,7 +643,7 @@ export function createProposal(
         createdAt: created,
         updatedAt: created,
         payload: {
-          content: input.payload.content,
+          content: proposalContent,
           ...(input.payload.frontmatter !== undefined ? { frontmatter: input.payload.frontmatter } : {}),
         },
         changes: mintedChanges,
@@ -1544,6 +1549,7 @@ function prepareProposalTransaction(
   },
   ctx?: ProposalsContext,
 ): ProposalTxn {
+  if (options.operation === "accept") assertAkmAssetWrite(target.source);
   const assetPath = resolveAssetFilePathSafe(target.source, ref);
   if (!assetPath) throw new Error(`Cannot resolve proposal target ${proposal.ref}.`);
   fs.mkdirSync(path.dirname(assetPath), { recursive: true });

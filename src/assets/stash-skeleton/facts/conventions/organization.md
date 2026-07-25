@@ -1,4 +1,5 @@
 ---
+type: fact
 category: convention
 description: Where to place an asset in the stash — the one path partition axis, chosen by asset type, so refs stay stable and slug search (akm search "<slug>" --type <type>) co-locates related assets.
 when_to_use: Surfaced to authoring agents when they create or move any asset and must decide its subdirectory/name.

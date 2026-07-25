@@ -20,8 +20,17 @@
 import fs from "node:fs";
 import { type CittyArgsDefinitionForScan, findCittyTopLevelCommandIndex } from "../../cli/parse-args";
 import { recognizeMatch } from "../../core/adapter/recognize-match";
+import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
-import { displayRef, parseQualifiedRefInput } from "../../core/asset/resolve-ref";
+import {
+  extractFrontmatterOnly,
+  extractLineRange,
+  extractSection,
+  formatToc,
+  markdownFragmentSlugs,
+  parseMarkdownToc,
+} from "../../core/asset/markdown";
+import { displayRef, typeNameFromConceptId } from "../../core/asset/resolve-ref";
 import { META_DIR, type MetaRef, parseMetaRef, resolveMetaFilePath } from "../../core/asset/stash-meta";
 import { asNonEmptyString } from "../../core/common";
 import { getIndexPassConfig, loadConfig } from "../../core/config/config";
@@ -31,7 +40,7 @@ import { withStateDbTelemetry } from "../../core/state-db";
 import { hasGraphData } from "../../indexer/db/graph-db";
 import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
 import { extractGraphForSingleFile } from "../../indexer/graph/graph-extraction";
-import { lookup } from "../../indexer/indexer";
+import { lookupBundleRef } from "../../indexer/indexer";
 import type { StashEntryScope } from "../../indexer/passes/metadata";
 import { ensurePrimaryIndexForRead, resolveReadSources } from "../../indexer/read-preflight";
 import { usageEventAttributionMetadata } from "../../indexer/search/search-attribution";
@@ -113,8 +122,9 @@ export async function akmShowUnified(input: {
   }
   // Count prior shows of this ref before logging the current one.
   if (!input.skipLogging) {
-    const priorShowCount = recentShowCount(ref);
-    logShowEvent(ref, input.eventSource, result.path, result.origin);
+    const consumedRef = result.ref ?? makeBundleRef(undefined, parseBundleRef(ref).conceptId);
+    const priorShowCount = recentShowCount(consumedRef);
+    logShowEvent(consumedRef, result.type, result.name, input.eventSource, result.path);
     if (priorShowCount >= 2) {
       // Agent has shown this same asset 3+ times — inject a loop-break hint.
       (result as unknown as Record<string, unknown>).showLoopWarning = priorShowCount + 1;
@@ -223,17 +233,15 @@ function recentShowCount(ref: string): number {
 
 function logShowEvent(
   ref: string,
+  type: string,
+  name: string,
   eventSource: UsageEventSource = "user",
   filePath?: string,
-  origin?: string | null,
 ): void {
   // Emit a structured event to events.jsonl so workflow-trace consumers
   // detect akm show invocations without relying on stdout scraping.
-  const parsed = parseQualifiedRefInput(ref);
-  // New-grammar display ref: also the lookup key below, which `findEntryIdByRef`
-  // resolves against `item_ref`.
-  const eventRef = displayRef({ type: parsed.type, name: parsed.name, bundleId: parsed.origin ?? origin ?? undefined });
-  appendEvent({ eventType: "show", ref: eventRef, metadata: { type: parsed.type, name: parsed.name } });
+  const eventRef = makeBundleRef(parseBundleRef(ref).bundle, parseBundleRef(ref).conceptId);
+  appendEvent({ eventType: "show", ref: eventRef, metadata: { type, name } });
 
   // Detect if this show is a selection from a recent search result.
   try {
@@ -301,40 +309,47 @@ export async function showLocal(input: {
   detail?: ShowDetailLevel;
   stashDir?: string;
 }): Promise<ShowResponse> {
-  const parsed = parseQualifiedRefInput(input.ref);
-  const displayType = parsed.type;
+  const parsed = parseBundleRef(input.ref);
+  const legacy = typeNameFromConceptId(parsed.conceptId);
   const config = loadConfig();
   const allSources = resolveSourceEntries(input.stashDir);
-  const searchSources = resolveSourcesForOrigin(parsed.origin, allSources);
+  const searchSources = resolveSourcesForOrigin(parsed.bundle, allSources);
 
   const allSourceDirs = searchSources.map((s) => s.path);
 
-  let indexedEntry: Awaited<ReturnType<typeof lookup>> = null;
+  let indexedEntry: Awaited<ReturnType<typeof lookupBundleRef>> = null;
   try {
-    indexedEntry = await lookup(parsed);
+    indexedEntry = await lookupBundleRef(parsed);
   } catch (err) {
     rethrowIfTestIsolationError(err);
     indexedEntry = null;
   }
   const resolvedAssetPath =
     indexedEntry?.filePath ??
-    (await resolveAssetPath(parsed, {
-      stashDir: input.stashDir,
-      mode: "disk-only",
-    }));
+    (legacy
+      ? await resolveAssetPath(
+          { type: legacy.type, name: legacy.name, origin: parsed.bundle },
+          {
+            stashDir: input.stashDir,
+            mode: "disk-only",
+          },
+        )
+      : null);
   const assetPath = resolvedAssetPath ?? undefined;
+  const displayType = indexedEntry?.type ?? legacy?.type ?? "asset";
+  const displayName = indexedEntry?.name ?? legacy?.name ?? parsed.conceptId;
 
-  if (!assetPath && parsed.origin && searchSources.length === 0) {
-    const installCmd = `akm add ${parsed.origin}`;
+  if (!assetPath && parsed.bundle && searchSources.length === 0) {
+    const installCmd = `akm add ${parsed.bundle}`;
     throw new NotFoundError(
-      `Stash asset not found for ref: ${displayType}:${parsed.name}. ` +
-        `Stash "${parsed.origin}" is not installed. Run: ${installCmd}`,
+      `Stash asset not found for ref: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
+        `Stash "${parsed.bundle}" is not installed. Run: ${installCmd}`,
     );
   }
 
   if (!assetPath) {
     throw new NotFoundError(
-      `Stash asset not found for ref: ${displayType}:${parsed.name}. ` +
+      `Stash asset not found for ref: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
         "Check the name with `akm search` or verify the asset exists in your stash.",
     );
   }
@@ -344,32 +359,46 @@ export async function showLocal(input: {
 
   if (!sourceStashDir) {
     throw new UsageError(
-      `Could not determine stash root for asset: ${displayType}:${parsed.name}. ` +
+      `Could not determine stash root for asset: ${displayType}:${displayName}. ` +
         "Run `akm init` to create the stash directory, or check `akm stash list` for configured paths.",
     );
   }
 
   const fileCtx = buildFileContext(sourceStashDir, assetPath);
-  const match = recognizeMatch(fileCtx);
-  if (!match) {
-    throw new UsageError(
-      `Could not display asset "${displayType}:${parsed.name}" — unsupported file type or unrecognized layout`,
-    );
-  }
+  let response: ShowResponse;
+  if (indexedEntry?.adapterId === "okf") {
+    response = buildGenericMarkdownResponse(indexedEntry, assetPath, input.view, parsed.fragment);
+  } else {
+    const match = recognizeMatch(fileCtx);
+    if (!match) {
+      throw new UsageError(
+        `Could not display asset "${makeBundleRef(parsed.bundle, parsed.conceptId)}" — unsupported file type or unrecognized layout`,
+      );
+    }
 
-  match.meta = { ...match.meta, name: parsed.name, view: input.view };
-  const renderer = await getRenderer(match.renderer);
-  if (!renderer) {
-    throw new UsageError(`Renderer "${match.renderer}" not found for asset: ${displayType}:${parsed.name}`);
-  }
+    match.meta = { ...match.meta, name: displayName, view: input.view };
+    const renderer = await getRenderer(match.renderer);
+    if (!renderer) {
+      throw new UsageError(`Renderer "${match.renderer}" not found for asset: ${displayType}:${displayName}`);
+    }
 
-  const renderCtx = buildRenderContext(fileCtx, match, allSourceDirs, source?.registryId);
-  const response = renderer.buildShowResponse(renderCtx);
+    const renderCtx = buildRenderContext(fileCtx, match, allSourceDirs, source?.registryId);
+    response = renderer.buildShowResponse(renderCtx);
+    if (parsed.fragment !== undefined) {
+      if (!match.renderer.endsWith("-md")) {
+        throw new UsageError(
+          `Fragments are not supported for ${displayType}:${displayName}. Only Markdown documents support heading fragments.`,
+          "INVALID_FLAG_VALUE",
+        );
+      }
+      applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, displayName);
+    }
+  }
   const isPrimaryStash = source !== undefined && source.path === allSources[0]?.path;
   const canonicalRef = displayRef(
     {
-      type: parsed.type,
-      name: parsed.name,
+      type: displayType,
+      name: displayName,
       conceptId: indexedEntry?.conceptId,
       bundleId: indexedEntry?.bundleId ?? source?.registryId,
     },
@@ -498,13 +527,80 @@ async function maybeExtractGraphInline(
  * renderer graph. Spec §6.2's literal flow.
  */
 export async function showByRef(ref: string): Promise<{ filePath: string; body: string }> {
-  const parsed = parseQualifiedRefInput(ref);
-  const entry = await lookup(parsed);
+  const parsed = parseBundleRef(ref);
+  if (parsed.fragment !== undefined) {
+    throw new UsageError(`Fragments are not accepted by raw show: ${ref}`, "INVALID_FLAG_VALUE");
+  }
+  const entry = await lookupBundleRef(parsed);
   if (!entry) {
-    throw new NotFoundError(`Asset not found for ref: ${parsed.type}:${parsed.name}`);
+    throw new NotFoundError(`Asset not found for ref: ${makeBundleRef(parsed.bundle, parsed.conceptId)}`);
   }
   const body = await fs.promises.readFile(entry.filePath, "utf8");
   return { filePath: entry.filePath, body };
+}
+
+function buildGenericMarkdownResponse(
+  entry: NonNullable<Awaited<ReturnType<typeof lookupBundleRef>>>,
+  assetPath: string,
+  view: KnowledgeView | undefined,
+  fragment: string | undefined,
+): ShowResponse {
+  const raw = fs.readFileSync(assetPath, "utf8");
+  const parsed = parseFrontmatter(raw);
+  const selectedView: KnowledgeView = fragment ? { mode: "section", heading: fragment } : (view ?? { mode: "full" });
+  let content: string;
+  switch (selectedView.mode) {
+    case "toc":
+      content = formatToc(parseMarkdownToc(parsed.content));
+      break;
+    case "frontmatter":
+      content = extractFrontmatterOnly(raw) ?? "(no frontmatter)";
+      break;
+    case "section":
+      content = requireMarkdownSection(parsed.content, selectedView.heading, entry.name).content;
+      break;
+    case "lines":
+      content = extractLineRange(parsed.content, selectedView.start, selectedView.end);
+      break;
+    default:
+      content = parsed.content;
+  }
+  const description = entry.document?.description ?? asNonEmptyString(parsed.data.description);
+  const tags =
+    entry.document?.tags ??
+    (Array.isArray(parsed.data.tags)
+      ? parsed.data.tags.filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0)
+      : undefined);
+  return {
+    type: entry.type,
+    name: entry.name,
+    path: assetPath,
+    action: "Read the content below.",
+    content,
+    ...(description ? { description } : {}),
+    ...(tags && tags.length > 0 ? { tags } : {}),
+  };
+}
+
+function applyMarkdownFragment(response: ShowResponse, raw: string, fragment: string, name: string): void {
+  const section = requireMarkdownSection(parseFrontmatter(raw).content, fragment, name).content;
+  if (response.template !== undefined) response.template = section;
+  else if (response.prompt !== undefined) response.prompt = section;
+  else response.content = section;
+}
+
+function requireMarkdownSection(
+  content: string,
+  fragment: string,
+  name: string,
+): NonNullable<ReturnType<typeof extractSection>> {
+  const section = extractSection(content, fragment);
+  if (section) return section;
+  const available = markdownFragmentSlugs(content);
+  throw new NotFoundError(
+    `Fragment "#${fragment}" not found in ${name}.` +
+      (available.length > 0 ? ` Available fragments: ${available.map((slug) => `#${slug}`).join(", ")}.` : ""),
+  );
 }
 
 /**

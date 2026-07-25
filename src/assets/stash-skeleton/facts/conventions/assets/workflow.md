@@ -1,4 +1,5 @@
 ---
+type: fact
 category: convention
 description: Soft authoring conventions for workflow assets using explicit operations, logging, and lintable steps.
 when_to_use: Surfaced to authoring agents when they write or revise a workflow asset.

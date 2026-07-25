@@ -142,9 +142,9 @@ test("validateStashEntry rejects an empty type", () => {
   expect(validateStashEntry({ name: "x", type: "" })).toBeNull();
 });
 
-test("validateStashEntry still rejects the deny-listed tool/vault types (D1.5-6)", () => {
-  expect(validateStashEntry({ name: "x", type: "tool" })).toBeNull();
-  expect(validateStashEntry({ name: "x", type: "vault" })).toBeNull();
+test("validateStashEntry accepts adapter-owned tool/vault types as open tokens", () => {
+  expect(validateStashEntry({ name: "x", type: "tool" })).toMatchObject({ name: "x", type: "tool" });
+  expect(validateStashEntry({ name: "x", type: "vault" })).toMatchObject({ name: "x", type: "vault" });
 });
 
 test("validateStashEntry accepts minimal valid entry", () => {

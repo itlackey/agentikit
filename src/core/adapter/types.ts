@@ -143,7 +143,7 @@ export interface IndexDocument {
   /** Fully-qualified "<bundle>//<concept-id>" (canonical stored spelling, §1.3). */
   ref?: ItemRef;
   bundle?: BundleId;
-  /** PROVENANCE (derived: longest-prefix match of the concept-id against component roots), not a ref segment. */
+  /** PROVENANCE from the bundle's single configured component, not a ref segment. */
   component?: ComponentId;
   /** OKF concept ID = path within bundle − ext; opaque to the core. */
   conceptId?: string;

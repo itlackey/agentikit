@@ -247,29 +247,17 @@ describe("source commands and resolution", () => {
     }
   });
 
-  test("akmShow rejects a foreign/unknown conceptId leading segment (F5 new grammar closes the type token)", async () => {
+  test("akmShow accepts a foreign conceptId shape and reports a normal index miss", async () => {
     const stashDir = createTmpDir("akm-stash-");
     process.env.AKM_STASH_DIR = stashDir;
-    // The F5 new-grammar input parser (`parseRefInput`) is CLOSED at the type
-    // token: a conceptId whose leading segment is not a known stash subdir
-    // ("widget" is not) has no legacy type predicate and is rejected as an
-    // unrecognized ref — the same outcome an unknown asset type produced before,
-    // now surfaced at the input-parse boundary. (The pre-0.9.0 open-token /
-    // "Unknown asset type" phasing is retired with the legacy grammar.)
-    await expect(akmShow({ ref: "widget/foo" })).rejects.toThrow(/no known asset-type prefix|Unrecognized asset ref/i);
+    await expect(akmShow({ ref: "widget/foo" })).rejects.toThrow(/asset not found/i);
   });
 
-  test("akmShow rejects the retired tool/vault types as unrecognized new-grammar refs", async () => {
+  test("akmShow does not reserve adapter-owned tool/vault concept paths", async () => {
     const stashDir = createTmpDir("akm-stash-");
     process.env.AKM_STASH_DIR = stashDir;
-    // `tool`/`vault` are not stash subdirs, so the new-grammar input parser
-    // rejects them as unrecognized refs. (The vault-removal migration hint lives
-    // in the STORED-ref parser `parseStoredRef` for durable data, not the CLI
-    // input path, which never durably re-key round-trips a `vault` ref.)
-    await expect(akmShow({ ref: "tool/deploy.sh" })).rejects.toThrow(
-      /no known asset-type prefix|Unrecognized asset ref/i,
-    );
-    await expect(akmShow({ ref: "vault/prod" })).rejects.toThrow(/no known asset-type prefix|Unrecognized asset ref/i);
+    await expect(akmShow({ ref: "tool/deploy.sh" })).rejects.toThrow(/asset not found/i);
+    await expect(akmShow({ ref: "vault/prod" })).rejects.toThrow(/asset not found/i);
   });
 
   test("akmShow rejects traversal and absolute path refs", async () => {

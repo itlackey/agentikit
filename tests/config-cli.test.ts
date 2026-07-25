@@ -73,6 +73,27 @@ describe("config CLI helpers", () => {
     ).toThrow("writable: true is only supported on path and git bundle sources");
   });
 
+  test("parseConfigValue rejects empty and multi-entry component maps", () => {
+    expect(() => parseConfigValue("bundles", '{"empty":{"path":"/tmp/empty","components":{}}}')).toThrow(
+      "a bundle components map must contain exactly one component",
+    );
+    expect(() =>
+      parseConfigValue("bundles", '{"multi":{"path":"/tmp/multi","components":{"a":{"root":"a"},"b":{"root":"b"}}}}'),
+    ).toThrow("a bundle components map must contain exactly one component");
+  });
+
+  test("parseConfigValue rejects component-level writable website and npm bundles", () => {
+    expect(() =>
+      parseConfigValue(
+        "bundles",
+        '{"web":{"website":{"url":"https://example.com"},"components":{"main":{"writable":true}}}}',
+      ),
+    ).toThrow("writable: true is only supported on path and git bundle sources");
+    expect(() =>
+      parseConfigValue("bundles", '{"pkg":{"npm":"example-package","components":{"main":{"writable":true}}}}'),
+    ).toThrow("writable: true is only supported on path and git bundle sources");
+  });
+
   test("setConfigValue sets embedding via JSON", () => {
     const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
     const updated = setConfigValue(

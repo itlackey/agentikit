@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import path from "node:path";
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { isRemoteUrl } from "../../core/common";
 import type { BundleConfigEntry, SourceConfigEntry } from "../../core/config/config";
 import {
@@ -84,7 +85,13 @@ export function addStash(opts: {
         return config;
       }
       key = nextBundleKey(bundles, name, resolvedPath);
-      bundles[key] = { path: resolvedPath, ...(writable === true ? { writable: true } : {}) };
+      bundles[key] = {
+        path: resolvedPath,
+        ...(writable === true ? { writable: true } : {}),
+        components: {
+          main: { root: ".", adapter: detectAdapterId(resolvedPath), writable: writable ?? true },
+        },
+      };
     }
     const next = { ...config, bundles };
     const entry = bundleEntryToSourceEntry(key, bundles[key]!) as SourceConfigEntry;
@@ -104,7 +111,10 @@ function urlBundleDescriptor(
   if (providerType === "website") {
     // Website provider options ride on the (passthrough) website descriptor and
     // round-trip back to `entry.options` via bundleEntryToSourceEntry.
-    return { website: { url, ...(options ?? {}) } };
+    return {
+      website: { url, ...(options ?? {}) },
+      components: { main: { root: ".", adapter: "website-snapshot", writable: false } },
+    };
   }
   if (providerType === "npm") return { npm: url };
   if (providerType === "git") return { git: url, ...(writable ? { writable: true } : {}) };

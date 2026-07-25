@@ -1,31 +1,31 @@
 # OKF format support
 
-**Status:** DECIDED (0.9.0 target). OKF is a first-class format supported by
-AKM through the built-in `okf` adapter.
-
-“First-class” states the supported product boundary, not that every conformance
-case already passes. Full conformance is claimed only when the runbook below
-passes end to end.
+**Status:** DECIDED (0.9.0). OKF is a first-class format supported by AKM
+through the built-in `okf` adapter. First-class means every applicable case in
+the conformance runbook passes end to end; adapter-local recognition alone is
+not sufficient.
 
 ## The decision
 
-AKM can install, index, search, show, validate, and, where the source is
-writable, author conformant OKF bundles. OKF support is held to the observable
-conformance contract in the
+OKF is AKM's least-common-denominator format for Markdown concepts and generic
+read behavior. AKM can install, recognize, index, search, and show conformant
+OKF bundles without converting them to an AKM-native layout. OKF support is
+held to the observable conformance contract in the
 [OKF v0.1 conformance runbook](../testing/okf-v0.1-conformance-runbook.md).
 
-OKF is **not**:
+That baseline does not make OKF AKM's database schema or force non-Markdown
+formats through Markdown. In particular, OKF is **not**:
 
-- AKM's internal or foundational content model;
-- the default adapter for an AKM workspace;
 - an AKM asset type;
-- a schema imposed on Claude, OpenCode, Agent Skills, workflows, tasks,
-  environments, scripts, LLM Wiki bundles, or AKM-native stash files;
-- the source of type or identity rules for adapters that own other formats.
+- a serialization imposed on scripts, YAML tasks, environment files, secrets,
+  Agent Skills, or other native non-Markdown assets;
+- a replacement for adapter-owned capability, validation, redaction, placement,
+  or execution rules.
 
-Each adapter owns its native recognition, identity, metadata, links,
-validation, and placement rules. The normalized `IndexDocument` is the narrow
-cross-format search projection; it is not an OKF document.
+The core provides path identity, open descriptive types, generic Markdown
+content/fragment reads, and a normalized search projection. Adapters add
+behavior to that baseline. They never narrow the core by rejecting an item only
+because its `type` is unfamiliar.
 
 ## First-class support contract
 
@@ -43,29 +43,45 @@ For a bundle selected as `adapter: okf`, AKM must provide all of the following:
    applicable ref-consuming commands. Adapter-owned concept IDs such as
    `tables/customers` must not be rejected merely because they do not use an
    AKM stash placement directory.
-6. A writable OKF target uses adapter-owned placement and emits conformant OKF
-   documents. If that write contract is unavailable, the source is read-only;
-   AKM must not silently write AKM-native files into it.
+6. Markdown heading fragments are accepted as input-only selectors and never
+   become part of durable identity.
+7. An OKF target without adapter-owned authoring rejects AKM-native write
+   commands before touching disk. AKM must never silently place native files in
+   an OKF bundle.
 
-These requirements are format support, not a universalization rule. In
-particular, accepting `okfbundle//tables/customers` requires ref resolution to
-honor the selected adapter and index; it does not make every AKM concept ID an
-OKF concept ID.
+The shipped `okf` adapter is consumer-only. Its supported behavior is the
+portable content/fragment baseline; it does not infer task, command, script,
+environment, or secret capabilities from an arbitrary OKF `type` value.
 
-## AKM-native behavior remains separate
+## Progressive enhancement
 
-The built-in `akm` adapter continues to classify AKM-native content with its
-existing matcher and placement rules. Directory, extension, filename, and
-content probes remain authoritative for that adapter. Frontmatter `type` does
-not override those rules merely because OKF uses a field with the same name.
+AKM Markdown is an OKF-compatible superset. Newly authored AKM Markdown emits a
+non-empty native `type` plus any AKM-specific frontmatter required by its asset
+kind. The `akm` adapter still derives native identity and capability from its
+directory, extension, filename, and content rules; frontmatter `type` does not
+override those rules. Existing legacy Markdown without `type` remains readable
+and is upgraded when AKM creates or semantically rewrites it rather than during
+indexing.
 
-`akm init` creates an AKM workspace and selects the `akm` adapter. It does not
-add a root `index.md` merely to make the workspace look like an OKF bundle.
-Users who want an OKF bundle add or configure one as an OKF source.
+The result is progressive enhancement:
 
-Shared implementation details such as path-like refs and an open indexed
-`type` field are AKM core contracts. Their use by OKF does not make them
-OKF-owned semantics.
+1. Any OKF type gets path identity, indexing, search, content show, and heading
+   fragments through the `okf` adapter.
+2. The `akm` adapter recognizes AKM-owned types and adds their specialized
+   behavior: command prompts, runnable scripts, workflows, tasks, redacted
+   environment/secret views, memories, lessons, and other native capabilities.
+3. Unknown `type` values remain valid data. They get generic behavior unless
+   the selected adapter explicitly adds more.
+
+`akm init` records `adapter: akm`. `akm add` records the detected adapter, and an
+explicit configured adapter always wins over probing. Strong native AKM layout
+evidence wins before the broader OKF probe because AKM Markdown is an OKF
+superset. An index-less bundle containing conformant typed Markdown can still be
+recognized as OKF.
+
+The normalized `IndexDocument` is the additive cross-format projection. Its
+basic Markdown fields align with OKF, while adapters may project additional
+metadata and capabilities without changing identity.
 
 ## See also
 

@@ -17,6 +17,33 @@ export interface KnowledgeToc {
   totalLines: number;
 }
 
+/** Stable GitHub-style selector for a Markdown heading. */
+export function markdownHeadingSlug(heading: string): string {
+  return heading
+    .trim()
+    .toLowerCase()
+    .replace(/<[^>]*>/g, "")
+    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+export function markdownFragmentSlugs(content: string): string[] {
+  return uniqueHeadingSlugs(parseMarkdownToc(content).headings).filter(Boolean);
+}
+
+function uniqueHeadingSlugs(headings: TocHeading[]): string[] {
+  const counts = new Map<string, number>();
+  return headings.map((heading) => {
+    const base = markdownHeadingSlug(heading.text);
+    if (!base) return "";
+    const count = counts.get(base) ?? 0;
+    counts.set(base, count + 1);
+    return count === 0 ? base : `${base}-${count}`;
+  });
+}
+
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
 export function parseMarkdownToc(content: string): KnowledgeToc {
@@ -55,33 +82,20 @@ export function extractSection(
   heading: string,
 ): { content: string; startLine: number; endLine: number } | null {
   const lines = content.split(/\r?\n/);
-  const target = heading.toLowerCase();
+  const headings = parseMarkdownToc(content).headings;
+  const exact = headings.find((candidate) => candidate.text.toLowerCase() === heading.trim().toLowerCase());
+  const targetSlug = markdownHeadingSlug(heading);
+  const slugIndex = exact ? -1 : uniqueHeadingSlugs(headings).findIndex((slug) => slug === targetSlug);
+  const selected = exact ?? (slugIndex >= 0 ? headings[slugIndex] : undefined);
+  if (!selected) return null;
 
-  let startIdx = -1;
-  let startLevel = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const match = lines[i]!.match(/^(#{1,6})\s+(.+)$/);
-    if (!match) continue;
-    const text = match[2]!.replace(/\s+#+\s*$/, "").trim();
-    if (text.toLowerCase() === target && startIdx === -1) {
-      startIdx = i;
-      startLevel = match[1]!.length;
-    } else if (startIdx !== -1 && match[1]!.length <= startLevel) {
-      return {
-        content: lines.slice(startIdx, i).join("\n"),
-        startLine: startIdx + 1,
-        endLine: i,
-      };
-    }
-  }
-
-  if (startIdx === -1) return null;
-
+  const next = headings.find((candidate) => candidate.line > selected.line && candidate.level <= selected.level);
+  const startIdx = selected.line - 1;
+  const endIdx = next ? next.line - 1 : lines.length;
   return {
-    content: lines.slice(startIdx).join("\n"),
-    startLine: startIdx + 1,
-    endLine: lines.length,
+    content: lines.slice(startIdx, endIdx).join("\n"),
+    startLine: selected.line,
+    endLine: endIdx,
   };
 }
 

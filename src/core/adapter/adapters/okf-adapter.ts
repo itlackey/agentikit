@@ -26,7 +26,8 @@
  *    WARNING (consumers tolerate broken links). Reads go through
  *    `ctx.readFile`; ref existence via `ctx.resolveRef`. Never touches the live
  *    filesystem.
- *  - placeNew / directoryList / looksLikeRoot per §5 / §1.2.
+ *  - directoryList / looksLikeRoot per §5 / §1.2. Authoring is deliberately
+ *    absent; AKM-native writers fail before mutating an OKF bundle.
  */
 
 import fs from "node:fs";
@@ -70,13 +71,23 @@ function isReservedFileName(name: string): boolean {
  */
 export function resolveOkfLinks(body: string, fileRelPath: string): string[] {
   const dir = path.posix.dirname(toPosix(fileRelPath));
-  const linkRe = /\[[^\]]*\]\(([^)]+)\)/g;
+  const definitions = new Map<string, string>();
+  for (const match of body.matchAll(/^\s*\[([^\]]+)\]:\s*(\S+)/gm)) {
+    definitions.set(match[1]!.trim().toLowerCase(), match[2]!);
+  }
+  const candidates: Array<{ index: number; target: string }> = [];
+  for (const match of body.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+    candidates.push({ index: match.index, target: match[1]! });
+  }
+  for (const match of body.matchAll(/(?<!!)\[[^\]]*\]\[([^\]]+)\]/g)) {
+    const target = definitions.get(match[1]!.trim().toLowerCase());
+    if (target) candidates.push({ index: match.index, target });
+  }
+  candidates.sort((a, b) => a.index - b.index);
   const out: string[] = [];
   const seen = new Set<string>();
-  let match: RegExpExecArray | null;
-  // biome-ignore lint/suspicious/noAssignInExpressions: idiomatic regex loop
-  while ((match = linkRe.exec(body)) !== null) {
-    let target = match[1]!.trim();
+  for (const candidate of candidates) {
+    let target = candidate.target.trim();
     // Drop an optional markdown link title: `[x](/a.md "Title")`.
     const wsIdx = target.search(/\s/);
     if (wsIdx >= 0) target = target.slice(0, wsIdx);
@@ -151,6 +162,10 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   if (tags !== undefined) doc.tags = tags;
   if (updated !== undefined) doc.updated = updated;
   if (links.length > 0) doc.links = links;
+  const extras = Object.fromEntries(
+    Object.entries(data).filter(([key]) => !["type", "title", "description", "tags", "timestamp"].includes(key)),
+  );
+  if (Object.keys(extras).length > 0) doc.documentJson = extras;
   return doc;
 }
 
@@ -166,14 +181,11 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
     const reserved = isReservedFileName(fileName);
     const parsed = parseFrontmatter(raw);
 
-    // Base checks (unquoted-colon / missing-updated / stale-path / missing-ref).
+    // Base checks shared with native AKM formats. OKF's timestamp is optional,
+    // so the AKM-specific freshness diagnostic is removed unconditionally.
     const base = await runBaseValidateChecks(relPath, parsed, c.root, ctx);
-    // §0.1: for OKF content a `timestamp` satisfies the freshness requirement
-    // (the base-linter's `missing-updated` maps to `timestamp`). Suppress the
-    // `missing-updated` diagnostic when a non-empty `timestamp` is present.
-    const hasTimestamp = nonEmptyString(parsed.data.timestamp) !== undefined;
     for (const diag of base) {
-      if (hasTimestamp && diag.issue === "missing-updated") continue;
+      if (diag.issue === "missing-updated") continue;
       diagnostics.push(diag);
     }
 
@@ -213,18 +225,40 @@ export const okfAdapter: BundleAdapter = {
   recognize,
   validate,
 
-  /** `<c.root>/<conceptId>.md` (§5). */
-  placeNew(c: BundleComponent, conceptId: string): string {
-    return path.join(c.root, `${conceptId}.md`);
-  },
-
   /** OKF concepts live anywhere under the component root (§5). */
   directoryList(_c: BundleComponent): string[] {
     return ["."];
   },
 
-  /** Install-time probe: a root is an OKF bundle when it has a root `index.md` (§1.2; `okf_version` NOT required). */
+  /**
+   * Install-time probe. A root index is sufficient; an index-less root is also
+   * OKF when it contains at least one conformant concept with a non-empty open
+   * `type`. More-specific native adapters run before this portable baseline.
+   */
   looksLikeRoot(root: string): boolean {
-    return fs.existsSync(path.join(root, "index.md"));
+    if (fs.existsSync(path.join(root, "index.md"))) return true;
+    const stack = [root];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (!current) continue;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (entry.isSymbolicLink() || entry.name === ".git") continue;
+        const absolute = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          stack.push(absolute);
+          continue;
+        }
+        if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".md") || isReservedFileName(entry.name)) continue;
+        const type = nonEmptyString(parseFrontmatter(fs.readFileSync(absolute, "utf8")).data.type);
+        if (type) return true;
+      }
+    }
+    return false;
   },
 };

@@ -1,4 +1,5 @@
 ---
+type: fact
 category: convention
 description: Soft authoring conventions for memory assets using durable-context and provenance discipline.
 when_to_use: Surfaced to authoring agents when they write or revise a memory asset.

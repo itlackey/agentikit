@@ -4,9 +4,10 @@
 
 import fs from "node:fs";
 import { defineJsonCommand, output, parseAllFlagValues } from "../cli/shared";
+import { makeBundleRef, parseBundleRef } from "../core/asset/asset-ref";
 import { assembleAsset } from "../core/asset/asset-serialize";
 import { parseFrontmatter, parseFrontmatterBlock } from "../core/asset/frontmatter";
-import { conceptIdFromTypeName, displayRef, parseRefInput } from "../core/asset/resolve-ref";
+import { conceptIdFromTypeName, parseRefInput } from "../core/asset/resolve-ref";
 import { writeFileAtomic } from "../core/common";
 import { FEEDBACK_FAILURE_MODES, loadConfig } from "../core/config/config";
 import { UsageError } from "../core/errors";
@@ -229,7 +230,7 @@ export const feedbackCommand = defineJsonCommand({
         "Pass a ref like `skills/deploy` and either --positive or --negative.",
       );
     }
-    const parsedRef = parseRefInput(ref);
+    const parsedRef = parseBundleRef(ref);
     if (args.positive && args.negative) {
       throw new UsageError("Specify either --positive or --negative, not both.");
     }
@@ -313,17 +314,18 @@ export const feedbackCommand = defineJsonCommand({
     try {
       const config = loadConfig();
       const sources = resolveSourceEntries(undefined, config);
-      const requestedSource = parsedRef.origin
+      const requestedSource = parsedRef.bundle
         ? sources.find(
             (source) =>
-              source.registryId === parsedRef.origin ||
-              ((parsedRef.origin === "local" || parsedRef.origin === "stash") && source === sources[0]),
+              source.registryId === parsedRef.bundle ||
+              ((parsedRef.bundle === "local" || parsedRef.bundle === "stash") && source === sources[0]),
           )
         : undefined;
-      if (parsedRef.origin && !requestedSource) {
-        throw new UsageError(`Source "${parsedRef.origin}" is not configured.`, "INVALID_FLAG_VALUE");
+      if (parsedRef.bundle && !requestedSource) {
+        throw new UsageError(`Source "${parsedRef.bundle}" is not configured.`, "INVALID_FLAG_VALUE");
       }
-      const entryId = findEntryIdByRef(db, ref, requestedSource?.path);
+      const lookupRef = makeBundleRef(parsedRef.bundle, parsedRef.conceptId);
+      const entryId = findEntryIdByRef(db, lookupRef, requestedSource?.path);
       if (entryId === undefined) {
         throw new UsageError(
           `Ref "${ref}" is not in the index. ` +
@@ -337,7 +339,6 @@ export const feedbackCommand = defineJsonCommand({
       // in search results until after reindexing.
       const indexedEntry = getEntryById(db, entryId);
       const source = sources.find((candidate) => candidate.path === indexedEntry?.stashDir);
-      const durableOrigin = parsedRef.origin ?? source?.registryId ?? "stash";
       // WI-8.5b: the `feedback` / `improve_review_needed` events key on the
       // resolved entry's fully-qualified item_ref — the SAME durable key the
       // usage_events row carries and the SAME spelling the signal-delta
@@ -345,7 +346,7 @@ export const feedbackCommand = defineJsonCommand({
       // The D-R5 display spelling is the fallback only for a NULL-provenance
       // (pre-cutover) row that the one-time re-key has not yet finalized.
       const itemRef = getItemRefById(db, entryId) ?? undefined;
-      durableRef = itemRef ?? displayRef({ type: parsedRef.type, name: parsedRef.name, bundleId: durableOrigin });
+      durableRef = itemRef ?? makeBundleRef(parsedRef.bundle ?? source?.registryId, parsedRef.conceptId);
       utilityResult = recordFeedbackUsage(db, entryId, itemRef, signal, metadataStr);
     } finally {
       closeDatabase(db);

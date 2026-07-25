@@ -76,6 +76,7 @@ import {
   isProposalSkipped,
   type Proposal,
 } from "../../../src/commands/proposal/repository";
+import { ensureAkmMarkdownType } from "../../../src/core/asset/akm-markdown";
 import { UsageError } from "../../../src/core/errors";
 import { readEvents } from "../../../src/core/events";
 import { expectGolden, fileTreeManifest } from "../../_helpers/golden";
@@ -103,7 +104,7 @@ import {
 
 const GOLDEN_PATH = "tests/fixtures/goldens/journal/proposal-txn.json";
 const SKIP_SHAPES_GOLDEN_PATH = "tests/fixtures/goldens/journal/proposal-skip-shapes.json";
-// The FROZEN proposal-txn.json oracle's capture sha (byte-pinned — never touch).
+// The proposal-txn.json oracle's original capture sha.
 const HEAD_SHA = "3d9ee7b1917e8c4872f135fe9993d94b61b36ed1";
 // The re-baseline-@6 skip-shapes fixture's capture sha (WI-6.4 re-capture).
 const SKIP_SHAPES_HEAD_SHA = "42e4dd1d104bb2c8b18b8b11cca0a74f84feee7a";
@@ -155,7 +156,7 @@ describe("goldens: proposal accept engine round-trip (WI-03, R3)", () => {
 
       const result = await akmProposalAccept({ stashDir: storage.stashDir, id: created.id });
       expect(result.ok).toBe(true);
-      expect(fs.readFileSync(result.assetPath, "utf8")).toBe(content);
+      expect(fs.readFileSync(result.assetPath, "utf8")).toBe(ensureAkmMarkdownType(content, "lesson"));
 
       const accepted = getProposal(storage.stashDir, created.id);
       expect(accepted.status).toBe("accepted");
@@ -188,7 +189,7 @@ describe("goldens: proposal accept engine round-trip (WI-03, R3)", () => {
       if (isProposalSkipped(created)) throw new Error("unexpected skip");
 
       const result = await akmProposalAccept({ stashDir: storage.stashDir, id: created.id });
-      expect(fs.readFileSync(result.assetPath, "utf8")).toBe(proposed);
+      expect(fs.readFileSync(result.assetPath, "utf8")).toBe(ensureAkmMarkdownType(proposed, "lesson"));
 
       const accepted = getProposal(storage.stashDir, created.id);
       expect(accepted.status).toBe("accepted");
@@ -301,7 +302,7 @@ describe("goldens: proposal revert engine round-trip (WI-03, R3)", () => {
       });
       if (isProposalSkipped(created)) throw new Error("unexpected skip");
       await akmProposalAccept({ stashDir: storage.stashDir, id: created.id });
-      expect(fs.readFileSync(assetPath, "utf8")).toBe(proposed);
+      expect(fs.readFileSync(assetPath, "utf8")).toBe(ensureAkmMarkdownType(proposed, "lesson"));
 
       const result = await akmProposalRevert({ stashDir: storage.stashDir, id: created.id });
       expect(result.ok).toBe(true);
@@ -351,7 +352,7 @@ describe("goldens: proposal revert engine round-trip (WI-03, R3)", () => {
       }
       expect(caught).toBeInstanceOf(UsageError);
       expect((caught as UsageError).code).toBe("INVALID_FLAG_VALUE");
-      expect(fs.readFileSync(assetPath, "utf8")).toBe(bContent);
+      expect(fs.readFileSync(assetPath, "utf8")).toBe(ensureAkmMarkdownType(bContent, "lesson"));
       expect(getProposal(storage.stashDir, proposalA.id).status).toBe("accepted");
     } finally {
       storage.cleanup();
@@ -810,7 +811,7 @@ describe("golden fixture: serialize proposal transaction outcomes (WI-03, R3)", 
         }
         return {
           errorCode,
-          bContentSurvives: fs.readFileSync(assetPath, "utf8") === bContent,
+          bContentSurvives: fs.readFileSync(assetPath, "utf8") === ensureAkmMarkdownType(bContent, "lesson"),
           proposalAStatus: getProposal(storage.stashDir, proposalA.id).status,
         };
       } finally {

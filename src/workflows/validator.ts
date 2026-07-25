@@ -16,7 +16,18 @@ import { utf8Bytes, WORKFLOW_MAX_INSTRUCTION_BYTES, WORKFLOW_MAX_PARAMS, WORKFLO
 import type { WorkflowDocument, WorkflowError } from "./schema";
 
 const STEP_ID_REGEX = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const ALLOWED_FRONTMATTER_KEYS = new Set(["description", "tags", "params", "name", "updated", "when_to_use", "xrefs"]);
+const ALLOWED_FRONTMATTER_KEYS = new Set([
+  "type",
+  "title",
+  "description",
+  "tags",
+  "params",
+  "name",
+  "timestamp",
+  "updated",
+  "when_to_use",
+  "xrefs",
+]);
 
 export function runSemanticChecks(
   draft: WorkflowDocument,
@@ -86,7 +97,7 @@ function checkFrontmatterKeys(data: Record<string, unknown>, fmEndLine: number, 
     if (ALLOWED_FRONTMATTER_KEYS.has(key)) continue;
     errors.push({
       line: fmEndLine,
-      message: `Workflow frontmatter "${key}" is not supported. Use only: description, tags, params, name, updated, when_to_use, xrefs.`,
+      message: `Workflow frontmatter "${key}" is not supported. Use only: type, title, description, tags, params, name, timestamp, updated, when_to_use, xrefs.`,
     });
   }
 }

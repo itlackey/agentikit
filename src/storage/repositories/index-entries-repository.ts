@@ -103,11 +103,13 @@ interface UpsertStmts {
 const upsertStmtsByDb = new WeakMap<Database, UpsertStmts>();
 
 // The ON CONFLICT DO UPDATE column assignments — factored out so the two
-// conflict targets below stay byte-identical. `entry_key` is deliberately NOT
-// updated (it is an identity column; renames go through `rekeyEntryInPlace`).
+// conflict targets below stay byte-identical. `item_ref` is durable identity;
+// update the compatibility `entry_key` when adapter ownership changes its
+// spelling so directory pruning retains the upserted row.
 // `content_hash` COALESCEs so a NULL passed by the LLM-enhance re-upsert cannot
 // wipe a previously-persisted hash.
 const UPSERT_SET_CLAUSE = `SET
+        entry_key = excluded.entry_key,
         dir_path = excluded.dir_path,
         file_path = excluded.file_path,
         stash_dir = excluded.stash_dir,

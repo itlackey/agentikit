@@ -63,7 +63,7 @@ async function crashProposalAt(
   await new Promise<void>((resolve) => child.once("exit", () => resolve()));
 }
 
-function seedProposal(name: string): { id: string; assetPath: string; original: string } {
+function seedProposal(name: string): { id: string; assetPath: string; original: string; content: string } {
   const assetPath = path.join(storage.stashDir, "lessons", `${name}.md`);
   const original =
     "---\ndescription: Original durable content\nwhen_to_use: Testing proposal crash recovery\n---\n\nORIGINAL.\n";
@@ -75,7 +75,7 @@ function seedProposal(name: string): { id: string; assetPath: string; original: 
     payload: { content: CONTENT },
   });
   if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
-  return { id: proposal.id, assetPath, original };
+  return { id: proposal.id, assetPath, original, content: proposal.payload.content };
 }
 
 describe("proposal accept durable crash recovery", () => {
@@ -92,7 +92,7 @@ describe("proposal accept durable crash recovery", () => {
 
       const result = await akmProposalAccept({ stashDir: storage.stashDir, id: seeded.id });
       expect(result.ok).toBe(true);
-      expect(fs.readFileSync(seeded.assetPath, "utf8")).toBe(CONTENT);
+      expect(fs.readFileSync(seeded.assetPath, "utf8")).toBe(seeded.content);
       const proposal = getProposal(storage.stashDir, seeded.id);
       expect(proposal.status).toBe("accepted");
       expect(proposal.backupContent).toBe(seeded.original);
@@ -125,7 +125,9 @@ describe("proposal accept durable crash recovery", () => {
 
       const result = await akmProposalAccept({ stashDir, id: proposal.id, config });
       expect(result.ok).toBe(true);
-      expect(fs.readFileSync(path.join(stashDir, "lessons", "cross-device-accept.md"), "utf8")).toBe(CONTENT);
+      expect(fs.readFileSync(path.join(stashDir, "lessons", "cross-device-accept.md"), "utf8")).toBe(
+        proposal.payload.content,
+      );
     } finally {
       fs.rmSync(stashDir, { recursive: true, force: true });
     }
@@ -162,7 +164,7 @@ describe("proposal accept durable crash recovery", () => {
       akmProposalReject({ stashDir: storage.stashDir, id: seeded.id, reason: "must not reject committed accept" }),
     ).rejects.toThrow(/not pending/i);
     expect(getProposal(storage.stashDir, seeded.id).status).toBe("accepted");
-    expect(fs.readFileSync(seeded.assetPath, "utf8")).toBe(CONTENT);
+    expect(fs.readFileSync(seeded.assetPath, "utf8")).toBe(seeded.content);
   });
 
   test("target-B retry globally recovers a target-A accept and fails closed", async () => {
@@ -188,7 +190,9 @@ describe("proposal accept durable crash recovery", () => {
     await expect(akmProposalAccept({ stashDir: storage.stashDir, id: proposal.id, target: "b" })).rejects.toThrow(
       /bound|different|target/i,
     );
-    expect(fs.readFileSync(path.join(targetA, "lessons", "multi-target-crash.md"), "utf8")).toBe(CONTENT);
+    expect(fs.readFileSync(path.join(targetA, "lessons", "multi-target-crash.md"), "utf8")).toBe(
+      proposal.payload.content,
+    );
     expect(fs.existsSync(path.join(targetB, "lessons", "multi-target-crash.md"))).toBe(false);
     const accepted = getProposal(storage.stashDir, proposal.id);
     expect(accepted.status).toBe("accepted");

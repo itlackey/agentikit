@@ -513,9 +513,11 @@ export const akmAdapter: BundleAdapter = {
   /**
    * Install-time probe (§1.2), reproducing today's stash-root detection
    * (`provider-utils.ts#detectStashRoot`/`hasStashDirs`): a root is an AKM
-   * workspace root when it carries a `.stash` marker directory OR any immediate
-   * subdirectory named after a placement stash subdir. Pure stat/readdir; a
-   * missing/unreadable root is not a root.
+   * workspace root when it carries a `.stash` marker, multiple native placement
+   * directories, or one native directory whose Markdown is absent/legacy or
+   * declares the matching AKM type. The final check prevents an OKF bundle with
+   * an unrelated open type under (for example) `knowledge/` from being claimed
+   * by AKM merely because the directory name overlaps.
    */
   looksLikeRoot(root: string): boolean {
     try {
@@ -530,6 +532,21 @@ export const akmAdapter: BundleAdapter = {
     } catch {
       return false;
     }
-    return entries.some((entry) => entry.isDirectory() && ownedDirNames.has(entry.name));
+    const ownedDirs = entries.filter((entry) => entry.isDirectory() && ownedDirNames.has(entry.name));
+    if (ownedDirs.length >= 2) return true;
+    const only = ownedDirs[0];
+    if (!only) return false;
+    const expectedType = stashDirToType(only.name);
+    try {
+      const markdown = fs
+        .readdirSync(path.join(root, only.name), { withFileTypes: true })
+        .find((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".md"));
+      if (!markdown) return true;
+      const data = parseFrontmatter(fs.readFileSync(path.join(root, only.name, markdown.name), "utf8")).data;
+      const declaredType = typeof data.type === "string" ? data.type.trim() : "";
+      return !declaredType || declaredType === expectedType;
+    } catch {
+      return true;
+    }
   },
 };

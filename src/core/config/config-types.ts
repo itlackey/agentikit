@@ -122,6 +122,10 @@ export interface ConfiguredSource {
   primary?: boolean;
   /** Pass-through provider-specific options. */
   options?: Record<string, unknown>;
+  /** Adapter selected for the bundle's sole component, when configured. */
+  adapterId?: string;
+  /** Component root relative to the provider's materialized content root. */
+  componentRoot?: string;
 }
 
 /**
