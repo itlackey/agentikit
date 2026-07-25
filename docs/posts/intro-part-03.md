@@ -13,7 +13,7 @@ published: true
 date: '2026-03-17T16:07:09Z'
 ---
 
-> **⚠ Deprecation notice (akm v1):** The OpenViking provider described in this post is no longer supported in akm v1. Configurations using `--provider openviking` will fail to load. This post is preserved for historical reference. See the configuration docs in the repo for current provider options.
+> **⚠ Deprecation notice (akm v1):** The OpenViking provider described in this post is no longer supported in akm v1. Configurations using `--provider openviking` will fail to load. This post is preserved for historical reference. See the [configuration docs](https://github.com/itlackey/akm/blob/main/docs/reference/configuration.md) for current provider options.
 
 This is part three in a series about managing the growing pile of skills, scripts, and context that AI coding agents depend on. In [part one](https://dev.to/itlackey/your-ai-agents-skill-list-is-getting-out-of-hand-32ck), I talked about why progressive disclosure beats loading everything into context. In [part two](https://dev.to/itlackey/you-already-have-dozens-of-agent-skills-you-just-cant-find-them), I showed how `akm` unifies your existing Claude Code, OpenCode, and Cursor assets into one searchable stash.
 
