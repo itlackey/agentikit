@@ -104,7 +104,7 @@ akm-bench compare results/noakm results/akm
 akm-bench attribute results/akm
 ```
 
-The technical reference is at [`docs/technical/benchmark.md`](../technical/benchmark.md).
+The technical reference is at `docs/technical/benchmark.md` in the repo.
 
 ## Security hardening (PR #275)
 
@@ -151,6 +151,6 @@ akm proposal accept <id>
 
 No manual migration is required for users on 0.6.x with no `agent` or `llm.features` blocks configured. Everything new is opt-in.
 
-Full historical details are in the [pre-1.0 migration plan](../archive/pre-1.0-migration.md) and the [0.7.0 release notes](../migration/release-notes/0.7.0.md).
+Full historical details are in the pre-1.0 migration plan and the 0.7.0 release notes, both in the repo.
 
 Full changelog at [CHANGELOG.md](https://github.com/itlackey/akm/blob/main/.github/CHANGELOG.md).
