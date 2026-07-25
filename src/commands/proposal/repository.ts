@@ -110,6 +110,7 @@ import {
   type ProposalSource,
   type ProposalStatus,
 } from "./proposal-types";
+import { hasCanonicalProposalValidator } from "./validators/proposal-validators";
 import { repairProposalContent, validateProposal } from "./validators/proposals";
 
 // ── Proposal domain types (moved to ./proposal-types.ts, WI-9.8 KILL 1) ─────
@@ -148,7 +149,7 @@ export type ProposalRejectionReason =
   | "unknown_type"
   | "empty_content"
   | "missing_description"
-  | "invalid_workflow_structure";
+  | "invalid_canonical_structure";
 
 /** Result of {@link purgeOrphanProposals}. */
 export interface OrphanPurgeResult {
@@ -586,7 +587,7 @@ export function createProposal(
   ];
   const mintedBeforeHash = mintBeforeContent !== undefined ? contentHash(mintBeforeContent) : undefined;
 
-  if (parsedRef.type === "workflow") {
+  if (hasCanonicalProposalValidator(parsedRef.type)) {
     const report = validateProposal({
       id: "pending",
       ref: normalizedRef,
@@ -599,8 +600,8 @@ export function createProposal(
     });
     if (!report.ok) {
       return rejectProposal(
-        "invalid_workflow_structure",
-        `Proposal for "${input.ref}" has invalid workflow structure:\n${report.findings
+        "invalid_canonical_structure",
+        `Proposal for "${input.ref}" has invalid ${parsedRef.type} structure:\n${report.findings
           .map((finding) => `[${finding.kind}] ${finding.message}`)
           .join("\n")}`,
       );

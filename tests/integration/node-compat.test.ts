@@ -725,9 +725,9 @@ describe("tasks parity", () => {
         const doctor = launcherRun(["tasks", "doctor"]);
         assertNoBoundaryLeak(doctor, "Node fallback tasks doctor");
         expect(doctor.status).toBe(0);
-        expect((parseJson(doctor.stdout) as { akm?: { argv?: string[] } })?.akm?.argv?.[1]).toBe(CLI_ENTRY);
+        expect((parseJson(doctor.stdout) as { akm?: { argv?: string[] } })?.akm?.argv?.[1]).toBe(launcher);
 
-        const add = launcherRun(["tasks", "add", id, "--schedule", "@daily", "--command", "akm --version"]);
+        const add = launcherRun(["tasks", "add", id, "--schedule", "@daily", "--command", "akm --version", "--rebind"]);
         assertNoBoundaryLeak(add, "Node fallback tasks add");
         expect(add.status).toBe(0);
         taskAdded = true;
@@ -737,7 +737,7 @@ describe("tasks parity", () => {
           `scheduler output missing\nadd stdout:\n${add.stdout}\nadd stderr:\n${add.stderr}`,
         ).toBe(true);
         const crontab = fs.readFileSync(fakeCrontab, "utf8");
-        expect(crontab).toContain(CLI_ENTRY);
+        expect(crontab).toContain(launcher);
         const scheduled = nodeSpawnSync("/bin/sh", ["-c", generatedCronCommand(crontab, id)], {
           env: schedulerProcessEnv,
           encoding: "utf8",
