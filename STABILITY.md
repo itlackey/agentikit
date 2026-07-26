@@ -244,8 +244,12 @@ akm config set experimental.improveAutonomy true
 
 Without it, these five lanes are downgraded, and each downgrade is **reported,
 not silent**: it warns on stderr naming the lane and the key, appends an
-`improve_skipped` event with `reason: "autonomy_gated"`, and is counted in
-`akm health`'s improve skip-reason summary.
+`improve_skipped` event with `reason: "autonomy_gated"`, is counted in
+`akm health`'s improve skip-reason summary, and is listed by `akm tasks doctor`
+under `improveAutonomy.gatedLanes` — which is where to look when a *scheduled*
+run stops doing something it used to. `akm tasks doctor` also reports the
+**effective** `improveTriage.applyMode`, so a `promote` strategy under a
+review-first config correctly shows `queue`.
 
 | Lane | What it does when enabled | With autonomy off |
 | --- | --- | --- |

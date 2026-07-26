@@ -17,6 +17,7 @@ import { assetPathForName } from "../../core/asset/asset-placement";
 import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import { isWithin, resolveStashDir } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
+import { IMPROVE_AUTONOMY_CONFIG_KEY, isImproveAutonomyEnabled } from "../../core/config/experimental";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { getTaskHistoryDir, getTaskLogDir } from "../../core/paths";
 import {
@@ -49,6 +50,7 @@ import {
 import type { TaskDocument } from "../../tasks/schema";
 import { normaliseTaskId } from "../../tasks/task-id";
 import { validateTaskDocument } from "../../tasks/validator";
+import { applyAutonomyGate } from "../improve/autonomy-gate";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
 
 export interface TasksAddInput {
@@ -631,6 +633,16 @@ export interface TasksDoctorResult {
    * Effective proposal-queue triage settings for the default improve strategy.
    * Absent when the resolved strategy has no `triage` process block.
    */
+  /**
+   * D8 — the autonomy gate's effect on the default improve strategy. A scheduled
+   * run that quietly stopped consolidating is the silent no-op the gate exists
+   * to prevent, and this is where an operator looks for the explanation.
+   */
+  improveAutonomy?: {
+    enabled: boolean;
+    configKey: string;
+    gatedLanes: { lane: string; reason: string }[];
+  };
   improveTriage?: {
     defaultStrategy: string;
     enabled: boolean;
@@ -678,7 +690,18 @@ export async function akmTasksDoctor(
   // strategy. The struct is a fixed shape, so this is a deliberate addition.
   const improveStrategyName =
     typeof config.defaults?.improveStrategy === "string" ? config.defaults.improveStrategy : "default";
-  const triage = resolveImproveStrategy(config.defaults?.improveStrategy, config).config.processes?.triage;
+  // D8 — report the EFFECTIVE strategy, not the raw one. Resolving the raw
+  // strategy here would report `applyMode: "promote"` for a promote strategy
+  // under a review-first config, while the run actually uses "queue" — a doctor
+  // command lying about the thing it exists to diagnose.
+  const rawStrategy = resolveImproveStrategy(config.defaults?.improveStrategy, config).config;
+  const { config: effectiveStrategy, gated } = applyAutonomyGate(rawStrategy, config);
+  const improveAutonomy = {
+    enabled: isImproveAutonomyEnabled(config),
+    configKey: IMPROVE_AUTONOMY_CONFIG_KEY,
+    gatedLanes: gated.map((entry) => ({ lane: entry.lane as string, reason: entry.reason })),
+  };
+  const triage = effectiveStrategy.processes?.triage;
   const improveTriage = triage
     ? {
         defaultStrategy: improveStrategyName,
@@ -699,6 +722,7 @@ export async function akmTasksDoctor(
     engine: { defaultEngine, available: engines },
     scheduleSubset: SCHEDULE_SUPPORTED_SUBSET_HINT,
     warnings,
+    improveAutonomy,
     ...(improveTriage ? { improveTriage } : {}),
   };
 }
