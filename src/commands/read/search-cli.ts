@@ -40,7 +40,7 @@ export const searchCommand = defineJsonCommand({
     type: {
       type: "string",
       description:
-        "Asset type filter (skill, command, agent, knowledge, workflow, script, memory, env, secret, lesson, or any). Use workflow to find step-by-step task assets.",
+        "Asset type filter — free-form, exact match, unvalidated; an unknown type returns no hits (default: any). Built-ins: skill, command, agent, knowledge, workflow, script, memory, lesson, task, session, fact, env, secret, instruction — plus any adapter-defined type (e.g. website, wiki-source, a wiki pageKind). Use workflow to find step-by-step task assets.",
     },
     limit: { type: "string", description: "Maximum number of results" },
     source: { type: "string", description: "Search source (stash|registry|both)", default: "stash" },
@@ -124,7 +124,7 @@ export const curateCommand = defineJsonCommand({
     type: {
       type: "string",
       description:
-        "Asset type filter (skill, command, agent, knowledge, workflow, script, memory, env, secret, lesson, or any). Use workflow to curate step-by-step task assets.",
+        "Asset type filter — free-form, exact match, unvalidated; an unknown type returns no hits (default: any). Built-ins: skill, command, agent, knowledge, workflow, script, memory, lesson, task, session, fact, env, secret, instruction — plus any adapter-defined type (e.g. website, wiki-source, a wiki pageKind). Use workflow to curate step-by-step task assets.",
     },
     limit: { type: "string", description: "Maximum number of curated results", default: "4" },
     source: { type: "string", description: "Search source (stash|registry|both)", default: "stash" },
