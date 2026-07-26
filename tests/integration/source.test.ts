@@ -340,82 +340,26 @@ Creates a user.
     expect(result.content).toContain("## Authentication");
   });
 
-  test("akmShow returns TOC for knowledge with view toc", async () => {
+  test("akmShow extracts a section for knowledge via #fragment", async () => {
     const stashDir = createTmpDir("akm-stash-");
     writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC);
 
     process.env.AKM_STASH_DIR = stashDir;
-    const result = await akmShow({ ref: "knowledge/api-guide.md", view: { mode: "toc" } });
-
-    expect(result.type).toBe("knowledge");
-    expect(result.content).toContain("# Overview");
-    expect(result.content).toContain("## Authentication");
-    expect(result.content).toContain("## Endpoints");
-    expect(result.content).toContain("lines total");
-  });
-
-  test("akmShow extracts section for knowledge", async () => {
-    const stashDir = createTmpDir("akm-stash-");
-    writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC);
-
-    process.env.AKM_STASH_DIR = stashDir;
-    const result = await akmShow({
-      ref: "knowledge/api-guide.md",
-      view: { mode: "section", heading: "Authentication" },
-    });
+    const result = await akmShow({ ref: "knowledge/api-guide.md#authentication" });
 
     expect(result.type).toBe("knowledge");
     expect(result.content).toContain("bearer tokens");
     expect(result.content).not.toContain("Endpoints");
   });
 
-  test("akmShow extracts line range for knowledge", async () => {
+  test("akmShow lists the available slugs when the fragment does not match", async () => {
     const stashDir = createTmpDir("akm-stash-");
     writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC);
 
     process.env.AKM_STASH_DIR = stashDir;
-    const result = await akmShow({ ref: "knowledge/api-guide.md", view: { mode: "lines", start: 5, end: 7 } });
-
-    expect(result.type).toBe("knowledge");
-    expect(result.content).toContain("# Overview");
-  });
-
-  test("akmShow extracts frontmatter for knowledge", async () => {
-    const stashDir = createTmpDir("akm-stash-");
-    writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC);
-
-    process.env.AKM_STASH_DIR = stashDir;
-    const result = await akmShow({ ref: "knowledge/api-guide.md", view: { mode: "frontmatter" } });
-
-    expect(result.type).toBe("knowledge");
-    expect(result.content).toContain("title: API Guide");
-    expect(result.content).not.toContain("# Overview");
-  });
-
-  test("akmShow returns no-frontmatter message when missing", async () => {
-    const stashDir = createTmpDir("akm-stash-");
-    writeFile(path.join(stashDir, "knowledge", "plain.md"), "# Just a heading\nSome text.\n");
-
-    process.env.AKM_STASH_DIR = stashDir;
-    const result = await akmShow({ ref: "knowledge/plain.md", view: { mode: "frontmatter" } });
-
-    expect(result.content).toBe("(no frontmatter)");
-  });
-
-  test("akmShow returns helpful message for missing section in knowledge", async () => {
-    const stashDir = createTmpDir("akm-stash-");
-    writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC);
-
-    process.env.AKM_STASH_DIR = stashDir;
-    const result = await akmShow({
-      ref: "knowledge/api-guide.md",
-      view: { mode: "section", heading: "Nonexistent" },
-    });
-    expect(result.type).toBe("knowledge");
-    expect(result.content).toContain('Section "Nonexistent" not found');
-    expect(result.content).toContain("akm show");
-    expect(result.content).toContain("toc");
-    expect(result.content).toContain("discover available headings");
+    await expect(akmShow({ ref: "knowledge/api-guide.md#nonexistent" })).rejects.toThrow(
+      /Available fragments: #overview, #authentication, #endpoints/,
+    );
   });
 
   test("akmShow for script type returns run", async () => {

@@ -12,9 +12,11 @@
 import { type ArgsDef, type CommandContext, type CommandDef, defineCommand } from "citty";
 import { stringify as yamlStringify } from "yaml";
 import { assertNever } from "../core/assert";
-import { AkmError, UsageError } from "../core/errors";
+import { AkmError } from "../core/errors";
 import { getOutputMode, type OutputMode } from "../output/context";
+import { renderGenericHtml, renderGenericMarkdown } from "../output/generic-render";
 import { deliverRendered } from "../output/html-render";
+import { getHtmlRendererHandler, getMdRendererHandler } from "../output/render-registry";
 import { shapeForCommand } from "../output/shapes";
 import { formatPlain, outputJsonl } from "../output/text";
 import { parseAllFlagValues } from "./invocation";
@@ -118,17 +120,46 @@ export type JsonCommandDef<T extends ArgsDef = ArgsDef> = Omit<CommandDef<T>, "r
 };
 
 /**
+ * The global output flags, redeclared on every leaf command.
+ *
+ * citty parses each command level against only that command's own args, so a
+ * flag declared on the root command is UNKNOWN at the leaf — and an unknown
+ * flag does not consume its space-separated value, which then falls through as
+ * a positional. `akm sync --format json` once synced a bundle named "json",
+ * and `akm env unset env:x KEY --format json` once tried to unset a key named
+ * "json"; both grew bespoke argv-inspection workarounds. Declaring the flags
+ * at the leaf lets the parser consume the value, which is the root-cause fix.
+ *
+ * These declarations exist for PARSING only. The output mode is still read
+ * exactly once, from the invocation singleton at startup — no command body may
+ * read these args (that is the same one-parse rule `cli/invocation.ts`
+ * documents).
+ */
+export const GLOBAL_OUTPUT_ARGS = {
+  format: { type: "string", description: "Output format: json|jsonl|yaml|text|md|html (global flag)" },
+  detail: { type: "string", description: "Output detail: brief|normal|full (global flag)" },
+  shape: { type: "string", description: "Output projection: human|agent|summary (global flag)" },
+  output: { type: "string", description: "Write rendered output to a file instead of stdout (global flag)" },
+} as const satisfies ArgsDef;
+
+/**
  * Define a citty command whose `run` body is automatically wrapped in
  * `runWithJsonErrors`, so the handler emits a byte-identical JSON error
  * envelope (stdout/stderr/exit-code) on throw without the boilerplate. A
  * command without a `run` (a pure subcommand group) is passed through
  * unchanged.
+ *
+ * Every command defined here also accepts the {@link GLOBAL_OUTPUT_ARGS} so
+ * their values are parsed rather than mis-captured as positionals; a command
+ * declaring its own arg of the same name wins (e.g. `hints` has its own
+ * `detail`).
  */
 export function defineJsonCommand<const T extends ArgsDef = ArgsDef>(def: JsonCommandDef<T>): CommandDef<T> {
   const { run, ...rest } = def;
-  if (!run) return defineCommand({ ...rest } as CommandDef<T>);
+  const withGlobals = { ...rest, args: { ...GLOBAL_OUTPUT_ARGS, ...rest.args } };
+  if (!run) return defineCommand(withGlobals as CommandDef<T>);
   return defineCommand({
-    ...rest,
+    ...withGlobals,
     run: (context: CommandContext<T>) => runWithJsonErrors(() => run(context)),
   } as CommandDef<T>);
 }
@@ -198,21 +229,20 @@ export function output(command: string, result: unknown): void {
       deliverRendered(plain ?? JSON.stringify(shaped, null, 2), mode.outputPath);
       return;
     }
-    case "md":
-      // `--format md` is currently only consumed by `akm health` for the
-      // per-run / window-compare table renderings. Commands that don't
-      // implement an md renderer fall back to the JSON envelope so
-      // pipelines never get an empty stdout.
-      deliverRendered(JSON.stringify(shaped, null, 2), mode.outputPath);
+    case "md": {
+      // D7 — registry first, generic rendering of the shaped envelope second.
+      // No command emits JSON under `--format md` any more: silently handing
+      // back the wrong format was the worst of the three behaviours this
+      // replaced.
+      const rendered = getMdRendererHandler(command)?.(shaped, mode.detail);
+      deliverRendered(rendered ?? renderGenericMarkdown(command, shaped), mode.outputPath);
       return;
-    case "html":
-      // `akm health` intercepts `mode.format === "html"` before reaching
-      // output() (cli.ts, same as the `md` intercept) and renders its own
-      // bespoke template. Every other command has no HTML surface — the
-      // generic JSON-in-<pre> fallback template was removed (chunk-9 WI-9.4c
-      // / Decision 4); `html` stays a valid --format value (OUTPUT_FORMATS),
-      // it just only resolves for health.
-      throw new UsageError("html output is only available for `akm health`", "INVALID_FLAG_VALUE");
+    }
+    case "html": {
+      const rendered = getHtmlRendererHandler(command)?.(shaped, mode.detail);
+      deliverRendered(rendered ?? renderGenericHtml(command, shaped), mode.outputPath);
+      return;
+    }
   }
 }
 

@@ -55,7 +55,7 @@ akm registry search "<query>"                 # Search all registries
 | skill | Instructions to follow (read the full content) |
 | command | A prompt template with placeholders to fill in |
 | agent | A system prompt with model and tool hints |
-| knowledge | A reference doc (use `toc` or `section "..."` to navigate) |
+| knowledge | A reference doc (append `#<heading-slug>` to the ref to read one section) |
 | workflow | Parsed steps plus workflow-specific execution commands |
 | memory | Recalled context (read the content for background information) |
 | env | A `.env` file of related CONFIGURATION (many vars; sensitive or not — all protected); key names only. Inject with `akm env run <ref> -- <cmd>` (the agent-safe path — values stay on disk). |

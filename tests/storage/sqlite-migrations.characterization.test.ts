@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { FROZEN_WORKFLOW_MIGRATIONS } from "../../scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies";
-import { runMigrations as runStateMigrations } from "../../src/core/state/migrations";
+import { runMigrations as runStateMigrations, STATE_MIGRATIONS } from "../../src/core/state/migrations";
 import { openStateDatabase } from "../../src/core/state-db";
 import type { Database as AkmDatabase } from "../../src/storage/database";
 import { migrationChecksum, runMigrations as runSqliteMigrations } from "../../src/storage/engines/sqlite-migrations";
@@ -65,6 +65,12 @@ describe("SQLite migration runner characterization", () => {
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("state.db: released initial migration body remains checksum-sealed", () => {
+    const initial = STATE_MIGRATIONS[0];
+    if (!initial) throw new Error("Initial state migration is missing");
+    expect(migrationChecksum(initial)).toBe("670c210dabf8c12022678aac76b90531321b33f7a328b99c52f38bda224be6c3");
   });
 
   test("state.db: fresh-DB migration replay produces a stable schema + ledger", () => {

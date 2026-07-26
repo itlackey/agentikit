@@ -49,6 +49,8 @@ import {
   A_WORKFLOW_NAME,
   agentRef,
   commandRef,
+  D_FRAGMENT_NAME,
+  fragmentRef,
   knowledgeRef,
   lessonRef,
   memoryRef,
@@ -444,12 +446,12 @@ describe("family D — argv-handling surfaces", () => {
     });
   });
 
-  test("show <ref> lines 1 2 --format=text — normalizeShowArgv view-mode", async () => {
-    writeFile("knowledge/lines-fixture.md", "# Heading\nline2\nline3\nline4\n");
-    const result = await runCli(["show", "knowledge/lines-fixture.md", "lines", "1", "2", "--format=text"]);
+  test("show <ref>#<slug> --format=text — fragment section selector", async () => {
+    writeFile(`knowledge/${D_FRAGMENT_NAME}`, "# Heading\nintro\n\n## Details\ndetail body\n");
+    const result = await runCli(["show", `${fragmentRef()}#details`, "--format=text"]);
     expect(result.code).toBe(0);
     expectGolden(
-      "tests/fixtures/goldens/cli/d-show-lines-view.json",
+      "tests/fixtures/goldens/cli/d-show-fragment.json",
       { exitCode: result.code, stdoutScrubbed: result.stdout },
       { stash: stashDir },
     );

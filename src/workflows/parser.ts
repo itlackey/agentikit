@@ -5,11 +5,10 @@
 /**
  * Workflow markdown → WorkflowDocument JSON.
  *
- * Composition over invention: frontmatter is parsed with the `yaml` package,
- * heading discovery with `parseMarkdownToc`, and section bodies with
- * `extractLineRange` — all already in the codebase. The parser walks the
- * heading list once to assemble a `WorkflowDocument` with `SourceRef`
- * line spans, accumulating `WorkflowError`s rather than throwing.
+ * Composition over invention: frontmatter is parsed with the `yaml` package and
+ * heading discovery with `parseMarkdownToc` — both already in the codebase. The
+ * parser walks the heading list once to assemble a `WorkflowDocument` with
+ * `SourceRef` line spans, accumulating `WorkflowError`s rather than throwing.
  */
 
 import { parse as yamlParse } from "yaml";

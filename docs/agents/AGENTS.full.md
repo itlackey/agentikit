@@ -11,8 +11,9 @@ akm search "<query>" --source both            # Also search registries for insta
 akm search "<query>" --source registry        # Search registries only
 akm search "<query>" --limit 10               # Limit results
 akm search "<query>" --detail full            # Include scores, paths, timing
-akm search "memories/projectA/"                 # Enumerate a typed subtree (ref-prefix; trailing slash required)
-akm search "knowledge:"                       # List every asset of a type
+akm search "memories/projectA/"               # Enumerate a subtree (conceptId prefix; trailing slash required)
+akm search "knowledge/"                       # List every knowledge item
+akm search "team-catalog//"                   # List every item in one bundle
 akm curate "<task>"                          # Curate the best matches for a task
 ```
 
@@ -34,7 +35,7 @@ prefix copied from search output works as a query verbatim.
 
 ## Show
 
-Display an asset by ref. Knowledge assets support view modes as positional arguments.
+Display an asset by ref. On a markdown document `#fragment` selects one section by heading slug.
 
 ```sh
 akm show scripts/deploy.sh                     # Show script (returns run command)
@@ -42,10 +43,10 @@ akm show skills/code-review                    # Show skill (returns full conten
 akm show commands/release                      # Show command (returns template)
 akm show agents/architect                      # Show agent (returns system prompt)
 akm show workflows/ship-release                # Show parsed workflow steps
-akm show knowledge/guide toc                  # Table of contents
-akm show knowledge/guide section "Auth"       # Specific section
-akm show knowledge/guide lines 10 30          # Line range
-akm show knowledge/my-doc                    # Show a knowledge asset
+akm show knowledge/guide                       # Whole document
+akm show knowledge/guide#auth                  # Just the "Auth" section
+akm show knowledge/guide#nope                  # Lists the available fragment slugs
+akm show knowledge/my-doc                      # Show a knowledge asset
 akm show research//pages/ml-basics           # Show a page in the "research" LLM Wiki bundle
 akm wiki show research                        # Wiki summary (bundle-level overview)
 ```
@@ -56,12 +57,12 @@ akm wiki show research                        # Wiki summary (bundle-level overv
 | skill | `content` (full SKILL.md) |
 | command | `template`, `description`, `parameters` |
 | agent | `prompt`, `description`, `modelHint`, `toolPolicy` |
-| knowledge | `content` (with view modes: `full`, `toc`, `frontmatter`, `section`, `lines`) |
+| knowledge | `content` (whole document, or one section via `#fragment`) |
 | workflow | `workflowTitle`, `workflowParameters`, `steps` |
 | memory | `content` (recalled context) |
 | env | `keys` (values and comment text are never returned) |
 | secret | metadata only (the single value is never returned) |
-| wiki | `content` (same view modes as knowledge). For any wiki task, run `akm wiki list`. `akm wiki ingest <name>` dispatches the configured agent engine (defaults.engine or `--engine`) to execute the ingest workflow. |
+| wiki | `content` (same `#fragment` selection as knowledge). For any wiki task, run `akm wiki list`. `akm wiki ingest <name>` dispatches the configured agent engine (defaults.engine or `--engine`) to execute the ingest workflow. |
 | lesson | `content` plus `when_to_use` from frontmatter — read both before applying the lesson |
 
 `akm show wiki:<name>` returns the same summary as `akm wiki show <name>`: path,
@@ -196,10 +197,10 @@ When `--dest` is provided, `akm setup` is not required first.
 
 ## Move / Rename
 
-There is no rename command. **A rename is delete plus create**: the new path is
-a new identity, so the destination starts with fresh learned state (utility,
-salience, usage history) and inbound refs to the old path dangle. Prefer NOT
-renaming — a ref is chosen once. When a rename is unavoidable:
+**A rename is delete plus create**: the new path is a new identity, so the
+destination starts with fresh learned state (utility, salience, usage history)
+and inbound refs to the old path dangle. Prefer NOT renaming — a ref is chosen
+once. When a rename is unavoidable:
 
 ```sh
 mv ~/akm/memories/projectA/old-note.md ~/akm/memories/projectA/new-note.md
@@ -212,9 +213,10 @@ A memory's `.derived.md` twin must move with its base. Moving an item between
 bundles is `akm clone` (or a copy) followed by deleting the source — both the
 bundle and the concept identity change.
 
-(`akm mv` existed through 0.9.0-rc and was removed: it rewrote bare conceptIds,
-which are prose rather than refs, and matched no fully-qualified `bundle//`
-form at all.)
+(`akm mv` ships, but it is **Experimental** and defective for prose-ref
+rewriting: it rewrites bare conceptIds, which are prose rather than refs, and
+matches no fully-qualified `bundle//` form at all — so it edits text that is not
+a ref while leaving real refs dangling. Use the procedure above.)
 
 ## Sync
 

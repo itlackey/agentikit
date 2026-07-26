@@ -22,7 +22,7 @@ import { parseMetaRef } from "../../core/asset/stash-meta";
 import { UsageError } from "../../core/errors";
 import { resolveUsageEventSource } from "../../indexer/usage/usage-events";
 import { getHyphenatedBoolean, getOutputMode } from "../../output/context";
-import type { KnowledgeView, ShowDetailLevel } from "../../sources/types";
+import type { ShowDetailLevel } from "../../sources/types";
 import { akmCurate } from "./curate";
 import { akmSearch, parseBeliefFilterMode, parseScopeFilterFlags, parseSearchSource } from "./search";
 import { akmShowUnified } from "./show";
@@ -33,14 +33,14 @@ export const searchCommand = defineJsonCommand({
     query: {
       type: "positional",
       description:
-        'Search query (omit to list all assets). A ref-prefix query — "<type>:<prefix>/" or bare "<type>:" — enumerates that subtree/type instead of keyword-matching; an explicit --type wins over the parsed type.',
+        'Search query (omit to list all assets). A conceptId-prefix query — "memories/projecta/", "bundle//", "bundle//skills/" — enumerates that subtree instead of keyword-matching; a trailing "/" is required, and an explicit --type wins over the prefix.',
       required: false,
       default: "",
     },
     type: {
       type: "string",
       description:
-        "Asset type filter (skill, command, agent, knowledge, workflow, script, memory, env, secret, lesson, or any). Use workflow to find step-by-step task assets.",
+        "Asset type filter — free-form, exact match, unvalidated; an unknown type returns no hits (default: any). Built-ins: skill, command, agent, knowledge, workflow, script, memory, lesson, task, session, fact, env, secret, instruction — plus any adapter-defined type (e.g. website, wiki-source, a wiki pageKind). Use workflow to find step-by-step task assets.",
     },
     limit: { type: "string", description: "Maximum number of results" },
     source: { type: "string", description: "Search source (stash|registry|both)", default: "stash" },
@@ -124,7 +124,7 @@ export const curateCommand = defineJsonCommand({
     type: {
       type: "string",
       description:
-        "Asset type filter (skill, command, agent, knowledge, workflow, script, memory, env, secret, lesson, or any). Use workflow to curate step-by-step task assets.",
+        "Asset type filter — free-form, exact match, unvalidated; an unknown type returns no hits (default: any). Built-ins: skill, command, agent, knowledge, workflow, script, memory, lesson, task, session, fact, env, secret, instruction — plus any adapter-defined type (e.g. website, wiki-source, a wiki pageKind). Use workflow to curate step-by-step task assets.",
     },
     limit: { type: "string", description: "Maximum number of curated results", default: "4" },
     source: { type: "string", description: "Search source (stash|registry|both)", default: "stash" },
@@ -160,17 +160,35 @@ export const curateCommand = defineJsonCommand({
   },
 });
 
+/**
+ * Reject any positional after the ref. The
+ * `akm show <ref> toc|section "H"|lines A B|frontmatter|full` view grammar was
+ * removed in 0.9.0; its keywords used to be rewritten into hidden flags before
+ * citty saw argv, so without this guard a stale invocation would silently
+ * render the whole item instead of the view the caller asked for.
+ */
+function rejectExtraShowPositionals(positionals: unknown, ref: string): void {
+  const extra = (Array.isArray(positionals) ? (positionals as unknown[]).map(String) : []).slice(1);
+  if (extra.length === 0) return;
+  throw new UsageError(
+    `akm show takes a single ref, but got ${extra.map((token) => `"${token}"`).join(" ")} after "${ref}". ` +
+      "The view-mode grammar (toc|section|lines|frontmatter|full) was removed in 0.9.0 — use " +
+      `\`akm show ${ref}#<heading-slug>\` to read one section, or \`akm show ${ref}\` for the whole item.`,
+    "INVALID_FLAG_VALUE",
+    "An unmatched #fragment lists the available slugs.",
+  );
+}
+
 export const showCommand = defineJsonCommand({
   meta: {
     name: "show",
-    description:
-      "Show a stash asset by ref (e.g. akm show knowledge/guide.md toc, akm show knowledge/guide.md section 'Auth')",
+    description: "Show a stash asset by ref (e.g. akm show knowledge/guide.md, akm show knowledge/guide.md#auth)",
   },
   args: {
     ref: {
       type: "positional",
       description:
-        'Asset ref ([bundle//]conceptId) optionally followed by a view mode. View modes: `toc` (table of contents), `section "Heading"` (extract one section), `lines <start> <end>` (line range), `frontmatter` (YAML metadata only), `full` (raw file). Example: `akm show knowledge/guide.md section "Auth"`.',
+        "Asset ref ([bundle//]conceptId[#fragment]). On a markdown document `#fragment` selects one section by heading slug, and an unmatched fragment lists the available slugs. Example: `akm show knowledge/guide.md#auth`.",
       required: true,
     },
     format: { type: "string", description: "Output format (json|jsonl|text|yaml)" },
@@ -187,38 +205,8 @@ export const showCommand = defineJsonCommand({
     // not a typed asset ref — skip ref validation and let akmShowUnified
     // direct-read it. (the ref parser would reject the non-type `meta`.)
     if (!parseMetaRef(args.ref)) parseBundleRef(args.ref);
-    // The knowledge-view positional syntax (`akm show knowledge/foo section "Auth"`)
-    // is rewritten to `--akmView` / `--akmHeading` / `--akmStart` / `--akmEnd`
-    // by `normalizeShowArgv` before citty parses argv. We read those values
-    // directly via `getParsedInvocation()` so the flags don't surface as
-    // user-facing options in `akm show --help`.
+    rejectExtraShowPositionals(args._, args.ref);
     const invocation = getParsedInvocation();
-    const akmView = invocation.getFlagValue("--akmView");
-    const akmHeading = invocation.getFlagValue("--akmHeading");
-    const akmStart = invocation.getFlagValue("--akmStart");
-    const akmEnd = invocation.getFlagValue("--akmEnd");
-    let view: KnowledgeView | undefined;
-    if (akmView) {
-      switch (akmView) {
-        case "section":
-          view = { mode: "section", heading: akmHeading ?? "" };
-          break;
-        case "lines":
-          view = {
-            mode: "lines",
-            start: Number(akmStart ?? "1"),
-            end: akmEnd ? parseInt(akmEnd, 10) : Number.MAX_SAFE_INTEGER,
-          };
-          break;
-        case "toc":
-        case "frontmatter":
-        case "full":
-          view = { mode: akmView };
-          break;
-        default:
-          throw new UsageError(`Unknown view mode: ${akmView}. Expected one of: full|toc|frontmatter|section|lines`);
-      }
-    }
     const cliShape = getOutputMode().shape;
     const explicitDetail = invocation.getFlagValue("--detail");
     // `--shape summary` selects the compact metadata projection for show.
@@ -231,7 +219,6 @@ export const showCommand = defineJsonCommand({
     const scope = parseScopeFilterFlags(scopeTokens, "--scope");
     const result = await akmShowUnified({
       ref: args.ref,
-      view,
       detail: showDetail,
       scope,
       eventSource: resolveUsageEventSource(),

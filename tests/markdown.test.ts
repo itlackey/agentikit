@@ -1,12 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  extractFrontmatterOnly,
-  extractLineRange,
-  extractSection,
-  formatToc,
-  markdownFragmentSlugs,
-  parseMarkdownToc,
-} from "../src/core/asset/markdown";
+import { extractSection, markdownFragmentSlugs, parseMarkdownToc } from "../src/core/asset/markdown";
 
 const SAMPLE_DOC = `---
 title: Guide
@@ -132,49 +125,6 @@ test("markdown fragments replace punctuation runs with separators", () => {
   const content = "# Foo.Bar\n\nDot body.\n";
   expect(markdownFragmentSlugs(content)).toEqual(["foo-bar"]);
   expect(extractSection(content, "foo-bar")?.content).toContain("Dot body.");
-});
-
-test("extractLineRange returns correct lines (1-based inclusive)", () => {
-  const content = "line1\nline2\nline3\nline4\nline5";
-  expect(extractLineRange(content, 2, 4)).toBe("line2\nline3\nline4");
-});
-
-test("extractLineRange clamps to valid range", () => {
-  const content = "line1\nline2\nline3";
-  expect(extractLineRange(content, 0, 100)).toBe("line1\nline2\nline3");
-  expect(extractLineRange(content, 2, 2)).toBe("line2");
-});
-
-test("extractLineRange returns empty when end is before start", () => {
-  const content = "line1\nline2\nline3\nline4\nline5";
-  expect(extractLineRange(content, 5, 2)).toBe("");
-});
-
-test("extractFrontmatterOnly returns YAML block", () => {
-  const fm = extractFrontmatterOnly(SAMPLE_DOC);
-  expect(fm).not.toBeNull();
-  expect(fm).toContain("title: Guide");
-  expect(fm).toContain('description: "A test guide"');
-});
-
-test("extractFrontmatterOnly returns null when no frontmatter", () => {
-  expect(extractFrontmatterOnly("# Just a heading\n")).toBeNull();
-});
-
-test("formatToc produces readable output with line numbers", () => {
-  const toc = parseMarkdownToc(SAMPLE_DOC);
-  const output = formatToc(toc);
-  expect(output).toContain("# Getting Started");
-  expect(output).toContain("## Installation");
-  expect(output).toContain("### Advanced Config");
-  expect(output).toContain("lines total");
-  expect(output).toMatch(/L\s*\d+/);
-});
-
-test("formatToc handles empty headings", () => {
-  const output = formatToc({ headings: [], totalLines: 5 });
-  expect(output).toContain("no headings found");
-  expect(output).toContain("5 lines total");
 });
 
 test("parseMarkdownToc skips headings inside fenced code blocks", () => {

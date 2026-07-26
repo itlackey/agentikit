@@ -118,6 +118,10 @@ describe("resolveImprovePlan", () => {
       semanticSearchMode: "off",
       engines: { default: llm },
       defaults: { llmEngine: "default" },
+      // D8 — `consolidate` and `memoryInference` are only *enabled* when autonomy
+      // is opted into; without this the gate disables them and they resolve no
+      // runner, which is the gate working rather than the preflight failing.
+      experimental: { improveAutonomy: true },
       improve: {
         strategies: {
           all: {

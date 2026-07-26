@@ -75,6 +75,7 @@ import { type ArgsDef, defineCommand, runMain } from "citty";
 import {
   findCittyTopLevelCommand,
   findCittyTopLevelCommandIndex,
+  getParsedInvocation,
   parseAllFlagValues,
   resolveHelpMigrateVersionArg,
   setParsedInvocation,
@@ -89,7 +90,7 @@ import { secretCommand } from "./commands/env/secret-cli";
 import { feedbackCommand } from "./commands/feedback-cli";
 import { graphCommand } from "./commands/graph/graph-cli";
 import { akmHealth } from "./commands/health";
-import { renderRunsDetailMd, renderWindowCompareMd } from "./commands/health/md-report";
+import "./commands/health/renderers";
 import type { WindowSpec } from "./commands/health/types";
 import { parseWindowSpec } from "./commands/health/windows";
 import { extractCommand } from "./commands/improve/extract-cli";
@@ -100,7 +101,6 @@ import { hintsCommand, lessonsCommand, logCommand } from "./commands/observabili
 import { proposalCommand } from "./commands/proposal/proposal-cli";
 import { rememberCommand } from "./commands/read/remember-cli";
 import { curateCommand, searchCommand, showCommand } from "./commands/read/search-cli";
-import { normalizeShowArgv } from "./commands/read/show";
 import { registryCommand } from "./commands/registry-cli";
 import { addCommand } from "./commands/sources/add-cli";
 import { renderMigrationHelp } from "./commands/sources/migration-help";
@@ -121,10 +121,10 @@ import { UsageError } from "./core/errors";
 import { assertNoPendingMigrationOperation } from "./core/migration-operation";
 import { getConfigPath } from "./core/paths";
 import { plainize } from "./core/tty";
-import { info, isQuiet, setQuiet, setVerbose } from "./core/warn";
+import { info, isQuiet, setQuiet, setVerbose, warn } from "./core/warn";
 import { disposeDispatchResources } from "./integrations/agent/runner-dispatch";
 import { getHyphenatedBoolean, getOutputMode, initOutputMode } from "./output/context";
-import { deliverRendered, renderHtml, resolveTemplatePath } from "./output/html-render";
+import { isFormatExemptCommand } from "./output/format-exempt";
 import { consumeSchedulerContextArg } from "./tasks/scheduler-invocation";
 import { pkgVersion } from "./version";
 
@@ -315,9 +315,11 @@ const healthCommand = defineCommand({
       description:
         "Explicit comparison window 'name=...,since=ISO,until=ISO' (repeatable, up to 4; mutually exclusive with --window-compare)",
     },
-    compare: {
-      type: "string",
-      description: "Comparison window for the --format html report's trend deltas (default: 24h)",
+    report: {
+      type: "boolean",
+      description:
+        "Fetch the full report dataset: per-run rows, trend deltas vs the prior window, and the pending proposal queue. Renders as the rich report under --format md/html and as complete data under any other format.",
+      default: false,
     },
   },
   async run({ args }) {
@@ -329,57 +331,39 @@ const healthCommand = defineCommand({
       const windows: WindowSpec[] | undefined =
         rawWindows.length > 0 ? rawWindows.map((raw) => parseWindowSpec(raw)) : undefined;
       const groupBy = args["group-by"];
-      const windowCompareRaw = args["window-compare"];
-      const mode = getOutputMode();
+      const report = args.report === true;
 
-      // `--format html` is health-specific: render the full HTML health
-      // report (charts, KPI cards, advisories) from the bespoke template.
-      // Mirrors the `md` intercept below. Two reads, exactly like the
-      // retired akm-health-report skill: the canonical per-run window plus a
-      // window-compare read for the trend deltas (defaults to 24h,
-      // overridable via --compare).
-      if (mode.format === "html") {
-        // Default the compare window to the report's own `--since` window so the
-        // trend deltas are like-for-like (e.g. last 7d vs the prior 7d). A fixed
-        // 24h default made a `--since 7d` report compare its 7-day totals against
-        // a 24-hour prior window, producing meaningless deltas.
-        const compare = args.compare ?? windowCompareRaw ?? args.since ?? "24h";
-        const result = akmHealth({ since: args.since, groupBy: "run", windowCompare: compare });
-        resultStatus = result.status;
-        const deltas = result.deltas;
-        const { buildHealthHtmlReplacements } = await import("./commands/health/html-report");
-        const { listPendingProposals } = await import("./commands/proposal/proposal");
-        const replacements = buildHealthHtmlReplacements(result, {
-          window: args.since ?? "24h",
-          compare,
-          proposals: listPendingProposals(),
-          deltas,
-        });
-        deliverRendered(renderHtml(resolveTemplatePath("health"), replacements), mode.outputPath);
-        return;
-      }
-
-      const result = akmHealth({
+      // `--report` is a DATA flag: it selects the richer read (per-run rows +
+      // window-compare deltas + the proposal queue) and nothing about the read
+      // depends on --format. The registered md/html renderers are pure
+      // functions of the result — a report-shaped result renders as the rich
+      // report, any other shape falls through to the generic rendering.
+      //
+      // The compare window defaults to the report's own `--since` window so the
+      // deltas are like-for-like (e.g. last 7d vs the prior 7d). A fixed 24h
+      // default made a `--since 7d` report compare its 7-day totals against a
+      // 24-hour prior window, producing meaningless deltas.
+      const windowCompare = report ? (args["window-compare"] ?? args.since ?? "24h") : args["window-compare"];
+      const base = akmHealth({
         since: args.since,
-        groupBy: groupBy as "run" | undefined,
-        windowCompare: windowCompareRaw,
+        groupBy: report ? "run" : (groupBy as "run" | undefined),
+        windowCompare,
         windows,
       });
-      resultStatus = result.status;
-      // `--format md` is health-specific: render a TSV-shaped per-run or
-      // window-compare table to stdout instead of going through the JSON
-      // envelope. Other modes fall through to the standard output() path.
-      if (mode.format === "md") {
-        if (result.windows && result.windows.length > 0) {
-          deliverRendered(renderWindowCompareMd(result.windows, result.deltas), mode.outputPath);
-        } else if (result.runs) {
-          deliverRendered(renderRunsDetailMd(result.runs), mode.outputPath);
-        } else {
-          output("health", result);
-        }
-      } else {
-        output("health", result);
+      resultStatus = base.status;
+      if (report) {
+        const { listPendingProposals } = await import("./commands/proposal/proposal");
+        output("health", {
+          ...base,
+          report: {
+            window: args.since ?? "24h",
+            compare: windowCompare as string,
+            pendingProposals: listPendingProposals().map(({ ref, source, createdAt }) => ({ ref, source, createdAt })),
+          },
+        });
+        return;
       }
+      output("health", base);
     });
     if (resultStatus === "fail") {
       process.exit(EXIT_GENERAL);
@@ -600,9 +584,6 @@ if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
   } catch (error: unknown) {
     emitJsonError(error);
   }
-  // citty reads process.argv directly and does not accept a custom argv array,
-  // so we must replace process.argv with the normalized version before runMain.
-  process.argv = normalizeShowArgv(process.argv);
   // Mint the ParsedInvocation singleton from the (normalized) argv — the ONE
   // place argv is parsed for the whole process (plan §10.7 / chunk-9 WI-9.9).
   // Every out-of-cli.ts command module reads argv state through
@@ -631,6 +612,20 @@ if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
   const topLevelCommand = findCittyTopLevelCommand(process.argv.slice(2), MAIN_TOP_LEVEL_ARGS);
   if (getOutputMode().shape === "summary" && topLevelCommand !== "show") {
     emitJsonError(new UsageError("'--shape summary' is only valid on 'akm show'.", "INVALID_SHAPE_VALUE"));
+  }
+
+  // D7 — every command that renders through output() honours all six --format
+  // values. The declared exempt set (src/output/format-exempt.ts) does not
+  // render an envelope at all, so warn rather than pretend: silently ignoring
+  // the flag is what made the old md/html behaviour so hard to discover. A
+  // warning, not an error, because the flag is harmless here and scripts that
+  // pass --format globally to a mixed batch of commands should still work.
+  const invocation = getParsedInvocation();
+  if (
+    (invocation.hasFlag("--format") || invocation.getFlagValue("--format") !== undefined) &&
+    isFormatExemptCommand(topLevelCommand, invocation.userArgs[1])
+  ) {
+    warn(`[output] '--format' has no effect on 'akm ${topLevelCommand}' — its output is not a result envelope.`);
   }
 
   // First-time-user breadcrumb: when run with no subcommand AND no config

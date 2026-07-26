@@ -529,23 +529,37 @@ describe("akmShow content-based classification", () => {
     expect(result.template).toBe("Build the project.");
     expect(result.agent).toBe("build");
   });
+});
 
-  test("knowledge view modes work through new renderer pipeline", async () => {
-    writeFile(
-      path.join(stashDir, "knowledge", "guide.md"),
-      ["# Intro", "Welcome.", "", "## Setup", "Install things.", "", "## Usage", "Use things."].join("\n"),
-    );
+// ── Markdown fragments (the only section selector — D2) ──────────────────────
 
+describe("akmShow markdown fragments", () => {
+  const GUIDE = ["# Intro", "Welcome.", "", "## Setup", "Install things.", "", "## Usage", "Use things."].join("\n");
+
+  beforeEach(() => {
+    writeFile(path.join(stashDir, "knowledge", "guide.md"), GUIDE);
     saveConfig({ semanticSearchMode: "off" });
+  });
 
-    const tocResult = await akmShow({ ref: "knowledge/guide.md", view: { mode: "toc" } });
-    expect(tocResult.content).toContain("Intro");
-    expect(tocResult.content).toContain("Setup");
+  test("no fragment returns the whole item", async () => {
+    const result = await akmShow({ ref: "knowledge/guide.md" });
+    expect(result.content).toBe(GUIDE);
+  });
 
-    const sectionResult = await akmShow({
-      ref: "knowledge/guide.md",
-      view: { mode: "section", heading: "Setup" },
-    });
-    expect(sectionResult.content).toContain("Install things.");
+  test("#slug returns just that section", async () => {
+    const result = await akmShow({ ref: "knowledge/guide.md#setup" });
+    expect(result.content).toBe("## Setup\nInstall things.\n");
+  });
+
+  test("an unmatched fragment lists the available slugs", async () => {
+    await expect(akmShow({ ref: "knowledge/guide.md#nope" })).rejects.toThrow(
+      /Available fragments: #intro, #setup, #usage/,
+    );
+  });
+
+  test("the knowledge action points large documents at #fragment", async () => {
+    const result = await akmShow({ ref: "knowledge/guide.md" });
+    expect(result.action).toContain("#fragment");
+    expect(result.action).not.toContain("toc");
   });
 });

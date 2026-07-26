@@ -1,8 +1,8 @@
 # CLI Reference
 
 The CLI is called `akm` (Agent Knowledge Management). Commands default to structured
-JSON at `--detail brief`. Use `--format json|jsonl|text|yaml`, `--detail
-brief|normal|full`, and `--shape human|agent|summary` when you want a
+JSON at `--detail brief`. Use `--format json|jsonl|yaml|text|md|html`,
+`--detail brief|normal|full`, and `--shape human|agent|summary` when you want a
 different presentation. Errors include `error` and `hint` fields.
 
 This page is authoritative for the current CLI. For per-release behavior
@@ -15,7 +15,7 @@ These flags are accepted by all commands:
 
 | Flag | Values | Default | Description |
 | --- | --- | --- | --- |
-| `--format` | `json`, `text`, `yaml`, `jsonl` | `json` | Output format |
+| `--format` | `json`, `jsonl`, `yaml`, `text`, `md`, `html` | `json` | Output format |
 | `--detail` | `brief`, `normal`, `full` | `brief` | Output **verbosity** level |
 | `--shape` | `human`, `agent`, `summary` | `human` | Output **projection** |
 | `--quiet` / `-q` | boolean | `false` | Suppress stderr warnings |
@@ -30,6 +30,28 @@ action view, `summary` for capability discovery).
 Outputs one JSON object per line. For `search` and `registry search`, each hit
 is a separate line. For other commands, the entire result is a single line.
 Useful for streaming consumption by scripts or agents.
+
+### `--format md` and `--format html`
+
+`json`, `jsonl`, and `yaml` serialize the result envelope; `text`, `md`, and
+`html` render it. Every command supports all six.
+
+A command may register a renderer for a document format when it has something
+better to say than the generic one: `akm health --group-by run --format md`
+emits its per-run table, and `akm health --report --format html` renders the
+full report with KPI cards, charts, and advisories. The renderers are
+data-driven — they fire when the result carries the report dataset, never on
+the format alone, so the same dataset is available as JSON too. Every other command falls back to a
+generic rendering derived from its own envelope — headings for the top-level
+keys, a table for an array of uniform objects, lists otherwise. HTML output is a
+self-contained document with no external references, so it can be redirected to
+a file and opened directly.
+
+A small set of commands is **format-exempt** because their output is not a
+result envelope at all — `completions`, the interactive `setup` wizard,
+child-process passthrough (`env run`, `secret run`, `agent`), and document
+payloads (`workflow template`, `help migrate`). Passing `--format` to one of
+those warns and is otherwise ignored.
 
 ### `--shape=agent`
 
@@ -213,11 +235,16 @@ akm health
 akm health --since 24h
 akm health --since 7d --format text
 akm health --since 2026-05-01T00:00:00Z
+akm health --report --format html         # full report: per-run rows, trends, proposal queue
+akm health --report --format json         # the same dataset as data
+akm health --report --window-compare 7d --format html
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--since` | Rolling window start for task-history, improve, and advisory metrics. Accepts ISO 8601, `YYYY-MM-DD`, epoch milliseconds, or shorthand like `24h` / `7d`. Default: last 24 hours. |
+| `--report` | Fetch the full report dataset: per-run rows, trend deltas vs the prior window (default: the `--since` window, so deltas are like-for-like), and the pending proposal queue. A **data** flag — the same dataset comes back in every `--format`; `md`/`html` render it as the rich report. |
+| `--window-compare` | Compare the current window against the prior window of the same duration (e.g. `24h`, `7d`). With `--report`, overrides the default trend window. |
 
 The command reads `state.db`, verifies that the required tables exist, performs a
 write-read probe against the events stream, inspects `task_history`, checks the
@@ -258,7 +285,7 @@ akm graph entity "React Router"
 akm graph related knowledge/react-router
 akm graph orphans --limit 20
 akm graph export --out ./graph.json
-akm graph export --out ./graph.jsonl --format jsonl
+akm graph export --out ./graph.jsonl --format jsonl   # global --format selects the payload
 akm graph update                        # Re-extract all eligible files
 akm graph update memories/foo             # Re-extract only this ref
 akm graph update memories/foo skills/bar   # Re-extract multiple refs
@@ -306,7 +333,6 @@ Common flags:
 | `--source <name\|path>` | Select which configured source stash to inspect (defaults to primary source) |
 | `--limit <n>` | Cap rows returned by `entities`, `entity`, `relations`, `related`, `orphans` |
 | `--out <path>` | Required for `export`; output file path |
-| `--format json\|jsonl` | Export format for `export` (default `json`) |
 
 If no graph artifact exists yet, run the flow that refreshes graph extraction for your stash.
 
@@ -334,24 +360,35 @@ akm search "deploy" --filter user=alice --filter agent=claude
 # Include proposal-queue entries:
 akm search "deploy" --include-proposed
 
-# Ref-prefix enumeration — list a typed subtree instead of keyword-matching:
+# ConceptId-prefix enumeration — list a subtree instead of keyword-matching:
 akm search "memories/projectA/"
-akm search "knowledge:"
+akm search "knowledge/"
+akm search "team-catalog//"
+akm search "team-catalog//skills/"
 ```
 
-A query shaped like a **ref prefix** — `<type>:<prefix>/` with a trailing
-slash, or a bare `<type>:` — is not keyword-matched. It enumerates the type's
-entries whose names start with the prefix: `akm search "memories/projectA/"`
-lists exactly the `projectA/` subtree of memories (recursive, `/`-boundary
-exact — a sibling `projectAlpha/` scope does not leak), and `akm search
-"session:"` lists every session (the parsed type is explicit intent, so the
-default `session` exclusion — an untyped-path policy — does not apply). Hits
-carry the fixed browse score `1` in deterministic listing order, matching the
-empty-query enumeration contract, and compose with `--limit`, `--belief`,
-`--filter`, and named `--source` narrowing. A full ref without the trailing
-slash (`memories/projectA/auth-tip`) stays an ordinary keyword search — use
-`akm show` to resolve a single ref. An explicit `--type` flag wins over the
-type parsed from the query.
+A query ending in `/` is a **conceptId prefix**, not a keyword search. It
+enumerates the entries whose conceptId starts with that prefix: `akm search
+"memories/projectA/"` lists exactly the `projectA/` subtree of memories
+(recursive, `/`-boundary exact — a sibling `projectAlpha/` scope does not
+leak), and `akm search "sessions/"` lists every session (a prefix is explicit
+intent, so the default `session` exclusion — an untyped-path policy — does not
+apply). A `<bundle>//` prefix scopes enumeration to one bundle, optionally
+narrowed further (`team-catalog//skills/`); `<bundle>//` alone lists the whole
+bundle, which is what replaced `akm bundle items`.
+
+Because the prefix matches the **conceptId** — the same spelling every emitted
+`ref` carries — a ref copied out of search output can be truncated to a prefix
+and pasted straight back in. Hits carry the fixed browse score `1` in
+deterministic listing order, matching the empty-query enumeration contract, and
+compose with `--limit`, `--belief`, `--filter`, and named `--source` narrowing.
+A full ref without the trailing slash (`memories/projectA/auth-tip`) stays an
+ordinary keyword search — use `akm show` to resolve a single ref. An explicit
+`--type` flag wins over the prefix.
+
+The pre-0.9.0 `<type>:` / `<type>:<prefix>/` spelling was removed. A query in
+that shape is now an ordinary keyword search, and when it returns nothing the
+tip names the conceptId spelling that replaces it.
 
 | Flag | Values | Default | Description |
 | --- | --- | --- | --- |
@@ -360,7 +397,7 @@ type parsed from the query.
 | `--source` | `stash`, `registry`, `both` | `stash` | Where to search (`local` is an alias for `stash`) |
 | `--filter` | `<key>=<value>` | _(none)_ | Scope filter — repeatable. Valid keys: `user`, `agent`, `run`, `channel`. Example: `--filter user=alice --filter channel=ops`. Narrows the result set; ranking is unchanged. |
 | `--include-proposed` | flag | `false` | Include entries with `quality: "proposed"` in the result set. Default search excludes them; `generated` and `curated` quality entries are always included. Unknown quality values warn once and remain searchable. |
-| `--format` | `json`, `text`, `yaml`, `jsonl` | `json` | Output format |
+| `--format` | `json`, `jsonl`, `yaml`, `text`, `md`, `html` | `json` | Output format |
 | `--detail` | `brief`, `normal`, `full` | `brief` | Output verbosity level |
 | `--shape` | `human`, `agent`, `summary` | `human` | Output projection. For `search`, `summary` currently behaves the same as the default `brief` envelope; per-hit content shaping is reserved for a future minor release. |
 
@@ -444,8 +481,9 @@ individual scripts, skills, or docs.
 
 ### show
 
-Display an asset by ref. Knowledge assets support view modes as positional
-arguments after the ref.
+Display an asset by ref. On a markdown document `#fragment` selects one
+section by heading slug (falling back to case-insensitive heading text); an
+unmatched fragment lists the available slugs.
 
 ```sh
 akm show scripts/deploy.sh
@@ -453,10 +491,9 @@ akm show skills/code-review
 akm show agents/architect
 akm show commands/release
 akm show workflows/ship-release
-akm show knowledge/guide toc
-akm show knowledge/guide section "Authentication"
-akm show knowledge/guide lines 10 30
-akm show knowledge/guide frontmatter
+akm show knowledge/guide                 # the whole document
+akm show knowledge/guide#authentication  # just that section
+akm show knowledge/guide#nope            # lists the available fragment slugs
 
 # Stash .meta/ orientation docs — direct-read, not indexed:
 akm show meta                       # working stash's .meta/index.md
@@ -498,7 +535,7 @@ Returns type-specific payloads:
 | skill | `content` (full SKILL.md) |
 | command | `template`, `description` |
 | agent | `prompt`, `description`, `modelHint` |
-| knowledge | `content` with view modes: `full`, `toc`, `frontmatter`, `section`, `lines` |
+| knowledge | `content` — the whole document, or one section via `#fragment` |
 | workflow | `workflowTitle`, `workflowParameters`, `steps` |
 | memory | `content` |
 | env | `keys` (key names only — values and comment text never returned) |
@@ -884,6 +921,14 @@ CI or fresh environments without running `akm setup` first.
 
 ### mv (Experimental)
 
+> **Experimental — not covered by `STABILITY.md`.** The inbound-ref rewriting
+> below is implemented inverted relative to the body-ref grammar: it matches
+> bare conceptIds, which prose treats as ordinary text, and matches no
+> fully-qualified `bundle//conceptId` form at all — so it can edit prose that is
+> not a ref while leaving real anchored refs dangling. The recommended rename is
+> a plain filesystem move plus `akm index` and `akm lint` (see
+> [`ref.md` § Renames and moves](../architecture/specs/ref.md#renames-and-moves)).
+
 Rename an asset **within its type directory** in the primary writable stash.
 `akm mv` is the CLI half of the stash conventions' forced-rename procedure
 ("grep and fix inbound xrefs in the same pass"): it moves the file, rewrites
@@ -989,7 +1034,7 @@ akm sync my-skills -m "Update"     # Sync named stash with message
 | `[name]` | Optional git-backed stash selector. Matches the configured source name exactly and also accepts canonical GitHub aliases such as `owner/repo`, `github:owner/repo`, and branch-ref forms like `github:owner/repo#branch`. Forward slashes are allowed. Defaults to the primary stash |
 | `-m`, `--message` | Commit message. Defaults to `akm save <timestamp>` |
 | `--no-push` | Commit only; never push even when the stash is writable with a remote configured |
-| `--format` | Output format (`json`, `text`, `yaml`). Both `--format json` and `--format=json` are accepted |
+| `--format` | Output format (any of the six global values). Both `--format json` and `--format=json` are accepted |
 
 If no positional selector is provided, `akm sync --format json` still targets
 the primary stash. If a positional selector is provided, it wins even when the

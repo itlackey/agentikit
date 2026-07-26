@@ -268,10 +268,11 @@ akm lint          # confirms nothing dangles
 ```
 
 Moving an item between bundles is copy/import followed by deletion from the
-source — both the bundle and the concept identity change. (0.9.0 removed the
-`akm mv` command, which promised identity-preserving renames but implemented
-prose-ref rewriting inverted; see
-[the decision record](../architecture/specs/0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-is-removed).)
+source — both the bundle and the concept identity change. (The `akm mv` command
+promises identity-preserving renames, but it implements prose-ref rewriting
+inverted, so 0.9.0 classifies it **Experimental** and outside the stability
+contract; the procedure above is the recommended one. See
+[the decision record](../architecture/specs/0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-ships-experimental).)
 
 **Which subdirectory?** Choose the partition axis by asset **type**:
 scope-born types (`memory`, `lesson`, `task`, `env`, `secret`) take the current

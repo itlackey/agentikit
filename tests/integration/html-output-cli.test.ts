@@ -6,10 +6,12 @@
  * CLI-level coverage for `--format html` and the global `--output <path>`
  * flag (#582), driven through the in-process harness.
  *
- * `--format html` is health-only (chunk-9 WI-9.4c / Decision 4): the generic
- * JSON-in-<pre> fallback template was removed, so every non-health command
- * now rejects `--format html` with a `UsageError` (INVALID_FLAG_VALUE)
- * instead of rendering the default template.
+ * `--format html` works on every command (D7). `akm health` renders its bespoke
+ * report by registering a renderer; every other command falls back to a generic
+ * rendering of its shaped envelope. This reverses chunk-9 WI-9.4c, which had
+ * removed the HTML fallback and left `html` rejected everywhere except health —
+ * the replacement fallback is a real rendering, not the JSON-in-<pre> template
+ * that decision deleted.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -45,15 +47,18 @@ function seedProposal(ref = "lessons/rg-over-grep"): void {
   if (isProposalSkipped(result)) throw new Error("unexpected skip in seedProposal");
 }
 
-describe("--format html (health-only)", () => {
-  test("akm proposal list --format html rejects with a UsageError (html is health-only)", async () => {
+describe("--format html on non-health commands", () => {
+  test("akm proposal list --format html renders the envelope generically", async () => {
     seedProposal();
-    const { code, stderr } = await runCliCapture(["proposal", "list", "--format", "html"]);
-    expect(code).toBe(2);
-    const parsed = JSON.parse(stderr);
-    expect(parsed.ok).toBe(false);
-    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
-    expect(parsed.error).toContain("html output is only available for `akm health`");
+    const { code, stdout } = await runCliCapture(["proposal", "list", "--format", "html"]);
+    expect(code).toBe(0);
+    expect(stdout).toContain("<!doctype html>");
+    expect(stdout).toContain("</html>");
+    // The generic renderer titles the document with the command name, which is
+    // how you can tell it apart from a registered bespoke renderer.
+    expect(stdout).toContain("proposal-list");
+    // Not the JSON-in-<pre> template WI-9.4c deleted.
+    expect(stdout).not.toMatch(/<pre>\s*\{/);
   });
 
   test("invalid --format still rejects unknown values and lists html", async () => {
@@ -65,14 +70,14 @@ describe("--format html (health-only)", () => {
 });
 
 describe("--output <path>", () => {
-  test("--format html --output still rejects (html is health-only, before any file write)", async () => {
+  test("--format html --output writes the rendered document to the file", async () => {
     seedProposal();
     const out = path.join(storage.root, "proposals.html");
-    const { code, stderr } = await runCliCapture(["proposal", "list", "--format", "html", "--output", out]);
-    expect(code).toBe(2);
-    const parsed = JSON.parse(stderr);
-    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
-    expect(fs.existsSync(out)).toBe(false);
+    const { code, stdout } = await runCliCapture(["proposal", "list", "--format", "html", "--output", out]);
+    expect(code).toBe(0);
+    expect(stdout.trim()).toBe("");
+    expect(fs.existsSync(out)).toBe(true);
+    expect(fs.readFileSync(out, "utf8")).toContain("<!doctype html>");
   });
 
   test("also redirects json output to the file", async () => {
@@ -86,9 +91,9 @@ describe("--output <path>", () => {
   });
 });
 
-describe("akm health --format html", () => {
-  test("renders the full report from the bespoke template (echarts is CDN-only, chunk-9 WI-9.4d)", async () => {
-    const { code, stdout } = await runCliCapture(["health", "--format", "html"]);
+describe("akm health --report", () => {
+  test("--format html renders the full report from the bespoke template (echarts is CDN-only, chunk-9 WI-9.4d)", async () => {
+    const { code, stdout } = await runCliCapture(["health", "--report", "--format", "html"]);
     // health maps warn→4; both pass and warn are valid for a fresh sandbox DB.
     expect([0, 4]).toContain(code);
     expect(stdout).toContain("<!DOCTYPE html>");
@@ -111,13 +116,48 @@ describe("akm health --format html", () => {
     expect(stdout).toContain("Trend vs prior 24h");
   });
 
-  test("--compare overrides the trend window and --output writes the file", async () => {
+  test("--window-compare overrides the trend window and --output writes the file", async () => {
     const out = path.join(storage.root, "health.html");
-    const { code, stdout } = await runCliCapture(["health", "--format", "html", "--compare", "7d", "--output", out]);
+    const { code, stdout } = await runCliCapture([
+      "health",
+      "--report",
+      "--format",
+      "html",
+      "--window-compare",
+      "7d",
+      "--output",
+      out,
+    ]);
     expect([0, 4]).toContain(code);
     expect(stdout.trim()).toBe("");
     const html = fs.readFileSync(out, "utf8");
     expect(html).toContain("Trend vs prior 7d");
     expect(html).toContain("AKM Health Report");
+  });
+
+  test("the report dataset is format-independent: --format json carries the same data", async () => {
+    // The pre-D7 design made the full report reachable ONLY as html — the
+    // format determined what data you could have. --report is a data flag, so
+    // the identical dataset must come back as ordinary JSON.
+    const { code, stdout } = await runCliCapture(["health", "--report", "--format", "json"]);
+    expect([0, 4]).toContain(code);
+    const parsed = JSON.parse(stdout);
+    expect(Array.isArray(parsed.runs)).toBe(true);
+    expect(parsed.report.window).toBe("24h");
+    expect(parsed.report.compare).toBe("24h");
+    expect(Array.isArray(parsed.report.pendingProposals)).toBe(true);
+  });
+
+  test("plain akm health carries no report dataset and renders html generically", async () => {
+    const { code, stdout } = await runCliCapture(["health", "--format", "json"]);
+    expect([0, 4]).toContain(code);
+    expect(JSON.parse(stdout).report).toBeUndefined();
+
+    const html = await runCliCapture(["health", "--format", "html"]);
+    expect([0, 4]).toContain(html.code);
+    // Without the report dataset the registered renderer falls through to the
+    // generic rendering — no bespoke template, no error.
+    expect(html.stdout).toContain("<h1>akm health</h1>");
+    expect(html.stdout).not.toContain("AKM Health Report");
   });
 });

@@ -468,18 +468,10 @@ const envUnsetCommand = defineJsonCommand({
       throw new NotFoundError(`Env not found: ${ref}`);
     }
     // citty puts every positional in `args._` (incl. the ref at [0]); the keys
-    // are the remaining positionals. citty also mis-captures the space-separated
-    // value of a global flag (`--format json`) as a positional, so drop any
-    // token that is actually a global flag's value (cli.ts:1335 documents this).
-    const invocation = getParsedInvocation();
-    const globalFlagValues = new Set(
-      ["--format", "--shape", "--detail", "--scope", "--filter", "--target"]
-        .map((flag) => invocation.getFlagValue(flag))
-        .filter((v): v is string => typeof v === "string"),
-    );
-    const keys = (Array.isArray(args._) ? (args._ as unknown[]).map(String) : [])
-      .slice(1)
-      .filter((k) => !globalFlagValues.has(k));
+    // are the remaining positionals. The global output flags are declared on
+    // every defineJsonCommand (GLOBAL_OUTPUT_ARGS), so their space-separated
+    // values are consumed by the parser and never land here.
+    const keys = (Array.isArray(args._) ? (args._ as unknown[]).map(String) : []).slice(1);
     if (keys.length === 0) {
       throw new UsageError("Usage: akm env unset <ref> <KEY...> (one or more keys).", "MISSING_REQUIRED_ARGUMENT");
     }

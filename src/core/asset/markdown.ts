@@ -102,38 +102,6 @@ export function extractSection(
   };
 }
 
-export function extractLineRange(content: string, start: number, end: number): string {
-  const lines = content.split(/\r?\n/);
-  if (end < start) return "";
-  const s = Math.max(1, Math.min(start, lines.length));
-  const e = Math.min(end, lines.length);
-  return lines.slice(s - 1, e).join("\n");
-}
-
-export function extractFrontmatterOnly(content: string): string | null {
-  const parsed = parseFrontmatter(content);
-  return parsed.frontmatter;
-}
-
-// ── Formatting ──────────────────────────────────────────────────────────────
-
-export function formatToc(toc: KnowledgeToc): string {
-  if (toc.headings.length === 0) {
-    return `(no headings found — ${toc.totalLines} lines total)`;
-  }
-
-  const lineWidth = String(toc.totalLines).length;
-  const parts = toc.headings.map((h) => {
-    const lineNum = `L${String(h.line).padStart(lineWidth)}`;
-    const indent = "  ".repeat(h.level - 1);
-    const prefix = "#".repeat(h.level);
-    return `${lineNum}  ${indent}${prefix} ${h.text}`;
-  });
-
-  parts.push(`\n${toc.totalLines} lines total`);
-  return parts.join("\n");
-}
-
 // ── Fence stripping ──────────────────────────────────────────────────────────
 
 /**

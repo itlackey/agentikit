@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { normalizeShowArgv } from "../../../src/commands/read/show";
 import { runCliCapture } from "../../_helpers/cli";
 import { type Cleanup, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
 
@@ -33,62 +32,52 @@ async function runEntrypoint(args: string[]): Promise<{ status: number; stdout: 
 // tests/integration/show-argv-entrypoint.test.ts — it needs the real
 // subprocess entry point, which the in-process harness intentionally skips.
 
-// Regression: normalizeShowArgv splits global flags from positional view-mode
-// args and rebuilds argv. The global-flag allowlist must preserve the 0.8
-// output flags (--shape, --verbose) — otherwise `akm show <ref> <view> --shape
-// agent` silently drops the projection because process.argv is replaced before
-// initOutputMode reads it.
-describe("normalizeShowArgv preserves global output flags on the view-mode path", () => {
-  const base = ["bun", "akm", "show", "knowledge/guide"];
+// D2: the `akm show <ref> toc|section|lines|frontmatter|full` view grammar is
+// gone. A trailing positional was previously rewritten into hidden `--akmView`
+// flags; it must now be a usage error that points at `#fragment`, and the
+// hidden flags themselves must no longer select anything.
+describe("akm show view-mode grammar is removed", () => {
+  const GUIDE = ["# Intro", "Welcome.", "", "## Setup", "Install things.", ""].join("\n");
 
-  test("--shape <value> (space form) survives the rewrite", () => {
-    const out = normalizeShowArgv([...base, "toc", "--shape", "agent"]);
-    expect(out).toEqual(["bun", "akm", "show", "knowledge/guide", "--akmView", "toc", "--shape", "agent"]);
+  function seedGuide(): void {
+    const storage = useStorage();
+    writeSandboxConfig({ semanticSearchMode: "off" });
+    writeFixture(path.join(storage.stashDir, "knowledge", "guide.md"), GUIDE);
+  }
+
+  for (const positional of ["toc", "frontmatter", "full", "section", "lines"]) {
+    test(`a trailing \`${positional}\` positional is a usage error naming #fragment`, async () => {
+      seedGuide();
+
+      const result = await runEntrypoint(["show", "knowledge/guide", positional, "--format=json"]);
+
+      expect(result.status).toBe(2);
+      const error = JSON.parse(result.stderr) as Record<string, unknown>;
+      expect(error.ok).toBe(false);
+      expect(String(error.error)).toContain("akm show knowledge/guide#");
+    });
+  }
+
+  test("the hidden --akmView flag no longer selects a view", async () => {
+    seedGuide();
+
+    const result = await runEntrypoint(["show", "knowledge/guide", "--akmView=toc", "--format=json"]);
+
+    expect(result.status).toBe(0);
+    const json = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(json.content).toBe(GUIDE);
   });
 
-  test("--shape=<value> (equals form) survives the rewrite", () => {
-    const out = normalizeShowArgv([...base, "toc", "--shape=summary"]);
-    expect(out).toContain("--shape=summary");
-    expect(out).toContain("--akmView");
-  });
+  test("the ref keeps resolving when a view keyword is its own conceptId", async () => {
+    const storage = useStorage();
+    writeSandboxConfig({ semanticSearchMode: "off" });
+    writeFixture(path.join(storage.stashDir, "knowledge", "toc.md"), "# Toc\nA doc literally named toc.\n");
 
-  test("--verbose survives the rewrite on the section view path", () => {
-    const out = normalizeShowArgv([...base, "section", "Auth", "--verbose"]);
-    expect(out).toEqual([
-      "bun",
-      "akm",
-      "show",
-      "knowledge/guide",
-      "--akmView",
-      "section",
-      "--akmHeading",
-      "Auth",
-      "--verbose",
-    ]);
-  });
+    const result = await runEntrypoint(["show", "knowledge/toc", "--format=json"]);
 
-  test("global flags before show are preserved when view-mode args are rewritten", () => {
-    const out = normalizeShowArgv([
-      "bun",
-      "akm",
-      "--format=json",
-      "--shape",
-      "summary",
-      "show",
-      "knowledge/guide",
-      "toc",
-    ]);
-    expect(out).toEqual([
-      "bun",
-      "akm",
-      "--format=json",
-      "--shape",
-      "summary",
-      "show",
-      "knowledge/guide",
-      "--akmView",
-      "toc",
-    ]);
+    expect(result.status).toBe(0);
+    const json = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(json.name).toBe("toc");
   });
 });
 

@@ -36,7 +36,7 @@ import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/im
 import { openStateDatabase } from "../../../../src/core/state-db";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { closeDatabase, openExistingDatabase } from "../../../../src/storage/repositories/index-connection";
-import { withTestImproveLlm } from "../../../_helpers/improve-config";
+import { withImproveAutonomy, withTestImproveLlm } from "../../../_helpers/improve-config";
 
 // Deterministic, strictly-ordered timestamps for signal-delta ordering.
 // These replace `await sleep(10)` between two appendEvent() calls: instead of
@@ -76,12 +76,14 @@ function writeMemory(stashDir: string, name: string, body: string, mtime?: Date)
 async function buildIndex(stashDir: string): Promise<void> {
   process.env.AKM_STASH_DIR = stashDir;
   saveConfig(
-    withTestImproveLlm({
-      semanticSearchMode: "off",
-      bundles: { stash: { path: stashDir, writable: true } },
-      defaultBundle: "stash",
-      defaultWriteTarget: "stash",
-    }),
+    withImproveAutonomy(
+      withTestImproveLlm({
+        semanticSearchMode: "off",
+        bundles: { stash: { path: stashDir, writable: true } },
+        defaultBundle: "stash",
+        defaultWriteTarget: "stash",
+      }),
+    ),
   );
   await akmIndex({ stashDir, full: true });
 }
@@ -102,14 +104,16 @@ function durableRef(ref: string): string {
 // behaviour is covered by proactive-maintenance-flow.test.ts; leaving it on here
 // would mask the gate each test is asserting.
 function configWithoutPoolGuard(): import("../../../../src/core/config/config").AkmConfig {
-  return withTestImproveLlm({
-    semanticSearchMode: "off",
-    improve: {
-      strategies: {
-        default: { processes: { consolidate: { minPoolSize: 0 }, proactiveMaintenance: { enabled: false } } },
+  return withImproveAutonomy(
+    withTestImproveLlm({
+      semanticSearchMode: "off",
+      improve: {
+        strategies: {
+          default: { processes: { consolidate: { minPoolSize: 0 }, proactiveMaintenance: { enabled: false } } },
+        },
       },
-    },
-  } as import("../../../../src/core/config/config").AkmConfig);
+    } as import("../../../../src/core/config/config").AkmConfig),
+  );
 }
 
 const okReflect = (ref: string): AkmReflectResult => ({

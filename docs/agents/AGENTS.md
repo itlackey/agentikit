@@ -8,7 +8,7 @@ You have access to a searchable library of scripts, skills, commands, agents, kn
 akm search "<query>"                          # Search for assets
 akm curate "<task>"                          # Curate the best matches for a task
 akm search "<query>" --type workflow          # Filter to workflow assets
-akm search "memories/projectA/"                 # List a typed subtree (ref-prefix query; trailing slash required)
+akm search "memories/projectA/"                 # List a conceptId subtree (trailing slash required)
 akm search "<query>" --source both            # Also search registries
 akm show <ref>                                # View asset details
 akm show knowledge/my-doc                    # Show a knowledge asset
@@ -38,7 +38,7 @@ akm registry search "<query>"                 # Search all registries
 | skill | Instructions to follow (read the full content) |
 | command | A prompt template with placeholders to fill in |
 | agent | A system prompt with model and tool hints |
-| knowledge | A reference doc (use `toc` or `section "..."` to navigate) |
+| knowledge | A reference doc (append `#<heading-slug>` to the ref to read one section) |
 | workflow | Parsed steps plus workflow-specific execution commands |
 | memory | Recalled context (read the content for background information) |
 | env | Keys only in normal output; use `akm env run env:<name> -- <cmd>` when a command needs the values |

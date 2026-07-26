@@ -196,8 +196,8 @@ akm show scripts/hello.sh
 
 The output is structured JSON containing everything an agent needs to use
 the asset. For scripts, this includes a `run` command plus optional `cwd`
-and `setup`. For agents, a `prompt` payload. For knowledge, navigable
-`content` with view modes.
+and `setup`. For agents, a `prompt` payload. For knowledge, the document
+`content` — append `#<heading-slug>` to the ref for one section.
 
 See [cli.md](../reference/cli.md#show) for the full per-type field reference.
 

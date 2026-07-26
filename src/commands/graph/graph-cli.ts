@@ -113,8 +113,10 @@ const graphSubCommands = {
     meta: { name: "export", description: "Export graph artifact as JSON or JSONL" },
     args: {
       source: { type: "string", description: "Source name/path (default: primary stash source)" },
-      out: { type: "string", description: "Output path" },
-      format: { type: "string", description: "Export format (json|jsonl)", default: "json" },
+      out: {
+        type: "string",
+        description: "Output path; a `.jsonl` extension writes a JSONL artifact, anything else JSON",
+      },
     },
     run({ args }) {
       output(
@@ -122,7 +124,6 @@ const graphSubCommands = {
         akmGraphExport({
           source: args.source,
           out: args.out ?? "",
-          format: args.format,
         }),
       );
     },

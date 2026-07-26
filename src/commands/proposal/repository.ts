@@ -71,13 +71,12 @@ import { warn } from "../../core/warn";
 import {
   assertAkmAssetWrite,
   assertWriteTargetPathsClean,
-  captureGitPathSnapshot,
   captureGitPublication,
-  ensureGitTransactionCommit,
+  captureWriteTargetPathSnapshot,
   type GitPathSnapshots,
   type GitPublication,
   prepareWriteTargetForMutation,
-  publishGitTransactionCommit,
+  publishWriteTargetTransaction,
   type ResolvedWriteTarget,
   resolveWriteTarget,
   type WriteTargetSource,
@@ -1319,28 +1318,20 @@ async function finalizeProposalTransaction(
   if (txn.journal.phase === "asset-published") {
     const commitRoot = target.source.repoPath ?? target.source.path;
     const commitPath = path.relative(commitRoot, p.assetPath).replaceAll(path.sep, "/");
-    if (target.source.kind === "git") {
-      if (!p.gitPublication) {
-        throw new Error(`Proposal transaction ${txn.journal.transactionId} has no Git publication identity.`);
-      }
-      const commit = ensureGitTransactionCommit(target, p.gitPublication, {
-        transactionId: txn.journal.transactionId,
-        message: `${p.operation === "accept" ? "Update" : "Revert"} ${p.ref}`,
-        paths: [commitPath],
-        snapshots: p.gitSnapshots ?? {},
-      });
-      if (p.gitPublication.commit !== commit) {
-        p.gitPublication.commit = commit;
-        advanceTxn(txn, "asset-published");
-      }
-      publishGitTransactionCommit(
-        target,
-        p.gitPublication,
-        txn.journal.transactionId,
-        [commitPath],
-        p.gitSnapshots ?? {},
-      );
-    }
+    publishWriteTargetTransaction(target, p.gitPublication, {
+      transactionId: txn.journal.transactionId,
+      message: `${p.operation === "accept" ? "Update" : "Revert"} ${p.ref}`,
+      paths: [commitPath],
+      snapshots: p.gitSnapshots ?? {},
+      onCommitRecorded: (commit) => {
+        // biome-ignore lint/style/noNonNullAssertion: publishWriteTargetTransaction throws when absent
+        const publication = p.gitPublication!;
+        if (publication.commit !== commit) {
+          publication.commit = commit;
+          advanceTxn(txn, "asset-published");
+        }
+      },
+    });
     persistProposalTransactionState(txn, proposal, ctx);
     advanceTxn(txn, "proposal-persisted");
   }
@@ -1690,10 +1681,8 @@ function publishProposalAsset(txn: ProposalTxn, target: ResolvedWriteTarget): vo
     }
     fs.linkSync(p.publishPath, p.assetPath);
     fsyncTxnDir(path.dirname(p.assetPath));
-    if (target.source.kind === "git") {
-      const snapshot = captureGitPathSnapshot(target, p.assetPath);
-      p.gitSnapshots = { [snapshot.path]: snapshot.state };
-    }
+    const snapshot = captureWriteTargetPathSnapshot(target, p.assetPath);
+    if (snapshot) p.gitSnapshots = { [snapshot.path]: snapshot.state };
     advanceTxn(txn, "asset-published");
   } catch (error) {
     rollbackPreparedProposalTransaction(txn);

@@ -187,17 +187,14 @@ Fixture refs worth using throughout this doc:
       shape.
 - [ ] `akm show skills/k8s-deploy --shape agent` returns the action-oriented
       shape.
-- [ ] `akm show knowledge/incident-response-runbook toc` prints the table of
-      contents only.
-- [ ] `akm show knowledge/incident-response-runbook section "Severity Levels"`
-      narrows to that section.
-- [ ] `akm show knowledge/incident-response-runbook lines 1 20` returns the
-      requested range.
-- [ ] `akm show knowledge/incident-response-runbook frontmatter` returns only
-      frontmatter.
-- [ ] `akm show knowledge/incident-response-runbook full` returns the raw file.
-- [ ] `akm show knowledge/incident-response-runbook section "Not Real"` returns
-      a friendly section-not-found message that points at `toc`.
+- [ ] `akm show knowledge/incident-response-runbook` returns the whole
+      document.
+- [ ] `akm show knowledge/incident-response-runbook#severity-levels` narrows to
+      that section.
+- [ ] `akm show knowledge/incident-response-runbook#not-real` fails with
+      `ASSET_NOT_FOUND` and lists the available fragment slugs.
+- [ ] `akm show knowledge/incident-response-runbook toc` fails with a usage
+      error that points at `#fragment`.
 - [ ] `akm show skills/does-not-exist` fails with `ASSET_NOT_FOUND`, includes a
       structured JSON envelope on stderr, and exits non-zero.
 

@@ -12,7 +12,10 @@ import { z } from "zod";
 
 export const OutputConfigSchema = z
   .object({
-    format: z.enum(["json", "yaml", "text"]).optional(),
+    // D7 — every `--format` value is a valid default, not just the three that
+    // predated universal md/html rendering. Kept in step with OUTPUT_FORMATS
+    // (`src/output/context.ts`).
+    format: z.enum(["json", "yaml", "text", "jsonl", "md", "html"]).optional(),
     detail: z.enum(["brief", "normal", "full"]).optional(),
   })
   .passthrough();

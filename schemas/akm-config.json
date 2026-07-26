@@ -515,7 +515,10 @@
           "enum": [
             "json",
             "yaml",
-            "text"
+            "text",
+            "jsonl",
+            "md",
+            "html"
           ]
         },
         "detail": {
@@ -1625,6 +1628,15 @@
         }
       },
       "additionalProperties": true
+    },
+    "experimental": {
+      "type": "object",
+      "properties": {
+        "improveAutonomy": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
     }
   },
   "required": [
@@ -2145,7 +2157,10 @@
               "enum": [
                 "json",
                 "yaml",
-                "text"
+                "text",
+                "jsonl",
+                "md",
+                "html"
               ]
             },
             "detail": {
@@ -3252,6 +3267,15 @@
                 }
               },
               "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "experimental": {
+          "type": "object",
+          "properties": {
+            "improveAutonomy": {
+              "type": "boolean"
             }
           },
           "additionalProperties": true

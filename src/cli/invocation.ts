@@ -8,11 +8,10 @@
  * Before this module, ~46 `process.argv` read sites were scattered across
  * `src/**` (32 outside `src/cli.ts`), each re-scanning the raw argv array for
  * repeated flags (`parseAllFlagValues`), `--`-passthrough tails (`env run`,
- * `secret run`), or first-occurrence flag values (`parseFlagValue`) — plus a
- * startup MUTATION of the global `process.argv` at `cli.ts:644`. This module
- * normalizes argv into one typed {@link ParsedInvocation} object, minted ONCE
- * by `src/cli.ts` right after its `normalizeShowArgv` rewrite, so every
- * downstream reader shares one parse instead of re-scanning the raw array.
+ * `secret run`), or first-occurrence flag values (`parseFlagValue`). This
+ * module normalizes argv into one typed {@link ParsedInvocation} object,
+ * minted ONCE by `src/cli.ts` at startup, so every downstream reader shares
+ * one parse instead of re-scanning the raw array.
  *
  * Deliberately import-free: this module must never join an import cycle
  * (cycle ratchet, plan §10.7 / chunk-9 D.3), so it depends on nothing but
@@ -24,8 +23,8 @@
  * preserving.
  *
  * Singleton + fallback semantics (the design decision this module encodes):
- *  - `setParsedInvocation(argv)` is called exactly once, by `src/cli.ts`,
- *    immediately after `process.argv = normalizeShowArgv(process.argv)`. It
+ *  - `setParsedInvocation(argv)` is called exactly once, by `src/cli.ts`, in
+ *    its startup block before any command handler can run. It
  *    snapshots that argv into an immutable {@link ParsedInvocation} that
  *    every subsequent `getParsedInvocation()` call returns unchanged for the
  *    rest of the process lifetime — "normalize argv exactly once at entry".
@@ -59,8 +58,7 @@
  *    search-cli, stash-cli, cli.ts) is unaffected.
  *  - `findCittyTopLevelCommand`/`findCittyTopLevelCommandIndex` (moved from
  *    `cli/parse-args.ts`, which had zero internal imports for this cluster) —
- *    re-exported from `cli/parse-args.ts` for `tests/tasks-embedded.test.ts`
- *    and `commands/read/show.ts`.
+ *    re-exported from `cli/parse-args.ts` for `tests/tasks-embedded.test.ts`.
  *  - `resolveHelpMigrateVersionArg` (moved from `cli.ts`, where it was
  *    private) — the `akm help migrate <version>` positional/flag
  *    disambiguation guard.
@@ -144,8 +142,8 @@ let _invocation: ParsedInvocation | undefined;
 
 /**
  * Mint the process-wide {@link ParsedInvocation} singleton. Called exactly
- * once, by `src/cli.ts`, right after `normalizeShowArgv` — "normalize argv
- * exactly once at entry" (plan §10.7).
+ * once, by `src/cli.ts`, at startup — "normalize argv exactly once at entry"
+ * (plan §10.7).
  */
 export function setParsedInvocation(argv: readonly string[]): ParsedInvocation {
   _invocation = createParsedInvocation(argv);

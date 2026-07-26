@@ -85,16 +85,15 @@ akm curate "code review" --type skill
 ## akm show
 
 `akm show` loads the full content of a specific asset by ref. Every asset type
-returns type-specific fields: scripts include `run` and `setup`; knowledge docs
-support `toc`, `section`, and `lines` views; workflows return parsed steps.
+returns type-specific fields: scripts include `run` and `setup`; markdown docs
+accept a `#fragment` to return one section; workflows return parsed steps.
 
 ```sh
 akm show scripts/deploy.sh
 akm show skills/code-review
 akm show workflows/ship-release
-akm show knowledge/api-guide toc
-akm show knowledge/api-guide section "Authentication"
-akm show knowledge/api-guide lines 10 30
+akm show knowledge/api-guide
+akm show knowledge/api-guide#authentication
 ```
 
 The ref format is `[bundle//]conceptId` (the `bundle//` prefix narrows lookup

@@ -22,6 +22,103 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`akm improve` is review-first by default; autonomy is opt-in** (0.9.0
+  decision D8). The command stays ON — schedules, reflect/distill proposals, and
+  graph extraction are unchanged — but the lanes that mutate assets *without*
+  review now require `akm config set experimental.improveAutonomy true`:
+  consolidate's merge/delete, memory-inference writes, the memory-cleanup pass,
+  the contradiction pass, and triage `applyMode: "promote"` (which downgrades to
+  `queue` rather than disabling triage). Previously none of these were gated, and
+  two of them — memory cleanup and contradiction detection — had **no strategy
+  flag at all** and ran on any improve run covering memories.
+
+  A gated lane is never a silent no-op: it warns on stderr naming the lane and
+  the key, appends an `improve_skipped` event with `reason: "autonomy_gated"`,
+  and is counted in `akm health`'s improve skip-reason summary.
+
+  Migration: set `experimental.improveAutonomy: true` to restore the previous
+  behavior. `sync.push` is **not** affected — it keeps its `true` default and its
+  own `sync.push: false` / `--no-push` controls. Two other direct writes stay
+  ungated by design: `extract`'s additive session indexing and distill's
+  encoding-salience frontmatter stamp. Because the gate is applied before the LLM
+  preflight, a review-first workspace may now need fewer engines configured than
+  before.
+
+  Also: `akm improve` no longer rejects the global `--format`. It emits an
+  envelope through `output()` (always under `--dry-run`, otherwise under
+  `--json-to-stdout`), so `--format` applies to that envelope; progress output
+  stays on stderr. Previously it exited 2 with `INVALID_FLAG_VALUE`, which made
+  it the one command that rejected a valid global flag.
+
+- **`akm health --report` replaces the html-only full report** (D7
+  follow-through). The full health report — per-run rows, trend deltas vs the
+  prior window, and the pending proposal queue — is now a **data** flag, not a
+  side effect of asking for html: `akm health --report --format html` renders
+  the rich report, and the identical dataset comes back under `--format json`
+  (previously that data was reachable only as html). The registered md/html
+  renderers fire on the shape of the result, and `akm health` no longer reads
+  `--format` at all.
+
+  Migration: `akm health --format html` → `akm health --report --format html`
+  (the bare form now renders the plain check generically); the html-only
+  `--compare` flag is removed — use `--window-compare`, which with `--report`
+  defaults to the `--since` window so trend deltas stay like-for-like.
+
+- **Global output flags parse correctly next to positionals.** citty parses
+  each command level against only its own declared args, so a root-declared
+  global flag was unknown at the leaf and its space-separated value fell
+  through as a positional — `akm sync --format json` synced a bundle named
+  "json", and `akm env unset env:x KEY --format json` tried to unset a key
+  named "json". The global output flags (`--format`, `--detail`, `--shape`,
+  `--output`) are now declared on every leaf command so their values are
+  consumed by the parser; the two bespoke argv-inspection workarounds this
+  replaces are deleted.
+
+- **All six `--format` values work on every command** (0.9.0 decision D7).
+  `json|jsonl|yaml|text|md|html` are now universal. Previously there were three
+  inconsistent behaviours: `md` silently emitted the JSON envelope everywhere
+  except `akm health`, `html` was rejected with exit 2 everywhere except
+  `akm health`, and `akm health` reached neither because it intercepted the
+  format itself. Rendering is now registry-driven — a command may register a
+  renderer for a document format, and anything unregistered falls back to a real
+  rendering of its own envelope (headings, tables for arrays of uniform objects,
+  lists otherwise). `akm health` keeps its per-run/window-compare tables and its
+  full HTML report by registering them; the output is unchanged.
+
+  Migration: none required for `json|jsonl|yaml|text`. `--format md` on a
+  non-health command previously returned JSON and now returns Markdown; a script
+  that parsed that JSON should ask for `--format json` explicitly. `--format
+  html` previously exited 2 on non-health commands and now succeeds.
+
+  Also: `akm graph export --format` is **removed** — it declared `--format`
+  locally as well as globally (one token, two parsers). The artifact payload
+  now follows the `--out` extension (`--out g.jsonl` writes JSONL, anything
+  else JSON); the global flag only renders the command's own envelope. A dead
+  local `--format` declaration on `akm history` was removed too (it was never
+  read). Commands
+  whose output is not an envelope (`completions`, `setup`, `env run`,
+  `secret run`, `agent`, `workflow template`, `help migrate`) are declared
+  format-exempt in `src/output/format-exempt.ts` and now warn when given
+  `--format` instead of ignoring it silently. `output.format` in config accepts
+  all six values.
+
+- **Subtree browse is a conceptId prefix, not `<type>:`** (0.9.0 decision D4).
+  `akm search` enumerates on `memories/`, `memories/projecta/`, `bundle//`, and
+  `bundle//skills/`; a trailing `/` is still required. The prefix now matches the
+  **conceptId** rather than the item name, so a ref copied out of search output
+  can be truncated to a prefix and pasted straight back in — previously that
+  round-trip degraded silently into a keyword search. Enumeration no longer
+  validates against the `akm` adapter's placement types, so items from every
+  adapter browse the same way, and `bundle//` lists a whole bundle (the
+  replacement for the removed `akm bundle items`).
+
+  Migration: `akm search "memory:"` → `akm search "memories/"`;
+  `akm search "memory:projectA/"` → `akm search "memories/projectA/"`;
+  `akm search "session:"` → `akm search "sessions/"`. The retired spelling is
+  now an ordinary keyword search; when it returns nothing, the tip names the
+  conceptId spelling that replaces it. `scripts/lint-shipped-assets.ts` no
+  longer exempts the old spelling, so it is an offense in agent-facing assets.
+
 - **`akm tasks sync [--target <bundle>]` reconciles a single bundle.** Sync now
   attributes each installed scheduler entry to its bundle (parsed from the
   `--target` token; absent ⇒ primary) and reconciles only the entries for the
@@ -40,6 +137,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scheduled task, delete its file in the owning bundle and run `akm tasks sync`
   (sync uninstalls the orphaned scheduler entry). Bare `akm tasks` now reports
   scheduler diagnostics (equivalent to `akm tasks doctor`).
+
+- **The `akm show <ref> toc|section|lines|frontmatter|full` view-mode grammar is
+  removed** (0.9.0 decision D2). `#fragment` is now the only section selector,
+  and a positional after the ref is a usage error that names it. Migration:
+
+  | Old | New |
+  | --- | --- |
+  | `akm show knowledge/guide section "Auth"` | `akm show knowledge/guide#auth` |
+  | `akm show knowledge/guide full` | `akm show knowledge/guide` |
+  | `akm show knowledge/guide toc` | `akm show knowledge/guide#<unmatched>` — the error lists the available fragment slugs |
+  | `akm show knowledge/guide lines 10 30` | no replacement — every response carries `path`, so slice the file yourself |
+  | `akm show knowledge/guide frontmatter` | no replacement — if a raw-YAML projection proves necessary it returns as a `--shape` value |
+
+  The undocumented `--akmView` / `--akmHeading` / `--akmStart` / `--akmEnd`
+  flags the grammar injected into argv are gone with it.
 
 ## [0.9.0] - 2026-07-20
 

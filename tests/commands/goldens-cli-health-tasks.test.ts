@@ -154,9 +154,12 @@ describe("family B — akm health", () => {
     });
   });
 
-  test("health --format=html — structural markers + buildHealthHtmlReplacements key-set (never bytes)", async () => {
+  test("health --report --format=html — structural markers + buildHealthHtmlReplacements key-set (never bytes)", async () => {
+    // The full report is a DATA flag: the bespoke template fires on the
+    // report-shaped result, not on the format (bare `--format html` renders
+    // the plain check generically).
     const out = path.join(storage.root, "health.html");
-    const result = await runCli(["health", "--format", "html", "--output", out]);
+    const result = await runCli(["health", "--report", "--format", "html", "--output", out]);
     expect([0, 4]).toContain(result.code);
     const html = fs.readFileSync(out, "utf8");
     expect(html).toContain("<!DOCTYPE html>");

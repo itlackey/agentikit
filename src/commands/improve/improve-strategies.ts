@@ -25,6 +25,7 @@ import {
   resolveImproveProcessRunner,
   resolveTriageJudgmentRunner,
 } from "../../integrations/agent/runner";
+import { applyAutonomyGate, type GatedLane } from "./autonomy-gate";
 
 /** 0.9 public name for the improve preset configuration. */
 export type ImproveStrategyConfig = ImproveProfileConfig;
@@ -124,6 +125,12 @@ export interface ResolvedImprovePlan {
   strategy: Readonly<SelectedStrategy>;
   processes: Readonly<Record<ImproveProcessName, ResolvedImproveProcess>>;
   triageJudgment: RunnerSpec | null;
+  /**
+   * D8 — lanes the autonomy gate downgraded for this run. Empty when
+   * `experimental.improveAutonomy` is set. The run reports each one so a gated
+   * lane is never a silent no-op.
+   */
+  autonomyGated: readonly GatedLane[];
 }
 
 function cloneAndFreeze<T>(value: T): Readonly<T> {
@@ -143,15 +150,20 @@ export function resolveImprovePlan(
   config: AkmConfig,
   options: { repairValidationFailures?: boolean } = {},
 ): ResolvedImprovePlan {
-  const strategy = resolveImproveStrategy(name, config);
-  return buildImprovePlan(strategy, config, options);
+  const selected = resolveImproveStrategy(name, config);
+  // D8 — gate autonomy BEFORE the plan is built, so every downstream consumer
+  // (process enablement, LLM preflight, triage judgment) sees one already-safe
+  // strategy rather than each having to re-ask whether autonomy is allowed.
+  const { config: gatedStrategyConfig, gated } = applyAutonomyGate(selected.config, config);
+  const strategy: SelectedStrategy = { name: selected.name, config: gatedStrategyConfig };
+  return { ...buildImprovePlan(strategy, config, options), autonomyGated: gated };
 }
 
 function buildImprovePlan(
   strategy: SelectedStrategy,
   config: AkmConfig,
   options: { repairValidationFailures?: boolean },
-): ResolvedImprovePlan {
+): Omit<ResolvedImprovePlan, "autonomyGated"> {
   const processes = {} as Record<ImproveProcessName, ResolvedImproveProcess>;
   for (const processName of Object.keys(IMPROVE_PROCESS_ENGINE_CAPABILITIES) as ImproveProcessName[]) {
     const processConfig = cloneAndFreeze(strategy.config.processes?.[processName] ?? {});

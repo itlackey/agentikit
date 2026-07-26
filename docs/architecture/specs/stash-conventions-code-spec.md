@@ -8,9 +8,9 @@ Status: implemented (SPEC-1..8 landed 2026-07-11/12; SPEC-6 shipped capture-only
 > - **SPEC-4** (`akm search "<type>:<prefix>/"`) — superseded by conceptId-prefix
 >   enumeration (`akm search "memories/projecta/"`, `"bundle//skills/"`). See
 >   [0.9.0-decisions.md D4](./0.9.0-decisions.md#d4--browse-uses-conceptid-prefixes-not-type).
-> - **SPEC-7** (`akm mv`) — the command is removed; a rename is delete plus
->   create. See
->   [0.9.0-decisions.md D3](./0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-is-removed).
+> - **SPEC-7** (`akm mv`) — the command ships, but as an **Experimental**
+>   surface only; the recommended rename is delete plus create. See
+>   [0.9.0-decisions.md D3](./0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-ships-experimental).
 >
 > The normative surface lives in [`ref.md`](./ref.md) and
 > [`../../../STABILITY.md`](../../../STABILITY.md).
@@ -186,13 +186,14 @@ Implementation specs for the code changes the finalized stash-organization/back-
 
 ### SPEC-7 — akm mv: rename with inbound-xref rewrite and utility-history preservation
 
-> **SUPERSEDED (0.9.0) — the command is removed.** Its inbound-ref rewriting
-> was implemented inverted relative to the body-ref grammar (it rewrote bare
-> conceptIds, which are not refs, and matched no `bundle//` form at all), and
-> the utility-history preservation it bought was preservation of a regenerable
-> cache whose embedding went stale anyway. A rename is now delete plus create.
-> See [0.9.0-decisions.md D3](./0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-is-removed).
-> The text below is retained as the historical record of the original design.
+> **AMENDED (0.9.0) — the command ships, classified Experimental.** Its
+> inbound-ref rewriting is implemented inverted relative to the body-ref grammar
+> (it rewrites bare conceptIds, which are not refs, and matches no `bundle//`
+> form at all), and the utility-history preservation it buys is preservation of
+> a regenerable cache whose embedding goes stale anyway. The recommended rename
+> is therefore delete plus create, and nothing on the contract depends on `mv`.
+> See [0.9.0-decisions.md D3](./0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-ships-experimental).
+> The text below is retained as the record of the original design.
 
 **Priority:** P2 · **Sizing:** L — new verb, FS+DB coordination, contract/spec/doc updates, wide test matrix.
 

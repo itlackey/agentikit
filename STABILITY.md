@@ -23,7 +23,7 @@ please file it.
 | --- | --- |
 | **Stable** | Scripted use is supported. Changes are additive within a minor release; breaking changes are called out in the CHANGELOG with a migration note. |
 | **Evolving** | Available across minor releases, but flag names, prompts, and payload shapes may shift. Breaking changes are flagged in the CHANGELOG. |
-| **Experimental** | Subject to change without notice. Not recommended for scripted use. Some experimental surfaces additionally require an explicit opt-in (see [Experimental opt-in](#experimental-opt-in)). |
+| **Experimental** | Subject to change without notice. Not recommended for scripted use. Some experimental surfaces additionally require an explicit opt-in — see [`akm improve` autonomy](#akm-improve-autonomy--opt-in-in-090). |
 | **Internal** | Not a public interface. May change or disappear in any release, without a CHANGELOG note. Listed here only so you can recognize it. |
 
 ## Stable
@@ -41,15 +41,25 @@ please file it.
   inside bundle content (where it resolves against the containing bundle). The
   older `<type>:<name>` grammar is no longer accepted.
   - `#fragment` is **input-only** and never stored. On markdown-document items
-    the core resolves it as a section selector; elsewhere it is an
+    the core resolves it as a section selector — `akm show <ref>#<heading-slug>`
+    returns that one section, no fragment returns the whole item, and an
+    unmatched fragment lists the available slugs. Elsewhere it is an
     adapter-owned selector opaque to the core. See
     [`docs/architecture/specs/ref.md`](./docs/architecture/specs/ref.md).
   - **Refs in prose** must be fully qualified (`bundle//conceptId`) or a native
     adapter link form. A bare conceptId in prose is ordinary text, not a ref,
     and no akm tool rewrites it.
-- **Ref-prefix enumeration** — `akm search "memories/"`,
+- **ConceptId-prefix enumeration** — `akm search "memories/"`,
   `"memories/projecta/"`, `"bundle//"`, `"bundle//skills/"`. A trailing `/` is
-  required for a non-empty prefix.
+  required. The prefix matches the **conceptId** — the spelling every emitted
+  `ref` carries — so a ref copied out of search output can be truncated to a
+  prefix and pasted back in. Enumeration is not tied to any adapter's type set,
+  so every adapter's items browse the same way, and `bundle//` lists a whole
+  bundle (this replaced `akm bundle items`). A prefix is explicit intent, so
+  `search.defaultExcludeTypes` does not apply to it. The pre-0.9.0
+  `"<type>:"` / `"<type>:<prefix>/"` spelling was removed; a query in that
+  shape is now an ordinary keyword search whose empty-result tip names the
+  conceptId spelling that replaces it.
 - **Read commands** — `akm search`, `akm show`, `akm list`, `akm curate`,
   `akm info`, `akm config get`, `akm config list`, `akm config path`,
   `akm env list`, `akm secret list`, `akm proposal list` (list filters),
@@ -59,22 +69,44 @@ please file it.
   `akm remember`, `akm feedback`, `akm config set`, `akm config unset`.
 - **Renames are delete + create** — moving or renaming an item gives it a new
   identity; learned state does not follow it. Cross-bundle movement is
-  copy/import plus delete. (0.9.0 removed `akm mv`, which promised otherwise.)
+  copy/import plus delete. `akm mv` still ships and claims to preserve identity
+  across a rename, but it is **Experimental and not covered by this contract**:
+  its inbound-ref rewriting targets bare conceptIds rather than the anchored
+  `bundle//conceptId` prose form, so it can rewrite non-refs while leaving real
+  refs dangling. Prefer a plain filesystem move plus `akm index` and `akm lint`.
 - **Asset `type` is a free-form, open string** — `--type` filtering is an
   exact match against an open set and is deliberately **not validated**: an
   unrecognized type returns zero hits, not an error. Adapters emit types
-  outside the built-in set. Filter by conceptId prefix when you need a closed
-  set.
-- **Output contracts** — JSON output shape (the top-level keys, error envelope
-  `{ok: false, error, hint}`), and the exit-code table below. All six
-  `--format` values (`json|jsonl|yaml|text|md|html`) are available on every
-  non-exempt command; `--detail` is verbosity only (`brief|normal|full`);
+  outside the built-in set, so there is no closed list to validate against —
+  `--type website` or `--type wiki-source` are ordinary, valid filters.
+- **Output contracts** — JSON output shape (the top-level keys) and the
+  error envelope `{ok: false, error, code?, hint?}`: `ok` and `error` are
+  always present; `code` is a stable machine-readable identifier present on
+  every classified failure (exit 1 / 2 / 78) and absent only on unexpected
+  internal errors (exit 70); `hint` is best-effort and may be absent. Prefer
+  `code` over matching on `error` prose. Plus the exit-code table below.
+  **All six** `--format` values (`json|jsonl|yaml|text|md|html`) are available
+  on every non-exempt command. `json`, `jsonl`, and `yaml` serialize the
+  envelope; `text`, `md`, and `html` render it. A command may register a bespoke
+  renderer for a document format — `akm health` does, for its per-run and
+  window-compare tables and its full HTML report — and anything unregistered
+  falls back to a generic rendering derived from the envelope's own shape. No
+  command emits one format's bytes when another was asked for, none rejects a
+  format outright, and **no command reads `--format` to decide what data to
+  fetch**: a registered renderer fires on the shape of the result (`akm health
+  --report` carries the report dataset in the envelope, so the same data is
+  available as JSON), never on the format alone.
+  `--detail` is verbosity only (`brief|normal|full`);
   `--shape` (`human|agent|summary`) is the output-projection axis (see
-  Experimental). A small set of commands is **format-exempt** by nature
-  (`completions`, the interactive `setup` wizard, child-process passthrough in
-  `env run` / `secret run` / `agent`, and document payloads from
-  `workflow template` / `hints` / `help migrate`); the exemption is declared,
-  documented, and warned about rather than silent.
+  Experimental). A small set of commands is **format-exempt** because their
+  output is not a result envelope at all: `completions` (shell script source),
+  the interactive `setup` wizard, child-process passthrough in `env run` /
+  `secret run` / `agent`, and document payloads from `workflow template` /
+  `help migrate`. The set is declared in `src/output/format-exempt.ts`, and
+  passing `--format` to one of them warns rather than silently doing something
+  else. `akm graph export` has no local `--format`: the artifact payload
+  follows the `--out` extension (`.jsonl` writes JSONL, anything else JSON),
+  and the global flag only renders the command's own envelope.
 
   | Exit code | Meaning |
   | --- | --- |
@@ -108,10 +140,16 @@ CHANGELOG with a migration note.
   proposal noun group
   `akm proposal {list,show,diff,accept,reject,revert,drain}`. Output JSON keys
   are stable; CLI flags (`--strategy`, `--task`, `--generator`) may add
-  options or tighten validation across releases. `akm improve` itself stays on
-  by default and review-first; its directly-mutating lanes require an opt-in
-  (see [Experimental opt-in](#experimental-opt-in)). `--auto-accept` is
-  deprecated and ignored; it becomes a hard error in 0.10 — the replacement is
+  options or tighten validation across releases. `akm improve` stays on by
+  default and is **review-first**: the lanes that mutate assets without review
+  require `experimental.improveAutonomy` — see
+  [`akm improve` autonomy](#akm-improve-autonomy--opt-in-in-090).
+  `--auto-accept` was removed in 0.9.0. It is now accepted-and-warned rather
+  than silently absorbed: passing it prints a deprecation warning naming the
+  replacement, and the space-separated form (`--auto-accept 90`) no longer
+  poisons the asset-type positional — its value is discarded with a second
+  warning instead of silently reducing the run to a zero-match no-op. It
+  becomes a hard error in 0.10. The replacement is
   `akm improve && akm proposal drain --promote --yes`, or a `triage` block
   with `applyMode: "promote"` in your strategy.
 - **Tasks** — `akm tasks` subcommand surface (singular `akm task` is an
@@ -190,31 +228,62 @@ for scripted use.
   written as YAML programs (`workflows/*.yaml`, `version: 2`, validated
   against `schemas/akm-workflow.json`), executed by `akm workflow run`, plus
   the harness-neutral driver protocol (`akm workflow brief` / `akm workflow
-  report`) and `akm workflow watch`. Requires the
-  `experimental.workflowEngine` opt-in. The YAML format, its schema, the
-  flags, and all JSON output shapes may change. Classic **linear markdown
+  report`) and `akm workflow watch`. These are reachable with no opt-in in
+  0.9.0 — treat them as unstable rather than blocked. The YAML format, its
+  schema, the flags, and all JSON output shapes may change. Classic **linear markdown
   workflows are unchanged and stable**, as is the workflow CLI contract
   (`start` / `next` / `complete` / `status` / `list` / `create` / `validate` /
   `template` / `resume` / `abandon`).
 
-### Experimental opt-in
+### `akm improve` autonomy — opt-in in 0.9.0
 
-Some experimental surfaces are gated: they refuse to run until you set the
-corresponding config key, and the refusal names the key. A gated lane never
-degrades into a silent no-op — a scheduled run that hits one emits an event,
-surfaces in `akm tasks doctor`, and raises a health advisory.
+**`akm improve` is review-first by default in 0.9.0.** The command itself is ON
+— its schedules, reflect/distill proposals, and graph extraction all run — but
+the lanes that mutate assets *without* review require an explicit opt-in:
 
-| Key | Gates |
+```sh
+akm config set experimental.improveAutonomy true
+```
+
+Without it, these five lanes are downgraded, and each downgrade is **reported,
+not silent**: it warns on stderr naming the lane and the key, appends an
+`improve_skipped` event with `reason: "autonomy_gated"`, is counted in
+`akm health`'s improve skip-reason summary, and is listed by `akm tasks doctor`
+under `improveAutonomy.gatedLanes` — which is where to look when a *scheduled*
+run stops doing something it used to. `akm tasks doctor` also reports the
+**effective** `improveTriage.applyMode`, so a `promote` strategy under a
+review-first config correctly shows `queue`.
+
+| Lane | What it does when enabled | With autonomy off |
+| --- | --- | --- |
+| `consolidate` | Merges memories and **deletes** the superseded files (archived to `.akm/archive/` first) | disabled |
+| `memoryInference` | Writes `.derived.md` children and rewrites parent frontmatter | disabled |
+| memory cleanup | Belief-state frontmatter rewrites, archive moves | not analyzed |
+| contradiction pass | Writes contradiction edges and belief-state transitions | not run |
+| `triage` `applyMode: "promote"` | Auto-accepts queued proposals into the stash | downgraded to `queue` — triage still runs, it just does not auto-accept |
+
+Because the gate is applied before the LLM preflight, a review-first workspace
+also needs fewer engines configured: a strategy whose only model-backed process
+is a gated lane resolves without an engine at all.
+
+**Three direct writes are deliberately NOT gated**, because they are additive or
+already independently controlled:
+
+| Write | Why it stays ungated |
 | --- | --- |
-| `experimental.workflowEngine` | `akm workflow run` / `brief` / `report` / `watch`, and creating YAML workflow programs |
-| `experimental.improveAutonomy` | The improve lanes that mutate assets without review: consolidate's merge/delete/contradict, the memory-cleanup and contradiction passes, memory-inference writes, triage `applyMode: "promote"`, and unattended `push` |
+| `extract` session indexing | Additive `sessions/**` writes; nothing is overwritten or deleted |
+| distill's encoding-salience stamp | Frontmatter metadata only |
+| `sync.push` | Publishes already-committed content to a remote the user configured for that purpose, and has its own `improve.strategies.<name>.sync.push: false` and `--no-push` |
 
-Without `experimental.improveAutonomy`, `akm improve` still runs and still
-generates proposals for review — reflect, distill, extract candidates,
-validation, proactive-maintenance selection, and graph extraction are all
-ungated. Two direct writes remain ungated by design and are called out here so
-they are not a surprise: `extract`'s session indexing (additive `sessions/**`
-writes, `processes.extract.indexSessions`, default on) and distill's
+Autonomy is never inferred: an absent `experimental` section, an absent key, and
+an explicit `false` all read as off, so a partially-written or older config is
+review-first rather than accidentally permissive.
+
+Reflect, distill, extract candidates, validation, proactive-maintenance
+selection, and graph extraction are proposal-only and never write assets
+directly. Two further direct writes are ungated by design: `extract`'s session
+indexing (additive `sessions/**` writes,
+`processes.extract.indexSessions`, default on) and distill's
 encoding-salience frontmatter stamp (metadata only).
 
 ## Internal
@@ -261,9 +330,25 @@ These changes are planned and will land in a known future release. They
 are not part of the current stability contract; you should plan migrations
 around them.
 
+**The 0.9.0 decision record is fully shipped.** The
+[decision record](./docs/architecture/specs/0.9.0-decisions.md) settles a set of
+breaking changes; every one of them is now in the code, and each decision
+carries its own shipped status.
+
+Shipped from that record: **D1** (`#fragment` section selection),
+**D2** (the `akm show <ref> toc|section|lines|frontmatter|full` view grammar is
+gone — `#fragment` is the only section selector), **D4** (conceptId /
+`bundle//` prefix browse), **D5** (`akm bundle` removed), **D6** (open `type`
+set at runtime), **D7** (all six `--format` values everywhere), **D8** (the
+`experimental.improveAutonomy` gate), **D9** (`--auto-accept` warn-and-ignore),
+and partially **D10** (an `akm-migrate` binary now exists, though the code still
+lives in this repo). **D3** is not on this list: `akm mv` ships in 0.9.0 as an
+Experimental surface (see the Renames bullet above), and no removal is planned.
+
 - **0.10 — migration extraction.** The migration machinery leaves the CLI for
   a separately published `akm-migrate` package (see Internal above).
-- **0.10 — `--auto-accept` hard error.** Currently warn-and-ignore.
+- **0.10 — `--auto-accept` hard error.** It is currently accepted-and-warned;
+  see the Improvement loop entry.
 - **1.0 contract freeze** — the `[bundle//]conceptId[#fragment]` ref grammar,
   the supported source model, search behavior, and write-target rules are
   frozen at 1.0. The SDK and in-process plugin story ship on top of that
