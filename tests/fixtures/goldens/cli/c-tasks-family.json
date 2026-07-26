@@ -8,6 +8,7 @@
       "caller",
       "engine",
       "historyDir",
+      "improveAutonomy",
       "improveTriage",
       "logDir",
       "remediation",
