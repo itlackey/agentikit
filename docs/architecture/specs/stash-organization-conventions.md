@@ -7,18 +7,20 @@ Date: 2026-07-11
 > **Amended by the 0.9.0 surface decisions.** Two mechanisms this document
 > records as closed are superseded; the sections below that narrate the
 > 2026-07-12 amendments are kept as a historical record, not current guidance:
-> - **A tooled rename** (`akm mv`, SPEC-7) — the command is removed. A rename
+> - **A tooled rename** (`akm mv`, SPEC-7) — the command still ships, but only
+>   as an **Experimental** surface outside the stability contract: its
+>   inbound-ref rewriting is inverted relative to the body-ref grammar. A rename
 >   is delete plus create: the destination is a new identity and learned state
->   does not follow it. The forced-rename procedure is the manual one (move,
->   fix inbound refs, `akm index`, `akm lint`). See
->   [0.9.0-decisions.md D3](0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-is-removed).
+>   does not follow it. The recommended forced-rename procedure is the manual
+>   one (move, fix inbound refs, `akm index`, `akm lint`). See
+>   [0.9.0-decisions.md D3](0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-ships-experimental).
 > - **The ref-prefix filter** (SPEC-4) — the `<type>:<prefix>/` spelling is
 >   retired in favour of conceptId prefixes (`memories/projecta/`,
 >   `bundle//skills/`). See
 >   [0.9.0-decisions.md D4](0.9.0-decisions.md#d4--browse-uses-conceptid-prefixes-not-type).
 >
 > The no-rename default this document argues for is therefore *stronger* under
-> 0.9.0, not weaker: there is no tool that makes a rename cheap.
+> 0.9.0, not weaker: no tool you may rely on makes a rename cheap.
 
 ## Problem
 
@@ -98,9 +100,10 @@ load-bearing facts, each verified in code:
    array, and (since SPEC-1 landed) the `xrefs:`/`supersededBy:`/
    `contradictedBy:` frontmatter channels. A rename dangles inbound links
    silently — nothing catches them until the next `akm lint` run flags them, so
-   run `akm lint` as the last step of any rename. (`akm mv` briefly automated
-   this and was removed in 0.9.0; its rewriting was inverted relative to the
-   body-ref grammar — see 0.9.0-decisions.md D3.) Wikis are excluded from
+   run `akm lint` as the last step of any rename. (`akm mv` automates this, but
+   its rewriting is inverted relative to the body-ref grammar, so it ships
+   Experimental in 0.9.0 and does not substitute for the lint run — see
+   0.9.0-decisions.md D3.) Wikis are excluded from
    `akm lint` and instead get their own
    orphan/broken-xref/broken-source/stale-index/uncited-raw checks via
    `akm wiki lint`.
@@ -257,10 +260,11 @@ corrections, each code-verified or empirically tested:
   and human readers.
 - **"Rename-proof" was misleading** — a rename orphans the asset's utility
   history (new `entry_key` row), strengthening the no-rename rule.
-  *Amendment (2026-07-12): SPEC-7 (`akm mv`) briefly made a tooled rename
-  preserve that history.* **Superseded (0.9.0): `akm mv` is removed and every
-  rename — manual or otherwise — orphans the utility history. The original
-  finding stands unqualified.**
+  *Amendment (2026-07-12): SPEC-7 (`akm mv`) made a tooled rename preserve that
+  history.* **Superseded (0.9.0): a rename is delete plus create and orphans
+  the utility history. `akm mv`'s in-place re-key still ships, but it is
+  Experimental and nothing may be built on it, so the original finding stands
+  unqualified.**
 - **Corrections now pair with `beliefState: superseded`/`supersededBy`**
   (parsed for all markdown types, demoted at rank time), and immutability was
   rescoped to ingested material only, resolving a contradiction with the
@@ -321,13 +325,14 @@ provenance channel.
   optimization). Whether the skeleton convention facts should re-adopt the
   idiom over `akm search "<slug>" --type <type>` stays deferred one release so
   older CLI versions aren't taught a query shape they don't support.
-- **A tooled rename.** Closed by SPEC-7, then **re-opened and answered "no"
-  in 0.9.0**: `akm mv` is removed and a rename is delete plus create. The
-  forced-rename procedure is the manual one this document originally
-  prescribed — move the file (a memory's `.derived.md` twin moves with it),
-  grep and fix inbound refs in the same pass, then `akm index` and `akm lint`.
-  The no-rename default is now the only defence, which strengthens it. See
-  [0.9.0-decisions.md D3](0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-is-removed).
+- **A tooled rename.** Closed by SPEC-7, then **re-opened in 0.9.0 and answered
+  "not as a contract"**: `akm mv` ships Experimental and a rename is delete plus
+  create. The recommended forced-rename procedure is the manual one this
+  document originally prescribed — move the file (a memory's `.derived.md` twin
+  moves with it), grep and fix inbound refs in the same pass, then `akm index`
+  and `akm lint`. The no-rename default is again the primary defence, which
+  strengthens it. See
+  [0.9.0-decisions.md D3](0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-ships-experimental).
 - **Index self-situating body text.** Closed by SPEC-8 in
   [stash-conventions-code-spec.md](stash-conventions-code-spec.md)
   (implemented, default-off: the `index.indexBodyOpening` config flag makes

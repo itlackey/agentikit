@@ -69,8 +69,6 @@ please file it.
   its inbound-ref rewriting targets bare conceptIds rather than the anchored
   `bundle//conceptId` prose form, so it can rewrite non-refs while leaving real
   refs dangling. Prefer a plain filesystem move plus `akm index` and `akm lint`.
-  Its removal is decided but not yet shipped (see
-  [On the horizon](#on-the-horizon)).
 - **Asset `type` is a free-form, open string** — `--type` filtering is an
   exact match against an open set and is deliberately **not validated**: an
   unrecognized type returns zero hits, not an error. Adapters emit types
@@ -312,7 +310,6 @@ status. Not yet in the code:
 | Decision | Change | Current behavior |
 | --- | --- | --- |
 | D2 | Remove the `akm show <ref> toc\|section\|lines\|frontmatter\|full` view grammar | Still parsed and advertised (`#fragment` from D1 already works alongside it) |
-| D3 | Remove `akm mv` | Still registered and executable |
 | D4 | Browse by conceptId / `bundle//` prefix | Only the `<type>:` grammar exists |
 | D7 | All six `--format` values on every command | `md`/`html` are `akm health`-only |
 | D8 | Gate improve autonomy behind `experimental.improveAutonomy` | No gate; mutating lanes are on by default |
@@ -320,7 +317,8 @@ status. Not yet in the code:
 Already shipped from that record: **D1** (`#fragment` section selection),
 **D5** (`akm bundle` removed), **D6** (open `type` set at runtime), and
 partially **D10** (an `akm-migrate` binary now exists, though the code still
-lives in this repo).
+lives in this repo). **D3** is not on this list: `akm mv` ships in 0.9.0 as an
+Experimental surface (see the Renames bullet above), and no removal is planned.
 
 - **0.10 — migration extraction.** The migration machinery leaves the CLI for
   a separately published `akm-migrate` package (see Internal above).

@@ -196,10 +196,10 @@ When `--dest` is provided, `akm setup` is not required first.
 
 ## Move / Rename
 
-There is no rename command. **A rename is delete plus create**: the new path is
-a new identity, so the destination starts with fresh learned state (utility,
-salience, usage history) and inbound refs to the old path dangle. Prefer NOT
-renaming — a ref is chosen once. When a rename is unavoidable:
+**A rename is delete plus create**: the new path is a new identity, so the
+destination starts with fresh learned state (utility, salience, usage history)
+and inbound refs to the old path dangle. Prefer NOT renaming — a ref is chosen
+once. When a rename is unavoidable:
 
 ```sh
 mv ~/akm/memories/projectA/old-note.md ~/akm/memories/projectA/new-note.md
@@ -212,9 +212,10 @@ A memory's `.derived.md` twin must move with its base. Moving an item between
 bundles is `akm clone` (or a copy) followed by deleting the source — both the
 bundle and the concept identity change.
 
-(`akm mv` existed through 0.9.0-rc and was removed: it rewrote bare conceptIds,
-which are prose rather than refs, and matched no fully-qualified `bundle//`
-form at all.)
+(`akm mv` ships, but it is **Experimental** and defective for prose-ref
+rewriting: it rewrites bare conceptIds, which are prose rather than refs, and
+matches no fully-qualified `bundle//` form at all — so it edits text that is not
+a ref while leaving real refs dangling. Use the procedure above.)
 
 ## Sync
 

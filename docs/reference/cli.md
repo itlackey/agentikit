@@ -884,6 +884,14 @@ CI or fresh environments without running `akm setup` first.
 
 ### mv (Experimental)
 
+> **Experimental — not covered by `STABILITY.md`.** The inbound-ref rewriting
+> below is implemented inverted relative to the body-ref grammar: it matches
+> bare conceptIds, which prose treats as ordinary text, and matches no
+> fully-qualified `bundle//conceptId` form at all — so it can edit prose that is
+> not a ref while leaving real anchored refs dangling. The recommended rename is
+> a plain filesystem move plus `akm index` and `akm lint` (see
+> [`ref.md` § Renames and moves](../architecture/specs/ref.md#renames-and-moves)).
+
 Rename an asset **within its type directory** in the primary writable stash.
 `akm mv` is the CLI half of the stash conventions' forced-rename procedure
 ("grep and fix inbound xrefs in the same pass"): it moves the file, rewrites

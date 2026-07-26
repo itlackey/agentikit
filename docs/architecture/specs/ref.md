@@ -254,10 +254,12 @@ link form owned by the adapter (OKF links, wiki links). **Bare short refs in
 prose are not refs**: `memories/foo` in a sentence is ordinary text, and no
 tool may rewrite it.
 
-Only lint's missing-ref scan consumes this rule today. The other former
-consumer, `akm mv`'s inbound-ref rewriting, is removed in 0.9.0 — it
-implemented the rule exactly inverted (it rewrote bare conceptIds and had no
-`bundle//` pattern at all), which is one of the reasons it is gone.
+Only lint's missing-ref scan honours this rule today. The other consumer,
+`akm mv`'s inbound-ref rewriting, is defective: it implements the rule exactly
+inverted (it rewrites bare conceptIds and matches no `bundle//` pattern at
+all), so it rewrites prose that is not a ref while leaving real anchored refs
+dangling. That is why `akm mv` is **Experimental** in 0.9.0 and not covered by
+the stability contract.
 
 ## Renames and moves
 
@@ -277,10 +279,13 @@ source. Both the bundle and the concept identity change; there is no
 identity-preserving cross-bundle move.
 
 This supersedes the pre-0.9.0 rule that a rename "MUST use an explicit
-state-rekey transaction", and the `akm mv` command that implemented it. That
-rule was a product choice made during the bundle refactor, not a constraint the
-architecture imposes. If preserving learned state through renames later proves
-materially valuable, a narrow same-bundle `akm rename` can return — resolving
+state-rekey transaction". That rule was a product choice made during the bundle
+refactor, not a constraint the architecture imposes. `akm mv`, which implements
+the superseded rule, still ships — but as an **Experimental** surface outside
+the stability contract, because its inbound-ref rewriting is inverted (above).
+The procedure above is the recommended one. If preserving learned state through
+renames later proves materially valuable, a narrow same-bundle `akm rename` can
+return — resolving
 through the index, using adapter-owned placement, accepting qualified refs,
 rewriting only anchored prose refs, applying one qualified old→new state
 mapping, and rebuilding derived index data rather than preserving row IDs.
