@@ -91,9 +91,9 @@ describe("--output <path>", () => {
   });
 });
 
-describe("akm health --format html", () => {
-  test("renders the full report from the bespoke template (echarts is CDN-only, chunk-9 WI-9.4d)", async () => {
-    const { code, stdout } = await runCliCapture(["health", "--format", "html"]);
+describe("akm health --report", () => {
+  test("--format html renders the full report from the bespoke template (echarts is CDN-only, chunk-9 WI-9.4d)", async () => {
+    const { code, stdout } = await runCliCapture(["health", "--report", "--format", "html"]);
     // health maps warn→4; both pass and warn are valid for a fresh sandbox DB.
     expect([0, 4]).toContain(code);
     expect(stdout).toContain("<!DOCTYPE html>");
@@ -116,13 +116,48 @@ describe("akm health --format html", () => {
     expect(stdout).toContain("Trend vs prior 24h");
   });
 
-  test("--compare overrides the trend window and --output writes the file", async () => {
+  test("--window-compare overrides the trend window and --output writes the file", async () => {
     const out = path.join(storage.root, "health.html");
-    const { code, stdout } = await runCliCapture(["health", "--format", "html", "--compare", "7d", "--output", out]);
+    const { code, stdout } = await runCliCapture([
+      "health",
+      "--report",
+      "--format",
+      "html",
+      "--window-compare",
+      "7d",
+      "--output",
+      out,
+    ]);
     expect([0, 4]).toContain(code);
     expect(stdout.trim()).toBe("");
     const html = fs.readFileSync(out, "utf8");
     expect(html).toContain("Trend vs prior 7d");
     expect(html).toContain("AKM Health Report");
+  });
+
+  test("the report dataset is format-independent: --format json carries the same data", async () => {
+    // The pre-D7 design made the full report reachable ONLY as html — the
+    // format determined what data you could have. --report is a data flag, so
+    // the identical dataset must come back as ordinary JSON.
+    const { code, stdout } = await runCliCapture(["health", "--report", "--format", "json"]);
+    expect([0, 4]).toContain(code);
+    const parsed = JSON.parse(stdout);
+    expect(Array.isArray(parsed.runs)).toBe(true);
+    expect(parsed.report.window).toBe("24h");
+    expect(parsed.report.compare).toBe("24h");
+    expect(Array.isArray(parsed.report.pendingProposals)).toBe(true);
+  });
+
+  test("plain akm health carries no report dataset and renders html generically", async () => {
+    const { code, stdout } = await runCliCapture(["health", "--format", "json"]);
+    expect([0, 4]).toContain(code);
+    expect(JSON.parse(stdout).report).toBeUndefined();
+
+    const html = await runCliCapture(["health", "--format", "html"]);
+    expect([0, 4]).toContain(html.code);
+    // Without the report dataset the registered renderer falls through to the
+    // generic rendering — no bespoke template, no error.
+    expect(html.stdout).toContain("<h1>akm health</h1>");
+    expect(html.stdout).not.toContain("AKM Health Report");
   });
 });

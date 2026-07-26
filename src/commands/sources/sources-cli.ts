@@ -8,8 +8,7 @@
  * Extracted verbatim from src/cli.ts (WS6). Each `main.subCommands.<key>`
  * registration line stays byte-identical; the args/output shape of every
  * subcommand is unchanged. The `--kind` filter helper (`parseKindFilter` +
- * `VALID_SOURCE_KINDS`), the `runSyncBody` git-commit/push body, and the
- * `wasFormatValueConsumedAsName` citty-mis-parse workaround are used ONLY by
+ * `VALID_SOURCE_KINDS`) and the `runSyncBody` git-commit/push body are used ONLY by
  * this cluster, so they move with it.
  *
  * Leaf handlers whose body is a plain `runWithJsonErrors(async () => { … })`
@@ -19,8 +18,7 @@
  * `runWithJsonErrors` wrapper) rather than wrapping inline.
  */
 import { defineCommand } from "citty";
-import { getParsedInvocation } from "../../cli/invocation";
-import { defineJsonCommand, output, runWithJsonErrors } from "../../cli/shared";
+import { defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
@@ -147,25 +145,13 @@ export const upgradeCommand = defineJsonCommand({
   },
 });
 
-// `sync` body. Kept as a standalone function so the git-commit/push logic and
-// the `--format`-as-name workaround stay in one place.
-async function runSyncBody(args: { name?: string; message?: string; push?: boolean }, verb: "sync"): Promise<void> {
+// `sync` body, standalone so the git-commit/push logic stays in one place.
+async function runSyncBody(args: { name?: string; message?: string; push?: boolean }): Promise<void> {
   await runWithJsonErrors(async () => {
-    // Fix: citty can consume `--format json` (space-separated) as the
-    // positional `name` argument (e.g. `akm sync --format json` parses
-    // name="json"). Detect the mis-parse by checking argv order — only
-    // treat the positional as consumed by --format when --format appears
-    // before any standalone occurrence of the same value in the sync
-    // subcommand's argv slice. This preserves legitimate invocations
-    // like `akm sync json --format json`.
-    const parsedFormat = getParsedInvocation().getFlagValue("--format");
-    const effectiveName =
-      args.name !== undefined &&
-      parsedFormat !== undefined &&
-      args.name === parsedFormat &&
-      wasFormatValueConsumedAsName(args.name, parsedFormat, verb)
-        ? undefined
-        : args.name;
+    // The optional `name` positional is safe to trust: the global output flags
+    // are declared on the command (GLOBAL_OUTPUT_ARGS), so `akm sync --format
+    // json` parses `json` as the flag's value, never as a stash name.
+    const effectiveName = args.name;
 
     let writable: boolean | undefined;
     if (effectiveName === undefined) {
@@ -192,7 +178,11 @@ export const syncCommand = defineCommand({
     description:
       "Sync changes in a git-backed stash: commits (and pushes when writable + remote is configured). No-op for non-git stashes.",
   },
+  // Raw defineCommand (not defineJsonCommand), so the global output flags are
+  // spread in explicitly — without them the optional `name` positional would
+  // swallow a space-separated global flag's value.
   args: {
+    ...GLOBAL_OUTPUT_ARGS,
     name: {
       type: "positional",
       description: "Name of the git stash to sync (default: primary stash directory)",
@@ -210,53 +200,9 @@ export const syncCommand = defineCommand({
     },
   },
   async run({ args }) {
-    await runSyncBody(args, "sync");
+    await runSyncBody(args);
   },
 });
-
-/**
- * Detect whether `--format <value>` was consumed by citty as the optional
- * `name` positional of `akm sync`. Returns true only when `--format` appears
- * in the sync subcommand's argv slice AND the candidate name does NOT
- * appear as a standalone positional elsewhere (before or after the flag).
- *
- * This keeps `akm sync json --format json` routing `json` as the stash name,
- * while `akm sync --format json` (no separate positional) is treated as a
- * primary-stash sync. `verb` is the subcommand token to anchor on.
- */
-function wasFormatValueConsumedAsName(name: string, formatValue: string, verb: "sync"): boolean {
-  const argv = getParsedInvocation().userArgs;
-  const verbIndex = argv.indexOf(verb);
-  const tokens = verbIndex >= 0 ? argv.slice(verbIndex + 1) : argv;
-
-  let formatIndex = -1;
-  let formatConsumesNextToken = false;
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    if (token === "--format") {
-      formatIndex = i;
-      formatConsumesNextToken = true;
-      break;
-    }
-    if (token === `--format=${formatValue}`) {
-      formatIndex = i;
-      break;
-    }
-  }
-
-  if (formatIndex === -1) return false;
-
-  // If the name appears as a standalone token before --format, it's the
-  // real positional and --format did not consume it.
-  if (tokens.slice(0, formatIndex).includes(name)) return false;
-
-  // If --format has a space-separated value, skip past the value token
-  // when scanning after the flag; otherwise start right after the flag.
-  const firstTokenAfterFormat = formatIndex + (formatConsumesNextToken ? 2 : 1);
-  if (tokens.slice(firstTokenAfterFormat).includes(name)) return false;
-
-  return true;
-}
 
 export const cloneCommand = defineJsonCommand({
   meta: {

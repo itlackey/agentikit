@@ -120,17 +120,46 @@ export type JsonCommandDef<T extends ArgsDef = ArgsDef> = Omit<CommandDef<T>, "r
 };
 
 /**
+ * The global output flags, redeclared on every leaf command.
+ *
+ * citty parses each command level against only that command's own args, so a
+ * flag declared on the root command is UNKNOWN at the leaf — and an unknown
+ * flag does not consume its space-separated value, which then falls through as
+ * a positional. `akm sync --format json` once synced a bundle named "json",
+ * and `akm env unset env:x KEY --format json` once tried to unset a key named
+ * "json"; both grew bespoke argv-inspection workarounds. Declaring the flags
+ * at the leaf lets the parser consume the value, which is the root-cause fix.
+ *
+ * These declarations exist for PARSING only. The output mode is still read
+ * exactly once, from the invocation singleton at startup — no command body may
+ * read these args (that is the same one-parse rule `cli/invocation.ts`
+ * documents).
+ */
+export const GLOBAL_OUTPUT_ARGS = {
+  format: { type: "string", description: "Output format: json|jsonl|yaml|text|md|html (global flag)" },
+  detail: { type: "string", description: "Output detail: brief|normal|full (global flag)" },
+  shape: { type: "string", description: "Output projection: human|agent|summary (global flag)" },
+  output: { type: "string", description: "Write rendered output to a file instead of stdout (global flag)" },
+} as const satisfies ArgsDef;
+
+/**
  * Define a citty command whose `run` body is automatically wrapped in
  * `runWithJsonErrors`, so the handler emits a byte-identical JSON error
  * envelope (stdout/stderr/exit-code) on throw without the boilerplate. A
  * command without a `run` (a pure subcommand group) is passed through
  * unchanged.
+ *
+ * Every command defined here also accepts the {@link GLOBAL_OUTPUT_ARGS} so
+ * their values are parsed rather than mis-captured as positionals; a command
+ * declaring its own arg of the same name wins (e.g. `hints` has its own
+ * `detail`).
  */
 export function defineJsonCommand<const T extends ArgsDef = ArgsDef>(def: JsonCommandDef<T>): CommandDef<T> {
   const { run, ...rest } = def;
-  if (!run) return defineCommand({ ...rest } as CommandDef<T>);
+  const withGlobals = { ...rest, args: { ...GLOBAL_OUTPUT_ARGS, ...rest.args } };
+  if (!run) return defineCommand(withGlobals as CommandDef<T>);
   return defineCommand({
-    ...rest,
+    ...withGlobals,
     run: (context: CommandContext<T>) => runWithJsonErrors(() => run(context)),
   } as CommandDef<T>);
 }

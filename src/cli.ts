@@ -90,7 +90,7 @@ import { secretCommand } from "./commands/env/secret-cli";
 import { feedbackCommand } from "./commands/feedback-cli";
 import { graphCommand } from "./commands/graph/graph-cli";
 import { akmHealth } from "./commands/health";
-import { setHealthHtmlContext } from "./commands/health/renderers";
+import "./commands/health/renderers";
 import type { WindowSpec } from "./commands/health/types";
 import { parseWindowSpec } from "./commands/health/windows";
 import { extractCommand } from "./commands/improve/extract-cli";
@@ -315,9 +315,11 @@ const healthCommand = defineCommand({
       description:
         "Explicit comparison window 'name=...,since=ISO,until=ISO' (repeatable, up to 4; mutually exclusive with --window-compare)",
     },
-    compare: {
-      type: "string",
-      description: "Comparison window for the --format html report's trend deltas (default: 24h)",
+    report: {
+      type: "boolean",
+      description:
+        "Fetch the full report dataset: per-run rows, trend deltas vs the prior window, and the pending proposal queue. Renders as the rich report under --format md/html and as complete data under any other format.",
+      default: false,
     },
   },
   async run({ args }) {
@@ -329,42 +331,39 @@ const healthCommand = defineCommand({
       const windows: WindowSpec[] | undefined =
         rawWindows.length > 0 ? rawWindows.map((raw) => parseWindowSpec(raw)) : undefined;
       const groupBy = args["group-by"];
-      const windowCompareRaw = args["window-compare"];
-      const mode = getOutputMode();
+      const report = args.report === true;
 
-      // `--format html` needs a richer READ than the other formats: the report
-      // renders trend deltas, which only exist when health is asked for a
-      // window-compare. That is a data-shape difference, not a rendering one,
-      // so it stays here while the rendering itself goes through the registry
-      // (D7 — nothing intercepts before output()).
+      // `--report` is a DATA flag: it selects the richer read (per-run rows +
+      // window-compare deltas + the proposal queue) and nothing about the read
+      // depends on --format. The registered md/html renderers are pure
+      // functions of the result — a report-shaped result renders as the rich
+      // report, any other shape falls through to the generic rendering.
       //
-      // Default the compare window to the report's own `--since` window so the
+      // The compare window defaults to the report's own `--since` window so the
       // deltas are like-for-like (e.g. last 7d vs the prior 7d). A fixed 24h
       // default made a `--since 7d` report compare its 7-day totals against a
       // 24-hour prior window, producing meaningless deltas.
-      const htmlCompare = args.compare ?? windowCompareRaw ?? args.since ?? "24h";
-      const result =
-        mode.format === "html"
-          ? akmHealth({ since: args.since, groupBy: "run", windowCompare: htmlCompare })
-          : akmHealth({
-              since: args.since,
-              groupBy: groupBy as "run" | undefined,
-              windowCompare: windowCompareRaw,
-              windows,
-            });
-      resultStatus = result.status;
-      if (mode.format === "html") {
-        // The HTML report reads the proposal queue too, which the health result
-        // does not carry. Bind it (and the window labels) for the registered
-        // renderer, which is otherwise a pure function of the result.
+      const windowCompare = report ? (args["window-compare"] ?? args.since ?? "24h") : args["window-compare"];
+      const base = akmHealth({
+        since: args.since,
+        groupBy: report ? "run" : (groupBy as "run" | undefined),
+        windowCompare,
+        windows,
+      });
+      resultStatus = base.status;
+      if (report) {
         const { listPendingProposals } = await import("./commands/proposal/proposal");
-        setHealthHtmlContext({
-          window: args.since ?? "24h",
-          compare: htmlCompare,
-          proposals: listPendingProposals(),
+        output("health", {
+          ...base,
+          report: {
+            window: args.since ?? "24h",
+            compare: windowCompare as string,
+            pendingProposals: listPendingProposals().map(({ ref, source, createdAt }) => ({ ref, source, createdAt })),
+          },
         });
+        return;
       }
-      output("health", result);
+      output("health", base);
     });
     if (resultStatus === "fail") {
       process.exit(EXIT_GENERAL);

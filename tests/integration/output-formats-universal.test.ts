@@ -121,8 +121,8 @@ describe("html is no longer health-only", () => {
 });
 
 describe("akm health keeps its bespoke reports through the registry", () => {
-  test("--format html renders the report template, not the generic fallback", async () => {
-    const result = await runCliCapture(["health", "--format=html"]);
+  test("--report --format html renders the report template, not the generic fallback", async () => {
+    const result = await runCliCapture(["health", "--report", "--format=html"]);
 
     expect([0, 4]).toContain(result.code);
     // The report template carries content the generic renderer never emits.
@@ -136,6 +136,13 @@ describe("akm health keeps its bespoke reports through the registry", () => {
     expect([0, 4]).toContain(result.code);
     expect(result.stdout.trim().length).toBeGreaterThan(0);
     expect(result.stdout.trimStart().startsWith("{")).toBe(false);
+  });
+
+  test("the renderers are data-driven: plain health under html falls to the generic rendering", async () => {
+    const result = await runCliCapture(["health", "--format=html"]);
+
+    expect([0, 4]).toContain(result.code);
+    expect(result.stdout).toContain("<h1>akm health</h1>");
   });
 });
 

@@ -15,7 +15,7 @@ import type { MemoryInferenceResult } from "../../../src/indexer/passes/memory-i
 import { getWebsiteCachePaths } from "../../../src/sources/snapshot-fetchers/website-ingest";
 import { writeMemory } from "../../_helpers/assets";
 import { makeProposal } from "../../_helpers/factories";
-import { withTestImproveLlm } from "../../_helpers/improve-config";
+import { withImproveAutonomy, withTestImproveLlm } from "../../_helpers/improve-config";
 
 const tempDirs: string[] = [];
 
@@ -28,13 +28,15 @@ function makeTempDir(prefix: string): string {
 async function buildIndex(stashDir: string): Promise<void> {
   process.env.AKM_STASH_DIR = stashDir;
   saveConfig(
-    withTestImproveLlm({
-      semanticSearchMode: "off",
-      bundles: { stash: { path: stashDir, writable: true } },
-      defaultBundle: "stash",
-      defaultWriteTarget: "stash",
-      improve: { strategies: { default: { processes: { extract: { enabled: false } } } } },
-    }),
+    withImproveAutonomy(
+      withTestImproveLlm({
+        semanticSearchMode: "off",
+        bundles: { stash: { path: stashDir, writable: true } },
+        defaultBundle: "stash",
+        defaultWriteTarget: "stash",
+        improve: { strategies: { default: { processes: { extract: { enabled: false } } } } },
+      }),
+    ),
   );
   await akmIndex({ stashDir, full: true });
 }
@@ -353,10 +355,12 @@ describe("akm improve memory cleanup", () => {
       // extract" because this test does not configure an LLM. Disable extract
       // here so the test's `memoryCleanup?.warnings` assertion is not
       // contaminated by host-env-dependent extract failures.
-      config: withTestImproveLlm({
-        semanticSearchMode: "off",
-        improve: { strategies: { default: { processes: { extract: { enabled: false } } } } },
-      }),
+      config: withImproveAutonomy(
+        withTestImproveLlm({
+          semanticSearchMode: "off",
+          improve: { strategies: { default: { processes: { extract: { enabled: false } } } } },
+        }),
+      ),
       ensureIndexFn: async () => false,
       reindexFn: async ({ stashDir: reindexStashDir }) => {
         await akmIndex({ stashDir: reindexStashDir, full: true });
@@ -723,15 +727,17 @@ describe("akm improve memory cleanup", () => {
     );
 
     saveConfig(
-      withTestImproveLlm({
-        semanticSearchMode: "off",
-        bundles: {
-          local: { path: stashDir, writable: true },
-          "docs-site": { website: { url: websiteUrl } },
-        },
-        defaultBundle: "local",
-        improve: { strategies: { default: { processes: { extract: { enabled: false } } } } },
-      }),
+      withImproveAutonomy(
+        withTestImproveLlm({
+          semanticSearchMode: "off",
+          bundles: {
+            local: { path: stashDir, writable: true },
+            "docs-site": { website: { url: websiteUrl } },
+          },
+          defaultBundle: "local",
+          improve: { strategies: { default: { processes: { extract: { enabled: false } } } } },
+        }),
+      ),
     );
 
     const reflectedRefs: string[] = [];

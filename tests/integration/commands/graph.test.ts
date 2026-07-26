@@ -325,15 +325,24 @@ describe("akm graph", () => {
     expect(result.related[0]?.type).toBe("memory");
   });
 
-  test("export writes JSONL output", () => {
+  test("export writes JSONL output when --out ends in .jsonl", () => {
     writeGraphArtifact();
     const out = path.join(stashDir, "graph-export.jsonl");
-    const result = akmGraphExport({ out, format: "jsonl" });
+    const result = akmGraphExport({ out });
     expect(result.shape).toBe("graph-export");
+    expect(result.format).toBe("jsonl");
     expect(result.outPath).toBe(out);
     expect(result.bytes).toBeGreaterThan(0);
     const lines = fs.readFileSync(out, "utf8").trim().split("\n");
     expect(lines.length).toBe(6);
+  });
+
+  test("export writes a JSON artifact for any other extension", () => {
+    writeGraphArtifact();
+    const out = path.join(stashDir, "graph-export.json");
+    const result = akmGraphExport({ out });
+    expect(result.format).toBe("json");
+    expect(() => JSON.parse(fs.readFileSync(out, "utf8"))).not.toThrow();
   });
 
   test("related result populates canonical ref alongside legacy path", async () => {

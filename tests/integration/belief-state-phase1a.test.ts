@@ -31,7 +31,7 @@ import { applyScoreContributors } from "../../src/indexer/search/ranking-contrib
 import type { RankedEntryInput } from "../../src/indexer/search/ranking-types";
 import type { Database } from "../../src/storage/database";
 import { writeMemory } from "../_helpers/assets";
-import { withTestImproveLlm } from "../_helpers/improve-config";
+import { withImproveAutonomy, withTestImproveLlm } from "../_helpers/improve-config";
 
 const tempDirs: string[] = [];
 const savedEnv = {
@@ -52,7 +52,7 @@ function makeTempDir(prefix: string): string {
 
 async function buildIndex(stashDir: string): Promise<void> {
   process.env.AKM_STASH_DIR = stashDir;
-  saveConfig(withTestImproveLlm({ semanticSearchMode: "off" }));
+  saveConfig(withImproveAutonomy(withTestImproveLlm({ semanticSearchMode: "off" })));
   await akmIndex({ stashDir, full: true });
 }
 

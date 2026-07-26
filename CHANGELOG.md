@@ -50,6 +50,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stays on stderr. Previously it exited 2 with `INVALID_FLAG_VALUE`, which made
   it the one command that rejected a valid global flag.
 
+- **`akm health --report` replaces the html-only full report** (D7
+  follow-through). The full health report — per-run rows, trend deltas vs the
+  prior window, and the pending proposal queue — is now a **data** flag, not a
+  side effect of asking for html: `akm health --report --format html` renders
+  the rich report, and the identical dataset comes back under `--format json`
+  (previously that data was reachable only as html). The registered md/html
+  renderers fire on the shape of the result, and `akm health` no longer reads
+  `--format` at all.
+
+  Migration: `akm health --format html` → `akm health --report --format html`
+  (the bare form now renders the plain check generically); the html-only
+  `--compare` flag is removed — use `--window-compare`, which with `--report`
+  defaults to the `--since` window so trend deltas stay like-for-like.
+
+- **Global output flags parse correctly next to positionals.** citty parses
+  each command level against only its own declared args, so a root-declared
+  global flag was unknown at the leaf and its space-separated value fell
+  through as a positional — `akm sync --format json` synced a bundle named
+  "json", and `akm env unset env:x KEY --format json` tried to unset a key
+  named "json". The global output flags (`--format`, `--detail`, `--shape`,
+  `--output`) are now declared on every leaf command so their values are
+  consumed by the parser; the two bespoke argv-inspection workarounds this
+  replaces are deleted.
+
 - **All six `--format` values work on every command** (0.9.0 decision D7).
   `json|jsonl|yaml|text|md|html` are now universal. Previously there were three
   inconsistent behaviours: `md` silently emitted the JSON envelope everywhere
@@ -67,11 +91,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   html` previously exited 2 on non-health commands and now succeeds.
 
   Also: `akm graph export --format` is **removed** — it declared `--format`
-  locally as well as globally (one token, two parsers). The global flag now
-  selects the artifact payload, so `akm graph export --out g.jsonl --format
-  jsonl` is unchanged in effect; other formats write a JSON artifact and render
-  the command's envelope in the format asked for. A dead local `--format`
-  declaration on `akm history` was removed too (it was never read). Commands
+  locally as well as globally (one token, two parsers). The artifact payload
+  now follows the `--out` extension (`--out g.jsonl` writes JSONL, anything
+  else JSON); the global flag only renders the command's own envelope. A dead
+  local `--format` declaration on `akm history` was removed too (it was never
+  read). Commands
   whose output is not an envelope (`completions`, `setup`, `env run`,
   `secret run`, `agent`, `workflow template`, `help migrate`) are declared
   format-exempt in `src/output/format-exempt.ts` and now warn when given

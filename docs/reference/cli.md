@@ -37,9 +37,11 @@ Useful for streaming consumption by scripts or agents.
 `html` render it. Every command supports all six.
 
 A command may register a renderer for a document format when it has something
-better to say than the generic one: `akm health --format md` emits its per-run
-or window-compare table, and `akm health --format html` renders the full report
-with KPI cards, charts, and advisories. Every other command falls back to a
+better to say than the generic one: `akm health --group-by run --format md`
+emits its per-run table, and `akm health --report --format html` renders the
+full report with KPI cards, charts, and advisories. The renderers are
+data-driven — they fire when the result carries the report dataset, never on
+the format alone, so the same dataset is available as JSON too. Every other command falls back to a
 generic rendering derived from its own envelope — headings for the top-level
 keys, a table for an array of uniform objects, lists otherwise. HTML output is a
 self-contained document with no external references, so it can be redirected to
@@ -233,11 +235,16 @@ akm health
 akm health --since 24h
 akm health --since 7d --format text
 akm health --since 2026-05-01T00:00:00Z
+akm health --report --format html         # full report: per-run rows, trends, proposal queue
+akm health --report --format json         # the same dataset as data
+akm health --report --window-compare 7d --format html
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--since` | Rolling window start for task-history, improve, and advisory metrics. Accepts ISO 8601, `YYYY-MM-DD`, epoch milliseconds, or shorthand like `24h` / `7d`. Default: last 24 hours. |
+| `--report` | Fetch the full report dataset: per-run rows, trend deltas vs the prior window (default: the `--since` window, so deltas are like-for-like), and the pending proposal queue. A **data** flag — the same dataset comes back in every `--format`; `md`/`html` render it as the rich report. |
+| `--window-compare` | Compare the current window against the prior window of the same duration (e.g. `24h`, `7d`). With `--report`, overrides the default trend window. |
 
 The command reads `state.db`, verifies that the required tables exist, performs a
 write-read probe against the events stream, inspects `task_history`, checks the

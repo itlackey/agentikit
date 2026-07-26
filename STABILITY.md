@@ -91,8 +91,11 @@ please file it.
   renderer for a document format — `akm health` does, for its per-run and
   window-compare tables and its full HTML report — and anything unregistered
   falls back to a generic rendering derived from the envelope's own shape. No
-  command emits one format's bytes when another was asked for, and none rejects
-  a format outright.
+  command emits one format's bytes when another was asked for, none rejects a
+  format outright, and **no command reads `--format` to decide what data to
+  fetch**: a registered renderer fires on the shape of the result (`akm health
+  --report` carries the report dataset in the envelope, so the same data is
+  available as JSON), never on the format alone.
   `--detail` is verbosity only (`brief|normal|full`);
   `--shape` (`human|agent|summary`) is the output-projection axis (see
   Experimental). A small set of commands is **format-exempt** because their
@@ -101,9 +104,9 @@ please file it.
   `secret run` / `agent`, and document payloads from `workflow template` /
   `help migrate`. The set is declared in `src/output/format-exempt.ts`, and
   passing `--format` to one of them warns rather than silently doing something
-  else. `akm graph export` has no local `--format`: the global flag selects the
-  artifact payload (`jsonl` writes JSONL, anything else JSON) while still
-  rendering the command's own envelope in the requested format.
+  else. `akm graph export` has no local `--format`: the artifact payload
+  follows the `--out` extension (`.jsonl` writes JSONL, anything else JSON),
+  and the global flag only renders the command's own envelope.
 
   | Exit code | Meaning |
   | --- | --- |

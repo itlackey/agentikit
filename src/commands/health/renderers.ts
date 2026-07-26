@@ -5,17 +5,18 @@
 /**
  * `akm health` document renderers, registered rather than intercepted (D7).
  *
- * Before D7 `src/cli.ts` branched on `mode.format` inside the health command
- * and called `deliverRendered` itself, returning before `output()` was ever
- * reached. That made health the one command whose `md`/`html` output bypassed
- * the output pipeline, and it is why `html` had to be rejected for everything
- * else. Registering the same renderers here keeps the reports byte-identical
- * while leaving exactly one rendering path in the codebase.
+ * Both handlers are **pure functions of the shaped result**. Everything the
+ * rich report needs — per-run rows, window-compare deltas, the pending
+ * proposal queue, and the window labels — travels in the result itself
+ * (`runs`/`deltas`/`report`, populated by `akm health --report`). There is no
+ * out-of-band context: an earlier revision bound the proposal queue through
+ * module state set by the command right before `output()`, which coupled the
+ * renderer to call order and made the command branch on the output format to
+ * know when to bind it. Putting the data in the envelope removed both.
  *
- * Both handlers return `null` for payload shapes they have nothing better to
- * say about, which falls through to the generic renderer — so `akm health`
- * without `--group-by run` or `--windows` still renders, it just renders
- * generically instead of emitting an empty table.
+ * Returning `null` falls through to the generic renderer, so a result without
+ * the report dataset still renders — generically — instead of erroring or
+ * emitting an empty table.
  */
 
 import { renderHtml, resolveTemplatePath } from "../../output/html-render";
@@ -23,35 +24,6 @@ import { registerHtmlRenderer, registerMdRenderer } from "../../output/render-re
 import { buildHealthHtmlReplacements } from "./html-report";
 import { renderRunsDetailMd, renderWindowCompareMd } from "./md-report";
 import type { AkmHealthResult } from "./types-result";
-
-/**
- * Context the HTML report needs that the health result does not carry: the
- * window labels the user asked for and the pending-proposal queue.
- *
- * Set by the health command immediately before `output()` when the format is
- * `html`. Module state rather than a renderer parameter because the renderer
- * signature is shared by every command; health is the only command that needs
- * to bind anything, and the alternative — widening the signature for one
- * caller — would push health's shape into the pipeline the registry exists to
- * keep it out of.
- */
-export interface HealthHtmlContext {
-  window: string;
-  compare: string;
-  proposals: ReturnType<typeof import("../proposal/proposal").listPendingProposals>;
-}
-
-let htmlContext: HealthHtmlContext | undefined;
-
-/** Bind the HTML report's out-of-band context for the next `output()` call. */
-export function setHealthHtmlContext(context: HealthHtmlContext): void {
-  htmlContext = context;
-}
-
-/** Clear the bound HTML context. Test-only utility. */
-export function resetHealthHtmlContext(): void {
-  htmlContext = undefined;
-}
 
 function isHealthResult(value: unknown): value is AkmHealthResult {
   return value !== null && typeof value === "object" && "status" in value;
@@ -67,12 +39,14 @@ registerMdRenderer("health", (result) => {
 });
 
 registerHtmlRenderer("health", (result) => {
-  if (!isHealthResult(result) || !htmlContext) return null;
-  const replacements = buildHealthHtmlReplacements(result, {
-    window: htmlContext.window,
-    compare: htmlContext.compare,
-    proposals: htmlContext.proposals,
-    deltas: result.deltas,
-  });
-  return renderHtml(resolveTemplatePath("health"), replacements);
+  if (!isHealthResult(result) || !result.report) return null;
+  return renderHtml(
+    resolveTemplatePath("health"),
+    buildHealthHtmlReplacements(result, {
+      window: result.report.window,
+      compare: result.report.compare,
+      proposals: result.report.pendingProposals,
+      deltas: result.deltas,
+    }),
+  );
 });

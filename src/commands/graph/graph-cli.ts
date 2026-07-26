@@ -13,7 +13,6 @@
 
 import { parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, output } from "../../cli/shared";
-import { getOutputMode } from "../../output/context";
 import {
   akmGraphEntities,
   akmGraphEntity,
@@ -114,23 +113,17 @@ const graphSubCommands = {
     meta: { name: "export", description: "Export graph artifact as JSON or JSONL" },
     args: {
       source: { type: "string", description: "Source name/path (default: primary stash source)" },
-      out: { type: "string", description: "Output path (artifact is JSON, or JSONL under `--format jsonl`)" },
+      out: {
+        type: "string",
+        description: "Output path; a `.jsonl` extension writes a JSONL artifact, anything else JSON",
+      },
     },
     run({ args }) {
-      // D7 — the local `--format` is gone: it collided with the global flag
-      // (one token, two parsers), which is what forced the citty workarounds
-      // in `sync` and `env unset`. The two artifact payloads map 1:1 onto the
-      // global values, so `--format jsonl` writes a JSONL artifact and every
-      // other format writes JSON while still rendering the command's own
-      // envelope in the format asked for. Erroring on `--format md` here would
-      // contradict the universal-format contract this decision establishes —
-      // the payload and the envelope are separate concerns.
       output(
         "graph-export",
         akmGraphExport({
           source: args.source,
           out: args.out ?? "",
-          format: getOutputMode().format === "jsonl" ? "jsonl" : "json",
         }),
       );
     },

@@ -290,14 +290,16 @@ export function akmGraphRelations(options?: { source?: string; limit?: number })
   };
 }
 
-export function akmGraphExport(options: { source?: string; out: string; format?: string }): GraphExportResult {
+export function akmGraphExport(options: { source?: string; out: string }): GraphExportResult {
   if (!options.out?.trim()) {
     throw new UsageError("`akm graph export` requires --out <path>.", "MISSING_REQUIRED_ARGUMENT");
   }
-  const format = options.format ?? "json";
-  if (format !== "json" && format !== "jsonl") {
-    throw new UsageError("--format must be one of: json, jsonl.", "INVALID_FLAG_VALUE");
-  }
+  // The artifact payload follows the destination, not a flag: `--out g.jsonl`
+  // writes JSONL, anything else writes JSON. The global `--format` is about
+  // rendering the command's own envelope and never reaches the file — payload
+  // and envelope are separate concerns, and overloading one flag with both was
+  // what forced the old local/global `--format` collision.
+  const format = options.out.trim().toLowerCase().endsWith(".jsonl") ? "jsonl" : "json";
   const { graph, stashPath, graphPath } = loadGraph(options.source);
   const outPath = path.resolve(options.out);
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
