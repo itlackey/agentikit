@@ -200,7 +200,17 @@ in the index, and fails closed when no configured source owns the path.
 ## Writing to Sources
 
 Writes go through one helper: `src/core/write-source.ts`. This is the only
-place in the codebase that branches on `source.kind`.
+place in the codebase that branches on `source.kind`, and that is **enforced**
+by `scripts/lint-write-source-chokepoint.ts` in the `lint` chain — it was
+prose-only until 0.9.0, and drifted.
+
+Command layers therefore never hold provider knowledge. Where a step is
+meaningful only for a publication-backed target, `write-source.ts` exposes a
+kind-neutral wrapper that absorbs the guard and no-ops otherwise:
+`commitWriteTargetBoundary`, `captureGitPublication`,
+`captureWriteTargetPathSnapshot`, and `publishWriteTargetTransaction`.
+Recording or comparing a kind for transaction *identity* (`targetKind:
+target.source.kind`) is not branching and stays in the command layer.
 
 ```ts
 writeAssetToSource(source, config, ref, content)

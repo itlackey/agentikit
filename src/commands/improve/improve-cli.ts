@@ -14,7 +14,7 @@ import { resolveMutationTarget } from "../../core/mutation-target";
 import { getCacheDir } from "../../core/paths";
 import { redactSensitiveText } from "../../core/redaction";
 import { withStateDb } from "../../core/state-db";
-import { clearLogFile, setLogFile } from "../../core/warn";
+import { clearLogFile, setLogFile, warn } from "../../core/warn";
 import { resolveWriteTarget } from "../../core/write-source";
 import { collectEngineCredentialValues } from "../../integrations/agent/engine-resolution";
 import { getActiveCanaries, queryRecentCycleMetrics } from "../../storage/repositories/canaries-repository";
@@ -191,7 +191,26 @@ export const improveCommand = defineCommand({
       const skipIfLocked = args["skip-if-locked"];
       const strategyArg = getStringArg(args, "strategy");
       const effectiveConfig = loadConfig();
-      const scopeArg = getStringArg(args, "scope");
+      // `--auto-accept` was removed in 0.9.0. citty is non-strict, so it is
+      // silently absorbed rather than rejected — which is the dangerous case:
+      // the SPACE-separated spelling (`--auto-accept 90`) leaves `90` sitting
+      // in the positional slot, where it is read as the asset-type scope. The
+      // run then matches nothing and exits 0, so a 0.8-era crontab goes dark
+      // with no error. Warn, and drop the poisoned positional.
+      const autoAcceptRaw = getParsedInvocation().getFlagValue("--auto-accept");
+      const sawAutoAccept = autoAcceptRaw !== undefined || getParsedInvocation().hasFlag("--auto-accept");
+      if (sawAutoAccept) {
+        warn(
+          "[improve] --auto-accept was removed in 0.9 and is ignored; proposals always queue for review. " +
+            "Replacement: `akm improve && akm proposal drain --promote --yes`, or a `triage` block with " +
+            'applyMode: "promote" in your strategy. It becomes a hard error in 0.10.',
+        );
+      }
+      let scopeArg = getStringArg(args, "scope");
+      if (sawAutoAccept && scopeArg !== undefined && scopeArg === autoAcceptRaw) {
+        warn(`[improve] ignoring "${scopeArg}" as a scope — it is the removed --auto-accept flag's value.`);
+        scopeArg = undefined;
+      }
       const scopeRef = scopeArg && isFullRefInput(scopeArg) ? parseRefInput(scopeArg) : undefined;
       const writeTarget = dryRun
         ? undefined

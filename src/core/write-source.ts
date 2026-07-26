@@ -599,6 +599,69 @@ export function ensureGitTransactionCommit(
   return committed;
 }
 
+/**
+ * Kind-neutral snapshot capture for one mutated path.
+ *
+ * Returns `undefined` for kinds with no publication model, so command layers
+ * never branch on `source.kind` themselves — the same fail-soft contract
+ * {@link captureGitPublication} and {@link commitWriteTargetBoundary} already
+ * use. `captureGitPathSnapshot` throws for non-git targets, which is what
+ * forced callers to guard; this absorbs that guard.
+ */
+export function captureWriteTargetPathSnapshot(
+  target: ResolvedWriteTarget,
+  filePath: string,
+): { path: string; state: GitPathState | null } | undefined {
+  if (target.source.kind !== "git") return undefined;
+  return captureGitPathSnapshot(target, filePath);
+}
+
+/**
+ * Kind-neutral commit + publish for one transaction boundary.
+ *
+ * A no-op (returns `undefined`) for kinds with no publication model. For a
+ * publication-backed target this absorbs BOTH the kind test and the
+ * "transaction lacks durable publication identity" invariant, so callers hold
+ * no provider knowledge. `onCommitRecorded` fires between the ensure and the
+ * push, letting a caller persist the commit and advance its own journal phase
+ * without inspecting the target.
+ *
+ * `missingPublicationError` lets a caller keep its own error CLASS for the
+ * missing-identity case. The two call sites disagreed historically —
+ * consolidate threw `ConfigError` (exit 78), proposal a plain `Error`
+ * (exit 70) — and collapsing them here would silently change one command's
+ * exit code. The guard moves; the classification stays with the caller.
+ */
+export function publishWriteTargetTransaction(
+  target: ResolvedWriteTarget,
+  publication: GitPublication | undefined,
+  options: {
+    transactionId: string;
+    message: string;
+    paths: string[];
+    snapshots: GitPathSnapshots;
+    onCommitRecorded?: (commit: string | null) => void;
+    missingPublicationError?: (targetName: string) => Error;
+  },
+): { commit: string | null } | undefined {
+  if (target.source.kind !== "git") return undefined;
+  if (!publication) {
+    throw (
+      options.missingPublicationError?.(target.source.name) ??
+      new Error(`Proposal transaction ${options.transactionId} has no Git publication identity.`)
+    );
+  }
+  const commit = ensureGitTransactionCommit(target, publication, {
+    transactionId: options.transactionId,
+    message: options.message,
+    paths: options.paths,
+    snapshots: options.snapshots,
+  });
+  options.onCommitRecorded?.(commit);
+  publishGitTransactionCommit(target, publication, options.transactionId, options.paths, options.snapshots);
+  return { commit };
+}
+
 /** Push only the recorded transaction commit, never later local descendants. */
 export function publishGitTransactionCommit(
   target: ResolvedWriteTarget,

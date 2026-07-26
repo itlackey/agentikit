@@ -34,14 +34,13 @@ import { parseSinceToIsoLenient } from "../../core/time";
 import { warn } from "../../core/warn";
 import {
   assertWriteTargetPathsClean,
-  captureGitPathSnapshot,
   captureGitPublication,
+  captureWriteTargetPathSnapshot,
   deleteAssetFromSource,
-  ensureGitTransactionCommit,
   type GitPathSnapshots,
   type GitPublication,
   prepareWriteTargetForMutation,
-  publishGitTransactionCommit,
+  publishWriteTargetTransaction,
   type ResolvedWriteTarget,
   recordWriteTargetPath,
   resolveWriteTarget,
@@ -532,8 +531,8 @@ function beginConsolidateTxn(
 
 function recordConsolidateMutationPath(txn: ConsolidateTxn, target: ResolvedWriteTarget, filePath: string): void {
   recordWriteTargetPath(target.source, filePath);
-  if (target.source.kind !== "git") return;
-  const snapshot = captureGitPathSnapshot(target, filePath);
+  const snapshot = captureWriteTargetPathSnapshot(target, filePath);
+  if (!snapshot) return;
   const previous = txn.journal.payload.gitSnapshots[snapshot.path];
   if (!txn.journal.payload.gitPaths.includes(snapshot.path)) {
     txn.journal.payload.gitPaths.push(snapshot.path);
@@ -574,31 +573,27 @@ function finishConsolidationPublication(txn: ConsolidateTxn, target: ResolvedWri
   }
   const prepared = prepareWriteTargetForMutation(target, { allowAhead: true });
   const paths = payload.gitPaths;
-  if (prepared.source.kind === "git") {
-    if (!payload.gitPublication) {
-      throw new ConfigError(
+  publishWriteTargetTransaction(prepared, payload.gitPublication, {
+    transactionId: txn.journal.transactionId,
+    message: payload.commitMessage ?? "Consolidate assets",
+    paths,
+    snapshots: payload.gitSnapshots ?? {},
+    // Preserve this command's ConfigError (exit 78) for a journal missing its
+    // publication identity; the shared helper's default is a plain Error.
+    missingPublicationError: () =>
+      new ConfigError(
         `Consolidation transaction ${txn.journal.transactionId} lacks durable Git publication identity.`,
         "INVALID_CONFIG_FILE",
-      );
-    }
-    const commit = ensureGitTransactionCommit(prepared, payload.gitPublication, {
-      transactionId: txn.journal.transactionId,
-      message: payload.commitMessage ?? "Consolidate assets",
-      paths,
-      snapshots: payload.gitSnapshots ?? {},
-    });
-    if (payload.gitPublication.commit !== commit) {
-      payload.gitPublication.commit = commit;
-      advanceTxn(txn, "publishing");
-    }
-    publishGitTransactionCommit(
-      prepared,
-      payload.gitPublication,
-      txn.journal.transactionId,
-      paths,
-      payload.gitSnapshots ?? {},
-    );
-  }
+      ),
+    onCommitRecorded: (commit) => {
+      // biome-ignore lint/style/noNonNullAssertion: publishWriteTargetTransaction throws when absent
+      const publication = payload.gitPublication!;
+      if (publication.commit !== commit) {
+        publication.commit = commit;
+        advanceTxn(txn, "publishing");
+      }
+    },
+  });
   advanceTxn(txn, "committed");
   cleanupTxn(txn.dir);
 }

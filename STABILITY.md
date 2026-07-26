@@ -85,9 +85,9 @@ please file it.
   **Four** `--format` values (`json|jsonl|yaml|text`) are available on every
   non-exempt command. `md` and `html` are **`akm health`-only** in 0.9.0:
   elsewhere `--format md` silently emits the JSON envelope and `--format html`
-  is rejected with exit 2 (`INVALID_FLAG_VALUE`) — and because that rejection
-  happens at output time, a mutating command can complete its write before
-  failing. Making all six formats universal is decided but not yet shipped
+  is rejected with exit 2 (`INVALID_FLAG_VALUE`) at startup, before the command
+  body runs, so a mutating command cannot complete its write and then fail.
+  Making all six formats universal is decided but not yet shipped
   (see [On the horizon](#on-the-horizon)).
   `--detail` is verbosity only (`brief|normal|full`);
   `--shape` (`human|agent|summary`) is the output-projection axis (see
@@ -133,12 +133,14 @@ CHANGELOG with a migration note.
   default, but it is **not** review-first out of the box: several lanes mutate
   assets directly and are ungated — see
   [`akm improve` autonomy](#akm-improve-autonomy--on-by-default-in-090).
-  `--auto-accept` was **removed** in 0.9.0 (not deprecated-and-warned): the
-  flag is silently absorbed, and `--auto-accept <value>` written with a space
-  is misparsed as the asset-type positional, which makes the run match nothing
-  and exit 0. Delete the whole token from scheduled tasks and scripts. The
-  replacement is `akm improve && akm proposal drain --promote --yes`, or a
-  `triage` block with `applyMode: "promote"` in your strategy.
+  `--auto-accept` was removed in 0.9.0. It is now accepted-and-warned rather
+  than silently absorbed: passing it prints a deprecation warning naming the
+  replacement, and the space-separated form (`--auto-accept 90`) no longer
+  poisons the asset-type positional — its value is discarded with a second
+  warning instead of silently reducing the run to a zero-match no-op. It
+  becomes a hard error in 0.10. The replacement is
+  `akm improve && akm proposal drain --promote --yes`, or a `triage` block
+  with `applyMode: "promote"` in your strategy.
 - **Tasks** — `akm tasks` subcommand surface (singular `akm task` is an
   additive alias); strict version-2 YAML for scheduled tasks. Prompt tasks use
   named engines and task history metadata is versioned. Schema additions in
@@ -322,9 +324,8 @@ lives in this repo).
 
 - **0.10 — migration extraction.** The migration machinery leaves the CLI for
   a separately published `akm-migrate` package (see Internal above).
-- **0.10 — `--auto-accept` hard error.** It is currently removed and silently
-  absorbed; see the Improvement loop entry for the space-separated-form
-  hazard.
+- **0.10 — `--auto-accept` hard error.** It is currently accepted-and-warned;
+  see the Improvement loop entry.
 - **1.0 contract freeze** — the `[bundle//]conceptId[#fragment]` ref grammar,
   the supported source model, search behavior, and write-target rules are
   frozen at 1.0. The SDK and in-process plugin story ship on top of that

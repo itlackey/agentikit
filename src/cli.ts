@@ -633,6 +633,16 @@ if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
     emitJsonError(new UsageError("'--shape summary' is only valid on 'akm show'.", "INVALID_SHAPE_VALUE"));
   }
 
+  // Same fail-fast reasoning for `--format html`, which only `akm health`
+  // renders. Without this the rejection happened at output() time — i.e. AFTER
+  // a mutating command had already performed its write — so `akm remember … \
+  // --format html` would persist the memory and then exit 2. The throw in
+  // cli/shared.ts output() stays as defense-in-depth for the in-process test
+  // harness, which skips this startup block.
+  if (getOutputMode().format === "html" && topLevelCommand !== "health") {
+    emitJsonError(new UsageError("'--format html' is only valid on 'akm health'.", "INVALID_FLAG_VALUE"));
+  }
+
   // First-time-user breadcrumb: when run with no subcommand AND no config
   // exists yet AND stderr is a TTY, print a friendly pointer to `akm setup`
   // above citty's auto-generated usage block. Triggers only when stdin/stderr
