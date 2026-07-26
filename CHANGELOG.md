@@ -22,6 +22,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **All six `--format` values work on every command** (0.9.0 decision D7).
+  `json|jsonl|yaml|text|md|html` are now universal. Previously there were three
+  inconsistent behaviours: `md` silently emitted the JSON envelope everywhere
+  except `akm health`, `html` was rejected with exit 2 everywhere except
+  `akm health`, and `akm health` reached neither because it intercepted the
+  format itself. Rendering is now registry-driven — a command may register a
+  renderer for a document format, and anything unregistered falls back to a real
+  rendering of its own envelope (headings, tables for arrays of uniform objects,
+  lists otherwise). `akm health` keeps its per-run/window-compare tables and its
+  full HTML report by registering them; the output is unchanged.
+
+  Migration: none required for `json|jsonl|yaml|text`. `--format md` on a
+  non-health command previously returned JSON and now returns Markdown; a script
+  that parsed that JSON should ask for `--format json` explicitly. `--format
+  html` previously exited 2 on non-health commands and now succeeds.
+
+  Also: `akm graph export --format` is **removed** — it declared `--format`
+  locally as well as globally (one token, two parsers). The global flag now
+  selects the artifact payload, so `akm graph export --out g.jsonl --format
+  jsonl` is unchanged in effect; other formats write a JSON artifact and render
+  the command's envelope in the format asked for. A dead local `--format`
+  declaration on `akm history` was removed too (it was never read). Commands
+  whose output is not an envelope (`completions`, `setup`, `env run`,
+  `secret run`, `agent`, `workflow template`, `help migrate`) are declared
+  format-exempt in `src/output/format-exempt.ts` and now warn when given
+  `--format` instead of ignoring it silently. `output.format` in config accepts
+  all six values.
+
 - **Subtree browse is a conceptId prefix, not `<type>:`** (0.9.0 decision D4).
   `akm search` enumerates on `memories/`, `memories/projecta/`, `bundle//`, and
   `bundle//skills/`; a trailing `/` is still required. The prefix now matches the

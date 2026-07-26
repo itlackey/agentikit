@@ -85,20 +85,25 @@ please file it.
   every classified failure (exit 1 / 2 / 78) and absent only on unexpected
   internal errors (exit 70); `hint` is best-effort and may be absent. Prefer
   `code` over matching on `error` prose. Plus the exit-code table below.
-  **Four** `--format` values (`json|jsonl|yaml|text`) are available on every
-  non-exempt command. `md` and `html` are **`akm health`-only** in 0.9.0:
-  elsewhere `--format md` silently emits the JSON envelope and `--format html`
-  is rejected with exit 2 (`INVALID_FLAG_VALUE`) at startup, before the command
-  body runs, so a mutating command cannot complete its write and then fail.
-  Making all six formats universal is decided but not yet shipped
-  (see [On the horizon](#on-the-horizon)).
+  **All six** `--format` values (`json|jsonl|yaml|text|md|html`) are available
+  on every non-exempt command. `json`, `jsonl`, and `yaml` serialize the
+  envelope; `text`, `md`, and `html` render it. A command may register a bespoke
+  renderer for a document format — `akm health` does, for its per-run and
+  window-compare tables and its full HTML report — and anything unregistered
+  falls back to a generic rendering derived from the envelope's own shape. No
+  command emits one format's bytes when another was asked for, and none rejects
+  a format outright.
   `--detail` is verbosity only (`brief|normal|full`);
   `--shape` (`human|agent|summary`) is the output-projection axis (see
-  Experimental). A small set of commands is **format-exempt** by nature
-  (`completions`, the interactive `setup` wizard, child-process passthrough in
-  `env run` / `secret run` / `agent`, and document payloads from
-  `workflow template` / `hints` / `help migrate`); the exemption is declared,
-  documented, and warned about rather than silent.
+  Experimental). A small set of commands is **format-exempt** because their
+  output is not a result envelope at all: `completions` (shell script source),
+  the interactive `setup` wizard, child-process passthrough in `env run` /
+  `secret run` / `agent`, and document payloads from `workflow template` /
+  `help migrate`. The set is declared in `src/output/format-exempt.ts`, and
+  passing `--format` to one of them warns rather than silently doing something
+  else. `akm graph export` has no local `--format`: the global flag selects the
+  artifact payload (`jsonl` writes JSONL, anything else JSON) while still
+  rendering the command's own envelope in the requested format.
 
   | Exit code | Meaning |
   | --- | --- |
@@ -314,17 +319,16 @@ status. Not yet in the code:
 
 | Decision | Change | Current behavior |
 | --- | --- | --- |
-| D7 | All six `--format` values on every command | `md`/`html` are `akm health`-only |
 | D8 | Gate improve autonomy behind `experimental.improveAutonomy` | No gate; mutating lanes are on by default |
 
 Already shipped from that record: **D1** (`#fragment` section selection),
 **D2** (the `akm show <ref> toc|section|lines|frontmatter|full` view grammar is
 gone — `#fragment` is the only section selector), **D4** (conceptId /
 `bundle//` prefix browse), **D5** (`akm bundle` removed), **D6** (open `type`
-set at runtime), and partially **D10** (an `akm-migrate` binary now exists,
-though the code still lives in this repo). **D3** is not on this list: `akm mv`
-ships in 0.9.0 as an Experimental surface (see the Renames bullet above), and
-no removal is planned.
+set at runtime), **D7** (all six `--format` values everywhere), and partially
+**D10** (an `akm-migrate` binary now exists, though the code still lives in
+this repo). **D3** is not on this list: `akm mv` ships in 0.9.0 as an
+Experimental surface (see the Renames bullet above), and no removal is planned.
 
 - **0.10 — migration extraction.** The migration machinery leaves the CLI for
   a separately published `akm-migrate` package (see Internal above).

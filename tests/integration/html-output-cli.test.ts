@@ -6,10 +6,12 @@
  * CLI-level coverage for `--format html` and the global `--output <path>`
  * flag (#582), driven through the in-process harness.
  *
- * `--format html` is health-only (chunk-9 WI-9.4c / Decision 4): the generic
- * JSON-in-<pre> fallback template was removed, so every non-health command
- * now rejects `--format html` with a `UsageError` (INVALID_FLAG_VALUE)
- * instead of rendering the default template.
+ * `--format html` works on every command (D7). `akm health` renders its bespoke
+ * report by registering a renderer; every other command falls back to a generic
+ * rendering of its shaped envelope. This reverses chunk-9 WI-9.4c, which had
+ * removed the HTML fallback and left `html` rejected everywhere except health —
+ * the replacement fallback is a real rendering, not the JSON-in-<pre> template
+ * that decision deleted.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -45,15 +47,18 @@ function seedProposal(ref = "lessons/rg-over-grep"): void {
   if (isProposalSkipped(result)) throw new Error("unexpected skip in seedProposal");
 }
 
-describe("--format html (health-only)", () => {
-  test("akm proposal list --format html rejects with a UsageError (html is health-only)", async () => {
+describe("--format html on non-health commands", () => {
+  test("akm proposal list --format html renders the envelope generically", async () => {
     seedProposal();
-    const { code, stderr } = await runCliCapture(["proposal", "list", "--format", "html"]);
-    expect(code).toBe(2);
-    const parsed = JSON.parse(stderr);
-    expect(parsed.ok).toBe(false);
-    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
-    expect(parsed.error).toContain("html output is only available for `akm health`");
+    const { code, stdout } = await runCliCapture(["proposal", "list", "--format", "html"]);
+    expect(code).toBe(0);
+    expect(stdout).toContain("<!doctype html>");
+    expect(stdout).toContain("</html>");
+    // The generic renderer titles the document with the command name, which is
+    // how you can tell it apart from a registered bespoke renderer.
+    expect(stdout).toContain("proposal-list");
+    // Not the JSON-in-<pre> template WI-9.4c deleted.
+    expect(stdout).not.toMatch(/<pre>\s*\{/);
   });
 
   test("invalid --format still rejects unknown values and lists html", async () => {
@@ -65,14 +70,14 @@ describe("--format html (health-only)", () => {
 });
 
 describe("--output <path>", () => {
-  test("--format html --output still rejects (html is health-only, before any file write)", async () => {
+  test("--format html --output writes the rendered document to the file", async () => {
     seedProposal();
     const out = path.join(storage.root, "proposals.html");
-    const { code, stderr } = await runCliCapture(["proposal", "list", "--format", "html", "--output", out]);
-    expect(code).toBe(2);
-    const parsed = JSON.parse(stderr);
-    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
-    expect(fs.existsSync(out)).toBe(false);
+    const { code, stdout } = await runCliCapture(["proposal", "list", "--format", "html", "--output", out]);
+    expect(code).toBe(0);
+    expect(stdout.trim()).toBe("");
+    expect(fs.existsSync(out)).toBe(true);
+    expect(fs.readFileSync(out, "utf8")).toContain("<!doctype html>");
   });
 
   test("also redirects json output to the file", async () => {

@@ -515,7 +515,10 @@
           "enum": [
             "json",
             "yaml",
-            "text"
+            "text",
+            "jsonl",
+            "md",
+            "html"
           ]
         },
         "detail": {
@@ -2145,7 +2148,10 @@
               "enum": [
                 "json",
                 "yaml",
-                "text"
+                "text",
+                "jsonl",
+                "md",
+                "html"
               ]
             },
             "detail": {

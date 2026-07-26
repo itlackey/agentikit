@@ -318,7 +318,6 @@ export const historyCommand = defineJsonCommand({
         "Useful for measuring which generators (reflect, distill, …) produce the most accepted proposals.",
       default: false,
     },
-    format: { type: "string", description: "Output format (json|jsonl|text|yaml)" },
   },
   async run({ args }) {
     const generatorFlag = args.generator as "user" | "improve" | "task" | "audit" | "unknown" | undefined;

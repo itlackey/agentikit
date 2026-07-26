@@ -1,8 +1,8 @@
 # CLI Reference
 
 The CLI is called `akm` (Agent Knowledge Management). Commands default to structured
-JSON at `--detail brief`. Use `--format json|jsonl|text|yaml`, `--detail
-brief|normal|full`, and `--shape human|agent|summary` when you want a
+JSON at `--detail brief`. Use `--format json|jsonl|yaml|text|md|html`,
+`--detail brief|normal|full`, and `--shape human|agent|summary` when you want a
 different presentation. Errors include `error` and `hint` fields.
 
 This page is authoritative for the current CLI. For per-release behavior
@@ -15,7 +15,7 @@ These flags are accepted by all commands:
 
 | Flag | Values | Default | Description |
 | --- | --- | --- | --- |
-| `--format` | `json`, `text`, `yaml`, `jsonl` | `json` | Output format |
+| `--format` | `json`, `jsonl`, `yaml`, `text`, `md`, `html` | `json` | Output format |
 | `--detail` | `brief`, `normal`, `full` | `brief` | Output **verbosity** level |
 | `--shape` | `human`, `agent`, `summary` | `human` | Output **projection** |
 | `--quiet` / `-q` | boolean | `false` | Suppress stderr warnings |
@@ -30,6 +30,26 @@ action view, `summary` for capability discovery).
 Outputs one JSON object per line. For `search` and `registry search`, each hit
 is a separate line. For other commands, the entire result is a single line.
 Useful for streaming consumption by scripts or agents.
+
+### `--format md` and `--format html`
+
+`json`, `jsonl`, and `yaml` serialize the result envelope; `text`, `md`, and
+`html` render it. Every command supports all six.
+
+A command may register a renderer for a document format when it has something
+better to say than the generic one: `akm health --format md` emits its per-run
+or window-compare table, and `akm health --format html` renders the full report
+with KPI cards, charts, and advisories. Every other command falls back to a
+generic rendering derived from its own envelope — headings for the top-level
+keys, a table for an array of uniform objects, lists otherwise. HTML output is a
+self-contained document with no external references, so it can be redirected to
+a file and opened directly.
+
+A small set of commands is **format-exempt** because their output is not a
+result envelope at all — `completions`, the interactive `setup` wizard,
+child-process passthrough (`env run`, `secret run`, `agent`), and document
+payloads (`workflow template`, `help migrate`). Passing `--format` to one of
+those warns and is otherwise ignored.
 
 ### `--shape=agent`
 
@@ -258,7 +278,7 @@ akm graph entity "React Router"
 akm graph related knowledge/react-router
 akm graph orphans --limit 20
 akm graph export --out ./graph.json
-akm graph export --out ./graph.jsonl --format jsonl
+akm graph export --out ./graph.jsonl --format jsonl   # global --format selects the payload
 akm graph update                        # Re-extract all eligible files
 akm graph update memories/foo             # Re-extract only this ref
 akm graph update memories/foo skills/bar   # Re-extract multiple refs
@@ -306,7 +326,6 @@ Common flags:
 | `--source <name\|path>` | Select which configured source stash to inspect (defaults to primary source) |
 | `--limit <n>` | Cap rows returned by `entities`, `entity`, `relations`, `related`, `orphans` |
 | `--out <path>` | Required for `export`; output file path |
-| `--format json\|jsonl` | Export format for `export` (default `json`) |
 
 If no graph artifact exists yet, run the flow that refreshes graph extraction for your stash.
 
@@ -371,7 +390,7 @@ tip names the conceptId spelling that replaces it.
 | `--source` | `stash`, `registry`, `both` | `stash` | Where to search (`local` is an alias for `stash`) |
 | `--filter` | `<key>=<value>` | _(none)_ | Scope filter — repeatable. Valid keys: `user`, `agent`, `run`, `channel`. Example: `--filter user=alice --filter channel=ops`. Narrows the result set; ranking is unchanged. |
 | `--include-proposed` | flag | `false` | Include entries with `quality: "proposed"` in the result set. Default search excludes them; `generated` and `curated` quality entries are always included. Unknown quality values warn once and remain searchable. |
-| `--format` | `json`, `text`, `yaml`, `jsonl` | `json` | Output format |
+| `--format` | `json`, `jsonl`, `yaml`, `text`, `md`, `html` | `json` | Output format |
 | `--detail` | `brief`, `normal`, `full` | `brief` | Output verbosity level |
 | `--shape` | `human`, `agent`, `summary` | `human` | Output projection. For `search`, `summary` currently behaves the same as the default `brief` envelope; per-hit content shaping is reserved for a future minor release. |
 
@@ -1008,7 +1027,7 @@ akm sync my-skills -m "Update"     # Sync named stash with message
 | `[name]` | Optional git-backed stash selector. Matches the configured source name exactly and also accepts canonical GitHub aliases such as `owner/repo`, `github:owner/repo`, and branch-ref forms like `github:owner/repo#branch`. Forward slashes are allowed. Defaults to the primary stash |
 | `-m`, `--message` | Commit message. Defaults to `akm save <timestamp>` |
 | `--no-push` | Commit only; never push even when the stash is writable with a remote configured |
-| `--format` | Output format (`json`, `text`, `yaml`). Both `--format json` and `--format=json` are accepted |
+| `--format` | Output format (any of the six global values). Both `--format json` and `--format=json` are accepted |
 
 If no positional selector is provided, `akm sync --format json` still targets
 the primary stash. If a positional selector is provided, it wins even when the

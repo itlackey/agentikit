@@ -75,6 +75,7 @@ import { type ArgsDef, defineCommand, runMain } from "citty";
 import {
   findCittyTopLevelCommand,
   findCittyTopLevelCommandIndex,
+  getParsedInvocation,
   parseAllFlagValues,
   resolveHelpMigrateVersionArg,
   setParsedInvocation,
@@ -89,7 +90,7 @@ import { secretCommand } from "./commands/env/secret-cli";
 import { feedbackCommand } from "./commands/feedback-cli";
 import { graphCommand } from "./commands/graph/graph-cli";
 import { akmHealth } from "./commands/health";
-import { renderRunsDetailMd, renderWindowCompareMd } from "./commands/health/md-report";
+import { setHealthHtmlContext } from "./commands/health/renderers";
 import type { WindowSpec } from "./commands/health/types";
 import { parseWindowSpec } from "./commands/health/windows";
 import { extractCommand } from "./commands/improve/extract-cli";
@@ -120,10 +121,10 @@ import { UsageError } from "./core/errors";
 import { assertNoPendingMigrationOperation } from "./core/migration-operation";
 import { getConfigPath } from "./core/paths";
 import { plainize } from "./core/tty";
-import { info, isQuiet, setQuiet, setVerbose } from "./core/warn";
+import { info, isQuiet, setQuiet, setVerbose, warn } from "./core/warn";
 import { disposeDispatchResources } from "./integrations/agent/runner-dispatch";
 import { getHyphenatedBoolean, getOutputMode, initOutputMode } from "./output/context";
-import { deliverRendered, renderHtml, resolveTemplatePath } from "./output/html-render";
+import { isFormatExemptCommand } from "./output/format-exempt";
 import { consumeSchedulerContextArg } from "./tasks/scheduler-invocation";
 import { pkgVersion } from "./version";
 
@@ -331,54 +332,39 @@ const healthCommand = defineCommand({
       const windowCompareRaw = args["window-compare"];
       const mode = getOutputMode();
 
-      // `--format html` is health-specific: render the full HTML health
-      // report (charts, KPI cards, advisories) from the bespoke template.
-      // Mirrors the `md` intercept below. Two reads, exactly like the
-      // retired akm-health-report skill: the canonical per-run window plus a
-      // window-compare read for the trend deltas (defaults to 24h,
-      // overridable via --compare).
-      if (mode.format === "html") {
-        // Default the compare window to the report's own `--since` window so the
-        // trend deltas are like-for-like (e.g. last 7d vs the prior 7d). A fixed
-        // 24h default made a `--since 7d` report compare its 7-day totals against
-        // a 24-hour prior window, producing meaningless deltas.
-        const compare = args.compare ?? windowCompareRaw ?? args.since ?? "24h";
-        const result = akmHealth({ since: args.since, groupBy: "run", windowCompare: compare });
-        resultStatus = result.status;
-        const deltas = result.deltas;
-        const { buildHealthHtmlReplacements } = await import("./commands/health/html-report");
-        const { listPendingProposals } = await import("./commands/proposal/proposal");
-        const replacements = buildHealthHtmlReplacements(result, {
-          window: args.since ?? "24h",
-          compare,
-          proposals: listPendingProposals(),
-          deltas,
-        });
-        deliverRendered(renderHtml(resolveTemplatePath("health"), replacements), mode.outputPath);
-        return;
-      }
-
-      const result = akmHealth({
-        since: args.since,
-        groupBy: groupBy as "run" | undefined,
-        windowCompare: windowCompareRaw,
-        windows,
-      });
+      // `--format html` needs a richer READ than the other formats: the report
+      // renders trend deltas, which only exist when health is asked for a
+      // window-compare. That is a data-shape difference, not a rendering one,
+      // so it stays here while the rendering itself goes through the registry
+      // (D7 — nothing intercepts before output()).
+      //
+      // Default the compare window to the report's own `--since` window so the
+      // deltas are like-for-like (e.g. last 7d vs the prior 7d). A fixed 24h
+      // default made a `--since 7d` report compare its 7-day totals against a
+      // 24-hour prior window, producing meaningless deltas.
+      const htmlCompare = args.compare ?? windowCompareRaw ?? args.since ?? "24h";
+      const result =
+        mode.format === "html"
+          ? akmHealth({ since: args.since, groupBy: "run", windowCompare: htmlCompare })
+          : akmHealth({
+              since: args.since,
+              groupBy: groupBy as "run" | undefined,
+              windowCompare: windowCompareRaw,
+              windows,
+            });
       resultStatus = result.status;
-      // `--format md` is health-specific: render a TSV-shaped per-run or
-      // window-compare table to stdout instead of going through the JSON
-      // envelope. Other modes fall through to the standard output() path.
-      if (mode.format === "md") {
-        if (result.windows && result.windows.length > 0) {
-          deliverRendered(renderWindowCompareMd(result.windows, result.deltas), mode.outputPath);
-        } else if (result.runs) {
-          deliverRendered(renderRunsDetailMd(result.runs), mode.outputPath);
-        } else {
-          output("health", result);
-        }
-      } else {
-        output("health", result);
+      if (mode.format === "html") {
+        // The HTML report reads the proposal queue too, which the health result
+        // does not carry. Bind it (and the window labels) for the registered
+        // renderer, which is otherwise a pure function of the result.
+        const { listPendingProposals } = await import("./commands/proposal/proposal");
+        setHealthHtmlContext({
+          window: args.since ?? "24h",
+          compare: htmlCompare,
+          proposals: listPendingProposals(),
+        });
       }
+      output("health", result);
     });
     if (resultStatus === "fail") {
       process.exit(EXIT_GENERAL);
@@ -629,14 +615,18 @@ if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
     emitJsonError(new UsageError("'--shape summary' is only valid on 'akm show'.", "INVALID_SHAPE_VALUE"));
   }
 
-  // Same fail-fast reasoning for `--format html`, which only `akm health`
-  // renders. Without this the rejection happened at output() time — i.e. AFTER
-  // a mutating command had already performed its write — so `akm remember … \
-  // --format html` would persist the memory and then exit 2. The throw in
-  // cli/shared.ts output() stays as defense-in-depth for the in-process test
-  // harness, which skips this startup block.
-  if (getOutputMode().format === "html" && topLevelCommand !== "health") {
-    emitJsonError(new UsageError("'--format html' is only valid on 'akm health'.", "INVALID_FLAG_VALUE"));
+  // D7 — every command that renders through output() honours all six --format
+  // values. The declared exempt set (src/output/format-exempt.ts) does not
+  // render an envelope at all, so warn rather than pretend: silently ignoring
+  // the flag is what made the old md/html behaviour so hard to discover. A
+  // warning, not an error, because the flag is harmless here and scripts that
+  // pass --format globally to a mixed batch of commands should still work.
+  const invocation = getParsedInvocation();
+  if (
+    (invocation.hasFlag("--format") || invocation.getFlagValue("--format") !== undefined) &&
+    isFormatExemptCommand(topLevelCommand, invocation.userArgs[1])
+  ) {
+    warn(`[output] '--format' has no effect on 'akm ${topLevelCommand}' — its output is not a result envelope.`);
   }
 
   // First-time-user breadcrumb: when run with no subcommand AND no config

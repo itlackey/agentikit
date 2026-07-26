@@ -12,9 +12,11 @@
 import { type ArgsDef, type CommandContext, type CommandDef, defineCommand } from "citty";
 import { stringify as yamlStringify } from "yaml";
 import { assertNever } from "../core/assert";
-import { AkmError, UsageError } from "../core/errors";
+import { AkmError } from "../core/errors";
 import { getOutputMode, type OutputMode } from "../output/context";
+import { renderGenericHtml, renderGenericMarkdown } from "../output/generic-render";
 import { deliverRendered } from "../output/html-render";
+import { getHtmlRendererHandler, getMdRendererHandler } from "../output/render-registry";
 import { shapeForCommand } from "../output/shapes";
 import { formatPlain, outputJsonl } from "../output/text";
 import { parseAllFlagValues } from "./invocation";
@@ -198,21 +200,20 @@ export function output(command: string, result: unknown): void {
       deliverRendered(plain ?? JSON.stringify(shaped, null, 2), mode.outputPath);
       return;
     }
-    case "md":
-      // `--format md` is currently only consumed by `akm health` for the
-      // per-run / window-compare table renderings. Commands that don't
-      // implement an md renderer fall back to the JSON envelope so
-      // pipelines never get an empty stdout.
-      deliverRendered(JSON.stringify(shaped, null, 2), mode.outputPath);
+    case "md": {
+      // D7 — registry first, generic rendering of the shaped envelope second.
+      // No command emits JSON under `--format md` any more: silently handing
+      // back the wrong format was the worst of the three behaviours this
+      // replaced.
+      const rendered = getMdRendererHandler(command)?.(shaped, mode.detail);
+      deliverRendered(rendered ?? renderGenericMarkdown(command, shaped), mode.outputPath);
       return;
-    case "html":
-      // `akm health` intercepts `mode.format === "html"` before reaching
-      // output() (cli.ts, same as the `md` intercept) and renders its own
-      // bespoke template. Every other command has no HTML surface — the
-      // generic JSON-in-<pre> fallback template was removed (chunk-9 WI-9.4c
-      // / Decision 4); `html` stays a valid --format value (OUTPUT_FORMATS),
-      // it just only resolves for health.
-      throw new UsageError("html output is only available for `akm health`", "INVALID_FLAG_VALUE");
+    }
+    case "html": {
+      const rendered = getHtmlRendererHandler(command)?.(shaped, mode.detail);
+      deliverRendered(rendered ?? renderGenericHtml(command, shaped), mode.outputPath);
+      return;
+    }
   }
 }
 
