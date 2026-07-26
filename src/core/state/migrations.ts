@@ -68,9 +68,8 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
       --   id          TEXT PK     — UUID (crypto.randomUUID()); stable directory name.
       --   stash_dir   TEXT        — absolute stash root; multi-stash installs need
       --                             this to partition proposal lists per stash.
-      --   ref         TEXT        — fully qualified target asset ref
-      --                             (e.g. "main//lessons/alpha"); indexed for
-      --                             ref-scoped queue views.
+      --   ref         TEXT        — target asset ref (e.g. "lesson:alpha");
+      --                             indexed for ref-scoped queue views.
       --   status      TEXT        — "pending" | "accepted" | "rejected"; indexed
       --                             so pending-queue queries are fast.
       --   source      TEXT        — human-readable origin tag (e.g. "reflect").
