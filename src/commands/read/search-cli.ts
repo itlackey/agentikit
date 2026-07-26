@@ -33,7 +33,7 @@ export const searchCommand = defineJsonCommand({
     query: {
       type: "positional",
       description:
-        'Search query (omit to list all assets). A ref-prefix query — "<type>:<prefix>/" or bare "<type>:" — enumerates that subtree/type instead of keyword-matching; an explicit --type wins over the parsed type.',
+        'Search query (omit to list all assets). A conceptId-prefix query — "memories/projecta/", "bundle//", "bundle//skills/" — enumerates that subtree instead of keyword-matching; a trailing "/" is required, and an explicit --type wins over the prefix.',
       required: false,
       default: "",
     },

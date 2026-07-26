@@ -14,7 +14,7 @@
  *   - the SCORED path (`searchDatabase`, fn@:282) — reached by any query with
  *     searchable FTS tokens;
  *   - the ENUMERATE path (`enumerateEntries`, fn@:574) — reached by an empty/
- *     unsearchable query or a `<type>:` ref-prefix query.
+ *     unsearchable query or a conceptId-prefix query.
  * Both apply the same source/scope/quality/belief filter chain in the same
  * order — now literally the same function body, not two copies. The
  * candidate-POOL difference (FTS/vector match vs enumerate-all) is inherent

@@ -18,7 +18,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { buildActionFromContributors, defaultActionContributors } from "../../core/action-contributors";
-import { placementTypes } from "../../core/asset/asset-placement";
+import { stashDirFor } from "../../core/asset/asset-placement";
 import { displayRef } from "../../core/asset/resolve-ref";
 import type { AkmConfig, ImproveConfig } from "../../core/config/config";
 import { getDbPath } from "../../core/paths";
@@ -42,7 +42,7 @@ import { ensureIndex } from "../ensure-index";
 import { collectGraphRelatedHit, type GraphBoostContext, loadGraphBoostContext } from "../graph/graph-boost";
 import { type IndexDocument, isProposedQuality, type StashEntryScope } from "../passes/metadata";
 import { resolveProjectContext } from "../walk/project-context";
-import { parseRefPrefixQuery, sanitizeFtsQuery } from "./fts-query";
+import { parseRefPrefixQuery, parseRetiredTypePrefixQuery, sanitizeFtsQuery } from "./fts-query";
 import { applyRankingRules, combineSearchScores, normalizeFtsScores } from "./ranking";
 import type { RankedEntryInput } from "./ranking-types";
 import { attachSearchHitAttribution, copySearchHitAttribution, getSearchHitAttribution } from "./search-attribution";
@@ -277,10 +277,7 @@ export async function searchLocal(input: {
     );
     return {
       hits,
-      tip:
-        hits.length === 0
-          ? "No matching stash assets were found. Try a different query or run 'akm index' to rebuild."
-          : undefined,
+      tip: hits.length === 0 ? emptyResultTip(query) : undefined,
       warnings: warnings.length > 0 ? warnings : undefined,
       embedMs,
       rankMs,
@@ -328,14 +325,15 @@ async function searchDatabase(
   const defaultExcludes =
     searchType === "any" && !includeExcludedTypes ? (config.search?.defaultExcludeTypes ?? ["session"]) : [];
 
-  // SPEC-4 — ref-prefix queries (`<type>:` / `<type>:<prefix>/`) translate to
-  // a typed enumeration narrowed by name prefix, instead of degenerating into
-  // the AND-token FTS query their sanitized form would produce ("memory
-  // projecta" — noise). The branch fires only on the untyped path: an explicit
-  // `--type` flag expresses stronger intent and wins. The PARSED type is
-  // itself explicit intent, so `defaultExcludeTypes` does not apply — a bare
-  // `session:` enumerates sessions exactly like `--type session` does.
-  const refPrefix = searchType === "any" ? parseRefPrefixQuery(query, placementTypes()) : null;
+  // D4 — conceptId-prefix queries (`memories/projecta/`, `bundle//`,
+  // `bundle//skills/`) translate to a deterministic enumeration narrowed by
+  // conceptId, instead of degenerating into the AND-token FTS query their
+  // sanitized form would produce ("memories projecta" — noise). The branch
+  // fires only on the untyped path: an explicit `--type` flag expresses
+  // stronger intent and wins. The PREFIX is itself explicit intent, so
+  // `defaultExcludeTypes` does not apply — `sessions/` enumerates sessions
+  // exactly like `--type session` does, and `bundle//` means the whole bundle.
+  const refPrefix = searchType === "any" ? parseRefPrefixQuery(query) : null;
   // Shared args for the two browse paths below; browse never runs semantic
   // ranking, so both return usedSemantic: false.
   const browseArgs = {
@@ -353,13 +351,13 @@ async function searchDatabase(
     restrictToSources,
   };
   if (refPrefix) {
-    // Browse path (ref-prefix enumeration).
+    // Browse path (conceptId-prefix enumeration).
     return {
       ...(await enumerateEntries({
         ...browseArgs,
-        typeFilter: refPrefix.type,
         excludeTypes: [],
-        namePrefix: refPrefix.namePrefix,
+        conceptIdPrefix: refPrefix.conceptIdPrefix,
+        ...(refPrefix.bundle !== undefined ? { bundle: refPrefix.bundle } : {}),
       })),
       usedSemantic: false,
     };
@@ -574,12 +572,26 @@ async function searchDatabase(
   return { embedMs, rankMs, hits, usedSemantic };
 }
 
+/**
+ * The no-hits tip. A query in the retired `<type>:` / `<type>:<prefix>/` browse
+ * grammar gets the conceptId spelling that replaces it: without this it comes
+ * back empty and silent, which is the failure D4 removed the grammar to avoid.
+ */
+function emptyResultTip(query: string): string {
+  const generic = "No matching stash assets were found. Try a different query or run 'akm index' to rebuild.";
+  const retired = parseRetiredTypePrefixQuery(query);
+  if (!retired) return generic;
+  const root = stashDirFor(retired.type);
+  if (!root) return generic;
+  return `No matching stash assets were found. The '<type>:' browse grammar was removed in 0.9.0 — use the conceptId spelling: 'akm search "${root}/${retired.rest}"'.`;
+}
+
 // ── Enumeration (browse) path ────────────────────────────────────────────────
 
 /**
  * Enumerate index entries without FTS scoring — the browse path shared by
- * empty/unsearchable queries and SPEC-4 ref-prefix queries (`<type>:` /
- * `<type>:<prefix>/`). Applies the same post-ranking filters as the scored
+ * empty/unsearchable queries and D4 conceptId-prefix queries (`memories/`,
+ * `bundle//`, `bundle//skills/`). Applies the same post-ranking filters as the scored
  * path (source narrowing, scope, proposed-quality, belief) before the limit
  * slice. Hits carry the fixed browse score 1 in type-then-name order — this is
  * a deterministic listing, not a relevance ranking.
@@ -592,13 +604,18 @@ async function enumerateEntries(opts: {
   /** Types hidden from untyped enumeration (config `defaultExcludeTypes`). */
   excludeTypes: string[];
   /**
-   * SPEC-4 name-prefix narrowing (e.g. `"projecta/"`, trailing slash retained
-   * for exact `/`-boundary subtree semantics). Compared case-insensitively:
-   * the command layer lowercases queries while on-disk directory names — and
-   * therefore entry names — may carry mixed case. Empty/undefined keeps every
-   * entry of the type.
+   * D4 conceptId-prefix narrowing (e.g. `"memories/projecta/"`, trailing slash
+   * retained for exact `/`-boundary subtree semantics). Compared
+   * case-insensitively: the command layer lowercases queries while on-disk
+   * directory names — and therefore conceptIds — may carry mixed case.
+   * Empty/undefined keeps every entry.
    */
-  namePrefix?: string;
+  conceptIdPrefix?: string;
+  /**
+   * D4 bundle narrowing (the `bundle//` half). Undefined spans every bundle;
+   * an unknown slug matches nothing rather than widening.
+   */
+  bundle?: string;
   limit: number;
   stashDir: string;
   allSourceDirs: string[];
@@ -622,12 +639,19 @@ async function enumerateEntries(opts: {
       a.entry.name.localeCompare(b.entry.name) ||
       a.filePath.localeCompare(b.filePath),
   );
-  // SPEC-4: narrow to the requested subtree. `startsWith` on the full
-  // slash-retaining prefix is exact — "projecta/" cannot match a sibling
-  // "projectalpha/…" scope.
-  const namePrefix = opts.namePrefix?.toLowerCase() ?? "";
+  // D4: narrow to the requested bundle and subtree. Matching is against the
+  // conceptId — the spelling every emitted `ref` carries — so a ref copied out
+  // of search output round-trips back in. `startsWith` on the full
+  // slash-retaining prefix is exact: "memories/projecta/" cannot match a
+  // sibling "memories/projectalpha/…" scope.
+  const bundle = opts.bundle?.toLowerCase();
+  const bundleFiltered =
+    bundle === undefined ? allEntries : allEntries.filter((ie) => ie.bundleId.toLowerCase() === bundle);
+  const conceptIdPrefix = opts.conceptIdPrefix?.toLowerCase() ?? "";
   const prefixFiltered =
-    namePrefix.length > 0 ? allEntries.filter((ie) => ie.entry.name.toLowerCase().startsWith(namePrefix)) : allEntries;
+    conceptIdPrefix.length > 0
+      ? bundleFiltered.filter((ie) => ie.conceptId.toLowerCase().startsWith(conceptIdPrefix))
+      : bundleFiltered;
   // Deduplicate by file path — multiple entries can share the same file
   const seenFilePaths = new Set<string>();
   const uniqueEntries = prefixFiltered.filter((ie) => {

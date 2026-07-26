@@ -26,16 +26,9 @@
  *                              akm-eval-smoke at cutover, plan 16)
  *
  * What is NOT the dead grammar (not flagged):
- *  1. LIVE ref-prefix SEARCH queries - a bare `<type>:` or a `<type>:<prefix>/`
- *     (trailing slash) is the deterministic subtree-enumeration grammar parsed
- *     by `parseRefPrefixQuery` (`indexer/search/fts-query.ts`), pinned by
- *     `tests/integration/search-ref-prefix.test.ts`. Still current; keep it.
- *     A bare `<type>:` never matches (the token requires a name char after the
- *     colon); a `<type>:<seg>/` matches but is skipped by the trailing-slash
- *     rule.
- *  2. `${type:NAME}` env/secret SUBSTITUTION tokens (`${secret:API_KEY}`) -
+ *  1. `${type:NAME}` env/secret SUBSTITUTION tokens (`${secret:API_KEY}`) -
  *     template injection syntax, not a ref (same carve-out as the test lint).
- *  3. The SANCTIONED `derived_from` / belief-transition `memory:<name>` channel
+ *  2. The SANCTIONED `derived_from` / belief-transition `memory:<name>` channel
  *     in the eval MEMORY-REGRESSION suite: `akm improve --json-to-stdout` emits
  *     `beliefStateTransitions[].ref`/`archived[].ref` as `memory:<name>`
  *     (`commands/improve/memory/memory-improve.ts`), and the runner's
@@ -118,10 +111,6 @@ function scanFile(abs: string, rel: string, offenses: Offense[]): void {
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
     for (const m of lines[i]!.matchAll(TOKEN)) {
-      const run = m[1]!;
-      // LIVE ref-prefix search shape (`<type>:<prefix>/`) - deterministic
-      // subtree enumeration, still current. Not a dead ref.
-      if (run.endsWith("/")) continue;
       offenses.push({ file: rel, line: i + 1, token: m[0] });
     }
   }

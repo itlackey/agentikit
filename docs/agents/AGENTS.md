@@ -8,7 +8,7 @@ You have access to a searchable library of scripts, skills, commands, agents, kn
 akm search "<query>"                          # Search for assets
 akm curate "<task>"                          # Curate the best matches for a task
 akm search "<query>" --type workflow          # Filter to workflow assets
-akm search "memories/projectA/"                 # List a typed subtree (ref-prefix query; trailing slash required)
+akm search "memories/projectA/"                 # List a conceptId subtree (trailing slash required)
 akm search "<query>" --source both            # Also search registries
 akm show <ref>                                # View asset details
 akm show knowledge/my-doc                    # Show a knowledge asset

@@ -22,6 +22,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Subtree browse is a conceptId prefix, not `<type>:`** (0.9.0 decision D4).
+  `akm search` enumerates on `memories/`, `memories/projecta/`, `bundle//`, and
+  `bundle//skills/`; a trailing `/` is still required. The prefix now matches the
+  **conceptId** rather than the item name, so a ref copied out of search output
+  can be truncated to a prefix and pasted straight back in — previously that
+  round-trip degraded silently into a keyword search. Enumeration no longer
+  validates against the `akm` adapter's placement types, so items from every
+  adapter browse the same way, and `bundle//` lists a whole bundle (the
+  replacement for the removed `akm bundle items`).
+
+  Migration: `akm search "memory:"` → `akm search "memories/"`;
+  `akm search "memory:projectA/"` → `akm search "memories/projectA/"`;
+  `akm search "session:"` → `akm search "sessions/"`. The retired spelling is
+  now an ordinary keyword search; when it returns nothing, the tip names the
+  conceptId spelling that replaces it. `scripts/lint-shipped-assets.ts` no
+  longer exempts the old spelling, so it is an offense in agent-facing assets.
+
 - **`akm tasks sync [--target <bundle>]` reconciles a single bundle.** Sync now
   attributes each installed scheduler entry to its bundle (parsed from the
   `--target` token; absent ⇒ primary) and reconciles only the entries for the

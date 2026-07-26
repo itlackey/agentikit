@@ -49,14 +49,17 @@ please file it.
   - **Refs in prose** must be fully qualified (`bundle//conceptId`) or a native
     adapter link form. A bare conceptId in prose is ordinary text, not a ref,
     and no akm tool rewrites it.
-- **Ref-prefix enumeration** — `akm search "<type>:"` and
-  `"<type>:<prefix>/"` (e.g. `"memory:"`, `"memory:projecta/"`) enumerate a
-  typed subtree. A trailing `/` is required for a non-empty prefix. Note this
-  uses the singular *type* token, not the conceptId spelling refs are emitted
-  in, and it only covers the `akm` adapter's placement types — items from other
-  adapters cannot be enumerated this way. Replacing it with conceptId /
-  `bundle//` prefixes is a decided but **not yet shipped** change (see
-  [On the horizon](#on-the-horizon)).
+- **ConceptId-prefix enumeration** — `akm search "memories/"`,
+  `"memories/projecta/"`, `"bundle//"`, `"bundle//skills/"`. A trailing `/` is
+  required. The prefix matches the **conceptId** — the spelling every emitted
+  `ref` carries — so a ref copied out of search output can be truncated to a
+  prefix and pasted back in. Enumeration is not tied to any adapter's type set,
+  so every adapter's items browse the same way, and `bundle//` lists a whole
+  bundle (this replaced `akm bundle items`). A prefix is explicit intent, so
+  `search.defaultExcludeTypes` does not apply to it. The pre-0.9.0
+  `"<type>:"` / `"<type>:<prefix>/"` spelling was removed; a query in that
+  shape is now an ordinary keyword search whose empty-result tip names the
+  conceptId spelling that replaces it.
 - **Read commands** — `akm search`, `akm show`, `akm list`, `akm curate`,
   `akm info`, `akm config get`, `akm config list`, `akm config path`,
   `akm env list`, `akm secret list`, `akm proposal list` (list filters),
@@ -311,16 +314,17 @@ status. Not yet in the code:
 
 | Decision | Change | Current behavior |
 | --- | --- | --- |
-| D4 | Browse by conceptId / `bundle//` prefix | Only the `<type>:` grammar exists |
 | D7 | All six `--format` values on every command | `md`/`html` are `akm health`-only |
 | D8 | Gate improve autonomy behind `experimental.improveAutonomy` | No gate; mutating lanes are on by default |
 
 Already shipped from that record: **D1** (`#fragment` section selection),
 **D2** (the `akm show <ref> toc|section|lines|frontmatter|full` view grammar is
-gone — `#fragment` is the only section selector), **D5** (`akm bundle`
-removed), **D6** (open `type` set at runtime), and partially **D10** (an
-`akm-migrate` binary now exists, though the code still lives in this repo). **D3** is not on this list: `akm mv` ships in 0.9.0 as an
-Experimental surface (see the Renames bullet above), and no removal is planned.
+gone — `#fragment` is the only section selector), **D4** (conceptId /
+`bundle//` prefix browse), **D5** (`akm bundle` removed), **D6** (open `type`
+set at runtime), and partially **D10** (an `akm-migrate` binary now exists,
+though the code still lives in this repo). **D3** is not on this list: `akm mv`
+ships in 0.9.0 as an Experimental surface (see the Renames bullet above), and
+no removal is planned.
 
 - **0.10 — migration extraction.** The migration machinery leaves the CLI for
   a separately published `akm-migrate` package (see Internal above).

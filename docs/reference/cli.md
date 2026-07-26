@@ -334,24 +334,35 @@ akm search "deploy" --filter user=alice --filter agent=claude
 # Include proposal-queue entries:
 akm search "deploy" --include-proposed
 
-# Ref-prefix enumeration — list a typed subtree instead of keyword-matching:
+# ConceptId-prefix enumeration — list a subtree instead of keyword-matching:
 akm search "memories/projectA/"
-akm search "knowledge:"
+akm search "knowledge/"
+akm search "team-catalog//"
+akm search "team-catalog//skills/"
 ```
 
-A query shaped like a **ref prefix** — `<type>:<prefix>/` with a trailing
-slash, or a bare `<type>:` — is not keyword-matched. It enumerates the type's
-entries whose names start with the prefix: `akm search "memories/projectA/"`
-lists exactly the `projectA/` subtree of memories (recursive, `/`-boundary
-exact — a sibling `projectAlpha/` scope does not leak), and `akm search
-"session:"` lists every session (the parsed type is explicit intent, so the
-default `session` exclusion — an untyped-path policy — does not apply). Hits
-carry the fixed browse score `1` in deterministic listing order, matching the
-empty-query enumeration contract, and compose with `--limit`, `--belief`,
-`--filter`, and named `--source` narrowing. A full ref without the trailing
-slash (`memories/projectA/auth-tip`) stays an ordinary keyword search — use
-`akm show` to resolve a single ref. An explicit `--type` flag wins over the
-type parsed from the query.
+A query ending in `/` is a **conceptId prefix**, not a keyword search. It
+enumerates the entries whose conceptId starts with that prefix: `akm search
+"memories/projectA/"` lists exactly the `projectA/` subtree of memories
+(recursive, `/`-boundary exact — a sibling `projectAlpha/` scope does not
+leak), and `akm search "sessions/"` lists every session (a prefix is explicit
+intent, so the default `session` exclusion — an untyped-path policy — does not
+apply). A `<bundle>//` prefix scopes enumeration to one bundle, optionally
+narrowed further (`team-catalog//skills/`); `<bundle>//` alone lists the whole
+bundle, which is what replaced `akm bundle items`.
+
+Because the prefix matches the **conceptId** — the same spelling every emitted
+`ref` carries — a ref copied out of search output can be truncated to a prefix
+and pasted straight back in. Hits carry the fixed browse score `1` in
+deterministic listing order, matching the empty-query enumeration contract, and
+compose with `--limit`, `--belief`, `--filter`, and named `--source` narrowing.
+A full ref without the trailing slash (`memories/projectA/auth-tip`) stays an
+ordinary keyword search — use `akm show` to resolve a single ref. An explicit
+`--type` flag wins over the prefix.
+
+The pre-0.9.0 `<type>:` / `<type>:<prefix>/` spelling was removed. A query in
+that shape is now an ordinary keyword search, and when it returns nothing the
+tip names the conceptId spelling that replaces it.
 
 | Flag | Values | Default | Description |
 | --- | --- | --- | --- |

@@ -11,8 +11,9 @@ akm search "<query>" --source both            # Also search registries for insta
 akm search "<query>" --source registry        # Search registries only
 akm search "<query>" --limit 10               # Limit results
 akm search "<query>" --detail full            # Include scores, paths, timing
-akm search "memories/projectA/"                 # Enumerate a typed subtree (ref-prefix; trailing slash required)
-akm search "knowledge:"                       # List every asset of a type
+akm search "memories/projectA/"               # Enumerate a subtree (conceptId prefix; trailing slash required)
+akm search "knowledge/"                       # List every knowledge item
+akm search "team-catalog//"                   # List every item in one bundle
 akm curate "<task>"                          # Curate the best matches for a task
 ```
 
