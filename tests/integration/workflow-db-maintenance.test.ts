@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { createMigrationBackup, restoreMigrationBackup } from "../../src/core/migration-backup";
+import { createMigrationBackup, restoreMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
 import { getConfigPath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 import { pollUntil } from "./_helpers/workflow-crossproc";

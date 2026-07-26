@@ -7,7 +7,6 @@ import { createProposal, getProposal, isProposalSkipped } from "../../src/comman
 import type { AkmConfig } from "../../src/core/config/config";
 import { readEvents } from "../../src/core/events";
 import { txnNamespaceDir } from "../../src/core/fs-txn";
-import { openStateDatabase } from "../../src/core/state-db";
 import {
   type IsolatedAkmStorage,
   makeSandboxDir,
@@ -25,7 +24,12 @@ const children: ChildProcess[] = [];
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
   markers = makeSandboxDir("akm-proposal-crash");
-  writeSandboxConfig({ semanticSearchMode: "off" });
+  writeSandboxConfig({
+    semanticSearchMode: "off",
+    bundles: { stash: { path: storage.stashDir, writable: true } },
+    defaultBundle: "stash",
+    defaultWriteTarget: "stash",
+  });
 });
 
 afterEach(() => {
@@ -97,7 +101,7 @@ describe("proposal accept durable crash recovery", () => {
       const proposal = getProposal(storage.stashDir, seeded.id);
       expect(proposal.status).toBe("accepted");
       expect(proposal.backupContent).toBe(seeded.original);
-      expect(proposal.acceptedContentHash).toBeDefined();
+      expect(proposal.acceptedTarget?.contentHash).toBeDefined();
       const events = readEvents({ type: "promoted", ref: proposal.ref }).events.filter(
         (event) => event.metadata?.proposalId === seeded.id,
       );
@@ -120,6 +124,7 @@ describe("proposal accept durable crash recovery", () => {
         ref: "lessons/cross-device-accept",
         source: "distill",
         force: true,
+        target: { source: "shm", root: stashDir },
         payload: { content: CONTENT },
       });
       if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
@@ -134,8 +139,8 @@ describe("proposal accept durable crash recovery", () => {
     }
   });
 
-  test("late legacy recovery canonicalizes an already-persisted accepted target", async () => {
-    const seeded = seedProposal("legacy-late-target");
+  test("rejects a transaction journal missing current target identity", async () => {
+    const seeded = seedProposal("missing-journal-target-kind");
     await crashProposalAt("index-finalized", seeded.id);
     const namespace = txnNamespaceDir(storage.stashDir);
     const transactionDir = fs.readdirSync(namespace)[0] as string;
@@ -143,118 +148,12 @@ describe("proposal accept durable crash recovery", () => {
     const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as {
       payload: Record<string, unknown>;
     };
-    journal.payload.targetSource = "stash";
     delete journal.payload.targetKind;
     fs.writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf8");
-    const config = {
-      semanticSearchMode: "off",
-      bundles: { primary: { path: storage.stashDir, writable: true } } as AkmConfig["bundles"],
-      defaultBundle: "primary",
-      defaultWriteTarget: "primary",
-    } as AkmConfig;
-    writeSandboxConfig(config);
-
-    await akmProposalAccept({ stashDir: storage.stashDir, id: seeded.id, config });
-    expect(getProposal(storage.stashDir, seeded.id).acceptedTarget).toMatchObject({
-      source: "primary",
-      root: path.resolve(storage.stashDir),
-    });
-  });
-
-  test("late legacy revert recovery canonicalizes the accepted target", async () => {
-    const seeded = seedProposal("legacy-late-revert-target");
-    await akmProposalAccept({ stashDir: storage.stashDir, id: seeded.id });
-    const acceptedHash = getProposal(storage.stashDir, seeded.id).acceptedTarget?.contentHash;
-    await crashProposalAt("index-finalized", seeded.id, "revert");
-    const namespace = txnNamespaceDir(storage.stashDir);
-    const transactionDir = fs.readdirSync(namespace)[0] as string;
-    const journalPath = path.join(namespace, transactionDir, "journal.json");
-    const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as {
-      payload: Record<string, unknown>;
-    };
-    journal.payload.targetSource = "stash";
-    delete journal.payload.targetKind;
-    fs.writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf8");
-    const config = {
-      semanticSearchMode: "off",
-      bundles: { primary: { path: storage.stashDir, writable: true } } as AkmConfig["bundles"],
-      defaultBundle: "primary",
-      defaultWriteTarget: "primary",
-    } as AkmConfig;
-    writeSandboxConfig(config);
-
-    await akmProposalRevert({ stashDir: storage.stashDir, id: seeded.id, config });
-    expect(getProposal(storage.stashDir, seeded.id)).toMatchObject({
-      status: "reverted",
-      acceptedTarget: {
-        source: "primary",
-        root: path.resolve(storage.stashDir),
-        contentHash: acceptedHash,
-      },
-    });
-  });
-
-  test("terminal revert recovery repairs same-source root and path spellings", async () => {
-    const firstAliasRoot = path.join(storage.root, "primary-alias-a");
-    const secondAliasRoot = path.join(storage.root, "primary-alias-b");
-    fs.symlinkSync(storage.stashDir, firstAliasRoot, "dir");
-    fs.symlinkSync(storage.stashDir, secondAliasRoot, "dir");
-    const firstConfig = {
-      semanticSearchMode: "off",
-      bundles: { primary: { path: firstAliasRoot, writable: true } } as AkmConfig["bundles"],
-      defaultBundle: "primary",
-      defaultWriteTarget: "primary",
-    } as AkmConfig;
-    writeSandboxConfig(firstConfig);
-    const seeded = seedProposal("legacy-terminal-revert-target");
-    await akmProposalAccept({ stashDir: storage.stashDir, id: seeded.id, config: firstConfig });
-    const db = openStateDatabase();
-    const row = db.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(seeded.id) as {
-      metadata_json: string;
-    };
-    const metadata = JSON.parse(row.metadata_json) as {
-      acceptedTarget: { source: string; root: string; path: string };
-    };
-    metadata.acceptedTarget = {
-      ...metadata.acceptedTarget,
-      source: "primary",
-      root: firstAliasRoot,
-      path: path.join(firstAliasRoot, "lessons", "legacy-terminal-revert-target.md"),
-    };
-    db.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), seeded.id);
-    db.close();
-    await crashProposalAt("event-persisted", seeded.id, "revert");
-    const namespace = txnNamespaceDir(storage.stashDir);
-    const transactionDir = fs.readdirSync(namespace)[0] as string;
-    const journalPath = path.join(namespace, transactionDir, "journal.json");
-    const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as {
-      phase: string;
-      payload: Record<string, unknown>;
-    };
-    journal.phase = "committed";
-    fs.writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf8");
-
-    const config = {
-      semanticSearchMode: "off",
-      bundles: { primary: { path: secondAliasRoot, writable: true } } as AkmConfig["bundles"],
-      defaultBundle: "primary",
-      defaultWriteTarget: "primary",
-    } as AkmConfig;
-    writeSandboxConfig(config);
-
-    await akmProposalRevert({ stashDir: storage.stashDir, id: seeded.id, config });
-    const recovered = getProposal(storage.stashDir, seeded.id);
-    expect(recovered).toMatchObject({
-      status: "reverted",
-      acceptedTarget: {
-        source: "primary",
-        root: path.resolve(secondAliasRoot),
-        path: path.join(path.resolve(secondAliasRoot), "lessons", "legacy-terminal-revert-target.md"),
-      },
-    });
-    expect((await akmProposalRevert({ stashDir: storage.stashDir, id: seeded.id, config })).proposal.status).toBe(
-      "reverted",
+    await expect(akmProposalAccept({ stashDir: storage.stashDir, id: seeded.id })).rejects.toThrow(
+      /unsafe proposal transaction|different target|target identity/i,
     );
+    expect(fs.existsSync(journalPath)).toBe(true);
   });
 
   for (const phase of [
@@ -306,6 +205,7 @@ describe("proposal accept durable crash recovery", () => {
       ref: "lessons/multi-target-crash",
       source: "distill",
       force: true,
+      target: { source: "a", root: targetA },
       payload: { content: CONTENT },
     });
     if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
@@ -345,6 +245,7 @@ describe("proposal accept durable crash recovery", () => {
       ref: "lessons/multi-target-revert",
       source: "distill",
       force: true,
+      target: { source: "a", root: targetA },
       payload: { content: CONTENT },
     });
     if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
@@ -382,77 +283,4 @@ describe("proposal accept durable crash recovery", () => {
       expect(events).toHaveLength(1);
     });
   }
-
-  test("legacy missing-file revert survives SIGKILL after target derivation and before journal creation", async () => {
-    const seeded = seedProposal("legacy-derived-restart");
-    await akmProposalAccept({ stashDir: storage.stashDir, id: seeded.id });
-    const db = openStateDatabase();
-    const row = db.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(seeded.id) as {
-      metadata_json: string;
-    };
-    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-    delete metadata.acceptedContentHash;
-    delete metadata.acceptedTarget;
-    db.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), seeded.id);
-    db.close();
-    fs.unlinkSync(seeded.assetPath);
-
-    await crashProposalAt("legacy-target-derived", seeded.id, "revert");
-
-    const persistedDb = openStateDatabase();
-    const persistedRow = persistedDb.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(seeded.id) as {
-      metadata_json: string;
-    };
-    const persisted = JSON.parse(persistedRow.metadata_json) as Record<string, unknown>;
-    persistedDb.close();
-    expect(persisted.legacyAcceptedTargetDerived).toBe(true);
-    expect(persisted.legacyAcceptedAssetWasAbsent).toBe(true);
-    expect(persisted.acceptedTarget).toBeDefined();
-
-    const result = await akmProposalRevert({ stashDir: storage.stashDir, id: seeded.id });
-    expect(result.proposal.status).toBe("reverted");
-    expect(fs.readFileSync(seeded.assetPath, "utf8")).toBe(seeded.original);
-  });
-
-  test("prepared legacy missing-file revert recovery canonicalizes its accepted target", async () => {
-    const seeded = seedProposal("legacy-prepared-missing-target");
-    await akmProposalAccept({ stashDir: storage.stashDir, id: seeded.id });
-    const db = openStateDatabase();
-    const row = db.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(seeded.id) as {
-      metadata_json: string;
-    };
-    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-    delete metadata.acceptedContentHash;
-    delete metadata.acceptedTarget;
-    db.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), seeded.id);
-    db.close();
-    fs.unlinkSync(seeded.assetPath);
-
-    await crashProposalAt("legacy-target-derived", seeded.id, "revert");
-    await crashProposalAt("prepared", seeded.id, "revert");
-    const namespace = txnNamespaceDir(storage.stashDir);
-    const transactionDir = fs.readdirSync(namespace)[0] as string;
-    const journalPath = path.join(namespace, transactionDir, "journal.json");
-    const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as {
-      payload: Record<string, unknown>;
-    };
-    journal.payload.targetSource = "retired-stash";
-    delete journal.payload.targetKind;
-    fs.writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf8");
-    const config = {
-      semanticSearchMode: "off",
-      bundles: { primary: { path: storage.stashDir, writable: true } } as AkmConfig["bundles"],
-      defaultBundle: "primary",
-      defaultWriteTarget: "primary",
-    } as AkmConfig;
-    writeSandboxConfig(config);
-
-    const result = await akmProposalRevert({ stashDir: storage.stashDir, id: seeded.id, config });
-    expect(result.proposal.status).toBe("reverted");
-    expect(result.proposal.acceptedTarget).toMatchObject({
-      source: "primary",
-      root: path.resolve(storage.stashDir),
-    });
-    expect(fs.readFileSync(seeded.assetPath, "utf8")).toBe(seeded.original);
-  });
 });

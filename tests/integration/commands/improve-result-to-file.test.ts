@@ -56,7 +56,6 @@ function readImproveRuns(xdgData: string): Array<{
   dry_run: number;
   ok: number;
   scope_mode: string;
-  profile: string | null;
   strategy: string | null;
   result: Record<string, unknown>;
 }> {
@@ -66,7 +65,7 @@ function readImproveRuns(xdgData: string): Array<{
   try {
     const rows = db
       .prepare(
-        `SELECT id, started_at, completed_at, dry_run, ok, scope_mode, profile, strategy, result_json
+        `SELECT id, started_at, completed_at, dry_run, ok, scope_mode, strategy, result_json
          FROM improve_runs ORDER BY started_at ASC`,
       )
       .all() as Array<{
@@ -76,7 +75,6 @@ function readImproveRuns(xdgData: string): Array<{
       dry_run: number;
       ok: number;
       scope_mode: string;
-      profile: string | null;
       strategy: string | null;
       result_json: string;
     }>;
@@ -87,7 +85,6 @@ function readImproveRuns(xdgData: string): Array<{
       dry_run: r.dry_run,
       ok: r.ok,
       scope_mode: r.scope_mode,
-      profile: r.profile,
       strategy: r.strategy,
       result: JSON.parse(r.result_json) as Record<string, unknown>,
     }));
@@ -153,7 +150,6 @@ describe("recordImproveRunResult", () => {
       expect(rows[0]!.ok).toBe(1);
       expect(rows[0]!.dry_run).toBe(0);
       expect(rows[0]!.scope_mode).toBe("all");
-      expect(rows[0]!.profile).toBeNull();
       expect(rows[0]!.strategy).toBe("default");
       expect(rows[0]!.result.ok).toBe(true);
 
@@ -165,7 +161,7 @@ describe("recordImproveRunResult", () => {
     }
   });
 
-  test("records the passed-through v2 strategy without relabeling it as a profile", () => {
+  test("records the passed-through v2 strategy", () => {
     const stash = makeStashDir();
     const runId = "test-run-with-strategy";
 
@@ -175,7 +171,6 @@ describe("recordImproveRunResult", () => {
       recordImproveRunResult(stash, runId, { ...baseResult, strategy: "quick" });
       const rows = readImproveRuns(xdgData);
       expect(rows.length).toBe(1);
-      expect(rows[0]!.profile).toBeNull();
       expect(rows[0]!.strategy).toBe("quick");
     } finally {
       dataSb.cleanup();

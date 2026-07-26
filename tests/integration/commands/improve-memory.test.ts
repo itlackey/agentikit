@@ -31,10 +31,17 @@ async function buildIndex(stashDir: string): Promise<void> {
   saveConfig(
     withTestImproveLlm({
       semanticSearchMode: "off",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
       improve: { strategies: { default: { processes: { extract: { enabled: false } } } } },
     }),
   );
   await akmIndex({ stashDir, full: true });
+}
+
+function durableRef(ref: string): string {
+  return `stash//${ref}`;
 }
 
 beforeEach(() => {
@@ -63,7 +70,7 @@ describe("akm improve memory cleanup", () => {
       "deploy.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Check VPN before deploy",
         description: "VPN is required before deploys.",
         tags: ["deploy", "vpn"],
@@ -76,7 +83,7 @@ describe("akm improve memory cleanup", () => {
       "deploy-copy.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Check VPN before deploy",
         description: "VPN is required before deploys.",
         tags: ["deploy", "vpn"],
@@ -89,7 +96,7 @@ describe("akm improve memory cleanup", () => {
       "deploy-verbose.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Check VPN before deploy",
         description: "VPN is required before deploys.",
         tags: ["deploy", "vpn", "release"],
@@ -102,7 +109,7 @@ describe("akm improve memory cleanup", () => {
       "deploy-old.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Use the old deploy tunnel",
         supersededBy: ["memory:deploy.derived"],
       },
@@ -149,7 +156,7 @@ describe("akm improve memory cleanup", () => {
       "deploy.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Check VPN before deploy",
         description: "VPN is required before deploys.",
       },
@@ -160,7 +167,7 @@ describe("akm improve memory cleanup", () => {
       "deploy-duplicate.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Check VPN before deploy",
         description: "VPN is required before deploys.",
       },
@@ -174,7 +181,7 @@ describe("akm improve memory cleanup", () => {
     // reflectFn / distillFn assertions don't fire.
     appendEvent({
       eventType: "feedback",
-      ref: "memories/deploy",
+      ref: durableRef("memories/deploy"),
       metadata: { signal: "positive" },
     });
 
@@ -198,7 +205,7 @@ describe("akm improve memory cleanup", () => {
         return {
           schemaVersion: 2,
           ok: true,
-          proposal: makeProposal(ref ?? "memory:missing"),
+          proposal: makeProposal(ref ?? "memories/missing"),
           ref: ref ?? "",
           engine: "test",
           durationMs: 1,
@@ -211,7 +218,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+          lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
         } satisfies AkmDistillResult;
       },
     });
@@ -257,7 +264,7 @@ describe("akm improve memory cleanup", () => {
       "deploy.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Use gateway B for deploys",
         description: "Gateway B is the active deploy tunnel.",
       },
@@ -268,7 +275,7 @@ describe("akm improve memory cleanup", () => {
       "deploy-old.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Use gateway A for deploys",
         contradictedBy: ["memory:deploy.derived"],
       },
@@ -314,7 +321,7 @@ describe("akm improve memory cleanup", () => {
       "deploy.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Use gateway B for deploys",
         description: "Gateway B is the current deploy tunnel.",
         searchHints: ["gateway b current deploy tunnel"],
@@ -326,7 +333,7 @@ describe("akm improve memory cleanup", () => {
       "deploy-legacy.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Use gateway A for deploys",
         description: "Gateway A is the legacy tunnel.",
         contradictedBy: ["memory:deploy.derived"],
@@ -367,7 +374,7 @@ describe("akm improve memory cleanup", () => {
         ({
           schemaVersion: 2,
           ok: true,
-          proposal: makeProposal(ref ?? "memory:missing"),
+          proposal: makeProposal(ref ?? "memories/missing"),
           ref: ref ?? "",
           engine: "test",
           durationMs: 1,
@@ -378,7 +385,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+          lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -461,7 +468,7 @@ describe("akm improve memory cleanup", () => {
       "deploy-legacy.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         beliefState: "contradicted",
         contradictedBy: ["memory:deploy.derived"],
         currentBeliefRefs: ["memory:deploy.derived"],
@@ -493,7 +500,7 @@ describe("akm improve memory cleanup", () => {
         ({
           schemaVersion: 2,
           ok: true,
-          proposal: makeProposal(ref ?? "memory:missing"),
+          proposal: makeProposal(ref ?? "memories/missing"),
           ref: ref ?? "",
           engine: "test",
           durationMs: 1,
@@ -504,7 +511,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+          lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -533,7 +540,7 @@ describe("akm improve memory cleanup", () => {
       "deploy-a.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Use gateway A fallback",
         contradictedBy: ["memory:deploy-b.derived"],
       },
@@ -544,7 +551,7 @@ describe("akm improve memory cleanup", () => {
       "deploy-b.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Use gateway B fallback",
         contradictedBy: ["memory:deploy-a.derived"],
       },
@@ -555,7 +562,7 @@ describe("akm improve memory cleanup", () => {
       "deploy-old.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Use gateway C fallback",
         contradictedBy: ["memory:deploy-a.derived"],
       },
@@ -618,7 +625,7 @@ describe("akm improve memory cleanup", () => {
       "deploy.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Check VPN before deploy",
         description: "VPN is required before deploys.",
       },
@@ -629,7 +636,7 @@ describe("akm improve memory cleanup", () => {
       "deploy-copy.derived",
       {
         inferred: true,
-        source: "memory:deploy",
+        source: "memories/deploy",
         title: "Check VPN before deploy",
         description: "VPN is required before deploys.",
       },
@@ -641,7 +648,7 @@ describe("akm improve memory cleanup", () => {
       "incident.derived",
       {
         inferred: true,
-        source: "memory:incident",
+        source: "memories/incident",
         title: "Page the on-call lead",
         description: "Escalate incidents immediately.",
       },
@@ -652,7 +659,7 @@ describe("akm improve memory cleanup", () => {
       "incident-copy.derived",
       {
         inferred: true,
-        source: "memory:incident",
+        source: "memories/incident",
         title: "Page the on-call lead",
         description: "Escalate incidents immediately.",
       },
@@ -677,7 +684,7 @@ describe("akm improve memory cleanup", () => {
         ({
           schemaVersion: 2,
           ok: true,
-          proposal: makeProposal(ref ?? "memory:missing"),
+          proposal: makeProposal(ref ?? "memories/missing"),
           ref: ref ?? "",
           engine: "test",
           durationMs: 1,
@@ -688,7 +695,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+          lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -757,7 +764,7 @@ describe("akm improve memory cleanup", () => {
         return {
           schemaVersion: 2,
           ok: true,
-          proposal: makeProposal(ref ?? "knowledge:missing"),
+          proposal: makeProposal(ref ?? "knowledge/missing"),
           ref: ref ?? "",
           engine: "test",
           durationMs: 1,
@@ -770,7 +777,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+          lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
         } satisfies AkmDistillResult;
       },
     });
@@ -813,7 +820,7 @@ describe("akm improve memory cleanup", () => {
         return {
           schemaVersion: 2,
           ok: true,
-          proposal: makeProposal(ref ?? "memory:missing"),
+          proposal: makeProposal(ref ?? "memories/missing"),
           ref: ref ?? "",
           engine: "test",
           durationMs: 1,
@@ -825,7 +832,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
     expect(withoutSignals.plannedRefs).toEqual([]);
@@ -833,7 +840,7 @@ describe("akm improve memory cleanup", () => {
 
     appendEvent({
       eventType: "feedback",
-      ref: "memories/alpha",
+      ref: durableRef("memories/alpha"),
       metadata: { signal: "positive", note: "helpful" },
     });
 
@@ -857,7 +864,7 @@ describe("akm improve memory cleanup", () => {
         return {
           schemaVersion: 2,
           ok: true,
-          proposal: makeProposal(ref ?? "memory:missing"),
+          proposal: makeProposal(ref ?? "memories/missing"),
           ref: ref ?? "",
           engine: "test",
           durationMs: 1,
@@ -869,7 +876,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
     expect(withSignal.plannedRefs).toEqual([expect.objectContaining({ ref: "memories/alpha", reason: "scope-type" })]);
@@ -890,7 +897,7 @@ describe("akm improve memory cleanup", () => {
       "parent.derived",
       {
         inferred: true,
-        source: "memory:parent",
+        source: "memories/parent",
         description: "Derived inference from parent.",
       },
       "# Derived\n\nInferred content.",
@@ -916,7 +923,7 @@ describe("akm improve memory cleanup", () => {
         return {
           schemaVersion: 2,
           ok: true,
-          proposal: makeProposal(ref ?? "memory:parent"),
+          proposal: makeProposal(ref ?? "memories/parent"),
           ref: ref ?? "",
           engine: "test",
           durationMs: 1,
@@ -928,7 +935,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -959,9 +966,12 @@ describe("akm improve memory cleanup", () => {
     const now = Date.now();
     // Old reflect_invoked event, then a NEWER feedback event → signal-delta
     // gate passes (new signal arrived since the last proposal).
-    appendEvent({ eventType: "reflect_invoked", ref: "memories/deploy" }, { now: () => now - 24 * 60 * 60 * 1000 });
     appendEvent(
-      { eventType: "feedback", ref: "memories/deploy", metadata: { signal: "positive" } },
+      { eventType: "reflect_invoked", ref: durableRef("memories/deploy") },
+      { now: () => now - 24 * 60 * 60 * 1000 },
+    );
+    appendEvent(
+      { eventType: "feedback", ref: durableRef("memories/deploy"), metadata: { signal: "positive" } },
       { now: () => now },
     );
 
@@ -982,7 +992,7 @@ describe("akm improve memory cleanup", () => {
         return {
           schemaVersion: 2,
           ok: true,
-          proposal: makeProposal(ref ?? "memory:missing"),
+          proposal: makeProposal(ref ?? "memories/missing"),
           ref: ref ?? "",
           engine: "test",
           durationMs: 1,
@@ -994,7 +1004,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -1024,7 +1034,7 @@ describe("akm improve memory cleanup", () => {
         ({
           schemaVersion: 2,
           ok: true,
-          proposal: makeProposal(ref ?? "memory:missing"),
+          proposal: makeProposal(ref ?? "memories/missing"),
           ref: ref ?? "",
           engine: "test",
           durationMs: 1,
@@ -1036,7 +1046,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         } satisfies AkmDistillResult;
       },
     });
@@ -1068,8 +1078,16 @@ describe("akm improve memory cleanup", () => {
     writeMemory(stashDir, "vpn", { description: "vpn memory" }, "Remember vpn details.");
     await buildIndex(stashDir);
 
-    appendEvent({ eventType: "feedback", ref: "memory:deploy", metadata: { signal: "positive", note: "good" } });
-    appendEvent({ eventType: "feedback", ref: "memory:vpn", metadata: { signal: "positive", note: "good" } });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("memories/deploy"),
+      metadata: { signal: "positive", note: "good" },
+    });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("memories/vpn"),
+      metadata: { signal: "positive", note: "good" },
+    });
 
     const inferredRefs: string[][] = [];
     const graphCalls: number[] = [];
@@ -1082,20 +1100,20 @@ describe("akm improve memory cleanup", () => {
       reflectFn: async ({ ref }) => ({
         schemaVersion: 2,
         ok: true,
-        proposal: makeProposal(ref ?? "memory:missing"),
+        proposal: makeProposal(ref ?? "memories/missing"),
         ref: ref ?? "",
         engine: "test",
         durationMs: 1,
       }),
       distillFn: async ({ ref }) => {
-        if (ref === "memory:deploy") {
+        if (ref === "memories/deploy") {
           return {
             schemaVersion: 1,
             ok: true,
             outcome: "queued",
             inputRef: ref,
-            lessonRef: "knowledge:deploy",
-            proposalRef: "knowledge:deploy",
+            lessonRef: "knowledge/deploy",
+            proposalRef: "knowledge/deploy",
             proposalKind: "knowledge",
           } satisfies AkmDistillResult;
         }
@@ -1104,7 +1122,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
           proposalRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
           proposalKind: "lesson",
         } satisfies AkmDistillResult;
@@ -1170,7 +1188,11 @@ describe("akm improve memory cleanup", () => {
     writeMemory(stashDir, "vpn", { description: "vpn memory" }, "Remember vpn details.");
     await buildIndex(stashDir);
 
-    appendEvent({ eventType: "feedback", ref: "memories/vpn", metadata: { signal: "positive", note: "good" } });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("memories/vpn"),
+      metadata: { signal: "positive", note: "good" },
+    });
 
     const callOrder: string[] = [];
 
@@ -1185,7 +1207,7 @@ describe("akm improve memory cleanup", () => {
       reflectFn: async ({ ref }) => ({
         schemaVersion: 2,
         ok: true,
-        proposal: makeProposal(ref ?? "memory:missing"),
+        proposal: makeProposal(ref ?? "memories/missing"),
         ref: ref ?? "",
         engine: "test",
         durationMs: 1,
@@ -1195,7 +1217,7 @@ describe("akm improve memory cleanup", () => {
         ok: true,
         outcome: "queued",
         inputRef: ref,
-        lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         proposalRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         proposalKind: "lesson",
       }),
@@ -1217,7 +1239,7 @@ describe("akm improve memory cleanup", () => {
       graphExtractionFn: async ({ options }) => {
         callOrder.push("graphExtraction");
         // Phase 1 perf fix: improve now passes candidatePaths filtered to refs
-        // actually touched this run (here: memory:vpn). The set must include
+        // actually touched this run (here: memories/vpn). The set must include
         // the resolved file for the processed memory so graph extraction can
         // rescan only the changed files.
         expect(options?.candidatePaths).toBeDefined();
@@ -1250,7 +1272,11 @@ describe("akm improve memory cleanup", () => {
     writeMemory(stashDir, "vpn", { description: "vpn memory" }, "Remember vpn details.");
     await buildIndex(stashDir);
 
-    appendEvent({ eventType: "feedback", ref: "memory:vpn", metadata: { signal: "positive", note: "good" } });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("memories/vpn"),
+      metadata: { signal: "positive", note: "good" },
+    });
 
     // setQuiet(false): the harness sets quiet=true by default; opt back into
     // noisy mode so that info()/warn() calls from production code reach the
@@ -1265,7 +1291,7 @@ describe("akm improve memory cleanup", () => {
         reflectFn: async ({ ref }) => ({
           schemaVersion: 2,
           ok: true,
-          proposal: makeProposal(ref ?? "memory:missing"),
+          proposal: makeProposal(ref ?? "memories/missing"),
           ref: ref ?? "",
           engine: "test",
           durationMs: 1,
@@ -1275,7 +1301,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
           proposalRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
           proposalKind: "lesson",
         }),
@@ -1340,7 +1366,11 @@ describe("akm improve memory cleanup", () => {
     writeMemory(stashDir, "vpn", { description: "vpn memory" }, "Remember vpn details.");
     await buildIndex(stashDir);
 
-    appendEvent({ eventType: "feedback", ref: "memories/vpn", metadata: { signal: "positive", note: "good" } });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("memories/vpn"),
+      metadata: { signal: "positive", note: "good" },
+    });
 
     const result = await akmImprove({
       scope: "memory",
@@ -1350,7 +1380,7 @@ describe("akm improve memory cleanup", () => {
       reflectFn: async ({ ref }) => ({
         schemaVersion: 2,
         ok: true,
-        proposal: makeProposal(ref ?? "memory:missing"),
+        proposal: makeProposal(ref ?? "memories/missing"),
         ref: ref ?? "",
         engine: "test",
         durationMs: 1,
@@ -1360,7 +1390,7 @@ describe("akm improve memory cleanup", () => {
         ok: true,
         outcome: "queued",
         inputRef: ref,
-        lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         proposalRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         proposalKind: "lesson",
       }),
@@ -1435,7 +1465,7 @@ describe("akm improve memory cleanup", () => {
           decidedAt: "2026-01-01T00:00:00.000Z",
           payload: {
             startedAt: "2026-01-01T00:00:00.000Z",
-            operations: [{ op: "delete", ref: "memory:old", reason: "stale" }],
+            operations: [{ op: "delete", ref: "memories/old", reason: "stale" }],
             completed: [],
           },
         },

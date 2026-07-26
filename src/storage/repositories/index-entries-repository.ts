@@ -312,10 +312,8 @@ export function getBaseBeliefStatesForDerivedTwins(db: Database, twinIds: number
  * name; the row is marked FTS-dirty for the caller's
  * `rebuildFts({incremental: true})`.
  *
- * `usage_events.entry_ref` rows for the old ref are rewritten to the new ref
- * in the same transaction — both the bare `type:name` spelling and the
- * origin-qualified `origin//type:name` spelling (search/show writers persist
- * either, see {@link getRetrievalCounts}). Without this, events keep the old
+ * Bundle-qualified `usage_events.entry_ref` rows for the old conceptId are
+ * rewritten to the new item ref. Without this, events keep the old
  * ref, `relinkUsageEvents` finds no matching entry after the next full
  * rebuild, and the utility history the re-key exists to preserve silently
  * resets. DETACHED orphan events already sitting at the new ref (entry_id
@@ -336,23 +334,21 @@ export function getBaseBeliefStatesForDerivedTwins(db: Database, twinIds: number
  * full `akm index` picks the file up as a fresh entry).
  */
 export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number | null {
-  // Chunk-8: the row is located by its legacy `entry_key`; the caller (mv)
-  // always has it and it is the UNIQUE identity column until the re-key.
+  const oldItemRef = `${opts.sourceName}//${opts.oldRef}`;
   const row = db
-    .prepare("SELECT id, stash_dir, entry_json, search_text, entry_type, item_ref FROM entries WHERE entry_key = ?")
-    .get(opts.oldEntryKey) as
+    .prepare("SELECT id, stash_dir, entry_json, search_text, entry_type FROM entries WHERE item_ref = ?")
+    .get(oldItemRef) as
     | {
         id: number;
         stash_dir: string;
         entry_json: string;
         search_text: string;
         entry_type: string;
-        item_ref: string | null;
       }
     | undefined
     | null;
   if (!row) return null;
-  if (opts.sourceRoot && path.resolve(row.stash_dir) !== path.resolve(opts.sourceRoot)) {
+  if (path.resolve(row.stash_dir) !== path.resolve(opts.sourceRoot)) {
     throw new Error(`Refusing to re-key entry ${opts.oldEntryKey}: source root does not match.`);
   }
 
@@ -371,19 +367,11 @@ export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number
     /* corrupt entry_json — key/path-only re-key */
   }
 
-  // Chunk-5 flip F1: keep `item_ref`/`concept_id` consistent with the rename so
-  // a post-mv new-grammar lookup finds the moved row by its NEW conceptId. The
-  // bundle prefix is carried over from the existing item_ref unchanged (mv never
-  // crosses bundles); a NULL item_ref (write-back row) stays NULL and is healed
-  // on the next full index, exactly like the legacy columns before the flip.
-  let newItemRef: string | null = null;
-  let newConceptId: string | null = null;
-  if (row.item_ref) {
-    const boundary = row.item_ref.indexOf("//");
-    const bundle = boundary >= 0 ? row.item_ref.slice(0, boundary) : undefined;
-    newConceptId = conceptIdFromTypeName(row.entry_type, opts.newName);
-    newItemRef = bundle !== undefined ? `${bundle}//${newConceptId}` : newConceptId;
+  const expectedNewRef = conceptIdFromTypeName(row.entry_type, opts.newName);
+  if (opts.newRef !== expectedNewRef) {
+    throw new Error(`Refusing to re-key entry ${opts.oldEntryKey}: target ref does not match the entry type and name.`);
   }
+  const newItemRef = `${opts.sourceName}//${opts.newRef}`;
 
   db.transaction(() => {
     const stale = db.prepare("SELECT id FROM entries WHERE entry_key = ?").get(opts.newEntryKey) as
@@ -400,13 +388,19 @@ export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number
       db.prepare("DELETE FROM entries WHERE id = ?").run(stale.id);
     }
     db.prepare(
-      "UPDATE entries SET entry_key = ?, dir_path = ?, file_path = ?, entry_json = ?, search_text = ? WHERE id = ?",
-    ).run(opts.newEntryKey, path.dirname(opts.newFilePath), opts.newFilePath, entryJson, searchText, row.id);
+      "UPDATE entries SET entry_key = ?, dir_path = ?, file_path = ?, entry_json = ?, search_text = ?, item_ref = ?, concept_id = ? WHERE id = ?",
+    ).run(
+      opts.newEntryKey,
+      path.dirname(opts.newFilePath),
+      opts.newFilePath,
+      entryJson,
+      searchText,
+      newItemRef,
+      opts.newRef,
+      row.id,
+    );
     if (opts.newDerivedFrom !== undefined) {
       db.prepare("UPDATE entries SET derived_from = ? WHERE id = ?").run(opts.newDerivedFrom, row.id);
-    }
-    if (newItemRef !== null) {
-      db.prepare("UPDATE entries SET item_ref = ?, concept_id = ? WHERE id = ?").run(newItemRef, newConceptId, row.id);
     }
     db.prepare("INSERT OR IGNORE INTO entries_fts_dirty (entry_id) VALUES (?)").run(row.id);
   })();
@@ -423,27 +417,14 @@ export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number
 
 /**
  * Rewrite `usage_events.entry_ref` from `opts.oldRef` to `opts.newRef` in
- * state.db (both the bare `type:name` and the origin-qualified `origin//type:name`
- * spellings). DETACHED orphan events (entry_id NULL) already sitting AT the new
+ * state.db. DETACHED orphan events (entry_id NULL) already sitting AT the new
  * ref are evicted first so the moved asset never adopts a deleted stranger's
- * history (live-asset-wins). Best-effort + guarded on state.db's existence; a
- * legacy state.db predating usage_events is tolerated.
+ * history (live-asset-wins). Best-effort + guarded on state.db's existence.
  */
-/** The conceptId for a legacy `type:name` ref (`memory:foo` → `memories/foo`), or undefined. */
-function conceptIdFromTypeNameRef(ref: string): string | undefined {
-  const colon = ref.indexOf(":");
-  if (colon <= 0) return undefined;
-  return conceptIdFromTypeName(ref.slice(0, colon), ref.slice(colon + 1));
-}
-
 function rewriteUsageEventRefForMove(opts: RekeyEntryOptions): void {
   if (!fs.existsSync(getStateDbPath())) return;
-  // Post-cutover, `usage_events.entry_ref` is the fully-qualified item_ref
-  // (`<bundle>//<conceptId>`); the pre-flip legacy `type:name` spellings survive
-  // only on rows written before the cutover. Rewrite BOTH: `opts.oldRef`/`newRef`
-  // are the legacy `type:name` forms, so the conceptId siblings are derived here.
-  const oldConcept = conceptIdFromTypeNameRef(opts.oldRef);
-  const newConcept = conceptIdFromTypeNameRef(opts.newRef);
+  // `usage_events.entry_ref` is the fully-qualified item_ref
+  // (`<bundle>//<conceptId>`).
   const rename = (stateDb: Database, oldR: string, newR: string): void => {
     stateDb.prepare("DELETE FROM usage_events WHERE entry_id IS NULL AND entry_ref = ?").run(newR);
     stateDb.prepare("UPDATE usage_events SET entry_ref = ? WHERE entry_ref = ?").run(newR, oldR);
@@ -451,30 +432,12 @@ function rewriteUsageEventRefForMove(opts: RekeyEntryOptions): void {
   try {
     withStateDb((stateDb) => {
       stateDb.transaction(() => {
-        if (opts.sourceName) {
-          const origins = new Set([opts.sourceName]);
-          if (opts.sourceName === "stash" && opts.includeLegacyBare) origins.add("local");
-          for (const origin of origins) {
-            rename(stateDb, `${origin}//${opts.oldRef}`, `${origin}//${opts.newRef}`);
-            // The item_ref spelling (`<bundle>//<conceptId>`) — the durable
-            // post-cutover key. Origins double as the bundle id for the stash.
-            if (oldConcept !== undefined && newConcept !== undefined)
-              rename(stateDb, `${origin}//${oldConcept}`, `${origin}//${newConcept}`);
-          }
-        }
-        if (opts.includeLegacyBare || !opts.sourceName) {
-          rename(stateDb, opts.oldRef, opts.newRef);
-          if (oldConcept !== undefined && newConcept !== undefined) rename(stateDb, oldConcept, newConcept);
-        }
+        rename(stateDb, `${opts.sourceName}//${opts.oldRef}`, `${opts.sourceName}//${opts.newRef}`);
       })();
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const missingLegacyUsageSchema =
-      /no such table:\s*(?:main\.)?usage_events\b/i.test(message) ||
-      /no such column:\s*(?:usage_events\.)?(?:entry_id|entry_ref)\b/i.test(message) ||
-      /table\s+usage_events\s+has no column named\s+(?:entry_id|entry_ref)\b/i.test(message);
-    if (!missingLegacyUsageSchema) throw error;
+    throw new Error(`Failed to rewrite usage events for move: ${message}`, { cause: error });
   }
 }
 
@@ -1085,14 +1048,14 @@ export function getItemRefById(db: Database, id: number): string | null {
 }
 
 /**
- * Resolve a `usage_events.entry_ref` to its live `entries.id`. Post-Chunk-8 every
- * `entry_ref` is the fully-qualified `bundle//conceptId` `item_ref` spelling
- * (the one-time state.db cutover re-keyed the historical legacy rows), so this
- * keys directly on the globally-unique `item_ref` — no origin→root scoping. A
- * short conceptId (no bundle) falls back to the default-stash scope.
+ * Resolve a `usage_events.entry_ref` to its live `entries.id`. `entry_ref` is
+ * the fully-qualified `bundle//conceptId` `item_ref` spelling, so this keys
+ * directly on the globally-unique `item_ref`. Bare durable refs are invalid and
+ * remain detached.
  */
-function resolveUsageEventEntryId(db: Database, ref: string, options: RelinkUsageEventsOptions): number | undefined {
-  return findEntryIdByRef(db, ref, parseBundleRef(ref).bundle ? undefined : options.defaultStashDir);
+function resolveUsageEventEntryId(db: Database, ref: string): number | undefined {
+  if (parseBundleRef(ref).bundle === undefined) return undefined;
+  return findEntryIdByRef(db, ref);
 }
 
 /**
@@ -1107,7 +1070,7 @@ function resolveUsageEventEntryId(db: Database, ref: string, options: RelinkUsag
  * distinct linked entry_ids in usage_events is small — and the re-resolution
  * reads `entries` from `indexDb`.
  */
-export function relinkUsageEvents(indexDb: Database, stateDb: Database, options: RelinkUsageEventsOptions = {}): void {
+export function relinkUsageEvents(indexDb: Database, stateDb: Database, _options: RelinkUsageEventsOptions = {}): void {
   bestEffort(() => {
     // Step 1: null out stale entry_ids (entry was deleted, re-keyed, etc).
     // Leaving them in place would let `recomputeUtilityScores` aggregate by an
@@ -1130,10 +1093,8 @@ export function relinkUsageEvents(indexDb: Database, stateDb: Database, options:
       nullTx();
     }
 
-    // Step 2: re-resolve each distinct ref inside its source boundary. Qualified
-    // refs require an origin→root mapping; bare legacy refs require the explicit
-    // historical/default root. This keeps duplicate refs from adopting whichever
-    // entries row SQLite happens to return first while retaining indexed lookups.
+    // Step 2: re-resolve each fully-qualified ref. Bare rows are not current
+    // durable identities and remain detached.
     const refs = stateDb
       .prepare("SELECT DISTINCT entry_ref AS ref FROM usage_events WHERE entry_id IS NULL AND entry_ref IS NOT NULL")
       .all() as { ref: string }[];
@@ -1143,7 +1104,7 @@ export function relinkUsageEvents(indexDb: Database, stateDb: Database, options:
       for (const { ref } of refs) {
         let id: number | undefined;
         try {
-          id = resolveUsageEventEntryId(indexDb, ref, options);
+          id = resolveUsageEventEntryId(indexDb, ref);
         } catch (err) {
           if (err instanceof Error && err.name === "UsageError") continue;
           throw err;

@@ -16,7 +16,6 @@ import {
 import { backupExistingConfig } from "../../src/core/config/config-io";
 import { ConfigError } from "../../src/core/errors";
 import { getCacheDir, getConfigDir, getConfigPath } from "../../src/core/paths";
-import { setQuiet } from "../../src/core/warn";
 import { getDefaultLlmConfig, requireLlmConfig } from "../../src/integrations/agent/engine-resolution";
 
 function makeTmpDir(): string {
@@ -198,8 +197,8 @@ describe("loadConfig", () => {
 
   test("project-level .akm/config.json is no longer merged (single-layer load)", () => {
     // Multi-layer project config was removed; only the user-level config is
-    // read. A project-level file under cwd-ancestors emits a deprecation
-    // warning but does NOT contribute settings.
+    // read. A project-level file under cwd-ancestors does not contribute
+    // settings.
     const projectDir = makeTmpDir();
     const restoreCwd = process.cwd();
     try {
@@ -245,7 +244,7 @@ describe("loadConfig", () => {
 
     expect(() => loadConfig()).toThrow(ConfigError);
     expect(() => loadConfig()).toThrow(/sources is the retired pre-cutover source shape/);
-    expect(() => loadConfig()).toThrow(/akm migrate apply/);
+    expect(() => loadConfig()).toThrow(/akm-migrate apply/);
   });
 
   test("hard-rejects the retired `installed[]` key (0.9.0 cutover)", () => {
@@ -270,39 +269,6 @@ describe("loadConfig", () => {
 
     expect(() => loadConfig()).toThrow(ConfigError);
     expect(() => loadConfig()).toThrow(/installed is the retired pre-cutover source shape/);
-  });
-
-  test("emits a one-time deprecation warning when a project-level config is discovered (#457)", () => {
-    const projectDir = makeTmpDir();
-    const restoreCwd = process.cwd();
-    try {
-      writeRawConfig(
-        path.join(projectDir, ".akm", "config.json"),
-        JSON.stringify({ sources: [{ type: "filesystem", path: "/project-stash" }] }),
-      );
-
-      const messages: string[] = [];
-      const originalWarn = console.warn;
-      // setQuiet(false): harness defaults to quiet=true; opt into noisy mode so
-      // warn() inside warnIfProjectConfigPresent reaches the patched console.warn.
-      setQuiet(false);
-      console.warn = (...args: unknown[]) => {
-        messages.push(args.map(String).join(" "));
-      };
-      try {
-        process.chdir(projectDir);
-        loadConfig();
-      } finally {
-        console.warn = originalWarn;
-        setQuiet(true); // restore harness default
-      }
-      // Warning mentions deprecation + project-level + that the file is ignored.
-      expect(messages.some((m) => m.includes("DEPRECATED") && m.includes("project-level"))).toBe(true);
-      expect(messages.some((m) => m.includes("ignored"))).toBe(true);
-    } finally {
-      process.chdir(restoreCwd);
-      cleanup(projectDir);
-    }
   });
 });
 

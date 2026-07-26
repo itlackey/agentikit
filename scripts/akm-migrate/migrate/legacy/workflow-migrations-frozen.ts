@@ -16,7 +16,7 @@
  * The three-DB cutover (WI-8.2) merges workflow.db into state.db and then
  * (WI-8.3) DELETES `src/workflows/db.ts` outright, taking the live
  * `WORKFLOW_MIGRATIONS` array with it. But pre-cutover backups
- * (`src/core/migration-backup.ts`) captured a physical `workflow.db` and
+ * (`scripts/akm-migrate/migration-backup.ts`) captured a physical `workflow.db` and
  * recorded its ledger status, and plan §3.3 item 1 requires that those
  * pre-cutover backups remain VERIFIABLE and RESTORABLE by the post-cutover
  * binary. Backup verification classifies a SQLite ledger by walking
@@ -42,7 +42,7 @@
  * the cutover (plan §8.3).
  */
 
-import type { SealedMigration } from "../../storage/engines/sqlite-migrations";
+import type { SealedMigration } from "../../../../src/storage/engines/sqlite-migrations";
 
 /**
  * Frozen `{ id, checksum }` snapshot of `WORKFLOW_MIGRATIONS` at the akm 0.9.0

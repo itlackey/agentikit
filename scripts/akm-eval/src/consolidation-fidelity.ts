@@ -14,7 +14,7 @@
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { bundleRefToString, parseBundleRef } from "../../../src/core/asset/asset-ref";
-import { classifyRefGrammar, legacyRefToBundleRef } from "../../../src/migrate/legacy-ref-grammar";
+import { classifyRefGrammar, legacyRefToBundleRef } from "../../akm-migrate/migrate/legacy-ref-grammar";
 
 export type ConsolidationFidelityLabel = "lossy" | "safe";
 

@@ -148,7 +148,6 @@ function makeRun(overrides: Partial<ImproveRunSummary> = {}): ImproveRunSummary 
     wallTimeMs: 300_000,
     ok: true,
     strategy: "default",
-    legacyProfile: null,
     scope: { mode: "all" },
     taskId: "manual",
     actions: base.actions,
@@ -168,7 +167,7 @@ function makeRun(overrides: Partial<ImproveRunSummary> = {}): ImproveRunSummary 
 
 describe("renderRunsDetailMd", () => {
   test("keeps ok boolean and exposes decoder status in a separate column", () => {
-    const out = renderRunsDetailMd([makeRun({ ok: false, resultStatus: "normalized" })]);
+    const out = renderRunsDetailMd([makeRun({ ok: false, resultStatus: "invalid" })]);
     const [header, row] = out.split("\n");
     const headers = header!.trim().split(/\s{2,}/);
     const cells = row!.trim().split(/\s{2,}/);
@@ -177,7 +176,6 @@ describe("renderRunsDetailMd", () => {
       "ts",
       "ok",
       "strategy",
-      "legacy_profile",
       "actions",
       "refl_ok/fail/cd/skip",
       "distill_q/llm-fail/qrej/cfg/skip",
@@ -190,8 +188,8 @@ describe("renderRunsDetailMd", () => {
     ]);
     expect(cells[1]).toBe("false");
     expect(cells[2]).toBe("default");
-    expect(cells.at(-1)).toBe("normalized");
-    expect(row).not.toContain("false (normalized)");
+    expect(cells.at(-1)).toBe("invalid");
+    expect(row).not.toContain("false (invalid)");
   });
 
   test("renders the header row and one aligned data row", () => {
@@ -293,7 +291,7 @@ describe("renderWindowCompareMd", () => {
 
   test("renders result-row accounting without changing the runs denominator", () => {
     const improve = zeroImprove();
-    improve.resultRows = { total: 5, included: 3, normalized: 1, skipped: { invalid: 2 } };
+    improve.resultRows = { total: 5, included: 3, skipped: { invalid: 2 } };
     const window: WindowResult = {
       name: "current",
       since: "2026-07-01T00:00:00.000Z",
@@ -323,7 +321,7 @@ describe("renderWindowCompareMd", () => {
     const out = renderWindowCompareMd([window], undefined);
     expect(out).toContain("runs");
     expect(out).toContain("improve.resultRows.included");
-    expect(out).toContain("improve.resultRows.normalized");
+    expect(out).not.toContain("improve.resultRows.normalized");
     expect(out).toContain("improve.resultRows.skipped.invalid");
   });
 });

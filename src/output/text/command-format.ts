@@ -497,6 +497,7 @@ export function formatListPlain(r: Record<string, unknown>): string {
     const ver = typeof src.version === "string" ? ` v${src.version}` : "";
     const prov = typeof src.provider === "string" ? ` (${src.provider})` : "";
     const flags: string[] = [];
+    if (src.default === true) flags.push("default");
     if (src.updatable === true) flags.push("updatable");
     if (src.writable === true) flags.push("writable");
     const flagText = flags.length > 0 ? ` [${flags.join(", ")}]` : "";

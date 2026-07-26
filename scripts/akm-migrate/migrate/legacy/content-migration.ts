@@ -52,10 +52,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { IndexDocument } from "../../core/adapter/types";
-import { mutateFrontmatter, parseFrontmatter } from "../../core/asset/frontmatter";
-import { asNonEmptyString } from "../../core/common";
-import { warn } from "../../core/warn";
+import type { IndexDocument } from "../../../../src/core/adapter/types";
+import { mutateFrontmatter, parseFrontmatter } from "../../../../src/core/asset/frontmatter";
+import { asNonEmptyString } from "../../../../src/core/common";
+import { warn } from "../../../../src/core/warn";
 import { isRelevantAssetFile, TYPE_DIRS } from "./legacy-layout";
 import { inspectLegacyStashOverrides, legacyStashFilePath } from "./legacy-stash-json";
 

@@ -92,7 +92,12 @@ import { closeDatabase, openExistingDatabase } from "../../src/storage/repositor
 import * as indexDbModule from "../../src/storage/repositories/index-entries-repository";
 import { runCliCapture } from "../_helpers/cli";
 import { expectGolden, fileTreeManifest } from "../_helpers/golden";
-import { makeSandboxDir, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
+import {
+  type IsolatedAkmStorage,
+  withIsolatedAkmStorage as isolatedStorage,
+  makeSandboxDir,
+  writeSandboxConfig as writeConfig,
+} from "../_helpers/sandbox";
 import {
   MV_COMMITTED_DIVERGENCE_NAME,
   MV_COMMITTED_DIVERGENCE_TARGET_REL,
@@ -123,6 +128,24 @@ import {
 
 const GOLDEN_PATH = "tests/fixtures/goldens/journal/move-txn.json";
 const HEAD_SHA = "3d9ee7b1917e8c4872f135fe9993d94b61b36ed1";
+
+function writeSandboxConfig(partial: Record<string, unknown>): void {
+  const stashDir = process.env.AKM_STASH_DIR;
+  if (!stashDir) throw new Error("AKM_STASH_DIR is required for mv tests");
+  const bundles = (partial.bundles ?? {}) as Record<string, unknown>;
+  writeConfig({
+    ...partial,
+    bundles: { stash: { path: stashDir, writable: true }, ...bundles },
+    defaultBundle: "stash",
+    defaultWriteTarget: "stash",
+  });
+}
+
+function withIsolatedAkmStorage(): IsolatedAkmStorage {
+  const storage = isolatedStorage();
+  writeSandboxConfig({ semanticSearchMode: "off" });
+  return storage;
+}
 
 interface MvOutput {
   ok: boolean;

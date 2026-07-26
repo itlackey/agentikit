@@ -8,8 +8,8 @@ import path from "node:path";
 import { akmAdapter } from "../../core/adapter/adapters/akm-adapter";
 import { stashDirNames } from "../../core/asset/asset-placement";
 import { resolveStashDir } from "../../core/common";
-import type { SourceConfigEntry } from "../../core/config/config";
-import { getSources, loadConfig } from "../../core/config/config";
+import type { AkmConfig, SourceConfigEntry } from "../../core/config/config";
+import { getSources, loadConfig, resolveConfiguredSources } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { sanitizeCommitMessage } from "../../core/git-message";
 import { lockContentRootFor } from "../../integrations/lockfile";
@@ -80,14 +80,13 @@ const GIT_PUSH_TIMEOUT_MS = 120_000;
 const ZERO_OID = "0000000000000000000000000000000000000000";
 
 /**
- * Resolve the writable-override flag for an end-of-run / `akm sync` commit on
- * the primary stash. Returns `true` when the root config explicitly marks the
- * primary stash writable, otherwise `undefined` (leave the per-stash default
- * untouched). Extracted so `akm sync`, `akm improve`'s end-of-run sync, and the
- * CLI body all derive this identically instead of re-copying the expression.
+ * Resolve the writable flag for an end-of-run / `akm sync` commit from the
+ * configured default bundle.
  */
-export function resolveWritableOverride(config: { writable?: boolean }): true | undefined {
-  return config.writable === true ? true : undefined;
+export function resolveWritableOverride(config: AkmConfig): true | undefined {
+  const source = resolveConfiguredSources(config).find((entry) => entry.name === config.defaultBundle);
+  if (!source) return undefined;
+  return (source.writable ?? source.type === "filesystem") ? true : undefined;
 }
 
 /**
@@ -107,7 +106,7 @@ export function resolveWritableOverride(config: { writable?: boolean }): true | 
  * primary stash dir (e.g. `akm improve`'s end-of-run sync, whose pre-commit
  * gate validates that exact directory) pass it here so the gate and the commit
  * operate on the SAME directory instead of independently calling
- * `resolveStashDir({ readOnly: true })`. When absent, behaviour is unchanged.
+ * `resolveStashDir()`. When absent, behaviour is unchanged.
  */
 export function saveGitStash(
   name?: string,
@@ -158,8 +157,8 @@ export function saveGitStash(
   } else {
     // Honour an explicit primary-stash dir override (keeps the improve gate and
     // the commit on the same directory); otherwise resolve the default.
-    repoDir = options?.repoDir ?? resolveStashDir({ readOnly: true });
-    // Allow caller to override writable for the primary stash (e.g. from root config.writable)
+    repoDir = options?.repoDir ?? resolveStashDir();
+    // Allow the caller to pass the configured default bundle's writability.
     if (writableOverride !== undefined) {
       writable = writableOverride;
     }

@@ -5,7 +5,7 @@
 /**
  * Source operations: list, remove, update.
  *
- * Provides unified operations across all source kinds (local, managed, remote).
+ * Provides unified operations across all configured bundle source providers.
  * The CLI's `akm list`, `akm remove`, and `akm update` commands are wired here.
  *
  * 0.9.0 (spec §10.1/§10.2): the retired `installed[]` array is gone — a
@@ -18,10 +18,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveStashDir } from "../../core/common";
-import type { AkmConfig } from "../../core/config/config";
+import type { AkmConfig, BundleConfigEntry } from "../../core/config/config";
 import { getSources, loadConfig } from "../../core/config/config";
 import { NotFoundError, UsageError } from "../../core/errors";
+import { getDbPath } from "../../core/paths";
 import { akmIndex } from "../../indexer/indexer";
+import type { LockfileEntry } from "../../integrations/lockfile";
 import { readLockfile, upsertLockEntry } from "../../integrations/lockfile";
 import { parseRegistryRef } from "../../registry/resolve";
 import type { InstalledBundle, InstallKind } from "../../registry/types";
@@ -33,12 +35,18 @@ import {
 } from "../../sources/snapshot-fetchers/website-ingest";
 import type {
   RemoveResponse,
+  SourceComponent,
+  SourceDescriptor,
   SourceEntry,
   SourceKind,
   SourceListResponse,
+  SourceLock,
   UpdateResponse,
   UpdateResultItem,
 } from "../../sources/types";
+import type { Database } from "../../storage/database";
+import { closeDatabase, openReadonlyExistingDatabase } from "../../storage/repositories/index-connection";
+import { getAllEntries } from "../../storage/repositories/index-entries-repository";
 import { removeInstalledRegistryEntry, upsertInstalledRegistryEntry } from "./source-add";
 import { removeStash } from "./source-manage";
 
@@ -111,52 +119,120 @@ function resolveManagedTarget(config: AkmConfig, target: string): ManagedInstall
   return undefined;
 }
 
+function describeBundleSource(entry: BundleConfigEntry): SourceDescriptor {
+  if (entry.path) return { kind: "path", locator: entry.path };
+  if (entry.git) return { kind: "git", locator: entry.git };
+  if (entry.website) {
+    return {
+      kind: "website",
+      locator: entry.website.url,
+      ...(entry.website.maxPages !== undefined ? { maxPages: entry.website.maxPages } : {}),
+    };
+  }
+  return { kind: "npm", locator: entry.npm ?? "" };
+}
+
+function describeComponents(entry: BundleConfigEntry): SourceComponent[] {
+  return Object.entries(entry.components ?? {}).map(([name, component]) => ({
+    name,
+    ...(component.root !== undefined ? { root: component.root } : {}),
+    ...(component.adapter !== undefined ? { adapter: component.adapter } : {}),
+    ...(component.writable !== undefined ? { writable: component.writable } : {}),
+  }));
+}
+
+function describeLock(entry: LockfileEntry | undefined): SourceLock | null {
+  if (!entry) return null;
+  return {
+    source: entry.source,
+    ref: entry.ref,
+    ...(entry.resolvedVersion !== undefined ? { resolvedVersion: entry.resolvedVersion } : {}),
+    ...(entry.resolvedRevision !== undefined ? { resolvedRevision: entry.resolvedRevision } : {}),
+    ...(entry.integrity !== undefined ? { integrity: entry.integrity } : {}),
+    ...(entry.localRoot !== undefined ? { localRoot: entry.localRoot } : {}),
+    ...(entry.manifestDigest !== undefined ? { manifestDigest: entry.manifestDigest } : {}),
+    ...(entry.adapterIds !== undefined ? { adapterIds: entry.adapterIds } : {}),
+    ...(entry.installedAt !== undefined ? { installedAt: entry.installedAt } : {}),
+  };
+}
+
+interface BundleCounts {
+  itemCount: number;
+  byType: Record<string, number>;
+}
+
+function readBundleCounts(): Map<string, BundleCounts> {
+  const counts = new Map<string, BundleCounts>();
+  const dbPath = getDbPath();
+  if (!fs.existsSync(dbPath)) return counts;
+
+  let db: Database | undefined;
+  try {
+    db = openReadonlyExistingDatabase(dbPath);
+    if (!db) return counts;
+    for (const row of getAllEntries(db)) {
+      if (!row.bundleId) continue;
+      const count = counts.get(row.bundleId) ?? { itemCount: 0, byType: {} };
+      count.itemCount += 1;
+      count.byType[row.entry.type] = (count.byType[row.entry.type] ?? 0) + 1;
+      counts.set(row.bundleId, count);
+    }
+  } catch (error) {
+    process.stderr.write(`[akm list] failed to read bundle counts from ${dbPath}: ${String(error)}\n`);
+  } finally {
+    if (db) {
+      try {
+        closeDatabase(db);
+      } catch {
+        // The inventory read is already complete; a close failure is non-fatal.
+      }
+    }
+  }
+  return counts;
+}
+
 export async function akmListSources(input?: { stashDir?: string; kind?: SourceKind[] }): Promise<SourceListResponse> {
   const stashDir = input?.stashDir ?? resolveStashDir();
   const config = loadConfig();
   const kindFilter = input?.kind;
   const locks = new Map(readLockfile().map((entry) => [entry.id, entry]));
+  const counts = readBundleCounts();
 
   const sources: SourceEntry[] = [];
 
-  // Every source is a bundle. A bundle with a lock entry is registry-managed;
-  // otherwise it is a plain filesystem/git/website source.
   for (const bundle of getSources(config)) {
     const key = bundle.name ?? bundle.path ?? bundle.url ?? "unknown";
-    const lock = bundle.name ? locks.get(bundle.name) : undefined;
-
-    if (lock) {
-      const kind: SourceKind = "managed";
-      if (kindFilter && !kindFilter.includes(kind)) continue;
-      const root = lock.localRoot ?? bundle.path ?? "";
-      sources.push({
-        name: key,
-        kind,
-        ...(root ? { path: root } : {}),
-        ref: lock.ref,
-        version: lock.resolvedVersion,
-        writable: bundle.writable === true,
-        status: { exists: root ? directoryExists(root) : false },
-      });
-      continue;
-    }
-
-    const kind: SourceKind = (bundle.type as SourceKind) ?? "filesystem";
+    const configured = config.bundles?.[key];
+    if (!configured) continue;
+    const lock = locks.get(key);
+    const kind = bundle.type as SourceKind;
     if (kindFilter && !kindFilter.includes(kind)) continue;
-    const isFilesystem = kind === "filesystem";
+    const root = lock?.localRoot ?? bundle.path ?? "";
+    const componentWritable = Object.values(configured.components ?? {})[0]?.writable;
+    const bundleCounts = counts.get(key) ?? { itemCount: 0, byType: {} };
     sources.push({
       name: key,
       kind,
-      path: bundle.path,
+      default: key === config.defaultBundle,
+      source: describeBundleSource(configured),
+      ...(root ? { path: root } : {}),
+      ...(lock ? { ref: lock.ref } : {}),
       provider: bundle.url != null ? bundle.type : undefined,
-      writable: bundle.writable !== undefined ? bundle.writable : isFilesystem,
-      status: { exists: bundle.path ? directoryExists(bundle.path) : true },
+      ...(lock?.resolvedVersion !== undefined ? { version: lock.resolvedVersion } : {}),
+      writable: componentWritable ?? bundle.writable ?? kind === "filesystem",
+      ...(configured.registryId !== undefined ? { registryId: configured.registryId } : {}),
+      components: describeComponents(configured),
+      lock: describeLock(lock),
+      itemCount: bundleCounts.itemCount,
+      byType: bundleCounts.byType,
+      status: { exists: root ? directoryExists(root) : true },
     });
   }
 
   return {
     schemaVersion: 1,
     stashDir,
+    defaultBundle: config.defaultBundle ?? null,
     sources,
     totalSources: sources.length,
   };

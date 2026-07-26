@@ -4,7 +4,7 @@
 
 /**
  * WI-8.2 — the RekeyFn-shaped adapter that drives the REAL cutover re-key engine
- * (`src/migrate/legacy/three-db-cutover.ts#rekeyStateDb`) against the Chunk-0b
+ * (`scripts/akm-migrate/migrate/legacy/three-db-cutover.ts#rekeyStateDb`) against the Chunk-0b
  * property harness. The generator supplies the ground-truth `RekeyModel`; this
  * adapter builds the old-ref → item_ref map from it (exactly the shape
  * `buildCutoverRefMap` produces from a live index) and calls `rekeyStateDb`.
@@ -17,8 +17,8 @@
  * `canonicalRef` and are untouched (§15.3: extend, never rewrite).
  */
 
-import { TYPE_DIRS } from "../../../src/migrate/legacy/legacy-layout";
-import { rekeyStateDb } from "../../../src/migrate/legacy/three-db-cutover";
+import { TYPE_DIRS } from "../../../scripts/akm-migrate/migrate/legacy/legacy-layout";
+import { rekeyStateDb } from "../../../scripts/akm-migrate/migrate/legacy/three-db-cutover";
 import { bareRef, type LogicalAssetKey, qualifiedRef, type RekeyFn, type RekeyModel } from "./rekey-model";
 
 /**

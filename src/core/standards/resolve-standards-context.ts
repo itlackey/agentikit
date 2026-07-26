@@ -30,23 +30,13 @@ function refType(ref: string | undefined): string | undefined {
   const body = ref.includes("//") ? ref.slice(ref.indexOf("//") + 2) : ref;
   // 0.9.0 conceptId `<stash-subdir>/<name>`: delegate to the D-R2 reverse table
   // so the leading stash subdir maps back to its asset type (the canonical path).
-  const conceptType = typeNameFromConceptId(body)?.type;
-  if (conceptType !== undefined) return conceptType;
-  // DOCUMENTED EXCEPTION (ref-grammar decision D-R3 migration window): a tolerant
-  // legacy `type:name` arm survives ONLY because live callers still hand this
-  // recognition-only seam the old spelling — `propose.ts` builds
-  // `${options.type}:${options.name}`, and a pre-migration stored ref may still
-  // reach here before the 0.10.0 grammar removal. It never crosses a storage
-  // boundary, so it stays until those feeders flip.
-  const colon = body.indexOf(":");
-  if (colon > 0) return body.slice(0, colon).trim() || undefined;
-  return undefined;
+  return typeNameFromConceptId(body)?.type;
 }
 
 /**
  * Resolve the standards context for a write target identified by its asset ref.
  *
- * @param ref       Canonical asset ref of the write target (e.g. `skill:foo`).
+ * @param ref       Canonical asset ref of the write target (e.g. `skills/foo`).
  *                  When undefined, the target is a general authoring flow.
  * @param stashRoot Stash root directory.
  */

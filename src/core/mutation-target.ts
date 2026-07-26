@@ -6,7 +6,6 @@ import path from "node:path";
 import { deriveInstallations } from "../indexer/installations";
 import { resolveSourceEntries, type SearchSource } from "../indexer/search/search-source";
 import { type AssetRef, displayRef } from "./asset/resolve-ref";
-import { resolveStashDir } from "./common";
 import type { AkmConfig } from "./config/config";
 import { UsageError } from "./errors";
 import {
@@ -122,7 +121,7 @@ export function resolveMutationTarget(
     { allowedAdapters: options.allowedAdapters },
   );
   const stableRef = { ...ref, origin: bundleId };
-  const defaultBundle = defaultBundleForTarget(config, target);
+  const defaultBundle = defaultBundleForTarget(config);
   return {
     target,
     ref: stableRef,
@@ -130,13 +129,6 @@ export function resolveMutationTarget(
   };
 }
 
-export function defaultBundleForTarget(config: AkmConfig, target: ResolvedWriteTarget): string | undefined {
-  if (config.defaultBundle) return config.defaultBundle;
-  try {
-    return path.resolve(target.source.path) === path.resolve(resolveStashDir({ readOnly: true }))
-      ? target.source.name
-      : undefined;
-  } catch {
-    return undefined;
-  }
+export function defaultBundleForTarget(config: AkmConfig): string | undefined {
+  return config.defaultBundle;
 }

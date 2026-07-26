@@ -328,7 +328,7 @@ describe("issue #12: updatable field absent from SourceEntry", () => {
 
     const result = await akmListSources({ stashDir });
 
-    const managed = result.sources.find((s) => s.kind === "managed");
+    const managed = result.sources.find((source) => source.lock !== null);
     expect(managed).toBeDefined();
     expect("updatable" in (managed ?? {})).toBe(false);
   });

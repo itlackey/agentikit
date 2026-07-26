@@ -10,7 +10,7 @@
  * `020-three-db-cutover` is the pure additive
  * DDL (`CREATE TABLE IF NOT EXISTS` the merge-target tables); THIS module is the
  * code that MOVES the durable rows into place, exactly once, under the
- * migrate-apply fail-closed gate (`src/cli/config-migrate.ts` `cutover-applied`
+ * migrate-apply fail-closed gate (`scripts/akm-migrate/config-migrate.ts` `cutover-applied`
  * phase). It never runs as a sealed SQL migration body — the ATTACH path is
  * runtime-resolved and the old-ref → item_ref map is filesystem/index-derived.
  *
@@ -52,9 +52,9 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { warn } from "../../core/warn";
-import { type Database, openDatabaseFinalizing, type SqlValue } from "../../storage/database";
-import { applyStandardPragmas } from "../../storage/sqlite-pragmas";
+import { warn } from "../../../../src/core/warn";
+import { type Database, openDatabaseFinalizing, type SqlValue } from "../../../../src/storage/database";
+import { applyStandardPragmas } from "../../../../src/storage/sqlite-pragmas";
 import { classifyRefGrammar, parseStoredRef } from "../legacy-ref-grammar";
 import { deriveCanonicalAssetName, TYPE_DIRS } from "./legacy-layout";
 

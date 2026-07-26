@@ -76,7 +76,6 @@ describe("migration 003 — improve_runs", () => {
         "completed_at",
         "stash_dir",
         "dry_run",
-        "profile",
         "strategy",
         "scope_mode",
         "scope_value",
@@ -135,7 +134,7 @@ describe("recordImproveRun", () => {
         completedAt: "2026-05-23T12:01:00.000Z",
         stashDir: "/tmp/test-stash",
         dryRun: false,
-        legacyProfile: "default",
+        strategy: "default",
         scopeMode: "type",
         scopeValue: "lesson",
         guidance: "focus on tier 1 cleanup",
@@ -145,7 +144,7 @@ describe("recordImproveRun", () => {
 
       const row = db
         .prepare(
-          `SELECT id, started_at, completed_at, stash_dir, dry_run, profile,
+          `SELECT id, started_at, completed_at, stash_dir, dry_run, strategy,
                   scope_mode, scope_value, guidance, ok, result_json,
                   metrics_json, metadata_json
            FROM improve_runs WHERE id = 'run-001'`,
@@ -157,7 +156,7 @@ describe("recordImproveRun", () => {
       expect(row.completed_at).toBe("2026-05-23T12:01:00.000Z");
       expect(row.stash_dir).toBe("/tmp/test-stash");
       expect(row.dry_run).toBe(0);
-      expect(row.profile).toBe("default");
+      expect(row.strategy).toBe("default");
       expect(row.scope_mode).toBe("type");
       expect(row.scope_value).toBe("lesson");
       expect(row.guidance).toBe("focus on tier 1 cleanup");
@@ -182,7 +181,7 @@ describe("recordImproveRun", () => {
     }
   });
 
-  test("writes the selected 0.9 strategy without relabeling legacy profile rows", () => {
+  test("writes the selected strategy", () => {
     const db = openStateDatabase();
     try {
       const result = buildMinimalResult();
@@ -199,11 +198,10 @@ describe("recordImproveRun", () => {
         ok: true,
         result,
       });
-      const row = db.prepare("SELECT profile, strategy FROM improve_runs WHERE id = 'run-strategy'").get() as {
-        profile: string | null;
+      const row = db.prepare("SELECT strategy FROM improve_runs WHERE id = 'run-strategy'").get() as {
         strategy: string | null;
       };
-      expect(row).toEqual({ profile: null, strategy: "quick" });
+      expect(row).toEqual({ strategy: "quick" });
     } finally {
       db.close();
     }
@@ -263,7 +261,7 @@ describe("recordImproveRun", () => {
         completedAt: "2026-05-23T12:00:00.000Z",
         stashDir: "/tmp/test-stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
@@ -377,7 +375,7 @@ describe("recordImproveRun", () => {
         completedAt: "2026-07-05T12:00:00.000Z",
         stashDir: "/tmp/test-stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
@@ -417,7 +415,7 @@ describe("purgeOldImproveRuns", () => {
         completedAt: oldStarted,
         stashDir: "/tmp/test-stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
@@ -430,7 +428,7 @@ describe("purgeOldImproveRuns", () => {
         completedAt: recentStarted,
         stashDir: "/tmp/test-stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
@@ -461,7 +459,7 @@ describe("purgeOldImproveRuns", () => {
         completedAt: oldStarted,
         stashDir: "/tmp/test-stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
@@ -489,7 +487,7 @@ describe("purgeOldImproveRuns", () => {
         completedAt: recentStarted,
         stashDir: "/tmp/test-stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,

@@ -38,15 +38,13 @@ import { persistOutputEncodingSalience, runLessonQualityJudge, writeQualityRejec
 export interface PromoteMemoryContext {
   targetKind: "lesson" | "knowledge" | "auto";
   inputRef: string;
-  /** Source-qualified key for durable events/provenance. */
+  /** Source key for durable events/provenance. */
   durableInputRef?: string;
   /**
-   * Chunk-5 flip F5f — the resolved index entry's fully-qualified item_ref. When
-   * present, the promotion branch's `distill_invoked` events key on it, else the
-   * pre-flip `durableInputRef`. Dormant: item_ref NULL through improve today.
+   * The resolved index entry's fully-qualified item_ref. When absent, the
+   * promotion branch uses durableInputRef as its event key.
    */
   itemRef?: string;
-  sourceName?: string;
   assetContent: string | null;
   /** Filtered feedback events (only `.metadata` is read by the promotion policy). */
   filteredEvents: readonly { metadata?: Record<string, unknown> }[];
@@ -99,7 +97,7 @@ async function resolveKnowledgePromotionContent(
 ): Promise<KnowledgePromotionContent> {
   const durableInputRef = ctx.durableInputRef ?? ctx.inputRef;
   let resolvedPromotionContent = baseContent;
-  const existingKnowledgePath = await ctx.lookup(durableImproveRef(knowledgeRef, ctx.sourceName));
+  const existingKnowledgePath = await ctx.lookup(durableImproveRef(knowledgeRef));
   const existingKnowledgeContent =
     existingKnowledgePath && fs.existsSync(existingKnowledgePath)
       ? (() => {
@@ -149,7 +147,7 @@ async function resolveKnowledgePromotionContent(
         appendEvent(
           {
             eventType: "distill_invoked",
-            // Chunk-5 flip F5f — item_ref when resolved, else durable (dormant today).
+            // Use item_ref when resolved, otherwise the input conceptId.
             ref: ctx.itemRef ?? durableInputRef,
             metadata: {
               outcome: "skipped" as const,
@@ -315,7 +313,7 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
     appendEvent(
       {
         eventType: "distill_invoked",
-        // Chunk-5 flip F5f — item_ref when resolved, else durable (dormant today).
+        // Use item_ref when resolved, otherwise the input conceptId.
         ref: ctx.itemRef ?? durableInputRef,
         metadata: {
           outcome: "skipped" as const,
@@ -341,7 +339,7 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
   // G4: content-score the distilled OUTPUT so it carries a real encoding
   // salience (encoding_source='content') from creation.
   persistOutputEncodingSalience(
-    durableImproveRef(promotion.knowledgeRef, ctx.sourceName),
+    durableImproveRef(promotion.knowledgeRef),
     resolvedPromotionContent,
     existingRefVocabulary,
     outcomeWeightEnabled,
@@ -349,7 +347,7 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
   appendEvent(
     {
       eventType: "distill_invoked",
-      // Chunk-5 flip F5f — item_ref when resolved, else durable (dormant today).
+      // Use item_ref when resolved, otherwise the input conceptId.
       ref: ctx.itemRef ?? durableInputRef,
       metadata: {
         outcome: "queued" as const,

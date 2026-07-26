@@ -90,7 +90,6 @@ export { SetupConfigSchema, SetupTaskSchedulesSchema } from "./schema/setup";
 export {
   BundleConfigEntrySchema,
   BundlesConfigSchema,
-  InstalledStashEntrySchema,
   RegistryConfigEntrySchema,
   SourceConfigEntrySchema,
 } from "./schema/sources-bundles";
@@ -140,13 +139,10 @@ export const AkmConfigShape = {
   // trio is hard-rejected at load (see the top-level superRefine). The migrator
   // ({@link migrateConfigSourcesToBundles}) converts a pre-cutover config to this
   // shape before validation. `defaultBundle` names the primary bundle (spec
-  // §11.1 short-ref resolution / D-R4). `SourceConfigEntrySchema` /
-  // `InstalledStashEntrySchema` remain EXPORTED (the migrator + transitional
-  // readers consume them) but are no longer top-level config fields.
+  // §11.1 short-ref resolution / D-R4).
   bundles: BundlesConfigSchema.optional(),
   defaultBundle: nonEmptyString.optional(),
   output: OutputConfigSchema.optional(),
-  writable: z.boolean().optional(),
   defaultWriteTarget: nonEmptyString.optional(),
   search: SearchConfigSchema.optional(),
   feedback: FeedbackConfigSchema.optional(),
@@ -190,9 +186,16 @@ export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => 
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: [key],
-        message: `${key} is the retired pre-cutover source shape; run \`akm migrate apply\` to convert it to bundles`,
+        message: `${key} is the retired pre-cutover source shape; run \`akm-migrate apply\` to convert it to bundles`,
       });
     }
+  }
+  if ("writable" in raw) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["writable"],
+      message: "top-level writable is not supported; configure bundles.<id>.writable instead",
+    });
   }
   // `defaultBundle`, when present, must name a configured bundle.
   if (config.defaultBundle !== undefined) {

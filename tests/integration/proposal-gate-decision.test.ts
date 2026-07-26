@@ -56,6 +56,7 @@ function seed(stash: string, ref: string, source: string, content: string): Prop
     source,
     force: true,
     sourceRun: "run-x",
+    target: { source: "stash", root: stash },
     payload: { content, frontmatter: { description: `${ref} fixture` } },
   });
   if (isProposalSkipped(result)) throw new Error(`unexpected skip: ${result.message}`);

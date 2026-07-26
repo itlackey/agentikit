@@ -112,25 +112,23 @@ export interface RekeyEntryOptions {
   /** Absolute path of the renamed file (feeds `file_path` / `dir_path`). */
   newFilePath: string;
   /**
-   * Old canonical bare ref (`type:oldName` legacy form). Together
-   * with {@link newRef} this drives the `usage_events.entry_ref` rewrite —
+   * Old canonical conceptId. Together with {@link newRef} this drives the
+   * `usage_events.entry_ref` rewrite —
    * `entry_ref` (not `entry_id`) is the STABLE column `relinkUsageEvents`
    * uses to re-attach events after a full rebuild re-mints every entry id,
    * so leaving old-ref events behind would reset the asset's usage/utility
    * history at the first `akm index --full`.
    */
   oldRef: string;
-  /** New canonical bare ref (`type:newName` legacy form). */
+  /** New canonical conceptId. */
   newRef: string;
   /** Configured source identity owning the moved entry. */
-  sourceName?: string;
+  sourceName: string;
   /** Absolute source root owning the moved entry. */
-  sourceRoot?: string;
-  /** Whether pre-source-qualification bare usage refs belong to this source. */
-  includeLegacyBare?: boolean;
+  sourceRoot: string;
   /**
-   * For memory `.derived` twins: the base memory's NEW ref (e.g.
-   * `memory:projectA/new-name`), written into the `derived_from` column and
+   * For memory `.derived` twins: the base memory's new conceptId, written into
+   * the `derived_from` column and
    * `entry_json.derivedFrom`. Omit to leave both untouched.
    */
   newDerivedFrom?: string;
@@ -142,8 +140,6 @@ export interface RetrievalCountOptions {
   sourceName?: string;
   /** Selected source root used to validate usage-event entry IDs. */
   stashDir?: string;
-  /** Accept detached pre-cutover bare events only for the historical local source. */
-  includeLegacyBare?: boolean;
 }
 
 /** Aggregated per-entry utility metrics. */
@@ -189,8 +185,8 @@ export interface UsageEventRelinkSource {
 }
 
 export interface RelinkUsageEventsOptions {
-  /** Ordered sources from the active index run; the first source owns `local//`. */
+  /** Ordered sources from the active index run. */
   sources?: readonly UsageEventRelinkSource[];
-  /** Explicit historical/default root allowed to adopt legacy bare refs. */
+  /** Default root from the active index run. Bare durable refs are not relinked. */
   defaultStashDir?: string;
 }

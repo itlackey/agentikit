@@ -4,6 +4,7 @@
 
 import { defineGroupCommand, defineJsonCommand } from "../cli/shared";
 import { UsageError } from "../core/errors";
+import { runMigrationTool } from "./migration-tool";
 
 const configArg = {
   type: "string" as const,
@@ -16,9 +17,8 @@ export const migrateCommand = defineGroupCommand({
     status: defineJsonCommand({
       meta: { name: "status", description: "Read-only cross-artifact migration eligibility check" },
       args: { config: configArg },
-      async run({ args }) {
-        const { runMigrationStatus } = await import("../cli/config-migrate.js");
-        await runMigrationStatus({ preparedConfigPath: args.config });
+      run({ args }) {
+        runMigrationTool(["status", ...(args.config ? ["--config", args.config] : [])]);
       },
     }),
     apply: defineJsonCommand({
@@ -27,9 +27,12 @@ export const migrateCommand = defineGroupCommand({
         config: configArg,
         dryRun: { type: "boolean", default: false, description: "Run the same eligibility checks without mutation" },
       },
-      async run({ args }) {
-        const { runMigrationApply } = await import("../cli/config-migrate.js");
-        await runMigrationApply({ preparedConfigPath: args.config, dryRun: args.dryRun });
+      run({ args }) {
+        runMigrationTool([
+          "apply",
+          ...(args.config ? ["--config", args.config] : []),
+          ...(args.dryRun ? ["--dry-run"] : []),
+        ]);
       },
     }),
   },

@@ -66,7 +66,7 @@ test("improve auto-sync excludes pre-staged WIP from the same content directory"
     collectEligibleRefsFn: (async () => ({
       plannedRefs: [{ ref: "memories/seed" }],
       memorySummary: { eligible: 1, derived: 0 },
-      profileFilteredRefs: [],
+      strategyFilteredRefs: [],
     })) as never,
     runImprovePreparationStageFn: (async (args: { plannedRefs: Array<{ ref: string }> }) => {
       fs.writeFileSync(path.join(memoriesDir, "operation.md"), "operation\n", "utf8");

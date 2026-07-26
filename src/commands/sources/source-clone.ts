@@ -58,7 +58,7 @@ function destinationRef(
   name: string,
 ): string | undefined {
   if (!config || !target) return undefined;
-  return displayRef({ type, name, bundleId: target.source.name }, defaultBundleForTarget(config, target));
+  return displayRef({ type, name, bundleId: target.source.name }, defaultBundleForTarget(config));
 }
 
 export async function akmClone(options: CloneOptions): Promise<CloneResponse> {

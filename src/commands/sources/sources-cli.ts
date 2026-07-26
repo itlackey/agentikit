@@ -33,23 +33,26 @@ import { akmListSources, akmRemove, akmUpdate } from "./installed-stashes";
 import { checkForUpdate, performUpgrade } from "./self-update";
 import { akmClone } from "./source-clone";
 
-const VALID_SOURCE_KINDS = new Set<SourceKind>(["local", "managed", "remote"]);
+const VALID_SOURCE_KINDS = new Set<SourceKind>(["filesystem", "git", "npm", "website"]);
 
 function parseKindFilter(raw: string | undefined): SourceKind[] | undefined {
   if (!raw) return undefined;
   const kinds = raw.split(",").map((s) => s.trim()) as SourceKind[];
   for (const k of kinds) {
     if (!VALID_SOURCE_KINDS.has(k)) {
-      throw new UsageError(`Invalid --kind value: "${k}". Expected one of: local, managed, remote`);
+      throw new UsageError(`Invalid --kind value: "${k}". Expected one of: filesystem, git, npm, website`);
     }
   }
   return kinds;
 }
 
 export const listCommand = defineJsonCommand({
-  meta: { name: "list", description: "List all sources (local directories, managed packages, remote providers)" },
+  meta: { name: "list", description: "List configured bundles and their resolved source state" },
   args: {
-    kind: { type: "string", description: "Filter by source kind (local, managed, remote). Comma-separated." },
+    kind: {
+      type: "string",
+      description: "Filter by source provider (filesystem, git, npm, website). Comma-separated.",
+    },
   },
   async run({ args }) {
     const kind = parseKindFilter(args.kind);
@@ -166,7 +169,7 @@ async function runSyncBody(args: { name?: string; message?: string; push?: boole
 
     let writable: boolean | undefined;
     if (effectiveName === undefined) {
-      // Primary stash — honour the root-level writable flag from config.
+      // Primary stash — honour the configured default bundle's writable flag.
       writable = resolveWritableOverride(loadConfig());
     }
 

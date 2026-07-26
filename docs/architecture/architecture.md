@@ -464,7 +464,7 @@ async execution context; unrelated work and child processes remain excluded.
 | `src/indexer/graph/` | graph boost/dedup/extraction — the graph phase |
 | `src/indexer/search/` | `db-search`, ranking, search-fields, search-source, enrichers — the search phase |
 | `src/indexer/passes/` | memory-inference, staleness-detect, metadata — LLM/metadata passes |
-| `src/indexer/usage/` | usage-events, unmigrated-vaults-guard |
+| `src/indexer/usage/` | usage-events |
 | `src/commands/read/search.ts` | `akm search` orchestration |
 | `src/commands/read/show.ts` | `akm show` orchestration |
 | `src/commands/improve/` | knowledge-evolution slice (improve/consolidate/distill/extract/reflect + `memory/`) |

@@ -2,14 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
+import { defineGroupCommand, defineJsonCommand } from "../cli/shared";
 import { UsageError } from "../core/errors";
-import { createMigrationBackup, MIGRATION_BACKUP_VERSION, restoreMigrationBackup } from "../core/migration-backup";
+import { runMigrationTool } from "./migration-tool";
 
 function requireVersion(value: string): void {
-  if (value !== MIGRATION_BACKUP_VERSION) {
+  if (value !== "0.9.0") {
     throw new UsageError(
-      `Unsupported migration backup target ${JSON.stringify(value)}; expected ${MIGRATION_BACKUP_VERSION}.`,
+      `Unsupported migration backup target ${JSON.stringify(value)}; expected 0.9.0.`,
       "INVALID_FLAG_VALUE",
     );
   }
@@ -25,14 +25,7 @@ export const backupCommand = defineGroupCommand({
       },
       run({ args }) {
         requireVersion(args.for);
-        const result = createMigrationBackup();
-        output("backup", {
-          action: "create",
-          for: MIGRATION_BACKUP_VERSION,
-          path: result.path,
-          created: result.created,
-          manifest: result.manifest,
-        });
+        runMigrationTool(["backup", "--for", args.for]);
       },
     }),
     restore: defineJsonCommand({
@@ -44,15 +37,13 @@ export const backupCommand = defineGroupCommand({
       },
       run({ args }) {
         requireVersion(args.for);
-        const result = restoreMigrationBackup(args.confirm, args.run);
-        output("backup", {
-          action: "restore",
-          for: MIGRATION_BACKUP_VERSION,
-          path: result.path,
-          restored: true,
-          rescuePath: result.rescuePath,
-          manifest: result.manifest,
-        });
+        runMigrationTool([
+          "restore",
+          "--for",
+          args.for,
+          ...(args.run ? ["--run", args.run] : []),
+          ...(args.confirm ? ["--confirm"] : []),
+        ]);
       },
     }),
   },

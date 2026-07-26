@@ -3,7 +3,7 @@
  *
  * Verifies the `--target` flag added to `akm import` per v1 implementation
  * plan §6 decision 3. Resolution order is:
- *   --target → defaultWriteTarget → working stash → ConfigError
+ *   --target → defaultWriteTarget → defaultBundle → ConfigError
  *
  * These tests exercise the explicit-target path:
  *   - resolves to a configured filesystem source by name
@@ -168,12 +168,17 @@ describe("import --target", () => {
     expect(fs.existsSync(path.join(stashDir, "knowledge", "overview.md"))).toBe(false);
   });
 
-  test("default stash is used when --target is omitted", async () => {
+  test("default bundle is used when --target is omitted", async () => {
     const configDir = makeTempDir("akm-import-config-");
-    writeConfig(configDir, { semanticSearchMode: "off" });
+    const stashDir = makeTempDir("akm-import-stash-");
+    writeConfig(configDir, {
+      semanticSearchMode: "off",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+    });
     const sourcePath = makeKnowledgeFile("default-stash.md", "# Default stash\n\nContent.\n");
 
-    const { stashDir, result } = await runCli(["import", sourcePath], { configDir });
+    const { result } = await runCli(["import", sourcePath], { configDir, stashDir });
     expect(result.status).toBe(0);
 
     const json = JSON.parse(result.stdout) as { ok: boolean; ref: string; path: string };
@@ -220,7 +225,12 @@ describe("import --target", () => {
 
   test("imports a URL into knowledge using a URL-path-derived name", async () => {
     const configDir = makeTempDir("akm-import-config-");
-    writeConfig(configDir, { semanticSearchMode: "off" });
+    const stashDir = makeTempDir("akm-import-stash-");
+    writeConfig(configDir, {
+      semanticSearchMode: "off",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+    });
 
     const server = http.createServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
@@ -234,7 +244,7 @@ describe("import --target", () => {
 
     try {
       const url = `http://127.0.0.1:${address.port}/docs/guide`;
-      const { stashDir, result } = await runCli(["import", url], { configDir });
+      const { result } = await runCli(["import", url], { configDir, stashDir });
       expect(result.status).toBe(0);
 
       const json = JSON.parse(result.stdout) as { ok: boolean; ref: string; path: string };

@@ -103,11 +103,10 @@ function coercePct(raw: number | string | undefined): number | undefined {
 
 export interface ReportRun {
   id: string;
-  resultStatus: "valid" | "normalized" | "invalid";
+  resultStatus: "valid" | "invalid";
   resultComplete: boolean;
   taskId: string;
   strategy: string | null;
-  legacyProfile: string | null;
   startedAt: string;
   completedAt: string;
   wallTimeMs: number;
@@ -163,7 +162,6 @@ function reshapeRun(r: ImproveRunSummary): ReportRun {
     resultComplete: r.resultComplete ?? (r.resultStatus === undefined || r.resultStatus === "valid"),
     taskId: r.taskId ?? "manual",
     strategy: r.strategy,
-    legacyProfile: r.legacyProfile,
     startedAt: r.startedAt,
     completedAt: r.completedAt,
     wallTimeMs: wall,
@@ -354,7 +352,6 @@ export interface HealthReportViewModel {
   llm: AkmHealthResult["metrics"]["llmUsage"];
   memorySummary: AkmHealthResult["improve"]["memorySummary"];
   includedResultRows: number;
-  normalizedResultRows: number;
   skippedInvalidResultRows: number;
   invoked: number;
   completed: number;
@@ -434,7 +431,6 @@ type AggregatesPhase = Pick<
   | "llm"
   | "memorySummary"
   | "includedResultRows"
-  | "normalizedResultRows"
   | "skippedInvalidResultRows"
   | "invoked"
   | "completed"
@@ -506,7 +502,6 @@ function buildAggregatesPhase(result: AkmHealthResult, runsPhase: RunsPhase): Ag
     llm,
     memorySummary: improve.memorySummary,
     includedResultRows: improve.resultRows?.included ?? totalRuns,
-    normalizedResultRows: improve.resultRows?.normalized ?? 0,
     skippedInvalidResultRows: improve.resultRows?.skipped.invalid ?? invalidRuns.length,
     invoked,
     completed,

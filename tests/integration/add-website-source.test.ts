@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createMigrationBackup } from "../../src/core/migration-backup";
+import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
 import { withEnvSync } from "../_helpers/sandbox";
 
 const CLI = path.join(__dirname, "..", "..", "src", "cli.ts");

@@ -13,7 +13,7 @@
  * This fold USED to run on EVERY proposal operation (through
  * `withProposalsDb`, guarded by a `proposal_fs_imports` ledger). That disk
  * probe is gone from the live path: the import now runs ONCE, as an ADDITIVE
- * filesystem step of `akm migrate apply`'s `cutover-applied` phase — a sibling
+ * filesystem step of `akm-migrate apply`'s `cutover-applied` phase — a sibling
  * of the `.stash.json`/D-R6 content migration — AFTER the committed state txn,
  * best-effort (a throw is swallowed + logged by the caller, never aborting a
  * committed cutover) and idempotent.
@@ -38,12 +38,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { Proposal } from "../../commands/proposal/proposal-types";
-import { parseBundleRef } from "../../core/asset/asset-ref";
-import { warn } from "../../core/warn";
-import { parseRegistryRef } from "../../registry/resolve";
-import { type Database, openDatabase } from "../../storage/database";
-import { insertProposalIfAbsent } from "../../storage/repositories/proposals-repository";
+import type { Proposal } from "../../../../src/commands/proposal/proposal-types";
+import { parseBundleRef } from "../../../../src/core/asset/asset-ref";
+import { warn } from "../../../../src/core/warn";
+import { parseRegistryRef } from "../../../../src/registry/resolve";
+import { type Database, openDatabase } from "../../../../src/storage/database";
+import { proposalToRowValues } from "../../../../src/storage/repositories/proposals-repository";
 import { classifyRefGrammar, legacyRefToBundleRef, parseAssetRef as parseLegacyAssetRef } from "../legacy-ref-grammar";
 
 /** Legacy (pre-0.9.0) proposal directory: `<stashDir>/.akm/proposals[/archive]`. */
@@ -191,6 +191,29 @@ function importLegacyProposalsForStash(
   return imported;
 }
 
+function insertProposalIfAbsent(db: Database, proposal: Proposal, stashDir: string): boolean {
+  const row = proposalToRowValues(proposal, stashDir);
+  const result = db
+    .prepare(`
+      INSERT OR IGNORE INTO proposals
+        (id, stash_dir, ref, status, source, created_at, updated_at, content, frontmatter_json, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .run(
+      row.id,
+      row.stash_dir,
+      row.ref,
+      row.status,
+      row.source,
+      row.created_at,
+      row.updated_at,
+      row.content,
+      row.frontmatter_json,
+      row.metadata_json,
+    );
+  return Number((result as { changes?: number | bigint }).changes ?? 0) > 0;
+}
+
 /**
  * Parse one legacy proposal directory into a {@link Proposal}, inlining the
  * backup file (when present) as `backupContent`. Returns undefined — with a
@@ -293,6 +316,10 @@ function readLegacyProposalFile(
       content: rest.payload?.content ?? "",
       ...(rest.payload?.frontmatter ? { frontmatter: rest.payload.frontmatter } : {}),
     },
+    changes:
+      Array.isArray(rest.changes) && rest.changes.length > 0
+        ? rest.changes
+        : [{ path: "", after: rest.payload?.content ?? "", op: "update" }],
     createdAt: rest.createdAt ?? "",
     updatedAt: rest.updatedAt ?? rest.createdAt ?? "",
     status: rest.status ?? "pending",

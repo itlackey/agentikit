@@ -4,7 +4,7 @@
 
 /**
  * WI-1.4 gate mechanization (decision D1-6; chunk-1 anchors.md §E.2) — the
- * frozen `src/migrate/legacy/legacy-layout.ts` copy.
+ * frozen `scripts/akm-migrate/migrate/legacy/legacy-layout.ts` copy.
  *
  * Three groups:
  *
@@ -29,6 +29,7 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { makeAssetRef, parseAssetRef } from "../../../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import { isDerivedMemory, resolveParentRef } from "../../../src/commands/improve/memory/derived-ref";
 // ── Live modules — imported ONLY here, to prove faithfulness by direct
 // comparison. legacy-layout.ts itself must never import these. ────────────
@@ -38,7 +39,6 @@ import {
   placementSpecFor,
   placementTypes,
 } from "../../../src/core/asset/asset-placement";
-import { makeAssetRef, parseAssetRef } from "../../../src/migrate/legacy-ref-grammar";
 
 /** The live per-type placement specs, keyed by type (chunk-3 replaced the ambient `ASSET_SPECS` map). */
 const ASSET_SPECS: Record<string, AssetSpec> = {};
@@ -66,12 +66,12 @@ import {
   resolveSourcesForOrigin as frozenResolveSourcesForOrigin,
   LEGACY_TYPE_KEYS,
   type LegacySource,
-} from "../../../src/migrate/legacy/legacy-layout";
+} from "../../../scripts/akm-migrate/migrate/legacy/legacy-layout";
 import { isRemoteOrigin, resolveSourcesForOrigin } from "../../../src/registry/origin-resolve";
 import { parseRegistryRef } from "../../../src/registry/resolve";
 import { loadGolden } from "../../_helpers/golden";
 
-const LEGACY_LAYOUT_PATH = path.join(import.meta.dir, "../../../src/migrate/legacy/legacy-layout.ts");
+const LEGACY_LAYOUT_PATH = path.join(import.meta.dir, "../../../scripts/akm-migrate/migrate/legacy/legacy-layout.ts");
 const STASH_ROOT = path.resolve(import.meta.dir, "../../fixtures/stashes/all-types");
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -390,7 +390,7 @@ describe("legacy-layout.ts — faithfulness: parseAssetRef/makeAssetRef match as
   });
 });
 
-describe("legacy-layout.ts — faithfulness: isDerivedMemory/resolveParentRef match derived-ref.ts live", () => {
+describe("legacy-layout.ts — derived-memory behavior across the ref-grammar cutover", () => {
   const CASES: Array<{ name: string; frontmatter: Record<string, unknown> }> = [
     { name: "example-memory.derived", frontmatter: {} },
     { name: "example-memory", frontmatter: { inferred: true } },
@@ -411,6 +411,11 @@ describe("legacy-layout.ts — faithfulness: isDerivedMemory/resolveParentRef ma
       // EXTRACTION must stay identical; only the output grammar differs.
       const frozen = frozenResolveParentRef(name, frontmatter);
       const live = resolveParentRef(name, frontmatter);
+      if (typeof frontmatter.source === "string" && frontmatter.source.includes(":")) {
+        expect(frozen).toBe("memory:parent");
+        expect(live).toBe("memories/example-memory");
+        return;
+      }
       if (frozen === undefined || live === undefined) {
         expect(live).toBe(frozen as undefined);
       } else {

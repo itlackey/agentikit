@@ -231,7 +231,7 @@ const CONSOLIDATE_SYSTEM_PROMPT = consolidateSystemPrompt;
 
 /**
  * JSON Schema for structured consolidate plans (PR 1 of the asset-writers
- * decision — see knowledge:projects/akm/asset-writers-investigation/00-synthesis).
+ * decision — see knowledge/projects/akm/asset-writers-investigation/00-synthesis).
  * Mirrors the {ops[], warnings?[]} shape currently described in
  * CONSOLIDATE_SYSTEM_PROMPT. Providers with `supportsJsonSchema: true` enforce
  * the shape upstream so the chunk-level "invalid plan from AI — skipping"
@@ -602,17 +602,14 @@ function finishConsolidationPublication(txn: ConsolidateTxn, target: ResolvedWri
     );
   }
   const payload = txn.journal.payload;
-  if (
-    (payload.targetSource !== undefined && payload.targetSource !== target.source.name) ||
-    (payload.targetKind !== undefined && payload.targetKind !== target.source.kind)
-  ) {
+  if (payload.targetSource !== target.source.name || payload.targetKind !== target.source.kind) {
     throw new ConfigError(
       `Consolidation transaction ${txn.journal.transactionId} is bound to a different target source.`,
       "INVALID_CONFIG_FILE",
     );
   }
   const prepared = prepareWriteTargetForMutation(target, { allowAhead: true });
-  const paths = payload.gitPaths ?? [];
+  const paths = payload.gitPaths;
   if (prepared.source.kind === "git") {
     if (!payload.gitPublication) {
       throw new ConfigError(
@@ -756,22 +753,7 @@ function canonicalStoredXref(ref: string): string | undefined {
     const p = parseRefInput(ref);
     return displayRef({ type: p.type, name: p.name, bundleId: p.origin });
   } catch {
-    // Read tolerance for pre-0.9 provenance still present in asset frontmatter.
-    // New writes always use conceptIds; this only folds existing type:name refs
-    // forward while their containing asset is being merged.
-    const trimmed = ref.trim();
-    const boundary = trimmed.indexOf("//");
-    const origin = boundary >= 0 ? trimmed.slice(0, boundary) : undefined;
-    const body = boundary >= 0 ? trimmed.slice(boundary + 2) : trimmed;
-    const colon = body.indexOf(":");
-    if (colon <= 0 || colon === body.length - 1) return undefined;
-    const conceptId = conceptIdFromTypeName(body.slice(0, colon), body.slice(colon + 1));
-    try {
-      const p = parseRefInput(conceptId);
-      return displayRef({ type: p.type, name: p.name, bundleId: origin });
-    } catch {
-      return undefined;
-    }
+    return undefined;
   }
 }
 
@@ -2350,11 +2332,7 @@ export async function handlePromoteOp(op: ConsolidatePromoteOp, ctx: Consolidate
   }
 
   const proposedName =
-    op.knowledgeRef
-      .replace(/^knowledge:/, "")
-      .split("/")
-      .filter(Boolean)
-      .at(-1) ??
+    op.knowledgeRef.split("/").filter(Boolean).at(-1) ??
     entry.name.split("/").filter(Boolean).at(-1) ??
     "promoted-memory";
   const slug = proposedName
@@ -2368,9 +2346,8 @@ export async function handlePromoteOp(op: ConsolidatePromoteOp, ctx: Consolidate
     warnings.push(`Normalized generated ref "${op.knowledgeRef}" → "${knowledgeRef}"`);
   }
 
-  // Idempotency: a pending proposal already queued for this knowledge concept
-  // (grammar-independent — WI-8.5a stores proposals.ref as the item_ref, so an
-  // exact `{ ref: knowledge:slug }` filter would miss it).
+  // A pending proposal may carry a qualified item_ref, so compare its parsed
+  // conceptId rather than exact display spelling.
   if (hasPendingProposalForConcept(stashDir, knowledgeRef)) {
     warnings.push(`Skipping promote: pending proposal already exists for ${knowledgeRef}`);
     pushSkipReason("promote", op.ref, "promote_pending_proposal_exists");
@@ -2609,7 +2586,7 @@ export async function handleContradictOp(op: ConsolidateContradictOp, ctx: Conso
  * Two slugs that normalise to the same string are considered the same asset
  * for dedup purposes even if they don't share an exact ref.
  */
-/** The conceptId a proposal ref maps to in EITHER grammar (WI-8.5a), or undefined. */
+/** The conceptId a proposal ref maps to, or undefined for an invalid ref. */
 function conceptIdForRef(ref: string): string | undefined {
   try {
     const p = parseRefInput(ref);
@@ -2619,7 +2596,7 @@ function conceptIdForRef(ref: string): string | undefined {
   }
 }
 
-/** Is a pending proposal already queued for `conceptRef`'s concept (grammar-independent)? */
+/** Is a pending proposal already queued for `conceptRef`'s concept? */
 function hasPendingProposalForConcept(stashDir: string, conceptRef: string): boolean {
   const want = conceptIdForRef(conceptRef);
   return (
@@ -2628,16 +2605,7 @@ function hasPendingProposalForConcept(stashDir: string, conceptRef: string): boo
 }
 
 function normalizeSlugForDedup(ref: string): string {
-  // Extract the bare asset name from EITHER grammar (WI-8.5a: proposals.ref is the
-  // item_ref `bundle//conceptId`, which carries no `type:` colon — the old
-  // `replace(/^[^:]+:/,"")` strip would leave the bundle/type prefix in). The name
-  // is identical across grammars, so the dedup slug stays stable across the flip.
-  let slug: string;
-  try {
-    slug = parseRefInput(ref).name;
-  } catch {
-    slug = ref.replace(/^[^:]+:/, "");
-  }
+  const slug = parseRefInput(ref).name;
   const monthRe = /(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
   const tokens = slug
     .toLowerCase()

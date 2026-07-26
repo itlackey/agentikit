@@ -38,8 +38,9 @@ async function runCli(args: string[]): Promise<{ code: number; stdout: string; s
 
 function fixtureImproveResult(partial: Record<string, unknown>): AkmImproveResult {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     ok: true,
+    strategy: "default",
     scope: { mode: "all" },
     dryRun: false,
     memorySummary: { eligible: 0, derived: 0 },
@@ -93,7 +94,7 @@ describe("family B — akm health", () => {
         log_path: null,
         target_kind: "improve",
         target_ref: null,
-        metadata_json: "{}",
+        metadata_json: JSON.stringify({ metadataVersion: 2, durationMs: 30_000, detail: null }),
       });
       recordImproveRun(db, {
         id: "b-run-gb",
@@ -101,7 +102,7 @@ describe("family B — akm health", () => {
         completedAt,
         stashDir: storage.stashDir,
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
@@ -198,7 +199,12 @@ describe("family B — akm health", () => {
         log_path: path.join(storage.root, "definitely-missing.log"),
         target_kind: "prompt",
         target_ref: null,
-        metadata_json: JSON.stringify({ durationMs: 5, detail: { exitCode: 1 }, profile: "opencode" }),
+        metadata_json: JSON.stringify({
+          metadataVersion: 2,
+          durationMs: 5,
+          detail: { exitCode: 1 },
+          engine: "opencode",
+        }),
       });
     } finally {
       failDb.close();
@@ -223,7 +229,7 @@ describe("family B — akm health", () => {
         log_path: null,
         target_kind: "prompt",
         target_ref: null,
-        metadata_json: "{}",
+        metadata_json: JSON.stringify({ metadataVersion: 2, durationMs: 0, detail: null, engine: null }),
       });
     } finally {
       warnDb.close();

@@ -11,6 +11,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
+// The legacy grammar + dual-grammar shims now live in the Chunk-8 migrate home.
+import {
+  classifyRefGrammar,
+  legacyConceptId,
+  legacyRefToBundleRef,
+  parseAssetRef,
+} from "../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import {
   displayRef,
   isFullRefInput,
@@ -21,13 +28,6 @@ import {
   typeNameFromConceptId,
 } from "../src/core/asset/resolve-ref";
 import { NotFoundError, UsageError } from "../src/core/errors";
-// The legacy grammar + dual-grammar shims now live in the Chunk-8 migrate home.
-import {
-  classifyRefGrammar,
-  legacyConceptId,
-  legacyRefToBundleRef,
-  parseAssetRef,
-} from "../src/migrate/legacy-ref-grammar";
 
 /** Build a bundle whose membership set is a fixed list of conceptIds. */
 function bundle(id: string, concepts: string[]): RefResolutionBundle {

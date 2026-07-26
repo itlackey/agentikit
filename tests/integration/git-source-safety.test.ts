@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { parseAssetRef } from "../../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import {
   captureGitPathSnapshot,
   captureGitPublication,
@@ -25,7 +26,6 @@ import {
   writeAssetToSource,
 } from "../../src/core/write-source";
 import { mergeLockEntriesSync } from "../../src/integrations/lockfile";
-import { parseAssetRef } from "../../src/migrate/legacy-ref-grammar";
 import { saveGitStash } from "../../src/sources/providers/git";
 import {
   type Cleanup,

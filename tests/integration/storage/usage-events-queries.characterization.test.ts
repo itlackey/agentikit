@@ -19,8 +19,8 @@ import type { Database as AkmDatabase } from "../../../src/storage/database";
  * src/indexer/usage-events.ts.
  *
  * The non-ref filters retain the raw SQL behaviour that lived inline in the
- * command before extraction. Ref filtering additionally covers canonical bare
- * refs across legacy and source-qualified rows.
+ * command before extraction. Ref filtering covers current conceptId inputs
+ * against bundle-qualified durable rows.
  */
 describe("usage_events query characterization (WS5)", () => {
   let db: AkmDatabase;
@@ -37,17 +37,17 @@ describe("usage_events query characterization (WS5)", () => {
     const rows: Array<
       [string, string | null, number | null, string | null, string | null, string | null, string, string]
     > = [
-      ["search", "alpha", 1, "lesson:a", null, null, "user", "2026-01-01 10:00:00"],
-      ["show", null, 1, "lesson:a", null, null, "user", "2026-01-02 10:00:00"],
-      ["show", null, 2, "lesson:b", null, null, "user", "2026-01-03 10:00:00"],
-      ["feedback", null, 1, "lesson:a", "positive", "{}", "user", "2026-01-04 10:00:00"],
-      ["feedback", null, 1, "lesson:a", "positive", "{}", "user", "2026-01-05 10:00:00"],
-      ["feedback", null, 1, "lesson:a", "negative", "{}", "user", "2026-01-06 10:00:00"],
-      ["feedback", null, 2, "lesson:b", "negative", "{}", "improve", "2026-01-07 10:00:00"],
-      ["search", "beta", 2, "lesson:b", null, null, "improve", "2026-01-08 10:00:00"],
-      ["ref-test", null, 1, "stash//lesson:a", null, null, "user", "2026-01-09 10:00:00"],
-      ["ref-test", null, 1, "team//lesson:a", null, null, "user", "2026-01-10 10:00:00"],
-      ["ref-test", null, 1, "team//lesson:a-extra", null, null, "user", "2026-01-11 10:00:00"],
+      ["search", "alpha", 1, "stash//lessons/a", null, null, "user", "2026-01-01 10:00:00"],
+      ["show", null, 1, "stash//lessons/a", null, null, "user", "2026-01-02 10:00:00"],
+      ["show", null, 2, "stash//lessons/b", null, null, "user", "2026-01-03 10:00:00"],
+      ["feedback", null, 1, "stash//lessons/a", "positive", "{}", "user", "2026-01-04 10:00:00"],
+      ["feedback", null, 1, "stash//lessons/a", "positive", "{}", "user", "2026-01-05 10:00:00"],
+      ["feedback", null, 1, "stash//lessons/a", "negative", "{}", "user", "2026-01-06 10:00:00"],
+      ["feedback", null, 2, "stash//lessons/b", "negative", "{}", "improve", "2026-01-07 10:00:00"],
+      ["search", "beta", 2, "stash//lessons/b", null, null, "improve", "2026-01-08 10:00:00"],
+      ["ref-test", null, 1, "lessons/a", null, null, "user", "2026-01-09 10:00:00"],
+      ["ref-test", null, 1, "team//lessons/a", null, null, "user", "2026-01-10 10:00:00"],
+      ["ref-test", null, 1, "team//lessons/a-extra", null, null, "user", "2026-01-11 10:00:00"],
     ];
     for (const r of rows) insert.run(...r);
   });
@@ -106,18 +106,18 @@ describe("usage_events query characterization (WS5)", () => {
     expect(getUsageEvents(db, { since: "2026-01-05 00:00:00" })).toEqual(
       buildExpected(["created_at >= ?"], ["2026-01-05 00:00:00"]),
     );
-    // Bare entry_ref includes exact legacy rows and exact source-qualified suffixes.
+    // A short current ref matches qualified suffixes, not bare stored rows.
     expect(
-      getUsageEvents(db, { since: "2026-01-04 00:00:00", entry_ref: "lesson:a" }).map((row) => row.entry_ref),
-    ).toEqual(["lesson:a", "lesson:a", "lesson:a", "stash//lesson:a", "team//lesson:a"]);
+      getUsageEvents(db, { since: "2026-01-04 00:00:00", entry_ref: "lessons/a" }).map((row) => row.entry_ref),
+    ).toEqual(["stash//lessons/a", "stash//lessons/a", "stash//lessons/a", "team//lessons/a"]);
     // since + source.
     expect(getUsageEvents(db, { since: "2026-01-01 00:00:00", source: "improve" })).toEqual(
       buildExpected(["created_at >= ?", "source = ?"], ["2026-01-01 00:00:00", "improve"]),
     );
     // A qualified entry_ref preserves exact source identity.
-    expect(getUsageEvents(db, { entry_ref: "stash//lesson:a" }).map((row) => row.entry_ref)).toEqual([
-      "stash//lesson:a",
-    ]);
+    expect(getUsageEvents(db, { entry_ref: "stash//lessons/a" }).map((row) => row.entry_ref)).toEqual(
+      Array(5).fill("stash//lessons/a"),
+    );
   });
 
   test("getUsageEvents fully materialises results (survive db.close)", () => {
@@ -125,11 +125,11 @@ describe("usage_events query characterization (WS5)", () => {
     ensureUsageEventsSchema(local);
     local
       .prepare("INSERT INTO usage_events (event_type, entry_ref, source) VALUES (?, ?, ?)")
-      .run("search", "lesson:x", "user");
+      .run("search", "stash//lessons/x", "user");
     const rows = getUsageEvents(local, {});
     local.close();
     // Array is a plain materialised copy — readable after the connection closes.
     expect(rows.length).toBe(1);
-    expect(rows[0]?.entry_ref).toBe("lesson:x");
+    expect(rows[0]?.entry_ref).toBe("stash//lessons/x");
   });
 });

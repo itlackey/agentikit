@@ -13,7 +13,7 @@ import {
 // the Chunk-5 flip closed (F5). `type` is no longer part of identity; the ref
 // is a bundle-scoped path id. The pre-0.9.0 `[origin//]type:name` grammar and
 // its `parseAssetRef`/`makeAssetRef`/`refToString` API were deleted here and
-// relocated to `src/migrate/legacy-ref-grammar.ts` (Chunk-8 content migration
+// relocated to `scripts/akm-migrate/migrate/legacy-ref-grammar.ts` (Chunk-8 content migration
 // + the §11.4 re-key). The grammar-invariant intents that survived — name
 // validation (empty / null-byte / absolute / traversal / drive-letter),
 // backslash normalization, origin↔bundle boundary, and round-trip — are all

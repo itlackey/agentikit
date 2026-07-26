@@ -89,7 +89,7 @@ earlier `0.9.0-rc.1` / `0.9.0-beta.*` development entries below.
   index (and renamed by the content migration when they hold a real concept).
 - **`vault` asset type removed.** Use `env` (a whole `.env` group; key names
   surfaced, values never) and `secret` (a single sensitive value), addressed as
-  `env/<name>` and `secrets/<name>`. `akm-migrate-storage` still performs the
+  `env/<name>` and `secrets/<name>`. `akm-migrate storage` performs the
   non-destructive `vaults/` → `env/` copy for older stashes.
 - **0.8-era CLI aliases removed.** The flat proposal verbs (`akm proposals`,
   `akm accept`, `akm reject`, `akm diff`, `akm revert`, `akm show proposal`),

@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
 import { resetConfigCache } from "../../src/core/config/config";
-import { createMigrationBackup } from "../../src/core/migration-backup";
 import { resetGraphBoostCache } from "../../src/indexer/graph/graph-boost";
 import { clearEmbeddingCache, resetLocalEmbedder } from "../../src/llm/embedder";
 import { parseWorkflow } from "../../src/workflows/parser";
@@ -48,7 +48,11 @@ function createWorkflowEnv(): NodeJS.ProcessEnv {
     XDG_DATA_HOME: xdgData,
     XDG_STATE_HOME: xdgState,
   };
-  writeConfig(env, { semanticSearchMode: "off" });
+  writeConfig(env, {
+    semanticSearchMode: "off",
+    bundles: { stash: { path: stashDir, writable: true } },
+    defaultBundle: "stash",
+  });
   return env;
 }
 

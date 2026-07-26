@@ -83,7 +83,7 @@ const noopDistill = (ref: string): AkmDistillResult => ({
   ok: true,
   outcome: "queued",
   inputRef: ref,
-  lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+  lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
 });
 
 /** Minimal config: disable all expensive processes; keep proactiveMaintenance on. */

@@ -580,13 +580,6 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       const { loadConfig, mutateConfig } = await import("../core/config/config.js");
       let config = loadConfig();
 
-      // One-time, read-only guard: warn if the writable stash still holds an
-      // un-migrated `vaults/` directory. In 0.9.0 the indexer skips `vaults/`
-      // entirely, so an unmigrated vault's `.env` data would silently never be
-      // indexed. Non-destructive — only stats, never reads/writes/deletes.
-      const { warnOnUnmigratedVaults } = await import("./usage/unmigrated-vaults-guard.js");
-      warnOnUnmigratedVaults(stashDir);
-
       // Ensure git stash caches are extracted before resolving stash dirs,
       // so their content directories exist on disk for the walker to discover.
       const sourceCacheStart = Date.now();

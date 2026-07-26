@@ -823,10 +823,8 @@ function resolveBeliefState(frontmatter: Record<string, unknown>): Exclude<Memor
 // IDENTITY channel: they are compared against a derived memory's own
 // `memory:<name>` ref (resolveFamilyContradictions' familyRefSet,
 // firstExistingRef's byRef map), so they stay in `memory:<name>` grammar. This
-// is deliberately NOT the `memories/<name>` derived_from conceptId — Group-C
-// item 2 flipped only that channel. We parse the tolerant bare name and format
-// it back into identity grammar so both grammars on disk resolve to the ref
-// record.ref carries.
+// is not the `memories/<name>` source conceptId. Parse and format this identity
+// channel without treating asset conceptIds as aliases.
 function refArray(value: unknown): string[] {
   if (typeof value === "string") {
     const name = parseMemoryName(value);

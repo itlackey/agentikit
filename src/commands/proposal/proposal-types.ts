@@ -9,10 +9,8 @@
  * (`ProposalValidator`, `ProposalValidationContext`,
  * `ProposalValidationFinding`, `ProposalValidationReport`) used to live in
  * `./repository.ts` and `./validators/proposals.ts` / `./validators/proposal-validators.ts`
- * respectively. Both the storage repository (`storage/repositories/proposals-repository.ts`),
- * the migrator's legacy filesystem importer
- * (`../../migrate/legacy/proposal-fs-import.ts`), and the validators
- * (`./validators/*.ts`) only need the *type*, not the txn engine or the
+ * respectively. Both the storage repository (`storage/repositories/proposals-repository.ts`)
+ * and the validators (`./validators/*.ts`) only need the *type*, not the txn engine or the
  * validator-combining logic — importing those heavier modules just for a
  * type created an import cycle (WI-9.8 KILL 1, plan §10.7 D.3: repository.ts
  * ↔ validators/proposals.ts / proposal-validators.ts / proposal-quality-validators.ts
@@ -276,9 +274,7 @@ export interface Proposal {
   /**
    * The file mutations this proposal performs (plan §2.2). Multi-file capable;
    * proposals minted from a single-content payload carry exactly one entry
-   * whose `after` IS `payload.content`. Derived at {@link createProposal} time;
-   * legacy rows persisted before 0.9.0 synthesize a single `update` entry with
-   * an empty `path` at read time.
+   * whose `after` IS `payload.content`. Derived at {@link createProposal} time.
    */
   changes: FileChange[];
   /**
@@ -287,8 +283,7 @@ export interface Proposal {
    * materialized root so a later accept cannot follow a changed default write
    * target.
    *
-   * Absent on historical or compatibility-path proposals created without an
-   * explicit destination; those rows retain the queue/default fallback.
+   * Present on every persisted proposal created by the current runtime.
    */
   proposedTarget?: {
     source: string;
@@ -342,8 +337,6 @@ export interface Proposal {
    * revert state carried on the row.
    */
   backupContent?: string;
-  /** SHA-256 of the exact bytes published when this proposal was accepted. */
-  acceptedContentHash?: string;
   /** Exact write target owned by the accepted content; prevents cross-target revert. */
   acceptedTarget?: {
     source: string;
@@ -351,10 +344,6 @@ export interface Proposal {
     path: string;
     contentHash: string;
   };
-  /** Internal marker for a target binding reconstructed from pre-binding proposal state. */
-  legacyAcceptedTargetDerived?: boolean;
-  /** The accepted file was absent when legacy ownership was reconstructed. */
-  legacyAcceptedAssetWasAbsent?: boolean;
   /**
    * Attribution tagging: which eligibility lane selected the source asset for the
    * improve run that produced this proposal (`signal-delta`, `high-salience`,

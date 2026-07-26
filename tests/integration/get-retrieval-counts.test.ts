@@ -15,11 +15,11 @@ import { getRetrievalCounts, upsertUtilityScore } from "../../src/storage/reposi
 /**
  * Unit coverage for getRetrievalCounts (db.ts).
  *
- * Pins the bug-fix behaviour:
- *   1. stash-prefixed (`origin//type:name`) and bare (`type:name`) stored
- *      entry_ref spellings both match a bare input ref (and aggregate together).
+ * Pins current durable-ref behaviour:
+ *   1. bundle-qualified conceptId rows match current input refs; bare stored
+ *      rows do not.
  *   2. `curate` events count alongside `search` / `show`.
- *   3. NULL entry_ref rows (legacy curate summary rows) contribute nothing.
+ *   3. NULL entry_ref summary rows contribute nothing.
  *   4. Non-demand events (source = audit/improve/task/unknown) are EXCLUDED —
  *      this count feeds salience/ranking and pipeline probe traffic must not
  *      register as demand (meta-review 05 DRIFT-6).
@@ -47,45 +47,44 @@ describe("getRetrievalCounts", () => {
       .run(eventType, entryRef, source, entryId ?? null);
   }
 
-  test("matches both bare and stash-prefixed stored refs for a bare input ref", () => {
-    seed("search", "lesson:a"); // bare
-    seed("show", "local//lesson:a"); // stash-prefixed, same asset
-    seed("search", "owner/repo//lesson:a"); // registry-prefixed, same asset
+  test("matches qualified conceptId rows and ignores a bare stored ref", () => {
+    seed("search", "lessons/a");
+    seed("show", "stash//lessons/a");
+    seed("search", "team//lessons/a");
 
-    const counts = getRetrievalCounts(db, stateDb, ["lesson:a"]);
-    // All three rows collapse onto the single bare input ref.
-    expect(counts.get("lesson:a")).toBe(3);
+    const counts = getRetrievalCounts(db, stateDb, ["lessons/a"]);
+    expect(counts.get("lessons/a")).toBe(2);
   });
 
-  test("matches a stash-prefixed input ref against a bare stored ref", () => {
-    seed("show", "lesson:b"); // stored bare
-    const counts = getRetrievalCounts(db, stateDb, ["local//lesson:b"]);
-    expect(counts.get("local//lesson:b")).toBe(1);
+  test("does not match a qualified input ref against a bare stored ref", () => {
+    seed("show", "lessons/b");
+    const counts = getRetrievalCounts(db, stateDb, ["stash//lessons/b"]);
+    expect(counts.has("stash//lessons/b")).toBe(false);
   });
 
   test("counts curate events alongside search and show", () => {
-    seed("search", "skill:deploy");
-    seed("show", "skill:deploy");
-    seed("curate", "skill:deploy");
-    seed("feedback", "skill:deploy"); // must NOT be counted
+    seed("search", "stash//skills/deploy");
+    seed("show", "stash//skills/deploy");
+    seed("curate", "stash//skills/deploy");
+    seed("feedback", "stash//skills/deploy"); // must NOT be counted
 
-    const counts = getRetrievalCounts(db, stateDb, ["skill:deploy"]);
-    expect(counts.get("skill:deploy")).toBe(3);
+    const counts = getRetrievalCounts(db, stateDb, ["skills/deploy"]);
+    expect(counts.get("skills/deploy")).toBe(3);
   });
 
-  test("ignores rows with a NULL entry_ref (legacy curate summary rows)", () => {
+  test("ignores rows with a NULL entry_ref", () => {
     seed("curate", null);
     seed("curate", null);
-    seed("curate", "command:release"); // the only counted curate row
+    seed("curate", "stash//commands/release"); // the only counted curate row
 
-    const counts = getRetrievalCounts(db, stateDb, ["command:release"]);
-    expect(counts.get("command:release")).toBe(1);
+    const counts = getRetrievalCounts(db, stateDb, ["commands/release"]);
+    expect(counts.get("commands/release")).toBe(1);
   });
 
   test("returns no entry for refs with no matching events", () => {
-    seed("search", "lesson:present");
-    const counts = getRetrievalCounts(db, stateDb, ["lesson:absent"]);
-    expect(counts.has("lesson:absent")).toBe(false);
+    seed("search", "stash//lessons/present");
+    const counts = getRetrievalCounts(db, stateDb, ["lessons/absent"]);
+    expect(counts.has("lessons/absent")).toBe(false);
   });
 
   test("empty input returns an empty map", () => {
@@ -93,29 +92,29 @@ describe("getRetrievalCounts", () => {
   });
 
   test("excludes audit, improve, task, and unknown events from demand counts", () => {
-    seed("search", "skill:probe", "user");
-    seed("search", "skill:probe", "improve"); // improve-loop probe — excluded
-    seed("curate", "skill:probe", "task"); // task-runner traffic — excluded
-    seed("show", "skill:probe", "audit"); // eval traffic — excluded
-    seed("show", "skill:probe", "unknown"); // unattributed traffic — excluded
+    seed("search", "stash//skills/probe", "user");
+    seed("search", "stash//skills/probe", "improve"); // improve-loop probe — excluded
+    seed("curate", "stash//skills/probe", "task"); // task-runner traffic — excluded
+    seed("show", "stash//skills/probe", "audit"); // eval traffic — excluded
+    seed("show", "stash//skills/probe", "unknown"); // unattributed traffic — excluded
 
-    const counts = getRetrievalCounts(db, stateDb, ["skill:probe"]);
-    expect(counts.get("skill:probe")).toBe(1);
+    const counts = getRetrievalCounts(db, stateDb, ["skills/probe"]);
+    expect(counts.get("skills/probe")).toBe(1);
   });
 
   test("a ref retrieved ONLY by the pipeline registers no demand at all", () => {
-    seed("search", "lesson:machine-only", "improve");
-    seed("show", "lesson:machine-only", "task");
+    seed("search", "stash//lessons/machine-only", "improve");
+    seed("show", "stash//lessons/machine-only", "task");
 
-    const counts = getRetrievalCounts(db, stateDb, ["lesson:machine-only"]);
-    expect(counts.has("lesson:machine-only")).toBe(false);
+    const counts = getRetrievalCounts(db, stateDb, ["lessons/machine-only"]);
+    expect(counts.has("lessons/machine-only")).toBe(false);
   });
 
   test("only explicit user provenance counts as demand", () => {
-    seed("show", "agent:reviewer", "hook");
+    seed("show", "stash//agents/reviewer", "hook");
 
-    const counts = getRetrievalCounts(db, stateDb, ["agent:reviewer"]);
-    expect(counts.has("agent:reviewer")).toBe(false);
+    const counts = getRetrievalCounts(db, stateDb, ["agents/reviewer"]);
+    expect(counts.has("agents/reviewer")).toBe(false);
   });
 
   test("utility recomputation excludes audit and unattributed events", () => {
@@ -173,11 +172,11 @@ describe("getRetrievalCounts", () => {
     expect(row).toMatchObject({ search_count: 0, show_count: 0, select_rate: 0 });
   });
 
-  test("source-scoped counts exclude duplicate signals from other origins and legacy bare rows", () => {
-    seed("show", "team//skill:duplicate");
-    seed("search", "team//skill:duplicate");
-    seed("show", "readonly//skill:duplicate");
-    seed("show", "skill:duplicate");
+  test("source-scoped counts exclude duplicate signals from other bundles and bare rows", () => {
+    seed("show", "team//skills/duplicate");
+    seed("search", "team//skills/duplicate");
+    seed("show", "readonly//skills/duplicate");
+    seed("show", "skills/duplicate");
 
     const scoped = (
       getRetrievalCounts as unknown as (
@@ -186,9 +185,9 @@ describe("getRetrievalCounts", () => {
         refs: string[],
         options: { sourceName: string },
       ) => Map<string, number>
-    )(db, stateDb, ["skill:duplicate"], { sourceName: "team" });
+    )(db, stateDb, ["skills/duplicate"], { sourceName: "team" });
 
-    expect(scoped.get("skill:duplicate")).toBe(2);
+    expect(scoped.get("skills/duplicate")).toBe(2);
   });
 
   test("last-use recency selects the duplicate from the requested source root", () => {

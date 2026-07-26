@@ -7,7 +7,7 @@
  *   • the full lifecycle (create → list → show → diff → accept / reject →
  *     revert) round-trips through the table;
  *   • the migrator's one-time legacy filesystem-proposal import
- *     (`src/migrate/legacy/proposal-fs-import.ts`) round-trips through the
+ *     (`scripts/akm-migrate/migrate/legacy/proposal-fs-import.ts`) round-trips through the
  *     lifecycle — accept/revert on an imported row, inlined `backup.<ext>`
  *     content, and INSERT-OR-IGNORE idempotency. (The end-to-end `migrate apply`
  *     wiring of that import lives in tests/integration/three-db-cutover.test.ts,
@@ -22,6 +22,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { importLegacyProposalsIntoState } from "../../scripts/akm-migrate/migrate/legacy/proposal-fs-import";
 import {
   akmProposalAccept,
   akmProposalDiff,
@@ -29,7 +30,7 @@ import {
   akmProposalShow,
 } from "../../src/commands/proposal/proposal";
 import {
-  createProposal,
+  createProposal as createProposalImpl,
   getProposal,
   isProposalSkipped,
   listProposals,
@@ -38,8 +39,6 @@ import {
 } from "../../src/commands/proposal/repository";
 import type { AkmConfig } from "../../src/core/config/config";
 import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
-import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
-import { importLegacyProposalsIntoState } from "../../src/migrate/legacy/proposal-fs-import";
 import { makeConfig } from "../_helpers/factories";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
@@ -62,9 +61,17 @@ function makeStashDir(): string {
 
 /** The durable `proposals.ref` item_ref (WI-8.5a): `<bundle>//<conceptId>`. */
 function durableRef(stashDir: string, type: string, name: string): string {
-  const bundleId = deriveInstallations([{ path: stashDir, writable: true }])[0]?.id ?? slugForPath(stashDir);
-  return deriveEntryProvenance({ bundleId, componentId: bundleId, adapterId: "akm" }, type, name).itemRef;
+  void stashDir;
+  const directories: Record<string, string> = { lesson: "lessons", skill: "skills", memory: "memories" };
+  return `stash//${directories[type] ?? type}/${name}`;
 }
+
+const createProposal: typeof createProposalImpl = (stashDir, input, ctx) =>
+  createProposalImpl(
+    stashDir,
+    { ...input, target: input.target ?? { source: "stash", root: path.resolve(stashDir) } },
+    ctx,
+  );
 
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
@@ -299,7 +306,7 @@ function commonPrefix(a: string, b: string): string {
 //
 // The pre-0.9 filesystem-proposal import folded out of the live per-op path
 // (was `withProposalsDb` → `importLegacyProposalFiles`) into the one-time
-// migrator (`src/migrate/legacy/proposal-fs-import.ts`). These tests seed via
+// migrator (`scripts/akm-migrate/migrate/legacy/proposal-fs-import.ts`). These tests seed via
 // that importer directly — the SAME code `akm migrate apply` runs — then drive
 // the imported rows through the proposal lifecycle. The end-to-end migrate-apply
 // wiring is tests/integration/three-db-cutover.test.ts scenario (g).
@@ -377,7 +384,7 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     expect(fs.existsSync(path.join(stash, ".akm", "proposals", pendingId, "proposal.json"))).toBe(true);
   });
 
-  test("a legacy accepted proposal can be reverted from its inlined backup", async () => {
+  test("an imported accepted proposal without acceptedTarget cannot be reverted", async () => {
     const stash = makeStashDir();
     const config = makeConfig(stash);
     const id = "33333333-3333-4333-8333-333333333333";
@@ -387,10 +394,8 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     });
     expect(runLegacyImport(stash)).toBe(1);
 
-    const result = await akmProposalRevert({ stashDir: stash, id, config });
-    expect(result.ok).toBe(true);
-    expect(fs.readFileSync(result.assetPath, "utf8")).toContain("PRIOR BODY.");
-    expect(getProposal(stash, id).status).toBe("reverted");
+    await expect(akmProposalRevert({ stashDir: stash, id, config })).rejects.toThrow(/has no recorded target/i);
+    expect(getProposal(stash, id).status).toBe("accepted");
   });
 
   test("an accepted target is re-keyed with the migrated bundle before revert", async () => {
@@ -643,7 +648,13 @@ describe("concurrent create + list safety (WAL)", () => {
         payload: {
           stashDir: stash,
           dbPath,
-          input: { ref, source, sourceRun: "run-concurrency-a", payload: { content: `${VALID_LESSON}\nA` } },
+          input: {
+            ref,
+            source,
+            sourceRun: "run-concurrency-a",
+            target: { source: "stash", root: stash },
+            payload: { content: `${VALID_LESSON}\nA` },
+          },
         },
       });
       const workerB = startProposalWorker<Record<string, unknown>>({
@@ -651,7 +662,13 @@ describe("concurrent create + list safety (WAL)", () => {
         payload: {
           stashDir: stash,
           dbPath,
-          input: { ref, source, sourceRun: "run-concurrency-b", payload: { content: `${VALID_LESSON}\nB` } },
+          input: {
+            ref,
+            source,
+            sourceRun: "run-concurrency-b",
+            target: { source: "stash", root: stash },
+            payload: { content: `${VALID_LESSON}\nB` },
+          },
         },
       });
       await Promise.all([workerA.ready, workerB.ready]);

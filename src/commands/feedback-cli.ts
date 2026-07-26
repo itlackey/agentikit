@@ -25,7 +25,6 @@ import type { Database } from "../storage/database";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import {
   findEntryIdByRef,
-  getEntryById,
   getEntryFilePathById,
   getItemRefById,
 } from "../storage/repositories/index-entries-repository";
@@ -349,16 +348,13 @@ export const feedbackCommand = defineJsonCommand({
       // For negative signals, the score is adjusted the next time `akm index`
       // runs — the signal is durable in the DB but does NOT suppress ranking
       // in search results until after reindexing.
-      const indexedEntry = getEntryById(db, entryId);
-      const source = sources.find((candidate) => candidate.path === indexedEntry?.stashDir);
       // WI-8.5b: the `feedback` / `improve_review_needed` events key on the
       // resolved entry's fully-qualified item_ref — the SAME durable key the
       // usage_events row carries and the SAME spelling the signal-delta
       // correlation reads (buildLatestFeedbackTsMap, collapsed to [item_ref]).
-      // The D-R5 display spelling is the fallback only for a NULL-provenance
-      // (pre-cutover) row that the one-time re-key has not yet finalized.
-      const itemRef = getItemRefById(db, entryId) ?? undefined;
-      durableRef = itemRef ?? makeBundleRef(parsedRef.bundle ?? source?.registryId, parsedRef.conceptId);
+      const itemRef = getItemRefById(db, entryId);
+      if (!itemRef) throw new UsageError(`Indexed ref "${ref}" has no durable item ref.`, "INVALID_PROPOSAL");
+      durableRef = itemRef;
       utilityResult = recordFeedbackUsage(db, entryId, itemRef, signal, metadataStr);
     } finally {
       closeDatabase(db);

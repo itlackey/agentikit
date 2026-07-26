@@ -65,6 +65,7 @@ function seedProposal(stash: string, ref: string, content: string): Proposal {
     source: "extract",
     force: true,
     sourceRun: "run-test",
+    target: { source: "stash", root: stash },
     payload: { content, frontmatter: { description: "test fixture" } },
   });
   if (isProposalSkipped(result)) throw new Error(`unexpected skip: ${result.message}`);
@@ -375,6 +376,7 @@ describe("Bug 2 — promote boundary re-validate after repair", () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       payload: { content: repaired },
+      changes: [{ path: "lessons/deploy-pipelines.md", op: "create" as const, after: repaired }],
     };
     const report = runProposalValidators(proposal as Parameters<typeof runProposalValidators>[0]);
     expect(report.ok).toBe(true);
@@ -408,6 +410,7 @@ describe("Bug 2 — promote boundary re-validate after repair", () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       payload: { content: repaired },
+      changes: [{ path: "lessons/repo-management.md", op: "create" as const, after: repaired }],
     };
     const report = runProposalValidators(proposal as Parameters<typeof runProposalValidators>[0]);
     expect(report.ok).toBe(true);
@@ -436,6 +439,7 @@ describe("Bug 2 — promote boundary re-validate after repair", () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       payload: { content: repaired },
+      changes: [{ path: "lessons/short-desc.md", op: "create" as const, after: repaired }],
     };
     const report = runProposalValidators(proposal as Parameters<typeof runProposalValidators>[0]);
 

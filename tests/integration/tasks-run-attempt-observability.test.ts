@@ -5,10 +5,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
 import { shouldBypassConfigStartup } from "../../src/cli";
 import { akmTasksRun } from "../../src/commands/tasks/tasks";
 import { buildTaskRunId, openLogsDatabase, queryTaskLogs } from "../../src/core/logs-db";
-import { createMigrationBackup } from "../../src/core/migration-backup";
 import { openStateDatabase } from "../../src/core/state-db";
 import {
   decodeTaskHistoryMetadata,

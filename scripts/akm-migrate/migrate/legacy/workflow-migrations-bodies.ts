@@ -15,7 +15,7 @@
  *
  * WI-8.3 DELETES `src/workflows/db.ts` outright, taking the live
  * `WORKFLOW_MIGRATIONS` array (and its `ensureBaseSchema`) with it. But the
- * three-DB cutover (`src/cli/config-migrate.ts` `runFrozenWorkflowRoll`) must
+ * three-DB cutover (`scripts/akm-migrate/config-migrate.ts` `runFrozenWorkflowRoll`) must
  * still be able to ROLL an existing pre-cutover workflow.db forward to its
  * final ledger (010) before merging it into state.db, so every column the
  * migrations add (defaults, back-fills) is materialised faithfully. It rolls
@@ -41,7 +41,7 @@
  * live bodies — the pin test fails on any drift.
  */
 
-import type { Migration } from "../../storage/engines/sqlite-migrations";
+import type { Migration } from "../../../../src/storage/engines/sqlite-migrations";
 
 /**
  * Frozen `ensureBaseSchema` baseline DDL — the `workflow_runs` /

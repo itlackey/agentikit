@@ -130,7 +130,7 @@ export interface AssetOutcomeRow {
 // ── Writer ────────────────────────────────────────────────────────────────────
 
 export interface OutcomeUpdateInputs {
-  /** Asset ref (`type:name`). */
+  /** Asset ref. */
   ref: string;
   /**
    * Current total retrieval count from the index DB.

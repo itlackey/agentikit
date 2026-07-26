@@ -66,10 +66,10 @@ describe("parseWorkflow", () => {
     expect(doc.steps[1]!.completionCriteria).toBeUndefined();
   });
 
-  test("accepts canonical xrefs in workflow frontmatter", () => {
+  test("accepts canonical opaque xrefs in workflow frontmatter", () => {
     const withXrefs = VALID_WORKFLOW.replace(
       "params:\n",
-      "xrefs:\n  - memories/project-a/deploy-order\n  - lessons/project-a/release-checks\nparams:\n",
+      "xrefs:\n  - memories/project-a/deploy-order\n  - catalog//tables/customers\n  - guide#usage\nparams:\n",
     );
 
     expect(parse(withXrefs).ok).toBe(true);
@@ -78,8 +78,8 @@ describe("parseWorkflow", () => {
   test("rejects xrefs that are not an array of canonical asset refs", () => {
     for (const xrefs of [
       "xrefs: memories/deploy-order\n",
-      "xrefs:\n  - not-a-ref\n",
       "xrefs:\n  - environment:production\n",
+      "xrefs:\n  - ../outside\n",
       "xrefs:\n  - memories/deploy-order\n  - 42\n",
     ]) {
       const result = parse(VALID_WORKFLOW.replace("params:\n", `${xrefs}params:\n`));

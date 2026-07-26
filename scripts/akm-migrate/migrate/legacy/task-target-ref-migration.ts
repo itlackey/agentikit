@@ -18,12 +18,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isMap, isScalar, parseDocument } from "yaml";
-import { bundlesToSourceEntries } from "../../core/config/config";
-import type { AkmConfig, BundleConfigEntry } from "../../core/config/config-types";
-import { ConfigError } from "../../core/errors";
-import { resolveWritable } from "../../core/write-source";
-import { resolveEntryContentDir } from "../../indexer/search/search-source";
-import type { LockfileEntry } from "../../integrations/lockfile";
+import { bundlesToSourceEntries } from "../../../../src/core/config/config";
+import type { AkmConfig, BundleConfigEntry } from "../../../../src/core/config/config-types";
+import { ConfigError } from "../../../../src/core/errors";
+import { resolveWritable } from "../../../../src/core/write-source";
+import { resolveEntryContentDir } from "../../../../src/indexer/search/search-source";
+import type { LockfileEntry } from "../../../../src/integrations/lockfile";
 import { classifyRefGrammar, legacyConceptId, parseAssetRef } from "../legacy-ref-grammar";
 import {
   canonicalizeWorkflowName,
@@ -57,7 +57,7 @@ export interface TaskTargetRefMigrationPlan {
 function migrationError(filePath: string, detail: string): ConfigError {
   return new ConfigError(
     `Cannot migrate persisted task target in ${filePath}: ${detail} ` +
-      "Repair or remove this task, then rerun `akm migrate apply`.",
+      "Repair or remove this task, then rerun `akm-migrate apply`.",
     "INVALID_CONFIG_FILE",
   );
 }
@@ -94,7 +94,7 @@ function bundlesFromConfig(
     if (prior && prior !== id) {
       throw new ConfigError(
         `Cannot migrate persisted task targets because bundles "${prior}" and "${id}" resolve to the same root ${root}. ` +
-          "Give each bundle a distinct path, then rerun `akm migrate apply`.",
+          "Give each bundle a distinct path, then rerun `akm-migrate apply`.",
         "INVALID_CONFIG_FILE",
       );
     }
@@ -246,14 +246,14 @@ export function planTaskTargetRefMigration(
     if (tasksStat.isSymbolicLink()) {
       throw new ConfigError(
         `Cannot migrate persisted task targets because ${tasksDir} is a symbolic link. Replace it with a real ` +
-          "directory, then rerun `akm migrate apply`.",
+          "directory, then rerun `akm-migrate apply`.",
         "INVALID_CONFIG_FILE",
       );
     }
     if (!tasksStat.isDirectory()) {
       throw new ConfigError(
         `Cannot migrate persisted task targets because ${tasksDir} is not a directory. Repair it, then rerun ` +
-          "`akm migrate apply`.",
+          "`akm-migrate apply`.",
         "INVALID_CONFIG_FILE",
       );
     }

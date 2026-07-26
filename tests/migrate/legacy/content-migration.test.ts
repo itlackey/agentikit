@@ -5,8 +5,8 @@
 import { expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { runContentMigration } from "../../../scripts/akm-migrate/migrate/legacy/content-migration";
 import { parseFrontmatter } from "../../../src/core/asset/frontmatter";
-import { runContentMigration } from "../../../src/migrate/legacy/content-migration";
 import { makeSandboxDir } from "../../_helpers/sandbox";
 
 test("retains a sidecar unless every entry can be folded", () => {

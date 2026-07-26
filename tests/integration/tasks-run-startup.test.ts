@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { getMigrationApplyJournalPath } from "../../src/core/migration-backup";
+import { getMigrationApplyJournalPath } from "../../scripts/akm-migrate/migration-backup";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;

@@ -2,6 +2,12 @@ import { afterAll, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+// The legacy `.stash.json` sidecar reader/writer moved to the migrator home
+// (Chunk-5 flip scope-B); alias to the old local names to keep the bodies intact.
+import {
+  readLegacyStashOverrides as loadStashFile,
+  writeLegacyStashFile as writeStashFile,
+} from "../../scripts/akm-migrate/migrate/legacy/legacy-stash-json";
 import { resetConfigCache } from "../../src/core/config/config";
 import {
   applyCuratedFrontmatter,
@@ -18,12 +24,6 @@ import {
 } from "../../src/indexer/passes/metadata";
 import { recognizeStashEntries } from "../../src/indexer/scan/drain-dir";
 import { buildSearchFields, buildSearchText } from "../../src/indexer/search/search-fields";
-// The legacy `.stash.json` sidecar reader/writer moved to the migrator home
-// (Chunk-5 flip scope-B); alias to the old local names to keep the bodies intact.
-import {
-  readLegacyStashOverrides as loadStashFile,
-  writeLegacyStashFile as writeStashFile,
-} from "../../src/migrate/legacy/legacy-stash-json";
 import { sandboxXdgConfigHome, writeSandboxConfig } from "../_helpers/sandbox";
 
 // Renderers auto-register via ensureBuiltinsRegistered in file-context.ts

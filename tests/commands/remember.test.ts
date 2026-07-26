@@ -3,7 +3,7 @@
  *
  * Verifies the `--target` flag added to `akm remember` per v1 implementation
  * plan §6 decision 3. Resolution order is:
- *   --target → defaultWriteTarget → working stash → ConfigError
+ *   --target → defaultWriteTarget → defaultBundle → ConfigError
  *
  * These tests exercise the explicit-target path:
  *   - resolves to a configured filesystem source by name
@@ -124,8 +124,12 @@ describe("remember --target", () => {
 });
 
 describe("remember --target", () => {
-  test("default stash is used when --target is omitted", async () => {
-    writeConfig({ semanticSearchMode: "off" });
+  test("default bundle is used when --target is omitted", async () => {
+    writeConfig({
+      semanticSearchMode: "off",
+      bundles: { stash: { path: currentStashDir, writable: true } },
+      defaultBundle: "stash",
+    });
 
     const { stashDir, result } = await runCli(["remember", "Memory without target flag"]);
     expect(result.status).toBe(0);

@@ -52,7 +52,7 @@ interface TaskHistoryRow {
   finishedAt: string;
   durationMs: number;
   log: string;
-  target: { kind: string; engine?: string | null; legacyProfile?: string; ref?: string };
+  target: { kind: string; engine?: string | null; ref?: string };
   detail?: { runId?: string; exitCode?: number };
 }
 
@@ -443,18 +443,13 @@ test.skipIf(!ENABLED)(
       expect(fs.readFileSync(path.join(legacyBackupPath, "backup.meta.json"), "utf8")).toBe(legacyBackupMetadata);
       expect(fs.readFileSync(path.join(legacyBackupPath, "state.db"))).toEqual(legacyBackupState);
 
-      const migratedOldHistory = readLatestHistory(currentCli, "upgrade-command", currentEnv);
-      expect(migratedOldHistory).toMatchObject({
-        id: oldHistory!.id,
-        status: oldHistory!.status,
-        startedAt: oldHistory!.startedAt,
-        finishedAt: oldHistory!.finishedAt,
-        detail: { exitCode: 0 },
-        // Published 0.8.14 persisted command runs as prompt rows. The migration
-        // preserves that durable row but cannot infer the lost target kind.
-        target: { kind: "prompt", engine: null },
-      });
-      expect(fs.readFileSync(migratedOldHistory.log, "utf8")).toBe(oldHistoryLog);
+      const migratedOldHistory = run(
+        [currentCli, "tasks", "history", "--id", "upgrade-command", "--limit", "1"],
+        currentEnv,
+      );
+      expect(migratedOldHistory.status).not.toBe(0);
+      expect(`${migratedOldHistory.stdout}\n${migratedOldHistory.stderr}`).toContain("unsupported metadataVersion");
+      expect(fs.readFileSync(oldHistory!.log, "utf8")).toBe(oldHistoryLog);
 
       const version = run([currentCli, "--version"], currentEnv);
       expectSuccess(version, "packed 0.9 --version");

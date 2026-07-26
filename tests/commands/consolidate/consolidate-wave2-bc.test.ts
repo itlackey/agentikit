@@ -20,10 +20,8 @@ import type { AkmConfig } from "../../../src/core/config/config";
 describe("config-cli: defaultWriteTarget (#21)", () => {
   const base: AkmConfig = { semanticSearchMode: "auto" };
 
-  test("parseConfigValue returns defaultWriteTarget", () => {
-    expect(parseConfigValue("defaultWriteTarget", "my-stash")).toEqual({
-      defaultWriteTarget: "my-stash",
-    });
+  test("parseConfigValue cannot set defaultWriteTarget without a configured bundle", () => {
+    expect(() => parseConfigValue("defaultWriteTarget", "my-stash")).toThrow(/Unknown bundle/);
   });
 
   test("parseConfigValue rejects empty defaultWriteTarget", () => {
@@ -39,23 +37,22 @@ describe("config-cli: defaultWriteTarget (#21)", () => {
     expect(getConfigValue(config, "defaultWriteTarget")).toBe("my-stash");
   });
 
-  test("setConfigValue sets defaultWriteTarget — no sources configured", () => {
-    const result = setConfigValue(base, "defaultWriteTarget", "any-name");
-    expect(result.defaultWriteTarget).toBe("any-name");
+  test("setConfigValue rejects defaultWriteTarget when no bundles are configured", () => {
+    expect(() => setConfigValue(base, "defaultWriteTarget", "any-name")).toThrow(/Unknown bundle/);
   });
 
-  test("setConfigValue validates name against sources when sources[] is non-empty", () => {
+  test("setConfigValue validates the name against configured bundles", () => {
     const config: AkmConfig = {
       ...base,
-      sources: [{ type: "filesystem", path: "/tmp/stash", name: "primary" }],
+      bundles: { primary: { path: "/tmp/stash" } },
     };
-    expect(() => setConfigValue(config, "defaultWriteTarget", "unknown-stash")).toThrow(/Unknown source name/);
+    expect(() => setConfigValue(config, "defaultWriteTarget", "unknown-stash")).toThrow(/Unknown bundle/);
   });
 
   test("setConfigValue accepts a valid source name", () => {
     const config: AkmConfig = {
       ...base,
-      sources: [{ type: "filesystem", path: "/tmp/stash", name: "primary" }],
+      bundles: { primary: { path: "/tmp/stash" } },
     };
     const result = setConfigValue(config, "defaultWriteTarget", "primary");
     expect(result.defaultWriteTarget).toBe("primary");

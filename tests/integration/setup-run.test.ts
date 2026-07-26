@@ -9,7 +9,7 @@ import { _setAgentDetectForTests } from "../../src/integrations/agent";
 import { _setEmbedderForTests } from "../../src/llm/embedder";
 import { _setDetectForTests } from "../../src/setup/detect";
 import { _setLoadSetupStashesForTests, type SetupBundleEntry } from "../../src/setup/registry-stash-loader";
-import { runSetupWizard } from "../../src/setup/setup";
+import { runSetupFromConfig, runSetupWizard } from "../../src/setup/setup";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 import { overrideSeam } from "../_helpers/seams";
 
@@ -290,6 +290,9 @@ describe("runSetupWizard", () => {
     // 0.9.0 (spec §10.1): the primary stash is the defaultBundle's path.
     const savedBundles = saved.bundles as Record<string, { path?: string }> | undefined;
     expect(savedBundles?.[saved.defaultBundle as string]?.path).toBe(DEFAULT_STASH_DIR);
+    expect("stashDir" in saved).toBe(false);
+    expect("sources" in saved).toBe(false);
+    expect("installed" in saved).toBe(false);
     expect(saved.semanticSearchMode).toBe("off");
     expect(setupState.initCalls).toEqual([{ dir: DEFAULT_STASH_DIR }]);
     expect(setupState.indexCalls).toEqual([{ stashDir: DEFAULT_STASH_DIR, enrich: undefined }]);
@@ -315,6 +318,40 @@ describe("runSetupWizard", () => {
       true,
     );
     expect(setupState.indexCalls).toEqual([{ stashDir: DEFAULT_STASH_DIR, enrich: undefined }]);
+  });
+
+  test("preserves selected canonical bundle entries and removes deselected ones", async () => {
+    installSetupSeams();
+    fs.mkdirSync(path.dirname(DEFAULT_CONFIG_PATH), { recursive: true });
+    const keptBundle = {
+      git: "https://example.test/keep.git",
+      writable: false,
+      components: { keep: { root: ".", adapter: "akm", writable: false } },
+      customMetadata: "preserved",
+    };
+    fs.writeFileSync(
+      DEFAULT_CONFIG_PATH,
+      `${JSON.stringify({
+        configVersion: "0.9.0",
+        semanticSearchMode: "auto",
+        bundles: {
+          stash: { path: DEFAULT_STASH_DIR, writable: true },
+          keep: keptBundle,
+          drop: { path: "/home/tester/drop" },
+        },
+        defaultBundle: "stash",
+      })}\n`,
+    );
+
+    promptState.selects.push("default", "none", "done", "json", "brief", "skip", "none");
+    promptState.confirms.push(false, false, true, false);
+    promptState.multiselects.push([...DEFAULT_REGISTRY_URLS], ["git:https://example.test/keep.git"], [], []);
+
+    await runSetupWizard();
+
+    const bundles = readSavedConfig().bundles as Record<string, unknown>;
+    expect(bundles.keep).toEqual(keptBundle);
+    expect(bundles.drop).toBeUndefined();
   });
 
   test("warns and completes when indexing fails after saving config", async () => {
@@ -478,5 +515,44 @@ describe("runSetupWizard", () => {
     expect(setupState.indexCalls).toHaveLength(0);
     expect(promptState.trace.some((line) => line.includes("core task definitions"))).toBe(false);
     expect(promptState.trace.some((line) => line.includes("Activate these schedules"))).toBe(false);
+  });
+});
+
+describe("runSetupFromConfig", () => {
+  test("persists canonical bundle input without rebuilding it through draft aliases", async () => {
+    installSetupSeams();
+    const primaryPath = "/home/tester/current-bundle";
+    const bundles = {
+      workspace: {
+        path: primaryPath,
+        writable: false,
+        components: { workspace: { root: ".", adapter: "akm", writable: false } },
+        customMetadata: "preserved",
+      },
+      docs: { website: { url: "https://example.test/docs", maxPages: 5 } },
+    };
+
+    await runSetupFromConfig({
+      configJson: JSON.stringify({ bundles, defaultBundle: "workspace", semanticSearchMode: "off" }),
+      noInit: true,
+    });
+
+    const saved = readSavedConfig();
+    expect(saved.bundles).toEqual(bundles);
+    expect(saved.defaultBundle).toBe("workspace");
+    expect("stashDir" in saved).toBe(false);
+    expect("sources" in saved).toBe(false);
+    expect("installed" in saved).toBe(false);
+  });
+
+  test("rejects retired source config fields instead of translating them", async () => {
+    installSetupSeams();
+    for (const key of ["stashDir", "sources", "installed"]) {
+      await expect(
+        runSetupFromConfig({ configJson: JSON.stringify({ [key]: key === "stashDir" ? "/home/tester/old" : [] }) }),
+      ).rejects.toThrow(`${key} is not supported`);
+    }
+    expect(fs.existsSync(DEFAULT_CONFIG_PATH)).toBe(false);
+    expect(setupState.initCalls).toEqual([]);
   });
 });

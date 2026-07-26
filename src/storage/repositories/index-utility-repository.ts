@@ -145,11 +145,7 @@ export function upsertUtilityScore(db: Database, entryId: number, data: UtilityS
 
 /**
  * Reduce a stored ref to its bare form, dropping any `origin//` / `bundle//`
- * prefix — the SAME strip the counting SQL does (`substr` after the first
- * `//`). The bare form is `type:name` for a legacy row and `conceptId` for a
- * 0.9.0 re-keyed row (Chunk-5 flip F4c). Matching the SQL strip exactly keeps
- * the JS row-grouping and the SQL `IN (…)` filter in lockstep across both
- * spellings.
+ * prefix, matching the counting SQL's `substr` after the first `//`.
  */
 function bareRef(ref: string): string {
   const boundary = ref.indexOf("//");
@@ -164,12 +160,8 @@ function bareRef(ref: string): string {
  */
 function bareRefCandidates(ref: string): string[] {
   const bare = bareRef(ref.trim());
-  try {
-    const parsed = parseRefInput(bare);
-    return [conceptIdFromTypeName(parsed.type, parsed.name)];
-  } catch {
-    return [bare];
-  }
+  const parsed = parseRefInput(bare);
+  return [conceptIdFromTypeName(parsed.type, parsed.name)];
 }
 
 /**
@@ -181,16 +173,13 @@ function bareRefCandidates(ref: string): string[] {
  * proactive-maintenance selector to rank zero-feedback assets by retrieval
  * frequency.
  *
- * Unscoped callers retain normalization-aware legacy matching. Source-scoped
- * callers instead require either an event linked to an entry in the selected
- * stash root or a detached ref qualified with the selected source name. Bare
- * detached events are accepted only when `includeLegacyBare` is explicitly set
- * for the historical local stash.
+ * Source-scoped callers require either an event linked to an entry in the
+ * selected stash root or a detached ref qualified with the selected source
+ * name.
  *
  * `curate` events are included: their per-item rows are written with
  * entry_ref populated (see logCurateEvent), so curation is a real retrieval
- * signal here. Legacy summary-only curate rows with a NULL entry_ref simply
- * contribute nothing.
+ * signal here. Summary-only rows with a NULL entry_ref contribute nothing.
  *
  * Machine/eval/unattributed/extension events are excluded: this count feeds
  * salience and ranking, so only explicitly attributed `user` traffic counts.
@@ -207,9 +196,8 @@ export function getRetrievalCounts(
     return getSourceScopedRetrievalCounts(indexDb, stateDb, refs, options);
   }
 
-  // Map each candidate bare form (both spellings) back to the input ref(s) that
-  // produced it so we can re-key DB results (grouped by bare form) onto the
-  // caller's ref strings — spelling-agnostic across the §11.4 re-key.
+  // Map each conceptId back to the input refs that produced it so DB results
+  // can be re-keyed onto the caller's strings.
   const bareToInputs = new Map<string, string[]>();
   for (const ref of refs) {
     for (const bare of bareRefCandidates(ref)) {
@@ -230,7 +218,7 @@ export function getRetrievalCounts(
     // everything up to and including the last `//` separator. SQLite has no
     // rfind, but stored origins never themselves contain `//`, so a stash ref
     // has exactly one `//` and `substr(... instr ...)` is exact; bare refs have
-    // no `//` and pass through unchanged.
+    // no `//` and are excluded above.
     // usage_events lives in state.db (Chunk-8 WI-8.3) — this global count needs
     // no entries join, so it reads state.db directly.
     const rows = stateDb
@@ -245,7 +233,8 @@ export function getRetrievalCounts(
          FROM usage_events
          WHERE event_type IN ('search','show','curate')
            AND entry_ref IS NOT NULL
-            AND source = 'user'
+           AND instr(entry_ref, '//') > 0
+           AND source = 'user'
            AND CASE
                  WHEN instr(entry_ref, '//') > 0
                    THEN substr(entry_ref, instr(entry_ref, '//') + 2)
@@ -307,7 +296,8 @@ function getSourceScopedRetrievalCounts(
            FROM usage_events ue
           WHERE ue.event_type IN ('search','show','curate')
             AND ue.entry_ref IS NOT NULL
-              AND ue.source = 'user'
+            AND instr(ue.entry_ref, '//') > 0
+            AND ue.source = 'user'
             AND CASE
                   WHEN instr(ue.entry_ref, '//') > 0
                     THEN substr(ue.entry_ref, instr(ue.entry_ref, '//') + 2)
@@ -329,8 +319,7 @@ function getSourceScopedRetrievalCounts(
       const detached = row.entry_id === null || selectedRoot === undefined;
       const qualifiedForSource =
         detached && options.sourceName !== undefined && row.entry_ref === `${options.sourceName}//${bare}`;
-      const acceptedLegacyBare = detached && options.includeLegacyBare === true && row.entry_ref === bare;
-      if (!linkedToSelectedRoot && !qualifiedForSource && !acceptedLegacyBare) continue;
+      if (!linkedToSelectedRoot && !qualifiedForSource) continue;
       countsByBare.set(bare, (countsByBare.get(bare) ?? 0) + 1);
     }
   }

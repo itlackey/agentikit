@@ -167,7 +167,7 @@ describe("stepAddSources – recommended GitHub repos", () => {
     q.multiselects.push(["https://github.com/itlackey/akm-stash"]);
     q.selects.push("done");
 
-    const result = await stepAddSources({ sources: [] } as never);
+    const result = await stepAddSources({ bundles: {} } as never);
     expect(q.multiselectConfigs).toHaveLength(1);
     expect(q.logged.some((entry) => entry.includes("Configured stash sources"))).toBe(false);
     expect(q.multiselectConfigs[0]?.options.map((option) => option.label)).toEqual([
@@ -399,7 +399,7 @@ describe("non-interactive setup stash dir", () => {
 
     await runSetupSteps(steps.slice(0, 1), ctx);
 
-    expect(ctx.config.stashDir).toBe("/tmp/noninteractive-stash");
+    expect(ctx.config.primaryPath).toBe("/tmp/noninteractive-stash");
     expect(q.selects).toHaveLength(0);
     expect(q.texts).toHaveLength(0);
   });
@@ -467,7 +467,7 @@ describe("stepAddSources – custom GitHub repo", () => {
     // select → done
     q.selects.push("done");
 
-    const result = await stepAddSources({ sources: [] } as never);
+    const result = await stepAddSources({ bundles: {} } as never);
     const repo = result.find((s) => s.url === "https://github.com/owner/repo");
     expect(repo).toBeDefined();
     expect(repo?.type).toBe("git");
@@ -488,7 +488,7 @@ describe("stepAddSources – cancel within sub-actions", () => {
     // back at menu → done
     q.selects.push("done");
 
-    const result = await stepAddSources({ sources: [] } as never);
+    const result = await stepAddSources({ bundles: {} } as never);
     // No repo was added because the user cancelled
     expect(result).toEqual([]);
   });
@@ -499,7 +499,7 @@ describe("stepAddSources – cancel within sub-actions", () => {
     q.texts.push(CANCEL); // cancel the path prompt
     q.selects.push("done");
 
-    const result = await stepAddSources({ sources: [] } as never);
+    const result = await stepAddSources({ bundles: {} } as never);
     expect(result).toEqual([]);
   });
 
@@ -510,7 +510,7 @@ describe("stepAddSources – cancel within sub-actions", () => {
     q.texts.push(CANCEL); // cancel on name prompt
     q.selects.push("done");
 
-    const result = await stepAddSources({ sources: [] } as never);
+    const result = await stepAddSources({ bundles: {} } as never);
     // Repo was NOT added because user cancelled at the name step
     expect(result).toEqual([]);
   });
@@ -522,7 +522,7 @@ describe("stepAddSources – deferred additional prompt", () => {
   test("can skip the additional-source menu when requested", async () => {
     q.multiselects.push([]);
 
-    const result = await stepAddSources({ sources: [] } as never, { promptForAdditional: false });
+    const result = await stepAddSources({ bundles: {} } as never, { promptForAdditional: false });
 
     expect(result).toEqual([]);
     expect(q.selects).toHaveLength(0);

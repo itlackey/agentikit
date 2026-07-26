@@ -9,7 +9,6 @@ import { type AkmConfig, type ImproveProfileConfig, saveConfig } from "../../../
 import { appendEvent, readEvents } from "../../../src/core/events";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { writeMemory } from "../../_helpers/assets";
-import { durableItemRef } from "../../_helpers/durable-ref";
 import { makeProposal } from "../../_helpers/factories";
 import { withTestImproveLlm } from "../../_helpers/improve-config";
 
@@ -30,10 +29,25 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
+function configureStash(stashDir: string): void {
+  saveConfig(
+    withTestImproveLlm({
+      semanticSearchMode: "off",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+    }),
+  );
+}
+
 async function buildIndex(stashDir: string): Promise<void> {
   process.env.AKM_STASH_DIR = stashDir;
-  saveConfig(withTestImproveLlm({ semanticSearchMode: "off" }));
+  configureStash(stashDir);
   await akmIndex({ stashDir, full: true });
+}
+
+function durableRef(ref: string): string {
+  return `stash//${ref}`;
 }
 
 beforeEach(() => {
@@ -73,7 +87,10 @@ describe("O-2: --scope <ref> bypasses reflect/distill cooldowns (#365)", () => {
 
     const reflectedRefs: string[] = [];
     const now = Date.now();
-    appendEvent({ eventType: "reflect_invoked", ref: "memories/auth-tips" }, { now: () => now - 60 * 1000 });
+    appendEvent(
+      { eventType: "reflect_invoked", ref: durableRef("memories/auth-tips") },
+      { now: () => now - 60 * 1000 },
+    );
 
     await akmImprove({
       scope: "memories/auth-tips",
@@ -97,7 +114,7 @@ describe("O-2: --scope <ref> bypasses reflect/distill cooldowns (#365)", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -111,7 +128,10 @@ describe("O-2: --scope <ref> bypasses reflect/distill cooldowns (#365)", () => {
 
     const reflectedRefs: string[] = [];
     const now = Date.now();
-    appendEvent({ eventType: "reflect_invoked", ref: "memories/auth-tips-2" }, { now: () => now - 60 * 1000 });
+    appendEvent(
+      { eventType: "reflect_invoked", ref: durableRef("memories/auth-tips-2") },
+      { now: () => now - 60 * 1000 },
+    );
 
     await akmImprove({
       scope: "memory",
@@ -123,7 +143,7 @@ describe("O-2: --scope <ref> bypasses reflect/distill cooldowns (#365)", () => {
         return {
           schemaVersion: 2,
           ok: true,
-          proposal: makeProposal(ref ?? "memory:missing"),
+          proposal: makeProposal(ref ?? "memories/missing"),
           ref: ref ?? "",
           engine: "test",
           durationMs: 1,
@@ -135,7 +155,7 @@ describe("O-2: --scope <ref> bypasses reflect/distill cooldowns (#365)", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -176,7 +196,7 @@ describe("O-1: wall-clock budget AbortSignal propagated to sub-calls (#364)", ()
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -211,7 +231,7 @@ describe("O-1: wall-clock budget AbortSignal propagated to sub-calls (#364)", ()
         ok: true,
         outcome: "queued",
         inputRef: ref,
-        lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -254,7 +274,7 @@ describe("D-2: reject-aware cooldown for distill (#370)", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         } satisfies AkmDistillResult;
       },
     });
@@ -300,7 +320,7 @@ describe("D-2: reject-aware cooldown for distill (#370)", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         } satisfies AkmDistillResult;
       },
     });
@@ -328,8 +348,8 @@ describe("M-1: contradiction-detection pass writes contradictedBy edges (#367)",
       "../../../src/commands/improve/memory/memory-contradiction-detect"
     );
     const stashDir = makeTempDir("akm-m1-no-llm-");
-    writeMemory(stashDir, "auth-tips.derived", { inferred: true, source: "memory:auth-tips" }, "Always use VPN.");
-    writeMemory(stashDir, "auth-tips.derived2", { inferred: true, source: "memory:auth-tips" }, "VPN is optional.");
+    writeMemory(stashDir, "auth-tips.derived", { inferred: true, source: "memories/auth-tips" }, "Always use VPN.");
+    writeMemory(stashDir, "auth-tips.derived2", { inferred: true, source: "memories/auth-tips" }, "VPN is optional.");
 
     const result = await detectAndWriteContradictions(stashDir, {
       bundles: { stash: { path: stashDir, writable: true } } as AkmConfig["bundles"],
@@ -351,11 +371,11 @@ describe("M-1: contradiction-detection pass writes contradictedBy edges (#367)",
     // Direction is lexicographic ref order: the larger ref loses. "…derived2" >
     // "…derived", so `derived2` is the loser (gets the edge) and `derived` is the
     // surviving winner.
-    writeMemory(stashDir, "auth-tips.derived", { inferred: true, source: "memory:auth-tips" }, "Always use VPN.");
+    writeMemory(stashDir, "auth-tips.derived", { inferred: true, source: "memories/auth-tips" }, "Always use VPN.");
     writeMemory(
       stashDir,
       "auth-tips.derived2",
-      { inferred: true, source: "memory:auth-tips" },
+      { inferred: true, source: "memories/auth-tips" },
       "VPN is never required.",
     );
 
@@ -394,8 +414,8 @@ describe("M-1: contradiction-detection pass writes contradictedBy edges (#367)",
     );
     const stashDir = makeTempDir("akm-m1-persist-");
     // Direction is lexicographic ref order: `vpn.derived2` (larger ref) loses.
-    writeMemory(stashDir, "vpn.derived", { inferred: true, source: "memory:vpn" }, "Always use VPN.");
-    writeMemory(stashDir, "vpn.derived2", { inferred: true, source: "memory:vpn" }, "VPN is never required.");
+    writeMemory(stashDir, "vpn.derived", { inferred: true, source: "memories/vpn" }, "Always use VPN.");
+    writeMemory(stashDir, "vpn.derived2", { inferred: true, source: "memories/vpn" }, "VPN is never required.");
 
     const config = contradictionConfig(stashDir);
     const judge = async () => JSON.stringify({ contradicts: true, reason: "Direct factual conflict." });
@@ -437,9 +457,9 @@ describe("M-1: contradiction-detection pass writes contradictedBy edges (#367)",
       "../../../src/commands/improve/memory/memory-improve"
     );
     const stashDir = makeTempDir("akm-m1-triad-");
-    writeMemory(stashDir, "vpn.aaa.derived", { inferred: true, source: "memory:vpn" }, "Always use VPN.");
-    writeMemory(stashDir, "vpn.bbb.derived", { inferred: true, source: "memory:vpn" }, "VPN is optional.");
-    writeMemory(stashDir, "vpn.ccc.derived", { inferred: true, source: "memory:vpn" }, "VPN is never required.");
+    writeMemory(stashDir, "vpn.aaa.derived", { inferred: true, source: "memories/vpn" }, "Always use VPN.");
+    writeMemory(stashDir, "vpn.bbb.derived", { inferred: true, source: "memories/vpn" }, "VPN is optional.");
+    writeMemory(stashDir, "vpn.ccc.derived", { inferred: true, source: "memories/vpn" }, "VPN is never required.");
 
     const config = contradictionConfig(stashDir);
     const judge = async () => JSON.stringify({ contradicts: true, reason: "Direct factual conflict." });
@@ -473,11 +493,11 @@ describe("M-1: contradiction-detection pass writes contradictedBy edges (#367)",
       "../../../src/commands/improve/memory/memory-contradiction-detect"
     );
     const stashDir = makeTempDir("akm-m1-no-contradiction-");
-    writeMemory(stashDir, "auth-tips.derived", { inferred: true, source: "memory:auth-tips" }, "Use VPN for prod.");
+    writeMemory(stashDir, "auth-tips.derived", { inferred: true, source: "memories/auth-tips" }, "Use VPN for prod.");
     writeMemory(
       stashDir,
       "auth-tips.derived2",
-      { inferred: true, source: "memory:auth-tips" },
+      { inferred: true, source: "memories/auth-tips" },
       "Enable 2FA before deploys.",
     );
 
@@ -504,6 +524,7 @@ describe("M-3: schema-repair routes through proposal queue (#387)", () => {
     const memFile = path.join(stashDir, "memories", "auth-guide.md");
     fs.mkdirSync(path.dirname(memFile), { recursive: true });
     fs.writeFileSync(memFile, "---\n---\nAuth guide content.\n", "utf8");
+    configureStash(stashDir);
 
     const result = await runSchemaRepairPass([{ ref: "memories/auth-guide", reason: "missing description" }], {
       startMs: Date.now(),
@@ -529,7 +550,7 @@ describe("M-3: schema-repair routes through proposal queue (#387)", () => {
     // Proposal should exist in the queue
     const proposals = listProposals(stashDir);
     expect(proposals.length).toBe(1);
-    expect(proposals[0]?.ref).toBe(durableItemRef(stashDir, "memory", "auth-guide"));
+    expect(proposals[0]?.ref).toBe(durableRef("memories/auth-guide"));
     expect(proposals[0]?.payload.content).toContain("Authentication guide");
   });
 
@@ -578,6 +599,9 @@ describe("M-3: schema-repair routes through proposal queue (#387)", () => {
     saveConfig({
       configVersion: "0.9.0",
       semanticSearchMode: "off",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
       engines: {
         default: { kind: "llm", endpoint: "http://127.0.0.1:1/v1/chat/completions", model: "test" },
       },
@@ -585,12 +609,16 @@ describe("M-3: schema-repair routes through proposal queue (#387)", () => {
     });
 
     const { appendEvent: appendFeedbackEvent } = await import("../../../src/core/events");
-    appendFeedbackEvent({ eventType: "feedback", ref: "lessons/no-description", metadata: { signal: "positive" } });
+    appendFeedbackEvent({
+      eventType: "feedback",
+      ref: durableRef("lessons/no-description"),
+      metadata: { signal: "positive" },
+    });
 
     const reflectFn = async ({ ref }: { ref?: string }): Promise<AkmReflectResult> => ({
       schemaVersion: 2,
       ok: true,
-      proposal: makeProposal(ref ?? "lesson:no-description"),
+      proposal: makeProposal(ref ?? "lessons/no-description"),
       ref: ref ?? "",
       engine: "test",
       durationMs: 1,
@@ -600,7 +628,7 @@ describe("M-3: schema-repair routes through proposal queue (#387)", () => {
       ok: true,
       outcome: "queued",
       inputRef: ref,
-      lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+      lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
     });
     const reindexFn = async () => ({
       schemaVersion: 1 as const,
@@ -694,7 +722,7 @@ describe("O-3: reindex triggered after consolidation before graph extraction (#3
       reflectFn: async ({ ref }) => ({
         schemaVersion: 2,
         ok: true,
-        proposal: makeProposal(ref ?? "memory:auth-guide"),
+        proposal: makeProposal(ref ?? "memories/auth-guide"),
         ref: ref ?? "",
         engine: "test",
         durationMs: 1,
@@ -704,7 +732,7 @@ describe("O-3: reindex triggered after consolidation before graph extraction (#3
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -760,7 +788,7 @@ describe("zero-signal stash: 0 eligible refs when stash has no feedback or retri
         return {
           schemaVersion: 2,
           ok: true,
-          proposal: makeProposal(ref ?? "memory:mem-1"),
+          proposal: makeProposal(ref ?? "memories/mem-1"),
           ref: ref ?? "",
           engine: "test",
           durationMs: 1,
@@ -771,7 +799,7 @@ describe("zero-signal stash: 0 eligible refs when stash has no feedback or retri
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -795,7 +823,7 @@ describe("new 0.8.0 improve metrics", () => {
       reflectFn: async ({ ref }) => ({
         schemaVersion: 2,
         ok: true,
-        proposal: makeProposal(ref ?? "memory:alpha"),
+        proposal: makeProposal(ref ?? "memories/alpha"),
         ref: ref ?? "",
         engine: "test",
         durationMs: 1,
@@ -805,7 +833,7 @@ describe("new 0.8.0 improve metrics", () => {
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -825,8 +853,8 @@ describe("new 0.8.0 improve metrics", () => {
     // 0.8.0 signal-delta gate requires recent feedback to make a ref eligible
     // for reflect. Add a feedback event for each ref so the planner queues
     // them and reflectFn (which returns cooldown) is actually called.
-    appendEvent({ eventType: "feedback", ref: "memories/beta", metadata: { signal: "positive" } });
-    appendEvent({ eventType: "feedback", ref: "memories/gamma", metadata: { signal: "positive" } });
+    appendEvent({ eventType: "feedback", ref: durableRef("memories/beta"), metadata: { signal: "positive" } });
+    appendEvent({ eventType: "feedback", ref: durableRef("memories/gamma"), metadata: { signal: "positive" } });
 
     // Return a cooldown result for every ref to drive reflectCooldownActions up.
     const result = await akmImprove({
@@ -846,7 +874,7 @@ describe("new 0.8.0 improve metrics", () => {
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -886,7 +914,7 @@ describe("new 0.8.0 improve metrics", () => {
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -949,7 +977,7 @@ describe("new 0.8.0 improve metrics", () => {
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -1017,13 +1045,13 @@ describe("new 0.8.0 improve metrics", () => {
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
     expect(result.proposalsExpired).toBeGreaterThanOrEqual(1);
     // The expired proposal must have been emitted as a `proposal_expired` event.
     const expiredEvents = readEvents({ type: "proposal_expired" });
-    expect(expiredEvents.events.some((e) => e.ref === durableItemRef(stashDir, "memory", "live-asset"))).toBe(true);
+    expect(expiredEvents.events.some((e) => e.ref === durableRef("memories/live-asset"))).toBe(true);
   });
 });

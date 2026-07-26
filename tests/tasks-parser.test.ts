@@ -123,16 +123,10 @@ describe("parseTaskDocument", () => {
     }
   });
 
-  test("rejects the retired `type:name` colon grammar in a prompt with a canonical-form hint", () => {
+  test("treats colon text as an inline prompt rather than a ref", () => {
     const yaml = ["version: 2", 'schedule: "0 8 * * 1"', "prompt: skill:code-review"].join("\n");
-    let caught: unknown;
-    try {
-      parseTaskDocument({ yaml, filePath: "/stash/tasks/x.yml", id: "x" });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(UsageError);
-    expect((caught as UsageError).message).toContain("skills/code-review");
+    const task = parseTaskDocument({ yaml, filePath: "/stash/tasks/x.yml", id: "x" });
+    expect(task.target).toMatchObject({ kind: "prompt", source: { kind: "inline", text: "skill:code-review" } });
   });
 
   test("a bare `word/word` prompt with no known stash subdir stays inline text", () => {

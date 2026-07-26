@@ -61,7 +61,11 @@ beforeEach(() => {
 
   saveConfig({
     semanticSearchMode: "off",
-    bundles: { searchpath: { path: searchPathDir } },
+    bundles: {
+      stash: { path: stashDir, writable: true },
+      searchpath: { path: searchPathDir },
+    },
+    defaultBundle: "stash",
   });
 });
 

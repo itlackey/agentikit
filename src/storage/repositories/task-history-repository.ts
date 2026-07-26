@@ -20,19 +20,12 @@ export type TaskHistoryDetail = {
   exitCode?: number | null;
 };
 
-export type TaskHistoryMetadata =
-  | {
-      metadataVersion: 1;
-      durationMs?: number;
-      detail?: TaskHistoryDetail;
-      legacyProfile?: string;
-    }
-  | {
-      metadataVersion: 2;
-      durationMs: number;
-      detail: TaskHistoryDetail | null;
-      engine?: string | null;
-    };
+export type TaskHistoryMetadata = {
+  metadataVersion: 2;
+  durationMs: number;
+  detail: TaskHistoryDetail | null;
+  engine?: string | null;
+};
 
 function metadataError(message: string): never {
   throw new Error(`invalid task_history metadata_json: ${message}`);
@@ -57,7 +50,7 @@ function validateDetail(value: unknown): asserts value is TaskHistoryDetail | nu
   }
 }
 
-/** Decode historical v1 and current v2 metadata without cross-version aliases. */
+/** Decode current task-history metadata. */
 export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryMetadata {
   let parsed: unknown = input;
   if (typeof input === "string") {
@@ -69,26 +62,7 @@ export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryM
   }
   if (!isRecord(parsed)) metadataError("root must be an object");
 
-  const version = parsed.metadataVersion ?? 1;
-  if (version === 1) {
-    const allowed = new Set(["metadataVersion", "durationMs", "detail", "profile"]);
-    const unknown = Object.keys(parsed).filter((key) => !allowed.has(key));
-    if (unknown.length > 0) metadataError(`unknown v1 fields: ${unknown.sort().join(", ")}`);
-    if (parsed.metadataVersion !== undefined && parsed.metadataVersion !== 1)
-      metadataError("invalid v1 metadataVersion");
-    if (parsed.durationMs !== undefined && typeof parsed.durationMs !== "number")
-      metadataError("durationMs must be a number");
-    if (parsed.profile !== undefined && typeof parsed.profile !== "string") metadataError("profile must be a string");
-    validateDetail(parsed.detail);
-    return {
-      metadataVersion: 1,
-      ...(typeof parsed.durationMs === "number" ? { durationMs: parsed.durationMs } : {}),
-      ...(parsed.detail !== undefined && parsed.detail !== null ? { detail: parsed.detail } : {}),
-      ...(typeof parsed.profile === "string" ? { legacyProfile: parsed.profile } : {}),
-    };
-  }
-
-  if (version === 2) {
+  if (parsed.metadataVersion === 2) {
     const allowed = new Set(["metadataVersion", "durationMs", "detail", "engine"]);
     const unknown = Object.keys(parsed).filter((key) => !allowed.has(key));
     if (unknown.length > 0) metadataError(`unknown v2 fields: ${unknown.sort().join(", ")}`);
@@ -106,7 +80,7 @@ export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryM
     };
   }
 
-  metadataError(`unsupported metadataVersion: ${String(version)}`);
+  metadataError(`unsupported metadataVersion: ${String(parsed.metadataVersion)}`);
 }
 
 /**

@@ -411,7 +411,7 @@ The JSONL file at `$CACHE/events.jsonl` is no longer written by akm. Existing fi
 
 ### `$STATE/tasks/history/<task-id>.jsonl` — Task Run History (legacy)
 
-These JSONL files are no longer written or read by akm. Existing files at `$CACHE/tasks/history/` or `$STATE/tasks/history/` can be imported into the `task_history` table in `state.db` using the migration script. See Step 7 of `akm-migrate-storage`.
+These JSONL files are no longer written or read by akm. Existing files at `$CACHE/tasks/history/` or `$STATE/tasks/history/` can be imported into the `task_history` table in `state.db` using the migration script. See Step 7 of `akm-migrate storage`.
 
 One line per execution: `{ id, status, startedAt, finishedAt, durationMs, log, target, detail? }`. No cleanup.
 

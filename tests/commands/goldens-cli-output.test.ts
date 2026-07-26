@@ -87,7 +87,11 @@ beforeEach(() => {
   // only sandboxes once per PROCESS, not per test (see its module docstring).
   storage = withIsolatedAkmStorage();
   stashDir = storage.stashDir;
-  writeSandboxConfig({ semanticSearchMode: "off" });
+  writeSandboxConfig({
+    semanticSearchMode: "off",
+    bundles: { stash: { path: stashDir, writable: true } },
+    defaultBundle: "stash",
+  });
   seedAssets();
 });
 

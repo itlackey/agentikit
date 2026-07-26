@@ -29,7 +29,7 @@ import path from "node:path";
 import { assembleAssetFromString, serializeFrontmatter } from "../../core/asset/asset-serialize";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { stripMarkdownFences } from "../../core/asset/markdown";
-import { type AssetRef, parseRefInput } from "../../core/asset/resolve-ref";
+import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import { DESCRIPTION_MAX_CHARS, requiresDescription } from "../../core/authoring-rules";
 import type { AkmConfig, ImproveProfileConfig, LlmProfileConfig } from "../../core/config/config";
 import { loadConfig } from "../../core/config/config";
@@ -79,7 +79,7 @@ import { emitProposal } from "./proposal-envelope";
 import { classifyReflectChange } from "./reflect-noise";
 import { createRunContext, type RunContext, resolveRunStashDir } from "./run-context";
 import { MAX_REJECTED_PROPOSALS } from "./shared";
-import { bareImproveRef, durableImproveRef, improveStateReadRefs } from "./source-identity";
+import { durableImproveRef, improveStateReadRefs } from "./source-identity";
 
 export interface AkmReflectOptions {
   /**
@@ -177,18 +177,10 @@ export interface AkmReflectOptions {
    * direct `akm reflect` invocations (no lane → downstream treats as `"unknown"`).
    */
   eligibilitySource?: EligibilitySource;
-  /** Source identity used only for durable event keys. */
-  sourceName?: string;
-  /** Read pre-source-qualification feedback only for the historical local stash. */
-  legacyBareState?: boolean;
   /**
-   * Chunk-5 flip F5f (Step 6 writers) — the resolved index entry's fully-qualified
-   * durable key (`<bundle>//<conceptId>`, from {@link ImproveEligibleRef.itemRef}).
-   * When present, reflect keys its `reflect_invoked` event and dual-armed source/
-   * distill_invoked reads on it, falling back to the pre-flip source-qualified
-   * `durableImproveRef` spelling otherwise. NULL through the improve path today
-   * (item_ref not yet populated), so every `itemRef ?? durable` reduces to
-   * `durable` byte-identically. // Chunk-8: collapse to `itemRef` alone.
+   * The resolved index entry's fully-qualified durable key
+   * (`<bundle>//<conceptId>`, from {@link ImproveEligibleRef.itemRef}).
+   * When absent, reflect uses the input conceptId as its durable key.
    */
   itemRef?: string;
 }
@@ -209,11 +201,9 @@ const MAX_GLOBAL_FEEDBACK_LINES = 20;
  * all assets so `akm reflect` can operate in a general "review recent
  * signals" mode. Best-effort — a missing or empty events stream returns `[]`.
  */
-function readRecentFeedback(ref?: string, legacyRef?: string): string[] {
+function readRecentFeedback(ref?: string): string[] {
   try {
-    const result = readEvents({ type: "feedback", ...(ref && !legacyRef ? { ref } : {}) });
-    const events =
-      ref && legacyRef ? result.events.filter((event) => event.ref === ref || event.ref === legacyRef) : result.events;
+    const events = readEvents({ type: "feedback", ...(ref ? { ref } : {}) }).events;
     const lines: string[] = [];
     const limit = ref ? MAX_FEEDBACK_LINES : MAX_GLOBAL_FEEDBACK_LINES;
     for (const event of events.slice(-limit)) {
@@ -264,7 +254,7 @@ export const REFLECT_ALLOWED_TYPES: ReadonlySet<string> = new Set([
  * LLM tried to rewrite them.
  *
  * Observed regression: proposal `26941510` (May 2026) renamed
- * `skill:openpalm-stack-diagnostics`'s `name` field to `"diagnostic-checklist"`.
+ * `skills/openpalm-stack-diagnostics`'s `name` field to `"diagnostic-checklist"`.
  */
 const PROTECTED_FRONTMATTER_FIELDS: ReadonlySet<string> = new Set(["name", "ref", "id", "slug", "type"]);
 
@@ -299,7 +289,7 @@ function readRejectedProposals(stash: string, ref?: string): RejectedProposalCon
  * to this file instead of inlining it in JSON on stdout. This bypasses two
  * known failure modes for long assets: (a) ARG_MAX truncation on prompt
  * round-trips through fenced JSON, and (b) embedded-JSON parser brittleness
- * on multi-KB bodies (e.g. the `knowledge:systems/KOKORO_USAGE_GUIDE` 8.4KB
+ * on multi-KB bodies (e.g. the `knowledge/systems/KOKORO_USAGE_GUIDE` 8.4KB
  * payload that produced 4/5 `parse_error` in May 2026 reflect validation).
  *
  * The path lives under {@link os.tmpdir} and embeds the (sanitized) ref +
@@ -353,16 +343,14 @@ async function readRelatedLessons(
   stash: string,
   ref: string,
   parsedRef: { type: string; name: string },
-  sourceName?: string,
   itemRef?: string,
-  legacyBareState?: boolean,
 ): Promise<RelatedLesson[]> {
   if (parsedRef.type !== "skill") return [];
 
   const related = new Map<string, RelatedLesson>();
   const derivedLessonRef = deriveLessonRef(ref);
   const candidateRefs = new Set<string>([derivedLessonRef]);
-  const derivedLessonPath = path.join(stash, "lessons", `${derivedLessonRef.slice("lesson:".length)}.md`);
+  const derivedLessonPath = path.join(stash, "lessons", `${parseRefInput(derivedLessonRef).name}.md`);
   if (fs.existsSync(derivedLessonPath)) {
     // WI-9.10: genuine content read — routed through the per-invocation asset
     // memo (D6). No write to this same path happens later in this invocation,
@@ -371,17 +359,14 @@ async function readRelatedLessons(
   }
 
   try {
-    // Chunk-5 flip F5f (Step 6 readers) — dual-arm the distill_invoked filter on
-    // [item_ref, durable, bare] so an event keyed under EITHER grammar resolves
-    // once the writers emit item_ref. Dormant: item_ref NULL through improve
-    // today, so the key set is [durable] byte-identically. // Chunk-8: [item_ref].
-    const distillInvokedKeys = new Set(improveStateReadRefs(ref, sourceName, legacyBareState ?? false, itemRef));
+    // Match events using the candidate's single durable state key.
+    const distillInvokedKeys = new Set(improveStateReadRefs(ref, itemRef));
     const feedbackEvents = readEvents({ type: "distill_invoked" }).events.filter(
       (event) => event.ref !== undefined && distillInvokedKeys.has(event.ref),
     );
     for (const event of feedbackEvents) {
       const lessonRef = typeof event.metadata?.lessonRef === "string" ? event.metadata.lessonRef : undefined;
-      if (lessonRef?.startsWith("lesson:")) candidateRefs.add(lessonRef);
+      if (lessonRef && lenientRefType(lessonRef) === "lesson") candidateRefs.add(lessonRef);
     }
   } catch {
     // Best effort only.
@@ -389,7 +374,7 @@ async function readRelatedLessons(
 
   for (const candidateRef of candidateRefs) {
     try {
-      const filePath = await findAssetFilePath(durableImproveRef(candidateRef, sourceName), stash);
+      const filePath = await findAssetFilePath(durableImproveRef(candidateRef), stash);
       if (!filePath || !fs.existsSync(filePath)) continue;
       const content = ctx.readAsset(filePath);
       related.set(candidateRef, { ref: candidateRef, content });
@@ -406,7 +391,7 @@ async function readRelatedLessons(
         const content = ctx.readAsset(path.join(lessonsDir, fileName));
         if (!hasRelatedSkillSource(content, ref)) continue;
         const lessonName = fileName.slice(0, -3);
-        const lessonRef = `lesson:${lessonName}`;
+        const lessonRef = conceptIdFromTypeName("lesson", lessonName);
         if (!related.has(lessonRef)) {
           related.set(lessonRef, { ref: lessonRef, content });
         }
@@ -1731,10 +1716,9 @@ async function resolveReflectSource(
       assetContent = options.assetContent;
     } else {
       try {
-        // Chunk-5 flip F5f — resolve the source asset by item_ref when the planner
-        // supplied one (the index entry carries it), else the pre-flip durable ref.
-        // Dormant: item_ref NULL today, so this reduces to the durable ref.
-        const qualifiedRef = options.itemRef ?? durableImproveRef(options.ref, options.sourceName);
+        // Resolve the source by item_ref when planning supplied one, otherwise
+        // use the input conceptId.
+        const qualifiedRef = options.itemRef ?? durableImproveRef(options.ref);
         const localFilePath = await findAssetFilePath(qualifiedRef, stash);
         if (localFilePath && fs.existsSync(localFilePath)) {
           assetContent = fs.readFileSync(localFilePath, "utf8");
@@ -1829,7 +1813,7 @@ async function runReflectRefineIterations(args: {
       // Issue A (#reflect-pipeline file-write contract): when the runner can
       // touch the filesystem, instruct the agent to write the proposal body
       // to a tmp file instead of inlining it in JSON. Avoids parse failures
-      // on long bodies (e.g. knowledge:systems/KOKORO_USAGE_GUIDE 8.4KB).
+      // on long bodies (e.g. knowledge/systems/KOKORO_USAGE_GUIDE 8.4KB).
       ...(iterDraftPath ? { draftFilePath: iterDraftPath } : {}),
       ...(outputMode ? { outputMode } : {}),
     });
@@ -1955,9 +1939,8 @@ function emitReflectInvokedAndBuildFailureEmitter(
   appendEvent(
     {
       eventType: "reflect_invoked",
-      // Chunk-5 flip F5f — key on item_ref when the planner resolved one, else the
-      // pre-flip source-qualified durable ref (dormant: item_ref NULL today).
-      ...(options.ref ? { ref: options.itemRef ?? durableImproveRef(options.ref, options.sourceName) } : {}),
+      // Key on item_ref when planning supplied one, otherwise the conceptId.
+      ...(options.ref ? { ref: options.itemRef ?? durableImproveRef(options.ref) } : {}),
       metadata: {
         ...(options.task ? { task: options.task } : {}),
         ...(options.engine ? { engine: options.engine } : {}),
@@ -2015,23 +1998,10 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
   // 4. Build the shared prompt inputs — feedback, hints, lessons, rejected
   // proposals. These are stable across refinement iterations; only the
   // `priorDraft` field changes per-iteration (R-1 / #372).
-  const feedback = readRecentFeedback(
-    options.ref ? durableImproveRef(options.ref, options.sourceName) : undefined,
-    options.ref && options.legacyBareState ? bareImproveRef(options.ref) : undefined,
-  );
+  const feedback = readRecentFeedback(options.ref ? (options.itemRef ?? durableImproveRef(options.ref)) : undefined);
   const schemaHints = buildSchemaHints(parsedRef?.type ?? "", assetContent);
   const relatedLessons =
-    options.ref && parsedRef
-      ? await readRelatedLessons(
-          assetCtx,
-          stash,
-          options.ref,
-          parsedRef,
-          options.sourceName,
-          options.itemRef,
-          options.legacyBareState,
-        )
-      : [];
+    options.ref && parsedRef ? await readRelatedLessons(assetCtx, stash, options.ref, parsedRef, options.itemRef) : [];
   // Reflexion-style verbal-RL: inject rejected proposals so the agent avoids
   // reproducing proposals that have already been reviewed and refused.
   const rejectedProposals = readRejectedProposals(stash, options.ref);
@@ -2141,8 +2111,8 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
 
   // 6b. Validate payload.ref === options.ref (R-3 / #366).
   // A hallucinating agent can silently retarget proposals to a different ref.
-  // This guard normalises both refs through parseRefInput (dual-grammar) so origin-prefix
-  // differences do not cause false positives, then rejects mismatches.
+  // Parse both current refs so an optional bundle prefix does not cause a false
+  // positive, then reject genuine concept mismatches.
   // References: CRITIC (arXiv:2305.11738), CoVe (arXiv:2309.11495).
   if (options.ref) {
     try {

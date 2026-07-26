@@ -41,7 +41,7 @@ describe("config schema drift pins", () => {
     const props = schema.properties as Record<string, unknown>;
     const index = props.index as { properties?: Record<string, unknown> };
     expect(Object.keys(index.properties ?? {})).toContain("metadataEnhance");
-    expect(Object.keys(index.properties ?? {})).toContain("stalenessDetection");
+    expect(Object.keys(index.properties ?? {})).not.toContain("stalenessDetection");
     // SPEC-8: reserved boolean feature flag gating body-opening indexing.
     expect(Object.keys(index.properties ?? {})).toContain("indexBodyOpening");
     const indexBodyOpening = index.properties?.indexBodyOpening as { type?: string };
@@ -62,6 +62,7 @@ describe("config schema drift pins", () => {
       expect(entryProps).toContain(key);
     }
     expect(props.defaultBundle).toEqual({ type: "string", minLength: 1 });
+    expect(props.writable).toBeUndefined();
     // `bindings` (Tier B) is never part of the accepted config surface.
     expect(props.bindings).toBeUndefined();
   });

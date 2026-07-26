@@ -191,7 +191,7 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
   fs.writeFileSync(assetPath, authoredContent.endsWith("\n") ? authoredContent : `${authoredContent}\n`, "utf8");
   recordWriteTargetPath(target.source, assetPath);
 
-  const defaultBundle = defaultBundleForTarget(config, target);
+  const defaultBundle = defaultBundleForTarget(config);
   const ref = makeBundleRef(target.source.name === defaultBundle ? undefined : target.source.name, conceptId);
   commitWriteTargetBoundary(target, `Create ${ref}`);
 

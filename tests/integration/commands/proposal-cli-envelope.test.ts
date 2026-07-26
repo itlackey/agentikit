@@ -16,9 +16,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { createProposal, isProposalSkipped } from "../../../src/commands/proposal/repository";
+import { slugForPath } from "../../../src/indexer/installations";
 import { runCliCapture } from "../../_helpers/cli";
 import { durableItemRef } from "../../_helpers/durable-ref";
-import { makeSandboxDir, type SandboxedDir, withEnv } from "../../_helpers/sandbox";
+import { makeSandboxDir, type SandboxedDir, withEnv, writeSandboxConfig } from "../../_helpers/sandbox";
 
 const disposers: SandboxedDir[] = [];
 
@@ -32,6 +33,12 @@ function makeStashDir(): string {
   for (const sub of ["lessons", "skills", "memories", "knowledge"]) {
     fs.mkdirSync(path.join(d.dir, sub), { recursive: true });
   }
+  const bundleId = slugForPath(d.dir);
+  writeSandboxConfig({
+    bundles: { [bundleId]: { path: d.dir, writable: true } },
+    defaultBundle: bundleId,
+    defaultWriteTarget: bundleId,
+  });
   return d.dir;
 }
 

@@ -13,16 +13,11 @@ const oldBunPathDir = path.join(testRoot, "old bun path");
 const unusableBunPathDir = path.join(testRoot, "unusable bun path");
 const windowsShimDir = path.join(testRoot, "generated windows shims");
 const launcher = path.join(packageDir, "akm");
-const migrateLauncher = path.join(packageDir, "akm-migrate-storage");
+const migrateLauncher = path.join(packageDir, "akm-migrate");
 
-const launchers = [
-  { bin: "akm-fixture", bunArtifact: "bun-cli", nodeArtifact: "node-cli" },
-  {
-    bin: "akm-migrate-fixture",
-    bunArtifact: "bun-migrate",
-    nodeArtifact: "node-migrate",
-  },
-];
+const akmCase = { bin: "akm-fixture", bunArtifact: "bun-cli", nodeArtifact: "node-cli" } as const;
+const migrateCase = { bin: "akm-migrate-fixture", bunArtifact: "bun-migrate" } as const;
+const launchers = [akmCase, migrateCase];
 
 function result(stdout: Uint8Array): { artifact: string; args: string[] } {
   const line = new TextDecoder().decode(stdout).trim().split(/\r?\n/).at(-1);
@@ -65,7 +60,7 @@ async function generateWindowsShims(): Promise<void> {
   await Promise.all(
     launchers.map((testCase) =>
       cmdShim(
-        path.join(packageDir, testCase.bin === "akm-fixture" ? "akm" : "akm-migrate-storage"),
+        path.join(packageDir, testCase.bin === "akm-fixture" ? "akm" : "akm-migrate"),
         path.join(windowsShimDir, testCase.bin),
       ),
     ),
@@ -88,7 +83,7 @@ beforeAll(async () => {
   fs.mkdirSync(nodeOnlyPathDir, { recursive: true });
   fs.mkdirSync(path.join(packageDir, "scripts"), { recursive: true });
   fs.copyFileSync(path.join(REPO_ROOT, "scripts", "node-runtime", "akm"), launcher);
-  fs.copyFileSync(path.join(REPO_ROOT, "scripts", "node-runtime", "akm-migrate-storage"), migrateLauncher);
+  fs.copyFileSync(path.join(REPO_ROOT, "scripts", "node-runtime", "akm-migrate"), migrateLauncher);
   fs.chmodSync(launcher, 0o755);
   fs.chmodSync(migrateLauncher, 0o755);
   fs.writeFileSync(
@@ -97,7 +92,7 @@ beforeAll(async () => {
       name: "akm-launcher-fixture",
       version: "1.0.0",
       type: "module",
-      bin: { "akm-fixture": "akm", "akm-migrate-fixture": "akm-migrate-storage" },
+      bin: { "akm-fixture": "akm", "akm-migrate-fixture": "akm-migrate" },
     }),
   );
   fs.writeFileSync(
@@ -109,12 +104,8 @@ beforeAll(async () => {
     'console.log(JSON.stringify({ artifact: "node-cli", args: process.argv.slice(2) }));\n',
   );
   fs.writeFileSync(
-    path.join(packageDir, "scripts", "migrate-storage.js"),
+    path.join(packageDir, "scripts", "akm-migrate.js"),
     'console.log(JSON.stringify({ artifact: "bun-migrate", args: process.argv.slice(2) }));\n',
-  );
-  fs.writeFileSync(
-    path.join(packageDir, "migrate-storage-node.mjs"),
-    'console.log(JSON.stringify({ artifact: "node-migrate", args: process.argv.slice(2) }));\n',
   );
   fs.writeFileSync(path.join(consumerDir, "package.json"), JSON.stringify({ name: "consumer", private: true }));
 
@@ -160,34 +151,33 @@ describe("package launcher", () => {
     }
   });
 
-  test("npm's generated platform shims fall back to Node wrappers when Bun is unavailable", () => {
-    for (const testCase of launchers) {
-      const launched = launchThroughNpmShim(testCase.bin, nodeOnlyPathDir);
+  test("the core launcher falls back to Node and the migration launcher requires Bun", () => {
+    const core = launchThroughNpmShim(akmCase.bin, nodeOnlyPathDir);
+    expect(new TextDecoder().decode(core.stderr)).toBe("");
+    expect(core.exitCode).toBe(0);
+    expect(result(core.stdout)).toEqual({ artifact: akmCase.nodeArtifact, args: ["argument with spaces"] });
 
-      expect(new TextDecoder().decode(launched.stderr)).toBe("");
-      expect(launched.exitCode).toBe(0);
-      expect(result(launched.stdout)).toEqual({
-        artifact: testCase.nodeArtifact,
-        args: ["argument with spaces"],
-      });
-    }
+    const migration = launchThroughNpmShim(migrateCase.bin, nodeOnlyPathDir);
+    expect(new TextDecoder().decode(migration.stdout)).toBe("");
+    expect(new TextDecoder().decode(migration.stderr)).toContain("akm-migrate requires Bun >= 1.0");
+    expect(migration.exitCode).toBe(1);
   });
 
-  test("falls back to Node when Bun is below the supported floor or unusable", () => {
+  test("handles Bun below the supported floor or unusable according to each launcher contract", () => {
     const node = Bun.which("node");
     if (!node) throw new Error("Node.js is required for the package launcher contract test");
 
     for (const bunDir of [oldBunPathDir, unusableBunPathDir]) {
-      for (const testCase of launchers) {
-        const launched = launchThroughNpmShim(testCase.bin, runtimePath(node, path.join(bunDir, "bun")));
+      const pathValue = runtimePath(node, path.join(bunDir, "bun"));
+      const core = launchThroughNpmShim(akmCase.bin, pathValue);
+      expect(new TextDecoder().decode(core.stderr)).toBe("");
+      expect(core.exitCode).toBe(0);
+      expect(result(core.stdout)).toEqual({ artifact: akmCase.nodeArtifact, args: ["argument with spaces"] });
 
-        expect(new TextDecoder().decode(launched.stderr)).toBe("");
-        expect(launched.exitCode).toBe(0);
-        expect(result(launched.stdout)).toEqual({
-          artifact: testCase.nodeArtifact,
-          args: ["argument with spaces"],
-        });
-      }
+      const migration = launchThroughNpmShim(migrateCase.bin, pathValue);
+      expect(new TextDecoder().decode(migration.stdout)).toBe("");
+      expect(new TextDecoder().decode(migration.stderr)).toContain("akm-migrate requires Bun >= 1.0");
+      expect(migration.exitCode).toBe(1);
     }
   });
 
@@ -197,8 +187,8 @@ describe("package launcher", () => {
 
       expect(shim).toContain('SET "_prog=node"');
       expect(shim).toContain("%*");
-      expect(shim).toContain(testCase.bin === "akm-fixture" ? "akm" : "akm-migrate-storage");
-      expect(shim).toContain(`package with spaces\\${testCase.bin === "akm-fixture" ? "akm" : "akm-migrate-storage"}`);
+      expect(shim).toContain(testCase.bin === "akm-fixture" ? "akm" : "akm-migrate");
+      expect(shim).toContain(`package with spaces\\${testCase.bin === "akm-fixture" ? "akm" : "akm-migrate"}`);
       expect(shim).not.toContain("bun.exe");
     }
   });

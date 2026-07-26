@@ -74,7 +74,7 @@ test("full reindex relinks duplicate usage only to its qualified source and scop
   // conceptId (`[bundle//]memories/duplicate`), not the legacy `memory:duplicate`.
   insert.run(null, "team//memories/duplicate");
   insert.run(stashId as number, "stash//memories/duplicate");
-  insert.run(stashId as number, "memories/duplicate");
+  insert.run(null, "memories/duplicate");
   stateDb.close();
 
   await akmIndex({ stashDir, full: true });
@@ -95,11 +95,10 @@ test("full reindex relinks duplicate usage only to its qualified source and scop
         ? null
         : ((stashDirById.get(r.entry_id) as { stash_dir: string } | undefined)?.stash_dir ?? null),
   }));
-  // Relinking remains origin-faithful: short/default refs attach to the stash
-  // row and the qualified team ref attaches only to the team row.
+  // Relinking remains bundle-faithful; the bare row stays detached.
   const stashLinked = linked.filter((r) => r.stash_dir === stashDir);
-  expect(stashLinked.length).toBe(2);
-  expect(stashLinked.map((r) => r.entry_ref).sort()).toEqual(["memories/duplicate", "stash//memories/duplicate"]);
+  expect(stashLinked).toEqual([{ entry_ref: "stash//memories/duplicate", stash_dir: stashDir }]);
+  expect(linked.find((row) => row.entry_ref === "memories/duplicate")?.stash_dir).toBeNull();
   const teamRow = linked.filter((r) => r.entry_ref === "team//memories/duplicate");
   expect(teamRow).toEqual([{ entry_ref: "team//memories/duplicate", stash_dir: teamDir }]);
   const quarantined = stateDb2
@@ -110,16 +109,14 @@ test("full reindex relinks duplicate usage only to its qualified source and scop
     getRetrievalCounts(db, stateDb2, ["memories/duplicate"], {
       stashDir: teamDir,
       sourceName: "team",
-      includeLegacyBare: false,
     }).get("memories/duplicate"),
   ).toBe(1);
   expect(
     getRetrievalCounts(db, stateDb2, ["memories/duplicate"], {
       stashDir,
       sourceName: "stash",
-      includeLegacyBare: true,
     }).get("memories/duplicate"),
-  ).toBe(2);
+  ).toBe(1);
   closeDatabase(db);
   stateDb2.close();
 });

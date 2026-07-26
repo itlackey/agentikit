@@ -15,9 +15,9 @@ import {
   normalizeDirectProvenance,
   parseConsolidationFidelityManifest,
 } from "../scripts/akm-eval/src/consolidation-fidelity";
+import { legacyRefToBundleRef } from "../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import { checkMergeInformationFloor } from "../src/commands/improve/anti-collapse";
 import { bundleRefToString, parseBundleRef } from "../src/core/asset/asset-ref";
-import { legacyRefToBundleRef } from "../src/migrate/legacy-ref-grammar";
 
 const manifest = loadConsolidationFidelityManifest();
 const holdout = loadConsolidationFidelityManifest(CONSOLIDATION_FIDELITY_HOLDOUT_MANIFEST_PATH);

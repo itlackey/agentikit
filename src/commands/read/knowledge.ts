@@ -245,7 +245,7 @@ function resolveWriteRefRoots(target?: string): { roots: WriteRefRoot[] } {
   const stashRoot = writeTarget.source.path;
   let workingStash: string | undefined;
   try {
-    workingStash = resolveStashDir({ readOnly: true });
+    workingStash = resolveStashDir();
   } catch {
     // No working stash configured — the write target alone.
   }

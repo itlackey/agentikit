@@ -5,12 +5,12 @@
 import { expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import type { AkmConfig } from "../../../src/core/config/config";
-import { getLockfilePath } from "../../../src/core/paths";
 import {
   applyTaskTargetRefMigration,
   planTaskTargetRefMigration,
-} from "../../../src/migrate/legacy/task-target-ref-migration";
+} from "../../../scripts/akm-migrate/migrate/legacy/task-target-ref-migration";
+import type { AkmConfig } from "../../../src/core/config/config";
+import { getLockfilePath } from "../../../src/core/paths";
 import { makeSandboxDir, sandboxXdgDataHome } from "../../_helpers/sandbox";
 
 function configFor(
@@ -118,7 +118,7 @@ test("fails closed for ambiguous origins but rewrites a stale missing workflow t
           second: { path: second, registryId: "shared" },
         }),
       ),
-    ).toThrow(/ambiguous.*shared.*first.*second.*rerun `akm migrate apply`/i);
+    ).toThrow(/ambiguous.*shared.*first.*second.*rerun `akm-migrate apply`/i);
 
     fs.writeFileSync(
       path.join(stash, "tasks", "ambiguous.yml"),

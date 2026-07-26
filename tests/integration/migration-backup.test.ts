@@ -6,13 +6,14 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { acquireMaintenanceActivity, acquireMaintenanceBarrier } from "../../src/core/maintenance-barrier";
+import { getLegacyWorkflowDbPath } from "../../scripts/akm-migrate/migrate/legacy/legacy-paths";
 import {
   createMigrationBackup,
   getMigrationBackupDir,
   restoreMigrationBackup,
   verifyMigrationBackup,
-} from "../../src/core/migration-backup";
+} from "../../scripts/akm-migrate/migration-backup";
+import { acquireMaintenanceActivity, acquireMaintenanceBarrier } from "../../src/core/maintenance-barrier";
 import {
   getConfigPath,
   getDataDir,
@@ -23,7 +24,6 @@ import {
 import { runMigrations as runStateMigrations } from "../../src/core/state/migrations";
 import { openStateDatabase } from "../../src/core/state-db";
 import { acquireIndexWriterLease } from "../../src/indexer/index-writer-lock";
-import { getLegacyWorkflowDbPath } from "../../src/migrate/legacy/legacy-paths";
 import { openLegacyWorkflowDb } from "../_helpers/legacy-workflow-db";
 import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome, sandboxXdgDataHome } from "../_helpers/sandbox";
 

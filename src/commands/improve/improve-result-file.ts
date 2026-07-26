@@ -107,7 +107,6 @@ export function recordImproveRunResult(
       completedAt,
       stashDir,
       dryRun: Boolean(result.dryRun),
-      legacyProfile: redactSensitiveValue(decoded.legacyProfile, sensitiveValues),
       strategy: redactSensitiveValue(decoded.strategy, sensitiveValues),
       scopeMode: result.scope?.mode ?? "all",
       scopeValue: persistedResult.scope?.value ?? null,

@@ -5,11 +5,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { planTaskTargetRefMigration } from "../../scripts/akm-migrate/migrate/legacy/task-target-ref-migration";
+import { getMigrationApplyJournalPath, inspectMigrationState } from "../../scripts/akm-migrate/migration-backup";
 import type { AkmConfig } from "../../src/core/config/config";
-import { getMigrationApplyJournalPath, inspectMigrationState } from "../../src/core/migration-backup";
 import { getConfigPath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
-import { planTaskTargetRefMigration } from "../../src/migrate/legacy/task-target-ref-migration";
 import { openStateDbAtCeiling, PRE_CUTOVER_STATE_CEILING } from "../_fixtures/migration/seed-rows";
 import { runCliCapture } from "../_helpers/cli";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";

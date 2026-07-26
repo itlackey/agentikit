@@ -5,6 +5,7 @@ import path from "node:path";
 import { akmProposalAccept } from "../../../src/commands/proposal/proposal";
 import { createProposal, isProposalSkipped } from "../../../src/commands/proposal/repository";
 import type { AkmConfig } from "../../../src/core/config/config";
+import { slugForPath } from "../../../src/indexer/installations";
 import { runCliCapture } from "../../_helpers/cli";
 import { durableItemRef } from "../../_helpers/durable-ref";
 import { makeSandboxDir, type SandboxedDir, withEnv, writeSandboxConfig } from "../../_helpers/sandbox";
@@ -31,6 +32,12 @@ function makeStashDir(): string {
   for (const sub of ["lessons", "skills", "memories", "knowledge"]) {
     fs.mkdirSync(path.join(stash, sub), { recursive: true });
   }
+  const bundleId = slugForPath(stash);
+  writeSandboxConfig({
+    bundles: { [bundleId]: { path: stash, writable: true } },
+    defaultBundle: bundleId,
+    defaultWriteTarget: bundleId,
+  });
   return stash;
 }
 
@@ -71,6 +78,7 @@ describe("akm proposal drain strategy selector", () => {
       configVersion: "0.9.0",
       bundles: { stash: { path: stashDir, writable: true } },
       defaultBundle: "stash",
+      defaultWriteTarget: "stash",
       defaults: { improveStrategy: "queue-only" },
       improve: {
         strategies: {

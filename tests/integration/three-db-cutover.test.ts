@@ -19,26 +19,29 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { cutoverStashRootsFromConfig } from "../../src/cli/config-migrate";
-import { createProposal } from "../../src/commands/proposal/repository";
-import { parseFrontmatter } from "../../src/core/asset/frontmatter";
-import { deriveBundleIds, deriveLegacyBundleIds } from "../../src/core/bundle-id";
-import type { AkmConfig } from "../../src/core/config/config";
-import { getMigrationApplyJournalPath } from "../../src/core/migration-backup";
-import { getMigrationOperationRoot } from "../../src/core/migration-operation";
-import { getConfigPath, getDataDir, getDbPath, getLockfilePath, getStateDbPathInDataDir } from "../../src/core/paths";
-import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
-import type { StashFile } from "../../src/indexer/passes/metadata";
-import { type ContentMigrationReport, runContentMigration } from "../../src/migrate/legacy/content-migration";
-import { getLegacyWorkflowDbPath } from "../../src/migrate/legacy/legacy-paths";
-import { writeLegacyStashFile } from "../../src/migrate/legacy/legacy-stash-json";
-import { importLegacyProposalsIntoState } from "../../src/migrate/legacy/proposal-fs-import";
+import { cutoverStashRootsFromConfig } from "../../scripts/akm-migrate/config-migrate";
+import {
+  type ContentMigrationReport,
+  runContentMigration,
+} from "../../scripts/akm-migrate/migrate/legacy/content-migration";
+import { getLegacyWorkflowDbPath } from "../../scripts/akm-migrate/migrate/legacy/legacy-paths";
+import { writeLegacyStashFile } from "../../scripts/akm-migrate/migrate/legacy/legacy-stash-json";
+import { importLegacyProposalsIntoState } from "../../scripts/akm-migrate/migrate/legacy/proposal-fs-import";
 import {
   buildCutoverRefMap,
   deleteWorkflowDb,
   migratePilotTreatmentFiles,
   quarantineIndexDb,
-} from "../../src/migrate/legacy/three-db-cutover";
+} from "../../scripts/akm-migrate/migrate/legacy/three-db-cutover";
+import { getMigrationApplyJournalPath } from "../../scripts/akm-migrate/migration-backup";
+import { createProposal } from "../../src/commands/proposal/repository";
+import { parseFrontmatter } from "../../src/core/asset/frontmatter";
+import { deriveBundleIds, deriveLegacyBundleIds } from "../../src/core/bundle-id";
+import type { AkmConfig } from "../../src/core/config/config";
+import { getMigrationOperationRoot } from "../../src/core/migration-operation";
+import { getConfigPath, getDataDir, getDbPath, getLockfilePath, getStateDbPathInDataDir } from "../../src/core/paths";
+import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
+import type { StashFile } from "../../src/indexer/passes/metadata";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
 import {
   buildOrphanBearingStateDb,
@@ -1193,7 +1196,7 @@ describe("WI-8.5d (f) — content migration folds .stash.json + D-R6 renames mis
 // ─────────────────────────────────────────────────────────────────────────────
 // (g) Pre-0.9 filesystem-proposal import — folded out of the live per-op path
 //     (was `withProposalsDb` → `importLegacyProposalFiles`) INTO this one-time
-//     migrator step (`src/migrate/legacy/proposal-fs-import.ts`).
+//     migrator step (`scripts/akm-migrate/migrate/legacy/proposal-fs-import.ts`).
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Write one pre-0.9.0 `<stash>/.akm/proposals[/archive]/<id>/proposal.json`. */

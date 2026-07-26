@@ -72,11 +72,11 @@ describe("Migration 010 — asset_outcome table", () => {
             negative_feedback_count, accepted_change_count,
             outcome_score, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run("lesson:test", 0, 0, 0.0, 0, 0, 0.0, NOW);
+      ).run("lessons/test", 0, 0, 0.0, 0, 0, 0.0, NOW);
 
-      const row = getAssetOutcome(db, "lesson:test");
+      const row = getAssetOutcome(db, "lessons/test");
       expect(row).toBeDefined();
-      expect(row?.asset_ref).toBe("lesson:test");
+      expect(row?.asset_ref).toBe("lessons/test");
     } finally {
       db.close();
     }
@@ -90,7 +90,7 @@ describe("updateAssetOutcome — warm-start on first insert", () => {
     const { db } = openTestDb();
     try {
       const result = updateAssetOutcome(db, {
-        ref: "skill:alpha",
+        ref: "skills/alpha",
         currentRetrievalCount: 5,
         lastRetrievedAt: NOW,
         acceptedChangeCount: 2,
@@ -103,7 +103,7 @@ describe("updateAssetOutcome — warm-start on first insert", () => {
       // outcome_score should be clipped to WARM_START_CAP, not the full 0.9.
       expect(result.outcomeScore).toBe(WARM_START_CAP);
 
-      const row = getAssetOutcome(db, "skill:alpha");
+      const row = getAssetOutcome(db, "skills/alpha");
       expect(row?.outcome_score).toBe(WARM_START_CAP);
       expect(row?.retrieval_count).toBe(5);
       // Warm-start seeds expected_retrieval_rate = 0 (no delta history yet),
@@ -119,7 +119,7 @@ describe("updateAssetOutcome — warm-start on first insert", () => {
     const { db } = openTestDb();
     try {
       const result = updateAssetOutcome(db, {
-        ref: "lesson:beta",
+        ref: "lessons/beta",
         currentRetrievalCount: 0,
         lastRetrievedAt: 0,
         acceptedChangeCount: 0,
@@ -139,7 +139,7 @@ describe("updateAssetOutcome — warm-start on first insert", () => {
     try {
       // WARM_START_CAP = 0.3, utilityScore = 0.5 (above cap)
       const result = updateAssetOutcome(db, {
-        ref: "knowledge:gamma",
+        ref: "knowledge/gamma",
         currentRetrievalCount: 0,
         lastRetrievedAt: 0,
         acceptedChangeCount: 0,
@@ -157,7 +157,7 @@ describe("updateAssetOutcome — warm-start on first insert", () => {
     const { db } = openTestDb();
     try {
       const result = updateAssetOutcome(db, {
-        ref: "memory:delta",
+        ref: "memories/delta",
         currentRetrievalCount: 0,
         lastRetrievedAt: 0,
         acceptedChangeCount: 0,
@@ -181,7 +181,7 @@ describe("updateAssetOutcome — differential update (second call)", () => {
     try {
       // Seed row.
       updateAssetOutcome(db, {
-        ref: "skill:epsilon",
+        ref: "skills/epsilon",
         currentRetrievalCount: 10,
         lastRetrievedAt: NOW,
         acceptedChangeCount: 3,
@@ -192,7 +192,7 @@ describe("updateAssetOutcome — differential update (second call)", () => {
 
       // Second update with more retrievals.
       const result = updateAssetOutcome(db, {
-        ref: "skill:epsilon",
+        ref: "skills/epsilon",
         currentRetrievalCount: 14, // +4 retrievals
         lastRetrievedAt: NOW + 1000,
         acceptedChangeCount: 4,
@@ -203,7 +203,7 @@ describe("updateAssetOutcome — differential update (second call)", () => {
 
       expect(result.isNewRow).toBe(false);
 
-      const row = getAssetOutcome(db, "skill:epsilon");
+      const row = getAssetOutcome(db, "skills/epsilon");
       expect(row?.retrieval_count).toBe(14);
       // Score should be updated (not the same as the seed).
       expect(typeof row?.outcome_score).toBe("number");
@@ -222,12 +222,12 @@ describe("updateAssetOutcome — differential update (second call)", () => {
            (asset_ref, last_retrieved_at, retrieval_count, expected_retrieval_rate,
             negative_feedback_count, accepted_change_count,
             outcome_score, updated_at)
-         VALUES ('lesson:zeta', 0, 20, 20.0, 0, 0, 0.2, ?)`,
+         VALUES ('lessons/zeta', 0, 20, 20.0, 0, 0, 0.2, ?)`,
       ).run(NOW);
 
       // Only 21 retrievals vs. expected 20 → small delta (1), small penalty.
       const result = updateAssetOutcome(db, {
-        ref: "lesson:zeta",
+        ref: "lessons/zeta",
         currentRetrievalCount: 21,
         lastRetrievedAt: NOW,
         acceptedChangeCount: 0,
@@ -255,12 +255,12 @@ describe("updateAssetOutcome — differential update (second call)", () => {
            (asset_ref, last_retrieved_at, retrieval_count, expected_retrieval_rate,
             negative_feedback_count, accepted_change_count,
             outcome_score, updated_at)
-         VALUES ('lesson:eta', 0, 100, 100.0, 10, 0, -0.9, ?)`,
+         VALUES ('lessons/eta', 0, 100, 100.0, 10, 0, -0.9, ?)`,
       ).run(NOW);
 
       // Extreme penalty: large retrieval_delta, zero acceptance, negative valence.
       const result = updateAssetOutcome(db, {
-        ref: "lesson:eta",
+        ref: "lessons/eta",
         currentRetrievalCount: 200, // huge delta
         lastRetrievedAt: NOW,
         acceptedChangeCount: 0,
@@ -285,12 +285,12 @@ describe("updateAssetOutcome — differential update (second call)", () => {
            (asset_ref, last_retrieved_at, retrieval_count, expected_retrieval_rate,
             negative_feedback_count, accepted_change_count,
             outcome_score, updated_at)
-         VALUES ('lesson:theta', 0, 100, 0.0, 0, 100, 3.13, ?)`,
+         VALUES ('lessons/theta', 0, 100, 0.0, 0, 100, 3.13, ?)`,
       ).run(NOW);
 
       // Strongly positive cycle: big surprise delta, full acceptance, +1 valence.
       const result = updateAssetOutcome(db, {
-        ref: "lesson:theta",
+        ref: "lessons/theta",
         currentRetrievalCount: 200,
         lastRetrievedAt: NOW,
         acceptedChangeCount: 200,
@@ -314,7 +314,7 @@ describe("getOutcomeScoresByRef — bulk read", () => {
     const { db } = openTestDb();
     try {
       updateAssetOutcome(db, {
-        ref: "skill:known1",
+        ref: "skills/known1",
         currentRetrievalCount: 3,
         lastRetrievedAt: NOW,
         acceptedChangeCount: 1,
@@ -323,7 +323,7 @@ describe("getOutcomeScoresByRef — bulk read", () => {
         now: NOW,
       });
       updateAssetOutcome(db, {
-        ref: "lesson:known2",
+        ref: "lessons/known2",
         currentRetrievalCount: 7,
         lastRetrievedAt: NOW,
         acceptedChangeCount: 2,
@@ -332,10 +332,10 @@ describe("getOutcomeScoresByRef — bulk read", () => {
         now: NOW,
       });
 
-      const scores = getOutcomeScoresByRef(db, ["skill:known1", "lesson:known2", "memory:unknown"]);
-      expect(scores.has("skill:known1")).toBe(true);
-      expect(scores.has("lesson:known2")).toBe(true);
-      expect(scores.has("memory:unknown")).toBe(false);
+      const scores = getOutcomeScoresByRef(db, ["skills/known1", "lessons/known2", "memories/unknown"]);
+      expect(scores.has("skills/known1")).toBe(true);
+      expect(scores.has("lessons/known2")).toBe(true);
+      expect(scores.has("memories/unknown")).toBe(false);
     } finally {
       db.close();
     }
@@ -358,7 +358,7 @@ describe("getAllAssetOutcomes", () => {
   test("returns all rows ordered by asset_ref", () => {
     const { db } = openTestDb();
     try {
-      for (const ref of ["skill:c", "skill:a", "skill:b"]) {
+      for (const ref of ["skills/c", "skills/a", "skills/b"]) {
         updateAssetOutcome(db, {
           ref,
           currentRetrievalCount: 1,
@@ -370,7 +370,7 @@ describe("getAllAssetOutcomes", () => {
       }
       const rows = getAllAssetOutcomes(db);
       expect(rows.length).toBe(3);
-      expect(rows.map((r) => r.asset_ref)).toEqual(["skill:a", "skill:b", "skill:c"]);
+      expect(rows.map((r) => r.asset_ref)).toEqual(["skills/a", "skills/b", "skills/c"]);
     } finally {
       db.close();
     }
@@ -428,12 +428,12 @@ describe("updateAssetOutcome — two-sided prediction error (EMA-over-delta)", (
            (asset_ref, last_retrieved_at, retrieval_count, expected_retrieval_rate,
             negative_feedback_count, accepted_change_count,
             outcome_score, updated_at)
-         VALUES ('skill:two-sided', 0, 100, 5.0, 0, 0, 0.2, ?)`,
+         VALUES ('skills/two-sided', 0, 100, 5.0, 0, 0, 0.2, ?)`,
       ).run(NOW);
 
       // Only delta=1 this cycle vs. expected=5 → predictionError = 1 - 5 = -4 (negative).
       const result = updateAssetOutcome(db, {
-        ref: "skill:two-sided",
+        ref: "skills/two-sided",
         currentRetrievalCount: 101, // delta = 1
         lastRetrievedAt: NOW + 1000,
         acceptedChangeCount: 0,
@@ -460,12 +460,12 @@ describe("updateAssetOutcome — two-sided prediction error (EMA-over-delta)", (
            (asset_ref, last_retrieved_at, retrieval_count, expected_retrieval_rate,
             negative_feedback_count, accepted_change_count,
             outcome_score, updated_at)
-         VALUES ('skill:above-expected', 0, 100, 2.0, 0, 5, 0.1, ?)`,
+         VALUES ('skills/above-expected', 0, 100, 2.0, 0, 5, 0.1, ?)`,
       ).run(NOW);
 
       // delta=10 this cycle vs. expected=2 → predictionError = 10 - 2 = +8 (positive).
       const result = updateAssetOutcome(db, {
-        ref: "skill:above-expected",
+        ref: "skills/above-expected",
         currentRetrievalCount: 110, // delta = 10
         lastRetrievedAt: NOW + 1000,
         acceptedChangeCount: 5,
@@ -491,7 +491,7 @@ describe("updateAssetOutcome — two-sided prediction error (EMA-over-delta)", (
            (asset_ref, last_retrieved_at, retrieval_count, expected_retrieval_rate,
             negative_feedback_count, accepted_change_count,
             outcome_score, updated_at)
-         VALUES ('skill:sustained-low', 0, 100, 10.0, 0, 0, 0.5, ?)`,
+         VALUES ('skills/sustained-low', 0, 100, 10.0, 0, 0, 0.5, ?)`,
       ).run(NOW);
 
       let base = 100;
@@ -499,7 +499,7 @@ describe("updateAssetOutcome — two-sided prediction error (EMA-over-delta)", (
       for (let i = 1; i <= 10; i++) {
         base += 1; // only delta=1 per cycle vs. expected≈10
         lastResult = updateAssetOutcome(db, {
-          ref: "skill:sustained-low",
+          ref: "skills/sustained-low",
           currentRetrievalCount: base,
           lastRetrievedAt: NOW + i * 1000,
           acceptedChangeCount: 0,
@@ -526,12 +526,12 @@ describe("updateAssetOutcome — two-sided prediction error (EMA-over-delta)", (
            (asset_ref, last_retrieved_at, retrieval_count, expected_retrieval_rate,
             negative_feedback_count, accepted_change_count,
             outcome_score, updated_at)
-         VALUES ('skill:ema-delta', 0, 100, 5.0, 0, 0, 0.0, ?)`,
+         VALUES ('skills/ema-delta', 0, 100, 5.0, 0, 0, 0.0, ?)`,
       ).run(NOW);
 
       // delta=8 this cycle; new EMA = 0.3×8 + 0.7×5 = 2.4 + 3.5 = 5.9
       updateAssetOutcome(db, {
-        ref: "skill:ema-delta",
+        ref: "skills/ema-delta",
         currentRetrievalCount: 108, // delta = 8
         lastRetrievedAt: NOW + 1000,
         acceptedChangeCount: 0,
@@ -540,7 +540,7 @@ describe("updateAssetOutcome — two-sided prediction error (EMA-over-delta)", (
         now: NOW + 1000,
       });
 
-      const row = getAssetOutcome(db, "skill:ema-delta");
+      const row = getAssetOutcome(db, "skills/ema-delta");
       // expected_retrieval_rate should track the DELTA (≈5.9), not the cumulative count (108).
       expect(row?.expected_retrieval_rate).toBeCloseTo(5.9, 5);
       expect(row?.expected_retrieval_rate).toBeLessThan(10); // definitely not near 108
@@ -553,7 +553,7 @@ describe("updateAssetOutcome — two-sided prediction error (EMA-over-delta)", (
     const { db } = openTestDb();
     try {
       updateAssetOutcome(db, {
-        ref: "skill:warm-zero",
+        ref: "skills/warm-zero",
         currentRetrievalCount: 50,
         lastRetrievedAt: NOW,
         acceptedChangeCount: 0,
@@ -562,7 +562,7 @@ describe("updateAssetOutcome — two-sided prediction error (EMA-over-delta)", (
         now: NOW,
       });
 
-      const row = getAssetOutcome(db, "skill:warm-zero");
+      const row = getAssetOutcome(db, "skills/warm-zero");
       expect(row?.expected_retrieval_rate).toBe(0);
     } finally {
       db.close();
@@ -576,7 +576,7 @@ describe("computeProxyAdequacy — correlation tripwire", () => {
   test("returns NaN correlation and isInverted=false for fewer than 3 rows", () => {
     const rows = [
       {
-        asset_ref: "skill:a",
+        asset_ref: "skills/a",
         last_retrieved_at: 0,
         retrieval_count: 5,
         expected_retrieval_rate: 5,
@@ -610,7 +610,7 @@ describe("computeProxyAdequacy — correlation tripwire", () => {
 
   test("isInverted=true for negative correlation below -0.3", () => {
     // High outcome_score → LOW accepted_change_rate: proxy is inverted.
-    const refs = ["skill:a", "skill:b", "skill:c", "skill:d", "skill:e"];
+    const refs = ["skills/a", "skills/b", "skills/c", "skills/d", "skills/e"];
     const rows = refs.map((ref, i) => {
       // Outcome scores: 0.9, 0.7, 0.5, 0.3, 0.1 (high = popular)
       const outcomeScore = 0.9 - i * 0.2;

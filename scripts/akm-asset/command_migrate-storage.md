@@ -6,22 +6,22 @@ when_to_use: When a user has upgraded akm to v0.9+ and wants to migrate their ex
 
 You are helping a user migrate their akm data from legacy flat-file locations to the new XDG-compliant directory structure introduced in akm v0.9+.
 
-The migration script (`scripts/migrate-storage.ts`) is non-destructive: it copies data to new locations and leaves the originals in place. The user can delete old files manually after verifying everything works.
+The standalone `akm-migrate storage` command is non-destructive: it copies data to new locations and leaves the originals in place. The user can delete old files manually after verifying everything works.
 
 ## Step 1 — Check that the migration script is available
 
 Run:
 ```
-ls scripts/migrate-storage.ts
+command -v akm-migrate
 ```
 
-If the file does not exist, tell the user to download it from the akm repository or install it via `akm install commands/migrate-storage`. Do not proceed until the script is present.
+If the command does not exist, tell the user to install the standalone migration tool. Do not proceed until it is present.
 
 ## Step 2 — Run a dry-run first
 
 Run the script in dry-run mode to show the user exactly what will happen:
 ```
-bun scripts/migrate-storage.ts --dry-run
+akm-migrate storage --dry-run
 ```
 
 Review the output with the user. The dry run will show:
@@ -36,12 +36,12 @@ Ask the user if the listed source and destination paths look correct before cont
 
 Once the user is satisfied with the dry-run output, run the migration with the `--yes` flag to skip the interactive prompt:
 ```
-bun scripts/migrate-storage.ts --yes
+akm-migrate storage --yes
 ```
 
 Or without `--yes` to let the user confirm interactively:
 ```
-bun scripts/migrate-storage.ts
+akm-migrate storage
 ```
 
 Wait for the script to complete and review the final summary with the user.

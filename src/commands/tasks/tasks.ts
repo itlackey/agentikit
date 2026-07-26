@@ -1179,9 +1179,7 @@ export function setEnabledInYaml(yaml: string, enabled: boolean): string {
 // `akm tasks run` completes.
 export { ConfigError, exitCodeForStatus, NotFoundError, parseTaskDocument, UsageError };
 
-// Accept a bare task id or the canonical 0.9.0 `[bundle//]tasks/<id>` ref
-// (ref-grammar decision D-R3). The pre-0.9.0 `task:<id>` colon grammar is
-// retired and rejected loudly — it appears NOWHERE after the flip.
+// Accept a bare task id or the canonical `[bundle//]tasks/<id>` ref.
 export function parseTaskRef(input: string): { id: string } {
   const trimmed = input.trim();
   // Canonical conceptId form: `[bundle//]tasks/<id>`. A `/` unambiguously marks
@@ -1196,15 +1194,6 @@ export function parseTaskRef(input: string): { id: string } {
       // fall through to the shared error below
     }
     throw new UsageError(`Expected a task id or tasks/<id> ref, got "${input}".`, "INVALID_FLAG_VALUE");
-  }
-  // Legacy `task:<id>` grammar is gone in 0.9.0 (D-R3) — reject it with a typed
-  // error that names the new form so muscle-memory callers get a clear fix.
-  if (trimmed.includes(":")) {
-    const legacyName = trimmed.slice(trimmed.indexOf(":") + 1);
-    throw new UsageError(
-      `The \`task:<id>\` ref grammar was removed in 0.9.0 — use the bare id or \`tasks/${legacyName || "<id>"}\`.`,
-      "INVALID_FLAG_VALUE",
-    );
   }
   return { id: normaliseTaskId(trimmed) };
 }

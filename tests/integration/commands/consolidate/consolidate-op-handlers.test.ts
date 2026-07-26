@@ -77,8 +77,8 @@ describe("handleContradictOp — confidence gate", () => {
     const ctx = makeCtx({ skips });
     const op: ConsolidateContradictOp = {
       op: "contradict",
-      ref: "memory:a",
-      contradictedByRef: "memory:b",
+      ref: "memories/a",
+      contradictedByRef: "memories/b",
       reason: "x",
       confidence: 0.5,
     };
@@ -86,7 +86,7 @@ describe("handleContradictOp — confidence gate", () => {
     await handleContradictOp(op, ctx);
 
     expect(ctx.counts.contradicted).toBe(0);
-    expect(skips).toEqual([{ op: "contradict", ref: "memory:a", reason: "contradict_low_confidence" }]);
+    expect(skips).toEqual([{ op: "contradict", ref: "memories/a", reason: "contradict_low_confidence" }]);
     expect(ctx.warnings.some((w) => w.includes("below 0.92 threshold"))).toBe(true);
   });
 });
@@ -96,14 +96,14 @@ describe("handleDeleteOp — captureMode:hot guard", () => {
     const filePath = path.join(tmp, "hot-mem.md");
     fs.writeFileSync(filePath, "---\ncaptureMode: hot\ntype: memory\n---\nbody\n", "utf8");
     const skips: SkipCall[] = [];
-    const ctx = makeCtx({ skips, memoryByRef: new Map([["memory:hot-mem", entryFor("hot-mem", filePath)]]) });
-    const op: ConsolidateDeleteOp = { op: "delete", ref: "memory:hot-mem", reason: "redundant" };
+    const ctx = makeCtx({ skips, memoryByRef: new Map([["memories/hot-mem", entryFor("hot-mem", filePath)]]) });
+    const op: ConsolidateDeleteOp = { op: "delete", ref: "memories/hot-mem", reason: "redundant" };
 
     await handleDeleteOp(op, 0, ctx);
 
     expect(ctx.counts.deleted).toBe(0);
     expect(fs.existsSync(filePath)).toBe(true);
-    expect(skips).toEqual([{ op: "delete", ref: "memory:hot-mem", reason: "captureMode_hot_refused" }]);
+    expect(skips).toEqual([{ op: "delete", ref: "memories/hot-mem", reason: "captureMode_hot_refused" }]);
   });
 });
 
@@ -112,20 +112,20 @@ describe("handlePromoteOp — within-run source dedup", () => {
     const skips: SkipCall[] = [];
     const ctx = makeCtx({
       skips,
-      memoryByRef: new Map([["memory:dup", entryFor("dup", path.join(tmp, "dup.md"))]]),
-      promotedSourceRefs: new Set(["memory:dup"]),
+      memoryByRef: new Map([["memories/dup", entryFor("dup", path.join(tmp, "dup.md"))]]),
+      promotedSourceRefs: new Set(["memories/dup"]),
     });
     const op: ConsolidatePromoteOp = {
       op: "promote",
-      ref: "memory:dup",
-      knowledgeRef: "knowledge:dup",
+      ref: "memories/dup",
+      knowledgeRef: "knowledge/dup",
       reason: "useful",
     };
 
     await handlePromoteOp(op, ctx);
 
     expect(ctx.promoted).toEqual([]);
-    expect(skips).toEqual([{ op: "promote", ref: "memory:dup", reason: "promote_already_promoted_this_run" }]);
+    expect(skips).toEqual([{ op: "promote", ref: "memories/dup", reason: "promote_already_promoted_this_run" }]);
   });
 });
 
@@ -169,7 +169,7 @@ describe("makeConsolidateResult — envelope defaults", () => {
 });
 
 describe("consolidation merge provenance", () => {
-  it("serializes canonical xrefs and removes legacy source_refs metadata", () => {
+  it("serializes current xrefs, drops retired ref spellings, and removes source_refs metadata", () => {
     const inject = (
       consolidateModule as unknown as {
         injectGenerationFrontmatter: (content: string, generations: number[], refs: string[]) => string;
@@ -185,13 +185,7 @@ describe("consolidation merge provenance", () => {
     const xrefs = parsed.data.xrefs as string[];
 
     expect(parsed.data.source_refs).toBeUndefined();
-    expect(xrefs).toEqual([
-      "memories/existing",
-      "memories/legacy",
-      "memories/primary",
-      "memories/secondary",
-      "env/alias",
-    ]);
+    expect(xrefs).toEqual(["memories/existing", "memories/secondary", "env/alias"]);
     // WI-8.5b: stored xrefs are canonicalized to the D-R5 new grammar via
     // displayRef(parseRefInput(ref)) — each canonical xref round-trips to itself.
     expect(
@@ -253,13 +247,10 @@ describe("consolidation merge provenance", () => {
       expect(merged.data.source_refs).toBeUndefined();
       expect(merged.data.xrefs).toEqual([
         "memories/output-existing",
-        "memories/output-legacy",
         "memories/primary",
         "memories/secondary",
         "memories/primary-xref",
-        "memories/primary-legacy",
         "memories/secondary-xref",
-        "memories/secondary-legacy",
       ]);
       expect(ctx.counts.merged).toBe(1);
       expect(ctx.counts.mergeFloorViolations).toBe(0);

@@ -16,11 +16,6 @@ import { resolveSourceProviderFactory } from "../../sources/provider-factory";
 import "../../sources/providers/index";
 import { warn } from "../../core/warn";
 
-// Legacy "context-hub" / "github" type aliases are normalized to "git" at
-// config-load time (see src/config.ts), so this set only contains the canonical
-// type.
-const GIT_STASH_TYPES = new Set(["git"]);
-
 // ── Types ───────────────────────────────────────────────────────────────────
 
 export interface SearchSource {
@@ -216,7 +211,7 @@ export function resolveEntryContentDir(entry: SourceConfigEntry): string | undef
   // layout puts indexable files under `<repo>/content/`, so the walker needs
   // that subdirectory. This is a content-layout convention, not a provider
   // capability — keep it here.
-  if (GIT_STASH_TYPES.has(entry.type)) {
+  if (entry.type === "git") {
     return resolveGitContentRoot(dir);
   }
   return dir;

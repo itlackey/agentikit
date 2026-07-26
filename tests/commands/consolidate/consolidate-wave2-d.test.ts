@@ -10,9 +10,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { parseAssetRef } from "../../../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import { parseConfigValue } from "../../../src/commands/config-cli";
 import { ConfigError, NotFoundError, UsageError } from "../../../src/core/errors";
-import { parseAssetRef } from "../../../src/migrate/legacy-ref-grammar";
 
 // ── #15: parseAssetRef — MISSING_REQUIRED_ARGUMENT code ────────────────────
 

@@ -30,7 +30,7 @@ describe("parseTaskRef (0.9.0 grammar, D-R3)", () => {
     expect(parseTaskRef("  tasks/foo  ")).toEqual({ id: "foo" });
   });
 
-  test("REJECTS the retired legacy `task:<id>` colon grammar with a typed error naming the new form", () => {
+  test("rejects the retired legacy `task:<id>` colon grammar", () => {
     let caught: unknown;
     try {
       parseTaskRef(LEGACY_TASK_REF);
@@ -40,8 +40,6 @@ describe("parseTaskRef (0.9.0 grammar, D-R3)", () => {
     expect(caught).toBeInstanceOf(UsageError);
     const usage = caught as UsageError;
     expect(usage.code).toBe("INVALID_FLAG_VALUE");
-    // Message names the 0.9.0 replacement so muscle-memory callers get a fix.
-    expect(usage.message).toContain("tasks/foo");
   });
 
   test("REJECTS a non-task conceptId", () => {

@@ -47,8 +47,7 @@ import { ensureAkmMarkdownType } from "./asset/akm-markdown";
 import { assetPathForName, stashDirFor } from "./asset/asset-placement";
 import type { AssetRef } from "./asset/resolve-ref";
 import { displayRef } from "./asset/resolve-ref";
-import { deriveBundleId } from "./bundle-id";
-import { isWithin, resolveStashDir } from "./common";
+import { isWithin } from "./common";
 import type { AkmConfig, ConfiguredSource, SourceConfigEntry } from "./config/config";
 import { resolveConfiguredSources } from "./config/config";
 import { ConfigError, UsageError } from "./errors";
@@ -379,9 +378,6 @@ export async function deleteAssetFromSource(
  * caller paths), commits once, and pushes when the target is writable, has a
  * remote, and `push !== false`.
  *
- * The deprecated `options.pushOnCommit` on the source config is now fully
- * IGNORED (Decision 6, WI-9.6b): it neither sets nor suppresses `push`. Only a
- * one-time deprecation warning remains (see {@link warnIfPushOnCommit}).
  */
 export function commitWriteTargetBoundary(
   target: ResolvedWriteTarget,
@@ -395,8 +391,6 @@ export function commitWriteTargetBoundary(
   },
 ): void {
   if (target.source.kind !== "git") return;
-
-  warnIfPushOnCommit(target.config);
 
   const push = options?.push;
 
@@ -473,8 +467,6 @@ export interface GitPublication {
   upstream?: string;
   upstreamHead?: string;
   commit?: string | null;
-  /** Recovery-only marker for a pre-identity exact commit that has no transaction trailer. */
-  legacyCommit?: boolean;
 }
 
 interface GitPublicationIdentity {
@@ -515,52 +507,6 @@ export function captureGitPublication(target: ResolvedWriteTarget): GitPublicati
     }
   }
   return { ...identity, baseHead, ...(upstreamHead ? { upstreamHead } : {}) };
-}
-
-/** Reconstruct the safely-identifiable commit state of a pre-publication-identity journal. */
-export function captureLegacyGitPublication(
-  target: ResolvedWriteTarget,
-  paths: string[],
-  snapshots: GitPathSnapshots,
-): GitPublication | undefined {
-  if (target.source.kind !== "git") return undefined;
-  const identity = readGitPublicationIdentity(target);
-  const normalizedPaths = normalizePublicationPaths(paths);
-  const head = readGitHead(identity.repoPath, target.source.name);
-  let upstreamHead: string | undefined;
-  if (identity.upstream) {
-    const upstream = runGit(["-C", identity.repoPath, "rev-parse", identity.upstream]);
-    if (upstream.status !== 0 || !upstream.stdout.trim()) {
-      throw new Error(`Cannot read Git upstream for target "${target.source.name}".`);
-    }
-    upstreamHead = upstream.stdout.trim();
-    if (head !== upstreamHead) {
-      return {
-        ...identity,
-        baseHead: upstreamHead,
-        upstreamHead,
-        commit: head,
-        legacyCommit: true,
-      };
-    }
-  } else {
-    const parent = runGit(["-C", identity.repoPath, "rev-parse", `${head}^`]);
-    if (parent.status === 0 && parent.stdout.trim()) {
-      const candidate: GitPublication = {
-        ...identity,
-        baseHead: parent.stdout.trim(),
-        commit: head,
-        legacyCommit: true,
-      };
-      try {
-        validateGitTransactionCommit(target, candidate, head, "legacy", normalizedPaths, snapshots);
-        return candidate;
-      } catch {
-        // The current HEAD predates the interrupted mutation; create a new exact commit from it.
-      }
-    }
-  }
-  return { ...identity, baseHead: head, ...(upstreamHead ? { upstreamHead } : {}) };
 }
 
 /** Capture one repo-relative path exactly as Git will stage it. */
@@ -832,14 +778,12 @@ function validateGitTransactionCommit(
   if (parent.status !== 0 || ancestry.length !== 2 || ancestry[1] !== publication.baseHead) {
     throw new Error(`Git commit ${commit} is not the direct transaction commit for "${target.source.name}".`);
   }
-  if (!publication.legacyCommit) {
-    const message = runGit(["-C", publication.repoPath, "show", "-s", "--format=%B", commit]);
-    if (
-      message.status !== 0 ||
-      !message.stdout.split(/\r?\n/).some((line) => line.trim() === `AKM-Transaction: ${transactionId}`)
-    ) {
-      throw new Error(`Git commit ${commit} is not owned by transaction ${transactionId}.`);
-    }
+  const message = runGit(["-C", publication.repoPath, "show", "-s", "--format=%B", commit]);
+  if (
+    message.status !== 0 ||
+    !message.stdout.split(/\r?\n/).some((line) => line.trim() === `AKM-Transaction: ${transactionId}`)
+  ) {
+    throw new Error(`Git commit ${commit} is not owned by transaction ${transactionId}.`);
   }
   const changed = runGit([
     "-C",
@@ -902,27 +846,6 @@ function validateGitCommitSnapshots(
       throw new Error(`Git transaction committed unexpected content for ${expectedPath}.`);
     }
   }
-}
-
-/**
- * Emit a one-time deprecation warning the first time a source config carrying
- * `options.pushOnCommit` is encountered. The field still parses (for old
- * configs) but is now FULLY IGNORED (Decision 6, WI-9.6b): it no longer maps
- * onto the batch push gate in any way (neither opts in nor opts out). The
- * field will be REMOVED in 0.10.
- */
-let pushOnCommitWarned = false;
-function warnIfPushOnCommit(config: SourceConfigEntry): void {
-  if (config.options?.pushOnCommit === undefined) return;
-  if (pushOnCommitWarned) return;
-  pushOnCommitWarned = true;
-  const label = config.name ? ` on source "${config.name}"` : "";
-  process.stderr.write(
-    `warning: \`options.pushOnCommit\`${label} is deprecated (0.9.0) and now fully ignored — it no longer ` +
-      "affects push behaviour in any way. akm commits writes in a single batch at the operation boundary and " +
-      "pushes when the target is writable with a remote and push isn't explicitly disabled. Remove the option " +
-      "or rely on sync push instead; it will be REMOVED in 0.10.\n",
-  );
 }
 
 // ── Write-target resolution (locked decision 3) ─────────────────────────────
@@ -1047,18 +970,6 @@ export function resolveWritableTargets(akmConfig: AkmConfig): ResolvedWriteTarge
     const existing = byRoot.get(root);
     if (!existing || target.source.name === akmConfig.defaultWriteTarget) byRoot.set(root, target);
   }
-  if (byRoot.size === 0) {
-    try {
-      const stashDir = resolveStashDir({ readOnly: true });
-      const bundleId = deriveBundleId(undefined, stashDir, new Set());
-      byRoot.set(path.resolve(stashDir), {
-        source: { kind: "filesystem", name: bundleId, path: stashDir, adapterId: detectAdapterId(stashDir) },
-        config: { type: "filesystem", path: stashDir, name: bundleId, writable: true },
-      });
-    } catch {
-      // No active working stash; configured writable targets above are complete.
-    }
-  }
   return [...byRoot.values()];
 }
 
@@ -1133,19 +1044,8 @@ export function resolveWriteTarget(
     );
   }
 
-  // 3. Working stash (config.stashDir / resolveStashDir()).
-  try {
-    return resolveWorkingStashTarget(akmConfig, options);
-  } catch {
-    // Fall through to the final ConfigError below.
-  }
-
-  // 4. Nothing usable.
-  throw new ConfigError(
-    "no writable source configured; run `akm init`",
-    "STASH_DIR_NOT_FOUND",
-    "Run `akm init` to create a working stash, or set `defaultWriteTarget` in your config.",
-  );
+  // 3. Configured default bundle.
+  return resolveWorkingStashTarget(akmConfig, options);
 }
 
 /** Resolve the implicit working stash without consulting `defaultWriteTarget`. */
@@ -1155,31 +1055,21 @@ export function resolveWorkingStashTarget(
 ): ResolvedWriteTarget {
   const configuredSources = resolveConfiguredSources(akmConfig);
   const requireWritable = options.requireWritable !== false;
-  const stashDir = resolveStashDir({ readOnly: true });
   const defaultBundleSource = akmConfig.defaultBundle
-    ? configuredSources.find((source) => source.name === akmConfig.defaultBundle && source.type === "filesystem")
+    ? configuredSources.find((source) => source.name === akmConfig.defaultBundle)
     : undefined;
-  if (defaultBundleSource) {
-    const target = adaptConfiguredSource(defaultBundleSource);
-    if (path.resolve(target.source.path) === path.resolve(stashDir)) {
-      if (requireWritable && !resolveWritable(target.config)) {
-        throw new ConfigError(
-          `defaultBundle "${akmConfig.defaultBundle}" is not writable`,
-          "INVALID_CONFIG_FILE",
-          `Set \`writable: true\` on the "${akmConfig.defaultBundle}" bundle, or set \`defaultWriteTarget\` to a writable source.`,
-        );
-      }
-      return { ...target, selector: undefined };
-    }
+  if (!defaultBundleSource || !akmConfig.defaultBundle) {
+    throw new ConfigError("No default bundle is configured.", "INVALID_CONFIG_FILE");
   }
-
-  // The working stash stays `kind: "filesystem"` even when it lives inside a
-  // Git repo; primary-stash synchronization owns that separate boundary.
-  const bundleId = deriveBundleId(undefined, stashDir, new Set());
-  return {
-    source: { kind: "filesystem", name: bundleId, path: stashDir, adapterId: detectAdapterId(stashDir) },
-    config: { type: "filesystem", path: stashDir, name: bundleId, writable: true },
-  };
+  const target = adaptConfiguredSource(defaultBundleSource);
+  if (requireWritable && !resolveWritable(target.config)) {
+    throw new ConfigError(
+      `defaultBundle "${akmConfig.defaultBundle}" is not writable`,
+      "INVALID_CONFIG_FILE",
+      `Set \`writable: true\` on the "${akmConfig.defaultBundle}" bundle, or set \`defaultWriteTarget\` to a writable source.`,
+    );
+  }
+  return { ...target, selector: undefined };
 }
 
 // ── Internals ───────────────────────────────────────────────────────────────
@@ -1262,8 +1152,6 @@ export function formatRefForMessage(ref: AssetRef): string {
  *   ConfiguredSource.name     → WriteTargetSource.name
  *   ConfiguredSource.source.* → WriteTargetSource.path  (via parseSourceSpec)
  *
- * Legacy aliases (`context-hub`, `github`) have already been normalised to
- * `git` by the config loader, so this mapping is straightforward.
  */
 function adaptConfiguredSource(runtime: ConfiguredSource): ResolvedWriteTarget {
   // Map the runtime kind to the write helper's `kind` discriminator. Only

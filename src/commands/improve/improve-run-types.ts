@@ -72,12 +72,10 @@ export interface AkmImproveOptions {
   target?: string;
   /** Write target resolved once at the improve invocation boundary. */
   writeTarget?: ResolvedWriteTarget;
-  /** Stable source identity used for durable source-qualified improve state. */
+  /** Stable source identity used for source-scoped improve operations. */
   sourceName?: string;
   stashDir?: string;
   config?: AkmConfig;
-  /** Internal cutover flag: permit bare durable-state reads for the historical local stash only. */
-  legacyBareState?: boolean;
   /** Invocation plan preflighted by the public CLI before any side effects. */
   resolvedPlan?: ResolvedImprovePlan;
   /**

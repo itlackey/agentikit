@@ -149,7 +149,7 @@ export const DEFAULT_ENCODING_SALIENCE = 0.5;
 // ── Input shape ───────────────────────────────────────────────────────────────
 
 export interface SalienceInputs {
-  /** Asset ref (`type:name`). */
+  /** Asset ref. */
   ref: string;
   /** Asset type string (parsed from ref). Empty string falls back to default weight. */
   type: string;

@@ -36,9 +36,8 @@ export function resolveImproveScope(scope: string | undefined): { mode: "all" | 
     parseRefInput(trimmed);
     return { mode: "ref", value: trimmed };
   } catch (err) {
-    // Open type token (chunk 1.5, D1.5-1): a bare word with no `type:name`
-    // shape (no colon) is a `--scope <type>` filter attempt, not a ref — ANY
-    // such word is now accepted, including foreign/unknown type strings,
+    // A bare word with no ref separator is a `--scope <type>` filter attempt,
+    // not a ref. Any such word is accepted, including foreign/unknown type strings,
     // which simply match zero entries downstream (a read-only query filter,
     // not a data-acceptance gate, so no deny-list is needed here: an
     // unrecognized type just matches nothing, since nothing is ever indexed
@@ -83,7 +82,7 @@ export async function collectEligibleRefs(
   memorySummary: { eligible: number; derived: number };
   /**
    * Refs that were considered for planning but excluded because EVERY per-ref
-   * pass on the active profile (reflect + distill) would refuse them.
+   * pass in the active strategy (reflect + distill) would refuse them.
    *
    * Mirrors the 2026-05-21 `.derived` precedent (improve.ts:447–467) which
    * pre-filters churn-only refs. The 2026-05-27 deep analysis
@@ -95,9 +94,8 @@ export async function collectEligibleRefs(
    * `strategy_filtered_all_passes`, emitted by the caller once `eventsCtx` is
    * available.
    *
-   * Empty when scope.mode === "ref" (user explicitly named the ref — intent
-   * overrides profile-eligibility) or when no profile was passed (legacy
-   * callers).
+   * Empty when scope.mode === "ref" (the user explicitly named the ref) or no
+   * strategy configuration was supplied.
    */
   strategyFilteredRefs: ImproveEligibleRef[];
 }> {
@@ -173,7 +171,7 @@ async function collectEligibleRefsFromIndex(
       return isEntryInWritableSource(indexed.stashDir, indexed.filePath, writableDirSet);
     });
     const planned = new Map<string, ImproveEligibleRef>();
-    const profileFiltered = new Map<string, ImproveEligibleRef>();
+    const strategyFiltered = new Map<string, ImproveEligibleRef>();
     let memoryEligible = 0;
     let memoryDerived = 0;
     for (const indexed of entries) {
@@ -188,11 +186,8 @@ async function collectEligibleRefsFromIndex(
         if (error instanceof UsageError || error instanceof NotFoundError) continue;
         throw error;
       }
-      // Chunk-5 flip F5d (Step 4): the durable `item_ref` (`<bundle>//<concept-id>`),
-      // reconstructed from the mapper-unlocked provenance columns with ZERO extra
-      // queries (D-R3 — derived from the resolved index entry, never raw input).
-      // `undefined` for a NULL-provenance (pre-flip / write-back) row; the durable
-      // writers then fall back to the legacy `type:name` key.
+      // Derive the durable item_ref from indexed provenance without another query.
+      // A provenance-free row uses the short conceptId ref for improve state.
       const itemRef = indexed.bundleId && indexed.conceptId ? `${indexed.bundleId}//${indexed.conceptId}` : undefined;
       const isDerived = indexed.entry.name.endsWith(".derived");
       // `.derived` memories are LLM-inferred and intentionally skip reflect
@@ -202,16 +197,16 @@ async function collectEligibleRefsFromIndex(
       // 2026-05-21: 11 derived refs re-planned every hour during idle periods.
       // The cleanup phase (analyzeMemoryCleanup) inspects derived memories
       // independently of `plannedRefs`, so dropping them here loses nothing.
-      if (!isDerived && !planned.has(ref) && !profileFiltered.has(ref)) {
-        // 2026-05-27: extend the .derived precedent to profile-incompatible
+      if (!isDerived && !planned.has(ref) && !strategyFiltered.has(ref)) {
+        // 2026-05-27: extend the .derived precedent to strategy-incompatible
         // refs. If every per-ref pass (reflect + distill) on the active
-        // profile would refuse this ref, drop it from `plannedRefs`. The
+        // strategy would refuse this ref, drop it from `plannedRefs`. The
         // caller emits `improve_skipped { reason: strategy_filtered_all_passes }`
         // once `eventsCtx` is available so the audit trail is preserved in a
         // single event per ref instead of 2× synthetic actions per run.
         // Background: see /tmp/akm-health-investigations/planner-profile-metrics-deep-analysis.md
         if (improveProfile && isStrategyFilteredForAllPasses(ref, improveProfile)) {
-          profileFiltered.set(ref, {
+          strategyFiltered.set(ref, {
             ref,
             reason: "strategy_filtered_all_passes",
             filePath: indexed.filePath,
@@ -235,7 +230,7 @@ async function collectEligibleRefsFromIndex(
     return {
       plannedRefs: [...planned.values()],
       memorySummary: { eligible: memoryEligible, derived: memoryDerived },
-      strategyFilteredRefs: [...profileFiltered.values()],
+      strategyFilteredRefs: [...strategyFiltered.values()],
     };
   } catch (error) {
     // Empty-stash setup paths can open index.db before its schema exists.
@@ -301,9 +296,8 @@ export function memoryCleanupParentRef(
     if (!fs.existsSync(candidate)) continue;
     const raw = fs.readFileSync(candidate, "utf8");
     const fm = parseFrontmatter(raw).data;
-    // The `source:` backref (the `derived_from` channel) is read through the
-    // legacy-tolerant parseMemoryRef, whose NORMALISED output is now the 0.9.0
-    // `memories/<name>` conceptId (Group-C item 2). That is exactly what
+    // The `source:` backref is normalized to the `memories/<name>` conceptId.
+    // That is exactly what
     // analyzeMemoryCleanup's parentRef filter compares against — resolveParentRef
     // emits the same conceptId — so the two sites stay in lockstep.
     const parent = parseMemoryRef(typeof fm.source === "string" ? fm.source : undefined);
@@ -383,18 +377,13 @@ export function shouldDistillMemoryRef(ref: string, stashDir?: string): boolean 
 export function buildLatestFeedbackTsMap(
   refs: ReadonlyArray<string>,
   sinceIso: string,
-  sourceName?: string,
-  includeLegacyBare = false,
   itemRefByRef?: Map<string, string | undefined>,
 ): Map<string, string> {
   const out = new Map<string, string>();
   if (refs.length === 0) return out;
-  // Chunk-5 flip F5e — dual-arm on [item_ref, durable, bare] so an item_ref-
-  // keyed feedback event resolves once the writers emit it. // Chunk-8: [item_ref].
+  // Correlate item_ref-keyed events and conceptId-keyed direct invocations.
   const refByDurableKey = new Map(
-    refs.flatMap((ref) =>
-      improveStateReadRefs(ref, sourceName, includeLegacyBare, itemRefByRef?.get(ref)).map((key) => [key, ref]),
-    ),
+    refs.flatMap((ref) => improveStateReadRefs(ref, itemRefByRef?.get(ref)).map((key) => [key, ref])),
   );
   const { events } = readEvents({ type: "feedback", since: sinceIso });
   for (const e of events) {
@@ -413,7 +402,7 @@ export function buildLatestFeedbackTsMap(
  * Latest proposal timestamp per input-ref, filtered by source ('reflect' or
  * 'distill'). Reads the corresponding `*_invoked` events from state.db —
  * these events are emitted at proposal creation time and carry the *input*
- * asset ref (memory:foo, skill:bar, etc.) directly. We use them rather than
+ * asset ref (`memories/foo`, `skills/bar`, etc.) directly. We use them rather than
  * `listProposals` because distill proposals are keyed by the derived
  * lesson/knowledge ref, not the source memory — joining back through the
  * payload would be fragile.
@@ -421,18 +410,13 @@ export function buildLatestFeedbackTsMap(
 export function buildLatestProposalTsMap(
   refs: ReadonlyArray<string>,
   source: "reflect" | "distill",
-  sourceName?: string,
-  includeLegacyBare = false,
   itemRefByRef?: Map<string, string | undefined>,
 ): Map<string, string> {
   const out = new Map<string, string>();
   if (refs.length === 0) return out;
-  // Chunk-5 flip F5e — dual-arm on [item_ref, durable, bare] so an item_ref-
-  // keyed *_invoked event resolves once the writers emit it. // Chunk-8: [item_ref].
+  // Correlate item_ref-keyed events and conceptId-keyed direct invocations.
   const refByDurableKey = new Map(
-    refs.flatMap((ref) =>
-      improveStateReadRefs(ref, sourceName, includeLegacyBare, itemRefByRef?.get(ref)).map((key) => [key, ref]),
-    ),
+    refs.flatMap((ref) => improveStateReadRefs(ref, itemRefByRef?.get(ref)).map((key) => [key, ref])),
   );
   const eventType = source === "reflect" ? "reflect_invoked" : "distill_invoked";
   const { events } = readEvents({ type: eventType });

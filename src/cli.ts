@@ -71,7 +71,6 @@ process.on("uncaughtException", (err) => {
 });
 
 import fs from "node:fs";
-import path from "node:path";
 import { type ArgsDef, defineCommand, runMain } from "citty";
 import {
   findCittyTopLevelCommand,
@@ -83,7 +82,6 @@ import {
 import { EXIT_CODES, emitJsonError, output, runWithJsonErrors } from "./cli/shared";
 import { agentCommand, lintCommand, proposeCommand } from "./commands/agent/contribute-cli";
 import { backupCommand } from "./commands/backup-cli";
-import { bundleCommand } from "./commands/bundle/bundle-cli";
 import { generateBashCompletions, installBashCompletions } from "./commands/completions";
 import { configCommand } from "./commands/config-cli";
 import { envCommand } from "./commands/env/env-cli";
@@ -118,13 +116,12 @@ import {
 import { importKnowledgeCommand, indexCommand, infoCommand, initCommand } from "./commands/sources/stash-cli";
 import { tasksCommand } from "./commands/tasks/tasks-cli";
 import { workflowCommand } from "./commands/workflow-cli";
-import { bestEffort } from "./core/best-effort";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config/config";
 import { UsageError } from "./core/errors";
 import { assertNoPendingMigrationOperation } from "./core/migration-operation";
-import { getCacheDir, getConfigPath, getDbPath } from "./core/paths";
+import { getConfigPath } from "./core/paths";
 import { plainize } from "./core/tty";
-import { info, isQuiet, setQuiet, setVerbose, warn } from "./core/warn";
+import { info, isQuiet, setQuiet, setVerbose } from "./core/warn";
 import { disposeDispatchResources } from "./integrations/agent/runner-dispatch";
 import { getHyphenatedBoolean, getOutputMode, initOutputMode } from "./output/context";
 import { deliverRendered, renderHtml, resolveTemplatePath } from "./output/html-render";
@@ -516,7 +513,6 @@ export const main = defineCommand({
     health: healthCommand,
     info: infoCommand,
     graph: graphCommand,
-    bundle: bundleCommand,
     add: addCommand,
     list: listCommand,
     remove: removeCommand,
@@ -576,7 +572,7 @@ export function shouldBypassConfigStartup(argv: readonly string[]): boolean {
   if (command !== "config") return false;
   const configIndex = args.indexOf("config");
   const subcommand = args.slice(configIndex + 1).find((arg) => !arg.startsWith("-"));
-  return subcommand === "path" || subcommand === "validate" || subcommand === "migrate";
+  return subcommand === "path" || subcommand === "validate";
 }
 
 // ── Exit codes ──────────────────────────────────────────────────────────────
@@ -635,22 +631,6 @@ if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
   const topLevelCommand = findCittyTopLevelCommand(process.argv.slice(2), MAIN_TOP_LEVEL_ARGS);
   if (getOutputMode().shape === "summary" && topLevelCommand !== "show") {
     emitJsonError(new UsageError("'--shape summary' is only valid on 'akm show'.", "INVALID_SHAPE_VALUE"));
-  }
-
-  // One-time cleanup of stale 0.7.x index file at the old cache location.
-  // 0.8.0 moved the index to $XDG_DATA_HOME/akm/index.db (getDataDir()).
-  // If the old file exists at $XDG_CACHE_HOME/akm/index.db, remove it so the
-  // user isn't confused by a phantom DB. Best-effort; never fatal.
-  if (!shouldBypassConfigStartup(process.argv)) {
-    bestEffort(() => {
-      const oldIndexPath = path.join(getCacheDir(), "index.db");
-      if (fs.existsSync(oldIndexPath)) {
-        fs.rmSync(oldIndexPath, { force: true });
-        fs.rmSync(`${oldIndexPath}-shm`, { force: true });
-        fs.rmSync(`${oldIndexPath}-wal`, { force: true });
-        warn(`Cleaned up stale 0.7.x index from ${oldIndexPath}. Canonical path is now ${getDbPath()}.`);
-      }
-    }, "stale 0.7.x index cleanup is non-fatal");
   }
 
   // First-time-user breadcrumb: when run with no subcommand AND no config

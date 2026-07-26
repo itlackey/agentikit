@@ -9,10 +9,9 @@
  *   - the single batch-at-boundary commit (issue #507) produces exactly one
  *     complete commit + clean tree, pushes per the writable+remote+push gate,
  *     and is a no-op for filesystem targets
- *   - deprecated `pushOnCommit` is now fully ignored (warn-and-ignore, Decision 6)
  *   - rejection of `writable: true` on website / npm at config load
  *   - rejection of unsupported `kind` reaching the helper
- *   - resolveWriteTarget precedence (explicit → defaultWriteTarget → stashDir)
+ *   - resolveWriteTarget precedence (explicit → defaultWriteTarget → defaultBundle)
  *   - commit-message sanitization (issue #270) via the boundary commit
  */
 
@@ -37,7 +36,6 @@ import {
   type WriteTargetSource,
   writeAssetToSource,
 } from "../../src/core/write-source";
-import { slugForPath } from "../../src/indexer/installations";
 import { resolveSourceEntries } from "../../src/indexer/search/search-source";
 import { writeLockfile } from "../../src/integrations/lockfile";
 import { getCachePaths, parseGitRepoUrl } from "../../src/sources/providers/git";
@@ -219,12 +217,11 @@ describe("writeAssetToSource — filesystem", () => {
 
 // ── writeAssetToSource — git (0.9.0 batch-at-boundary, issue #507) ───────────
 
-function gitTarget(workDir: string, opts?: { writable?: boolean; pushOnCommit?: boolean }): ResolvedWriteTarget {
+function gitTarget(workDir: string, opts?: { writable?: boolean }): ResolvedWriteTarget {
   const config: SourceConfigEntry = {
     type: "git",
     name: "team",
     writable: opts?.writable ?? true,
-    ...(opts?.pushOnCommit !== undefined ? { options: { pushOnCommit: opts.pushOnCommit } } : {}),
   };
   return { source: { kind: "git", name: "team", path: workDir }, config };
 }
@@ -309,25 +306,6 @@ describe("writeAssetToSource — git (no per-write commit)", () => {
       encoding: "utf8",
     });
     expect(remoteLog.stdout.trim()).toBe("seed");
-  });
-
-  test("deprecated pushOnCommit is ignored — writable+remote pushes anyway via the batch default", async () => {
-    // pushOnCommit no longer maps onto the push gate in any way (Decision 6,
-    // WI-9.6b): this still pushes, but because the target is writable with a
-    // remote and no explicit `push` override was given — NOT because of
-    // pushOnCommit. See the "content-layout sync" test in
-    // improve-sync.test.ts for a case where the old mapping's absence is
-    // actually observable (pushOnCommit: false no longer suppresses push).
-    const { remoteDir, workDir } = initBareGitRepo();
-    const target = gitTarget(workDir, { writable: true, pushOnCommit: true });
-
-    await writeAssetToSource(target.source, target.config, { type: "memory", name: "legacy" }, "body");
-    commitWriteTargetBoundary(target, "Update memory:legacy");
-
-    const remoteLog = spawnSync("git", ["--git-dir", remoteDir, "log", "--format=%s", "-1", "main"], {
-      encoding: "utf8",
-    });
-    expect(remoteLog.stdout.trim()).toBe("Update memory:legacy");
   });
 
   test("commitWriteTargetBoundary is a no-op for filesystem targets", async () => {
@@ -559,14 +537,8 @@ describe("resolveWriteTarget", () => {
     expect(result.source.name).toBe("default-one");
   });
 
-  test("falls back to working stashDir when no explicit target / defaultWriteTarget", () => {
-    const stashDir = makeTempDir("akm-target-stash-");
-    process.env.AKM_STASH_DIR = stashDir;
-    const result = resolveWriteTarget({ semanticSearchMode: "off" });
-    expect(result.selector).toBeUndefined();
-    expect(result.source.name).toBe(slugForPath(stashDir));
-    expect(result.source.kind).toBe("filesystem");
-    expect(result.source.path).toBe(stashDir);
+  test("requires a default bundle when no explicit target or defaultWriteTarget exists", () => {
+    expect(() => resolveWriteTarget({ semanticSearchMode: "off" })).toThrow(ConfigError);
   });
 
   test("preserves the default bundle identity for the configured working stash", () => {

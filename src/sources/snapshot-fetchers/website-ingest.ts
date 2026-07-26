@@ -101,7 +101,7 @@ export function shouldAllowPrivateWebsiteUrlForTests(rawUrl: string): boolean {
 function resolveFetcherStashDir(explicitStashDir?: string): string | null {
   if (explicitStashDir) return explicitStashDir;
   try {
-    return resolveStashDir({ readOnly: true });
+    return resolveStashDir();
   } catch {
     return null;
   }

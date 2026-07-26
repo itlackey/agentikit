@@ -10,7 +10,7 @@
  * lost on re-index.
  *
  * MIGRATOR-OWNED HOME (akm 0.9.0 Chunk-5 flip, scope-B ruling; relocated to
- * `src/migrate/legacy/` in Chunk-8 WI-8.5d): the sidecar layout is a pre-0.9
+ * `scripts/akm-migrate/migrate/legacy/` in Chunk-8 WI-8.5d): the sidecar layout is a pre-0.9
  * on-disk shape, so its reader/writer live under the frozen migrator home
  * alongside the other legacy-layout code rather than in the live indexer passes.
  * After WI-8.5d the live indexer no longer reads the sidecar — the only reader is
@@ -24,10 +24,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { IndexDocument } from "../../core/adapter/types";
-import { writeFileAtomic } from "../../core/common";
-import { warn } from "../../core/warn";
-import { type StashFile, validateStashEntry } from "../../indexer/passes/metadata";
+import type { IndexDocument } from "../../../../src/core/adapter/types";
+import { writeFileAtomic } from "../../../../src/core/common";
+import { warn } from "../../../../src/core/warn";
+import { type StashFile, validateStashEntry } from "../../../../src/indexer/passes/metadata";
 
 /** The pre-0.9.0 per-directory metadata sidecar filename. */
 const LEGACY_STASH_FILENAME = ".stash.json";

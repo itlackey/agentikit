@@ -2,8 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
 import { ConfigError, NotFoundError, UsageError } from "../../src/core/errors";
-import { createMigrationBackup } from "../../src/core/migration-backup";
 import { runCliCapture } from "../_helpers/cli";
 import { makeSandboxDir, makeStashDir, type SandboxedDir, withEnv, withEnvSync } from "../_helpers/sandbox";
 

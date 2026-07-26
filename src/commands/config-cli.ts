@@ -146,7 +146,7 @@ export const configCommand = defineGroupCommand({
         if (args.all) {
           let stashDir: string;
           try {
-            stashDir = resolveStashDir({ readOnly: true });
+            stashDir = resolveStashDir();
           } catch {
             stashDir = `${getDefaultStashDir()} (not initialized)`;
           }
@@ -178,7 +178,7 @@ export const configCommand = defineGroupCommand({
     get: defineJsonCommand({
       meta: { name: "get", description: "Get a configuration value by key" },
       args: {
-        key: { type: "positional", required: true, description: "Config key (for example: embedding, stashDir)" },
+        key: { type: "positional", required: true, description: "Config key (for example: embedding, defaultBundle)" },
       },
       run({ args }) {
         output("config", getConfigValue(loadConfig(), args.key));
@@ -202,25 +202,8 @@ export const configCommand = defineGroupCommand({
             "Suppress the post-write config dump on stdout. Use from hooks and CI scripts; the write still happens and errors still print.",
           default: false,
         },
-        // #463: explicit layer flag for forward-compat. User layer is the only
-        // settable layer today; the flag exists so plugin authors can encode
-        // intent and the surface stays stable if project-layer writes return.
-        layer: {
-          type: "string",
-          description: "Config layer to write to. Currently only `user` is supported.",
-          default: "user",
-        },
       },
       run({ args }) {
-        if (args.layer && args.layer !== "user") {
-          throw new UsageError(
-            `Unsupported --layer "${args.layer}". Only "user" is settable in 0.9.0.`,
-            "INVALID_FLAG_VALUE",
-          );
-        }
-        // Use loadConfig (not loadUserConfig) so the project-config
-        // deprecation warning fires consistently with `akm config get`
-        // (#457). Effective merged shape is identical post-0.8.0.
         const updated = mutateConfig((current) => setConfigValue(current, args.key, args.value)).config;
         if (!args.silent) {
           output("config", listConfig(updated));
@@ -236,19 +219,8 @@ export const configCommand = defineGroupCommand({
           description: "Suppress the post-write config dump on stdout.",
           default: false,
         },
-        layer: {
-          type: "string",
-          description: "Config layer to write to. Currently only `user` is supported.",
-          default: "user",
-        },
       },
       run({ args }) {
-        if (args.layer && args.layer !== "user") {
-          throw new UsageError(
-            `Unsupported --layer "${args.layer}". Only "user" is settable in 0.9.0.`,
-            "INVALID_FLAG_VALUE",
-          );
-        }
         const result = mutateConfig((current) => unsetConfigValue(current, args.key), { absentNoop: true });
         const updated = result.config;
         if (!args.silent) {
@@ -264,23 +236,6 @@ export const configCommand = defineGroupCommand({
       async run() {
         const { runConfigValidate } = await import("../cli/config-validate.js");
         await runConfigValidate();
-      },
-    }),
-    migrate: defineJsonCommand({
-      meta: {
-        name: "migrate",
-        description: "Compatibility alias for the canonical top-level migrate status/apply coordinator.",
-      },
-      args: {
-        config: {
-          type: "string",
-          description: "Path to an operator-prepared current-version config to validate and install",
-        },
-        dryRun: { type: "boolean", default: false, description: "Validate and report without changing files" },
-      },
-      async run({ args }) {
-        const { runConfigMigrate } = await import("../cli/config-migrate.js");
-        await runConfigMigrate({ preparedConfigPath: args.config, dryRun: args.dryRun });
       },
     }),
     enable: defineJsonCommand({
@@ -307,8 +262,7 @@ export const configCommand = defineGroupCommand({
   // The bare `akm config` invocation (and `akm config --list`) dumps the
   // current config. defineGroupCommand short-circuits this body when a
   // registered subcommand ran, so the routing set stays derived from the
-  // subCommands map and can never desync (previously validate/migrate were
-  // missing from a hand-maintained set, causing a spurious second dump).
+  // subCommands map and can never desync.
   defaultRun() {
     output("config", listConfig(loadConfig()));
   },

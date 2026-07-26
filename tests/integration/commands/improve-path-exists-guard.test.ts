@@ -54,14 +54,25 @@ function makeTempDir(prefix: string): string {
 
 async function buildIndex(stashDir: string): Promise<void> {
   process.env.AKM_STASH_DIR = stashDir;
-  saveConfig(withTestImproveLlm({ semanticSearchMode: "off" }));
+  saveConfig(
+    withTestImproveLlm({
+      semanticSearchMode: "off",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+    }),
+  );
   await akmIndex({ stashDir, full: true });
+}
+
+function durableRef(ref: string): string {
+  return `stash//${ref}`;
 }
 
 const reflectFn = async ({ ref }: { ref?: string }): Promise<AkmReflectResult> => ({
   schemaVersion: 2,
   ok: true,
-  proposal: makeProposal(ref ?? "lesson:unknown"),
+  proposal: makeProposal(ref ?? "lessons/unknown"),
   ref: ref ?? "",
   engine: "test",
   durationMs: 1,
@@ -161,8 +172,16 @@ describe("akmImprove final pathExists guard", () => {
     // Inject a positive feedback signal so both lessons pass the signal filter
     // and arrive at the final guard.
     const { appendEvent } = await import("../../../src/core/events");
-    appendEvent({ eventType: "feedback", ref: "lessons/alpha", metadata: { signal: "positive", note: "ok" } });
-    appendEvent({ eventType: "feedback", ref: "lessons/beta", metadata: { signal: "positive", note: "ok" } });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("lessons/alpha"),
+      metadata: { signal: "positive", note: "ok" },
+    });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("lessons/beta"),
+      metadata: { signal: "positive", note: "ok" },
+    });
 
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -201,9 +220,21 @@ describe("akmImprove final pathExists guard", () => {
 
     // Positive feedback so all three pass the signal filter and reach the guard.
     const { appendEvent } = await import("../../../src/core/events");
-    appendEvent({ eventType: "feedback", ref: "lessons/kept", metadata: { signal: "positive", note: "ok" } });
-    appendEvent({ eventType: "feedback", ref: "lessons/gone", metadata: { signal: "positive", note: "ok" } });
-    appendEvent({ eventType: "feedback", ref: "lessons/alive", metadata: { signal: "positive", note: "ok" } });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("lessons/kept"),
+      metadata: { signal: "positive", note: "ok" },
+    });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("lessons/gone"),
+      metadata: { signal: "positive", note: "ok" },
+    });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("lessons/alive"),
+      metadata: { signal: "positive", note: "ok" },
+    });
 
     // Delete one file post-index to simulate the deletion race.
     fs.unlinkSync(path.join(stashDir, "lessons", "gone.md"));

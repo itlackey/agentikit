@@ -120,7 +120,6 @@ function readImproveRuns(xdgData: string): Array<{
   dry_run: number;
   ok: number;
   scope_mode: string;
-  profile: string | null;
   strategy: string | null;
   result: Record<string, unknown>;
 }> {
@@ -130,7 +129,7 @@ function readImproveRuns(xdgData: string): Array<{
   try {
     const rows = db
       .prepare(
-        `SELECT id, started_at, completed_at, dry_run, ok, scope_mode, profile, strategy, result_json
+        `SELECT id, started_at, completed_at, dry_run, ok, scope_mode, strategy, result_json
          FROM improve_runs ORDER BY started_at ASC`,
       )
       .all() as Array<{
@@ -140,7 +139,6 @@ function readImproveRuns(xdgData: string): Array<{
       dry_run: number;
       ok: number;
       scope_mode: string;
-      profile: string | null;
       strategy: string | null;
       result_json: string;
     }>;
@@ -151,7 +149,6 @@ function readImproveRuns(xdgData: string): Array<{
       dry_run: r.dry_run,
       ok: r.ok,
       scope_mode: r.scope_mode,
-      profile: r.profile,
       strategy: r.strategy,
       result: JSON.parse(r.result_json) as Record<string, unknown>,
     }));

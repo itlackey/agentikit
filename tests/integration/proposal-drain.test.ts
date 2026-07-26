@@ -71,10 +71,19 @@ function seed(stash: string, ref: string, source: string, content: string): Prop
     source,
     force: true,
     sourceRun: "run-x",
+    target: { source: "stash", root: stash },
     payload: { content, frontmatter: { description: `${ref} fixture` } },
   });
   if (isProposalSkipped(result)) throw new Error(`unexpected skip: ${result.message}`);
   return result;
+}
+
+function proposalFixture(source: string, content: string): Proposal {
+  return {
+    source,
+    payload: { content },
+    changes: [{ path: "lessons/fixture.md", op: "create", after: content }],
+  } as Proposal;
 }
 
 function baseOpts(stash: string, overrides: Partial<DrainOptions> = {}): DrainOptions {
@@ -156,20 +165,20 @@ describe("resolveDrainPolicy", () => {
 
 describe("classifyProposal", () => {
   test("extract with real content → accept", () => {
-    const p = { source: "extract", payload: { content: VALID_LESSON } } as Proposal;
+    const p = proposalFixture("extract", VALID_LESSON);
     expect(classifyProposal(p, PERSONAL_STASH)?.verdict).toBe("accept");
   });
 
   test("extract exceeding the accept band's maxDiffLines → defer (no uncapped auto-promote)", () => {
     // An arbitrarily large extract must not auto-promote with zero LLM calls.
     const big = `---\nd: x\n---\n${Array.from({ length: 300 }, (_, i) => `line ${i}`).join("\n")}\n`;
-    const p = { source: "extract", payload: { content: big } } as Proposal;
+    const p = proposalFixture("extract", big);
     const decision = classifyProposal(p, PERSONAL_STASH);
     expect(decision?.verdict).toBe("defer");
   });
 
   test("empty diff → reject", () => {
-    const p = { source: "extract", payload: { content: EMPTY_LESSON } } as Proposal;
+    const p = proposalFixture("extract", EMPTY_LESSON);
     const decision = classifyProposal(p, PERSONAL_STASH);
     expect(decision?.verdict).toBe("reject");
   });
@@ -177,28 +186,28 @@ describe("classifyProposal", () => {
   test("mid-band consolidate (in defer list, no accept match) → defer", () => {
     // A consolidate proposal that exceeds the accept band's maxDiffLines defers.
     const big = `---\nd: x\n---\n${Array.from({ length: 300 }, (_, i) => `line ${i}`).join("\n")}\n`;
-    const p = { source: "consolidate", payload: { content: big } } as Proposal;
+    const p = proposalFixture("consolidate", big);
     const decision = classifyProposal(p, PERSONAL_STASH);
     expect(decision?.verdict).toBe("defer");
   });
 
   test("unmatched generator → null (left pending)", () => {
-    const p = { source: "propose", payload: { content: VALID_LESSON } } as Proposal;
+    const p = proposalFixture("propose", VALID_LESSON);
     expect(classifyProposal(p, PERSONAL_STASH)).toBeNull();
   });
 
   test("global maxDiffLines defers an otherwise-acceptable extract", () => {
-    const p = { source: "extract", payload: { content: VALID_LESSON } } as Proposal;
+    const p = proposalFixture("extract", VALID_LESSON);
     expect(classifyProposal(p, PERSONAL_STASH, 2)?.verdict).toBe("defer");
   });
 });
 
 describe("isEmptyDiff", () => {
   test("frontmatter-only content is empty", () => {
-    expect(isEmptyDiff({ payload: { content: EMPTY_LESSON } } as Proposal)).toBe(true);
+    expect(isEmptyDiff(proposalFixture("extract", EMPTY_LESSON))).toBe(true);
   });
   test("content with a body is not empty", () => {
-    expect(isEmptyDiff({ payload: { content: VALID_LESSON } } as Proposal)).toBe(false);
+    expect(isEmptyDiff(proposalFixture("extract", VALID_LESSON))).toBe(false);
   });
 });
 

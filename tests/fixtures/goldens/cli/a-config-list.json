@@ -1,7 +1,9 @@
 {
   "exitCode": 0,
   "stdoutKeys": [
+    "bundles",
     "configVersion",
+    "defaultBundle",
     "output",
     "registries",
     "schemaVersion",

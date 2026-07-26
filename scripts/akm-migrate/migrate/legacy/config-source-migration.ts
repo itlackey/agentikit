@@ -37,12 +37,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { installedSourceDescriptor } from "../../core/config/config-sources";
-import type { BundleConfigEntry } from "../../core/config/config-types";
-import { deriveBundleIds } from "../../indexer/installations";
-import type { SearchSource } from "../../indexer/search/search-source";
-import type { LockfileEntry } from "../../integrations/lockfile";
-import type { InstallKind } from "../../registry/types";
+import { installedSourceDescriptor } from "../../../../src/core/config/config-sources";
+import type { BundleConfigEntry } from "../../../../src/core/config/config-types";
+import { deriveBundleIds } from "../../../../src/indexer/installations";
+import type { SearchSource } from "../../../../src/indexer/search/search-source";
+import type { LockfileEntry } from "../../../../src/integrations/lockfile";
+import type { InstallKind } from "../../../../src/registry/types";
 
 /** The pre-cutover source keys this transform consumes and removes. */
 const OLD_SOURCE_KEYS = ["stashDir", "sources", "installed"] as const;

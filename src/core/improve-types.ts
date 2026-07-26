@@ -39,13 +39,10 @@ export interface ImproveEligibleRef {
    */
   filePath?: string;
   /**
-   * Chunk-5 flip F5d (Step 4): the durable fully-qualified `<bundle>//<concept-id>`
-   * stored spelling (`entries.item_ref`), DERIVED FROM THE RESOLVED INDEX ENTRY at
-   * planning time (D-R3 — "derived from a resolved entry, never from raw input").
-   * The durable-state writers (salience/outcome) key by this when present and fall
-   * back to the pre-flip `type:name` grammar for NULL-`item_ref` (pre-flip /
-   * write-back) rows. Unset when the planner could not resolve provenance for the
-   * ref (e.g. an unindexed scope-ref target).
+   * Durable fully-qualified `<bundle>//<concept-id>` spelling from
+   * `entries.item_ref`, derived from the resolved index entry at planning time.
+   * Unset when the planner could not resolve provenance for the ref (for example,
+   * an unindexed scope-ref target), in which case the conceptId `ref` is used.
    */
   itemRef?: string;
   /**
@@ -673,10 +670,3 @@ export interface AkmImproveResult {
   /** Present only when a started run was persisted after abnormal termination. */
   terminated?: { reason: string; at: string; errorMessage?: string };
 }
-
-/** Historical improve-result envelope written before the 0.9 strategy cutover. */
-export type LegacyAkmImproveResult = Omit<AkmImproveResult, "schemaVersion" | "strategy" | "strategyFilteredRefs"> & {
-  schemaVersion: 1;
-  profile?: string;
-  profileFilteredRefs?: ImproveEligibleRef[];
-};

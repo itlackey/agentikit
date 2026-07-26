@@ -217,27 +217,56 @@ export interface SourceInstallStatus extends InstalledBundle {
   extractedDir: string;
 }
 
-/**
- * Canonical source kind values (v1 spec §2.1 + list-only "managed" for installed entries).
- * The four provider kinds must match the `SourceProvider.kind` discriminators exactly.
- * @deprecated "local" and "remote" were pre-v1 names; use "filesystem" and "website".
- */
-export type SourceKind = "filesystem" | "git" | "npm" | "website" | "managed" | "local" | "remote";
+/** Canonical source provider kinds. */
+export type SourceKind = "filesystem" | "git" | "npm" | "website";
+
+export interface SourceDescriptor {
+  kind: "path" | "git" | "npm" | "website";
+  locator: string;
+  maxPages?: number;
+}
+
+export interface SourceLock {
+  source: InstallKind;
+  ref: string;
+  resolvedVersion?: string;
+  resolvedRevision?: string;
+  integrity?: string;
+  localRoot?: string;
+  manifestDigest?: string;
+  adapterIds?: string[];
+  installedAt?: string;
+}
+
+export interface SourceComponent {
+  name: string;
+  root?: string;
+  adapter?: string;
+  writable?: boolean;
+}
 
 export interface SourceEntry {
   name: string;
   kind: SourceKind;
+  default: boolean;
+  source: SourceDescriptor;
   path?: string;
   ref?: string;
   provider?: string;
   version?: string;
   writable: boolean;
+  registryId?: string;
+  components: SourceComponent[];
+  lock: SourceLock | null;
+  itemCount: number;
+  byType: Record<string, number>;
   status: { exists: boolean };
 }
 
 export interface SourceListResponse {
   schemaVersion: number;
   stashDir: string;
+  defaultBundle: string | null;
   sources: SourceEntry[];
   totalSources: number;
 }

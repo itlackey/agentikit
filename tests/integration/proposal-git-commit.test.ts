@@ -52,6 +52,7 @@ describe("proposal Git target commits", () => {
       ref: "lessons/git-proposal",
       source: "distill",
       force: true,
+      target: { source: "team", root: content },
       payload: { content: ACCEPTED },
     });
     if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
@@ -104,6 +105,7 @@ describe("proposal Git target commits", () => {
       ref: "lessons/git-proposal",
       source: "distill",
       force: true,
+      target: { source: "team", root: content },
       payload: { content: ACCEPTED },
     });
     if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
@@ -165,6 +167,7 @@ describe("proposal Git target commits", () => {
       ref: "lessons/git-proposal",
       source: "distill",
       force: true,
+      target: { source: "team", root: content },
       payload: { content: ACCEPTED },
     });
     if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
@@ -201,6 +204,7 @@ describe("proposal Git target commits", () => {
       ref: "lessons/ignored-proposal",
       source: "distill",
       force: true,
+      target: { source: "team", root: content },
       payload: { content: ACCEPTED },
     });
     if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
@@ -213,7 +217,7 @@ describe("proposal Git target commits", () => {
     expect(fs.existsSync(txnNamespaceDir(content))).toBe(false);
   });
 
-  test("recovers an asset-published journal created before Git publication identity was persisted", async () => {
+  test("rejects an asset-published journal without Git publication identity", async () => {
     const url = "https://example.com/akm/proposal-git-legacy-journal.git";
     const repo = getCachePaths(parseGitRepoUrl(url).canonicalUrl).repoDir;
     const content = path.join(repo, "content");
@@ -245,6 +249,7 @@ describe("proposal Git target commits", () => {
       ref: "lessons/git-proposal",
       source: "distill",
       force: true,
+      target: { source: "team", root: content },
       payload: { content: ACCEPTED },
     });
     if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
@@ -259,15 +264,13 @@ describe("proposal Git target commits", () => {
       payload: Record<string, unknown>;
     };
     delete journal.payload.gitPublication;
-    delete journal.payload.gitSnapshots;
-    delete journal.payload.targetKind;
-    journal.payload.targetSource = "stash";
     fs.writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf8");
     fs.rmSync(rejectingHook);
 
-    await akmProposalAccept({ stashDir: storage.stashDir, id: proposal.id, config });
-    expect(git(repo, ["rev-list", "--count", "HEAD"])).toBe("2");
-    expect(git(remote, ["show", "main:content/lessons/git-proposal.md"])).toContain("ACCEPTED.");
-    expect(fs.existsSync(namespace)).toBe(false);
+    await expect(akmProposalAccept({ stashDir: storage.stashDir, id: proposal.id, config })).rejects.toThrow(
+      "has no Git publication identity",
+    );
+    expect(git(remote, ["show", "main:content/lessons/git-proposal.md"])).toContain("ORIGINAL.");
+    expect(fs.existsSync(namespace)).toBe(true);
   });
 });

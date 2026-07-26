@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 describe("summarizeImproveRuns result-row accounting", () => {
-  test("counts normalized rows and skips malformed rows without admitting them to metrics", () => {
+  test("admits v2 rows and skips v1 or malformed rows", () => {
     const now = Date.now();
     const db = openStateDatabase();
 
@@ -33,7 +33,7 @@ describe("summarizeImproveRuns result-row accounting", () => {
         completedAt: startedAt,
         stashDir: "/tmp/stash",
         dryRun: false,
-        legacyProfile: "default",
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
@@ -44,67 +44,44 @@ describe("summarizeImproveRuns result-row accounting", () => {
 
     try {
       insert("complete", 120_000, {
-        schemaVersion: 1,
+        schemaVersion: 2,
         ok: true,
-        profile: "default",
+        strategy: "default",
         scope: { mode: "all" },
         dryRun: false,
         memorySummary: { eligible: 25, derived: 5 },
         plannedRefs: [{ ref: "memories/complete" }],
         actions: [],
       });
-      insert("published-0.8-staleness", 150_000, {
-        schemaVersion: 1,
-        ok: true,
-        scope: { mode: "all" },
-        dryRun: false,
-        memorySummary: { eligible: 7, derived: 2 },
-        plannedRefs: [{ ref: "memories/stale-a" }, { ref: "memories/stale-b" }],
-        actions: [],
-        stalenessDetection: {
-          considered: 8,
-          deprecated: 2,
-          confirmed: 4,
-          skipped: 2,
-          durationMs: 125,
-          warnings: [],
-        },
-      });
-      insert("known-interrupted", 90_000, {
-        schemaVersion: 1,
+      insert("terminated", 90_000, {
+        schemaVersion: 2,
         ok: false,
-        profile: "default",
+        strategy: "default",
         scope: { mode: "all" },
         dryRun: false,
+        memorySummary: { eligible: 100, derived: 20 },
         plannedRefs: [],
         actions: [],
         terminated: { reason: "SIGTERM", at: new Date(now - 90_000).toISOString() },
       });
-      insert("over-broad-legacy", 60_000, {
+      insert("v1", 60_000, {
         schemaVersion: 1,
         ok: true,
         profile: "default",
         scope: { mode: "all" },
         dryRun: false,
-        plannedRefs: Array.from({ length: 10 }, (_, index) => ({ ref: `memories/invalid-${index}` })),
+        memorySummary: { eligible: 999, derived: 999 },
+        plannedRefs: [{ ref: "memories/v1" }],
         actions: [],
-        terminated: { reason: "not-interrupted", at: new Date(now - 60_000).toISOString() },
       });
-      insert("malformed-staleness", 45_000, {
-        schemaVersion: 1,
+      insert("malformed-v2", 45_000, {
+        schemaVersion: 2,
         ok: true,
+        strategy: "default",
         scope: { mode: "all" },
         dryRun: false,
-        memorySummary: { eligible: 999, derived: 999 },
-        plannedRefs: Array.from({ length: 10 }, (_, index) => ({ ref: `memories/stale-invalid-${index}` })),
+        plannedRefs: [{ ref: "memories/malformed" }],
         actions: [],
-        stalenessDetection: {
-          considered: 8,
-          deprecated: 2,
-          confirmed: 4,
-          skipped: 2,
-          durationMs: 125,
-        },
       });
       insert("unsupported-version", 30_000, {
         schemaVersion: 99,
@@ -120,14 +97,13 @@ describe("summarizeImproveRuns result-row accounting", () => {
 
       // windows[].runs retains its historical all-row denominator. Decoder
       // accounting is additive and must not silently narrow that count.
-      expect(summary.runCount).toBe(6);
+      expect(summary.runCount).toBe(5);
       expect(summary.metrics.resultRows).toEqual({
-        total: 6,
-        included: 3,
-        normalized: 1,
+        total: 5,
+        included: 2,
         skipped: { invalid: 3 },
       });
-      expect(summary.metrics.plannedRefs).toBe(3);
+      expect(summary.metrics.plannedRefs).toBe(1);
       expect(summary.metrics.memorySummary).toEqual({ eligible: 25, derived: 5 });
     } finally {
       db.close();

@@ -24,10 +24,10 @@
  */
 
 import path from "node:path";
-import { stashDirFor, typeForStashDir } from "../core/asset/asset-placement";
-import { type BundleRef, isBundleSlug, parseBundleRef } from "../core/asset/asset-ref";
-import { NotFoundError, UsageError } from "../core/errors";
-import { DEPRECATED_REJECTED_TYPES } from "../core/recognition-util";
+import { stashDirFor, typeForStashDir } from "../../../src/core/asset/asset-placement";
+import { type BundleRef, isBundleSlug, parseBundleRef } from "../../../src/core/asset/asset-ref";
+import { NotFoundError, UsageError } from "../../../src/core/errors";
+import { DEPRECATED_REJECTED_TYPES } from "../../../src/core/recognition-util";
 
 // ── Legacy `[origin//]type:name` value object ────────────────────────────────
 

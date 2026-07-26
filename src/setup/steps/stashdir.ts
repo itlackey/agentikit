@@ -17,7 +17,6 @@ export async function stepStashDir(
   current: AkmConfig,
   options?: { nonInteractive?: boolean; preferredDir?: string },
 ): Promise<string> {
-  // 0.9.0 (spec §10.1): the current primary stash is the defaultBundle's path.
   const currentPrimary = primaryBundlePath(current);
   const defaultDir = options?.preferredDir ?? currentPrimary ?? getDefaultStashDir();
 

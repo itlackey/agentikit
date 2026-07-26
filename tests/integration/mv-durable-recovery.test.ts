@@ -29,7 +29,12 @@ const children: ChildProcess[] = [];
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
   markers = makeSandboxDir("akm-mv-crash");
-  writeSandboxConfig({ semanticSearchMode: "off" });
+  writeSandboxConfig({
+    semanticSearchMode: "off",
+    bundles: { stash: { path: storage.stashDir, writable: true } },
+    defaultBundle: "stash",
+    defaultWriteTarget: "stash",
+  });
 });
 
 afterEach(() => {
@@ -70,14 +75,14 @@ async function crashAt(phase: string, fromRef: string, toName: string): Promise<
 describe("mv durable journal crash recovery", () => {
   test("rolls back a SIGKILL after one citer replacement, then safely retries", async () => {
     seed("memories/crash-before-commit.md", "Crash source.\n");
-    const citerA = seed("knowledge/crash-a.md", "A memory:crash-before-commit\n");
-    const citerB = seed("knowledge/crash-b.md", "B memory:crash-before-commit\n");
+    const citerA = seed("knowledge/crash-a.md", "A memories/crash-before-commit\n");
+    const citerB = seed("knowledge/crash-b.md", "B memories/crash-before-commit\n");
     await crashAt("applying-partial", "memories/crash-before-commit", "crash-before-commit-new");
 
     const retry = await runCliCapture(["mv", "memories/crash-before-commit", "crash-before-commit-new"]);
     expect(retry.code).toBe(0);
-    expect(fs.readFileSync(citerA, "utf8")).toContain("memory:crash-before-commit-new");
-    expect(fs.readFileSync(citerB, "utf8")).toContain("memory:crash-before-commit-new");
+    expect(fs.readFileSync(citerA, "utf8")).toContain("memories/crash-before-commit-new");
+    expect(fs.readFileSync(citerB, "utf8")).toContain("memories/crash-before-commit-new");
   });
 
   test("finishes state re-key after SIGKILL at the irreversible filesystem commit", async () => {
@@ -158,6 +163,25 @@ describe("mv durable journal crash recovery", () => {
     expect(trigger.code).not.toBe(0);
     expect(fs.readFileSync(target, "utf8")).toBe("EXTERNAL POST-CRASH EDIT\n");
     expect(fs.existsSync(txnNamespaceDir(storage.stashDir))).toBe(true);
+  });
+
+  test("refuses a move journal carrying the retired ref grammar", async () => {
+    seed("memories/retired-journal-ref.md", "Current source.\n");
+    seed("memories/retired-journal-trigger.md", "Recovery trigger.\n");
+    await crashAt("filesystem-committed", "memories/retired-journal-ref", "retired-journal-ref-new");
+
+    const namespace = txnNamespaceDir(storage.stashDir);
+    const transactionDir = fs.readdirSync(namespace)[0] as string;
+    const journalPath = path.join(namespace, transactionDir, "journal.json");
+    const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as { payload: Record<string, unknown> };
+    journal.payload.fromRef = "memory:retired-journal-ref";
+    fs.writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf8");
+
+    const result = await runCliCapture(["mv", "memories/retired-journal-trigger", "retired-journal-trigger-new"]);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("unsafe move recovery journal");
+    expect(fs.existsSync(journalPath)).toBe(true);
+    expect(fs.existsSync(path.join(storage.stashDir, "memories", "retired-journal-trigger-new.md"))).toBe(false);
   });
 
   test("proposal promotion finalizes a pending committed move before writing", async () => {

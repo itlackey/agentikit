@@ -194,8 +194,8 @@ describe("deriveLessonRef", () => {
   });
 });
 
-describe("akmDistill — source-qualified lookup", () => {
-  test("qualifies duplicate refs and never writes salience to another source", async () => {
+describe("akmDistill — selected-root lookup", () => {
+  test("never writes salience to another source", async () => {
     const selected = makeStashDir();
     const other = makeStashDir();
     const selectedFile = path.join(selected, "skills", "duplicate.md");
@@ -208,7 +208,6 @@ describe("akmDistill — source-qualified lookup", () => {
 
     await akmDistill({
       ref: "skills/duplicate",
-      sourceName: "team",
       stashDir: selected,
       config: configEnabled(selected),
       lookupFn: async (ref) => {
@@ -222,6 +221,33 @@ describe("akmDistill — source-qualified lookup", () => {
     expect(lookedUp[0]).toBe("skills/duplicate");
     expect(fs.readFileSync(selectedFile, "utf8")).toContain("salience:");
     expect(fs.readFileSync(otherFile, "utf8")).toBe(otherContent);
+  });
+
+  test("reads feedback using item_ref when planning supplied one", async () => {
+    const stash = makeStashDir();
+    const itemRef = "team//skills/deploy";
+    let queriedRef: string | undefined;
+    let receivedPrompt = "";
+
+    const result = await akmDistill({
+      ref: "skills/deploy",
+      itemRef,
+      stashDir: stash,
+      config: configEnabled(stash),
+      lookupFn: noopLookup,
+      readEventsFn: ((options: { ref?: string }) => {
+        queriedRef = options.ref;
+        return eventsFor(itemRef, ["positive"])(options);
+      }) as typeof readEvents,
+      chat: async (_config, messages) => {
+        receivedPrompt = messages.map((message) => message.content).join("\n");
+        return "";
+      },
+    });
+
+    expect(result.outcome).toBe("llm_failed");
+    expect(queriedRef).toBe(itemRef);
+    expect(receivedPrompt).toContain("## What worked");
   });
 });
 

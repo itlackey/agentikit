@@ -87,10 +87,10 @@ export type NotFoundErrorCode =
  * imperative. Returning undefined means "no canned hint".
  */
 const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
-  STASH_DIR_NOT_FOUND: "Run `akm setup` to create and configure your stash, or set stashDir in your config.",
+  STASH_DIR_NOT_FOUND: "Run `akm setup` to create and configure your stash, or configure a defaultBundle path.",
   STASH_DIR_NOT_A_DIRECTORY:
-    "The configured stashDir exists but isn't a directory. Update stashDir to point at a folder.",
-  STASH_DIR_UNREADABLE: "Check the path exists and your user has read permission, or update stashDir.",
+    "The configured default bundle path exists but isn't a directory. Update it to point at a folder.",
+  STASH_DIR_UNREADABLE: "Check the path exists and your user has read permission, or update the default bundle path.",
   EMBEDDING_NOT_CONFIGURED: 'Run `akm config set embedding \'{"endpoint":"...","model":"..."}\'` to enable embeddings.',
   LLM_NOT_CONFIGURED:
     'Run `akm setup` or configure an `engines` entry with `kind: "llm"`, then select it with `defaults.llmEngine`.',

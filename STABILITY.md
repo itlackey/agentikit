@@ -222,13 +222,10 @@ encoding-salience frontmatter stamp (metadata only).
 Not public interfaces. Listed so you can recognize them, not so you can rely
 on them.
 
-- **Migration surfaces** — `akm migrate {status,apply}`,
-  `akm backup {create,restore}`, and the `akm-migrate-storage` binary
-  implement the one-time 0.8→0.9 cutover. They are **scheduled for removal at
-  0.10**, moving to a separately published `akm-migrate` package; `akm
-  migrate` and `akm backup` become thin forwarders. `akm config migrate` is
-  removed in 0.9.0 (use `akm migrate`). `akm help migrate <version>` is
-  Stable — it renders release notes and is unrelated to the apply machinery.
+- **Migration surfaces** — the standalone `akm-migrate` tool owns the one-time
+  0.8→0.9 cutover and storage migration. `akm migrate` and `akm backup` are thin
+  process forwarders; `akm config migrate` is removed. `akm help migrate
+  <version>` is Stable and only renders release notes.
 - **`akm registry build-index`** — maintainer tooling for building a registry
   index.
 - **Environment variables** — see the table below.

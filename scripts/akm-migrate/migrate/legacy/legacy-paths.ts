@@ -10,8 +10,8 @@
  *
  * The runtime `getWorkflowDbPath` core helper is DELETED in WI-8.3 (the runtime
  * no longer opens workflow.db — its durable rows live in state.db post-cutover).
- * But the migrator home (`src/migrate/legacy/`), the backup/restore machinery
- * (`src/core/migration-backup.ts` — backup artifacts + the pre-cutover ledger
+ * But the migrator home (`scripts/akm-migrate/migrate/legacy/`), the backup/restore machinery
+ * (`scripts/akm-migrate/migration-backup.ts` — backup artifacts + the pre-cutover ledger
  * probe) and config-migrate.ts's backward-looking arms still need the physical
  * `<dataDir>/workflow.db` path literal to FIND, roll, merge, back up, and delete
  * a pre-cutover workflow.db. This module is that path literal's only surviving
@@ -20,7 +20,7 @@
  */
 
 import path from "node:path";
-import { getDataDir } from "../../core/paths";
+import { getDataDir } from "../../../../src/core/paths";
 
 /** Physical path of a pre-cutover workflow.db (`<dataDir>/workflow.db`). */
 export function getLegacyWorkflowDbPath(): string {

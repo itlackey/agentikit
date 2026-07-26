@@ -43,7 +43,7 @@ function writeFixturePackage(root: string, name = "akm-package-install-fixture",
         version,
         type: "module",
         files: ["cli.js", "migrate.js"],
-        bin: { akm: "cli.js", "akm-migrate-storage": "migrate.js" },
+        bin: { akm: "cli.js", "akm-migrate": "migrate.js" },
       },
       null,
       4,
@@ -72,7 +72,7 @@ function fakeVerifiedInstall(prefix: string, version: string): VerifiedInstall {
   const launcher = path.join(prefix, "bin", "akm");
   return {
     launcher,
-    launchers: { akm: launcher, "akm-migrate-storage": path.join(prefix, "bin", "akm-migrate-storage") },
+    launchers: { akm: launcher, "akm-migrate": path.join(prefix, "bin", "akm-migrate") },
     packageDir: globalPackageDir(prefix, "akm-cli"),
     version,
   };
@@ -91,15 +91,15 @@ function writePublishedPackage(packageDir: string, version: string): void {
     JSON.stringify({
       name: "akm-cli",
       version,
-      bin: { akm: "dist/akm", "akm-migrate-storage": "dist/akm-migrate-storage" },
+      bin: { akm: "dist/akm", "akm-migrate": "dist/akm-migrate" },
     }),
   );
   fs.writeFileSync(path.join(packageDir, "dist", "akm"), "akm");
-  fs.writeFileSync(path.join(packageDir, "dist", "akm-migrate-storage"), "migrate");
+  fs.writeFileSync(path.join(packageDir, "dist", "akm-migrate"), "migrate");
 }
 
 function writeOwnedLaunchers(prefix: string, packageDir: string): void {
-  for (const binName of ["akm", "akm-migrate-storage"] as const) {
+  for (const binName of ["akm", "akm-migrate"] as const) {
     const launcher = globalLauncherPath(prefix, binName);
     const target = path.join(packageDir, "dist", binName);
     fs.mkdirSync(path.dirname(launcher), { recursive: true });
@@ -215,9 +215,9 @@ describe("package install orchestration", () => {
     expect(fs.lstatSync(verified.packageDir).isSymbolicLink()).toBe(false);
     expect(verified.version).toBe(version);
     expect(verified.launcher.startsWith(prefix)).toBe(true);
-    expect(Object.keys(verified.launchers).sort()).toEqual(["akm", "akm-migrate-storage"]);
+    expect(Object.keys(verified.launchers).sort()).toEqual(["akm", "akm-migrate"]);
     expect(fs.existsSync(verified.launchers.akm)).toBe(true);
-    expect(fs.existsSync(verified.launchers["akm-migrate-storage"])).toBe(true);
+    expect(fs.existsSync(verified.launchers["akm-migrate"])).toBe(true);
   });
 
   test("preflights, preserves the prior package, and restores it after verification failure", async () => {
@@ -317,7 +317,7 @@ describe("package install orchestration", () => {
       const root = tempRoot();
       const realPrefix = path.join(root, priorPackage ? "foreign" : "stray");
       const temporaryPrefix = path.join(root, "temporary");
-      const launcher = globalLauncherPath(realPrefix, priorPackage ? "akm-migrate-storage" : "akm");
+      const launcher = globalLauncherPath(realPrefix, priorPackage ? "akm-migrate" : "akm");
       fs.mkdirSync(path.dirname(launcher), { recursive: true });
       if (priorPackage) {
         const packageDir = globalPackageDir(realPrefix, "akm-cli");
@@ -471,7 +471,7 @@ describe("package install orchestration", () => {
             if (prefix !== realPrefix) return;
             fs.unlinkSync(packageDir);
             writePublishedPackage(packageDir, "1.1.0-local.1");
-            for (const binName of ["akm", "akm-migrate-storage"] as const)
+            for (const binName of ["akm", "akm-migrate"] as const)
               fs.unlinkSync(globalLauncherPath(realPrefix, binName));
             writeOwnedLaunchers(realPrefix, packageDir);
             throw new Error("candidate install failed after mutation");
@@ -486,7 +486,7 @@ describe("package install orchestration", () => {
               expect(allowLinkedPackage).toBe(true);
               expect(fs.lstatSync(packageDir).isSymbolicLink()).toBe(true);
               expect(fs.readlinkSync(packageDir)).toBe(originalLinkTarget);
-              for (const binName of ["akm", "akm-migrate-storage"] as const) {
+              for (const binName of ["akm", "akm-migrate"] as const) {
                 const launcher = globalLauncherPath(realPrefix, binName);
                 const target = path.join(packageDir, "dist", binName);
                 if (process.platform === "win32") {

@@ -191,8 +191,7 @@ export function parseSourceSpec(entry: SourceConfigEntry): SourceSpec | undefine
     case "npm":
       return entry.path ? { type: "npm", package: entry.path } : undefined;
     default:
-      // Unknown provider — best-effort fallback so callers still get something.
-      return entry.path ? { type: "filesystem", path: entry.path } : undefined;
+      return undefined;
   }
 }
 

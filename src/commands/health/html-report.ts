@@ -225,7 +225,6 @@ function renderExecSummary(vm: HealthReportViewModel): string {
     li("Compare window", esc(vm.compare)),
     li("Runs", `${num(vm.totalRuns)} (${vm.failedRuns} failed)`),
     li("Included result rows", num(vm.includedResultRows)),
-    li("Normalized result rows", num(vm.normalizedResultRows)),
     li("Invalid result rows skipped", num(vm.skippedInvalidResultRows)),
     li(
       "Stash derived",
@@ -489,7 +488,7 @@ function renderActionItems(vm: HealthReportViewModel): string {
       title: `${vm.perf.overBudgetRuns} consolidation run${vm.perf.overBudgetRuns === 1 ? "" : "s"} exceeded budget`,
       descHtml:
         "Consolidation phase wall time exceeded the total run budget on these runs. " +
-        "Consider increasing the timeout or reducing the consolidation pool via profile config.",
+        "Consider increasing the timeout or reducing the consolidation pool via strategy config.",
       remedy: "akm config show",
     });
   }

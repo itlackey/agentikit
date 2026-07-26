@@ -89,7 +89,7 @@
  *
  * ## Identifier names are intentionally UNCHANGED from their live sources
  *
- * The manifest's `grepGateScope` explicitly excludes `src/migrate/legacy/`
+ * The manifest's `grepGateScope` explicitly excludes `scripts/akm-migrate/migrate/legacy/`
  * from every zero-count grep ("the frozen §3.4 copy retains dead
  * identifiers by design... do NOT rename identifiers inside the frozen copy
  * to appease greps"). Every exported name below (`AssetSpec`,

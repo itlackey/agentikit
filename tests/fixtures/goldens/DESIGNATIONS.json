@@ -156,12 +156,12 @@
     },
     {
       "path": "tests/fixtures/goldens/cli/a-list.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
+      "reBaselineChunk": "9",
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `list` (installed sources) JSON envelope key-set. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "9510134f31a327d9f0b4c3fd88bb2908a8ffcde3270195a18bcb5fc468aa17c1"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `list` (installed sources) JSON envelope key-set. Re-baselined by the current-config cleanup that retires `bundle list|show|items` and makes `akm list` own bundle inventory, including the top-level `defaultBundle`. Chunk 9 owns the CLI output surface under the surface-owner rule; key-set/count/boolean assertions only, no production ref literals."
     },
     {
       "path": "tests/fixtures/goldens/cli/a-proposal.json",

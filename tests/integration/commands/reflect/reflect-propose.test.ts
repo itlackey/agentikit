@@ -163,7 +163,6 @@ describe("akm reflect", () => {
 
     const result = await akmReflect({
       ref: "lessons/rg-over-grep",
-      sourceName: "team",
       stashDir: selected,
       config: quietQualityGateConfig(),
       runAgentOptions: {
@@ -176,6 +175,33 @@ describe("akm reflect", () => {
     expect(result.ok).toBe(true);
     expect(prompt).toContain("SELECTED SOURCE BODY");
     expect(prompt).not.toContain("OTHER SOURCE BODY");
+  });
+
+  test("reads feedback using item_ref when planning supplied one", async () => {
+    const stash = makeStashDir();
+    const itemRef = durableItemRef(stash, "lesson", "rg-over-grep");
+    appendEvent({
+      eventType: "feedback",
+      ref: itemRef,
+      metadata: { signal: "negative", note: "qualified feedback" },
+    });
+    let prompt = "";
+
+    const result = await akmReflect({
+      ref: "lessons/rg-over-grep",
+      itemRef,
+      assetContent: "---\ndescription: Search guidance\nwhen_to_use: Searching repositories\n---\n\nUse grep.\n",
+      stashDir: stash,
+      config: quietQualityGateConfig(),
+      runAgentOptions: {
+        spawn: fakeSpawnWithCapture("not json", "", 0, (cmd) => {
+          prompt = cmd.at(-1) ?? "";
+        }),
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(prompt).toContain("[negative] qualified feedback");
   });
 
   test("redacts an echoed engine environment credential before proposal persistence", async () => {

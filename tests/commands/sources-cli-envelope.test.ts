@@ -54,7 +54,7 @@ describe("akm source-management cluster — JSON envelope snapshot (WS6)", () =>
   });
 
   test("list --kind <valid>: filter is accepted (exit 0, list shape)", async () => {
-    const { stdout, status } = await runCli(["--json", "list", "--kind", "local"]);
+    const { stdout, status } = await runCli(["--json", "list", "--kind", "filesystem"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env.shape).toBe("list");

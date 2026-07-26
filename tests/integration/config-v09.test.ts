@@ -213,6 +213,19 @@ describe("0.9 config contract", () => {
     }
   });
 
+  test("rejects removed runtime compatibility settings", () => {
+    expect(validateConfigShape({ configVersion: "0.9.0", writable: true }).ok).toBe(false);
+    expect(
+      validateConfigShape({
+        configVersion: "0.9.0",
+        bundles: { primary: { path: "/s", options: { pushOnCommit: true } } },
+      }).ok,
+    ).toBe(false);
+    expect(validateConfigShape({ configVersion: "0.9.0", index: { stalenessDetection: { enabled: true } } }).ok).toBe(
+      false,
+    );
+  });
+
   test("rejects a bundle key that is not a legal slug and a non-source or multi-source entry", () => {
     // Illegal slug key (contains ':').
     expect(validateConfigShape({ configVersion: "0.9.0", bundles: { "github:owner/repo": { path: "/s" } } }).ok).toBe(

@@ -14,7 +14,7 @@
  * params:
  *   region: us-east-1
  * # ...or:
- * prompt: agent:my-agent            # asset ref
+ * prompt: agents/my-agent           # asset ref
  * # ...or:
  * prompt: ./prompts/my-prompt.md    # relative file path
  * # ...or:
@@ -37,7 +37,6 @@
 
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import { stashDirFor } from "../core/asset/asset-placement";
 import { isFullRefInput } from "../core/asset/resolve-ref";
 import { UsageError } from "../core/errors";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
@@ -349,8 +348,7 @@ function rejectTargetFields(
  *   • "[bundle//]<subdir>/<name>" (asset ref)  → asset
  *   • "./foo.md", "../foo.md", "/abs"          → file
  *   • "C:\\abs" (Windows absolute)             → file
- *   • "<type>:<name>" (retired colon grammar)  → typed UsageError
- *   • anything else (incl. block scalars)      → inline text
+ *   • anything else (including colon text and block scalars) → inline text
  */
 function resolvePromptSource(raw: string, filePath: string, id: string): import("./schema").TaskPromptSource {
   const trimmed = raw.trim();
@@ -373,23 +371,6 @@ function resolvePromptSource(raw: string, filePath: string, id: string): import(
   // bare `word/word` inline prompt (no known subdir) stays inline text (D-R3).
   if (isFullRefInput(trimmed)) {
     return { kind: "asset", ref: trimmed };
-  }
-
-  // The pre-0.9.0 `type:name` colon grammar is retired (D-R3, ref-grammar
-  // decision). Reject it with a typed error naming the canonical form rather
-  // than silently degrading to inline text — mirrors `parseTaskRef`'s rejection
-  // of `task:<id>`.
-  const legacyColon = /^([a-z][a-z0-9_-]*):([^\s]+)/i.exec(trimmed);
-  if (legacyColon) {
-    const typeTok = legacyColon[1] ?? "";
-    const name = legacyColon[2] ?? "";
-    const subdir = stashDirFor(typeTok);
-    const canonical = subdir ? `${subdir}/${name}` : `<stash-subdir>/${name}`;
-    throw new UsageError(
-      `Task "${id}" prompt uses the removed \`type:name\` ref grammar ("${trimmed}") — ` +
-        `use the canonical asset ref \`${canonical}\`. File: ${filePath}`,
-      "INVALID_FLAG_VALUE",
-    );
   }
 
   return { kind: "inline", text: trimmed };

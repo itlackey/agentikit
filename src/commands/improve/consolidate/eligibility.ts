@@ -26,7 +26,7 @@ export function isConsolidationEligibleMemoryName(name: string): boolean {
  * consolidate flow already guards against unparseable memories elsewhere).
  *
  * Defends against four observed defect classes (see
- * `memory:akm-improve-critical-review-2026-05-20`):
+ * `memories/akm-improve-critical-review-2026-05-20`):
  *   - LLM marks a memory contradicted then deletes (dangling contradictedBy)
  *   - LLM merges two unrelated memories sharing a topic keyword
  *   - LLM judges a recent durable design memo as "redundant"

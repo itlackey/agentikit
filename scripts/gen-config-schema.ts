@@ -19,7 +19,6 @@ import {
   ImproveProfileConfigSchema,
   LlmProfileConfigSchema,
   RegistryConfigEntrySchema,
-  SourceConfigEntrySchema,
 } from "../src/core/config/config-schema";
 
 interface JsonSchema {
@@ -42,7 +41,6 @@ function generate(): JsonSchema {
     ImproveProcessConfig: ImproveProcessConfigSchema,
     ImproveProfileConfig: ImproveProfileConfigSchema,
     RegistryConfigEntry: RegistryConfigEntrySchema,
-    StashConfigEntry: SourceConfigEntrySchema,
   } as const;
 
   const defs: Record<string, unknown> = {};

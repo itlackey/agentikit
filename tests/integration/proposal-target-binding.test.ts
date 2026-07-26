@@ -73,15 +73,8 @@ describe("proposal queue target binding", () => {
     expect(fs.existsSync(path.join(primary, "lessons", "bound-secondary.md"))).toBe(false);
   });
 
-  test("an unbound secondary-queue proposal does not fall through to a Git default bundle", async () => {
+  test("a secondary-queue proposal records its configured bundle instead of the default", async () => {
     const team = stash("akm-proposal-git-default-secondary-");
-    const created = createProposal(team, {
-      ref: "lessons/git-default-fallback",
-      source: "propose",
-      force: true,
-      payload: { content: VALID_LESSON },
-    });
-    if (isProposalSkipped(created)) throw new Error("unexpected skip");
     const cfg = {
       bundles: {
         remote: { git: "https://example.com/default.git", writable: true },
@@ -89,13 +82,23 @@ describe("proposal queue target binding", () => {
       } as AkmConfig["bundles"],
       defaultBundle: "remote",
     } as AkmConfig;
+    writeSandboxConfig(cfg);
+    resetConfigCache();
+    const created = createProposal(team, {
+      ref: "lessons/git-default-fallback",
+      source: "propose",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+    expect(created.proposedTarget).toEqual({ source: "team", root: path.resolve(team) });
 
     const accepted = await akmProposalAccept({ queue: "team", id: created.id, config: cfg });
     expect(accepted.assetPath).toBe(path.join(team, "lessons", "git-default-fallback.md"));
     expect(fs.existsSync(accepted.assetPath)).toBe(true);
   });
 
-  test("a qualified implicit queue remains bound when another target is the default", async () => {
+  test("a qualified proposal cannot use an unconfigured queue bundle", () => {
     const team = stash("akm-proposal-implicit-default-team-");
     const cfg = {
       bundles: { team: { path: team, writable: true } } as AkmConfig["bundles"],
@@ -103,17 +106,14 @@ describe("proposal queue target binding", () => {
     } as AkmConfig;
     writeSandboxConfig(cfg);
 
-    const created = createProposal(storage.stashDir, {
-      ref: "stash//lessons/implicit-bound",
-      source: "propose",
-      force: true,
-      payload: { content: VALID_LESSON },
-    });
-    if (isProposalSkipped(created)) throw new Error("unexpected skip");
-    expect(created.proposedTarget).toEqual({ source: "stash", root: path.resolve(storage.stashDir) });
-
-    const accepted = await akmProposalAccept({ stashDir: storage.stashDir, id: created.id, config: cfg });
-    expect(accepted.assetPath).toBe(path.join(storage.stashDir, "lessons", "implicit-bound.md"));
+    expect(() =>
+      createProposal(storage.stashDir, {
+        ref: "stash//lessons/implicit-bound",
+        source: "propose",
+        force: true,
+        payload: { content: VALID_LESSON },
+      }),
+    ).toThrow(/configured bundle|bundle "stash" is not configured/i);
     expect(fs.existsSync(path.join(team, "lessons", "implicit-bound.md"))).toBe(false);
   });
 
@@ -179,22 +179,21 @@ describe("proposal queue target binding", () => {
     expect(resolveProposalId(queue, "other//lessons/shared").id).toBe(other.id);
   });
 
-  test("a legacy path-derived qualifier maps to the configured owner of the queue root", async () => {
+  test("a path-derived qualifier is not rewritten to the configured owner", () => {
     const primary = namedStash("physical");
     const team = stash("akm-proposal-alias-team-");
     const cfg = config(primary, team);
     writeSandboxConfig(cfg);
     resetConfigCache();
 
-    const created = createProposal(primary, {
-      ref: "physical//lessons/configured-owner",
-      source: "propose",
-      force: true,
-      payload: { content: VALID_LESSON },
-    });
-    if (isProposalSkipped(created)) throw new Error("unexpected skip");
-    expect(created.ref).toBe("primary//lessons/configured-owner");
-    expect(created.proposedTarget).toEqual({ source: "primary", root: path.resolve(primary) });
+    expect(() =>
+      createProposal(primary, {
+        ref: "physical//lessons/configured-owner",
+        source: "propose",
+        force: true,
+        payload: { content: VALID_LESSON },
+      }),
+    ).toThrow(/bundle "physical" is not configured/i);
 
     const unqualified = createProposal(primary, {
       ref: "lessons/configured-default",
@@ -205,12 +204,9 @@ describe("proposal queue target binding", () => {
     if (isProposalSkipped(unqualified)) throw new Error("unexpected skip");
     expect(unqualified.ref).toBe("primary//lessons/configured-default");
     expect(unqualified.proposedTarget).toEqual({ source: "primary", root: path.resolve(primary) });
-
-    const accepted = await akmProposalAccept({ stashDir: primary, id: created.id, config: cfg });
-    expect(accepted.assetPath).toBe(path.join(primary, "lessons", "configured-owner.md"));
   });
 
-  test("a legacy path alias that collides with another configured bundle cannot redirect the proposal", () => {
+  test("a configured bundle name wins even when it matches another queue's directory name", () => {
     const primary = namedStash("collision");
     const collisionTarget = stash("akm-proposal-collision-target-");
     const cfg = {
@@ -224,15 +220,15 @@ describe("proposal queue target binding", () => {
     writeSandboxConfig(cfg);
     resetConfigCache();
 
-    expect(() =>
-      createProposal(primary, {
-        ref: "collision//lessons/no-redirect",
-        source: "propose",
-        force: true,
-        payload: { content: VALID_LESSON },
-      }),
-    ).toThrow(/legacy path alias.*configured bundle.*refusing to redirect/i);
-    expect(fs.existsSync(path.join(collisionTarget, "lessons", "no-redirect.md"))).toBe(false);
+    const created = createProposal(primary, {
+      ref: "collision//lessons/no-redirect",
+      source: "propose",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+    expect(created.ref).toBe("collision//lessons/no-redirect");
+    expect(created.proposedTarget).toEqual({ source: "collision", root: path.resolve(collisionTarget) });
   });
 
   test("accept rejects a target changed after the proposal captured its before hash", async () => {

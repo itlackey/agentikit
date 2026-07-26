@@ -15,7 +15,7 @@ import { type AgentEngineSelection, readAgentEngineSelection } from "../engine-c
 import { prompt } from "../prompt";
 import type { SetupDraftConfig } from "../steps";
 
-// The just-computed source list is threaded in as the draft's scratch `sources`.
+// The just-computed source list is threaded through the private setup draft.
 export async function stepAgentPlatforms(current: SetupDraftConfig): Promise<SourceConfigEntry[]> {
   const platforms = detectAgentPlatforms();
 
@@ -24,7 +24,7 @@ export async function stepAgentPlatforms(current: SetupDraftConfig): Promise<Sou
     return [];
   }
 
-  const existingPaths = new Set((current.sources ?? []).map((s) => s.path));
+  const existingPaths = new Set((current.additionalSources ?? []).map((s) => s.path));
 
   // Filter out platforms already configured
   const newPlatforms = platforms.filter((pl) => !existingPaths.has(pl.path));

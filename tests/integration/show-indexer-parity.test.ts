@@ -16,10 +16,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { parseAssetRef } from "../../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import { akmShowUnified } from "../../src/commands/read/show";
 import { resetConfigCache, saveConfig } from "../../src/core/config/config";
 import { akmIndex, lookup } from "../../src/indexer/indexer";
-import { parseAssetRef } from "../../src/migrate/legacy-ref-grammar";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { getMeta } from "../../src/storage/repositories/index-meta-repository";
 import { searchVec } from "../../src/storage/repositories/index-vec-repository";

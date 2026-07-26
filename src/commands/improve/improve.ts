@@ -75,7 +75,6 @@ import { DEFAULT_DUE_DAYS, filterProactiveDue } from "./proactive-maintenance";
 import { akmReflect } from "./reflect";
 import { createRunContext, type RunContext } from "./run-context";
 import { errMessage } from "./shared";
-import { shouldReadLegacyBareImproveState } from "./source-identity";
 
 export type {
   AkmImproveOptions,
@@ -499,9 +498,6 @@ function resolveImproveRunSetup(options: AkmImproveOptions) {
       target: selectedSelector,
       ...(writeTarget ? { writeTarget } : {}),
     },
-    legacyBareState:
-      options.legacyBareState ??
-      shouldReadLegacyBareImproveState(selectedSource.name, selectedSource.path, _earlyConfig),
     // Profile-level limit, then process-level reflect.limit as fallback.
     // CLI --limit takes precedence over both.
     limit: options.limit ?? improveProfile?.processes?.reflect?.limit ?? improveProfile.limit,
@@ -860,8 +856,6 @@ function makeCommitStashBatch(deps: {
     }
     const saveGitStashFn = options.saveGitStashFn ?? saveGitStash;
     const writableOverride = writeTarget ? resolveWritable(writeTarget.config) : resolveWritableOverride(_earlyConfig);
-    // pushOnCommit is deprecated and fully ignored (Decision 6, WI-9.6b) — it no
-    // longer participates in this fallback chain.
     const push = options.sync?.push ?? improveProfile.sync?.push ?? true;
     const message = renderSyncCommitMessage(
       effectiveSync.message ?? "akm improve auto-sync",
@@ -946,22 +940,10 @@ export function refilterProactiveLoopRefs(
   let postLockLoopRefs = loopRefs;
   if (proactiveLoopRefs.length > 0) {
     const proactiveRefStrs = proactiveLoopRefs.map((r) => r.ref);
-    // Chunk-5 flip F5e — dual-arm the proposal reverse map on item_ref too.
+    // Correlate proposal timestamps on each candidate's durable key.
     const proactiveItemRefByRef = new Map(proactiveLoopRefs.map((r) => [r.ref, r.itemRef] as const));
-    const freshReflectTs = buildLatestProposalTsMap(
-      proactiveRefStrs,
-      "reflect",
-      options.sourceName,
-      options.legacyBareState,
-      proactiveItemRefByRef,
-    );
-    const freshDistillTs = buildLatestProposalTsMap(
-      proactiveRefStrs,
-      "distill",
-      options.sourceName,
-      options.legacyBareState,
-      proactiveItemRefByRef,
-    );
+    const freshReflectTs = buildLatestProposalTsMap(proactiveRefStrs, "reflect", proactiveItemRefByRef);
+    const freshDistillTs = buildLatestProposalTsMap(proactiveRefStrs, "distill", proactiveItemRefByRef);
     const pmDueDays = improveProfile.processes?.proactiveMaintenance?.dueDays ?? DEFAULT_DUE_DAYS;
     const stillDue = new Set(
       filterProactiveDue(proactiveLoopRefs, freshReflectTs, freshDistillTs, pmDueDays, Date.now()).map((r) => r.ref),

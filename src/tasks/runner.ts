@@ -89,7 +89,7 @@ export interface TaskRunResult {
   log: string;
   target:
     | { kind: "workflow"; ref: string }
-    | { kind: "prompt"; engine: string | null; legacyProfile?: string }
+    | { kind: "prompt"; engine: string | null }
     | { kind: "command"; cmd?: string[] }
     | { kind: "unknown" };
   /** Workflow run id (for workflow targets) or agent reason/error (for prompt targets). */
@@ -862,9 +862,7 @@ function taskHistoryRowToResult(
       : row.target_kind === "command"
         ? { kind: "command" }
         : row.target_kind === "prompt"
-          ? meta.metadataVersion === 2
-            ? { kind: "prompt", engine: meta.engine ?? null }
-            : { kind: "prompt", engine: null, ...(meta.legacyProfile ? { legacyProfile: meta.legacyProfile } : {}) }
+          ? { kind: "prompt", engine: meta.engine ?? null }
           : { kind: "unknown" };
 
   return {
@@ -872,10 +870,10 @@ function taskHistoryRowToResult(
     status: row.status as TaskRunStatus,
     startedAt: row.started_at,
     finishedAt: row.completed_at ?? row.failed_at ?? row.started_at,
-    durationMs: meta.durationMs ?? 0,
+    durationMs: meta.durationMs,
     log: row.log_path ?? "",
     target,
-    ...(meta.detail !== undefined && meta.detail !== null ? { detail: meta.detail } : {}),
+    ...(meta.detail ? { detail: meta.detail } : {}),
   };
 }
 

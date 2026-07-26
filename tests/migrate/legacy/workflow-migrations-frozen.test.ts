@@ -4,7 +4,7 @@
 
 /**
  * Chunk-8 WI-8.1 — the frozen `{ id, checksum }` copy of the workflow.db
- * ledger (`src/migrate/legacy/workflow-migrations-frozen.ts`, plan §3.3
+ * ledger (`scripts/akm-migrate/migrate/legacy/workflow-migrations-frozen.ts`, plan §3.3
  * item 1 / §8.2).
  *
  * Two groups, mirroring `legacy-layout.test.ts`'s conventions:
@@ -25,9 +25,12 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { WORKFLOW_MIGRATIONS_CHECKSUMS } from "../../../src/migrate/legacy/workflow-migrations-frozen";
+import { WORKFLOW_MIGRATIONS_CHECKSUMS } from "../../../scripts/akm-migrate/migrate/legacy/workflow-migrations-frozen";
 
-const FROZEN_PATH = path.resolve(__dirname, "../../../src/migrate/legacy/workflow-migrations-frozen.ts");
+const FROZEN_PATH = path.resolve(
+  __dirname,
+  "../../../scripts/akm-migrate/migrate/legacy/workflow-migrations-frozen.ts",
+);
 
 describe("workflow-migrations-frozen — self-containment", () => {
   test("imports nothing from src/workflows/ and only the engine type from src/", () => {

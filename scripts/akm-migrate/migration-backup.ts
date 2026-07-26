@@ -5,29 +5,40 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { migrateConfigSourcesToBundles } from "../migrate/legacy/config-source-migration";
-import { getLegacyWorkflowDbPath } from "../migrate/legacy/legacy-paths";
-import { WORKFLOW_MIGRATIONS_CHECKSUMS } from "../migrate/legacy/workflow-migrations-frozen";
-import { type Database, openDatabaseFinalizing } from "../storage/database";
+import { migrateConfigSourcesToBundles } from "./migrate/legacy/config-source-migration";
+import { getLegacyWorkflowDbPath } from "./migrate/legacy/legacy-paths";
+import { WORKFLOW_MIGRATIONS_CHECKSUMS } from "./migrate/legacy/workflow-migrations-frozen";
+import { type Database, openDatabaseFinalizing } from "../../src/storage/database";
 import {
   inspectMigrationLedger,
   inspectSealedMigrationLedger,
   type Migration,
   type MigrationLedgerState,
   type SealedMigration,
-} from "../storage/engines/sqlite-migrations";
-import { MAX_CONFIG_FILE_BYTES, MAX_LOCAL_METADATA_BYTES, readTextFileWithLimit, writeFileAtomic } from "./common";
-import { parseConfigText, withConfigLock } from "./config/config-io";
-import { CURRENT_CONFIG_VERSION, validateConfigShape } from "./config/config-schema";
-import { compareConfigVersion } from "./config/config-version";
-import { ConfigError } from "./errors";
-import { createLockPayload, probeLock, reclaimStaleLock, releaseLock, tryAcquireLockSync } from "./file-lock";
-import { acquireMaintenanceActivitySync, withMaintenanceStartBarrier } from "./maintenance-barrier";
+} from "../../src/storage/engines/sqlite-migrations";
+import {
+  MAX_CONFIG_FILE_BYTES,
+  MAX_LOCAL_METADATA_BYTES,
+  readTextFileWithLimit,
+  writeFileAtomic,
+} from "../../src/core/common";
+import { parseConfigText, withConfigLock } from "../../src/core/config/config-io";
+import { CURRENT_CONFIG_VERSION, validateConfigShape } from "../../src/core/config/config-schema";
+import { compareConfigVersion } from "../../src/core/config/config-version";
+import { ConfigError } from "../../src/core/errors";
+import {
+  createLockPayload,
+  probeLock,
+  reclaimStaleLock,
+  releaseLock,
+  tryAcquireLockSync,
+} from "../../src/core/file-lock";
+import { acquireMaintenanceActivitySync, withMaintenanceStartBarrier } from "../../src/core/maintenance-barrier";
 import {
   getMigrationApplyJournalPath,
   getMigrationOperationRoot,
   getMigrationRestoreJournalPath,
-} from "./migration-operation";
+} from "../../src/core/migration-operation";
 import {
   getConfigPath,
   getDataDir,
@@ -35,8 +46,8 @@ import {
   getIndexWriterLockPath,
   getLockfileLockPath,
   getStateDbPathInDataDir,
-} from "./paths";
-import { STATE_MIGRATIONS } from "./state/migrations";
+} from "../../src/core/paths";
+import { STATE_MIGRATIONS } from "../../src/core/state/migrations";
 
 export const MIGRATION_BACKUP_VERSION = "0.9.0" as const;
 const MANIFEST_FORMAT_VERSION = 3 as const;
@@ -118,7 +129,7 @@ export function getMigrationBackupRoot(): string {
   return getMigrationOperationRoot();
 }
 
-export { getMigrationApplyJournalPath, getMigrationRestoreJournalPath } from "./migration-operation";
+export { getMigrationApplyJournalPath, getMigrationRestoreJournalPath };
 
 export function getMigrationBackupDir(runId?: string): string {
   if (!runId) return getMigrationBackupRoot();
@@ -1441,7 +1452,7 @@ export function restoreMigrationBackup(confirm: boolean, runId?: string): Migrat
       withMaintenanceStartBarrier(() => {
         if (fs.existsSync(getMigrationApplyJournalPath())) {
           throw new ConfigError(
-            `Migration apply recovery is pending at ${getMigrationApplyJournalPath()}; run \`akm migrate apply\` before restore.`,
+            `Migration apply recovery is pending at ${getMigrationApplyJournalPath()}; run \`akm-migrate apply\` before restore.`,
             "INVALID_CONFIG_FILE",
           );
         }

@@ -5,12 +5,8 @@
 /**
  * akm 0.9.0 Chunk-5 flip, F4c M1 — REF_RE dual-recognition.
  *
- * The linter's missing-ref scan and `akm mv`'s inbound-xref rewrite must
- * recognize BOTH the legacy `type:name` grammar (`// F5: delete`) AND the 0.9.0
- * `[bundle//]conceptId` grammar the output emitter now writes into frontmatter
- * (ref-grammar decision D-R3). The specific gap this closes: a flipped
- * short-conceptId `supersededBy` value (e.g. `memories/foo`) was invisible to
- * the old `type:name`-only scan.
+ * The linter's missing-ref scan and `akm mv`'s inbound-xref rewrite recognize
+ * `[bundle//]conceptId` refs. Retired `type:name` text is inert.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -95,16 +91,21 @@ describe("F4c M1 — linter missing-ref dual grammar", () => {
   });
 });
 
-describe("F4c M1 — akm mv rewrites both grammars", () => {
+describe("F4c M1 — akm mv rewrites current refs only", () => {
   let storage: IsolatedAkmStorage;
 
   afterEach(() => {
     storage?.cleanup();
   });
 
-  test("a conceptId-spelled xref AND a legacy xref both re-point after a rename", async () => {
+  test("a conceptId xref re-points while type:name text remains inert", async () => {
     storage = withIsolatedAkmStorage();
     const stashDir = storage.stashDir;
+    writeSandboxConfig({
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+    });
     fs.mkdirSync(path.join(stashDir, "memories"), { recursive: true });
     // The asset being moved.
     fs.writeFileSync(path.join(stashDir, "memories", "old-note.md"), "# old note\n", "utf8");
@@ -125,10 +126,9 @@ describe("F4c M1 — akm mv rewrites both grammars", () => {
     expect(res.code).toBe(0);
 
     const citer = fs.readFileSync(path.join(stashDir, "memories", "citer.md"), "utf8");
-    // Both grammars re-pointed onto the new name, each preserving its grammar.
     expect(citer).toContain("memories/new-note");
-    expect(citer).toContain("memory:new-note");
-    expect(citer).not.toContain("old-note");
+    expect(citer).toContain("memory:old-note");
+    expect(citer).not.toContain("memory:new-note");
   });
 
   test("a qualified local bundle is rejected instead of moving the primary copy", async () => {

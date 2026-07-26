@@ -38,7 +38,7 @@ export function resolveScheduledTaskContext(
   platform: NodeJS.Platform = process.platform,
 ): ScheduledTaskContext {
   return canonicalContext({
-    AKM_STASH_DIR: path.resolve(resolveStashDir(undefined, env)),
+    AKM_STASH_DIR: path.resolve(resolveStashDir(env)),
     AKM_CONFIG_DIR: path.resolve(getConfigDir(env, platform)),
     AKM_DATA_DIR: path.resolve(getDataDir(env, platform)),
     AKM_CACHE_DIR: path.resolve(getCacheDir(env)),

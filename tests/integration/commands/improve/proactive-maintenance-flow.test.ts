@@ -62,7 +62,7 @@ const okDistill = (ref: string): AkmDistillResult => ({
   ok: true,
   outcome: "queued",
   inputRef: ref,
-  lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+  lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
 });
 
 const noopIndexFns = {

@@ -5,12 +5,12 @@
         "distinctIdempotencyKeyCount": 1,
         "matchingCount": 1
       },
-      "sameAcceptedContentHash": true,
+      "sameAcceptedTargetHash": true,
       "sameAssetPath": true,
       "treeUnchanged": true
     },
     "newAsset": {
-      "acceptedContentHashPresent": true,
+      "acceptedTargetHashPresent": true,
       "backupContentPresent": false,
       "fileTree": {
         "lessons/jnl-accept-new-asset.md": "25d2271375bd6e413048a4b690e3ca832cac889cac762d80f4fb5631ada6a986"
@@ -23,7 +23,7 @@
       "status": "accepted"
     },
     "overwrite": {
-      "acceptedContentHashPresent": true,
+      "acceptedTargetHashPresent": true,
       "backupContentPresent": true,
       "fileTree": {
         "lessons/jnl-accept-overwrite.md": "6457ef98697be8d7e763c65fe0b9c29a944e6157528a3d102efbcaeb8f646847"

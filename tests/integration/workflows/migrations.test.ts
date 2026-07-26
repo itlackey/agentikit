@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { FROZEN_WORKFLOW_MIGRATIONS } from "../../../src/migrate/legacy/workflow-migrations-bodies";
+import { FROZEN_WORKFLOW_MIGRATIONS } from "../../../scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies";
 import type { Database as AkmDatabase } from "../../../src/storage/database";
 import { runMigrations as runSqliteMigrations } from "../../../src/storage/engines/sqlite-migrations";
 import { openLegacyWorkflowDb } from "../../_helpers/legacy-workflow-db";
@@ -13,7 +13,7 @@ import { openLegacyWorkflowDb } from "../../_helpers/legacy-workflow-db";
  *
  * `src/workflows/db.ts` (`openWorkflowDatabase` / live `WORKFLOW_MIGRATIONS`) is
  * deleted; the migration BODIES survive frozen in
- * `src/migrate/legacy/workflow-migrations-bodies.ts` and are rolled through the
+ * `scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts` and are rolled through the
  * shared engine by `config-migrate.ts#runFrozenWorkflowRoll` at cutover time.
  * `openLegacyWorkflowDb` (test helper) drives that same base-schema + frozen
  * migration chain. Covers:

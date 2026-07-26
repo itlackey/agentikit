@@ -7,15 +7,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { main, shouldBypassConfigStartup } from "../../src/cli";
 import {
   _setApplyPreflightHookForTests,
   _setMigrationSnapshotHookForTests,
+  inspectMigrationPlan,
   type MigrationPlan,
-} from "../../src/cli/config-migrate";
-import { MAX_CONFIG_FILE_BYTES } from "../../src/core/common";
-import { loadUserConfig, mutateConfig, saveConfig } from "../../src/core/config/config";
-import { acquireMaintenanceActivity } from "../../src/core/maintenance-barrier";
+  runMigrationApply,
+} from "../../scripts/akm-migrate/config-migrate";
+import { getLegacyWorkflowDbPath } from "../../scripts/akm-migrate/migrate/legacy/legacy-paths";
+import { FROZEN_WORKFLOW_MIGRATIONS } from "../../scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies";
 import {
   _setRestoreRollbackBoundaryHookForTests,
   createMigrationBackup,
@@ -26,13 +26,15 @@ import {
   inspectMigrationState,
   restoreMigrationBackup,
   verifyMigrationBackup,
-} from "../../src/core/migration-backup";
+} from "../../scripts/akm-migrate/migration-backup";
+import { main, shouldBypassConfigStartup } from "../../src/cli";
+import { MAX_CONFIG_FILE_BYTES } from "../../src/core/common";
+import { loadUserConfig, mutateConfig, saveConfig } from "../../src/core/config/config";
+import { acquireMaintenanceActivity } from "../../src/core/maintenance-barrier";
 import { _setAfterPendingOperationCheckHookForTests } from "../../src/core/migration-operation";
 import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { runMigrations as runStateMigrations, STATE_MIGRATIONS } from "../../src/core/state/migrations";
 import { openStateDatabase } from "../../src/core/state-db";
-import { getLegacyWorkflowDbPath } from "../../src/migrate/legacy/legacy-paths";
-import { FROZEN_WORKFLOW_MIGRATIONS } from "../../src/migrate/legacy/workflow-migrations-bodies";
 import { openDatabaseFinalizing } from "../../src/storage/database";
 import { runMigrations as runSqliteMigrations } from "../../src/storage/engines/sqlite-migrations";
 import { runCliCapture } from "../_helpers/cli";
@@ -932,9 +934,14 @@ describe("migration lifecycle regressions", () => {
         }
       });
 
-      const resumed = await runCliCapture(["migrate", "apply"]);
-      expect(resumed.code).not.toBe(0);
-      expect(resumed.stderr).toMatch(/forward recovery.*changed before its next mutation/i);
+      let error: unknown;
+      try {
+        await runMigrationApply();
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeDefined();
+      expect(String(error)).toMatch(/forward recovery.*changed before its next mutation/i);
       expect(hookCalls).toBe(1);
       expect(fs.existsSync(journalPath)).toBe(true);
       const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as {
@@ -975,10 +982,15 @@ describe("migration lifecycle regressions", () => {
         }
       });
 
-      const resumed = await runCliCapture(["migrate", "apply"]);
-      expect(resumed.code).not.toBe(0);
-      expect(resumed.stderr).toMatch(/forward recovery.*changed while creating a private status snapshot/i);
-      expect(resumed.stderr).not.toMatch(/restored from|rollback/i);
+      let error: unknown;
+      try {
+        await runMigrationApply();
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeDefined();
+      expect(String(error)).toMatch(/forward recovery.*changed while creating a private status snapshot/i);
+      expect(String(error)).not.toMatch(/restored from|rollback/i);
       expect(hookCalls).toBe(1);
       expect(fs.existsSync(journalPath)).toBe(true);
       const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as {
@@ -1019,9 +1031,9 @@ describe("migration lifecycle regressions", () => {
       }
     });
 
-    const status = await runCliCapture(["migrate", "status"]);
-    expect(status.code).not.toBe(0);
-    expect(status.stdout).toMatch(/changed while creating a private status snapshot/i);
+    const status = inspectMigrationPlan();
+    expect(status.status).toBe("blocked");
+    expect(status.blockers.join("\n")).toMatch(/changed while creating a private status snapshot/i);
     expect(hookCalls).toBe(1);
     expect(fs.existsSync(journalPath)).toBe(true);
     expect(fs.existsSync(journalBefore.backupPath)).toBe(true);
@@ -1206,8 +1218,7 @@ describe("migration lifecycle regressions", () => {
     // workflow.db's is classified by the migrator (above), not a runtime opener.
     expect(() => openStateDatabase()).toThrow(/migration|required|checksum|current/i);
 
-    const applied = await runCliCapture(["migrate", "apply"]);
-    expect(applied.code, applied.stderr).toBe(0);
+    await runMigrationApply();
     expect(inspectMigrationState()).toMatchObject({ state: { status: "current" }, workflow: { status: "missing" } });
     // state.db seals its whole ledger (incl. the cutover migration 020); the
     // three-DB cutover then DELETES workflow.db (its rows merged into state.db),
@@ -1674,7 +1685,10 @@ describe("migration lifecycle regressions", () => {
   });
 
   test("backup and restore implementation does not whole-file read database artifacts", () => {
-    const source = fs.readFileSync(path.resolve(import.meta.dir, "../../src/core/migration-backup.ts"), "utf8");
+    const source = fs.readFileSync(
+      path.resolve(import.meta.dir, "../../scripts/akm-migrate/migration-backup.ts"),
+      "utf8",
+    );
     expect(source).not.toMatch(/readFileSync\((?:filePath|source)\)/);
     expect(source).not.toMatch(/writeFileAtomic\([^\n]+fs\.readFileSync/);
   });

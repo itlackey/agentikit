@@ -32,8 +32,8 @@ function normalizeName(name: string): string {
 //
 // The 0.9.0 identity is `[<bundle>//]<concept-id>[#<fragment>]` (path identity;
 // `type` is no longer part of identity). This is the surviving ref grammar; the
-// pre-0.9.0 `[origin//]type:name` grammar now lives in the Chunk-8 migrate home
-// (`src/migrate/legacy-ref-grammar.ts`), consumed only for stored-ref parsing.
+// pre-0.9.0 `[origin//]type:name` grammar now lives in the standalone migrator
+// (`scripts/akm-migrate/migrate/legacy-ref-grammar.ts`).
 //
 //   - `bundle`   — workspace bundle slug; the OPTIONAL prefix. Short refs
 //                  (no `bundle//`) resolve to the containing bundle (§11.1).

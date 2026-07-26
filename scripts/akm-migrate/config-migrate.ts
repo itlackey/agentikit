@@ -6,22 +6,27 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { deriveLegacyBundleIds, inferLegacyBundleIds } from "../core/bundle-id";
+import { deriveLegacyBundleIds, inferLegacyBundleIds } from "../../src/core/bundle-id";
 import {
   MAX_CONFIG_FILE_BYTES,
   MAX_LOCAL_METADATA_BYTES,
   readTextFileWithLimit,
   writeFileAtomic,
-} from "../core/common";
+} from "../../src/core/common";
 import {
   type AkmConfig,
   parseAndValidateConfigText,
   resetConfigCache,
   sanitizeConfigForWrite,
-} from "../core/config/config";
-import { backupExistingConfig, parseConfigText, withConfigLock, writeConfigAtomic } from "../core/config/config-io";
-import { ConfigError } from "../core/errors";
-import { withMaintenanceStartBarrier } from "../core/maintenance-barrier";
+} from "../../src/core/config/config";
+import {
+  backupExistingConfig,
+  parseConfigText,
+  withConfigLock,
+  writeConfigAtomic,
+} from "../../src/core/config/config-io";
+import { ConfigError } from "../../src/core/errors";
+import { withMaintenanceStartBarrier } from "../../src/core/maintenance-barrier";
 import {
   assertNoArtifactReplacementBlockers,
   ensureMigrationBackupWithConfigLockHeld,
@@ -41,20 +46,28 @@ import {
   restoreMigrationBackupWithLocksHeld,
   sameMigrationGeneration,
   verifyMigrationBackup,
-} from "../core/migration-backup";
-import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../core/paths";
-import { runMigrations as runStateMigrations } from "../core/state/migrations";
-import { isValidLockfileEntry, type LockfileEntry, mergeLockEntriesSync, readLockfile } from "../integrations/lockfile";
+} from "./migration-backup";
+import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../../src/core/paths";
+import { runMigrations as runStateMigrations } from "../../src/core/state/migrations";
+import {
+  isValidLockfileEntry,
+  type LockfileEntry,
+  mergeLockEntriesSync,
+  readLockfile,
+} from "../../src/integrations/lockfile";
 import {
   migrateConfigSourcesToBundles,
   migratedLockEntries,
   oldConfigHasRelativeSourcePaths,
   oldConfigToSearchSources,
-} from "../migrate/legacy/config-source-migration";
-import { type ContentMigrationReport, runContentMigration } from "../migrate/legacy/content-migration";
-import { getLegacyWorkflowDbPath } from "../migrate/legacy/legacy-paths";
-import { importLegacyProposalsIntoState } from "../migrate/legacy/proposal-fs-import";
-import { applyTaskTargetRefMigration, planTaskTargetRefMigration } from "../migrate/legacy/task-target-ref-migration";
+} from "./migrate/legacy/config-source-migration";
+import { type ContentMigrationReport, runContentMigration } from "./migrate/legacy/content-migration";
+import { getLegacyWorkflowDbPath } from "./migrate/legacy/legacy-paths";
+import { importLegacyProposalsIntoState } from "./migrate/legacy/proposal-fs-import";
+import {
+  applyTaskTargetRefMigration,
+  planTaskTargetRefMigration,
+} from "./migrate/legacy/task-target-ref-migration";
 import {
   buildCutoverRefMap,
   type CutoverStashRoot,
@@ -64,12 +77,12 @@ import {
   migratePilotTreatmentFiles,
   quarantineIndexDb,
   runThreeDbCutover,
-} from "../migrate/legacy/three-db-cutover";
-import { FROZEN_WORKFLOW_MIGRATIONS } from "../migrate/legacy/workflow-migrations-bodies";
-import { requestGc } from "../runtime";
-import { type Database, openDatabaseFinalizing } from "../storage/database";
-import { runMigrations as runSqliteMigrations } from "../storage/engines/sqlite-migrations";
-import { EXIT_CODES } from "./shared";
+} from "./migrate/legacy/three-db-cutover";
+import { FROZEN_WORKFLOW_MIGRATIONS } from "./migrate/legacy/workflow-migrations-bodies";
+import { requestGc } from "../../src/runtime";
+import { type Database, openDatabaseFinalizing } from "../../src/storage/database";
+import { runMigrations as runSqliteMigrations } from "../../src/storage/engines/sqlite-migrations";
+import { EXIT_CODES } from "../../src/cli/shared";
 
 const MANUAL_GUIDANCE =
   "Provide a complete operator-prepared 0.9 config with --config. AKM does not guess profile-to-engine mappings.";
@@ -327,7 +340,7 @@ function collapseStateDbToSingleFile(db: ReturnType<typeof openDatabaseFinalizin
   if (journalMode === "wal") {
     throw new ConfigError(
       "Cannot convert state.db out of WAL mode for migration — another akm process is holding it open. " +
-        "Close other akm processes and re-run `akm migrate apply`.",
+        "Close other akm processes and re-run `akm-migrate apply`.",
       "INVALID_CONFIG_FILE",
     );
   }
@@ -1973,7 +1986,7 @@ function legacyCutoverSources(journal: ApplyJournal): Array<{ path: string; regi
 
 /**
  * Roll a pre-cutover workflow.db forward to its final ledger (010) using the
- * FROZEN migration bodies (`src/migrate/legacy/workflow-migrations-bodies.ts`)
+ * FROZEN migration bodies (`scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts`)
  * through the shared engine — never the live `WORKFLOW_MIGRATIONS` array
  * (`src/workflows/db.ts` is deleted in WI-8.3). The roll materialises every
  * migration-added column + DEFAULT so the subsequent state.db merge carries
@@ -2102,7 +2115,7 @@ function runContentMigrationStep(journal: ApplyJournal, target: AkmConfig): void
     // DELETE mode by this point, so we open it raw and INSERT OR IGNORE each
     // legacy `proposal.json` on its UUID — idempotent, no ledger needed.
     //
-    // rc-window edge: a user who already ran `akm migrate apply` on an EARLIER
+    // rc-window edge: a user who already ran `akm-migrate apply` on an EARLIER
     // rc binary (before this fold existed) AND never ran a proposal command
     // afterward would have their pre-0.9 fs proposals un-imported — the old
     // live-path import that once covered that gap is gone. Re-running this
@@ -2341,7 +2354,7 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
         clearApplyJournal();
         resetConfigCache();
         throw new ConfigError(
-          "Interrupted migration rollback was already committed; cleaned its apply journal. Rerun migrate apply with the prepared config.",
+          "Interrupted migration rollback was already committed; cleaned its apply journal. Rerun `akm-migrate apply` with the prepared config.",
           "INVALID_CONFIG_FILE",
         );
       }
@@ -2351,7 +2364,7 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
         clearApplyJournal();
         resetConfigCache();
         throw new ConfigError(
-          "Interrupted migration rollback completed from its exact journaled generation; rerun migrate apply with the prepared config.",
+          "Interrupted migration rollback completed from its exact journaled generation; rerun `akm-migrate apply` with the prepared config.",
           "INVALID_CONFIG_FILE",
         );
       }

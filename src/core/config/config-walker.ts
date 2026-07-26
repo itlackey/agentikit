@@ -237,16 +237,15 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
     isPlainObject(existing) && isPlainObject(parsed.data) ? deepMergeConfig(existing, parsed.data) : parsed.data,
   );
 
-  // Targeted invariant: defaultWriteTarget must point at a configured source
+  // Targeted invariant: defaultWriteTarget must point at a configured bundle
   // (#464.a). Whole-config validation happens at save time; this check fires
-  // at set time so the user sees the typo immediately. Empty-sources case is
-  // accepted here (legacy behaviour) — saveConfig will reject if it persists.
+  // at set time so the user sees the typo immediately.
   if (dotted === "defaultWriteTarget" && typeof value === "string") {
-    const sources = (next.sources as Array<{ name?: string }> | undefined) ?? [];
-    const knownNames = sources.map((s) => s.name).filter((n): n is string => typeof n === "string" && n.length > 0);
-    if (knownNames.length > 0 && !knownNames.includes(value)) {
+    const bundles = next.bundles && typeof next.bundles === "object" ? next.bundles : {};
+    const knownNames = Object.keys(bundles);
+    if (!knownNames.includes(value)) {
       throw new UsageError(
-        `Unknown source name "${value}" for defaultWriteTarget; configured source names: ${knownNames.map((n) => `"${n}"`).join(", ")}.`,
+        `Unknown bundle "${value}" for defaultWriteTarget; configured bundles: ${knownNames.map((n) => `"${n}"`).join(", ") || "none"}.`,
         "INVALID_FLAG_VALUE",
       );
     }

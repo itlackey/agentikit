@@ -21,9 +21,11 @@ import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
 import { ConfigError, UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
+import { canonicalBundleIdForTarget } from "../../core/mutation-target";
 import { redactSensitiveText } from "../../core/redaction";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
-import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../indexer/installations";
+import { resolveWriteTarget } from "../../core/write-source";
+import { deriveEntryProvenance } from "../../indexer/installations";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "../../integrations/agent";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
 import { buildProposePrompt, parseAgentProposalPayload } from "../../integrations/agent/prompts";
@@ -98,8 +100,7 @@ function failureEnvelope(
  * uses). Matches `createProposal`'s durable `proposals.ref` mint, so the entry
  * event, the fallback ref, and the stored proposal all carry one spelling.
  */
-function proposeItemRef(stashDir: string, type: string, name: string): string {
-  const bundleId = deriveInstallations([{ path: stashDir, writable: true }])[0]?.id ?? slugForPath(stashDir);
+function proposeItemRef(bundleId: string, type: string, name: string): string {
   return deriveEntryProvenance({ bundleId, componentId: bundleId, adapterId: "akm" }, type, name).itemRef;
 }
 
@@ -108,10 +109,10 @@ function proposeItemRef(stashDir: string, type: string, name: string): string {
  * fully-qualified item_ref the durable proposal is minted under
  * (`proposeItemRef`), so the entry event and the stored proposal agree.
  */
-function emitProposeInvoked(stash: string, options: AkmProposeOptions): void {
+function emitProposeInvoked(bundleId: string, options: AkmProposeOptions): void {
   appendEvent({
     eventType: "propose_invoked",
-    ref: proposeItemRef(stash, options.type, options.name),
+    ref: proposeItemRef(bundleId, options.type, options.name),
     metadata: {
       type: options.type,
       name: options.name,
@@ -140,12 +141,15 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
 
   const stash = options.stashDir ?? resolveStashDir();
 
-  // 1. Always emit `propose_invoked` (extracted: emitProposeInvoked).
-  emitProposeInvoked(stash, options);
-
-  // 2. Resolve the selected engine exactly once. Propose accepts either kind;
+  // 1. Resolve the selected engine and write target exactly once.
   // the LLM arm uses the caller-specific plain-chat handler below.
   const config = options.agentConfig ?? (await import("../../core/config/config.js")).loadConfig();
+  const writeTarget = resolveWriteTarget(config);
+  const target = {
+    source: canonicalBundleIdForTarget(config, writeTarget),
+    root: writeTarget.source.path,
+  };
+  emitProposeInvoked(target.source, options);
   const engineName = options.engine ?? config.defaults?.engine;
   if (!engineName) throw new ConfigError("propose requires --engine or defaults.engine.", "INVALID_CONFIG_FILE");
   const runner = resolveEngine(engineName, config);
@@ -276,7 +280,7 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
   // 6. Insert the proposal. Note: we allow the agent's `ref` to normalise the
   // asset name (e.g. path-cleanup), but only after validating that the ref is
   // well-formed and the type still matches the requested type.
-  const expectedRef = proposeItemRef(stash, options.type, options.name); // WI-8.5a item_ref flip
+  const expectedRef = proposeItemRef(target.source, options.type, options.name);
   let ref = expectedRef;
   if (payload.ref) {
     let parsedRef: ReturnType<typeof parseRefInput>;
@@ -310,13 +314,14 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
         ...(result.stderr ? { stderr: result.stderr } : {}),
       };
     }
-    ref = proposeItemRef(stash, parsedRef.type, parsedRef.name); // WI-8.5a item_ref flip
+    ref = proposeItemRef(target.source, parsedRef.type, parsedRef.name);
   }
 
   const createInput: CreateProposalInput = {
     ref,
     source: "propose",
     sourceRun: `propose-${Date.now()}`,
+    target,
     // User-initiated proposals always bypass dedup/cooldown guards — the
     // operator is explicitly asking for a new proposal.
     force: true,

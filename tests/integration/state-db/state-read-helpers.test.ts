@@ -34,8 +34,8 @@ let db: Database;
 
 function baselineImproveRunRows(database: Database, since: string, until?: string): unknown[] {
   const sql = until
-    ? "SELECT id, started_at, completed_at, ok, scope_mode, scope_value, profile AS legacyProfile, strategy, result_json FROM improve_runs WHERE started_at >= ? AND started_at < ? AND dry_run = 0 ORDER BY started_at DESC"
-    : "SELECT id, started_at, completed_at, ok, scope_mode, scope_value, profile AS legacyProfile, strategy, result_json FROM improve_runs WHERE started_at >= ? AND dry_run = 0 ORDER BY started_at DESC";
+    ? "SELECT id, started_at, completed_at, ok, scope_mode, scope_value, strategy, result_json FROM improve_runs WHERE started_at >= ? AND started_at < ? AND dry_run = 0 ORDER BY started_at DESC"
+    : "SELECT id, started_at, completed_at, ok, scope_mode, scope_value, strategy, result_json FROM improve_runs WHERE started_at >= ? AND dry_run = 0 ORDER BY started_at DESC";
   return until ? database.prepare(sql).all(since, until) : database.prepare(sql).all(since);
 }
 

@@ -16,8 +16,6 @@ export interface ImproveResultRowAccounting {
   total: number;
   /** Rows decoded and admitted to result-derived metrics. */
   included: number;
-  /** Included rows repaired as the known interrupted v1 compatibility shape. */
-  normalized: number;
   /** Rows omitted from result-derived metrics, grouped by bounded reason. */
   skipped: { invalid: number };
 }

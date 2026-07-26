@@ -23,16 +23,12 @@ export function parseTaskMetadata(row: TaskHistoryRow): {
   durationMs?: number;
   detail?: Record<string, unknown>;
   engine?: string | null;
-  legacyProfile?: string;
 } {
   const metadata = decodeTaskHistoryMetadata(row.metadata_json);
   return {
     ...(metadata.durationMs !== undefined ? { durationMs: metadata.durationMs } : {}),
     ...(metadata.detail ? { detail: metadata.detail } : {}),
-    ...(metadata.metadataVersion === 2 && metadata.engine !== undefined ? { engine: metadata.engine } : {}),
-    ...(metadata.metadataVersion === 1 && metadata.legacyProfile !== undefined
-      ? { legacyProfile: metadata.legacyProfile }
-      : {}),
+    ...(metadata.engine !== undefined ? { engine: metadata.engine } : {}),
   };
 }
 
@@ -42,7 +38,7 @@ function createUnknownImproveMetrics(): ImproveHealthMetrics {
     completed: 0,
     skipped: 0,
     skipReasons: {},
-    resultRows: { total: 0, included: 0, normalized: 0, skipped: { invalid: 0 } },
+    resultRows: { total: 0, included: 0, skipped: { invalid: 0 } },
     plannedRefs: 0,
     strategyFilteredRefs: 0,
     actions: {
@@ -225,9 +221,7 @@ function applyPlannedRefs(metrics: ImproveHealthMetrics, result: Record<string, 
   // strategyFilteredRefs (array of {ref, reason}) — 2026-05-27: pre-filter
   // bucket from `collectEligibleRefs` so the metric reflects work the
   // planner dropped before signal-delta / per-pass dispatch.
-  // Health v3 reports strategy metrics only. Historical v1 profile filtering
-  // remains legacy data and must not be silently relabelled as a strategy metric.
-  const strategyFilteredRefs = result.schemaVersion === 2 ? result.strategyFilteredRefs : undefined;
+  const strategyFilteredRefs = result.strategyFilteredRefs;
   if (Array.isArray(strategyFilteredRefs)) metrics.strategyFilteredRefs += strategyFilteredRefs.length;
 }
 
@@ -673,8 +667,7 @@ function mergeImproveMetrics(dst: ImproveHealthMetrics, src: ImproveHealthMetric
   dst.coverage.acceptedProposals += src.coverage.acceptedProposals;
 }
 
-// The improve_runs read lives in the owner module (core/state-db.ts) so this
-// command file holds no raw SQL. `ImproveRunRow` aliases the owner's row shape.
+// The improve_runs read lives in its repository so this command holds no raw SQL.
 type ImproveRunRow = ImproveRunSummaryRow;
 
 function compareImproveRunRecency(a: ImproveRunRow, b: ImproveRunRow): number {
@@ -720,14 +713,12 @@ export function summarizeImproveRuns(
       continue;
     }
     accum.resultRows.included += 1;
-    if (decoded.normalizedLegacyPartial) accum.resultRows.normalized += 1;
     const result = decoded.envelope as unknown as Record<string, unknown>;
     const perRow = projectRunMetrics(result);
     mergeImproveMetrics(accum, perRow);
 
     const startMs = new Date(row.started_at).getTime();
     if (
-      !decoded.normalizedLegacyPartial &&
       result.terminated === undefined &&
       Number.isFinite(startMs) &&
       (latestCompleteRow === undefined || compareImproveRunRecency(row, latestCompleteRow) > 0)
@@ -795,7 +786,7 @@ export function projectImproveRunSummary(row: ImproveRunRow, wallTimeMs: number,
   try {
     const decoded = decodeImproveResult(row.result_json);
     result = decoded.envelope as unknown as Record<string, unknown>;
-    resultStatus = decoded.normalizedLegacyPartial ? "normalized" : "valid";
+    resultStatus = "valid";
   } catch {
     // Keep the persisted row visible in per-run output, but do not project its
     // unknown payload or admit its duration to result-derived denominators.
@@ -818,7 +809,6 @@ export function projectImproveRunSummary(row: ImproveRunRow, wallTimeMs: number,
     resultStatus,
     resultComplete: resultStatus === "valid" && result.terminated === undefined,
     strategy: row.strategy,
-    legacyProfile: row.legacyProfile,
     scope: {
       mode: row.scope_mode,
       ...(row.scope_value ? { value: row.scope_value } : {}),
