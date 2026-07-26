@@ -55,7 +55,12 @@ describe("tasks doctor autonomy reporting", () => {
 
     expect(result.improveAutonomy?.enabled).toBe(false);
     expect(result.improveAutonomy?.configKey).toBe(IMPROVE_AUTONOMY_CONFIG_KEY);
-    expect(result.improveAutonomy?.gatedLanes.map((l) => l.lane)).toContain("consolidate");
+    expect(result.improveAutonomy?.gatedLanes.map((lane) => lane.lane).sort()).toEqual([
+      "consolidate",
+      "contradiction",
+      "memoryCleanup",
+    ]);
+    expect(result.improveAutonomy?.gatedLanes.every((lane) => lane.reason.length > 0)).toBe(true);
   });
 
   test("reports autonomy on with no gated lanes", async () => {

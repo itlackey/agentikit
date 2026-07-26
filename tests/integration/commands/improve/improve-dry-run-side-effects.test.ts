@@ -265,6 +265,9 @@ describe("akm improve --dry-run writes no AKM artifacts", () => {
     );
 
     expect(result.dryRun).toBe(true);
+    expect(result.memoryCleanup).toBeDefined();
+    expect(result.memoryCleanup?.analyzedDerived).toBe(2);
+    expect(result.memoryCleanup?.archived).toBeUndefined();
     expect(ensureIndexFn).not.toHaveBeenCalled();
     expect(fetchCalls).toEqual([]);
     expectSandboxRootsUnchanged(before, stashDir);
