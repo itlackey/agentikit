@@ -56,7 +56,7 @@ export function upsertEntry(
   // connection so we don't pay the SQL parse/compile cost on every call.
   const stmts = getUpsertStmts(db);
   const previous =
-    (stmts.usesItemRefConflict && provenance?.itemRef
+    (provenance?.itemRef
       ? (stmts.findByItemRef.get(provenance.itemRef) as ExistingUpsertRow | undefined)
       : undefined) ?? (stmts.findByEntryKey.get(entryKey) as ExistingUpsertRow | undefined);
   // Phase 5A / Advantage D5: surface derived memory parent ref into the
@@ -107,7 +107,6 @@ interface UpsertStmts {
   markDirty: ReturnType<Database["prepare"]>;
   findByItemRef: ReturnType<Database["prepare"]>;
   findByEntryKey: ReturnType<Database["prepare"]>;
-  usesItemRefConflict: boolean;
 }
 
 interface ExistingUpsertRow {
@@ -119,7 +118,7 @@ const upsertStmtsByDb = new WeakMap<Database, UpsertStmts>();
 
 // The ON CONFLICT DO UPDATE column assignments — factored out so the two
 // conflict targets below stay byte-identical. `item_ref` is durable identity;
-// update the compatibility `entry_key` when adapter ownership changes its
+// update `entry_key` when adapter ownership changes its
 // spelling so directory pruning retains the upserted row.
 // `content_hash` COALESCEs so a NULL passed by the LLM-enhance re-upsert cannot
 // wipe a previously-persisted hash.
@@ -140,53 +139,13 @@ const UPSERT_SET_CLAUSE = `SET
         type = excluded.type,
         content_hash = COALESCE(excluded.content_hash, content_hash)`;
 
-/**
- * Whether `entries.item_ref` currently carries its UNIQUE index (the v19
- * `idx_entries_item_ref`, built by `ensureUniqueItemRefIndex`). On a
- * partially-migrated DB with a duplicate non-NULL item_ref, that build falls
- * back to a NON-unique index — and `ON CONFLICT(item_ref)` is only a legal
- * conflict target when a UNIQUE index/constraint backs the column (otherwise
- * the upsert throws AT PREPARE TIME). This gate lets {@link getUpsertStmts}
- * degrade to the always-present `entry_key` target until a rebuild restores
- * uniqueness. Best-effort: any probe failure treats item_ref as non-unique.
- */
-function itemRefHasUniqueIndex(db: Database): boolean {
-  try {
-    const indexes = db.prepare("PRAGMA index_list(entries)").all() as Array<{ name: string; unique: number | bigint }>;
-    return indexes.some((idx) => idx.name === "idx_entries_item_ref" && Number(idx.unique) === 1);
-  } catch {
-    return false;
-  }
-}
-
 function getUpsertStmts(db: Database): UpsertStmts {
   const existing = upsertStmtsByDb.get(db);
   if (existing) return existing;
-  // Conflict target (spec §3.3): the UNIQUE `item_ref` is THE intended clean
-  // dedupe key, so it is the PRIMARY target — a row carrying its durable
-  // identity dedupes on `item_ref`. `entry_key` is retained as a SECOND,
-  // NULL-safe fallback target because a legacy write path can still upsert an
-  // EXISTING row with a NULL `item_ref` (SQLite treats NULLs as distinct in a
-  // UNIQUE index, so an item_ref-only target would miss the row, fall through
-  // to a plain INSERT, and ABORT on the `entry_key NOT NULL UNIQUE` constraint).
-  // Concretely, the out-of-scope LLM metadata-enhance re-upsert (indexer.ts
-  // `enhanceDirsWithLlm`) re-writes already-indexed rows without provenance →
-  // NULL item_ref; the `entry_key` arm keeps that re-upsert an UPDATE, not a
-  // crash. Both arms run the IDENTICAL assignment block, so the outcome is the
-  // same regardless of which constraint matches. The `entry_key` fallback is
-  // deletable once every write path sets `item_ref`.
-  //
-  // When item_ref lacks its UNIQUE index (the ensureUniqueItemRefIndex fallback
-  // on a partially-migrated DB), `ON CONFLICT(item_ref)` is not a legal target
-  // and would fail at prepare time — so we degrade to the entry_key-only upsert
-  // (behaviour-identical to the pre-repoint key) until the next rebuild restores
-  // uniqueness; without this the very rebuild meant to heal the duplicate could
-  // not run.
-  const usesItemRefConflict = itemRefHasUniqueIndex(db);
-  const conflictClause = usesItemRefConflict
-    ? `ON CONFLICT(item_ref) DO UPDATE ${UPSERT_SET_CLAUSE}
-      ON CONFLICT(entry_key) DO UPDATE ${UPSERT_SET_CLAUSE}`
-    : `ON CONFLICT(entry_key) DO UPDATE ${UPSERT_SET_CLAUSE}`;
+  // Durable identity is the primary conflict target. `entry_key` remains the
+  // internal conflict key for low-level entries without provenance.
+  const conflictClause = `ON CONFLICT(item_ref) DO UPDATE ${UPSERT_SET_CLAUSE}
+      ON CONFLICT(entry_key) DO UPDATE ${UPSERT_SET_CLAUSE}`;
   const stmts: UpsertStmts = {
     // RETURNING id handles ON CONFLICT DO UPDATE correctly — no second
     // SELECT round-trip needed (last_insert_rowid() is unreliable for
@@ -203,7 +162,6 @@ function getUpsertStmts(db: Database): UpsertStmts {
     markDirty: db.prepare("INSERT OR IGNORE INTO entries_fts_dirty (entry_id) VALUES (?)"),
     findByItemRef: db.prepare("SELECT id, search_text FROM entries WHERE item_ref = ? ORDER BY id ASC LIMIT 1"),
     findByEntryKey: db.prepare("SELECT id, search_text FROM entries WHERE entry_key = ? LIMIT 1"),
-    usesItemRefConflict,
   };
   upsertStmtsByDb.set(db, stmts);
   return stmts;
@@ -221,25 +179,19 @@ function getUpsertStmts(db: Database): UpsertStmts {
  */
 export function getDerivedForParent(db: Database, parentRef: string, stashDir?: string): DbIndexedEntry | null {
   if (!parentRef) return null;
-  try {
-    const sourceScope = stashDir ? "AND stash_dir = ?" : "";
-    const row = db
-      .prepare(
-        `SELECT ${ENTRY_COLUMNS}
+  const sourceScope = stashDir ? "AND stash_dir = ?" : "";
+  const row = db
+    .prepare(
+      `SELECT ${ENTRY_COLUMNS}
          FROM entries
          WHERE derived_from = ?
          ${sourceScope}
          ORDER BY id DESC
          LIMIT 1`,
-      )
-      .get(parentRef, ...(stashDir ? [stashDir] : [])) as EntryRow | undefined;
-    if (!row) return null;
-    return rowToIndexedEntry(row, "getDerivedForParent");
-  } catch {
-    /* `derived_from` column may not exist on legacy DBs that haven't been
-       rebuilt; treat as "no derived child". */
-    return null;
-  }
+    )
+    .get(parentRef, ...(stashDir ? [stashDir] : [])) as EntryRow | undefined;
+  if (!row) return null;
+  return rowToIndexedEntry(row, "getDerivedForParent");
 }
 
 /**
@@ -266,34 +218,22 @@ export function getBaseBeliefStatesForDerivedTwins(db: Database, twinIds: number
     const chunk = twinIds.slice(i, i + SQLITE_CHUNK_SIZE);
     const placeholders = chunk.map(() => "?").join(",");
     bestEffort(() => {
-      // Chunk-5 flip F1: a twin's identity suffix is `.derived` on BOTH the
-      // legacy `entry_key` (`<stash>:memory:<name>.derived`) and the new
-      // `item_ref` (`<bundle>//memories/<name>.derived`). Join the base by
-      // stripping that suffix on EITHER column so both fully-migrated rows
-      // (item_ref path) and NULL-`item_ref` rows (legacy path) inherit. On a
-      // consistent index both predicates select the SAME base row, so the OR
-      // never double-counts; `substr(NULL, …)` is NULL and matches nothing, so
-      // a NULL `item_ref` simply falls through to the entry_key predicate.
-      // F5: the `entry_key` arm is the deletable legacy shim.
       const rows = db
         .prepare(
           `SELECT twin.id AS twin_id, json_extract(base.entry_json, '$.beliefState') AS belief
            FROM entries twin
            JOIN entries base
              ON base.entry_type = 'memory'
-            AND (
-                 base.entry_key = substr(twin.entry_key, 1, length(twin.entry_key) - length('.derived'))
-              OR base.item_ref = substr(twin.item_ref, 1, length(twin.item_ref) - length('.derived'))
-            )
+             AND base.item_ref = substr(twin.item_ref, 1, length(twin.item_ref) - length('.derived'))
            WHERE twin.id IN (${placeholders})
-             AND (twin.entry_key LIKE '%.derived' OR twin.item_ref LIKE '%.derived')
+             AND twin.item_ref LIKE '%.derived'
              AND json_extract(base.entry_json, '$.beliefState') IS NOT NULL`,
         )
         .all(...chunk) as { twin_id: number; belief: string | null }[];
       for (const r of rows) {
         if (typeof r.belief === "string" && r.belief.trim().length > 0) out.set(r.twin_id, r.belief.trim());
       }
-    }, "legacy DB / entry_json without beliefState — treat as no twin inheritance");
+    }, "belief-state inheritance is best-effort");
   }
   return out;
 }
@@ -483,7 +423,7 @@ export function getPositiveFeedbackCountsByIds(ids: number[]): Map<number, numbe
         }
       }
     });
-  }, "usage_events table may be missing on legacy state.db — treat as zero counts");
+  }, "positive feedback counts are best-effort");
   return result;
 }
 
@@ -541,11 +481,9 @@ export function deleteEntriesByStashDir(db: Database, stashDir: string): void {
  * to prune only the DEPARTED rows. The net row-state of `dir_path` is identical
  * to delete-then-reinsert; the win is that unchanged rows keep their id.
  *
- * Keyed on `entry_key` rather than `item_ref`: the diff must be exact regardless
- * of whether a row's `item_ref` is populated (legacy rows and NULL-provenance
- * write-back rows exist), and `entry_key` is never NULL and mirrors the upsert
- * conflict target precisely. Both directory- and source-scoped so overlapping
- * source roots cannot prune one another's rows.
+ * Keyed on `entry_key` because it mirrors the directory upsert key precisely.
+ * Both directory- and source-scoped so overlapping source roots cannot prune
+ * one another's rows.
  */
 export function deleteEntriesByDirExceptKeys(
   db: Database,
@@ -737,7 +675,7 @@ export function getAllEntries(db: Database, entryType?: string, excludeTypes?: s
 /**
  * Resolve a single `entries.id` from a new-grammar `[bundle//]conceptId` ref,
  * keying on the canonical stored `item_ref` (ref-grammar decision D-R1/D-R4).
- * All refs are the new grammar post-Chunk-8. The optional `stashDir` scopes the
+ * The optional `stashDir` scopes the
  * match to one source root.
  */
 export function findEntryIdByRef(db: Database, ref: string, stashDir?: string): number | undefined {
@@ -750,9 +688,8 @@ function withMdVariants(name: string): string[] {
 }
 
 /**
- * New-grammar (`[bundle//]conceptId`) id lookup: match `item_ref` first (exact
- * when bundle-qualified, `//conceptId`-suffix when short), then fall back to the
- * legacy `entry_key` predicate for NULL-`item_ref` rows.
+ * Current (`[bundle//]conceptId`) id lookup: match `item_ref` exactly when
+ * bundle-qualified or by `//conceptId` suffix when short.
  */
 function findEntryIdByBundleRef(db: Database, ref: string, stashDir?: string): number | undefined {
   const parsed = parseBundleRef(ref);
@@ -788,9 +725,7 @@ function findEntryIdByBundleRef(db: Database, ref: string, stashDir?: string): n
  * precedence-ordered scan would pick — while staying a pure config-free leaf
  * (true installation-priority resolution against an injected bundle list is
  * `resolveRef`'s job; this DB helper takes no config handle). The exact-bundle
- * arm is single-row under the UNIQUE `item_ref` index; `ORDER BY id ASC` there
- * keeps it deterministic on a partially-migrated DB whose fallback index is
- * non-unique.
+ * arm is single-row under the UNIQUE `item_ref` index.
  */
 function matchIdByItemRef(
   db: Database,

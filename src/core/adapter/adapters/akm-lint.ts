@@ -42,7 +42,7 @@
  *
  * Imported ONLY by `akm-adapter.ts` (no inbound `src/` edge) → can never join a
  * cycle. It VALUE-imports `parseWorkflow` (already transitively reachable from
- * `akm-adapter` via `matchers.ts`) and the PURE predicate `isDangerousVaultKey`
+ * `akm-adapter` via `matchers.ts`) and the pure predicate `isDangerousEnvKey`
  * from `commands/lint/env-key-rules` — the predicate is imported, not copied,
  * precisely so the 40+ security-sensitive dangerous-key names cannot drift from
  * the canonical set; importing it is ratchet-neutral (verified: 18). The small
@@ -53,7 +53,7 @@
  */
 
 import path from "node:path";
-import { isDangerousVaultKey } from "../../../commands/lint/env-key-rules";
+import { isDangerousEnvKey } from "../../../commands/lint/env-key-rules";
 import { parseWorkflow } from "../../../workflows/parser";
 import type { BundleComponent, Diagnostic, ValidateContext } from "../types";
 
@@ -64,7 +64,7 @@ const KNOWN_CATEGORIES = new Set(["personal", "team", "project", "convention", "
 const PLACEHOLDER_STRINGS = ["Describe what this workflow accomplishes", "Example Workflow"];
 
 /** Inline suppression token — `commands/lint/env-key-rules.ts:138` (not exported there; reproduced verbatim). */
-const SUPPRESSION_COMMENT = "# akm-lint-ok: dangerous-vault-key";
+const SUPPRESSION_COMMENT = "# akm-lint-ok: dangerous-env-key";
 
 // ── BaseLinter protected-method ports (base-linter.ts:520-551) ───────────────
 
@@ -162,7 +162,7 @@ function collectSuppressedKeys(raw: string): Set<string> {
 }
 
 /**
- * env/secret dangerous-key scan (`lint/index.ts:191-218` + `env-key-rules.ts#checkVaultForDangerousKeys`),
+ * env/secret dangerous-key scan (`lint/index.ts:191-218` + `env-key-rules.ts#checkEnvForDangerousKeys`),
  * keyed on `type` and preserving the `.env`-suffix narrowness (see file header).
  * Reads the overlay `raw`, not disk. `type`==="env" ⇒ ref prefix `env:`;
  * `type`==="secret" ⇒ `secret:` (`lint/index.ts:201-204`).
@@ -179,11 +179,11 @@ export function dangerousEnvKeyDiagnostics(type: string | undefined, relPath: st
   const suppressed = collectSuppressedKeys(raw);
   const diagnostics: Diagnostic[] = [];
   for (const key of keys) {
-    if (!isDangerousVaultKey(key)) continue;
+    if (!isDangerousEnvKey(key)) continue;
     if (suppressed.has(key)) continue;
     diagnostics.push({
       file: relPath,
-      issue: "dangerous-vault-key",
+      issue: "dangerous-env-key",
       detail: `Env key \`${key}\` can be used to hijack process execution when injected via \`akm env run\`. Ref: ${ref}. Review this file before running \`akm env run\` commands against untrusted stashes. (suppress with: ${SUPPRESSION_COMMENT} on previous line)`,
       fixed: false,
     });

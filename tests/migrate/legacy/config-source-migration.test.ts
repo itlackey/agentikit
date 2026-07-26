@@ -11,6 +11,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { deriveLegacyBundleIds, inferLegacyBundleIds } from "../../../scripts/akm-migrate/migrate/legacy/bundle-id";
 import {
   hasOldSourceShape,
   migrateConfigSourcesToBundles,
@@ -19,12 +20,7 @@ import {
 } from "../../../scripts/akm-migrate/migrate/legacy/config-source-migration";
 import { registerBuiltinAdapters } from "../../../src/core/adapter/adapters";
 import { resetAdapterRegistryForTests } from "../../../src/core/adapter/registry";
-import {
-  deriveBundleId,
-  deriveBundleIds,
-  deriveLegacyBundleIds,
-  inferLegacyBundleIds,
-} from "../../../src/core/bundle-id";
+import { deriveBundleId, deriveBundleIds } from "../../../src/core/bundle-id";
 import { validateConfigShape } from "../../../src/core/config/config-schema";
 import { bundleEntryToSourceEntry, installedSourceDescriptor } from "../../../src/core/config/config-sources";
 import { deriveInstallations } from "../../../src/indexer/installations";

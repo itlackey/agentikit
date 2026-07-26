@@ -31,7 +31,7 @@ import {
 } from "../../indexer/search/search-attribution";
 import { findSourceForPath, resolveSourceEntries } from "../../indexer/search/search-source";
 import { insertUsageEvent, type UsageEventSource } from "../../indexer/usage/usage-events";
-import { truncateDescription } from "../../output/shapes";
+import { truncateDescription } from "../../output/shapes/helpers";
 import type { RegistrySearchResultHit, SearchResponse, ShowResponse, SourceSearchHit } from "../../sources/types";
 import { TELEMETRY_BUSY_TIMEOUT_MS, withIndexDb } from "../../storage/repositories/index-db";
 import { findEntryIdByRef, getItemRefById } from "../../storage/repositories/index-entries-repository";
@@ -181,12 +181,11 @@ function logCurateEvent(
         // state.db (Chunk-8 WI-8.3).
         const perItem = result.items
           .filter((item): item is typeof item & { ref: string } => "ref" in item && typeof item.ref === "string")
-          .map((item) => {
+          .flatMap((item) => {
             const entryId = findEntryIdByRef(db, item.ref);
-            const itemRef = entryId !== undefined ? getItemRefById(db, entryId) : null;
-            // Post-flip the resolved row carries `item_ref`; fall back to the
-            // item's own (new-grammar) ref for an unresolved straggler.
-            return { entryRef: itemRef ?? item.ref, entryId, item };
+            if (entryId === undefined) return [];
+            const itemRef = getItemRefById(db, entryId);
+            return itemRef ? [{ entryRef: itemRef, entryId, item }] : [];
           });
         withStateDbTelemetry((stateDb) => {
           insertUsageEvent(stateDb, {

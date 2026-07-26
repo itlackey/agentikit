@@ -21,10 +21,8 @@ import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
 import { ConfigError, UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
-import { canonicalBundleIdForTarget } from "../../core/mutation-target";
 import { redactSensitiveText } from "../../core/redaction";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
-import { resolveWriteTarget } from "../../core/write-source";
 import { deriveEntryProvenance } from "../../indexer/installations";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "../../integrations/agent";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
@@ -37,6 +35,7 @@ import {
   isProposalSkipped,
   type Proposal,
   type ProposalsContext,
+  resolveProposalQueueTarget,
 } from "./repository";
 
 export interface AkmProposeOptions {
@@ -144,11 +143,7 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
   // 1. Resolve the selected engine and write target exactly once.
   // the LLM arm uses the caller-specific plain-chat handler below.
   const config = options.agentConfig ?? (await import("../../core/config/config.js")).loadConfig();
-  const writeTarget = resolveWriteTarget(config);
-  const target = {
-    source: canonicalBundleIdForTarget(config, writeTarget),
-    root: writeTarget.source.path,
-  };
+  const target = resolveProposalQueueTarget(stash, config);
   emitProposeInvoked(target.source, options);
   const engineName = options.engine ?? config.defaults?.engine;
   if (!engineName) throw new ConfigError("propose requires --engine or defaults.engine.", "INVALID_CONFIG_FILE");

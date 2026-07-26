@@ -43,7 +43,7 @@ import { type BundleRef, isBundleSlug, parseBundleRef } from "./asset-ref";
 
 /**
  * The decomposed form of a parsed ref — the return shape of {@link parseRefInput}
- * / {@link parseQualifiedRefInput}. `type`/`name` are the legacy asset-type token
+ * / {@link parseQualifiedRefInput}. `type`/`name` are the asset-type projection
  * and canonical name (D-R2 reverse of the conceptId); `origin` is the bundle
  * slug (or non-slug source origin) when the ref was qualified, else undefined.
  * (The frozen migrator keeps its own private copy of this shape.)
@@ -150,14 +150,13 @@ function notFound(conceptId: string, triedForms: string[], ctx: RefContext): Not
  * hit, show/curate response, workflow status, improve REPORT envelope, …).
  */
 export interface DisplayRefItem {
-  /** Legacy asset type — supplies the conceptId stash-subdir when `conceptId` is absent. */
+  /** Asset type used to derive the conceptId stash-subdir when needed. */
   type: string;
   /** Bare canonical name — the conceptId tail when `conceptId` is absent. */
   name: string;
   /**
    * The row's stored conceptId (`concept_id` / the `item_ref` tail). Derived
-   * from `type`/`name` (D-R2 `stashDirFor(type)/name`) when absent — the
-   * NULL-`item_ref` write-back-row fallback.
+   * from `type`/`name` (D-R2 `stashDirFor(type)/name`) when absent.
    */
   conceptId?: string;
   /**
@@ -169,10 +168,10 @@ export interface DisplayRefItem {
 }
 
 /**
- * D-R2 conceptId derivation from a legacy `type`/`name` pair
+ * D-R2 conceptId derivation from an asset `type`/`name` pair
  * (`stashDirFor(type)/name`; bare name for a foreign type with no placement
  * stash-subdir). Kept self-contained so {@link displayRef} — a PERMANENT display
- * rule — does not depend on the transient legacy shims.
+ * rule remains independent of input parsing.
  *
  * Exported (Chunk-8 WI-8.5c) as the ONE conceptId derivation the improve
  * correlation sites (`eligibility.ts` candidate refs, `salience.ts`
@@ -214,21 +213,21 @@ export function displayRef(item: DisplayRefItem, defaultBundleId?: string): stri
 
 // ── D-R2 reverse table + input-boundary parser (new grammar only) ────────────
 
-/** The legacy `type`/`name` a qualified conceptId maps back to, or `undefined`. */
-export interface LegacyRefParts {
+/** The asset `type`/`name` a qualified conceptId maps to, or `undefined`. */
+export interface AssetRefParts {
   type: string;
   name: string;
 }
 
 /**
- * Split a qualified conceptId (`<stash-subdir>/<name>`) back to its legacy
+ * Split a qualified conceptId (`<stash-subdir>/<name>`) into its asset
  * `type`/`name`, or `undefined` when the leading segment is not a known stash
  * subdir (a bare-name conceptId from a foreign type — no legacy predicate
  * applies). The PERMANENT D-R2 reverse table: the input boundary uses it to map
  * a new-grammar conceptId onto today's {@link AssetRef} shape. (The migrate home
  * keeps a private transient copy for stored-ref parsing.)
  */
-export function typeNameFromConceptId(conceptId: string): LegacyRefParts | undefined {
+export function typeNameFromConceptId(conceptId: string): AssetRefParts | undefined {
   const slash = conceptId.indexOf("/");
   if (slash <= 0) return undefined;
   const type = typeForStashDir(conceptId.slice(0, slash));
@@ -263,14 +262,14 @@ export function parseRefInput(raw: string): AssetRef {
       "INVALID_FLAG_VALUE",
     );
   }
-  const legacy = typeNameFromConceptId(ref.conceptId);
-  if (legacy === undefined) {
+  const parts = typeNameFromConceptId(ref.conceptId);
+  if (parts === undefined) {
     throw new NotFoundError(
       `Unrecognized asset ref "${raw.trim()}": conceptId "${ref.conceptId}" has no known asset-type prefix.`,
       "ASSET_NOT_FOUND",
     );
   }
-  return { type: legacy.type, name: legacy.name, origin: ref.bundle };
+  return { type: parts.type, name: parts.name, origin: ref.bundle };
 }
 
 /**

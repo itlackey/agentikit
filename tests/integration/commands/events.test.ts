@@ -5,7 +5,7 @@ import path from "node:path";
 import { akmEventsList, akmEventsTail } from "../../../src/commands/events";
 import { saveConfig } from "../../../src/core/config/config";
 import { appendEvent, readEvents, tailEvents } from "../../../src/core/events";
-import { getDbPath } from "../../../src/core/paths";
+import { getStateDbPath } from "../../../src/core/state-db";
 import { runCliCapture } from "../../_helpers/cli";
 import { type Cleanup, sandboxStashDir } from "../../_helpers/sandbox";
 
@@ -33,6 +33,11 @@ function makeTempDir(prefix: string): string {
 function sandboxStash(): string {
   const stash = sandboxStashDir();
   stashCleanup = stash.cleanup;
+  saveConfig({
+    semanticSearchMode: "off",
+    bundles: { stash: { path: stash.dir, writable: true } },
+    defaultBundle: "stash",
+  });
   return stash.dir;
 }
 
@@ -90,7 +95,7 @@ describe("appendEvent / readEvents", () => {
     expect(result.nextOffset).toBeGreaterThanOrEqual(result.events[1]?.id ?? 0);
   });
 
-  test("--since (byte offset) is durable across processes", () => {
+  test("--since offset is durable across processes", () => {
     const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
     const ctx = { dbPath };
     appendEvent({ eventType: "remember", ref: "memory:a" }, ctx);
@@ -108,10 +113,10 @@ describe("appendEvent / readEvents", () => {
     expect(empty.nextOffset).toBe(next.nextOffset);
   });
 
-  test("`akm events list --since @offset:` rejects malformed byte cursors", () => {
+  test("`akm log list --since @offset:` rejects malformed cursors", () => {
     const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
     const ctx = { dbPath };
-    expect(() => akmEventsList({ since: "@offset:not-a-number", ctx })).toThrow(/Invalid --since byte offset/);
+    expect(() => akmEventsList({ since: "@offset:not-a-number", ctx })).toThrow(/Invalid --since offset/);
     expect(() => akmEventsList({ since: "@offset:-3", ctx })).toThrow(/Invalid --since/);
   });
 
@@ -214,7 +219,6 @@ describe("tailEvents", () => {
 describe("akm CLI mutation events", () => {
   test("remember, feedback, and add each emit an event to state.db", async () => {
     sandboxStash();
-    saveConfig({ semanticSearchMode: "off" });
 
     // ─ remember ──────────────────────────────────────────────────────────
     const remember = await runCli(["remember", "first event captured", "--name", "alpha", "--format=json"]);
@@ -246,7 +250,6 @@ describe("akm CLI mutation events", () => {
 
   test("`akm log list` returns the captured events in JSON envelope shape", async () => {
     sandboxStash();
-    saveConfig({ semanticSearchMode: "off" });
 
     // Create a remember event via the CLI so state.db gets populated.
     const remember = await runCli(["remember", "another event captured", "--name", "beta", "--format=json"]);
@@ -263,7 +266,6 @@ describe("akm CLI mutation events", () => {
 
   test("`akm log` is the canonical command; `akm events` is no longer a command", async () => {
     sandboxStash();
-    saveConfig({ semanticSearchMode: "off" });
 
     const remember = await runCli(["remember", "log is canonical", "--name", "delta", "--format=json"]);
     expect(remember.status).toBe(0);
@@ -281,7 +283,6 @@ describe("akm CLI mutation events", () => {
 
   test("`akm log list --type feedback` filters by event type", async () => {
     sandboxStash();
-    saveConfig({ semanticSearchMode: "off" });
 
     const remember = await runCli(["remember", "filter test", "--name", "gamma", "--format=json"]);
     expect(remember.status).toBe(0);
@@ -327,8 +328,8 @@ describe("akm log tail (streaming trailer)", () => {
 
   test("--format jsonl writes a discriminated trailer row to stdout", async () => {
     // Seed events into the same state.db the in-process CLI will read from
-    // (getDbPath() resolves to <sandboxed XDG_DATA_HOME>/akm/state.db).
-    const dbPath = getDbPath();
+    // (getStateDbPath() resolves to <sandboxed XDG_DATA_HOME>/akm/state.db).
+    const dbPath = getStateDbPath();
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     const ctx = { dbPath };
     appendEvent({ eventType: "remember", ref: "memory:t1" }, ctx);
@@ -358,7 +359,7 @@ describe("akm log tail (streaming trailer)", () => {
 
   test("--format text writes a trailer line to stderr (stdout stays pristine)", async () => {
     // Seed events into the same state.db the in-process CLI will read from.
-    const dbPath = getDbPath();
+    const dbPath = getStateDbPath();
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     const ctx = { dbPath };
     appendEvent({ eventType: "remember", ref: "memory:tx1" }, ctx);

@@ -279,7 +279,7 @@ export function resolveTemplate(segments: TemplateSegment[], scope: ExpressionSc
  * Resolve a whole-value field (`map.over`, `route.input`) from its RAW
  * template string: the text must be exactly one `${{ … }}` reference with no
  * surrounding literal text (the compiler enforces this for YAML programs;
- * frozen plans are re-checked here so a tampered/legacy plan fails loudly
+ * frozen plans are re-checked here so a tampered plan fails loudly
  * instead of string-splicing). The reference resolves to its RAW value —
  * arrays stay arrays, objects stay objects.
  */

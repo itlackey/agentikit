@@ -17,6 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { runCliCapture } from "../../_helpers/cli";
+import { durableItemRef } from "../../_helpers/durable-ref";
 import { type Cleanup, sandboxStashDir, writeSandboxConfig } from "../../_helpers/sandbox";
 
 const SECRET_VALUE = "super-secret-token-value";
@@ -76,7 +77,7 @@ describe("akm secret — JSON envelope snapshot (WS6)", () => {
     const { stdout, status } = await runCli(["--json", "secret", "remove", "secrets/deploy-key", "--yes"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
-    expect(env.ref).toBe("secrets/deploy-key");
+    expect(env.ref).toBe(durableItemRef(stashDir, "secret", "deploy-key"));
     expect(env.removed).toBe(true);
     expect(stdout).not.toContain(SECRET_VALUE);
     expect(fs.existsSync(file)).toBe(false);

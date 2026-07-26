@@ -117,8 +117,8 @@ behind the 0.9.0 changes.
 Each indexed entry stores that identity as `item_ref`, with `bundle_id` and
 `concept_id` provenance, and stores its absolute materialized local file as
 `file_path`. Search and show return these index-backed refs and paths, so two
-bundles containing the same concept remain distinguishable. Nullable
-pre-cutover rows retain a path/type lookup fallback until they are reindexed.
+bundles containing the same concept remain distinguishable. Rows without the
+current identity columns are ignored until they are reindexed.
 
 Examples:
 

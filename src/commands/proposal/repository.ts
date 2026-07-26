@@ -84,6 +84,7 @@ import {
 } from "../../core/write-source";
 import { withAssetMutationLease } from "../../indexer/index-writer-lock";
 import { indexWrittenAssets } from "../../indexer/index-written-assets";
+import { deriveInstallations } from "../../indexer/installations";
 import { resolveSourceEntries } from "../../indexer/search/search-source";
 import type { Database } from "../../storage/database";
 import { insertEventOnce } from "../../storage/repositories/events-repository";
@@ -431,23 +432,6 @@ function proposalDurableRef(parsedRef: AssetRef, target: NonNullable<CreatePropo
   return `${target.source}//${conceptId}`;
 }
 
-interface ProposalQueueIdentity {
-  bundleId: string;
-  root: string;
-  writable: boolean;
-}
-
-function resolveProposalQueueIdentity(stashDir: string): ProposalQueueIdentity {
-  const root = path.resolve(stashDir);
-  const source = resolveSourceEntries(undefined, loadConfig()).find(
-    (candidate) => path.resolve(candidate.path) === root && candidate.registryId !== undefined,
-  );
-  if (!source?.registryId) {
-    throw new ConfigError(`No configured bundle owns proposal queue ${root}.`, "INVALID_CONFIG_FILE");
-  }
-  return { bundleId: source.registryId, root, writable: source.writable === true };
-}
-
 function resolveCreateProposalTarget(
   stashDir: string,
   explicit: CreateProposalInput["target"] | undefined,
@@ -462,14 +446,35 @@ function resolveCreateProposalTarget(
     }
     return { source: explicit.source, root: path.resolve(explicit.root) };
   }
-  const local = resolveProposalQueueIdentity(stashDir);
-  if (!bundle || bundle === local.bundleId) {
-    if (!local.writable)
-      throw new UsageError(`Proposal bundle "${local.bundleId}" is not writable.`, "INVALID_FLAG_VALUE");
-    return { source: local.bundleId, root: local.root };
+  const config = loadConfig();
+  const local = resolveProposalQueueTarget(stashDir, config);
+  if (!bundle || bundle === local.source) return local;
+  if (bundle) {
+    const target = resolveBundleWriteTarget(config, bundle);
+    return { source: target.source.name, root: target.source.path };
   }
-  const target = resolveBundleWriteTarget(loadConfig(), bundle);
-  return { source: target.source.name, root: target.source.path };
+  return local;
+}
+
+export function resolveProposalQueueTarget(
+  stashDir: string,
+  config: AkmConfig = loadConfig(),
+): NonNullable<CreateProposalInput["target"]> {
+  const root = path.resolve(stashDir);
+  const sources = resolveSourceEntries(root, config);
+  const sourceIndex = sources.findIndex((source) => path.resolve(source.path) === root);
+  const source = sources[sourceIndex];
+  const bundleId = sourceIndex >= 0 ? deriveInstallations(sources)[sourceIndex]?.id : undefined;
+  if (!source || !bundleId) {
+    throw new ConfigError(`No bundle owns proposal queue ${root}.`, "INVALID_CONFIG_FILE");
+  }
+  if (!source.registryId && Object.keys(config.bundles ?? {}).length > 0) {
+    throw new ConfigError(`No configured bundle owns proposal queue ${root}.`, "INVALID_CONFIG_FILE");
+  }
+  if (source.writable !== true) {
+    throw new UsageError(`Proposal bundle "${bundleId}" is not writable.`, "INVALID_FLAG_VALUE");
+  }
+  return { source: bundleId, root };
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -928,10 +933,9 @@ export function archiveProposal(
 
 /**
  * Record the drain/triage engine's decision onto a proposal (#577).
- * Drain-owned audit machinery — the deterministic drain engine is the only
- * live writer since the 0.9.0 confidence-gate deletion.
+ * Drain-owned audit machinery — the deterministic drain engine is the writer.
  *
- * Stamps `gateDecision` (decision / reason / confidence / thresholds) onto the
+ * Stamps `gateDecision` (decision / reason / measurement / thresholds) onto the
  * row so `akm proposal show` and `list` can explain why a proposal landed where
  * it did. The decision is metadata about the adjudication, so this does NOT
  * change `status` or bump `updatedAt` — a `deferred` proposal stays `pending`,

@@ -8,14 +8,17 @@ import {
   akmTasksSync,
   prepareSchedulerRuntime,
 } from "../../src/commands/tasks/tasks";
-import type { TaskBackend } from "../../src/tasks/backends";
-import type { TaskInstallOptions } from "../../src/tasks/backends/types";
+import type { TaskBackend, TaskInstallOptions } from "../../src/tasks/backends/types";
 import { schedulerContextDescriptor, writeSchedulerContextDescriptor } from "../../src/tasks/scheduler-invocation";
-import { withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 function writeTask(stashDir: string): void {
   fs.mkdirSync(path.join(stashDir, "tasks"), { recursive: true });
   fs.writeFileSync(path.join(stashDir, "tasks", "ping.yml"), 'version: 2\nschedule: "@daily"\ncommand: echo ping\n');
+}
+
+function configureStash(stashDir: string): void {
+  writeSandboxConfig({ bundles: { stash: { path: stashDir, writable: true } }, defaultBundle: "stash" });
 }
 
 describe("scheduler runtime binding", () => {
@@ -67,6 +70,7 @@ describe("scheduler runtime binding", () => {
   test("ordinary sync preserves binding and --rebind replaces it", async () => {
     const storage = withIsolatedAkmStorage();
     try {
+      configureStash(storage.stashDir);
       writeTask(storage.stashDir);
       const installs: Array<TaskInstallOptions | undefined> = [];
       const backend: TaskBackend = {
@@ -113,6 +117,7 @@ describe("scheduler runtime binding", () => {
   test("add --force never replaces an existing binding", async () => {
     const storage = withIsolatedAkmStorage();
     try {
+      configureStash(storage.stashDir);
       writeTask(storage.stashDir);
       const installs: Array<TaskInstallOptions | undefined> = [];
       const backend: TaskBackend = {
@@ -148,38 +153,10 @@ describe("scheduler runtime binding", () => {
     }
   });
 
-  test("enable and disable preserve unreadable legacy definitions via native toggle", async () => {
+  test("enable and disable reinstall using the current binding and descriptor", async () => {
     const storage = withIsolatedAkmStorage();
     try {
-      writeTask(storage.stashDir);
-      const toggles: Array<{ id: string; enabled: boolean }> = [];
-      const backend: TaskBackend = {
-        name: "cron",
-        install() {
-          throw new Error("must not reinstall");
-        },
-        uninstall() {},
-        setEnabled(id, enabled) {
-          toggles.push({ id, enabled });
-        },
-        list: () => [{ id: "ping" }],
-      };
-
-      await akmTasksSetEnabled("ping", false, {
-        backend,
-        schedulerRuntime: () => {
-          throw new Error("must not derive caller binding");
-        },
-      });
-      expect(toggles).toEqual([{ id: "ping", enabled: false }]);
-    } finally {
-      storage.cleanup();
-    }
-  });
-
-  test("legacy entries remain installed until explicit migration", async () => {
-    const storage = withIsolatedAkmStorage();
-    try {
+      configureStash(storage.stashDir);
       writeTask(storage.stashDir);
       const installs: Array<TaskInstallOptions | undefined> = [];
       const backend: TaskBackend = {
@@ -189,26 +166,22 @@ describe("scheduler runtime binding", () => {
         },
         uninstall() {},
         setEnabled() {},
-        list: () => [{ id: "ping", signature: "legacy", binding: ["/legacy/akm"] }],
-        expectedSignature: () => "expected",
+        list: () => [{ id: "ping", binding: ["/current/akm"], contextPath: "/current/context.json" }],
       };
 
-      const ordinary = await akmTasksSync({ backend });
-      expect(ordinary.skipped[0]?.reason).toContain("tasks sync --rebind");
-      expect(installs).toEqual([]);
-
-      await akmTasksSync(
-        { backend, schedulerRuntime: () => ({ binding: ["/current/akm"], contextPath: "/current/context.json" }) },
-        undefined,
-        { rebind: true },
-      );
-      expect(installs[0]).toMatchObject({ binding: ["/current/akm"], contextPath: "/current/context.json" });
+      await akmTasksSetEnabled("ping", false, {
+        backend,
+        schedulerRuntime: () => {
+          throw new Error("must not derive caller binding");
+        },
+      });
+      expect(installs).toEqual([{ binding: ["/current/akm"], contextPath: "/current/context.json" }]);
     } finally {
       storage.cleanup();
     }
   });
 
-  test("doctor groups actual backend bindings and reports remediation", async () => {
+  test("doctor groups current backend bindings and reports remediation", async () => {
     const storage = withIsolatedAkmStorage();
     try {
       fs.mkdirSync(storage.stashDir, { recursive: true });
@@ -230,7 +203,6 @@ describe("scheduler runtime binding", () => {
           { id: "alpha", binding: [process.execPath], contextPath },
           { id: "beta", binding: [process.execPath], contextPath },
           { id: "tampered", binding: [process.execPath], contextPath: tamperedContextPath },
-          { id: "legacy", binding: ["akm"] },
         ],
       };
       const result = await akmTasksDoctor(
@@ -257,11 +229,6 @@ describe("scheduler runtime binding", () => {
         contextPath: tamperedContextPath,
         taskIds: ["tampered"],
         status: ["invalid-context"],
-      });
-      expect(result.bindings).toContainEqual({
-        argv: ["akm"],
-        taskIds: ["legacy"],
-        status: ["legacy", "path-selected"],
       });
       expect(result.caller.kind).toBe("standalone");
       expect(result.remediation).toBe("akm tasks sync --rebind");

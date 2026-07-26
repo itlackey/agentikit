@@ -651,6 +651,16 @@ test("applyCuratedFrontmatter extracts evidenceSources as a string list", () => 
   expect(entry.evidenceSources).toEqual(["memories/a", "memories/b"]);
 });
 
+test("applyCuratedFrontmatter indexes only current derived-memory backrefs", () => {
+  const current: IndexDocument = { name: "child.derived", type: "memory" };
+  applyCuratedFrontmatter(current, { inferred: true, source: "team//memories/parent" });
+  expect(current.derivedFrom).toBe("memories/parent");
+
+  const retired: IndexDocument = { name: "old-child.derived", type: "memory" };
+  applyCuratedFrontmatter(retired, { inferred: true, source: ["memory", "parent"].join(":") });
+  expect(retired.derivedFrom).toBeUndefined();
+});
+
 test("validateStashEntry preserves captureMode, whenToUse, lessonStrength, evidenceSources", () => {
   const result = validateStashEntry({
     name: "m",
@@ -674,7 +684,7 @@ test("validateStashEntry preserves captureMode, whenToUse, lessonStrength, evide
 // onto IndexDocument — so no rank-time or filter policy can see it. SPEC-6 step 1
 // (docs/architecture/specs/stash-conventions-code-spec.md) captures it in
 // applyCuratedFrontmatter (alongside beliefState) and whitelists it through
-// validateStashEntry so it survives the .stash.json / entry_json round-trip.
+// validateStashEntry so it survives the entry_json projection.
 
 /**
  * SPEC-6 adds `category?: string` to IndexDocument. Read it through a typed

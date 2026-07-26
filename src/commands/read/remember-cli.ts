@@ -100,12 +100,12 @@ export const rememberCommand = defineJsonCommand({
     xref: {
       type: "string",
       description:
-        "Cross-reference ref recorded in the memory's `xrefs:` frontmatter (repeatable: --xref knowledge:auth-flow --xref memory:vpn-note). Each ref must resolve in the write target or a configured source; an unresolvable ref aborts the write.",
+        "Cross-reference ref recorded in the memory's `xrefs:` frontmatter (repeatable: --xref knowledge/auth-flow --xref memories/vpn-note). Each ref must resolve in the write target or a configured source; an unresolvable ref aborts the write.",
     },
     supersedes: {
       type: "string",
       description:
-        "Ref of an existing asset this memory corrects (repeatable: --supersedes memory:projectA/old-note). Writes the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the write; a ref outside the write target and working stash still writes the correction but skips the demotion (reported as applied: false).",
+        "Ref of an existing asset this memory corrects (repeatable: --supersedes memories/projectA/old-note). Writes the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the write; a ref outside the write target and working stash still writes the correction but skips the demotion (reported as applied: false).",
     },
     auto: {
       type: "boolean",

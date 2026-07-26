@@ -10,7 +10,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { buildMemoryFrontmatter } from "../../../src/commands/remember";
-import { shapeSearchHit, shapeShowOutput } from "../../../src/output/shapes";
+import { shapeSearchHit, shapeShowOutput } from "../../../src/output/shapes/helpers";
 
 // ── #7: show shape includes path + editable ───────────────────────────────────
 

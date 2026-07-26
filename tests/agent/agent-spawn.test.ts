@@ -15,10 +15,9 @@
  * timeout test) we keep the timeout small and deterministic.
  */
 import { describe, expect, test } from "bun:test";
-
+import type { SpawnedSubprocess, SpawnFn } from "../../src/core/subprocess";
 import type { AgentProfile } from "../../src/integrations/agent/profiles";
 import { getBuiltinAgentProfile } from "../../src/integrations/agent/profiles";
-import type { SpawnedSubprocess, SpawnFn } from "../../src/integrations/agent/spawn";
 import { runAgent } from "../../src/integrations/agent/spawn";
 
 function makeProfile(overrides: Partial<AgentProfile> = {}): AgentProfile {

@@ -5,7 +5,7 @@
 import path from "node:path";
 import { defineCommand } from "citty";
 import { getParsedInvocation } from "../../cli/invocation";
-import { getStringArg, parseAutoAcceptFlag, parsePositiveIntFlag } from "../../cli/parse-args";
+import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
 import { output, runWithJsonErrors } from "../../cli/shared";
 import { isFullRefInput, parseRefInput } from "../../core/asset/resolve-ref";
 import { loadConfig } from "../../core/config/config";
@@ -23,7 +23,6 @@ import { refreshCanarySet } from "./collapse-detector";
 import { akmImprove } from "./improve";
 import {
   buildImproveRunId,
-  improveRunLocator,
   recordImproveRunResult,
   recordTerminatedImproveRun,
   type TerminationReason,
@@ -111,11 +110,6 @@ export const improveCommand = defineCommand({
     },
     "dry-run": { type: "boolean", description: "Show planned actions without writing", default: false },
     target: { type: "string", description: "Override the write target for accepted proposals" },
-    "auto-accept": {
-      type: "string",
-      description:
-        "DEPRECATED and ignored (the 0.9.0 confidence gate was removed; proposals queue for review via `akm proposal` / the drain engine). Accepted for one minor so existing crontabs keep working; removed in 0.10.",
-    },
     limit: { type: "string", description: "Maximum number of assets to process (highest utility first)" },
     "timeout-ms": {
       type: "string",
@@ -134,8 +128,7 @@ export const improveCommand = defineCommand({
     },
     "json-to-stdout": {
       type: "boolean",
-      description:
-        "Emit the full JSON result on stdout (legacy behaviour). (0.8.0+: full result is recorded in the improve_runs table of state.db and stdout is empty; use this flag for the prior behaviour, e.g. `akm improve --json-to-stdout | jq`.)",
+      description: "Also emit the full persisted run result on stdout as JSON.",
       default: false,
     },
     "skip-if-locked": {
@@ -178,8 +171,6 @@ export const improveCommand = defineCommand({
         );
       }
       const jsonToStdout = args["json-to-stdout"];
-      // Deprecated (0.9.0): warns when present, has no effect. Removed in 0.10.
-      parseAutoAcceptFlag(args["auto-accept"]);
       const targetArg = getStringArg(args, "target");
       const taskArg = getStringArg(args, "task");
       const dryRun = args["dry-run"];
@@ -325,9 +316,9 @@ export const improveCommand = defineCommand({
       }
       const durationMs = Date.now() - startedAtMs;
 
-      if (dryRun || jsonToStdout) {
+      if (dryRun) {
         // A dry-run never persists its result, so stdout is its only result
-        // channel. --json-to-stdout remains the live-run escape hatch.
+        // channel.
         output("improve", improveResult);
         process.exit(0);
       }
@@ -346,7 +337,6 @@ export const improveCommand = defineCommand({
       //      ORDER BY started_at DESC LIMIT 10"
       // runId + primaryStashDir minted up-top so signal handlers can record
       // partial runs; reuse them here for the success path.
-      const resultRef = improveRunLocator(runId);
       runRecorded = true; // Suppress any late signal-handler write — the success path owns the row now.
       if (primaryStashDir) {
         try {
@@ -355,7 +345,7 @@ export const improveCommand = defineCommand({
           // Stderr warning on the failure path is preferable to crashing
           // the run after all the work has completed.
           process.stderr.write(
-            `warning: failed to record improve run ${resultRef}: ${err instanceof Error ? err.message : String(err)}\n`,
+            `warning: failed to record improve run ${runId}: ${err instanceof Error ? err.message : String(err)}\n`,
           );
         }
       } else {
@@ -363,6 +353,8 @@ export const improveCommand = defineCommand({
           `warning: no writable stash directory resolved; improve result not persisted to state.db (use --json-to-stdout to capture)\n`,
         );
       }
+
+      if (jsonToStdout) output("improve", improveResult);
 
       // durationMs reserved for future use (no console emission today).
       void durationMs;

@@ -175,8 +175,7 @@ export interface ProposalReview {
 
 /**
  * The verdict the deterministic drain/triage engine reached for this proposal
- * (#577). Drain-owned audit machinery: the `akm improve` confidence gate that
- * also stamped these died in 0.9.0; historical rows it wrote still render.
+ * (#577). This is drain-owned audit machinery.
  *
  *   - `auto-accepted` — the gate promoted the proposal without review.
  *   - `deferred`      — the gate left the proposal pending for human (or
@@ -190,12 +189,11 @@ export type ProposalGateDecisionOutcome = "auto-accepted" | "deferred" | "auto-r
  *
  * Persisted onto the proposal row (in `metadata_json`) at gate time so tooling
  * can explain WHY each proposal is in its current state — e.g. `akm proposal
- * show` surfacing "deferred: below-threshold (72 < 90)" instead of forcing the
+ * show` surfacing "deferred: max-diff-lines (210 > 200)" instead of forcing the
  * operator to reconstruct it from the run-level `triage_deferred` aggregate.
  *
- * Forward-only: proposals created before 0.9.0 (and any pending proposal that
- * predates this field) simply carry no `gateDecision`. Every renderer treats a
- * missing decision as "unknown" rather than erroring.
+ * Proposals that have not passed through a gate carry no `gateDecision`;
+ * renderers omit gate fields for those proposals.
  */
 export interface ProposalGateDecision {
   outcome: ProposalGateDecisionOutcome;
@@ -205,20 +203,13 @@ export interface ProposalGateDecision {
    * `max-diff-lines`, `min-content-lines`, `policy-accept`, `mid-band`,
    * `possible-dup`, `no-judge-configured`, `judgment-accept`,
    * `judgment-reject`.
-   *
-   * Historical rows written by the deleted (0.9.0) improve confidence gate may
-   * carry `above-threshold`, `below-threshold`, `no-confidence`, or
-   * `exploration-budget` — renderers still display them.
    */
   reason: string;
-  /** Computed confidence score in `[0, 1]`, when the gate had one. */
-  confidence?: number;
   /**
    * The value the gate actually measured and compared against the threshold
    * (drain gate). For the over-band defer this is the proposed content's line
    * count, for the body-floor defer the non-empty body-line count — so a full
    * comparison such as "210 > 200" stays reconstructable, not just the bound.
-   * The improve gate uses {@link confidence} as its measured value instead.
    */
   measured?: number;
   /**
@@ -227,8 +218,6 @@ export interface ProposalGateDecision {
    * knobs it actually consulted.
    */
   thresholds?: {
-    /** Confidence threshold in `[0, 1]` (historical improve-gate rows only). */
-    autoAccept?: number;
     /** Maximum diff-line bound that deferred the proposal (drain gate). */
     maxDiffLines?: number;
     /** Minimum body-line floor that deferred the proposal (drain gate). */
@@ -239,7 +228,7 @@ export interface ProposalGateDecision {
    * to distinguish an unchanged retry from a reset/content edit.
    */
   contentHash?: string;
-  /** Label of the gate that recorded the decision (e.g. `triage:personal-stash`, `improve:reflect`). */
+  /** Label of the gate that recorded the decision (e.g. `triage:personal-stash`). */
   gate?: string;
   /** ISO timestamp the decision was recorded. */
   decidedAt: string;
@@ -317,14 +306,12 @@ export interface Proposal {
    * adjudication time (drain-owned audit machinery).
    *
    * Carries the decision (auto-accepted / deferred / auto-rejected), the reason
-   * token, the confidence the gate computed, and the thresholds in effect, so
-   * `akm proposal show` / `list` can explain why a proposal is pending without
-   * the operator reconstructing it from run-level aggregates.
+   * token, measured value, and thresholds in effect, so `akm proposal show` /
+   * `list` can explain why a proposal is pending without the operator
+   * reconstructing it from run-level aggregates.
    *
-   * Absent on proposals that never passed through a gate, and on every proposal
-   * created before 0.9.0 (forward-only — no backfill). Historical rows written
-   * by the deleted improve confidence gate still render. Renderers must treat
-   * a missing decision as "unknown".
+   * Absent on proposals that never passed through a gate. Renderers omit gate
+   * fields when the decision is absent.
    */
   gateDecision?: ProposalGateDecision;
   /**

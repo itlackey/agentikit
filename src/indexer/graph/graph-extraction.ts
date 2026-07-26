@@ -64,13 +64,6 @@ import { walkMarkdownFiles } from "../walk/walker";
 import { deduplicateGraph } from "./graph-dedup";
 import type { GraphExtractionTelemetry, GraphFile, GraphFileNode, GraphQualityTelemetry } from "./graph-types";
 
-// Re-exported so existing `import type { GraphFileNode, ... } from
-// "./indexer/graph/graph-extraction"` sites (graph-boost.ts, commands/graph/
-// graph.ts) are unaffected by the KILL 5 sever (types moved to graph-types.ts
-// to break the graph-db.ts ↔ graph-extraction.ts import cycle — the store
-// must not import from the orchestrator).
-export type { GraphExtractionTelemetry, GraphFile, GraphFileNode, GraphQualityTelemetry };
-
 /** Schema version for the persisted artifact — bumps trigger a full rebuild. */
 export const GRAPH_FILE_SCHEMA_VERSION = GRAPH_SCHEMA_VERSION;
 

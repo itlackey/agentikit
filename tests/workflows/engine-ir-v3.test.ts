@@ -21,11 +21,7 @@ import {
   WORKFLOW_MAX_SCHEMA_BYTES,
   WORKFLOW_MAX_SOURCE_BYTES,
 } from "../../src/workflows/resource-limits";
-import {
-  classifyWorkflowRunPlan,
-  requireAbandonableWorkflowPlan,
-  requireExecutableWorkflowPlan,
-} from "../../src/workflows/runtime/plan-classifier";
+import { classifyWorkflowRunPlan, requireExecutableWorkflowPlan } from "../../src/workflows/runtime/plan-classifier";
 
 const SOURCE = { path: "workflows/review.yaml" };
 
@@ -131,11 +127,15 @@ describe("workflow engine v3 contracts", () => {
     if (parsed.ok) expect(parsed.program.steps[0]?.unit?.engine).toBe("fast");
 
     const retired = parseWorkflowProgram(
-      "version: 1\nname: review\nsteps:\n  - id: review\n    unit: { runner: llm, profile: fast, instructions: Review }\n",
+      "version: 2\nname: review\ndefaults: { runner: llm }\nsteps:\n  - id: review\n    unit: { profile: fast, instructions: Review }\n",
       SOURCE,
     );
     expect(retired.ok).toBe(false);
-    if (!retired.ok) expect(retired.errors.map((e) => e.message).join(" ")).toContain("version 1 retired");
+    if (!retired.ok) {
+      const messages = retired.errors.map((e) => e.message).join(" ");
+      expect(messages).toContain('Unknown "defaults" key "runner"');
+      expect(messages).toContain('key "profile"');
+    }
   });
 
   test("strict decoder accepts a canonical frozen catalog and rejects unreferenced entries", () => {
@@ -209,13 +209,13 @@ describe("workflow engine v3 contracts", () => {
     expect(() => decodeWorkflowPlanV3(frozen.plan)).not.toThrow();
   });
 
-  test("classification rejects null, v2, noncanonical, and bad-hash plans before mutation", () => {
+  test("classification rejects missing, non-v3, noncanonical, and bad-hash plans before mutation", () => {
     expect(classifyWorkflowRunPlan({ plan_json: null, plan_hash: null, plan_ir_version: null }).support).toBe(
-      "missing-plan",
+      "corrupt-plan",
     );
-    expect(
-      classifyWorkflowRunPlan({ plan_json: '{"irVersion":2}', plan_hash: null, plan_ir_version: null }).support,
-    ).toBe("unsupported-version");
+    expect(classifyWorkflowRunPlan({ plan_json: '{"irVersion":2}', plan_hash: null, plan_ir_version: 3 }).support).toBe(
+      "corrupt-plan",
+    );
 
     const plan = frozenPlan();
     const canonical = canonicalPlanJson(plan);
@@ -301,51 +301,26 @@ describe("workflow engine v3 contracts", () => {
     for (const candidate of invalid) expect(() => decodeWorkflowPlanV3(candidate)).toThrow();
   });
 
-  test("classification distinguishes unsupported versions from corrupt version metadata", () => {
-    const unsupported = { plan_json: '{"irVersion":2}', plan_hash: null, plan_ir_version: 2, id: "old" };
-    expect(classifyWorkflowRunPlan(unsupported).support).toBe("unsupported-version");
-    try {
-      requireExecutableWorkflowPlan(unsupported);
-      throw new Error("expected unsupported plan rejection");
-    } catch (error) {
-      expect(error).toBeInstanceOf(UsageError);
-      expect((error as UsageError).code).toBe("WORKFLOW_IR_VERSION_UNSUPPORTED");
-    }
-
-    const plan = frozenPlan();
-    const canonical = canonicalPlanJson(plan);
-    expect(
-      classifyWorkflowRunPlan({ plan_json: canonical, plan_hash: computePlanHash(plan), plan_ir_version: 2 }).support,
-    ).toBe("corrupt-plan");
-    expect(
-      classifyWorkflowRunPlan({ plan_json: '{"irVersion":"3"}', plan_hash: null, plan_ir_version: 3 }).support,
-    ).toBe("corrupt-plan");
-  });
-
-  test("malformed null, v2, and future historical plans remain abandonable while every attributable v3 is protected", () => {
-    const historical = [
+  test("all missing, malformed, and non-current plans use the current-plan corruption contract", () => {
+    const invalid = [
       { plan_json: "{malformed", plan_hash: null, plan_ir_version: null, id: "null-version" },
       { plan_json: "{malformed", plan_hash: null, plan_ir_version: 2, id: "v2" },
       { plan_json: "{malformed", plan_hash: null, plan_ir_version: 4, id: "future" },
       { plan_json: null, plan_hash: null, plan_ir_version: 2, id: "missing-v2" },
-    ];
-    expect(historical.map((row) => classifyWorkflowRunPlan(row).support)).toEqual([
-      "missing-plan",
-      "unsupported-version",
-      "unsupported-version",
-      "unsupported-version",
-    ]);
-    for (const row of historical) expect(() => requireAbandonableWorkflowPlan(row)).not.toThrow();
-
-    const attributableV3 = [
       { plan_json: "{malformed", plan_hash: null, plan_ir_version: 3, id: "stored-v3" },
       { plan_json: '{"irVersion":3}', plan_hash: null, plan_ir_version: null, id: "content-v3" },
       { plan_json: '{"irVersion":3}', plan_hash: null, plan_ir_version: 2, id: "mismatched-v3" },
       { plan_json: null, plan_hash: null, plan_ir_version: 3, id: "missing-v3" },
     ];
-    for (const row of attributableV3) {
+    for (const row of invalid) {
       expect(classifyWorkflowRunPlan(row).support).toBe("corrupt-plan");
-      expect(() => requireAbandonableWorkflowPlan(row)).toThrow();
+      try {
+        requireExecutableWorkflowPlan(row);
+        throw new Error("expected current-plan rejection");
+      } catch (error) {
+        expect(error).toBeInstanceOf(UsageError);
+        expect((error as UsageError).code).toBe("INVALID_JSON_ARGUMENT");
+      }
     }
   });
 

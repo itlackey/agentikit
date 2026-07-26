@@ -2,11 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AkmDistillResult } from "../../../src/commands/improve/distill";
 import { akmImprove } from "../../../src/commands/improve/improve";
-import type { AkmReflectResult } from "../../../src/commands/improve/reflect";
 import { type AkmConfig, type ImproveProfileConfig, saveConfig } from "../../../src/core/config/config";
 import { appendEvent, readEvents } from "../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../src/core/improve-types";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { writeMemory } from "../../_helpers/assets";
 import { makeProposal } from "../../_helpers/factories";
@@ -114,7 +113,7 @@ describe("O-2: --scope <ref> bypasses reflect/distill cooldowns (#365)", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -155,7 +154,7 @@ describe("O-2: --scope <ref> bypasses reflect/distill cooldowns (#365)", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -196,7 +195,7 @@ describe("O-1: wall-clock budget AbortSignal propagated to sub-calls (#364)", ()
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -231,7 +230,7 @@ describe("O-1: wall-clock budget AbortSignal propagated to sub-calls (#364)", ()
         ok: true,
         outcome: "queued",
         inputRef: ref,
-        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -274,7 +273,7 @@ describe("D-2: reject-aware cooldown for distill (#370)", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         } satisfies AkmDistillResult;
       },
     });
@@ -320,7 +319,7 @@ describe("D-2: reject-aware cooldown for distill (#370)", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         } satisfies AkmDistillResult;
       },
     });
@@ -383,7 +382,12 @@ describe("M-1: contradiction-detection pass writes contradictedBy edges (#367)",
       stashDir,
       contradictionConfig(stashDir),
       // Inject a fake chat that always returns "contradicts: true".
-      async () => JSON.stringify({ contradicts: true, reason: "Direct factual conflict about VPN requirement." }),
+      async () =>
+        JSON.stringify({
+          contradicts: true,
+          confidence: 1,
+          reason: "Direct factual conflict about VPN requirement.",
+        }),
       contradictionStrategy,
     );
 
@@ -418,7 +422,7 @@ describe("M-1: contradiction-detection pass writes contradictedBy edges (#367)",
     writeMemory(stashDir, "vpn.derived2", { inferred: true, source: "memories/vpn" }, "VPN is never required.");
 
     const config = contradictionConfig(stashDir);
-    const judge = async () => JSON.stringify({ contradicts: true, reason: "Direct factual conflict." });
+    const judge = async () => JSON.stringify({ contradicts: true, confidence: 1, reason: "Direct factual conflict." });
 
     const loserPath = path.join(stashDir, "memories", "vpn.derived2.md");
     const winnerPath = path.join(stashDir, "memories", "vpn.derived.md");
@@ -462,7 +466,7 @@ describe("M-1: contradiction-detection pass writes contradictedBy edges (#367)",
     writeMemory(stashDir, "vpn.ccc.derived", { inferred: true, source: "memories/vpn" }, "VPN is never required.");
 
     const config = contradictionConfig(stashDir);
-    const judge = async () => JSON.stringify({ contradicts: true, reason: "Direct factual conflict." });
+    const judge = async () => JSON.stringify({ contradicts: true, confidence: 1, reason: "Direct factual conflict." });
 
     const first = await detectAndWriteContradictions(stashDir, config, judge, contradictionStrategy);
     expect(first.pairsChecked).toBe(3); // aaa-bbb, aaa-ccc, bbb-ccc
@@ -628,7 +632,7 @@ describe("M-3: schema-repair routes through proposal queue (#387)", () => {
       ok: true,
       outcome: "queued",
       inputRef: ref,
-      lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
+      proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
     });
     const reindexFn = async () => ({
       schemaVersion: 1 as const,
@@ -732,7 +736,7 @@ describe("O-3: reindex triggered after consolidation before graph extraction (#3
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -799,7 +803,7 @@ describe("zero-signal stash: 0 eligible refs when stash has no feedback or retri
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -833,7 +837,7 @@ describe("new 0.8.0 improve metrics", () => {
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -874,7 +878,7 @@ describe("new 0.8.0 improve metrics", () => {
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -914,7 +918,7 @@ describe("new 0.8.0 improve metrics", () => {
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -977,7 +981,7 @@ describe("new 0.8.0 improve metrics", () => {
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 
@@ -1045,7 +1049,7 @@ describe("new 0.8.0 improve metrics", () => {
         ok: true,
         outcome: "queued" as const,
         inputRef: ref,
-        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
       }),
     });
 

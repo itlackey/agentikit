@@ -16,12 +16,14 @@ import { parseRefInput } from "../../../core/asset/resolve-ref";
 import { timestampForFilename } from "../../../core/common";
 import type { AkmConfig, LlmConnectionConfig } from "../../../core/config/config";
 import { appendEvent, type EventsContext } from "../../../core/events";
-import type { AkmDistillResult, DistillOutcome, EligibilitySource } from "../../../core/improve-types";
+import type { AkmDistillResult, DistillOutcome } from "../../../core/improve-types";
+import { parseEmbeddedJsonResponse } from "../../../core/parse";
 import { withStateDb } from "../../../core/state-db";
 import { getDefaultLlmConfig } from "../../../integrations/agent/engine-resolution";
-import { type ChatCompletionOptions, type ChatMessage, parseEmbeddedJsonResponse } from "../../../llm/client";
+import type { ChatCompletionOptions, ChatMessage } from "../../../llm/client";
 import type { LlmFeatureKey } from "../../../llm/feature-gate";
 import { callStructured } from "../../../llm/structured-call";
+import type { EligibilitySource } from "../../proposal/proposal-types";
 import { akmSearch } from "../../read/search";
 import { scoreEncodingSalience } from "../encoding-salience";
 import { computeSalience, upsertAssetSalience } from "../salience";
@@ -305,7 +307,7 @@ export async function runReflectQualityJudge(
  *
  * @param stash     - Root stash directory.
  * @param inputRef  - The original input ref (for the event).
- * @param lessonRef - The proposed lesson/knowledge ref.
+ * @param proposalRef - The proposed lesson/knowledge ref.
  * @param content   - The raw content that failed the quality gate.
  * @param score     - Quality score from the judge.
  * @param reason    - Human-readable rejection reason.
@@ -315,7 +317,7 @@ export async function runReflectQualityJudge(
 export function writeQualityRejection(
   stash: string,
   inputRef: string,
-  lessonRef: string,
+  proposalRef: string,
   content: string,
   score: number,
   reason: string,
@@ -329,7 +331,7 @@ export function writeQualityRejection(
   fs.mkdirSync(rejectDir, { recursive: true });
   const ts = timestampForFilename();
   fs.writeFileSync(
-    path.join(rejectDir, `${ts}-${lessonRef.replace(/[:/\\]/g, "-")}.md`),
+    path.join(rejectDir, `${ts}-${proposalRef.replace(/[:/\\]/g, "-")}.md`),
     `---\nscore: ${score}\nreason: ${reason}\noutcome: ${outcome}\n---\n\n${content}`,
     "utf8",
   );
@@ -339,7 +341,7 @@ export function writeQualityRejection(
       ref: inputRef,
       metadata: {
         outcome,
-        lessonRef,
+        proposalRef,
         score,
         reason,
         ...extraMeta,
@@ -355,7 +357,7 @@ export function writeQualityRejection(
     ok: true,
     outcome,
     inputRef,
-    lessonRef,
+    proposalRef,
     score,
     reason,
     ...extraMeta,

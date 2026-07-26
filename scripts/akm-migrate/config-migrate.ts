@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { deriveLegacyBundleIds, inferLegacyBundleIds } from "../../src/core/bundle-id";
+import { deriveLegacyBundleIds, inferLegacyBundleIds } from "./migrate/legacy/bundle-id";
 import {
   MAX_CONFIG_FILE_BYTES,
   MAX_LOCAL_METADATA_BYTES,

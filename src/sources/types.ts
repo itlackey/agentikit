@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { InstalledBundle, InstallKind, KitSource } from "../registry/types";
+import type { InstalledBundle, InstallKind } from "../registry/types";
 
 export type AkmSearchType = string;
 export type SearchSource = "stash" | "registry" | "both";
@@ -277,7 +277,7 @@ export interface RemoveResponse {
   target: string;
   removed: {
     id: string;
-    source: KitSource | string;
+    source: string;
     ref: string;
     cacheDir: string;
     stashRoot: string;

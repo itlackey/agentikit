@@ -560,32 +560,13 @@ function ensureBundleRefColumns(db: Database): void {
  * durable identity — spec §11.4). A pre-v19 DB has a NON-unique
  * `idx_entries_item_ref`, so we DROP-then-CREATE (a `CREATE UNIQUE INDEX IF NOT
  * EXISTS` under the same name would no-op against the existing non-unique index).
- * SQLite treats NULLs as distinct in a UNIQUE index, so NULL-item_ref write-back
- * stragglers do not collide.
- *
- * A partially-migrated index could still hold two rows with the same non-NULL
- * item_ref; the UNIQUE build then throws. The index is a regenerable derived
- * cache, so we fall back to the plain lookup index (reads stay fast) and warn —
- * a full `akm index` rebuild repopulates one row per item_ref and the next open
- * upgrades cleanly.
+ * SQLite treats NULLs as distinct in a UNIQUE index. Duplicate durable identities
+ * are an invalid index and fail the schema open rather than enabling a dual-key
+ * fallback.
  */
 function ensureUniqueItemRefIndex(db: Database): void {
-  let uniqueOk = false;
-  bestEffort(() => {
-    db.exec("DROP INDEX IF EXISTS idx_entries_item_ref");
-    db.exec("CREATE UNIQUE INDEX idx_entries_item_ref ON entries(item_ref)");
-    uniqueOk = true;
-  }, "entries.item_ref UNIQUE index — column added by ensureBundleRefColumns above");
-  if (!uniqueOk) {
-    warn(
-      "[akm] entries.item_ref UNIQUE index could not be built (duplicate item_ref on a partially-migrated index) — " +
-        "keeping the plain lookup index; a full `akm index` rebuild restores uniqueness.",
-    );
-    bestEffort(
-      () => db.exec("CREATE INDEX IF NOT EXISTS idx_entries_item_ref ON entries(item_ref)"),
-      "entries.item_ref lookup index fallback",
-    );
-  }
+  db.exec("DROP INDEX IF EXISTS idx_entries_item_ref");
+  db.exec("CREATE UNIQUE INDEX idx_entries_item_ref ON entries(item_ref)");
 }
 
 /**

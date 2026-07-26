@@ -7,7 +7,7 @@ import path from "node:path";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { isBundleSlug } from "../../core/asset/asset-ref";
 import { isHttpUrl, resolveStashDir } from "../../core/common";
-import type { AkmConfig, BundleConfigEntry, SourceConfigEntry, SourceSpec } from "../../core/config/config";
+import type { AkmConfig, BundleConfigEntry, SourceConfigEntry } from "../../core/config/config";
 import {
   bundleEntryToSourceEntry,
   getSources,
@@ -405,8 +405,3 @@ function toWebsiteName(siteUrl: string): string {
     return siteUrl;
   }
 }
-
-// Re-export SourceSpec (the discriminated union from #123) so existing
-// importers of `upsertInstalledRegistryEntry` (formerly from registry-install)
-// resolve the same nominal type.
-export type { SourceSpec };

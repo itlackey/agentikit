@@ -50,13 +50,6 @@ export function resolveAkmInvocation(
 ): ResolvedAkmInvocation {
   const env = options.env ?? process.env;
 
-  if (env.AKM_BIN?.trim()) {
-    throw new ConfigError(
-      "`AKM_BIN` scheduler overrides were removed. Scheduler bindings must use an npm-global or standalone launcher; run `akm tasks sync --rebind` to migrate installed entries explicitly.",
-      "INVALID_CONFIG_FILE",
-    );
-  }
-
   const runtime = options.runtime ?? (process.versions.bun ? "bun" : "node");
   const execPath = options.execPath ?? process.execPath;
   const mainPath = options.mainPath ?? runtimeMainPath;

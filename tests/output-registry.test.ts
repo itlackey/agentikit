@@ -6,8 +6,10 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { deregisterOutputShape, registerOutputShape, shapeForCommand } from "../src/output/shapes";
-import { deregisterTextFormatter, formatPlain, registerTextFormatter } from "../src/output/text";
+import { shapeForCommand } from "../src/output/shapes";
+import { deregisterOutputShape, registerOutputShape } from "../src/output/shapes/registry";
+import { formatPlain } from "../src/output/text";
+import { deregisterTextFormatter, registerTextFormatter } from "../src/output/text/registry";
 
 // ── Output shape registry ─────────────────────────────────────────────────────
 

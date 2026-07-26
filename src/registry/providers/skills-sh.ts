@@ -6,7 +6,7 @@ import { fetchWithRetry } from "../../core/common";
 import type { RegistryConfigEntry } from "../../core/config/config";
 import { md5Hex } from "../../runtime";
 import { fetchCachedJson } from "../../storage/repositories/registry-cache";
-import { registerProvider } from "../factory";
+import { registerRegistryProvider } from "../factory";
 import type { RegistryAssetSearchHit, RegistrySearchHit } from "../types";
 import type { RegistryProvider, RegistryProviderResult, RegistryProviderSearchOptions } from "./types";
 
@@ -152,7 +152,7 @@ class SkillsShProvider implements RegistryProvider {
 
 // ── Self-register ───────────────────────────────────────────────────────────
 
-registerProvider("skills-sh", (config) => new SkillsShProvider(config));
+registerRegistryProvider("skills-sh", (config) => new SkillsShProvider(config));
 
 // ── Response parsing ────────────────────────────────────────────────────────
 

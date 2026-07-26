@@ -21,14 +21,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { AkmConfig, LlmProfileConfig } from "../../src/core/config/config";
-import type { ChatMessage } from "../../src/llm/client";
+import type { AkmConfig } from "../../src/core/config/config";
+import type { ChatCompletionConfig, ChatMessage } from "../../src/llm/client";
 import { LlmCallError } from "../../src/llm/client";
 import { callStructured, type LlmErrorClass } from "../../src/llm/structured-call";
 
 // Minimal LLM profile config. `chatCompletion` is replaced by the injected
 // fake, so transport fields are irrelevant.
-const PROFILE: LlmProfileConfig = { baseUrl: "http://x", model: "m" } as unknown as LlmProfileConfig;
+const PROFILE: ChatCompletionConfig = { endpoint: "http://x", model: "m" };
 
 const MESSAGES: ChatMessage[] = [
   { role: "system", content: "sys" },

@@ -20,19 +20,17 @@
 //
 // Cases the contract covers (see fixture in the contract test):
 //   - existing memory / knowledge / agent / workflow / skill refs
-//   - knowledge subdirectory layout (knowledge/<category>/<slug>.md)
+//   - namespaced knowledge paths (knowledge/<category>/<slug>.md)
 //   - skill multi-file layout (skills/<slug>/SKILL.md)
-//   - memory `.derived.md` sibling
 //   - namespaced slugs containing `/`
 //   - env (`env/.env`, `env/<name>.env`) and secret (`secrets/<name>`) refs
 //   - non-existent refs
-//   - script type (unresolvable by design — both must return false)
+//   - script paths with explicit extensions
 //
 // As of 0.9 the path mapping in `refToRelPath` is DERIVED FROM THE PLACEMENT
 // SPECS (`assetPathForName` in `src/core/asset/asset-placement.ts`) rather than
 // hand-encoded, so it can no longer drift from the placement layer. `env`/
-// `secret` refs are path-resolved. `script` stays unresolvable and `task`
-// keeps its legacy `.md` resolution (see refToRelPath for both).
+// `secret`, `script`, and `task` refs are path-resolved.
 // ----------------------------------------------------------------------------
 
 import fs from "node:fs";
@@ -166,21 +164,11 @@ export const REF_SLUG_CHAR_CLASS_SRC = "[^\\s\"'`)\\]>,\\n]";
  *
  * Path layout is owned by the placement layer: we resolve through
  * `assetPathForName(type, stashDirFor(type), name)` so the linter and the
- * rest of the CLI agree on where an asset lives. Two legacy carve-outs are
- * preserved to keep pre-0.9 behaviour byte-identical:
- *   - `script`: returns null (scripts live in nested dirs with arbitrary
- *     extensions — unresolvable by the slug-based walker, as the contract pins).
- *   - `task`: M1 fix — tasks are stored as `<id>.yml` on disk, so resolve
- *     `task:` refs against `tasks/<id>.yml` to match actual on-disk layout.
+ * rest of the CLI agree on where an asset lives.
  *
  * Exported for contract testing — see header CONTRACT block.
  */
 export function refToRelPath(refType: string, refName: string): string | null {
-  // script is intentionally unresolvable (contract-pinned).
-  if (refType === "script") return null;
-  // M1: tasks are stored as .yml on disk; resolve task: refs against tasks/<id>.yml.
-  if (refType === "task") return path.join(stashDirFor("task") ?? "tasks", `${refName}.yml`);
-
   const typeDir = stashDirFor(refType);
   if (!typeDir) return null; // unknown type — skip
   // assetPathForName returns a path rooted at the type dir we pass in,
@@ -216,51 +204,21 @@ export function refExistsInAnyStash(relPath: string, refType: string, refName: s
  * (the contract pins `refToRelPath` + `refExistsInAnyStash`; this is the
  * shared internal both build on).
  */
-export function resolveRefPathInStash(relPath: string, refType: string, refName: string, root: string): string | null {
+export function resolveRefPathInStash(
+  relPath: string,
+  _refType: string,
+  _refName: string,
+  root: string,
+): string | null {
   const absPath = path.join(root, relPath);
   if (fs.existsSync(absPath)) return absPath;
-  // Multi-file skill layout: directory containing SKILL.md
-  const bareDir = absPath.replace(/\.md$/, "");
-  if (fs.existsSync(bareDir) && fs.existsSync(path.join(bareDir, "SKILL.md"))) {
-    return path.join(bareDir, "SKILL.md");
-  }
-  // .derived.md variant for memory refs
-  if (refType === "memory") {
-    const derivedPath = path.join(root, "memories", `${refName}.derived.md`);
-    if (fs.existsSync(derivedPath)) return derivedPath;
-  }
-  // Knowledge-specific: search subdirectories like knowledge/projects/, knowledge/tools/, etc.
-  if (refType === "knowledge") {
-    try {
-      const knowledgeDir = path.join(root, "knowledge");
-      if (fs.existsSync(knowledgeDir) && fs.statSync(knowledgeDir).isDirectory()) {
-        const entries = fs.readdirSync(knowledgeDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.isDirectory()) continue;
-          const subPath = path.join(knowledgeDir, entry.name, `${refName}.md`);
-          if (fs.existsSync(subPath)) return subPath;
-        }
-      }
-    } catch {
-      // Ignore errors reading directory
-    }
-  }
-  // Fallback: the refName may already encode the full stash-relative path
-  // (e.g. knowledge:skills/foo/references/bar where the file lives at
-  // <stash>/skills/foo/references/bar.md, not <stash>/knowledge/skills/...).
-  const directPath = path.join(root, `${refName}.md`);
-  if (fs.existsSync(directPath)) return directPath;
-  const directDir = path.join(root, refName);
-  if (fs.existsSync(directDir) && fs.existsSync(path.join(directDir, "SKILL.md"))) {
-    return path.join(directDir, "SKILL.md");
-  }
   return null;
 }
 
 /**
  * A `(refType, refName)` pair that is not a lint-checkable local asset ref —
- * shared skip-guard for BOTH recognition arms (legacy `type:name` and the 0.9.0
- * `bundle//conceptId` grammar). Filters the false-positive patterns:
+ * shared skip-guard for recognized `bundle//conceptId` refs. Filters the
+ * false-positive patterns:
  *   - Shell variables: memory:$(cmd) or knowledge:${VAR} (guarded by callers on
  *     the raw token, before it is split).
  *   - Empty names or names that look like absolute paths / home dirs / URLs.
@@ -320,9 +278,9 @@ function scanBundleRefs(scanBody: string, allRoots: string[]): Array<{ ref: stri
  */
 function classifyConceptRef(rawConceptId: string, allRoots: string[]): string | null {
   const conceptId = rawConceptId.split("#", 1)[0]!;
-  const legacy = typeNameFromConceptId(conceptId);
-  if (legacy === undefined) return null; // foreign type / not a local asset ref
-  return localRefMissingRelPath(legacy.type, legacy.name, allRoots);
+  const parts = typeNameFromConceptId(conceptId);
+  if (parts === undefined) return null; // foreign type / not a local asset ref
+  return localRefMissingRelPath(parts.type, parts.name, allRoots);
 }
 
 /**
@@ -408,9 +366,8 @@ function dedupeMissing(
  * would otherwise dangle them silently.
  *
  * `sources:` is deliberately excluded (non-wiki `sources:` was rejected as a
- * typed channel; wiki `sources:` is checked by lintWiki). `source_refs:` /
- * `evidenceSources:` are excluded too — they legitimately point at
- * merged-away or pruned assets (historical provenance).
+ * typed channel; wiki `sources:` is checked by lintWiki). `evidenceSources:` is
+ * excluded because it can point at merged-away or pruned assets.
  */
 const XREF_FRONTMATTER_KEYS = ["xrefs", "supersededBy", "contradictedBy"] as const;
 

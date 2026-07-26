@@ -360,7 +360,7 @@ const graphRankingContributor: RankingContributor = {
  *
  * Memories captured via the hot path (`akm remember`) get a modest additive
  * boost so they outrank otherwise-equal background-derived memories. Memories
- * without `captureMode` (legacy) return 0 and rank exactly as before.
+ * without `captureMode` return 0.
  */
 const captureModeRankingContributor: RankingContributor = {
   name: "capture-mode-ranking",

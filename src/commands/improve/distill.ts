@@ -60,8 +60,9 @@ import type { AkmConfig, ImproveProfileConfig, LlmConnectionConfig } from "../..
 import { getImproveProcessConfig, loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent, type EventsContext, readEvents } from "../../core/events";
-import type { AkmDistillResult, EligibilitySource } from "../../core/improve-types";
+import type { AkmDistillResult } from "../../core/improve-types";
 import { lintLessonContent } from "../../core/lesson-lint";
+import { parseEmbeddedJsonResponse } from "../../core/parse";
 import { getDbPath } from "../../core/paths";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
 import { withStateDb } from "../../core/state-db";
@@ -69,10 +70,11 @@ import { warnVerbose } from "../../core/warn";
 import { resolveAssetPath } from "../../indexer/walk/path-resolver";
 import { getDefaultLlmConfig } from "../../integrations/agent/engine-resolution";
 import { materializeLlmRunnerConnection, resolveImproveProcessRunner } from "../../integrations/agent/runner";
-import { type ChatMessage, chatCompletion, parseEmbeddedJsonResponse } from "../../llm/client";
+import { type ChatMessage, chatCompletion } from "../../llm/client";
 import { callStructured } from "../../llm/structured-call";
 import { closeDatabase, openIndexDatabase } from "../../storage/repositories/index-connection";
 import { getAllEntries } from "../../storage/repositories/index-entries-repository";
+import type { EligibilitySource } from "../proposal/proposal-types";
 import {
   isProposalSkipped,
   listProposals,
@@ -104,20 +106,6 @@ import { createRunContext, type RunContext, resolveRunStashDir } from "./run-con
 import { computeSalience, upsertAssetSalience } from "./salience";
 import { MAX_REJECTED_PROPOSALS } from "./shared";
 import { durableImproveRef } from "./source-identity";
-
-// Re-exported for `reflect.ts`, which applies the same LLM-as-judge gate to
-// reflect proposals (R-5 / #374).
-export { runLessonQualityJudge };
-
-// ── Types ───────────────────────────────────────────────────────────────────
-
-// DistillOutcome / AkmDistillResult moved DOWN to core/improve-types.ts
-// (WI-9.8 KILL 2 — the §10.7 layering inversion: core/improve-types.ts
-// imported AkmDistillResult UP from this module, and distill/promote-memory.ts
-// + distill/quality-gate.ts each imported it back from here too, forming a
-// sub-cycle). Re-exported here verbatim so existing import sites
-// (`from "./distill"`) are unchanged.
-export type { AkmDistillResult, DistillOutcome } from "../../core/improve-types";
 
 /**
  * Asset-ref types that `akm distill` structurally refuses as inputs.
@@ -162,7 +150,7 @@ export interface AkmDistillOptions {
    */
   improveProfile?: ImproveProfileConfig;
   /**
-   * Proposal target mode. `lesson` preserves the legacy behaviour.
+   * Proposal target mode. `lesson` always emits a lesson proposal.
    * `auto` lets memory refs graduate into knowledge proposals when a
    * deterministic stability heuristic says they are reinforced enough.
    */
@@ -279,15 +267,11 @@ export function deriveLessonRef(inputRef: string): string {
 //
 // The actual implementations now live in `core/proposal-quality-validators.ts`
 // so the same checks run inside `runProposalValidators` on `proposal accept`.
-// We re-export the public-facing helpers here so existing imports
-// (`from "../../src/commands/distill"`) continue to resolve.
 import {
   detectDoubleFrontmatter,
   isValidDescription,
   isValidWhenToUse,
 } from "../proposal/validators/proposal-quality-validators";
-
-export { detectDoubleFrontmatter, isValidDescription, isValidWhenToUse };
 
 // ── Prompt assembly ─────────────────────────────────────────────────────────
 
@@ -300,8 +284,8 @@ const KNOWLEDGE_SYSTEM_PROMPT = distillKnowledgeSystemPrompt;
 // PR 1 of the asset-writers decision (see knowledge/projects/akm/
 // asset-writers-investigation/00-synthesis): on providers that honour
 // `response_format: json_schema`, ask the LLM for a typed JSON object and
-// re-assemble the markdown locally. The previous "emit raw markdown with
-// embedded frontmatter" path remains as a fallback for providers that ignore
+// re-assemble the markdown locally. The "emit raw markdown with embedded
+// frontmatter" path supports providers that ignore
 // the schema (and for the `chat` test seam, which is wired to return strings
 // today). Shape-level rejection codes — MALFORMED_FRONTMATTER_BLOCK,
 // FRONTMATTER_NOT_OBJECT, INVALID_YAML, UNBALANCED_CODE_FENCE — become
@@ -763,7 +747,7 @@ function refuseDisallowedDistillInput(args: {
       ref: options.itemRef ?? durableInputRef,
       metadata: {
         outcome: "skipped" as const,
-        lessonRef: skippedRef,
+        proposalRef: skippedRef,
         message,
         skipReason: isSecretInput ? "refused_secret_input" : "recursive_lesson_input",
         ...eligMeta,
@@ -776,7 +760,8 @@ function refuseDisallowedDistillInput(args: {
     ok: true,
     outcome: "skipped",
     inputRef,
-    lessonRef: skippedRef,
+    proposalRef: skippedRef,
+    skipReason: isSecretInput ? "refused_secret_input" : "recursive_lesson_input",
     message,
   };
 }
@@ -1125,7 +1110,7 @@ async function emitDistillLessonProposal(args: {
         ref: options.itemRef ?? durableInputRef,
         metadata: {
           outcome: "skipped" as const,
-          lessonRef: effectiveLessonRef,
+          proposalRef: effectiveLessonRef,
           message: proposalResult2.message,
           skipReason: proposalResult2.reason,
           ...eligMeta,
@@ -1138,7 +1123,8 @@ async function emitDistillLessonProposal(args: {
       ok: true,
       outcome: "skipped",
       inputRef,
-      lessonRef: effectiveLessonRef,
+      proposalRef: effectiveLessonRef,
+      skipReason: proposalResult2.reason,
       message: proposalResult2.message,
     };
   }
@@ -1160,7 +1146,6 @@ async function emitDistillLessonProposal(args: {
       ref: options.itemRef ?? durableInputRef,
       metadata: {
         outcome: "queued" as const,
-        lessonRef: effectiveLessonRef,
         proposalRef: effectiveLessonRef,
         proposalKind: effectiveProposalKind,
         proposalId: proposal2.id,
@@ -1181,7 +1166,6 @@ async function emitDistillLessonProposal(args: {
     ok: true,
     outcome: "queued",
     inputRef,
-    lessonRef: effectiveLessonRef,
     proposalRef: effectiveLessonRef,
     proposalKind: effectiveProposalKind,
     proposalId: proposal2.id,
@@ -1225,8 +1209,8 @@ function assembleAndValidateDistillContent(args: {
   } = args;
   // Structured-output path: when the provider honoured the JSON schema, `raw`
   // is a JSON object string (not a markdown blob). Try to parse it and assemble
-  // the canonical `---\nfm\n---\n\nbody` form before falling through to the
-  // legacy markdown pipeline. Failure here (non-JSON response, missing
+  // the canonical `---\nfm\n---\n\nbody` form before using the markdown
+  // response path. Failure here (non-JSON response, missing
   // required field, unexpected types) is non-fatal — we drop down to the
   // markdown path which has its own auto-repair + lint pass.
   let content: string;
@@ -1283,7 +1267,7 @@ function assembleAndValidateDistillContent(args: {
         ref: itemRef ?? durableInputRef,
         metadata: {
           outcome: "validation_failed" as const,
-          lessonRef: effectiveLessonRef,
+          proposalRef: effectiveLessonRef,
           proposalKind: effectiveProposalKind,
           findingKinds: findings.map((f) => f.kind),
           ...(exclusionSet.size > 0 ? { filteredFeedbackCount } : {}),
@@ -1418,7 +1402,6 @@ function distillEmptyResponseResult(args: {
       ok: true,
       outcome: "config_disabled",
       inputRef,
-      lessonRef: effectiveLessonRef,
       proposalRef: effectiveLessonRef,
       proposalKind: effectiveProposalKind,
       message: "distill is disabled in config; enable processes.distill.enabled to activate.",
@@ -1435,7 +1418,7 @@ function distillEmptyResponseResult(args: {
       ref: itemRef ?? durableInputRef,
       metadata: {
         outcome: "llm_failed" as const,
-        lessonRef: effectiveLessonRef,
+        proposalRef: effectiveLessonRef,
         proposalKind: effectiveProposalKind,
         ...(exclusionSet.size > 0 ? { filteredFeedbackCount } : {}),
         ...eligMeta,
@@ -1448,7 +1431,6 @@ function distillEmptyResponseResult(args: {
     ok: true,
     outcome: "llm_failed",
     inputRef,
-    lessonRef: effectiveLessonRef,
     proposalRef: effectiveLessonRef,
     proposalKind: effectiveProposalKind,
     message: "LLM call returned no usable output (timeout, empty, or error).",

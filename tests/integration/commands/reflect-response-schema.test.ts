@@ -180,12 +180,15 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
     stubReturn = JSON.stringify({
       ref: "lessons/wired",
       content: "---\ndescription: ok\nwhen_to_use: when wired\n---\n\nbody.\n",
+      confidence: 0.9,
+      frontmatterPatch: { description: null, when_to_use: null },
     });
 
     const result = await runReflectViaLlm({
       prompt: "test prompt",
       connection: fakeLlmConnection(),
       iteration: 0,
+      outputMode: "json_schema",
       responseSchema: REFLECT_JSON_SCHEMA,
     });
 
@@ -204,10 +207,16 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
       prompt: "test prompt",
       connection: fakeLlmConnection(),
       iteration: 0,
+      outputMode: "json_schema",
       responseSchema: REFLECT_JSON_SCHEMA,
       chat: async () => {
         chatCalls += 1;
-        return "stub";
+        return JSON.stringify({
+          ref: "lessons/test",
+          content: "body",
+          confidence: 0.9,
+          frontmatterPatch: { description: null, when_to_use: null },
+        });
       },
     });
 
@@ -217,11 +226,17 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
   });
 
   test("when responseSchema is omitted, chatCompletion receives undefined responseSchema", async () => {
-    stubReturn = "stub";
+    stubReturn = JSON.stringify({
+      ref: "lessons/test",
+      content: "body",
+      confidence: 0.9,
+      frontmatterPatch: { description: null, when_to_use: null },
+    });
     await runReflectViaLlm({
       prompt: "test prompt",
       connection: fakeLlmConnection(),
       iteration: 0,
+      outputMode: "json_schema",
     });
     expect(capturedCalls.length).toBe(1);
     expect(capturedCalls[0]?.responseSchema).toBeUndefined();
@@ -234,10 +249,16 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
         prompt: "test prompt",
         connection: fakeLlmConnection(),
         iteration: 0,
+        outputMode: "json_schema",
         timeoutMs,
         chat: async (_config, _messages, options) => {
           received = options?.timeoutMs;
-          return "stub";
+          return JSON.stringify({
+            ref: "lessons/test",
+            content: "body",
+            confidence: 0.9,
+            frontmatterPatch: { description: null, when_to_use: null },
+          });
         },
       });
       expect(received).toBe(timeoutMs);

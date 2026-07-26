@@ -25,7 +25,7 @@ export function freezeWorkflowProgram(yamlText: string, sourcePath = "workflows/
   if (!parsed.ok) throw new Error(parsed.errors.map((error) => `${error.line}: ${error.message}`).join(" | "));
   return compileResolveFreezeWorkflow(
     {
-      ref: `workflow:${parsed.program.name}`,
+      ref: `workflows/${parsed.program.name}`,
       path: sourcePath,
       sourcePath: "/tmp",
       title: parsed.program.name,
@@ -41,7 +41,7 @@ export function freezeMarkdownWorkflow(markdown: string, sourcePath = "workflows
   if (!parsed.ok) throw new Error(parsed.errors.map((error) => error.message).join(" | "));
   return compileResolveFreezeWorkflow(
     {
-      ref: `workflow:${parsed.document.title}`,
+      ref: `workflows/${parsed.document.title}`,
       path: sourcePath,
       sourcePath: "/tmp",
       title: parsed.document.title,

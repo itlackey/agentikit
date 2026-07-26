@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { _setWarnSinkForTests } from "../src/core/warn";
 import { type EntryRow, rowToIndexedEntry } from "../src/storage/repositories/index-entry-mapper";
 
 function row(overrides: Partial<EntryRow> = {}): EntryRow {
@@ -28,15 +29,19 @@ describe("rowToIndexedEntry provenance", () => {
     });
   });
 
-  test("keeps nullable pre-flip provenance available as an undefined fallback", () => {
-    const mapped = rowToIndexedEntry(
-      row({ item_ref: null, bundle_id: null, concept_id: null, adapter_id: null }),
-      "test",
-    );
-    expect(mapped?.itemRef).toBeUndefined();
-    expect(mapped?.bundleId).toBeUndefined();
-    expect(mapped?.conceptId).toBeUndefined();
-    expect(mapped?.adapterId).toBeUndefined();
-    expect(mapped?.entryKey).toBe("/stash:knowledge:guide");
+  test("rejects rows without canonical provenance", () => {
+    const warnings: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    try {
+      expect(
+        rowToIndexedEntry(row({ item_ref: null, bundle_id: null, concept_id: null, adapter_id: null }), "test"),
+      ).toBeNull();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("missing indexed provenance");
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
   });
 });

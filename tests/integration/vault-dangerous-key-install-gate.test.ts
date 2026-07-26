@@ -9,7 +9,7 @@
  * distinguish an intended exit from a real audit bug by string-matching
  * `err.message === "process.exit called"` — a TEST mock sentinel. In production
  * `process.exit` never throws, so the abort branch was test-only, and if the
- * sentinel string ever drifted the DANGEROUS_VAULT_KEY abort would silently
+ * sentinel string ever drifted the DANGEROUS_ENV_KEY abort would silently
  * become fail-OPEN: an insecure stash would install.
  *
  * `auditInstalledStashForDangerousKeys` now returns a TYPED decision and the

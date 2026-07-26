@@ -15,7 +15,8 @@
  *   • Detection: detectAgentCliProfiles, pickDefaultAgentProfile, defaultWhich.
  */
 
-export type { AgentCommandBuilder, AgentDispatchRequest, BuiltCommand } from "./builders";
+export type { SpawnedSubprocess, SpawnFn } from "../../core/subprocess";
+export type { AgentCommandBuilder, AgentDispatchRequest, BuiltCommand } from "./builder-shared";
 export { getCommandBuilder } from "./builders";
 export { DEFAULT_AGENT_TIMEOUT_MS } from "./config";
 export type {
@@ -47,6 +48,4 @@ export type {
   AgentFailureReason,
   AgentRunResult,
   RunAgentOptions,
-  SpawnedSubprocess,
-  SpawnFn,
 } from "./spawn";

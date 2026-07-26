@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { InstalledTaskRef } from "../src/tasks/backends";
 import {
   buildCronLine,
   CRON_BACKEND,
@@ -13,6 +12,7 @@ import {
   toggleBlock,
   upsertBlock,
 } from "../src/tasks/backends/cron";
+import type { InstalledTaskRef } from "../src/tasks/backends/types";
 import {
   type ScheduledTaskContext,
   schedulerContextDescriptor,
@@ -294,6 +294,19 @@ describe("cron backend drift detection", () => {
     expect(listed[0]!.signature).toBe(backend.expectedSignature?.(SYNC_TASK, { target: "work" }));
     // The target-aware signature differs from the primary (no-target) one.
     expect(backend.expectedSignature?.(SYNC_TASK, { target: "work" })).not.toBe(backend.expectedSignature?.(SYNC_TASK));
+  });
+
+  test("list() rejects an entry without the current context descriptor", () => {
+    const exec = memoryExec(
+      [
+        "# akm:task ping BEGIN",
+        "*/15 * * * * /usr/local/bin/akm tasks run ping --scheduled >> /var/log/akm/ping.log 2>&1",
+        "# akm:task ping END",
+        "",
+      ].join("\n"),
+    );
+
+    expect(() => CRON_BACKEND(opts(exec)).list()).toThrow("does not contain a current AKM scheduler invocation");
   });
 
   test("expectedSignature changes when the schedule changes (drift is detectable)", () => {

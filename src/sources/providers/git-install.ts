@@ -118,11 +118,10 @@ function replaceDirectory(stagedDir: string, destination: string): void {
 }
 
 /**
- * Sync mode for a one-shot install ref (`akm add github:owner/repo` or
- * `akm add git:url`). Runs the clone → strip → include-filter pipeline that
- * historically lived in `installRegistryRef()`.
+ * Materialize a Git install ref (`akm add github:owner/repo` or
+ * `akm add git:url`) through the clone, strip, and include-filter pipeline.
  */
-export async function syncRegistryGitRef(ref: string, options?: SyncOptions): Promise<SourceLockData> {
+export async function syncGitRef(ref: string, options?: SyncOptions): Promise<SourceLockData> {
   const parsed = parseRegistryRef(ref);
   if (parsed.source === "github") {
     const githubRef: ParsedGitRef = {
@@ -136,7 +135,7 @@ export async function syncRegistryGitRef(ref: string, options?: SyncOptions): Pr
     return { ...result, source: "github" };
   }
   if (parsed.source !== "git") {
-    throw new UsageError(`syncRegistryGitRef requires a git: or github: ref, got "${ref}"`);
+    throw new UsageError(`syncGitRef requires a git: or github: ref, got "${ref}"`);
   }
   return doSyncGit(parsed, options);
 }
@@ -169,9 +168,9 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
   // can be committed; an older extracted snapshot is not eligible.
   if (isDirectory(extractedDir) && (!options?.writable || isDirectory(path.join(extractedDir, ".git")))) {
     if (options?.writable) {
-      const provisionalKitRoot = detectStashRoot(extractedDir);
-      const installRoot = applyAkmIncludeConfig(provisionalKitRoot, cacheDir, extractedDir) ?? provisionalKitRoot;
-      if (installRoot !== provisionalKitRoot) {
+      const provisionalBundleRoot = detectStashRoot(extractedDir);
+      const installRoot = applyAkmIncludeConfig(provisionalBundleRoot, cacheDir, extractedDir) ?? provisionalBundleRoot;
+      if (installRoot !== provisionalBundleRoot) {
         throw new UsageError("Writable Git installs do not support .akm-include filtered snapshots.");
       }
       return syncExistingWritableCheckout(
@@ -186,8 +185,8 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
       if (options?.force) {
         throw new Error("refresh read-only snapshot");
       }
-      const provisionalKitRoot = detectStashRoot(extractedDir);
-      const installRoot = applyAkmIncludeConfig(provisionalKitRoot, cacheDir, extractedDir) ?? provisionalKitRoot;
+      const provisionalBundleRoot = detectStashRoot(extractedDir);
+      const installRoot = applyAkmIncludeConfig(provisionalBundleRoot, cacheDir, extractedDir) ?? provisionalBundleRoot;
       const stashRoot = detectStashRoot(installRoot);
       if (stashRoot) {
         return {
@@ -213,7 +212,7 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
   fs.mkdirSync(cacheDir, { recursive: true });
   fs.rmSync(cloneDir, { recursive: true, force: true });
 
-  let provisionalKitRoot: string;
+  let provisionalBundleRoot: string;
   let installRoot: string;
   let stashRoot: string;
   try {
@@ -245,9 +244,9 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
       replaceDirectory(cloneDir, extractedDir);
     }
 
-    provisionalKitRoot = detectStashRoot(extractedDir);
-    installRoot = applyAkmIncludeConfig(provisionalKitRoot, cacheDir, extractedDir) ?? provisionalKitRoot;
-    if (options?.writable && installRoot !== provisionalKitRoot) {
+    provisionalBundleRoot = detectStashRoot(extractedDir);
+    installRoot = applyAkmIncludeConfig(provisionalBundleRoot, cacheDir, extractedDir) ?? provisionalBundleRoot;
+    if (options?.writable && installRoot !== provisionalBundleRoot) {
       throw new UsageError("Writable Git installs do not support .akm-include filtered snapshots.");
     }
     stashRoot = detectStashRoot(installRoot);

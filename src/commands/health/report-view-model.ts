@@ -180,7 +180,7 @@ function reshapeRun(r: ImproveRunSummary): ReportRun {
     processed: cons.processed,
     failedChunks: cons.failedChunks,
     totalChunks: cons.totalChunks,
-    miWritten: mi.written || mi.writes || 0,
+    miWritten: mi.written,
     miConsidered: mi.considered,
     miYieldRate: mi.yieldRate,
     miCacheHits: mi.cacheHits,
@@ -488,7 +488,7 @@ function buildAggregatesPhase(result: AkmHealthResult, runsPhase: RunsPhase): Ag
   const failedRuns = runs.filter((r) => !r.ok).length;
   const invoked = improve.invoked || totalRuns;
   const completed = improve.completed || totalRuns - failedRuns;
-  const miWritten = mi.written || mi.writes || 0;
+  const miWritten = mi.written;
 
   return {
     consolidation: cons,

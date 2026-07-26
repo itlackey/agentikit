@@ -28,7 +28,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { EventEnvelope } from "../../../src/core/events";
+import type { EventEnvelope } from "../../../src/core/events-types";
 import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { completeWorkflowStep, startWorkflowRun } from "../../../src/workflows/runtime/runs";
@@ -224,7 +224,7 @@ describe("akm workflow validate — origin-qualified refs resolve through the so
     return dir;
   }
 
-  test("validate <origin>//workflows/<name> validates the file that ref would start", async () => {
+  test("validate <bundle>//workflows/<name> validates the file that ref would start", async () => {
     const extraStash = makeExtraStash();
     writeSingleStepWorkflow(extraStash, "shared-flow");
     writeSandboxConfig({
@@ -241,7 +241,7 @@ describe("akm workflow validate — origin-qualified refs resolve through the so
     expect(env.title).toBe("shared-flow");
   });
 
-  test("a bare workflow:<name> ref in the primary stash also validates", async () => {
+  test("a short workflows/<name> ref in the primary stash also validates", async () => {
     writeSingleStepWorkflow(storage.stashDir, "primary-flow");
     const { code, stdout } = await runCliCapture(["--json", "workflow", "validate", "workflows/primary-flow"]);
     expect(code).toBe(0);
@@ -250,7 +250,7 @@ describe("akm workflow validate — origin-qualified refs resolve through the so
     expect(env.stepCount).toBe(1);
   });
 
-  test("an unknown origin-qualified ref is a clean UsageError, not a crash", async () => {
+  test("an unknown bundle-qualified ref is a clean UsageError, not a crash", async () => {
     writeSandboxConfig({ semanticSearchMode: "off" });
     const { code, stderr } = await runCliCapture(["--json", "workflow", "validate", "nowhere//workflows/missing-flow"]);
     expect(code).toBe(2);

@@ -206,7 +206,7 @@ describe("tasks run attempt observability", () => {
     });
   });
 
-  test("records a config-dependent command failure and preserves its config exit", async () => {
+  test("routes a bare command through the current installation and preserves config classification", async () => {
     writeRawConfig('{"configVersion":"0.8.0"}');
     writeTask("config-command", 'version: 2\nschedule: "@daily"\ncommand: akm health\n');
 

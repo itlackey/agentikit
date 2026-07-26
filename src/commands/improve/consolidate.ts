@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import consolidateSystemPrompt from "../../assets/prompts/consolidate-system.md" with { type: "text" };
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { assembleAssetFromString, serializeFrontmatter } from "../../core/asset/asset-serialize";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { conceptIdFromTypeName, displayRef, parseRefInput } from "../../core/asset/resolve-ref";
@@ -27,33 +28,9 @@ import {
 // Note: appendEvent import removed (WS-3a: archive TTL machinery retired)
 import { parseEmbeddedJsonResponse } from "../../core/parse";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
+import { openStateDatabase } from "../../core/state-db";
 import { detectTruncatedDescription } from "../../core/text-truncation";
 import { parseSinceToIsoLenient } from "../../core/time";
-import { isProposalSkipped, listProposals, proposalContent } from "../proposal/repository";
-import {
-  hasSupersededStatus,
-  MERGE_ABSOLUTE_FLOOR_CHARS,
-  MERGE_SHRINK_RATIO_MIN,
-  validateProposalFrontmatter,
-} from "../proposal/validators/proposal-quality-validators";
-import {
-  type AntiCollapseConfig,
-  checkGenerationGuard,
-  checkLexicalDiversity,
-  checkMergeInformationFloor,
-  computeMergedGeneration,
-  readAssetGeneration,
-} from "./anti-collapse";
-import { cacheHash, stripFrontmatterBody } from "./content-hash";
-import { writeContradictEdge } from "./memory/memory-belief";
-import { emitProposal } from "./proposal-envelope";
-import { createRunContext, type RunContext } from "./run-context";
-
-// Re-export the moved helpers so existing test imports continue to resolve.
-export { hasSupersededStatus, validateProposalFrontmatter };
-
-import { detectAdapterId } from "../../core/adapter/detect-adapter";
-import { openStateDatabase } from "../../core/state-db";
 import { warn } from "../../core/warn";
 import {
   assertWriteTargetPathsClean,
@@ -80,12 +57,47 @@ import { closeDatabase, openExistingDatabase } from "../../storage/repositories/
 import { findEntryIdByRef, getAllEntries, getEntryById } from "../../storage/repositories/index-entries-repository";
 import type { DbIndexedEntry } from "../../storage/repositories/index-entry-types";
 import { getNeighborsByEntryId } from "../../storage/repositories/index-vec-repository";
+import { isProposalSkipped, listProposals, proposalContent } from "../proposal/repository";
+import {
+  hasSupersededStatus,
+  MERGE_ABSOLUTE_FLOOR_CHARS,
+  MERGE_SHRINK_RATIO_MIN,
+  validateProposalFrontmatter,
+} from "../proposal/validators/proposal-quality-validators";
+import {
+  type AntiCollapseConfig,
+  checkGenerationGuard,
+  checkLexicalDiversity,
+  checkMergeInformationFloor,
+  computeMergedGeneration,
+  readAssetGeneration,
+} from "./anti-collapse";
+import { cacheHash, stripFrontmatterBody } from "./content-hash";
 import { resolveImproveStrategy, resolveProcessEnabled } from "./improve-strategies";
+import { writeContradictEdge } from "./memory/memory-belief";
+import { emitProposal } from "./proposal-envelope";
+import { createRunContext, type RunContext } from "./run-context";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-// Shared consolidate domain types live in ./consolidate/types (the cluster's
-// dependency sink). Re-exported here so existing importers keep resolving.
+import type { ConsolidateOpKind, ConsolidateResult } from "../../core/improve-types";
+
+// Chunk sizing + per-chunk prompt assembly live in ./consolidate/chunking.
+import { buildChunkPrompt, computeSafeChunkSize, DEFAULT_CONTEXT_LENGTH_TOKENS } from "./consolidate/chunking";
+// Eligibility / safety predicates live in ./consolidate/eligibility.
+import {
+  type ConsolidateGuardVerdict,
+  consolidateGuardStatus,
+  isConsolidationEligibleMemoryName,
+  isHotCapturedMemory,
+} from "./consolidate/eligibility";
+// Plan parsing / merging (pure op-reconciliation algebra) lives in
+// ./consolidate/merge.
+import { isValidOp, mergePlans } from "./consolidate/merge";
+// LLM-output sanitization (pure string/frontmatter transforms) lives in
+// ./consolidate/sanitize.
+import { normalizeUpdatedField, sanitizeMergedContent } from "./consolidate/sanitize";
+// Shared consolidate domain types live in ./consolidate/types.
 import type {
   ConsolidateContradictOp,
   ConsolidateDeleteOp,
@@ -95,53 +107,6 @@ import type {
   MemoryEntry,
   RawChunkPlan,
 } from "./consolidate/types";
-
-export type {
-  ConsolidateContradictOp,
-  ConsolidateDeleteOp,
-  ConsolidateMergeOp,
-  ConsolidateOperation,
-  ConsolidatePromoteOp,
-  MemoryEntry,
-  RawChunkPlan,
-} from "./consolidate/types";
-
-// Chunk sizing + per-chunk prompt assembly live in ./consolidate/chunking.
-// Imported for internal use by the orchestrator and re-exported for importers.
-import { buildChunkPrompt, computeSafeChunkSize, DEFAULT_CONTEXT_LENGTH_TOKENS } from "./consolidate/chunking";
-
-export { buildChunkPrompt, computeSafeChunkSize, DEFAULT_CONTEXT_LENGTH_TOKENS } from "./consolidate/chunking";
-
-// LLM-output sanitization (pure string/frontmatter transforms) lives in
-// ./consolidate/sanitize. Imported for internal use + re-exported for importers.
-import { normalizeUpdatedField, sanitizeMergedContent } from "./consolidate/sanitize";
-
-export { normalizeUpdatedField, sanitizeMergedContent, stripOuterCodeFence } from "./consolidate/sanitize";
-
-// Eligibility / safety predicates live in ./consolidate/eligibility. Imported
-// for internal guard use; the two public predicates are re-exported.
-import {
-  type ConsolidateGuardVerdict,
-  consolidateGuardStatus,
-  isConsolidationEligibleMemoryName,
-  isHotCapturedMemory,
-} from "./consolidate/eligibility";
-
-export { isConsolidationEligibleMemoryName, isHotCapturedMemory } from "./consolidate/eligibility";
-
-// Plan parsing / merging (pure op-reconciliation algebra) lives in
-// ./consolidate/merge. Imported for internal use; mergePlans re-exported.
-import { isValidOp, mergePlans } from "./consolidate/merge";
-
-export { mergePlans } from "./consolidate/merge";
-
-// ConsolidateResult / ConsolidatePerfTelemetry / ConsolidateOpKind moved DOWN
-// to core/improve-types.ts (WI-9.8 KILL 2 — the §10.7 layering inversion:
-// core/improve-types.ts imported these UP from this module). Re-exported here
-// verbatim so existing import sites (`from "./consolidate"`) are unchanged.
-import type { ConsolidateOpKind, ConsolidateResult } from "../../core/improve-types";
-
-export type { ConsolidateOpKind, ConsolidatePerfTelemetry, ConsolidateResult } from "../../core/improve-types";
 
 export interface AkmConsolidateOptions {
   /**
@@ -159,8 +124,7 @@ export interface AkmConsolidateOptions {
    * Skip the interactive confirm prompt on the HTTP consolidation path and
    * apply the plan directly. Unset/false: the prompt fires on an interactive
    * TTY; non-interactive contexts (CI, cron, piped stdin, AKM_NON_INTERACTIVE)
-   * default to a non-destructive "no". Replaces the deleted confidence-gate
-   * `autoAccept` knob's prompt-bypass role (0.9.0).
+   * default to a non-destructive "no".
    */
   assumeYes?: boolean;
   task?: string; // extra guidance appended to the system prompt
@@ -714,9 +678,7 @@ function backupFile(filePath: string, backupDir: string, name: string): void {
  * Inject `generation` and canonical `xrefs` into merged content.
  * generation = max(sourceGenerations) + 1.
  * xrefs = UNION of the provided provenance refs (participants + their cited
- * sources) with anything already present in xrefs or legacy source_refs —
- * R5 §4.2: the old set-if-absent behavior dropped second-generation
- * provenance whenever the LLM emitted its own (partial) source_refs.
+ * sources) with anything already present in xrefs.
  * Fails open — returns original content if frontmatter can't be parsed.
  */
 export function injectGenerationFrontmatter(
@@ -727,10 +689,7 @@ export function injectGenerationFrontmatter(
   try {
     const parsed = parseFrontmatter(mergedContent);
     const existingFm = parsed.data as Record<string, unknown>;
-    const existingRefs = [
-      ...(Array.isArray(existingFm.xrefs) ? existingFm.xrefs.map(String) : []),
-      ...(Array.isArray(existingFm.source_refs) ? existingFm.source_refs.map(String) : []),
-    ];
+    const existingRefs = Array.isArray(existingFm.xrefs) ? existingFm.xrefs.map(String) : [];
     const canonicalRefs = [...existingRefs, ...provenanceRefs].flatMap((ref) => {
       const canonical = canonicalStoredXref(ref);
       return canonical === undefined ? [] : [canonical];
@@ -740,7 +699,6 @@ export function injectGenerationFrontmatter(
       generation: computeMergedGeneration(sourceGenerations),
       xrefs: [...new Set(canonicalRefs)],
     };
-    delete updatedFm.source_refs;
     return assembleAssetFromString(serializeFrontmatter(updatedFm), parsed.content);
   } catch {
     return mergedContent; // fail open
@@ -896,16 +854,13 @@ function resolveConsolidationWriteTarget(opts: AkmConsolidateOptions, config: Ak
       },
     };
   }
-  if (opts.target && !path.isAbsolute(opts.target)) {
+  if (opts.target) {
     const target = resolveWriteTarget(config, opts.target);
     return { ...target, source: { ...target.source, path: path.resolve(target.source.path) } };
   }
 
-  // Programmatic callers historically supplied an absolute stash path. Normalize
-  // it immediately into the same unambiguous write-target shape used by named sources.
-  const explicitRoot = opts.target ?? opts.stashDir;
-  if (explicitRoot) {
-    const root = path.resolve(explicitRoot);
+  if (opts.stashDir) {
+    const root = path.resolve(opts.stashDir);
     return {
       source: { kind: "filesystem", name: "stash", path: root, adapterId: detectAdapterId(root) },
       config: { type: "filesystem", name: "stash", path: root, writable: true },
@@ -1928,21 +1883,18 @@ async function finalizeMerge(
   // whether the optional anti-collapse refusal/advisory checks are enabled.
   const participantInfo = allParticipants.map((ref) => {
     const e = memoryByRef.get(ref);
-    if (!e) return { ref, generation: 0, body: "", sourceRefs: [] as string[] };
+    if (!e) return { ref, generation: 0, body: "", xrefs: [] as string[] };
     try {
       const raw = fs.readFileSync(e.filePath, "utf8");
       const parsed = parseFrontmatter(raw);
       const fm = parsed.data as Record<string, unknown>;
-      const sourceRefs = [
-        ...(Array.isArray(fm.xrefs) ? fm.xrefs.map(String) : []),
-        ...(Array.isArray(fm.source_refs) ? fm.source_refs.map(String) : []),
-      ].flatMap((ref) => {
+      const xrefs = (Array.isArray(fm.xrefs) ? fm.xrefs.map(String) : []).flatMap((ref) => {
         const canonical = canonicalStoredXref(ref);
         return canonical === undefined ? [] : [canonical];
       });
-      return { ref, generation: readAssetGeneration(fm), body: stripFrontmatterBody(raw), sourceRefs };
+      return { ref, generation: readAssetGeneration(fm), body: stripFrontmatterBody(raw), xrefs };
     } catch {
-      return { ref, generation: 0, body: "", sourceRefs: [] as string[] };
+      return { ref, generation: 0, body: "", xrefs: [] as string[] };
     }
   });
   const sourceGenerations = participantInfo.map((p) => p.generation);
@@ -1979,8 +1931,8 @@ async function finalizeMerge(
   }
 
   // merged.generation = max(sourceGenerations) + 1. xrefs is the UNION of
-  // participants + canonical and legacy provenance already carried by them.
-  const provenanceUnion = [...new Set([...allParticipants, ...participantInfo.flatMap((p) => p.sourceRefs)])];
+  // participants + canonical provenance already carried by them.
+  const provenanceUnion = [...new Set([...allParticipants, ...participantInfo.flatMap((p) => p.xrefs)])];
   mergedContent = injectGenerationFrontmatter(mergedContent, sourceGenerations, provenanceUnion);
 
   if (antiCollapseConfig.enabled !== false) {
@@ -2372,9 +2324,7 @@ export async function handlePromoteOp(op: ConsolidatePromoteOp, ctx: Consolidate
     return;
   }
 
-  // Defensive sanitization: legacy memory files written by older
-  // consolidate runs may still carry outer code fences or broken YAML.
-  // Strip them here so we never propose a polluted asset.
+  // Validate and normalize source content before proposing a promoted asset.
   const promoteSanitized = sanitizeMergedContent(memoryContent);
   if (!promoteSanitized.ok) {
     warnings.push(`Promote: rejected ${op.ref} — source memory failed sanitization (${promoteSanitized.reason}).`);
@@ -2499,6 +2449,7 @@ export async function handlePromoteOp(op: ConsolidatePromoteOp, ctx: Consolidate
       { stashDir },
       {
         ref: knowledgeRef,
+        target: { source: target.source.name, root: target.source.path },
         source: "consolidate",
         sourceRun,
         // §23.6 fingerprint model-id term (WI-6.4).
@@ -2529,10 +2480,8 @@ export async function handleContradictOp(op: ConsolidateContradictOp, ctx: Conso
   const { memoryByRef, warnings, pushSkipReason, counts, target } = ctx;
   // Confidence gate: surface-level topic overlap causes false positives
   // (investigation 2026-06-18). Require ≥0.92 confidence before writing
-  // contradiction edges. Missing confidence field defaults to 1.0 for
-  // backward compatibility with responses that predate this field.
-  const opConfidence =
-    typeof (op as { confidence?: number }).confidence === "number" ? (op as { confidence: number }).confidence : 1.0;
+  // contradiction edges. Missing confidence is not sufficient evidence.
+  const opConfidence = typeof op.confidence === "number" ? op.confidence : 0;
   if (opConfidence < 0.92) {
     warnings.push(
       `Contradict: confidence ${opConfidence.toFixed(2)} below 0.92 threshold for ${op.ref} <-> ${op.contradictedByRef} — skipping.`,

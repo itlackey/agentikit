@@ -7,7 +7,7 @@
  * Coverage follows v1 spec §12.2 and §12.3.
  */
 import { describe, expect, test } from "bun:test";
-import type { AgentCommandBuilder, AgentDispatchRequest } from "../../src/integrations/agent/builders";
+import type { AgentCommandBuilder, AgentDispatchRequest } from "../../src/integrations/agent/builder-shared";
 import type { AgentProfile } from "../../src/integrations/agent/profiles";
 
 // NOTE: this file previously carried a full 13-export mock.module fake of

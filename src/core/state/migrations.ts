@@ -68,8 +68,9 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
       --   id          TEXT PK     — UUID (crypto.randomUUID()); stable directory name.
       --   stash_dir   TEXT        — absolute stash root; multi-stash installs need
       --                             this to partition proposal lists per stash.
-      --   ref         TEXT        — target asset ref (e.g. "lesson:alpha");
-      --                             indexed for ref-scoped queue views.
+      --   ref         TEXT        — fully qualified target asset ref
+      --                             (e.g. "main//lessons/alpha"); indexed for
+      --                             ref-scoped queue views.
       --   status      TEXT        — "pending" | "accepted" | "rejected"; indexed
       --                             so pending-queue queries are fast.
       --   source      TEXT        — human-readable origin tag (e.g. "reflect").
@@ -363,7 +364,8 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   //
   // VESTIGIAL as of the Chunk-8 fold: the legacy `proposal.json` import moved
   // OUT of the live per-operation path and INTO the one-time migrator
-  // (`src/migrate/legacy/proposal-fs-import.ts`, wired through `akm migrate apply`),
+  // (`scripts/akm-migrate/migrate/legacy/proposal-fs-import.ts`, wired through
+  // `akm-migrate apply`),
   // whose idempotency is INSERT OR IGNORE on the proposal UUID plus migrate-apply's
   // own journal — it no longer reads or writes this ledger. The CREATE TABLE
   // stays because the migration registry is APPEND-ONLY and checksum-sealed:
@@ -856,13 +858,14 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // never a DROP or a data move. The actual data movement (the workflow.db merge,
   // the usage_events rescue from index.db, the full old-ref→item_ref re-key, and
   // the workflow.db delete / index.db quarantine) is CODE — a journaled step of
-  // the migrate-apply flow (`src/cli/config-migrate.ts` `cutover-applied` phase),
-  // driven by `src/migrate/legacy/three-db-cutover.ts`. See the no-DROP contract
-  // carve-out note in `src/core/state-db.ts`.
+  // the migrate-apply flow (`scripts/akm-migrate/config-migrate.ts`
+  // `cutover-applied` phase), driven by
+  // `scripts/akm-migrate/migrate/legacy/three-db-cutover.ts`. See the no-DROP
+  // contract carve-out note in `src/core/state-db.ts`.
   //
   // The three workflow tables are the 10 pre-cutover workflow migrations
-  // (the frozen `src/migrate/legacy/workflow-migrations-bodies.ts` base schema +
-  // 001–010) folded into one baseline at their FINAL post-010 shape — column
+  // (the frozen `scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts`
+  // base schema + 001–010) folded into one baseline at their FINAL post-010 shape — column
   // lists, CHECK constraints, and indexes copied verbatim. `usage_events` mirrors
   // index.db's former `ensureUsageEventsSchema` (`src/indexer/usage/usage-events.ts`),
   // its new durable home. `legacy_state` mirrors `ensureLegacyStateTable`

@@ -238,8 +238,7 @@ export function normHash(text: string): string {
 
 /**
  * Score one canary against the live index, merge-following via canonical
- * `xrefs`. Legacy `source_refs` remains readable for assets written before the
- * xref cutover. A hit is the anchor ref itself OR any returned entry whose
+ * `xrefs`. A hit is the anchor ref itself or any returned entry whose
  * provenance contains the anchor.
  * Returns the 0-based rank of the first hit, or -1.
  */
@@ -253,7 +252,7 @@ function scoreCanary(indexDb: IndexDatabase, canary: { anchor_ref: string; query
     // spelling, so migration alone cannot collapse recall to zero.
     const ref = conceptIdFromTypeName(r.entry.type, r.entry.name);
     if (ref === anchorConceptId) return i;
-    const provenance = [...(r.entry.xrefs ?? []), ...(r.entry.sourceRefs ?? [])];
+    const provenance = r.entry.xrefs ?? [];
     if (provenance.some((sourceRef) => canaryConceptId(sourceRef) === anchorConceptId)) return i;
   }
   return -1;

@@ -37,7 +37,6 @@ const PUBLISHED_DEFAULT_TASK_IDS = [
 ] as const;
 const PUBLISHED_CORE_TASK_IDS = ["improve", "backup"] as const;
 const TASK_IDS = [...CUSTOM_TASK_IDS, ...PUBLISHED_DEFAULT_TASK_IDS, ...PUBLISHED_CORE_TASK_IDS] as const;
-const SAFE_SYNC_TASK_IDS = TASK_IDS.filter((id) => id !== "backup");
 
 interface RunResult {
   status: number;
@@ -317,13 +316,8 @@ test.skipIf(!ENABLED)(
       );
       expect(originalTasks.get("backup")).toContain("command: akm db backups\nenabled: true");
       for (const definition of originalTasks.values()) expect(definition).not.toMatch(/^version:/m);
-      const migratedTasks = new Map(originalTasks);
       const legacyWorkflowTask = originalTasks.get("upgrade-workflow");
       if (!legacyWorkflowTask) throw new Error("Missing published upgrade-workflow task snapshot");
-      migratedTasks.set(
-        "upgrade-workflow",
-        legacyWorkflowTask.replace("workflow: workflow:upgrade-noop", "workflow: workflows/upgrade-noop"),
-      );
 
       const oldRun = run([process.execPath, oldCli, "tasks", "run", "upgrade-command"], oldEnv);
       expectSuccess(oldRun, "published 0.8.14 task run before migration");
@@ -423,12 +417,25 @@ test.skipIf(!ENABLED)(
         engines: preparedConfig.engines,
         defaults: preparedConfig.defaults,
       });
-      expectTasksUnchanged(stashDir, migratedTasks);
+      const migratedTasks = snapshotTasks(stashDir);
+      for (const definition of migratedTasks.values()) expect(definition).toMatch(/^version: 2$/m);
+      expect(migratedTasks.get("upgrade-workflow")).toContain("workflow: workflows/upgrade-noop");
+      expect(migratedTasks.get("upgrade-prompt")).toContain("engine: legacy-agent");
+      expect(migratedTasks.get("upgrade-prompt")).not.toContain("profile:");
+      expect(migratedTasks.get("upgrade-global-improve")).toContain("--strategy frequent");
+      expect(migratedTasks.get("upgrade-global-improve")).not.toContain("--auto-accept");
+      expect(migratedTasks.get("akm-improve-frequent")).toContain("--strategy frequent");
+      expect(migratedTasks.get("akm-improve-frequent")).not.toContain("--auto-accept");
+      expect(migratedTasks.get("upgrade-explicit-improve")).toContain(
+        "/opt/retained-0.8/akm improve --profile frequent",
+      );
+      expect(migratedTasks.get("backup")).toContain("command: akm db backups");
+      expect(migratedTasks.get("backup")).toContain("enabled: false");
 
       // Repair path for installations that already ran an earlier 0.9 RC: the
-      // config/state cutover is current, but the persisted 0.8 task target was
-      // not rewritten by that RC. Status must still advertise work and apply
-      // must run the journaled task-only phase without replaying the DB cutover.
+      // config/state cutover is current, but a persisted 0.8 task was not
+      // rewritten by that RC. Status must still advertise work and apply must
+      // run the journaled task-only phase without replaying the DB cutover.
       fs.writeFileSync(path.join(stashDir, "tasks", "upgrade-workflow.yml"), legacyWorkflowTask);
       const repairStatus = run([currentCli, "migrate", "status"], currentEnv);
       expectSuccess(repairStatus, "packed 0.9 current-RC repair status");
@@ -455,7 +462,7 @@ test.skipIf(!ENABLED)(
       expectSuccess(version, "packed 0.9 --version");
       expect(version.stdout).toContain(candidatePackage.version);
 
-      const sync = run([currentCli, "tasks", "sync"], currentEnv);
+      const sync = run([currentCli, "tasks", "sync", "--rebind"], currentEnv);
       expectSuccess(sync, "packed 0.9 tasks sync");
       const syncJson = JSON.parse(sync.stdout) as {
         installed: string[];
@@ -463,20 +470,15 @@ test.skipIf(!ENABLED)(
         unchanged: string[];
         skipped: Array<{ id: string; reason: string }>;
       };
-      expect(syncJson.skipped, JSON.stringify(syncJson.skipped, null, 2)).toHaveLength(1);
-      expect(syncJson.skipped[0]).toMatchObject({ id: "backup" });
-      expect(syncJson.skipped[0]?.reason).toContain("akm db backups");
-      expect(syncJson.skipped[0]?.reason).toContain("akm backup create");
-      expect(new Set([...syncJson.installed, ...syncJson.updated, ...syncJson.unchanged])).toEqual(
-        new Set(SAFE_SYNC_TASK_IDS),
-      );
+      expect(syncJson.skipped, JSON.stringify(syncJson.skipped, null, 2)).toEqual([]);
+      expect(new Set([...syncJson.installed, ...syncJson.updated, ...syncJson.unchanged])).toEqual(new Set(TASK_IDS));
       expectTasksUnchanged(stashDir, migratedTasks);
 
       // The task-specific `tasks show` subcommand was removed in 0.9 — task
       // inspection is now the generic `akm show tasks/<id>`. Verify each migrated
       // task still resolves as a stash asset. The parsed/normalized target shapes
       // (profile→strategy, workflow-ref rewrite, enabled state) are asserted from
-      // the byte-exact migrated file contents (expectTasksUnchanged, above) and
+      // the migrated file contents (expectTasksUnchanged, above) and
       // the crontab body (disabled → `# akm:disabled`) rather than a show payload.
       for (const id of TASK_IDS) {
         const show = run([currentCli, "show", `tasks/${id}`, "--format=json"], currentEnv);
@@ -499,7 +501,9 @@ test.skipIf(!ENABLED)(
       expect(cronBody(crontab, "backup")).toStartWith("# akm:disabled ");
 
       const scheduledCommand = generatedCronCommand(crontab, "upgrade-command");
-      expect(scheduledCommand).toContain(`PATH=${currentInstallPath}`);
+      expect(scheduledCommand).toContain(currentPackageRoot);
+      expect(scheduledCommand).toContain("--scheduler-context");
+      expect(scheduledCommand).not.toContain("PATH=");
       expect(scheduledCommand).toContain("tasks run upgrade-command");
       const scheduled = run(["/bin/sh", "-c", scheduledCommand], { ...storageEnv, PATH: "/usr/bin:/bin" });
       expectSuccess(scheduled, "execute generated packed-artifact cron command with stripped PATH");

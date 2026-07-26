@@ -25,11 +25,10 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AkmDistillResult } from "../../../src/commands/improve/distill";
 import { akmImprove } from "../../../src/commands/improve/improve";
-import type { AkmReflectResult } from "../../../src/commands/improve/reflect";
 import { saveConfig } from "../../../src/core/config/config";
 import { readEvents } from "../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../src/core/improve-types";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { writeLesson } from "../../_helpers/assets";
 import { makeProposal } from "../../_helpers/factories";
@@ -83,7 +82,7 @@ const distillFn = async ({ ref }: { ref: string }): Promise<AkmDistillResult> =>
   ok: true,
   outcome: "queued",
   inputRef: ref,
-  lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+  proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
 });
 
 const reindexFn = async (): Promise<{

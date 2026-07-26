@@ -1,22 +1,20 @@
 # akm improve — Workflow Reference
 
-`akm improve` is the scheduled self-improvement loop that walks every asset in the stash (or a scoped subset), invokes the reflection agent and the LLM distiller on each one, runs memory consolidation across the corpus, and then performs improve-owned maintenance passes such as memory inference and graph extraction. It is the primary mechanism for turning accumulated feedback signals into queued proposals. Proposal resolution is **audited-autonomous**: in practice proposals are resolved by the pipeline's own gates (auto-accept gate, drain policy, TTL), not by per-item human review — the audit trail (events + resolved proposal rows) is the oversight mechanism. Per-item human approval exists only at `/akm-memory-promote` and `/akm-proposal accept`.
+`akm improve` is the scheduled self-improvement loop that walks every asset in the stash (or a scoped subset), invokes the reflection agent and the LLM distiller on each one, runs memory consolidation across the corpus, and then performs improve-owned maintenance passes such as memory inference and graph extraction. It is the primary mechanism for turning accumulated feedback signals into queued proposals. Proposals remain queued until explicit proposal review or the configured drain policy resolves them; events and resolved proposal rows provide the audit trail.
 
 ## Command surface
 
 | Option | Type | Purpose |
 |---|---|---|
-| `--scope` | `string` | Restrict the run to a single ref (`type:name`), an asset type (`lesson`), or omit for all assets. |
+| `--scope` | `string` | Restrict the run to a single ref (`[bundle//]conceptId`), an asset type (`lesson`), or omit for all assets. |
 | `--task` | `string` | Hint forwarded verbatim to the reflection prompt and agent. |
 | `--dry-run` | `boolean` | Compute the plan from the existing index and analyze memory cleanup; emit no events, acquire no lock, call no model, and write nothing. |
 | `--target` | `string` | Passed through to `akmConsolidate` as the write-target source override. |
-| `--auto-accept` | `number \| "safe" \| false` (default: **off**) | Opt-in threshold for the shared auto-accept gate (`runAutoAcceptGate`). Flag absent or bare `--auto-accept` → OFF (`parseAutoAcceptFlag`; deliberate flip from the 0.8.0-RC default-ON-at-90 behaviour). `--auto-accept=<N>` → integer threshold 0-100. `--auto-accept=safe` → permanent alias for 90. `--auto-accept=false` → explicit disable. Until proposals expose per-operation confidence scores, an enabled gate accepts the consolidate batch whole (legacy behaviour). The drain tier never consults this threshold — it is deterministic-policy-gated. |
 | `--limit` | `number` | Cap the number of assets processed after utility-score sorting. |
 | `--timeout-ms` | `number` | Wall-clock budget for the entire run. Default: 7 200 000 ms (2 hours). |
 | `--skip-if-locked` | `boolean` | If another improve owns the whole-run lock, return an exit-0 no-op result before triage, indexing, events, or sync. Without the flag, contention is a config error. |
 | `--consolidate-recovery` | `"abort" \| "clean"` | Recovery mode for stale/incomplete consolidate journals. Default: `abort`. |
 | `--require-feedback-signal` | `boolean` | Restrict all/type runs to refs with recent feedback signals; disable retrieval fallback. |
-| `--min-retrieval-count` | `number` | Minimum retrieval count for zero-feedback fallback eligibility. Default: 5. |
 
 Injected function seams (`reflectFn`, `distillFn`, `ensureIndexFn`, `reindexFn`) replace production defaults in tests.
 
@@ -128,11 +126,7 @@ flowchart TD
         CON_ABORT --> CON_MERGE
         CON_G --> CON_MERGE[mergePlans: deduplicate ops\nmerge wins over delete]
         CON_MERGE --> CON_DRY{dryRun?} -- yes --> CON_DRYRESULT([return planned ops, no writes])
-        CON_DRY -- no --> CON_HTTP{HTTP path AND autoAccept === undefined\n(--auto-accept=false explicitly passed)?}
-        CON_HTTP -- yes --> CON_CONFIRM[promptConfirm: apply N ops?]
-        CON_CONFIRM --> CON_CONFIRMED{user answered y?} -- no --> CON_ABORT2([return previewOnly result])
-        CON_CONFIRMED -- yes --> PHASE_B
-        CON_HTTP -- no --> PHASE_B
+        CON_DRY -- no --> PHASE_B
 
         subgraph PHASE_B["Phase B — Write operations"]
             PHASE_B_A[writeJournal .akm/consolidate-journal.json] --> PHASE_B_B[For each op:]
@@ -243,7 +237,7 @@ For `skills/*` refs, reflect also reviews related distilled lessons as consolida
 4. For each `promote` op: idempotency check (pending proposals and existing file); `createProposal` with `source: "consolidate"`; mark journal completed.
 5. Clean up the journal and timestamp-keyed backup directory on success.
 
-**HTTP path confirmation:** auto-accept is **on by default** (threshold 90) when the `--auto-accept` flag is absent, so Phase B proceeds without prompting. The user is prompted interactively before Phase B executes only when `--auto-accept=false` is explicitly passed on the HTTP path (no agent config). Any other value of `--auto-accept` — including the bare flag, an integer threshold, or the `safe` alias — keeps auto-accept enabled and skips the prompt.
+The parent improve run passes its explicit unattended execution policy into consolidation. Standalone consolidation remains confirmation-gated unless its caller sets `assumeYes`.
 
 **What it writes:**
 - `.akm/consolidate-journal.json` — operation log for crash recovery.
@@ -315,14 +309,12 @@ Before the per-asset loop, `akm improve` builds Sets of all refs that are curren
 
 Improve process selection is resolved once by `resolveImprovePlan`; the plan
 contains every process's frozen enablement, process config, and resolved runner.
-LLM-only processes reject an explicit agent engine rather than falling through. With
-`--auto-accept` absent, auto-accept uses the selected strategy's threshold.
+LLM-only processes reject an explicit agent engine rather than falling through.
 
 ## Output shape
 
 `AkmImproveResult` uses `schemaVersion: 2`, identifies the selected `strategy`,
-and can report `ok: false` for terminated runs. The decoder retains read-only
-support for historical schema-v1 results that used `profile`:
+and can report `ok: false` for terminated runs:
 
 | Field | Type | Description |
 |---|---|---|

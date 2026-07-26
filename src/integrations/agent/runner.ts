@@ -176,5 +176,3 @@ export function resolveImproveProcessRunner(
     timeoutMs: resolved.timeoutMs,
   };
 }
-
-export { isProcessEnabled } from "../../llm/feature-gate";

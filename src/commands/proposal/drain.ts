@@ -14,8 +14,7 @@
  *   - Reuses `listProposals` (no source filter — generator filtering is
  *     in-memory) and the `akmProposalAccept` / `akmProposalReject` wrappers from
  *     `proposal.ts` so the standard `promoted` / `rejected` events are emitted.
- *     Deterministic by design — never confidence-gated (the improve confidence
- *     gate that once ran alongside this engine died in 0.9.0).
+ *     Deterministic by design; only the configured drain policy decides.
  *   - Backlog-only: `excludeIds` removes this-run's fresh proposals so triage
  *     never re-adjudicates a current run's output (decision #2).
  *   - Hard guardrails enforced in code: a `maxAccepts` ceiling checked *before*
@@ -45,11 +44,12 @@ import { parseRefInput } from "../../core/asset/resolve-ref";
 import type { AkmConfig } from "../../core/config/config";
 import type { EventsContext } from "../../core/events";
 import { appendEvent } from "../../core/events";
+import { escapeJsonStringControls, stripCodeFences, stripThinkBlocks } from "../../core/parse";
 import { info, warn } from "../../core/warn";
 import type { RunAgentOptions } from "../../integrations/agent";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { executeRunner, type RunnerSeams } from "../../integrations/agent/runner-dispatch";
-import { type ChatMessage, chatCompletion, stripJsonFences } from "../../llm/client";
+import { type ChatMessage, chatCompletion } from "../../llm/client";
 import { akmProposalAccept, akmProposalReject, type ProposalRejectResult } from "./proposal";
 import {
   listProposals,
@@ -363,7 +363,7 @@ export function buildJudgmentPrompt(
 
 /** Parse a {@link JudgmentVerdict} from raw runner output. Lenient. */
 export function parseJudgmentVerdict(raw: string): JudgmentVerdict | null {
-  const cleaned = stripJsonFences(raw).trim();
+  const cleaned = escapeJsonStringControls(stripCodeFences(stripThinkBlocks(raw))).trim();
   if (!cleaned) return null;
   // Find the first balanced-looking JSON object in the output.
   const start = cleaned.indexOf("{");

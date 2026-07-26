@@ -2,8 +2,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { RegistryIndex } from "../../src/commands/read/registry-search";
 import { searchRegistry } from "../../src/commands/read/registry-search";
+import type { RegistryIndex } from "../../src/registry/providers/static-index";
 import { type Cleanup, sandboxXdgCacheHome, sandboxXdgDataHome } from "../_helpers/sandbox";
 
 // ── Test fixtures ───────────────────────────────────────────────────────────
@@ -649,7 +649,7 @@ describe("cross-provider score normalization", () => {
   test("merged multi-provider results are ordered by normalized score", async () => {
     // Provider A: static-index with a moderate-relevance match.
     // Provider B: skills-sh with a high-installs match.
-    // After normalization each batch has max=1; the better-matched kit wins.
+    // After normalization each batch has max=1; the better-matched bundle wins.
     const staticSrv = serveIndex({
       version: 3,
       updatedAt: "2026-01-01T00:00:00Z",
@@ -879,7 +879,7 @@ describe("provider routing", () => {
 
 describe("incomplete hits filter (#159)", () => {
   test("hits missing required fields are dropped from response", async () => {
-    const { registerProvider } = await import("../../src/registry/factory");
+    const { registerRegistryProvider } = await import("../../src/registry/factory");
     const goodHit = {
       source: "github" as const,
       id: "github:owner/good",
@@ -887,7 +887,7 @@ describe("incomplete hits filter (#159)", () => {
       ref: "github:owner/good",
       installRef: "github:owner/good",
     };
-    registerProvider("incomplete-hits-test", (() => ({
+    registerRegistryProvider("incomplete-hits-test", (() => ({
       type: "incomplete-hits-test",
       async search() {
         return {
@@ -895,7 +895,7 @@ describe("incomplete hits filter (#159)", () => {
           hits: [{} as never, { source: "github", title: "x" } as never, goodHit],
         };
       },
-    })) as unknown as Parameters<typeof registerProvider>[1]);
+    })) as unknown as Parameters<typeof registerRegistryProvider>[1]);
 
     const result = await searchRegistry("anything", {
       registries: [{ url: "http://unused", provider: "incomplete-hits-test" }],
@@ -907,8 +907,8 @@ describe("incomplete hits filter (#159)", () => {
   });
 
   test("incomplete asset hits are dropped from assetHits", async () => {
-    const { registerProvider } = await import("../../src/registry/factory");
-    registerProvider("incomplete-assets-test", (() => ({
+    const { registerRegistryProvider } = await import("../../src/registry/factory");
+    registerRegistryProvider("incomplete-assets-test", (() => ({
       type: "incomplete-assets-test",
       async search() {
         return {
@@ -926,7 +926,7 @@ describe("incomplete hits filter (#159)", () => {
           ],
         };
       },
-    })) as unknown as Parameters<typeof registerProvider>[1]);
+    })) as unknown as Parameters<typeof registerRegistryProvider>[1]);
 
     const result = await searchRegistry("anything", {
       registries: [{ url: "http://unused", provider: "incomplete-assets-test" }],
@@ -940,8 +940,8 @@ describe("incomplete hits filter (#159)", () => {
   // PR #168 review #9: asset hits with missing/empty `stash.id` or `stash.name`
   // are also incomplete and must not propagate to JSON output.
   test("asset hits with missing or empty stash fields are dropped", async () => {
-    const { registerProvider } = await import("../../src/registry/factory");
-    registerProvider("incomplete-stash-test", (() => ({
+    const { registerRegistryProvider } = await import("../../src/registry/factory");
+    registerRegistryProvider("incomplete-stash-test", (() => ({
       type: "incomplete-stash-test",
       async search() {
         return {
@@ -981,7 +981,7 @@ describe("incomplete hits filter (#159)", () => {
           ],
         };
       },
-    })) as unknown as Parameters<typeof registerProvider>[1]);
+    })) as unknown as Parameters<typeof registerRegistryProvider>[1]);
 
     const result = await searchRegistry("anything", {
       registries: [{ url: "http://unused", provider: "incomplete-stash-test" }],

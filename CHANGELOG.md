@@ -65,8 +65,8 @@ earlier `0.9.0-rc.1` / `0.9.0-beta.*` development entries below.
   fully-qualified `bundle//conceptId`; the short bundle-omitted form is accepted
   input only (resolved against `defaultBundle`, then installation-priority
   order). The pre-0.9.0 `[origin//]type:name` grammar is removed — there is no
-  compatibility parser; the frozen migrator in `src/migrate/legacy/` is the only
-  place it survives.
+  compatibility parser; the frozen migrator in `scripts/akm-migrate/migrate/`
+  is the only place it survives.
 - **Explicit, journaled, crash-resumable cutover (`akm migrate apply`).** The
   migrator re-keys all durable state to the new spelling, folds the former
   `workflow.db` into `state.db` (four databases down to three: `state.db` /

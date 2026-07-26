@@ -17,14 +17,16 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isMap, isScalar, parseDocument } from "yaml";
+import { isMap, parseDocument, stringify as stringifyYaml } from "yaml";
 import { bundlesToSourceEntries } from "../../../../src/core/config/config";
 import type { AkmConfig, BundleConfigEntry } from "../../../../src/core/config/config-types";
 import { ConfigError } from "../../../../src/core/errors";
 import { resolveWritable } from "../../../../src/core/write-source";
 import { resolveEntryContentDir } from "../../../../src/indexer/search/search-source";
 import type { LockfileEntry } from "../../../../src/integrations/lockfile";
+import { parseTaskDocument } from "../../../../src/tasks/parser";
 import { classifyRefGrammar, legacyConceptId, parseAssetRef } from "../legacy-ref-grammar";
+import { normalizeLegacyTask } from "./legacy-task-normalize";
 import {
   canonicalizeWorkflowName,
   type LegacySource,
@@ -42,8 +44,8 @@ interface MigrationBundle {
 
 export interface TaskTargetRefRewrite {
   filePath: string;
-  from: string;
-  to: string;
+  from?: string;
+  to?: string;
   before: Buffer;
   after: Buffer;
   mode: number;
@@ -162,23 +164,10 @@ function assertRealPathWithin(root: string, candidate: string, filePath: string,
   if (relative.startsWith("..") || path.isAbsolute(relative)) throw migrationError(filePath, detail);
 }
 
-function renderScalarLike(sourceToken: string, replacement: string, filePath: string): string {
-  if (sourceToken.startsWith("'") && sourceToken.endsWith("'")) {
-    return `'${replacement.replaceAll("'", "''")}'`;
-  }
-  if (sourceToken.startsWith('"') && sourceToken.endsWith('"')) return JSON.stringify(replacement);
-  // parseDocument already proved this source range is one valid string scalar.
-  // Canonical replacements contain only slug/path characters, so any one-line
-  // plain legacy scalar can be replaced plainly even when its origin had @/#.
-  if (!sourceToken.includes("\n") && !sourceToken.includes("\r")) return replacement;
-  throw migrationError(filePath, "the legacy workflow target uses an unsupported YAML scalar style.");
-}
-
 function planTaskFile(
   filePath: string,
   containing: MigrationBundle,
   bundles: MigrationBundle[],
-  durabilityPaths: string[],
 ): TaskTargetRefRewrite | undefined {
   const before = fs.readFileSync(filePath);
   let text: string;
@@ -191,42 +180,56 @@ function planTaskFile(
   const yamlError = doc.errors[0];
   if (yamlError) throw migrationError(filePath, `invalid YAML (${yamlError.message}).`);
   if (!isMap(doc.contents)) throw migrationError(filePath, "task YAML must be a mapping.");
-  const version = doc.get("version");
+  const raw = doc.toJS() as Record<string, unknown>;
+  const version = raw.version;
   if (version !== undefined && version !== 1) return undefined;
-  if (!doc.has("workflow")) return undefined;
-  const node = doc.get("workflow", true);
-  if (!isScalar(node) || typeof node.value !== "string") {
-    throw migrationError(filePath, "legacy `workflow` must be a string scalar.");
-  }
-  const from = node.value.trim();
-  if (classifyRefGrammar(from) !== "legacy") {
-    durabilityPaths.push(filePath);
-    return undefined;
+
+  let normalized: Record<string, unknown>;
+  try {
+    normalized = normalizeLegacyTask(raw);
+  } catch (error) {
+    throw migrationError(filePath, error instanceof Error ? error.message : String(error));
   }
 
-  let parsed: ReturnType<typeof parseAssetRef>;
+  let from: string | undefined;
+  let to: string | undefined;
+  if (typeof normalized.workflow === "string") {
+    from = normalized.workflow.trim();
+    if (classifyRefGrammar(from) === "legacy") {
+      let parsed: ReturnType<typeof parseAssetRef>;
+      try {
+        parsed = parseAssetRef(from);
+      } catch (error) {
+        throw migrationError(
+          filePath,
+          `legacy workflow target "${from}" is invalid (${error instanceof Error ? error.message : String(error)}).`,
+        );
+      }
+      if (parsed.type !== "workflow") {
+        throw migrationError(filePath, `legacy target "${from}" has type "${parsed.type}", not "workflow".`);
+      }
+      const name = canonicalizeWorkflowName(parsed.name);
+      const targetBundle = parsed.origin ? resolveOrigin(parsed.origin, bundles, filePath) : containing;
+      assertWorkflowPathSafe(targetBundle, name, from, filePath);
+      const conceptId = legacyConceptId("workflow", name);
+      to = parsed.origin ? `${targetBundle.id}//${conceptId}` : conceptId;
+      normalized.workflow = to;
+    }
+  }
+
+  const after = Buffer.from(stringifyYaml(normalized));
   try {
-    parsed = parseAssetRef(from);
+    parseTaskDocument({ yaml: after.toString("utf8"), filePath, id: path.basename(filePath, ".yml") });
   } catch (error) {
-    throw migrationError(
-      filePath,
-      `legacy workflow target "${from}" is invalid (${error instanceof Error ? error.message : String(error)}).`,
-    );
+    throw migrationError(filePath, `the converted v2 task is invalid (${error instanceof Error ? error.message : String(error)}).`);
   }
-  if (parsed.type !== "workflow") {
-    throw migrationError(filePath, `legacy target "${from}" has type "${parsed.type}", not "workflow".`);
-  }
-  const name = canonicalizeWorkflowName(parsed.name);
-  const targetBundle = parsed.origin ? resolveOrigin(parsed.origin, bundles, filePath) : containing;
-  assertWorkflowPathSafe(targetBundle, name, from, filePath);
-  const conceptId = legacyConceptId("workflow", name);
-  const to = parsed.origin ? `${targetBundle.id}//${conceptId}` : conceptId;
-  const range = node.range;
-  if (!range) throw migrationError(filePath, "the legacy workflow target has no stable source range.");
-  const token = text.slice(range[0], range[1]);
-  const replacement = renderScalarLike(token, to, filePath);
-  const after = Buffer.from(text.slice(0, range[0]) + replacement + text.slice(range[1]));
-  return { filePath, from, to, before, after, mode: fs.lstatSync(filePath).mode & 0o777 };
+  return {
+    filePath,
+    ...(from !== undefined && to !== undefined ? { from, to } : {}),
+    before,
+    after,
+    mode: fs.lstatSync(filePath).mode & 0o777,
+  };
 }
 
 /** Preflight every persisted v1 task target without changing disk. */
@@ -266,7 +269,7 @@ export function planTaskTargetRefMigration(
       if (!entry.isFile())
         throw migrationError(filePath, "task migration does not follow symbolic links or special files.");
       assertRealPathWithin(bundle.root, filePath, filePath, "the task file resolves outside its bundle.");
-      const rewrite = planTaskFile(filePath, bundle, bundles, durabilityPaths);
+      const rewrite = planTaskFile(filePath, bundle, bundles);
       if (rewrite) rewrites.push(rewrite);
     }
   }

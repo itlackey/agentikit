@@ -235,17 +235,11 @@ export interface IndexDocument {
    * consolidate's injectGenerationFrontmatter. Absent = original asset.
    */
   generation?: number;
-  /**
-   * R5 — provenance pointers (frontmatter `source_refs`): the refs this asset
-   * was merged/distilled from. Lets the collapse detector's canary scoring
-   * follow a legitimately-merged anchor instead of reading it as collapse.
-   */
-  sourceRefs?: string[];
   currentBeliefRefs?: string[];
   /**
    * How the memory was captured. `hot` indicates a user-driven write
    * (the `akm remember` CLI path); `background` indicates an
-   * agent/derived write (e.g. memory-inference). Absent on legacy memories.
+   * agent/derived write (e.g. memory-inference). Optional when capture mode is unknown.
    * Surfaced from the `captureMode:` frontmatter key.
    */
   captureMode?: "hot" | "background";

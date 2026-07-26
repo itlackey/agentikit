@@ -1,33 +1,31 @@
 import { describe, expect, test } from "bun:test";
-import { registerProvider, resolveProviderFactory } from "../src/registry/factory";
+import { registerRegistryProvider, resolveRegistryProviderFactory } from "../src/registry/factory";
+import type { RegistryProviderFactory } from "../src/registry/providers/types";
 import { resolveSourceProviderFactory } from "../src/sources/provider-factory";
 
 describe("provider-registry", () => {
-  test("resolveProviderFactory returns null for unknown type", () => {
-    expect(resolveProviderFactory("nonexistent-provider-xyz")).toBeNull();
+  test("resolveRegistryProviderFactory returns null for unknown type", () => {
+    expect(resolveRegistryProviderFactory("nonexistent-provider-xyz")).toBeNull();
   });
 
-  test("registerProvider + resolveProviderFactory round-trips", () => {
-    const factory = (() => ({
+  test("registerRegistryProvider + resolveRegistryProviderFactory round-trips", () => {
+    const factory: RegistryProviderFactory = () => ({
       type: "test-provider",
       search: async () => ({ hits: [] }),
-      searchKits: async () => [],
-      getKit: async () => null,
-      canHandle: () => false,
-    })) as unknown as Parameters<typeof registerProvider>[1];
-    registerProvider("test-roundtrip", factory);
-    expect(resolveProviderFactory("test-roundtrip")).toBe(factory);
+    });
+    registerRegistryProvider("test-roundtrip", factory);
+    expect(resolveRegistryProviderFactory("test-roundtrip")).toBe(factory);
   });
 
   test("static-index is registered after import", async () => {
     // Importing triggers self-registration
     await import("../src/registry/providers/static-index");
-    expect(resolveProviderFactory("static-index")).not.toBeNull();
+    expect(resolveRegistryProviderFactory("static-index")).not.toBeNull();
   });
 
   test("skills-sh is registered after import", async () => {
     await import("../src/registry/providers/skills-sh");
-    expect(resolveProviderFactory("skills-sh")).not.toBeNull();
+    expect(resolveRegistryProviderFactory("skills-sh")).not.toBeNull();
   });
 
   test("filesystem stash provider is registered after import", async () => {

@@ -107,7 +107,7 @@ const RESERVED_BASENAMES = new Set(["index.md", "log.md"]);
  * (`confidence`/`source`/`fileSize`/`filename`/…) are intentionally absent — the
  * fold preserves only what survives a re-index, so it stays faithful.
  */
-const CURATED_FIELD_MAP: ReadonlyArray<readonly [keyof IndexDocument, string]> = [
+const CURATED_FIELD_MAP: ReadonlyArray<readonly [keyof IndexDocument | "sourceRefs", string]> = [
   ["description", "description"],
   ["tags", "tags"],
   ["aliases", "aliases"],

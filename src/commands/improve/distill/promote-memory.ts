@@ -22,8 +22,10 @@ import fs from "node:fs";
 import { parseFrontmatter } from "../../../core/asset/frontmatter";
 import type { AkmConfig, ImproveProfileConfig, LlmConnectionConfig } from "../../../core/config/config";
 import { appendEvent, type EventsContext } from "../../../core/events";
-import type { AkmDistillResult, EligibilitySource } from "../../../core/improve-types";
-import { type ChatCompletionOptions, type ChatMessage, parseEmbeddedJsonResponse } from "../../../llm/client";
+import type { AkmDistillResult } from "../../../core/improve-types";
+import { parseEmbeddedJsonResponse } from "../../../core/parse";
+import type { ChatCompletionOptions, ChatMessage } from "../../../llm/client";
+import type { EligibilitySource } from "../../proposal/proposal-types";
 import { isProposalSkipped, type Proposal, type ProposalsContext } from "../../proposal/repository";
 import { assessMemoryKnowledgePromotionCandidate } from "../distill-promotion-policy";
 import { emitProposal } from "../proposal-envelope";
@@ -151,7 +153,7 @@ async function resolveKnowledgePromotionContent(
             ref: ctx.itemRef ?? durableInputRef,
             metadata: {
               outcome: "skipped" as const,
-              lessonRef: knowledgeRef,
+              proposalRef: knowledgeRef,
               message: "D-1: LLM resolved destination conflict as NOOP — existing content kept",
               ...ctx.eligMeta,
             },
@@ -164,7 +166,8 @@ async function resolveKnowledgePromotionContent(
             ok: true,
             outcome: "skipped",
             inputRef: ctx.inputRef,
-            lessonRef: knowledgeRef,
+            proposalRef: knowledgeRef,
+            skipReason: "conflict_noop",
             message: "Existing knowledge content unchanged (contradiction resolution: NOOP)",
           },
         };
@@ -317,7 +320,7 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
         ref: ctx.itemRef ?? durableInputRef,
         metadata: {
           outcome: "skipped" as const,
-          lessonRef: promotion.knowledgeRef,
+          proposalRef: promotion.knowledgeRef,
           message: proposalResult.message,
           skipReason: proposalResult.reason,
           ...eligMeta,
@@ -330,7 +333,8 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
       ok: true,
       outcome: "skipped",
       inputRef,
-      lessonRef: promotion.knowledgeRef,
+      proposalRef: promotion.knowledgeRef,
+      skipReason: proposalResult.reason,
       message: proposalResult.message,
     };
   }
@@ -351,7 +355,6 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
       ref: ctx.itemRef ?? durableInputRef,
       metadata: {
         outcome: "queued" as const,
-        lessonRef: promotion.knowledgeRef,
         proposalRef: promotion.knowledgeRef,
         proposalKind: "knowledge" as const,
         proposalId: proposal.id,
@@ -371,7 +374,6 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
     ok: true,
     outcome: "queued",
     inputRef,
-    lessonRef: promotion.knowledgeRef,
     proposalRef: promotion.knowledgeRef,
     proposalKind: "knowledge",
     proposalId: proposal.id,

@@ -9,14 +9,12 @@
  * it does *not* materialise files to disk (that is a `SourceProvider`). The two
  * built-in providers are:
  *
- * - `static-index` — reads the v2 JSON index schema (the official akm registry
- *   and any static-hosted team registry).
+ * - `static-index` — reads v2/v3 JSON indexes from the official akm registry
+ *   and static-hosted team registries.
  * - `skills-sh` — wraps the skills.sh REST API.
  *
- * The contract is a single `search()` method (the orchestrator's only entry
- * point). An earlier "v1-spec" surface (`searchKits`/`searchAssets`/`getKit`/
- * `canHandle`) was implemented by every provider but never called by any
- * non-test code; it was removed along with its supporting types.
+ * The contract is a single `search()` method, the orchestrator's only entry
+ * point.
  */
 
 import type { RegistryConfigEntry } from "../../core/config/config";

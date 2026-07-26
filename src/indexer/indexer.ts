@@ -65,6 +65,7 @@ import {
   upsertEntry,
   upsertWorkflowDocument,
 } from "../storage/repositories/index-entries-repository";
+import type { EntryProvenance } from "../storage/repositories/index-entry-types";
 import { rebuildFts } from "../storage/repositories/index-fts-repository";
 import { clearStaleCacheEntries } from "../storage/repositories/index-llm-cache-repository";
 import {
@@ -1289,7 +1290,7 @@ function persistDirRecords(
   warnings: string[],
   sourceRoots: readonly string[],
   scanComplete: boolean,
-  bundleByRoot?: ReadonlyMap<string, { bundleId: string; componentId: string; adapterId: string }>,
+  bundleByRoot: ReadonlyMap<string, { bundleId: string; componentId: string; adapterId: string }>,
 ): { dirsNeedingLlm: DirNeedingLlm[] } {
   const dirsNeedingLlm: DirNeedingLlm[] = [];
   const fullDelete = doFullDelete && scanComplete;
@@ -1381,8 +1382,9 @@ function persistDirRecords(
       let dedupedRows = 0;
 
       if (stash) {
-        const bundle = bundleByRoot?.get(path.resolve(currentStashDir));
-        const ownerIdentity = bundle?.bundleId ?? path.resolve(currentStashDir);
+        const bundle = bundleByRoot.get(path.resolve(currentStashDir));
+        if (!bundle) throw new Error(`Missing bundle provenance for indexed source ${currentStashDir}`);
+        const ownerIdentity = bundle.bundleId;
         for (const entry of stash.entries) {
           const entryPath = entry.filename ? path.join(dirPath, entry.filename) : null;
           if (!entryPath) {
@@ -1391,10 +1393,13 @@ function persistDirRecords(
           }
 
           const adapterConceptId = conceptIdByFile?.get(entryPath);
+          if (!adapterConceptId) {
+            warn(`Skipping entry without adapter-owned concept identity: ${entryPath}`);
+            continue;
+          }
           // Adapter-owned concept identity is path-based and cannot be replaced
-          // by presentation fields such as type/title. The legacy AKM key stays
-          // intact for native assets and nullable pre-cutover compatibility.
-          const identityKey = `${ownerIdentity}\0${adapterConceptId ?? `${entry.type}\0${entry.name}`}`;
+          // by presentation fields such as type/title.
+          const identityKey = `${ownerIdentity}\0${adapterConceptId}`;
           if (indexedAssetIdentities.has(identityKey)) {
             dedupedRows++;
             continue;
@@ -1409,18 +1414,10 @@ function persistDirRecords(
           const searchText = buildSearchText(entry);
           const entryWithSize = attachFileSize(entry, entryPath);
           // content_hash = doc.hash from the drain, keyed by the recognized
-          // file's path (stable across the legacy-sidecar merge). NULL preserves
-          // any existing hash (upsert COALESCE) for sidecar-only entries.
+          // file's path. A missing hash preserves the existing value on upsert.
           const contentHash = hashByFile?.get(entryPath);
 
-          // Chunk-5 Step 2 (spec §14.4): derive the durable bundle identity
-          // (the D-R2 qualified conceptId + `<bundle>//<conceptId>` item_ref) via
-          // the shared helper that the write-path fast path also uses. NULL
-          // provenance when the source root has no bundle mapping (e.g. write-back
-          // paths) — healed on next index.
-          const provenance = bundle
-            ? deriveEntryProvenance(bundle, entry.type, entry.name, adapterConceptId)
-            : undefined;
+          const provenance = deriveEntryProvenance(bundle, entry.type, entry.name, adapterConceptId);
 
           const entryId = upsertEntry(
             db,
@@ -1558,6 +1555,33 @@ async function indexEntries(
   );
 
   return { scannedDirs, skippedDirs, generatedCount, warnings, dirsNeedingLlm, complete };
+}
+
+function indexedProvenanceForFile(db: Database, filePath: string): EntryProvenance {
+  const row = db
+    .prepare(
+      "SELECT item_ref AS itemRef, bundle_id AS bundleId, component_id AS componentId, " +
+        "concept_id AS conceptId, adapter_id AS adapterId FROM entries WHERE file_path = ? LIMIT 1",
+    )
+    .get(filePath) as
+    | {
+        itemRef: string | null;
+        bundleId: string | null;
+        componentId: string | null;
+        conceptId: string | null;
+        adapterId: string | null;
+      }
+    | undefined;
+  if (!row?.itemRef || !row.bundleId || !row.componentId || !row.conceptId || !row.adapterId) {
+    throw new Error(`Missing indexed provenance for ${filePath}`);
+  }
+  return {
+    itemRef: row.itemRef,
+    bundleId: row.bundleId,
+    componentId: row.componentId,
+    conceptId: row.conceptId,
+    adapterId: row.adapterId,
+  };
 }
 
 async function enhanceDirsWithLlm(
@@ -1712,6 +1736,7 @@ async function enhanceDirsWithLlm(
             const entryPath = entry.filename ? path.join(dirPath, entry.filename) : files[0] || dirPath;
             const entryKey = `${currentStashDir}:${entry.type}:${entry.name}`;
             const searchText = buildSearchText(entry);
+            const provenance = indexedProvenanceForFile(db, entryPath);
             upsertEntry(
               db,
               entryKey,
@@ -1720,6 +1745,7 @@ async function enhanceDirsWithLlm(
               currentStashDir,
               attachFileSize(entry, entryPath),
               searchText,
+              provenance,
             );
           }
         })();
@@ -2031,13 +2057,9 @@ function buildIndexedDirCandidate(
 }
 
 function resolveIndexedFiles(dirPath: string, files: string[], stash: StashFile): string[] {
-  const fileBasenameMap = buildFileBasenameMap(files);
   const resolved = new Set<string>();
   for (const entry of stash.entries) {
-    const entryPath = entry.filename
-      ? path.join(dirPath, entry.filename)
-      : matchEntryToFile(entry.name, fileBasenameMap);
-    if (entryPath) resolved.add(entryPath);
+    if (entry.filename) resolved.add(path.join(dirPath, entry.filename));
   }
   return resolved.size > 0 ? [...resolved] : files;
 }
@@ -2194,48 +2216,6 @@ async function enhanceStashWithLlm(
   return { entries: enhanced };
 }
 
-/**
- * Build a map from base filename (without extension) to full path for quick lookups.
- */
-export function buildFileBasenameMap(files: string[]): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const file of files) {
-    const base = path.basename(file, path.extname(file));
-    // Only keep first match per base name to avoid ambiguity
-    if (!map.has(base)) map.set(base, file);
-  }
-  return map;
-}
-
-/**
- * Try to match a filename-less entry to an actual file in the directory.
- *
- * Matching strategy (in priority order):
- *   1. Exact basename match: entry.name === filename without extension
- *   2. Last path segment match: for entries with names like "dir/sub-entry",
- *      try matching the last segment
- *   3. No implicit file fallback: ambiguous legacy entries are skipped
- */
-export function matchEntryToFile(entryName: string, fileMap: Map<string, string>): string | null {
-  // Exact match on entry name
-  const exact = fileMap.get(entryName);
-  if (exact) return exact;
-
-  // Try last segment for hierarchical names (e.g. "corpus/agentic-patterns/foo")
-  const lastSegment = entryName.split("/").pop() ?? entryName;
-  if (lastSegment !== entryName) {
-    const segmentMatch = fileMap.get(lastSegment);
-    if (segmentMatch) return segmentMatch;
-  }
-
-  return null;
-}
-
-// `buildSearchFields` and `buildSearchText` were previously re-exported from
-// here for backwards compatibility. Importers should now pull them directly
-// from `./search-fields` to avoid loading the indexer's full dependency
-// graph (LLM client, embedder facade) when only the text builder is needed.
-
 // ── lookup ─────────────────────────────────────────────────────────────────
 
 import { type BundleRef, makeBundleRef } from "../core/asset/asset-ref";
@@ -2253,14 +2233,13 @@ export interface IndexEntry {
   /** Asset name as recorded by the indexer. */
   name: string;
   /** Adapter that owns recognition and progressive behavior for this entry. */
-  adapterId?: string;
+  adapterId: string;
   /** Persisted format-neutral projection for generic presentation. */
   document?: IndexDocument;
   /** Canonical durable identity from `entries.item_ref`. */
-  itemRef?: string;
-  /** Nullable-row fallback provenance from the index. */
-  bundleId?: string;
-  conceptId?: string;
+  itemRef: string;
+  bundleId: string;
+  conceptId: string;
 }
 
 async function resolveLookupSources(): Promise<SearchSource[]> {
@@ -2317,17 +2296,18 @@ export async function lookupBundleRef(ref: BundleRef): Promise<IndexEntry | null
       } catch {
         // Corrupt optional projection does not erase the durable path identity.
       }
+      if (!row.itemRef || !row.bundleId || !row.conceptId || !row.adapterId) continue;
       return {
         entryKey: row.entryKey,
         filePath: row.filePath,
         stashDir: row.stashDir,
         type: row.type,
         name: document?.name ?? ref.conceptId.split("/").pop() ?? ref.conceptId,
-        adapterId: row.adapterId ?? undefined,
+        adapterId: row.adapterId,
         document,
-        itemRef: row.itemRef ?? undefined,
-        bundleId: row.bundleId ?? undefined,
-        conceptId: row.conceptId ?? undefined,
+        itemRef: row.itemRef,
+        bundleId: row.bundleId,
+        conceptId: row.conceptId,
       };
     }
     return null;
@@ -2342,121 +2322,11 @@ export async function lookupBundleRef(ref: BundleRef): Promise<IndexEntry | null
  * file corresponds to which ref; the indexer walks `provider.path()` for
  * every configured source, so this query covers all source kinds.
  *
- * Match rules:
- *   - `ref.origin === undefined` → first match across all sources (primary
- *     source first, then in declared order — same priority as the indexer's
- *     write order).
- *   - an exact configured origin → restrict to that source.
- *   - `local` / `stash` with no exact configured source → primary source compatibility alias.
- *   - `ref.origin === <name>`    → restrict to the matching source name. We
- *     resolve the source's directory and match on `entry_key` prefix.
- *
  * Returns `null` when no row matches — callers translate that into a
  * `NotFoundError` with their own messaging.
  */
 export async function lookup(ref: AssetRef): Promise<IndexEntry | null> {
-  const sources = await resolveLookupSources();
-  if (sources.length === 0) return null;
-
-  const dbPath = getDbPath();
-  const db = openExistingDatabase(dbPath);
-  try {
-    const escapeLike = (value: string): string =>
-      value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
-
-    // Canonical names strip .md for markdown assets, but users often pass
-    // refs with .md (e.g. command:release.md). Normalize by trying both.
-    const nameVariants = [ref.name];
-    if (ref.name.endsWith(".md")) {
-      nameVariants.push(ref.name.slice(0, -3));
-    }
-
-    const { candidateDirs, qualified } = resolveLookupScope(ref.origin, sources);
-
-    if (candidateDirs.length === 0) return null;
-
-    // Prefer durable indexed identity. Scoping each lookup to candidateDirs
-    // preserves configured source priority for duplicate concepts while exact
-    // bundle refs resolve directly through `item_ref`.
-    for (const name of nameVariants) {
-      const conceptId = conceptIdFromTypeName(ref.type, name);
-      const itemRefInput = qualified && ref.origin ? `${ref.origin}//${conceptId}` : conceptId;
-      for (const dir of candidateDirs) {
-        const id = findEntryIdByRef(db, itemRefInput, dir);
-        if (id === undefined) continue;
-        const row = db
-          .prepare(
-            "SELECT entry_key AS entryKey, file_path AS filePath, stash_dir AS stashDir, entry_type AS type, " +
-              "item_ref AS itemRef, bundle_id AS bundleId, concept_id AS conceptId FROM entries WHERE id = ?",
-          )
-          .get(id) as
-          | {
-              entryKey: string;
-              filePath: string;
-              stashDir: string;
-              type: string;
-              itemRef: string | null;
-              bundleId: string | null;
-              conceptId: string | null;
-            }
-          | undefined;
-        if (row) {
-          return {
-            entryKey: row.entryKey,
-            filePath: row.filePath,
-            stashDir: row.stashDir,
-            type: row.type,
-            name,
-            itemRef: row.itemRef ?? undefined,
-            bundleId: row.bundleId ?? undefined,
-            conceptId: row.conceptId ?? undefined,
-          };
-        }
-      }
-    }
-
-    // Nullable pre-flip rows cannot be found by item_ref. Keep the legacy
-    // entry_key lookup only as their compatibility fallback.
-    for (const name of nameVariants) {
-      const suffix = `:${ref.type}:${name}`;
-      const escapedSuffix = escapeLike(suffix);
-      for (const dir of candidateDirs) {
-        const escapedDir = escapeLike(dir);
-        const row = db
-          .prepare(
-            "SELECT entry_key AS entryKey, file_path AS filePath, stash_dir AS stashDir, entry_type AS type, " +
-              "item_ref AS itemRef, bundle_id AS bundleId, concept_id AS conceptId FROM entries " +
-              "WHERE item_ref IS NULL AND entry_key LIKE ? ESCAPE '\\' AND entry_type = ? LIMIT 1",
-          )
-          .get(`${escapedDir}${escapedSuffix}`, ref.type) as
-          | {
-              entryKey: string;
-              filePath: string;
-              stashDir: string;
-              type: string;
-              itemRef: string | null;
-              bundleId: string | null;
-              conceptId: string | null;
-            }
-          | undefined;
-        if (row) {
-          return {
-            entryKey: row.entryKey,
-            filePath: row.filePath,
-            stashDir: row.stashDir,
-            type: row.type,
-            name,
-            itemRef: row.itemRef ?? undefined,
-            bundleId: row.bundleId ?? undefined,
-            conceptId: row.conceptId ?? undefined,
-          };
-        }
-      }
-    }
-    return null;
-  } finally {
-    closeDatabase(db);
-  }
+  return lookupBundleRef({ bundle: ref.origin, conceptId: conceptIdFromTypeName(ref.type, ref.name) });
 }
 
 // ── Utility score recomputation ──────────────────────────────────────────────

@@ -136,7 +136,6 @@ const WIKI_INFRA_FILES = new Set(["schema.md", "index.md", "log.md"]);
  * invariant for sensitive env/secret files holds by construction. Returns `true`
  * when the `akm` adapter must ABSTAIN (recognize → null):
  *   - an `env/…` `.env` file with a sibling `.sensitive` marker;
- *   - anything under the frozen legacy `vaults/` dir (the `vault` type is gone);
  *   - a `secrets/` `.sensitive`/`.lock` marker, or a secret with a sibling
  *     `<name>.sensitive` marker;
  *   - a `wikis/<name>/` root-level infra file (schema.md/index.md/log.md).
@@ -152,10 +151,6 @@ function akmStashAbstains(root: string, absPath: string): boolean {
   if (segments[0] === "env" && (absPath.endsWith(".env") || path.basename(absPath) === ".env")) {
     if (fs.existsSync(absPath.replace(/\.env$/, ".sensitive"))) return true;
   }
-
-  // The legacy `vaults/` directory (frozen copy left by the 0.8 migration) is
-  // never indexed — the `vault` asset type was removed in 0.9.0.
-  if (segments[0] === "vaults") return true;
 
   // Skip secret files that are themselves a `.sensitive` marker, or that have a
   // sibling `<name>.sensitive` marker. Secrets are otherwise indexed by name
@@ -210,7 +205,6 @@ const DOCUMENT_JSON_CARRIED_FIELDS = [
   "wikiRole",
   "sources",
   "generation",
-  "sourceRefs",
   "evidenceSources",
 ] as const satisfies readonly (keyof IndexDocument)[];
 
@@ -266,17 +260,11 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   const match = recognizeMatch(file);
   if (match === null) return null;
 
-  // canonical name = the winning type's per-type canonical name (§5.1:
-  // reproduce AssetSpec.toCanonicalName). Fall back to the BASENAME minus its
-  // extension only if the type's toCanonicalName abstains (e.g. a `skills/x.md`
-  // flat file, or a `SKILL.md` sitting directly at the skills/ root with no name
-  // dir). The basename fallback is byte-identical to the pre-0.9.0 flat-walk's
-  // `?? baseName` fallback (metadata.ts `generateMetadata`), so `entry.name`
-  // stays the BARE canonical name — never the stash-root-relative path, which
-  // would re-embed the `<stash-subdir>/` type prefix and double-prefix every
-  // downstream legacy `type:name` ref (e.g. `skill:skills/x`).
+  // Canonical name = the winning type's per-type canonical name (§5.1).
+  // Invalid placements are not projected onto a different identity.
   const derived = deriveCanonicalAssetNameFromStashRoot(match.type, c.root, file.absPath);
-  const canonicalName = derived ?? path.basename(file.absPath).replace(/\.[^./]+$/, "");
+  if (derived === undefined) return null;
+  const canonicalName = derived;
   // conceptId = the QUALIFIED `<stash-subdir>/<canonical-name>` spelling
   // (ref-grammar decision D-R2): the same form `placeNew` consumes, and for
   // markdown types the OKF concept ID (path − .md). Both branches now feed a
@@ -514,7 +502,7 @@ export const akmAdapter: BundleAdapter = {
    * Install-time probe (§1.2), reproducing today's stash-root detection
    * (`provider-utils.ts#detectStashRoot`/`hasStashDirs`): a root is an AKM
    * workspace root when it carries a `.stash` marker, multiple native placement
-   * directories, or one native directory whose Markdown is absent/legacy or
+   * directories, or one native directory whose Markdown is absent or
    * declares the matching AKM type. The final check prevents an OKF bundle with
    * an unrelated open type under (for example) `knowledge/` from being claimed
    * by AKM merely because the directory name overlaps.

@@ -7,9 +7,8 @@
 // The deterministic drain/triage engine must stamp WHY each proposal landed
 // where it did (auto-accepted / deferred / auto-rejected, with reason +
 // thresholds) onto the proposal row, and the `proposal show` / `list` surfaces
-// must expose it. Legacy proposals carry no decision and must render cleanly
-// as "unknown". Historical rows written by the deleted (0.9.0) improve
-// confidence gate must keep rendering — the render fixtures below pin that.
+// must expose it. Proposals that have not passed through a gate omit the gate
+// fields from rendered output.
 //
 // FS-bound (real createProposal/listProposals against the sandboxed state.db),
 // no process.env mutation — the stash dir is passed explicitly and the preload
@@ -85,10 +84,10 @@ describe("recordGateDecision (#577)", () => {
 
     const updated = recordGateDecision(stash, created.id, {
       outcome: "deferred",
-      reason: "below-threshold",
-      confidence: 0.72,
-      thresholds: { autoAccept: 0.9 },
-      gate: "improve:reflect",
+      reason: "max-diff-lines",
+      measured: 210,
+      thresholds: { maxDiffLines: 200 },
+      gate: "triage:personal-stash",
     });
 
     expect(updated?.gateDecision?.outcome).toBe("deferred");
@@ -101,10 +100,10 @@ describe("recordGateDecision (#577)", () => {
     const reread = getProposal(stash, created.id);
     expect(reread.gateDecision).toEqual({
       outcome: "deferred",
-      reason: "below-threshold",
-      confidence: 0.72,
-      thresholds: { autoAccept: 0.9 },
-      gate: "improve:reflect",
+      reason: "max-diff-lines",
+      measured: 210,
+      thresholds: { maxDiffLines: 200 },
+      gate: "triage:personal-stash",
       decidedAt,
     });
   });
@@ -222,7 +221,7 @@ describe("drainProposals records a gate decision per path (#577)", () => {
   });
 });
 
-// ── show / list expose the decision (and legacy renders cleanly) ────────────
+// ── show / list expose the decision ────────────────────────────────────────
 
 describe("proposal show / list expose the gate decision (#577)", () => {
   const withDecision = {
@@ -234,10 +233,10 @@ describe("proposal show / list expose the gate decision (#577)", () => {
     confidence: 0.72,
     gateDecision: {
       outcome: "deferred",
-      reason: "below-threshold",
-      confidence: 0.72,
-      thresholds: { autoAccept: 0.9 },
-      gate: "improve:reflect",
+      reason: "min-content-lines",
+      measured: 1,
+      thresholds: { minContentLines: 5 },
+      gate: "triage:personal-stash",
       decidedAt: "2026-06-11T00:00:01.000Z",
     },
   };
@@ -258,9 +257,9 @@ describe("proposal show / list expose the gate decision (#577)", () => {
       decidedAt: "2026-06-11T00:00:01.000Z",
     },
   };
-  const legacy = {
-    id: "uuid-legacy",
-    ref: "lessons/old",
+  const ungated = {
+    id: "uuid-ungated",
+    ref: "lessons/new",
     status: "pending",
     source: "reflect",
     createdAt: "2026-06-11T00:00:00.000Z",
@@ -269,7 +268,7 @@ describe("proposal show / list expose the gate decision (#577)", () => {
   test("shapeProposalEntry projects confidence + gateDecision at normal/full detail", () => {
     const normal = shapeProposalEntry(withDecision, "normal");
     expect(normal.confidence).toBe(0.72);
-    expect((normal.gateDecision as Record<string, unknown>).reason).toBe("below-threshold");
+    expect((normal.gateDecision as Record<string, unknown>).reason).toBe("min-content-lines");
 
     const full = shapeProposalEntry(withDecision, "full");
     expect(full.gateDecision).toBeDefined();
@@ -278,9 +277,9 @@ describe("proposal show / list expose the gate decision (#577)", () => {
   test("formatProposalShowPlain renders decision + reason + reconstructable comparison", () => {
     const out = formatProposalShowPlain({ proposal: withDecision });
     expect(out).toContain("gate.decision: deferred");
-    expect(out).toContain("gate.reason: below-threshold");
-    expect(out).toContain("0.72 < 0.90");
-    expect(out).toContain("gate.by: improve:reflect");
+    expect(out).toContain("gate.reason: min-content-lines");
+    expect(out).toContain("1 < 5");
+    expect(out).toContain("gate.by: triage:personal-stash");
   });
 
   test("formatProposalShowPlain renders the full '210 > 200' comparison for a drain band defer", () => {
@@ -296,19 +295,17 @@ describe("proposal show / list expose the gate decision (#577)", () => {
     expect(out).toContain("gate=deferred:max-diff-lines (210 > 200)");
   });
 
-  test("formatProposalShowPlain renders 'unknown' for a legacy proposal with no decision", () => {
-    const out = formatProposalShowPlain({ proposal: legacy });
-    expect(out).toContain("gate.decision: unknown");
-    // Must not throw or emit a malformed line.
+  test("formatProposalShowPlain omits gate fields when no decision exists", () => {
+    const out = formatProposalShowPlain({ proposal: ungated });
+    expect(out).not.toContain("gate.");
     expect(out).not.toContain("undefined");
   });
 
-  test("formatProposalListPlain surfaces the decision inline and omits it for legacy rows", () => {
-    const out = formatProposalListPlain({ totalCount: 2, proposals: [withDecision, legacy] });
-    expect(out).toContain("gate=deferred:below-threshold (0.72 < 0.90)");
-    // Legacy row renders with no gate suffix and no stray text.
-    const legacyLine = out.split("\n").find((l) => l.includes("uuid-legacy")) ?? "";
-    expect(legacyLine).not.toContain("gate=");
-    expect(legacyLine).not.toContain("undefined");
+  test("formatProposalListPlain surfaces the decision inline and omits it for ungated rows", () => {
+    const out = formatProposalListPlain({ totalCount: 2, proposals: [withDecision, ungated] });
+    expect(out).toContain("gate=deferred:min-content-lines (1 < 5)");
+    const ungatedLine = out.split("\n").find((l) => l.includes("uuid-ungated")) ?? "";
+    expect(ungatedLine).not.toContain("gate=");
+    expect(ungatedLine).not.toContain("undefined");
   });
 });

@@ -60,8 +60,12 @@ function seedImproveRun(id = "run-html-1", ok = true): void {
         actions: [
           { ref: "memories/a", mode: "reflect", result: { ok: true } },
           { ref: "memories/b", mode: "distill", result: { outcome: "queued" } },
-          { ref: "memories/c", mode: "distill-skipped", result: { reason: "type-filter" } },
         ],
+        distillSkipped: {
+          total: 1,
+          byReason: { "type-filter": 1 },
+          samples: [{ ref: "memories/c", reason: "type-filter" }],
+        },
         consolidation: {
           processed: 4,
           promoted: ["memories/p1", "memories/p2"],

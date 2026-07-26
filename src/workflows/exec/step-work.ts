@@ -46,7 +46,7 @@ import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
 import { type WorkflowRunUnitRow, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
-import { canonicalJson as canonicalJsonString, decodeCanonicalPlan } from "../ir/plan-hash";
+import { canonicalJson as canonicalJsonString } from "../ir/plan-hash";
 import type {
   FrozenEngineSnapshot,
   IrInvocation,
@@ -1522,28 +1522,6 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
     kind: "gate-exhausted",
     gateRejection: { stepId, missing: rejection.missing, feedback: rejection.feedback },
   };
-}
-
-// ── Frozen plan parse + integrity check (shared) ─────────────────────────────
-
-/**
- * Parse and integrity-check a run's frozen plan JSON (migration 006). Shared by
- * the engine loop's plan loader (`run-workflow.ts`) and the R3 brief/report
- * surfaces so all three apply the SAME corruption + hash checks — the frozen
- * plan the engine executes is the exact plan brief describes and report
- * validates against. A NULL `plan_json` is the CALLER's decision (the engine
- * warns and compiles from the asset; brief/report error), so this helper only
- * handles a PRESENT plan string.
- */
-export function parseFrozenPlan(runId: string, planJson: string, planHash: string | null): WorkflowPlanGraph {
-  try {
-    return decodeCanonicalPlan(runId, planJson, planHash);
-  } catch (cause) {
-    throw new UsageError(
-      `Workflow run ${runId} has a corrupt frozen plan: ${cause instanceof Error ? cause.message : String(cause)}. ` +
-        `The journaled plan cannot be executed — abandon it and start a new run.`,
-    );
-  }
 }
 
 // ── Small helpers ────────────────────────────────────────────────────────────

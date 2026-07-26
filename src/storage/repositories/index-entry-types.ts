@@ -44,19 +44,17 @@ export interface DbIndexedEntry {
   stashDir: string;
   entry: IndexDocument;
   searchText: string;
-  /** Canonical durable ref from `entries.item_ref`; absent on nullable pre-flip rows. */
-  itemRef?: string;
+  /** Canonical durable ref from `entries.item_ref`. */
+  itemRef: string;
   /**
    * Chunk-5 flip (Checkpoint A): the durable `concept_id`/`bundle_id` provenance
-   * columns, surfaced from the `entries` row so the state.db salience/outcome
-   * dual-read arms can reconstruct the fully-qualified `<bundle>//<concept-id>`
-   * new-grammar key with no extra query. `undefined` for a NULL-provenance
-   * (pre-flip / write-back) row — the reader then falls through to its inline
-   * legacy `type:name` arm.
+   * columns, surfaced from the `entries` row so state.db readers can reconstruct
+   * the fully-qualified `<bundle>//<concept-id>` key with no extra query.
+   * Undefined provenance marks an invalid indexed row.
    */
-  conceptId?: string;
-  bundleId?: string;
-  adapterId?: string;
+  conceptId: string;
+  bundleId: string;
+  adapterId: string;
 }
 
 /** One FTS5 search hit joined back to its `entries` row. */
@@ -69,9 +67,8 @@ export interface DbSearchResult {
   /**
    * Chunk-5 flip F5d (Step 2): the durable fully-qualified `<bundle>//<concept-id>`
    * stored spelling from the `entries.item_ref` column, surfaced onto the search
-   * read path so the salience dual-read arm keys on the new grammar first.
-   * `undefined`/`null` for a NULL-provenance (pre-flip / write-back) row — the
-   * reader then falls through to its inline legacy `type:name` arm.
+   * read path so salience keys on durable identity. Null provenance marks an
+   * invalid indexed row.
    */
   itemRef?: string | null;
   /** Indexed provenance used when `item_ref` is temporarily NULL. */

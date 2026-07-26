@@ -13,7 +13,7 @@
  * orchestrator) just for these shapes. That back-edge was a static-graph
  * cycle even though it was type-only (chunk 9 WI-9.8 KILL 5 sever): the
  * store must not depend on the orchestrator. `graph-extraction.ts`
- * re-exports these types so existing import sites are unaffected.
+ * owns these shared graph shapes without importing the extraction orchestrator.
  */
 
 import type { GraphExtractionReason, GraphExtractionStatus, GraphRelation } from "../../llm/graph-extract";

@@ -48,7 +48,13 @@ beforeEach(() => {
   storage = withIsolatedAkmStorage();
   // Improve verbs resolve an engine before dispatch; the injected `chat`
   // stubs keep every call offline.
-  saveConfig(withTestImproveLlm({ semanticSearchMode: "off" }));
+  saveConfig(
+    withTestImproveLlm({
+      semanticSearchMode: "off",
+      bundles: { stash: { path: storage.stashDir, writable: true } },
+      defaultBundle: "stash",
+    }),
+  );
 });
 
 afterEach(() => {
@@ -192,8 +198,8 @@ describe("appendEvent hot path — improve loop wiring", () => {
     fs.mkdirSync(path.dirname(memPath), { recursive: true });
     fs.writeFileSync(memPath, "---\ndescription: hot path alpha\n---\n\nRemember alpha.\n", "utf8");
     await akmIndex({ stashDir: storage.stashDir, full: true });
-    appendEvent({ eventType: "feedback", ref: "memories/hot-path-alpha", metadata: { signal: "negative" } });
-    appendEvent({ eventType: "feedback", ref: "memories/hot-path-alpha", metadata: { signal: "negative" } });
+    appendEvent({ eventType: "feedback", ref: "stash//memories/hot-path-alpha", metadata: { signal: "negative" } });
+    appendEvent({ eventType: "feedback", ref: "stash//memories/hot-path-alpha", metadata: { signal: "negative" } });
 
     const result = await akmImprove({
       stashDir: storage.stashDir,
@@ -219,7 +225,7 @@ describe("appendEvent hot path — improve loop wiring", () => {
           ok: true,
           outcome: "skipped",
           inputRef: o.ref,
-          lessonRef: "lessons/stub",
+          proposalRef: "lessons/stub",
           message: "stub",
         };
       },

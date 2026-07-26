@@ -33,7 +33,8 @@
  */
 
 import { NotFoundError } from "../../core/errors";
-import { type EventEnvelope, type ReadEventsOptions, type ReadEventsResult, readEvents } from "../../core/events";
+import { type ReadEventsOptions, type ReadEventsResult, readEvents } from "../../core/events";
+import type { EventEnvelope } from "../../core/events-types";
 import type { WorkflowRunStatus } from "../../sources/types";
 import { withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
 

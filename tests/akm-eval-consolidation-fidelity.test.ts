@@ -255,7 +255,7 @@ describe("deterministic fixture-authored consolidation candidate oracle", () => 
     const countOnlyGuard = checkMergeInformationFloor(
       fixture.calibrationCandidate.body,
       fixture.calibrationCandidate.directProvenance,
-      fixture.sources.map((source) => ({ ...source, sourceRefs: [] })),
+      fixture.sources.map((source) => ({ ...source, xrefs: [] })),
       {},
     );
     expect(countOnlyGuard.specificityRetention).toBe(1);

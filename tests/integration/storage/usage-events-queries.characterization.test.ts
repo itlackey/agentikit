@@ -48,6 +48,7 @@ describe("usage_events query characterization (WS5)", () => {
       ["ref-test", null, 1, "lessons/a", null, null, "user", "2026-01-09 10:00:00"],
       ["ref-test", null, 1, "team//lessons/a", null, null, "user", "2026-01-10 10:00:00"],
       ["ref-test", null, 1, "team//lessons/a-extra", null, null, "user", "2026-01-11 10:00:00"],
+      ["foreign-test", null, 3, "team//pages/runbook", null, null, "user", "2026-01-12 10:00:00"],
     ];
     for (const r of rows) insert.run(...r);
   });
@@ -118,6 +119,14 @@ describe("usage_events query characterization (WS5)", () => {
     expect(getUsageEvents(db, { entry_ref: "stash//lessons/a" }).map((row) => row.entry_ref)).toEqual(
       Array(5).fill("stash//lessons/a"),
     );
+    // Concept IDs remain adapter-owned; the history query does not require an
+    // AKM type-directory prefix.
+    expect(getUsageEvents(db, { entry_ref: "pages/runbook" }).map((row) => row.entry_ref)).toEqual([
+      "team//pages/runbook",
+    ]);
+    expect(getUsageEvents(db, { entry_ref: "team//pages/runbook" }).map((row) => row.entry_ref)).toEqual([
+      "team//pages/runbook",
+    ]);
   });
 
   test("getUsageEvents fully materialises results (survive db.close)", () => {

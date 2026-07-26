@@ -650,26 +650,22 @@ describe("#644 encoding_salience provenance (content vs type-stub)", () => {
       upsertAssetSalience(db, "agents/s", computeSalience({ ref: "agents/s", type: "agent", retrievalFreq: 0 }), NOW);
       const contentRow = getAssetSalience(db, "agents/c");
       const stubRow = getAssetSalience(db, "agents/s");
-      expect(contentRow && isContentEncodingRow(contentRow, "agent")).toBe(true);
-      expect(stubRow && isContentEncodingRow(stubRow, "agent")).toBe(false);
+      expect(contentRow && isContentEncodingRow(contentRow)).toBe(true);
+      expect(stubRow && isContentEncodingRow(stubRow)).toBe(false);
     } finally {
       db.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  test("isContentEncodingRow legacy NULL-provenance heuristic: differs-from-stub ⇒ content", () => {
+  test("isContentEncodingRow rejects NULL provenance regardless of score", () => {
     const { db, tmpDir } = openTestStateDb();
     try {
-      // Simulate a legacy row written before migration 015 (encoding_source NULL)
-      // whose stored value differs from the type stub — i.e. a real score that was
-      // never re-clobbered. The heuristic must treat it as content.
       db.prepare(
         `INSERT INTO asset_salience
            (asset_ref, encoding_salience, outcome_salience, retrieval_salience, rank_score, consecutive_no_ops, updated_at, encoding_source)
          VALUES (?, ?, 0, 0, 0, 0, ?, NULL)`,
       ).run("memories/legacy-real", 0.83, NOW);
-      // And a legacy row sitting exactly on the type stub — treat as a stub.
       db.prepare(
         `INSERT INTO asset_salience
            (asset_ref, encoding_salience, outcome_salience, retrieval_salience, rank_score, consecutive_no_ops, updated_at, encoding_source)
@@ -679,8 +675,8 @@ describe("#644 encoding_salience provenance (content vs type-stub)", () => {
       const realRow = getAssetSalience(db, "memories/legacy-real");
       const stubRow = getAssetSalience(db, "agents/legacy-stub");
       expect(realRow?.encoding_source).toBeNull();
-      expect(realRow && isContentEncodingRow(realRow, "memory")).toBe(true);
-      expect(stubRow && isContentEncodingRow(stubRow, "agent")).toBe(false);
+      expect(realRow && isContentEncodingRow(realRow)).toBe(false);
+      expect(stubRow && isContentEncodingRow(stubRow)).toBe(false);
     } finally {
       db.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });

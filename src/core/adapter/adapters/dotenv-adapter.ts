@@ -19,7 +19,7 @@
  *
  * ── validate (spec §6 env/secret validation column) ──
  *
- * The dangerous-key scan (`dangerous-vault-key`), reusing the akm adapter's
+ * The dangerous-key scan (`dangerous-env-key`), reusing the akm adapter's
  * `dangerousEnvKeyDiagnostics` — which preserves the code-grounded narrowness:
  * it runs ONLY on `*.env`-suffixed files, so `secrets/<bare-name>` is never
  * scanned (its whole content is an opaque secret value). Reads KEY NAMES only.

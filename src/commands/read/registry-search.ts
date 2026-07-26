@@ -5,17 +5,12 @@
 import { toErrorMessage } from "../../core/common";
 import { DEFAULT_CONFIG, type RegistryConfigEntry } from "../../core/config/config";
 import { warn } from "../../core/warn";
-import { resolveProviderFactory } from "../../registry/factory";
+import { resolveRegistryProviderFactory } from "../../registry/factory";
 import type { RegistryAssetSearchHit, RegistrySearchHit, RegistrySearchResponse } from "../../registry/types";
 
 // ── Eagerly import providers to trigger self-registration ───────────────────
 
 import "../../registry/providers/index";
-
-// ── Re-exports for backward compatibility ───────────────────────────────────
-
-export type { RegistryBundleEntry, RegistryIndex } from "../../registry/providers/static-index";
-export type { RegistryAssetSearchHit } from "../../registry/types";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -176,7 +171,7 @@ export function resolveRegistries(configRegistries?: RegistryConfigEntry[]): Reg
 
 function createProvider(entry: RegistryConfigEntry, warnings: string[]) {
   const providerType = entry.provider ?? "static-index";
-  const factory = resolveProviderFactory(providerType);
+  const factory = resolveRegistryProviderFactory(providerType);
   if (!factory) {
     const label = entry.name ? `${entry.name} (${entry.url})` : entry.url;
     warnings.push(`Registry ${label}: unknown provider type "${providerType}"`);

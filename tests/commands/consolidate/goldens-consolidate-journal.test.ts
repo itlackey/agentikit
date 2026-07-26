@@ -41,12 +41,9 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import {
-  akmConsolidate,
-  type ConsolidateDeleteOp,
-  type ConsolidateOperation,
-} from "../../../src/commands/improve/consolidate";
+import { akmConsolidate } from "../../../src/commands/improve/consolidate";
 import { consolidateGuardStatus } from "../../../src/commands/improve/consolidate/eligibility";
+import type { ConsolidateDeleteOp, ConsolidateOperation } from "../../../src/commands/improve/consolidate/types";
 import { assembleAsset } from "../../../src/core/asset/asset-serialize";
 import type { AkmConfig } from "../../../src/core/config/config";
 import { ConfigError } from "../../../src/core/errors";
@@ -217,7 +214,7 @@ async function captureFullRunLifecycle(): Promise<Record<string, unknown>> {
 
     let result: Awaited<ReturnType<typeof akmConsolidate>>;
     try {
-      result = await akmConsolidate({ stashDir: root, target: root, config: CONFIG, assumeYes: true });
+      result = await akmConsolidate({ stashDir: root, config: CONFIG, assumeYes: true });
     } finally {
       writeSpy.mockRestore();
       copySpy.mockRestore();
@@ -284,7 +281,7 @@ async function captureAllHotZeroLlm(): Promise<Record<string, unknown>> {
       return JSON.stringify({ operations: [] });
     });
 
-    const result = await akmConsolidate({ stashDir: root, target: root, config: CONFIG, assumeYes: true });
+    const result = await akmConsolidate({ stashDir: root, config: CONFIG, assumeYes: true });
 
     return {
       chatCompletionCallCount: chatCalls,
@@ -332,7 +329,7 @@ async function captureAbortIncomplete(): Promise<Record<string, unknown>> {
 
     let caught: unknown;
     try {
-      await akmConsolidate({ stashDir: root, target: root, config: CONFIG });
+      await akmConsolidate({ stashDir: root, config: CONFIG });
     } catch (e) {
       caught = e;
     }
@@ -364,7 +361,7 @@ async function captureAbortUnreadable(): Promise<Record<string, unknown>> {
 
     let caught: unknown;
     try {
-      await akmConsolidate({ stashDir: root, target: root, config: CONFIG });
+      await akmConsolidate({ stashDir: root, config: CONFIG });
     } catch (e) {
       caught = e;
     }
@@ -402,7 +399,6 @@ async function captureCleanIncomplete(): Promise<Record<string, unknown>> {
 
     const result = await akmConsolidate({
       stashDir: root,
-      target: root,
       config: CONFIG,
       recoveryMode: "clean",
     });
@@ -443,7 +439,7 @@ async function captureCompletedSwept(): Promise<Record<string, unknown>> {
       JSON.stringify({ operations: [{ op: "delete", ref, reason: "redundant" }] }),
     );
 
-    const result = await akmConsolidate({ stashDir: root, target: root, config: CONFIG, assumeYes: true });
+    const result = await akmConsolidate({ stashDir: root, config: CONFIG, assumeYes: true });
 
     return {
       ok: result.ok,
@@ -499,6 +495,13 @@ describe("checkForIncompleteJournal recovery-mode matrix (run-entry, abort|clean
   test("publishing phase recovers even when the diagnostic checklist is incomplete", async () => {
     const storage = withIsolatedAkmStorage();
     try {
+      const targetBundle = "stash";
+      const config = {
+        ...CONFIG,
+        bundles: { [targetBundle]: { path: storage.stashDir, writable: true } },
+        defaultBundle: targetBundle,
+        defaultWriteTarget: targetBundle,
+      } as unknown as AkmConfig;
       const staleOp: ConsolidateDeleteOp = {
         op: "delete",
         ref: memoryRef(JOURNAL_STALE_OP_REF_NAME),
@@ -510,15 +513,18 @@ describe("checkForIncompleteJournal recovery-mode matrix (run-entry, abort|clean
           startedAt: "2020-01-01T00:00:00.000Z",
           operations: [staleOp] satisfies ConsolidateOperation[],
           completed: [],
+          targetSource: targetBundle,
+          targetKind: "filesystem",
           gitPaths: [],
+          gitSnapshots: {},
         },
         "publishing",
       );
 
       const result = await akmConsolidate({
         stashDir: storage.stashDir,
-        target: storage.stashDir,
-        config: CONFIG,
+        target: targetBundle,
+        config,
       });
 
       expect(result.ok).toBe(true);
@@ -543,9 +549,9 @@ describe("checkForIncompleteJournal recovery-mode matrix (run-entry, abort|clean
         gitPaths: [],
       });
 
-      await expect(
-        akmConsolidate({ stashDir: storage.stashDir, target: storage.stashDir, config: CONFIG }),
-      ).rejects.toThrow("Incomplete consolidation run detected");
+      await expect(akmConsolidate({ stashDir: storage.stashDir, config: CONFIG })).rejects.toThrow(
+        "Incomplete consolidation run detected",
+      );
       expect(fs.existsSync(craftedJournalPath(storage.stashDir))).toBe(true);
     } finally {
       storage.cleanup();

@@ -8,9 +8,7 @@
  *
  * Split out of `registry.ts` so that `youtube.ts` (a built-in fetcher that
  * `registry.ts` imports by value) does not need a type-only import back into
- * `registry.ts` — that back-edge is a static-graph cycle even though it is
- * type-only (chunk 9 WI-9.8 KILL 3 sever). `registry.ts` re-exports these
- * types so existing import sites are unaffected.
+ * `registry.ts`.
  */
 
 export interface WikiSnapshotResult {

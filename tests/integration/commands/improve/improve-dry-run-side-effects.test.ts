@@ -260,7 +260,7 @@ describe("akm improve --dry-run writes no AKM artifacts", () => {
         }),
       (url) => {
         fetchCalls.push(url);
-        return new Response('{"choices":[{"message":{"content":"{\\"contradicts\\":true}"}}]}');
+        return new Response('{"choices":[{"message":{"content":"{\\"contradicts\\":true,\\"confidence\\":1}"}}]}');
       },
     );
 

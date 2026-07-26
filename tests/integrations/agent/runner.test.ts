@@ -2,11 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { resolveProcessEnabled } from "../../../src/commands/improve/improve-strategies";
 import type { AkmConfig } from "../../../src/core/config/config";
 import { resolveEngine } from "../../../src/integrations/agent/engine-resolution";
-import {
-  isProcessEnabled,
-  resolveDefaultLlmRunner,
-  resolveImproveProcessRunner,
-} from "../../../src/integrations/agent/runner";
+import { resolveDefaultLlmRunner, resolveImproveProcessRunner } from "../../../src/integrations/agent/runner";
+import { isProcessEnabled } from "../../../src/llm/feature-gate";
 
 function makeConfig(overrides: Partial<AkmConfig> = {}): AkmConfig {
   return {

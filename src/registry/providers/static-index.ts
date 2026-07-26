@@ -6,7 +6,7 @@ import { fetchWithRetry, jsonWithByteCap, toErrorMessage } from "../../core/comm
 import type { RegistryConfigEntry } from "../../core/config/config";
 import { asString } from "../../integrations/github";
 import { fetchCachedJson } from "../../storage/repositories/registry-cache";
-import { registerProvider } from "../factory";
+import { registerRegistryProvider } from "../factory";
 import { buildInstallRef } from "../resolve";
 import type { InstallKind, RegistryAssetEntry, RegistryAssetSearchHit, RegistrySearchHit } from "../types";
 import type { RegistryProvider, RegistryProviderResult, RegistryProviderSearchOptions } from "./types";
@@ -15,9 +15,6 @@ import type { RegistryProvider, RegistryProviderResult, RegistryProviderSearchOp
 
 /** Cache TTL in milliseconds (1 hour). */
 const CACHE_TTL_MS = 60 * 60 * 1000;
-
-/** Maximum age before cache is considered stale but still usable as fallback (7 days). */
-const CACHE_STALE_MS = 7 * 24 * 60 * 60 * 1000;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -54,13 +51,13 @@ class StaticIndexProvider implements RegistryProvider {
 
   async search(options: RegistryProviderSearchOptions): Promise<RegistryProviderResult> {
     const warnings: string[] = [];
-    const allKits = await this.loadAllKits(warnings);
+    const bundles = await this.loadBundles(warnings);
 
-    const hits = scoreKits(allKits, options.query, options.limit);
+    const hits = scoreBundles(bundles, options.query, options.limit);
 
     let assetHits: RegistryAssetSearchHit[] | undefined;
     if (options.includeAssets) {
-      const scored = scoreAssets(allKits, options.query, options.limit);
+      const scored = scoreAssets(bundles, options.query, options.limit);
       if (scored.length > 0) assetHits = scored;
     }
 
@@ -69,27 +66,27 @@ class StaticIndexProvider implements RegistryProvider {
 
   // ── Internals ───────────────────────────────────────────────────────────
 
-  private async loadAllKits(warnings: string[]): Promise<Array<{ stash: RegistryBundleEntry; registryName?: string }>> {
-    const allKits: Array<{ stash: RegistryBundleEntry; registryName?: string }> = [];
+  private async loadBundles(warnings: string[]): Promise<Array<{ stash: RegistryBundleEntry; registryName?: string }>> {
+    const bundles: Array<{ stash: RegistryBundleEntry; registryName?: string }> = [];
     try {
       const index = await loadIndex(this.config);
       if (index) {
         const regName = this.config.name;
         for (const stash of index.stashes) {
-          allKits.push({ stash, registryName: regName });
+          bundles.push({ stash, registryName: regName });
         }
       }
     } catch (err) {
       const label = this.config.name ? `${this.config.name} (${this.config.url})` : this.config.url;
       warnings.push(`Registry ${label}: ${toErrorMessage(err)}`);
     }
-    return allKits;
+    return bundles;
   }
 }
 
 // ── Self-register ───────────────────────────────────────────────────────────
 
-registerProvider("static-index", (config) => new StaticIndexProvider(config));
+registerRegistryProvider("static-index", (config) => new StaticIndexProvider(config));
 
 // ── Index loading with cache ────────────────────────────────────────────────
 
@@ -98,7 +95,7 @@ async function loadIndex(entry: RegistryConfigEntry): Promise<RegistryIndex | nu
     cacheKey: entry.url,
     ttlMs: CACHE_TTL_MS,
     // Both the fresh hit and the stale fallback parse identically; a corrupt
-    // cache row lets JSON.parse throw out of the load (legacy behaviour).
+    // cache row lets JSON.parse throw out of the load.
     parseCache: (json) => parseRegistryIndex(JSON.parse(json) as unknown) ?? undefined,
     fetchFresh: async () => {
       const response = await fetchWithRetry(entry.url, undefined, { timeout: 10_000 });
@@ -117,14 +114,6 @@ async function loadIndex(entry: RegistryConfigEntry): Promise<RegistryIndex | nu
       return { value: index, cacheJson: JSON.stringify(index), cacheOpts: { etag, lastModified } };
     },
   });
-}
-
-export function isCacheExpired(mtimeMs: number): boolean {
-  return Date.now() - mtimeMs > CACHE_TTL_MS;
-}
-
-export function isCacheStale(mtimeMs: number): boolean {
-  return Date.now() - mtimeMs > CACHE_STALE_MS;
 }
 
 // ── Index parsing (exported for reuse) ──────────────────────────────────────
@@ -159,9 +148,7 @@ function parseBundleEntry(raw: unknown): RegistryBundleEntry | null {
   const source = asSource(obj.source);
   if (!id || !name || !ref || !source) return null;
 
-  // The legacy registry boolean `curated` is removed in v1. Legacy index JSON
-  // containing a `curated` key parses normally; the key is silently ignored
-  // (v1 spec §4.2, docs/migration/v1.md).
+  // Some published indexes include `curated`; it is intentionally ignored.
   return {
     id,
     name,
@@ -180,7 +167,7 @@ function parseBundleEntry(raw: unknown): RegistryBundleEntry | null {
 
 // ── Scoring ─────────────────────────────────────────────────────────────────
 
-function scoreKits(
+function scoreBundles(
   stashes: Array<{ stash: RegistryBundleEntry; registryName?: string }>,
   query: string,
   limit: number,

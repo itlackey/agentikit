@@ -19,26 +19,17 @@
  *     "eventType": "<verb>", "ref"?: "<asset-ref>", ... }
  *
  * - `id` is a monotonic SQLite AUTOINCREMENT rowid. Callers can persist it
- *   as a durable cursor for `--since` resumption (replaces the old byte-offset
- *   cursor). The public API still surfaces this as `nextOffset` (an opaque
- *   number) for backward compatibility with callers that stored byte-offset
- *   cursors.
+ *   as a durable cursor for `--since` resumption. The public API surfaces this
+ *   as the opaque `nextOffset` number.
  * - `ts` is ISO-8601 (UTC, millisecond precision).
  */
 
-import path from "node:path";
 import type { Database } from "../storage/database";
 import { insertEvent, readStateEvents } from "../storage/repositories/events-repository";
 import { rethrowIfTestIsolationError } from "./errors";
 import type { EventEnvelope } from "./events-types";
-import { getDataDir } from "./paths";
-import { openStateDatabase, withStateDb } from "./state-db";
+import { getStateDbPath, openStateDatabase, withStateDb } from "./state-db";
 import { error } from "./warn";
-
-// Re-exported so existing `import type { EventEnvelope } from "./core/events"`
-// sites are unaffected by the KILL 1 sever (type moved to events-types.ts to
-// break the events.ts ↔ events-repository.ts import cycle).
-export type { EventEnvelope };
 
 /**
  * Stable, machine-readable event types. New types may be added freely.
@@ -192,22 +183,13 @@ export interface EventsContext {
 }
 
 /**
- * Legacy events.jsonl path — used only by the migration script
- * (`scripts/migrate-storage.ts`) to import existing event history into
- * state.db. No events are written here by akm v0.9+.
- */
-export function getEventsPath(): string {
-  return path.join(getDataDir(), "events.jsonl");
-}
-
-/**
  * Resolve the state.db path from context:
  *   1. `ctx.dbPath` — explicit override (test seam)
- *   2. default      — `<dataDir>/state.db`
+ *   2. default      — the canonical state.db path
  */
 function resolveDbPath(ctx?: EventsContext): string {
   if (ctx?.dbPath) return ctx.dbPath;
-  return path.join(getDataDir(), "state.db");
+  return getStateDbPath();
 }
 
 function resolveNow(ctx?: EventsContext): () => number {
@@ -276,8 +258,7 @@ export interface ReadEventsOptions {
    * Monotonic id lower bound — durable cursor.
    *
    * The SQLite AUTOINCREMENT rowid of the last seen event. Treat as an opaque
-   * non-negative integer. Callers migrating from the old JSONL implementation
-   * should reset any persisted byte-offset cursor to 0.
+   * non-negative integer.
    */
   sinceOffset?: number;
   /** Filter to a single event type. */
@@ -326,7 +307,7 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
       ref: options.ref,
     });
 
-    // Apply tag filters in application code (same as the old JSONL implementation).
+    // Apply tag filters after the indexed state.db read.
     const events = rawEvents.filter((envelope) => {
       const tags = (envelope.metadata?.tags as string[] | undefined) ?? [];
       if (options.excludeTags?.some((t) => tags.includes(t))) return false;

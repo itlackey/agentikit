@@ -19,7 +19,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildActionFromContributors, defaultActionContributors } from "../../core/action-contributors";
 import { placementTypes } from "../../core/asset/asset-placement";
-import { parseBundleRef } from "../../core/asset/asset-ref";
 import { displayRef } from "../../core/asset/resolve-ref";
 import type { AkmConfig, ImproveConfig } from "../../core/config/config";
 import { getDbPath } from "../../core/paths";
@@ -65,6 +64,14 @@ import {
  */
 const STALE_INDEX_HINT_MS = 7 * 24 * 60 * 60 * 1000;
 
+type IndexedProvenance = { itemRef: string; bundleId: string; conceptId: string };
+
+function hasIndexedProvenance<
+  T extends { itemRef?: string | null; bundleId?: string | null; conceptId?: string | null },
+>(entry: T): entry is T & IndexedProvenance {
+  return Boolean(entry.itemRef && entry.bundleId && entry.conceptId);
+}
+
 function buildStaleIndexHint(db: Database): string | undefined {
   try {
     const builtAt = getMeta(db, "builtAt");
@@ -78,7 +85,9 @@ function buildStaleIndexHint(db: Database): string | undefined {
   }
 }
 
-function indexedProvenance(entry: RankedEntryInput): Pick<RankedEntryInput, "itemRef" | "bundleId" | "conceptId"> {
+function indexedProvenance(
+  entry: RankedEntryInput & IndexedProvenance,
+): Pick<IndexedProvenance, "itemRef" | "bundleId" | "conceptId"> {
   return { itemRef: entry.itemRef, bundleId: entry.bundleId, conceptId: entry.conceptId };
 }
 
@@ -90,20 +99,13 @@ export function buildLocalAction(
   return buildActionFromContributors({ type, ref }, defaultActionContributors(registry)) ?? `akm show ${ref}`;
 }
 
-function resolveSearchHitRef(
-  entry: IndexDocument,
-  refName: string,
-  source?: SearchSource,
-  provenance?: { itemRef?: string | null; bundleId?: string | null; conceptId?: string | null },
-  defaultBundleId?: string,
-): string {
-  const indexedRef = provenance?.itemRef ? parseBundleRef(provenance.itemRef) : undefined;
+function resolveSearchHitRef(entry: IndexDocument, provenance: IndexedProvenance, defaultBundleId?: string): string {
   return displayRef(
     {
       type: entry.type,
-      name: refName,
-      conceptId: provenance?.conceptId ?? indexedRef?.conceptId ?? entry.conceptId,
-      bundleId: provenance?.bundleId ?? indexedRef?.bundle ?? source?.registryId ?? undefined,
+      name: entry.name,
+      conceptId: provenance.conceptId,
+      bundleId: provenance.bundleId,
     },
     defaultBundleId,
   );
@@ -419,7 +421,7 @@ async function searchDatabase(
     // not leak into default ('any') results. defaultExcludes is already []
     // unless this is the untyped path without includeExcludedTypes.
     excludeTypes: defaultExcludes,
-  });
+  }).filter(hasIndexedProvenance);
 
   // ── Scoring Phase ──────────────────────────────────────────────────────
   // Apply boosts as multiplicative factors (all boosts in a single phase
@@ -520,9 +522,6 @@ async function searchDatabase(
   preFilter.sort((a, b) => displayScore(b.score) - displayScore(a.score) || a.entry.name.localeCompare(b.entry.name));
 
   // Deduplicate by file path — keep only the highest-scored entry per file.
-  // Multiple legacy-sidecar entries can map to the same file (e.g. entries without
-  // a filename field all collapse to files[0]). Showing the same path/ref
-  // multiple times clutters results.
   const deduped = deduplicateByPath(preFilter);
 
   // Source → scope → proposed-quality → derived-twin belief inheritance →
@@ -612,7 +611,7 @@ async function enumerateEntries(opts: {
   restrictToSources: boolean;
 }): Promise<{ hits: SourceSearchHit[] }> {
   const { db, query, sources, config, rendererRegistry, filters, beliefFilter } = opts;
-  const allEntries = getAllEntries(db, opts.typeFilter, opts.excludeTypes);
+  const allEntries = getAllEntries(db, opts.typeFilter, opts.excludeTypes).filter(hasIndexedProvenance);
   // Explicit listing order: type, then name, then filePath. The underlying
   // SELECT carries no ORDER BY, so its row order tracks the query plan and the
   // index-insertion (file-walk) order — both machine-dependent. A browse
@@ -824,9 +823,9 @@ async function tryVecScores(
 export async function buildDbHit(input: {
   entry: IndexDocument;
   path: string;
-  itemRef?: string | null;
-  bundleId?: string | null;
-  conceptId?: string | null;
+  itemRef: string;
+  bundleId: string;
+  conceptId: string;
   score: number;
   query: string;
   rankingMode: "hybrid" | "semantic" | "fts";
@@ -883,7 +882,7 @@ export async function buildDbHit(input: {
     (source && path.resolve(source.path) === path.resolve(input.defaultStashDir)
       ? (input.bundleId ?? undefined)
       : undefined);
-  const ref = resolveSearchHitRef(input.entry, input.entry.name, source, input, defaultBundleId);
+  const ref = resolveSearchHitRef(input.entry, input, defaultBundleId);
 
   const editable = isEditable(absolutePath, input.config, input.sources);
   const estimatedTokens = typeof input.entry.fileSize === "number" ? Math.round(input.entry.fileSize / 4) : undefined;
@@ -1014,7 +1013,7 @@ function deduplicateByPath<T extends { filePath: string; score?: number }>(items
 }
 
 /**
- * Exact-match scope filter check. Legacy entries without a `scope` object only
+ * Exact-match scope filter check. Entries without a `scope` object only
  * match when no filter is supplied — which is what the caller guards on
  * before invoking this helper.
  */

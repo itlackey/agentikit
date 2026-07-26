@@ -262,12 +262,12 @@ describe("parseWorkflowProgram — top-level validation", () => {
     expect(parseErrors("- a\n- b")).toHaveLength(1);
   });
 
-  test("version must be the number 2 and v1 is retired", () => {
+  test("version must be the number 2", () => {
     expect(parseErrors(`name: t\nsteps:\n  - id: a\n    unit: { instructions: x }`).join(" ")).toContain(
       '"version: 2" is required',
     );
     expect(parseErrors(`version: 1\nname: t\nsteps:\n  - id: a\n    unit: { instructions: x }`).join(" ")).toContain(
-      "version 1 retired",
+      "got 1",
     );
     expect(parseErrors(`version: "2"\nname: t\nsteps:\n  - id: a\n    unit: { instructions: x }`).join(" ")).toContain(
       'got "2"',
@@ -756,7 +756,7 @@ describe("looksLikeWorkflowProgram", () => {
 
   test("rejects non-program text", () => {
     expect(looksLikeWorkflowProgram("# Workflow: classic markdown\n\n## Step: one")).toBe(false);
-    expect(looksLikeWorkflowProgram("version: 1\nsteps:\n  - id: a")).toBe(true);
+    expect(looksLikeWorkflowProgram("version: 1\nsteps:\n  - id: a")).toBe(false);
     expect(looksLikeWorkflowProgram("version: 2\nno_steps: true")).toBe(false);
     expect(looksLikeWorkflowProgram("  version: 2\n  steps:\n")).toBe(false);
     expect(looksLikeWorkflowProgram("version: 20\nsteps:\n")).toBe(false);

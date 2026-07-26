@@ -17,7 +17,6 @@ export {
   inspectGitUpstream,
   runGit,
   syncExistingWritableCheckout,
-  syncRegistryGitRef,
 } from "./git-install";
 export {
   ensureGitMirror,

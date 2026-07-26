@@ -158,7 +158,7 @@ describe("dotenv adapter — renderer golden (field-omission redaction)", () => 
   }
 });
 
-describe("dotenv adapter — lint golden (dangerous-vault-key, .env-suffix-narrow)", () => {
+describe("dotenv adapter — lint golden (dangerous-env-key, .env-suffix-narrow)", () => {
   const perType = loadGolden("lint").perType as Record<string, { relPath: string; issues: Diagnostic[] }>;
 
   test("each file validates to exactly the golden's issue codes", async () => {
@@ -175,14 +175,14 @@ describe("dotenv adapter — lint golden (dangerous-vault-key, .env-suffix-narro
     }
   });
 
-  test("env/dangerous.env fires two dangerous-vault-key findings (PATH, NODE_OPTIONS); the bare secret is not scanned", async () => {
+  test("env/dangerous.env fires two dangerous-env-key findings (PATH, NODE_OPTIONS); the bare secret is not scanned", async () => {
     const mk = (rel: string): FileChange => ({
       path: rel,
       op: "update",
       after: fs.readFileSync(path.join(FIXTURE_ROOT, rel), "utf8"),
     });
     const dangerous = await dotenvAdapter.validate(component(), [mk("env/dangerous.env")], ctx);
-    expect(dangerous.map((d) => d.issue)).toEqual(["dangerous-vault-key", "dangerous-vault-key"]);
+    expect(dangerous.map((d) => d.issue)).toEqual(["dangerous-env-key", "dangerous-env-key"]);
     const bareSecret = await dotenvAdapter.validate(component(), [mk("secrets/deploy-key")], ctx);
     expect(bareSecret).toEqual([]);
   });

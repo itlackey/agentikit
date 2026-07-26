@@ -16,14 +16,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AkmDistillResult } from "../../../../src/commands/improve/distill";
 import {
   buildLatestFeedbackTsMap,
   buildLatestProposalTsMap,
   collectEligibleRefs,
 } from "../../../../src/commands/improve/eligibility";
 import { akmImprove } from "../../../../src/commands/improve/improve";
-import type { AkmReflectResult } from "../../../../src/commands/improve/reflect";
 import type { AssetSalienceRow } from "../../../../src/commands/improve/salience";
 import {
   DEFAULT_ENCODING_SALIENCE,
@@ -34,6 +32,7 @@ import {
 import { improveStateReadRefs } from "../../../../src/commands/improve/source-identity";
 import { saveConfig } from "../../../../src/core/config/config";
 import { appendEvent, readEvents } from "../../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/improve-types";
 import { openStateDatabase } from "../../../../src/core/state-db";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { closeDatabase, openExistingDatabase } from "../../../../src/storage/repositories/index-connection";
@@ -136,7 +135,7 @@ const okDistill = (ref: string): AkmDistillResult => ({
   ok: true,
   outcome: "queued",
   inputRef: ref,
-  lessonRef: `lessons/${ref.replaceAll("/", "-")}-lesson`,
+  proposalRef: `lessons/${ref.replaceAll("/", "-")}-lesson`,
 });
 
 beforeEach(() => {
@@ -653,9 +652,7 @@ describe("high-salience admission gate (#608)", () => {
     const db = openStateDatabase();
     try {
       if (encodingSource === null) {
-        // Legacy NULL-provenance row (pre-#644 migration 015). Write the raw
-        // value with a NULL encoding_source so `isContentEncodingRow`'s
-        // differs-from-stub heuristic governs admission.
+        // Rows without explicit content provenance must never enter the lane.
         db.prepare(
           `INSERT INTO asset_salience
              (asset_ref, encoding_salience, outcome_salience, retrieval_salience, rank_score, consecutive_no_ops, updated_at, encoding_source)
@@ -793,11 +790,7 @@ describe("high-salience admission gate (#608)", () => {
     expect(reflected).not.toContain("memories/stub");
   });
 
-  // Legacy NULL-provenance row (pre-#644 migration 015). isContentEncodingRow
-  // applies the differs-from-stub heuristic: a NULL row whose value still differs
-  // from the per-type stub must have been content-written and never re-clobbered,
-  // so it is treated as content and IS admitted. Memory stub is 0.5; 0.9 ≠ 0.5.
-  test("legacy NULL-provenance row that DIFFERS from the type stub IS admitted (differs-from-stub heuristic)", async () => {
+  test("NULL-provenance rows are not admitted", async () => {
     const stash = makeTempDir("akm-hs-null-diff-");
     writeMemory(stash, "legacy", "Legacy row, value differs from stub.");
     await buildIndex(stash);
@@ -816,16 +809,10 @@ describe("high-salience admission gate (#608)", () => {
       distillFn: async ({ ref }) => okDistill(ref ?? ""),
     });
 
-    expect(reflected).toContain("memories/legacy");
+    expect(reflected).not.toContain("memories/legacy");
   });
 
-  // Legacy NULL-provenance row whose value EQUALS the per-type stub. The
-  // heuristic treats it as a stub (the safe default) → NOT admitted. Asserted at
-  // the helper level (a non-indexed lesson ref would never be a run candidate, so
-  // routing it through akmImprove would be vacuous): the gate calls
-  // `isContentEncodingRow(row, parseAssetRef(ref).type)` and admits only when it
-  // returns true. lesson stub = 0.75; a NULL row at exactly 0.75 returns false.
-  test("legacy NULL-provenance row that EQUALS the type stub is treated as a stub (isContentEncodingRow=false)", () => {
+  test("NULL provenance is never content regardless of score", () => {
     const equalsStub: AssetSalienceRow = {
       asset_ref: "lessons/atstub",
       encoding_salience: DEFAULT_TYPE_ENCODING_WEIGHTS.lesson ?? DEFAULT_ENCODING_SALIENCE,
@@ -836,10 +823,8 @@ describe("high-salience admission gate (#608)", () => {
       updated_at: Date.now(),
       encoding_source: null,
     };
-    // EQUALS stub → not content → excluded from the lane.
-    expect(isContentEncodingRow(equalsStub, "lesson")).toBe(false);
-    // DIFFERS from stub → content (never re-clobbered) → admitted by the lane.
-    expect(isContentEncodingRow({ ...equalsStub, encoding_salience: 0.9 }, "lesson")).toBe(true);
+    expect(isContentEncodingRow(equalsStub)).toBe(false);
+    expect(isContentEncodingRow({ ...equalsStub, encoding_salience: 0.9 })).toBe(false);
   });
 });
 

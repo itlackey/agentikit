@@ -43,8 +43,14 @@
  */
 
 import type { AkmConfig, ImproveProfileConfig } from "../../core/config/config";
-import type { EventEnvelope } from "../../core/events";
-import type { ImproveActionResult, ImproveEligibleRef } from "../../core/improve-types";
+import type { EventEnvelope } from "../../core/events-types";
+import type {
+  AkmDistillResult,
+  AkmReflectResult,
+  ConsolidateResult,
+  ImproveActionResult,
+  ImproveEligibleRef,
+} from "../../core/improve-types";
 import type { ResolvedWriteTarget } from "../../core/write-source";
 import type { EnsureIndexOptions } from "../../indexer/ensure-index";
 import type { GraphExtractionResult, runGraphExtractionPass } from "../../indexer/graph/graph-extraction";
@@ -53,14 +59,14 @@ import type { SessionLogHarness } from "../../integrations/session-logs/types";
 import type { saveGitStash } from "../../sources/providers/git";
 import type { drainProposals } from "../proposal/drain";
 import type { DeadUrl } from "../url-checker";
-import type { AkmConsolidateOptions, ConsolidateResult } from "./consolidate";
-import type { AkmDistillResult, akmDistill } from "./distill";
+import type { AkmConsolidateOptions } from "./consolidate";
+import type { akmDistill } from "./distill";
 import type { collectEligibleRefs, resolveImproveScope } from "./eligibility";
 import type { AkmExtractResult, countNewExtractCandidates } from "./extract";
 import type { ResolvedImprovePlan } from "./improve-strategies";
 import type { detectAndWriteContradictions } from "./memory/memory-contradiction-detect";
 import type { applyMemoryCleanup } from "./memory/memory-improve";
-import type { AkmReflectResult, akmReflect } from "./reflect";
+import type { akmReflect } from "./reflect";
 import type { RunContext } from "./run-context";
 
 export type ImproveScope = ReturnType<typeof resolveImproveScope>;
@@ -182,7 +188,7 @@ export interface ImprovePreparationResult {
   schemaRepairs: Array<{
     ref: string;
     reason: string;
-    outcome: "queued" | "written" | "skipped" | "error";
+    outcome: "queued" | "skipped" | "error";
     proposalId?: string;
     error?: string;
   }>;

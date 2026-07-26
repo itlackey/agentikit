@@ -22,10 +22,11 @@ import { parseRefInput } from "../../core/asset/resolve-ref";
 import { authoringRulesForType } from "../../core/authoring-rules";
 import type { LlmConnectionConfig } from "../../core/config/config";
 import { appendEvent, readEvents } from "../../core/events";
+import { parseEmbeddedJsonResponse } from "../../core/parse";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
 import { info } from "../../core/warn";
 import { resolveAssetPath } from "../../indexer/walk/path-resolver";
-import { chatCompletion, parseEmbeddedJsonResponse } from "../../llm/client";
+import { chatCompletion } from "../../llm/client";
 import { createProposal, isProposalSkipped } from "../proposal/repository";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -38,15 +39,11 @@ export interface SchemaRepairFailure {
 /**
  * Schema-repair outcome values (M-3 / #387).
  *
- *   - `queued`  — LLM generated fields were written to the proposal queue
- *                 (replaces the previous `written` path which wrote directly
- *                 to disk, bypassing the proposal queue safety invariant).
- *   - `written` — Legacy / direct-write path (retained for backward compat;
- *                 no longer emitted by the default implementation).
+ *   - `queued`  — LLM generated fields were written to the proposal queue.
  *   - `skipped` — Asset didn't need repair or was on cooldown.
  *   - `error`   — LLM call failed or JSON could not be parsed.
  */
-export type SchemaRepairOutcome = "queued" | "written" | "skipped" | "error";
+export type SchemaRepairOutcome = "queued" | "skipped" | "error";
 
 export interface SchemaRepairRecord {
   ref: string;
@@ -123,7 +120,7 @@ export async function runSchemaRepairPass(
     // Cooldown: skip repair if we ran it successfully recently.
     const recentRepairs = readEvents({ type: "schema_repair_invoked", ref: failure.ref });
     const lastRepair = recentRepairs.events
-      .filter((e) => e.metadata?.outcome === "written")
+      .filter((e) => e.metadata?.outcome === "queued")
       .sort((a, b) => new Date(b.ts ?? 0).getTime() - new Date(a.ts ?? 0).getTime())[0];
     if (lastRepair?.ts && Date.now() - new Date(lastRepair.ts).getTime() < SCHEMA_REPAIR_COOLDOWN_MS) {
       repairs.push({ ref: failure.ref, reason: failure.reason, outcome: "skipped" });

@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import * as tasksModule from "../../../src/commands/tasks/tasks";
 import { saveConfig } from "../../../src/core/config/config";
-import type { TaskBackend } from "../../../src/tasks/backends";
+import type { TaskBackend } from "../../../src/tasks/backends/types";
 import { makeSandboxDir, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 const backendState = {

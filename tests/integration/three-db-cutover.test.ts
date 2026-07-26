@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { cutoverStashRootsFromConfig } from "../../scripts/akm-migrate/config-migrate";
+import { deriveLegacyBundleIds } from "../../scripts/akm-migrate/migrate/legacy/bundle-id";
 import {
   type ContentMigrationReport,
   runContentMigration,
@@ -36,7 +37,7 @@ import {
 import { getMigrationApplyJournalPath } from "../../scripts/akm-migrate/migration-backup";
 import { createProposal } from "../../src/commands/proposal/repository";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
-import { deriveBundleIds, deriveLegacyBundleIds } from "../../src/core/bundle-id";
+import { deriveBundleIds } from "../../src/core/bundle-id";
 import type { AkmConfig } from "../../src/core/config/config";
 import { getMigrationOperationRoot } from "../../src/core/migration-operation";
 import { getConfigPath, getDataDir, getDbPath, getLockfilePath, getStateDbPathInDataDir } from "../../src/core/paths";

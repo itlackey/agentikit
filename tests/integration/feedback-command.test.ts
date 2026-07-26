@@ -55,7 +55,12 @@ afterEach(() => {
 });
 
 async function buildIndex(): Promise<void> {
-  saveConfig({ semanticSearchMode: "off" });
+  saveConfig({
+    semanticSearchMode: "off",
+    bundles: { stash: { path: stashDir, writable: true } },
+    defaultBundle: "stash",
+    defaultWriteTarget: "stash",
+  });
   await akmIndex({ stashDir, full: true });
 }
 
@@ -128,6 +133,7 @@ describe("akm feedback", () => {
       "--format=json",
     ]);
     expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
 
     // appendLessonStrength must have LOCATED the lesson in the index (the D-R3
     // lookup uses the new grammar) and appended the feedback ref.

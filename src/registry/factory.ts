@@ -13,10 +13,8 @@
  * `sources/provider-factory.ts` or the installed-source operations in
  * `installed-stashes.ts`.
  *
- * Phase 6 (v1 architecture refactor): factories are now the
- * `RegistryProviderFactory` type owned by `src/registry/providers/types.ts`.
- * The legacy alias in `src/registry-provider.ts` is kept as a thin re-export
- * for transitional callers and will be removed after the dust settles.
+ * Factories use the `RegistryProviderFactory` type owned by
+ * `src/registry/providers/types.ts`.
  */
 
 import { createProviderRegistry } from "./create-provider-registry";
@@ -26,10 +24,10 @@ import type { RegistryProviderFactory } from "./providers/types";
 
 const registry = createProviderRegistry<RegistryProviderFactory>();
 
-export function registerProvider(type: string, factory: RegistryProviderFactory): void {
+export function registerRegistryProvider(type: string, factory: RegistryProviderFactory): void {
   registry.register(type, factory);
 }
 
-export function resolveProviderFactory(type: string): RegistryProviderFactory | null {
+export function resolveRegistryProviderFactory(type: string): RegistryProviderFactory | null {
   return registry.resolve(type);
 }

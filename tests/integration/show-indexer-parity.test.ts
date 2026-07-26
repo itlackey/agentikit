@@ -1,13 +1,13 @@
 /**
  * Parity regression for Phase 4 (spec §10 step 4 / §6.2).
  *
- * `akm show` now consults `indexer.lookup(ref)` first, then reads the file
+ * `akm show` consults `indexer.lookupBundleRef(ref)` first, then reads the file
  * from disk. The risk called out in the v1 implementation plan is that
- * origin-prefixed refs (e.g. `local//skill:foo`) silently regress when the
+ * bundle-qualified refs silently regress when the
  * indexer is consulted instead of the directory walker.
  *
  * This test pins both forms — bare ref and origin-prefixed ref — and asserts
- * that `indexer.lookup` returns the same on-disk path that `akmShowUnified`
+ * that `indexer.lookupBundleRef` returns the same on-disk path that `akmShowUnified`
  * resolves to. If a future refactor changes how the indexer keys assets, this
  * test fails fast instead of silently breaking show for installed sources.
  */
@@ -16,10 +16,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseAssetRef } from "../../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import { akmShowUnified } from "../../src/commands/read/show";
+import { parseBundleRef } from "../../src/core/asset/asset-ref";
 import { resetConfigCache, saveConfig } from "../../src/core/config/config";
-import { akmIndex, lookup } from "../../src/indexer/indexer";
+import { akmIndex, lookupBundleRef } from "../../src/indexer/indexer";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { getMeta } from "../../src/storage/repositories/index-meta-repository";
 import { searchVec } from "../../src/storage/repositories/index-vec-repository";
@@ -88,8 +88,8 @@ afterAll(() => {
   }
 });
 
-describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
-  test("indexed asset: lookup() returns the same file akmShow renders", async () => {
+describe("Phase 4 parity: indexer.lookupBundleRef ↔ akmShowUnified", () => {
+  test("indexed asset lookup returns the same file akmShow renders", async () => {
     const skillBody = [
       "---",
       "name: parity-skill",
@@ -104,9 +104,7 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
 
     await akmIndex({ stashDir, full: true });
 
-    const ref = "skill:parity-skill";
-    const parsed = parseAssetRef(ref);
-    const indexed = await lookup(parsed);
+    const indexed = await lookupBundleRef(parseBundleRef("skills/parity-skill"));
     expect(indexed).not.toBeNull();
     if (!indexed) return;
 
@@ -118,8 +116,7 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
     const fileBody = fs.readFileSync(indexed.filePath, "utf8");
     expect(fileBody).toBe(skillBody);
 
-    // akmShow returns the same path in its rendered response (new-grammar input;
-    // the legacy `ref` above feeds the parseAssetRef lookup arm of the parity).
+    // akmShow returns the same path in its rendered response.
     const shown = await akmShowUnified({ ref: "skills/parity-skill" });
     expect(shown.path).toBe(indexed.filePath);
     expect(indexed.itemRef).toMatch(/\/\/skills\/parity-skill$/);
@@ -132,8 +129,8 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
 
     await akmIndex({ stashDir, full: true });
 
-    const bare = await lookup(parseAssetRef("skill:origin-skill"));
-    const local = await lookup(parseAssetRef("local//skill:origin-skill"));
+    const bare = await lookupBundleRef(parseBundleRef("skills/origin-skill"));
+    const local = await lookupBundleRef(parseBundleRef("local//skills/origin-skill"));
     expect(bare).not.toBeNull();
     expect(local).toBeNull();
 
@@ -142,7 +139,7 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
     expect(shownBare.path).toBe(bare?.filePath as string);
   });
 
-  test("lookup retains the entry-key fallback only for nullable pre-flip provenance", async () => {
+  test("lookup does not fall back to entry_key for an incomplete provenance row", async () => {
     writeFile(path.join(stashDir, "knowledge", "legacy.md"), "# Legacy\n");
     await akmIndex({ stashDir, full: true });
 
@@ -156,9 +153,8 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
       closeDatabase(db);
     }
 
-    const indexed = await lookup(parseAssetRef("knowledge:legacy"));
-    expect(indexed?.filePath).toBe(path.join(stashDir, "knowledge", "legacy.md"));
-    expect(indexed?.itemRef).toBeUndefined();
+    const indexed = await lookupBundleRef(parseBundleRef("knowledge/legacy"));
+    expect(indexed).toBeNull();
   });
 
   test("lookup and show do not downgrade embedding dimension metadata", async () => {
@@ -179,7 +175,7 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
 
     try {
       await akmIndex({ stashDir, full: true });
-      await lookup(parseAssetRef("skill:embed-skill"));
+      await lookupBundleRef(parseBundleRef("skills/embed-skill"));
       await akmShowUnified({ ref: "skills/embed-skill" });
 
       const db = openIndexDatabase(path.join(process.env.XDG_DATA_HOME as string, "akm", "index.db"), {
@@ -197,9 +193,9 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
     }
   });
 
-  test("missing asset: lookup returns null", async () => {
+  test("missing asset lookup returns null", async () => {
     await akmIndex({ stashDir, full: true });
-    const result = await lookup(parseAssetRef("skill:does-not-exist"));
+    const result = await lookupBundleRef(parseBundleRef("skills/does-not-exist"));
     expect(result).toBeNull();
   });
 });

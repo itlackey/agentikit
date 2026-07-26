@@ -37,6 +37,7 @@ import { isHttpUrl, resolveStashDir } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
+import { resolveBundleWriteTarget } from "../../core/mutation-target";
 import { getCacheDir } from "../../core/paths";
 import { clearLogFile, info, isVerbose, setLogFile } from "../../core/warn";
 import { resolveWriteTarget } from "../../core/write-source";
@@ -57,24 +58,20 @@ import { akmInit } from "./init";
 export const initCommand = defineJsonCommand({
   meta: {
     name: "init",
-    description: "Initialize akm's working stash directory and persist stashDir in config",
+    description: "Initialize akm's working stash directory and persist its bundle in config",
   },
   args: {
     dir: { type: "string", description: "Custom stash directory path (default: ~/akm)" },
     "set-default": {
       type: "boolean",
       description:
-        "Make --dir the default stash (write stashDir to config.json). Without this, `akm init --dir X` scaffolds X but leaves your existing default stash unchanged.",
+        "Make --dir the default bundle. Without this, `akm init --dir X` scaffolds X but leaves your existing default bundle unchanged.",
       default: false,
     },
   },
   async run({ args }) {
-    // Accept both historical spellings for backwards compatibility with
-    // older docs/scripts that used `--stashDir`.
-    const invocation = getParsedInvocation();
-    const legacyDir = invocation.getFlagValue("--stashDir") ?? invocation.getFlagValue("--stash-dir");
     const result = await akmInit({
-      dir: args.dir ?? legacyDir,
+      dir: args.dir,
       setDefault: args["set-default"],
     });
     output("init", result);
@@ -216,12 +213,12 @@ export const importKnowledgeCommand = defineJsonCommand({
     xref: {
       type: "string",
       description:
-        "Cross-reference ref merged into the document's `xrefs:` frontmatter (repeatable: --xref knowledge:auth-flow). Existing frontmatter is preserved (dedupe-append, never a nested block); a document whose frontmatter is not parseable YAML aborts the import rather than being rewritten lossily. Each ref must resolve in the write target or a configured source; an unresolvable ref aborts the import.",
+        "Cross-reference ref merged into the document's `xrefs:` frontmatter (repeatable: --xref knowledge/auth-flow). Existing frontmatter is preserved (dedupe-append, never a nested block); a document whose frontmatter is not parseable YAML aborts the import rather than being rewritten lossily. Each ref must resolve in the write target or a configured source; an unresolvable ref aborts the import.",
     },
     supersedes: {
       type: "string",
       description:
-        "Ref of an existing asset this document corrects (repeatable: --supersedes knowledge:legacy-guide). Imports the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the import; a ref outside the write target and working stash still imports the correction but skips the demotion (reported as applied: false).",
+        "Ref of an existing asset this document corrects (repeatable: --supersedes knowledge/legacy-guide). Imports the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the import; a ref outside the write target and working stash still imports the correction but skips the demotion (reported as applied: false).",
     },
   },
   async run({ args }) {
@@ -243,7 +240,19 @@ export const importKnowledgeCommand = defineJsonCommand({
     for (const s of supersedes) {
       if (!xrefs.includes(s.ref)) xrefs.push(s.ref);
     }
-    const stashDir = resolveWriteTarget(loadConfig(), writeTarget).source.path;
+    const config = loadConfig();
+    const stashDir = (() => {
+      try {
+        return resolveWriteTarget(config, writeTarget).source.path;
+      } catch (error) {
+        if (!writeTarget) throw error;
+        try {
+          return resolveBundleWriteTarget(config, writeTarget).source.path;
+        } catch {
+          throw error;
+        }
+      }
+    })();
     const { content, preferredName } = await readKnowledgeInput(args.source, { stashDir });
     // Imported docs may carry their own frontmatter: merge (dedupe-append)
     // BEFORE the write so write-path indexing sees the final content and no

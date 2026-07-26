@@ -29,7 +29,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildChunkPrompt } from "../../src/commands/improve/consolidate";
+import { buildChunkPrompt } from "../../src/commands/improve/consolidate/chunking";
 import { buildDistillPrompt } from "../../src/commands/improve/distill";
 import { buildExtractPrompt } from "../../src/commands/improve/extract-prompt";
 import { resolveStashStandards } from "../../src/core/standards/resolve-stash-standards";

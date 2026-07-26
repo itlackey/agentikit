@@ -3,25 +3,25 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Vault security lint rules — flags known-dangerous environment variable names.
+ * Environment security lint rules — flags known-dangerous variable names.
  *
- * These env var names, when present as vault keys, indicate the vault can be
+ * These env var names, when present in an environment file, indicate the file can be
  * used to hijack process execution via loader injection, path override, or
  * shell/runtime startup hooks.  The lint pass emits a warning-level finding;
- * it does NOT block vault load or `akm vault setKey`.
+ * it does NOT block local environment edits.
  *
  * Enforcement scope:
- *   - `akm lint` reports findings as `dangerous-vault-key` (non-blocking warn).
+ *   - `akm lint` reports findings as `dangerous-env-key` (non-blocking warn).
  *   - `akm add` BLOCKS install unless `--allow-insecure` is set (or, on TTY,
  *     the user explicitly confirms at the prompt).
- *   - `akm vault setKey` does NOT consult this list — by design, the operator
- *     owns their own vault and may legitimately store any key locally.  The
- *     gate exists only for third-party stash installation.
+ *   - Local env writes do NOT consult this list — by design, the operator may
+ *     legitimately store any key locally. The gate exists only for third-party
+ *     stash installation.
  *
  * False-positive tradeoff:
  *   A handful of keys (EDITOR, VISUAL, PAGER) are included because they are
  *   invoked by many interactive tools and are a documented RCE vector when
- *   sourced from untrusted vaults.  They will also flag on benign vaults
+ *   sourced from untrusted environments. They will also flag on benign files
  *   where the operator legitimately wants to set their editor — accept the
  *   FP and bypass with `--allow-insecure` after review.
  */
@@ -32,7 +32,7 @@ import type { LintIssue } from "./types";
 
 // ── Dangerous key set ─────────────────────────────────────────────────────────
 
-export const DANGEROUS_VAULT_KEYS = new Set([
+export const DANGEROUS_ENV_KEYS = new Set([
   // Dynamic linker hijacking (Linux glibc ld.so)
   "LD_PRELOAD", // forces shared library injection
   "LD_LIBRARY_PATH", // overrides library search path
@@ -95,7 +95,7 @@ export const DANGEROUS_VAULT_KEYS = new Set([
  * prefixed with `BASH_FUNC_`.  Listing every concrete name is impossible; we
  * test against this pattern set in addition to the literal `Set`.
  */
-export const DANGEROUS_VAULT_KEY_PATTERNS: ReadonlyArray<{ pattern: RegExp; reason: string }> = [
+export const DANGEROUS_ENV_KEY_PATTERNS: ReadonlyArray<{ pattern: RegExp; reason: string }> = [
   {
     // CVE-2014-6271 (Shellshock) — bash imports exported functions named
     // `BASH_FUNC_<name>%%` and parses their bodies, enabling RCE.
@@ -110,12 +110,12 @@ export const DANGEROUS_VAULT_KEY_PATTERNS: ReadonlyArray<{ pattern: RegExp; reas
 
 /**
  * Returns `true` if the given key name is dangerous — either by literal match
- * against `DANGEROUS_VAULT_KEYS` or by matching any entry in
- * `DANGEROUS_VAULT_KEY_PATTERNS`.
+ * against `DANGEROUS_ENV_KEYS` or by matching any entry in
+ * `DANGEROUS_ENV_KEY_PATTERNS`.
  */
-export function isDangerousVaultKey(key: string): boolean {
-  if (DANGEROUS_VAULT_KEYS.has(key)) return true;
-  for (const { pattern } of DANGEROUS_VAULT_KEY_PATTERNS) {
+export function isDangerousEnvKey(key: string): boolean {
+  if (DANGEROUS_ENV_KEYS.has(key)) return true;
+  for (const { pattern } of DANGEROUS_ENV_KEY_PATTERNS) {
     if (pattern.test(key)) return true;
   }
   return false;
@@ -124,28 +124,27 @@ export function isDangerousVaultKey(key: string): boolean {
 // ── Checker ───────────────────────────────────────────────────────────────────
 
 /**
- * Inspect a vault `.env` file and return a lint finding for every key whose
- * name appears in `DANGEROUS_VAULT_KEYS` or matches a pattern in
- * `DANGEROUS_VAULT_KEY_PATTERNS`.
+ * Inspect an `.env` file and return a lint finding for every key whose name
+ * appears in `DANGEROUS_ENV_KEYS` or matches `DANGEROUS_ENV_KEY_PATTERNS`.
  *
- * @param vaultPath  Absolute path to the `.env` file.
+ * @param envPath    Absolute path to the `.env` file.
  * @param relPath    Stash-relative path used as the `file` field in findings
- *                   (e.g. `"vaults/prod.env"`).
- * @param vaultRef   Human-readable vault ref (e.g. `"vault:prod"`) shown in
+ *                   (e.g. `"env/prod.env"`).
+ * @param envRef     Human-readable env ref (e.g. `"env/prod"`) shown in
  *                   the finding message.
  */
 /** Suppression comment token checked case-insensitively on the preceding non-empty line. */
-const SUPPRESSION_COMMENT = "# akm-lint-ok: dangerous-vault-key";
+const SUPPRESSION_COMMENT = "# akm-lint-ok: dangerous-env-key";
 
 /**
- * Returns the set of keys suppressed by an inline `# akm-lint-ok: dangerous-vault-key`
+ * Returns the set of keys suppressed by an inline `# akm-lint-ok: dangerous-env-key`
  * comment on the line immediately preceding the key assignment in the `.env` file.
  */
-function collectSuppressedKeys(vaultPath: string): Set<string> {
+function collectSuppressedKeys(envPath: string): Set<string> {
   const suppressed = new Set<string>();
   let raw: string;
   try {
-    raw = fs.readFileSync(vaultPath, "utf8");
+    raw = fs.readFileSync(envPath, "utf8");
   } catch {
     return suppressed;
   }
@@ -163,38 +162,21 @@ function collectSuppressedKeys(vaultPath: string): Set<string> {
   return suppressed;
 }
 
-export function checkVaultForDangerousKeys(vaultPath: string, relPath: string, vaultRef: string): LintIssue[] {
-  const { keys } = listKeys(vaultPath);
-  const suppressed = collectSuppressedKeys(vaultPath);
+export function checkEnvForDangerousKeys(envPath: string, relPath: string, envRef: string): LintIssue[] {
+  const { keys } = listKeys(envPath);
+  const suppressed = collectSuppressedKeys(envPath);
   const issues: LintIssue[] = [];
 
   for (const key of keys) {
-    if (!isDangerousVaultKey(key)) continue;
+    if (!isDangerousEnvKey(key)) continue;
     if (suppressed.has(key)) continue;
     issues.push({
       file: relPath,
-      issue: "dangerous-vault-key",
-      detail: `Env key \`${key}\` can be used to hijack process execution when injected via \`akm env run\`. Ref: ${vaultRef}. Review this file before running \`akm env run\` commands against untrusted stashes. (suppress with: ${SUPPRESSION_COMMENT} on previous line)`,
+      issue: "dangerous-env-key",
+      detail: `Env key \`${key}\` can be used to hijack process execution when injected via \`akm env run\`. Ref: ${envRef}. Review this file before running \`akm env run\` commands against untrusted stashes. (suppress with: ${SUPPRESSION_COMMENT} on previous line)`,
       fixed: false,
     });
   }
 
   return issues;
 }
-
-// ── Env-neutral aliases ───────────────────────────────────────────────────────
-//
-// These primitives guard *environment variable injection*, which is shared by
-// the `env` asset type, whole-file `secret` injection, and the `akm add`
-// supply-chain gate. The original `*Vault*` names are retained above for
-// backward compatibility (and stable lint output) through the 0.8.x
-// deprecation window; new call sites should prefer the env-neutral names.
-
-/** Env-neutral alias of {@link DANGEROUS_VAULT_KEYS}. */
-export const DANGEROUS_ENV_KEYS = DANGEROUS_VAULT_KEYS;
-/** Env-neutral alias of {@link DANGEROUS_VAULT_KEY_PATTERNS}. */
-export const DANGEROUS_ENV_KEY_PATTERNS = DANGEROUS_VAULT_KEY_PATTERNS;
-/** Env-neutral alias of {@link isDangerousVaultKey}. */
-export const isDangerousEnvKey = isDangerousVaultKey;
-/** Env-neutral alias of {@link checkVaultForDangerousKeys}. */
-export const checkEnvForDangerousKeys = checkVaultForDangerousKeys;

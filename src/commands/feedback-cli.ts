@@ -17,7 +17,6 @@ import { getDbPath } from "../core/paths";
 import { withStateDb } from "../core/state-db";
 import { warn } from "../core/warn";
 import { commitWriteTargetBoundary, recordWriteTargetPath } from "../core/write-source";
-import { deriveInstallations } from "../indexer/installations";
 import { resolveSourceEntries } from "../indexer/search/search-source";
 import { countFeedbackSignals, insertUsageEvent, resolveUsageEventSource } from "../indexer/usage/usage-events";
 import { resolveSourcesForOrigin } from "../registry/origin-resolve";
@@ -78,29 +77,20 @@ function validateFeedbackTags(raw: string[]): string[] {
  * `inferenceProcessed`.
  */
 function appendLessonStrength(refInput: AssetRef, feedbackRef: string): { ref: string; strength: number } | null {
-  // Canonical 0.9.0 conceptId (`lessons/<name>`, D-R3) — `findEntryIdByRef`
-  // keys on the stored `item_ref` and parses its argument as the new grammar,
-  // so a `type:name` lookup here would never match.
+  // Canonical conceptId (`lessons/<name>`, D-R3): `findEntryIdByRef` keys on
+  // the stored `item_ref`.
   const conceptId = conceptIdFromTypeName(refInput.type, refInput.name);
   const config = loadConfig();
-  const sources = resolveSourceEntries(undefined, config);
-  const installations = deriveInstallations(sources);
-  const candidates = refInput.origin ? resolveSourcesForOrigin(refInput.origin, sources) : sources;
   let filePath: string | undefined;
   let bundleId: string | undefined;
   const db = openExistingDatabase();
   try {
-    for (const source of candidates) {
-      const sourceIndex = sources.indexOf(source);
-      const candidateBundle = installations[sourceIndex]?.id;
-      if (!candidateBundle) continue;
-      const entryId = findEntryIdByRef(db, makeBundleRef(candidateBundle, conceptId), source.path);
-      if (entryId === undefined) continue;
-      const resolvedPath = getEntryFilePathById(db, entryId);
-      if (!resolvedPath) continue;
-      filePath = resolvedPath;
-      bundleId = candidateBundle;
-      break;
+    const entryId = findEntryIdByRef(db, makeBundleRef(refInput.origin, conceptId));
+    if (entryId !== undefined) {
+      const itemRef = getItemRefById(db, entryId);
+      const parsedItemRef = itemRef ? parseBundleRef(itemRef) : undefined;
+      filePath = getEntryFilePathById(db, entryId) ?? undefined;
+      bundleId = parsedItemRef?.bundle;
     }
   } finally {
     closeDatabase(db);
@@ -162,7 +152,7 @@ function appendLessonStrength(refInput: AssetRef, feedbackRef: string): { ref: s
 function recordFeedbackUsage(
   indexDb: Database,
   entryId: number,
-  durableEntryRef: string | undefined,
+  durableEntryRef: string,
   signal: "positive" | "negative",
   metadataStr: string | undefined,
 ): ReturnType<typeof applyFeedbackToUtilityScore> | undefined {

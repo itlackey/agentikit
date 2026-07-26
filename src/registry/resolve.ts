@@ -21,10 +21,6 @@ import type {
   ResolvedRegistryArtifact,
 } from "./types";
 
-// The semver engine lives in ./semver (WI-9.3 verbatim move); `maxSatisfying`
-// stays re-exported here so this module's public surface is unchanged.
-export { maxSatisfying } from "./semver";
-
 /**
  * Validate that a URL is safe to pass to git.
  * Allowlists https:, http:, ssh:, git: schemes and git@ SSH shorthand.

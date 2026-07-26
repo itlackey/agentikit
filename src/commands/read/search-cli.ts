@@ -221,10 +221,8 @@ export const showCommand = defineJsonCommand({
     }
     const cliShape = getOutputMode().shape;
     const explicitDetail = invocation.getFlagValue("--detail");
-    // `--shape summary` selects the compact metadata projection for show
-    // (the legacy `--detail summary` spelling still maps here via the
-    // back-compat path in resolveOutputMode). `--detail brief` forces the
-    // brief response regardless of shape.
+    // `--shape summary` selects the compact metadata projection for show.
+    // `--detail brief` forces the brief response regardless of shape.
     const showDetail: ShowDetailLevel | undefined =
       explicitDetail === "brief" ? "brief" : cliShape === "summary" ? "summary" : undefined;
     // `--scope` is repeatable — citty only exposes the last value, so read

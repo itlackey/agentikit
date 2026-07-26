@@ -208,7 +208,7 @@ describe("stepScheduledTasks", () => {
       ...EMPTY_SYNC_RESULT,
       skipped: [
         { id: "improve", reason: "cannot resolve installed runtime" },
-        { id: "sync", reason: "legacy scheduler entry" },
+        { id: "sync", reason: "scheduler context descriptor is invalid" },
       ],
     });
     state.confirmReturn = true;

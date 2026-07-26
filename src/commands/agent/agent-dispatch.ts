@@ -19,7 +19,7 @@ import fs from "node:fs";
 import { parseRefInput } from "../../core/asset/resolve-ref";
 import type { AkmConfig } from "../../core/config/config";
 import { NotFoundError, UsageError } from "../../core/errors";
-import type { AgentDispatchRequest } from "../../integrations/agent/builders";
+import type { AgentDispatchRequest } from "../../integrations/agent/builder-shared";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
 import { executeRunner } from "../../integrations/agent/runner-dispatch";
 import type { AgentRunResult } from "../../integrations/agent/spawn";
@@ -41,7 +41,7 @@ export interface AkmAgentDispatchOptions {
   /**
    * When present, the platform-specific AgentCommandBuilder uses these fields
    * to construct the argv (system prompt, model alias, tool policy). When
-   * absent, falls back to the legacy positional-prompt behaviour.
+   * absent, uses positional-prompt dispatch.
    */
   dispatch?: AgentDispatchRequest;
 }

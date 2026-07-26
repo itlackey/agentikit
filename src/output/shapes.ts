@@ -39,36 +39,6 @@ import { searchShapes } from "./shapes/search";
 import { secretListShapes } from "./shapes/secret-list";
 import { showShapes } from "./shapes/show";
 
-// Re-export helpers so existing imports from `shapes.ts` keep working.
-export {
-  capDescription,
-  NORMAL_DESCRIPTION_LIMIT,
-  pickFields,
-  shapeAssetHit,
-  shapeDistillOutput,
-  shapeEventEntry,
-  shapeEventsOutput,
-  shapeHistoryEntry,
-  shapeHistoryOutput,
-  shapeProposalAcceptOutput,
-  shapeProposalDiffOutput,
-  shapeProposalEntry,
-  shapeProposalListOutput,
-  shapeProposalProducerOutput,
-  shapeProposalRejectOutput,
-  shapeProposalShowOutput,
-  shapeRegistrySearchOutput,
-  shapeSearchHit,
-  shapeSearchHitForAgent,
-  shapeSearchOutput,
-  shapeShowOutput,
-  truncateDescription,
-} from "./shapes/helpers";
-export type { OutputShapeHandler } from "./shapes/registry";
-// Re-export registry API so callers can use this module as the single entry
-// point (backward compat).
-export { deregisterOutputShape, registerOutputShape } from "./shapes/registry";
-
 // ── Explicit built-in shape assembly ──────────────────────────────────────────
 // Each entry below is a pure exported `OutputShapeEntry[]` from a per-command
 // module. The set is registered ONCE, deterministically, with no reliance on

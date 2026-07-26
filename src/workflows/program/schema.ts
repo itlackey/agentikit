@@ -37,9 +37,6 @@ type LlmInvocationOverrides = import("../../integrations/agent/engine-resolution
 type AgentFailureReason = import("../../integrations/agent/spawn").AgentFailureReason;
 
 export const WORKFLOW_PROGRAM_VERSION = 2;
-/** @deprecated source v2 rejects runner; retained for TypeScript migration only. */
-export const PROGRAM_RUNNER_KINDS = ["llm", "agent", "sdk", "inherit"] as const;
-export type ProgramRunnerKind = (typeof PROGRAM_RUNNER_KINDS)[number];
 
 /** How a map step folds its per-item unit results into the step artifact. */
 export const PROGRAM_REDUCERS = ["collect", "vote"] as const;
@@ -109,10 +106,6 @@ export interface ProgramRetry {
 export interface ProgramUnit {
   /** Named engine override. Absent = workflow then config default. */
   engine?: string;
-  /** @deprecated v1 source compatibility type only. */
-  runner?: ProgramRunnerKind;
-  /** @deprecated v1 source compatibility type only. */
-  profile?: string;
   /** Model alias (tier) or exact id; resolved per-harness at dispatch. */
   model?: string;
   /** LLM-only invocation settings; validated after the engine is selected. */
@@ -202,8 +195,6 @@ export interface ProgramBudget {
 /** Run-level defaults, overridable per unit. */
 export interface ProgramDefaults {
   engine?: string;
-  /** @deprecated v1 source compatibility type only. */
-  runner?: ProgramRunnerKind;
   model?: string;
   llm?: LlmInvocationOverrides;
   /** Parsed default timeout in ms; `null` = explicitly "none". */
@@ -212,7 +203,7 @@ export interface ProgramDefaults {
 }
 
 export interface WorkflowProgram {
-  version: number;
+  version: typeof WORKFLOW_PROGRAM_VERSION;
   name: string;
   description?: string;
   /** Param name → JSON-Schema-ish declaration (validated as a schema in R1 compile). */

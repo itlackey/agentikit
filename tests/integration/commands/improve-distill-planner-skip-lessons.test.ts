@@ -30,16 +30,16 @@ import path from "node:path";
 
 import {
   type AkmDistillOptions,
-  type AkmDistillResult,
   akmDistill,
   DISTILL_REFUSED_INPUT_TYPES,
   isDistillRefusedInputType,
 } from "../../../src/commands/improve/distill";
 import { akmImprove } from "../../../src/commands/improve/improve";
-import type { AkmReflectOptions, AkmReflectResult } from "../../../src/commands/improve/reflect";
+import type { AkmReflectOptions } from "../../../src/commands/improve/reflect";
 import { stashDirFor } from "../../../src/core/asset/asset-placement";
 import { saveConfig } from "../../../src/core/config/config";
 import { appendEvent } from "../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../src/core/improve-types";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { withTestImproveLlm } from "../../_helpers/improve-config";
 
@@ -209,7 +209,7 @@ describe("improve planner: skip distill-refused input types", () => {
           ok: true,
           outcome: "queued",
           inputRef: options.ref,
-          lessonRef: `lessons/${options.ref.replace(/[:/]/g, "-")}-lesson`,
+          proposalRef: `lessons/${options.ref.replace(/[:/]/g, "-")}-lesson`,
         } satisfies AkmDistillResult;
       },
     });

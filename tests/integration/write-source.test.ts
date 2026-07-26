@@ -24,6 +24,7 @@ import path from "node:path";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { SourceConfigEntry } from "../../src/core/config/config";
 import { ConfigError, UsageError } from "../../src/core/errors";
+import { sanitizeCommitMessage } from "../../src/core/git-message";
 import {
   assertWritableAllowedForKind,
   commitWriteTargetBoundary,
@@ -32,7 +33,6 @@ import {
   type ResolvedWriteTarget,
   resolveWritable,
   resolveWriteTarget,
-  sanitizeCommitMessage,
   type WriteTargetSource,
   writeAssetToSource,
 } from "../../src/core/write-source";

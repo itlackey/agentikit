@@ -3,11 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Unified install-ref dispatcher.
- *
- * Replaces the historical `installRegistryRef()` entry point. Given an
- * unparsed install ref, this resolves the right syncable provider and
- * invokes its `sync()` method.
+ * Materialize an install ref through the matching source implementation.
  */
 
 import { UsageError } from "../../core/errors";
@@ -26,8 +22,8 @@ export async function syncFromRef(ref: string, options?: SyncOptions): Promise<S
     return syncNpmRef(ref, options);
   }
   if (parsed.source === "git" || parsed.source === "github") {
-    const { syncRegistryGitRef } = await import("./git");
-    return syncRegistryGitRef(ref, options);
+    const { syncGitRef } = await import("./git-install");
+    return syncGitRef(ref, options);
   }
   // Exhaustiveness — `parseRegistryRef` only emits the four sources above.
   const _exhaustive: never = parsed;

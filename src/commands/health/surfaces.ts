@@ -5,11 +5,10 @@
 /**
  * The remaining `surfaces` advisory group for `akm health` (meta-review 08).
  * `stash-git-exposure` (08-F1) shipped first in ./stash-exposure.ts; this
- * module adds the other four read-only checks the adjudication approved:
+ * module adds the other three read-only checks the adjudication approved:
  *
  *   - `secret-file-perms`   — env/secret/backup files not 0600, dirs not 0700 (F4)
  *   - `binary-config-skew`  — config.json written by a NEWER akm than this binary (F3)
- *   - `orphan-stores`       — legacy config-backups dirs + 0-byte stash state.db decoy (F4/F7)
  *   - `egress-endpoints`    — the remote-destination list, for eyeball diff (surfaces 3/9)
  *
  * Every collector is a pure projection over injected paths/config (no
@@ -136,54 +135,6 @@ export function collectConfigSkewAdvisory(configPath: string): HealthCheckResult
 }
 
 /**
- * `orphan-stores` (08-F4/F7): stores that look load-bearing but are dead —
- * legacy `config-backups/` dirs in $DATA/$CONFIG (only `$CACHE/config-backups`
- * is written and pruned today) and a 0-byte `<stash>/.akm/state.db` decoy that
- * misleads debugging (the live state.db lives in the data dir). Read-only:
- * this advisory NAMES them; removal stays an owner-approved per-path action.
- */
-export function collectOrphanStoresAdvisory(input: {
-  dataDir: string;
-  configDir: string;
-  stashDir: string;
-}): HealthCheckResult | undefined {
-  const orphans: string[] = [];
-
-  for (const [label, dir] of [
-    ["legacy data-dir backup location", path.join(input.dataDir, "config-backups")],
-    ["legacy config-dir backup location", path.join(input.configDir, "config-backups")],
-  ] as const) {
-    try {
-      if (fs.statSync(dir).isDirectory()) orphans.push(`${dir}/ (${label}; live backups are in $CACHE/config-backups)`);
-    } catch {
-      // absent — fine
-    }
-  }
-
-  const decoy = path.join(input.stashDir, ".akm", "state.db");
-  try {
-    const stat = fs.statSync(decoy);
-    if (stat.isFile() && stat.size === 0) {
-      orphans.push(`${decoy} (0-byte decoy; the live state.db is in the data dir)`);
-    }
-  } catch {
-    // absent — fine
-  }
-
-  if (orphans.length === 0) return undefined;
-  return {
-    name: "orphan-stores",
-    kind: "deterministic",
-    status: "warn",
-    confidence: "high",
-    message:
-      `${orphans.length} orphan store(s) found: ${orphans.join("; ")}. ` +
-      "These are dead locations that mislead debugging/recovery — review and remove them (owner-approved, per-path).",
-    evidence: { orphans },
-  };
-}
-
-/**
  * Minimal structural view of the effective config for the egress list —
  * deliberately not the full AkmConfig type so tests stay decoupled and the
  * collector never needs config loading itself.
@@ -238,14 +189,12 @@ export function collectEgressAdvisory(config: EgressConfigView | undefined): Hea
 }
 
 /**
- * Aggregate the four collectors into the advisories array shape `akmHealth`
- * consumes. Order is fixed: perms → skew → orphans → egress.
+ * Aggregate the three collectors into the advisories array shape `akmHealth`
+ * consumes. Order is fixed: perms → skew → egress.
  */
 export function collectSurfacesAdvisories(input: {
   stashDir: string;
   cacheDir: string;
-  dataDir: string;
-  configDir: string;
   configPath: string;
   config: EgressConfigView | undefined;
   platform?: PlatformLike;
@@ -256,7 +205,6 @@ export function collectSurfacesAdvisories(input: {
       input.platform ?? process.platform,
     ),
     collectConfigSkewAdvisory(input.configPath),
-    collectOrphanStoresAdvisory({ dataDir: input.dataDir, configDir: input.configDir, stashDir: input.stashDir }),
     collectEgressAdvisory(input.config),
   ];
   return results.filter((r): r is HealthCheckResult => r !== undefined);

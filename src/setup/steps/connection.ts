@@ -10,6 +10,7 @@
 import * as p from "../../cli/clack";
 import type { AkmConfig, EmbeddingConnectionConfig, LlmConnectionConfig } from "../../core/config/config";
 import { detectAgentCliProfiles, pickDefaultAgentProfile } from "../../integrations/agent";
+import type { HarnessLLMConfig } from "../../integrations/harnesses/shared";
 import { detectLMStudio, detectOllama, type LMStudioDetectionResult } from "../detect";
 import { verifyOpenAiCompatibleEndpoint } from "../detected-engines";
 import {
@@ -18,7 +19,6 @@ import {
   readAgentEngineSelection,
   readCurrentLlmEngine,
 } from "../engine-config";
-import type { HarnessLLMConfig } from "../harness-config-import";
 import { prompt } from "../prompt";
 import {
   keepCurrentOption,

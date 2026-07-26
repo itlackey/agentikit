@@ -23,15 +23,6 @@ import { claudeCodeImporter } from "../integrations/harnesses/claude/config-impo
 import { openCodeImporter } from "../integrations/harnesses/opencode/config-import";
 import type { HarnessConfigImporter, HarnessLLMConfig } from "../integrations/harnesses/shared";
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
-// Re-exported so existing `import { type HarnessLLMConfig, ... } from
-// "./setup/harness-config-import"` sites are unaffected by the KILL 8 sever
-// (types moved to integrations/harnesses/shared.ts — a dependency sink — to
-// break the harness-config-import.ts ↔ {claude,opencode}/config-import.ts
-// import cycle).
-export type { HarnessConfigImporter, HarnessLLMConfig };
-
 // The Claude Code importer was migrated to its harness directory in #563
 // (`harnesses/claude/config-import.ts`) and the OpenCode importer in #564
 // (`harnesses/opencode/config-import.ts`). Both are imported back into

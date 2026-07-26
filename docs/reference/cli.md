@@ -1918,13 +1918,12 @@ akm improve workflows/release-checklist --task "reduce duplication"
 | `--task` | Optional extra guidance for this improvement pass |
 | `--dry-run` | Show the schema-v2 result on stdout without creating config, data, state, cache, stash, log, or result artifacts. Dry-run results are never persisted, including on errors or signals. |
 | `--target` | Select the proposal/write target; when the ref scope is bundle-qualified, it must name the same bundle |
-| `--auto-accept[=<value>]` | **Deprecated and ignored.** There is no confidence gate; proposals always queue for review — adjudicate them with `akm proposal` or the drain engine. The flag still parses (with a warning) so existing scheduled tasks keep working. |
 | `--limit <n>` | Maximum number of assets to process |
 | `--timeout-ms <ms>` | Wall-clock budget for the run |
 | `--consolidate-recovery <abort|clean>` | Handle stale consolidate journal by aborting (default) or cleaning stale artifacts |
 | `--require-feedback-signal` | Only process assets with recent feedback signals |
 | `--strategy <name>` | Override the active improve strategy (a built-in or entry under `improve.strategies`) |
-| `--json-to-stdout` | Emit the full JSON result on stdout for a live run. Without this flag, live-run results are recorded in `$XDG_DATA_HOME/akm/state.db` table `improve_runs` and stdout stays empty. Dry-runs always emit their result on stdout and never write an `improve_runs` row. |
+| `--json-to-stdout` | Also emit the full persisted JSON result on stdout for a live run. Without this flag, stdout stays empty. Dry-runs always emit their result and are never persisted. |
 
 `akm improve` is the public entrypoint for whole-stash, type-scoped, and
 ref-scoped improvement. It owns the memory-cleanup and lesson-distillation

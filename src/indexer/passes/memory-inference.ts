@@ -143,11 +143,7 @@ interface MemoryRecord {
   filePath: string;
   /** Source root the file lives under (the writable stash dir). */
   stashRoot: string;
-  /**
-   * Parent identity ref (`memory:<name>`) — internal candidate/progress key. The
-   * child's `source:` backref is derived from `name` as a `memories/<name>`
-   * conceptId (Group-C item 2), NOT from this legacy identity ref.
-   */
+  /** Parent conceptId used for candidate filtering and progress reporting. */
   ref: string;
   /** Existing frontmatter (parsed). */
   data: Record<string, unknown>;
@@ -455,7 +451,7 @@ export function collectPendingMemories(stashRoot: string): MemoryRecord[] {
     out.push({
       filePath,
       stashRoot,
-      ref: `memory:${relName}`,
+      ref: conceptIdFromTypeName("memory", relName),
       data: parsed.data,
       body: parsed.content,
       name: relName,
@@ -569,10 +565,8 @@ function renderDerivedMemory(parent: MemoryRecord, derived: DerivedMemoryDraft):
   const fm: Record<string, unknown> = {
     [FM_INFERRED]: true,
     [FM_CAPTURE_MODE]: "background",
-    // Group-C item 2: the `source:` backref (the `derived_from` channel) is now
-    // written in the 0.9.0 `memories/<name>` conceptId grammar, not the legacy
-    // `memory:<name>`. `parent.ref` stays the legacy identity ref used internally
-    // for candidate/progress bookkeeping; only the on-disk backref is flipped.
+    // The `source:` backref and internal candidate identity use the same current
+    // `memories/<name>` conceptId spelling.
     [FM_SOURCE]: conceptIdFromTypeName("memory", parent.name),
     description: derived.description,
     tags: derived.tags,

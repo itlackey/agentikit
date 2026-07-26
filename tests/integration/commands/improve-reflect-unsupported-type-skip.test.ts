@@ -28,12 +28,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { AkmDistillResult } from "../../../src/commands/improve/distill";
 import { akmImprove } from "../../../src/commands/improve/improve";
-import type { AkmReflectOptions, AkmReflectResult } from "../../../src/commands/improve/reflect";
+import type { AkmReflectOptions } from "../../../src/commands/improve/reflect";
 import { REFLECT_ALLOWED_TYPES } from "../../../src/commands/improve/reflect";
 import { saveConfig } from "../../../src/core/config/config";
 import { appendEvent } from "../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../src/core/improve-types";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { withTestImproveLlm } from "../../_helpers/improve-config";
 
@@ -98,7 +98,7 @@ function makeStubDistillResult(ref: string): AkmDistillResult {
     ok: true,
     outcome: "queued",
     inputRef: ref,
-    lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+    proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
   };
 }
 

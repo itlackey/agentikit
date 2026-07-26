@@ -51,7 +51,7 @@ export function shouldWarnOnPlainHttp(ref: string): boolean {
 // exit from a real audit bug by string-matching `err.message === "process.exit
 // called"` — a TEST mock sentinel. In production `process.exit` never throws, so
 // that branch was test-only; worse, if the sentinel string ever drifted the
-// DANGEROUS_VAULT_KEY abort would silently become fail-OPEN and an insecure
+// DANGEROUS_ENV_KEY abort would silently become fail-OPEN and an insecure
 // stash would install, while the catch swallowed any genuine audit bug.
 //
 // This helper replaces that magic-string control flow with a typed decision.
@@ -66,7 +66,7 @@ export function shouldWarnOnPlainHttp(ref: string): boolean {
 export type DangerousKeyAuditDecision = { blocked: true; exitCode: number } | { blocked: false };
 
 interface DangerousKeyFinding {
-  vaultRef: string;
+  envRef: string;
   keyName: string;
   relPath: string;
 }
@@ -77,7 +77,7 @@ function collectDangerousKeyFindings(
   checkEnvForDangerousKeys: (
     envPath: string,
     relPath: string,
-    vaultRef: string,
+    envRef: string,
   ) => Array<{ detail: string; file: string }>,
 ): DangerousKeyFinding[] {
   const allFindings: DangerousKeyFinding[] = [];
@@ -88,14 +88,14 @@ function collectDangerousKeyFindings(
   for (const envFile of envFiles) {
     const envPath = path.join(dir, envFile);
     const baseName = path.basename(envFile, ".env");
-    const vaultRef = baseName === "" ? `${prefix}:default` : `${prefix}:${baseName}`;
+    const envRef = baseName === "" ? `${prefix}/default` : `${prefix}/${baseName}`;
     const relPath = path.join(subdir, envFile);
-    const findings = checkEnvForDangerousKeys(envPath, relPath, vaultRef);
+    const findings = checkEnvForDangerousKeys(envPath, relPath, envRef);
     for (const finding of findings) {
       // Extract the key name from the detail string for the summary line.
       const keyMatch = finding.detail.match(/Env key `([^`]+)`/);
       const keyName = keyMatch ? keyMatch[1]! : finding.file;
-      allFindings.push({ vaultRef, keyName, relPath });
+      allFindings.push({ envRef, keyName, relPath });
     }
   }
   return allFindings;
@@ -140,7 +140,7 @@ export async function auditInstalledStashForDangerousKeys(opts: {
     // Operator has explicitly accepted the risk — warn and continue.
     for (const f of allFindings) {
       warn(
-        `[dangerous-vault-key] ${f.relPath}: key \`${f.keyName}\` in ${f.vaultRef} can hijack process execution via \`akm env run\`. Proceeding because --allow-insecure was set.`,
+        `[dangerous-env-key] ${f.relPath}: key \`${f.keyName}\` in ${f.envRef} can hijack process execution via \`akm env run\`. Proceeding because --allow-insecure was set.`,
       );
     }
     return { blocked: false };
@@ -166,14 +166,14 @@ export async function auditInstalledStashForDangerousKeys(opts: {
     // Guard on stdin (not stdout) because p.confirm() reads from stdin;
     // stdout may be a TTY while stdin is piped, which would cause a hang.
     const stashLabel = ref;
-    const groupedByVault = new Map<string, string[]>();
+    const groupedByEnv = new Map<string, string[]>();
     for (const f of allFindings) {
-      const existing = groupedByVault.get(f.vaultRef) ?? [];
+      const existing = groupedByEnv.get(f.envRef) ?? [];
       existing.push(f.keyName);
-      groupedByVault.set(f.vaultRef, existing);
+      groupedByEnv.set(f.envRef, existing);
     }
-    for (const [vaultRef, keys] of groupedByVault) {
-      warn(`[warn] Env "${vaultRef}" in stash "${stashLabel}" contains potentially dangerous keys:`);
+    for (const [envRef, keys] of groupedByEnv) {
+      warn(`[warn] Env "${envRef}" in stash "${stashLabel}" contains potentially dangerous keys:`);
       for (const key of keys) {
         warn(`  - ${key}: can hijack process execution via \`akm env run\``);
       }
@@ -190,7 +190,7 @@ export async function auditInstalledStashForDangerousKeys(opts: {
             ok: false,
             error:
               "Install aborted: stash contains dangerous env keys. Remove the keys or re-run with --allow-insecure to bypass.",
-            code: "DANGEROUS_VAULT_KEY",
+            code: "DANGEROUS_ENV_KEY",
             ...(rollbackWarning ? { rollbackWarning } : {}),
           },
           null,
@@ -205,13 +205,13 @@ export async function auditInstalledStashForDangerousKeys(opts: {
 
   // Non-interactive path without bypass flag: fail hard.
   const rollbackWarning = await rollback();
-  const keyList = allFindings.map((f) => `  - ${f.keyName} (${f.vaultRef})`).join("\n");
+  const keyList = allFindings.map((f) => `  - ${f.keyName} (${f.envRef})`).join("\n");
   console.error(
     JSON.stringify(
       {
         ok: false,
         error: `Install blocked: stash "${ref}" contains dangerous env keys that can hijack process execution via \`akm env run\`:\n${keyList}\nRe-run with --allow-insecure to bypass this check after reviewing the env file.`,
-        code: "DANGEROUS_VAULT_KEY",
+        code: "DANGEROUS_ENV_KEY",
         ...(rollbackWarning ? { rollbackWarning } : {}),
       },
       null,

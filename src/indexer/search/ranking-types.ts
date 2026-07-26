@@ -10,7 +10,7 @@
  * `ranking.ts` imports the contributor functions/lists from) does not need a
  * type-only import back into `ranking.ts` — that back-edge is a static-graph
  * cycle even though it is type-only (chunk 9 WI-9.8 KILL 2 sever). `ranking.ts`
- * re-exports `RankedEntryInput` so existing import sites are unaffected.
+ * keeps the ranking dependency graph acyclic.
  */
 
 import type { IndexDocument } from "../passes/metadata";
@@ -21,12 +21,7 @@ export interface RankedEntryInput {
   filePath: string;
   score: number;
   rankingMode: "hybrid" | "semantic" | "fts";
-  /**
-   * Chunk-5 flip F5d (Step 2): the durable fully-qualified `<bundle>//<concept-id>`
-   * stored spelling carried from `entries.item_ref` through the search read path,
-   * so `loadSalienceRankScores` can key on the new grammar first (new key, then an
-   * inline legacy `type:name` arm). `undefined`/`null` for a NULL-provenance row.
-   */
+  /** Durable fully-qualified `<bundle>//<concept-id>` indexed identity. */
   itemRef?: string | null;
   bundleId?: string | null;
   conceptId?: string | null;

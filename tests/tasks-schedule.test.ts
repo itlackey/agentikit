@@ -17,7 +17,7 @@ describe("parseSchedule", () => {
     expect(spec.fields.hour.kind).toBe("star");
   });
 
-  test("accepts the persisted 0.8 range-step schedule", () => {
+  test("accepts a range-step schedule", () => {
     const spec = parseSchedule("0 2-22/4 * * *", "cron");
     expect(spec.fields.hour).toEqual({ kind: "rangeStep", start: 2, end: 22, step: 4 });
     expect(translateToCron(spec)).toBe("0 2-22/4 * * *");
@@ -69,7 +69,7 @@ describe("translateToLaunchd", () => {
     expect(t.calendars).toEqual(Array.from({ length: 12 }, (_, hour) => ({ Minute: 0, Hour: hour * 2 })));
   });
 
-  test("expands the persisted 0.8 hour range-step into calendar boundaries", () => {
+  test("expands an hour range-step into calendar boundaries", () => {
     const t = translateToLaunchd(parseSchedule("0 2-22/4 * * *", "launchd"));
     expect(t.calendars).toEqual([2, 6, 10, 14, 18, 22].map((Hour) => ({ Minute: 0, Hour })));
   });
@@ -125,7 +125,7 @@ describe("translateToSchtasks", () => {
     expect(t).toEqual({ kind: "hourValues", hours: [0, 5, 10, 15, 20], atMinute: 0 });
   });
 
-  test("persisted hour range-step expands to exact daily wall-clock anchors", () => {
+  test("hour range-step expands to exact daily wall-clock anchors", () => {
     const t = translateToSchtasks(parseSchedule("0 2-22/4 * * *", "schtasks"));
     expect(t).toEqual({ kind: "hourValues", hours: [2, 6, 10, 14, 18, 22], atMinute: 0 });
   });

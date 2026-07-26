@@ -163,6 +163,9 @@ describe("estimatedTokens in search hits", () => {
     const hit = await buildDbHit({
       entry,
       path: filePath,
+      itemRef: "stash//scripts/test-script",
+      bundleId: "stash",
+      conceptId: "scripts/test-script",
       score: 0.5,
       query: "test",
       rankingMode: "fts",
@@ -196,6 +199,9 @@ describe("estimatedTokens approximation", () => {
     const hit = await buildDbHit({
       entry,
       path: filePath,
+      itemRef: "stash//scripts/sized-script",
+      bundleId: "stash",
+      conceptId: "scripts/sized-script",
       score: 0.5,
       query: "sized",
       rankingMode: "fts",
@@ -223,6 +229,9 @@ describe("estimatedTokens approximation", () => {
     const hit = await buildDbHit({
       entry,
       path: filePath,
+      itemRef: "stash//scripts/no-size",
+      bundleId: "stash",
+      conceptId: "scripts/no-size",
       score: 0.5,
       query: "no",
       rankingMode: "fts",

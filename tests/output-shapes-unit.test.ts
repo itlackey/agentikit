@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { shapeForCommand } from "../src/output/shapes";
 import {
   capDescription,
   pickFields,
   shapeAssetHit,
-  shapeForCommand,
   shapeProposalAcceptOutput,
   shapeProposalDiffOutput,
   shapeProposalEntry,
@@ -17,7 +17,7 @@ import {
   shapeSearchOutput,
   shapeShowOutput,
   truncateDescription,
-} from "../src/output/shapes";
+} from "../src/output/shapes/helpers";
 
 describe("pickFields", () => {
   test("returns only requested fields, in the requested order", () => {

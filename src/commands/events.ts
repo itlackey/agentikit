@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `akm events list` and `akm events tail` (#204).
+ * Programmatic event listing and tailing behind `akm log` (#204).
  *
  * Programmatic surface — the CLI dispatcher in `src/cli.ts` registers two
  * verbs that delegate here. Both return JSON envelopes shaped by
@@ -14,7 +14,8 @@
 
 import { makeBundleRef, parseBundleRef } from "../core/asset/asset-ref";
 import { UsageError } from "../core/errors";
-import { type EventEnvelope, type EventsContext, readEvents, type TailOptions, tailEvents } from "../core/events";
+import { type EventsContext, readEvents, type TailOptions, tailEvents } from "../core/events";
+import type { EventEnvelope } from "../core/events-types";
 import { parseSinceToIso } from "../core/time";
 
 export interface EventsListOptions {
@@ -23,13 +24,13 @@ export interface EventsListOptions {
   ref?: string;
   excludeTags?: string[];
   includeTags?: string[];
-  /** Test seam — overrides events.jsonl path / clock. */
+  /** Test seam — overrides the state database / clock. */
   ctx?: EventsContext;
 }
 
 /**
- * Parse `--since` accepting either a byte-offset cursor (`@offset:<int>`) for
- * cross-process resumption, or a timestamp / epoch-ms (the existing form).
+ * Parse `--since` accepting either an opaque row cursor (`@offset:<int>`) for
+ * cross-process resumption, or a timestamp / epoch-ms.
  * Returns one of `{ sinceOffset }` or `{ since }`.
  */
 function parseSinceFlag(since: string | undefined): {
@@ -46,7 +47,7 @@ function parseSinceFlag(since: string | undefined): {
     const value = Number.parseInt(raw, 10);
     if (Number.isNaN(value) || value < 0) {
       throw new UsageError(
-        `Invalid --since byte offset: "${since}". Expected @offset:<non-negative integer>.`,
+        `Invalid --since offset: "${since}". Expected @offset:<non-negative integer>.`,
         "INVALID_FLAG_VALUE",
       );
     }

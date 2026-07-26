@@ -56,7 +56,7 @@ const workflowSpec: Omit<AssetSpec, "stashDir"> = {
     for (const ext of WORKFLOW_EXTENSIONS) {
       if (lower.endsWith(ext)) return path.join(typeRoot, name);
     }
-    // Probe in priority order — `.md` first for back-compat — and fall back
+    // Probe in canonical extension priority order and fall back
     // to the markdown path so error messages keep naming the canonical file.
     for (const ext of WORKFLOW_EXTENSIONS) {
       const candidate = path.join(typeRoot, `${name}${ext}`);
@@ -70,7 +70,7 @@ const markdownSpec: Omit<AssetSpec, "stashDir"> = {
   isRelevantFile: (fileName) => path.extname(fileName).toLowerCase() === ".md",
   toCanonicalName: (typeRoot, filePath) => {
     const rel = toPosix(path.relative(typeRoot, filePath));
-    // Strip .md extension from canonical names (agent:code-reviewer, not agent:code-reviewer.md)
+    // Strip .md extension from canonical names.
     return rel.endsWith(".md") ? rel.slice(0, -3) : rel;
   },
   toAssetPath: (typeRoot, name) => {
@@ -189,9 +189,8 @@ export function stashDirFor(type: string): string | undefined {
  * Reverse of {@link stashDirFor}: the placement type owning a stash subdir, or
  * `undefined` when no registered type places into it. The type→subdir map is a
  * bijection over the built-in types (each type has a distinct subdir), so this
- * is the well-defined inverse. Used by the Chunk-5 dual-grammar shim to reverse
- * a D-R2 qualified conceptId (`<stash-subdir>/<name>`) back to a legacy
- * `type:name` predicate so NULL-`item_ref` rows stay findable by new refs.
+ * is the well-defined inverse used to project a path-based conceptId onto the
+ * asset-type metadata required by native adapters.
  */
 export function typeForStashDir(stashDir: string): string | undefined {
   for (const [type, spec] of Object.entries(PLACEMENT_SPECS)) {

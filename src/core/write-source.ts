@@ -47,26 +47,18 @@ import { ensureAkmMarkdownType } from "./asset/akm-markdown";
 import { assetPathForName, stashDirFor } from "./asset/asset-placement";
 import type { AssetRef } from "./asset/resolve-ref";
 import { displayRef } from "./asset/resolve-ref";
-import { isWithin } from "./common";
+import { deriveBundleId } from "./bundle-id";
+import { isWithin, resolveStashDir } from "./common";
 import type { AkmConfig, ConfiguredSource, SourceConfigEntry } from "./config/config";
 import { resolveConfiguredSources } from "./config/config";
 import { ConfigError, UsageError } from "./errors";
 import { sanitizeCommitMessage } from "./git-message";
 import { warn } from "./warn";
 
-// Re-exported so existing `import { sanitizeCommitMessage } from
-// "./core/write-source"` sites are unaffected by the KILL 6 sever (the
-// helper moved to git-message.ts to break the write-source.ts → git.ts →
-// git-stash.ts → write-source.ts 3-file import cycle).
-export { sanitizeCommitMessage };
-
 // ── Types ───────────────────────────────────────────────────────────────────
 
 /**
- * Minimal shape required by {@link writeAssetToSource}. Lets the helper run
- * against either the legacy {@link ConfiguredSource} runtime value (today's
- * code on `release/0.6.0`) or the post-Phase-3 simplified `SourceProvider`
- * interface — both expose a `kind`/`name`/`path` triple.
+ * Minimal source shape required by {@link writeAssetToSource}.
  *
  * `kind` is the branching discriminator for the helper. The set of supported
  * values is `"filesystem"` and `"git"`. Anything else throws `ConfigError`.
@@ -970,6 +962,10 @@ export function resolveWritableTargets(akmConfig: AkmConfig): ResolvedWriteTarge
     const existing = byRoot.get(root);
     if (!existing || target.source.name === akmConfig.defaultWriteTarget) byRoot.set(root, target);
   }
+  if (process.env.AKM_STASH_DIR?.trim()) {
+    const target = resolveWorkingStashTarget(akmConfig);
+    byRoot.set(path.resolve(target.source.path), target);
+  }
   return [...byRoot.values()];
 }
 
@@ -1055,6 +1051,25 @@ export function resolveWorkingStashTarget(
 ): ResolvedWriteTarget {
   const configuredSources = resolveConfiguredSources(akmConfig);
   const requireWritable = options.requireWritable !== false;
+  if (process.env.AKM_STASH_DIR?.trim()) {
+    const stashDir = resolveStashDir();
+    const configured = configuredSources.find((source) => {
+      const sourcePath = source.source.type === "filesystem" ? source.source.path : undefined;
+      return sourcePath !== undefined && path.resolve(sourcePath) === path.resolve(stashDir);
+    });
+    if (configured) {
+      const target = adaptConfiguredSource(configured);
+      if (requireWritable && !resolveWritable(target.config)) {
+        throw new ConfigError(`Bundle "${configured.name}" is not writable.`, "INVALID_CONFIG_FILE");
+      }
+      return { ...target, selector: undefined };
+    }
+    const bundleId = deriveBundleId(undefined, stashDir, new Set(Object.keys(akmConfig.bundles ?? {})));
+    return {
+      source: { kind: "filesystem", name: bundleId, path: stashDir, adapterId: detectAdapterId(stashDir) },
+      config: { type: "filesystem", name: bundleId, path: stashDir, writable: true },
+    };
+  }
   const defaultBundleSource = akmConfig.defaultBundle
     ? configuredSources.find((source) => source.name === akmConfig.defaultBundle)
     : undefined;
@@ -1173,9 +1188,8 @@ function adaptConfiguredSource(runtime: ConfiguredSource): ResolvedWriteTarget {
   // root lives in the lock (`localRoot`), NOT the desired config. Resolve there
   // FIRST — via the SAME shared resolver the indexer READ path uses — so a write
   // lands in exactly the directory a read walks; git sync/commit then runs
-  // against that same root. When no lock row records a localRoot (a git bundle
-  // migrated from a `sources[]` url), fall back to the derived cache repoDir +
-  // content/-subdir convention — the identical chain the read path applies.
+  // against that same root. Before the first lock row exists, fall back to the
+  // derived cache repoDir + content/-subdir convention used by the read path.
   const lockRoot = kind === "git" ? lockContentRootFor(runtime.name, runtime.type) : undefined;
   const repoPath = lockRoot ?? pathFromConfiguredSource(runtime);
   if (!repoPath) {

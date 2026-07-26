@@ -21,14 +21,16 @@ import { describe, expect, it, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isHotCapturedMemory } from "../../../../src/commands/improve/consolidate/eligibility";
 import {
-  hasSupersededStatus,
-  isHotCapturedMemory,
   normalizeUpdatedField,
   sanitizeMergedContent,
   stripOuterCodeFence,
+} from "../../../../src/commands/improve/consolidate/sanitize";
+import {
+  hasSupersededStatus,
   validateProposalFrontmatter,
-} from "../../../../src/commands/improve/consolidate";
+} from "../../../../src/commands/proposal/validators/proposal-quality-validators";
 import type { AkmConfig } from "../../../../src/core/config/config";
 import { detectTruncatedDescription } from "../../../../src/core/text-truncation";
 import { resolveImproveProcessRunner } from "../../../../src/integrations/agent/runner";

@@ -43,8 +43,10 @@ import { writeContradictEdge } from "../../../src/commands/improve/memory/memory
 import { writeMarkdownAsset } from "../../../src/commands/read/knowledge";
 import { rememberCommand } from "../../../src/commands/read/remember-cli";
 import { importKnowledgeCommand } from "../../../src/commands/sources/stash-cli";
+import { parseBundleRef } from "../../../src/core/asset/asset-ref";
 import { parseFrontmatter } from "../../../src/core/asset/frontmatter";
 import { runCliCapture } from "../../_helpers/cli";
+import { durableItemRef } from "../../_helpers/durable-ref";
 import {
   type Cleanup,
   makeSandboxDir,
@@ -99,6 +101,14 @@ function listDirRecursive(dir: string): string[] {
   return fs.readdirSync(dir, { recursive: true }).map(String);
 }
 
+function stashRef(type: string, name: string): string {
+  return durableItemRef(stashDir, type, name);
+}
+
+function conceptId(ref: string): string {
+  return parseBundleRef(ref).conceptId;
+}
+
 interface SupersededReport {
   ref: string;
   applied: boolean;
@@ -130,14 +140,14 @@ describe("remember --supersedes", () => {
       "old-endpoint",
       "projectA",
     );
-    expect(old.ref).toBe("memories/projectA/old-endpoint");
+    expect(conceptId(old.ref)).toBe("memories/projectA/old-endpoint");
     const oldRawBefore = fs.readFileSync(old.path, "utf8");
     const oldParsedBefore = parseFrontmatter(oldRawBefore);
     // The hot-path seed carries beliefState: asserted — the demotion must
     // overwrite it, not merely fill an absent key.
     expect(oldParsedBefore.data.beliefState).toBe("asserted");
 
-    const { code, stdout } = await runCliCapture([
+    const { code, stdout, stderr } = await runCliCapture([
       "remember",
       "The staging deploy now uses the new quantum-rotation gateway endpoint.",
       "--name",
@@ -145,29 +155,29 @@ describe("remember --supersedes", () => {
       "--path",
       "projectA",
       "--supersedes",
-      "memories/projectA/old-endpoint",
+      old.ref,
     ]);
-    expect(code).toBe(0);
+    expect(code, stderr).toBe(0);
 
     const json = JSON.parse(stdout) as WriteOutput;
     expect(json.ok).toBe(true);
-    expect(json.ref).toBe("memories/projectA/new-endpoint");
+    expect(json.ref).toBe(stashRef("memory", "projectA/new-endpoint"));
 
     // Additive output key: the demotion is reported as applied.
     expect(Array.isArray(json.superseded)).toBe(true);
     expect(json.superseded).toHaveLength(1);
-    expect(json.superseded?.[0]?.ref).toBe("memories/projectA/old-endpoint");
+    expect(json.superseded?.[0]?.ref).toBe(old.ref);
     expect(json.superseded?.[0]?.applied).toBe(true);
 
     // Correction provenance: the superseded ref folds into the NEW asset's
     // xrefs automatically (no --xref flag was passed).
     const newParsed = parseFrontmatter(fs.readFileSync(json.path, "utf8"));
-    expect(newParsed.data.xrefs).toContain("memories/projectA/old-endpoint");
+    expect(newParsed.data.xrefs).toContain(old.ref);
 
     // The OLD asset gains exactly the two demotion keys...
     const oldParsedAfter = parseFrontmatter(fs.readFileSync(old.path, "utf8"));
     expect(oldParsedAfter.data.beliefState).toBe("superseded");
-    expect(oldParsedAfter.data.supersededBy).toEqual(["memories/projectA/new-endpoint"]);
+    expect(oldParsedAfter.data.supersededBy).toEqual([json.ref]);
     // ...while every other frontmatter key survives (metadata edit, not a rewrite)...
     expect(oldParsedAfter.data.captureMode).toBe("hot");
     // ...and the body is untouched.
@@ -177,7 +187,7 @@ describe("remember --supersedes", () => {
   test("demotion is live: --belief current hides the old asset and the correction outranks it", async () => {
     // The shared token lives in the asset NAMES (body prose is not
     // FTS-indexed), so both memories are findable by the same query.
-    await rememberSeed("Deploy to staging through the legacy endpoint.", "quantum-rotation-old-endpoint");
+    const old = await rememberSeed("Deploy to staging through the legacy endpoint.", "quantum-rotation-old-endpoint");
 
     const { code, stdout } = await runCliCapture([
       "remember",
@@ -185,28 +195,30 @@ describe("remember --supersedes", () => {
       "--name",
       "quantum-rotation-new-endpoint",
       "--supersedes",
-      "memories/quantum-rotation-old-endpoint",
+      old.ref,
     ]);
     expect(code).toBe(0);
     const newRef = (JSON.parse(stdout) as WriteOutput).ref;
-    expect(newRef).toBe("memories/quantum-rotation-new-endpoint");
+    expect(newRef).toBe(stashRef("memory", "quantum-rotation-new-endpoint"));
 
     // The demoted incumbent must drop out of `--belief current` immediately —
     // this only holds if the mutated old file was reindexed by the writer.
     const current = await runCliCapture(["search", "quantum rotation", "--type", "memory", "--belief", "current"]);
     expect(current.code).toBe(0);
-    const currentRefs = ((JSON.parse(current.stdout).hits ?? []) as Array<{ ref: string }>).map((h) => h.ref);
-    expect(currentRefs).toContain(newRef);
-    expect(currentRefs).not.toContain("memory:quantum-rotation-old-endpoint");
+    const currentRefs = ((JSON.parse(current.stdout).hits ?? []) as Array<{ ref: string }>).map((h) =>
+      conceptId(h.ref),
+    );
+    expect(currentRefs).toContain(conceptId(newRef));
+    expect(currentRefs).not.toContain(conceptId(old.ref));
 
     // Unfiltered search still returns both, with the correction ranked above
     // the superseded incumbent (beliefStateBoost demotion, -0.25).
     const all = await runCliCapture(["search", "quantum rotation", "--type", "memory"]);
     expect(all.code).toBe(0);
-    const allRefs = ((JSON.parse(all.stdout).hits ?? []) as Array<{ ref: string }>).map((h) => h.ref);
-    expect(allRefs).toContain(newRef);
-    expect(allRefs).toContain("memories/quantum-rotation-old-endpoint");
-    expect(allRefs.indexOf(newRef)).toBeLessThan(allRefs.indexOf("memories/quantum-rotation-old-endpoint"));
+    const allRefs = ((JSON.parse(all.stdout).hits ?? []) as Array<{ ref: string }>).map((h) => conceptId(h.ref));
+    expect(allRefs).toContain(conceptId(newRef));
+    expect(allRefs).toContain(conceptId(old.ref));
+    expect(allRefs.indexOf(conceptId(newRef))).toBeLessThan(allRefs.indexOf(conceptId(old.ref)));
   });
 
   test("re-running the correction is idempotent: supersededBy is not duplicated", async () => {
@@ -218,9 +230,10 @@ describe("remember --supersedes", () => {
       "--name",
       "rotation-cadence-new",
       "--supersedes",
-      "memories/rotation-cadence-old",
+      old.ref,
     ]);
     expect(first.code).toBe(0);
+    const newRef = (JSON.parse(first.stdout) as WriteOutput).ref;
 
     const second = await runCliCapture([
       "remember",
@@ -229,32 +242,34 @@ describe("remember --supersedes", () => {
       "rotation-cadence-new",
       "--force",
       "--supersedes",
-      "memories/rotation-cadence-old",
+      old.ref,
     ]);
     expect(second.code).toBe(0);
 
     const oldParsed = parseFrontmatter(fs.readFileSync(old.path, "utf8"));
     expect(oldParsed.data.beliefState).toBe("superseded");
-    expect(oldParsed.data.supersededBy).toEqual(["memories/rotation-cadence-new"]);
+    expect(oldParsed.data.supersededBy).toEqual([newRef]);
   });
 
   test("unresolvable --supersedes fails with exit 2 usage envelope; nothing written, nothing demoted", async () => {
     const goodOldPath = seedAsset(stashDir, "memories/good-old.md", "A resolvable incumbent memory.\n");
     const goodOldRaw = fs.readFileSync(goodOldPath, "utf8");
+    const goodOldRef = stashRef("memory", "good-old");
+    const missingRef = stashRef("memory", "ghost-note");
 
     const { code, stderr } = await runCliCapture([
       "remember",
       "This correction must not be written",
       "--supersedes",
-      "memories/good-old",
+      goodOldRef,
       "--supersedes",
-      "memories/ghost-note",
+      missingRef,
     ]);
     expect(code).toBe(2);
 
     const json = JSON.parse(stderr) as { ok: boolean; error: string; code?: string };
     expect(json.ok).toBe(false);
-    expect(json.error).toContain("memories/ghost-note");
+    expect(json.error).toContain(missingRef);
     expect(typeof json.code).toBe("string");
 
     // Validation happens BEFORE any write: no new asset landed AND the
@@ -266,6 +281,8 @@ describe("remember --supersedes", () => {
   test("--supersedes composes with --xref (deduped) and adds a frontmatter block to a frontmatter-less old asset", async () => {
     seedAsset(stashDir, "knowledge/auth-flow.md", "# Auth flow\n\nReference doc.\n");
     const oldPath = seedAsset(stashDir, "memories/vpn-note.md", "VPN is required for staging.\n");
+    const authFlowRef = stashRef("knowledge", "auth-flow");
+    const vpnNoteRef = stashRef("memory", "vpn-note");
 
     const { code, stdout } = await runCliCapture([
       "remember",
@@ -273,19 +290,19 @@ describe("remember --supersedes", () => {
       "--name",
       "vpn-note-correction",
       "--xref",
-      "knowledge/auth-flow",
+      authFlowRef,
       "--supersedes",
-      "memories/vpn-note",
+      vpnNoteRef,
     ]);
     expect(code).toBe(0);
 
     const json = JSON.parse(stdout) as WriteOutput;
     const newParsed = parseFrontmatter(fs.readFileSync(json.path, "utf8"));
     const xrefs = (newParsed.data.xrefs ?? []) as string[];
-    expect(xrefs).toContain("knowledge/auth-flow");
-    expect(xrefs).toContain("memories/vpn-note");
+    expect(xrefs).toContain(authFlowRef);
+    expect(xrefs).toContain(vpnNoteRef);
     // No duplicates when a ref arrives through both channels or repeats.
-    expect(xrefs.filter((r) => r === "memories/vpn-note")).toHaveLength(1);
+    expect(xrefs.filter((r) => r === vpnNoteRef)).toHaveLength(1);
 
     // A frontmatter-less old asset gains a metadata block; the body text is
     // preserved (assembleAsset only strips leading blank lines).
@@ -299,7 +316,7 @@ describe("remember --supersedes", () => {
 
   test("self-supersede (--force overwrite of the same name) is rejected with exit 2; the original asset is untouched", async () => {
     const orig = await rememberSeed("The flux capacitor needs the legacy calibration.", "flux-note");
-    expect(orig.ref).toBe("memories/flux-note");
+    expect(conceptId(orig.ref)).toBe("memories/flux-note");
     const origRaw = fs.readFileSync(orig.path, "utf8");
 
     const { code, stderr } = await runCliCapture([
@@ -309,13 +326,13 @@ describe("remember --supersedes", () => {
       "flux-note",
       "--force",
       "--supersedes",
-      "memories/flux-note",
+      orig.ref,
     ]);
     expect(code).toBe(2);
 
     const json = JSON.parse(stderr) as { ok: boolean; error: string; code?: string };
     expect(json.ok).toBe(false);
-    expect(json.error).toContain("memories/flux-note");
+    expect(json.error).toContain(orig.ref);
     expect(json.error).toContain("cannot supersede itself");
     expect(json.code).toBe("INVALID_FLAG_VALUE");
 
@@ -342,6 +359,7 @@ describe("remember --supersedes", () => {
       ].join("\n"),
     );
     const oldRaw = fs.readFileSync(oldPath, "utf8");
+    const oldRef = stashRef("knowledge", "broken-fm");
 
     const { code, stdout, stderr } = await runCliCapture([
       "remember",
@@ -349,24 +367,24 @@ describe("remember --supersedes", () => {
       "--name",
       "fixed-guidance",
       "--supersedes",
-      "knowledge/broken-fm",
+      oldRef,
     ]);
     expect(code).toBe(0);
 
     const json = JSON.parse(stdout) as WriteOutput;
     expect(json.ok).toBe(true);
     expect(json.superseded).toHaveLength(1);
-    expect(json.superseded?.[0]?.ref).toBe("knowledge/broken-fm");
+    expect(json.superseded?.[0]?.ref).toBe(oldRef);
     expect(json.superseded?.[0]?.applied).toBe(false);
     expect(json.superseded?.[0]?.reason ?? "").toContain("YAML");
-    expect(stderr).toContain("knowledge/broken-fm");
+    expect(stderr).toContain(oldRef);
 
     // No lossy rewrite: the lenient-parser fallback would have flattened the
     // tags list to "" — the file must stay byte-identical instead.
     expect(fs.readFileSync(oldPath, "utf8")).toBe(oldRaw);
     // The correction still writes and cites the incumbent.
     const newParsed = parseFrontmatter(fs.readFileSync(json.path, "utf8"));
-    expect(newParsed.data.xrefs).toContain("knowledge/broken-fm");
+    expect(newParsed.data.xrefs).toContain(oldRef);
   });
 
   test("old asset in a WRITABLE non-target source: demotion skipped with a --target remedy (not misreported as read-only)", async () => {
@@ -377,6 +395,7 @@ describe("remember --supersedes", () => {
       semanticSearchMode: "off",
       bundles: { team: { path: teamDir, writable: true } },
     });
+    const teamNoteRef = "team//memories/team-note";
 
     const { code, stdout } = await runCliCapture([
       "remember",
@@ -394,6 +413,7 @@ describe("remember --supersedes", () => {
     // its own boundary commit).
     expect(json.path.startsWith(stashDir)).toBe(true);
     expect(json.superseded).toHaveLength(1);
+    expect(json.superseded?.[0]?.ref).toBe(teamNoteRef);
     expect(json.superseded?.[0]?.applied).toBe(false);
     const reason = json.superseded?.[0]?.reason ?? "";
     // Eligibility is write-target-or-working-stash, not source writability:
@@ -412,6 +432,7 @@ describe("remember --supersedes", () => {
       semanticSearchMode: "off",
       bundles: { "readonly-extra": { path: extraDir, writable: false } },
     });
+    const staleTipRef = "readonly-extra//memories/stale-tip";
 
     const { code, stdout, stderr } = await runCliCapture([
       "remember",
@@ -428,15 +449,15 @@ describe("remember --supersedes", () => {
     // Written to the PRIMARY stash while citing the read-only incumbent.
     expect(json.path.startsWith(stashDir)).toBe(true);
     const newParsed = parseFrontmatter(fs.readFileSync(json.path, "utf8"));
-    expect(newParsed.data.xrefs).toContain("memories/stale-tip");
+    expect(newParsed.data.xrefs).toContain(staleTipRef);
 
     // The demotion could not be applied: reported, warned, and the read-only
     // file stays byte-identical.
     expect(json.superseded).toHaveLength(1);
-    expect(json.superseded?.[0]?.ref).toBe("memories/stale-tip");
+    expect(json.superseded?.[0]?.ref).toBe(staleTipRef);
     expect(json.superseded?.[0]?.applied).toBe(false);
     expect((json.superseded?.[0]?.reason ?? "").length).toBeGreaterThan(0);
-    expect(stderr).toContain("memories/stale-tip");
+    expect(stderr).toContain(staleTipRef);
     expect(fs.readFileSync(oldPath, "utf8")).toBe(oldRaw);
   });
 });
@@ -444,25 +465,30 @@ describe("remember --supersedes", () => {
 // ── raw-asset corruption gate (finding #1) ───────────────────────────────────
 
 describe("--supersedes refuses non-markdown demotion targets before any write", () => {
-  test("secret:/env:/task:/script: refs exit 2 and leave the raw files byte-identical", async () => {
+  test("secret, env, task, and script refs exit 2 and leave the raw files byte-identical", async () => {
     // The demotion prepends a YAML frontmatter block when the target has none —
     // on a secret the frontmatter-prefixed blob would BECOME the credential
     // value, and a task .yml would become an unparseable multi-document YAML.
     const secretBytes = "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----\n";
     const envBytes = "API_KEY=abc\n# commented-out: OLD_KEY=zzz\n";
-    const taskBytes = "schedule: '0 2 * * *'\nworkflow: workflow:daily-backup\n";
+    const taskBytes = "schedule: '0 2 * * *'\nworkflow: stash//workflows/daily-backup\n";
     const secretPath = seedAsset(stashDir, "secrets/clientX/api-key", secretBytes);
     const envPath = seedAsset(stashDir, "env/staging.env", envBytes);
     const taskPath = seedAsset(stashDir, "tasks/nightly.yml", taskBytes);
     seedAsset(stashDir, "scripts/rotate.sh", "#!/bin/sh\necho rotate\n");
 
-    for (const ref of ["secret:clientX/api-key", "env:staging", "task:nightly", "script:rotate.sh"]) {
+    for (const ref of [
+      stashRef("secret", "clientX/api-key"),
+      stashRef("env", "staging"),
+      stashRef("task", "nightly"),
+      stashRef("script", "rotate.sh"),
+    ]) {
       const { code, stderr } = await runCliCapture(["remember", "key rotated", "--supersedes", ref]);
       expect(code).toBe(2);
       const json = JSON.parse(stderr) as { ok: boolean; error: string; code?: string };
       expect(json.ok).toBe(false);
       expect(json.code).toBe("INVALID_FLAG_VALUE");
-      expect(json.error).toContain(ref.slice(ref.indexOf(":") + 1));
+      expect(json.error).toContain(ref);
     }
 
     // Nothing demoted, nothing written.
@@ -476,12 +502,12 @@ describe("--supersedes refuses non-markdown demotion targets before any write", 
     const wfBytes = "steps:\n  - run: echo hi\n";
     const wfPath = seedAsset(stashDir, "workflows/deploy.yaml", wfBytes);
 
-    for (const ref of ["workflows/deploy", "workflows/deploy.yaml"]) {
+    for (const ref of [stashRef("workflow", "deploy"), stashRef("workflow", "deploy.yaml")]) {
       const { code, stderr } = await runCliCapture(["remember", "deploy changed", "--supersedes", ref]);
       expect(code).toBe(2);
       const json = JSON.parse(stderr) as { ok: boolean; error: string; code?: string };
       expect(json.code).toBe("INVALID_FLAG_VALUE");
-      expect(json.error).toContain(ref.slice(ref.indexOf(":") + 1));
+      expect(json.error).toContain(ref);
     }
     expect(fs.readFileSync(wfPath, "utf8")).toBe(wfBytes);
     expect(listDirRecursive(path.join(stashDir, "memories"))).toEqual([]);
@@ -489,6 +515,7 @@ describe("--supersedes refuses non-markdown demotion targets before any write", 
 
   test("a MARKDOWN workflow still demotes (resolved stash-rooted, independent of the cwd)", async () => {
     const wfPath = seedAsset(stashDir, "workflows/release.md", "# Release\n\nManual steps.\n");
+    const releaseRef = stashRef("workflow", "release");
 
     const { code, stdout } = await runCliCapture([
       "remember",
@@ -496,7 +523,7 @@ describe("--supersedes refuses non-markdown demotion targets before any write", 
       "--name",
       "release-flow-fix",
       "--supersedes",
-      "workflows/release",
+      releaseRef,
     ]);
     expect(code).toBe(0);
 
@@ -516,18 +543,19 @@ describe("a demotion fs error still commits and indexes the correction", () => {
     // fs error must degrade to the applied:false report shape, NOT abort the
     // write before commitWriteTargetBoundary/indexWrittenAssets.
     const ghostPath = path.join(stashDir, "memories", "ghost-note.md");
+    const ghostRef = stashRef("memory", "ghost-note");
 
     const result = await writeMarkdownAsset({
       type: "memory",
       content: "---\nbeliefState: asserted\n---\nCorrected fact body.",
       name: "corrected-fact",
       fallbackPrefix: "memory",
-      supersedes: [{ ref: "memory:ghost-note", filePath: ghostPath, stashRoot: stashDir, writable: true }],
+      supersedes: [{ ref: ghostRef, filePath: ghostPath, stashRoot: stashDir, writable: true }],
     });
 
-    expect(result.ref).toBe("memories/corrected-fact");
+    expect(result.ref).toBe(stashRef("memory", "corrected-fact"));
     expect(result.superseded).toHaveLength(1);
-    expect(result.superseded?.[0]?.ref).toBe("memory:ghost-note");
+    expect(result.superseded?.[0]?.ref).toBe(ghostRef);
     expect(result.superseded?.[0]?.applied).toBe(false);
     expect(result.superseded?.[0]?.reason ?? "").toContain("demotion failed");
 
@@ -537,7 +565,7 @@ describe("a demotion fs error still commits and indexes the correction", () => {
     const search = await runCliCapture(["search", "corrected fact", "--type", "memory"]);
     expect(search.code).toBe(0);
     const refs = ((JSON.parse(search.stdout).hits ?? []) as Array<{ ref: string }>).map((h) => h.ref);
-    expect(refs).toContain("memories/corrected-fact");
+    expect(refs.map(conceptId)).toContain(conceptId(result.ref));
   });
 });
 
@@ -562,36 +590,37 @@ describe("import --supersedes", () => {
       ].join("\n"),
     );
     const oldParsedBefore = parseFrontmatter(fs.readFileSync(oldPath, "utf8"));
+    const oldRef = stashRef("knowledge", "legacy-guide");
     const sourcePath = makeSourceFile("modern-guide.md", "# Modern guide\n\nNew advice replacing the legacy doc.\n");
 
-    const { code, stdout } = await runCliCapture([
+    const { code, stdout, stderr } = await runCliCapture([
       "import",
       sourcePath,
       "--name",
       "modern-guide",
       "--supersedes",
-      "knowledge/legacy-guide",
+      oldRef,
     ]);
-    expect(code).toBe(0);
+    expect(code, stderr).toBe(0);
 
     const json = JSON.parse(stdout) as WriteOutput;
     expect(json.ok).toBe(true);
-    expect(json.ref).toBe("knowledge/modern-guide");
+    expect(json.ref).toBe(stashRef("knowledge", "modern-guide"));
     expect(json.superseded).toHaveLength(1);
-    expect(json.superseded?.[0]?.ref).toBe("knowledge/legacy-guide");
+    expect(json.superseded?.[0]?.ref).toBe(oldRef);
     expect(json.superseded?.[0]?.applied).toBe(true);
 
     // The imported doc carries the correction provenance in ONE frontmatter block.
     const newRaw = fs.readFileSync(json.path, "utf8");
     const newParsed = parseFrontmatter(newRaw);
-    expect(newParsed.data.xrefs).toContain("knowledge/legacy-guide");
+    expect(newParsed.data.xrefs).toContain(oldRef);
     expect(newParsed.content).toContain("# Modern guide");
     expect(newRaw.match(/^---\s*$/gm)?.length).toBe(2);
 
     // The old doc: demoted, other keys preserved, body untouched.
     const oldParsedAfter = parseFrontmatter(fs.readFileSync(oldPath, "utf8"));
     expect(oldParsedAfter.data.beliefState).toBe("superseded");
-    expect(oldParsedAfter.data.supersededBy).toEqual(["knowledge/modern-guide"]);
+    expect(oldParsedAfter.data.supersededBy).toEqual([json.ref]);
     expect(oldParsedAfter.data.description).toBe("Legacy auth guide");
     expect(oldParsedAfter.data.tags).toEqual(["auth"]);
     expect(oldParsedAfter.content).toBe(oldParsedBefore.content);
@@ -599,13 +628,14 @@ describe("import --supersedes", () => {
 
   test("unresolvable --supersedes fails with exit 2 usage envelope and imports nothing", async () => {
     const sourcePath = makeSourceFile("doomed-correction.md", "# Doomed\n\nMust not land in the stash.\n");
+    const missingRef = stashRef("knowledge", "ghost-doc");
 
-    const { code, stderr } = await runCliCapture(["import", sourcePath, "--supersedes", "knowledge/ghost-doc"]);
+    const { code, stderr } = await runCliCapture(["import", sourcePath, "--supersedes", missingRef]);
     expect(code).toBe(2);
 
     const json = JSON.parse(stderr) as { ok: boolean; error: string; code?: string };
     expect(json.ok).toBe(false);
-    expect(json.error).toContain("knowledge/ghost-doc");
+    expect(json.error).toContain(missingRef);
     expect(typeof json.code).toBe("string");
 
     expect(listDirRecursive(path.join(stashDir, "knowledge"))).toEqual([]);
@@ -672,11 +702,11 @@ describe("writeSupersededEdge — sibling of writeContradictEdge in memory-belie
       "utf8",
     );
 
-    writeSupersededEdge(filePath, "memory:corrections/new-note");
+    writeSupersededEdge(filePath, "stash//memories/corrections/new-note");
 
     const parsed = parseFrontmatter(fs.readFileSync(filePath, "utf8"));
     expect(parsed.data.beliefState).toBe("superseded");
-    expect(parsed.data.supersededBy).toEqual(["memory:corrections/new-note"]);
+    expect(parsed.data.supersededBy).toEqual(["stash//memories/corrections/new-note"]);
     expect(parsed.data.description).toBe("An incumbent memory");
     expect(parsed.data.tags).toEqual(["ops"]);
     expect(parsed.content.replace(/^\n+/, "")).toBe("Incumbent body.\n");
@@ -688,9 +718,9 @@ describe("writeSupersededEdge — sibling of writeContradictEdge in memory-belie
     const filePath = path.join(dir, "old.md");
     fs.writeFileSync(filePath, "Plain incumbent body.\n", "utf8");
 
-    writeSupersededEdge(filePath, "memory:new-note");
+    writeSupersededEdge(filePath, "stash//memories/new-note");
     const afterFirst = fs.readFileSync(filePath, "utf8");
-    writeSupersededEdge(filePath, "memory:new-note");
+    writeSupersededEdge(filePath, "stash//memories/new-note");
     expect(fs.readFileSync(filePath, "utf8")).toBe(afterFirst);
   });
 
@@ -700,12 +730,12 @@ describe("writeSupersededEdge — sibling of writeContradictEdge in memory-belie
     const filePath = path.join(dir, "old.md");
     fs.writeFileSync(filePath, "Twice-corrected body.\n", "utf8");
 
-    writeSupersededEdge(filePath, "memory:zeta-fix");
-    writeSupersededEdge(filePath, "memory:alpha-fix");
+    writeSupersededEdge(filePath, "stash//memories/zeta-fix");
+    writeSupersededEdge(filePath, "stash//memories/alpha-fix");
 
     const parsed = parseFrontmatter(fs.readFileSync(filePath, "utf8"));
     expect(parsed.data.beliefState).toBe("superseded");
-    expect(parsed.data.supersededBy).toEqual(["memory:alpha-fix", "memory:zeta-fix"]);
+    expect(parsed.data.supersededBy).toEqual(["stash//memories/alpha-fix", "stash//memories/zeta-fix"]);
   });
 
   test("a pre-existing SCALAR supersededBy edge is preserved, not dropped (finding #14)", async () => {
@@ -717,14 +747,14 @@ describe("writeSupersededEdge — sibling of writeContradictEdge in memory-belie
     const filePath = path.join(dir, "old.md");
     fs.writeFileSync(
       filePath,
-      ["---", "supersededBy: memory:first-fix", "beliefState: superseded", "---", "", "Body.", ""].join("\n"),
+      ["---", "supersededBy: stash//memories/first-fix", "beliefState: superseded", "---", "", "Body.", ""].join("\n"),
       "utf8",
     );
 
-    writeSupersededEdge(filePath, "memory:second-fix");
+    writeSupersededEdge(filePath, "stash//memories/second-fix");
 
     const parsed = parseFrontmatter(fs.readFileSync(filePath, "utf8"));
-    expect(parsed.data.supersededBy).toEqual(["memory:first-fix", "memory:second-fix"]);
+    expect(parsed.data.supersededBy).toEqual(["stash//memories/first-fix", "stash//memories/second-fix"]);
     expect(parsed.data.beliefState).toBe("superseded");
   });
 
@@ -733,14 +763,22 @@ describe("writeSupersededEdge — sibling of writeContradictEdge in memory-belie
     const filePath = path.join(dir, "old.md");
     fs.writeFileSync(
       filePath,
-      ["---", "contradictedBy: memory:first-dispute", "beliefState: contradicted", "---", "", "Body.", ""].join("\n"),
+      [
+        "---",
+        "contradictedBy: stash//memories/first-dispute",
+        "beliefState: contradicted",
+        "---",
+        "",
+        "Body.",
+        "",
+      ].join("\n"),
       "utf8",
     );
 
-    writeContradictEdge(filePath, "memory:second-dispute");
+    writeContradictEdge(filePath, "stash//memories/second-dispute");
 
     const parsed = parseFrontmatter(fs.readFileSync(filePath, "utf8"));
-    expect(parsed.data.contradictedBy).toEqual(["memory:first-dispute", "memory:second-dispute"]);
+    expect(parsed.data.contradictedBy).toEqual(["stash//memories/first-dispute", "stash//memories/second-dispute"]);
     expect(parsed.data.beliefState).toBe("contradicted");
   });
 
@@ -752,17 +790,21 @@ describe("writeSupersededEdge — sibling of writeContradictEdge in memory-belie
     // op as applied. The guard must be state-aware like writeSupersededEdge.
     const dir = makeDir("akm-contradict-edge");
     const filePath = path.join(dir, "old.md");
-    fs.writeFileSync(filePath, ["---", "contradictedBy: memory:disputer", "---", "", "Body.", ""].join("\n"), "utf8");
+    fs.writeFileSync(
+      filePath,
+      ["---", "contradictedBy: stash//memories/disputer", "---", "", "Body.", ""].join("\n"),
+      "utf8",
+    );
 
-    writeContradictEdge(filePath, "memory:disputer");
+    writeContradictEdge(filePath, "stash//memories/disputer");
 
     const parsed = parseFrontmatter(fs.readFileSync(filePath, "utf8"));
     expect(parsed.data.beliefState).toBe("contradicted");
-    expect(parsed.data.contradictedBy).toEqual(["memory:disputer"]);
+    expect(parsed.data.contradictedBy).toEqual(["stash//memories/disputer"]);
 
     // Idempotent once repaired: a repeat call leaves the file byte-identical.
     const afterFirst = fs.readFileSync(filePath, "utf8");
-    writeContradictEdge(filePath, "memory:disputer");
+    writeContradictEdge(filePath, "stash//memories/disputer");
     expect(fs.readFileSync(filePath, "utf8")).toBe(afterFirst);
   });
 
@@ -773,15 +815,15 @@ describe("writeSupersededEdge — sibling of writeContradictEdge in memory-belie
     const filePath = path.join(dir, "old.md");
     fs.writeFileSync(filePath, ["---", "beliefState: archived", "---", "", "Body.", ""].join("\n"), "utf8");
 
-    writeContradictEdge(filePath, "memory:new-dispute");
+    writeContradictEdge(filePath, "stash//memories/new-dispute");
 
     const parsed = parseFrontmatter(fs.readFileSync(filePath, "utf8"));
     expect(parsed.data.beliefState).toBe("archived");
-    expect(parsed.data.contradictedBy).toEqual(["memory:new-dispute"]);
+    expect(parsed.data.contradictedBy).toEqual(["stash//memories/new-dispute"]);
 
     // Idempotent under the kept state too.
     const afterFirst = fs.readFileSync(filePath, "utf8");
-    writeContradictEdge(filePath, "memory:new-dispute");
+    writeContradictEdge(filePath, "stash//memories/new-dispute");
     expect(fs.readFileSync(filePath, "utf8")).toBe(afterFirst);
   });
 
@@ -795,21 +837,30 @@ describe("writeSupersededEdge — sibling of writeContradictEdge in memory-belie
       const filePath = path.join(dir, "old.md");
       fs.writeFileSync(
         filePath,
-        ["---", `beliefState: ${state}`, "contradictedBy:", "  - memory:disputer", "---", "", "Body.", ""].join("\n"),
+        [
+          "---",
+          `beliefState: ${state}`,
+          "contradictedBy:",
+          "  - stash//memories/disputer",
+          "---",
+          "",
+          "Body.",
+          "",
+        ].join("\n"),
         "utf8",
       );
 
-      writeSupersededEdge(filePath, "memory:new-fix");
+      writeSupersededEdge(filePath, "stash//memories/new-fix");
 
       const parsed = parseFrontmatter(fs.readFileSync(filePath, "utf8"));
       expect(parsed.data.beliefState).toBe(state);
-      expect(parsed.data.supersededBy).toEqual(["memory:new-fix"]);
+      expect(parsed.data.supersededBy).toEqual(["stash//memories/new-fix"]);
       // The contradiction edges stay consistent with the kept state.
-      expect(parsed.data.contradictedBy).toEqual(["memory:disputer"]);
+      expect(parsed.data.contradictedBy).toEqual(["stash//memories/disputer"]);
 
       // Idempotent under the kept state too: a repeat call does not rewrite.
       const afterFirst = fs.readFileSync(filePath, "utf8");
-      writeSupersededEdge(filePath, "memory:new-fix");
+      writeSupersededEdge(filePath, "stash//memories/new-fix");
       expect(fs.readFileSync(filePath, "utf8")).toBe(afterFirst);
     }
   });

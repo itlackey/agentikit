@@ -67,22 +67,22 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import type { AkmDistillResult } from "../../../src/commands/improve/distill";
 import {
   buildLatestFeedbackTsMap,
   buildLatestProposalTsMap,
   isSignalDeltaEligible,
 } from "../../../src/commands/improve/eligibility";
 import { akmImprove } from "../../../src/commands/improve/improve";
-import type { AkmReflectResult } from "../../../src/commands/improve/reflect";
 import type { AkmConfig } from "../../../src/core/config/config";
 import { saveConfig } from "../../../src/core/config/config";
 import { appendEvent } from "../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../src/core/improve-types";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { expectGolden } from "../../_helpers/golden";
 import { withTestImproveLlm } from "../../_helpers/improve-config";
 import { withIsolatedAkmStorage } from "../../_helpers/sandbox";
 import {
+  memoryItemRef,
   memoryRef,
   SDG_DISTILL_ONLY_NAME,
   SDG_ELIGIBLE_A_NAME,
@@ -104,9 +104,11 @@ const T_NEWER = Date.now() - 2 * 60_000;
 const T_NEWEST = Date.now() - 60_000;
 const EPOCH_ISO = new Date(0).toISOString();
 
-function configWithoutPoolGuard(): AkmConfig {
+function configWithoutPoolGuard(stashDir: string): AkmConfig {
   return withTestImproveLlm({
     semanticSearchMode: "off",
+    bundles: { stash: { path: stashDir, writable: true } },
+    defaultBundle: "stash",
     improve: {
       strategies: {
         default: { processes: { consolidate: { minPoolSize: 0 }, proactiveMaintenance: { enabled: false } } },
@@ -144,7 +146,7 @@ const okDistill = (ref: string): AkmDistillResult => ({
   ok: true,
   outcome: "queued",
   inputRef: ref,
-  lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
+  proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
 });
 
 // ── isSignalDeltaEligible truth table (pure function, eligibility.ts:421-431) ─
@@ -311,7 +313,7 @@ async function capturePartitionCounts(): Promise<Record<string, unknown>> {
   const storage = withIsolatedAkmStorage();
   try {
     const stash = storage.stashDir;
-    const cfg = configWithoutPoolGuard();
+    const cfg = configWithoutPoolGuard(stash);
     saveConfig(cfg);
 
     for (const name of [
@@ -328,11 +330,11 @@ async function capturePartitionCounts(): Promise<Record<string, unknown>> {
     // Group A (eligibleRefs): feedback signal, no prior reflect/distill
     // proposal at all -> both gates pass -> eligibleRefs.
     appendEvent(
-      { eventType: "feedback", ref: memoryRef(SDG_ELIGIBLE_A_NAME), metadata: { signal: "positive" } },
+      { eventType: "feedback", ref: memoryItemRef(SDG_ELIGIBLE_A_NAME), metadata: { signal: "positive" } },
       { now: () => T_NEWER },
     );
     appendEvent(
-      { eventType: "feedback", ref: memoryRef(SDG_ELIGIBLE_B_NAME), metadata: { signal: "positive" } },
+      { eventType: "feedback", ref: memoryItemRef(SDG_ELIGIBLE_B_NAME), metadata: { signal: "positive" } },
       { now: () => T_NEWER },
     );
 
@@ -340,10 +342,10 @@ async function capturePartitionCounts(): Promise<Record<string, unknown>> {
     // (reflect blocked) but NO distill_invoked at all (distill stays open) ->
     // distillOnlyRefs.
     appendEvent(
-      { eventType: "feedback", ref: memoryRef(SDG_DISTILL_ONLY_NAME), metadata: { signal: "negative" } },
+      { eventType: "feedback", ref: memoryItemRef(SDG_DISTILL_ONLY_NAME), metadata: { signal: "negative" } },
       { now: () => T_OLDER },
     );
-    appendEvent({ eventType: "reflect_invoked", ref: memoryRef(SDG_DISTILL_ONLY_NAME) }, { now: () => T_NEWER });
+    appendEvent({ eventType: "reflect_invoked", ref: memoryItemRef(SDG_DISTILL_ONLY_NAME) }, { now: () => T_NEWER });
 
     // Group C (noFeedbackPool): zero feedback events, zero retrievals ->
     // deliberately nothing appended.

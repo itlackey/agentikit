@@ -24,15 +24,16 @@ import {
   listProposals,
   type ProposalsContext,
 } from "../../../src/commands/proposal/repository";
-import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../../src/indexer/installations";
+import { deriveEntryProvenance } from "../../../src/indexer/installations";
 import { makeStashDir, type SandboxedDir, sandboxXdgDataHome } from "../../_helpers/sandbox";
 
 const disposers: Array<{ cleanup: () => void }> = [];
+const TEST_BUNDLE = "local";
 
 /** The durable `proposals.ref` item_ref (WI-8.5a): `<bundle>//<conceptId>`. */
-function durableRef(stashDir: string, type: string, name: string): string {
-  const bundleId = deriveInstallations([{ path: stashDir, writable: true }])[0]?.id ?? slugForPath(stashDir);
-  return deriveEntryProvenance({ bundleId, componentId: bundleId, adapterId: "akm" }, type, name).itemRef;
+function durableRef(type: string, name: string): string {
+  return deriveEntryProvenance({ bundleId: TEST_BUNDLE, componentId: TEST_BUNDLE, adapterId: "akm" }, type, name)
+    .itemRef;
 }
 
 function freshStash(): string {
@@ -44,9 +45,10 @@ function freshStash(): string {
   return stash.dir;
 }
 
-function baseInput(ref: string): CreateProposalInput {
+function baseInput(ref: string, root: string): CreateProposalInput {
   return {
     ref,
+    target: { source: TEST_BUNDLE, root },
     source: "reflect",
     sourceRun: "reflect-run-1",
     payload: {
@@ -67,7 +69,7 @@ describe("emitProposal facade", () => {
       const stash = freshStash();
       const ctx = { dbPath: path.join(dataSb.dir, "akm", "state.db") };
 
-      const result = emitProposal({ stashDir: stash, proposalsCtx: ctx }, baseInput("knowledge/guide.md"));
+      const result = emitProposal({ stashDir: stash, proposalsCtx: ctx }, baseInput("knowledge/guide.md", stash));
 
       expect(isProposalSkipped(result)).toBe(false);
       if (isProposalSkipped(result)) throw new Error("unexpected skip");
@@ -81,7 +83,7 @@ describe("emitProposal facade", () => {
       expect("fileChanges" in result).toBe(false);
 
       const persisted = listProposals(stash, {}, ctx);
-      expect(persisted.map((p) => p.ref)).toEqual([durableRef(stash, "knowledge", "guide.md")]);
+      expect(persisted.map((p) => p.ref)).toEqual([durableRef("knowledge", "guide.md")]);
     } finally {
       dataSb.cleanup();
     }
@@ -96,7 +98,7 @@ describe("emitProposal facade", () => {
       try {
         const stash = freshStash();
         const ctx: ProposalsContext = { dbPath: path.join(dataSb.dir, "akm", "state.db") };
-        const input = baseInput("knowledge/dup.md");
+        const input = baseInput("knowledge/dup.md", stash);
         const first = emit(stash, ctx, input) as ReturnType<typeof createProposal>;
         const second = emit(stash, ctx, input) as ReturnType<typeof createProposal>; // identical → guard fires
         const forced = emit(stash, ctx, { ...input, force: true }) as ReturnType<typeof createProposal>;
@@ -127,7 +129,7 @@ describe("emitProposal facade", () => {
       const result = emitProposal(
         { stashDir: stash },
         {
-          ...baseInput("lessons/x.md"),
+          ...baseInput("lessons/x.md", stash),
           payload: {
             content:
               "---\ndescription: A valid lesson proposal fixture\nwhen_to_use: Testing proposal context forwarding\n---\n\nFixture body.\n",
@@ -140,7 +142,7 @@ describe("emitProposal facade", () => {
       );
       expect(isProposalSkipped(result)).toBe(false);
       const rows = listProposals(stash);
-      expect(rows.map((p) => p.ref)).toEqual([durableRef(stash, "lesson", "x.md")]);
+      expect(rows.map((p) => p.ref)).toEqual([durableRef("lesson", "x.md")]);
     } finally {
       dataSb.cleanup();
     }

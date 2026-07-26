@@ -157,8 +157,8 @@ describe("checkLexicalDiversity", () => {
 
 describe("checkMergeInformationFloor", () => {
   const participants = [
-    { ref: "memories/a", body: "alpha beta gamma delta epsilon zeta", sourceRefs: ["memories/root"] },
-    { ref: "memories/b", body: "eta theta iota kappa lambda mu", sourceRefs: [] },
+    { ref: "memories/a", body: "alpha beta gamma delta epsilon zeta", xrefs: ["memories/root"] },
+    { ref: "memories/b", body: "eta theta iota kappa lambda mu", xrefs: [] },
   ];
   const fullProvenance = ["memories/a", "memories/b", "memories/root"];
 

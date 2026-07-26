@@ -83,9 +83,9 @@ export async function indexWrittenAssets(
       const dbPath = getDbPath();
       if (!fs.existsSync(dbPath)) return true;
 
-      // The full walk never descends into dot-directories (they hold state like
-      // `.meta/` and the legacy metadata sidecar) — mirror that dot-segment skip
-      // here so this fast path indexes exactly what a full run would. Sensitive/
+      // The full walk never descends into dot-directories (for example `.meta/`)
+      // — mirror that dot-segment skip here so this fast path indexes exactly
+      // what a full run would. Sensitive/
       // infra abstention is the adapter's job now (see the `akmAdapter` note
       // below), not a path pre-filter.
       const files = filePaths.filter((f) => {
@@ -100,13 +100,9 @@ export async function indexWrittenAssets(
       // workflows drop, valid workflow docs are cached for the side-table upsert.
       const component = deriveInstallations([
         { path: stashDir, writable: true, ...(options.bundleId ? { registryId: options.bundleId } : {}) },
-      ])[0]?.components[0] ?? {
-        id: options.bundleId ?? stashDir,
-        adapter: "akm",
-        root: stashDir,
-        writable: true,
-      };
-      const pairs: Array<{ file: string; entry: IndexDocument; contentHash?: string }> = [];
+      ])[0]?.components[0];
+      if (!component) throw new Error(`Could not derive bundle provenance for ${stashDir}`);
+      const pairs: Array<{ file: string; entry: IndexDocument; conceptId: string; contentHash?: string }> = [];
       const unindexable = new Set<string>();
       for (const file of files) {
         if (!fs.existsSync(file)) {
@@ -125,7 +121,9 @@ export async function indexWrittenAssets(
         // below, mirroring the full walk — since `akm mv` rewrites citer files
         // that can be workflows. A broken workflow drains to zero entries (like
         // the old skip-with-warning) and is treated as unindexable.
-        if (entry) pairs.push({ file, entry, contentHash: drained.hashByFile.get(ctx.absPath) });
+        const conceptId = drained.conceptIdByFile.get(ctx.absPath);
+        if (entry && conceptId)
+          pairs.push({ file, entry, conceptId, contentHash: drained.hashByFile.get(ctx.absPath) });
         else unindexable.add(file);
       }
 
@@ -140,7 +138,7 @@ export async function indexWrittenAssets(
             rows.map((row) => row.id),
           );
         }
-        for (const { file, entry, contentHash } of pairs) {
+        for (const { file, entry, conceptId, contentHash } of pairs) {
           const entryKey = `${stashDir}:${entry.type}:${entry.name}`;
           let entryWithSize = entry;
           try {
@@ -155,6 +153,7 @@ export async function indexWrittenAssets(
             { bundleId: component.id, componentId: component.id, adapterId: component.adapter },
             entry.type,
             entry.name,
+            conceptId,
           );
           const entryId = upsertEntry(
             db,

@@ -616,7 +616,7 @@ export function buildSchemaRepairPrompt(input: SchemaRepairPromptInput): string 
  * can map to {@link AgentFailureReason} `parse_error`.
  *
  * Resilient to two common local-LLM failure modes:
- *  1. `<think>…</think>` blocks emitted before the JSON (stripped by `stripJsonFences`).
+ *  1. `<think>…</think>` blocks emitted before the JSON (stripped before parsing).
  *  2. Prose preamble / postamble around the JSON object (handled by `extractEmbeddedJson`).
  */
 export function parseAgentProposalPayload(stdout: string): AgentProposalPayload {

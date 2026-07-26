@@ -3,17 +3,15 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Install-time types used by `syncFromRef` and the legacy install pipeline.
+ * Install-time types used by `syncFromRef`.
  *
- * Distinct from the v1 {@link SourceProvider} interface (which only deals
- * with "configured sources" — entries already resolved into a directory).
+ * Distinct from the {@link SourceProvider} interface, which only deals with
+ * configured sources already resolved into a directory.
  * These types describe the resolution+lockfile step that runs when
  * `akm add <install-ref>` materialises an upstream artifact into a local
  * cache directory.
  *
- * They live here, outside `provider.ts`, so the v1 SourceProvider
- * interface stays minimal (`{ name, kind, init, path, sync? }`) per the
- * architecture spec §2.1.
+ * They live here, outside `provider.ts`, so SourceProvider stays minimal.
  */
 
 import type { InstallKind } from "../../registry/types";

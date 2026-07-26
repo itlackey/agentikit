@@ -20,8 +20,8 @@ import { akmReflect } from "../../../../src/commands/improve/reflect";
 import { akmPropose } from "../../../../src/commands/proposal/propose";
 import { listProposals } from "../../../../src/commands/proposal/repository";
 import { appendEvent, readEvents } from "../../../../src/core/events";
+import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess";
 import { akmIndex } from "../../../../src/indexer/indexer";
-import type { SpawnedSubprocess, SpawnFn } from "../../../../src/integrations/agent/spawn";
 import { durableItemRef } from "../../../_helpers/durable-ref";
 import { quietQualityGateConfig } from "../../../_helpers/factories";
 import {
@@ -335,7 +335,7 @@ describe("akm reflect", () => {
     expect(listProposals(stash).length).toBe(0);
   });
 
-  test("raw markdown output for an existing ref falls back to proposal content", async () => {
+  test("raw markdown output is rejected when it ignores the proposal contract", async () => {
     const stash = makeStashDir();
     const result = await akmReflect({
       ref: "lessons/any",
@@ -349,10 +349,10 @@ describe("akm reflect", () => {
         ),
       },
     });
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("expected success");
-    expect(result.proposal.payload.content).toContain("# Title");
-    expect(listProposals(stash).length).toBe(1);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.reason).toBe("parse_error");
+    expect(listProposals(stash).length).toBe(0);
   });
 
   test("timeout → no proposal, reason=timeout", async () => {

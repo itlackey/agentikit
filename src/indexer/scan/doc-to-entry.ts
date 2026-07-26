@@ -105,21 +105,12 @@ export function indexDocumentToStashEntry(doc: IndexDocument): IndexDocument {
   if (dj.wikiRole !== undefined) entry.wikiRole = dj.wikiRole as IndexDocument["wikiRole"];
   assignStringList(entry, "sources", dj.sources);
   if (typeof dj.generation === "number") entry.generation = dj.generation;
-  assignStringList(entry, "sourceRefs", dj.sourceRefs);
   assignStringList(entry, "evidenceSources", dj.evidenceSources);
 
   return entry;
 }
 
-type StringListKey =
-  | "examples"
-  | "usage"
-  | "xrefs"
-  | "supersededBy"
-  | "contradictedBy"
-  | "sources"
-  | "sourceRefs"
-  | "evidenceSources";
+type StringListKey = "examples" | "usage" | "xrefs" | "supersededBy" | "contradictedBy" | "sources" | "evidenceSources";
 
 type StringKey = "pageKind" | "whenToUse" | "bodyOpening" | "category" | "run" | "setup" | "cwd";
 

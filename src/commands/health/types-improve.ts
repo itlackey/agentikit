@@ -79,24 +79,18 @@ export interface ImproveHealthMetrics {
       queued: number;
       llmFailed: number;
       /**
-       * Sum of `judgeRejected + validatorRejected`. Retained for
-       * backward-compatibility with pre-2026-05-26 consumers; new dashboards
-       * should prefer the split fields below.
-       */
-      qualityRejected: number;
-      /**
        * LLM-judge rejection (outcomes `quality_rejected` and `review_needed`).
        * Tuning lever: prompt/temperature/model — the judge said the output
        * was substantively low quality. Pre-2026-05-26 lumped with
-       * deterministic lint failures under `qualityRejected`. See review §1b.
+       * deterministic lint failures. See review §1b.
        */
       judgeRejected: number;
       /**
        * Deterministic lint/schema validator rejection (outcome
        * `validation_failed`). Tuning lever: validator config / prompt schema
        * — the LLM is fine, our post-LLM validators rejected the artifact.
-       * In live 7d data, 29/29 of the legacy `qualityRejected` bucket were
-       * actually this case.
+       * In live 7d data, validator failures made up the entire former combined
+       * rejection bucket.
        */
       validatorRejected: number;
       configDisabled: number;
@@ -277,25 +271,6 @@ export interface ImproveHealthMetrics {
      */
     htmlErrorCount: number;
     /**
-     * Count of envelopes that contributed to the yield denominator. A run
-     * is yield-eligible iff its `memoryInference` envelope has a
-     * `cacheHits` field (i.e. it post-dates the cache-hits metric). Older
-     * envelopes are still counted in `considered`/`written` but excluded
-     * from `freshAttempts` and `yieldRate` so legacy data does not drag
-     * the rate down. See investigation 2026-05-26.
-     */
-    yieldEligibleRuns: number;
-    /**
-     * Sum of `considered` across yield-eligible runs only. This — not the
-     * top-level `considered` — is what `freshAttempts` is derived from.
-     */
-    yieldEligibleConsidered: number;
-    /**
-     * Sum of `writtenFacts` across yield-eligible runs only. Numerator of
-     * the gated `yieldRate`.
-     */
-    yieldEligibleWritten: number;
-    /**
      * `written / freshAttempts`, 4dp; 0 when freshAttempts=0.
      *
      * Was previously `written / considered`. Changed 2026-05-25 because
@@ -307,8 +282,6 @@ export interface ImproveHealthMetrics {
      */
     yieldRate: number;
     durationMs: number;
-    /** @deprecated use `written` — kept as a soft-compat alias through 0.8.0. */
-    writes: number;
   };
   graphExtraction: {
     ran: boolean;

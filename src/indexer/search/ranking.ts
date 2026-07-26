@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import fs from "node:fs";
-import { conceptIdFromTypeName } from "../../core/asset/resolve-ref";
 import { acquireMaintenanceActivitySync } from "../../core/maintenance-barrier";
 import { getStateDbPath } from "../../core/state-db";
 import { type Database, openDatabase } from "../../storage/database";
@@ -21,12 +20,6 @@ import {
   defaultUtilityRankingContributors,
 } from "./ranking-contributors";
 import type { RankedEntryInput } from "./ranking-types";
-
-// Re-exported so existing `import type { RankedEntryInput } from
-// "./indexer/search/ranking"` sites are unaffected by the KILL 2 sever (type
-// moved to ranking-types.ts to break the ranking.ts ↔ ranking-contributors.ts
-// import cycle).
-export type { RankedEntryInput };
 
 export interface RankEntriesOptions {
   db: Database;
@@ -90,23 +83,12 @@ export function loadSalienceRankScores(items: RankedEntryInput[]): Map<number, n
     const dbPath = getStateDbPath();
     if (!fs.existsSync(dbPath)) return result; // improve loop has never run here
     const releaseActivity = acquireMaintenanceActivitySync("state-db");
-    // Fold both durable salience spellings into the single `IN` query, keyed
-    // back to the entry id (Chunk-8 WI-8.5c — the legacy `type:name` arm is
-    // retired):
-    //   • the fully-qualified `item_ref` (`<bundle>//<conceptId>`) — what the
-    //     improve writer keys salience by when the planner resolved provenance;
-    //   • the bare conceptId — the write-key fallback for entries with no
-    //     resolved `item_ref` (`item_ref` NULL is the bare form of the same key).
-    // Output is keyed by id, so a fully-qualified match wins over the bare-conceptId
-    // match for the same asset id.
-    const idByRef = new Map<string, { id: number; isNew: boolean }>();
+    const idByRef = new Map<string, number>();
     try {
       for (const item of items) {
-        // Bare-conceptId arm (the item_ref-absent write-key fallback).
-        idByRef.set(conceptIdFromTypeName(item.entry.type, item.entry.name), { id: item.id, isNew: false });
-        // Fully-qualified `item_ref` arm (skipped for NULL-provenance rows).
-        if (item.itemRef) idByRef.set(item.itemRef, { id: item.id, isNew: true });
+        if (item.itemRef) idByRef.set(item.itemRef, item.id);
       }
+      if (idByRef.size === 0) return result;
       const stateDb = openDatabase(dbPath, { readonly: true });
       try {
         try {
@@ -116,7 +98,6 @@ export function loadSalienceRankScores(items: RankedEntryInput[]): Map<number, n
         }
         const refs = [...idByRef.keys()];
         const CHUNK = 500;
-        const newHits = new Set<number>();
         for (let i = 0; i < refs.length; i += CHUNK) {
           const chunk = refs.slice(i, i + CHUNK);
           const placeholders = chunk.map(() => "?").join(",");
@@ -124,16 +105,8 @@ export function loadSalienceRankScores(items: RankedEntryInput[]): Map<number, n
             .prepare(`SELECT asset_ref, rank_score FROM asset_salience WHERE asset_ref IN (${placeholders})`)
             .all(...chunk) as Array<{ asset_ref: string; rank_score: number }>;
           for (const row of rows) {
-            const target = idByRef.get(row.asset_ref);
-            if (!target) continue;
-            // New-grammar match wins over a stale legacy row for the same id;
-            // a legacy match applies only when no new row has claimed the id.
-            if (target.isNew) {
-              result.set(target.id, row.rank_score);
-              newHits.add(target.id);
-            } else if (!newHits.has(target.id)) {
-              result.set(target.id, row.rank_score);
-            }
+            const id = idByRef.get(row.asset_ref);
+            if (id !== undefined) result.set(id, row.rank_score);
           }
         }
       } finally {

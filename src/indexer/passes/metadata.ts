@@ -10,6 +10,7 @@ import path from "node:path";
 // `IndexDocument` can reference them without a `metadata.ts ↔ types.ts` cycle;
 // they are imported (and re-exported below) here. `SCOPE_KEYS` (a value) stays.
 import type { AssetParameter, IndexDocument, ScopeKey, StashEntryScope, StashIntent } from "../../core/adapter/types";
+import { parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import type { TocHeading } from "../../core/asset/markdown";
 import { asNonEmptyString } from "../../core/common";
@@ -158,9 +159,8 @@ export function validateStashEntry(entry: unknown): IndexDocument | null {
   if (xrefs) result.xrefs = xrefs;
   const sources = normalizeNonEmptyStringList(e.sources);
   if (sources) result.sources = sources;
-  // SPEC-6: `category` must survive the whitelist or legacy-sidecar-declared
-  // facts lose their convention/meta marker on the round-trip. Non-string
-  // values are dropped, not coerced.
+  // SPEC-6: `category` must survive the projection. Non-string values are
+  // dropped, not coerced.
   if (typeof e.category === "string" && e.category.trim().length > 0) {
     result.category = e.category.trim();
   }
@@ -178,8 +178,6 @@ export function validateStashEntry(entry: unknown): IndexDocument | null {
   if (typeof e.generation === "number" && Number.isFinite(e.generation) && e.generation > 0) {
     result.generation = Math.floor(e.generation);
   }
-  const sourceRefs = normalizeNonEmptyStringList(e.sourceRefs);
-  if (sourceRefs) result.sourceRefs = sourceRefs;
   const currentBeliefRefs = normalizeNonEmptyStringList(e.currentBeliefRefs);
   if (currentBeliefRefs) result.currentBeliefRefs = currentBeliefRefs;
   if (e.captureMode === "hot" || e.captureMode === "background") {
@@ -196,9 +194,8 @@ export function validateStashEntry(entry: unknown): IndexDocument | null {
   if (typeof e.derivedFrom === "string" && e.derivedFrom.trim().length > 0) {
     result.derivedFrom = e.derivedFrom.trim();
   }
-  // SPEC-8: `bodyOpening` must survive the whitelist so entries round-tripped
-  // through the legacy sidecar keep their captured opening. Preserved verbatim —
-  // the extractor already trimmed and capped it at capture time.
+  // SPEC-8: `bodyOpening` must survive the projection. The extractor already
+  // trimmed and capped it at capture time.
   if (typeof e.bodyOpening === "string" && e.bodyOpening.trim().length > 0) {
     result.bodyOpening = e.bodyOpening;
   }
@@ -284,36 +281,37 @@ function normalizeStringListOrUndefined(value: unknown): string[] | undefined {
 }
 
 /**
- * Normalise one derived-memory parent backref to the 0.9.0 `memories/<name>`
- * conceptId for the `derived_from` column (Group-C item 2 flip), tolerant of
- * BOTH the flipped `[bundle//]memories/<name>` producer output and the legacy
- * `[origin//]memory:<name>` spelling still on disk pre content-migration.
- * Returns `undefined` for a non-memory / bare value so the caller can fall back
- * to the bare `derivedFrom` key. Kept inline (a two-branch pure string op) so
- * the indexer stays self-contained and does not import the commands-layer
- * reader — the two normalisers agree on output by construction.
+ * Normalize a current derived-memory parent ref to its `memories/<name>`
+ * conceptId for the `derived_from` column. Returns `undefined` for a non-memory
+ * or bare value so the caller can inspect the current `derivedFrom` key.
  */
 function normalizeMemoryBackref(value: string | undefined): string | undefined {
   if (!value) return undefined;
-  const trimmed = value.trim();
-  const boundary = trimmed.indexOf("//");
-  const body = boundary >= 0 ? trimmed.slice(boundary + 2) : trimmed;
-  const MEMORY_PREFIX = "memory:";
-  if (body.startsWith(MEMORY_PREFIX)) return `memories/${body.slice(MEMORY_PREFIX.length)}`;
-  if (body.startsWith("memories/")) return body;
-  return undefined;
+  try {
+    const parsed = parseBundleRef(value);
+    return parsed.fragment === undefined && parsed.conceptId.startsWith("memories/") ? parsed.conceptId : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
- * Resolve a derived memory's parent conceptId from its `source:` backref (new or
- * legacy grammar) or, failing that, its bare `derivedFrom: <name>` frontmatter
- * key (promoted to `memories/<name>`). `undefined` when neither yields a parent.
+ * Resolve a derived memory's parent conceptId from its current `source:` backref
+ * or, failing that, its bare `derivedFrom: <name>` frontmatter key.
  */
 function derivedFromConceptId(source: string | undefined, derivedFrom: string | undefined): string | undefined {
   const fromSource = normalizeMemoryBackref(source);
   if (fromSource) return fromSource;
-  if (derivedFrom) return normalizeMemoryBackref(derivedFrom) ?? `memories/${derivedFrom}`;
-  return undefined;
+  const rawDerivedFrom = derivedFrom?.trim();
+  if (!rawDerivedFrom) return undefined;
+  const qualified = normalizeMemoryBackref(rawDerivedFrom);
+  if (qualified) return qualified;
+  if (rawDerivedFrom.includes(":") || rawDerivedFrom.includes("//")) return undefined;
+  try {
+    return parseBundleRef(`memories/${rawDerivedFrom}`).conceptId;
+  } catch {
+    return undefined;
+  }
 }
 
 export function applyCuratedFrontmatter(entry: IndexDocument, fmData: Record<string, unknown>): void {
@@ -364,17 +362,12 @@ export function applyCuratedFrontmatter(entry: IndexDocument, fmData: Record<str
   const contradictedBy = normalizeStringListOrUndefined(fmData.contradictedBy);
   if (contradictedBy) entry.contradictedBy = contradictedBy;
 
-  // R5 — consolidation provenance. `generation` (merge depth counter) and
-  // `source_refs` (merge/distill provenance pointers) are written by the
-  // improve pipeline; captured into the index so the collapse detector can
-  // count over-generation assets and follow merges without filesystem reads.
+  // R5 — consolidation generation depth is captured so the collapse detector
+  // can count over-generation assets without filesystem reads.
   const generation = fmData.generation;
   if (typeof generation === "number" && Number.isFinite(generation) && generation > 0) {
     entry.generation = Math.floor(generation);
   }
-  const sourceRefs = normalizeStringListOrUndefined(fmData.source_refs);
-  if (sourceRefs) entry.sourceRefs = sourceRefs;
-
   const currentBeliefRefs = normalizeStringListOrUndefined(fmData.currentBeliefRefs);
   if (currentBeliefRefs) entry.currentBeliefRefs = currentBeliefRefs;
 

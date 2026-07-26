@@ -1,0 +1,10 @@
+Usage: akm-migrate <command> [options]
+
+Commands:
+  status [--config <path>]                     Inspect migration eligibility.
+  apply [--config <path>] [--dry-run]          Apply pending migrations.
+  backup [--for 0.9.0]                         Create a verified recovery run.
+  restore [--for 0.9.0] [--run <id>] --confirm Restore a recovery run.
+  storage [--dry-run] [--yes] [--from <ver>]   Run legacy storage migrations.
+
+Run akm-migrate storage --list to list storage migrations.

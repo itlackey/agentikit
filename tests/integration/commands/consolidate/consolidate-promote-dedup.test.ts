@@ -27,11 +27,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  type ConsolidateOperation,
-  type ConsolidatePromoteOp,
-  mergePlans,
-} from "../../../../src/commands/improve/consolidate";
+import { mergePlans } from "../../../../src/commands/improve/consolidate/merge";
+import type { ConsolidateOperation, ConsolidatePromoteOp } from "../../../../src/commands/improve/consolidate/types";
 import { cacheHash } from "../../../../src/commands/improve/content-hash";
 import { createProposal, isProposalSkipped, listProposals } from "../../../../src/commands/proposal/repository";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../../../src/indexer/installations";

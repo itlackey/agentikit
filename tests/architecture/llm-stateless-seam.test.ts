@@ -26,6 +26,7 @@
  */
 import { describe, expect, test } from "bun:test";
 
+import { parseJsonResponse } from "../../src/core/parse";
 import * as client from "../../src/llm/client";
 import * as embedder from "../../src/llm/embedder";
 import * as indexPasses from "../../src/llm/index-passes";
@@ -35,8 +36,6 @@ import * as metadataEnhance from "../../src/llm/metadata-enhance";
 describe("src/llm/* is bounded and stateless (v1 spec §9.7, §14.4)", () => {
   test("`client` exports are pure functions", () => {
     expect(typeof client.chatCompletion).toBe("function");
-    expect(typeof client.stripJsonFences).toBe("function");
-    expect(typeof client.parseJsonResponse).toBe("function");
     expect(typeof client.isLlmAvailable).toBe("function");
     expect(typeof client.probeLlmCapabilities).toBe("function");
   });
@@ -107,14 +106,13 @@ describe("src/llm/* is bounded and stateless (v1 spec §9.7, §14.4)", () => {
     expect(embedder.resetLocalEmbedder.length).toBe(0);
   });
 
-  test("`stripJsonFences` and `parseJsonResponse` are referentially transparent", () => {
+  test("response parsing is referentially transparent", () => {
     // Two calls with the same input produce the same output. These are
     // pure, so this is not a deep test of statelessness — but it does
     // pin the seam: response parsing is not allowed to learn from
     // prior responses.
     const fenced = '```json\n{"a":1}\n```';
-    expect(client.stripJsonFences(fenced)).toBe(client.stripJsonFences(fenced));
-    expect(client.parseJsonResponse<{ a: number }>(fenced)).toEqual({ a: 1 });
-    expect(client.parseJsonResponse<{ a: number }>(fenced)).toEqual({ a: 1 });
+    expect(parseJsonResponse<{ a: number }>(fenced)).toEqual({ a: 1 });
+    expect(parseJsonResponse<{ a: number }>(fenced)).toEqual({ a: 1 });
   });
 });

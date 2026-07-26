@@ -40,9 +40,10 @@ import path from "node:path";
 import contradictionJudgeTemplate from "../../../assets/prompts/contradiction-judge.md" with { type: "text" };
 import { mutateFrontmatter, parseFrontmatter } from "../../../core/asset/frontmatter";
 import type { AkmConfig, ImproveProfileConfig, LlmConnectionConfig } from "../../../core/config/config";
+import { parseEmbeddedJsonResponse } from "../../../core/parse";
 import { getDefaultLlmConfig } from "../../../integrations/agent/engine-resolution";
 import { materializeLlmRunnerConnection, resolveImproveProcessRunner } from "../../../integrations/agent/runner";
-import { type ChatMessage, chatCompletion, parseEmbeddedJsonResponse } from "../../../llm/client";
+import { type ChatMessage, chatCompletion } from "../../../llm/client";
 import { callStructured } from "../../../llm/structured-call";
 import { isDerivedMemory, memoryIdentityRef, resolveParentRef } from "./derived-ref";
 
@@ -63,8 +64,7 @@ const MAX_PAIRS_PER_RUN = 20;
 /**
  * Minimum confidence required to write a contradiction edge. Below this
  * threshold the LLM may be flagging topic-overlap rather than genuine logical
- * exclusivity (investigation 2026-06-18). Absent confidence fields default to
- * 1.0 for backward compatibility with older judge responses.
+ * exclusivity (investigation 2026-06-18).
  */
 const CONTRADICT_CONFIDENCE_THRESHOLD = 0.92;
 
@@ -279,11 +279,6 @@ export async function detectAndWriteContradictions(
         // edge already exists (no new information; avoids re-judging resolved
         // pairs across runs).
         //
-        // Legacy mutual A↔B edges written by the pre-fix pass self-heal: the
-        // skip fires this run, but the SCC resolver treats the 2-cycle as a sink
-        // and refreshes both to active — DELETING both `contradictedBy` arrays
-        // (memory-improve.ts persistBeliefStateTransition). The next detection
-        // run then sees no edge, re-judges, and writes the single canonical edge.
         const aParsed = parseFrontmatter(fs.readFileSync(a.filePath, "utf8"));
         const bParsed = parseFrontmatter(fs.readFileSync(b.filePath, "utf8"));
         const { loser, winnerRef } = pickContradictionLoser(a, b);
@@ -315,9 +310,9 @@ export async function detectAndWriteContradictions(
 
         if (!judgeResult) continue; // Feature gate disabled or LLM call failed.
 
-        let parsed: { contradicts: boolean; confidence?: number; reason?: string } | null | undefined = null;
+        let parsed: { contradicts: boolean; confidence: number; reason?: string } | null | undefined = null;
         try {
-          parsed = parseEmbeddedJsonResponse<{ contradicts: boolean; confidence?: number; reason?: string }>(
+          parsed = parseEmbeddedJsonResponse<{ contradicts: boolean; confidence: number; reason?: string }>(
             judgeResult,
           );
         } catch {
@@ -327,10 +322,7 @@ export async function detectAndWriteContradictions(
 
         if (!parsed?.contradicts) continue;
 
-        // Confidence gate: absent field defaults to 1.0 (backward compat with
-        // pre-confidence responses). Do NOT default to 0 — that would silently
-        // disable all detection during the rollout period.
-        const confidence = typeof parsed.confidence === "number" ? parsed.confidence : 1.0;
+        const confidence = typeof parsed.confidence === "number" ? parsed.confidence : 0;
         if (confidence < CONTRADICT_CONFIDENCE_THRESHOLD) {
           result.warnings.push(
             `Pair ${a.ref} / ${b.ref}: confidence ${confidence.toFixed(2)} below ${CONTRADICT_CONFIDENCE_THRESHOLD} threshold — skipped.`,

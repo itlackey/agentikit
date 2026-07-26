@@ -1,31 +1,17 @@
 /**
- * R5 characterization (RED/contract) — pins the CURRENT observable behavior of
- * the install-ref grammar (`buildInstallRef`, currently a private function in
- * `src/registry/providers/static-index.ts`) that the R5 refactor must preserve
- * byte-for-byte while it (a) moves `buildInstallRef` to `resolve.ts`,
- * (b) tightens its `source` param from `string` to the 4-member `InstallKind`,
- * and (c) rewrites the `default: -> github:` arm as an explicit `case "github"`.
- *
- * `buildInstallRef` is NOT exported today, so it is pinned INDIRECTLY through the
- * public `RegistryProvider.search()` seam: each search hit's `installRef` is
- * `buildInstallRef(stash.source, stash.ref)` (static-index.ts:252). `asSource()`
- * (static-index.ts:366) only admits the 4-set {npm,github,git,local}, so a
- * fixture stash with one of those `source` values drives exactly one
- * `buildInstallRef` branch.
+ * Pins the install-ref grammar indirectly through the public
+ * `RegistryProvider.search()` seam. Each search hit's `installRef` is built
+ * from the registry bundle's source and ref.
  *
  * The four assertions below are the behavior contract:
  *   npm    -> `npm:<ref>`
  *   git    -> `git+<ref>`
  *   local  -> `file:<ref>`
- *   github -> `github:<ref>`   (currently the `default:` fallthrough — the only
- *                               4-set value that reaches `default:`)
- *
- * Expected to be GREEN on current code (this is the pin), and to STAY green after
- * the refactor moves+narrows `buildInstallRef`.
+ *   github -> `github:<ref>`
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { resolveProviderFactory } from "../../src/registry/factory";
+import { resolveRegistryProviderFactory } from "../../src/registry/factory";
 import type { RegistryProvider } from "../../src/registry/providers/types";
 import { type Cleanup, sandboxXdgCacheHome } from "../_helpers/sandbox";
 
@@ -93,7 +79,7 @@ function serveJson(body: unknown): { url: string; close: () => void } {
 }
 
 function makeProvider(url: string, name = "official"): RegistryProvider {
-  const factory = resolveProviderFactory("static-index");
+  const factory = resolveRegistryProviderFactory("static-index");
   if (!factory) throw new Error("static-index provider not registered");
   return factory({ url, name });
 }
@@ -140,7 +126,7 @@ describe("buildInstallRef behavior contract (via RegistryProvider.search install
     expect(await installRefFor("local:pinme-local")).toBe("file:/abs/path/to/pinme");
   });
 
-  test('source "github" -> "github:<ref>" (currently the default: fallthrough)', async () => {
+  test('source "github" -> "github:<ref>"', async () => {
     expect(await installRefFor("github:owner/pinme")).toBe("github:owner/pinme");
   });
 

@@ -151,7 +151,7 @@ describe("#584: index.db handle is closed before reindexFn runs", () => {
         ok: true,
         outcome: "queued",
         inputRef: o.ref,
-        lessonRef: "lessons/stub",
+        proposalRef: "lessons/stub",
       }),
       // Report written facts so the maintenance pass triggers the
       // post-inference reindex (#584 call site 1).

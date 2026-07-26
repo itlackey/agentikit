@@ -30,7 +30,7 @@ import { parsePositiveIntFlag } from "../cli/parse-args";
 import { defineJsonCommand, output, parseAllFlagValues, runWithJsonErrors } from "../cli/shared";
 import { EMBEDDED_HINTS, EMBEDDED_HINTS_FULL } from "../output/cli-hints";
 import { getOutputMode, parseDetailLevel } from "../output/context";
-import { formatEventLine } from "../output/text";
+import { formatEventLine } from "../output/text/helpers";
 import { getDirname } from "../runtime";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import { collectTagSetFromEntries } from "../storage/repositories/index-entries-repository";
@@ -49,7 +49,7 @@ const eventsListCommand = defineJsonCommand({
       description: "ISO timestamp / epoch ms, OR `@offset:<id>` for a durable row-id cursor (resume across processes)",
     },
     type: { type: "string", description: "Filter by event type (add, remove, remember, feedback, ...)" },
-    ref: { type: "string", description: "Filter by asset ref (type:name)" },
+    ref: { type: "string", description: "Filter by asset ref ([bundle//]conceptId)" },
     "exclude-tags": {
       type: "string",
       description: "Exclude events matching these tags (repeatable)",
@@ -81,7 +81,7 @@ const eventsTailCommand = defineCommand({
       description: "ISO timestamp / epoch ms, OR `@offset:<id>` for a durable row-id cursor (resume across processes)",
     },
     type: { type: "string", description: "Filter by event type" },
-    ref: { type: "string", description: "Filter by asset ref (type:name)" },
+    ref: { type: "string", description: "Filter by asset ref ([bundle//]conceptId)" },
     "interval-ms": { type: "string", description: "Polling interval in ms (default: 75)" },
     "max-duration-ms": { type: "string", description: "Stop after this many ms (default: never)" },
     "max-events": { type: "string", description: "Stop after observing this many events" },

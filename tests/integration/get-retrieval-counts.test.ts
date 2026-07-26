@@ -6,6 +6,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { getLastUseMsByRef } from "../../src/commands/improve/salience";
 import { recomputeUtilityScores } from "../../src/indexer/indexer";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import { ensureUsageEventsSchema } from "../../src/indexer/usage/usage-events";
 import type { Database as AkmDatabase } from "../../src/storage/database";
 import { openIndexDatabase } from "../../src/storage/repositories/index-connection";
@@ -127,6 +128,7 @@ describe("getRetrievalCounts", () => {
       stashDir,
       { type: "skill", name: "probe" } as never,
       "probe",
+      deriveEntryProvenance({ bundleId: "utility", componentId: "utility", adapterId: "akm" }, "skill", "probe"),
     );
     seed("search", "skills/probe", "user", entryId);
     seed("show", "skills/probe", "user", entryId);
@@ -152,6 +154,7 @@ describe("getRetrievalCounts", () => {
       stashDir,
       { type: "skill", name: "probe" } as never,
       "probe",
+      deriveEntryProvenance({ bundleId: "omitted", componentId: "omitted", adapterId: "akm" }, "skill", "probe"),
     );
     upsertUtilityScore(db, entryId, {
       utility: 1,
@@ -203,6 +206,7 @@ describe("getRetrievalCounts", () => {
       selectedRoot,
       { type: "skill", name: "duplicate" } as never,
       "selected",
+      deriveEntryProvenance({ bundleId: "selected", componentId: "selected", adapterId: "akm" }, "skill", "duplicate"),
     );
     const otherId = upsertEntry(
       db,
@@ -212,6 +216,7 @@ describe("getRetrievalCounts", () => {
       otherRoot,
       { type: "skill", name: "duplicate" } as never,
       "other",
+      deriveEntryProvenance({ bundleId: "other", componentId: "other", adapterId: "akm" }, "skill", "duplicate"),
     );
     upsertUtilityScore(db, selectedId, {
       utility: 1,

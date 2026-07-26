@@ -257,7 +257,7 @@ describe("improve engine-plan boundaries", () => {
             ok: true,
             outcome: "skipped",
             inputRef: options.ref,
-            lessonRef: "lessons/source-lesson",
+            proposalRef: "lessons/source-lesson",
           };
         },
         loopRefs: [{ ref: "memories/source", reason: "scope-ref" }],

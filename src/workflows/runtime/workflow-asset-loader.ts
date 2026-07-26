@@ -6,8 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { adapterForId } from "../../core/adapter/registry";
-import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
-import { type AssetRef, parseRefInput } from "../../core/asset/resolve-ref";
+import { type BundleRef, makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { isWithin } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import { NotFoundError, UsageError } from "../../core/errors";
@@ -54,18 +53,28 @@ export type WorkflowAsset = {
 };
 
 /**
- * The canonical durable `workflow_runs.workflow_ref` run-key:
- * `[origin//]workflows/<canonical-name>` (normative §11.4 — the chunk-8
- * cutover re-keys pre-existing legacy rows onto this spelling; every mint
- * site MUST build the key through this one helper).
+ * Build the canonical `workflow_runs.workflow_ref` for an AKM workflow asset.
  */
-export function canonicalWorkflowRunRef(origin: string | undefined, canonicalName: string): string {
-  return `${origin ? `${origin}//` : ""}workflows/${canonicalName}`;
+export function canonicalWorkflowRunRef(bundle: string | undefined, canonicalName: string): string {
+  return makeBundleRef(bundle, `workflows/${canonicalName}`);
 }
 
-/** Parse a workflow ref using the canonical `[bundle//]workflows/<name>` grammar. */
-export function parseWorkflowRefInput(ref: string): AssetRef {
-  return parseRefInput(ref.trim());
+/** Parse a workflow ref using the canonical `[bundle//]conceptId` grammar. */
+export function parseWorkflowRefInput(ref: string): BundleRef {
+  const parsed = parseBundleRef(ref.trim());
+  if (parsed.fragment !== undefined) {
+    throw new UsageError(
+      `Export fragment "#${parsed.fragment}" is not accepted in a workflow ref.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  if (parsed.conceptId.startsWith("workflow:")) {
+    throw new UsageError(
+      `Invalid workflow ref "${ref.trim()}". Use [bundle//]conceptId, such as workflows/release.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  return parsed;
 }
 
 /** Resolve input sugar to the workflow's canonical run identity. */
@@ -79,19 +88,7 @@ export async function canonicalizeWorkflowRefInput(ref: string): Promise<string>
  * parsing the source file from disk.
  */
 export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
-  const bundleRef = parseBundleRef(ref.trim());
-  if (bundleRef.fragment !== undefined) {
-    throw new UsageError(
-      `Export fragment "#${bundleRef.fragment}" is not accepted in a workflow ref.`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  let parsed: AssetRef | undefined;
-  try {
-    parsed = parseWorkflowRefInput(ref);
-  } catch {
-    // Standalone akm-workflow bundles use root-relative concept ids.
-  }
+  const bundleRef = parseWorkflowRefInput(ref);
 
   const config = loadConfig();
   const allSources = resolveSourceEntries(undefined, config);
@@ -116,7 +113,7 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
     try {
       const adapterId = source.adapterId ?? detectAdapterId(source.path);
       const candidateName =
-        adapterId === "akm-workflow" ? bundleRef.conceptId : parsed?.type === "workflow" ? parsed.name : undefined;
+        adapterId === "akm-workflow" ? bundleRef.conceptId : workflowNameFromConceptId(bundleRef.conceptId);
       const ownedSource = source.adapterId ? source : { ...source, adapterId };
       if (!candidateName) {
         if (adapterOwnsConcept(source.path, adapterId, bundleRef.conceptId)) {
@@ -157,7 +154,7 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
   const resolvedSourcePath = sourcePath as string;
   // Canonicalize the stored ref: `workflows/foo.yaml` and `workflows/foo`
   // resolve to the same file, so they MUST share one run identity. The raw
-  // `parsed.name` (with any extension) is what drives file resolution above;
+  // `workflowName` (with any extension) is what drives file resolution above;
   // only the persisted/queried ref is collapsed (matches the index entry key,
   // which is keyed by the extension-stripped canonical name).
   const canonicalName = canonicalizeWorkflowName(workflowName as string);
@@ -180,6 +177,11 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
 
 function ownsNativeWorkflowRuntime(source: SearchSource): boolean {
   return source.adapterId === "akm" || source.adapterId === "akm-workflow";
+}
+
+function workflowNameFromConceptId(conceptId: string): string | undefined {
+  const prefix = "workflows/";
+  return conceptId.startsWith(prefix) && conceptId.length > prefix.length ? conceptId.slice(prefix.length) : undefined;
 }
 
 function adapterOwnsConcept(sourcePath: string, adapterId: string, conceptId: string): boolean {
@@ -356,9 +358,9 @@ function workflowEntryKey(sourcePath: string, ref: string, adapterId?: string): 
   if ((adapterId ?? detectAdapterId(sourcePath)) === "akm-workflow") {
     return `${sourcePath}:concept:${bundleRef.conceptId}`;
   }
-  const parsed = parseWorkflowRefInput(ref);
-  if (parsed.type !== "workflow") throw new UsageError(`Expected a workflow ref, got "${ref}".`);
-  return `${sourcePath}:${parsed.type}:${parsed.name}`;
+  const name = workflowNameFromConceptId(bundleRef.conceptId);
+  if (!name) throw new UsageError(`Expected a workflow ref, got "${ref}".`);
+  return `${sourcePath}:workflow:${name}`;
 }
 
 function projectAsset(

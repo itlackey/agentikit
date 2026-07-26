@@ -20,7 +20,6 @@ function zeroImprove(): ImproveHealthMetrics {
       distill: {
         queued: 0,
         llmFailed: 0,
-        qualityRejected: 0,
         judgeRejected: 0,
         validatorRejected: 0,
         configDisabled: 0,
@@ -76,12 +75,8 @@ function zeroImprove(): ImproveHealthMetrics {
       skippedAborted: 0,
       unaccounted: 0,
       htmlErrorCount: 0,
-      yieldEligibleRuns: 0,
-      yieldEligibleConsidered: 0,
-      yieldEligibleWritten: 0,
       yieldRate: 0,
       durationMs: 0,
-      writes: 0,
     },
     graphExtraction: {
       ran: false,
@@ -178,7 +173,7 @@ describe("renderRunsDetailMd", () => {
       "strategy",
       "actions",
       "refl_ok/fail/cd/skip",
-      "distill_q/llm-fail/qrej/cfg/skip",
+      "distill_q/llm-fail/judge/validator/cfg/skip",
       "cons_proc/promo/merge/del",
       "mem_cons/written/skip",
       "graph_f/e/r",
@@ -201,8 +196,7 @@ describe("renderRunsDetailMd", () => {
         distill: {
           queued: 4,
           llmFailed: 0,
-          qualityRejected: 1,
-          judgeRejected: 0,
+          judgeRejected: 1,
           validatorRejected: 0,
           configDisabled: 0,
           skipped: 2,
@@ -230,7 +224,7 @@ describe("renderRunsDetailMd", () => {
     const data = lines[1];
     expect(data).toContain("2026-07-03T00:00:00.000Z");
     expect(data).toContain("2/1/0/3"); // reflect
-    expect(data).toContain("4/0/1/0/2"); // distill
+    expect(data).toContain("4/0/1/0/0/2"); // distill
     expect(data).toContain("5/2/1/0"); // consolidation
     expect(data).toContain("7/3/4"); // mem inference
     expect(data).toContain("2/10/6"); // graph

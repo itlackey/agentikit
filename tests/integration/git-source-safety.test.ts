@@ -32,6 +32,7 @@ import {
   sandboxStashDir,
   sandboxXdgCacheHome,
   sandboxXdgConfigHome,
+  sandboxXdgDataHome,
   writeSandboxConfig,
 } from "../_helpers/sandbox";
 
@@ -77,7 +78,8 @@ let envCleanup: Cleanup = () => {};
 
 beforeEach(() => {
   const cacheResult = sandboxXdgCacheHome();
-  const cfgResult = sandboxXdgConfigHome(cacheResult.cleanup);
+  const dataResult = sandboxXdgDataHome(cacheResult.cleanup);
+  const cfgResult = sandboxXdgConfigHome(dataResult.cleanup);
   const stashResult = sandboxStashDir(cfgResult.cleanup);
   envCleanup = stashResult.cleanup;
 });

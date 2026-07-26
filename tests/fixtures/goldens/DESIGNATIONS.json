@@ -25,8 +25,8 @@
       "consumers": [
         "tests/integration/goldens-proposal-recovery.test.ts"
       ],
-      "notes": "WI-03, plan §11 Chunk 0a / R3 (crash-recovery half of engines 1+2 of 3). Integration scope (brief §3.4) — parameterizes the existing, unmodified tests/integration/_helpers/proposal-crash-runner.ts subprocess harness. Pins SIGKILL recovery outcomes for accept (all 5 pre-commit phases: prepared rolls back, every later phase rolls forward), revert (exactly-once per phase), reject (exactly-one rejected event per phase incl. the prepared/state-persisted/event-finalized set), and the reject-recovers-a-pending-accept ordering (akmProposalReject recovers an interrupted accept transaction BEFORE evaluating its own pending-status guard). journalPhasesObserved is informational only (brief §3.2 rule 4) — the single phase name the runner was told to hold at, never journal bytes/paths. Same fileTree-key caveat as tests/fixtures/goldens/journal/proposal-txn.json does not apply here (this fixture serializes only booleans/status strings/event counts, no fileTree). | RE-CAPTURED at WI-6.5 (Chunk 6, its owning chunk — reviewed diff + ledger entry) after the proposal journals moved onto the unified FileChange transaction engine (src/core/fs-txn.ts): phase vocabulary and every recovery outcome came through the swap unchanged — the re-capture diff touched only capturedAtHead, the notes strings, and serializer whitespace. Designation returned to frozen-migration-input with a fresh sha256 in the same reviewed change.",
-      "sha256": "a37e51af31c0f00c9cfd3c2a6f3c18603f1e58df4c58cb5a4bd999973f173888"
+      "notes": "WI-03, plan §11 Chunk 0a / R3 (crash-recovery half of engines 1+2 of 3). Integration scope (brief §3.4) — parameterizes the existing, unmodified tests/integration/_helpers/proposal-crash-runner.ts subprocess harness. Pins SIGKILL recovery outcomes for accept (all 5 pre-commit phases: prepared rolls back, every later phase rolls forward), revert (exactly-once per phase), reject (exactly-one rejected event per phase incl. the prepared/state-persisted/event-finalized set), and the reject-recovers-a-pending-accept ordering (akmProposalReject recovers an interrupted accept transaction BEFORE evaluating its own pending-status guard). journalPhasesObserved is informational only (brief §3.2 rule 4) — the single phase name the runner was told to hold at, never journal bytes/paths. Same fileTree-key caveat as tests/fixtures/goldens/journal/proposal-txn.json does not apply here (this fixture serializes only booleans/status strings/event counts, no fileTree). | RE-CAPTURED at WI-6.5 (Chunk 6, its owning chunk — reviewed diff + ledger entry) after the proposal journals moved onto the unified FileChange transaction engine (src/core/fs-txn.ts): phase vocabulary and every recovery outcome came through the swap unchanged — the re-capture diff touched only capturedAtHead, the notes strings, and serializer whitespace. | RE-CAPTURED 2026-07-25 by the proposal surface owner after removing pre-binding target recovery; every captured journal now carries the strict current target identity.",
+      "sha256": "30cd1dce5f3d10b299e2f4017ed1939bb52d7895155d4f29ad8ebdd13658ed85"
     },
     {
       "path": "tests/fixtures/goldens/journal/move-txn.json",
@@ -237,12 +237,12 @@
     },
     {
       "path": "tests/fixtures/goldens/cli/c-tasks-family.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
+      "reBaselineChunk": "9",
       "consumers": [
         "tests/commands/goldens-cli-health-tasks.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Re-baselined by issue #711 (bundle-targeted tasks): the redundant `tasks list`/`tasks show` subcommands were retired (covered by `akm search` / `akm show`), so this oracle now pins the surviving Family C `tasks run|history|doctor` JSON envelope key-sets, driven against a command-type task running the `true` shell builtin. Re-baselined for scheduler binding/context diagnostics: doctor now reports `bindings`, `caller`, and `remediation`. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "2dd488749d6295b2b2154580fa8a5baabdc72fa40a6478a4c11bd140e9483d6e"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Re-baselined by issue #711 (bundle-targeted tasks): the redundant `tasks list`/`tasks show` subcommands were retired (covered by `akm search` / `akm show`), so this oracle now pins the surviving Family C `tasks run|history|doctor` JSON envelope key-sets, driven against a command-type task running the `true` shell builtin. Re-baselined for scheduler binding/context diagnostics: doctor now reports `bindings`, `caller`, and `remediation`. Re-baselined again for the current-only task surface: doctor no longer emits retired schema/generated-command compatibility diagnostics. Chunk 9 owns this CLI output surface under the surface-owner rule; key-set/count/boolean assertions only, no production ref literals."
     },
     {
       "path": "tests/fixtures/goldens/cli/c-tasks-run-config-bypass.json",
@@ -394,8 +394,8 @@
       "consumers": [
         "tests/commands/goldens-cli-health-tasks.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family B `akm health --group-by run --format=md` TSV-table scrubbed text output — no ref literals (per-run improve metrics only). Chunk 9 oracle; no production ref literals.",
-      "sha256": "fa5976265c7d294a08da90f96992d78995b5769ee830842aca6295a0d689937d"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family B `akm health --group-by run --format=md` TSV-table scrubbed text output — no ref literals (per-run improve metrics only). Chunk 9 oracle; no production ref literals. RE-CAPTURED 2026-07-26 by the health surface owner after replacing the compatibility qrej column with explicit judge and validator counts.",
+      "sha256": "15bc22c6e7b4cbe0dbae04a3a2a08168e141ec7a4892e4f1a9a6db8e430737df"
     },
     {
       "path": "tests/fixtures/goldens/cli/b-health-window-compare-md.json",
@@ -403,8 +403,8 @@
       "consumers": [
         "tests/commands/goldens-cli-health-tasks.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family B `akm health --window-compare 24h --format=md` window-compare TSV-table scrubbed text output — no ref literals. Chunk 9 oracle; no production ref literals.",
-      "sha256": "dbf56f312307962c324ec83a7bb6a050e2ca4f7999b0ab9c5bf1d974eb62cb6a"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family B `akm health --window-compare 24h --format=md` window-compare TSV-table scrubbed text output — no ref literals. Chunk 9 oracle; no production ref literals. RE-CAPTURED 2026-07-25 by the health surface owner after removing v1 profile and normalized-result columns.",
+      "sha256": "d55876022cb925694ac8d14b9ee463b4dbb23aa65a488c7fb4cdd68784ee81b7"
     },
     {
       "path": "tests/fixtures/goldens/cli/d-help-migrate.json",

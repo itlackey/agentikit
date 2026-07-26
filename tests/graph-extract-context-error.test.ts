@@ -12,7 +12,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { isContextSizeError } from "../src/llm/graph-extract";
+import { isContextSizeError } from "../src/llm/client";
 
 describe("isContextSizeError", () => {
   test("returns false for gemma-style prose without token/overflow evidence", () => {

@@ -40,9 +40,14 @@
         ]
       },
       "missingConfidenceDefaultsHigh": {
-        "beliefState": "contradicted",
-        "contradicted": 1,
-        "skips": []
+        "contradicted": 0,
+        "skips": [
+          {
+            "op": "contradict",
+            "reason": "contradict_low_confidence",
+            "ref": "memories/cop-contradict-missing-conf"
+          }
+        ]
       }
     },
     "delete": {

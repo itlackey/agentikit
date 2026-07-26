@@ -21,7 +21,7 @@ export interface ResolveAssetPathOptions {
 }
 
 function normalizeRef(ref: string | AssetRef): AssetRef {
-  // Stored/resolved refs may still be in the legacy spelling → dual parser.
+  // String inputs use the current `[bundle//]conceptId` grammar.
   return typeof ref === "string" ? parseRefInput(ref) : ref;
 }
 

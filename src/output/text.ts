@@ -48,53 +48,6 @@ import { updateFormatters } from "./text/update";
 import { upgradeFormatters } from "./text/upgrade";
 import { workflowFormatters } from "./text/workflow";
 
-// Re-export helpers so existing imports from `text.ts` keep working.
-export {
-  formatAddPlain,
-  formatClonePlain,
-  formatConfigPlain,
-  formatCuratePlain,
-  formatDistillPlain,
-  formatEventLine,
-  formatEventsPlain,
-  formatFeedbackPlain,
-  formatHistoryPlain,
-  formatImportPlain,
-  formatIndexPlain,
-  formatInfoPlain,
-  formatInitPlain,
-  formatListPlain,
-  formatProposalAcceptPlain,
-  formatProposalDiffPlain,
-  formatProposalListPlain,
-  formatProposalProducerPlain,
-  formatProposalRejectPlain,
-  formatProposalShowPlain,
-  formatRegistryAddPlain,
-  formatRegistryBuildIndexPlain,
-  formatRegistryListPlain,
-  formatRegistryRemovePlain,
-  formatRegistrySearchPlain,
-  formatRememberPlain,
-  formatRemovePlain,
-  formatSavePlain,
-  formatSearchPlain,
-  formatShowPlain,
-  formatToggleComponentPlain,
-  formatUpdatePlain,
-  formatUpgradePlain,
-  formatWorkflowCreatePlain,
-  formatWorkflowListPlain,
-  formatWorkflowNextPlain,
-  formatWorkflowResumePlain,
-  formatWorkflowStatusPlain,
-  formatWorkflowValidatePlain,
-} from "./text/helpers";
-export type { TextFormatterHandler } from "./text/registry";
-// Re-export registry API so callers can use this module as the single entry
-// point (backward compat).
-export { deregisterTextFormatter, registerTextFormatter } from "./text/registry";
-
 // ── Explicit built-in formatter assembly ──────────────────────────────────────
 // Each entry below is a pure exported `TextFormatterEntry[]` from a per-command
 // module. The set is registered ONCE, deterministically, with no reliance on

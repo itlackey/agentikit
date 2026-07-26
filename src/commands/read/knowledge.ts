@@ -22,18 +22,19 @@ import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../../core/
 import { isHttpUrl, isWithin, resolveStashDir, tryReadStdinText } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
-import { resolveMutationTarget } from "../../core/mutation-target";
+import { resolveBundleWriteTarget, resolveMutationTarget } from "../../core/mutation-target";
 import { resolveStashStandards } from "../../core/standards/resolve-stash-standards";
 import { warn } from "../../core/warn";
 import {
   commitWriteTargetBoundary,
   formatRefForMessage,
+  type ResolvedWriteTarget,
   recordWriteTargetPath,
   resolveWriteTarget,
   writeAssetToSource,
 } from "../../core/write-source";
 import { indexWrittenAssets } from "../../indexer/index-written-assets";
-import { deriveInstallations } from "../../indexer/installations";
+import { deriveInstallations, slugForPath } from "../../indexer/installations";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import {
   fetchWebsiteMarkdownSnapshot,
@@ -150,18 +151,12 @@ export async function readKnowledgeInput(
 /** A `--xref` / `--supersedes` flag value parsed to its components. */
 interface ParsedWriteRef {
   /**
-   * The CANONICAL bare `conceptId` (`<stash-subdir>/<name>`, D-R2) rebuilt from
-   * the parsed components — what lands in frontmatter. WI-8.5a flips this from
-   * the legacy `type:name`: frontmatter refs are intra-bundle SHORT refs (§11.1,
-   * D-R4 "short refs inside bundle content resolve to the containing bundle"),
-   * Unqualified refs remain intra-bundle short refs; explicit cross-bundle refs
-   * retain their qualifier so duplicate names stay unambiguous.
-   * Persisting the raw flag value instead would store spellings the ref parser
-   * accepts but later ref scanners (lint's ref-list scan, mv's rewriter) key on
-   * differently; the bare conceptId is exactly what both now recognize.
+   * The normalized input spelling. A short input remains short here until
+   * resolution supplies the owning bundle; storage always uses the resolved
+   * fully-qualified ref.
    */
   ref: string;
-  /** Canonical asset type (aliases resolved by the ref parser). */
+  /** Asset type derived from the conceptId's canonical directory. */
   type: string;
   /** Normalized asset name. */
   name: string;
@@ -171,11 +166,9 @@ interface ParsedWriteRef {
 
 /**
  * Parse a `--xref` / `--supersedes` value through the new-grammar input parser
- * (`parseRefInput`, the 0.9.0 `[bundle//]conceptId` grammar) so malformed and
- * origin-prefixed spellings get a structured error instead of a misleading "did
- * not resolve". Chunk-8 WI-8.5c: the legacy `[origin//]type:name` content-surface
- * arm is retired — `--xref`/`--supersedes` take the conceptId form. Bundle
- * qualifiers are retained for exact source membership checks.
+ * (`parseRefInput`, the `[bundle//]conceptId` grammar) so malformed values get a
+ * structured error instead of a misleading "did not resolve". Bundle qualifiers
+ * are retained for exact source membership checks.
  */
 function parseWriteRef(raw: string, flag: "--xref" | "--supersedes"): ParsedWriteRef {
   let parsed: AssetRef;
@@ -189,8 +182,8 @@ function parseWriteRef(raw: string, flag: "--xref" | "--supersedes"): ParsedWrit
       `Refs use the conceptId form, e.g. ${flag} knowledge/auth-flow.`,
     );
   }
-  // Type alias resolved and name normalized. Bundle qualifiers remain explicit
-  // so duplicate names resolve in the named source.
+  // Bundle qualifiers remain explicit so duplicate names resolve in the named
+  // source.
   const conceptId = conceptIdFromTypeName(parsed.type, parsed.name);
   const origin = parsed.origin;
   return {
@@ -203,9 +196,8 @@ function parseWriteRef(raw: string, flag: "--xref" | "--supersedes"): ParsedWrit
 
 /**
  * Trim, parse, and dedupe `--xref` / `--supersedes` flag values, in argv
- * order. Parsing comes BEFORE deduplication so two alias spellings of the
- * same asset (`environment:prod` and `env:prod`, `local//knowledge:x` and
- * `knowledge:x`) collapse into one canonical entry.
+ * order. Parsing comes before deduplication so normalized spellings collapse
+ * into one canonical entry.
  */
 function parseWriteRefs(rawRefs: string[], flag: "--xref" | "--supersedes"): ParsedWriteRef[] {
   const parsedRefs: ParsedWriteRef[] = [];
@@ -235,13 +227,23 @@ function parseWriteRefs(rawRefs: string[], flag: "--xref" | "--supersedes"): Par
 interface WriteRefRoot {
   path: string;
   source?: SearchSource;
-  bundleId?: string;
+  bundleId: string;
   mutable: boolean;
 }
 
 function resolveWriteRefRoots(target?: string): { roots: WriteRefRoot[] } {
   const cfg = loadConfig();
-  const writeTarget = resolveWriteTarget(cfg, target);
+  let writeTarget: ResolvedWriteTarget;
+  try {
+    writeTarget = resolveWriteTarget(cfg, target);
+  } catch (error) {
+    if (!target) throw error;
+    try {
+      writeTarget = resolveBundleWriteTarget(cfg, target);
+    } catch {
+      throw error;
+    }
+  }
   const stashRoot = writeTarget.source.path;
   let workingStash: string | undefined;
   try {
@@ -251,7 +253,7 @@ function resolveWriteRefRoots(target?: string): { roots: WriteRefRoot[] } {
   }
   const mutableRoots: string[] = [stashRoot];
   if (workingStash && path.resolve(workingStash) !== path.resolve(stashRoot)) mutableRoots.push(workingStash);
-  const namedSources = resolveSourceEntries(stashRoot, cfg);
+  const namedSources = resolveSourceEntries(undefined, cfg);
   const installations = deriveInstallations(namedSources);
   const bundleByPath = new Map(
     namedSources.flatMap((source, index) => {
@@ -271,12 +273,17 @@ function resolveWriteRefRoots(target?: string): { roots: WriteRefRoot[] } {
           path.resolve(p) === path.resolve(stashRoot)
             ? writeTarget.source.adapterId === "akm"
             : source?.writable === true && (source.adapterId ?? detectAdapterId(p)) === "akm";
-        return { path: p, source, bundleId: bundleByPath.get(path.resolve(p)), mutable };
+        return {
+          path: p,
+          source,
+          bundleId: bundleByPath.get(path.resolve(p)) ?? slugForPath(p),
+          mutable,
+        };
       }),
     ...otherSources.map((source) => ({
       path: source.path,
       source,
-      bundleId: bundleByPath.get(path.resolve(source.path)),
+      bundleId: bundleByPath.get(path.resolve(source.path)) ?? slugForPath(source.path),
       mutable: false,
     })),
   ];
@@ -288,16 +295,16 @@ function rootsForWriteRef(parsed: ParsedWriteRef, roots: WriteRefRoot[]): WriteR
   return roots.filter((root) => root.bundleId === parsed.origin);
 }
 
-function canonicalWriteRef(parsed: ParsedWriteRef): string {
-  return parsed.ref;
+function canonicalWriteRef(parsed: ParsedWriteRef, bundleId: string): string {
+  return `${bundleId}//${conceptIdFromTypeName(parsed.type, parsed.name)}`;
 }
 
 /**
  * True when write-time validation must FAIL OPEN for this ref type — exactly
  * lint's `checkMissingRefs` policy (`if (relPath === null) continue`,
- * base-linter.ts): a type the slug resolver cannot map to a path (`script:` is
- * contract-pinned to return null) is accepted without an existence check
- * rather than being unwinnable. `workflow:` never fails open — it resolves
+ * base-linter.ts): a type the slug resolver cannot map to a path (script refs
+ * are contract-pinned to return null) is accepted without an existence check
+ * rather than being unwinnable. Workflow refs never fail open — they resolve
  * stash-rooted via {@link locateWriteRefInRoot}.
  */
 function isFailOpenRefType(type: string, name: string): boolean {
@@ -306,7 +313,7 @@ function isFailOpenRefType(type: string, name: string): boolean {
 
 /**
  * Resolve a write-time ref to its primary on-disk file within a single stash
- * root. Wraps lint's `resolveRefPathInStash` with one addition: `workflow:`
+ * root. Wraps lint's `resolveRefPathInStash` with one addition: workflow
  * refs are probed against the ROOT's workflows/ dir first (every recognized
  * workflow extension), because `workflowSpec.toAssetPath` inside
  * `refToRelPath` probes the CWD — and write validation must not depend on the
@@ -346,7 +353,7 @@ export const XREF_SOFT_CAP = 5;
 /**
  * Validate `--xref` flag values before ANY write happens.
  *
- * Each ref (`type:name`) must resolve to a real asset in the write-ref root
+ * Each `[bundle//]conceptId` must resolve to a real asset in the write-ref root
  * set (write target + working stash + configured sources — see
  * {@link resolveWriteRefRoots}; cross-stash provenance refs into read-only
  * sources are accepted). An unresolvable ref is input validation of an
@@ -355,13 +362,12 @@ export const XREF_SOFT_CAP = 5;
  * validation leaves the stash untouched. Resolution reuses the lint
  * ref-resolver helpers (`refToRelPath` / `resolveRefPathInStash`) — do not
  * fork a second resolver — and mirrors lint's fail-open policy: a type the
- * resolver cannot map to a path (`script:`) is accepted without an existence
- * check.
+ * resolver cannot map to a path (for example a script concept) is accepted
+ * without an existence check.
  *
- * Returns the CANONICAL `type:name` spellings (alias types resolved, names
- * normalized, `local//` stripped — see {@link ParsedWriteRef}), deduplicated
- * in argv order. More than {@link XREF_SOFT_CAP} refs emits a stderr warning
- * (soft cap) but still returns them all.
+ * Returns fully-qualified durable refs, deduplicated in argv order. More than
+ * {@link XREF_SOFT_CAP} refs emits a stderr warning (soft cap) but still
+ * returns them all.
  */
 export function resolveXrefsForWrite(rawXrefs: string[], target?: string): string[] {
   const parsedRefs = parseWriteRefs(rawXrefs, "--xref");
@@ -370,25 +376,21 @@ export function resolveXrefsForWrite(rawXrefs: string[], target?: string): strin
   const { roots } = resolveWriteRefRoots(target);
 
   const unresolved: ParsedWriteRef[] = [];
+  const xrefs: string[] = [];
   for (const parsed of parsedRefs) {
-    if (isFailOpenRefType(parsed.type, parsed.name)) continue;
-    if (
-      !rootsForWriteRef(parsed, roots).some(
-        (root) => locateWriteRefInRoot(parsed.type, parsed.name, root.path) !== null,
-      )
-    ) {
+    const candidates = rootsForWriteRef(parsed, roots);
+    const resolvedRoot = isFailOpenRefType(parsed.type, parsed.name)
+      ? candidates[0]
+      : candidates.find((root) => locateWriteRefInRoot(parsed.type, parsed.name, root.path) !== null);
+    if (!resolvedRoot) {
       unresolved.push(parsed);
+      continue;
     }
+    const ref = canonicalWriteRef(parsed, resolvedRoot.bundleId);
+    if (!xrefs.includes(ref)) xrefs.push(ref);
   }
   if (unresolved.length > 0) {
     throw unresolvedRefsError("--xref", unresolved);
-  }
-
-  // The CANONICAL spellings are what land in frontmatter (see ParsedWriteRef).
-  const xrefs: string[] = [];
-  for (const parsed of parsedRefs) {
-    const ref = canonicalWriteRef(parsed);
-    if (!xrefs.includes(ref)) xrefs.push(ref);
   }
 
   if (xrefs.length > XREF_SOFT_CAP) {
@@ -471,9 +473,8 @@ function isParseableYamlMapping(frontmatter: string): boolean {
  */
 export interface SupersededTarget {
   /**
-   * The old asset's CANONICAL ref (`type:name` — alias spellings passed on
-   * the CLI are canonicalized, see {@link ParsedWriteRef}). Folded into the
-   * correction's xrefs by the callers, so it must be scanner-recognizable.
+   * The old asset's fully-qualified durable ref. Folded into the correction's
+   * xrefs by callers, so it must be scanner-recognizable.
    */
   ref: string;
   /** Absolute path of the old asset's primary on-disk file. */
@@ -559,16 +560,28 @@ export function resolveSupersedesForWrite(rawRefs: string[], target?: string): S
     // file would prepend a YAML block over its raw bytes.
     if (SUPERSEDE_REJECTED_TYPES.has(parsed.type)) {
       throw new UsageError(
-        `--supersedes cannot demote ${parsed.ref}: "${parsed.type}:" assets are raw files, and the demotion writes YAML frontmatter that would corrupt them.`,
+        `--supersedes cannot demote ${parsed.ref}: asset type "${parsed.type}" uses raw files, and the demotion writes YAML frontmatter that would corrupt them.`,
         "INVALID_FLAG_VALUE",
-        "Only markdown assets (e.g. memory:, knowledge:, fact:) can carry the beliefState/supersededBy demotion. Replace or delete the raw asset instead.",
+        "Only markdown assets (e.g. memories/note, knowledge/guide, facts/team/tool-stack) can carry the beliefState/supersededBy demotion. Replace or delete the raw asset instead.",
       );
     }
-    let located: { root: string; source?: SearchSource; mutable: boolean; filePath: string } | null = null;
+    let located: {
+      root: string;
+      source?: SearchSource;
+      bundleId: string;
+      mutable: boolean;
+      filePath: string;
+    } | null = null;
     for (const root of orderedRoots) {
       const filePath = locateWriteRefInRoot(parsed.type, parsed.name, root.path);
       if (filePath !== null) {
-        located = { root: root.path, source: root.source, mutable: root.mutable, filePath };
+        located = {
+          root: root.path,
+          source: root.source,
+          bundleId: root.bundleId,
+          mutable: root.mutable,
+          filePath,
+        };
         break;
       }
     }
@@ -578,8 +591,8 @@ export function resolveSupersedesForWrite(rawRefs: string[], target?: string): S
     }
     // Belt-and-suspenders for the same corruption class: whatever the type,
     // the demotion may only touch a markdown file. Rejects e.g. a YAML
-    // workflow program (`workflow:deploy` resolving to workflows/deploy.yaml,
-    // or the explicit `workflow:deploy.yaml` spelling).
+    // workflow program (`workflows/deploy` resolving to workflows/deploy.yaml,
+    // or the explicit `workflows/deploy.yaml` spelling).
     if (!located.filePath.toLowerCase().endsWith(".md")) {
       throw new UsageError(
         `--supersedes ${parsed.ref} resolves to a non-markdown file (${located.filePath}) — the demotion writes YAML frontmatter and would corrupt it.`,
@@ -587,12 +600,12 @@ export function resolveSupersedesForWrite(rawRefs: string[], target?: string): S
         "Only markdown assets can carry the beliefState/supersededBy demotion. Replace or delete the file instead.",
       );
     }
-    const { root, source, mutable: writable, filePath } = located;
+    const { root, source, bundleId, mutable: writable, filePath } = located;
     // The eligibility rule is write-target-or-working-stash, NOT source
     // writability: mutating a non-target writable source would leave it dirty
     // outside any boundary commit. Name the remedy when one exists.
     const namedWritableSource = source?.writable === true ? source.registryId : undefined;
-    const canonicalRef = canonicalWriteRef(parsed);
+    const canonicalRef = canonicalWriteRef(parsed, bundleId);
     if (plan.some((item) => item.ref === canonicalRef)) continue;
     plan.push({
       ref: canonicalRef,
@@ -693,7 +706,7 @@ export async function writeMarkdownAsset(options: {
   for (const item of options.supersedes ?? []) {
     if (path.resolve(item.filePath) === path.resolve(assetPath)) {
       throw new UsageError(
-        `--supersedes ${item.ref} resolves to the asset being written ("${options.type}:${normalizedName}") — a correction cannot supersede itself.`,
+        `--supersedes ${item.ref} resolves to the asset being written ("${resolved.displayRef}") — a correction cannot supersede itself.`,
         "INVALID_FLAG_VALUE",
         "Write the correction under a different --name, or drop --supersedes when overwriting an asset in place with --force.",
       );
@@ -701,6 +714,7 @@ export async function writeMarkdownAsset(options: {
   }
 
   const result = await writeAssetToSource(source, config, resolved.ref, options.content);
+  const durableRef = result.ref;
   result.ref = resolved.displayRef;
   // SPEC-5 (--supersedes): demote each superseded asset by mutating its
   // frontmatter (`beliefState: superseded` + sorted-set-append `supersededBy`;
@@ -749,9 +763,7 @@ export async function writeMarkdownAsset(options: {
     // Degrade to the same applied:false report the non-writable path uses.
     try {
       const sameSource = path.resolve(item.stashRoot) === path.resolve(source.path);
-      // Refs inside one bundle stay short; cross-bundle edges retain the
-      // qualified output ref so duplicate concepts remain unambiguous.
-      writeSupersededEdge(item.filePath, sameSource ? conceptIdFromTypeName(options.type, normalizedName) : result.ref);
+      writeSupersededEdge(item.filePath, durableRef);
       if (sameSource) {
         recordWriteTargetPath(source, item.filePath);
       }
@@ -801,7 +813,7 @@ export async function writeMarkdownAsset(options: {
         // and a dead `akm show` pointer is worse than generic wording.
         const orgFactPath = path.join(source.path, "facts", "conventions", "organization.md");
         hint = fs.existsSync(orgFactPath)
-          ? `Wrote to the ${options.type} root. This stash has placement conventions — see \`akm show fact:conventions/organization\`.`
+          ? `Wrote to the ${options.type} root. This stash has placement conventions — see \`akm show facts/conventions/organization\`.`
           : `Wrote to the ${options.type} root. This stash has placement conventions — see the convention facts under its facts/ directory.`;
       }
     } catch {

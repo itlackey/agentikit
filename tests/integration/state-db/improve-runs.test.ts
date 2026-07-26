@@ -243,13 +243,14 @@ describe("recordImproveRun", () => {
     const db = openStateDatabase();
     try {
       const result = buildMinimalResult({
+        gateAutoAcceptedCount: 1,
         plannedRefs: [
           { ref: "lessons/a", reason: "scope-type" },
           { ref: "lessons/b", reason: "scope-type" },
           { ref: "lessons/c", reason: "scope-type" },
         ],
         actions: [
-          { ref: "lessons/a", mode: "reflect", result: { ok: true, autoAccepted: true } as never },
+          { ref: "lessons/a", mode: "reflect", result: { ok: true } as never },
           { ref: "lessons/b", mode: "distill", result: { ok: true } as never },
           { ref: "lessons/c", mode: "reflect-cooldown", result: { ok: true, reason: "cooldown" } },
           { ref: "lessons/d", mode: "error", result: { ok: false, error: "boom" } },

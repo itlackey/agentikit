@@ -8,7 +8,6 @@ import os from "node:os";
 import path from "node:path";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { recognizeStashEntries } from "../../src/indexer/scan/drain-dir";
-import type { RankedEntryInput } from "../../src/indexer/search/ranking";
 import {
   applyBeliefStateScoreCeiling,
   applyContributorAblation,
@@ -16,6 +15,7 @@ import {
   defaultUtilityRankingContributors,
   type RankingContext,
 } from "../../src/indexer/search/ranking-contributors";
+import type { RankedEntryInput } from "../../src/indexer/search/ranking-types";
 
 describe("applyContributorAblation (eval-only AKM_ABLATE_CONTRIBUTORS filter)", () => {
   const all = defaultRankingContributors;

@@ -37,7 +37,6 @@ import {
   assertWorkflowSpineMatchesPlan,
   classifyWorkflowRunPlan,
   frozenStepRows,
-  requireAbandonableWorkflowPlan,
   requireExecutableWorkflowPlan,
 } from "./plan-classifier";
 import { evaluateStaleUnits, type StaleUnit } from "./unit-checkin";
@@ -115,10 +114,9 @@ export interface WorkflowUnitDiagnostic {
   /** When the `running` claim expires; null when unclaimed. */
   claimExpiresAt: string | null;
   engine: string | null;
-  /** Planned resolved runtime kind on v3 rows, never inferred for history. */
+  /** Journaled resolved runtime kind for a frozen-engine unit. */
   runtimeKind: "llm" | "agent" | "sdk" | null;
   platform: string | null;
-  legacyRunnerSelector?: string | null;
 }
 
 /** Clip bound for a unit's `result_json` on the `--units` diagnostic surface. */
@@ -165,7 +163,6 @@ function toUnitDiagnostic(
     runtimeKind:
       row.engine && (row.runner === "llm" || row.runner === "agent" || row.runner === "sdk") ? row.runner : null,
     platform: plannedEngine?.kind === "agent" ? plannedEngine.platform : null,
-    ...(!row.engine && row.runner ? { legacyRunnerSelector: row.runner } : {}),
   };
 }
 
@@ -337,8 +334,7 @@ export async function startWorkflowRun(
         })),
       );
 
-      // Same transaction as the insert: a run row never exists without its
-      // frozen plan (rows with NULL plan_json are pre-006 legacy runs).
+      // Same transaction as the insert: a run row never exists without its frozen plan.
       repo.setRunPlan(runId, planJson, planHash, WORKFLOW_IR_VERSION);
     });
 
@@ -539,10 +535,9 @@ export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetai
 export async function abandonWorkflowRun(runId: string): Promise<WorkflowRunDetail> {
   return withWorkflowRunsRepo((repo) => {
     const run = readWorkflowRun(repo, runId);
-    requireAbandonableWorkflowPlan(run);
-    const classified = classifyWorkflowRunPlan(run);
+    const plan = requireExecutableWorkflowPlan(run);
     const existingSteps = readWorkflowRunSteps(repo, run.id);
-    if (classified.support === "supported") assertWorkflowSpineMatchesPlan(classified.plan, run, existingSteps);
+    assertWorkflowSpineMatchesPlan(plan, run, existingSteps);
     if (run.status === "completed" || run.status === "failed") {
       throw new UsageError(`Workflow run ${run.id} is already ${run.status}.`);
     }

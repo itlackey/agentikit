@@ -4,8 +4,7 @@
  *     (migration 003).
  *   - Stdout is empty in default mode — the existing `[improve] ...` log
  *     lines on stderr remain the canonical console UX.
- *   - `--json-to-stdout` restores the prior behaviour (full JSON on stdout,
- *     no state.db row written).
+ *   - `--json-to-stdout` can additionally emit the persisted result.
  *
  * Pre-0.8.0 these tests asserted on `<stash>/.akm/runs/<id>/improve-result.json`
  * files. Item 10 of the 0.8.0 pre-production polish plan migrated the storage
@@ -18,15 +17,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import type { AkmImproveResult } from "../../../src/commands/improve/improve";
-import {
-  buildImproveRunId,
-  improveRunLocator,
-  recordImproveRunResult,
-} from "../../../src/commands/improve/improve-result-file";
+import { buildImproveRunId, recordImproveRunResult } from "../../../src/commands/improve/improve-result-file";
 import { type SandboxedDir, makeStashDir as sandboxMakeStashDir, sandboxXdgDataHome } from "../../_helpers/sandbox";
 
-// The pure-function tests (buildImproveRunId, improveRunLocator,
-// recordImproveRunResult) run in-process — recordImproveRunResult isolates
+// The buildImproveRunId and recordImproveRunResult tests run in-process;
+// recordImproveRunResult isolates
 // state.db via the allowlisted sandboxXdgDataHome helper. The three `akm
 // improve` CLI tests that used to live here run `improve` for real (which
 // opens and WRITES the state.db improve_runs table, hitting genuine
@@ -107,16 +102,6 @@ describe("buildImproveRunId", () => {
   });
 });
 
-describe("improveRunLocator", () => {
-  test("returns a state.db locator (not a filesystem path)", () => {
-    const rel = improveRunLocator("test-run");
-    // Compatibility shim: still a relative-style string for log messages,
-    // but now references the state.db row rather than an on-disk file.
-    expect(path.isAbsolute(rel)).toBe(false);
-    expect(rel).toBe(path.join("state.db", "improve_runs", "test-run"));
-  });
-});
-
 describe("recordImproveRunResult", () => {
   const baseResult: AkmImproveResult = {
     schemaVersion: 2,
@@ -140,9 +125,7 @@ describe("recordImproveRunResult", () => {
     const xdgData = dataSb.dir;
 
     try {
-      const rel = recordImproveRunResult(stash, runId, baseResult);
-      // Return value is now a state.db locator for log messages, not a file path.
-      expect(rel).toBe(path.join("state.db", "improve_runs", runId));
+      recordImproveRunResult(stash, runId, baseResult);
 
       const rows = readImproveRuns(xdgData);
       expect(rows.length).toBe(1);

@@ -117,7 +117,7 @@ export interface WorkflowBriefUnit {
   unitId: string;
   nodeId: string;
   index: number;
-  /** Frozen engine name and lowering; never a legacy runner/profile selector. */
+  /** Frozen engine name and lowering. */
   engine: string;
   runtimeKind: IrRuntimeKind;
   platform: string | null;
@@ -367,9 +367,7 @@ export async function buildWorkflowBrief(target: string): Promise<WorkflowBrief>
     };
   }
 
-  // Load the FROZEN plan the engine executes (migration 006). A legacy run
-  // (NULL plan_json) has no plan for brief to read — point at engine-driven
-  // mode, which still handles pre-006 runs by compiling from the asset.
+  // Load the same frozen plan the engine executes.
   const plan = requireExecutableWorkflowPlan(runRow);
   // Reviewer #12: the journaled params row must still satisfy the frozen param
   // schemas — a violation is post-start corruption, loud on the brief surface

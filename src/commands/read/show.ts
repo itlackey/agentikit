@@ -100,8 +100,7 @@ export async function akmShowUnified(input: {
   // 0a. Stash `.meta/` convention: `[origin//]meta[:name]` direct-reads a
   //     human-authored orientation doc from the stash's `.meta/` directory.
   //     These files are not indexed (the walker skips dot-dirs), so they are
-  //     resolved here before the index lookup and the `type:name` parser,
-  //     which would otherwise reject the non-asset-type `meta`.
+  //     resolved here before the index lookup; meta docs are not asset refs.
   {
     const metaRef = parseMetaRef(ref);
     if (metaRef) return showStashMeta(metaRef);
@@ -275,12 +274,13 @@ function logShowEvent(
     withIndexDb(
       (db) => {
         const entryId = filePath ? getEntryIdByFilePath(db, filePath) : findEntryIdByRef(db, eventRef);
-        // The DURABLE usage-event key is the resolved entry's fully-qualified
-        // `item_ref`; the new-grammar `eventRef` is the fallback for an
-        // unresolved / not-yet-indexed show. entry_id/item_ref resolve from
-        // index.db (`db`); the usage_events write lands in state.db (WI-8.3).
-        const entryRef = (entryId !== undefined ? getItemRefById(db, entryId) : null) ?? eventRef;
-        const entry = entryId !== undefined ? getEntryById(db, entryId) : undefined;
+        if (entryId === undefined) return;
+        // Usage events carry only the resolved row's fully-qualified item_ref.
+        // A disk-only show has no durable indexed identity yet, so it does not
+        // create a per-entry usage row.
+        const entryRef = getItemRefById(db, entryId);
+        if (!entryRef) return;
+        const entry = getEntryById(db, entryId);
         withStateDbTelemetry((stateDb) => {
           insertUsageEvent(stateDb, {
             event_type: "show",
@@ -310,7 +310,7 @@ export async function showLocal(input: {
   stashDir?: string;
 }): Promise<ShowResponse> {
   const parsed = parseBundleRef(input.ref);
-  const legacy = typeNameFromConceptId(parsed.conceptId);
+  const assetParts = typeNameFromConceptId(parsed.conceptId);
   const config = loadConfig();
   const allSources = resolveSourceEntries(input.stashDir);
   const searchSources = resolveSourcesForOrigin(parsed.bundle, allSources);
@@ -326,9 +326,9 @@ export async function showLocal(input: {
   }
   const resolvedAssetPath =
     indexedEntry?.filePath ??
-    (legacy
+    (assetParts
       ? await resolveAssetPath(
-          { type: legacy.type, name: legacy.name, origin: parsed.bundle },
+          { type: assetParts.type, name: assetParts.name, origin: parsed.bundle },
           {
             stashDir: input.stashDir,
             mode: "disk-only",
@@ -336,8 +336,8 @@ export async function showLocal(input: {
         )
       : null);
   const assetPath = resolvedAssetPath ?? undefined;
-  const displayType = indexedEntry?.type ?? legacy?.type ?? "asset";
-  const displayName = indexedEntry?.name ?? legacy?.name ?? parsed.conceptId;
+  const displayType = indexedEntry?.type ?? assetParts?.type ?? "asset";
+  const displayName = indexedEntry?.name ?? assetParts?.name ?? parsed.conceptId;
 
   if (!assetPath && parsed.bundle && searchSources.length === 0) {
     const installCmd = `akm add ${parsed.bundle}`;
@@ -382,7 +382,7 @@ export async function showLocal(input: {
       throw new UsageError(`Renderer "${match.renderer}" not found for asset: ${displayType}:${displayName}`);
     }
 
-    const renderBundle = indexedEntry?.bundleId ?? source?.registryId;
+    const renderBundle = indexedEntry ? indexedEntry.bundleId : source?.registryId;
     const renderDefaultBundle =
       config.defaultBundle ?? (source?.path === allSources[0]?.path ? renderBundle : undefined);
     const renderCtx = buildRenderContext(fileCtx, match, allSourceDirs, renderBundle, renderDefaultBundle);
@@ -403,7 +403,7 @@ export async function showLocal(input: {
       type: displayType,
       name: displayName,
       conceptId: indexedEntry?.conceptId,
-      bundleId: indexedEntry?.bundleId ?? source?.registryId,
+      bundleId: indexedEntry ? indexedEntry.bundleId : source?.registryId,
     },
     config.defaultBundle ?? (isPrimaryStash ? indexedEntry?.bundleId : undefined),
   );
@@ -705,7 +705,7 @@ export function normalizeShowArgv(argv: string[]): string[] {
     commandArgs.includes("--end")
   ) {
     throw new UsageError(
-      'Legacy show flags are no longer supported. Use positional syntax like `akm show knowledge:guide toc` or `akm show knowledge:guide section "Auth"`.',
+      'Legacy show flags are no longer supported. Use positional syntax like `akm show knowledge/guide toc` or `akm show knowledge/guide section "Auth"`.',
     );
   }
 

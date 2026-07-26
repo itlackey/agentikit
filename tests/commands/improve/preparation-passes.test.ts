@@ -21,8 +21,9 @@ import {
   buildSnapshotManifest,
   partitionBySignalDelta,
 } from "../../../src/commands/improve/preparation";
+import type { EligibilitySource } from "../../../src/commands/proposal/proposal-types";
 import type { AkmConfig } from "../../../src/core/config/config";
-import type { EligibilitySource, ImproveEligibleRef } from "../../../src/core/improve-types";
+import type { ImproveEligibleRef } from "../../../src/core/improve-types";
 import { makeStashDir, type SandboxedDir, sandboxXdgDataHome } from "../../_helpers/sandbox";
 
 const disposers: Array<{ cleanup: () => void }> = [];

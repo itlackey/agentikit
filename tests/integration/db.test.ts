@@ -102,6 +102,11 @@ function insertTestEntry(
 ): number {
   const type = opts?.type ?? "script";
   const entry = makeEntry({ name: key, type, description: opts?.description ?? `Description for ${key}` });
+  const provenance = deriveEntryProvenance(
+    { bundleId: "test-bundle", componentId: "test-bundle", adapterId: "akm" },
+    type,
+    key,
+  );
   return upsertEntry(
     db,
     key,
@@ -110,6 +115,7 @@ function insertTestEntry(
     opts?.stashDir ?? "/test/stash",
     entry,
     opts?.searchText ?? `${key} ${entry.description}`,
+    provenance,
   );
 }
 
@@ -232,7 +238,7 @@ describe("Entry CRUD", () => {
     try {
       const type = "script";
       const name = "my-tool";
-      const entryKey = `/s:${type}:${name}`; // legacy stashDir:type:name shape
+      const entryKey = `/s:${type}:${name}`;
       const prov = deriveEntryProvenance({ bundleId: "team-kb", componentId: "team-kb", adapterId: "akm" }, type, name);
       const entry = makeEntry({ name, type, description: "original" });
       upsertEntry(db, entryKey, "/s/dir", "/s/dir/my-tool.ts", "/s", entry, "my-tool original", prov);
@@ -247,48 +253,6 @@ describe("Entry CRUD", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]?.item_ref).toBe("team-kb//scripts/my-tool");
       expect(JSON.parse(rows[0]?.entry_json ?? "{}").description).toBe("updated");
-    } finally {
-      closeDatabase(db);
-    }
-  });
-
-  test("a NULL-item_ref re-upsert of an existing row UPDATES in place via the entry_key fallback (never crashes)", () => {
-    // Mirrors the out-of-scope LLM metadata-enhance re-upsert: an already-indexed
-    // row (non-NULL item_ref) is re-written WITHOUT provenance → NULL item_ref.
-    // Under an item_ref-ONLY conflict target this would miss the row and ABORT on
-    // the `entry_key NOT NULL UNIQUE` constraint; the retained entry_key fallback
-    // keeps it a safe in-place UPDATE.
-    const db = openIndexDatabase(tmpDbPath());
-    try {
-      const type = "script";
-      const name = "my-tool";
-      const entryKey = `/s:${type}:${name}`; // legacy stashDir:type:name shape
-      const prov = deriveEntryProvenance({ bundleId: "team-kb", componentId: "team-kb", adapterId: "akm" }, type, name);
-      const first = makeEntry({ name, type, description: "first pass" });
-      upsertEntry(db, entryKey, "/s/dir", "/s/dir/my-tool.ts", "/s", first, "first", prov);
-      expect(getEntryCount(db)).toBe(1);
-
-      // Re-upsert the SAME entry_key WITHOUT provenance (item_ref = NULL).
-      const enhanced = makeEntry({ name, type, description: "enhanced" });
-      expect(() => upsertEntry(db, entryKey, "/s/dir", "/s/dir/my-tool.ts", "/s", enhanced, "enhanced")).not.toThrow();
-      // One row, updated in place — not duplicated.
-      expect(getEntryCount(db)).toBe(1);
-      const entries = getAllEntries(db);
-      expect(entries).toHaveLength(1);
-      expect(entries[0]!.entry.description).toBe("enhanced");
-    } finally {
-      closeDatabase(db);
-    }
-  });
-
-  test("distinct NULL-item_ref rows coexist (NULLs are distinct under the UNIQUE index)", () => {
-    // The unmapped-bundle write path leaves item_ref NULL; two such rows with
-    // different entry_keys must NOT collapse into one under the item_ref UNIQUE.
-    const db = openIndexDatabase(tmpDbPath());
-    try {
-      insertTestEntry(db, "tool-a");
-      insertTestEntry(db, "tool-b");
-      expect(getEntryCount(db)).toBe(2);
     } finally {
       closeDatabase(db);
     }
@@ -802,31 +766,6 @@ describe("Vector / Embedding integration", () => {
       expect(insertTestEntry(db, "vec-input", { searchText: "changed projection" })).toBe(id);
       expect(db.prepare("SELECT COUNT(*) AS count FROM embeddings WHERE id = ?").get(id)).toEqual({ count: 0 });
       expect(db.prepare("SELECT COUNT(*) AS count FROM entries_vec WHERE id = ?").get(id)).toEqual({ count: 0 });
-    } finally {
-      closeDatabase(db);
-    }
-  });
-
-  test("entry-key fallback invalidates the row it updates when item_ref is non-unique", () => {
-    const db = openIndexDatabase(tmpDbPath(), { embeddingDim: 4 });
-    try {
-      db.exec("DROP INDEX idx_entries_item_ref; CREATE INDEX idx_entries_item_ref ON entries(item_ref)");
-      const provenance = deriveEntryProvenance(
-        { bundleId: "shared", componentId: "shared", adapterId: "akm" },
-        "script",
-        "duplicate",
-      );
-      const entry = makeEntry({ name: "duplicate", type: "script" });
-      const firstId = upsertEntry(db, "first-key", "/first", "/first/a.ts", "/first", entry, "first", provenance);
-      const secondId = upsertEntry(db, "second-key", "/second", "/second/a.ts", "/second", entry, "second", provenance);
-      upsertEmbedding(db, firstId, [1, 0, 0, 0]);
-      upsertEmbedding(db, secondId, [0, 1, 0, 0]);
-
-      expect(upsertEntry(db, "second-key", "/second", "/second/a.ts", "/second", entry, "changed", provenance)).toBe(
-        secondId,
-      );
-      expect(db.prepare("SELECT COUNT(*) AS count FROM embeddings WHERE id = ?").get(firstId)).toEqual({ count: 1 });
-      expect(db.prepare("SELECT COUNT(*) AS count FROM embeddings WHERE id = ?").get(secondId)).toEqual({ count: 0 });
     } finally {
       closeDatabase(db);
     }

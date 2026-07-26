@@ -9,7 +9,12 @@ import { daysToMs } from "../../core/common";
 import { type AkmConfig, DEFAULT_GRAPH_EXTRACTION_BATCH_SIZE, loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent, type EventsContext } from "../../core/events";
-import type { ImproveActionResult, ImproveEligibleRef } from "../../core/improve-types";
+import type {
+  AkmDistillResult,
+  AkmReflectResult,
+  ImproveActionResult,
+  ImproveEligibleRef,
+} from "../../core/improve-types";
 import { openLogsDatabase, purgeOldTaskLogs } from "../../core/logs-db";
 import { getDbPath } from "../../core/paths";
 import { withStateDb } from "../../core/state-db";
@@ -37,7 +42,7 @@ import { closeDatabase, openIndexDatabase } from "../../storage/repositories/ind
 import { expireStaleProposals, listProposals, purgeOrphanProposals } from "../proposal/repository";
 import { checkDeadUrls, type DeadUrl } from "../url-checker";
 import { DEFAULT_RETENTION_DAYS as CYCLE_METRICS_RETENTION_DAYS, runCollapseDetector } from "./collapse-detector";
-import { type AkmDistillResult, deriveLessonRef } from "./distill";
+import { deriveLessonRef } from "./distill";
 import { deriveKnowledgeRef } from "./distill-promotion-policy";
 // Eligibility / candidate-selection predicates live in ./eligibility.
 import { findAssetFilePath, isDistillCandidateRef } from "./eligibility";
@@ -52,7 +57,6 @@ import type {
 } from "./improve-run-types";
 import { type ResolvedImprovePlan, shouldSkipRef } from "./improve-strategies";
 import type { applyMemoryCleanup } from "./memory/memory-improve";
-import type { AkmReflectResult } from "./reflect";
 import { recordNoOp, resetConsecutiveNoOps } from "./salience";
 import { errMessage, refSlug } from "./shared";
 import { durableImproveRef } from "./source-identity";
@@ -300,6 +304,9 @@ async function runLoopReflectPass(
         ...(improveProfile ? { improveProfile } : {}),
         config: options.config,
         ...(primaryStashDir ? { stashDir: primaryStashDir } : {}),
+        ...(options.sourceName && primaryStashDir
+          ? { target: { source: options.sourceName, root: primaryStashDir } }
+          : {}),
         ...(reflectErrors.length > 0 ? { avoidPatterns: [...reflectErrors] } : {}),
         eventSource: "improve" as const,
         // #639 — resolve the low-value filter from the ACTIVE improve profile

@@ -29,8 +29,7 @@
  *
  * `doc.hash` (= sha256 of the file content) is surfaced per recognized file so
  * the persist layer can populate the `content_hash` column (item 2). It is keyed
- * by the file's absolute path (stable across the legacy-sidecar merge,
- * which rebuilds entry objects) rather than by the entry object.
+ * by the file's absolute path rather than by the entry object.
  *
  * Pure of DB/global state beyond the workflow-document side channel; a new leaf
  * (nothing imports it back), so it joins no import cycle.
@@ -88,6 +87,10 @@ export function drainDirDocuments(
   for (const file of fileContexts) {
     const doc = adapter.recognize(component, file);
     if (doc === null) continue;
+    if (!doc.conceptId) {
+      warnings.push(`Skipped ${file.absPath}: adapter "${adapter.id}" returned no conceptId.`);
+      continue;
+    }
 
     const entry = indexDocumentToStashEntry(doc);
     // Workflow docs: drop-with-warning if broken; otherwise cache the parsed
@@ -99,7 +102,7 @@ export function drainDirDocuments(
     }
 
     if (doc.hash !== undefined) hashByFile.set(file.absPath, doc.hash);
-    if (doc.conceptId !== undefined) conceptIdByFile.set(file.absPath, doc.conceptId);
+    conceptIdByFile.set(file.absPath, doc.conceptId);
     entries.push(entry);
   }
 

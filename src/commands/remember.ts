@@ -15,6 +15,7 @@ import { serializeFrontmatter } from "../core/asset/asset-serialize";
 import { toErrorMessage, tryReadStdinText } from "../core/common";
 import { loadConfig } from "../core/config/config";
 import { UsageError } from "../core/errors";
+import { parseEmbeddedJsonResponse } from "../core/parse";
 import { DURATION_UNITS, parseDuration as parseDurationSpec } from "../core/time";
 import { warn } from "../core/warn";
 import type { StashEntryScope } from "../indexer/passes/metadata";
@@ -30,14 +31,14 @@ import { getDefaultLlmConfig } from "../integrations/agent/engine-resolution";
  * The `scope` shape is the wire-level contract — it is persisted as the
  * canonical top-level frontmatter keys `scope_user`, `scope_agent`,
  * `scope_run`, `scope_channel` (one key per non-empty scope value).
- * Legacy memories without scope continue to load and parse cleanly.
+ * Memories without scope continue to load and parse cleanly.
  */
 export interface MemoryFrontmatterFields {
   description?: string;
   tags?: string[];
   source?: string;
   /**
-   * Cross-reference refs (`type:name`) collected via `--xref` (repeatable).
+   * Cross-reference refs (`[bundle//]conceptId`) collected via `--xref` (repeatable).
    * Persisted as the `xrefs:` frontmatter list — the channel the stash
    * back-linking conventions mandate for provenance/associative links; the
    * indexer folds these into the asset's search hints. An empty array is
@@ -231,7 +232,7 @@ export async function runLlmEnrich(body: string): Promise<EnrichmentResult> {
     warn("Warning: --enrich requires an LLM to be configured. Run `akm setup` to configure one.");
     return { tags: [] };
   }
-  const { chatCompletion, parseEmbeddedJsonResponse: parseJsonResponse } = await import("../llm/client");
+  const { chatCompletion } = await import("../llm/client");
   // #576: attribute this entry point's LLM call to the `remember` stage. The
   // wrapper is ambient — if a usage sink is active it tags the record; if not,
   // it is a no-op.
@@ -274,7 +275,7 @@ Return ONLY the JSON object, no prose, no markdown fences.`;
       }
     })();
 
-    const parsed = parseJsonResponse<Record<string, unknown>>(result);
+    const parsed = parseEmbeddedJsonResponse<Record<string, unknown>>(result);
     if (!parsed) {
       warn("Warning: --enrich received invalid JSON from the LLM. Writing memory without enrichment.");
       return { tags: [] };

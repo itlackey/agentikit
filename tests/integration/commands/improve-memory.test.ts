@@ -2,13 +2,12 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AkmDistillResult } from "../../../src/commands/improve/distill";
 import { akmImprove } from "../../../src/commands/improve/improve";
-import type { AkmReflectResult } from "../../../src/commands/improve/reflect";
 import { akmSearch } from "../../../src/commands/read/search";
 import { saveConfig } from "../../../src/core/config/config";
 import { appendEvent, readEvents } from "../../../src/core/events";
 import { canonicalTxnRoot, txnNamespaceDir } from "../../../src/core/fs-txn";
+import type { AkmDistillResult, AkmReflectResult } from "../../../src/core/improve-types";
 import { setQuiet } from "../../../src/core/warn";
 import type { GraphExtractionResult } from "../../../src/indexer/graph/graph-extraction";
 import { akmIndex } from "../../../src/indexer/indexer";
@@ -218,7 +217,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
+          proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
         } satisfies AkmDistillResult;
       },
     });
@@ -385,7 +384,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
+          proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -511,7 +510,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
+          proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -695,7 +694,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
+          proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -777,7 +776,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
+          proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
         } satisfies AkmDistillResult;
       },
     });
@@ -832,7 +831,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
     expect(withoutSignals.plannedRefs).toEqual([]);
@@ -876,7 +875,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
     expect(withSignal.plannedRefs).toEqual([expect.objectContaining({ ref: "memories/alpha", reason: "scope-type" })]);
@@ -935,7 +934,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -1004,7 +1003,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         }) satisfies AkmDistillResult,
     });
 
@@ -1046,7 +1045,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         } satisfies AkmDistillResult;
       },
     });
@@ -1112,7 +1111,6 @@ describe("akm improve memory cleanup", () => {
             ok: true,
             outcome: "queued",
             inputRef: ref,
-            lessonRef: "knowledge/deploy",
             proposalRef: "knowledge/deploy",
             proposalKind: "knowledge",
           } satisfies AkmDistillResult;
@@ -1122,8 +1120,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
-          proposalRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
           proposalKind: "lesson",
         } satisfies AkmDistillResult;
       },
@@ -1217,8 +1214,7 @@ describe("akm improve memory cleanup", () => {
         ok: true,
         outcome: "queued",
         inputRef: ref,
-        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
-        proposalRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         proposalKind: "lesson",
       }),
       memoryInferenceFn: async () => {
@@ -1301,8 +1297,7 @@ describe("akm improve memory cleanup", () => {
           ok: true,
           outcome: "queued",
           inputRef: ref,
-          lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
-          proposalRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+          proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
           proposalKind: "lesson",
         }),
         graphExtractionFn: async ({ onProgress }) => {
@@ -1390,8 +1385,7 @@ describe("akm improve memory cleanup", () => {
         ok: true,
         outcome: "queued",
         inputRef: ref,
-        lessonRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
-        proposalRef: `lesson:${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
+        proposalRef: `lessons/${ref?.replace(/[:/]/g, "-") ?? "missing"}-lesson`,
         proposalKind: "lesson",
       }),
       memoryInferenceFn: async () => ({

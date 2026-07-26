@@ -472,7 +472,7 @@ describe("post-loop hook gating", () => {
       reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
       reflectFn: async () => ({ schemaVersion: 1, ok: true, outcome: "skipped", ref: "", message: "stub" }) as never,
       distillFn: async () =>
-        ({ schemaVersion: 1, ok: true, outcome: "skipped", inputRef: "", lessonRef: "", message: "stub" }) as never,
+        ({ schemaVersion: 1, ok: true, outcome: "skipped", inputRef: "", proposalRef: "", message: "stub" }) as never,
     });
     const count = stateDb.prepare("SELECT COUNT(*) AS n FROM improve_cycle_metrics").get() as { n: number };
     expect(count.n).toBe(0);

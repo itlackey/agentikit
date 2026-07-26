@@ -32,10 +32,10 @@ afterEach(() => {
 });
 
 describe("raw recovery startup", () => {
-  test("validate/migrate/path/backup/setup bypass normal config startup", () => {
+  test("validate/path and migrate/backup/setup forwarders bypass normal config startup", () => {
     for (const args of [
       ["bun", "cli.ts", "config", "validate"],
-      ["bun", "cli.ts", "config", "migrate"],
+      ["bun", "cli.ts", "migrate", "status"],
       ["bun", "cli.ts", "config", "path"],
       ["bun", "cli.ts", "backup", "create", "--for", "0.9.0"],
       ["bun", "cli.ts", "setup", "--detect-only"],
@@ -45,15 +45,12 @@ describe("raw recovery startup", () => {
     }
   });
 
-  test("raw validate rejects legacy config while migrate reports the prepared-config recovery path", async () => {
+  test("raw validate rejects legacy config without modifying it", async () => {
     const original = '{"configVersion":"0.8.0","profiles":{}}\n';
     fs.writeFileSync(getConfigPath(), original);
     const validate = await runCliCapture(["config", "validate"]);
-    const migrate = await runCliCapture(["config", "migrate"]);
     expect(validate.code).toBe(78);
-    expect(migrate.code).toBe(1);
     expect(validate.stderr).toContain("UNSUPPORTED_CONFIG_VERSION");
-    expect(migrate.stdout).toContain("blocked");
     expect(fs.readFileSync(getConfigPath(), "utf8")).toBe(original);
   });
 

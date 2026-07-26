@@ -61,7 +61,7 @@ describe("matchImproveTaskId", () => {
   const at = (iso: string) => Date.parse(iso);
 
   test("attributes a run to the nearest scheduled improve task within ±5 min", () => {
-    const taskId = matchImproveTaskId("2026-01-01T00:00:00Z", null, [
+    const taskId = matchImproveTaskId("2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z", [
       { taskId: "akm-improve-frequent", startMs: at("2026-01-01T00:00:30Z"), endMs: Number.NaN },
       { taskId: "akm-improve-proactive-weekly", startMs: at("2026-01-01T00:04:00Z"), endMs: Number.NaN },
     ]);
@@ -69,13 +69,13 @@ describe("matchImproveTaskId", () => {
   });
 
   test("returns 'manual' when no task starts within the window", () => {
-    const taskId = matchImproveTaskId("2026-01-01T00:00:00Z", null, [
+    const taskId = matchImproveTaskId("2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z", [
       { taskId: "akm-improve-frequent", startMs: at("2026-01-01T00:10:00Z"), endMs: Number.NaN },
     ]);
     expect(taskId).toBe("manual");
   });
 
   test("returns 'manual' for an unparseable start timestamp", () => {
-    expect(matchImproveTaskId("not-a-date", null, [])).toBe("manual");
+    expect(matchImproveTaskId("not-a-date", "2026-01-01T00:01:00Z", [])).toBe("manual");
   });
 });

@@ -19,7 +19,7 @@ short (bundle-omitted) form is a first-class *accepted input* at every boundary 
 lookups, and tests — resolved by a deterministic, behavior-preserving rule.** There is no second
 grammar: the short form is the same production with the optional prefix omitted, not a different
 format. `type:name` is not an accepted form anywhere after the flip (it survives only inside the
-frozen `src/migrate/legacy/` copy). This dissolves the codemod problem — the measured blocker was
+frozen `scripts/akm-migrate/migrate/legacy/` copy). This dissolves the codemod problem — the measured blocker was
 never the grammar, it was the assumption that tests must *spell the bundle*; they don't, because
 resolution supplies it, exactly the way origin-less `type:name` refs already work today.
 
@@ -237,7 +237,7 @@ F5 **inside the same chunk**, satisfying §11.4's no-permanent-dual-parser rule.
   ratchets (db trio leaves the baseline per DoD 11).
 - **F5 — Delete the old grammar.** `parseAssetRef`/`makeAssetRef`/`refToString`/`AssetRef`/
   `TYPE_ALIASES` deleted (~216 sites already repointed by F1/F4); the F1 old-grammar reader shim
-  deleted; frozen `src/migrate/legacy/legacy-layout.ts` untouched. Gate: grep `parseAssetRef` →
+  deleted; frozen `scripts/akm-migrate/migrate/legacy/legacy-layout.ts` untouched. Gate: grep `parseAssetRef` →
   0, `StashEntry` → 0 (declared scopes); tests type-prefix ratchet → 0 and flipped absolute.
 
 **Chunk 8 then consumes D-R5 as settled:** the config migrator emits `bundles` keys equal to the

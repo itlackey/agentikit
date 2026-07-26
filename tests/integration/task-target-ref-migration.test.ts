@@ -55,7 +55,7 @@ function seedMigration(workflowRef: string, createWorkflow = true): { prepared: 
   return { prepared, taskPath };
 }
 
-test("migrate apply rewrites a persisted 0.8 workflow target and leaves current task bytes unchanged", async () => {
+test("migrate apply emits strict v2 for a persisted 0.8 task and leaves current task bytes unchanged", async () => {
   const { prepared, taskPath } = seedMigration("workflow:upgrade-noop");
   const currentTaskPath = path.join(storage.stashDir, "tasks", "manual-current.yml");
   const currentTask = 'version: 2\nschedule: "@daily"\nworkflow: workflows/upgrade-noop\nenabled: true\n';
@@ -64,6 +64,7 @@ test("migrate apply rewrites a persisted 0.8 workflow target and leaves current 
   const applied = await runCliCapture(["migrate", "apply", "--config", prepared]);
   expect(applied.code, applied.stderr).toBe(0);
   expect(fs.readFileSync(taskPath, "utf8")).toContain("workflow: workflows/upgrade-noop");
+  expect(fs.readFileSync(taskPath, "utf8")).toContain("version: 2");
   expect(fs.readFileSync(taskPath, "utf8")).not.toContain("workflow: workflow:upgrade-noop");
   expect(fs.readFileSync(currentTaskPath, "utf8")).toBe(currentTask);
 });

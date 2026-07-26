@@ -103,7 +103,7 @@ const TIMEOUT_HINT = `Use "<n>ms", "<n>s", "<n>m" (e.g. "10m"), or "none"`;
  * column 0. Used so the matcher and parser cannot drift.
  */
 export function looksLikeWorkflowProgram(yamlText: string): boolean {
-  return /^version[ \t]*:[ \t]*['"]?(?:1|2)['"]?[ \t]*(#.*)?$/m.test(yamlText) && /^steps[ \t]*:/m.test(yamlText);
+  return /^version[ \t]*:[ \t]*['"]?2['"]?[ \t]*(#.*)?$/m.test(yamlText) && /^steps[ \t]*:/m.test(yamlText);
 }
 
 type Path = Array<string | number>;
@@ -208,15 +208,8 @@ export function parseWorkflowProgram(yamlText: string, source: { path: string })
   checkUnknownKeys(ctx, root, [], TOP_LEVEL_KEYS, "top-level");
 
   if (root.version !== WORKFLOW_PROGRAM_VERSION) {
-    if (root.version === 1) {
-      ctx.err(
-        ["version"],
-        `Workflow version 1 retired; version 2 is required. Replace runner/profile selectors with engine.`,
-      );
-    } else {
-      const got = root.version === undefined ? "it is missing" : `got ${JSON.stringify(root.version)}`;
-      ctx.err(["version"], `"version: 2" is required at the top level (${got}). Only the number 2 is a valid version.`);
-    }
+    const got = root.version === undefined ? "it is missing" : `got ${JSON.stringify(root.version)}`;
+    ctx.err(["version"], `"version: 2" is required at the top level (${got}). Only the number 2 is a valid version.`);
   }
 
   let name = "";

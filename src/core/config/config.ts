@@ -190,9 +190,8 @@ export function loadUserConfig(): AkmConfig {
  * Parse raw config text and validate via Zod.
  * ({@link AkmConfigSchema}). Returns the merged-with-defaults AkmConfig.
  *
- * The migration handles all one-time 0.7→0.8 transforms (legacy keys,
- * boolean→string coercions, openviking rename); the schema then validates
- * the canonical shape and throws on anything it doesn't recognise.
+ * The schema accepts only the current config version and validates the
+ * canonical shape before defaults are merged.
  */
 export function parseAndValidateConfigText(text: string, sourcePath?: string): AkmConfig {
   const raw = parseConfigText(text, sourcePath);

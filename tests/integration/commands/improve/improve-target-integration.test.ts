@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmConsolidate } from "../../../../src/commands/improve/consolidate";
@@ -9,9 +9,10 @@ import { mergeLockEntriesSync } from "../../../../src/integrations/lockfile";
 import { getCachePaths, parseGitRepoUrl } from "../../../../src/sources/providers/git";
 import { getWebsiteCachePaths } from "../../../../src/sources/snapshot-fetchers/website-ingest";
 import { withTestImproveLlm } from "../../../_helpers/improve-config";
-import { makeStashDir, type SandboxedDir } from "../../../_helpers/sandbox";
+import { type Cleanup, makeStashDir, type SandboxedDir, sandboxXdgDataHome } from "../../../_helpers/sandbox";
 
 const sandboxes: SandboxedDir[] = [];
+let envCleanup: Cleanup = () => {};
 
 function stash(): string {
   const sb = makeStashDir();
@@ -33,8 +34,14 @@ function targetConfig(primary: string, team: string, readonly: string): AkmConfi
   } as AkmConfig);
 }
 
+beforeEach(() => {
+  envCleanup = sandboxXdgDataHome().cleanup;
+});
+
 afterEach(() => {
   for (const sb of sandboxes.splice(0)) sb.cleanup();
+  envCleanup();
+  envCleanup = () => {};
 });
 
 describe("improve named target integration", () => {

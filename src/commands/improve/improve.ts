@@ -9,11 +9,12 @@ import { type AssetRef, parseRefInput } from "../../core/asset/resolve-ref";
 import { daysToMs } from "../../core/common";
 import { type AkmConfig, bundlesToSourceEntries, loadConfig } from "../../core/config/config";
 import { ConfigError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
-import { appendEvent, type EventEnvelope, type EventsContext, readEvents } from "../../core/events";
+import { appendEvent, type EventsContext, readEvents } from "../../core/events";
+import type { EventEnvelope } from "../../core/events-types";
 import type { LockOwnership } from "../../core/file-lock";
 import type {
   AkmImproveResult,
-  EligibilitySource,
+  ConsolidateResult,
   ImproveActionResult,
   ImproveEligibleRef,
   ImproveMemoryCleanupResult,
@@ -42,7 +43,7 @@ import { closeDatabase, openExistingDatabase } from "../../storage/repositories/
 import { getEntryCount } from "../../storage/repositories/index-entries-repository";
 import { type DrainResult, drainProposals } from "../proposal/drain";
 import { resolveDrainPolicy } from "../proposal/drain-policies";
-import type { ConsolidateResult } from "./consolidate";
+import type { EligibilitySource } from "../proposal/proposal-types";
 import { akmDistill } from "./distill";
 // Eligibility / candidate-selection predicates live in ./eligibility.
 import {

@@ -132,7 +132,7 @@ describe("qualified mutation targets", () => {
     const result = await runCliCapture(["env", "set", "stash//env/implicit", "API_TOKEN", "--from-file", value]);
 
     expect(result.code).toBe(0);
-    expect(JSON.parse(result.stdout).ref).toBe("env/implicit");
+    expect(JSON.parse(result.stdout).ref).toBe("stash//env/implicit");
     expect(fs.existsSync(path.join(storage.stashDir, "env", "implicit.env"))).toBe(true);
     expect(fs.existsSync(path.join(team, "env", "implicit.env"))).toBe(false);
   });

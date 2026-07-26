@@ -644,15 +644,6 @@ checklist did not exercise.
 - [ ] `akm env set env/prod KEY=value` (positional value or KEY=VALUE
       form) is rejected with `UsageError`.
 
-#### `--auto-accept=false` regression check
-
-- [ ] `akm improve <ref>` (no flag) auto-accepts at threshold 90 (does not
-      prompt on the HTTP path).
-- [ ] `akm improve <ref> --auto-accept=false` restores the interactive
-      prompt on the HTTP consolidation path.
-- [ ] `akm improve <ref> --auto-accept=safe` is accepted as a permanent alias
-      for `--auto-accept=90`.
-
 #### Proposal resolution by ref or UUID prefix
 
 - [ ] `akm proposal accept <full-uuid>` works (regression check).

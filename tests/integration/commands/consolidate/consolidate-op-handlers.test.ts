@@ -169,7 +169,7 @@ describe("makeConsolidateResult — envelope defaults", () => {
 });
 
 describe("consolidation merge provenance", () => {
-  it("serializes current xrefs, drops retired ref spellings, and removes source_refs metadata", () => {
+  it("serializes canonical xrefs and drops invalid refs", () => {
     const inject = (
       consolidateModule as unknown as {
         injectGenerationFrontmatter: (content: string, generations: number[], refs: string[]) => string;
@@ -177,15 +177,14 @@ describe("consolidation merge provenance", () => {
     ).injectGenerationFrontmatter;
     expect(typeof inject).toBe("function");
     const content = inject(
-      "---\ndescription: Merged memory\nsource_refs: [memory:legacy]\nxrefs: [memories/existing]\n---\n\nMerged body.\n",
+      "---\ndescription: Merged memory\nxrefs: [memories/existing]\n---\n\nMerged body.\n",
       [1, 2],
-      ["memory:primary", "memories/secondary", "env/alias", "not-a-ref"],
+      ["memories/primary", "memories/secondary", "env/alias", "not-a-ref"],
     );
     const parsed = parseFrontmatter(content);
     const xrefs = parsed.data.xrefs as string[];
 
-    expect(parsed.data.source_refs).toBeUndefined();
-    expect(xrefs).toEqual(["memories/existing", "memories/secondary", "env/alias"]);
+    expect(xrefs).toEqual(["memories/existing", "memories/primary", "memories/secondary", "env/alias"]);
     // WI-8.5b: stored xrefs are canonicalized to the D-R5 new grammar via
     // displayRef(parseRefInput(ref)) — each canonical xref round-trips to itself.
     expect(
@@ -204,12 +203,12 @@ describe("consolidation merge provenance", () => {
       fs.mkdirSync(path.dirname(primaryPath), { recursive: true });
       fs.writeFileSync(
         primaryPath,
-        "---\ndescription: Primary\ngeneration: 2\nxrefs: [memories/primary-xref]\nsource_refs: [memory:primary-legacy]\n---\n\nPrimary source body with distinct details.\n",
+        "---\ndescription: Primary\ngeneration: 2\nxrefs: [memories/primary-xref]\n---\n\nPrimary source body with distinct details.\n",
         "utf8",
       );
       fs.writeFileSync(
         secondaryPath,
-        "---\ndescription: Secondary\ngeneration: 1\nxrefs: [memories/secondary-xref]\nsource_refs: [memory:secondary-legacy]\n---\n\nSecondary source body with other details.\n",
+        "---\ndescription: Secondary\ngeneration: 1\nxrefs: [memories/secondary-xref]\n---\n\nSecondary source body with other details.\n",
         "utf8",
       );
       const skips: SkipCall[] = [];
@@ -230,7 +229,7 @@ describe("consolidation merge provenance", () => {
         ]),
         generateMergedContentFn: (async () => ({
           content:
-            "---\ndescription: Merged memory\nxrefs: [memories/output-existing]\nsource_refs: [memory:output-legacy]\n---\n\nPrimary source body with distinct details and secondary source body with other details.\n",
+            "---\ndescription: Merged memory\nxrefs: [memories/output-existing]\n---\n\nPrimary source body with distinct details and secondary source body with other details.\n",
         })) as never,
       });
       const op: ConsolidateMergeOp = {
@@ -244,7 +243,6 @@ describe("consolidation merge provenance", () => {
 
       const merged = parseFrontmatter(fs.readFileSync(primaryPath, "utf8"));
       expect(merged.data.generation).toBe(3);
-      expect(merged.data.source_refs).toBeUndefined();
       expect(merged.data.xrefs).toEqual([
         "memories/output-existing",
         "memories/primary",

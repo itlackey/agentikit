@@ -11,8 +11,8 @@
  *   • the asset/file source exists (prompt targets)
  *   • the selected engine resolves (prompt targets)
  *
- * Validation is deliberately split from parsing: callers that only want to
- * read frontmatter (e.g. `akm show`) can skip these checks, while
+ * Validation is deliberately split from parsing: callers that only inspect
+ * task metadata (e.g. `akm show`) can skip these checks, while
  * `tasks add` and `tasks run` should always run them.
  */
 

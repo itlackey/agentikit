@@ -6,10 +6,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmTasksAdd, akmTasksSetEnabled, akmTasksSync } from "../../../src/commands/tasks/tasks";
-import type { TaskBackend } from "../../../src/tasks/backends";
+import type { TaskBackend } from "../../../src/tasks/backends/types";
 import type { ScheduleBackend } from "../../../src/tasks/schedule";
 import type { TaskDocument } from "../../../src/tasks/schema";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
 let backendName: ScheduleBackend;
@@ -42,7 +42,11 @@ const backend: TaskBackend = {
     if (task) installed.set(id, { ...task, enabled });
   },
   list() {
-    return [...installed.keys()].map((id) => ({ id }));
+    return [...installed.keys()].map((id) => ({
+      id,
+      binding: ["/test/akm"],
+      contextPath: "/test/context.json",
+    }));
   },
 };
 
@@ -54,6 +58,10 @@ function writeTask(id: string, yaml: string): string {
 
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
+  writeSandboxConfig({
+    bundles: { stash: { path: storage.stashDir, writable: true } },
+    defaultBundle: "stash",
+  });
   fs.mkdirSync(path.join(storage.stashDir, "tasks"), { recursive: true });
   backendName = "cron";
   installed = new Map();
@@ -529,148 +537,31 @@ describe("task lifecycle failure handling", () => {
     expect(installed.get("toggle")?.enabled).toBe(before);
   });
 
-  test.each([
-    "missing",
-    "installed",
-  ])("sync refuses the enabled published 0.8 backup task when its scheduler entry is %s", async (schedulerState) => {
-    const yaml = [
-      'schedule: "0 3 * * 0"',
-      "command: akm db backups",
-      "enabled: true",
-      "description: Weekly config/DB backup",
-      "",
-    ].join("\n");
-    const taskPath = writeTask("backup", yaml);
-    if (schedulerState === "installed") {
-      installed.set("backup", {
-        version: 2,
-        schemaVersion: 2,
-        id: "backup",
-        schedule: "0 3 * * 0",
-        enabled: true,
-        target: { kind: "command", cmd: ["akm", "db", "backups"] },
-        description: "Weekly config/DB backup",
-        source: { path: taskPath },
-      });
-    }
+  test("sync installs command arguments without obsolete-command handling", async () => {
+    const yaml = ["version: 2", 'schedule: "0 3 * * 0"', "command: akm db backups", "enabled: true", ""].join("\n");
+    writeTask("backup", yaml);
 
     const result = await akmTasksSync({ backend });
 
-    expect(result.installed).toEqual([]);
-    expect(result.updated).toEqual([]);
-    expect(result.skipped).toHaveLength(1);
-    expect(result.skipped[0]).toMatchObject({ id: "backup" });
-    expect(result.skipped[0]?.reason).toContain("akm db backups");
-    expect(result.skipped[0]?.reason).toContain("akm backup create");
-    expect(installCalls).toEqual([]);
-    expect(enabledCalls).toEqual(schedulerState === "installed" ? [{ id: "backup", enabled: false }] : []);
-    expect(fs.readFileSync(taskPath, "utf8")).toBe(yaml);
+    expect(result.installed).toEqual(["backup"]);
+    expect(result.skipped).toEqual([]);
+    expect(installCalls[0]?.target).toEqual({ kind: "command", cmd: ["akm", "db", "backups"] });
   });
 
-  test("add refuses the obsolete bare-self backup command before source or scheduler mutation", async () => {
-    const taskRoot = path.join(storage.stashDir, "tasks");
-    fs.rmSync(taskRoot, { recursive: true });
-    let writeCalls = 0;
-    let commitCalls = 0;
-    let failure: unknown;
-
-    try {
-      await akmTasksAdd(
-        {
-          id: "backup",
-          schedule: "0 3 * * 0",
-          command: ["akm", "db", "backups"],
-        },
-        {
-          backend,
-          async writeAsset(_source, _config, ref) {
-            writeCalls += 1;
-            return { path: "/unexpected", ref: `${ref.type}:${ref.name}` };
-          },
-          commitBoundary() {
-            commitCalls += 1;
-          },
-        },
-      );
-    } catch (err) {
-      failure = err;
-    }
-
-    expect(writeCalls).toBe(0);
-    expect(installCalls).toEqual([]);
-    expect(enabledCalls).toEqual([]);
-    expect(uninstallCalls).toEqual([]);
-    expect(commitCalls).toBe(0);
-    expect(fs.existsSync(taskRoot)).toBe(false);
-    expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toContain("akm db backups");
-  });
-
-  test("add leaves an explicit retained AKM backup command operator-owned", async () => {
+  test("add stores command arguments without rewriting them", async () => {
     const result = await akmTasksAdd(
       {
-        id: "retained-backup",
+        id: "backup",
         schedule: "0 3 * * 0",
-        command: ["/opt/retained-0.8/akm", "db", "backups"],
+        command: ["akm", "db", "backups"],
       },
       { backend },
     );
 
     expect(result.target).toEqual({
       kind: "command",
-      cmd: ["/opt/retained-0.8/akm", "db", "backups"],
+      cmd: ["akm", "db", "backups"],
     });
     expect(installCalls).toHaveLength(1);
-  });
-
-  test("sync installs an explicit retained AKM backup command", async () => {
-    const yaml = [
-      "version: 2",
-      'schedule: "0 3 * * 0"',
-      'command: ["/opt/retained-0.8/akm", "db", "backups"]',
-      "enabled: true",
-      "",
-    ].join("\n");
-    writeTask("retained-backup", yaml);
-
-    const result = await akmTasksSync({ backend });
-
-    expect(result.skipped).toEqual([]);
-    expect(result.installed).toEqual(["retained-backup"]);
-    expect(installCalls).toHaveLength(1);
-  });
-
-  test("enable permits an explicit retained AKM backup command", async () => {
-    const yaml = [
-      "version: 2",
-      'schedule: "0 3 * * 0"',
-      'command: ["./akm", "db", "backups"]',
-      "enabled: false",
-      "",
-    ].join("\n");
-    const taskPath = writeTask("retained-backup", yaml);
-
-    const result = await akmTasksSetEnabled("retained-backup", true, { backend });
-
-    expect(result.enabled).toBe(true);
-    expect(fs.readFileSync(taskPath, "utf8")).toContain("enabled: true");
-    expect(installCalls).toHaveLength(1);
-  });
-
-  test("enable refuses the obsolete backup command without changing its disabled definition", async () => {
-    const yaml = [
-      'schedule: "0 3 * * 0"',
-      "command: akm db backups",
-      "enabled: false",
-      "description: Disabled legacy backup listing task",
-      "",
-    ].join("\n");
-    const taskPath = writeTask("backup", yaml);
-
-    await expect(akmTasksSetEnabled("backup", true, { backend })).rejects.toThrow("akm db backups");
-
-    expect(fs.readFileSync(taskPath, "utf8")).toBe(yaml);
-    expect(installCalls).toEqual([]);
-    expect(enabledCalls).toEqual([]);
   });
 });

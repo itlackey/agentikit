@@ -1491,9 +1491,6 @@
                 "type": "integer",
                 "exclusiveMinimum": 0
               },
-              "symmetricValence": {
-                "type": "boolean"
-              },
               "sync": {
                 "type": "object",
                 "properties": {
@@ -3124,9 +3121,6 @@
                     "type": "integer",
                     "exclusiveMinimum": 0
                   },
-                  "symmetricValence": {
-                    "type": "boolean"
-                  },
                   "sync": {
                     "type": "object",
                     "properties": {
@@ -4575,9 +4569,6 @@
         "limit": {
           "type": "integer",
           "exclusiveMinimum": 0
-        },
-        "symmetricValence": {
-          "type": "boolean"
         },
         "sync": {
           "type": "object",

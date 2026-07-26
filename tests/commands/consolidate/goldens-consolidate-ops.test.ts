@@ -69,17 +69,19 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import {
-  type ConsolidateContradictOp,
-  type ConsolidateDeleteOp,
-  type ConsolidateMergeOp,
   type ConsolidateOpContext,
-  type ConsolidatePromoteOp,
   handleContradictOp,
   handleDeleteOp,
   handleMergeOp,
   handlePromoteOp,
 } from "../../../src/commands/improve/consolidate";
-import type { MemoryEntry } from "../../../src/commands/improve/consolidate/types";
+import type {
+  ConsolidateContradictOp,
+  ConsolidateDeleteOp,
+  ConsolidateMergeOp,
+  ConsolidatePromoteOp,
+  MemoryEntry,
+} from "../../../src/commands/improve/consolidate/types";
 import { createProposal, listProposals } from "../../../src/commands/proposal/repository";
 import { assembleAsset } from "../../../src/core/asset/asset-serialize";
 import { parseFrontmatter } from "../../../src/core/asset/frontmatter";
@@ -748,6 +750,7 @@ describe("handlePromoteOp — gate matrix (consolidate.ts:2477-2690 order)", () 
       const { entry, ref } = writeMemory(root, PROMOTE_GATE_BODY_DEDUP_NAME, {}, SHARED_BODY);
       const existing = createProposal(root, {
         ref: knowledgeRef(PROMOTE_GATE_BODY_DEDUP_EXISTING_KNOWLEDGE_NAME),
+        target: { source: "local", root },
         source: "consolidate",
         payload: {
           content: assembleAsset({ description: "pre-existing" }, SHARED_BODY),
@@ -785,6 +788,7 @@ describe("handlePromoteOp — gate matrix (consolidate.ts:2477-2690 order)", () 
       );
       const existing = createProposal(root, {
         ref: knowledgeRef(PROMOTE_GATE_SLUG_DEDUP_EXISTING_KNOWLEDGE_NAME),
+        target: { source: "local", root },
         source: "consolidate",
         payload: {
           content: assembleAsset({ description: "pre-existing slug variant" }, "A completely different pending body."),
@@ -924,7 +928,7 @@ describe("handleContradictOp", () => {
     }
   });
 
-  test("missing confidence field defaults to 1.0 (treated as high-confidence)", async () => {
+  test("missing confidence field is rejected", async () => {
     const storage = withIsolatedAkmStorage();
     try {
       const root = storage.stashDir;
@@ -943,10 +947,10 @@ describe("handleContradictOp", () => {
 
       await handleContradictOp(op, ctx);
 
-      expect(ctx.counts.contradicted).toBe(1);
-      expect(skips).toEqual([]);
+      expect(ctx.counts.contradicted).toBe(0);
+      expect(skips).toEqual([{ op: "contradict", ref: a.ref, reason: "contradict_low_confidence" }]);
       const asset = readAsset(a.filePath);
-      expect(asset.frontmatter.beliefState).toBe("contradicted");
+      expect(asset.frontmatter.beliefState).toBeUndefined();
     } finally {
       storage.cleanup();
     }
@@ -1290,6 +1294,7 @@ test("golden fixture: serialize consolidate op-outcome scenarios", async () => {
       "it clears the one-hundred character promote floor.";
     createProposal(root, {
       ref: knowledgeRef(PROMOTE_GATE_BODY_DEDUP_EXISTING_KNOWLEDGE_NAME),
+      target: { source: "local", root },
       source: "consolidate",
       payload: {
         content: assembleAsset({ description: "pre-existing" }, SHARED_BODY),
@@ -1308,6 +1313,7 @@ test("golden fixture: serialize consolidate op-outcome scenarios", async () => {
     const root = storage.stashDir;
     createProposal(root, {
       ref: knowledgeRef(PROMOTE_GATE_SLUG_DEDUP_EXISTING_KNOWLEDGE_NAME),
+      target: { source: "local", root },
       source: "consolidate",
       payload: {
         content: assembleAsset({ description: "pre-existing slug variant" }, "A completely different pending body."),

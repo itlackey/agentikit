@@ -355,7 +355,8 @@ describe("runSetupWithDefaults — idempotency", () => {
         try {
           await expect(
             runSetupFromConfig({
-              configJson: JSON.stringify({ stashDir, semanticSearchMode: "off" }),
+              configJson: JSON.stringify({ semanticSearchMode: "off" }),
+              dir: stashDir,
               noInit: false,
             }),
           ).rejects.toThrow(/Timed out waiting for config lock/);

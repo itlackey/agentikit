@@ -24,7 +24,7 @@
 import type { AkmConfig } from "../../core/config/config";
 import type { Database } from "../../storage/database";
 import { loadStoredGraphMeta, loadStoredGraphSnapshot } from "../db/graph-db";
-import type { GraphFile, GraphFileNode } from "./graph-extraction";
+import type { GraphFile, GraphFileNode } from "./graph-types";
 
 /**
  * Per-query state for the graph boost. Built once per search invocation by
@@ -361,12 +361,9 @@ export function collectGraphRelatedHit(context: GraphBoostContext, filePath: str
  * NOT entries.id — so candidates are identified by file_path (the unique index
  * idx_graph_files_path guarantees one graph_files row per path).
  *
- * The returned `ref` field carries the CANONICAL asset ref resolved from the
- * durable identity columns (`entries.concept_id`, the bundle-less tail of
- * `item_ref`) when the file is indexed — NOT re-derived from the legacy
- * `entry_key`. Callers should fall back to formatting `path` when `ref` is
- * undefined (graph row with no matching entries row, or a NULL-provenance
- * write-back straggler healed on the next full index).
+ * The returned `ref` field carries the canonical indexed `concept_id`, never a
+ * value re-derived from presentation fields or `entry_key`. It is undefined
+ * when the graph row has no matching entry with current indexed provenance.
  */
 export function listRelatedPathsForFile(
   stashRoot: string,
@@ -482,30 +479,22 @@ export function listRelatedPathsForFile(
     }
   }
 
-  // Ref lookup via the CANONICAL stored identity (spec §3.3): `item_ref` is THE
-  // durable ref (`<bundle>//<conceptId>`) and `concept_id` is its bundle-less
-  // tail — the exact spelling displayRef emits for a default-bundle item. This
-  // related list is always scoped to ONE stash root (every row shares a bundle),
-  // so the user-facing ref is that short conceptId. Resolve by (concept_id /
-  // item_ref, file_path) DIRECTLY — no entry_key→`type:name` string surgery.
-  // A NULL-provenance write-back straggler (item_ref/concept_id still NULL)
-  // simply carries no ref; the caller falls back to the path and the next full
-  // index heals the row.
+  // This related list is scoped to one source root, so the user-facing ref is
+  // the indexed bundle-less conceptId.
   const refByPath = new Map<string, string>();
   try {
     const entryRows = db
       .prepare(
-        `SELECT file_path, concept_id, item_ref FROM entries
-          WHERE file_path IN (${placeholders}) AND stash_dir = ?`,
+        `SELECT file_path, concept_id FROM entries
+          WHERE file_path IN (${placeholders}) AND stash_dir = ?
+            AND item_ref IS NOT NULL AND concept_id IS NOT NULL`,
       )
       .all(...candidatePaths, stashRoot) as Array<{
       file_path: string;
-      concept_id: string | null;
-      item_ref: string | null;
+      concept_id: string;
     }>;
     for (const row of entryRows) {
-      const ref = row.concept_id ?? conceptIdFromItemRef(row.item_ref);
-      if (ref) refByPath.set(row.file_path, ref);
+      refByPath.set(row.file_path, row.concept_id);
     }
   } catch {
     /* ignore — refs are best-effort */
@@ -523,20 +512,6 @@ export function listRelatedPathsForFile(
       relationCount: relationCountByPath.get(row.file_path) ?? 0,
     };
   });
-}
-
-/**
- * The bundle-less conceptId tail of a canonical `item_ref`
- * (`<bundle>//<conceptId>`), or `null` when the ref is absent. The graph-related
- * ref is scoped to a single stash root, so the short conceptId is the
- * user-facing spelling (matching displayRef's default-bundle output). The reader
- * prefers the stored `concept_id` column; this derives the same value from
- * `item_ref` when only that column is populated.
- */
-function conceptIdFromItemRef(itemRef: string | null): string | null {
-  if (!itemRef) return null;
-  const boundary = itemRef.indexOf("//");
-  return boundary >= 0 ? itemRef.slice(boundary + 2) : itemRef;
 }
 
 /**

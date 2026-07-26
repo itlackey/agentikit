@@ -9,8 +9,7 @@
  * (which `core/events.ts` imports the value-level `insertEvent`/`readStateEvents`
  * from) does not need a type-only import back into `core/events.ts` — that
  * back-edge is a static-graph cycle even though it is type-only (chunk 9
- * WI-9.8 KILL 1 sever). `core/events.ts` re-exports `EventEnvelope` from here
- * so existing import sites are unaffected.
+ * WI-9.8 KILL 1 sever). Consumers import the envelope from this leaf.
  */
 
 export interface EventEnvelope {

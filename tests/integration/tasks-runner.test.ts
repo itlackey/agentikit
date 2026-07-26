@@ -215,37 +215,31 @@ describe("runTask — workflow target", () => {
   }
 });
 
-describe("runTask — 0.8 command target", () => {
-  test("runs a nested akm command with a stripped scheduler PATH", async () => {
-    writeTask("legacy-self", 'schedule: "@daily"\ncommand: akm --version\nenabled: true\n');
+describe("runTask — command target", () => {
+  test("routes a bare akm command through the current installation", async () => {
+    const command = ["akm", "improve", "--strategy", "quick"];
+    writeTask(
+      "literal-command",
+      ["version: 2", 'schedule: "@daily"', `command: ${JSON.stringify(command)}`, ""].join("\n"),
+    );
+    let spawned: string[] | undefined;
+    const spawnFn: SpawnFn = (cmd) => {
+      spawned = cmd;
+      return {
+        exitCode: 0,
+        exited: Promise.resolve(0),
+        stdout: emptyReadableStream(),
+        stderr: emptyReadableStream(),
+        stdin: null,
+        kill() {},
+      };
+    };
 
-    const result = await withEnv({ PATH: "/usr/bin:/bin" }, () => runTask("legacy-self", { stashDir, logDir }));
+    const result = await runTask("literal-command", { stashDir, logDir, spawnFn });
 
     expect(result.status).toBe("completed");
-    expect(result.detail?.exitCode).toBe(0);
-    expect(fs.readFileSync(result.log, "utf8")).toContain("0.9.0");
+    expect(spawned).toEqual([...resolveAkmInvocation().argv, ...command.slice(1)]);
   });
-
-  test.skipIf(process.platform === "win32")(
-    "resolves only the command position after env options and assignments",
-    async () => {
-      writeTask(
-        "legacy-env-self",
-        [
-          'schedule: "@daily"',
-          `command: ${JSON.stringify(["env", "--unset", "akm", "MODE=fast", "akm", "--version"])}`,
-          "enabled: true",
-          "",
-        ].join("\n"),
-      );
-
-      const result = await withEnv({ PATH: "/usr/bin:/bin" }, () => runTask("legacy-env-self", { stashDir, logDir }));
-
-      expect(result.status).toBe("completed");
-      expect(result.detail?.exitCode).toBe(0);
-      expect(fs.readFileSync(result.log, "utf8")).toContain("0.9.0");
-    },
-  );
 
   test("executes an explicitly selected akm path without replacing it", async () => {
     const vendorDir = path.join(tmpRoot, "vendor");
@@ -260,6 +254,7 @@ describe("runTask — 0.8 command target", () => {
     writeTask(
       "explicit-akm",
       [
+        "version: 2",
         'schedule: "@daily"',
         `command: ${JSON.stringify([executable, "-e", 'console.log("explicit vendor akm")'])}`,
         "",
@@ -296,7 +291,7 @@ describe("runTask — 0.8 command target", () => {
   test("a command that ignores SIGTERM is SIGKILLed on timeout, logging timed_out + exit 143", async () => {
     writeTask(
       "stubborn",
-      ['schedule: "@daily"', "command: hang-forever", "timeoutMs: 100", "enabled: true", ""].join("\n"),
+      ["version: 2", 'schedule: "@daily"', "command: hang-forever", "timeoutMs: 100", "enabled: true", ""].join("\n"),
     );
 
     const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
@@ -335,20 +330,6 @@ describe("runTask — 0.8 command target", () => {
     const log = fs.readFileSync(result.log, "utf8");
     expect(log).toContain("timed_out=true timeout_ms=100");
     expect(log).toContain("exit_code=143");
-  });
-
-  test("does not fall back to PATH when a bare self-invocation cannot be resolved", async () => {
-    writeTask("unresolved-self", 'schedule: "@daily"\ncommand: akm --version\nenabled: true\n');
-    const execPath = process.execPath;
-
-    try {
-      process.execPath = "";
-      await expect(withEnv({ PATH: "" }, () => runTask("unresolved-self", { stashDir, logDir }))).rejects.toThrow(
-        "Cannot resolve absolute path to the akm binary",
-      );
-    } finally {
-      process.execPath = execPath;
-    }
   });
 });
 
@@ -820,15 +801,15 @@ describe("resolveAkmInvocation", () => {
     ).toThrow("Cannot resolve absolute path");
   });
 
-  test("reports the removed AKM_BIN scheduler override with migration guidance", () => {
-    expect(() =>
+  test("ignores unrelated environment variables during scheduler resolution", () => {
+    expect(
       resolveAkmInvocation({
         env: { AKM_BIN: "/opt/vendor/akm" },
         runtime: "bun",
-        execPath: "/usr/bin/bun",
-        mainPath: path.resolve(import.meta.dir, "../../src/cli.ts"),
+        execPath: "/opt/akm",
+        mainPath: "/$bunfs/root/src/cli.ts",
       }),
-    ).toThrow("npm-global or standalone launcher; run `akm tasks sync --rebind`");
+    ).toEqual({ argv: ["/opt/akm"], via: "standalone", kind: "standalone", eligible: true });
   });
 
   test("uses only the executable for a Bun standalone build", () => {

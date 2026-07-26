@@ -23,9 +23,8 @@ import type { DbIndexedEntry } from "./index-entry-types";
  * Canonical column list for reading a full indexed entry from the `entries`
  * table, in the order {@link rowToIndexedEntry} expects.
  *
- * Durable identity columns are surfaced here so every mapped entry can prefer
- * indexed provenance while retaining path/type fallback for nullable pre-flip
- * rows.
+ * Durable identity columns are surfaced here so every mapped entry carries
+ * current indexed provenance.
  */
 export const ENTRY_COLUMNS =
   "id, entry_key, dir_path, file_path, stash_dir, entry_json, search_text, item_ref, concept_id, bundle_id, adapter_id";
@@ -39,13 +38,13 @@ export type EntryRow = {
   stash_dir: string;
   entry_json: string;
   search_text: string;
-  /** Canonical durable `<bundle>//<concept-id>` ref; NULL on pre-flip rows. */
+  /** Canonical durable `<bundle>//<concept-id>` ref. */
   item_ref: string | null;
-  /** Durable OKF concept id (`item_ref` tail); NULL on pre-flip / write-back rows. */
+  /** Durable OKF concept id (`item_ref` tail). */
   concept_id: string | null;
-  /** Durable bundle id (`item_ref` head); NULL on pre-flip / write-back rows. */
+  /** Durable bundle id (`item_ref` head). */
   bundle_id: string | null;
-  /** Owning adapter; NULL on pre-adapter rows. */
+  /** Owning adapter. */
   adapter_id: string | null;
 };
 
@@ -62,6 +61,10 @@ export function rowToIndexedEntry(row: EntryRow, context: string): DbIndexedEntr
     warn(`[db] ${context}: skipping entry id=${row.id} — corrupt entry_json`);
     return null;
   }
+  if (!row.item_ref || !row.concept_id || !row.bundle_id || !row.adapter_id) {
+    warn(`[db] ${context}: skipping entry id=${row.id} — missing indexed provenance`);
+    return null;
+  }
   return {
     id: row.id,
     entryKey: row.entry_key,
@@ -70,9 +73,9 @@ export function rowToIndexedEntry(row: EntryRow, context: string): DbIndexedEntr
     stashDir: row.stash_dir,
     entry,
     searchText: row.search_text,
-    itemRef: row.item_ref ?? undefined,
-    conceptId: row.concept_id ?? undefined,
-    bundleId: row.bundle_id ?? undefined,
-    adapterId: row.adapter_id ?? undefined,
+    itemRef: row.item_ref,
+    conceptId: row.concept_id,
+    bundleId: row.bundle_id,
+    adapterId: row.adapter_id,
   };
 }

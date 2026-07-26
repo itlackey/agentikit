@@ -161,7 +161,7 @@ afterEach(() => {
   for (const d of disposers.splice(0)) d.cleanup();
 });
 
-describe("akm improve CLI dry-run artifact boundary", () => {
+describe("akm improve CLI result storage", () => {
   let stashDir: string;
   beforeEach(() => {
     stashDir = makeStashDir();
@@ -184,24 +184,28 @@ describe("akm improve CLI dry-run artifact boundary", () => {
     expect(snapshotRoots(result.roots)).toEqual(result.artifactBefore);
   });
 
-  test("--json-to-stdout remains read-only and does not duplicate dry-run output", () => {
-    const result = runCli(["improve", "--dry-run", "--json-to-stdout"], stashDir);
+  test("--json-to-stdout emits and persists a live result", () => {
+    const result = runCli(["improve", "--json-to-stdout"], stashDir);
     expect(result.status).toBe(0);
 
     // Stdout has the full result body.
     const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
     expect(parsed.ok).toBe(true);
-    expect(parsed.dryRun).toBe(true);
+    expect(parsed.dryRun).toBe(false);
     expect(parsed.strategy).toBe("default");
     expect(parsed.memorySummary).toBeDefined();
     expect(parsed.plannedRefs).toBeDefined();
-    // No envelope-only fields in legacy mode.
-    expect(parsed.runId).toBeUndefined();
+    // The output is the persisted live result itself, without a second envelope.
+    expect(typeof parsed.runId).toBe("string");
     expect(parsed.resultPath).toBeUndefined();
     expect(parsed.summary).toBeUndefined();
 
     const rows = readImproveRuns(result.xdgData);
-    expect(rows.length).toBe(0);
+    expect(rows.length).toBe(1);
+    expect(parsed.runId).toBe(rows[0]?.id);
+    const { shape, ...liveResult } = parsed;
+    expect(shape).toBe("improve");
+    expect(rows[0]?.result).toEqual(liveResult);
 
     // No legacy on-disk file either.
     const runsDir = path.join(stashDir, ".akm", "runs");
@@ -212,7 +216,6 @@ describe("akm improve CLI dry-run artifact boundary", () => {
 
     // Stderr should NOT contain the "improve result written to" hint.
     expect(result.stderr).not.toContain("improve result written to");
-    expect(snapshotRoots(result.roots)).toEqual(result.artifactBefore);
   });
 
   test("two consecutive dry-runs persist neither invocation", () => {

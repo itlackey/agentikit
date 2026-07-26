@@ -151,9 +151,9 @@ describe("registry/skills-sh — fetchSkills surfaces guard violations", () => {
     // turns errors into a warning. Confirm the guard's distinctive
     // "Refusing to resolve data directory under bun test" prose survives
     // the wrapping (proving the inner openDatabase catch did NOT swallow).
-    const { resolveProviderFactory } = await import("../../src/registry/factory");
+    const { resolveRegistryProviderFactory } = await import("../../src/registry/factory");
     await import("../../src/registry/providers/skills-sh");
-    const factory = resolveProviderFactory("skills-sh");
+    const factory = resolveRegistryProviderFactory("skills-sh");
     if (!factory) throw new Error("skills-sh factory not registered");
     const provider = factory({ url: "http://127.0.0.1:1/skills-sh-unreachable", name: "skills.sh" });
     const result = await provider.search({ query: "test", limit: 1 });
@@ -164,10 +164,10 @@ describe("registry/skills-sh — fetchSkills surfaces guard violations", () => {
 });
 
 describe("registry/static-index — loadIndex surfaces guard violations", () => {
-  test("a leaky env causes loadAllKits to surface the data-dir guard via warnings", async () => {
-    const { resolveProviderFactory } = await import("../../src/registry/factory");
+  test("a leaky env causes loadBundles to surface the data-dir guard via warnings", async () => {
+    const { resolveRegistryProviderFactory } = await import("../../src/registry/factory");
     await import("../../src/registry/providers/static-index");
-    const factory = resolveProviderFactory("static-index");
+    const factory = resolveRegistryProviderFactory("static-index");
     if (!factory) throw new Error("static-index factory not registered");
     const provider = factory({ url: "http://127.0.0.1:1/static-index-unreachable", name: "test-reg" });
     const result = await provider.search({ query: "anything", limit: 1 });

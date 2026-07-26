@@ -108,7 +108,7 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
         task,
         [...(opts?.binding ?? akmArgv)],
         logDir,
-        opts?.contextPath === null ? undefined : (opts?.contextPath ?? defaultContextPath),
+        opts?.contextPath ?? defaultContextPath,
         opts?.target,
       );
       const file = plistPath(task.id);
@@ -254,13 +254,18 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
       }
       if (ids.length === 0) return [];
       const disabledLabels = readDisabledLabels(exec);
-      return ids.map((id) => {
-        try {
-          return inspectInstalledLaunchdTask(id, fsLike.readFile(plistPath(id)), disabledLabels, exec);
-        } catch {
-          return { id };
-        }
-      });
+      return ids.map((id) => inspectInstalledLaunchdTask(id, fsLike.readFile(plistPath(id)), disabledLabels, exec));
+    },
+    listForRebind() {
+      if (!fsLike.exists(agentsDir)) return [];
+      const refs: Array<{ id: string; target?: string }> = [];
+      for (const file of fsLike.list(agentsDir)) {
+        if (!file.startsWith(LAUNCHD_LABEL_PREFIX) || !file.endsWith(".plist")) continue;
+        const id = file.slice(LAUNCHD_LABEL_PREFIX.length, -".plist".length);
+        const installed = extractPlistInvocation(fsLike.readFile(plistPath(id)));
+        refs.push({ id, ...(installed?.target !== undefined ? { target: installed.target } : {}) });
+      }
+      return refs;
     },
     expectedSignature(task: TaskDocument, opts?: TaskInstallOptions): string {
       return normalizeSignature(
@@ -268,7 +273,7 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
           task,
           [...(opts?.binding ?? akmArgv)],
           logDir,
-          opts?.contextPath === null ? undefined : (opts?.contextPath ?? defaultContextPath),
+          opts?.contextPath ?? defaultContextPath,
           opts?.target,
         ),
       );
@@ -283,10 +288,16 @@ function inspectInstalledLaunchdTask(
   exec: LaunchdExec,
 ): InstalledTaskRef {
   const installed = extractPlistInvocation(raw);
+  if (!installed) {
+    throw new ConfigError(
+      `LaunchAgent task "${id}" does not contain a current AKM scheduler invocation.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
   const metadata = {
-    ...(installed?.target !== undefined ? { target: installed.target } : {}),
-    ...(installed?.binding !== undefined ? { binding: installed.binding } : {}),
-    ...(installed?.contextPath !== undefined ? { contextPath: installed.contextPath } : {}),
+    ...(installed.target !== undefined ? { target: installed.target } : {}),
+    binding: installed.binding,
+    contextPath: installed.contextPath,
   };
   if (!disabledLabels) return { id, ...metadata };
 
@@ -343,7 +354,7 @@ export function buildPlistXml(
   task: TaskDocument,
   akmArgv: string[],
   logDir: string,
-  contextPath: string | undefined,
+  contextPath: string,
   target?: string,
 ): string {
   const spec = parseSchedule(task.schedule, "launchd");

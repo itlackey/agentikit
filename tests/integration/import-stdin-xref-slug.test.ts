@@ -19,6 +19,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { parseBundleRef } from "../../src/core/asset/asset-ref";
+import { durableItemRef } from "../_helpers/durable-ref";
 import { type Cleanup, sandboxStashDir, writeSandboxConfig } from "../_helpers/sandbox";
 
 let stashCleanup: Cleanup = () => {};
@@ -38,6 +40,10 @@ afterEach(() => {
 });
 
 const CLI_PATH = path.resolve(import.meta.dir, "../../src/cli.ts");
+
+function conceptId(ref: string): string {
+  return parseBundleRef(ref).conceptId;
+}
 
 /** Run `akm <args>` as a real subprocess with `input` piped to stdin. */
 function akmWithStdin(args: string[], input: string): { status: number | null; stdout: string; stderr: string } {
@@ -61,15 +67,18 @@ describe("import - (stdin) slug stability under --xref", () => {
     const plain = akmWithStdin(["import", "-"], body);
     expect(plain.status, plain.stderr).toBe(0);
     const plainRef = (JSON.parse(plain.stdout) as { ref: string }).ref;
-    expect(plainRef).toBe("knowledge/auth-notes");
+    expect(conceptId(plainRef)).toBe("knowledge/auth-notes");
 
     // The structured path (forced by --xref) must derive the identical slug
     // from the pre-merge content — not a random knowledge-<epoch>-<rand>
     // fallback taken from the merged frontmatter fence. --force proves the
     // name collides with the plain-path write.
-    const structured = akmWithStdin(["import", "-", "--force", "--xref", "knowledge/auth-flow"], body);
+    const structured = akmWithStdin(
+      ["import", "-", "--force", "--xref", durableItemRef(stashDir, "knowledge", "auth-flow")],
+      body,
+    );
     expect(structured.status, structured.stderr).toBe(0);
-    expect((JSON.parse(structured.stdout) as { ref: string }).ref).toBe(plainRef);
+    expect(conceptId((JSON.parse(structured.stdout) as { ref: string }).ref)).toBe(conceptId(plainRef));
   });
 
   test("a stdin doc CARRYING ITS OWN frontmatter derives its slug from the parsed body — same with and without --xref (R2-3)", () => {
@@ -85,10 +94,13 @@ describe("import - (stdin) slug stability under --xref", () => {
     const plain = akmWithStdin(["import", "-"], body);
     expect(plain.status, plain.stderr).toBe(0);
     const plainRef = (JSON.parse(plain.stdout) as { ref: string }).ref;
-    expect(plainRef).toBe("knowledge/frontmattered-guide");
+    expect(conceptId(plainRef)).toBe("knowledge/frontmattered-guide");
 
-    const structured = akmWithStdin(["import", "-", "--force", "--xref", "knowledge/legacy-guide"], body);
+    const structured = akmWithStdin(
+      ["import", "-", "--force", "--xref", durableItemRef(stashDir, "knowledge", "legacy-guide")],
+      body,
+    );
     expect(structured.status, structured.stderr).toBe(0);
-    expect((JSON.parse(structured.stdout) as { ref: string }).ref).toBe(plainRef);
+    expect(conceptId((JSON.parse(structured.stdout) as { ref: string }).ref)).toBe(conceptId(plainRef));
   });
 });

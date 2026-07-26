@@ -12,8 +12,8 @@
 import { describe, expect, test } from "bun:test";
 import type { IndexDocument } from "../src/indexer/passes/metadata";
 import { shouldQueryPositiveFeedbackCounts } from "../src/indexer/search/db-search";
-import type { RankedEntryInput } from "../src/indexer/search/ranking";
 import { applyUtilityContributors, type UtilityRankingContext } from "../src/indexer/search/ranking-contributors";
+import type { RankedEntryInput } from "../src/indexer/search/ranking-types";
 import type { Database } from "../src/storage/database";
 import type { UtilityScoreRow } from "../src/storage/repositories/index-entry-types";
 

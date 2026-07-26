@@ -11,13 +11,8 @@ import { getDbPath } from "../../core/paths";
 import { warn } from "../../core/warn";
 import { loadStoredGraphSnapshot } from "../../indexer/db/graph-db";
 import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
-import type {
-  GraphExtractionPassOptions,
-  GraphExtractionTelemetry,
-  GraphFile,
-  GraphFileNode,
-} from "../../indexer/graph/graph-extraction";
-import { runGraphExtractionPass } from "../../indexer/graph/graph-extraction";
+import { type GraphExtractionPassOptions, runGraphExtractionPass } from "../../indexer/graph/graph-extraction";
+import type { GraphExtractionTelemetry, GraphFile, GraphFileNode } from "../../indexer/graph/graph-types";
 import { withIndexWriterLease } from "../../indexer/index-writer-lock";
 import { lookup } from "../../indexer/indexer";
 import { findSourceForPath, resolveSourceEntries } from "../../indexer/search/search-source";

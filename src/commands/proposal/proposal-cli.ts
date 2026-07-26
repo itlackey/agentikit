@@ -318,8 +318,6 @@ const proposalRevertCommand = defineJsonCommand({
 });
 
 // `proposal show` (#225): show a single proposal with its validation findings.
-// `akmProposalShow` already backs `akm show proposal <id>` (now deprecated); this
-// is the canonical noun-group entry point.
 const proposalShowCommand = defineJsonCommand({
   meta: { name: "show", description: "Show a single proposal and its validation findings" },
   args: {
@@ -498,12 +496,7 @@ const proposalDrainCommand = defineJsonCommand({
   },
 });
 
-// ── proposal noun group (#225 / 0.8 CLI stabilization) ────────────────────────
-//
-// `akm proposal <verb>` is the canonical grammar in 0.8. The flat verbs
-// (`proposals`/`accept`/`reject`/`diff`/`revert`) remain as deprecated aliases
-// that warn to stderr and delegate to the same command bodies; they are removed
-// in 0.9.0. Bare `akm proposal` behaves as `proposal list` (mirrors `akm env`).
+// ── proposal noun group ───────────────────────────────────────────────────────
 
 export const proposalCommand = defineGroupCommand({
   meta: { name: "proposal", description: "Manage the proposal queue: list, show, diff, accept, reject, revert" },

@@ -29,11 +29,6 @@ import { getCommandBuilder } from "./builders";
 import { DEFAULT_AGENT_TIMEOUT_MS } from "./config";
 import type { AgentParseMode, AgentProfile, AgentStdioMode } from "./profiles";
 
-// The managed-subprocess primitive owns spawn/timeout/abort/capture; these
-// types are its vocabulary. Re-exported so existing importers of this module
-// (and its test fakes) keep resolving them here unchanged.
-export type { SpawnedSubprocess, SpawnFn } from "../../core/subprocess";
-
 /** Stable failure-reason vocabulary. Wider strings are not allowed.
  *
  * Note on `content_policy_reject`: this is NOT an LLM fault — it is a
@@ -125,15 +120,14 @@ export interface RunAgentOptions {
   /**
    * Abstract dispatch parameters. When present, the platform-specific
    * AgentCommandBuilder constructs the argv from these fields (system prompt,
-   * model alias, tool policy). When absent, falls back to the legacy
-   * positional-prompt behaviour for backwards compatibility.
+   * model alias, tool policy). When absent, the prompt is passed positionally.
    */
-  dispatch?: import("./builders").AgentDispatchRequest;
+  dispatch?: import("./builder-shared").AgentDispatchRequest;
   /**
    * Builder registry override — used by tests to inject fake builders without
    * touching the global BUILTIN_BUILDERS map.
    */
-  builderRegistry?: Record<string, import("./builders").AgentCommandBuilder>;
+  builderRegistry?: Record<string, import("./builder-shared").AgentCommandBuilder>;
 }
 
 /**
@@ -311,7 +305,7 @@ export async function runAgent(
   };
 
   // Build argv via the platform-specific builder when dispatch params are
-  // provided; fall back to the legacy positional-prompt form otherwise.
+  // provided; otherwise use the direct positional-prompt form.
   let builtArgv: readonly string[];
   let builtEnv: Record<string, string> | undefined;
   if (options.dispatch !== undefined) {
@@ -320,9 +314,9 @@ export async function runAgent(
     builtArgv = built.argv;
     builtEnv = built.env;
   } else {
-    const legacyArgs: string[] = [...profile.args, ...(options.args ?? [])];
-    if (prompt !== undefined) legacyArgs.push(prompt);
-    builtArgv = [profile.bin, ...legacyArgs];
+    const positionalArgs: string[] = [...profile.args, ...(options.args ?? [])];
+    if (prompt !== undefined) positionalArgs.push(prompt);
+    builtArgv = [profile.bin, ...positionalArgs];
   }
   // Extra args (e.g. forwarded CLI positionals) are appended after the builder output.
   const finalArgv: string[] = [...builtArgv, ...(options.dispatch ? (options.args ?? []) : [])];

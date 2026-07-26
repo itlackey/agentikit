@@ -66,9 +66,8 @@ const BUNDLE_SLUG_RE = /^[^\s:.#/]+$/;
 
 /**
  * True when `s` is a legal bundle slug (spec §11.1 / D-R5 charset: non-empty,
- * no `:`/`.`/`#`/`/` or whitespace). Exported so the dual-grammar input dispatch
- * (`resolve-ref.ts`) can classify a `prefix//tail` token by whether its prefix
- * is a legal bundle slug — the clean legacy-vs-new-grammar discriminator.
+ * no `:`/`.`/`#`/`/` or whitespace). Exported for input boundaries that need
+ * to distinguish bundle-qualified refs from source locators.
  */
 export function isBundleSlug(s: string): boolean {
   return BUNDLE_SLUG_RE.test(s);
@@ -86,7 +85,7 @@ export function isBundleSlug(s: string): boolean {
  * boundary punctuation (brackets/parens/quotes/backtick/comma/angle) so a
  * leading boundary char (e.g. the `[` of a markdown link) is not absorbed into
  * the slug. The concept segment reuses the same terminator charset as the
- * legacy body-ref scan (whitespace/quotes/brackets/comma/nl), and admits `/`,
+ * body-ref scan (whitespace/quotes/brackets/comma/nl), and admits `/`,
  * `.`, and a trailing `#fragment`.
  */
 export const BUNDLE_REF_RE = /(?:^|[\s`"'(,[])([^\s:.#/`"'()[\],<>]+\/\/[^\s"'`)\]>,\n]+)/gm;

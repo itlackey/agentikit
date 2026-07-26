@@ -88,7 +88,7 @@ export function buildSearchFields(entry: IndexDocument): {
 
 /**
  * Build a single concatenated search text string for an entry.
- * Used for the `search_text` column in the entries table (backward compat)
+ * Used for the `search_text` column in the entries table.
  * and for generating embedding text.
  */
 export function buildSearchText(entry: IndexDocument): string {

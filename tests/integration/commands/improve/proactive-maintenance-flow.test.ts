@@ -13,11 +13,10 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import type { AkmDistillResult } from "../../../../src/commands/improve/distill";
 import { akmImprove } from "../../../../src/commands/improve/improve";
-import type { AkmReflectResult } from "../../../../src/commands/improve/reflect";
 import { saveConfig } from "../../../../src/core/config/config";
 import { readEvents } from "../../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/improve-types";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { writeSkill } from "../../../_helpers/assets";
 import { withTestImproveLlm } from "../../../_helpers/improve-config";
@@ -62,7 +61,7 @@ const okDistill = (ref: string): AkmDistillResult => ({
   ok: true,
   outcome: "queued",
   inputRef: ref,
-  lessonRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
+  proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
 });
 
 const noopIndexFns = {

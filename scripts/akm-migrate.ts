@@ -7,6 +7,7 @@
 import { runWithJsonErrors } from "../src/cli/shared";
 import { UsageError } from "../src/core/errors";
 import { runMigrationApply, runMigrationStatus } from "./akm-migrate/config-migrate";
+import helpText from "./akm-migrate/help.txt" with { type: "text" };
 import {
   createMigrationBackup,
   MIGRATION_BACKUP_VERSION,
@@ -34,6 +35,11 @@ function requireBackupVersion(args: readonly string[]): void {
 export async function main(args = process.argv.slice(2)): Promise<void> {
   const [command, ...rest] = args;
   switch (command) {
+    case "--help":
+    case "-h":
+    case "help":
+      console.log(helpText.trimEnd());
+      return;
     case "status":
       await runMigrationStatus({ preparedConfigPath: valueAfter(rest, "--config") });
       return;

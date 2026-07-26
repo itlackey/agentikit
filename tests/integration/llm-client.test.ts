@@ -1,12 +1,7 @@
 import { describe, expect, jest, test } from "bun:test";
 import type { LlmConnectionConfig } from "../../src/core/config/config";
-import {
-  chatCompletion,
-  LlmCallError,
-  parseEmbeddedJsonResponse,
-  probeLlmCapabilities,
-  redactErrorBody,
-} from "../../src/llm/client";
+import { parseEmbeddedJsonResponse } from "../../src/core/parse";
+import { chatCompletion, LlmCallError, probeLlmCapabilities, redactErrorBody } from "../../src/llm/client";
 
 function createRequestServer(respond: (body: Record<string, unknown>) => Response): {
   url: string;

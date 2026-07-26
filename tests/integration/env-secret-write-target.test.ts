@@ -143,7 +143,7 @@ describe("env/secret write-target routing", () => {
     expect(JSON.parse(res.stdout).ref).toBe("env/prod");
   });
 
-  test("an explicitly named working-stash target still emits the short default ref", async () => {
+  test("an explicitly named working-stash target emits its qualified ref", async () => {
     writeSandboxConfig({ bundles: { primary: { path: storage.stashDir } } });
 
     const res = await runCliCapture([
@@ -160,7 +160,7 @@ describe("env/secret write-target routing", () => {
     ]);
 
     expect(res.code).toBe(0);
-    expect(JSON.parse(res.stdout).ref).toBe("env/prod");
+    expect(JSON.parse(res.stdout).ref).toBe("primary//env/prod");
   });
 
   test("a non-writable --target fails fast with the shared ConfigError and writes nothing", async () => {

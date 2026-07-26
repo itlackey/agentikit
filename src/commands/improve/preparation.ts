@@ -10,7 +10,7 @@ import { daysToMs } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import { ConfigError, rethrowIfTestIsolationError } from "../../core/errors";
 import { appendEvent, type EventsContext, readEvents } from "../../core/events";
-import type { EligibilitySource, ImproveActionResult, ImproveEligibleRef } from "../../core/improve-types";
+import type { ConsolidateResult, ImproveActionResult, ImproveEligibleRef } from "../../core/improve-types";
 import { openStateDatabase, withStateDb } from "../../core/state-db";
 import { info, warn } from "../../core/warn";
 import { countUsageEventsByType } from "../../indexer/usage/usage-events";
@@ -22,8 +22,9 @@ import { getZeroResultSearches } from "../../storage/repositories/index-entries-
 import { getRetrievalCounts } from "../../storage/repositories/index-utility-repository";
 import { listStateProposals } from "../../storage/repositories/proposals-repository";
 import { akmLint } from "../lint/index";
+import type { EligibilitySource } from "../proposal/proposal-types";
 import { runSchemaRepairPass } from "../sources/schema-repair";
-import { akmConsolidate, type ConsolidateResult } from "./consolidate";
+import { akmConsolidate } from "./consolidate";
 // Eligibility / candidate-selection predicates live in ./eligibility.
 import {
   buildLatestFeedbackTsMap,
@@ -1696,7 +1697,7 @@ function selectHighSalienceLane(args: {
           const row = readAssetSalienceForImproveRef(dbForHighSalience, r.ref, r.itemRef);
           if (
             row &&
-            isContentEncodingRow(row, assetTypeOf(r.ref)) &&
+            isContentEncodingRow(row) &&
             row.encoding_salience >= salienceThreshold &&
             !lastReflectProposalTs.has(r.ref)
           ) {
@@ -1771,27 +1772,16 @@ function scoreSalience(args: {
 
   // WS-1 — Unified salience vector (S1 seam).
   //
-  // The legacy sort combined three independent formulas (utility EMA, negative-only
-  // ratio / symmetric-valence magnitude, and the proactive-maintenance priority
-  // formula). WS-1 converges them into one `computeSalience()` call per ref, with
+  // WS-1 converges utility, valence, and proactive-maintenance signals into one
+  // `computeSalience()` call per ref, with
   // three independently-stored sub-scores and one documented rankScore projection.
   //
-  // Migration note: if a profile still has `symmetricValence` set, emit a one-time
-  // warning — its behaviour (symmetric |valence| attention) is now always-on as
-  // part of the salience vector, so the knob is a no-op and will be removed in 0.10.
-  if (improveProfile.symmetricValence === true) {
-    warn(
-      "[improve] Profile option 'symmetricValence' is deprecated (WS-1 salience vector). " +
-        "Symmetric valence is now always active; remove the option from your improve profile.",
-    );
-  }
-
   // Fetch last-use timestamps from the index DB for the full merged set so the
   // recency term in retrievalSalience is genuinely decayable (plan §WS-1 step 2).
   // This reuses the index DB opened earlier for retrieval counts; a separate
   // lightweight open is used here to avoid holding the connection longer than needed.
   let lastUseMsByRef = new Map<string, number>();
-  // utilityMap is kept for backward-compatible observability (health report reads it).
+  // Health and outcome reporting consume the utility projection.
   const utilityMap = buildUtilityMap(mergedRefs);
   let dbForSalience: import("../../storage/database").Database | undefined;
   try {
@@ -1942,10 +1932,7 @@ function updateOutcomeScores(args: {
           for (const row of allOutcomes) {
             if (row.outcome_score > maxOutcomeScore) maxOutcomeScore = row.outcome_score;
           }
-          // Read-clip: legacy rows written before the OUTCOME_SCORE_MAX write-clip
-          // existed can sit above the ceiling (live max was 3.13). Without this
-          // clip they inflate the normalisation denominator and floor everyone
-          // else's outcomeSalience (#691 follow-up).
+          // Keep the normalization denominator within the writer's score bounds.
           maxOutcomeScore = Math.min(maxOutcomeScore, OUTCOME_SCORE_MAX);
 
           // Proxy-adequacy tripwire (two-tailed): inverted (corr < −0.3) and
@@ -2064,7 +2051,7 @@ function computeSalienceVectors(args: {
         for (const r of mergedRefs) {
           const type = assetTypeOf(r.ref);
           const row = readAssetSalienceForImproveRef(dbForStoredEncoding, r.ref, itemRefByRef.get(r.ref));
-          if (row && isContentEncodingRow(row, type)) {
+          if (row && isContentEncodingRow(row)) {
             storedEncodingByRef.set(r.ref, row.encoding_salience);
           }
         }
@@ -2497,9 +2484,8 @@ async function filterEligibility(args: {
   // suppresses repeated LLM attempts on those same assets without touching their
   // persisted rank_score (so they remain fully retrievable).
   //
-  // This is the ONLY ranking path — negativeOnlyRatio and the legacy
-  // symmetricValence branch are replaced. The eligibilitySource lanes
-  // (signal-delta / proactive / high-salience) survive as labels (set above).
+  // This is the only ranking path. The eligibilitySource lanes (signal-delta /
+  // proactive / high-salience) survive as labels set above.
 
   const effectiveScore = (ref: string): number => {
     const rankScore = salienceMap.get(ref)?.rankScore ?? 0;

@@ -18,16 +18,6 @@ import type { MemoryInferenceResult } from "../indexer/passes/memory-inference";
 import type { AgentFailureReason } from "../integrations/agent/spawn";
 import { assertNever } from "./assert";
 
-// EligibilitySource moved to commands/proposal/proposal-types.ts (WI-9.8 KILL
-// 1): it is a zero-dependency string union that commands/proposal/repository.ts's
-// `Proposal.eligibilitySource` field also needs, and repository.ts importing
-// it FROM this file (which itself imports UP from commands/improve/* above —
-// the §10.7 layering inversion KILL 2 fixes) dragged the whole
-// repository↔validators knot back into the still-cyclic improve-types SCC.
-// Re-exported here so every existing `from "core/improve-types"` import site
-// (ImproveEligibleRef below + the improve/* consumers) is unchanged.
-export type { EligibilitySource } from "../commands/proposal/proposal-types";
-
 export interface ImproveEligibleRef {
   ref: string;
   reason: "scope-ref" | "scope-type" | "memory-cleanup" | "strategy_filtered_all_passes";
@@ -134,9 +124,8 @@ export function classifyImproveAction(mode: ImproveActionMode): ImproveActionCla
 // depended on the very command modules that depend on it, and each verb
 // module's own (heavy) transitive imports could route back here, gluing the
 // whole improve command family into one import-cycle SCC. Moving the result
-// shapes down here (verbatim) fixes the direction; each verb module now
-// imports its own result type FROM here and re-exports it so existing import
-// sites (`from "./consolidate"`, `from "./distill"`, etc.) are unchanged.
+// shapes down here fixes the dependency direction; verb modules import their
+// result types directly from this leaf.
 
 /** Op-kind discriminator used in {@link ConsolidateResult.skipReasons}. */
 export type ConsolidateOpKind = "merge" | "delete" | "promote" | "contradict";
@@ -303,19 +292,16 @@ export interface AkmDistillResult {
   outcome: DistillOutcome;
   /** Original input ref (verbatim). */
   inputRef: string;
-  /**
-   * Historical field name kept for compatibility. Carries the queued proposal
-   * ref, which may now be a `knowledge:` ref when memory promotion fires.
-   */
-  lessonRef: string;
-  /** Explicit queued proposal ref. Mirrors `lessonRef`. */
-  proposalRef?: string;
+  /** Target or queued proposal ref. */
+  proposalRef: string;
   /** Type of proposal the invocation targeted or queued. */
   proposalKind?: "lesson" | "knowledge";
   /** Proposal id when `outcome === "queued"`. */
   proposalId?: string;
   /** Human-readable hint surfaced when the call was skipped. */
   message?: string;
+  /** Machine-readable reason when `outcome === "skipped"`. */
+  skipReason?: string;
   /** Validation findings when `outcome === "validation_failed"`. */
   findings?: { kind: string; field: string; message: string }[];
   /** The full proposal object when `outcome === "queued"`. */
@@ -567,7 +553,7 @@ export interface AkmImproveResult {
   schemaRepairs?: Array<{
     ref: string;
     reason: string;
-    outcome: "queued" | "written" | "skipped" | "error";
+    outcome: "queued" | "skipped" | "error";
     proposalId?: string;
     error?: string;
   }>;

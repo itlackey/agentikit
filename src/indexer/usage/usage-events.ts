@@ -9,7 +9,9 @@
  *   id, event_type, query, entry_id (nullable), entry_ref, signal, metadata, source, created_at
  */
 
-import { parseRefInput } from "../../core/asset/resolve-ref";
+import { stashDirFor } from "../../core/asset/asset-placement";
+import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
+import { UsageError } from "../../core/errors";
 import type { Database, SqlValue } from "../../storage/database";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -128,14 +130,21 @@ export function getUsageEvents(db: Database, filters?: UsageEventFilters): Usage
     params.push(filters.event_type);
   }
   if (filters?.entry_ref) {
-    const entryRef = filters.entry_ref.trim();
-    parseRefInput(entryRef);
-    if (entryRef.includes("//")) {
+    const parsed = parseBundleRef(filters.entry_ref);
+    const colon = parsed.conceptId.indexOf(":");
+    if (colon > 0 && !parsed.conceptId.slice(0, colon).includes("/") && stashDirFor(parsed.conceptId.slice(0, colon))) {
+      throw new UsageError(
+        `Invalid asset ref "${filters.entry_ref}". Use [bundle//]conceptId, for example memories/note.`,
+        "INVALID_FLAG_VALUE",
+      );
+    }
+    const entryRef = makeBundleRef(parsed.bundle, parsed.conceptId);
+    if (parsed.bundle !== undefined) {
       conditions.push("entry_ref = ?");
       params.push(entryRef);
     } else {
       conditions.push("instr(entry_ref, '//') > 0 AND substr(entry_ref, instr(entry_ref, '//') + 2) = ?");
-      params.push(entryRef);
+      params.push(parsed.conceptId);
     }
   }
   if (filters?.source) {
