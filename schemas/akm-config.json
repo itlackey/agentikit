@@ -1628,6 +1628,15 @@
         }
       },
       "additionalProperties": true
+    },
+    "experimental": {
+      "type": "object",
+      "properties": {
+        "improveAutonomy": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
     }
   },
   "required": [
@@ -3258,6 +3267,15 @@
                 }
               },
               "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "experimental": {
+          "type": "object",
+          "properties": {
+            "improveAutonomy": {
+              "type": "boolean"
             }
           },
           "additionalProperties": true

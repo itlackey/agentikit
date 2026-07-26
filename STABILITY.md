@@ -23,7 +23,7 @@ please file it.
 | --- | --- |
 | **Stable** | Scripted use is supported. Changes are additive within a minor release; breaking changes are called out in the CHANGELOG with a migration note. |
 | **Evolving** | Available across minor releases, but flag names, prompts, and payload shapes may shift. Breaking changes are flagged in the CHANGELOG. |
-| **Experimental** | Subject to change without notice. Not recommended for scripted use. Experimental surfaces are reachable without any opt-in in 0.9.0 — see [`akm improve` autonomy](#akm-improve-autonomy--on-by-default-in-090). |
+| **Experimental** | Subject to change without notice. Not recommended for scripted use. Some experimental surfaces additionally require an explicit opt-in — see [`akm improve` autonomy](#akm-improve-autonomy--opt-in-in-090). |
 | **Internal** | Not a public interface. May change or disappear in any release, without a CHANGELOG note. Listed here only so you can recognize it. |
 
 ## Stable
@@ -138,9 +138,9 @@ CHANGELOG with a migration note.
   `akm proposal {list,show,diff,accept,reject,revert,drain}`. Output JSON keys
   are stable; CLI flags (`--strategy`, `--task`, `--generator`) may add
   options or tighten validation across releases. `akm improve` stays on by
-  default, but it is **not** review-first out of the box: several lanes mutate
-  assets directly and are ungated — see
-  [`akm improve` autonomy](#akm-improve-autonomy--on-by-default-in-090).
+  default and is **review-first**: the lanes that mutate assets without review
+  require `experimental.improveAutonomy` — see
+  [`akm improve` autonomy](#akm-improve-autonomy--opt-in-in-090).
   `--auto-accept` was removed in 0.9.0. It is now accepted-and-warned rather
   than silently absorbed: passing it prints a deprecation warning naming the
   replacement, and the space-separated form (`--auto-accept 90`) no longer
@@ -232,33 +232,45 @@ for scripted use.
   (`start` / `next` / `complete` / `status` / `list` / `create` / `validate` /
   `template` / `resume` / `abandon`).
 
-### `akm improve` autonomy — ON by default in 0.9.0
+### `akm improve` autonomy — opt-in in 0.9.0
 
-**There is no experimental opt-in gate in 0.9.0.** An earlier draft of this
-document described `experimental.improveAutonomy` and
-`experimental.workflowEngine` config keys that gate the mutating lanes. Those
-keys do not exist: they are absent from the config schema, read nowhere in the
-runtime, and `akm config set experimental.improveAutonomy true` fails with
-`Unknown config key`. Nothing is gated. The gates are a **planned** 0.10
-change (see [On the horizon](#on-the-horizon)); they are recorded here because
-the earlier wording understated the risk in the dangerous direction.
+**`akm improve` is review-first by default in 0.9.0.** The command itself is ON
+— its schedules, reflect/distill proposals, and graph extraction all run — but
+the lanes that mutate assets *without* review require an explicit opt-in:
 
-The shipped `default` improve strategy runs these **directly mutating** lanes
-with no opt-in:
+```sh
+akm config set experimental.improveAutonomy true
+```
 
-| Lane | What it does | Turn it off with |
+Without it, these five lanes are downgraded, and each downgrade is **reported,
+not silent**: it warns on stderr naming the lane and the key, appends an
+`improve_skipped` event with `reason: "autonomy_gated"`, and is counted in
+`akm health`'s improve skip-reason summary.
+
+| Lane | What it does when enabled | With autonomy off |
 | --- | --- | --- |
-| `consolidate` | Merges memories and **deletes** the superseded files (archived to `.akm/archive/` first) | `improve.strategies.<name>.processes.consolidate.enabled: false` |
-| `memoryInference` | Writes `.derived.md` children and rewrites parent frontmatter | `...processes.memoryInference.enabled: false` |
-| memory cleanup / contradiction | Belief-state frontmatter rewrites, archive moves | runs whenever the scope covers memories |
-| `sync.push` | **Commits and pushes** the stash to its git remote unattended | `improve.strategies.<name>.sync.push: false` (or `--no-push`) |
+| `consolidate` | Merges memories and **deletes** the superseded files (archived to `.akm/archive/` first) | disabled |
+| `memoryInference` | Writes `.derived.md` children and rewrites parent frontmatter | disabled |
+| memory cleanup | Belief-state frontmatter rewrites, archive moves | not analyzed |
+| contradiction pass | Writes contradiction edges and belief-state transitions | not run |
+| `triage` `applyMode: "promote"` | Auto-accepts queued proposals into the stash | downgraded to `queue` — triage still runs, it just does not auto-accept |
 
-`triage` with `applyMode: "promote"` also auto-accepts queued proposals into
-the stash; the shipped `default` strategy leaves triage disabled, but
-`reflect-distill` and `proactive-maintenance` enable it in promote mode.
+Because the gate is applied before the LLM preflight, a review-first workspace
+also needs fewer engines configured: a strategy whose only model-backed process
+is a gated lane resolves without an engine at all.
 
-If you want review-first behavior today, set the keys above explicitly or run
-a narrower strategy (`--strategy quick`). Do not rely on a gate.
+**Three direct writes are deliberately NOT gated**, because they are additive or
+already independently controlled:
+
+| Write | Why it stays ungated |
+| --- | --- |
+| `extract` session indexing | Additive `sessions/**` writes; nothing is overwritten or deleted |
+| distill's encoding-salience stamp | Frontmatter metadata only |
+| `sync.push` | Publishes already-committed content to a remote the user configured for that purpose, and has its own `improve.strategies.<name>.sync.push: false` and `--no-push` |
+
+Autonomy is never inferred: an absent `experimental` section, an absent key, and
+an explicit `false` all read as off, so a partially-written or older config is
+review-first rather than accidentally permissive.
 
 Reflect, distill, extract candidates, validation, proactive-maintenance
 selection, and graph extraction are proposal-only and never write assets
@@ -311,23 +323,19 @@ These changes are planned and will land in a known future release. They
 are not part of the current stability contract; you should plan migrations
 around them.
 
-**Decided but not yet shipped.** The
-[0.9.0 decision record](./docs/architecture/specs/0.9.0-decisions.md) settles
-a set of breaking changes; several are still only decisions. Nothing above
-describes them as current behavior, and each decision carries its own shipped
-status. Not yet in the code:
+**The 0.9.0 decision record is fully shipped.** The
+[decision record](./docs/architecture/specs/0.9.0-decisions.md) settles a set of
+breaking changes; every one of them is now in the code, and each decision
+carries its own shipped status.
 
-| Decision | Change | Current behavior |
-| --- | --- | --- |
-| D8 | Gate improve autonomy behind `experimental.improveAutonomy` | No gate; mutating lanes are on by default |
-
-Already shipped from that record: **D1** (`#fragment` section selection),
+Shipped from that record: **D1** (`#fragment` section selection),
 **D2** (the `akm show <ref> toc|section|lines|frontmatter|full` view grammar is
 gone — `#fragment` is the only section selector), **D4** (conceptId /
 `bundle//` prefix browse), **D5** (`akm bundle` removed), **D6** (open `type`
-set at runtime), **D7** (all six `--format` values everywhere), and partially
-**D10** (an `akm-migrate` binary now exists, though the code still lives in
-this repo). **D3** is not on this list: `akm mv` ships in 0.9.0 as an
+set at runtime), **D7** (all six `--format` values everywhere), **D8** (the
+`experimental.improveAutonomy` gate), **D9** (`--auto-accept` warn-and-ignore),
+and partially **D10** (an `akm-migrate` binary now exists, though the code still
+lives in this repo). **D3** is not on this list: `akm mv` ships in 0.9.0 as an
 Experimental surface (see the Renames bullet above), and no removal is planned.
 
 - **0.10 — migration extraction.** The migration machinery leaves the CLI for

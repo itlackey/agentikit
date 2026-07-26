@@ -44,6 +44,7 @@ import { getEntryCount } from "../../storage/repositories/index-entries-reposito
 import { type DrainResult, drainProposals } from "../proposal/drain";
 import { resolveDrainPolicy } from "../proposal/drain-policies";
 import type { EligibilitySource } from "../proposal/proposal-types";
+import { isAutonomyLaneAllowed } from "./autonomy-gate";
 import { akmDistill } from "./distill";
 // Eligibility / candidate-selection predicates live in ./eligibility.
 import {
@@ -714,9 +715,14 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
   // M-1 (#367): Run contradiction-detection BEFORE analyzeMemoryCleanup so
   // the SCC resolver in resolveFamilyContradictions has edges to work on.
   // Best-effort: failures are warnings, never fatal.
+  // D8 — `shouldAnalyzeMemoryCleanup` reads scope and eligible-memory count and
+  // no strategy flag at all, so before the autonomy gate this pass ran on ANY
+  // improve run covering memories. It writes contradiction edges and
+  // belief-state transitions, so it needs the opt-in.
   if (
     !options.dryRun &&
     primaryStashDir &&
+    isAutonomyLaneAllowed("contradiction", _earlyConfig) &&
     shouldAnalyzeMemoryCleanup(scope, memorySummary.eligible, primaryStashDir)
   ) {
     try {
@@ -743,9 +749,13 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
     }
   }
 
-  const memoryCleanupPlan = shouldAnalyzeMemoryCleanup(scope, memorySummary.eligible, primaryStashDir)
-    ? analyzeMemoryCleanup(primaryStashDir as string, cleanupParentRef ? { parentRef: cleanupParentRef } : undefined)
-    : undefined;
+  // D8 — same gate: the cleanup plan drives belief-state frontmatter rewrites
+  // and archive moves, and had no strategy flag either.
+  const memoryCleanupPlan =
+    isAutonomyLaneAllowed("memoryCleanup", _earlyConfig) &&
+    shouldAnalyzeMemoryCleanup(scope, memorySummary.eligible, primaryStashDir)
+      ? analyzeMemoryCleanup(primaryStashDir as string, cleanupParentRef ? { parentRef: cleanupParentRef } : undefined)
+      : undefined;
   const guidance =
     memorySummary.eligible > 0
       ? "Improve folds memory cleanup into the same proposal queue: speculative promotions still go through reflect/distill proposals, while high-confidence redundant derived memories are moved into a recoverable cleanup archive instead of being left active in the stash."
@@ -1080,6 +1090,28 @@ async function runImproveStageSequence(args: {
           strategy: selectedStrategy.name,
           reason: "strategy_filtered_all_passes",
           count: strategyFilteredRefs.length,
+        },
+      },
+      eventsCtx,
+    );
+  }
+
+  // D8 — one event per lane the autonomy gate downgraded, naming the lane AND
+  // the config key that would enable it. This is the difference between a gate
+  // and a silent no-op: whatever the user would have seen happen, they now see
+  // explained. `health` already aggregates `improve_skipped` by reason
+  // (buildImproveSkipSummary), so these surface there without new machinery.
+  for (const lane of args.run.resolvedPlan.autonomyGated) {
+    warn(`[improve] ${lane.lane} skipped — it ${lane.reason}. Set \`${lane.configKey}: true\` to enable it.`);
+    appendEvent(
+      {
+        eventType: "improve_skipped",
+        ref: undefined,
+        metadata: {
+          strategy: selectedStrategy.name,
+          reason: "autonomy_gated",
+          lane: lane.lane,
+          configKey: lane.configKey,
         },
       },
       eventsCtx,

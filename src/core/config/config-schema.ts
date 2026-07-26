@@ -47,6 +47,7 @@ import { z } from "zod";
 import { BUILTIN_IMPROVE_STRATEGY_NAMES, IMPROVE_PROCESS_ENGINE_CAPABILITIES } from "./engine-semantics";
 import { EmbeddingConnectionConfigSchema } from "./schema/embedding";
 import { EnginesSchema } from "./schema/engines";
+import { ExperimentalConfigSchema } from "./schema/experimental";
 import { FeedbackConfigSchema } from "./schema/feedback";
 import { ImproveConfigSchema } from "./schema/improve";
 import { IndexConfigSchema } from "./schema/index-config";
@@ -67,6 +68,7 @@ import { WorkflowConfigSchema } from "./schema/workflow";
 
 export { EmbeddingConnectionConfigSchema } from "./schema/embedding";
 export { EngineConfigSchema, EnginesSchema, LlmConnectionConfigSchema, LlmProfileConfigSchema } from "./schema/engines";
+export { ExperimentalConfigSchema } from "./schema/experimental";
 export { FEEDBACK_FAILURE_MODES, FeedbackConfigSchema, type FeedbackFailureMode } from "./schema/feedback";
 export { ImproveConfigSchema } from "./schema/improve";
 export {
@@ -150,6 +152,9 @@ export const AkmConfigShape = {
   improve: ImproveConfigSchema.optional(),
   workflow: WorkflowConfigSchema.optional(),
   setup: SetupConfigSchema.optional(),
+  // D8 — explicit opt-ins for behaviour outside the stability contract. Every
+  // key defaults to OFF; see `src/core/config/experimental.ts` for the readers.
+  experimental: ExperimentalConfigSchema.optional(),
 } as const;
 
 export const AkmConfigBaseSchema = z.object(AkmConfigShape).passthrough();

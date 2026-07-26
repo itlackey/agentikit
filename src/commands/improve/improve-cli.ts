@@ -189,14 +189,12 @@ export const improveCommand = defineCommand({
       return;
     }
     await runWithJsonErrors(async () => {
-      const formatFlagValue = getParsedInvocation().getFlagValue("--format");
-      if (formatFlagValue !== undefined) {
-        throw new UsageError(
-          `akm improve does not accept --format. That flag controls output formatting for other commands (search, show, etc.).\n` +
-            `Did you mean: akm improve (no --format flag)?`,
-          "INVALID_FLAG_VALUE",
-        );
-      }
+      // D7 — `--format` used to be rejected here outright. It is a global flag on
+      // a command that does emit an envelope through `output()` (always on
+      // `--dry-run`, otherwise with `--json-to-stdout`), so rejecting it made
+      // improve a fourth inconsistent format behaviour rather than a documented
+      // exemption. It now applies to that envelope; progress output stays on
+      // stderr regardless.
       const jsonToStdout = args["json-to-stdout"];
       const targetArg = getStringArg(args, "target");
       const taskArg = getStringArg(args, "task");

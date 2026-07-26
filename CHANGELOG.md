@@ -22,6 +22,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`akm improve` is review-first by default; autonomy is opt-in** (0.9.0
+  decision D8). The command stays ON — schedules, reflect/distill proposals, and
+  graph extraction are unchanged — but the lanes that mutate assets *without*
+  review now require `akm config set experimental.improveAutonomy true`:
+  consolidate's merge/delete, memory-inference writes, the memory-cleanup pass,
+  the contradiction pass, and triage `applyMode: "promote"` (which downgrades to
+  `queue` rather than disabling triage). Previously none of these were gated, and
+  two of them — memory cleanup and contradiction detection — had **no strategy
+  flag at all** and ran on any improve run covering memories.
+
+  A gated lane is never a silent no-op: it warns on stderr naming the lane and
+  the key, appends an `improve_skipped` event with `reason: "autonomy_gated"`,
+  and is counted in `akm health`'s improve skip-reason summary.
+
+  Migration: set `experimental.improveAutonomy: true` to restore the previous
+  behavior. `sync.push` is **not** affected — it keeps its `true` default and its
+  own `sync.push: false` / `--no-push` controls. Two other direct writes stay
+  ungated by design: `extract`'s additive session indexing and distill's
+  encoding-salience frontmatter stamp. Because the gate is applied before the LLM
+  preflight, a review-first workspace may now need fewer engines configured than
+  before.
+
+  Also: `akm improve` no longer rejects the global `--format`. It emits an
+  envelope through `output()` (always under `--dry-run`, otherwise under
+  `--json-to-stdout`), so `--format` applies to that envelope; progress output
+  stays on stderr. Previously it exited 2 with `INVALID_FLAG_VALUE`, which made
+  it the one command that rejected a valid global flag.
+
 - **All six `--format` values work on every command** (0.9.0 decision D7).
   `json|jsonl|yaml|text|md|html` are now universal. Previously there were three
   inconsistent behaviours: `md` silently emitted the JSON envelope everywhere
