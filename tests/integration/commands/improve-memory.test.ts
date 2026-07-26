@@ -1487,6 +1487,9 @@ describe("akm improve memory cleanup", () => {
         stashDir,
         config: {
           semanticSearchMode: "off",
+          // D8 — the stale-journal recovery path only runs when consolidate
+          // does, and consolidate needs the autonomy opt-in.
+          experimental: { improveAutonomy: true },
           engines: {
             default: { kind: "llm", endpoint: "http://localhost/chat/completions", model: "test" },
           },
@@ -1514,6 +1517,9 @@ describe("akm improve memory cleanup", () => {
         stashDir,
         config: {
           semanticSearchMode: "off",
+          // D8 — the stale-journal recovery path only runs when consolidate
+          // does, and consolidate needs the autonomy opt-in.
+          experimental: { improveAutonomy: true },
           engines: {
             default: { kind: "llm", endpoint: "http://localhost/chat/completions", model: "test" },
           },
@@ -1550,6 +1556,9 @@ describe("akm improve memory cleanup", () => {
       stashDir,
       config: {
         semanticSearchMode: "off",
+        // D8 — the stale-journal recovery path only runs when consolidate does,
+        // and consolidate needs the autonomy opt-in.
+        experimental: { improveAutonomy: true },
         engines: {
           default: { kind: "llm", endpoint: "http://localhost/chat/completions", model: "test" },
         },
