@@ -10,8 +10,9 @@
  * `defaultBundle` shape (spec §10.1). Runs as a pure pre-validation transform in
  * the migrator's config-applied phase (`cli/config-migrate.ts`): the old keys
  * are removed and the emitted `bundles` map is keyed by exactly what
- * `deriveInstallations` derives for each source at runtime (D-R5 no-identity
- * shift), because BOTH sides call the ONE shared {@link deriveBundleId} helper.
+ * `deriveInstallations` derives for each source at runtime. Explicit configured
+ * ids are reserved before path-derived ids; the cutover ref map re-keys any
+ * pre-reservation durable ids by their physical source root.
  *
  * `defaultBundle` is the primary stash's derived id — the source marked
  * `primary: true`, else the synthetic entry built from top-level `stashDir`.
@@ -38,7 +39,7 @@ import os from "node:os";
 import path from "node:path";
 import { installedSourceDescriptor } from "../../core/config/config-sources";
 import type { BundleConfigEntry } from "../../core/config/config-types";
-import { deriveBundleId } from "../../indexer/installations";
+import { deriveBundleIds } from "../../indexer/installations";
 import type { SearchSource } from "../../indexer/search/search-source";
 import type { LockfileEntry } from "../../integrations/lockfile";
 import type { InstallKind } from "../../registry/types";
@@ -113,7 +114,10 @@ function sourceEntryDescriptor(entry: Record<string, unknown>): BundleConfigEntr
  * the runtime resolution order: primary first, then `sources[]`, then
  * `installed[]`.
  */
-export function oldConfigMigratableSources(raw: Record<string, unknown>): MigratableSource[] {
+export function oldConfigMigratableSources(
+  raw: Record<string, unknown>,
+  pathResolutionBase = process.cwd(),
+): MigratableSource[] {
   const out: MigratableSource[] = [];
   const sources = Array.isArray(raw.sources) ? (raw.sources as Array<Record<string, unknown>>) : [];
   const installed = Array.isArray(raw.installed) ? (raw.installed as Array<Record<string, unknown>>) : [];
@@ -127,7 +131,7 @@ export function oldConfigMigratableSources(raw: Record<string, unknown>): Migrat
     const p = readString(primaryEntry.path);
     if (descriptor) {
       out.push({
-        derivationPath: p ? path.resolve(expandTilde(p)) : (readString(primaryEntry.url) ?? ""),
+        derivationPath: p ? path.resolve(pathResolutionBase, expandTilde(p)) : (readString(primaryEntry.url) ?? ""),
         registryId: readString(primaryEntry.name),
         writable: primaryEntry.writable === true,
         primary: true,
@@ -137,7 +141,7 @@ export function oldConfigMigratableSources(raw: Record<string, unknown>): Migrat
   }
   if (!out.some((source) => source.primary) && stashDir) {
     out.push({
-      derivationPath: path.resolve(expandTilde(stashDir)),
+      derivationPath: path.resolve(pathResolutionBase, expandTilde(stashDir)),
       writable: true,
       primary: true,
       descriptor: { path: stashDir },
@@ -150,7 +154,7 @@ export function oldConfigMigratableSources(raw: Record<string, unknown>): Migrat
     if (!descriptor) continue;
     const p = readString(entry.path);
     out.push({
-      derivationPath: p ? path.resolve(expandTilde(p)) : (readString(entry.url) ?? ""),
+      derivationPath: p ? path.resolve(pathResolutionBase, expandTilde(p)) : (readString(entry.url) ?? ""),
       registryId: readString(entry.name),
       writable: entry.writable === true,
       descriptor,
@@ -166,7 +170,7 @@ export function oldConfigMigratableSources(raw: Record<string, unknown>): Migrat
     // locator), NOT the materialized cache root. The resolved root belongs in the
     // lock (`localRoot`), keyed by the derived bundle id — see {@link migratedLockEntries}.
     const descriptor = source ? installedSourceDescriptor(source, ref, stashRoot) : { path: stashRoot };
-    const resolvedRoot = path.resolve(expandTilde(stashRoot));
+    const resolvedRoot = path.resolve(pathResolutionBase, expandTilde(stashRoot));
     // A git/npm descriptor carries a locator, so the runtime resolves its content
     // dir from the lock's localRoot; record that resolved state for the lock.
     const needsLock = ("git" in descriptor || "npm" in descriptor) && !!source && !!ref;
@@ -205,6 +209,23 @@ export function oldConfigMigratableSources(raw: Record<string, unknown>): Migrat
   return deduplicated;
 }
 
+/** Whether pre-cutover source resolution depends on the process working directory. */
+export function oldConfigHasRelativeSourcePaths(raw: Record<string, unknown>): boolean {
+  const sources = Array.isArray(raw.sources) ? (raw.sources as Array<Record<string, unknown>>) : [];
+  const installed = Array.isArray(raw.installed) ? (raw.installed as Array<Record<string, unknown>>) : [];
+  const isRelative = (value: unknown): boolean => {
+    const candidate = readString(value);
+    return candidate !== undefined && !path.isAbsolute(expandTilde(candidate));
+  };
+  const primaryEntry = sources.find((entry) => entry.primary === true);
+  if (primaryEntry && sourceEntryDescriptor(primaryEntry) && isRelative(primaryEntry.path)) return true;
+  if (!primaryEntry && isRelative(raw.stashDir)) return true;
+  if (sources.some((entry) => entry !== primaryEntry && sourceEntryDescriptor(entry) && isRelative(entry.path))) {
+    return true;
+  }
+  return installed.some((entry) => isRelative(entry.stashRoot));
+}
+
 /**
  * Derive the §10.2 lock entries the config-shape migration produces for
  * `installed[]` entries whose desired descriptor is a git/npm LOCATOR. Each
@@ -218,10 +239,11 @@ export function oldConfigMigratableSources(raw: Record<string, unknown>): Migrat
 export function migratedLockEntries(raw: Record<string, unknown>): LockfileEntry[] {
   if ("bundles" in raw) return [];
   if (!hasOldSourceShape(raw)) return [];
-  const usedIds = new Set<string>();
+  const migratable = oldConfigMigratableSources(raw);
+  const ids = deriveBundleIds(migratable.map((src) => ({ registryId: src.registryId, path: src.derivationPath })));
   const entries: LockfileEntry[] = [];
-  for (const src of oldConfigMigratableSources(raw)) {
-    const id = deriveBundleId(src.registryId, src.derivationPath, usedIds);
+  for (const [index, src] of migratable.entries()) {
+    const id = ids[index] as string;
     if (src.lock) {
       entries.push({ id, source: src.lock.source, ref: src.lock.ref, localRoot: src.lock.localRoot });
     }
@@ -230,12 +252,14 @@ export function migratedLockEntries(raw: Record<string, unknown>): LockfileEntry
 }
 
 /**
- * The SearchSource[] view of the pre-cutover config — the exact input a "direct
- * `deriveInstallations` run over the old source list" consumes for the D-R5
- * no-identity-shift proof.
+ * The SearchSource[] view of the pre-cutover config — the exact input a direct
+ * current `deriveInstallations` run over the old source list consumes.
  */
-export function oldConfigToSearchSources(raw: Record<string, unknown>): SearchSource[] {
-  return oldConfigMigratableSources(raw).map((src) => ({
+export function oldConfigToSearchSources(
+  raw: Record<string, unknown>,
+  pathResolutionBase = process.cwd(),
+): SearchSource[] {
+  return oldConfigMigratableSources(raw, pathResolutionBase).map((src) => ({
     path: src.derivationPath,
     ...(src.registryId ? { registryId: src.registryId } : {}),
     ...(src.writable ? { writable: true } : {}),
@@ -254,15 +278,15 @@ export function migrateConfigSourcesToBundles(raw: Record<string, unknown>): Rec
   if (!hasOldSourceShape(raw)) return raw;
 
   const migratable = oldConfigMigratableSources(raw);
-  const usedIds = new Set<string>();
+  const ids = deriveBundleIds(migratable.map((src) => ({ registryId: src.registryId, path: src.derivationPath })));
   const bundles: Record<string, BundleConfigEntry> = {};
   const selectorToBundle = new Map<string, string>();
   let defaultBundle: string | undefined;
 
-  for (const src of migratable) {
+  for (const [index, src] of migratable.entries()) {
     // The ONE shared derivation, so the emitted key equals the runtime
     // installation id by construction (D-R5).
-    const id = deriveBundleId(src.registryId, src.derivationPath, usedIds);
+    const id = ids[index] as string;
     const entry: BundleConfigEntry = { ...src.descriptor };
     if (src.writable) entry.writable = true;
     // Preserve the original registry id when the slug-legal key differs from it

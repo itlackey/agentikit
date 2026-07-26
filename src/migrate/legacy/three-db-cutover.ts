@@ -107,6 +107,8 @@ export interface CutoverStashRoot {
   path: string;
   /** Canonical target bundle id used in the new item_ref. */
   bundleId?: string;
+  /** Bundle id emitted by the pre-reservation derivation, when it differs. */
+  legacyBundleId?: string;
   registryId?: string;
   /** True for the workspace-primary stash (bare / `stash` / `local` origins resolve here). */
   primary?: boolean;
@@ -175,18 +177,25 @@ function addIndexEntryMappings(
   const bundle = row.itemRef.includes("//") ? row.itemRef.slice(0, row.itemRef.indexOf("//")) : undefined;
 
   const matched = stashRoots?.find((r) => samePath(r.path, row.stashDir));
+  const conceptId = bundle ? row.itemRef.slice(row.itemRef.indexOf("//") + 2) : undefined;
+  const rekeyedBundle =
+    matched?.bundleId && matched.legacyBundleId !== matched.bundleId && bundle === matched.legacyBundleId
+      ? matched.bundleId
+      : undefined;
+  const targetItemRef = rekeyedBundle && conceptId ? `${rekeyedBundle}//${conceptId}` : row.itemRef;
   // No stash-root info (or an unrecognized root) → treat as the primary source,
   // so single-source installs (and the test fixtures) always get bare keys.
   const isPrimary = matched ? matched.primary === true || stashRoots?.[0] === matched : true;
 
   if (isPrimary) {
-    setMapping(map, bareTail, row.itemRef); // bare `type:name` resolves to the default/primary
-    setMapping(map, `stash//${bareTail}`, row.itemRef);
-    setMapping(map, `local//${bareTail}`, row.itemRef);
+    setMapping(map, bareTail, targetItemRef); // bare `type:name` resolves to the default/primary
+    setMapping(map, `stash//${bareTail}`, targetItemRef);
+    setMapping(map, `local//${bareTail}`, targetItemRef);
   }
-  if (bundle) setMapping(map, `${bundle}//${bareTail}`, row.itemRef);
-  if (matched?.registryId) setMapping(map, `${matched.registryId}//${bareTail}`, row.itemRef);
-  setMapping(map, row.entryKey, row.itemRef); // the literal stored key
+  if (bundle) setMapping(map, `${bundle}//${bareTail}`, targetItemRef);
+  if (matched?.registryId) setMapping(map, `${matched.registryId}//${bareTail}`, targetItemRef);
+  if (targetItemRef !== row.itemRef) setMapping(map, row.itemRef, targetItemRef);
+  setMapping(map, row.entryKey, targetItemRef); // the literal stored key
 }
 
 /**
@@ -221,6 +230,9 @@ function walkLegacyLayoutInto(map: Map<string, string>, root: CutoverStashRoot):
         setMapping(map, `local//${bareTail}`, itemRef);
       }
       if (root.registryId) setMapping(map, `${root.registryId}//${bareTail}`, itemRef);
+      if (root.legacyBundleId && root.legacyBundleId !== bundle) {
+        setMapping(map, `${root.legacyBundleId}//${conceptId}`, itemRef);
+      }
     }
   }
 }

@@ -38,6 +38,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { assembleAsset } from "../../core/asset/asset-serialize";
 import { parseFrontmatter, parseFrontmatterBlock } from "../../core/asset/frontmatter";
 import { conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
@@ -210,7 +211,7 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
   // (git, npm, website) are deliberately untouched — writing inferred
   // children there would be clobbered by the next sync().
   const primary = sources[0];
-  if (!primary) return result;
+  if (!primary || (primary.adapterId ?? detectAdapterId(primary.path)) !== "akm") return result;
 
   const pending = collectPendingMemories(primary.path).filter(
     (record) => !options.candidateRefs || options.candidateRefs.has(record.ref),
@@ -530,6 +531,7 @@ async function writeDerivedMemory(parent: MemoryRecord, derived: DerivedMemoryDr
     kind: "filesystem",
     name: "stash",
     path: parent.stashRoot,
+    adapterId: "akm",
   };
   const writeConfig: SourceConfigEntry = {
     type: "filesystem",

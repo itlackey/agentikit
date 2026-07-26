@@ -25,6 +25,8 @@ export interface FreshnessCacheOptions {
   staleMs: number;
   /** Bypass the fresh check and always refresh (stale fallback still applies). */
   force?: boolean;
+  /** Whether a failed refresh may silently serve a still-usable stale cache. */
+  allowStaleOnRefreshFailure?: boolean;
   /**
    * Extra gate the cached copy must pass — on both the fresh and the stale
    * path — before it can be served (e.g. "extracted content is present").
@@ -60,7 +62,7 @@ export async function withFreshnessCache(options: FreshnessCacheOptions): Promis
   try {
     await options.refresh();
   } catch (err) {
-    if (mtime && !isExpired(mtime, options.staleMs) && usable()) {
+    if (options.allowStaleOnRefreshFailure !== false && mtime && !isExpired(mtime, options.staleMs) && usable()) {
       return;
     }
     throw err;

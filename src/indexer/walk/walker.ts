@@ -24,6 +24,12 @@ export interface WalkStashFlatOptions {
   includeAllDirectories?: boolean;
 }
 
+export interface WalkStashFlatResult {
+  files: FileContext[];
+  /** False when any directory or candidate file could not be inspected. */
+  complete: boolean;
+}
+
 export interface DirectoryGroup {
   dirPath: string;
   files: string[];
@@ -77,7 +83,11 @@ export function walkStash(typeRoot: string, assetType: string): DirectoryGroup[]
  * .cache, dot-directories, and the legacy metadata sidecar.
  */
 export function walkStashFlat(stashRoot: string, options: WalkStashFlatOptions = {}): FileContext[] {
-  if (!fs.existsSync(stashRoot)) return [];
+  return walkStashFlatWithStatus(stashRoot, options).files;
+}
+
+export function walkStashFlatWithStatus(stashRoot: string, options: WalkStashFlatOptions = {}): WalkStashFlatResult {
+  if (!fs.existsSync(stashRoot)) return { files: [], complete: false };
 
   // Try git-based walk first (respects .gitignore)
   const gitResult = walkStashGit(stashRoot, options);
@@ -91,7 +101,7 @@ export function walkStashFlat(stashRoot: string, options: WalkStashFlatOptions =
  * Walk using `git ls-files` to respect .gitignore.
  * Returns null if the directory is not a git repo or git fails.
  */
-function walkStashGit(stashRoot: string, options: WalkStashFlatOptions): FileContext[] | null {
+function walkStashGit(stashRoot: string, options: WalkStashFlatOptions): WalkStashFlatResult | null {
   // Quick check: is this a git repo? Look for .git in this dir or parents.
   if (!isInsideGitRepo(stashRoot)) return null;
 
@@ -125,6 +135,7 @@ function walkStashGit(stashRoot: string, options: WalkStashFlatOptions): FileCon
     .filter((f) => !SKIP_FILES.has(path.basename(f)));
 
   const results: FileContext[] = [];
+  let complete = true;
   for (const relFile of files) {
     const absPath = path.join(stashRoot, relFile);
     try {
@@ -133,10 +144,11 @@ function walkStashGit(stashRoot: string, options: WalkStashFlatOptions): FileCon
       }
     } catch {
       // File may have been deleted since git ls-files ran
+      complete = false;
     }
   }
 
-  return results;
+  return { files: results, complete };
 }
 
 /**
@@ -195,14 +207,21 @@ export function* walkMarkdownFiles(root: string): Generator<string> {
 }
 
 /** Manual walk for non-git directories. */
-function walkStashManual(stashRoot: string, options: WalkStashFlatOptions): FileContext[] {
+function walkStashManual(stashRoot: string, options: WalkStashFlatOptions): WalkStashFlatResult {
   const results: FileContext[] = [];
+  let complete = true;
 
   const stack = [stashRoot];
   while (stack.length > 0) {
     const current = stack.pop();
     if (!current) continue;
-    const entries = fs.readdirSync(current, { withFileTypes: true });
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      complete = false;
+      continue;
+    }
     for (const entry of entries) {
       if (entry.name === ".stash.json") continue;
       const fullPath = path.join(current, entry.name);
@@ -223,5 +242,5 @@ function walkStashManual(stashRoot: string, options: WalkStashFlatOptions): File
     }
   }
 
-  return results;
+  return { files: results, complete };
 }

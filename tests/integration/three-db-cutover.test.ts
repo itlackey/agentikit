@@ -19,8 +19,11 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { cutoverStashRootsFromConfig } from "../../src/cli/config-migrate";
 import { createProposal } from "../../src/commands/proposal/repository";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
+import { deriveBundleIds, deriveLegacyBundleIds } from "../../src/core/bundle-id";
+import type { AkmConfig } from "../../src/core/config/config";
 import { getMigrationApplyJournalPath } from "../../src/core/migration-backup";
 import { getMigrationOperationRoot } from "../../src/core/migration-operation";
 import { getConfigPath, getDataDir, getDbPath, getLockfilePath, getStateDbPathInDataDir } from "../../src/core/paths";
@@ -187,6 +190,107 @@ test("cutover ref map tolerates a pre-provenance index without item_ref", () => 
   expect(fs.existsSync(mapPath)).toBe(true);
 });
 
+test("cutover ref map rekeys pre-reservation bundle ids to their configured owners", () => {
+  const primaryRoot = path.join(getDataDir(), "stash");
+  const secondaryRoot = path.join(getDataDir(), "team");
+  fs.mkdirSync(path.join(primaryRoot, "knowledge"), { recursive: true });
+  fs.mkdirSync(path.join(secondaryRoot, "knowledge"), { recursive: true });
+  fs.writeFileSync(path.join(primaryRoot, "knowledge", "primary.md"), "# Primary\n");
+  fs.writeFileSync(path.join(secondaryRoot, "knowledge", "secondary.md"), "# Secondary\n");
+
+  const sources = [{ path: primaryRoot }, { path: secondaryRoot, registryId: "stash" }];
+  const legacyIds = deriveLegacyBundleIds(sources);
+  const configuredIds = deriveBundleIds(sources);
+  expect(legacyIds[0]).toBe("stash");
+  expect(configuredIds[1]).toBe("stash");
+
+  const oldIndexPath = path.join(getDataDir(), "collision-index.db");
+  const index = new Database(oldIndexPath);
+  index.exec("CREATE TABLE entries (entry_key TEXT NOT NULL, item_ref TEXT, entry_type TEXT, stash_dir TEXT NOT NULL)");
+  const insert = index.prepare("INSERT INTO entries (entry_key, item_ref, entry_type, stash_dir) VALUES (?, ?, ?, ?)");
+  const oldPrimaryRef = `${legacyIds[0]}//knowledge/primary`;
+  const oldSecondaryRef = `${legacyIds[1]}//knowledge/secondary`;
+  const newPrimaryRef = `${configuredIds[0]}//knowledge/primary`;
+  const newSecondaryRef = `${configuredIds[1]}//knowledge/secondary`;
+  insert.run(["knowledge", "primary"].join(":"), oldPrimaryRef, "knowledge", primaryRoot);
+  insert.run(`${legacyIds[1]}//${["knowledge", "secondary"].join(":")}`, oldSecondaryRef, "knowledge", secondaryRoot);
+  index.close();
+
+  const roots = [
+    {
+      path: primaryRoot,
+      bundleId: configuredIds[0],
+      legacyBundleId: legacyIds[0],
+      registryId: configuredIds[0],
+      primary: true,
+    },
+    {
+      path: secondaryRoot,
+      bundleId: configuredIds[1],
+      legacyBundleId: legacyIds[1],
+      registryId: configuredIds[1],
+    },
+  ];
+  const indexedMap = buildCutoverRefMap({
+    oldIndexDbPath: oldIndexPath,
+    stashRoots: roots,
+    mapOutputPath: path.join(getDataDir(), "collision-ref-map.json"),
+  });
+  expect(indexedMap.get(oldPrimaryRef)).toBe(newPrimaryRef);
+  expect(indexedMap.get(oldSecondaryRef)).toBe(newSecondaryRef);
+
+  const walkedMap = buildCutoverRefMap({
+    oldIndexDbPath: path.join(getDataDir(), "missing-collision-index.db"),
+    stashRoots: roots,
+    mapOutputPath: path.join(getDataDir(), "collision-walk-ref-map.json"),
+  });
+  expect(walkedMap.get(oldPrimaryRef)).toBe(newPrimaryRef);
+  expect(walkedMap.get(oldSecondaryRef)).toBe(newSecondaryRef);
+});
+
+test("cutover legacy-id inference reserves non-materialized configured bundles", () => {
+  const primaryRoot = path.join(getDataDir(), "stash");
+  const websitePath = path.join(getDataDir(), "website-cache-placeholder");
+  fs.mkdirSync(primaryRoot, { recursive: true });
+  const legacySources = [{ path: primaryRoot }, { path: websitePath, registryId: "stash" }];
+  const [primaryId] = deriveBundleIds(legacySources);
+  const config = {
+    bundles: {
+      [primaryId as string]: { path: primaryRoot, writable: true },
+      stash: { website: "https://example.test/non-materialized" },
+    },
+    defaultBundle: primaryId,
+  } as unknown as AkmConfig;
+
+  expect(cutoverStashRootsFromConfig(config, [], legacySources)).toContainEqual(
+    expect.objectContaining({ path: primaryRoot, bundleId: primaryId, legacyBundleId: "stash" }),
+  );
+});
+
+test("cutover uses the old provider path when a non-materialized source consumed an id first", () => {
+  const websitePath = path.join(getDataDir(), "provider", "stash");
+  const teamRoot = path.join(getDataDir(), "team");
+  fs.mkdirSync(teamRoot, { recursive: true });
+  const legacySources = [{ path: websitePath }, { path: teamRoot, registryId: "stash" }];
+  const currentIds = deriveBundleIds(legacySources);
+  const legacyIds = deriveLegacyBundleIds(legacySources);
+  const config = {
+    bundles: {
+      [currentIds[0] as string]: { website: "https://example.test/stash" },
+      [currentIds[1] as string]: { path: teamRoot, writable: true },
+    },
+    defaultBundle: currentIds[1],
+  } as unknown as AkmConfig;
+
+  expect(cutoverStashRootsFromConfig(config, [], legacySources)).toContainEqual(
+    expect.objectContaining({
+      path: teamRoot,
+      bundleId: currentIds[1],
+      legacyBundleId: legacyIds[1],
+    }),
+  );
+});
+
 function seedInstalledBundleMigration(): { prepared: string; installedRoot: string; oldRef: string; itemRef: string } {
   const installedRoot = path.join(getDataDir(), "installed-owner-repo");
   fs.mkdirSync(path.join(installedRoot, "skills", "deploy"), { recursive: true });
@@ -271,7 +375,21 @@ test("a real v17 index and v2 resume preserve installed-bundle durable state", a
   expect(journal.migrationLockEntries).toHaveLength(1);
   journal.formatVersion = 2;
   delete journal.migrationLockEntries;
+  delete journal.pathResolutionBase;
   fs.writeFileSync(getMigrationApplyJournalPath(), `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
+
+  fs.mkdirSync(path.dirname(getLockfilePath()), { recursive: true });
+  fs.writeFileSync(
+    getLockfilePath(),
+    `${JSON.stringify([
+      { id: "installed-owner-repo", source: "github", ref: "owner/repo", localRoot: "relative-installed" },
+    ])}\n`,
+    { mode: 0o600 },
+  );
+  const unsafeResume = await runCliCapture(["migrate", "apply"]);
+  expect(unsafeResume.code).not.toBe(0);
+  expect(unsafeResume.stderr).toMatch(/cannot safely resume.*relative source paths.*working-directory binding/i);
+  fs.rmSync(getLockfilePath());
 
   const applied = await runCliCapture(["migrate", "apply"]);
   expect(applied.code, applied.stderr).toBe(0);
@@ -305,6 +423,7 @@ test("a v2 journal fails closed when its prepared installed root cannot be recov
   const journal = JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8"));
   journal.formatVersion = 2;
   delete journal.migrationLockEntries;
+  delete journal.pathResolutionBase;
   fs.writeFileSync(getMigrationApplyJournalPath(), `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
   const before = fs.readFileSync(getMigrationApplyJournalPath());
 
@@ -330,6 +449,10 @@ test("a required installed-bundle lock write keeps forward recovery pending", as
   expect(JSON.parse(fs.readFileSync(getConfigPath(), "utf8")).configVersion).toBe("0.8.0");
   expect(fs.readFileSync(getLockfilePath(), "utf8")).toBe("not a lockfile");
 
+  const format3Journal = JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8"));
+  format3Journal.formatVersion = 3;
+  delete format3Journal.pathResolutionBase;
+  fs.writeFileSync(getMigrationApplyJournalPath(), `${JSON.stringify(format3Journal, null, 2)}\n`, { mode: 0o600 });
   fs.rmSync(getLockfilePath());
   const resumed = await runCliCapture(["migrate", "apply"]);
   expect(resumed.code, resumed.stderr).toBe(0);
@@ -337,6 +460,107 @@ test("a required installed-bundle lock write keeps forward recovery pending", as
     { id: "installed-owner-repo", source: "github", ref: "owner/repo", localRoot: installedRoot },
   ]);
   expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+}, 30_000);
+
+test("relative pre-cutover roots resume against the journaled cwd", async () => {
+  const initialCwd = path.join(getDataDir(), "migration-initial", "working");
+  const resumeCwd = path.join(getDataDir(), "migration-resume", "deeper", "working");
+  const relativeStash = path.join("..", "relative-stash");
+  const stashRoot = path.resolve(initialCwd, relativeStash);
+  const memoriesDir = path.join(stashRoot, "memories");
+  const tasksDir = path.join(stashRoot, "tasks");
+  const workflowsDir = path.join(stashRoot, "workflows");
+  fs.mkdirSync(initialCwd, { recursive: true });
+  fs.mkdirSync(memoriesDir, { recursive: true });
+  fs.mkdirSync(tasksDir, { recursive: true });
+  fs.mkdirSync(workflowsDir, { recursive: true });
+  fs.mkdirSync(resumeCwd, { recursive: true });
+  fs.writeFileSync(path.join(memoriesDir, "note.md"), "---\ndescription: Generated\n---\n\nBody.\n");
+  writeLegacyStashFile(memoriesDir, {
+    entries: [
+      {
+        name: "note",
+        type: "memory",
+        filename: "note.md",
+        description: "Resolved from the original migration cwd",
+      },
+    ],
+  });
+  fs.writeFileSync(path.join(workflowsDir, "relative.md"), "# Relative workflow\n");
+  const taskPath = path.join(tasksDir, "relative.yml");
+  fs.writeFileSync(taskPath, `schedule: "@daily"\nworkflow: ${["workflow", "relative"].join(":")}\n`);
+
+  fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
+  fs.writeFileSync(getConfigPath(), `${JSON.stringify({ configVersion: "0.8.0", stashDir: relativeStash })}\n`, {
+    mode: 0o600,
+  });
+  const prepared = path.join(path.dirname(getConfigPath()), "prepared-relative-0.9.json");
+  fs.writeFileSync(
+    prepared,
+    `${JSON.stringify({ configVersion: "0.9.0", semanticSearchMode: "off", stashDir: relativeStash })}\n`,
+    { mode: 0o600 },
+  );
+  openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+
+  const cliPath = path.resolve(import.meta.dir, "../..", "src", "cli.ts");
+  const crashed = Bun.spawn([process.execPath, cliPath, "migrate", "apply", "--config", prepared], {
+    cwd: initialCwd,
+    env: { ...process.env, AKM_TEST_MIGRATION_CRASH_AFTER: "workflow" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [crashCode] = await Promise.all([
+    crashed.exited,
+    new Response(crashed.stdout).text(),
+    new Response(crashed.stderr).text(),
+  ]);
+  expect(crashCode).not.toBe(0);
+  const journal = JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8"));
+  expect(journal).toMatchObject({
+    formatVersion: 4,
+    pathResolutionBase: initialCwd,
+    phase: "workflow-applied",
+  });
+
+  const format3Journal = { ...journal, formatVersion: 3 };
+  delete format3Journal.pathResolutionBase;
+  fs.writeFileSync(getMigrationApplyJournalPath(), `${JSON.stringify(format3Journal, null, 2)}\n`, { mode: 0o600 });
+  const unsafeResume = Bun.spawn([process.execPath, cliPath, "migrate", "apply"], {
+    cwd: resumeCwd,
+    env: { ...process.env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [unsafeCode, , unsafeStderr] = await Promise.all([
+    unsafeResume.exited,
+    new Response(unsafeResume.stdout).text(),
+    new Response(unsafeResume.stderr).text(),
+  ]);
+  expect(unsafeCode).not.toBe(0);
+  expect(unsafeStderr).toMatch(/cannot safely resume.*relative source paths.*working-directory binding/i);
+  expect(fs.existsSync(path.join(memoriesDir, ".stash.json"))).toBe(true);
+  expect(fs.readFileSync(taskPath, "utf8")).toContain(["workflow", "relative"].join(":"));
+
+  fs.writeFileSync(getMigrationApplyJournalPath(), `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
+
+  const resumed = Bun.spawn([process.execPath, cliPath, "migrate", "apply"], {
+    cwd: resumeCwd,
+    env: { ...process.env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [resumeCode, , resumeStderr] = await Promise.all([
+    resumed.exited,
+    new Response(resumed.stdout).text(),
+    new Response(resumed.stderr).text(),
+  ]);
+  expect(resumeCode, resumeStderr).toBe(0);
+  expect(fs.existsSync(path.join(memoriesDir, ".stash.json"))).toBe(false);
+  expect(parseFrontmatter(fs.readFileSync(path.join(memoriesDir, "note.md"), "utf8")).data.description).toBe(
+    "Resolved from the original migration cwd",
+  );
+  expect(fs.readFileSync(taskPath, "utf8")).toContain("workflow: workflows/relative");
+  expect(fs.existsSync(path.join(resumeCwd, relativeStash))).toBe(false);
 }, 30_000);
 
 test("workflow deletion failures propagate so the boundary can be retried", () => {
@@ -1063,7 +1287,7 @@ describe("(g) migrate apply imports pre-0.9 filesystem proposals into state.db",
 
     // (6) Re-running the import step itself over the still-on-disk legacy files
     // re-imports nothing (INSERT OR IGNORE on the UUID) — idempotent.
-    expect(importLegacyProposalsIntoState(getStateDbPathInDataDir(), [stash])).toBe(0);
+    expect(importLegacyProposalsIntoState(getStateDbPathInDataDir(), [{ path: stash, bundleId: "stash" }])).toBe(0);
     expect(readProposalRows(stash).map((r) => r.id)).toEqual([pendingId, acceptedId]);
   }, 30_000);
 });

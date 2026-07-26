@@ -5,9 +5,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import type { AkmConfig } from "../../src/core/config/config";
 import { getMigrationApplyJournalPath, inspectMigrationState } from "../../src/core/migration-backup";
 import { getConfigPath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
+import { planTaskTargetRefMigration } from "../../src/migrate/legacy/task-target-ref-migration";
 import { openStateDbAtCeiling, PRE_CUTOVER_STATE_CEILING } from "../_fixtures/migration/seed-rows";
 import { runCliCapture } from "../_helpers/cli";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
@@ -74,6 +76,29 @@ test("a stale persisted workflow target is rewritten without blocking core migra
   expect(fs.readFileSync(taskPath, "utf8")).toContain("workflow: workflows/missing");
   expect(inspectMigrationState().state.status).toBe("current");
   expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+});
+
+test("task planning uses the migration journal's managed-bundle root", () => {
+  const managedRoot = path.join(storage.root, "journal-managed-root");
+  fs.mkdirSync(path.join(managedRoot, "tasks"), { recursive: true });
+  fs.mkdirSync(path.join(managedRoot, "workflows"), { recursive: true });
+  fs.writeFileSync(path.join(managedRoot, "workflows", "managed.md"), "# Managed\n");
+  const taskPath = path.join(managedRoot, "tasks", "managed.yml");
+  fs.writeFileSync(taskPath, `schedule: "@daily"\nworkflow: ${["workflow", "managed"].join(":")}\n`);
+  const config = {
+    semanticSearchMode: "off",
+    bundles: { managed: { git: "https://example.test/managed.git", writable: true } },
+    defaultBundle: "managed",
+    defaultWriteTarget: "managed",
+  } as AkmConfig;
+
+  const plan = planTaskTargetRefMigration(config, storage.root, [
+    { id: "managed", source: "git", ref: "https://example.test/managed.git", localRoot: managedRoot },
+  ]);
+
+  expect(plan.rewrites).toHaveLength(1);
+  expect(plan.rewrites[0]?.filePath).toBe(taskPath);
+  expect(plan.rewrites[0]?.to).toBe("workflows/managed");
 });
 
 test("a crash after task mutation resumes the journaled forward phase idempotently", async () => {

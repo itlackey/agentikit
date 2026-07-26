@@ -23,7 +23,7 @@ export function markdownHeadingSlug(heading: string): string {
     .trim()
     .toLowerCase()
     .replace(/<[^>]*>/g, "")
-    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
+    .replace(/[^\p{L}\p{N}\s_-]+/gu, "-")
     .replace(/[\s_]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
@@ -34,13 +34,15 @@ export function markdownFragmentSlugs(content: string): string[] {
 }
 
 function uniqueHeadingSlugs(headings: TocHeading[]): string[] {
-  const counts = new Map<string, number>();
+  const used = new Set<string>();
   return headings.map((heading) => {
     const base = markdownHeadingSlug(heading.text);
     if (!base) return "";
-    const count = counts.get(base) ?? 0;
-    counts.set(base, count + 1);
-    return count === 0 ? base : `${base}-${count}`;
+    let slug = base;
+    let suffix = 0;
+    while (used.has(slug)) slug = `${base}-${++suffix}`;
+    used.add(slug);
+    return slug;
   });
 }
 
@@ -83,10 +85,11 @@ export function extractSection(
 ): { content: string; startLine: number; endLine: number } | null {
   const lines = content.split(/\r?\n/);
   const headings = parseMarkdownToc(content).headings;
-  const exact = headings.find((candidate) => candidate.text.toLowerCase() === heading.trim().toLowerCase());
-  const targetSlug = markdownHeadingSlug(heading);
-  const slugIndex = exact ? -1 : uniqueHeadingSlugs(headings).findIndex((slug) => slug === targetSlug);
-  const selected = exact ?? (slugIndex >= 0 ? headings[slugIndex] : undefined);
+  const fragment = heading.trim();
+  const slugIndex = uniqueHeadingSlugs(headings).indexOf(fragment);
+  const exact =
+    slugIndex < 0 ? headings.find((candidate) => candidate.text.toLowerCase() === fragment.toLowerCase()) : undefined;
+  const selected = slugIndex >= 0 ? headings[slugIndex] : exact;
   if (!selected) return null;
 
   const next = headings.find((candidate) => candidate.line > selected.line && candidate.level <= selected.level);

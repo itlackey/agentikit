@@ -16,6 +16,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { type SearchSource as IndexSearchSource, resolveSourceEntries } from "../indexer/search/search-source";
+import { resolveSourcesForOrigin } from "../registry/origin-resolve";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "./asset/asset-create";
 import { assetPathForName } from "./asset/asset-placement";
 import type { AssetRef } from "./asset/resolve-ref";
@@ -65,18 +66,13 @@ export function findEnvSource(origin: string | undefined, type: "env" | "secret"
   if (sources.length === 0) {
     throw new UsageError("No stashes configured. Run `akm init` to create your working stash.");
   }
-  const candidates =
-    !origin || origin === "local"
-      ? origin === "local"
-        ? sources.slice(0, 1)
-        : sources
-      : sources.filter((s) => s.registryId === origin);
+  const candidates = origin ? resolveSourcesForOrigin(origin, sources) : sources;
   const typeDir = type === "env" ? "env" : "secrets";
   const member = candidates.find((source) =>
     fs.existsSync(assetPathForName(type, path.join(source.path, typeDir), name)),
   );
   if (member) return member;
-  if (!origin || origin === "local") {
+  if (!origin) {
     const fallback = candidates[0];
     if (fallback) return fallback;
     throw new UsageError("No stashes configured. Run `akm init` to create your working stash.");
@@ -91,7 +87,7 @@ export function findEnvSource(origin: string | undefined, type: "env" | "secret"
 export function makeEnvRef(name: string, source?: IndexSearchSource): string {
   // F4b output-spelling flip: `env/name` in the primary stash, `bundle//env/name`
   // for a slug-clean named source.
-  return displayRef({ type: "env", name, bundleId: source?.registryId });
+  return displayRef({ type: "env", name, bundleId: source?.registryId }, displayDefaultBundle(source));
 }
 
 /**
@@ -135,7 +131,14 @@ export function parseSecretRef(ref: string): AssetRef {
 export function makeSecretRef(name: string, source?: IndexSearchSource): string {
   // F4b output-spelling flip: `secrets/name` in the primary stash,
   // `bundle//secrets/name` for a slug-clean named source.
-  return displayRef({ type: "secret", name, bundleId: source?.registryId });
+  return displayRef({ type: "secret", name, bundleId: source?.registryId }, displayDefaultBundle(source));
+}
+
+function displayDefaultBundle(source?: IndexSearchSource): string | undefined {
+  const config = loadConfig();
+  if (config.defaultBundle || !source) return config.defaultBundle;
+  const primary = resolveSourceEntries(undefined, config)[0];
+  return primary && path.resolve(primary.path) === path.resolve(source.path) ? source.registryId : undefined;
 }
 
 export function resolveSecretPath(
@@ -205,7 +208,7 @@ export function resolveEnvWriteTarget(
     assertFlatAssetName(parsed.name);
     parsed.name = combineCreatePath(normalizeCreateSubPath(create.subPath), parsed.name);
   }
-  const resolved = resolveMutationTarget(loadConfig(), parsed, writeTarget);
+  const resolved = resolveMutationTarget(loadConfig(), parsed, writeTarget, { allowedAdapters: ["akm", "dotenv"] });
   const { target } = resolved;
   const envRoot = path.join(target.source.path, "env");
   const absPath = assetPathForName("env", envRoot, parsed.name);
@@ -241,7 +244,7 @@ export function resolveSecretWriteTarget(
     assertFlatAssetName(parsed.name);
     parsed.name = combineCreatePath(normalizeCreateSubPath(create.subPath), parsed.name);
   }
-  const resolved = resolveMutationTarget(loadConfig(), parsed, writeTarget);
+  const resolved = resolveMutationTarget(loadConfig(), parsed, writeTarget, { allowedAdapters: ["akm", "dotenv"] });
   const { target } = resolved;
   const typeRoot = path.join(target.source.path, "secrets");
   const absPath = assetPathForName("secret", typeRoot, parsed.name);

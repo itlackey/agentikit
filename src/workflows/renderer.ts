@@ -68,7 +68,7 @@ export const workflowMdRenderer: AssetRenderer = {
     // primary/default-bundle workflow renders the SHORT conceptId
     // (`workflows/<name>`); a named source qualifies it as
     // (`<bundle>//workflows/<name>`).
-    const ref = displayRef({ type: "workflow", name, bundleId: ctx.origin });
+    const ref = displayRef({ type: "workflow", name, bundleId: ctx.origin }, ctx.defaultBundle);
     return {
       type: "workflow",
       name,
@@ -106,7 +106,7 @@ export const workflowProgramRenderer: AssetRenderer = {
     // WI-8.5b (display flip): the `akm workflow next <ref>` action is DISPLAY
     // output — its spelling follows the D-R5 display rule (`displayRef`), mirroring
     // workflowMdRenderer above.
-    const ref = displayRef({ type: "workflow", name, bundleId: ctx.origin });
+    const ref = displayRef({ type: "workflow", name, bundleId: ctx.origin }, ctx.defaultBundle);
     const parameters = projectProgramParameters(program);
     return {
       type: "workflow",

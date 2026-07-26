@@ -152,13 +152,18 @@ describe("resolveSourceEntries", () => {
     }
   });
 
-  test("skips non-existent stash paths", () => {
+  test("keeps non-existent configured paths so indexing can preserve their last-known-good rows", () => {
     saveConfig({
       semanticSearchMode: "off",
       bundles: { missing: { path: "/nonexistent/path/should/not/exist" } },
     });
     const sources = resolveSourceEntries();
-    expect(sources.length).toBe(1);
+    expect(sources).toHaveLength(2);
+    expect(sources[1]).toMatchObject({
+      path: "/nonexistent/path/should/not/exist",
+      registryId: "missing",
+      type: "filesystem",
+    });
   });
 
   test("includes registry-managed bundles resolved from the lock localRoot", () => {
@@ -217,6 +222,71 @@ describe("resolveSourceEntries", () => {
       expect(sources[0]!.path).toBe(overrideDir);
     } finally {
       fs.rmSync(overrideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps AKM_STASH_DIR ahead of a configured default bundle", () => {
+    const configuredDefault = fs.mkdtempSync(path.join(os.tmpdir(), "akm-configured-default-"));
+    try {
+      saveConfig({
+        semanticSearchMode: "off",
+        defaultBundle: "configured",
+        bundles: { configured: { path: configuredDefault } },
+      });
+
+      const sources = resolveSourceEntries();
+      expect(sources.map((source) => source.path)).toEqual([stashDir, configuredDefault]);
+      expect(sources[0]?.registryId).toBeUndefined();
+      expect(sources[1]?.registryId).toBe("configured");
+    } finally {
+      fs.rmSync(configuredDefault, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps an explicit stash override ahead of env and default bundle", () => {
+    const configuredDefault = fs.mkdtempSync(path.join(os.tmpdir(), "akm-configured-default-"));
+    const overrideDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-explicit-override-"));
+    try {
+      saveConfig({
+        semanticSearchMode: "off",
+        defaultBundle: "configured",
+        bundles: { configured: { path: configuredDefault } },
+      });
+
+      const sources = resolveSourceEntries(overrideDir);
+      expect(sources.map((source) => source.path)).toEqual([overrideDir, configuredDefault]);
+    } finally {
+      fs.rmSync(configuredDefault, { recursive: true, force: true });
+      fs.rmSync(overrideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("represents an escaping default component as unresolved without inserting the escaped root", () => {
+    const bundleRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-escaping-default-"));
+    try {
+      saveConfig({
+        semanticSearchMode: "off",
+        defaultBundle: "escaping",
+        bundles: {
+          escaping: { path: bundleRoot, components: { main: { root: "..", adapter: "akm" } } },
+        },
+      });
+
+      const sources = resolveSourceEntries();
+      const unresolved = sources.find((source) => source.registryId === "escaping");
+      expect(sources[0]?.path).toBe(stashDir);
+      expect(unresolved).toMatchObject({ unresolved: true, registryId: "escaping" });
+      expect(unresolved?.path.startsWith(`${bundleRoot}${path.sep}`)).toBe(true);
+      expect(sources.some((source) => source.path === path.dirname(bundleRoot))).toBe(false);
+      if (!unresolved) throw new Error("expected unresolved source");
+      fs.mkdirSync(unresolved.path, { recursive: true });
+      expect(resolveSourceEntries(unresolved.path)[0]).toMatchObject({
+        path: unresolved.path,
+        registryId: "escaping",
+        unresolved: true,
+      });
+    } finally {
+      fs.rmSync(bundleRoot, { recursive: true, force: true });
     }
   });
 

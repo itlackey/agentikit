@@ -25,6 +25,10 @@ export interface SyncOptions {
   now?: Date;
   /** Treat the cloned repo as writable (keeps `.git` and pulls instead of re-cloning). */
   writable?: boolean;
+  /** Existing writable content root to update in place without changing its durable path. */
+  writableRoot?: string;
+  /** Configured component roots that must still exist in the fetched revision. */
+  writableRequiredRoots?: readonly string[];
   /** Override cache root directory — primarily for tests. */
   cacheRootDir?: string;
 }

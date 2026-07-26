@@ -37,6 +37,7 @@ import {
   type WriteTargetSource,
   writeAssetToSource,
 } from "../../src/core/write-source";
+import { slugForPath } from "../../src/indexer/installations";
 import { resolveSourceEntries } from "../../src/indexer/search/search-source";
 import { writeLockfile } from "../../src/integrations/lockfile";
 import { getCachePaths, parseGitRepoUrl } from "../../src/sources/providers/git";
@@ -563,7 +564,7 @@ describe("resolveWriteTarget", () => {
     process.env.AKM_STASH_DIR = stashDir;
     const result = resolveWriteTarget({ semanticSearchMode: "off" });
     expect(result.selector).toBeUndefined();
-    expect(result.source.name).toBe("stash");
+    expect(result.source.name).toBe(slugForPath(stashDir));
     expect(result.source.kind).toBe("filesystem");
     expect(result.source.path).toBe(stashDir);
   });

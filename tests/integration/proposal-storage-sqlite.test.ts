@@ -17,6 +17,7 @@
  *   • UUID-prefix resolution + stash_dir partitioning against the table.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -336,9 +337,9 @@ function legacyRecord(id: string, ref: string, status: string, extra: Record<str
  * Migrate the state.db (so the `proposals` table exists), then run the migrator's
  * one-time import over `stash`. Returns the imported count.
  */
-function runLegacyImport(stash: string): number {
+function runLegacyImport(stash: string, bundleId = "stash"): number {
   openStateDatabase(getStateDbPath()).close();
-  return importLegacyProposalsIntoState(getStateDbPath(), [stash]);
+  return importLegacyProposalsIntoState(getStateDbPath(), [{ path: stash, bundleId }]);
 }
 
 describe("migrator legacy-import output round-trips the proposal lifecycle", () => {
@@ -392,6 +393,42 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     expect(getProposal(stash, id).status).toBe("reverted");
   });
 
+  test("an accepted target is re-keyed with the migrated bundle before revert", async () => {
+    const stash = makeStashDir();
+    const id = "44444444-4444-4444-8444-444444444444";
+    const assetPath = path.join(stash, "lessons", "accepted-target.md");
+    const acceptedBody = `${VALID_LESSON}\nAccepted revision.\n`;
+    fs.writeFileSync(assetPath, acceptedBody, "utf8");
+    writeLegacyProposal(
+      stash,
+      legacyRecord(id, "stash//lesson:accepted-target", "accepted", {
+        backup: "backup.md",
+        acceptedTarget: {
+          source: "stash",
+          root: stash,
+          path: assetPath,
+          contentHash: createHash("sha256").update(acceptedBody, "utf8").digest("hex"),
+        },
+      }),
+      { archive: true, backupBody: "---\ndescription: Prior\nwhen_to_use: Prior\n---\n\nPRIOR BODY.\n" },
+    );
+
+    expect(runLegacyImport(stash, "primary")).toBe(1);
+    expect(getProposal(stash, id).acceptedTarget).toMatchObject({
+      source: "primary",
+      root: path.resolve(stash),
+      path: assetPath,
+    });
+    const config = {
+      bundles: { primary: { path: stash, writable: true } } as AkmConfig["bundles"],
+      defaultBundle: "primary",
+      defaultWriteTarget: "primary",
+    } as AkmConfig;
+    const reverted = await akmProposalRevert({ stashDir: stash, id, config });
+    expect(reverted.ok).toBe(true);
+    expect(fs.readFileSync(assetPath, "utf8")).toContain("PRIOR BODY.");
+  });
+
   test("re-running the import never duplicates rows (INSERT OR IGNORE on UUID)", () => {
     const stash = makeStashDir();
     const id = "66666666-6666-4666-8666-666666666666";
@@ -399,7 +436,7 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
 
     expect(runLegacyImport(stash)).toBe(1);
     // Second pass over the still-on-disk files re-imports nothing.
-    expect(importLegacyProposalsIntoState(getStateDbPath(), [stash])).toBe(0);
+    expect(importLegacyProposalsIntoState(getStateDbPath(), [{ path: stash, bundleId: "stash" }])).toBe(0);
     expect(listProposals(stash)).toHaveLength(1);
     expect(countRows(stash)).toBe(1);
   });
@@ -417,13 +454,41 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     expect(getProposal(stash, id).status).toBe("accepted");
   });
 
+  test("legacy local, short, and transitional refs use the migrated bundle mapping", () => {
+    const stash = makeStashDir();
+    const refs = [
+      ["77777777-7777-4777-8777-777777777771", "lesson:legacy-short"],
+      ["77777777-7777-4777-8777-777777777772", "local//lesson:legacy-local"],
+      ["77777777-7777-4777-8777-777777777773", "lessons/transitional-short"],
+    ] as const;
+    for (const [id, ref] of refs) writeLegacyProposal(stash, legacyRecord(id, ref, "pending"));
+
+    expect(runLegacyImport(stash, "primary")).toBe(3);
+
+    const migrated = listProposals(stash).sort((a, b) => a.ref.localeCompare(b.ref));
+    expect(migrated.map((proposal) => proposal.ref)).toEqual([
+      "primary//lessons/legacy-local",
+      "primary//lessons/legacy-short",
+      "primary//lessons/transitional-short",
+    ]);
+    for (const proposal of migrated) {
+      expect(proposal.proposedTarget).toEqual({ source: "primary", root: path.resolve(stash) });
+    }
+  });
+
   test("legacy origin-qualified refs migrate for current filtering and bound acceptance", async () => {
     const primary = makeStashDir();
     const team = makeStashDir();
     const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const legacyRef = `team//${"lesson"}:legacy-origin`;
     writeLegacyProposal(team, legacyRecord(id, legacyRef, "pending"));
-    expect(runLegacyImport(team)).toBe(1);
+    openStateDatabase(getStateDbPath()).close();
+    expect(
+      importLegacyProposalsIntoState(getStateDbPath(), [
+        { path: primary, bundleId: "primary" },
+        { path: team, bundleId: "team" },
+      ]),
+    ).toBe(1);
 
     expect(listProposals(team, { ref: "lessons/legacy-origin" }).map((proposal) => proposal.id)).toEqual([id]);
     expect(listProposals(team, { ref: "team//lessons/legacy-origin" }).map((proposal) => proposal.id)).toEqual([id]);
@@ -442,6 +507,92 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     const accepted = await akmProposalAccept({ queue: "team", id, config });
     expect(accepted.assetPath).toBe(path.join(team, "lessons", "legacy-origin.md"));
     expect(fs.existsSync(path.join(primary, "lessons", "legacy-origin.md"))).toBe(false);
+  });
+
+  test("legacy locator-qualified refs bind to the configured canonical bundle", async () => {
+    const primary = makeStashDir();
+    const team = makeStashDir();
+    const id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const relativeId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    writeLegacyProposal(primary, legacyRecord(id, "github:example/team#v1//lesson:legacy-locator", "pending"));
+    writeLegacyProposal(
+      primary,
+      legacyRecord(
+        relativeId,
+        `${path.relative(process.cwd(), team).replaceAll(path.sep, "/")}//lesson:legacy-relative`,
+        "pending",
+      ),
+    );
+    openStateDatabase(getStateDbPath()).close();
+    expect(
+      importLegacyProposalsIntoState(getStateDbPath(), [
+        { path: primary, bundleId: "primary" },
+        { path: team, bundleId: "team", registryId: "github:example/team" },
+      ]),
+    ).toBe(2);
+
+    const migrated = getProposal(primary, id);
+    expect(migrated.ref).toBe("team//lessons/legacy-locator");
+    expect(migrated.proposedTarget).toEqual({ source: "team", root: path.resolve(team) });
+    const relative = getProposal(primary, relativeId);
+    expect(relative.ref).toBe("team//lessons/legacy-relative");
+    expect(relative.proposedTarget).toEqual({ source: "team", root: path.resolve(team) });
+
+    const config = {
+      bundles: {
+        primary: { path: primary, writable: true },
+        team: { path: team, writable: true, registryId: "github:example/team" },
+      },
+      defaultBundle: "primary",
+      defaultWriteTarget: "primary",
+    } as unknown as AkmConfig;
+    const accepted = await akmProposalAccept({ stashDir: primary, id, config });
+    expect(accepted.assetPath).toBe(path.join(team, "lessons", "legacy-locator.md"));
+    expect(fs.existsSync(path.join(primary, "lessons", "legacy-locator.md"))).toBe(false);
+  });
+
+  test("a path-derived legacy bundle alias rekeys to its configured bundle", () => {
+    const physical = makeStashDir();
+    const id = "abababab-abab-4bab-8bab-abababababab";
+    const legacyBundleId = path.basename(physical).toLowerCase();
+    writeLegacyProposal(physical, legacyRecord(id, `${legacyBundleId}//lesson:path-owned`, "pending"));
+    openStateDatabase(getStateDbPath()).close();
+
+    expect(
+      importLegacyProposalsIntoState(getStateDbPath(), [{ path: physical, bundleId: "primary", legacyBundleId }]),
+    ).toBe(1);
+    expect(getProposal(physical, id)).toMatchObject({
+      ref: "primary//lessons/path-owned",
+      proposedTarget: { source: "primary", root: path.resolve(physical) },
+    });
+  });
+
+  test("canonical bundle ids win alias collisions and ambiguous aliases are skipped", () => {
+    const primary = makeStashDir();
+    const team = makeStashDir();
+    const catalog = makeStashDir();
+    const versionOne = makeStashDir();
+    const versionTwo = makeStashDir();
+    const canonicalId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const ambiguousId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    writeLegacyProposal(primary, legacyRecord(canonicalId, "team//lesson:canonical-wins", "pending"));
+    writeLegacyProposal(primary, legacyRecord(ambiguousId, "github:example/shared//lesson:ambiguous-alias", "pending"));
+    openStateDatabase(getStateDbPath()).close();
+
+    expect(
+      importLegacyProposalsIntoState(getStateDbPath(), [
+        { path: primary, bundleId: "primary" },
+        { path: team, bundleId: "team" },
+        { path: catalog, bundleId: "catalog", registryId: "team" },
+        { path: versionOne, bundleId: "version-one", registryId: "github:example/shared#v1" },
+        { path: versionTwo, bundleId: "version-two", registryId: "github:example/shared#v2" },
+      ]),
+    ).toBe(1);
+    expect(getProposal(primary, canonicalId)).toMatchObject({
+      ref: "team//lessons/canonical-wins",
+      proposedTarget: { source: "team", root: path.resolve(team) },
+    });
+    expect(() => getProposal(primary, ambiguousId)).toThrow(/not found/i);
   });
 });
 

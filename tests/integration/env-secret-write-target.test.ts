@@ -143,6 +143,26 @@ describe("env/secret write-target routing", () => {
     expect(JSON.parse(res.stdout).ref).toBe("env/prod");
   });
 
+  test("an explicitly named working-stash target still emits the short default ref", async () => {
+    writeSandboxConfig({ bundles: { primary: { path: storage.stashDir } } });
+
+    const res = await runCliCapture([
+      "env",
+      "set",
+      "prod",
+      "API_TOKEN",
+      "--from-file",
+      valueFile(),
+      "--target",
+      "primary",
+      "--format",
+      "json",
+    ]);
+
+    expect(res.code).toBe(0);
+    expect(JSON.parse(res.stdout).ref).toBe("env/prod");
+  });
+
   test("a non-writable --target fails fast with the shared ConfigError and writes nothing", async () => {
     const ro = bundleDir();
     writeSandboxConfig({
@@ -166,6 +186,37 @@ describe("env/secret write-target routing", () => {
     expect(res.code).toBe(78);
     expect(JSON.parse(res.stderr).error).toMatch(/not writable/i);
     expect(fs.existsSync(path.join(ro, "env", "prod.env"))).toBe(false);
+  });
+
+  test("a writable OKF target rejects env mutation before creating a file", async () => {
+    const okf = bundleDir();
+    writeSandboxConfig({
+      bundles: {
+        stash: { path: storage.stashDir },
+        vendor: {
+          path: okf,
+          components: { main: { root: ".", adapter: "okf", writable: true } },
+        },
+      },
+      defaultBundle: "stash",
+    });
+
+    const res = await runCliCapture([
+      "env",
+      "set",
+      "prod",
+      "API_TOKEN",
+      "--from-file",
+      valueFile(),
+      "--target",
+      "vendor",
+      "--format",
+      "json",
+    ]);
+
+    expect(res.code).toBe(2);
+    expect(JSON.parse(res.stderr).error).toMatch(/adapter "okf".*does not support AKM asset writes/i);
+    expect(fs.existsSync(path.join(okf, "env", "prod.env"))).toBe(false);
   });
 
   test("a git-backed writable target lands the write through a single boundary commit", async () => {

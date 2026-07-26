@@ -126,7 +126,7 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
     expect(shown.ref).toBe("skills/parity-skill");
   });
 
-  test("origin-prefixed ref: local//skill:foo resolves to primary stash path", async () => {
+  test("a missing qualified bundle does not retarget to the primary stash", async () => {
     const body = ["---", "name: origin-skill", "description: Test", "---", "# origin"].join("\n");
     writeFile(path.join(stashDir, "skills", "origin-skill", "SKILL.md"), body);
 
@@ -135,13 +135,10 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
     const bare = await lookup(parseAssetRef("skill:origin-skill"));
     const local = await lookup(parseAssetRef("local//skill:origin-skill"));
     expect(bare).not.toBeNull();
-    expect(local).not.toBeNull();
-    expect(local?.filePath).toBe(bare?.filePath);
+    expect(local).toBeNull();
 
-    // Show parity for both ref forms.
     const shownBare = await akmShowUnified({ ref: "skills/origin-skill" });
-    const shownLocal = await akmShowUnified({ ref: "local//skills/origin-skill" });
-    expect(shownBare.path).toBe(shownLocal.path);
+    await expect(akmShowUnified({ ref: "local//skills/origin-skill" })).rejects.toThrow();
     expect(shownBare.path).toBe(bare?.filePath as string);
   });
 

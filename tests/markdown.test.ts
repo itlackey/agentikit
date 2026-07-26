@@ -120,6 +120,20 @@ test("markdown fragments suffix duplicate and colliding heading slugs", () => {
   expect(extractSection(content, "c-2")?.content).toContain("Plus again.");
 });
 
+test("markdown fragments stay globally unique when a natural slug uses a generated suffix", () => {
+  const content = "# Foo\n\nFirst.\n\n# Foo\n\nSecond.\n\n# Foo-1\n\nLiteral suffix.\n";
+  expect(markdownFragmentSlugs(content)).toEqual(["foo", "foo-1", "foo-1-1"]);
+  expect(extractSection(content, "foo-1")?.content).toContain("Second.");
+  expect(extractSection(content, "foo-1")?.content).not.toContain("Literal suffix.");
+  expect(extractSection(content, "foo-1-1")?.content).toContain("Literal suffix.");
+});
+
+test("markdown fragments replace punctuation runs with separators", () => {
+  const content = "# Foo.Bar\n\nDot body.\n";
+  expect(markdownFragmentSlugs(content)).toEqual(["foo-bar"]);
+  expect(extractSection(content, "foo-bar")?.content).toContain("Dot body.");
+});
+
 test("extractLineRange returns correct lines (1-based inclusive)", () => {
   const content = "line1\nline2\nline3\nline4\nline5";
   expect(extractLineRange(content, 2, 4)).toBe("line2\nline3\nline4");

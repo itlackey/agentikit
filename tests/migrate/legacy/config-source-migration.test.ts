@@ -4,9 +4,8 @@
 
 /**
  * WI-8.4 — the config-shape migration (`stashDir`/`sources[]`/`installed[]` →
- * `bundles`/`defaultBundle`). The load-bearing assertion is the D-R5
- * no-identity-shift proof: the emitted bundle KEYS equal a direct
- * `deriveInstallations` run over the same pre-cutover source list.
+ * `bundles`/`defaultBundle`). The emitted keys follow the current reserved-id
+ * derivation; pre-reservation ids are retained only as cutover aliases.
  */
 
 import { beforeAll, describe, expect, test } from "bun:test";
@@ -14,6 +13,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { registerBuiltinAdapters } from "../../../src/core/adapter/adapters";
 import { resetAdapterRegistryForTests } from "../../../src/core/adapter/registry";
+import {
+  deriveBundleId,
+  deriveBundleIds,
+  deriveLegacyBundleIds,
+  inferLegacyBundleIds,
+} from "../../../src/core/bundle-id";
 import { validateConfigShape } from "../../../src/core/config/config-schema";
 import { bundleEntryToSourceEntry, installedSourceDescriptor } from "../../../src/core/config/config-sources";
 import { deriveInstallations } from "../../../src/indexer/installations";
@@ -71,7 +76,7 @@ describe("migrateConfigSourcesToBundles", () => {
     });
   });
 
-  test("emits bundle keys equal to a direct deriveInstallations run (D-R5 no-identity-shift proof)", () => {
+  test("emits bundle keys equal to the current reserved-id derivation", () => {
     const raw = oldShapeConfig();
     const migrated = migrateConfigSourcesToBundles(raw) as { bundles: Record<string, unknown>; defaultBundle?: string };
 
@@ -83,6 +88,70 @@ describe("migrateConfigSourcesToBundles", () => {
     expect(Object.keys(migrated.bundles)).toEqual(["akm", "team", "catalog", "repo"]);
     // defaultBundle is the primary (stashDir) bundle.
     expect(migrated.defaultBundle).toBe("akm");
+  });
+
+  test("reserves configured source ids before deriving a colliding primary path", () => {
+    const raw = {
+      configVersion: "0.9.0",
+      stashDir: "/home/u/stash",
+      sources: [{ type: "filesystem", path: "/home/u/team", name: "stash" }],
+    };
+    const migrated = migrateConfigSourcesToBundles(raw) as {
+      bundles: Record<string, unknown>;
+      defaultBundle: string;
+    };
+    const runtimeIds = deriveInstallations(oldConfigToSearchSources(raw)).map((installation) => installation.id);
+    const legacyIds = deriveLegacyBundleIds(oldConfigToSearchSources(raw));
+
+    expect(Object.keys(migrated.bundles)).toEqual(runtimeIds);
+    expect(runtimeIds[0]).not.toBe("stash");
+    expect(runtimeIds[1]).toBe("stash");
+    expect(migrated.defaultBundle).toBe(runtimeIds[0] as string);
+    expect(legacyIds[0]).toBe("stash");
+    expect(legacyIds[1]).not.toBe("stash");
+    expect(
+      inferLegacyBundleIds([
+        { id: runtimeIds[0] as string, path: "/home/u/stash" },
+        { id: runtimeIds[1] as string, path: "/home/u/team" },
+      ]),
+    ).toEqual(legacyIds);
+  });
+
+  test("recovers a pre-reservation id after multiple configured-id collisions", () => {
+    const primaryPath = "/home/u/stash";
+    const firstCollisionId = deriveBundleId(undefined, primaryPath, new Set(["stash"]));
+    const sources: Array<{ path: string; registryId?: string }> = [
+      { path: primaryPath },
+      { path: "/home/u/team", registryId: "stash" },
+      { path: "/home/u/catalog", registryId: firstCollisionId },
+    ];
+    const reservedIds = deriveBundleIds(sources);
+
+    expect(reservedIds[0]).toMatch(/-2$/);
+    expect(
+      inferLegacyBundleIds(sources.map((source, index) => ({ id: reservedIds[index] as string, path: source.path }))),
+    ).toEqual(deriveLegacyBundleIds(sources));
+  });
+
+  test("recovers a pre-reservation id after a tenth collision", () => {
+    const primaryPath = "/home/u/stash";
+    const collisionId = deriveBundleId(undefined, primaryPath, new Set(["stash"]));
+    const reserved = ["stash", collisionId, ...Array.from({ length: 8 }, (_, index) => `${collisionId}-${index + 2}`)];
+    const sources: Array<{ path: string; registryId?: string }> = [
+      { path: primaryPath },
+      ...reserved.map((registryId, index) => ({ path: `/home/u/reserved-${index}`, registryId })),
+    ];
+    const currentIds = deriveBundleIds(sources);
+    expect(currentIds[0]).toBe(`${collisionId}-10`);
+    expect(
+      inferLegacyBundleIds(
+        sources.map((source, index) => ({
+          id: currentIds[index] as string,
+          path: source.path,
+          ...(source.registryId ? { registryId: source.registryId } : {}),
+        })),
+      )[0],
+    ).toBe("stash");
   });
 
   test("emits faithful source descriptors and preserves the non-slug-legal registry id", () => {

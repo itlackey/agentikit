@@ -22,6 +22,7 @@ import { getTaskHistoryDir, getTaskLogDir } from "../../core/paths";
 import {
   commitWriteTargetBoundary,
   deleteAssetFromSource,
+  prepareWriteTargetForMutation,
   type ResolvedWriteTarget,
   resolveWriteTarget,
   writeAssetToSource,
@@ -955,7 +956,8 @@ function resolveTaskBundle(
   target: string | undefined,
   opts: { requireWritable: boolean },
 ): { resolved: ResolvedWriteTarget; stashDir: string; installTarget: string | undefined } {
-  const resolved = resolveWriteTarget(loadConfig(), target, { requireWritable: opts.requireWritable });
+  const selected = resolveWriteTarget(loadConfig(), target, { requireWritable: opts.requireWritable });
+  const resolved = opts.requireWritable ? prepareWriteTargetForMutation(selected) : selected;
   const stashDir = resolved.source.path;
   const installTarget = isPrimaryStashPath(stashDir) ? undefined : (resolved.selector ?? resolved.source.name);
   return { resolved, stashDir, installTarget };

@@ -414,8 +414,8 @@ describe("update preserves entry.source for writable installed entries", () => {
       bundles: {
         "dimm-city-agent-stash": {
           git: "https://github.com/dimm-city/agent-stash.git",
-          writable: true,
           registryId: "github:dimm-city/agent-stash",
+          components: { main: { root: ".", adapter: "okf", writable: true } },
         },
       },
     });
@@ -459,6 +459,12 @@ describe("update preserves entry.source for writable installed entries", () => {
     let result: Awaited<ReturnType<typeof akmUpdate>>;
     try {
       result = await akmUpdate({ target: "github:dimm-city/agent-stash", stashDir });
+      expect(syncSpy).toHaveBeenCalledWith("github:dimm-city/agent-stash", {
+        force: false,
+        writable: true,
+        writableRoot: stashRoot,
+        writableRequiredRoots: [stashRoot],
+      });
     } finally {
       syncSpy.mockRestore();
       mirrorSpy.mockRestore();
@@ -473,9 +479,59 @@ describe("update preserves entry.source for writable installed entries", () => {
     expect(bundle?.git).toBe("https://github.com/dimm-city/agent-stash");
     // writable must survive the update
     expect(bundle?.writable).toBe(true);
+    expect(bundle?.components).toEqual({ main: { root: ".", adapter: "okf", writable: true } });
     // resolved revision lives in the lock and should be updated
     const lock = readLockfile().find((e) => e.ref === "github:dimm-city/agent-stash");
     expect(lock?.source).toBe("git");
     expect(lock?.resolvedRevision).toBe("def456");
+  });
+
+  test("re-adding a writable install without --writable preserves and updates its checkout in place", async () => {
+    const stashRoot = createTmpDir("akm-qa-readd-writable-");
+    makeStashDir(stashRoot);
+    const cacheDir = createTmpDir("akm-qa-readd-cache-");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        "dimm-city-agent-stash": {
+          git: "https://github.com/dimm-city/agent-stash.git",
+          registryId: "github:dimm-city/agent-stash",
+          components: { main: { root: ".", adapter: "okf", writable: true } },
+        },
+      },
+    });
+    mergeLockEntriesSync([
+      {
+        id: "dimm-city-agent-stash",
+        source: "github",
+        ref: "github:dimm-city/agent-stash",
+        localRoot: stashRoot,
+        installedAt: "2026-04-22T16:39:07.564Z",
+      },
+    ]);
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+      id: "github:dimm-city/agent-stash",
+      source: "github",
+      ref: "github:dimm-city/agent-stash",
+      artifactUrl: "https://github.com/dimm-city/agent-stash.git",
+      contentDir: stashRoot,
+      cacheDir,
+      extractedDir: stashRoot,
+      syncedAt: new Date().toISOString(),
+      writable: true,
+    });
+    try {
+      await akmAdd({ ref: "github:dimm-city/agent-stash" });
+      expect(syncSpy).toHaveBeenCalledWith("github:dimm-city/agent-stash", {
+        writable: true,
+        writableRoot: stashRoot,
+        writableRequiredRoots: [stashRoot],
+      });
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(readLockfile().find((entry) => entry.id === "dimm-city-agent-stash")?.localRoot).toBe(stashRoot);
+    expect(loadConfig().bundles?.["dimm-city-agent-stash"]?.components?.main?.writable).toBe(true);
   });
 });

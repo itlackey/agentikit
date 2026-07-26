@@ -40,6 +40,36 @@ afterEach(() => {
 });
 
 describe("task asset mutations honor write-target resolution", () => {
+  test("rejects a writable OKF target before writing or installing a task", async () => {
+    const iso = withIsolatedAkmStorage();
+    const target = makeSandboxDir("akm-task-okf-target");
+    try {
+      saveConfig({
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        defaultWriteTarget: "target",
+        bundles: {
+          target: {
+            path: target.dir,
+            components: { main: { root: ".", adapter: "okf", writable: true } },
+          },
+        },
+      });
+
+      await expect(
+        tasksModule.akmTasksAdd(
+          { id: "vendor-task", schedule: "0 2 * * *", command: "echo vendor" },
+          { backend: fakeBackend },
+        ),
+      ).rejects.toThrow(/adapter "okf".*does not support AKM asset writes/i);
+      expect(fs.existsSync(path.join(target.dir, "tasks", "vendor-task.yml"))).toBe(false);
+      expect(backendState.installCalls).toEqual([]);
+    } finally {
+      iso.cleanup();
+      target.cleanup();
+    }
+  });
+
   test("add writes to defaultWriteTarget instead of the primary stash", async () => {
     const iso = withIsolatedAkmStorage();
     const target = makeSandboxDir("akm-task-target");

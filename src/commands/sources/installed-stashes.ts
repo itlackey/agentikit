@@ -57,6 +57,7 @@ interface ManagedInstall {
   resolvedVersion?: string;
   resolvedRevision?: string;
   writable: boolean;
+  requiredRoots: string[];
 }
 
 /** Enumerate the registry-managed installs (lock-backed bundles) in a config. */
@@ -67,6 +68,7 @@ function listManagedInstalls(config: AkmConfig): ManagedInstall[] {
   for (const [key, bundle] of Object.entries(bundles)) {
     const lock = locks.get(key);
     if (!lock) continue; // only lock-backed bundles are registry-managed
+    const componentWritable = Object.values(bundle.components ?? {})[0]?.writable;
     out.push({
       bundleKey: key,
       installId: bundle.registryId ?? key,
@@ -75,7 +77,12 @@ function listManagedInstalls(config: AkmConfig): ManagedInstall[] {
       localRoot: lock.localRoot ?? "",
       resolvedVersion: lock.resolvedVersion,
       resolvedRevision: lock.resolvedRevision,
-      writable: bundle.writable === true,
+      writable: componentWritable ?? bundle.writable === true,
+      requiredRoots: lock.localRoot
+        ? Object.values(bundle.components ?? {}).map((component) =>
+            path.resolve(lock.localRoot as string, component.root ?? "."),
+          )
+        : [],
     });
   }
   return out;
@@ -298,7 +305,12 @@ async function updateManagedInstall(managed: ManagedInstall, force: boolean): Pr
   // succeeds would turn any sync failure (network down, bad ref) into losing a
   // previously-working install. The old root is cleaned up below, after the
   // lock points at the new content.
-  const synced = await syncFromRef(managed.ref, { force });
+  const synced = await syncFromRef(managed.ref, {
+    force,
+    writable: managed.writable,
+    ...(managed.writable && managed.localRoot ? { writableRoot: managed.localRoot } : {}),
+    ...(managed.writable && managed.requiredRoots.length > 0 ? { writableRequiredRoots: managed.requiredRoots } : {}),
+  });
 
   const installedEntry: InstalledBundle = {
     id: managed.installId,
@@ -333,7 +345,8 @@ async function updateManagedInstall(managed: ManagedInstall, force: boolean): Pr
   if (
     managed.localRoot &&
     path.resolve(managed.localRoot) !== path.resolve(synced.contentDir) &&
-    managed.source !== "local"
+    managed.source !== "local" &&
+    !managed.writable
   ) {
     cleanupDirectoryBestEffort(managed.localRoot);
   }

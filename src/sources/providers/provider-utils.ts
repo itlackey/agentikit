@@ -89,7 +89,10 @@ export function buildInstallCacheDir(
   id: string,
   version?: string,
 ): string {
-  const slug = `${source}-${id.replace(/[^a-zA-Z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "")}`;
+  const safeId = id.replace(/[^a-zA-Z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
+  const identitySuffix =
+    version === "writable" ? `-${createHash("sha256").update(`${source}:${id}`).digest("hex").slice(0, 12)}` : "";
+  const slug = `${source}-${safeId}${identitySuffix}`;
   const versionSlug = source === "local" ? uniqueSlug() : (version?.replace(/[^a-zA-Z0-9_.-]+/g, "-") ?? uniqueSlug());
   return path.join(cacheRootDir, slug || source, versionSlug);
 }

@@ -421,7 +421,7 @@ describe("legacy-layout.ts — faithfulness: isDerivedMemory/resolveParentRef ma
   }
 });
 
-describe("legacy-layout.ts — faithfulness: resolveSourcesForOrigin/isRemoteOrigin match origin-resolve.ts live", () => {
+describe("legacy-layout.ts — frozen locator aliases intentionally diverge from live bundle resolution", () => {
   // Structurally satisfies both the live SearchSource[] and the frozen
   // LegacySource[] — only .path/.registryId are read by either.
   const sources: Array<{ path: string; registryId?: string; writable?: boolean }> = [
@@ -440,11 +440,17 @@ describe("legacy-layout.ts — faithfulness: resolveSourcesForOrigin/isRemoteOri
     "npm:totally-unknown-pkg",
   ];
 
-  for (const origin of ORIGIN_CASES) {
-    test(`origin=${JSON.stringify(origin)}`, () => {
-      const liveResult = resolveSourcesForOrigin(origin, sources);
+  test("an unqualified lookup still searches every source in both implementations", () => {
+    expect(frozenResolveSourcesForOrigin(undefined, sources as LegacySource[]).map((source) => source.path)).toEqual(
+      resolveSourcesForOrigin(undefined, sources).map((source) => source.path),
+    );
+  });
+
+  for (const origin of ORIGIN_CASES.filter((candidate): candidate is string => candidate !== undefined)) {
+    test(`legacy locator ${JSON.stringify(origin)} never becomes a live asset-bundle alias`, () => {
       const frozenResult = frozenResolveSourcesForOrigin(origin, sources as LegacySource[]);
-      expect(frozenResult.map((s) => s.path)).toEqual(liveResult.map((s) => s.path));
+      const liveResult = resolveSourcesForOrigin(origin, sources);
+      if (frozenResult.length > 0) expect(liveResult).toEqual([]);
     });
   }
 

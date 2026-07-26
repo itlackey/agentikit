@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { SearchSource } from "../../src/indexer/search/search-source";
-import { isRemoteOrigin, resolveSourcesForOrigin } from "../../src/registry/origin-resolve";
+import { isRemoteOrigin, resolveSourcesForLocator, resolveSourcesForOrigin } from "../../src/registry/origin-resolve";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -38,11 +38,30 @@ describe("resolveSourcesForOrigin", () => {
     expect(result).toEqual(sources);
   });
 
-  test("returns first source for 'local' origin", () => {
+  test("does not retarget an absent 'local' bundle to the primary source", () => {
     const sources = [makeSource(), makeSource(), makeSource()];
     const result = resolveSourcesForOrigin("local", sources);
-    expect(result).toHaveLength(1);
-    expect(result[0]).toBe(sources[0]);
+    expect(result).toEqual([]);
+  });
+
+  test("configured bundles named local or stash resolve literally", () => {
+    const primary = makeSource();
+    const local = makeSource({ registryId: "local" });
+    const stash = makeSource({ registryId: "stash" });
+    const sources = [primary, local, stash];
+
+    expect(resolveSourcesForOrigin("local", sources)).toEqual([local]);
+    expect(resolveSourcesForOrigin("stash", sources)).toEqual([stash]);
+  });
+
+  test("an implicit source resolves by its derived canonical bundle id", () => {
+    const parent = makeTmpDir();
+    const stashPath = path.join(parent, "stash");
+    fs.mkdirSync(stashPath);
+    const source = makeSource({ path: stashPath });
+
+    expect(resolveSourcesForOrigin("stash", [source])).toEqual([source]);
+    expect(resolveSourcesForOrigin("local", [source])).toEqual([]);
   });
 
   test("returns empty array for 'local' origin with no sources", () => {
@@ -50,13 +69,12 @@ describe("resolveSourcesForOrigin", () => {
     expect(result).toEqual([]);
   });
 
-  test("matches by exact registryId", () => {
+  test("does not treat an install registry id as an asset bundle id", () => {
     const target = makeSource({ registryId: "npm:@scope/pkg" });
     const other = makeSource({ registryId: "github:owner/repo" });
     const sources = [makeSource(), target, other];
     const result = resolveSourcesForOrigin("npm:@scope/pkg", sources);
-    expect(result).toHaveLength(1);
-    expect(result[0]).toBe(target);
+    expect(result).toEqual([]);
   });
 
   test("falls through to empty when parseRegistryRef throws for invalid shorthand", () => {
@@ -69,22 +87,19 @@ describe("resolveSourcesForOrigin", () => {
     expect(result).toEqual([]);
   });
 
-  test("matches by exact registryId with full prefix form", () => {
+  test("does not parse a full install locator as an asset bundle", () => {
     const target = makeSource({ registryId: "github:owner/repo" });
     const sources = [makeSource(), target];
-    // Full prefix "github:owner/repo" matches exact registryId
     const result = resolveSourcesForOrigin("github:owner/repo", sources);
-    expect(result).toHaveLength(1);
-    expect(result[0]).toBe(target);
+    expect(result).toEqual([]);
   });
 
-  test("matches by resolved path", () => {
+  test("does not parse a filesystem path as an asset bundle", () => {
     const dir = makeTmpDir();
     const source = makeSource({ path: dir });
     const sources = [makeSource(), source];
     const result = resolveSourcesForOrigin(dir, sources);
-    expect(result).toHaveLength(1);
-    expect(result[0]).toBe(source);
+    expect(result).toEqual([]);
   });
 
   test("returns empty array when no match found", () => {
@@ -98,23 +113,36 @@ describe("resolveSourcesForOrigin", () => {
     expect(result).toEqual([]);
   });
 
-  test("exact registryId match takes priority over path match", () => {
-    const dir = makeTmpDir();
-    const byId = makeSource({ registryId: dir });
-    const byPath = makeSource({ path: dir });
-    const sources = [byId, byPath];
-    // The origin matches byId's registryId exactly
-    const result = resolveSourcesForOrigin(dir, sources);
-    expect(result).toHaveLength(1);
-    expect(result[0]).toBe(byId);
+  test("a configured bundle id is reserved ahead of a colliding implicit id", () => {
+    const parent = makeTmpDir();
+    const stashPath = path.join(parent, "stash");
+    fs.mkdirSync(stashPath);
+    const implicit = makeSource({ path: stashPath });
+    const configured = makeSource({ registryId: "stash" });
+
+    expect(resolveSourcesForOrigin("stash", [implicit, configured])).toEqual([configured]);
   });
 
-  test("returns multiple sources if multiple registryIds match", () => {
-    const a = makeSource({ registryId: "npm:@scope/pkg" });
-    const b = makeSource({ registryId: "npm:@scope/pkg" });
-    const sources = [makeSource(), a, b];
-    const result = resolveSourcesForOrigin("npm:@scope/pkg", sources);
-    expect(result).toHaveLength(2);
+  test("a local bundle cannot fall through to npm shorthand", () => {
+    const parent = makeTmpDir();
+    const localPath = path.join(parent, "local");
+    fs.mkdirSync(localPath);
+    const implicit = makeSource({ path: localPath });
+    const npmLocal = makeSource({ registryId: "npm:local" });
+
+    expect(resolveSourcesForOrigin("local", [implicit, npmLocal])).toEqual([implicit]);
+  });
+});
+
+describe("resolveSourcesForLocator", () => {
+  test("matches exact registry ids and filesystem paths for clone inputs", () => {
+    const dir = makeTmpDir();
+    const byId = makeSource({ registryId: "npm:@scope/pkg" });
+    const byPath = makeSource({ path: dir });
+    const sources = [byId, byPath];
+
+    expect(resolveSourcesForLocator("npm:@scope/pkg", sources)).toEqual([byId]);
+    expect(resolveSourcesForLocator(dir, sources)).toEqual([byPath]);
   });
 });
 

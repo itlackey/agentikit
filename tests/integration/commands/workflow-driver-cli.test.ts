@@ -258,6 +258,33 @@ describe("akm workflow validate — origin-qualified refs resolve through the so
     expect(env.ok).toBe(false);
     expect(env.error).toMatch(/not found|No sources|origin/i);
   });
+
+  test("a repeated-separator filesystem path is validated as a path, not a bundle ref", async () => {
+    const extraStash = makeExtraStash();
+    writeSingleStepWorkflow(extraStash, "repeated-separator");
+    const repeatedPath = `${extraStash}${path.sep}${path.sep}workflows${path.sep}repeated-separator.md`;
+
+    const { code, stdout } = await runCliCapture(["--json", "workflow", "validate", repeatedPath]);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: true, stepCount: 1 });
+  });
+});
+
+describe("akm workflow refs — unknown bundles fail consistently", () => {
+  test("start, next, list, status, and brief return the usage envelope", async () => {
+    const commands = [
+      ["workflow", "start", "ghost//missing"],
+      ["workflow", "next", "ghost//missing"],
+      ["workflow", "list", "--ref", "ghost//missing"],
+      ["workflow", "status", "ghost//missing"],
+      ["workflow", "brief", "ghost//missing"],
+    ];
+    for (const command of commands) {
+      const result = await runCliCapture(["--json", ...command]);
+      expect(result.code, `${command.join(" ")}: ${result.stderr}`).toBe(2);
+      expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
+    }
+  });
 });
 
 describe("akm workflow validate — non-fatal WARNINGS surface additively (ok stays true)", () => {

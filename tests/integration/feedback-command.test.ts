@@ -134,7 +134,51 @@ describe("akm feedback", () => {
     const { parseFrontmatter } = await import("../../src/core/asset/frontmatter");
     const raw = fs.readFileSync(path.join(stashDir, "lessons", "deploy-lesson.md"), "utf8");
     const strength = parseFrontmatter(raw).data.lessonStrength;
-    expect(Array.isArray(strength) ? strength : []).toContain("memories/deploy-note");
+    expect(Array.isArray(strength) ? strength : []).toContain("stash//memories/deploy-note");
+  });
+
+  test("--applied-to preserves a qualified lesson bundle and never falls back", async () => {
+    const teamDir = path.join(storage.root, "team-stash");
+    const primaryLesson = path.join(stashDir, "lessons", "shared.md");
+    const teamLesson = path.join(teamDir, "lessons", "shared.md");
+    writeFile(path.join(stashDir, "memories", "note.md"), "---\ndescription: note\n---\nPrimary note.\n");
+    writeFile(primaryLesson, "---\ndescription: primary lesson\n---\nPrimary.\n");
+    writeFile(teamLesson, "---\ndescription: team lesson\n---\nTeam.\n");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        stash: { path: stashDir, writable: true },
+        team: { path: teamDir, writable: true },
+      },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+    });
+    await akmIndex({ stashDir, full: true });
+
+    const qualified = await runCli([
+      "feedback",
+      "stash//memories/note",
+      "--positive",
+      "--applied-to",
+      "team//lessons/shared",
+      "--format=json",
+    ]);
+    expect(qualified.status).toBe(0);
+
+    const { parseFrontmatter } = await import("../../src/core/asset/frontmatter");
+    expect(parseFrontmatter(fs.readFileSync(primaryLesson, "utf8")).data.lessonStrength).toBeUndefined();
+    expect(parseFrontmatter(fs.readFileSync(teamLesson, "utf8")).data.lessonStrength).toEqual(["stash//memories/note"]);
+
+    const absent = await runCli([
+      "feedback",
+      "stash//memories/note",
+      "--positive",
+      "--applied-to",
+      "local//lessons/shared",
+      "--format=json",
+    ]);
+    expect(absent.status).toBe(0);
+    expect(parseFrontmatter(fs.readFileSync(primaryLesson, "utf8")).data.lessonStrength).toBeUndefined();
   });
 
   test("accepts markdown command refs without requiring the .md suffix", async () => {

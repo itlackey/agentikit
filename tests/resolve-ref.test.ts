@@ -249,6 +249,15 @@ describe("displayRef (F4b output-spelling rule)", () => {
     expect(displayRef({ type: "knowledge", name: "guide", bundleId: "core" }, "core")).toBe("knowledge/guide");
   });
 
+  test("non-default bundles named local or stash remain qualified", () => {
+    expect(displayRef({ type: "knowledge", name: "guide", bundleId: "local" }, "primary")).toBe(
+      "local//knowledge/guide",
+    );
+    expect(displayRef({ type: "knowledge", name: "guide", bundleId: "stash" }, "primary")).toBe(
+      "stash//knowledge/guide",
+    );
+  });
+
   test("explicit conceptId wins over type/name derivation for the short form", () => {
     expect(displayRef({ type: "knowledge", name: "guide.md", conceptId: "knowledge/guide" })).toBe("knowledge/guide");
   });

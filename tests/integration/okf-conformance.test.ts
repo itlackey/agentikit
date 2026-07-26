@@ -1,17 +1,29 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { akmLint } from "../../src/commands/lint";
 import { akmProposalAccept } from "../../src/commands/proposal/proposal";
 import { createProposal, isProposalSkipped } from "../../src/commands/proposal/repository";
-import { writeMarkdownAsset } from "../../src/commands/read/knowledge";
+import { resolveSupersedesForWrite, writeMarkdownAsset } from "../../src/commands/read/knowledge";
 import { akmSearch } from "../../src/commands/read/search";
 import { showLocal } from "../../src/commands/read/show";
 import { loadConfig, resetConfigCache } from "../../src/core/config/config";
+import { readEvents } from "../../src/core/events";
 import { getDbPath } from "../../src/core/paths";
 import { akmIndex } from "../../src/indexer/indexer";
 import { resolveSourceEntries } from "../../src/indexer/search/search-source";
 import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
+import { upsertEmbedding } from "../../src/storage/repositories/index-vec-repository";
+import {
+  createWorkflowAsset,
+  getWorkflowProgramTemplate,
+  getWorkflowTemplate,
+} from "../../src/workflows/authoring/authoring";
+import { resolveRunId } from "../../src/workflows/exec/brief";
+import { getNextWorkflowStep, listWorkflowRuns } from "../../src/workflows/runtime/runs";
+import { loadWorkflowAsset } from "../../src/workflows/runtime/workflow-asset-loader";
+import { runCliCapture } from "../_helpers/cli";
 import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 function write(root: string, rel: string, content: string): void {
@@ -253,8 +265,289 @@ describe("OKF first-class conformance", () => {
     expect(readSwitchRow()).toEqual([{ entryKey: `${okfRoot}:concept:knowledge/switch`, adapterId: "okf" }]);
   });
 
+  test("an adapter change prunes directories omitted by the new walk policy", async () => {
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const db = openExistingDatabase(getDbPath());
+    const staleRows = db
+      .prepare(
+        "SELECT id, dir_path AS dirPath FROM entries " +
+          "WHERE item_ref IN ('adversarial//.hidden/hidden', 'adversarial//bin/bin-doc') ORDER BY item_ref",
+      )
+      .all() as Array<{ id: number; dirPath: string }>;
+    expect(staleRows).toHaveLength(2);
+    for (const row of staleRows)
+      upsertEmbedding(
+        db,
+        row.id,
+        new Array(384).fill(0).map((_, i) => (i === 0 ? 1 : 0)),
+      );
+    closeDatabase(db);
+
+    configure("akm");
+    resetConfigCache();
+    await akmIndex({ stashDir: storage.stashDir });
+
+    const switched = openExistingDatabase(getDbPath());
+    try {
+      const ids = staleRows.map((row) => row.id);
+      const placeholders = ids.map(() => "?").join(",");
+      expect(
+        switched.prepare(`SELECT COUNT(*) AS count FROM entries WHERE id IN (${placeholders})`).get(...ids),
+      ).toEqual({
+        count: 0,
+      });
+      expect(
+        switched.prepare(`SELECT COUNT(*) AS count FROM embeddings WHERE id IN (${placeholders})`).get(...ids),
+      ).toEqual({ count: 0 });
+      expect(
+        switched.prepare(`SELECT COUNT(*) AS count FROM entries_vec WHERE id IN (${placeholders})`).get(...ids),
+      ).toEqual({
+        count: 0,
+      });
+      for (const row of staleRows) {
+        expect(switched.prepare("SELECT 1 FROM index_dir_state WHERE dir_path = ?").get(row.dirPath)).toBeNull();
+      }
+    } finally {
+      closeDatabase(switched);
+    }
+
+    configure("okf");
+    resetConfigCache();
+    await akmIndex({ stashDir: storage.stashDir });
+
+    const restored = openExistingDatabase(getDbPath());
+    try {
+      const refs = restored
+        .prepare(
+          "SELECT item_ref AS itemRef FROM entries " +
+            "WHERE item_ref IN ('adversarial//.hidden/hidden', 'adversarial//bin/bin-doc') ORDER BY item_ref",
+        )
+        .all() as Array<{ itemRef: string }>;
+      expect(refs.map((row) => row.itemRef)).toEqual(["adversarial//.hidden/hidden", "adversarial//bin/bin-doc"]);
+    } finally {
+      closeDatabase(restored);
+    }
+  });
+
+  test("adapter reconciliation hands an overlapping directory to the remaining source", async () => {
+    const nestedRoot = path.join(storage.stashDir, ".hidden");
+    write(storage.stashDir, ".hidden/overlap.md", concept("knowledge", "Overlap", "Overlap body."));
+    const configureOverlap = (parentAdapter: "akm" | "okf") => {
+      writeSandboxConfig({
+        semanticSearchMode: "off",
+        defaultBundle: "parent",
+        bundles: {
+          parent: {
+            path: storage.stashDir,
+            components: { main: { root: ".", adapter: parentAdapter, writable: true } },
+          },
+          nested: {
+            path: nestedRoot,
+            components: { main: { root: ".", adapter: "okf", writable: false } },
+          },
+        },
+      });
+      resetConfigCache();
+    };
+
+    configureOverlap("okf");
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const initialDb = openExistingDatabase(getDbPath());
+    let initialId = 0;
+    try {
+      const initial = initialDb
+        .prepare("SELECT id, item_ref AS itemRef, stash_dir AS stashDir FROM entries WHERE file_path = ?")
+        .get(path.join(nestedRoot, "overlap.md")) as { id: number; itemRef: string; stashDir: string };
+      expect(initial).toEqual({
+        id: expect.any(Number),
+        itemRef: "parent//.hidden/overlap",
+        stashDir: storage.stashDir,
+      });
+      initialId = initial.id;
+    } finally {
+      closeDatabase(initialDb);
+    }
+
+    configureOverlap("akm");
+    await akmIndex({ stashDir: storage.stashDir });
+
+    const db = openExistingDatabase(getDbPath());
+    try {
+      const rows = db
+        .prepare("SELECT id, item_ref AS itemRef, stash_dir AS stashDir FROM entries WHERE file_path = ?")
+        .all(path.join(nestedRoot, "overlap.md")) as Array<{ id: number; itemRef: string; stashDir: string }>;
+      expect(rows).toEqual([{ id: expect.any(Number), itemRef: "nested//overlap", stashDir: nestedRoot }]);
+      expect(rows[0]?.id).not.toBe(initialId);
+    } finally {
+      closeDatabase(db);
+    }
+
+    await akmIndex({ stashDir: storage.stashDir });
+    const stableDb = openExistingDatabase(getDbPath());
+    try {
+      const stableRefs = stableDb
+        .prepare("SELECT item_ref AS itemRef FROM entries WHERE file_path = ?")
+        .all(path.join(nestedRoot, "overlap.md")) as Array<{ itemRef: string }>;
+      expect(stableRefs).toEqual([{ itemRef: "nested//overlap" }]);
+    } finally {
+      closeDatabase(stableDb);
+    }
+
+    configureOverlap("okf");
+    await akmIndex({ stashDir: storage.stashDir });
+    const reversedDb = openExistingDatabase(getDbPath());
+    try {
+      const reversedRows = reversedDb
+        .prepare("SELECT item_ref AS itemRef, stash_dir AS stashDir FROM entries WHERE file_path = ?")
+        .all(path.join(nestedRoot, "overlap.md")) as Array<{ itemRef: string; stashDir: string }>;
+      expect(reversedRows).toEqual([{ itemRef: "parent//.hidden/overlap", stashDir: storage.stashDir }]);
+    } finally {
+      closeDatabase(reversedDb);
+    }
+  });
+
+  test("adapter reconciliation is order-independent when the removing source is scanned last", async () => {
+    const nestedRoot = path.join(storage.stashDir, ".container");
+    const sharedDir = path.join(nestedRoot, ".hidden");
+    const filePath = path.join(sharedDir, "overlap.md");
+    write(storage.stashDir, ".container/.hidden/overlap.md", concept("knowledge", "Overlap", "Overlap body."));
+    const configureOverlap = (parentAdapter: "akm" | "okf", nestedAdapter: "akm" | "okf") => {
+      writeSandboxConfig({
+        semanticSearchMode: "off",
+        defaultBundle: "parent",
+        bundles: {
+          parent: {
+            path: storage.stashDir,
+            components: { main: { root: ".", adapter: parentAdapter, writable: true } },
+          },
+          nested: {
+            path: nestedRoot,
+            components: { main: { root: ".", adapter: nestedAdapter, writable: false } },
+          },
+        },
+      });
+      resetConfigCache();
+    };
+
+    configureOverlap("akm", "okf");
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+    configureOverlap("okf", "akm");
+    await akmIndex({ stashDir: storage.stashDir });
+
+    const db = openExistingDatabase(getDbPath());
+    try {
+      const rows = db
+        .prepare("SELECT item_ref AS itemRef, stash_dir AS stashDir FROM entries WHERE file_path = ?")
+        .all(filePath) as Array<{ itemRef: string; stashDir: string }>;
+      expect(rows).toEqual([{ itemRef: "parent//.container/.hidden/overlap", stashDir: storage.stashDir }]);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("an incomplete Git walk cannot prune rows during incremental or full indexing", async () => {
+    const blockedPath = path.join(okfRoot, "partial", "blocked.md");
+    write(okfRoot, "partial/blocked.md", concept("knowledge", "Blocked", "Blocked body."));
+    write(okfRoot, "partial/good.md", concept("knowledge", "Good", "Good body."));
+    expect(spawnSync("git", ["init"], { cwd: okfRoot }).status).toBe(0);
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const originalStatSync = fs.statSync;
+    const statSpy = spyOn(fs, "statSync").mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+      if (path.resolve(String(target)) === path.resolve(blockedPath)) throw new Error("simulated stat failure");
+      return originalStatSync(target, options as never);
+    }) as typeof fs.statSync);
+    try {
+      await akmIndex({ stashDir: storage.stashDir });
+      await akmIndex({ stashDir: storage.stashDir, full: true });
+    } finally {
+      statSpy.mockRestore();
+    }
+
+    const db = openExistingDatabase(getDbPath());
+    try {
+      const refs = db
+        .prepare(
+          "SELECT item_ref AS itemRef FROM entries WHERE item_ref LIKE 'adversarial//partial/%' ORDER BY item_ref",
+        )
+        .all() as Array<{ itemRef: string }>;
+      expect(refs.map((row) => row.itemRef)).toEqual(["adversarial//partial/blocked", "adversarial//partial/good"]);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("an unavailable configured secondary source preserves rows, freshness, and clean state", async () => {
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+    const beforeDb = openExistingDatabase(getDbPath());
+    let builtAt = "";
+    try {
+      builtAt = (beforeDb.prepare("SELECT value FROM index_meta WHERE key = 'builtAt'").get() as { value: string })
+        .value;
+    } finally {
+      closeDatabase(beforeDb);
+    }
+
+    const aside = `${okfRoot}.aside`;
+    fs.renameSync(okfRoot, aside);
+    try {
+      resetConfigCache();
+      const result = await akmIndex({ stashDir: storage.stashDir, clean: true });
+      expect(result.clean).toEqual({ checked: 0, removed: 0, removedRefs: [], dryRun: false });
+    } finally {
+      fs.renameSync(aside, okfRoot);
+    }
+
+    const afterDb = openExistingDatabase(getDbPath());
+    try {
+      const row = afterDb
+        .prepare("SELECT item_ref AS itemRef FROM entries WHERE item_ref = 'adversarial//target'")
+        .get() as { itemRef: string } | null;
+      expect(row).toEqual({ itemRef: "adversarial//target" });
+      expect(
+        (afterDb.prepare("SELECT value FROM index_meta WHERE key = 'builtAt'").get() as { value: string }).value,
+      ).toBe(builtAt);
+    } finally {
+      closeDatabase(afterDb);
+    }
+  });
+
+  test("an unknown configured adapter cannot wipe a previously indexed component", async () => {
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "local",
+      bundles: {
+        local: {
+          path: storage.stashDir,
+          components: { main: { root: ".", adapter: "akm", writable: true } },
+        },
+        adversarial: {
+          path: okfRoot,
+          components: { main: { root: ".", adapter: "no-such-adapter", writable: false } },
+        },
+      },
+    });
+    resetConfigCache();
+
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const db = openExistingDatabase(getDbPath());
+    try {
+      expect(
+        db.prepare("SELECT item_ref AS itemRef FROM entries WHERE item_ref = 'adversarial//target'").get(),
+      ).toEqual({ itemRef: "adversarial//target" });
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
   test("OKF lint uses its own diagnostic and keeps findings non-fatal by default", () => {
     write(okfRoot, "missing-type.md", "---\ntitle: Missing Type\n---\n\nBody.\n");
+    write(okfRoot, "uppercase-missing-type.MD", "---\ntitle: Uppercase Missing Type\n---\n\nBody.\n");
+    write(okfRoot, "INDEX.MD", "# Reserved structural file\n");
 
     const result = akmLint({ dir: okfRoot });
 
@@ -265,7 +558,23 @@ describe("OKF first-class conformance", () => {
       detail: "OKF concepts require parseable mapping frontmatter with a non-empty type.",
       fixed: false,
     });
+    expect(result.flagged).toContainEqual({
+      file: "uppercase-missing-type.MD",
+      issue: "missing-type",
+      detail: "OKF concepts require parseable mapping frontmatter with a non-empty type.",
+      fixed: false,
+    });
+    expect(result.flagged.some((issue) => issue.file === "INDEX.MD")).toBe(false);
     expect(result.flagged.some((issue) => issue.issue === "missing-name-or-type")).toBe(false);
+
+    const filtered = akmLint({ dir: okfRoot, typeFilter: "memories", fix: true });
+    expect(filtered.flagged).toContainEqual({
+      file: "missing-type.md",
+      issue: "missing-type",
+      detail: "OKF concepts require parseable mapping frontmatter with a non-empty type.",
+      fixed: false,
+    });
+    expect(fs.existsSync(path.join(okfRoot, "missing-type.md"))).toBe(true);
   });
 
   test("configured adapter ownership wins over filesystem probing during lint", () => {
@@ -277,6 +586,352 @@ describe("OKF first-class conformance", () => {
 
     expect(result.flagged.some((issue) => issue.issue === "missing-updated")).toBe(true);
     expect(result.flagged.some((issue) => issue.issue === "missing-type")).toBe(false);
+  });
+
+  test("native lint --fix does not delete an uppercase Markdown memory", () => {
+    const basePath = path.join(okfRoot, "memories", "case-sensitive.MD");
+    write(okfRoot, "memories/case-sensitive.MD", "---\ninferenceProcessed: true\nupdated: 2026-07-25\n---\nshort\n");
+    write(okfRoot, "memories/case-sensitive.derived.md", concept("memory", "Derived", "Derived body."));
+    configure("akm");
+    resetConfigCache();
+
+    akmLint({ dir: okfRoot, fix: true });
+
+    expect(fs.existsSync(basePath)).toBe(true);
+  });
+
+  test("non-default bundles named local and stash keep qualified round-trip refs", async () => {
+    const localRoot = path.join(storage.root, "bundle-local");
+    const stashRoot = path.join(storage.root, "bundle-stash");
+    write(storage.stashDir, "shared.md", concept("knowledge", "Primary Shared", "Primary identity marker."));
+    write(localRoot, "shared.md", concept("knowledge", "Local Shared", "Local identity marker."));
+    write(stashRoot, "shared.md", concept("knowledge", "Stash Shared", "Stash identity marker."));
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "primary",
+      bundles: {
+        primary: {
+          path: storage.stashDir,
+          components: { main: { root: ".", adapter: "okf", writable: true } },
+        },
+        local: { path: localRoot, components: { main: { root: ".", adapter: "okf", writable: false } } },
+        stash: { path: stashRoot, components: { main: { root: ".", adapter: "okf", writable: false } } },
+      },
+    });
+    resetConfigCache();
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const search = await akmSearch({ query: "identity marker", skipLogging: true });
+    const refsByPath = new Map(
+      search.hits.flatMap((hit) => ("path" in hit && "ref" in hit ? [[hit.path, hit.ref] as const] : [])),
+    );
+    expect(refsByPath.get(path.join(storage.stashDir, "shared.md"))).toBe("shared");
+    expect(refsByPath.get(path.join(localRoot, "shared.md"))).toBe("local//shared");
+    expect(refsByPath.get(path.join(stashRoot, "shared.md"))).toBe("stash//shared");
+
+    expect((await showLocal({ ref: "local//shared" })).content).toContain("Local identity marker.");
+    expect((await showLocal({ ref: "stash//shared" })).content).toContain("Stash identity marker.");
+  });
+
+  test("OKF concepts cannot be executed as native workflows", async () => {
+    write(okfRoot, "workflows/foreign.md", getWorkflowTemplate());
+    write(okfRoot, "workflows/foreign-program.yaml", getWorkflowProgramTemplate());
+
+    await expect(loadWorkflowAsset("adversarial//workflows/foreign")).rejects.toThrow(
+      /adapter "okf".*does not support native workflow execution/i,
+    );
+    await expect(loadWorkflowAsset("adversarial//workflows/foreign-program")).rejects.toThrow(
+      /adapter "okf".*does not support native workflow execution/i,
+    );
+  });
+
+  test("the native akm-workflow adapter remains executable", async () => {
+    const workflowRoot = path.join(storage.root, "native-workflow-bundle");
+    write(workflowRoot, "deploy.md", getWorkflowTemplate());
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "native",
+      defaultWriteTarget: "native",
+      engines: { "test-agent": { kind: "agent", platform: "opencode-sdk" } },
+      defaults: { engine: "test-agent" },
+      bundles: {
+        local: { path: storage.stashDir },
+        native: {
+          path: workflowRoot,
+          components: { main: { root: ".", adapter: "akm-workflow", writable: true } },
+        },
+      },
+    });
+    resetConfigCache();
+
+    const loaded = await loadWorkflowAsset("native//deploy");
+    expect(loaded.path).toBe(path.join(workflowRoot, "deploy.md"));
+    expect(loaded.ref).toBe("native//deploy");
+    expect(loaded.steps.length).toBeGreaterThan(0);
+
+    const created = createWorkflowAsset({ name: "authored" });
+    expect(created.ref).toBe("authored");
+    expect(created.path).toBe(path.join(workflowRoot, "authored.md"));
+    expect((await loadWorkflowAsset(created.ref)).path).toBe(created.path);
+    await akmIndex({ stashDir: workflowRoot, full: true });
+    expect((await showLocal({ ref: created.ref })).path).toBe(created.path);
+    const started = await getNextWorkflowStep(created.ref);
+    expect(started.run.workflowRef).toBe("native//authored");
+    expect((await listWorkflowRuns({ workflowRef: created.ref })).runs).toHaveLength(1);
+    await expect(getNextWorkflowStep("native//authored")).resolves.toMatchObject({
+      run: { id: started.run.id, workflowRef: "native//authored" },
+    });
+    expect(
+      readEvents({ type: "workflow_started" }).events.find(
+        (event) => (event.metadata as { runId?: string } | undefined)?.runId === started.run.id,
+      )?.ref,
+    ).toBe("native//authored");
+    await expect(listWorkflowRuns({ workflowRef: " " })).rejects.toMatchObject({ code: "INVALID_FLAG_VALUE" });
+    await expect(listWorkflowRuns({ workflowRef: "native//" })).rejects.toThrow(/Invalid ref/);
+
+    const nested = createWorkflowAsset({ name: "knowledge/nested" });
+    expect(nested.ref).toBe("knowledge/nested");
+    expect((await loadWorkflowAsset(nested.ref)).path).toBe(nested.path);
+    const release = createWorkflowAsset({ name: "release1" });
+    expect((await runCliCapture(["workflow", "next", release.ref])).code).toBe(0);
+
+    fs.unlinkSync(created.path);
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "local",
+      defaultWriteTarget: "local",
+      engines: { "test-agent": { kind: "agent", platform: "opencode-sdk" } },
+      defaults: { engine: "test-agent" },
+      bundles: { local: { path: storage.stashDir, writable: true } },
+    });
+    resetConfigCache();
+    expect((await getNextWorkflowStep("native//authored")).run.workflowRef).toBe("native//authored");
+    expect((await listWorkflowRuns({ workflowRef: "native//authored" })).runs).toHaveLength(1);
+    expect(await resolveRunId("native//authored")).toBe(started.run.id);
+    const status = await runCliCapture(["workflow", "status", "native//authored"]);
+    expect(status.code, status.stderr).toBe(0);
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "standalone workflow lookup contains symlinks and handles extension case deterministically",
+    async () => {
+      const workflowRoot = path.join(storage.root, "standalone-workflow-safety");
+      const outside = path.join(storage.root, "outside-workflow.md");
+      write(workflowRoot, "upper.MD", getWorkflowTemplate());
+      write(workflowRoot, "duplicate.md", getWorkflowTemplate());
+      write(workflowRoot, "duplicate.MD", getWorkflowTemplate());
+      write(storage.root, "outside-workflow.md", getWorkflowTemplate());
+      fs.symlinkSync(outside, path.join(workflowRoot, "escape.md"));
+      writeSandboxConfig({
+        semanticSearchMode: "off",
+        defaultBundle: "native",
+        defaultWriteTarget: "native",
+        bundles: {
+          native: {
+            path: workflowRoot,
+            components: { main: { root: ".", adapter: "akm-workflow", writable: true } },
+          },
+        },
+      });
+      resetConfigCache();
+
+      expect((await loadWorkflowAsset("native//upper")).path).toBe(path.join(workflowRoot, "upper.MD"));
+      await expect(loadWorkflowAsset("native//escape")).rejects.toMatchObject({ code: "PATH_ESCAPE_VIOLATION" });
+      await expect(loadWorkflowAsset("native//duplicate")).rejects.toMatchObject({
+        code: "RESOURCE_ALREADY_EXISTS",
+      });
+      expect(() => createWorkflowAsset({ name: "upper" })).toThrow(/already exists as/i);
+    },
+  );
+
+  test("a short ref resolves to its non-default standalone owner", async () => {
+    const workflowRoot = path.join(storage.root, "non-default-standalone-workflows");
+    write(workflowRoot, "deploy.md", getWorkflowTemplate());
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "local",
+      engines: { "test-agent": { kind: "agent", platform: "opencode-sdk" } },
+      defaults: { engine: "test-agent" },
+      bundles: {
+        local: {
+          path: storage.stashDir,
+          components: { main: { root: ".", adapter: "akm", writable: true } },
+        },
+        native: {
+          path: workflowRoot,
+          components: { main: { root: ".", adapter: "akm-workflow", writable: true } },
+        },
+      },
+    });
+    resetConfigCache();
+
+    expect((await loadWorkflowAsset("deploy")).ref).toBe("native//deploy");
+    const started = await getNextWorkflowStep("deploy");
+    expect(started.run.workflowRef).toBe("native//deploy");
+    expect((await listWorkflowRuns({ workflowRef: "deploy" })).runs.map((run) => run.id)).toEqual([started.run.id]);
+  });
+
+  test("a short workflow ref cannot bypass its first OKF owner", async () => {
+    write(okfRoot, "workflows/same.md", getWorkflowTemplate());
+    write(storage.stashDir, "workflows/same.md", getWorkflowTemplate());
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "adversarial",
+      bundles: {
+        adversarial: {
+          path: okfRoot,
+          components: { main: { root: ".", adapter: "okf", writable: true } },
+        },
+        local: {
+          path: storage.stashDir,
+          components: { main: { root: ".", adapter: "akm", writable: true } },
+        },
+      },
+    });
+
+    await withEnv({ AKM_STASH_DIR: undefined }, async () => {
+      resetConfigCache();
+      await expect(loadWorkflowAsset("workflows/same")).rejects.toThrow(
+        /adapter "okf".*does not support native workflow execution/i,
+      );
+      expect((await loadWorkflowAsset("local//workflows/same")).path).toBe(
+        path.join(storage.stashDir, "workflows", "same.md"),
+      );
+    });
+  });
+
+  test("a bare standalone ref cannot bypass an earlier root-level OKF concept", async () => {
+    const workflowRoot = path.join(storage.root, "bare-standalone-owner");
+    write(okfRoot, "same.md", "---\ntype: knowledge\n---\n\nNot executable.\n");
+    write(okfRoot, "index.md", "# Structural index\n");
+    write(workflowRoot, "same.md", getWorkflowTemplate());
+    write(workflowRoot, "index.md", getWorkflowTemplate());
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "adversarial",
+      bundles: {
+        adversarial: {
+          path: okfRoot,
+          components: { main: { root: ".", adapter: "okf", writable: true } },
+        },
+        native: {
+          path: workflowRoot,
+          components: { main: { root: ".", adapter: "akm-workflow", writable: true } },
+        },
+      },
+    });
+    resetConfigCache();
+
+    await expect(loadWorkflowAsset("same")).rejects.toThrow(
+      /adapter "okf".*does not support native workflow execution/i,
+    );
+    expect((await loadWorkflowAsset("native//same")).ref).toBe("native//same");
+    expect((await loadWorkflowAsset("index")).ref).toBe("native//index");
+  });
+
+  test("workflow authoring rejects a default OKF component before touching disk", async () => {
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "adversarial",
+      bundles: {
+        adversarial: {
+          path: okfRoot,
+          writable: true,
+          components: { main: { root: ".", adapter: "okf", writable: true } },
+        },
+      },
+    });
+
+    await withEnv({ AKM_STASH_DIR: undefined }, async () => {
+      resetConfigCache();
+      expect(() => createWorkflowAsset({ name: "blocked" })).toThrow(
+        /adapter "okf".*does not support AKM asset writes/i,
+      );
+      expect(() => createWorkflowAsset({ name: "blocked.yaml" })).toThrow(
+        /adapter "okf".*does not support AKM asset writes/i,
+      );
+      expect(fs.existsSync(path.join(okfRoot, "workflows"))).toBe(false);
+    });
+  });
+
+  test("workflow authoring rejects an OKF defaultWriteTarget", () => {
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "local",
+      defaultWriteTarget: "adversarial",
+      bundles: {
+        local: {
+          path: storage.stashDir,
+          writable: true,
+          components: { main: { root: ".", adapter: "akm", writable: true } },
+        },
+        adversarial: {
+          path: okfRoot,
+          writable: true,
+          components: { main: { root: ".", adapter: "okf", writable: true } },
+        },
+      },
+    });
+    resetConfigCache();
+
+    expect(() => createWorkflowAsset({ name: "blocked-default-target" })).toThrow(
+      /adapter "okf".*does not support AKM asset writes/i,
+    );
+    expect(fs.existsSync(path.join(okfRoot, "workflows", "blocked-default-target.md"))).toBe(false);
+    expect(fs.existsSync(path.join(storage.stashDir, "workflows", "blocked-default-target.md"))).toBe(false);
+  });
+
+  test("an implicit OKF working stash rejects native writes", async () => {
+    writeSandboxConfig({ semanticSearchMode: "off" });
+    await withEnv({ AKM_STASH_DIR: okfRoot }, async () => {
+      resetConfigCache();
+      await expect(
+        writeMarkdownAsset({
+          type: "memory",
+          content: "Native write must fail.",
+          name: "blocked-implicit",
+          fallbackPrefix: "memory",
+        }),
+      ).rejects.toThrow(/adapter "okf".*does not support AKM asset writes/i);
+    });
+    expect(fs.existsSync(path.join(okfRoot, "memories", "blocked-implicit.md"))).toBe(false);
+  });
+
+  test("supersedes never rewrites a read-only OKF working stash", async () => {
+    const teamRoot = path.join(storage.root, "team-write-target");
+    fs.mkdirSync(teamRoot, { recursive: true });
+    const oldPath = path.join(okfRoot, "memories", "old.md");
+    write(okfRoot, "memories/old.md", concept("memory", "Old", "Vendor-owned body."));
+    const before = fs.readFileSync(oldPath, "utf8");
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "vendor",
+      defaultWriteTarget: "team",
+      bundles: {
+        vendor: {
+          path: okfRoot,
+          components: { main: { root: ".", adapter: "okf", writable: false } },
+        },
+        team: { path: teamRoot, components: { main: { root: ".", adapter: "akm", writable: true } } },
+      },
+    });
+
+    await withEnv({ AKM_STASH_DIR: okfRoot }, async () => {
+      resetConfigCache();
+      const supersedes = resolveSupersedesForWrite(["vendor//memories/old"], "team");
+      expect(supersedes[0]?.writable).toBe(false);
+      await writeMarkdownAsset({
+        type: "memory",
+        content: "Replacement body.",
+        name: "replacement",
+        fallbackPrefix: "memory",
+        target: "team",
+        supersedes,
+      });
+    });
+
+    expect(fs.readFileSync(oldPath, "utf8")).toBe(before);
+    expect(fs.existsSync(path.join(teamRoot, "memories", "replacement.md"))).toBe(true);
   });
 
   test("a nested default component root owns writes, indexing, show, and lint", async () => {

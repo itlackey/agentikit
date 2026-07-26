@@ -322,6 +322,25 @@ describe("runMemoryInferencePass — progress", () => {
 // ── runMemoryInferencePass — enabled path ───────────────────────────────────
 
 describe("runMemoryInferencePass — enabled", () => {
+  test("does not infer or mutate memories owned by a non-AKM adapter", async () => {
+    const parentPath = writeMemory("vendor", { description: "Vendor memory" }, "Do not rewrite this body.");
+    let calls = 0;
+    compressor = () => {
+      calls++;
+      return sampleDraft();
+    };
+
+    const result = await runMemoryInferencePass({
+      config: configWithLlm(),
+      sources: [{ path: tmpStash, adapterId: "okf" }],
+    });
+
+    expect(result.considered).toBe(0);
+    expect(calls).toBe(0);
+    expect(fs.existsSync(path.join(tmpStash, "memories", "vendor.derived.md"))).toBe(false);
+    expect(parseFrontmatter(fs.readFileSync(parentPath, "utf8")).data.inferenceProcessed).toBeUndefined();
+  });
+
   test("writes one derived memory with rich metadata, `inferred: true`, and `source:` backref", async () => {
     writeMemory("parent", { description: "before" }, "Two facts in one body.");
     compressor = () => ({

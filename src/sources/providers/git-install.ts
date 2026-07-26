@@ -7,18 +7,13 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { isWithin } from "../../core/common";
 import { UsageError } from "../../core/errors";
 import { getRegistryCacheDir } from "../../core/paths";
 import { parseRegistryRef, resolveRegistryArtifact, validateGitRef, validateGitUrl } from "../../registry/resolve";
 import type { ParsedGitRef } from "../../registry/types";
 import type { SourceLockData, SyncOptions } from "./install-types";
-import {
-  applyAkmIncludeConfig,
-  buildInstallCacheDir,
-  copyDirectoryContents,
-  detectStashRoot,
-  isDirectory,
-} from "./provider-utils";
+import { applyAkmIncludeConfig, buildInstallCacheDir, detectStashRoot, isDirectory } from "./provider-utils";
 
 /**
  * Shared subprocess wrapper for `git` invocations. Disables git's interactive
@@ -33,6 +28,93 @@ export function runGit(
     ...options,
     env: { ...process.env, ...options?.env, GIT_TERMINAL_PROMPT: "0" },
   });
+}
+
+export interface GitUpstreamState {
+  hasRemote: boolean;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+}
+
+/** Fetch and classify the current branch against its upstream without changing the worktree. */
+export function inspectGitUpstream(repoDir: string): GitUpstreamState {
+  const remotes = runGit(["-C", repoDir, "remote"]);
+  if (remotes.status !== 0) throw new UsageError(`Cannot inspect Git remotes at ${repoDir}: ${remotes.stderr.trim()}`);
+  if (!remotes.stdout.trim()) return { hasRemote: false, ahead: 0, behind: 0 };
+
+  const fetch = runGit(["-C", repoDir, "fetch", "--prune"], { timeout: 120_000 });
+  if (fetch.status !== 0) throw new UsageError(`Cannot refresh Git target at ${repoDir}: ${fetch.stderr.trim()}`);
+  const upstream = runGit(["-C", repoDir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+  if (upstream.status !== 0 || !upstream.stdout.trim()) {
+    throw new UsageError(`Git target at ${repoDir} has a remote but no upstream branch; configure one before writing.`);
+  }
+  const relation = gitRelation(repoDir, upstream.stdout.trim());
+  return { hasRemote: true, upstream: upstream.stdout.trim(), ...relation };
+}
+
+function gitRelation(repoDir: string, target: string): { ahead: number; behind: number } {
+  const result = runGit(["-C", repoDir, "rev-list", "--left-right", "--count", `HEAD...${target}`]);
+  const match = result.stdout.trim().match(/^(\d+)\s+(\d+)$/);
+  if (result.status !== 0 || !match) {
+    throw new UsageError(`Cannot compare Git history at ${repoDir}: ${result.stderr.trim() || "unknown relation"}`);
+  }
+  return { ahead: Number(match[1]), behind: Number(match[2]) };
+}
+
+/** Reject a fast-forward that would replace an ignored, untracked local path. */
+export function assertNoIgnoredPathOverwrite(repoDir: string, targetRevision: string): void {
+  const ignored = runGit(["-C", repoDir, "ls-files", "--others", "--ignored", "--exclude-standard", "-z"]);
+  if (ignored.status !== 0) {
+    throw new UsageError(`Cannot inspect ignored files at ${repoDir}: ${ignored.stderr.trim()}`);
+  }
+  const ignoredPaths = ignored.stdout.split("\0").filter(Boolean);
+  if (ignoredPaths.length === 0) return;
+  const changed = runGit(["-C", repoDir, "diff", "--name-only", "--no-renames", "-z", "HEAD", targetRevision]);
+  if (changed.status !== 0) {
+    throw new UsageError(`Cannot inspect incoming Git paths at ${repoDir}: ${changed.stderr.trim()}`);
+  }
+  const changedPaths = changed.stdout.split("\0").filter(Boolean);
+  const conflict = ignoredPaths.find((ignoredPath) =>
+    changedPaths.some(
+      (changedPath) =>
+        changedPath === ignoredPath ||
+        changedPath.startsWith(`${ignoredPath}/`) ||
+        ignoredPath.startsWith(`${changedPath}/`),
+    ),
+  );
+  if (conflict) {
+    throw new UsageError(
+      `Git update would overwrite ignored local path ${path.join(repoDir, conflict)}; move or remove it before update.`,
+    );
+  }
+}
+
+function normalizeRemoteUrl(value: string): string {
+  return value
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "");
+}
+
+function replaceDirectory(stagedDir: string, destination: string): void {
+  const backup = `${destination}.backup-${randomBytes(4).toString("hex")}`;
+  const hadDestination = fs.existsSync(destination);
+  if (hadDestination) fs.renameSync(destination, backup);
+  try {
+    fs.renameSync(stagedDir, destination);
+  } catch (error) {
+    if (hadDestination && fs.existsSync(backup)) fs.renameSync(backup, destination);
+    throw error;
+  }
+  if (hadDestination) {
+    try {
+      fs.rmSync(backup, { recursive: true, force: true });
+    } catch {
+      // The new destination is live; a stale backup is safer than reporting a
+      // failed replacement after the swap already succeeded.
+    }
+  }
 }
 
 /**
@@ -60,16 +142,50 @@ export async function syncRegistryGitRef(ref: string, options?: SyncOptions): Pr
 }
 
 async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<SourceLockData> {
+  validateGitUrl(parsed.url);
+  if (parsed.requestedRef) validateGitRef(parsed.requestedRef);
   const resolved = await resolveRegistryArtifact(parsed);
   const syncedAt = (options?.now ?? new Date()).toISOString();
+  if (options?.writable && options.writableRoot) {
+    return syncExistingWritableCheckout(
+      parsed,
+      resolved,
+      options.writableRoot,
+      syncedAt,
+      options.writableRequiredRoots,
+    );
+  }
   const cacheRootDir = options?.cacheRootDir ?? getRegistryCacheDir();
-  const cacheDir = buildInstallCacheDir(cacheRootDir, parsed.source, parsed.id, resolved.resolvedRevision);
+  const cacheDir = buildInstallCacheDir(
+    cacheRootDir,
+    parsed.source,
+    parsed.id,
+    options?.writable ? "writable" : resolved.resolvedRevision,
+  );
   const cloneDir = path.join(cacheDir, "clone");
   const extractedDir = path.join(cacheDir, "extracted");
 
-  // Cache hit
-  if (!options?.force && isDirectory(extractedDir)) {
+  // Cache hit. Writable installs must remain real checkouts so every mutation
+  // can be committed; an older extracted snapshot is not eligible.
+  if (isDirectory(extractedDir) && (!options?.writable || isDirectory(path.join(extractedDir, ".git")))) {
+    if (options?.writable) {
+      const provisionalKitRoot = detectStashRoot(extractedDir);
+      const installRoot = applyAkmIncludeConfig(provisionalKitRoot, cacheDir, extractedDir) ?? provisionalKitRoot;
+      if (installRoot !== provisionalKitRoot) {
+        throw new UsageError("Writable Git installs do not support .akm-include filtered snapshots.");
+      }
+      return syncExistingWritableCheckout(
+        parsed,
+        resolved,
+        detectStashRoot(installRoot),
+        syncedAt,
+        options.writableRequiredRoots,
+      );
+    }
     try {
+      if (options?.force) {
+        throw new Error("refresh read-only snapshot");
+      }
       const provisionalKitRoot = detectStashRoot(extractedDir);
       const installRoot = applyAkmIncludeConfig(provisionalKitRoot, cacheDir, extractedDir) ?? provisionalKitRoot;
       const stashRoot = detectStashRoot(installRoot);
@@ -88,22 +204,21 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
           syncedAt,
         };
       }
-    } catch {
+    } catch (error) {
       // Cache invalid, re-clone
     }
   }
 
+  const cacheExisted = fs.existsSync(cacheDir);
   fs.mkdirSync(cacheDir, { recursive: true });
-
-  // Validate URL and ref before passing to git to prevent command injection
-  validateGitUrl(parsed.url);
-  if (parsed.requestedRef) validateGitRef(parsed.requestedRef);
+  fs.rmSync(cloneDir, { recursive: true, force: true });
 
   let provisionalKitRoot: string;
   let installRoot: string;
   let stashRoot: string;
   try {
-    const cloneArgs = ["clone", "--depth", "1"];
+    const cloneArgs = ["clone"];
+    if (!options?.writable) cloneArgs.push("--depth", "1");
     if (parsed.requestedRef) {
       cloneArgs.push("--branch", parsed.requestedRef);
     }
@@ -114,21 +229,32 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
       throw new Error(classifyCloneFailure(parsed.url, cloneResult.stderr, cloneResult.error));
     }
 
-    // Copy contents to extracted dir without .git
-    fs.mkdirSync(extractedDir, { recursive: true });
-    copyDirectoryContents(cloneDir, extractedDir);
-
-    // Clean up the clone dir
-    fs.rmSync(cloneDir, { recursive: true, force: true });
+    if (options?.writable) {
+      const branch = runGit(["-C", cloneDir, "branch", "--show-current"]);
+      if (branch.status !== 0 || !branch.stdout.trim()) {
+        throw new UsageError("Writable Git installs require a branch ref; tags and detached revisions are read-only.");
+      }
+      const stagedRoot = detectStashRoot(cloneDir);
+      if (applyAkmIncludeConfig(stagedRoot, cacheDir, cloneDir)) {
+        throw new UsageError("Writable Git installs do not support .akm-include filtered snapshots.");
+      }
+      replaceDirectory(cloneDir, extractedDir);
+    } else {
+      // Read-only installs are immutable snapshots and do not retain Git metadata.
+      fs.rmSync(path.join(cloneDir, ".git"), { recursive: true, force: true });
+      replaceDirectory(cloneDir, extractedDir);
+    }
 
     provisionalKitRoot = detectStashRoot(extractedDir);
     installRoot = applyAkmIncludeConfig(provisionalKitRoot, cacheDir, extractedDir) ?? provisionalKitRoot;
+    if (options?.writable && installRoot !== provisionalKitRoot) {
+      throw new UsageError("Writable Git installs do not support .akm-include filtered snapshots.");
+    }
     stashRoot = detectStashRoot(installRoot);
   } catch (err) {
-    // Clean up the cache directory so stale or partially-cloned artifacts
-    // don't cause false cache hits on the next install attempt.
+    fs.rmSync(cloneDir, { recursive: true, force: true });
     try {
-      fs.rmSync(cacheDir, { recursive: true, force: true });
+      if (!cacheExisted) fs.rmSync(cacheDir, { recursive: true, force: true });
     } catch {
       /* best-effort */
     }
@@ -150,13 +276,152 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
   };
 }
 
+export function syncExistingWritableCheckout(
+  parsed: ParsedGitRef,
+  resolved: Awaited<ReturnType<typeof resolveRegistryArtifact>>,
+  contentRoot: string,
+  syncedAt: string,
+  requiredRoots: readonly string[] = [],
+): SourceLockData {
+  const root = path.resolve(contentRoot);
+  const repoResult = runGit(["-C", root, "rev-parse", "--show-toplevel"]);
+  if (repoResult.status !== 0 || !repoResult.stdout.trim()) {
+    throw new UsageError(
+      `Writable Git install at ${root} is not a checkout; refusing to replace it because it may contain local work.`,
+    );
+  }
+  const repoDir = path.resolve(repoResult.stdout.trim());
+  if (!isWithin(root, repoDir)) {
+    throw new UsageError(`Writable Git content root ${root} resolves outside its checkout at ${repoDir}.`);
+  }
+
+  const remote = runGit(["-C", repoDir, "remote", "get-url", "origin"]);
+  if (remote.status !== 0 || normalizeRemoteUrl(remote.stdout) !== normalizeRemoteUrl(parsed.url)) {
+    throw new UsageError(
+      `Writable Git install at ${root} points at a different origin; refusing to update or replace the checkout.`,
+    );
+  }
+
+  const status = runGit(["-C", repoDir, "status", "--porcelain"]);
+  if (status.status !== 0 || status.stdout.trim()) {
+    throw new UsageError(
+      `Writable Git install at ${root} has uncommitted changes; commit or discard them before update.`,
+    );
+  }
+
+  if (parsed.requestedRef) {
+    const branch = runGit(["-C", repoDir, "branch", "--show-current"]);
+    const expectedBranch = parsed.requestedRef.replace(/^refs\/heads\//, "");
+    if (branch.status !== 0 || !branch.stdout.trim() || branch.stdout.trim() !== expectedBranch) {
+      throw new UsageError(
+        `Writable Git install at ${root} is checked out on a different branch than requested ref "${parsed.requestedRef}".`,
+      );
+    }
+  }
+
+  const shallow = runGit(["-C", repoDir, "rev-parse", "--is-shallow-repository"]);
+  const fetchArgs = ["-C", repoDir, "fetch", "--prune", "--tags"];
+  if (shallow.status === 0 && shallow.stdout.trim() === "true") fetchArgs.push("--unshallow");
+  fetchArgs.push("origin");
+  if (parsed.requestedRef) fetchArgs.push(parsed.requestedRef);
+  const fetch = runGit(fetchArgs, { timeout: 120_000 });
+  if (fetch.status !== 0) {
+    throw new UsageError(
+      `Writable Git install at ${root} could not fetch its expected origin; local work was preserved. ${fetch.stderr.trim()}`,
+    );
+  }
+
+  let targetRevision = resolved.resolvedRevision;
+  if (targetRevision) {
+    const resolvedTarget = runGit(["-C", repoDir, "rev-parse", "--verify", `${targetRevision}^{commit}`]);
+    if (resolvedTarget.status === 0) targetRevision = resolvedTarget.stdout.trim();
+    else targetRevision = undefined;
+  }
+  if (!targetRevision) {
+    const fallbackTarget = runGit([
+      "-C",
+      repoDir,
+      "rev-parse",
+      "--verify",
+      parsed.requestedRef ? "FETCH_HEAD" : "@{u}",
+    ]);
+    if (fallbackTarget.status !== 0 || !fallbackTarget.stdout.trim()) {
+      throw new UsageError(`Writable Git install at ${root} has no verifiable upstream revision.`);
+    }
+    targetRevision = fallbackTarget.stdout.trim();
+  }
+
+  const relation = gitRelation(repoDir, targetRevision);
+  if (relation.ahead > 0) {
+    throw new UsageError(
+      `Writable Git install at ${root} has local commits that are not in the requested upstream revision; push or reconcile them before update.`,
+    );
+  }
+
+  assertNoIgnoredPathOverwrite(repoDir, targetRevision);
+
+  const rootsToPreserve = [...new Set([root, ...requiredRoots.map((candidate) => path.resolve(candidate))])];
+  for (const requiredRoot of rootsToPreserve) {
+    if (!isWithin(requiredRoot, repoDir)) {
+      throw new UsageError(`Configured Git component root ${requiredRoot} resolves outside ${repoDir}.`);
+    }
+    const relative = path.relative(repoDir, requiredRoot).replaceAll(path.sep, "/");
+    if (!relative) continue;
+    const tree = runGit(["-C", repoDir, "ls-tree", "-d", "-z", "--name-only", targetRevision, "--", relative]);
+    const names = tree.stdout.split("\0").filter(Boolean);
+    if (tree.status !== 0 || !names.includes(relative)) {
+      throw new UsageError(
+        `Writable Git update would remove configured content root ${requiredRoot}; the existing checkout was left unchanged.`,
+      );
+    }
+  }
+
+  if (relation.behind > 0) {
+    const statusBeforeMerge = runGit(["-C", repoDir, "status", "--porcelain"]);
+    if (statusBeforeMerge.status !== 0 || statusBeforeMerge.stdout.trim()) {
+      throw new UsageError(
+        `Writable Git install at ${root} changed while its update was prepared; local work was preserved.`,
+      );
+    }
+    assertNoIgnoredPathOverwrite(repoDir, targetRevision);
+    const merge = runGit(["-C", repoDir, "merge", "--ff-only", "--no-overwrite-ignore", targetRevision], {
+      timeout: 120_000,
+    });
+    if (merge.status !== 0) {
+      throw new UsageError(
+        `Writable Git install at ${root} cannot fast-forward; local commits were preserved. ${merge.stderr.trim()}`,
+      );
+    }
+  }
+  for (const requiredRoot of rootsToPreserve) {
+    if (!isDirectory(requiredRoot)) {
+      throw new UsageError(`Writable Git update did not preserve configured content root ${requiredRoot}.`);
+    }
+  }
+  const head = runGit(["-C", repoDir, "rev-parse", "HEAD"]);
+  return {
+    id: resolved.id,
+    source: resolved.source,
+    ref: resolved.ref,
+    artifactUrl: resolved.artifactUrl,
+    resolvedVersion: resolved.resolvedVersion,
+    resolvedRevision: head.status === 0 ? head.stdout.trim() : targetRevision,
+    contentDir: root,
+    cacheDir: repoDir,
+    extractedDir: repoDir,
+    writable: true,
+    syncedAt,
+  };
+}
+
 export function cloneRepo(cloneUrl: string, ref: string | null, destDir: string, writable = false): void {
   // Stage the clone into a sibling temp dir so that a failed clone never
   // destroys a previously-valid destDir (e.g. when the remote is temporarily
   // unreachable and we have a valid cached copy).
   const tmpDir = `${destDir}.tmp-${randomBytes(4).toString("hex")}`;
 
-  const args = ["clone", "--depth", "1"];
+  const args = ["clone"];
+  if (!writable) args.push("--depth", "1");
   if (ref) args.push("--branch", ref);
   args.push(cloneUrl, tmpDir);
 
@@ -174,9 +439,7 @@ export function cloneRepo(cloneUrl: string, ref: string | null, destDir: string,
       if (fs.existsSync(gitDir)) fs.rmSync(gitDir, { recursive: true, force: true });
     }
 
-    // Swap: remove the old destDir (if any) then atomically rename tmpDir into place.
-    if (fs.existsSync(destDir)) fs.rmSync(destDir, { recursive: true, force: true });
-    fs.renameSync(tmpDir, destDir);
+    replaceDirectory(tmpDir, destDir);
   } catch (err) {
     // Post-clone steps failed — clean up the temp dir to avoid orphaned dirs.
     fs.rmSync(tmpDir, { recursive: true, force: true });

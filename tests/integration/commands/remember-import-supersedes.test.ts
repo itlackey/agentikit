@@ -618,14 +618,11 @@ describe("import --supersedes", () => {
 
 // ── canonical persistence of alias spellings ─────────────────────────────────
 
-describe("--supersedes alias spellings are persisted canonically", () => {
-  test("a local//-prefixed ref is planned, reported, and folded into xrefs as the canonical bare ref", async () => {
-    // Validation resolves the PARSED components; persisting the raw spelling
-    // would put a `local//`-prefixed string into the report and the
-    // correction's xrefs while the demotion targeted the canonical asset.
+describe("--supersedes qualified bundle literals", () => {
+  test("an absent local// bundle fails before writing or demoting", async () => {
     const old = await rememberSeed("The legacy endpoint note.", "old-endpoint-alias");
 
-    const { code, stdout } = await runCliCapture([
+    const { code, stderr } = await runCliCapture([
       "remember",
       "The corrected endpoint note.",
       "--name",
@@ -633,20 +630,12 @@ describe("--supersedes alias spellings are persisted canonically", () => {
       "--supersedes",
       "local//memories/old-endpoint-alias",
     ]);
-    expect(code).toBe(0);
-    const json = JSON.parse(stdout) as WriteOutput;
-    expect(json.ref).toBe("memories/new-endpoint-alias");
-    expect(json.superseded).toEqual([{ ref: "memories/old-endpoint-alias", applied: true }]);
-
-    // Provenance xref on the correction: canonical bare form.
-    const newParsed = parseFrontmatter(fs.readFileSync(json.path, "utf8"));
-    expect(newParsed.data.xrefs).toEqual(["memories/old-endpoint-alias"]);
-
-    // The demotion landed on the old asset with the canonical NEW ref
-    // (writeSupersededEdge receives the write result's canonical ref).
+    expect(code).toBe(2);
+    expect(JSON.parse(stderr).error).toContain("local");
+    expect(fs.existsSync(path.join(stashDir, "memories", "new-endpoint-alias.md"))).toBe(false);
     const oldParsed = parseFrontmatter(fs.readFileSync(old.path, "utf8"));
-    expect(oldParsed.data.beliefState).toBe("superseded");
-    expect(oldParsed.data.supersededBy).toEqual(["memories/new-endpoint-alias"]);
+    expect(oldParsed.data.beliefState).toBe("asserted");
+    expect(oldParsed.data.supersededBy).toBeUndefined();
   });
 });
 

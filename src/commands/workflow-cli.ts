@@ -9,22 +9,17 @@
  * `runWithJsonErrors(...) + output(...)` are migrated to `defineJsonCommand`,
  * which emits the same JSON envelope (stdout/stderr/exit-code) as the inline
  * form. `workflow template` keeps a plain `defineCommand` because it writes the
- * template straight to stdout with no JSON envelope. The private helpers
- * `looksLikeWorkflowRunId` and `resolveWorkflowFilePath` move with the family.
+ * template straight to stdout with no JSON envelope.
  */
 
+import fs from "node:fs";
 import { defineCommand } from "citty";
 import { getParsedInvocation } from "../cli/invocation";
 import { getStringArg } from "../cli/parse-args";
 import { defineJsonCommand, output, runWithJsonErrors } from "../cli/shared";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
-import { parseRefInput } from "../core/asset/resolve-ref";
-import { loadConfig } from "../core/config/config";
 import { NotFoundError, UsageError } from "../core/errors";
 import { akmIndex } from "../indexer/indexer";
-import { resolveSourceEntries } from "../indexer/search/search-source";
-import { resolveSourcesForOrigin } from "../registry/origin-resolve";
-import { resolveAssetPath } from "../sources/resolve";
 import {
   createWorkflowAsset,
   formatWorkflowErrors,
@@ -45,11 +40,12 @@ import {
   completeWorkflowStep,
   getNextWorkflowStep,
   getWorkflowStatus,
+  hasWorkflowRun,
   listWorkflowRuns,
   resumeWorkflowRun,
   startWorkflowRun,
 } from "../workflows/runtime/runs";
-import { canonicalWorkflowRunRef } from "../workflows/runtime/workflow-asset-loader";
+import { loadWorkflowAsset } from "../workflows/runtime/workflow-asset-loader";
 
 const workflowStartCommand = defineJsonCommand({
   meta: {
@@ -95,39 +91,10 @@ const workflowNextCommand = defineJsonCommand({
       );
     }
     const parsedParams = args.params ? parseWorkflowJsonObject(args.params, "--params") : undefined;
-    // If the target looks like a UUID-style run id (no `:` and matches the
-    // run-id shape), short-circuit with a structured WORKFLOW_NOT_FOUND
-    // error before the ref parser throws an unhelpful ref-parse error.
-    if (looksLikeWorkflowRunId(args.target)) {
-      const { hasWorkflowRun } = await import("../workflows/runtime/runs.js");
-      if (!(await hasWorkflowRun(args.target))) {
-        throw new NotFoundError(
-          `Workflow run "${args.target}" not found.`,
-          "WORKFLOW_NOT_FOUND",
-          "Run `akm workflow list --active` to see runs.",
-        );
-      }
-    }
     const result = await getNextWorkflowStep(args.target, parsedParams);
     output("workflow-next", result);
   },
 });
-
-/**
- * Heuristic: a workflow run id is a UUID-shaped or hex-id-shaped string with
- * no `/` separator (canonical refs contain `workflows/<name>`). When this
- * matches we can give a much better
- * error than the ref parser's "Invalid asset type" failure.
- */
-function looksLikeWorkflowRunId(target: string): boolean {
-  if (target.includes(":")) return false;
-  if (target.includes("/")) return false;
-  // UUID v4-ish: 8-4-4-4-12 hex digits separated by dashes.
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(target)) return true;
-  // Bare hex/alphanumeric run ids of >=8 chars (covers shortened ids).
-  if (/^[0-9a-z][0-9a-z_-]{7,}$/i.test(target) && /[0-9]/.test(target)) return true;
-  return false;
-}
 
 const workflowCompleteCommand = defineJsonCommand({
   meta: {
@@ -185,28 +152,24 @@ const workflowStatusCommand = defineJsonCommand({
   async run({ args }) {
     const target = args.target;
     const includeUnits = args.units === true;
-    // Check if target looks like a workflow ref
-    const parsed = (() => {
-      try {
-        return parseRefInput(target);
-      } catch {
-        return null;
-      }
-    })();
-    if (parsed?.type === "workflow") {
-      const ref = canonicalWorkflowRunRef(parsed.origin, parsed.name);
-      const { runs } = await listWorkflowRuns({ workflowRef: ref });
-      if (runs.length === 0) {
-        throw new NotFoundError(`No workflow runs found for ${ref}`, "WORKFLOW_NOT_FOUND");
-      }
-      const mostRecent = runs[0];
-      if (!mostRecent) throw new NotFoundError(`No workflow runs found for ${ref}`, "WORKFLOW_NOT_FOUND");
-      const result = await getWorkflowStatus(mostRecent.id, { includeUnits });
-      output("workflow-status", result);
-    } else {
+    if (await hasWorkflowRun(target)) {
       const result = await getWorkflowStatus(target, { includeUnits });
       output("workflow-status", result);
+      return;
     }
+    let runs: Awaited<ReturnType<typeof listWorkflowRuns>>["runs"];
+    try {
+      ({ runs } = await listWorkflowRuns({ workflowRef: target }));
+    } catch (error) {
+      if (!target.includes(":") && !target.includes("/")) {
+        throw new NotFoundError(`Workflow run "${target}" not found.`, "WORKFLOW_NOT_FOUND");
+      }
+      throw error;
+    }
+    const mostRecent = runs[0];
+    if (!mostRecent) throw new NotFoundError(`No workflow runs found for ${target}`, "WORKFLOW_NOT_FOUND");
+    const result = await getWorkflowStatus(mostRecent.id, { includeUnits });
+    output("workflow-status", result);
   },
 });
 
@@ -353,25 +316,14 @@ const workflowValidateCommand = defineJsonCommand({
 });
 
 async function resolveWorkflowFilePath(target: string): Promise<string> {
-  // Canonical workflow refs resolve through the source search; anything else is
-  // treated as a filesystem path.
-  const looksLikeWorkflowRef = target.startsWith("workflows/") || target.includes("//workflows/");
-  if (!looksLikeWorkflowRef) return target;
-  const parsed = parseRefInput(target);
-  if (parsed.type !== "workflow") {
-    throw new UsageError(`Expected a workflow ref (workflows/<name>), got "${target}".`);
+  if (/[/\\]{2}/.test(target) && fs.existsSync(target)) return target;
+  try {
+    return (await loadWorkflowAsset(target)).path;
+  } catch (error) {
+    const looksLikeWorkflowRef = target.startsWith("workflows/") || target.includes("//");
+    if (looksLikeWorkflowRef) throw error;
+    return target;
   }
-  const config = loadConfig();
-  const allSources = resolveSourceEntries(undefined, config);
-  const searchSources = resolveSourcesForOrigin(parsed.origin, allSources);
-  for (const source of searchSources) {
-    try {
-      return await resolveAssetPath(source.path, "workflow", parsed.name);
-    } catch {
-      /* try next source */
-    }
-  }
-  throw new UsageError(`Workflow not found for ref: workflows/${parsed.name}`);
 }
 
 const workflowRunCommand = defineJsonCommand({

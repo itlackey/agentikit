@@ -27,7 +27,7 @@
         ],
         "phase": "applying"
       },
-      "journalWriteCount": 3,
+      "journalWriteCount": 4,
       "lastJournalWrite": {
         "completed": [
           "memories/cj-lifecycle-delete"

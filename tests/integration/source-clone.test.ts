@@ -85,7 +85,7 @@ describe("akmClone", () => {
     const result = await akmClone({ sourceRef: "scripts/deploy.sh" });
     // F4b: destination ref emits the 0.9.0 conceptId spelling.
 
-    expect(result.destination.ref).toContain("scripts/deploy.sh");
+    expect(result.destination.ref).toBe("scripts/deploy.sh");
     expect(result.overwritten).toBe(false);
     expect(fs.existsSync(path.join(stashDir, "scripts", "deploy.sh"))).toBe(true);
     expect(fs.readFileSync(path.join(stashDir, "scripts", "deploy.sh"), "utf8")).toBe("#!/bin/bash\necho deploy\n");
@@ -151,6 +151,29 @@ describe("akmClone", () => {
 
     await expect(akmClone({ sourceRef: "scripts/deploy.sh", target: "readonly" })).rejects.toThrow(ConfigError);
     expect(fs.existsSync(path.join(targetDir, "scripts", "deploy.sh"))).toBe(false);
+  });
+
+  test("rejects a managed OKF target before replacing existing bytes", async () => {
+    const targetDir = createStashDir("akm-clone-okf-target-");
+    const destination = path.join(targetDir, "scripts", "deploy.sh");
+    writeFile(path.join(searchPathDir, "scripts", "deploy.sh"), "echo replacement\n");
+    writeFile(destination, "echo original\n");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        searchpath: { path: searchPathDir },
+        foreign: {
+          path: targetDir,
+          writable: true,
+          components: { main: { root: ".", adapter: "okf", writable: true } },
+        },
+      },
+    });
+
+    await expect(akmClone({ sourceRef: "scripts/deploy.sh", target: "foreign", force: true })).rejects.toThrow(
+      /adapter "okf".*does not support AKM asset writes/i,
+    );
+    expect(fs.readFileSync(destination, "utf8")).toBe("echo original\n");
   });
 
   test("uses defaultWriteTarget when --target is omitted", async () => {
@@ -433,6 +456,7 @@ describe("akmClone --dest", () => {
     const result = await akmClone({ sourceRef: "scripts/deploy.sh", dest: customDest });
 
     expect(result.destination.path).toBe(path.join(customDest, "scripts", "deploy.sh"));
+    expect(result.destination.ref).toBeUndefined();
     expect(fs.existsSync(path.join(customDest, "scripts", "deploy.sh"))).toBe(true);
     expect(fs.readFileSync(path.join(customDest, "scripts", "deploy.sh"), "utf8")).toBe("#!/bin/bash\necho deploy\n");
     // Working stash should NOT have the file

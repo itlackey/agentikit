@@ -119,7 +119,7 @@ function namespaceIsClean(stashDir: string): boolean {
   return fs.readdirSync(ns).length === 0;
 }
 
-function writeRawJournalFile(stashDir: string, payload: unknown): void {
+function writeRawJournalFile(stashDir: string, payload: unknown, phase = "applying"): void {
   const p = craftedJournalPath(stashDir);
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(
@@ -128,7 +128,7 @@ function writeRawJournalFile(stashDir: string, payload: unknown): void {
       {
         version: 1,
         kind: "consolidate",
-        phase: "applying",
+        phase,
         transactionId: CRAFTED_TXN_ID,
         root: canonicalTxnRoot(stashDir),
         changes: [],
@@ -249,8 +249,8 @@ describe("full-run journal lifecycle (beginConsolidateTxn/backupFile/markJournal
     expect(captured.ok).toBe(true);
 
     // Engine checklist journal: begin (applying, empty completed) →
-    // markJournalCompleted (applying, completed appended) → committed.
-    expect(captured.journalWriteCount).toBe(3);
+    // markJournalCompleted (applying, completed appended) → publishing → committed.
+    expect(captured.journalWriteCount).toBe(4);
     const first = captured.firstJournalWrite as { phase: string; operations: unknown[]; completed: unknown[] };
     const last = captured.lastJournalWrite as { phase: string; operations: unknown[]; completed: string[] };
     expect(first.phase).toBe("applying");
@@ -418,7 +418,7 @@ async function captureCleanIncomplete(): Promise<Record<string, unknown>> {
   }
 }
 
-// ── Capture: completed >= operations -> committed leftover swept quietly ────
+// ── Capture: committed leftover swept quietly ───────────────────────────────
 
 async function captureCompletedSwept(): Promise<Record<string, unknown>> {
   const storage = withIsolatedAkmStorage();
@@ -427,11 +427,15 @@ async function captureCompletedSwept(): Promise<Record<string, unknown>> {
     const { ref } = writeMemory(root, JOURNAL_SILENT_LEAK_NAME);
 
     const staleOp: ConsolidateDeleteOp = { op: "delete", ref: memoryRef(JOURNAL_STALE_OP_REF_NAME), reason: "stale" };
-    writeRawJournalFile(root, {
-      startedAt: "2020-01-01T00:00:00.000Z",
-      operations: [staleOp] satisfies ConsolidateOperation[],
-      completed: [staleOp.ref], // completed === operations.length -> NOT incomplete
-    });
+    writeRawJournalFile(
+      root,
+      {
+        startedAt: "2020-01-01T00:00:00.000Z",
+        operations: [staleOp] satisfies ConsolidateOperation[],
+        completed: [staleOp.ref],
+      },
+      "committed",
+    );
     fs.mkdirSync(craftedBackupDir(root), { recursive: true });
     fs.writeFileSync(path.join(craftedBackupDir(root), "orphaned.md"), "orphaned backup content", "utf8");
 
@@ -484,12 +488,68 @@ describe("checkForIncompleteJournal recovery-mode matrix (run-entry, abort|clean
     expect(captured.backupDirRemoved).toBe(true);
   });
 
-  test("completed >= operations -> committed leftover swept quietly (the legacy orphaned-backup leak is gone)", async () => {
+  test("committed leftover is swept quietly (the legacy orphaned-backup leak is gone)", async () => {
     const captured = await captureCompletedSwept();
     expect(captured.ok).toBe(true);
     expect(captured.deleted).toBe(1);
     expect(captured.staleCommittedLeftoverSwept).toBe(true);
     expect(captured.namespaceCleanAfterRun).toBe(true);
+  });
+
+  test("publishing phase recovers even when the diagnostic checklist is incomplete", async () => {
+    const storage = withIsolatedAkmStorage();
+    try {
+      const staleOp: ConsolidateDeleteOp = {
+        op: "delete",
+        ref: memoryRef(JOURNAL_STALE_OP_REF_NAME),
+        reason: "stale",
+      };
+      writeRawJournalFile(
+        storage.stashDir,
+        {
+          startedAt: "2020-01-01T00:00:00.000Z",
+          operations: [staleOp] satisfies ConsolidateOperation[],
+          completed: [],
+          gitPaths: [],
+        },
+        "publishing",
+      );
+
+      const result = await akmConsolidate({
+        stashDir: storage.stashDir,
+        target: storage.stashDir,
+        config: CONFIG,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(namespaceIsClean(storage.stashDir)).toBe(true);
+    } finally {
+      storage.cleanup();
+    }
+  });
+
+  test("applying phase remains incomplete even when ref counts happen to match", async () => {
+    const storage = withIsolatedAkmStorage();
+    try {
+      const staleOp: ConsolidateDeleteOp = {
+        op: "delete",
+        ref: memoryRef(JOURNAL_STALE_OP_REF_NAME),
+        reason: "stale",
+      };
+      writeRawJournalFile(storage.stashDir, {
+        startedAt: "2020-01-01T00:00:00.000Z",
+        operations: [staleOp] satisfies ConsolidateOperation[],
+        completed: [staleOp.ref, `${staleOp.ref}-secondary`],
+        gitPaths: [],
+      });
+
+      await expect(
+        akmConsolidate({ stashDir: storage.stashDir, target: storage.stashDir, config: CONFIG }),
+      ).rejects.toThrow("Incomplete consolidation run detected");
+      expect(fs.existsSync(craftedJournalPath(storage.stashDir))).toBe(true);
+    } finally {
+      storage.cleanup();
+    }
   });
 });
 
@@ -562,11 +622,10 @@ test("golden fixture: journal-recovery.json (checkForIncompleteJournal recovery-
     scenario: "consolidate journal recovery-mode matrix: checkForIncompleteJournal (WI-06, R5)",
     capturedAtHead: HEAD_SHA,
     notes: [
-      "Re-captured at WI-6.3e (unified fs-txn engine). Recovery stays a run-entry decision: abort (default) refuses " +
-        "the run with the same ConfigError guidance; clean removes the stale transaction dir (journal + backups " +
-        "together -- the legacy scheme's two backup-timestamp derivations collapsed with the timestamped backup " +
-        "dirs). The legacy characterization surprise (a completed-but-never-cleaned journal's backup dir leaking " +
-        "forever) is GONE: committed leftovers are swept whole at the run-entry check.",
+      "Re-captured at WI-6.3e (unified fs-txn engine). Applying-phase recovery stays a run-entry decision: abort " +
+        "(default) refuses the run with the same ConfigError guidance; clean removes the stale transaction dir " +
+        "(journal + backups together). Publishing-phase recovery rolls forward its exact durable boundary, and " +
+        "committed leftovers are swept whole at the run-entry check.",
       "No ref literals appear anywhere in this fixture: every case here reports only booleans, counts, and the " +
         "ConfigError code string -- no ref-grammar re-baseline caveat applies.",
     ],

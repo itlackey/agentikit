@@ -7,16 +7,20 @@ import { defineJsonCommand, output, parseAllFlagValues } from "../cli/shared";
 import { makeBundleRef, parseBundleRef } from "../core/asset/asset-ref";
 import { assembleAsset } from "../core/asset/asset-serialize";
 import { parseFrontmatter, parseFrontmatterBlock } from "../core/asset/frontmatter";
-import { conceptIdFromTypeName, parseRefInput } from "../core/asset/resolve-ref";
-import { writeFileAtomic } from "../core/common";
+import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../core/asset/resolve-ref";
+import { isWithin, writeFileAtomic } from "../core/common";
 import { FEEDBACK_FAILURE_MODES, loadConfig } from "../core/config/config";
 import { UsageError } from "../core/errors";
 import { appendEvent } from "../core/events";
+import { resolveMutationTarget } from "../core/mutation-target";
 import { getDbPath } from "../core/paths";
 import { withStateDb } from "../core/state-db";
 import { warn } from "../core/warn";
+import { commitWriteTargetBoundary, recordWriteTargetPath } from "../core/write-source";
+import { deriveInstallations } from "../indexer/installations";
 import { resolveSourceEntries } from "../indexer/search/search-source";
 import { countFeedbackSignals, insertUsageEvent, resolveUsageEventSource } from "../indexer/usage/usage-events";
+import { resolveSourcesForOrigin } from "../registry/origin-resolve";
 import type { Database } from "../storage/database";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import {
@@ -74,32 +78,44 @@ function validateFeedbackTags(raw: string[]): string[] {
  * an existing asset — the same pattern memory-inference uses for
  * `inferenceProcessed`.
  */
-function appendLessonStrength(type: string, name: string, feedbackRef: string): { strength: number } | null {
+function appendLessonStrength(refInput: AssetRef, feedbackRef: string): { ref: string; strength: number } | null {
   // Canonical 0.9.0 conceptId (`lessons/<name>`, D-R3) — `findEntryIdByRef`
   // keys on the stored `item_ref` and parses its argument as the new grammar,
   // so a `type:name` lookup here would never match.
-  const ref = conceptIdFromTypeName(type, name);
+  const conceptId = conceptIdFromTypeName(refInput.type, refInput.name);
+  const config = loadConfig();
+  const sources = resolveSourceEntries(undefined, config);
+  const installations = deriveInstallations(sources);
+  const candidates = refInput.origin ? resolveSourcesForOrigin(refInput.origin, sources) : sources;
   let filePath: string | undefined;
+  let bundleId: string | undefined;
   const db = openExistingDatabase();
   try {
-    const entryId = findEntryIdByRef(db, ref);
-    if (entryId === undefined) {
-      warn(`[feedback] --applied-to: lesson ${ref} is not in the index.`);
-      return null;
+    for (const source of candidates) {
+      const sourceIndex = sources.indexOf(source);
+      const candidateBundle = installations[sourceIndex]?.id;
+      if (!candidateBundle) continue;
+      const entryId = findEntryIdByRef(db, makeBundleRef(candidateBundle, conceptId), source.path);
+      if (entryId === undefined) continue;
+      const resolvedPath = getEntryFilePathById(db, entryId);
+      if (!resolvedPath) continue;
+      filePath = resolvedPath;
+      bundleId = candidateBundle;
+      break;
     }
-    const resolvedPath = getEntryFilePathById(db, entryId);
-    if (!resolvedPath) {
-      warn(`[feedback] --applied-to: cannot resolve file path for ${ref}.`);
-      return null;
-    }
-    filePath = resolvedPath;
   } finally {
     closeDatabase(db);
   }
 
-  if (!filePath || !fs.existsSync(filePath)) {
-    warn(`[feedback] --applied-to: lesson file missing on disk for ${ref}.`);
+  const requestedRef = makeBundleRef(refInput.origin, conceptId);
+  if (!filePath || !bundleId || !fs.existsSync(filePath)) {
+    warn(`[feedback] --applied-to: lesson ${requestedRef} is not in the index or is missing on disk.`);
     return null;
+  }
+
+  const resolved = resolveMutationTarget(config, { ...refInput, origin: bundleId });
+  if (!isWithin(filePath, resolved.target.source.path)) {
+    throw new UsageError(`Resolved lesson ${requestedRef} is outside bundle "${bundleId}".`);
   }
 
   const raw = fs.readFileSync(filePath, "utf8");
@@ -113,7 +129,7 @@ function appendLessonStrength(type: string, name: string, feedbackRef: string): 
       : [];
   if (strengthList.includes(feedbackRef)) {
     // Already credited — idempotent no-op.
-    return { strength: strengthList.length };
+    return { ref: makeBundleRef(bundleId, conceptId), strength: strengthList.length };
   }
   strengthList.push(feedbackRef);
   data.lessonStrength = strengthList;
@@ -126,11 +142,13 @@ function appendLessonStrength(type: string, name: string, feedbackRef: string): 
     // typically 0o644); writeFileAtomic defaults to 0o600 otherwise.
     const mode = fs.statSync(filePath).mode & 0o777;
     writeFileAtomic(filePath, next, mode);
+    recordWriteTargetPath(resolved.target.source, filePath);
+    commitWriteTargetBoundary(resolved.target, `Update ${makeBundleRef(bundleId, conceptId)}`);
   } catch (err) {
     warn(`[feedback] --applied-to: failed to write ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
-  return { strength: strengthList.length };
+  return { ref: makeBundleRef(bundleId, conceptId), strength: strengthList.length };
 }
 
 /**
@@ -314,13 +332,7 @@ export const feedbackCommand = defineJsonCommand({
     try {
       const config = loadConfig();
       const sources = resolveSourceEntries(undefined, config);
-      const requestedSource = parsedRef.bundle
-        ? sources.find(
-            (source) =>
-              source.registryId === parsedRef.bundle ||
-              ((parsedRef.bundle === "local" || parsedRef.bundle === "stash") && source === sources[0]),
-          )
-        : undefined;
+      const requestedSource = parsedRef.bundle ? resolveSourcesForOrigin(parsedRef.bundle, sources)[0] : undefined;
       if (parsedRef.bundle && !requestedSource) {
         throw new UsageError(`Source "${parsedRef.bundle}" is not configured.`, "INVALID_FLAG_VALUE");
       }
@@ -397,9 +409,9 @@ export const feedbackCommand = defineJsonCommand({
       try {
         const parsedApplied = parseRefInput(appliedToRaw);
         if (parsedApplied.type === "lesson") {
-          const updated = appendLessonStrength(parsedApplied.type, parsedApplied.name, ref);
+          const updated = appendLessonStrength(parsedApplied, durableRef);
           if (updated) {
-            appliedToResult = { lessonRef: appliedToRaw, strength: updated.strength };
+            appliedToResult = { lessonRef: updated.ref, strength: updated.strength };
           }
         }
       } catch (err) {

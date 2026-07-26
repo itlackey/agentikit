@@ -13,6 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as yamlParse } from "yaml";
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../../core/asset/asset-create";
 import { assetPathForName, stashDirFor } from "../../core/asset/asset-placement";
 import { assembleAsset } from "../../core/asset/asset-serialize";
@@ -32,6 +33,7 @@ import {
   writeAssetToSource,
 } from "../../core/write-source";
 import { indexWrittenAssets } from "../../indexer/index-written-assets";
+import { deriveInstallations } from "../../indexer/installations";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import {
   fetchWebsiteMarkdownSnapshot,
@@ -172,9 +174,8 @@ interface ParsedWriteRef {
  * (`parseRefInput`, the 0.9.0 `[bundle//]conceptId` grammar) so malformed and
  * origin-prefixed spellings get a structured error instead of a misleading "did
  * not resolve". Chunk-8 WI-8.5c: the legacy `[origin//]type:name` content-surface
- * arm is retired — `--xref`/`--supersedes` take the conceptId form. A `local//`
- * origin is accepted and stripped; bundle qualifiers are retained for exact
- * source membership checks.
+ * arm is retired — `--xref`/`--supersedes` take the conceptId form. Bundle
+ * qualifiers are retained for exact source membership checks.
  */
 function parseWriteRef(raw: string, flag: "--xref" | "--supersedes"): ParsedWriteRef {
   let parsed: AssetRef;
@@ -188,10 +189,10 @@ function parseWriteRef(raw: string, flag: "--xref" | "--supersedes"): ParsedWrit
       `Refs use the conceptId form, e.g. ${flag} knowledge/auth-flow.`,
     );
   }
-  // Type alias resolved, name normalized, and `local//` dropped. Other bundle
-  // qualifiers remain explicit so duplicate names resolve in the named source.
+  // Type alias resolved and name normalized. Bundle qualifiers remain explicit
+  // so duplicate names resolve in the named source.
   const conceptId = conceptIdFromTypeName(parsed.type, parsed.name);
-  const origin = parsed.origin === "local" ? undefined : parsed.origin;
+  const origin = parsed.origin;
   return {
     ref: origin ? `${origin}//${conceptId}` : conceptId,
     type: parsed.type,
@@ -231,11 +232,17 @@ function parseWriteRefs(rawRefs: string[], flag: "--xref" | "--supersedes"): Par
  * NOTE: this is deliberately a superset of lint's root set (lint roots at the
  * working stash; this roots at the write target AND the working stash).
  */
-function resolveWriteRefRoots(target?: string): {
-  roots: Array<{ path: string; source?: SearchSource; mutable: boolean }>;
-} {
+interface WriteRefRoot {
+  path: string;
+  source?: SearchSource;
+  bundleId?: string;
+  mutable: boolean;
+}
+
+function resolveWriteRefRoots(target?: string): { roots: WriteRefRoot[] } {
   const cfg = loadConfig();
-  const stashRoot = resolveWriteTarget(cfg, target).source.path;
+  const writeTarget = resolveWriteTarget(cfg, target);
+  const stashRoot = writeTarget.source.path;
   let workingStash: string | undefined;
   try {
     workingStash = resolveStashDir({ readOnly: true });
@@ -245,28 +252,44 @@ function resolveWriteRefRoots(target?: string): {
   const mutableRoots: string[] = [stashRoot];
   if (workingStash && path.resolve(workingStash) !== path.resolve(stashRoot)) mutableRoots.push(workingStash);
   const namedSources = resolveSourceEntries(stashRoot, cfg);
+  const installations = deriveInstallations(namedSources);
+  const bundleByPath = new Map(
+    namedSources.flatMap((source, index) => {
+      const bundleId = installations[index]?.id;
+      return bundleId ? [[path.resolve(source.path), bundleId] as const] : [];
+    }),
+  );
   const otherSources = namedSources.filter(
     (s) => !mutableRoots.some((m) => path.resolve(m) === path.resolve(s.path)) && fs.existsSync(s.path),
   );
   const roots = [
     ...mutableRoots
       .filter((p) => fs.existsSync(p))
-      .map((p) => ({
-        path: p,
-        source: namedSources.find((source) => path.resolve(source.path) === path.resolve(p)),
-        mutable: true,
-      })),
-    ...otherSources.map((source) => ({ path: source.path, source, mutable: false })),
+      .map((p) => {
+        const source = namedSources.find((candidate) => path.resolve(candidate.path) === path.resolve(p));
+        const mutable =
+          path.resolve(p) === path.resolve(stashRoot)
+            ? writeTarget.source.adapterId === "akm"
+            : source?.writable === true && (source.adapterId ?? detectAdapterId(p)) === "akm";
+        return { path: p, source, bundleId: bundleByPath.get(path.resolve(p)), mutable };
+      }),
+    ...otherSources.map((source) => ({
+      path: source.path,
+      source,
+      bundleId: bundleByPath.get(path.resolve(source.path)),
+      mutable: false,
+    })),
   ];
   return { roots };
 }
 
-function rootsForWriteRef(
-  parsed: ParsedWriteRef,
-  roots: Array<{ path: string; source?: SearchSource; mutable: boolean }>,
-): Array<{ path: string; source?: SearchSource; mutable: boolean }> {
+function rootsForWriteRef(parsed: ParsedWriteRef, roots: WriteRefRoot[]): WriteRefRoot[] {
   if (!parsed.origin) return roots;
-  return roots.filter((root) => root.source?.registryId === parsed.origin);
+  return roots.filter((root) => root.bundleId === parsed.origin);
+}
+
+function canonicalWriteRef(parsed: ParsedWriteRef): string {
+  return parsed.ref;
 }
 
 /**
@@ -362,7 +385,11 @@ export function resolveXrefsForWrite(rawXrefs: string[], target?: string): strin
   }
 
   // The CANONICAL spellings are what land in frontmatter (see ParsedWriteRef).
-  const xrefs = parsedRefs.map((p) => p.ref);
+  const xrefs: string[] = [];
+  for (const parsed of parsedRefs) {
+    const ref = canonicalWriteRef(parsed);
+    if (!xrefs.includes(ref)) xrefs.push(ref);
+  }
 
   if (xrefs.length > XREF_SOFT_CAP) {
     warn(
@@ -469,11 +496,12 @@ export function resolveSupersedesWriteTarget(rawRefs: string[], target?: string)
   let effectiveTarget = target;
   for (const parsed of parseWriteRefs(rawRefs, "--supersedes")) {
     if (!parsed.origin) continue;
-    effectiveTarget = resolveMutationTarget(
+    const resolved = resolveMutationTarget(
       config,
       { type: parsed.type, name: parsed.name, origin: parsed.origin },
       effectiveTarget,
-    ).target.source.name;
+    ).target;
+    effectiveTarget = resolved.selector ?? resolved.source.name;
   }
   return effectiveTarget;
 }
@@ -564,8 +592,10 @@ export function resolveSupersedesForWrite(rawRefs: string[], target?: string): S
     // writability: mutating a non-target writable source would leave it dirty
     // outside any boundary commit. Name the remedy when one exists.
     const namedWritableSource = source?.writable === true ? source.registryId : undefined;
+    const canonicalRef = canonicalWriteRef(parsed);
+    if (plan.some((item) => item.ref === canonicalRef)) continue;
     plan.push({
-      ref: parsed.ref,
+      ref: canonicalRef,
       filePath,
       stashRoot: root,
       writable,
@@ -750,9 +780,12 @@ export async function writeMarkdownAsset(options: {
   // effect without waiting for the next full index.
   const demotedInTargetRoot = demotedByRoot.get(source.path) ?? [];
   demotedByRoot.delete(source.path);
-  await indexWrittenAssets(source.path, [result.path, ...demotedInTargetRoot]);
+  await indexWrittenAssets(source.path, [result.path, ...demotedInTargetRoot], { bundleId: resolved.ref.origin });
+  const sourceEntries = resolveSourceEntries(undefined, cfg);
+  const sourceInstallations = deriveInstallations(sourceEntries);
   for (const [root, files] of demotedByRoot) {
-    await indexWrittenAssets(root, files);
+    const sourceIndex = sourceEntries.findIndex((entry) => path.resolve(entry.path) === path.resolve(root));
+    await indexWrittenAssets(root, files, { bundleId: sourceInstallations[sourceIndex]?.id });
   }
   // Placement hint (stash-organization conventions): CLI writers never receive
   // the resolveStashStandards prompt injection LLM flows get, so a type-root

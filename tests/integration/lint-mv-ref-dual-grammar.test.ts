@@ -20,7 +20,7 @@ import path from "node:path";
 import { akmLint } from "../../src/commands/lint/index";
 import { runCliCapture } from "../_helpers/cli";
 import { makeConfig } from "../_helpers/factories";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 const tempDirs: string[] = [];
 
@@ -129,5 +129,31 @@ describe("F4c M1 — akm mv rewrites both grammars", () => {
     expect(citer).toContain("memories/new-note");
     expect(citer).toContain("memory:new-note");
     expect(citer).not.toContain("old-note");
+  });
+
+  test("a qualified local bundle is rejected instead of moving the primary copy", async () => {
+    storage = withIsolatedAkmStorage();
+    const localDir = path.join(storage.root, "local-bundle");
+    fs.mkdirSync(path.join(storage.stashDir, "memories"), { recursive: true });
+    fs.mkdirSync(path.join(localDir, "memories"), { recursive: true });
+    const primary = path.join(storage.stashDir, "memories", "old-note.md");
+    const local = path.join(localDir, "memories", "old-note.md");
+    fs.writeFileSync(primary, "Primary copy.\n", "utf8");
+    fs.writeFileSync(local, "Local bundle copy.\n", "utf8");
+    writeSandboxConfig({
+      bundles: {
+        stash: { path: storage.stashDir, writable: true },
+        local: { path: localDir, writable: true },
+      },
+      defaultBundle: "stash",
+    });
+
+    const result = await runCliCapture(["mv", "local//memories/old-note", "new-note"]);
+
+    expect(result.code).toBe(2);
+    expect(fs.readFileSync(primary, "utf8")).toBe("Primary copy.\n");
+    expect(fs.readFileSync(local, "utf8")).toBe("Local bundle copy.\n");
+    expect(fs.existsSync(path.join(storage.stashDir, "memories", "new-note.md"))).toBe(false);
+    expect(fs.existsSync(path.join(localDir, "memories", "new-note.md"))).toBe(false);
   });
 });

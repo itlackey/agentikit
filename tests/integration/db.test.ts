@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { openStateDatabase } from "../../src/core/state-db";
 import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import type { Database } from "../../src/storage/database";
@@ -13,6 +14,8 @@ import {
 import {
   collectTagSetFromEntries,
   deleteEntriesByDir,
+  deleteEntriesByDirAndStash,
+  deleteUsageEventsByEntryIds,
   findEntryIdByRef,
   getAllEntries,
   getEmbeddableEntryCount,
@@ -38,7 +41,7 @@ import {
   getRegistryIndexCache,
   upsertRegistryIndexCache,
 } from "../../src/storage/repositories/registry-index-cache-repository";
-import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../_helpers/sandbox";
+import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 // ── Temp directory management ───────────────────────────────────────────────
 
@@ -439,6 +442,51 @@ describe("Entry CRUD", () => {
     }
   });
 
+  test("deferred usage cleanup does not escape a rolled-back index transaction", () => {
+    const storage = withIsolatedAkmStorage();
+    const db = openIndexDatabase(tmpDbPath());
+    try {
+      const entryId = insertTestEntry(db, "rollback-delete", {
+        dirPath: "/handoff",
+        stashDir: "/parent",
+      });
+      const stateDb = openStateDatabase();
+      stateDb
+        .prepare("INSERT INTO usage_events (event_type, entry_id, entry_ref) VALUES ('show', ?, ?)")
+        .run(entryId, "parent//memories/rollback-delete");
+      stateDb.close();
+
+      expect(() =>
+        db.transaction(() => {
+          deleteEntriesByDirAndStash(db, "/handoff", "/parent", { cleanupUsageEvents: false });
+          throw new Error("forced persistence failure");
+        })(),
+      ).toThrow("forced persistence failure");
+      expect(getEntryCount(db)).toBe(1);
+
+      const afterRollback = openStateDatabase();
+      expect(
+        afterRollback.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE entry_id = ?").get(entryId),
+      ).toEqual({
+        count: 1,
+      });
+      afterRollback.close();
+
+      const deletedIds = deleteEntriesByDirAndStash(db, "/handoff", "/parent", { cleanupUsageEvents: false });
+      deleteUsageEventsByEntryIds(deletedIds);
+      const afterCommit = openStateDatabase();
+      expect(afterCommit.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE entry_id = ?").get(entryId)).toEqual(
+        {
+          count: 0,
+        },
+      );
+      afterCommit.close();
+    } finally {
+      closeDatabase(db);
+      storage.cleanup();
+    }
+  });
+
   // Since the `vault` type was removed (0.9.0) every indexed entry is
   // embeddable, so the embeddable count always equals the full entry count.
   test("getEmbeddableEntryCount equals total entry count", () => {
@@ -736,6 +784,49 @@ describe("Vector / Embedding integration", () => {
       // Original direction should now be far
       results = searchVec(db, [1, 0, 0, 0], 10);
       expect(results[0]!.distance).toBeGreaterThan(1);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("upsertEntry invalidates vectors only when the embedding input changes", () => {
+    const db = openIndexDatabase(tmpDbPath(), { embeddingDim: 4 });
+    try {
+      const id = insertTestEntry(db, "vec-input", { searchText: "same projection" });
+      upsertEmbedding(db, id, [1, 0, 0, 0]);
+
+      expect(insertTestEntry(db, "vec-input", { searchText: "same projection" })).toBe(id);
+      expect(db.prepare("SELECT COUNT(*) AS count FROM embeddings WHERE id = ?").get(id)).toEqual({ count: 1 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM entries_vec WHERE id = ?").get(id)).toEqual({ count: 1 });
+
+      expect(insertTestEntry(db, "vec-input", { searchText: "changed projection" })).toBe(id);
+      expect(db.prepare("SELECT COUNT(*) AS count FROM embeddings WHERE id = ?").get(id)).toEqual({ count: 0 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM entries_vec WHERE id = ?").get(id)).toEqual({ count: 0 });
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("entry-key fallback invalidates the row it updates when item_ref is non-unique", () => {
+    const db = openIndexDatabase(tmpDbPath(), { embeddingDim: 4 });
+    try {
+      db.exec("DROP INDEX idx_entries_item_ref; CREATE INDEX idx_entries_item_ref ON entries(item_ref)");
+      const provenance = deriveEntryProvenance(
+        { bundleId: "shared", componentId: "shared", adapterId: "akm" },
+        "script",
+        "duplicate",
+      );
+      const entry = makeEntry({ name: "duplicate", type: "script" });
+      const firstId = upsertEntry(db, "first-key", "/first", "/first/a.ts", "/first", entry, "first", provenance);
+      const secondId = upsertEntry(db, "second-key", "/second", "/second/a.ts", "/second", entry, "second", provenance);
+      upsertEmbedding(db, firstId, [1, 0, 0, 0]);
+      upsertEmbedding(db, secondId, [0, 1, 0, 0]);
+
+      expect(upsertEntry(db, "second-key", "/second", "/second/a.ts", "/second", entry, "changed", provenance)).toBe(
+        secondId,
+      );
+      expect(db.prepare("SELECT COUNT(*) AS count FROM embeddings WHERE id = ?").get(firstId)).toEqual({ count: 1 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM embeddings WHERE id = ?").get(secondId)).toEqual({ count: 0 });
     } finally {
       closeDatabase(db);
     }

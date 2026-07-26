@@ -17,6 +17,7 @@ import { ConfigError } from "../../core/errors";
 import {
   advanceTxn,
   beginTxn,
+  canonicalTxnRoot,
   cleanupTxn,
   registerTxnKind,
   type Txn,
@@ -51,12 +52,21 @@ import { createRunContext, type RunContext } from "./run-context";
 // Re-export the moved helpers so existing test imports continue to resolve.
 export { hasSupersededStatus, validateProposalFrontmatter };
 
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { openStateDatabase } from "../../core/state-db";
 import { warn } from "../../core/warn";
 import {
-  commitWriteTargetBoundary,
+  assertWriteTargetPathsClean,
+  captureGitPathSnapshot,
+  captureGitPublication,
   deleteAssetFromSource,
+  ensureGitTransactionCommit,
+  type GitPathSnapshots,
+  type GitPublication,
+  prepareWriteTargetForMutation,
+  publishGitTransactionCommit,
   type ResolvedWriteTarget,
+  recordWriteTargetPath,
   resolveWriteTarget,
   writeAssetToSource,
 } from "../../core/write-source";
@@ -500,10 +510,10 @@ function loadPendingConsolidateProposalHashes(stashDir: string): Set<string> {
 
 // ── Journal (unified fs-txn engine, WI-6.3e) ────────────────────────────────
 //
-// The consolidate journal is a CHECKLIST journal (planned ops + completed
-// marks + per-file backups), not a rollback/roll-forward transaction: recovery
-// stays a run-entry decision (`--consolidate-recovery abort|clean`), exactly
-// as before. What moved is the machinery: the in-stash
+// The consolidate journal records planned ops, diagnostic completion marks,
+// per-file backups, and an exact Git publication boundary. An interrupted
+// `applying` phase remains an explicit abort/clean decision; `publishing` rolls
+// forward only the recorded transaction-owned commit. The old in-stash
 // `.akm/consolidate-journal.json` + `.akm/consolidate-backup/<ts>/` homes are
 // gone; the journal rides the engine home (kind `consolidate`, root = stash)
 // with backups under the transaction directory.
@@ -512,28 +522,65 @@ interface ConsolidateJournalPayload {
   startedAt: string;
   operations: ConsolidateOperation[];
   completed: string[];
+  targetSource: string;
+  targetKind: string;
+  commitMessage?: string;
+  /** Exact repo-relative paths owned by this consolidation's Git boundary. */
+  gitPaths: string[];
+  gitSnapshots: GitPathSnapshots;
+  gitPublication?: GitPublication;
 }
 
 type ConsolidateTxn = Txn<ConsolidateJournalPayload>;
 
 const CONSOLIDATE_TXN_KIND = "consolidate";
-// Checklist semantics: never auto-recovered. commitPhase is the initial phase
-// so the engine never classifies these as rollback-able; the registered
-// handlers below abort loudly if generic recovery ever reaches one.
-const CONSOLIDATE_TXN_PHASES = ["applying", "committed"] as const;
+// Generic fs-txn recovery cannot reconstruct command config, so consolidate's
+// own run-entry path handles publication. The registered handler fails closed.
+const CONSOLIDATE_TXN_PHASES = ["applying", "publishing", "committed"] as const;
 
 function consolidateBackupDir(txn: ConsolidateTxn): string {
   return path.join(txn.dir, "backup");
 }
 
 /** Open the checklist journal for this run (durably, before any mutation). */
-function beginConsolidateTxn(stashDir: string, ops: ConsolidateOperation[]): ConsolidateTxn {
+function beginConsolidateTxn(
+  stashDir: string,
+  ops: ConsolidateOperation[],
+  target: ResolvedWriteTarget,
+): ConsolidateTxn {
+  const gitPublication = captureGitPublication(target);
   return beginTxn<ConsolidateJournalPayload>({
     kind: CONSOLIDATE_TXN_KIND,
     root: stashDir,
     changes: [],
-    payload: { startedAt: new Date().toISOString(), operations: ops, completed: [] },
+    payload: {
+      startedAt: new Date().toISOString(),
+      operations: ops,
+      completed: [],
+      targetSource: target.source.name,
+      targetKind: target.source.kind,
+      gitPaths: [],
+      gitSnapshots: {},
+      ...(gitPublication ? { gitPublication } : {}),
+    },
   });
+}
+
+function recordConsolidateMutationPath(txn: ConsolidateTxn, target: ResolvedWriteTarget, filePath: string): void {
+  recordWriteTargetPath(target.source, filePath);
+  if (target.source.kind !== "git") return;
+  const snapshot = captureGitPathSnapshot(target, filePath);
+  const previous = txn.journal.payload.gitSnapshots[snapshot.path];
+  if (!txn.journal.payload.gitPaths.includes(snapshot.path)) {
+    txn.journal.payload.gitPaths.push(snapshot.path);
+  }
+  if (
+    !Object.hasOwn(txn.journal.payload.gitSnapshots, snapshot.path) ||
+    JSON.stringify(previous) !== JSON.stringify(snapshot.state)
+  ) {
+    txn.journal.payload.gitSnapshots[snapshot.path] = snapshot.state;
+    advanceTxn(txn, "applying");
+  }
 }
 
 /** Durably mark one op complete on the checklist. Best-effort, like before. */
@@ -546,16 +593,61 @@ function markJournalCompleted(txn: ConsolidateTxn, opRef: string): void {
   }
 }
 
-/**
- * Run-entry recovery decision for stale consolidate journals (unchanged
- * semantics: `abort` refuses the run, `clean` removes stale artifacts). A
- * journal whose checklist is complete is a committed leftover and is swept
- * quietly — under the legacy single-path home the next run's journal write
- * overwrote it as a side effect; per-transaction dirs need the sweep to be
- * explicit (the legacy orphaned-backup leak documented in the journal
- * lifecycle golden is gone with it).
- */
-function checkForIncompleteJournal(stashDir: string, recoveryMode: "abort" | "clean", warnings: string[]): void {
+/** Finish a transaction-owned Git commit/push and remove its durable journal. */
+function finishConsolidationPublication(txn: ConsolidateTxn, target: ResolvedWriteTarget): void {
+  if (canonicalTxnRoot(target.source.path) !== canonicalTxnRoot(txn.journal.root)) {
+    throw new ConfigError(
+      `Consolidation transaction ${txn.journal.transactionId} is bound to a different target root.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const payload = txn.journal.payload;
+  if (
+    (payload.targetSource !== undefined && payload.targetSource !== target.source.name) ||
+    (payload.targetKind !== undefined && payload.targetKind !== target.source.kind)
+  ) {
+    throw new ConfigError(
+      `Consolidation transaction ${txn.journal.transactionId} is bound to a different target source.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const prepared = prepareWriteTargetForMutation(target, { allowAhead: true });
+  const paths = payload.gitPaths ?? [];
+  if (prepared.source.kind === "git") {
+    if (!payload.gitPublication) {
+      throw new ConfigError(
+        `Consolidation transaction ${txn.journal.transactionId} lacks durable Git publication identity.`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
+    const commit = ensureGitTransactionCommit(prepared, payload.gitPublication, {
+      transactionId: txn.journal.transactionId,
+      message: payload.commitMessage ?? "Consolidate assets",
+      paths,
+      snapshots: payload.gitSnapshots ?? {},
+    });
+    if (payload.gitPublication.commit !== commit) {
+      payload.gitPublication.commit = commit;
+      advanceTxn(txn, "publishing");
+    }
+    publishGitTransactionCommit(
+      prepared,
+      payload.gitPublication,
+      txn.journal.transactionId,
+      paths,
+      payload.gitSnapshots ?? {},
+    );
+  }
+  advanceTxn(txn, "committed");
+  cleanupTxn(txn.dir);
+}
+
+function checkForIncompleteJournal(
+  stashDir: string,
+  recoveryMode: "abort" | "clean",
+  warnings: string[],
+  target: ResolvedWriteTarget,
+): void {
   const nsDir = txnNamespaceDir(stashDir);
   if (!fs.existsSync(nsDir)) return;
   for (const entry of fs.readdirSync(nsDir, { withFileTypes: true })) {
@@ -586,9 +678,12 @@ function checkForIncompleteJournal(stashDir: string, recoveryMode: "abort" | "cl
     if (journal.kind !== CONSOLIDATE_TXN_KIND) continue;
     const operationCount = Array.isArray(journal.payload?.operations) ? journal.payload.operations.length : 0;
     const completedCount = Array.isArray(journal.payload?.completed) ? journal.payload.completed.length : 0;
-    if (completedCount >= operationCount) {
-      // Committed leftover — sweep quietly (see doc comment above).
+    if (journal.phase === "committed") {
       cleanupTxn(transactionDir);
+      continue;
+    }
+    if (journal.phase === "publishing") {
+      finishConsolidationPublication({ journal, journalPath, dir: transactionDir }, target);
       continue;
     }
     if (recoveryMode === "clean") {
@@ -708,20 +803,20 @@ function promoteProvenanceXrefs(existing: unknown, sourceRef: string): string[] 
 function archiveMemory(
   filePath: string,
   stashDir: string,
+  target: ResolvedWriteTarget,
   ref: string,
   reason: string,
   opIndex: number,
   supersededBy?: string,
   warnings?: string[],
-): void {
+): string | undefined {
   const archiveDir = path.join(stashDir, ".akm", "archive");
-  fs.mkdirSync(archiveDir, { recursive: true });
   let raw: string;
   try {
     raw = fs.readFileSync(filePath, "utf8");
   } catch {
     if (warnings) warnings.push(`archiveMemory: could not read ${ref} for archiving — skipping archive write`);
-    return;
+    return undefined;
   }
   let content = raw;
   try {
@@ -740,10 +835,14 @@ function archiveMemory(
   const ts = timestampForFilename();
   const safeName = path.basename(filePath, ".md");
   const archivePath = path.join(archiveDir, `${ts}-${opIndex}-${safeName}.md`);
+  assertWriteTargetPathsClean(target.source, [archivePath]);
   try {
+    fs.mkdirSync(archiveDir, { recursive: true });
     fs.writeFileSync(archivePath, content, "utf8");
+    return archivePath;
   } catch (e) {
     if (warnings) warnings.push(`archiveMemory: write failed for ${ref}: ${String(e)}`);
+    return undefined;
   }
 }
 
@@ -805,9 +904,14 @@ export function makeConsolidateResult(
 
 function resolveConsolidationWriteTarget(opts: AkmConsolidateOptions, config: AkmConfig): ResolvedWriteTarget {
   if (opts.writeTarget) {
+    const root = path.resolve(opts.writeTarget.source.path);
     return {
       ...opts.writeTarget,
-      source: { ...opts.writeTarget.source, path: path.resolve(opts.writeTarget.source.path) },
+      source: {
+        ...opts.writeTarget.source,
+        path: root,
+        adapterId: opts.writeTarget.source.adapterId ?? detectAdapterId(root),
+      },
     };
   }
   if (opts.target && !path.isAbsolute(opts.target)) {
@@ -821,7 +925,7 @@ function resolveConsolidationWriteTarget(opts: AkmConsolidateOptions, config: Ak
   if (explicitRoot) {
     const root = path.resolve(explicitRoot);
     return {
-      source: { kind: "filesystem", name: "stash", path: root },
+      source: { kind: "filesystem", name: "stash", path: root, adapterId: detectAdapterId(root) },
       config: { type: "filesystem", name: "stash", path: root, writable: true },
     };
   }
@@ -872,6 +976,9 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
     signal: opts.signal,
   });
 
+  const warnings: string[] = [];
+  checkForIncompleteJournal(stashDir, opts.recoveryMode ?? "abort", warnings, writeTarget);
+
   if (!resolveProcessEnabled("consolidate", opts.improveProfile ?? resolveImproveStrategy(undefined, config).config)) {
     return makeConsolidateResult({
       // Sourced from runContext (identical value to `opts.dryRun ?? false`)
@@ -881,11 +988,9 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
       dryRun: runContext.dryRun,
       target: opts.target ?? stashDir,
       durationMs: Date.now() - startMs,
+      warnings,
     });
   }
-
-  const warnings: string[] = [];
-  checkForIncompleteJournal(stashDir, opts.recoveryMode ?? "abort", warnings);
 
   // WS-3a: open one state.db handle shared by the body-embedding cache (dedup
   // + cluster) and the judged-state cache. All callers in the function body
@@ -1549,10 +1654,11 @@ async function applyConsolidationPlan(
   mergedSecondaries: number;
   promoted: string[];
 }> {
+  const mutationTarget = prepareWriteTargetForMutation(target);
   // -- Phase B + writes -------------------------------------------------------
   // Open the checklist journal (durably) before any mutations; backups live
   // under the transaction directory.
-  const txn = beginConsolidateTxn(stashDir, allOps);
+  const txn = beginConsolidateTxn(stashDir, allOps, mutationTarget);
   const backupDir = consolidateBackupDir(txn);
 
   const counts = {
@@ -1583,7 +1689,7 @@ async function applyConsolidationPlan(
     llmConfig: llmConfig ?? null,
     stashDir,
     sourceRun,
-    target,
+    target: mutationTarget,
     backupDir,
     memoryByRef,
     promoted,
@@ -1623,12 +1729,9 @@ async function applyConsolidationPlan(
   // with NO per-asset commit. If the target is a writable git source and any
   // asset was mutated, commit the whole batch ONCE here (stages .akm/ +
   // siblings together). No-op for filesystem/primary-stash targets.
-  if (merged > 0 || deleted > 0) {
-    commitWriteTargetBoundary(target, `Consolidate: ${merged} merged, ${deleted} removed`);
-  }
-
-  advanceTxn(txn, "committed");
-  cleanupTxn(txn.dir);
+  txn.journal.payload.commitMessage = `Consolidate: ${merged} merged, ${deleted} removed`;
+  advanceTxn(txn, "publishing");
+  finishConsolidationPublication(txn, mutationTarget);
 
   // [signoff 2026-06-15] TTL archive cleanup machinery RETIRED (WS-3a).
   // The elaborate archiveRetentionDays / archive-dir scan existed only to satisfy
@@ -1934,7 +2037,8 @@ async function finalizeMerge(
   // Write merged primary
   try {
     const parsedPrimary = parseRefInput(op.primary);
-    await writeAssetToSource(target.source, target.config, parsedPrimary, mergedContent);
+    const written = await writeAssetToSource(target.source, target.config, parsedPrimary, mergedContent);
+    recordConsolidateMutationPath(ctx.txn, target, written.path);
   } catch (e) {
     warnings.push(`Merge: write failed for ${op.primary}: ${String(e)}`);
     emitMergeFailureSkips("merge_write_failed");
@@ -1946,11 +2050,22 @@ async function finalizeMerge(
     const secEntry = memoryByRef.get(secRef);
     if (!secEntry) continue;
     if (fs.existsSync(secEntry.filePath)) {
-      archiveMemory(secEntry.filePath, stashDir, secRef, "merged into primary", opIndex, op.primary, warnings);
+      const archivePath = archiveMemory(
+        secEntry.filePath,
+        stashDir,
+        target,
+        secRef,
+        "merged into primary",
+        opIndex,
+        op.primary,
+        warnings,
+      );
+      if (archivePath) recordConsolidateMutationPath(ctx.txn, target, archivePath);
     }
     try {
       const parsedSec = parseRefInput(secRef);
-      await deleteAssetFromSource(target.source, target.config, parsedSec);
+      const deleted = await deleteAssetFromSource(target.source, target.config, parsedSec);
+      recordConsolidateMutationPath(ctx.txn, target, deleted.path);
       markJournalCompleted(ctx.txn, secRef);
     } catch (e) {
       warnings.push(`Merge: delete failed for ${secRef}: ${String(e)}`);
@@ -2175,12 +2290,23 @@ export async function handleDeleteOp(
   if (fs.existsSync(entry.filePath)) {
     backupFile(entry.filePath, backupDir, entry.name);
     // P1-B: soft-invalidation archive before hard delete
-    archiveMemory(entry.filePath, stashDir, op.ref, op.reason, opIndex, undefined, warnings);
+    const archivePath = archiveMemory(
+      entry.filePath,
+      stashDir,
+      target,
+      op.ref,
+      op.reason,
+      opIndex,
+      undefined,
+      warnings,
+    );
+    if (archivePath) recordConsolidateMutationPath(ctx.txn, target, archivePath);
   }
 
   try {
     const parsedRef = parseRefInput(op.ref);
-    await deleteAssetFromSource(target.source, target.config, parsedRef);
+    const deleted = await deleteAssetFromSource(target.source, target.config, parsedRef);
+    recordConsolidateMutationPath(ctx.txn, target, deleted.path);
     markJournalCompleted(ctx.txn, op.ref);
     counts.deleted++;
     // Prune from memoryByRef so later ops in this run cannot reference a
@@ -2423,7 +2549,7 @@ export async function handlePromoteOp(op: ConsolidatePromoteOp, ctx: Consolidate
 
 /** Execute one `contradict` op (behavior-identical to the former inlined branch). */
 export async function handleContradictOp(op: ConsolidateContradictOp, ctx: ConsolidateOpContext): Promise<void> {
-  const { memoryByRef, warnings, pushSkipReason, counts } = ctx;
+  const { memoryByRef, warnings, pushSkipReason, counts, target } = ctx;
   // Confidence gate: surface-level topic overlap causes false positives
   // (investigation 2026-06-18). Require ≥0.92 confidence before writing
   // contradiction edges. Missing confidence field defaults to 1.0 for
@@ -2460,7 +2586,9 @@ export async function handleContradictOp(op: ConsolidateContradictOp, ctx: Conso
 
   try {
     // Write the contradiction edge: op.ref is contradicted by op.contradictedByRef
+    assertWriteTargetPathsClean(target.source, [entry.filePath]);
     writeContradictEdge(entry.filePath, op.contradictedByRef);
+    recordConsolidateMutationPath(ctx.txn, target, entry.filePath);
     counts.contradicted++;
     markJournalCompleted(ctx.txn, op.ref);
   } catch (e) {
@@ -2864,10 +2992,8 @@ async function promptConfirm(message: string): Promise<boolean> {
   });
 }
 
-// Checklist journals are never auto-recovered — recovery is a run-entry
-// decision (`--consolidate-recovery abort|clean`). Registered so any generic
-// engine recovery that reaches one aborts with the same guidance instead of
-// improvising a rollback.
+// Command-owned run-entry recovery handles `publishing`; generic recovery has
+// no resolved target/config and therefore fails closed instead of improvising.
 registerTxnKind<ConsolidateJournalPayload>(CONSOLIDATE_TXN_KIND, {
   phases: CONSOLIDATE_TXN_PHASES,
   commitPhase: "applying",

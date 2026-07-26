@@ -76,11 +76,20 @@ import {
   txnMutationHook,
   txnNamespaceDir,
 } from "../../core/fs-txn";
+import { canonicalBundleIdForTarget, resolveBundleWriteTarget } from "../../core/mutation-target";
 import { withImmediateTransaction, withStateDb } from "../../core/state-db";
 import { warn } from "../../core/warn";
 import {
   assertAkmAssetWrite,
-  commitWriteTargetBoundary,
+  assertWriteTargetPathsClean,
+  captureGitPathSnapshot,
+  captureGitPublication,
+  captureLegacyGitPublication,
+  ensureGitTransactionCommit,
+  type GitPathSnapshots,
+  type GitPublication,
+  prepareWriteTargetForMutation,
+  publishGitTransactionCommit,
   type ResolvedWriteTarget,
   resolveWritableTargets,
   resolveWriteTarget,
@@ -89,6 +98,7 @@ import {
 import { withAssetMutationLease } from "../../indexer/index-writer-lock";
 import { indexWrittenAssets } from "../../indexer/index-written-assets";
 import { deriveInstallations, slugForPath } from "../../indexer/installations";
+import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import type { Database } from "../../storage/database";
 import { insertEventOnce } from "../../storage/repositories/events-repository";
 import {
@@ -375,7 +385,7 @@ function withProposalsDb<T>(_stashDir: string, ctx: ProposalsContext | undefined
  * non-slug registry origin (`github:owner/repo`, `npm:@scope/pkg`) cannot be
  * re-keyed without inventing a slug (D-R5) and keeps its legacy
  * `origin//type:name` spelling until the config `bundles` key lands. The
- * `local`/`stash` primary-stash sentinels resolve to the write-target bundle.
+ * Every explicit bundle qualifier remains part of the durable ref.
  */
 /**
  * Parse a user-supplied `--ref` / `idOrRef` filter. Qualified filters retain
@@ -386,6 +396,10 @@ function withProposalsDb<T>(_stashDir: string, ctx: ProposalsContext | undefined
 interface ProposalRefIdentity {
   conceptId: string;
   bundle?: string;
+}
+
+function isExplicitProposalBundle(origin: string | undefined): boolean {
+  return origin !== undefined;
 }
 
 function proposalRefIdentity(ref: string): ProposalRefIdentity | undefined {
@@ -427,7 +441,7 @@ function proposalMatchesRef(proposalRef: string, filter: ProposalRefIdentity): b
 function proposalDurableRef(parsedRef: AssetRef, stashDir: string, target?: CreateProposalInput["target"]): string {
   const conceptId = conceptIdFromTypeName(parsedRef.type, parsedRef.name);
   const { origin } = parsedRef;
-  if (origin !== undefined && origin !== "local" && origin !== "stash") {
+  if (origin !== undefined && isExplicitProposalBundle(origin)) {
     if (target && target.source !== origin) {
       throw new UsageError(
         `Proposal ref bundle "${origin}" conflicts with target source "${target.source}".`,
@@ -449,19 +463,86 @@ function proposalDurableRef(parsedRef: AssetRef, stashDir: string, target?: Crea
   return `${bundleId}//${conceptId}`;
 }
 
-/** Bind unqualified proposals created directly in a configured secondary queue. */
-function inferSecondaryProposalTarget(stashDir: string): CreateProposalInput["target"] | undefined {
+interface ProposalQueueIdentity {
+  bundleId: string;
+  root: string;
+  configured: boolean;
+  writable: boolean;
+  legacyBundleId: string;
+  bundleRoots: ReadonlyMap<string, string>;
+}
+
+function resolveProposalQueueIdentity(stashDir: string): ProposalQueueIdentity {
+  const root = path.resolve(stashDir);
+  const localSource: SearchSource = { path: root, writable: true };
+  const legacyBundleId = deriveInstallations([localSource])[0]?.id ?? slugForPath(root);
   try {
     const config = loadConfig();
-    const target = resolveWritableTargets(config).find(
-      (candidate) => path.resolve(candidate.source.path) === path.resolve(stashDir),
-    );
-    if (!target || target.source.name === "stash" || target.source.name === config.defaultBundle) return undefined;
-    return { source: target.source.name, root: target.source.path };
+    const configuredSources = resolveSourceEntries(undefined, config);
+    let sourceIndex = configuredSources.findIndex((source) => path.resolve(source.path) === root);
+    const configured = sourceIndex >= 0 && configuredSources[sourceIndex]?.registryId !== undefined;
+    const sources = sourceIndex >= 0 ? configuredSources : [...configuredSources, localSource];
+    if (sourceIndex < 0) sourceIndex = sources.length - 1;
+    const installations = deriveInstallations(sources);
+    const source = sources[sourceIndex] as SearchSource;
+    const bundleId = installations[sourceIndex]?.id ?? legacyBundleId;
+    const bundleRoots = new Map<string, string>();
+    for (const [index, installation] of installations.entries()) {
+      const candidate = sources[index];
+      if (candidate) bundleRoots.set(installation.id, path.resolve(candidate.path));
+    }
+    return { bundleId, root, configured, writable: source.writable === true, legacyBundleId, bundleRoots };
   } catch (error) {
     rethrowIfTestIsolationError(error);
     // Proposal creation historically did not require a resolvable config.
-    return undefined;
+    return {
+      bundleId: legacyBundleId,
+      root,
+      configured: false,
+      writable: true,
+      legacyBundleId,
+      bundleRoots: new Map([[legacyBundleId, root]]),
+    };
+  }
+}
+
+interface CreateProposalTargetResolution {
+  target?: CreateProposalInput["target"];
+  canonicalBundle?: string;
+}
+
+function resolveCreateProposalTarget(
+  stashDir: string,
+  explicit: CreateProposalInput["target"] | undefined,
+  bundle: string | undefined,
+): CreateProposalTargetResolution {
+  if (explicit) return { target: explicit };
+  const local = resolveProposalQueueIdentity(stashDir);
+  if (!bundle) {
+    return local.configured && local.writable ? { target: { source: local.bundleId, root: local.root } } : {};
+  }
+
+  if (bundle === local.legacyBundleId && bundle !== local.bundleId) {
+    const configuredRoot = local.bundleRoots.get(bundle);
+    if (configuredRoot && configuredRoot !== local.root) {
+      throw new UsageError(
+        `Proposal bundle "${bundle}" is both the legacy path alias for ${local.root} and a configured bundle at ${configuredRoot}; refusing to redirect the proposal.`,
+        "INVALID_FLAG_VALUE",
+      );
+    }
+    return {
+      target: { source: local.bundleId, root: local.root },
+      canonicalBundle: local.bundleId,
+    };
+  }
+
+  try {
+    const target = resolveBundleWriteTarget(loadConfig(), bundle);
+    return { target: { source: target.source.name, root: target.source.path } };
+  } catch (error) {
+    rethrowIfTestIsolationError(error);
+    if (bundle !== local.bundleId) throw error;
+    return { target: { source: local.bundleId, root: local.root } };
   }
 }
 
@@ -540,6 +621,12 @@ export function createProposal(
   if (!input.payload.content.trim()) {
     return rejectProposal("empty_content", `Proposal for "${input.ref}" has empty content.`);
   }
+  if (input.target && parsedRef.origin && input.target.source !== parsedRef.origin) {
+    return rejectProposal(
+      "invalid_ref",
+      `Qualified proposal ref bundle "${parsedRef.origin}" conflicts with queue target "${input.target.source}".`,
+    );
+  }
   // Description check is only enforced for `consolidate` source — that's the
   // automated pipeline that historically produced proposals with missing or
   // malformed frontmatter, polluting the queue with hundreds of unusable
@@ -555,8 +642,12 @@ export function createProposal(
     }
   }
 
-  const proposalTarget = input.target ?? inferSecondaryProposalTarget(stashDir);
-  const normalizedRef = proposalDurableRef(parsedRef, stashDir, proposalTarget); // durable proposal.ref (WI-8.5a item_ref flip)
+  const targetResolution = resolveCreateProposalTarget(stashDir, input.target, parsedRef.origin);
+  const proposalTarget = targetResolution.target;
+  const durableParsedRef = targetResolution.canonicalBundle
+    ? { ...parsedRef, origin: targetResolution.canonicalBundle }
+    : parsedRef;
+  const normalizedRef = proposalDurableRef(durableParsedRef, stashDir, proposalTarget); // durable proposal.ref (WI-8.5a item_ref flip)
   const targetRoot = path.resolve(proposalTarget?.root ?? stashDir);
 
   // WI-6.2: derive the FileChange[] envelope + mint-time beforeHash. The
@@ -650,7 +741,7 @@ export function createProposal(
         changes: mintedChanges,
         ...(proposalTarget
           ? { proposedTarget: { source: proposalTarget.source, root: targetRoot } }
-          : parsedRef.origin !== undefined && parsedRef.origin !== "local" && parsedRef.origin !== "stash"
+          : parsedRef.origin !== undefined && isExplicitProposalBundle(parsedRef.origin)
             ? { proposedTarget: { source: parsedRef.origin, root: path.resolve(stashDir) } }
             : {}),
         ...(mintedBeforeHash !== undefined ? { beforeHash: mintedBeforeHash } : {}),
@@ -1122,6 +1213,7 @@ interface ProposalTxnPayload {
   proposalId: string;
   stashDir: string;
   targetSource: string;
+  targetKind: string;
   assetPath: string;
   ref: string;
   contentPath: string;
@@ -1130,6 +1222,8 @@ interface ProposalTxnPayload {
   backupPath: string | null;
   originalHash: string | null;
   publishedHash: string;
+  gitPublication?: GitPublication;
+  gitSnapshots?: GitPathSnapshots;
   eventMetadata?: Record<string, unknown>;
 }
 
@@ -1214,6 +1308,74 @@ function validatePublishedProposal(p: ProposalTxnPayload): void {
   if (!fs.existsSync(p.assetPath) || proposalFileHash(p.assetPath) !== p.publishedHash) {
     throw new Error(`Cannot recover proposal ${p.proposalId}: published asset diverged.`);
   }
+}
+
+function canonicalProposalPath(filePath: string): string {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    try {
+      return path.join(fs.realpathSync(path.dirname(filePath)), path.basename(filePath));
+    } catch {
+      return path.resolve(filePath);
+    }
+  }
+}
+
+function canonicalizePersistedProposalTarget(
+  txn: ProposalTxn,
+  target: ResolvedWriteTarget,
+  ctx?: ProposalsContext,
+): void {
+  const p = txn.journal.payload;
+  withProposalsDb(p.stashDir, ctx, (db) =>
+    withImmediateTransaction(db, () => {
+      const current = requireProposal(db, p.stashDir, p.proposalId);
+      const acceptedTarget = current.acceptedTarget;
+      const acceptedHashMatchesJournal =
+        p.operation === "accept"
+          ? acceptedTarget?.contentHash === p.publishedHash
+          : p.originalHash === null || acceptedTarget?.contentHash === p.originalHash;
+      if (
+        !acceptedTarget ||
+        canonicalTxnRoot(acceptedTarget.root) !== canonicalTxnRoot(txn.journal.root) ||
+        canonicalProposalPath(acceptedTarget.path) !== canonicalProposalPath(p.assetPath) ||
+        !acceptedHashMatchesJournal
+      ) {
+        return;
+      }
+      const relativeAssetPath = path.relative(canonicalTxnRoot(txn.journal.root), canonicalProposalPath(p.assetPath));
+      if (
+        relativeAssetPath === "" ||
+        relativeAssetPath === ".." ||
+        relativeAssetPath.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relativeAssetPath)
+      ) {
+        throw new Error(`Proposal transaction ${txn.journal.transactionId} asset path escapes its target root.`);
+      }
+      const reboundAssetPath = path.resolve(target.source.path, relativeAssetPath);
+      if (
+        acceptedTarget.source === target.source.name &&
+        path.resolve(acceptedTarget.root) === path.resolve(target.source.path) &&
+        path.resolve(acceptedTarget.path) === reboundAssetPath
+      ) {
+        return;
+      }
+      upsertProposal(
+        db,
+        {
+          ...current,
+          acceptedTarget: {
+            ...acceptedTarget,
+            source: target.source.name,
+            root: target.source.path,
+            path: reboundAssetPath,
+          },
+        },
+        p.stashDir,
+      );
+    }),
+  );
 }
 
 function persistProposalTransactionState(txn: ProposalTxn, proposal: Proposal, ctx?: ProposalsContext): Proposal {
@@ -1305,18 +1467,47 @@ async function finalizeProposalTransaction(
   const p = txn.journal.payload;
   validatePublishedProposal(p);
   cleanupProposalPublication(p);
+  canonicalizePersistedProposalTarget(txn, target, ctx);
   if (txn.journal.phase === "asset-published") {
     const commitRoot = target.source.repoPath ?? target.source.path;
     const commitPath = path.relative(commitRoot, p.assetPath).replaceAll(path.sep, "/");
-    commitWriteTargetBoundary(target, `${p.operation === "accept" ? "Update" : "Revert"} ${p.ref}`, {
-      paths: [commitPath],
-    });
+    if (target.source.kind === "git") {
+      if (!p.gitPublication) {
+        const snapshot = captureGitPathSnapshot(target, p.assetPath);
+        const snapshots = { [snapshot.path]: snapshot.state };
+        const publication = captureLegacyGitPublication(target, [commitPath], snapshots);
+        if (!publication) {
+          throw new Error(`Proposal transaction ${txn.journal.transactionId} cannot capture Git publication identity.`);
+        }
+        p.gitPublication = publication;
+        p.gitSnapshots = snapshots;
+        p.targetKind = target.source.kind;
+        advanceTxn(txn, "asset-published");
+      }
+      const commit = ensureGitTransactionCommit(target, p.gitPublication, {
+        transactionId: txn.journal.transactionId,
+        message: `${p.operation === "accept" ? "Update" : "Revert"} ${p.ref}`,
+        paths: [commitPath],
+        snapshots: p.gitSnapshots ?? {},
+      });
+      if (p.gitPublication.commit !== commit) {
+        p.gitPublication.commit = commit;
+        advanceTxn(txn, "asset-published");
+      }
+      publishGitTransactionCommit(
+        target,
+        p.gitPublication,
+        txn.journal.transactionId,
+        [commitPath],
+        p.gitSnapshots ?? {},
+      );
+    }
     persistProposalTransactionState(txn, proposal, ctx);
     advanceTxn(txn, "proposal-persisted");
   }
   let accepted = getProposal(p.stashDir, p.proposalId, ctx);
   if (txn.journal.phase === "proposal-persisted") {
-    if (!(await indexWrittenAssets(txn.journal.root, [p.assetPath]))) {
+    if (!(await indexWrittenAssets(txn.journal.root, [p.assetPath], { bundleId: target.source.name }))) {
       throw new Error(`Proposal ${p.proposalId} index finalization failed.`);
     }
     advanceTxn(txn, "index-finalized");
@@ -1352,6 +1543,43 @@ function fenceProposalTxnJournal(journal: TxnJournal<ProposalTxnPayload>, txnDir
   }
 }
 
+function resolveProposalRecoveryTarget(
+  config: AkmConfig,
+  journal: TxnJournal<ProposalTxnPayload>,
+): ResolvedWriteTarget {
+  let target: ResolvedWriteTarget | undefined;
+  try {
+    target = resolveBundleWriteTarget(config, journal.payload.targetSource);
+  } catch {
+    try {
+      target = resolveWriteTarget(config, journal.payload.targetSource);
+    } catch {
+      // A pre-canonical journal may carry a retired source alias.
+    }
+  }
+  if (
+    target &&
+    journal.payload.targetKind === undefined &&
+    canonicalTxnRoot(target.source.path) !== canonicalTxnRoot(journal.root)
+  ) {
+    target = undefined;
+  }
+  if (!target && journal.payload.targetKind === undefined) {
+    const rootMatches = resolveWritableTargets(config).filter(
+      (candidate) => canonicalTxnRoot(candidate.source.path) === canonicalTxnRoot(journal.root),
+    );
+    if (rootMatches.length === 1) target = rootMatches[0];
+  }
+  if (!target) {
+    throw new UsageError(
+      `Proposal transaction ${journal.transactionId} target is no longer configured.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  const bundleId = canonicalBundleIdForTarget(config, target);
+  return { ...target, source: { ...target.source, name: bundleId } };
+}
+
 async function recoverProposalTransactions(
   target: ResolvedWriteTarget,
   stashDir: string,
@@ -1373,16 +1601,29 @@ async function recoverProposalTransactions(
     const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as TxnJournal<ProposalTxnPayload>;
     if (journal.kind !== PROPOSAL_TXN_KIND) continue;
     if (path.resolve(journal.payload.stashDir) !== path.resolve(stashDir)) continue;
-    if (journal.version !== 1 || canonicalTxnRoot(journal.root) !== canonicalTxnRoot(target.source.path)) {
+    if (
+      journal.version !== 1 ||
+      canonicalTxnRoot(journal.root) !== canonicalTxnRoot(target.source.path) ||
+      (journal.payload.targetKind !== undefined && journal.payload.targetSource !== target.source.name) ||
+      (journal.payload.targetKind !== undefined && journal.payload.targetKind !== target.source.kind)
+    ) {
       throw new Error(`Refusing unsafe proposal transaction journal at ${journalPath}.`);
     }
     fenceProposalTxnJournal(journal, transactionDir, target.source.path);
     const txn: ProposalTxn = { journal, journalPath, dir: transactionDir };
-    if (journal.phase === "prepared") rollbackPreparedProposalTransaction(txn);
-    else if (journal.phase !== "committed") {
+    if (journal.payload.targetKind === undefined) {
+      journal.payload.targetSource = target.source.name;
+      journal.payload.targetKind = target.source.kind;
+      advanceTxn(txn, journal.phase);
+    }
+    if (journal.phase === "prepared") {
+      canonicalizePersistedProposalTarget(txn, target, ctx);
+      rollbackPreparedProposalTransaction(txn);
+    } else if (journal.phase !== "committed") {
       const proposal = getProposal(stashDir, journal.payload.proposalId, ctx);
       completed.set(journal.payload.proposalId, await finalizeProposalTransaction(txn, target, proposal, ctx));
     } else {
+      canonicalizePersistedProposalTarget(txn, target, ctx);
       completed.set(journal.payload.proposalId, getProposal(stashDir, journal.payload.proposalId, ctx));
     }
     cleanupProposalPublication(journal.payload);
@@ -1410,13 +1651,16 @@ export async function recoverProposalTransactionsForStash(
   }
   const recoveredRoots = new Set<string>();
   for (const journal of matches) {
-    let target: ResolvedWriteTarget;
-    try {
-      target = resolveWriteTarget(config, journal.payload.targetSource);
-    } catch {
-      target = resolveWriteTarget(config);
-    }
-    if (canonicalTxnRoot(target.source.path) !== canonicalTxnRoot(journal.root)) {
+    let target = resolveProposalRecoveryTarget(config, journal);
+    const requiresGitPublication = matches.some(
+      (candidate) =>
+        candidate.phase === "asset-published" && canonicalTxnRoot(candidate.root) === canonicalTxnRoot(journal.root),
+    );
+    if (requiresGitPublication) target = prepareWriteTargetForMutation(target, { allowAhead: true });
+    if (
+      canonicalTxnRoot(target.source.path) !== canonicalTxnRoot(journal.root) ||
+      (journal.payload.targetKind !== undefined && journal.payload.targetKind !== target.source.kind)
+    ) {
       throw new Error(`Proposal transaction ${journal.transactionId} is bound to a different target root.`);
     }
     const key = path.resolve(target.source.path);
@@ -1560,6 +1804,7 @@ function prepareProposalTransaction(
   // and the initial `prepared` journal must be written exactly ONCE with its
   // final contents (crash runners intercept the first rename per phase).
   const transactionId = mintTxnId();
+  const gitPublication = captureGitPublication(target);
   const transactionDir = txnDirFor(target.source.path, transactionId);
   fs.mkdirSync(transactionDir, { recursive: true, mode: 0o700 });
   const contentPath = path.join(transactionDir, "published-content");
@@ -1591,6 +1836,7 @@ function prepareProposalTransaction(
       proposalId: proposal.id,
       stashDir,
       targetSource: target.source.name,
+      targetKind: target.source.kind,
       assetPath,
       ref: proposal.ref,
       contentPath,
@@ -1599,6 +1845,7 @@ function prepareProposalTransaction(
       backupPath: persistedBackupPath,
       originalHash: options.originalHash,
       publishedHash,
+      ...(gitPublication ? { gitPublication } : {}),
       ...(options.eventMetadata ? { eventMetadata: options.eventMetadata } : {}),
     },
     decidedAt: nowIso(ctx),
@@ -1616,7 +1863,7 @@ function prepareProposalTransaction(
   return txn;
 }
 
-function publishProposalAsset(txn: ProposalTxn): void {
+function publishProposalAsset(txn: ProposalTxn, target: ResolvedWriteTarget): void {
   const p = txn.journal.payload;
   try {
     if (p.originalHash !== null) {
@@ -1628,6 +1875,10 @@ function publishProposalAsset(txn: ProposalTxn): void {
     }
     fs.linkSync(p.publishPath, p.assetPath);
     fsyncTxnDir(path.dirname(p.assetPath));
+    if (target.source.kind === "git") {
+      const snapshot = captureGitPathSnapshot(target, p.assetPath);
+      p.gitSnapshots = { [snapshot.path]: snapshot.state };
+    }
     advanceTxn(txn, "asset-published");
   } catch (error) {
     rollbackPreparedProposalTransaction(txn);
@@ -1652,27 +1903,26 @@ function resolveRecordedProposalTarget(
   binding: { source: string; root: string },
   explicitTarget?: string,
 ): ResolvedWriteTarget {
-  const target = explicitTarget
-    ? resolveWriteTarget(config, explicitTarget)
-    : resolveWritableTargets(config).find(
-        (candidate) =>
-          candidate.source.name === binding.source &&
-          path.resolve(candidate.source.path) === path.resolve(binding.root),
-      );
-  if (!target) {
+  let target: ResolvedWriteTarget;
+  try {
+    target = explicitTarget
+      ? resolveWriteTarget(config, explicitTarget)
+      : resolveBundleWriteTarget(config, binding.source);
+  } catch {
     throw new UsageError(
       `Proposal ${proposalId} is bound to target "${binding.source}" at ${binding.root}, but that writable target is no longer configured.`,
       "INVALID_FLAG_VALUE",
     );
   }
-  if (target.source.name !== binding.source || path.resolve(target.source.path) !== path.resolve(binding.root)) {
+  const targetBundleId = canonicalBundleIdForTarget(config, target);
+  if (targetBundleId !== binding.source || path.resolve(target.source.path) !== path.resolve(binding.root)) {
     throw new UsageError(
       `Proposal ${proposalId} is bound to target "${binding.source}" at ${binding.root}; ` +
-        `--target "${explicitTarget}" resolves to "${target.source.name}" at ${target.source.path}.`,
+        `--target "${explicitTarget}" resolves to "${targetBundleId}" at ${target.source.path}.`,
       "INVALID_FLAG_VALUE",
     );
   }
-  return target;
+  return { ...target, source: { ...target.source, name: targetBundleId } };
 }
 
 function resolveProposalWriteTarget(
@@ -1784,8 +2034,10 @@ async function promoteProposalWithLease(
     );
   }
 
-  const assetPath = resolveAssetFilePathSafe(target.source, ref);
+  const mutationTarget = prepareWriteTargetForMutation(target);
+  const assetPath = resolveAssetFilePathSafe(mutationTarget.source, ref);
   if (!assetPath) throw new UsageError(`Cannot resolve proposal target ${proposal.ref}.`, "INVALID_PROPOSAL");
+  assertWriteTargetPathsClean(mutationTarget.source, [assetPath]);
   let backup: Buffer | undefined;
   if (fs.existsSync(assetPath)) {
     try {
@@ -1796,9 +2048,26 @@ async function promoteProposalWithLease(
       );
     }
   }
+  if (proposal.beforeHash !== undefined && (!backup || proposalHash(backup) !== proposal.beforeHash)) {
+    throw new UsageError(
+      `Proposal target changed after proposal ${id} was created; refusing to overwrite newer content.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  if (
+    proposal.beforeHash === undefined &&
+    proposal.proposedTarget !== undefined &&
+    backup !== undefined &&
+    proposal.changes.some((change) => change.op === "create")
+  ) {
+    throw new UsageError(
+      `Proposal target was created after proposal ${id}; refusing to overwrite newer content.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
   const transaction = prepareProposalTransaction(
     stashDir,
-    target,
+    mutationTarget,
     proposalToValidate,
     ref,
     repairedContent,
@@ -1810,8 +2079,8 @@ async function promoteProposalWithLease(
     },
     ctx,
   );
-  publishProposalAsset(transaction);
-  const accepted = await finalizeProposalTransaction(transaction, target, proposalToValidate, ctx);
+  publishProposalAsset(transaction, mutationTarget);
+  const accepted = await finalizeProposalTransaction(transaction, mutationTarget, proposalToValidate, ctx);
   cleanupTxn(transaction.dir);
   return { proposal: accepted, assetPath: transaction.journal.payload.assetPath, ref: proposal.ref };
 }
@@ -1957,6 +2226,7 @@ async function revertProposalWithLease(
         "INVALID_FLAG_VALUE",
       );
     }
+    const ownerTarget = prepareWriteTargetForMutation(owner.target);
     const acceptedAssetWasAbsent = matching.length === 0;
     proposal = withProposalsDb(stashDir, ctx, (db) =>
       withImmediateTransaction(db, () => {
@@ -1968,8 +2238,8 @@ async function revertProposalWithLease(
           ...current,
           acceptedContentHash: acceptedHash,
           acceptedTarget: {
-            source: owner.target.source.name,
-            root: owner.target.source.path,
+            source: ownerTarget.source.name,
+            root: ownerTarget.source.path,
             path: owner.assetPath,
             contentHash: acceptedHash,
           },
@@ -1981,7 +2251,7 @@ async function revertProposalWithLease(
       }),
     );
     txnMutationHook("legacy-target-derived");
-    target = owner.target;
+    target = ownerTarget;
     assetPath = owner.assetPath;
   } else if (proposal.legacyAcceptedTargetDerived) {
     const acceptedTarget = proposal.acceptedTarget;
@@ -2017,6 +2287,7 @@ async function revertProposalWithLease(
     assetPath = requestedAssetPath;
   }
 
+  target = prepareWriteTargetForMutation(target);
   await recoverTxnsForRoot(target.source.path, (journal) => journal.kind === "mv");
   acceptedHash = proposal.acceptedTarget?.contentHash ?? proposal.acceptedContentHash ?? acceptedHash;
   const acceptedAssetExists = fs.existsSync(assetPath);
@@ -2029,6 +2300,7 @@ async function revertProposalWithLease(
       "INVALID_FLAG_VALUE",
     );
   }
+  assertWriteTargetPathsClean(target.source, [assetPath]);
   const transaction = prepareProposalTransaction(
     stashDir,
     target,
@@ -2038,7 +2310,7 @@ async function revertProposalWithLease(
     { operation: "revert", originalHash: acceptedAssetExists ? acceptedHash : null },
     ctx,
   );
-  publishProposalAsset(transaction);
+  publishProposalAsset(transaction, target);
   const reverted = await finalizeProposalTransaction(transaction, target, proposal, ctx);
   cleanupTxn(transaction.dir);
   return { proposal: reverted, assetPath, ref: proposal.ref };
@@ -2137,13 +2409,14 @@ registerTxnKind<ProposalTxnPayload>(PROPOSAL_TXN_KIND, {
   finalize: async (txn) => {
     const p = txn.journal.payload;
     const config = loadConfig();
-    let target: ResolvedWriteTarget;
-    try {
-      target = resolveWriteTarget(config, p.targetSource);
-    } catch {
-      target = resolveWriteTarget(config);
+    let target = resolveProposalRecoveryTarget(config, txn.journal);
+    if (txn.journal.phase === "asset-published") {
+      target = prepareWriteTargetForMutation(target, { allowAhead: true });
     }
-    if (canonicalTxnRoot(target.source.path) !== canonicalTxnRoot(txn.journal.root)) {
+    if (
+      canonicalTxnRoot(target.source.path) !== canonicalTxnRoot(txn.journal.root) ||
+      (p.targetKind !== undefined && p.targetKind !== target.source.kind)
+    ) {
       throw new Error(`Proposal transaction ${txn.journal.transactionId} is bound to a different target root.`);
     }
     const proposal = getProposal(p.stashDir, p.proposalId);

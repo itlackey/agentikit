@@ -157,6 +157,7 @@ export interface RenderContext extends FileContext {
   matchResult: MatchResult;
   stashDirs: string[];
   origin?: string;
+  defaultBundle?: string;
 }
 
 /**
@@ -224,11 +225,13 @@ export function buildRenderContext(
   match: MatchResult,
   stashDirs: string[],
   origin?: string,
+  defaultBundle?: string,
 ): RenderContext {
   return {
     ...ctx,
     matchResult: match,
     stashDirs,
     origin,
+    defaultBundle,
   };
 }

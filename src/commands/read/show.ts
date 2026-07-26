@@ -382,7 +382,10 @@ export async function showLocal(input: {
       throw new UsageError(`Renderer "${match.renderer}" not found for asset: ${displayType}:${displayName}`);
     }
 
-    const renderCtx = buildRenderContext(fileCtx, match, allSourceDirs, source?.registryId);
+    const renderBundle = indexedEntry?.bundleId ?? source?.registryId;
+    const renderDefaultBundle =
+      config.defaultBundle ?? (source?.path === allSources[0]?.path ? renderBundle : undefined);
+    const renderCtx = buildRenderContext(fileCtx, match, allSourceDirs, renderBundle, renderDefaultBundle);
     response = renderer.buildShowResponse(renderCtx);
     if (parsed.fragment !== undefined) {
       if (!match.renderer.endsWith("-md")) {

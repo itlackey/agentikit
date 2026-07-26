@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { deriveLegacyBundleIds, inferLegacyBundleIds } from "../core/bundle-id";
 import {
   MAX_CONFIG_FILE_BYTES,
   MAX_LOCAL_METADATA_BYTES,
@@ -44,7 +45,12 @@ import {
 import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../core/paths";
 import { runMigrations as runStateMigrations } from "../core/state/migrations";
 import { isValidLockfileEntry, type LockfileEntry, mergeLockEntriesSync, readLockfile } from "../integrations/lockfile";
-import { migrateConfigSourcesToBundles, migratedLockEntries } from "../migrate/legacy/config-source-migration";
+import {
+  migrateConfigSourcesToBundles,
+  migratedLockEntries,
+  oldConfigHasRelativeSourcePaths,
+  oldConfigToSearchSources,
+} from "../migrate/legacy/config-source-migration";
 import { type ContentMigrationReport, runContentMigration } from "../migrate/legacy/content-migration";
 import { getLegacyWorkflowDbPath } from "../migrate/legacy/legacy-paths";
 import { importLegacyProposalsIntoState } from "../migrate/legacy/proposal-fs-import";
@@ -121,7 +127,7 @@ const APPLY_PHASE_ORDER: ApplyPhase[] = [
 ];
 
 interface ApplyJournal {
-  formatVersion: 2 | 3;
+  formatVersion: 2 | 3 | 4;
   version: typeof MIGRATION_BACKUP_VERSION;
   operationId: string;
   installationId: string;
@@ -130,6 +136,7 @@ interface ApplyJournal {
   backupPath: string;
   targetConfig: Record<string, unknown>;
   migrationLockEntries: LockfileEntry[];
+  pathResolutionBase: string;
   generation: MigrationGenerationFingerprint;
 }
 
@@ -219,6 +226,23 @@ function isMigrationLockEntries(value: unknown): value is LockfileEntry[] {
     value.every(
       (entry) => isValidLockfileEntry(entry) && typeof entry.localRoot === "string" && entry.localRoot.length > 0,
     )
+  );
+}
+
+function applyJournalHasRelativeSourcePaths(journal: ApplyJournal, backupConfig: Record<string, unknown>): boolean {
+  if (oldConfigHasRelativeSourcePaths(backupConfig)) return true;
+  const bundles = journal.targetConfig.bundles;
+  if (bundles && typeof bundles === "object" && !Array.isArray(bundles)) {
+    for (const entry of Object.values(bundles)) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const bundlePath = (entry as { path?: unknown }).path;
+      if (typeof bundlePath === "string" && bundlePath.length > 0 && !path.isAbsolute(expandTilde(bundlePath))) {
+        return true;
+      }
+    }
+  }
+  return journal.migrationLockEntries.some(
+    (entry) => entry.localRoot !== undefined && !path.isAbsolute(expandTilde(entry.localRoot)),
   );
 }
 
@@ -1114,6 +1138,7 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
   if (!fs.existsSync(journalPath)) return {};
   let journal: ApplyJournal;
   let wasFormat2 = false;
+  let originalFormatVersion: 2 | 3 | 4;
   try {
     const value = JSON.parse(
       readTextFileWithLimit(journalPath, MAX_LOCAL_METADATA_BYTES, "Migration apply journal"),
@@ -1143,8 +1168,9 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
       "formatVersion",
       "generation",
       "installationId",
-      ...(formatVersion === 3 ? ["migrationLockEntries"] : []),
+      ...(formatVersion === 3 || formatVersion === 4 ? ["migrationLockEntries"] : []),
       "operationId",
+      ...(formatVersion === 4 ? ["pathResolutionBase"] : []),
       "phase",
       "targetConfig",
       "version",
@@ -1159,7 +1185,7 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
     }
     const candidate = value as Partial<ApplyJournal>;
     if (
-      (candidate.formatVersion !== 2 && candidate.formatVersion !== 3) ||
+      (candidate.formatVersion !== 2 && candidate.formatVersion !== 3 && candidate.formatVersion !== 4) ||
       candidate.version !== MIGRATION_BACKUP_VERSION ||
       typeof candidate.operationId !== "string" ||
       !/^[A-Za-z0-9._-]+$/.test(candidate.operationId) ||
@@ -1172,15 +1198,21 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
       typeof candidate.targetConfig !== "object" ||
       Array.isArray(candidate.targetConfig) ||
       !phases.includes(candidate.phase as ApplyPhase) ||
-      (candidate.formatVersion === 3 && !isMigrationLockEntries(candidate.migrationLockEntries))
+      ((candidate.formatVersion === 3 || candidate.formatVersion === 4) &&
+        !isMigrationLockEntries(candidate.migrationLockEntries)) ||
+      (candidate.formatVersion === 4 &&
+        (typeof candidate.pathResolutionBase !== "string" || !path.isAbsolute(candidate.pathResolutionBase)))
     ) {
       return { error: `Invalid or foreign migration apply journal at ${journalPath}.` };
     }
     wasFormat2 = candidate.formatVersion === 2;
+    originalFormatVersion = candidate.formatVersion;
     journal = {
       ...(candidate as ApplyJournal),
-      formatVersion: 3,
-      migrationLockEntries: candidate.formatVersion === 3 ? (candidate.migrationLockEntries ?? []) : [],
+      formatVersion: 4,
+      migrationLockEntries: candidate.formatVersion === 2 ? [] : (candidate.migrationLockEntries ?? []),
+      pathResolutionBase:
+        candidate.formatVersion === 4 ? (candidate.pathResolutionBase as string) : path.resolve(process.cwd()),
     };
   } catch (error) {
     return {
@@ -1207,7 +1239,24 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
         "INVALID_CONFIG_FILE",
       );
     }
-    if (wasFormat2) journal.migrationLockEntries = recoverV2MigrationLockEntries(journal);
+    if (wasFormat2 && journal.phase !== "rollback-prepared") {
+      journal.migrationLockEntries = recoverV2MigrationLockEntries(journal);
+    }
+    if (originalFormatVersion !== 4 && journal.phase !== "rollback-prepared") {
+      const backupConfigPath = path.join(journal.backupPath, "config.json");
+      const backupConfig = fs.existsSync(backupConfigPath)
+        ? parseConfigText(
+            readTextFileWithLimit(backupConfigPath, MAX_CONFIG_FILE_BYTES, "Migration backup config"),
+            backupConfigPath,
+          )
+        : {};
+      if (applyJournalHasRelativeSourcePaths(journal, backupConfig)) {
+        throw new ConfigError(
+          `Cannot safely resume format-${originalFormatVersion} migration apply journal with relative source paths because it lacks the original working-directory binding.`,
+          "INVALID_CONFIG_FILE",
+        );
+      }
+    }
     return { journal, config, manifest };
   } catch (error) {
     return {
@@ -1819,37 +1868,107 @@ function expandTilde(p: string): string {
  * Source (a) (the index `item_ref` join) is authoritative, so an unresolved root
  * only costs a few origin aliases.
  */
-function cutoverStashRootsFromConfig(
+export function cutoverStashRootsFromConfig(
   config: AkmConfig,
   migrationLockEntries: readonly LockfileEntry[] = [],
+  legacySources: readonly { path: string; registryId?: string }[] = [],
+  pathResolutionBase = process.cwd(),
 ): CutoverStashRoot[] {
-  const roots: CutoverStashRoot[] = [];
+  const candidates: Array<{
+    path: string;
+    bundleId: string;
+    registryId: string;
+    preservedRegistryId?: string;
+    primary: boolean;
+    identityIndex: number;
+  }> = [];
+  const identitySources: Array<{ id: string; path: string; registryId?: string }> = [];
   const bundles = config.bundles;
   if (bundles && typeof bundles === "object") {
+    const locksById = new Map(migrationLockEntries.map((entry) => [entry.id, entry]));
+    const seenRoots = new Set<string>();
     for (const [id, entry] of Object.entries(bundles)) {
       const bundlePath = (entry as { path?: string }).path;
-      if (typeof bundlePath !== "string" || bundlePath.length === 0) continue; // only filesystem bundles
-      const registryId = (entry as { registryId?: string }).registryId ?? id;
-      roots.push({
-        path: path.resolve(expandTilde(bundlePath)),
+      const lockRoot = locksById.get(id)?.localRoot;
+      const materializedRoot =
+        typeof bundlePath === "string" && bundlePath.length > 0
+          ? path.resolve(pathResolutionBase, expandTilde(bundlePath))
+          : lockRoot
+            ? path.resolve(pathResolutionBase, expandTilde(lockRoot))
+            : undefined;
+      const preservedRegistryId = (entry as { registryId?: string }).registryId;
+      const identityIndex = identitySources.length;
+      identitySources.push({
+        id,
+        path: materializedRoot ?? path.resolve(pathResolutionBase, ".akm", "unresolved-sources", id),
+        ...(preservedRegistryId
+          ? { registryId: preservedRegistryId }
+          : materializedRoot === undefined
+            ? { registryId: id }
+            : {}),
+      });
+      if (!materializedRoot || seenRoots.has(materializedRoot)) continue;
+      seenRoots.add(materializedRoot);
+      candidates.push({
+        path: materializedRoot,
         bundleId: id,
-        registryId,
+        registryId: preservedRegistryId ?? id,
+        ...(preservedRegistryId ? { preservedRegistryId } : {}),
         primary: config.defaultBundle === id,
+        identityIndex,
       });
     }
     for (const lock of migrationLockEntries) {
       const localRoot = lock.localRoot;
-      if (!localRoot || roots.some((root) => path.resolve(root.path) === path.resolve(localRoot))) continue;
+      if (!localRoot) continue;
+      const materializedRoot = path.resolve(pathResolutionBase, expandTilde(localRoot));
+      if (seenRoots.has(materializedRoot)) continue;
+      seenRoots.add(materializedRoot);
       const entry = bundles[lock.id] as { registryId?: string } | undefined;
-      roots.push({
-        path: path.resolve(expandTilde(localRoot)),
+      const identityIndex = identitySources.length;
+      identitySources.push({ id: lock.id, path: materializedRoot, registryId: entry?.registryId ?? lock.id });
+      candidates.push({
+        path: materializedRoot,
         bundleId: lock.id,
         registryId: entry?.registryId ?? lock.id,
+        ...(entry?.registryId ? { preservedRegistryId: entry.registryId } : {}),
         primary: config.defaultBundle === lock.id,
+        identityIndex,
       });
     }
   }
-  return roots;
+  const inferredLegacyBundleIds = inferLegacyBundleIds(identitySources);
+  const legacyIdsByRoot = new Map<string, string>();
+  const ambiguousLegacyRoots = new Set<string>();
+  if (legacySources.length > 0) {
+    const exactLegacyIds = deriveLegacyBundleIds(legacySources);
+    legacySources.forEach((source, index) => {
+      const root = path.resolve(pathResolutionBase, source.path);
+      const legacyId = exactLegacyIds[index];
+      const existing = legacyIdsByRoot.get(root);
+      if (!legacyId || (existing !== undefined && existing !== legacyId)) {
+        ambiguousLegacyRoots.add(root);
+        legacyIdsByRoot.delete(root);
+      } else if (!ambiguousLegacyRoots.has(root)) {
+        legacyIdsByRoot.set(root, legacyId);
+      }
+    });
+  }
+  return candidates.map((candidate) => ({
+    path: candidate.path,
+    bundleId: candidate.bundleId,
+    legacyBundleId:
+      legacyIdsByRoot.get(path.resolve(candidate.path)) ?? inferredLegacyBundleIds[candidate.identityIndex],
+    registryId: candidate.registryId,
+    primary: candidate.primary,
+  }));
+}
+
+function legacyCutoverSources(journal: ApplyJournal): Array<{ path: string; registryId?: string }> {
+  const backupConfigPath = path.join(journal.backupPath, "config.json");
+  if (!fs.existsSync(backupConfigPath)) return [];
+  const text = readTextFileWithLimit(backupConfigPath, MAX_CONFIG_FILE_BYTES, "Migration backup config");
+  return oldConfigToSearchSources(parseConfigText(text, backupConfigPath), journal.pathResolutionBase);
 }
 
 /**
@@ -1904,7 +2023,12 @@ function runCutoverStep(journal: ApplyJournal, target: AkmConfig): void {
   const workflowPath = getLegacyWorkflowDbPath();
   const indexPath = getDbPath();
 
-  const stashRoots = cutoverStashRootsFromConfig(target, journal.migrationLockEntries);
+  const stashRoots = cutoverStashRootsFromConfig(
+    target,
+    journal.migrationLockEntries,
+    legacyCutoverSources(journal),
+    journal.pathResolutionBase,
+  );
   if (!cutoverMergeCommitted(statePath, journal.operationId)) {
     const refMap = buildCutoverRefMap({
       oldIndexDbPath: indexPath,
@@ -1941,7 +2065,15 @@ function cutoverRefMapPath(journal: ApplyJournal): string {
 /** Required forward-only filesystem step after the core config/database cutover verifies. */
 function runPilotTreatmentStep(journal: ApplyJournal, target: AkmConfig): void {
   const refMap = loadCutoverRefMap(cutoverRefMapPath(journal));
-  migratePilotTreatmentFiles(cutoverStashRootsFromConfig(target), refMap);
+  migratePilotTreatmentFiles(
+    cutoverStashRootsFromConfig(
+      target,
+      journal.migrationLockEntries,
+      legacyCutoverSources(journal),
+      journal.pathResolutionBase,
+    ),
+    refMap,
+  );
 }
 
 /**
@@ -1957,8 +2089,13 @@ function contentMigrationReportPath(): string {
 /** Best-effort content migration + report persistence (see {@link runCutoverStep}). */
 function runContentMigrationStep(journal: ApplyJournal, target: AkmConfig): void {
   try {
-    const roots = cutoverStashRootsFromConfig(target).map((r) => r.path);
-    const report = runContentMigration(roots);
+    const roots = cutoverStashRootsFromConfig(
+      target,
+      journal.migrationLockEntries,
+      legacyCutoverSources(journal),
+      journal.pathResolutionBase,
+    );
+    const report = runContentMigration(roots.map((root) => root.path));
     // Fold the one-time pre-0.9 filesystem-proposal import into this same
     // additive step (it used to run on every proposal operation via
     // `withProposalsDb`). state.db has been merged + collapsed to single-file
@@ -1971,7 +2108,19 @@ function runContentMigrationStep(journal: ApplyJournal, target: AkmConfig): void
     // live-path import that once covered that gap is gone. Re-running this
     // idempotent `migrate apply` recovers them (the legacy files are left in
     // place on import, so they are still there to re-walk). Acceptable for an rc.
-    report.legacyProposalsImported = importLegacyProposalsIntoState(getStateDbPathInDataDir(), roots);
+    const proposalRoots = roots.flatMap((root) =>
+      root.bundleId
+        ? [
+            {
+              path: root.path,
+              bundleId: root.bundleId,
+              ...(root.legacyBundleId ? { legacyBundleId: root.legacyBundleId } : {}),
+              ...(root.registryId ? { registryId: root.registryId } : {}),
+            },
+          ]
+        : [],
+    );
+    report.legacyProposalsImported = importLegacyProposalsIntoState(getStateDbPathInDataDir(), proposalRoots);
     persistContentMigrationReport(report);
     if (report.sidecarsFolded > 0 || report.reservedRenames.length > 0 || report.legacyProposalsImported > 0) {
       console.log(
@@ -2086,6 +2235,7 @@ function buildMigrationPlan(preparedConfigPath: string | undefined, activeApply:
           ...(!activeApply.config && activeApply.error ? { detail: activeApply.error } : {}),
         },
         config: activeApply.config,
+        migrationLockEntries: activeApply.journal.migrationLockEntries,
       }
     : loadTargetConfig(preparedConfigPath, artifacts);
   const blockers = [
@@ -2102,7 +2252,11 @@ function buildMigrationPlan(preparedConfigPath: string | undefined, activeApply:
   let taskRewrites = 0;
   if (blockers.length === 0 && target.config) {
     try {
-      taskRewrites = planTaskTargetRefMigration(target.config).rewrites.length;
+      taskRewrites = planTaskTargetRefMigration(
+        target.config,
+        activeApply.journal?.pathResolutionBase ?? process.cwd(),
+        target.migrationLockEntries ?? [],
+      ).rewrites.length;
     } catch (error) {
       blockers.push(error instanceof Error ? error.message : String(error));
     }
@@ -2212,7 +2366,7 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
         ? { path: active.journal.backupPath, manifest: verifyMigrationBackup(active.journal.backupPath) }
         : ensureMigrationBackupWithConfigLockHeld();
       const journal: ApplyJournal = active.journal ?? {
-        formatVersion: 3,
+        formatVersion: 4,
         version: MIGRATION_BACKUP_VERSION,
         operationId: `${process.pid}-${randomUUID()}`,
         installationId: backup.manifest.installationId,
@@ -2221,13 +2375,18 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
         backupPath: backup.path,
         targetConfig: sanitizeConfigForWrite(target),
         migrationLockEntries,
+        pathResolutionBase: path.resolve(process.cwd()),
         generation: fingerprintMigrationGeneration(),
       };
       if (!active.journal) writeApplyJournal(journal);
       const taskOnlyRepair = isTaskOnlyRepair(backup.manifest);
       let forwardRecoveryRequired = isForwardRecoveryPhase(journal.phase);
       try {
-        const taskTargetPlan = planTaskTargetRefMigration(target);
+        const taskTargetPlan = planTaskTargetRefMigration(
+          target,
+          journal.pathResolutionBase,
+          journal.migrationLockEntries,
+        );
         if (taskOnlyRepair) {
           forwardRecoveryRequired = true;
           runTaskOnlyRepair(journal, taskTargetPlan);

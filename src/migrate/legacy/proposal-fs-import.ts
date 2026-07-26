@@ -39,11 +39,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Proposal } from "../../commands/proposal/proposal-types";
+import { parseBundleRef } from "../../core/asset/asset-ref";
 import { warn } from "../../core/warn";
-import { deriveInstallations, slugForPath } from "../../indexer/installations";
+import { parseRegistryRef } from "../../registry/resolve";
 import { type Database, openDatabase } from "../../storage/database";
 import { insertProposalIfAbsent } from "../../storage/repositories/proposals-repository";
-import { classifyRefGrammar, legacyRefToBundleRef } from "../legacy-ref-grammar";
+import { classifyRefGrammar, legacyRefToBundleRef, parseAssetRef as parseLegacyAssetRef } from "../legacy-ref-grammar";
 
 /** Legacy (pre-0.9.0) proposal directory: `<stashDir>/.akm/proposals[/archive]`. */
 function legacyProposalsRoot(stashDir: string, archive: boolean): string {
@@ -66,7 +67,17 @@ type LegacyProposalFile = Omit<Proposal, "backupContent"> & { backup?: string };
  * state.db at all returns 0 rather than throwing (the committed cutover is
  * unaffected).
  */
-export function importLegacyProposalsIntoState(stateDbPath: string, stashRoots: readonly string[]): number {
+export interface LegacyProposalImportRoot {
+  path: string;
+  bundleId: string;
+  legacyBundleId?: string;
+  registryId?: string;
+}
+
+export function importLegacyProposalsIntoState(
+  stateDbPath: string,
+  stashRoots: readonly LegacyProposalImportRoot[],
+): number {
   if (!fs.existsSync(stateDbPath)) return 0;
   let db: Database;
   try {
@@ -78,11 +89,59 @@ export function importLegacyProposalsIntoState(stateDbPath: string, stashRoots: 
   try {
     let imported = 0;
     const seen = new Set<string>();
+    const canonicalBundleIds = new Set(stashRoots.map((root) => root.bundleId));
+    const aliasCandidates = new Map<string, Set<string>>();
+    const bundleRootCandidates = new Map<string, Set<string>>();
+    const pathBundleCandidates = new Map<string, Set<string>>();
+    const addAlias = (alias: string, bundleId: string) => {
+      const candidates = aliasCandidates.get(alias) ?? new Set<string>();
+      candidates.add(bundleId);
+      aliasCandidates.set(alias, candidates);
+    };
     for (const root of stashRoots) {
-      const resolved = path.resolve(root);
+      const resolvedRoot = path.resolve(root.path);
+      const roots = bundleRootCandidates.get(root.bundleId) ?? new Set<string>();
+      roots.add(resolvedRoot);
+      bundleRootCandidates.set(root.bundleId, roots);
+      const pathBundles = pathBundleCandidates.get(resolvedRoot) ?? new Set<string>();
+      pathBundles.add(root.bundleId);
+      pathBundleCandidates.set(resolvedRoot, pathBundles);
+      addAlias(root.bundleId, root.bundleId);
+      if (root.legacyBundleId) addAlias(root.legacyBundleId, root.bundleId);
+      if (root.registryId) {
+        addAlias(root.registryId, root.bundleId);
+        try {
+          addAlias(parseRegistryRef(root.registryId).id, root.bundleId);
+        } catch {
+          // Preserve the exact alias above; malformed legacy locators stay unmapped.
+        }
+      }
+      addAlias(resolvedRoot, root.bundleId);
+    }
+    const bundleRoots = new Map<string, string>();
+    for (const [bundleId, roots] of bundleRootCandidates) {
+      if (roots.size === 1) bundleRoots.set(bundleId, [...roots][0] as string);
+    }
+    const bundleAliases = new Map<string, string>();
+    for (const bundleId of canonicalBundleIds) {
+      if (bundleRoots.has(bundleId)) bundleAliases.set(bundleId, bundleId);
+    }
+    for (const [alias, candidates] of aliasCandidates) {
+      if (canonicalBundleIds.has(alias) || candidates.size !== 1) continue;
+      const bundleId = [...candidates][0] as string;
+      if (bundleRoots.has(bundleId)) bundleAliases.set(alias, bundleId);
+    }
+    for (const root of stashRoots) {
+      const resolved = path.resolve(root.path);
       if (seen.has(resolved)) continue;
       seen.add(resolved);
-      imported += importLegacyProposalsForStash(db, resolved);
+      const pathBundles = pathBundleCandidates.get(resolved);
+      if (pathBundles?.size !== 1) {
+        warn(`[akm] content-migration: skipping ambiguous legacy proposal root ${resolved}`);
+        continue;
+      }
+      const bundleId = [...pathBundles][0] as string;
+      imported += importLegacyProposalsForStash(db, { ...root, path: resolved, bundleId }, bundleAliases, bundleRoots);
     }
     return imported;
   } finally {
@@ -94,7 +153,13 @@ export function importLegacyProposalsIntoState(stateDbPath: string, stashRoots: 
  * Import one stash root's legacy proposal directories (live + archive) into the
  * open state.db. Returns the number of rows inserted for this stash.
  */
-function importLegacyProposalsForStash(db: Database, stashDir: string): number {
+function importLegacyProposalsForStash(
+  db: Database,
+  stash: LegacyProposalImportRoot,
+  bundleAliases: ReadonlyMap<string, string>,
+  bundleRoots: ReadonlyMap<string, string>,
+): number {
+  const stashDir = stash.path;
   const liveRoot = legacyProposalsRoot(stashDir, false);
   if (!fs.existsSync(liveRoot)) return 0;
 
@@ -110,7 +175,7 @@ function importLegacyProposalsForStash(db: Database, stashDir: string): number {
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.name === "archive") continue;
       const proposalDir = path.join(root, entry.name);
-      const proposal = readLegacyProposalFile(proposalDir, stashDir);
+      const proposal = readLegacyProposalFile(proposalDir, stash, bundleAliases, bundleRoots);
       if (!proposal) continue;
       try {
         if (insertProposalIfAbsent(db, proposal, stashDir)) imported += 1;
@@ -132,7 +197,12 @@ function importLegacyProposalsForStash(db: Database, stashDir: string): number {
  * warning — when the `proposal.json` is missing, unreadable, or malformed, so
  * a single corrupt legacy entry never blocks the import of the rest.
  */
-function readLegacyProposalFile(proposalDir: string, stashDir: string): Proposal | undefined {
+function readLegacyProposalFile(
+  proposalDir: string,
+  stash: LegacyProposalImportRoot,
+  bundleAliases: ReadonlyMap<string, string>,
+  bundleRoots: ReadonlyMap<string, string>,
+): Proposal | undefined {
   const filePath = path.join(proposalDir, "proposal.json");
   let parsed: LegacyProposalFile;
   try {
@@ -154,13 +224,43 @@ function readLegacyProposalFile(proposalDir: string, stashDir: string): Proposal
   const { backup, ...rest } = parsed;
   let migratedRef = rest.ref;
   let migratedTarget = rest.proposedTarget;
+  let migratedBundle: string;
   if (classifyRefGrammar(rest.ref) === "legacy") {
     try {
       const translated = legacyRefToBundleRef(rest.ref);
-      const bundle =
-        translated.bundle ?? deriveInstallations([{ path: stashDir, writable: true }])[0]?.id ?? slugForPath(stashDir);
+      const legacyOrigin = parseLegacyAssetRef(rest.ref).origin;
+      const explicitOrigin = legacyOrigin !== undefined && legacyOrigin !== "local" && legacyOrigin !== "stash";
+      let normalizedOrigin: string | undefined;
+      if (explicitOrigin) {
+        try {
+          normalizedOrigin = parseRegistryRef(legacyOrigin).id;
+        } catch {
+          // It may be a bundle id or filesystem path rather than a locator.
+        }
+      }
+      const bundle = explicitOrigin
+        ? (bundleAliases.get(legacyOrigin) ??
+          (normalizedOrigin ? bundleAliases.get(normalizedOrigin) : undefined) ??
+          bundleAliases.get(path.resolve(legacyOrigin)))
+        : translated.bundle
+          ? bundleAliases.get(translated.bundle)
+          : stash.bundleId;
+      if (!bundle || !bundleRoots.has(bundle)) throw new Error(`unmapped legacy proposal origin: ${legacyOrigin}`);
+      migratedBundle = bundle;
       migratedRef = `${bundle}//${translated.conceptId}`;
-      if (translated.bundle) migratedTarget = { source: translated.bundle, root: path.resolve(stashDir) };
+      migratedTarget = { source: bundle, root: bundleRoots.get(bundle) as string };
+    } catch (err) {
+      warn(`[akm] content-migration: skipping legacy proposal at ${filePath}: ${errMsg(err)}`);
+      return undefined;
+    }
+  } else {
+    try {
+      const translated = parseBundleRef(rest.ref);
+      const bundle = translated.bundle ? bundleAliases.get(translated.bundle) : stash.bundleId;
+      if (!bundle || !bundleRoots.has(bundle)) throw new Error(`unmapped proposal bundle: ${translated.bundle}`);
+      migratedBundle = bundle;
+      migratedRef = `${bundle}//${translated.conceptId}`;
+      migratedTarget = { source: bundle, root: bundleRoots.get(bundle) as string };
     } catch (err) {
       warn(`[akm] content-migration: skipping legacy proposal at ${filePath}: ${errMsg(err)}`);
       return undefined;
@@ -180,6 +280,15 @@ function readLegacyProposalFile(proposalDir: string, stashDir: string): Proposal
     ...rest,
     ref: migratedRef,
     ...(migratedTarget ? { proposedTarget: migratedTarget } : {}),
+    ...(rest.acceptedTarget
+      ? {
+          acceptedTarget: {
+            ...rest.acceptedTarget,
+            source: migratedBundle,
+            root: bundleRoots.get(migratedBundle) as string,
+          },
+        }
+      : {}),
     payload: {
       content: rest.payload?.content ?? "",
       ...(rest.payload?.frontmatter ? { frontmatter: rest.payload.frontmatter } : {}),

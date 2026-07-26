@@ -23,6 +23,7 @@ import type { AkmConfig, BundleConfigEntry } from "../../core/config/config-type
 import { ConfigError } from "../../core/errors";
 import { resolveWritable } from "../../core/write-source";
 import { resolveEntryContentDir } from "../../indexer/search/search-source";
+import type { LockfileEntry } from "../../integrations/lockfile";
 import { classifyRefGrammar, legacyConceptId, parseAssetRef } from "../legacy-ref-grammar";
 import {
   canonicalizeWorkflowName,
@@ -67,7 +68,11 @@ function expandTilde(value: string): string {
   return value;
 }
 
-function bundlesFromConfig(config: AkmConfig): MigrationBundle[] {
+function bundlesFromConfig(
+  config: AkmConfig,
+  pathResolutionBase: string,
+  migrationLockEntries: readonly LockfileEntry[],
+): MigrationBundle[] {
   const entries = Object.entries(config.bundles ?? {});
   const sourceEntries = new Map((bundlesToSourceEntries(config) ?? []).map((entry) => [entry.name, entry]));
   const defaultId = config.defaultBundle;
@@ -76,13 +81,14 @@ function bundlesFromConfig(config: AkmConfig): MigrationBundle[] {
     : entries;
   const bundles: MigrationBundle[] = [];
   const roots = new Map<string, string>();
+  const lockRoots = new Map(migrationLockEntries.map((entry) => [entry.id, entry.localRoot]));
   for (const [id, rawEntry] of ordered) {
     const entry = rawEntry as BundleConfigEntry;
     const sourceEntry = sourceEntries.get(id);
     if (!sourceEntry) continue;
-    const contentDir = resolveEntryContentDir(sourceEntry);
+    const contentDir = lockRoots.get(id) ?? resolveEntryContentDir(sourceEntry);
     if (!contentDir) continue;
-    const root = path.resolve(expandTilde(contentDir));
+    const root = path.resolve(pathResolutionBase, expandTilde(contentDir));
     const rootIdentity = fs.existsSync(root) ? fs.realpathSync(root) : root;
     const prior = roots.get(rootIdentity);
     if (prior && prior !== id) {
@@ -224,8 +230,12 @@ function planTaskFile(
 }
 
 /** Preflight every persisted v1 task target without changing disk. */
-export function planTaskTargetRefMigration(config: AkmConfig): TaskTargetRefMigrationPlan {
-  const bundles = bundlesFromConfig(config);
+export function planTaskTargetRefMigration(
+  config: AkmConfig,
+  pathResolutionBase = process.cwd(),
+  migrationLockEntries: readonly LockfileEntry[] = [],
+): TaskTargetRefMigrationPlan {
+  const bundles = bundlesFromConfig(config, pathResolutionBase, migrationLockEntries);
   const rewrites: TaskTargetRefRewrite[] = [];
   const durabilityPaths: string[] = [];
   for (const bundle of bundles) {

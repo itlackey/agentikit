@@ -192,11 +192,27 @@ async function addWebsiteSource(
  */
 async function addRegistryStash(ref: string, stashDir: string, writable?: boolean): Promise<AddResponse> {
   const parsedRef = parseRegistryRef(ref);
-  if (writable === true && parsedRef.source !== "git") {
+  if (writable === true && parsedRef.source !== "git" && parsedRef.source !== "github") {
     throw new ConfigError("writable: true is only supported on filesystem and git sources", "INVALID_CONFIG_FILE");
   }
 
-  const synced = await syncFromRef(ref, { writable });
+  const currentConfig = loadConfig();
+  const existingBundleKey = findInstalledBundleKey(currentConfig.bundles ?? {}, parsedRef.id);
+  const existingBundle = existingBundleKey ? currentConfig.bundles?.[existingBundleKey] : undefined;
+  const priorLock = existingBundleKey ? readLockfile().find((entry) => entry.id === existingBundleKey) : undefined;
+  const existingWritable =
+    Object.values(existingBundle?.components ?? {})[0]?.writable ?? existingBundle?.writable === true;
+  const effectiveWritable = writable === true || existingWritable;
+  const requiredRoots = priorLock?.localRoot
+    ? Object.values(existingBundle?.components ?? {}).map((component) =>
+        path.resolve(priorLock.localRoot as string, component.root ?? "."),
+      )
+    : [];
+  const synced = await syncFromRef(ref, {
+    writable: effectiveWritable,
+    ...(effectiveWritable && priorLock?.localRoot ? { writableRoot: priorLock.localRoot } : {}),
+    ...(requiredRoots.length > 0 ? { writableRequiredRoots: requiredRoots } : {}),
+  });
 
   const { config: updatedConfig, bundleId } = upsertInstalledRegistryEntry({
     id: synced.id,
@@ -213,7 +229,7 @@ async function addRegistryStash(ref: string, stashDir: string, writable?: boolea
 
   // The prior materialized root (if this is a re-install) — read BEFORE the lock
   // upsert overwrites it, so a moved cache root can be cleaned afterwards.
-  const priorLocalRoot = readLockfile().find((e) => e.id === bundleId)?.localRoot;
+  const priorLocalRoot = priorLock?.localRoot;
 
   await upsertLockEntry({
     id: bundleId,
@@ -228,7 +244,7 @@ async function addRegistryStash(ref: string, stashDir: string, writable?: boolea
   });
 
   // Clean up the old materialized root on re-install (moved cache).
-  if (priorLocalRoot && path.resolve(priorLocalRoot) !== path.resolve(synced.contentDir)) {
+  if (!effectiveWritable && priorLocalRoot && path.resolve(priorLocalRoot) !== path.resolve(synced.contentDir)) {
     try {
       fs.rmSync(priorLocalRoot, { recursive: true, force: true });
     } catch {
@@ -281,18 +297,27 @@ export function upsertInstalledRegistryEntry(entry: InstalledBundle): { config: 
   const config = mutateConfig((current) => {
     const bundles: Record<string, BundleConfigEntry> = { ...(current.bundles ?? {}) };
     bundleId = resolveInstalledBundleKey(bundles, entry.id, entry.stashRoot);
+    const existingComponents = bundles[bundleId]?.components;
+    const components = existingComponents
+      ? Object.fromEntries(
+          Object.entries(existingComponents).map(([id, component]) => [
+            id,
+            { ...component, writable: entry.writable === true },
+          ]),
+        )
+      : {
+          main: {
+            root: ".",
+            adapter: detectAdapterId(path.resolve(entry.stashRoot)),
+            writable: entry.writable === true,
+          },
+        };
     const descriptor = installedSourceDescriptor(entry.source, entry.ref, path.resolve(entry.stashRoot));
     bundles[bundleId] = {
       ...descriptor,
       ...(entry.writable === true ? { writable: true } : {}),
       ...(entry.id !== bundleId ? { registryId: entry.id } : {}),
-      components: {
-        main: {
-          root: ".",
-          adapter: detectAdapterId(path.resolve(entry.stashRoot)),
-          writable: entry.writable === true,
-        },
-      },
+      components: components satisfies NonNullable<BundleConfigEntry["components"]>,
     };
     return { ...current, bundles };
   }).config;

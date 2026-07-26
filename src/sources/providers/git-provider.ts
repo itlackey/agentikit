@@ -14,7 +14,7 @@ import { validateGitUrl } from "../../registry/resolve";
 import { withFreshnessCache } from "../freshness";
 import type { SourceProvider } from "../provider";
 import { registerSourceProvider } from "../provider-factory";
-import { cloneRepo, runGit, syncRegistryGitRef } from "./git-install";
+import { assertNoIgnoredPathOverwrite, cloneRepo, inspectGitUpstream, runGit, syncRegistryGitRef } from "./git-install";
 import type { SourceLockData, SyncOptions } from "./install-types";
 import { sanitizeString } from "./provider-utils";
 
@@ -119,6 +119,7 @@ export async function ensureGitMirror(
     ttlMs: CACHE_TTL_MS,
     staleMs: CACHE_STALE_MS,
     force: options?.force === true,
+    allowStaleOnRefreshFailure: !(options?.force === true && writable),
     isUsable: () => !requireRepoDir || hasExtractedRepo(cachePaths.repoDir),
     refresh: async () => {
       fs.mkdirSync(cachePaths.rootDir, { recursive: true });
@@ -167,12 +168,28 @@ export async function syncMirroredRepo(config: SourceConfigEntry, options?: Sync
 }
 
 function pullRepo(repoDir: string): void {
-  const result = runGit(["-C", repoDir, "pull", "--ff-only"], {
-    timeout: 120_000,
-  });
-  if (result.status !== 0) {
-    const err = result.stderr?.trim() || result.error?.message || "unknown error";
-    throw new Error(`Failed to pull ${repoDir}: ${err}`);
+  const status = runGit(["-C", repoDir, "status", "--porcelain"]);
+  if (status.status !== 0 || status.stdout.trim()) {
+    throw new UsageError(`Writable Git source at ${repoDir} has uncommitted changes; refusing to update it.`);
+  }
+  const relation = inspectGitUpstream(repoDir);
+  if (relation.ahead > 0) {
+    throw new UsageError(`Writable Git source at ${repoDir} has unpushed commits; refusing to update it.`);
+  }
+  if (relation.behind > 0 && relation.upstream) {
+    const statusBeforeMerge = runGit(["-C", repoDir, "status", "--porcelain"]);
+    if (statusBeforeMerge.status !== 0 || statusBeforeMerge.stdout.trim()) {
+      throw new UsageError(
+        `Writable Git source at ${repoDir} changed while its update was prepared; refusing to merge.`,
+      );
+    }
+    assertNoIgnoredPathOverwrite(repoDir, relation.upstream);
+    const merge = runGit(["-C", repoDir, "merge", "--ff-only", "--no-overwrite-ignore", relation.upstream], {
+      timeout: 120_000,
+    });
+    if (merge.status !== 0) {
+      throw new Error(`Failed to fast-forward ${repoDir}: ${merge.stderr?.trim() || "unknown error"}`);
+    }
   }
 }
 

@@ -14,8 +14,8 @@
  * commit behaviour — they only ever touch the filesystem. Git-backed targets
  * are committed in a SINGLE batch at the operation boundary via
  * {@link commitWriteTargetBoundary} (which delegates to `saveGitStash`). This
- * stages only operation-owned paths that still have a Git status entry as one
- * complete commit instead of one noisy, incomplete commit per asset.
+ * commits only operation-owned exact paths as one complete commit instead of
+ * one noisy, incomplete commit per asset.
  *
  * This module is still the **single dispatch point** for write/delete: callers
  * (remember, import, source-add, etc.) MUST go through `writeAssetToSource` /
@@ -27,12 +27,27 @@
 import fs from "node:fs";
 import path from "node:path";
 import { lockContentRootFor } from "../integrations/lockfile";
-import { getCachePaths, listGitChangedPaths, parseGitRepoUrl, runGit, saveGitStash } from "../sources/providers/git";
+import {
+  getCachePaths,
+  inspectGitUpstream,
+  isGitBackedStash,
+  parseGitRepoUrl,
+  runGit,
+  saveGitStash,
+} from "../sources/providers/git";
+import {
+  assertGitExactPathsClean,
+  assertNoIgnoredExactPaths,
+  type GitExactPathSnapshots,
+  type GitExactPathState,
+  reconcileGitExactPathIndex,
+} from "../sources/providers/git-stash";
 import { detectAdapterId } from "./adapter/detect-adapter";
 import { ensureAkmMarkdownType } from "./asset/akm-markdown";
 import { assetPathForName, stashDirFor } from "./asset/asset-placement";
 import type { AssetRef } from "./asset/resolve-ref";
 import { displayRef } from "./asset/resolve-ref";
+import { deriveBundleId } from "./bundle-id";
 import { isWithin, resolveStashDir } from "./common";
 import type { AkmConfig, ConfiguredSource, SourceConfigEntry } from "./config/config";
 import { resolveConfiguredSources } from "./config/config";
@@ -77,30 +92,125 @@ export interface WriteTargetSource {
  */
 const REJECTED_WRITABLE_KINDS: ReadonlySet<string> = new Set(["website", "npm"]);
 
-const pendingGitPaths = new Map<string, Set<string>>();
+interface PendingGitMutation {
+  baseHead: string | null;
+  snapshots: GitExactPathSnapshots;
+}
+
+const pendingGitMutations = new Map<string, PendingGitMutation>();
+const EMPTY_GIT_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const GIT_PUSH_TIMEOUT_MS = 120_000;
 
 function gitTargetKey(source: WriteTargetSource): string {
   return `${path.resolve(source.repoPath ?? source.path)}\0${path.resolve(source.path)}`;
 }
 
-/** Register a successful direct mutation for the target's exact-path boundary commit. */
+/** Record the exact post-mutation blob for the target's boundary commit. */
 export function recordWriteTargetPath(source: WriteTargetSource, filePath: string): void {
   if (source.kind !== "git") return;
+  const repoDir = path.resolve(source.repoPath ?? source.path);
+  if (!isGitBackedStash(repoDir)) return;
   const key = gitTargetKey(source);
-  const paths = pendingGitPaths.get(key) ?? new Set<string>();
-  paths.add(path.resolve(filePath));
-  pendingGitPaths.set(key, paths);
+  const pending = pendingGitMutations.get(key) ?? {
+    baseHead: readOptionalGitHead(repoDir),
+    snapshots: {},
+  };
+  const snapshot = captureGitPathSnapshot({ source, config: { type: "git" } }, filePath);
+  pending.snapshots[snapshot.path] = snapshot.state;
+  pendingGitMutations.set(key, pending);
 }
 
-function takeGitTargetPaths(source: WriteTargetSource): string[] {
-  const key = gitTargetKey(source);
-  const absolutePaths = pendingGitPaths.get(key);
-  pendingGitPaths.delete(key);
-  if (!absolutePaths) return [];
+function repoRelativeGitPath(source: WriteTargetSource, filePath: string): string {
   const repoDir = path.resolve(source.repoPath ?? source.path);
-  return [...absolutePaths]
-    .map((filePath) => path.relative(repoDir, filePath).replaceAll(path.sep, "/"))
-    .filter((filePath) => filePath && filePath !== ".." && !filePath.startsWith("../"));
+  const absolutePath = path.resolve(filePath);
+  const [relativePath] = normalizePublicationPaths([path.relative(repoDir, absolutePath).replaceAll(path.sep, "/")]);
+  return relativePath as string;
+}
+
+/** Reject dirty or ignored exact paths before a direct transaction mutation. */
+export function assertWriteTargetPathsClean(source: WriteTargetSource, filePaths: string[]): void {
+  if (source.kind !== "git") return;
+  const repoDir = path.resolve(source.repoPath ?? source.path);
+  if (!isGitBackedStash(repoDir)) return;
+  const key = gitTargetKey(source);
+  const pending = pendingGitMutations.get(key);
+  for (const filePath of filePaths) {
+    const relativePath = repoRelativeGitPath(source, filePath);
+    if (pending && Object.hasOwn(pending.snapshots, relativePath)) {
+      preflightGitPathMutation(source, filePath);
+    } else {
+      assertGitExactPathsClean(repoDir, [relativePath]);
+    }
+  }
+}
+
+function readOptionalGitHead(repoDir: string): string | null {
+  const result = runGit(["-C", repoDir, "rev-parse", "--verify", "HEAD"]);
+  return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : null;
+}
+
+function preflightGitPathMutation(
+  source: WriteTargetSource,
+  filePath: string,
+): { key: string; created: boolean } | undefined {
+  if (source.kind !== "git") return undefined;
+  const repoDir = path.resolve(source.repoPath ?? source.path);
+  if (!isGitBackedStash(repoDir)) return undefined;
+  const relativePath = repoRelativeGitPath(source, filePath);
+  const key = gitTargetKey(source);
+  let pending = pendingGitMutations.get(key);
+  const created = pending === undefined;
+  if (!pending) {
+    pending = { baseHead: readOptionalGitHead(repoDir), snapshots: {} };
+    pendingGitMutations.set(key, pending);
+  }
+  try {
+    if (readOptionalGitHead(repoDir) !== pending.baseHead) {
+      throw new UsageError(`Git target "${source.name}" advanced before its exact-path mutation.`);
+    }
+
+    if (!Object.hasOwn(pending.snapshots, relativePath)) {
+      assertGitExactPathsClean(repoDir, [relativePath]);
+      return { key, created };
+    }
+
+    assertNoIgnoredExactPaths(repoDir, [relativePath]);
+    const index = runGit([
+      "--literal-pathspecs",
+      "-C",
+      repoDir,
+      "diff",
+      "--cached",
+      "--quiet",
+      pending.baseHead ?? EMPTY_GIT_TREE,
+      "--",
+      relativePath,
+    ]);
+    if (index.status === 1) {
+      throw new UsageError(
+        `Exact Git operation path has staged work: ${relativePath}. Commit, stash, or discard that path before retrying.`,
+      );
+    }
+    if (index.status !== 0) {
+      throw new Error(`Cannot inspect Git index for exact operation path ${relativePath}: ${index.stderr.trim()}`);
+    }
+    const current = captureGitPathSnapshot({ source, config: { type: "git" } }, filePath);
+    if (!sameGitPathState(current.state, pending.snapshots[relativePath] ?? null)) {
+      throw new UsageError(
+        `Exact Git operation path changed after AKM wrote it: ${relativePath}. Commit, stash, or discard that path before retrying.`,
+      );
+    }
+    return { key, created };
+  } catch (error) {
+    if (created && Object.keys(pending.snapshots).length === 0) pendingGitMutations.delete(key);
+    throw error;
+  }
+}
+
+function discardEmptyGitPreflight(preflight: { key: string; created: boolean } | undefined): void {
+  if (!preflight?.created) return;
+  const pending = pendingGitMutations.get(preflight.key);
+  if (pending && Object.keys(pending.snapshots).length === 0) pendingGitMutations.delete(preflight.key);
 }
 
 // ── Portability advisory (review 13, D1) ────────────────────────────────────
@@ -195,11 +305,17 @@ export async function writeAssetToSource(
   assertAkmAssetWrite(source);
 
   const filePath = resolveAssetFilePath(source, ref);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const authored = filePath.toLowerCase().endsWith(".md") ? ensureAkmMarkdownType(content, ref.type) : content;
   const normalized = authored.endsWith("\n") ? authored : `${authored}\n`;
-  fs.writeFileSync(filePath, normalized, "utf8");
-  recordWriteTargetPath(source, filePath);
+  const preflight = preflightGitPathMutation(source, filePath);
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, normalized, "utf8");
+    recordWriteTargetPath(source, filePath);
+  } catch (error) {
+    discardEmptyGitPreflight(preflight);
+    throw error;
+  }
 
   // Non-fatal portability advisory (review 13, D1): flag absolute host home
   // paths in the written content. These make the stash non-portable and leak
@@ -237,8 +353,14 @@ export async function deleteAssetFromSource(
       "MISSING_REQUIRED_ARGUMENT",
     );
   }
-  fs.unlinkSync(filePath);
-  recordWriteTargetPath(source, filePath);
+  const preflight = preflightGitPathMutation(source, filePath);
+  try {
+    fs.unlinkSync(filePath);
+    recordWriteTargetPath(source, filePath);
+  } catch (error) {
+    discardEmptyGitPreflight(preflight);
+    throw error;
+  }
 
   return { path: filePath, ref: displayRef({ type: ref.type, name: ref.name, bundleId: ref.origin }) };
 }
@@ -264,7 +386,13 @@ export async function deleteAssetFromSource(
 export function commitWriteTargetBoundary(
   target: ResolvedWriteTarget,
   message: string,
-  options?: { push?: boolean; paths?: string[] },
+  options?: {
+    push?: boolean;
+    paths?: string[];
+    transactionId?: string;
+    expectedBaseHead?: string | null;
+    expectedSnapshots?: GitPathSnapshots;
+  },
 ): void {
   if (target.source.kind !== "git") return;
 
@@ -273,18 +401,507 @@ export function commitWriteTargetBoundary(
   const push = options?.push;
 
   const writable = resolveWritable(target.config);
-  const repoDir = target.source.repoPath ?? target.source.path;
-  const changedPaths = new Set(listGitChangedPaths(repoDir));
-  const paths = [...new Set([...(options?.paths ?? []), ...takeGitTargetPaths(target.source)])]
-    .map((filePath) => filePath.replaceAll(path.sep, "/"))
-    .filter((filePath) => changedPaths.has(filePath));
+  const repoDir = path.resolve(target.source.repoPath ?? target.source.path);
+  const key = gitTargetKey(target.source);
+  const pending = pendingGitMutations.get(key);
+  const expectedBaseHead =
+    options?.expectedBaseHead !== undefined
+      ? options.expectedBaseHead
+      : pending
+        ? pending.baseHead
+        : readOptionalGitHead(repoDir);
+  const normalizeBoundaryPath = (filePath: string): string => {
+    const relativePath = path.isAbsolute(filePath)
+      ? path.relative(repoDir, path.resolve(filePath)).replaceAll(path.sep, "/")
+      : filePath.replaceAll(path.sep, "/");
+    return normalizePublicationPaths([relativePath])[0] as string;
+  };
+  const providedSnapshots = new Map(
+    Object.entries(options?.expectedSnapshots ?? {}).map(([filePath, state]) => [
+      normalizeBoundaryPath(filePath),
+      state,
+    ]),
+  );
+  const paths = normalizePublicationPaths([
+    ...(options?.paths ?? []).map(normalizeBoundaryPath),
+    ...Object.keys(pending?.snapshots ?? {}),
+  ]);
+  const expectedSnapshots: GitPathSnapshots = {};
+  for (const filePath of paths) {
+    if (providedSnapshots.has(filePath)) {
+      expectedSnapshots[filePath] = providedSnapshots.get(filePath) ?? null;
+    } else if (pending && Object.hasOwn(pending.snapshots, filePath)) {
+      expectedSnapshots[filePath] = pending.snapshots[filePath] ?? null;
+    } else {
+      expectedSnapshots[filePath] = captureGitPathSnapshot(target, path.join(repoDir, filePath)).state;
+    }
+  }
+  if (
+    options?.expectedBaseHead !== undefined &&
+    pending !== undefined &&
+    options.expectedBaseHead !== pending.baseHead
+  ) {
+    throw new Error(`Git boundary base does not match the recorded exact-path mutation base.`);
+  }
   // Assets may live under <repo>/content, but git synchronization always runs
   // against the repository root.
-  saveGitStash(undefined, message, writable, {
-    repoDir,
+  try {
+    saveGitStash(undefined, message, writable, {
+      repoDir,
+      paths,
+      expectedSnapshots,
+      expectedBaseHead,
+      ...(push === undefined ? {} : { push }),
+      ...(options?.transactionId === undefined ? {} : { transactionId: options.transactionId }),
+    });
+    pendingGitMutations.delete(key);
+  } catch (error) {
+    if (pending && readOptionalGitHead(repoDir) !== pending.baseHead) pendingGitMutations.delete(key);
+    throw error;
+  }
+}
+
+/** Durable identity needed to commit and publish one transaction safely. */
+export interface GitPublication {
+  repoPath: string;
+  baseHead: string;
+  branch?: string;
+  remote?: string;
+  mergeRef?: string;
+  remoteUrl?: string;
+  pushUrls?: string[];
+  upstream?: string;
+  upstreamHead?: string;
+  commit?: string | null;
+  /** Recovery-only marker for a pre-identity exact commit that has no transaction trailer. */
+  legacyCommit?: boolean;
+}
+
+interface GitPublicationIdentity {
+  repoPath: string;
+  branch?: string;
+  remote?: string;
+  mergeRef?: string;
+  remoteUrl?: string;
+  pushUrls?: string[];
+  upstream?: string;
+}
+
+export type GitPathState = GitExactPathState;
+export type GitPathSnapshots = GitExactPathSnapshots;
+
+function sameGitPathState(left: GitPathState | null, right: GitPathState | null): boolean {
+  return left === null ? right === null : right !== null && left.oid === right.oid && left.mode === right.mode;
+}
+
+/** Capture the exact checkout/upstream identity before a durable mutation starts. */
+export function captureGitPublication(target: ResolvedWriteTarget): GitPublication | undefined {
+  if (target.source.kind !== "git") return undefined;
+  const identity = readGitPublicationIdentity(target);
+  const head = runGit(["-C", identity.repoPath, "rev-parse", "HEAD"]);
+  if (head.status !== 0 || !head.stdout.trim()) {
+    throw new Error(`Cannot read Git HEAD for target "${target.source.name}".`);
+  }
+  const baseHead = head.stdout.trim();
+  let upstreamHead: string | undefined;
+  if (identity.upstream) {
+    const upstream = runGit(["-C", identity.repoPath, "rev-parse", identity.upstream]);
+    if (upstream.status !== 0 || !upstream.stdout.trim()) {
+      throw new Error(`Cannot read Git upstream for target "${target.source.name}".`);
+    }
+    upstreamHead = upstream.stdout.trim();
+    if (baseHead !== upstreamHead) {
+      throw new Error(`Writable Git target "${target.source.name}" changed after mutation preflight.`);
+    }
+  }
+  return { ...identity, baseHead, ...(upstreamHead ? { upstreamHead } : {}) };
+}
+
+/** Reconstruct the safely-identifiable commit state of a pre-publication-identity journal. */
+export function captureLegacyGitPublication(
+  target: ResolvedWriteTarget,
+  paths: string[],
+  snapshots: GitPathSnapshots,
+): GitPublication | undefined {
+  if (target.source.kind !== "git") return undefined;
+  const identity = readGitPublicationIdentity(target);
+  const normalizedPaths = normalizePublicationPaths(paths);
+  const head = readGitHead(identity.repoPath, target.source.name);
+  let upstreamHead: string | undefined;
+  if (identity.upstream) {
+    const upstream = runGit(["-C", identity.repoPath, "rev-parse", identity.upstream]);
+    if (upstream.status !== 0 || !upstream.stdout.trim()) {
+      throw new Error(`Cannot read Git upstream for target "${target.source.name}".`);
+    }
+    upstreamHead = upstream.stdout.trim();
+    if (head !== upstreamHead) {
+      return {
+        ...identity,
+        baseHead: upstreamHead,
+        upstreamHead,
+        commit: head,
+        legacyCommit: true,
+      };
+    }
+  } else {
+    const parent = runGit(["-C", identity.repoPath, "rev-parse", `${head}^`]);
+    if (parent.status === 0 && parent.stdout.trim()) {
+      const candidate: GitPublication = {
+        ...identity,
+        baseHead: parent.stdout.trim(),
+        commit: head,
+        legacyCommit: true,
+      };
+      try {
+        validateGitTransactionCommit(target, candidate, head, "legacy", normalizedPaths, snapshots);
+        return candidate;
+      } catch {
+        // The current HEAD predates the interrupted mutation; create a new exact commit from it.
+      }
+    }
+  }
+  return { ...identity, baseHead: head, ...(upstreamHead ? { upstreamHead } : {}) };
+}
+
+/** Capture one repo-relative path exactly as Git will stage it. */
+export function captureGitPathSnapshot(
+  target: ResolvedWriteTarget,
+  filePath: string,
+): { path: string; state: GitPathState | null } {
+  if (target.source.kind !== "git") throw new Error(`Target "${target.source.name}" is not Git-backed.`);
+  const repoPath = path.resolve(target.source.repoPath ?? target.source.path);
+  const absolutePath = path.resolve(filePath);
+  const relativePath = path.relative(repoPath, absolutePath).replaceAll(path.sep, "/");
+  const [normalizedPath] = normalizePublicationPaths([relativePath]);
+  return {
+    path: normalizedPath as string,
+    state: captureGitPathState(repoPath, absolutePath, normalizedPath as string),
+  };
+}
+
+function captureGitPathState(repoPath: string, absolutePath: string, relativePath: string): GitPathState | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(absolutePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  let mode: GitPathState["mode"];
+  let oidResult: ReturnType<typeof runGit>;
+  if (stat.isSymbolicLink()) {
+    mode = "120000";
+    oidResult = runGit(["-C", repoPath, "hash-object", "--stdin"], { input: fs.readlinkSync(absolutePath) });
+  } else if (stat.isFile()) {
+    mode = stat.mode & 0o111 ? "100755" : "100644";
+    oidResult = runGit(["-C", repoPath, "hash-object", `--path=${relativePath}`, "--", absolutePath]);
+  } else {
+    throw new Error(`Git publication path is not a file: ${relativePath}`);
+  }
+  if (oidResult.status !== 0 || !oidResult.stdout.trim()) {
+    throw new Error(`Cannot snapshot Git publication path: ${relativePath}`);
+  }
+  return { oid: oidResult.stdout.trim(), mode };
+}
+
+/** Create or recover the one transaction-owned commit without pushing it. */
+export function ensureGitTransactionCommit(
+  target: ResolvedWriteTarget,
+  publication: GitPublication,
+  options: { transactionId: string; message: string; paths: string[]; snapshots: GitPathSnapshots },
+): string | null {
+  assertGitPublicationIdentity(target, publication);
+  const paths = normalizePublicationPaths(options.paths);
+  validateGitWorktreeSnapshots(target, paths, options.snapshots);
+  if (publication.commit !== undefined) {
+    if (publication.commit !== null) {
+      validateGitTransactionCommit(
+        target,
+        publication,
+        publication.commit,
+        options.transactionId,
+        paths,
+        options.snapshots,
+      );
+      reconcileGitExactPathIndex(publication.repoPath, publication.baseHead, publication.commit, paths);
+    }
+    return publication.commit;
+  }
+
+  const existing = findGitTransactionCommit(publication.repoPath, publication.baseHead, options.transactionId);
+  if (existing) {
+    validateGitTransactionCommit(target, publication, existing, options.transactionId, paths, options.snapshots);
+    reconcileGitExactPathIndex(publication.repoPath, publication.baseHead, existing, paths);
+    return existing;
+  }
+
+  const head = readGitHead(publication.repoPath, target.source.name);
+  if (head !== publication.baseHead) {
+    throw new Error(
+      `Cannot publish Git transaction ${options.transactionId}: target "${target.source.name}" advanced before its commit was recorded.`,
+    );
+  }
+  commitWriteTargetBoundary(target, options.message, {
     paths,
-    ...(push === undefined ? {} : { push }),
+    push: false,
+    transactionId: options.transactionId,
+    expectedBaseHead: publication.baseHead,
+    expectedSnapshots: options.snapshots,
   });
+  const committed = findGitTransactionCommit(publication.repoPath, publication.baseHead, options.transactionId);
+  if (!committed) {
+    if (readGitHead(publication.repoPath, target.source.name) === publication.baseHead) {
+      validateGitCommitSnapshots(publication.repoPath, publication.baseHead, paths, options.snapshots);
+      return null;
+    }
+    throw new Error(`Cannot identify the Git commit for transaction ${options.transactionId}.`);
+  }
+  validateGitTransactionCommit(target, publication, committed, options.transactionId, paths, options.snapshots);
+  reconcileGitExactPathIndex(publication.repoPath, publication.baseHead, committed, paths);
+  return committed;
+}
+
+/** Push only the recorded transaction commit, never later local descendants. */
+export function publishGitTransactionCommit(
+  target: ResolvedWriteTarget,
+  publication: GitPublication,
+  transactionId: string,
+  paths: string[],
+  snapshots: GitPathSnapshots,
+): void {
+  assertGitPublicationIdentity(target, publication);
+  if (publication.commit === undefined) {
+    throw new Error(`Git transaction ${transactionId} has no recorded publication decision.`);
+  }
+  if (publication.commit === null) return;
+  validateGitTransactionCommit(
+    target,
+    publication,
+    publication.commit,
+    transactionId,
+    normalizePublicationPaths(paths),
+    snapshots,
+  );
+  if (!publication.remote || !publication.mergeRef) return;
+
+  if (!publication.upstream) throw new Error(`Git transaction ${transactionId} has no recorded upstream.`);
+  if (
+    runGit(["-C", publication.repoPath, "merge-base", "--is-ancestor", publication.commit, publication.upstream])
+      .status === 0
+  ) {
+    return;
+  }
+  if (
+    runGit(["-C", publication.repoPath, "merge-base", "--is-ancestor", publication.upstream, publication.commit])
+      .status !== 0
+  ) {
+    throw new Error(`Cannot publish Git transaction ${transactionId}: upstream history diverged.`);
+  }
+  if (!publication.upstreamHead) {
+    throw new Error(`Git transaction ${transactionId} has no recorded upstream lease.`);
+  }
+  const pushed = runGit(
+    [
+      "-C",
+      publication.repoPath,
+      "push",
+      `--force-with-lease=${publication.mergeRef}:${publication.upstreamHead}`,
+      publication.remote,
+      `${publication.commit}:${publication.mergeRef}`,
+    ],
+    { timeout: GIT_PUSH_TIMEOUT_MS },
+  );
+  if (pushed.status !== 0) {
+    throw new Error(`git push failed for target "${target.source.name}": ${pushed.stderr.trim()}`);
+  }
+}
+
+function readGitPublicationIdentity(target: ResolvedWriteTarget): GitPublicationIdentity {
+  const repoPath = path.resolve(target.source.repoPath ?? target.source.path);
+  const branchResult = runGit(["-C", repoPath, "symbolic-ref", "--quiet", "--short", "HEAD"]);
+  const branch = branchResult.status === 0 ? branchResult.stdout.trim() : undefined;
+  const remotes = runGit(["-C", repoPath, "remote"]);
+  if (remotes.status !== 0) throw new Error(`Cannot inspect Git remotes for target "${target.source.name}".`);
+  if (!remotes.stdout.trim()) return { repoPath, ...(branch ? { branch } : {}) };
+  if (!branch) throw new Error(`Writable Git target "${target.source.name}" is detached from a branch.`);
+
+  const remoteResult = runGit(["-C", repoPath, "config", "--get", `branch.${branch}.remote`]);
+  const mergeResult = runGit(["-C", repoPath, "config", "--get", `branch.${branch}.merge`]);
+  if (remoteResult.status !== 0 || mergeResult.status !== 0) {
+    throw new Error(`Writable Git target "${target.source.name}" has no configured upstream branch.`);
+  }
+  const remote = remoteResult.stdout.trim();
+  const mergeRef = mergeResult.stdout.trim();
+  const upstreamResult = runGit(["-C", repoPath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+  if (upstreamResult.status !== 0 || !upstreamResult.stdout.trim()) {
+    throw new Error(`Cannot read Git upstream for target "${target.source.name}".`);
+  }
+  const urlResult = runGit(["-C", repoPath, "remote", "get-url", remote]);
+  if (urlResult.status !== 0 || !urlResult.stdout.trim()) {
+    throw new Error(`Cannot read Git remote "${remote}" for target "${target.source.name}".`);
+  }
+  const pushUrlsResult = runGit(["-C", repoPath, "remote", "get-url", "--push", "--all", remote]);
+  if (pushUrlsResult.status !== 0 || !pushUrlsResult.stdout.trim()) {
+    throw new Error(`Cannot read Git push URL for target "${target.source.name}".`);
+  }
+  return {
+    repoPath,
+    branch,
+    remote,
+    mergeRef,
+    remoteUrl: urlResult.stdout.trim(),
+    pushUrls: pushUrlsResult.stdout
+      .split("\n")
+      .map((value) => value.trim())
+      .filter(Boolean),
+    upstream: upstreamResult.stdout.trim(),
+  };
+}
+
+function assertGitPublicationIdentity(target: ResolvedWriteTarget, publication: GitPublication): void {
+  if (target.source.kind !== "git") {
+    throw new Error(`Git publication is bound to non-Git target "${target.source.name}".`);
+  }
+  const current = readGitPublicationIdentity(target);
+  for (const key of ["repoPath", "branch", "remote", "mergeRef", "remoteUrl", "upstream"] as const) {
+    if (current[key] !== publication[key]) {
+      throw new Error(`Git publication target identity changed at ${key} for "${target.source.name}".`);
+    }
+  }
+  if (JSON.stringify(current.pushUrls ?? []) !== JSON.stringify(publication.pushUrls ?? [])) {
+    throw new Error(`Git publication target identity changed at pushUrls for "${target.source.name}".`);
+  }
+}
+
+function normalizePublicationPaths(paths: string[]): string[] {
+  const normalized = new Set<string>();
+  for (const filePath of paths) {
+    const candidate = filePath.replaceAll(path.sep, "/");
+    if (
+      !candidate ||
+      candidate.includes("\0") ||
+      path.isAbsolute(filePath) ||
+      path.posix.isAbsolute(candidate) ||
+      candidate === "." ||
+      candidate === ".." ||
+      candidate.startsWith("../") ||
+      path.posix.normalize(candidate) !== candidate
+    ) {
+      throw new Error("Git publication contains an unsafe path.");
+    }
+    normalized.add(candidate);
+  }
+  return [...normalized];
+}
+
+function readGitHead(repoPath: string, targetName: string): string {
+  const result = runGit(["-C", repoPath, "rev-parse", "HEAD"]);
+  if (result.status !== 0 || !result.stdout.trim()) throw new Error(`Cannot read Git HEAD for target "${targetName}".`);
+  return result.stdout.trim();
+}
+
+function findGitTransactionCommit(repoPath: string, baseHead: string, transactionId: string): string | undefined {
+  const result = runGit([
+    "-C",
+    repoPath,
+    "log",
+    "--format=%H",
+    "--fixed-strings",
+    `--grep=AKM-Transaction: ${transactionId}`,
+    `${baseHead}..HEAD`,
+  ]);
+  if (result.status !== 0) throw new Error(`Cannot inspect Git transaction ${transactionId}.`);
+  const matches = result.stdout
+    .split("\n")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (matches.length > 1) throw new Error(`Git transaction ${transactionId} has multiple candidate commits.`);
+  return matches[0];
+}
+
+function validateGitTransactionCommit(
+  target: ResolvedWriteTarget,
+  publication: GitPublication,
+  commit: string,
+  transactionId: string,
+  expectedPaths: string[],
+  snapshots: GitPathSnapshots,
+): void {
+  const parent = runGit(["-C", publication.repoPath, "rev-list", "--parents", "-n", "1", commit]);
+  const ancestry = parent.stdout.trim().split(/\s+/);
+  if (parent.status !== 0 || ancestry.length !== 2 || ancestry[1] !== publication.baseHead) {
+    throw new Error(`Git commit ${commit} is not the direct transaction commit for "${target.source.name}".`);
+  }
+  if (!publication.legacyCommit) {
+    const message = runGit(["-C", publication.repoPath, "show", "-s", "--format=%B", commit]);
+    if (
+      message.status !== 0 ||
+      !message.stdout.split(/\r?\n/).some((line) => line.trim() === `AKM-Transaction: ${transactionId}`)
+    ) {
+      throw new Error(`Git commit ${commit} is not owned by transaction ${transactionId}.`);
+    }
+  }
+  const changed = runGit([
+    "-C",
+    publication.repoPath,
+    "diff-tree",
+    "--no-commit-id",
+    "--name-only",
+    "-z",
+    "--no-renames",
+    "-r",
+    commit,
+  ]);
+  const expected = new Set(expectedPaths);
+  const changedPaths = changed.stdout.split("\0").filter(Boolean);
+  if (changed.status !== 0 || changedPaths.length === 0 || changedPaths.some((filePath) => !expected.has(filePath))) {
+    throw new Error(`Git commit ${commit} contains paths outside transaction ${transactionId}.`);
+  }
+  validateGitCommitSnapshots(publication.repoPath, commit, expectedPaths, snapshots);
+  if (runGit(["-C", publication.repoPath, "merge-base", "--is-ancestor", commit, "HEAD"]).status !== 0) {
+    throw new Error(`Git commit ${commit} is no longer on the target branch.`);
+  }
+}
+
+function validateGitWorktreeSnapshots(
+  target: ResolvedWriteTarget,
+  expectedPaths: string[],
+  snapshots: GitPathSnapshots,
+): void {
+  for (const expectedPath of expectedPaths) {
+    if (!Object.hasOwn(snapshots, expectedPath)) {
+      throw new Error(`Git publication lacks a snapshot for ${expectedPath}.`);
+    }
+    const current = captureGitPathSnapshot(
+      target,
+      path.join(target.source.repoPath ?? target.source.path, expectedPath),
+    );
+    if (!sameGitPathState(current.state, snapshots[expectedPath] ?? null)) {
+      throw new Error(`Git publication path diverged after mutation: ${expectedPath}.`);
+    }
+  }
+}
+
+function validateGitCommitSnapshots(
+  repoPath: string,
+  commit: string,
+  expectedPaths: string[],
+  snapshots: GitPathSnapshots,
+): void {
+  for (const expectedPath of expectedPaths) {
+    if (!Object.hasOwn(snapshots, expectedPath)) {
+      throw new Error(`Git publication lacks a snapshot for ${expectedPath}.`);
+    }
+    const expected = snapshots[expectedPath];
+    const tree = runGit(["-C", repoPath, "ls-tree", commit, "--", expectedPath]);
+    if (tree.status !== 0) throw new Error(`Cannot inspect committed Git path: ${expectedPath}.`);
+    const match = tree.stdout.trim().match(/^(\d+)\s+blob\s+([0-9a-f]+)\t/);
+    if (expected === null) {
+      if (tree.stdout.trim()) throw new Error(`Git transaction unexpectedly retained ${expectedPath}.`);
+    } else if (expected === undefined || !match || match[1] !== expected.mode || match[2] !== expected.oid) {
+      throw new Error(`Git transaction committed unexpected content for ${expectedPath}.`);
+    }
+  }
 }
 
 /**
@@ -332,7 +949,11 @@ export interface ResolvedWriteTarget {
  * unmaterialized Git caches are not writable checkouts and must fail before a
  * command writes files into them.
  */
-export function prepareWriteTargetForMutation(target: ResolvedWriteTarget): ResolvedWriteTarget {
+export function prepareWriteTargetForMutation(
+  target: ResolvedWriteTarget,
+  options: { allowedAdapters?: readonly string[]; allowAhead?: boolean } = {},
+): ResolvedWriteTarget {
+  assertAkmAssetWrite(target.source, options.allowedAdapters);
   if (target.source.kind !== "git") return target;
 
   const contentRoot = path.resolve(target.source.path);
@@ -380,6 +1001,27 @@ export function prepareWriteTargetForMutation(target: ResolvedWriteTarget): Reso
   if (statusResult.status !== 0 || statusResult.error) {
     throw gitTargetNotMaterialized(target, contentRoot);
   }
+  const branchResult = runGit(["-C", repoPath, "symbolic-ref", "--quiet", "HEAD"]);
+  if (branchResult.status !== 0 || !branchResult.stdout.trim()) {
+    throw new UsageError(
+      `Writable Git target "${target.source.name}" is detached from a branch.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+
+  const upstream = inspectGitUpstream(repoPath);
+  if (upstream.behind > 0) {
+    throw new UsageError(
+      `Writable Git target "${target.source.name}" is behind ${upstream.upstream}; run \`akm update ${target.source.name}\` before writing.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  if (upstream.ahead > 0 && options.allowAhead !== true) {
+    throw new UsageError(
+      `Writable Git target "${target.source.name}" has unpushed commits; push or reconcile them before AKM writes another commit.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
 
   return {
     ...target,
@@ -408,9 +1050,10 @@ export function resolveWritableTargets(akmConfig: AkmConfig): ResolvedWriteTarge
   if (byRoot.size === 0) {
     try {
       const stashDir = resolveStashDir({ readOnly: true });
+      const bundleId = deriveBundleId(undefined, stashDir, new Set());
       byRoot.set(path.resolve(stashDir), {
-        source: { kind: "filesystem", name: "stash", path: stashDir, adapterId: "akm" },
-        config: { type: "filesystem", path: stashDir, name: "stash", writable: true },
+        source: { kind: "filesystem", name: bundleId, path: stashDir, adapterId: detectAdapterId(stashDir) },
+        config: { type: "filesystem", path: stashDir, name: bundleId, writable: true },
       });
     } catch {
       // No active working stash; configured writable targets above are complete.
@@ -491,35 +1134,8 @@ export function resolveWriteTarget(
   }
 
   // 3. Working stash (config.stashDir / resolveStashDir()).
-  //
-  // The primary stash stays `kind: "filesystem"` on purpose, even when it is a
-  // git repo on disk (recognized elsewhere via isGitBackedStash). Returning
-  // `kind: "git"` here would fire the boundary commit on every write through
-  // this resolver, double-committing the primary stash which is already
-  // committed in a single batch at operation boundaries (e.g. the end-of-run
-  // improve auto-sync via saveGitStash). Per-write stays non-committing.
   try {
-    const stashDir = resolveStashDir({ readOnly: true });
-    const defaultBundleSource = akmConfig.defaultBundle
-      ? configuredSources.find((source) => source.name === akmConfig.defaultBundle && source.type === "filesystem")
-      : undefined;
-    if (defaultBundleSource) {
-      const target = adaptConfiguredSource(defaultBundleSource);
-      if (path.resolve(target.source.path) === path.resolve(stashDir)) {
-        if (requireWritable && !resolveWritable(target.config)) {
-          throw new ConfigError(
-            `defaultBundle "${akmConfig.defaultBundle}" is not writable`,
-            "INVALID_CONFIG_FILE",
-            `Set \`writable: true\` on the "${akmConfig.defaultBundle}" bundle, or set \`defaultWriteTarget\` to a writable source.`,
-          );
-        }
-        return { ...target, selector: undefined };
-      }
-    }
-    return {
-      source: { kind: "filesystem", name: "stash", path: stashDir, adapterId: "akm" },
-      config: { type: "filesystem", path: stashDir, name: "stash", writable: true },
-    };
+    return resolveWorkingStashTarget(akmConfig, options);
   } catch {
     // Fall through to the final ConfigError below.
   }
@@ -530,6 +1146,40 @@ export function resolveWriteTarget(
     "STASH_DIR_NOT_FOUND",
     "Run `akm init` to create a working stash, or set `defaultWriteTarget` in your config.",
   );
+}
+
+/** Resolve the implicit working stash without consulting `defaultWriteTarget`. */
+export function resolveWorkingStashTarget(
+  akmConfig: AkmConfig,
+  options: { requireWritable?: boolean } = {},
+): ResolvedWriteTarget {
+  const configuredSources = resolveConfiguredSources(akmConfig);
+  const requireWritable = options.requireWritable !== false;
+  const stashDir = resolveStashDir({ readOnly: true });
+  const defaultBundleSource = akmConfig.defaultBundle
+    ? configuredSources.find((source) => source.name === akmConfig.defaultBundle && source.type === "filesystem")
+    : undefined;
+  if (defaultBundleSource) {
+    const target = adaptConfiguredSource(defaultBundleSource);
+    if (path.resolve(target.source.path) === path.resolve(stashDir)) {
+      if (requireWritable && !resolveWritable(target.config)) {
+        throw new ConfigError(
+          `defaultBundle "${akmConfig.defaultBundle}" is not writable`,
+          "INVALID_CONFIG_FILE",
+          `Set \`writable: true\` on the "${akmConfig.defaultBundle}" bundle, or set \`defaultWriteTarget\` to a writable source.`,
+        );
+      }
+      return { ...target, selector: undefined };
+    }
+  }
+
+  // The working stash stays `kind: "filesystem"` even when it lives inside a
+  // Git repo; primary-stash synchronization owns that separate boundary.
+  const bundleId = deriveBundleId(undefined, stashDir, new Set());
+  return {
+    source: { kind: "filesystem", name: bundleId, path: stashDir, adapterId: detectAdapterId(stashDir) },
+    config: { type: "filesystem", path: stashDir, name: bundleId, writable: true },
+  };
 }
 
 // ── Internals ───────────────────────────────────────────────────────────────
@@ -566,8 +1216,8 @@ function resolveAssetFilePath(source: WriteTargetSource, ref: AssetRef): string 
   return assetPath;
 }
 
-export function assertAkmAssetWrite(source: WriteTargetSource): void {
-  if (!source.adapterId || source.adapterId === "akm") return;
+export function assertAkmAssetWrite(source: WriteTargetSource, allowedAdapters: readonly string[] = ["akm"]): void {
+  if (!source.adapterId || allowedAdapters.includes(source.adapterId)) return;
   throw new UsageError(
     `Bundle "${source.name}" uses adapter "${source.adapterId}", which does not support AKM asset writes.`,
     "INVALID_FLAG_VALUE",

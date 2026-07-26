@@ -59,7 +59,7 @@ function checkXrefs(value: unknown, line: number, errors: WorkflowError[]): void
       const p = parseRefInput(ref);
       const conceptId = conceptIdFromTypeName(p.type, p.name);
       const newCanonical =
-        p.origin !== undefined && p.origin !== "local" && p.origin !== "stash"
+        p.origin !== undefined
           ? isBundleSlug(p.origin)
             ? `${p.origin}//${conceptId}`
             : `${p.origin}//${p.type}:${p.name}`

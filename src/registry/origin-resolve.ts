@@ -3,6 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import path from "node:path";
+import { isBundleSlug } from "../core/asset/asset-ref";
+import { deriveInstallations } from "../indexer/installations";
 import type { SearchSource } from "../indexer/search/search-source";
 import { parseRegistryRef } from "./resolve";
 
@@ -10,44 +12,31 @@ import { parseRegistryRef } from "./resolve";
  * Given an origin string (from an AssetRef) and the full list of stash
  * sources, return the subset of sources to search.
  *
- * Resolution order:
- *   1. undefined   → all sources
- *   2. "local"     → primary stash only (first entry)
- *   3. exact match → source whose registryId matches verbatim
- *   4. parsed match → parse origin as a registry ref, match by parsed ID
- *   5. path match  → source whose resolved path matches the origin
- *   6. empty       → indicates a remote/uninstalled origin (caller decides)
+ * Qualified asset refs use bundle identity only. Install locators and paths are
+ * a separate grammar handled by {@link resolveSourcesForLocator}.
  */
 export function resolveSourcesForOrigin(origin: string | undefined, allSources: SearchSource[]): SearchSource[] {
   if (!origin) return allSources;
 
-  // "local" means the primary stash (first entry)
-  if (origin === "local") {
-    return allSources.length > 0 ? [allSources[0]!] : [];
-  }
+  const installations = deriveInstallations(allSources);
+  return allSources.filter((_, index) => installations[index]?.id === origin);
+}
 
-  // Exact registryId match (e.g. origin is "npm:@scope/pkg")
-  const byExactId = allSources.filter((s) => s.registryId !== undefined && s.registryId === origin);
+/** Resolve the non-asset source locator grammar used by `akm clone`. */
+export function resolveSourcesForLocator(locator: string, allSources: SearchSource[]): SearchSource[] {
+  const byExactId = allSources.filter((source) => source.registryId === locator);
   if (byExactId.length > 0) return byExactId;
 
-  // Parse origin as a registry ref and match by parsed ID.
-  // Allows shorthand: "owner/repo" matches "github:owner/repo",
-  // "@scope/pkg" matches "npm:@scope/pkg".
   try {
-    const parsed = parseRegistryRef(origin);
+    const parsed = parseRegistryRef(locator);
     const byParsedId = allSources.filter((s) => s.registryId !== undefined && s.registryId === parsed.id);
     if (byParsedId.length > 0) return byParsedId;
   } catch {
-    // Not a valid registry ref — continue to path matching
+    // Not a registry locator; continue to path matching.
   }
 
-  // Match by resolved path (any source, including installed)
-  const resolvedOrigin = path.resolve(origin);
-  const byPath = allSources.filter((s) => path.resolve(s.path) === resolvedOrigin);
-  if (byPath.length > 0) return byPath;
-
-  // No match — origin may be remote/uninstalled
-  return [];
+  const resolvedLocator = path.resolve(locator);
+  return allSources.filter((source) => path.resolve(source.path) === resolvedLocator);
 }
 
 /**
@@ -55,6 +44,6 @@ export function resolveSourcesForOrigin(origin: string | undefined, allSources: 
  * (i.e. it looks like a registry ref but isn't installed locally).
  */
 export function isRemoteOrigin(origin: string, allSources: SearchSource[]): boolean {
-  if (origin === "local") return false;
-  return resolveSourcesForOrigin(origin, allSources).length === 0;
+  if (isBundleSlug(origin)) return false;
+  return resolveSourcesForLocator(origin, allSources).length === 0;
 }

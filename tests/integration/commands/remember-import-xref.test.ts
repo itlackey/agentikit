@@ -366,14 +366,11 @@ describe("--xref root set and resolver parity", () => {
     expect(deniedType.code).toBe(2);
     expect((JSON.parse(deniedType.stderr) as { code?: string }).code).toBe("INVALID_FLAG_VALUE");
 
-    // local// names the same local resolution this validator performs —
-    // accepted, and persisted in the canonical bare form (the prefix is
-    // stripped, mirroring lint's local// strip) so later ref scanners see
-    // the same spelling the resolver validated.
+    // A qualified bundle is literal. An absent `local` bundle must not silently
+    // retarget to the primary stash.
     const local = await runCliCapture(["remember", "Locally cited note", "--xref", "local//knowledge/auth-flow"]);
-    expect(local.code).toBe(0);
-    const localParsed = parseFrontmatter(fs.readFileSync((JSON.parse(local.stdout) as { path: string }).path, "utf8"));
-    expect(localParsed.data.xrefs).toEqual(["knowledge/auth-flow"]);
+    expect(local.code).toBe(2);
+    expect((JSON.parse(local.stderr) as { error: string }).error).toContain("did not resolve");
   });
 
   test("canonical conceptId xrefs persist as-is; spellings of one asset dedupe to one ref", async () => {
@@ -392,13 +389,13 @@ describe("--xref root set and resolver parity", () => {
     const parsed = parseFrontmatter(fs.readFileSync((JSON.parse(stdout) as { path: string }).path, "utf8"));
     expect(parsed.data.xrefs).toEqual(["env/prod"]);
 
-    // Two spellings of the SAME asset dedupe into one canonical entry.
+    // Repeated spellings of the same asset dedupe into one canonical entry.
     seedAsset(stashDir, "knowledge/auth-flow.md");
     const dupe = await runCliCapture([
       "remember",
       "Note citing one asset twice",
       "--xref",
-      "local//knowledge/auth-flow",
+      "knowledge/auth-flow",
       "--xref",
       "knowledge/auth-flow",
     ]);

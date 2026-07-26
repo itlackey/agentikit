@@ -45,6 +45,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { defineJsonCommand, output } from "../cli/shared";
+import { detectAdapterId } from "../core/adapter/detect-adapter";
 import { deriveCanonicalAssetNameFromStashRoot, stashDirFor } from "../core/asset/asset-placement";
 import { conceptIdFromTypeName, displayRef, isFullRefInput, parseRefInput } from "../core/asset/resolve-ref";
 import { isWithin, resolveStashDir, toPosix } from "../core/common";
@@ -68,6 +69,7 @@ import {
 import { getDbPath } from "../core/paths";
 import { getStateDbPath, openStateDatabase } from "../core/state-db";
 import { warnVerbose } from "../core/warn";
+import { assertAkmAssetWrite } from "../core/write-source";
 import { withAssetMutationLease } from "../indexer/index-writer-lock";
 import { indexWrittenAssets, WRITE_PATH_INDEX_BUSY_TIMEOUT_MS } from "../indexer/index-written-assets";
 import { resolveSourceEntries } from "../indexer/search/search-source";
@@ -1160,7 +1162,7 @@ export const mvCommand = defineJsonCommand({
     await withAssetMutationLease("mv", async () => {
       // ── Validation (everything before any write; a failure moves nothing) ──
       const source = parseRefInput(refArg);
-      if (source.origin && source.origin !== "local") {
+      if (source.origin) {
         throw new UsageError(
           `akm mv operates on the primary writable stash only — the origin prefix "${source.origin}//" is not supported.`,
           "INVALID_FLAG_VALUE",
@@ -1251,6 +1253,15 @@ export const mvCommand = defineJsonCommand({
       const stashDir = resolveStashDir();
       const config = loadConfig();
       const configuredSources = resolveSourceEntries(stashDir, config);
+      const sourceOwner = configuredSources.find(
+        (candidate) => path.resolve(candidate.path) === path.resolve(stashDir),
+      );
+      assertAkmAssetWrite({
+        kind: sourceOwner?.type ?? "filesystem",
+        name: sourceOwner?.registryId ?? config.defaultBundle ?? "stash",
+        path: stashDir,
+        adapterId: sourceOwner?.adapterId ?? detectAdapterId(stashDir),
+      });
       const { durableSourceName, includeLegacyBare } = resolveMoveSourceIdentity(configuredSources, stashDir, config);
       await recoverInterruptedMoveTransactions(stashDir);
       const typeDir = stashDirFor(source.type) as string;

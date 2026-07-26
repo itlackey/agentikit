@@ -30,7 +30,7 @@ import type {
   RelinkUsageEventsOptions,
 } from "./index-entry-types";
 import { SQLITE_CHUNK_SIZE } from "./index-sql";
-import { isVecAvailable } from "./index-vec-repository";
+import { deleteEntryVectors, isVecAvailable } from "./index-vec-repository";
 
 // ── Entry operations ────────────────────────────────────────────────────────
 
@@ -52,11 +52,13 @@ export function upsertEntry(
   provenance?: EntryProvenance,
   contentHash?: string,
 ): number {
-  // Hot path during indexing — cache the two prepared statements per
-  // database connection so we don't pay the SQL parse/compile cost on
-  // every call. The dirty-mark INSERT and the upsert-with-RETURNING
-  // share the same WeakMap so they live and die with the connection.
+  // Hot path during indexing — cache prepared statements per database
+  // connection so we don't pay the SQL parse/compile cost on every call.
   const stmts = getUpsertStmts(db);
+  const previous =
+    (stmts.usesItemRefConflict && provenance?.itemRef
+      ? (stmts.findByItemRef.get(provenance.itemRef) as ExistingUpsertRow | undefined)
+      : undefined) ?? (stmts.findByEntryKey.get(entryKey) as ExistingUpsertRow | undefined);
   // Phase 5A / Advantage D5: surface derived memory parent ref into the
   // dedicated `derived_from` column so retrieval-time lookup (parent→child)
   // does not have to scan + JSON-decode every memory row.
@@ -69,35 +71,48 @@ export function upsertEntry(
   // by the next full index). `content_hash` (F4a M-core-2) is `doc.hash` from
   // the diff-persist writer; a NULL passed here PRESERVES any existing hash (the
   // ON CONFLICT COALESCE below) so the LLM-enrichment re-upsert cannot wipe it.
-  const result = stmts.upsert.get(
-    entryKey,
-    dirPath,
-    filePath,
-    stashDir,
-    JSON.stringify(entry),
-    searchText,
-    entry.type,
-    derivedFrom,
-    provenance?.itemRef ?? null,
-    provenance?.bundleId ?? null,
-    provenance?.componentId ?? null,
-    provenance?.conceptId ?? null,
-    provenance?.adapterId ?? null,
-    entry.type,
-    contentHash ?? null,
-  ) as { id: number } | undefined;
-  if (!result) throw new Error("upsertEntry: entry_key not found after upsert");
+  const apply = (): number => {
+    const result = stmts.upsert.get(
+      entryKey,
+      dirPath,
+      filePath,
+      stashDir,
+      JSON.stringify(entry),
+      searchText,
+      entry.type,
+      derivedFrom,
+      provenance?.itemRef ?? null,
+      provenance?.bundleId ?? null,
+      provenance?.componentId ?? null,
+      provenance?.conceptId ?? null,
+      provenance?.adapterId ?? null,
+      entry.type,
+      contentHash ?? null,
+    ) as { id: number } | undefined;
+    if (!result) throw new Error("upsertEntry: entry_key not found after upsert");
 
-  // Mark this entry as FTS-dirty so `rebuildFts({ incremental: true })`
-  // only revisits entries that actually changed. INSERT OR IGNORE is
-  // idempotent across multiple upserts of the same row.
-  stmts.markDirty.run(result.id);
-  return result.id;
+    if (previous?.id === result.id && previous.search_text !== searchText) deleteEntryVectors(db, result.id);
+
+    // Mark this entry as FTS-dirty so `rebuildFts({ incremental: true })`
+    // only revisits entries that actually changed. INSERT OR IGNORE is
+    // idempotent across multiple upserts of the same row.
+    stmts.markDirty.run(result.id);
+    return result.id;
+  };
+  return previous && previous.search_text !== searchText ? db.transaction(apply)() : apply();
 }
 
 interface UpsertStmts {
   upsert: ReturnType<Database["prepare"]>;
   markDirty: ReturnType<Database["prepare"]>;
+  findByItemRef: ReturnType<Database["prepare"]>;
+  findByEntryKey: ReturnType<Database["prepare"]>;
+  usesItemRefConflict: boolean;
+}
+
+interface ExistingUpsertRow {
+  id: number;
+  search_text: string;
 }
 
 const upsertStmtsByDb = new WeakMap<Database, UpsertStmts>();
@@ -167,7 +182,8 @@ function getUpsertStmts(db: Database): UpsertStmts {
   // (behaviour-identical to the pre-repoint key) until the next rebuild restores
   // uniqueness; without this the very rebuild meant to heal the duplicate could
   // not run.
-  const conflictClause = itemRefHasUniqueIndex(db)
+  const usesItemRefConflict = itemRefHasUniqueIndex(db);
+  const conflictClause = usesItemRefConflict
     ? `ON CONFLICT(item_ref) DO UPDATE ${UPSERT_SET_CLAUSE}
       ON CONFLICT(entry_key) DO UPDATE ${UPSERT_SET_CLAUSE}`
     : `ON CONFLICT(entry_key) DO UPDATE ${UPSERT_SET_CLAUSE}`;
@@ -185,6 +201,9 @@ function getUpsertStmts(db: Database): UpsertStmts {
       RETURNING id
     `),
     markDirty: db.prepare("INSERT OR IGNORE INTO entries_fts_dirty (entry_id) VALUES (?)"),
+    findByItemRef: db.prepare("SELECT id, search_text FROM entries WHERE item_ref = ? ORDER BY id ASC LIMIT 1"),
+    findByEntryKey: db.prepare("SELECT id, search_text FROM entries WHERE entry_key = ? LIMIT 1"),
+    usesItemRefConflict,
   };
   upsertStmtsByDb.set(db, stmts);
   return stmts;
@@ -517,6 +536,24 @@ export function deleteEntriesByDir(db: Database, dirPath: string): void {
   deleteEntriesWhere(db, "dir_path", dirPath);
 }
 
+export function deleteEntriesByDirAndStash(
+  db: Database,
+  dirPath: string,
+  stashDir: string,
+  options: { cleanupUsageEvents?: boolean } = {},
+): number[] {
+  return db.transaction(() => {
+    const ids = db
+      .prepare("SELECT id FROM entries WHERE dir_path = ? AND stash_dir = ?")
+      .all(dirPath, stashDir) as Array<{
+      id: number;
+    }>;
+    deleteRelatedRows(db, ids, options);
+    db.prepare("DELETE FROM entries WHERE dir_path = ? AND stash_dir = ?").run(dirPath, stashDir);
+    return ids.map((row) => row.id);
+  })();
+}
+
 /**
  * Delete every entry (and its child rows) under a source's stash root.
  *
@@ -544,28 +581,40 @@ export function deleteEntriesByStashDir(db: Database, stashDir: string): void {
  * Keyed on `entry_key` rather than `item_ref`: the diff must be exact regardless
  * of whether a row's `item_ref` is populated (legacy rows and NULL-provenance
  * write-back rows exist), and `entry_key` is never NULL and mirrors the upsert
- * conflict target precisely. Dir-scoped (not stash-dir-scoped) so it is safe
- * under the per-dir incremental freshness gate — untouched (skipped) sibling
- * directories are never in scope.
+ * conflict target precisely. Both directory- and source-scoped so overlapping
+ * source roots cannot prune one another's rows.
  */
-export function deleteEntriesByDirExceptKeys(db: Database, dirPath: string, keepKeys: ReadonlySet<string>): void {
-  db.transaction(() => {
-    const rows = db.prepare("SELECT id, entry_key FROM entries WHERE dir_path = ?").all(dirPath) as Array<{
+export function deleteEntriesByDirExceptKeys(
+  db: Database,
+  dirPath: string,
+  stashDir: string,
+  keepKeys: ReadonlySet<string>,
+  options: { cleanupUsageEvents?: boolean } = {},
+): number[] {
+  return db.transaction(() => {
+    const rows = db
+      .prepare("SELECT id, entry_key FROM entries WHERE dir_path = ? AND stash_dir = ?")
+      .all(dirPath, stashDir) as Array<{
       id: number;
       entry_key: string;
     }>;
     const doomed = rows.filter((r) => !keepKeys.has(r.entry_key));
-    if (doomed.length === 0) return;
-    deleteRelatedRows(db, doomed);
+    if (doomed.length === 0) return [];
+    deleteRelatedRows(db, doomed, options);
     for (let i = 0; i < doomed.length; i += SQLITE_CHUNK_SIZE) {
       const chunk = doomed.slice(i, i + SQLITE_CHUNK_SIZE);
       const placeholders = chunk.map(() => "?").join(",");
       db.prepare(`DELETE FROM entries WHERE id IN (${placeholders})`).run(...chunk.map((r) => r.id));
     }
+    return doomed.map((row) => row.id);
   })();
 }
 
-function deleteRelatedRows(db: Database, ids: Array<{ id: number }>): void {
+function deleteRelatedRows(
+  db: Database,
+  ids: Array<{ id: number }>,
+  options: { cleanupUsageEvents?: boolean } = {},
+): void {
   if (ids.length === 0) return;
   const numericIds = ids.map((r) => r.id);
   const vecAvail = isVecAvailable(db);
@@ -611,22 +660,10 @@ function deleteRelatedRows(db: Database, ids: Array<{ id: number }>): void {
     );
   }
 
-  // Clean up usage events for the deleted entries. Chunk-8 WI-8.3: usage_events
-  // lives in state.db now, so this is a SEPARATE cross-DB delete (guarded on
-  // state.db's existence; only runs when there ARE deletions, so the extra open
-  // is bounded). Live-asset-wins collision eviction (the moved asset must not
-  // adopt a deleted stranger's id-linked history) depends on this delete.
-  if (fs.existsSync(getStateDbPath())) {
-    bestEffort(() => {
-      withStateDb((stateDb) => {
-        for (let i = 0; i < numericIds.length; i += SQLITE_CHUNK_SIZE) {
-          const chunk = numericIds.slice(i, i + SQLITE_CHUNK_SIZE);
-          const placeholders = chunk.map(() => "?").join(",");
-          stateDb.prepare(`DELETE FROM usage_events WHERE entry_id IN (${placeholders})`).run(...chunk);
-        }
-      });
-    }, "delete usage_events (state.db) for entries");
-  }
+  // usage_events lives in state.db, outside this transaction. Index persistence
+  // disables this cleanup and runs it only after its index.db transaction
+  // commits; standalone delete callers retain the immediate behavior.
+  if (options.cleanupUsageEvents !== false) deleteUsageEventsByEntryIds(numericIds);
 
   // #624-P1: graph_files is NO LONGER keyed on entries.id, so deleting an
   // entries row must NOT wipe the extracted graph (that is the whole point —
@@ -665,6 +702,19 @@ function deleteRelatedRows(db: Database, ids: Array<{ id: number }>): void {
       "sync graph_meta counts after entries delete",
     );
   }
+}
+
+export function deleteUsageEventsByEntryIds(entryIds: number[]): void {
+  if (entryIds.length === 0 || !fs.existsSync(getStateDbPath())) return;
+  bestEffort(() => {
+    withStateDb((stateDb) => {
+      for (let i = 0; i < entryIds.length; i += SQLITE_CHUNK_SIZE) {
+        const chunk = entryIds.slice(i, i + SQLITE_CHUNK_SIZE);
+        const placeholders = chunk.map(() => "?").join(",");
+        stateDb.prepare(`DELETE FROM usage_events WHERE entry_id IN (${placeholders})`).run(...chunk);
+      }
+    });
+  }, "delete usage_events (state.db) for entries");
 }
 
 /**
@@ -865,6 +915,21 @@ export function getEntriesByDir(db: Database, dirPath: string): DbIndexedEntry[]
     Record<string, unknown>
   >;
   return parseEntryRows(rows, "getEntriesByDir");
+}
+
+export function getIndexedDirPathsWithDifferentAdapter(db: Database, stashDir: string, adapterId: string): string[] {
+  const rows = db
+    .prepare("SELECT DISTINCT dir_path FROM entries WHERE stash_dir = ? AND COALESCE(adapter_id, '') <> ?")
+    .all(stashDir, adapterId) as Array<{ dir_path: string }>;
+  return rows.map((row) => row.dir_path);
+}
+
+/** Return every persisted source owner for one physical directory. */
+export function getIndexedStashDirsByDir(db: Database, dirPath: string): string[] {
+  const rows = db.prepare("SELECT DISTINCT stash_dir FROM entries WHERE dir_path = ?").all(dirPath) as Array<{
+    stash_dir: string;
+  }>;
+  return rows.map((row) => row.stash_dir);
 }
 
 /**

@@ -3,10 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { randomUUID } from "node:crypto";
+import { parseBundleRef } from "../../core/asset/asset-ref";
 import { loadConfig } from "../../core/config/config";
 import { NotFoundError, UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
-import { canonicalizeWorkflowName } from "../../core/recognition-util";
 import { warn } from "../../core/warn";
 import type {
   WorkflowRunStatus,
@@ -41,12 +41,7 @@ import {
   requireExecutableWorkflowPlan,
 } from "./plan-classifier";
 import { evaluateStaleUnits, type StaleUnit } from "./unit-checkin";
-import {
-  canonicalWorkflowRunRef,
-  loadWorkflowAsset,
-  parseWorkflowRefInput,
-  resolveWorkflowEntryId,
-} from "./workflow-asset-loader";
+import { canonicalizeWorkflowRefInput, loadWorkflowAsset, resolveWorkflowEntryId } from "./workflow-asset-loader";
 
 export interface WorkflowRunDetail {
   run: WorkflowRunSummary;
@@ -285,7 +280,7 @@ export async function startWorkflowRun(
     const runId = randomUUID();
     const scopeKey = getCurrentWorkflowScopeKey();
     const currentStepId = plan.steps[0]?.stepId ?? null;
-    const workflowEntryId = resolveWorkflowEntryId(asset.sourcePath, asset.ref);
+    const workflowEntryId = resolveWorkflowEntryId(asset.sourcePath, asset.ref, asset.adapterId);
 
     // Capture the agent harness + session driving this run. Explicit options
     // win; otherwise fall back to best-effort environment detection. This is
@@ -362,7 +357,7 @@ export async function startWorkflowRun(
     // into agent context.
     appendEvent({
       eventType: "workflow_started",
-      ref: ref,
+      ref: asset.ref,
       metadata: { runId: result.run.id, status: result.run.status },
     });
     return result;
@@ -403,23 +398,36 @@ export async function hasWorkflowRun(runId: string): Promise<boolean> {
 export async function listWorkflowRuns(input?: { workflowRef?: string; activeOnly?: boolean }): Promise<{
   runs: WorkflowRunSummary[];
 }> {
-  return withWorkflowRunsRepo((repo) => {
-    const scopeKey = getCurrentWorkflowScopeKey();
-    let workflowRef: string | undefined;
-    if (input?.workflowRef) {
-      const parsed = parseWorkflowRefInput(input.workflowRef);
-      if (parsed.type !== "workflow") {
-        throw new UsageError(`Expected a workflow ref (workflows/<name>), got "${input.workflowRef}".`);
-      }
-      workflowRef = canonicalWorkflowRunRef(parsed.origin, canonicalizeWorkflowName(parsed.name));
-    }
-    const rows = repo.listRuns({
-      scopeKey,
-      ...(workflowRef ? { workflowRef } : {}),
-      ...(input?.activeOnly ? { activeOnly: true } : {}),
-    });
-    return { runs: rows.map(toWorkflowRunSummary) };
-  });
+  const scopeKey = getCurrentWorkflowScopeKey();
+  const activeOnly = input?.activeOnly === true;
+  if (input?.workflowRef === undefined) {
+    return withWorkflowRunsRepo((repo) => ({
+      runs: repo.listRuns({ scopeKey, ...(activeOnly ? { activeOnly: true } : {}) }).map(toWorkflowRunSummary),
+    }));
+  }
+
+  const exactRef = input.workflowRef.trim();
+  if (!exactRef) {
+    throw new UsageError("Workflow ref filter cannot be empty.", "INVALID_FLAG_VALUE");
+  }
+  const parsedExactRef = parseBundleRef(exactRef);
+  if (parsedExactRef.fragment !== undefined) {
+    throw new UsageError("Workflow ref filters do not accept fragments.", "INVALID_FLAG_VALUE");
+  }
+  const exactRows = await withWorkflowRunsRepo((repo) => repo.listRuns({ scopeKey, workflowRef: exactRef }));
+  if (exactRows.length > 0) {
+    return {
+      runs: exactRows.filter((row) => !activeOnly || row.status === "active").map(toWorkflowRunSummary),
+    };
+  }
+
+  const workflowRef = await canonicalizeWorkflowSpecifier(exactRef);
+  if (workflowRef === exactRef) return { runs: [] };
+  return withWorkflowRunsRepo((repo) => ({
+    runs: repo
+      .listRuns({ scopeKey, workflowRef, ...(activeOnly ? { activeOnly: true } : {}) })
+      .map(toWorkflowRunSummary),
+  }));
 }
 
 export async function getNextWorkflowStep(
@@ -734,18 +742,24 @@ async function resolveRunSpecifier(
     return { run: explicitRun, autoStarted: false };
   }
 
-  // Run-id vs workflow-ref disambiguation: a run id is a bare token, while a
-  // canonical `workflows/name` ref carries a `/`.
-  if (!specifier.includes(":") && !specifier.includes("/")) {
-    throw new NotFoundError(`Workflow run "${specifier}" not found.`, "WORKFLOW_NOT_FOUND");
+  const scopeKey = getCurrentWorkflowScopeKey();
+  const exactActive = repo.getActiveRunRowForScope(specifier.trim(), scopeKey);
+  if (exactActive) {
+    if (params && Object.keys(params).length > 0) {
+      throw new UsageError(`--params can only be set on a new run; ${specifier} already has an active run`);
+    }
+    return { run: exactActive, autoStarted: false };
   }
 
-  const parsed = parseWorkflowRefInput(specifier);
-  if (parsed.type !== "workflow") {
-    throw new UsageError(`Expected a workflow ref or workflow run id, got "${specifier}".`);
+  let ref: string;
+  try {
+    ref = await canonicalizeWorkflowSpecifier(specifier);
+  } catch (error) {
+    if (error instanceof NotFoundError && !specifier.includes(":") && !specifier.includes("/")) {
+      throw new NotFoundError(`Workflow run or workflow "${specifier}" not found.`, "WORKFLOW_NOT_FOUND");
+    }
+    throw error;
   }
-  const ref = canonicalWorkflowRunRef(parsed.origin, canonicalizeWorkflowName(parsed.name));
-  const scopeKey = getCurrentWorkflowScopeKey();
   const active = repo.getActiveRunRowForScope(ref, scopeKey);
   if (active) {
     if (params && Object.keys(params).length > 0) {
@@ -756,6 +770,10 @@ async function resolveRunSpecifier(
 
   const started = await startWorkflowRun(ref, params ?? {});
   return { run: readWorkflowRun(repo, started.run.id), autoStarted: true };
+}
+
+async function canonicalizeWorkflowSpecifier(specifier: string): Promise<string> {
+  return canonicalizeWorkflowRefInput(specifier);
 }
 
 function readWorkflowRun(repo: WorkflowRunsRepository, runId: string): WorkflowRunRow {

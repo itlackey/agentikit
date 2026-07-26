@@ -70,6 +70,12 @@ export function isVecFastPathReady(db: Database): boolean {
   return getMeta(db, VEC_FAST_PATH_READY_META) !== "0";
 }
 
+/** Remove both vector representations for an entry whose embedding input changed. */
+export function deleteEntryVectors(db: Database, id: number): void {
+  db.prepare("DELETE FROM embeddings WHERE id = ?").run(id);
+  if (isVecAvailable(db)) db.prepare("DELETE FROM entries_vec WHERE id = ?").run(id);
+}
+
 const VEC_DOCS_URL = "https://github.com/itlackey/akm/blob/main/docs/reference/configuration.md#sqlite-vec-extension";
 const VEC_FALLBACK_THRESHOLD = 10_000;
 // Per-database warning state: tracks which databases have already emitted the
