@@ -444,8 +444,9 @@ individual scripts, skills, or docs.
 
 ### show
 
-Display an asset by ref. Knowledge assets support view modes as positional
-arguments after the ref.
+Display an asset by ref. On a markdown document `#fragment` selects one
+section by heading slug (falling back to case-insensitive heading text); an
+unmatched fragment lists the available slugs.
 
 ```sh
 akm show scripts/deploy.sh
@@ -453,10 +454,9 @@ akm show skills/code-review
 akm show agents/architect
 akm show commands/release
 akm show workflows/ship-release
-akm show knowledge/guide toc
-akm show knowledge/guide section "Authentication"
-akm show knowledge/guide lines 10 30
-akm show knowledge/guide frontmatter
+akm show knowledge/guide                 # the whole document
+akm show knowledge/guide#authentication  # just that section
+akm show knowledge/guide#nope            # lists the available fragment slugs
 
 # Stash .meta/ orientation docs — direct-read, not indexed:
 akm show meta                       # working stash's .meta/index.md
@@ -498,7 +498,7 @@ Returns type-specific payloads:
 | skill | `content` (full SKILL.md) |
 | command | `template`, `description` |
 | agent | `prompt`, `description`, `modelHint` |
-| knowledge | `content` with view modes: `full`, `toc`, `frontmatter`, `section`, `lines` |
+| knowledge | `content` — the whole document, or one section via `#fragment` |
 | workflow | `workflowTitle`, `workflowParameters`, `steps` |
 | memory | `content` |
 | env | `keys` (key names only — values and comment text never returned) |

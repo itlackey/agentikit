@@ -41,6 +41,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (sync uninstalls the orphaned scheduler entry). Bare `akm tasks` now reports
   scheduler diagnostics (equivalent to `akm tasks doctor`).
 
+- **The `akm show <ref> toc|section|lines|frontmatter|full` view-mode grammar is
+  removed** (0.9.0 decision D2). `#fragment` is now the only section selector,
+  and a positional after the ref is a usage error that names it. Migration:
+
+  | Old | New |
+  | --- | --- |
+  | `akm show knowledge/guide section "Auth"` | `akm show knowledge/guide#auth` |
+  | `akm show knowledge/guide full` | `akm show knowledge/guide` |
+  | `akm show knowledge/guide toc` | `akm show knowledge/guide#<unmatched>` — the error lists the available fragment slugs |
+  | `akm show knowledge/guide lines 10 30` | no replacement — every response carries `path`, so slice the file yourself |
+  | `akm show knowledge/guide frontmatter` | no replacement — if a raw-YAML projection proves necessary it returns as a `--shape` value |
+
+  The undocumented `--akmView` / `--akmHeading` / `--akmStart` / `--akmEnd`
+  flags the grammar injected into argv are gone with it.
+
 ## [0.9.0] - 2026-07-20
 
 0.9.0 is the format-neutral **bundle / adapter** refactor: it replaces the flat

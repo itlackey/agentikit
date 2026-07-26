@@ -41,7 +41,9 @@ please file it.
   inside bundle content (where it resolves against the containing bundle). The
   older `<type>:<name>` grammar is no longer accepted.
   - `#fragment` is **input-only** and never stored. On markdown-document items
-    the core resolves it as a section selector; elsewhere it is an
+    the core resolves it as a section selector — `akm show <ref>#<heading-slug>`
+    returns that one section, no fragment returns the whole item, and an
+    unmatched fragment lists the available slugs. Elsewhere it is an
     adapter-owned selector opaque to the core. See
     [`docs/architecture/specs/ref.md`](./docs/architecture/specs/ref.md).
   - **Refs in prose** must be fully qualified (`bundle//conceptId`) or a native
@@ -309,15 +311,15 @@ status. Not yet in the code:
 
 | Decision | Change | Current behavior |
 | --- | --- | --- |
-| D2 | Remove the `akm show <ref> toc\|section\|lines\|frontmatter\|full` view grammar | Still parsed and advertised (`#fragment` from D1 already works alongside it) |
 | D4 | Browse by conceptId / `bundle//` prefix | Only the `<type>:` grammar exists |
 | D7 | All six `--format` values on every command | `md`/`html` are `akm health`-only |
 | D8 | Gate improve autonomy behind `experimental.improveAutonomy` | No gate; mutating lanes are on by default |
 
 Already shipped from that record: **D1** (`#fragment` section selection),
-**D5** (`akm bundle` removed), **D6** (open `type` set at runtime), and
-partially **D10** (an `akm-migrate` binary now exists, though the code still
-lives in this repo). **D3** is not on this list: `akm mv` ships in 0.9.0 as an
+**D2** (the `akm show <ref> toc|section|lines|frontmatter|full` view grammar is
+gone — `#fragment` is the only section selector), **D5** (`akm bundle`
+removed), **D6** (open `type` set at runtime), and partially **D10** (an
+`akm-migrate` binary now exists, though the code still lives in this repo). **D3** is not on this list: `akm mv` ships in 0.9.0 as an
 Experimental surface (see the Renames bullet above), and no removal is planned.
 
 - **0.10 — migration extraction.** The migration machinery leaves the CLI for

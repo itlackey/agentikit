@@ -565,25 +565,11 @@ describe("Renderer", () => {
     expect(response.description).toBe("Deploy to production");
   });
 
-  test("getRenderer('knowledge-md') handles toc view", async () => {
+  test("getRenderer('knowledge-md') returns the whole document", async () => {
     const root = tmpDir();
     const filePath = path.join(root, "knowledge", "guide.md");
-    writeFile(
-      filePath,
-      [
-        "---",
-        "title: Guide",
-        "---",
-        "# Introduction",
-        "Welcome.",
-        "",
-        "## Setup",
-        "Install.",
-        "",
-        "## Usage",
-        "Use.",
-      ].join("\n"),
-    );
+    const content = ["---", "title: Guide", "---", "# Introduction", "Welcome.", "", "## Setup", "Install."].join("\n");
+    writeFile(filePath, content);
 
     const renderer = expectDefined(await getRenderer("knowledge-md"));
     const ctx = buildFileContext(root, filePath);
@@ -591,58 +577,15 @@ describe("Renderer", () => {
       type: "knowledge",
       specificity: 10,
       renderer: "knowledge-md",
-      meta: { name: "guide.md", view: { mode: "toc" as const } },
+      meta: { name: "guide.md" },
     };
     const renderCtx = buildRenderContext(ctx, match, [root]);
     const response = renderer.buildShowResponse(renderCtx);
 
-    expect(response.content).toContain("Introduction");
-    expect(response.content).toContain("Setup");
-    expect(response.content).toContain("Usage");
-  });
-
-  test("getRenderer('knowledge-md') handles section view", async () => {
-    const root = tmpDir();
-    const filePath = path.join(root, "knowledge", "guide.md");
-    writeFile(
-      filePath,
-      ["# Intro", "Welcome.", "", "## Setup", "Install things.", "", "## Usage", "Use things."].join("\n"),
-    );
-
-    const renderer = expectDefined(await getRenderer("knowledge-md"));
-    const ctx = buildFileContext(root, filePath);
-    const match = {
-      type: "knowledge",
-      specificity: 10,
-      renderer: "knowledge-md",
-      meta: { name: "guide.md", view: { mode: "section" as const, heading: "Setup" } },
-    };
-    const renderCtx = buildRenderContext(ctx, match, [root]);
-    const response = renderer.buildShowResponse(renderCtx);
-
-    expect(response.content).toContain("## Setup");
-    expect(response.content).toContain("Install things.");
-  });
-
-  test("getRenderer('knowledge-md') handles lines view", async () => {
-    const root = tmpDir();
-    const filePath = path.join(root, "knowledge", "guide.md");
-    writeFile(filePath, ["# Intro", "Welcome.", "", "## Setup", "Install things."].join("\n"));
-
-    const renderer = expectDefined(await getRenderer("knowledge-md"));
-    const ctx = buildFileContext(root, filePath);
-    const match = {
-      type: "knowledge",
-      specificity: 10,
-      renderer: "knowledge-md",
-      meta: { name: "guide.md", view: { mode: "lines" as const, start: 1, end: 2 } },
-    };
-    const renderCtx = buildRenderContext(ctx, match, [root]);
-    const response = renderer.buildShowResponse(renderCtx);
-
-    expect(response.content).toContain("Intro");
-    expect(response.content).toContain("Welcome");
-    expect(response.content).not.toContain("Setup");
+    // Section selection is the ref's `#fragment`, applied by showLocal — the
+    // renderer itself has no view modes to branch on.
+    expect(response.content).toBe(content);
+    expect(response.action).toContain("#fragment");
   });
 
   test("getAllRenderers() returns all 14 built-in renderers", async () => {

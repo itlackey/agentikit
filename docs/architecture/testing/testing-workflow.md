@@ -110,7 +110,7 @@ including:
 - registry-source compatibility
 - progressive indexing and re-indexing
 - update and upgrade command error paths
-- knowledge view modes and mixed asset discovery
+- knowledge `#fragment` selection and mixed asset discovery
 
 ## Semantic Search States
 

@@ -45,7 +45,7 @@ akm curate "review architecture" --type workflow # Restrict to one asset type
 
 ## Show
 
-Display an asset by ref. Knowledge assets support view modes as positional arguments.
+Display an asset by ref. On a markdown document `#fragment` selects one section by heading slug.
 
 ```sh
 akm show scripts/deploy.sh                    # Show script (returns run command)
@@ -53,9 +53,9 @@ akm show skills/code-review                   # Show skill (returns full content
 akm show commands/release                     # Show command (returns template)
 akm show agents/architect                     # Show agent (returns system prompt)
 akm show workflows/ship-release               # Show parsed workflow steps
-akm show knowledge/guide toc                  # Table of contents
-akm show knowledge/guide section "Auth"       # Specific section
-akm show knowledge/guide lines 10 30          # Line range
+akm show knowledge/guide                      # Whole document
+akm show knowledge/guide#auth                 # Just the "Auth" section
+akm show knowledge/guide#nope                 # Lists the available fragment slugs
 akm show knowledge/my-doc                     # Show content (local or remote)
 ```
 
@@ -65,7 +65,7 @@ akm show knowledge/my-doc                     # Show content (local or remote)
 | skill | `content` (full SKILL.md) |
 | command | `template`, `description`, `parameters` |
 | agent | `prompt`, `description`, `modelHint`, `toolPolicy` |
-| knowledge | `content` (with view modes: `full`, `toc`, `frontmatter`, `section`, `lines`) |
+| knowledge | `content` (whole document, or one section via `#fragment`) |
 | workflow | `workflowTitle`, `workflowParameters`, `steps` |
 | memory | `content` (recalled context) |
 | env | `keys` (key names only — values and comment text never returned) |

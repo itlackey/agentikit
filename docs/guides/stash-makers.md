@@ -143,12 +143,12 @@ Use Bearer tokens in the Authorization header.
 Default: 100 requests per minute per API key.
 ```
 
-Agents can request just the table of contents (`toc`) or a specific
-section (`section "Rate Limits"`) to avoid loading the entire document:
+Agents can request a single section by heading slug (`#rate-limits`) instead
+of loading the entire document; an unmatched fragment lists the slugs on offer:
 
 ```sh
-akm show knowledge/api-guide toc
-akm show knowledge/api-guide section "Rate Limits"
+akm show knowledge/api-guide
+akm show knowledge/api-guide#rate-limits
 ```
 
 ### Memories

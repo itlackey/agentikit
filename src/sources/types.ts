@@ -392,13 +392,6 @@ export interface ShowResponse {
   };
 }
 
-export type KnowledgeView =
-  | { mode: "full" }
-  | { mode: "toc" }
-  | { mode: "frontmatter" }
-  | { mode: "section"; heading: string }
-  | { mode: "lines"; start: number; end: number };
-
 // ── Manifest types ──────────────────────────────────────────────────────────
 
 /** Compact entry returned by `akm manifest` for cheap capability discovery. */

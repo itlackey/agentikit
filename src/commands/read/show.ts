@@ -18,18 +18,10 @@
  */
 
 import fs from "node:fs";
-import { type CittyArgsDefinitionForScan, findCittyTopLevelCommandIndex } from "../../cli/parse-args";
 import { recognizeMatch } from "../../core/adapter/recognize-match";
 import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
-import {
-  extractFrontmatterOnly,
-  extractLineRange,
-  extractSection,
-  formatToc,
-  markdownFragmentSlugs,
-  parseMarkdownToc,
-} from "../../core/asset/markdown";
+import { extractSection, markdownFragmentSlugs } from "../../core/asset/markdown";
 import { displayRef, typeNameFromConceptId } from "../../core/asset/resolve-ref";
 import { META_DIR, type MetaRef, parseMetaRef, resolveMetaFilePath } from "../../core/asset/stash-meta";
 import { asNonEmptyString } from "../../core/common";
@@ -62,7 +54,7 @@ import {
 import { computeBodyHash } from "../../storage/repositories/index-llm-cache-repository";
 // Eagerly import source providers to trigger self-registration.
 import "../../sources/providers/index";
-import type { KnowledgeView, ShowDetailLevel, ShowResponse } from "../../sources/types";
+import type { ShowDetailLevel, ShowResponse } from "../../sources/types";
 import { getCurrentWorkflowScopeKey } from "../../workflows/authoring/scope-key";
 import { getActiveWorkflowRun } from "../../workflows/runtime/runs";
 
@@ -76,7 +68,6 @@ import { getActiveWorkflowRun } from "../../workflows/runtime/runs";
  */
 export async function akmShowUnified(input: {
   ref: string;
-  view?: KnowledgeView;
   detail?: ShowDetailLevel;
   /**
    * Optional scope filter. When supplied, the resolved asset's frontmatter
@@ -305,7 +296,6 @@ function logShowEvent(
 /** @internal Use akmShowUnified() for all external callers. */
 export async function showLocal(input: {
   ref: string;
-  view?: KnowledgeView;
   detail?: ShowDetailLevel;
   stashDir?: string;
 }): Promise<ShowResponse> {
@@ -367,7 +357,7 @@ export async function showLocal(input: {
   const fileCtx = buildFileContext(sourceStashDir, assetPath);
   let response: ShowResponse;
   if (indexedEntry?.adapterId === "okf") {
-    response = buildGenericMarkdownResponse(indexedEntry, assetPath, input.view, parsed.fragment);
+    response = buildGenericMarkdownResponse(indexedEntry, assetPath, parsed.fragment);
   } else {
     const match = recognizeMatch(fileCtx);
     if (!match) {
@@ -376,7 +366,7 @@ export async function showLocal(input: {
       );
     }
 
-    match.meta = { ...match.meta, name: displayName, view: input.view };
+    match.meta = { ...match.meta, name: displayName };
     const renderer = await getRenderer(match.renderer);
     if (!renderer) {
       throw new UsageError(`Renderer "${match.renderer}" not found for asset: ${displayType}:${displayName}`);
@@ -545,29 +535,11 @@ export async function showByRef(ref: string): Promise<{ filePath: string; body: 
 function buildGenericMarkdownResponse(
   entry: NonNullable<Awaited<ReturnType<typeof lookupBundleRef>>>,
   assetPath: string,
-  view: KnowledgeView | undefined,
   fragment: string | undefined,
 ): ShowResponse {
   const raw = fs.readFileSync(assetPath, "utf8");
   const parsed = parseFrontmatter(raw);
-  const selectedView: KnowledgeView = fragment ? { mode: "section", heading: fragment } : (view ?? { mode: "full" });
-  let content: string;
-  switch (selectedView.mode) {
-    case "toc":
-      content = formatToc(parseMarkdownToc(parsed.content));
-      break;
-    case "frontmatter":
-      content = extractFrontmatterOnly(raw) ?? "(no frontmatter)";
-      break;
-    case "section":
-      content = requireMarkdownSection(parsed.content, selectedView.heading, entry.name).content;
-      break;
-    case "lines":
-      content = extractLineRange(parsed.content, selectedView.start, selectedView.end);
-      break;
-    default:
-      content = parsed.content;
-  }
+  const content = fragment ? requireMarkdownSection(parsed.content, fragment, entry.name).content : parsed.content;
   const description = entry.document?.description ?? asNonEmptyString(parsed.data.description);
   const tags =
     entry.document?.tags ??
@@ -665,102 +637,4 @@ function buildSummaryResponse(full: ShowResponse, assetPath?: string): ShowRespo
   };
 
   return summary;
-}
-
-// ── argv normalisation ───────────────────────────────────────────────────────
-
-const SHOW_VIEW_MODES = new Set(["toc", "frontmatter", "full", "section", "lines"]);
-
-const SHOW_ARGV_TOP_LEVEL_ARGS = {
-  format: { type: "string" },
-  output: { type: "string" },
-  detail: { type: "string" },
-  shape: { type: "string" },
-  quiet: { type: "boolean", alias: "q" },
-  verbose: { type: "boolean" },
-} satisfies CittyArgsDefinitionForScan;
-
-/**
- * Normalize argv so positional view-mode arguments after the asset ref
- * are rewritten into internal flags that citty can parse.
- *
- * Converts:
- *   akm show knowledge:guide.md toc          → akm show knowledge:guide.md --akmView toc
- *   akm show knowledge:guide.md section Auth → akm show knowledge:guide.md --akmView section --akmHeading Auth
- *   akm show knowledge:guide.md lines 1 50   → akm show knowledge:guide.md --akmView lines --akmStart 1 --akmEnd 50
- *
- * Legacy `--view` is intentionally unsupported.
- * Returns a new array; the input is never modified.
- */
-export function normalizeShowArgv(argv: string[]): string[] {
-  const rawArgs = argv.slice(2);
-  const commandIndex = findCittyTopLevelCommandIndex(rawArgs, SHOW_ARGV_TOP_LEVEL_ARGS);
-  if (commandIndex < 0 || rawArgs[commandIndex] !== "show") return argv;
-
-  const commandArgs = rawArgs.slice(commandIndex + 1);
-  if (
-    commandArgs.includes("--view") ||
-    commandArgs.includes("--heading") ||
-    commandArgs.includes("--start") ||
-    commandArgs.includes("--end")
-  ) {
-    throw new UsageError(
-      'Legacy show flags are no longer supported. Use positional syntax like `akm show knowledge/guide toc` or `akm show knowledge/guide section "Auth"`.',
-    );
-  }
-
-  // Separate global flags from positional/show-specific args
-  const prefix = [...argv.slice(0, 2), ...rawArgs.slice(0, commandIndex + 1)];
-  const rest = commandArgs;
-
-  const globalFlags: string[] = [];
-  const showArgs: string[] = [];
-
-  for (let i = 0; i < rest.length; i++) {
-    const arg = rest[i]!;
-    if (arg === "--quiet" || arg === "-q" || arg === "--verbose") {
-      globalFlags.push(arg);
-      continue;
-    }
-    if (arg.startsWith("--format=") || arg.startsWith("--detail=") || arg.startsWith("--shape=")) {
-      globalFlags.push(arg);
-      continue;
-    }
-    if (arg === "--format" || arg === "--detail" || arg === "--shape") {
-      globalFlags.push(arg);
-      const nextArg = rest[i + 1];
-      if (nextArg !== undefined) {
-        globalFlags.push(nextArg);
-        i++;
-      }
-      continue;
-    }
-    showArgs.push(arg);
-  }
-
-  // showArgs[0] = ref, showArgs[1] = potential view mode, showArgs[2..] = view params
-  const ref = showArgs[0];
-  const viewMode = showArgs[1];
-
-  if (!ref || !viewMode || !SHOW_VIEW_MODES.has(viewMode)) {
-    return argv;
-  }
-
-  const result = [...prefix, ref, "--akmView", viewMode];
-
-  if (viewMode === "section") {
-    // Next arg is the heading name; pass empty string when missing so the
-    // show handler can produce a clear "section not found" error.
-    const heading = showArgs[2] ?? "";
-    result.push("--akmHeading", heading);
-  } else if (viewMode === "lines") {
-    // Next two args are start and end
-    const start = showArgs[2];
-    const end = showArgs[3];
-    if (start) result.push("--akmStart", start);
-    if (end) result.push("--akmEnd", end);
-  }
-
-  result.push(...globalFlags);
-  return result;
 }

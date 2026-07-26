@@ -34,7 +34,7 @@ prefix copied from search output works as a query verbatim.
 
 ## Show
 
-Display an asset by ref. Knowledge assets support view modes as positional arguments.
+Display an asset by ref. On a markdown document `#fragment` selects one section by heading slug.
 
 ```sh
 akm show scripts/deploy.sh                     # Show script (returns run command)
@@ -42,10 +42,10 @@ akm show skills/code-review                    # Show skill (returns full conten
 akm show commands/release                      # Show command (returns template)
 akm show agents/architect                      # Show agent (returns system prompt)
 akm show workflows/ship-release                # Show parsed workflow steps
-akm show knowledge/guide toc                  # Table of contents
-akm show knowledge/guide section "Auth"       # Specific section
-akm show knowledge/guide lines 10 30          # Line range
-akm show knowledge/my-doc                    # Show a knowledge asset
+akm show knowledge/guide                       # Whole document
+akm show knowledge/guide#auth                  # Just the "Auth" section
+akm show knowledge/guide#nope                  # Lists the available fragment slugs
+akm show knowledge/my-doc                      # Show a knowledge asset
 akm show research//pages/ml-basics           # Show a page in the "research" LLM Wiki bundle
 akm wiki show research                        # Wiki summary (bundle-level overview)
 ```
@@ -56,12 +56,12 @@ akm wiki show research                        # Wiki summary (bundle-level overv
 | skill | `content` (full SKILL.md) |
 | command | `template`, `description`, `parameters` |
 | agent | `prompt`, `description`, `modelHint`, `toolPolicy` |
-| knowledge | `content` (with view modes: `full`, `toc`, `frontmatter`, `section`, `lines`) |
+| knowledge | `content` (whole document, or one section via `#fragment`) |
 | workflow | `workflowTitle`, `workflowParameters`, `steps` |
 | memory | `content` (recalled context) |
 | env | `keys` (values and comment text are never returned) |
 | secret | metadata only (the single value is never returned) |
-| wiki | `content` (same view modes as knowledge). For any wiki task, run `akm wiki list`. `akm wiki ingest <name>` dispatches the configured agent engine (defaults.engine or `--engine`) to execute the ingest workflow. |
+| wiki | `content` (same `#fragment` selection as knowledge). For any wiki task, run `akm wiki list`. `akm wiki ingest <name>` dispatches the configured agent engine (defaults.engine or `--engine`) to execute the ingest workflow. |
 | lesson | `content` plus `when_to_use` from frontmatter — read both before applying the lesson |
 
 `akm show wiki:<name>` returns the same summary as `akm wiki show <name>`: path,

@@ -100,7 +100,6 @@ import { hintsCommand, lessonsCommand, logCommand } from "./commands/observabili
 import { proposalCommand } from "./commands/proposal/proposal-cli";
 import { rememberCommand } from "./commands/read/remember-cli";
 import { curateCommand, searchCommand, showCommand } from "./commands/read/search-cli";
-import { normalizeShowArgv } from "./commands/read/show";
 import { registryCommand } from "./commands/registry-cli";
 import { addCommand } from "./commands/sources/add-cli";
 import { renderMigrationHelp } from "./commands/sources/migration-help";
@@ -600,9 +599,6 @@ if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
   } catch (error: unknown) {
     emitJsonError(error);
   }
-  // citty reads process.argv directly and does not accept a custom argv array,
-  // so we must replace process.argv with the normalized version before runMain.
-  process.argv = normalizeShowArgv(process.argv);
   // Mint the ParsedInvocation singleton from the (normalized) argv — the ONE
   // place argv is parsed for the whole process (plan §10.7 / chunk-9 WI-9.9).
   // Every out-of-cli.ts command module reads argv state through

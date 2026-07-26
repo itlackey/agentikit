@@ -17,7 +17,7 @@
  *    banner, `runMain`) when it is the direct entry point (`import.meta.main`).
  *    Importing it here therefore has no side effects.
  *  - `runCliCapture` replicates the small startup contract the command relies
- *    on — argv normalization (`normalizeShowArgv`) and output-mode init
+ *    on — a synthetic `process.argv` and output-mode init
  *    (`initOutputMode`) — then drives the command via citty's `runCommand`,
  *    mirroring `runMain`'s builtin `--help` / `--version` handling (which
  *    `runCommand` alone does not provide). For `--help` / `--version` the
@@ -61,7 +61,6 @@
 import { renderUsage, runCommand } from "citty";
 import { main, shouldBypassConfigStartup } from "../../src/cli";
 import { emitJsonError } from "../../src/cli/shared";
-import { normalizeShowArgv } from "../../src/commands/read/show";
 import { DEFAULT_CONFIG, loadConfig, resetConfigCache } from "../../src/core/config/config";
 import { AkmError } from "../../src/core/errors";
 import { clearLogFile, resetQuiet, resetVerbose } from "../../src/core/warn";
@@ -141,7 +140,7 @@ export async function runCliCapture(args: string[]): Promise<CliResult> {
   // sinks, so the patched console.log isn't relied on across an await boundary
   // (see module docstring). For the normal command path nothing is awaited
   // before runCommand, so this only matters for --help / --version.
-  const argv = normalizeShowArgv(["bun", "cli.ts", ...args]);
+  const argv = ["bun", "cli.ts", ...args];
   const rawArgs = argv.slice(2);
   const cmd = main as Parameters<typeof runCommand>[0];
 
@@ -173,10 +172,9 @@ export async function runCliCapture(args: string[]): Promise<CliResult> {
   // Several commands (and helpers like `parseAllFlagValues` in
   // src/cli/shared.ts) read `process.argv` DIRECTLY rather than the citty-parsed
   // args — e.g. `akm health` reads `--windows` / `--detail` / `--window-compare`
-  // straight from argv. The real entry point sets
-  // `process.argv = normalizeShowArgv(process.argv)` before running, so mirror
-  // that here: point argv at the synthetic invocation for the duration of the
-  // run. Restored in `finally`.
+  // straight from argv. The real entry point parses the process's own argv, so
+  // mirror that here: point argv at the synthetic invocation for the duration
+  // of the run. Restored in `finally`.
   process.argv = argv;
 
   // Inline arrow closures (NOT a shared factory) — see the module docstring:

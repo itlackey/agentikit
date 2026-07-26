@@ -67,7 +67,7 @@ time**: a bundle component whose root holds a `schema.md` plus a
 akm add github:team/research-wiki        # install a wiki bundle (or point at a local dir)
 akm search "attention"                   # pages rank alongside all other indexed content
 akm show research-wiki//pages/attention  # read a page by ref
-akm show research-wiki//pages/attention section "History"
+akm show research-wiki//pages/attention#history
 ```
 
 To build a new wiki, create the directory shape above by hand (or have
