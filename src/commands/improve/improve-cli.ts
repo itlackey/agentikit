@@ -89,6 +89,33 @@ async function runCanaryInspection(refresh: boolean): Promise<void> {
   output("improve-canary", result);
 }
 
+/**
+ * Handle the `--auto-accept` flag retired in 0.9.0, returning the scope the run
+ * should actually use.
+ *
+ * citty is non-strict, so the removed flag is silently absorbed rather than
+ * rejected — which is the dangerous case. The SPACE-separated spelling
+ * (`--auto-accept 90`) leaves `90` sitting in the positional slot, where it is
+ * read as the asset-type scope: the run then matches nothing and exits 0, so a
+ * 0.8-era crontab goes dark with no error at all. Warn about the flag, and drop
+ * the poisoned positional so the run behaves as an unscoped improve instead.
+ */
+function resolveScopeAfterRetiredAutoAccept(scopeArg: string | undefined): string | undefined {
+  const invocation = getParsedInvocation();
+  const autoAcceptRaw = invocation.getFlagValue("--auto-accept");
+  if (autoAcceptRaw === undefined && !invocation.hasFlag("--auto-accept")) return scopeArg;
+  warn(
+    "[improve] --auto-accept was removed in 0.9 and is ignored; proposals always queue for review. " +
+      "Replacement: `akm improve && akm proposal drain --promote --yes`, or a `triage` block with " +
+      'applyMode: "promote" in your strategy. It becomes a hard error in 0.10.',
+  );
+  if (scopeArg !== undefined && scopeArg === autoAcceptRaw) {
+    warn(`[improve] ignoring "${scopeArg}" as a scope — it is the removed --auto-accept flag's value.`);
+    return undefined;
+  }
+  return scopeArg;
+}
+
 export const improveCommand = defineCommand({
   meta: {
     name: "improve",
@@ -191,26 +218,7 @@ export const improveCommand = defineCommand({
       const skipIfLocked = args["skip-if-locked"];
       const strategyArg = getStringArg(args, "strategy");
       const effectiveConfig = loadConfig();
-      // `--auto-accept` was removed in 0.9.0. citty is non-strict, so it is
-      // silently absorbed rather than rejected — which is the dangerous case:
-      // the SPACE-separated spelling (`--auto-accept 90`) leaves `90` sitting
-      // in the positional slot, where it is read as the asset-type scope. The
-      // run then matches nothing and exits 0, so a 0.8-era crontab goes dark
-      // with no error. Warn, and drop the poisoned positional.
-      const autoAcceptRaw = getParsedInvocation().getFlagValue("--auto-accept");
-      const sawAutoAccept = autoAcceptRaw !== undefined || getParsedInvocation().hasFlag("--auto-accept");
-      if (sawAutoAccept) {
-        warn(
-          "[improve] --auto-accept was removed in 0.9 and is ignored; proposals always queue for review. " +
-            "Replacement: `akm improve && akm proposal drain --promote --yes`, or a `triage` block with " +
-            'applyMode: "promote" in your strategy. It becomes a hard error in 0.10.',
-        );
-      }
-      let scopeArg = getStringArg(args, "scope");
-      if (sawAutoAccept && scopeArg !== undefined && scopeArg === autoAcceptRaw) {
-        warn(`[improve] ignoring "${scopeArg}" as a scope — it is the removed --auto-accept flag's value.`);
-        scopeArg = undefined;
-      }
+      const scopeArg = resolveScopeAfterRetiredAutoAccept(getStringArg(args, "scope"));
       const scopeRef = scopeArg && isFullRefInput(scopeArg) ? parseRefInput(scopeArg) : undefined;
       const writeTarget = dryRun
         ? undefined
