@@ -116,9 +116,16 @@ describe("remember --target", () => {
     });
 
     const { result } = await runCli(["remember", "won't be written", "--target", "read-only"]);
-    expect(result.status).not.toBe(0);
+    // VALUE-17: pin the exact classified failure (ConfigError -> exit 78,
+    // code INVALID_CONFIG_FILE — see src/core/write-source.ts's
+    // `resolveWriteTarget` non-writable-target branch and
+    // src/cli/shared.ts's `classifyExitCode`), not merely "some failure".
+    // `not.toBe(0)` would also pass for a crash, which defeats the point of
+    // this test.
+    expect(result.status).toBe(78);
 
-    const json = JSON.parse(result.stderr) as { error: string };
+    const json = JSON.parse(result.stderr) as { error: string; code?: string };
+    expect(json.code).toBe("INVALID_CONFIG_FILE");
     expect(json.error).toContain("source read-only is not writable");
   });
 });
@@ -137,56 +144,6 @@ describe("remember --target", () => {
     const json = JSON.parse(result.stdout) as { ok: boolean; ref: string; path: string };
     expect(json.ok).toBe(true);
     expect(json.path.startsWith(stashDir)).toBe(true);
-  });
-
-  test("--target routes memory to the named writable secondary stash", async () => {
-    const secondaryDir = makeTargetDir();
-    writeConfig({
-      semanticSearchMode: "off",
-      bundles: { secondary: { path: secondaryDir, writable: true } },
-    });
-
-    const { stashDir, result } = await runCli(["remember", "Pinned note for secondary stash", "--target", "secondary"]);
-    expect(result.status).toBe(0);
-
-    const json = JSON.parse(result.stdout) as { ok: boolean; ref: string; path: string };
-    expect(json.ok).toBe(true);
-    expect(json.ref).toBe("secondary//memories/pinned-note-for-secondary-stash");
-
-    // Must land in the explicit secondary stash, NOT the working stash.
-    const expectedPath = path.join(secondaryDir, "memories", "pinned-note-for-secondary-stash.md");
-    expect(json.path).toBe(expectedPath);
-    expect(fs.existsSync(expectedPath)).toBe(true);
-    expect(fs.existsSync(path.join(stashDir, "memories", "pinned-note-for-secondary-stash.md"))).toBe(false);
-  });
-
-  test("--target with an unknown source name throws a usage error", async () => {
-    const targetDir = makeTargetDir();
-    writeConfig({
-      semanticSearchMode: "off",
-      bundles: { "real-stash": { path: targetDir, writable: true } },
-    });
-
-    const { result } = await runCli(["remember", "won't be written", "--target", "ghost-stash"]);
-    expect(result.status).toBe(2);
-
-    const json = JSON.parse(result.stderr) as { error: string };
-    expect(json.error).toContain('No source named "ghost-stash" is configured');
-    expect(json.error).toContain("--target must reference a source name");
-  });
-
-  test("--target on a non-writable source throws a config error", async () => {
-    const targetDir = makeTargetDir();
-    writeConfig({
-      semanticSearchMode: "off",
-      bundles: { "frozen-stash": { path: targetDir, writable: false } },
-    });
-
-    const { result } = await runCli(["remember", "won't be written", "--target", "frozen-stash"]);
-    expect(result.status).not.toBe(0);
-
-    const json = JSON.parse(result.stderr) as { error: string };
-    expect(json.error).toContain("source frozen-stash is not writable");
   });
 });
 

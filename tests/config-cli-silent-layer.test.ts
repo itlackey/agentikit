@@ -128,7 +128,14 @@ describe("akm config set --silent", () => {
 
   test("--silent still reports errors (apiKey rejection #454 is visible on stderr)", async () => {
     const { stderr, status } = await runCli(["config", "set", "--silent", "llm.apiKey", "sk-test"]);
-    expect(status).not.toBe(0);
+    // VALUE-17: pin the exact classified failure (UsageError -> exit 2, code
+    // INVALID_FLAG_VALUE — see `rejectApiKeyPath` in
+    // src/core/config/config-walker.ts and `classifyExitCode` in
+    // src/cli/shared.ts), not merely "some failure". `not.toBe(0)` would also
+    // pass for a crash, which defeats the point of this test.
+    expect(status).toBe(2);
+    const envelope = JSON.parse(stderr) as { code?: string };
+    expect(envelope.code).toBe("INVALID_FLAG_VALUE");
     expect(stderr).toContain("AKM_LLM_API_KEY");
   });
 

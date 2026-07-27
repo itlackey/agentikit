@@ -221,11 +221,11 @@ describe("config CLI helpers", () => {
     expect(() => parseConfigValue("output.detail", "max")).toThrow(/Expected 'brief' \| 'normal' \| 'full'/);
   });
 
-  test("parseConfigValue rejects retired boolean semanticSearchMode values", () => {
+  test("parseConfigValue rejects retired boolean semanticSearchMode value 'true'", () => {
     expect(() => parseConfigValue("semanticSearchMode", "true")).toThrow(/Invalid value for semanticSearchMode/);
   });
 
-  test("parseConfigValue rejects retired boolean semanticSearchMode values", () => {
+  test("parseConfigValue rejects retired boolean semanticSearchMode value 'false'", () => {
     expect(() => parseConfigValue("semanticSearchMode", "false")).toThrow(/Invalid value for semanticSearchMode/);
   });
 

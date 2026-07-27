@@ -171,12 +171,6 @@ describe("completions command", () => {
 // ── Unsupported shell ────────────────────────────────────────────────────────
 
 describe("completions unsupported shell", () => {
-  test("rejects unsupported shell type", async () => {
-    const { stderr, status } = await runCli("completions", "--shell", "zsh");
-    expect(status).not.toBe(0);
-    expect(stderr).toContain("Unsupported shell");
-  });
-
   // R-052(b): `completionsCommand` used to be a bare `run()` that threw
   // directly, so the error escaped the standard JSON envelope entirely — a
   // real subprocess printed a raw stack trace and exited 1 instead of the
