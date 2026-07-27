@@ -6,15 +6,8 @@ import path from "node:path";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { isRemoteUrl } from "../../core/common";
 import type { BundleConfigEntry, SourceConfigEntry } from "../../core/config/config";
-import {
-  bundleEntryToSourceEntry,
-  bundlesToSourceEntries,
-  getSources,
-  loadConfig,
-  mutateConfig,
-} from "../../core/config/config";
+import { bundleEntryToSourceEntry, bundlesToSourceEntries, getSources, mutateConfig } from "../../core/config/config";
 import { ConfigError, UsageError } from "../../core/errors";
-import { resolveSourceEntries } from "../../indexer/search/search-source";
 import { bundleKeyForPath, bundleKeyForUrl, nextBundleKey } from "./bundle-config-ops";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -31,11 +24,6 @@ export interface SourceRemoveResult {
   removed: boolean;
   entry?: SourceConfigEntry;
   message?: string;
-}
-
-export interface SourceListResult {
-  localSources: Array<{ path: string; registryId?: string }>;
-  sources: SourceConfigEntry[];
 }
 
 // ── Operations ──────────────────────────────────────────────────────────────
@@ -171,15 +159,4 @@ export function removeStash(target: string): SourceRemoveResult {
     return next;
   });
   return result as SourceRemoveResult;
-}
-
-/**
- * List all stash sources (local filesystem + configured stashes).
- */
-export function listStashes(): SourceListResult {
-  const config = loadConfig();
-  const localSources = resolveSourceEntries();
-  const sources = getSources(config);
-
-  return { localSources, sources };
 }

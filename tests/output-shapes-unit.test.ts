@@ -710,11 +710,16 @@ describe("shapeProposal* — proposal commands", () => {
       "brief",
     ) as Record<string, unknown>;
     expect(diff.isNew).toBe(true);
-    const reflect = shapeForCommand(
-      "reflect",
+    // R-063/R-064: the "reflect" shape registration was deleted — `akm
+    // reflect` has no standalone CLI verb and no `output("reflect", ...)`
+    // call site (reflect.ts is an internal function the improve loop calls
+    // directly). "propose" shares the same producer-shape handler and IS a
+    // live CLI verb (contribute-cli.ts), so it covers this registry path.
+    const propose = shapeForCommand(
+      "propose",
       { schemaVersion: 2, ok: true, ref: "lessons/x", proposal: fullProposal, engine: "p", durationMs: 1 },
       "normal",
     ) as Record<string, unknown>;
-    expect(reflect.ok).toBe(true);
+    expect(propose.ok).toBe(true);
   });
 });

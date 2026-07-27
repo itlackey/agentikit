@@ -3,16 +3,20 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * R5 — Longitudinal collapse/churn detector
+ * R5 — Longitudinal collapse detector
  * (docs/architecture/specs/improve-collapse-churn-detector-design.md).
  *
- * Detects the two measured failure modes of LLM-consolidated memory stores:
+ * Detects the measured collapse failure mode of LLM-consolidated memory
+ * stores: repeated merges destroy information — canary retrieval recall
+ * downtrends, distinct-content entropy downtrends, or the store shrinks
+ * while generation counts rise.
  *
- *   COLLAPSE — repeated merges destroy information: canary retrieval recall
- *     downtrends, distinct-content entropy downtrends, or the store shrinks
- *     while generation counts rise.
- *   CHURN — real accepted-change volume with zero retrieval-visible or
- *     shape-visible movement (LLM budget burned rewriting to no effect).
+ * The CHURN alert class described in the design doc was removed: production
+ * never threaded a real accepted-change-volume signal in (the value was a
+ * hardcoded 0 from the 0.9.0 confidence-gate deletion onward), so the alert
+ * could never fire. See the design doc's status note for the removal
+ * rationale. `improve_cycle_metrics.accepted_actions` remains in the schema
+ * (migration-owned, append-only) but is always written as 0 now.
  *
  * Hard invariants: deterministic only (FTS BM25 + hashing — never an LLM,
  * never an embedding model); bounded storage (< 2 KB per qualifying cycle,
@@ -60,7 +64,6 @@ export const DEFAULT_CANARY_K = 10;
 export const DEFAULT_WINDOW_CYCLES = 5;
 export const DEFAULT_RECALL_DROP_THRESHOLD = 0.15;
 export const DEFAULT_ENTROPY_DROP_THRESHOLD = 0.05;
-export const DEFAULT_CHURN_MIN_ACCEPTED = 25;
 export const DEFAULT_RETENTION_DAYS = 365;
 /** Deterministic bigram-diversity sample cap (cost bound at 10k assets). */
 const DIVERSITY_SAMPLE_CAP = 2000;
@@ -81,11 +84,10 @@ export interface CollapseDetectorConfig {
   windowCycles?: number;
   recallDropThreshold?: number;
   entropyDropThreshold?: number;
-  churnMinAcceptedActions?: number;
   retentionDays?: number;
 }
 
-export type CollapseAlertKind = "collapse-recall" | "collapse-entropy" | "collapse-shrink" | "churn" | "merge-floor";
+export type CollapseAlertKind = "collapse-recall" | "collapse-entropy" | "collapse-shrink" | "merge-floor";
 
 export interface CollapseAlert {
   kind: CollapseAlertKind;
@@ -278,7 +280,6 @@ export function computeCycleMetrics(
   args: {
     runId: string;
     pass: "consolidate";
-    acceptedActions: number;
     mergeFloorViolations: number;
     cfg: CollapseDetectorConfig;
     /** Over-generation threshold; callers pass the antiCollapse.maxGeneration in effect. */
@@ -354,7 +355,10 @@ export function computeCycleMetrics(
     distinct_content_ratio: learningTotal === 0 ? 1 : contentHashes.size / learningTotal,
     mean_bigram_diversity: diversityCount === 0 ? 1 : diversitySum / diversityCount,
     over_generation_count: overGeneration,
-    accepted_actions: args.acceptedActions,
+    // CHURN alert removed (never fired — see the module doc comment); the
+    // column stays NOT NULL pending the migration owner dropping it, so it
+    // is always written as 0 now.
+    accepted_actions: 0,
     merge_floor_violations: args.mergeFloorViolations,
     alerts_json: "[]",
   };
@@ -402,7 +406,6 @@ export function evaluateCollapseAlerts(
 
   const recallDrop = cfg.recallDropThreshold ?? DEFAULT_RECALL_DROP_THRESHOLD;
   const entropyDrop = cfg.entropyDropThreshold ?? DEFAULT_ENTROPY_DROP_THRESHOLD;
-  const churnMin = cfg.churnMinAcceptedActions ?? DEFAULT_CHURN_MIN_ACCEPTED;
 
   // COLLAPSE 1 — canary recall drop vs window median (median, not previous
   // cycle, so one noisy cycle can neither fire nor mask the alert).
@@ -445,22 +448,6 @@ export function evaluateCollapseAlerts(
     });
   }
 
-  // CHURN — real write volume, zero retrieval- or shape-visible movement.
-  // Flatness is measured against the window MEDIAN (consistent with the
-  // recall rule): endpoint-only comparison would call a window that swung
-  // wildly but happened to land near its start "flat".
-  const acceptedSum = hist.reduce((a, h) => a + h.accepted_actions, 0);
-  const scoreFlat = Math.abs(current.mean_ndcg - median(hist.map((h) => h.mean_ndcg))) < 0.02;
-  const entropyFlat =
-    Math.abs(current.distinct_content_ratio - median(hist.map((h) => h.distinct_content_ratio))) < 0.02;
-  if (acceptedSum >= churnMin && scoreFlat && entropyFlat) {
-    alerts.push({
-      kind: "churn",
-      detail: `${acceptedSum} accepted actions over ${W} cycles with flat canary score and flat entropy — write volume with no retrieval-visible effect`,
-      metrics: { acceptedSum, ndcgDelta: current.mean_ndcg - windowStart.mean_ndcg },
-    });
-  }
-
   return alerts;
 }
 
@@ -476,7 +463,6 @@ export function evaluateCollapseAlerts(
 export function runCollapseDetector(args: {
   runId: string;
   pass: "consolidate";
-  acceptedActions: number;
   mergeFloorViolations: number;
   config: AkmConfig;
   /** Active improve profile, so the threshold read honors `--profile`. */
@@ -503,7 +489,6 @@ export function runCollapseDetector(args: {
           const row = computeCycleMetrics(stateDb, db, {
             runId: args.runId,
             pass: args.pass,
-            acceptedActions: args.acceptedActions,
             mergeFloorViolations: args.mergeFloorViolations,
             cfg,
             maxGeneration,

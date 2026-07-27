@@ -16,7 +16,7 @@ import fs from "node:fs";
 import { defineCommand } from "citty";
 import { getParsedInvocation } from "../cli/invocation";
 import { getStringArg } from "../cli/parse-args";
-import { defineGroupCommand, defineJsonCommand, output, runWithJsonErrors } from "../cli/shared";
+import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
 import { loadConfig } from "../core/config/config";
 import { NotFoundError, UsageError } from "../core/errors";

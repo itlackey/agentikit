@@ -26,7 +26,14 @@
 
 import { defineCommand } from "citty";
 import { parsePositiveIntFlag } from "../cli/parse-args";
-import { defineGroupCommand, defineJsonCommand, output, parseAllFlagValues, runWithJsonErrors } from "../cli/shared";
+import {
+  defineGroupCommand,
+  defineJsonCommand,
+  GLOBAL_OUTPUT_ARGS,
+  output,
+  parseAllFlagValues,
+  runWithJsonErrors,
+} from "../cli/shared";
 import { NotFoundError } from "../core/errors";
 import { EMBEDDED_HINTS, EMBEDDED_HINTS_FULL } from "../output/cli-hints";
 import { getOutputMode, parseDetailLevel } from "../output/context";
@@ -97,6 +104,14 @@ const eventsListCommand = defineJsonCommand({
 const eventsTailCommand = defineCommand({
   meta: { name: "tail", description: "Follow the append-only state.db events stream (polling)" },
   args: {
+    // R-064/F4: `events tail` stays on plain `defineCommand` (not
+    // `defineJsonCommand`, see the module doc comment) because its output is
+    // manual streaming console/stderr writes, not the standard
+    // `runWithJsonErrors` + `output()` envelope. `defineJsonCommand` spreads
+    // GLOBAL_OUTPUT_ARGS in automatically; this command must do so by hand so
+    // `--format`/`--detail`/`--shape`/`--output` — which the `run` body below
+    // already honors via `getOutputMode()`/`output()` — show up in `--help`.
+    ...GLOBAL_OUTPUT_ARGS,
     since: {
       type: "string",
       description: "ISO timestamp / epoch ms, OR `@offset:<id>` for a durable row-id cursor (resume across processes)",

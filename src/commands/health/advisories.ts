@@ -136,8 +136,7 @@ export function collectImproveAdvisories(
     const latestCycle = getLatestCycleMetrics(db);
     const cycleSummary = latestCycle
       ? `Latest cycle (${latestCycle.ts}, ${latestCycle.pass}): mean canary recall ${latestCycle.mean_recall.toFixed(3)}, ` +
-        `distinct-content ratio ${latestCycle.distinct_content_ratio.toFixed(3)}, ` +
-        `${latestCycle.accepted_actions} accepted action(s).`
+        `distinct-content ratio ${latestCycle.distinct_content_ratio.toFixed(3)}.`
       : "";
     if (collapseAlertEvents.length > 0) {
       const kinds = [...new Set(collapseAlertEvents.map((e) => String(e.metadata?.kind ?? "unknown")))];
@@ -146,8 +145,8 @@ export function collectImproveAdvisories(
         name: "collapse-churn-detector",
         status: "warn",
         kind: "deterministic",
-        // Collapse kinds are measured, not inferred; churn/merge-floor
-        // volume thresholds are still being tuned (design doc §7).
+        // Collapse kinds are measured, not inferred; the merge-floor
+        // volume threshold is still being tuned (design doc §7).
         confidence: collapseKinds.length > 0 ? "high" : "medium",
         message:
           `R5 detector fired ${collapseAlertEvents.length} alert(s) in window (kinds: ${kinds.join(", ")}). ` +

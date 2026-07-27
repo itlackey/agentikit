@@ -256,9 +256,8 @@ export async function curateSearchResults(
     selectedStashHits = stashHits.slice(0, limit);
   } else {
     const selected = selectCuratedStashHits(query, stashHits, limit);
-    const preferred = preferBroadRootRepresentative(query, selected.selected, stashHits, selected.supportRefsByRef);
-    selectedStashHits = preferred.selected;
-    supportRefsByRef = preferred.supportRefsByRef;
+    selectedStashHits = selected.selected;
+    supportRefsByRef = selected.supportRefsByRef;
   }
 
   const selectedRegistryHits =
@@ -755,43 +754,6 @@ function collapseCurateFamilies(
     hits: [...passthrough, ...collapsedFamilies].sort((a, b) => a.originalIndex - b.originalIndex),
     supportRefsByRef,
   };
-}
-
-function preferBroadRootRepresentative(
-  query: string,
-  selected: SourceSearchHit[],
-  allHits: SourceSearchHit[],
-  supportRefsByRef: Map<string, CurateSupportRef[]>,
-): { selected: SourceSearchHit[]; supportRefsByRef: Map<string, CurateSupportRef[]> } {
-  const first = selected[0];
-  if (!first) return { selected, supportRefsByRef };
-
-  const match = /^knowledge:skills\/(.+?)\/references\/(.+)$/.exec(first.ref);
-  if (!match) return { selected, supportRefsByRef };
-
-  const lower = query.toLowerCase();
-  const topicTokens = match[2]!.split(/[^a-z0-9]+/i).filter(Boolean);
-  const wantsReference =
-    CURATE_REFERENCE_QUERY_RE.test(lower) ||
-    topicTokens.some((token) => token.length >= 3 && lower.includes(token.toLowerCase()));
-  if (wantsReference) return { selected, supportRefsByRef };
-
-  const rootRef = `skill:${match[1]}`;
-  const rootHit = allHits.find((hit) => hit.ref === rootRef);
-  if (!rootHit) return { selected, supportRefsByRef };
-
-  const next = [rootHit, ...selected.filter((hit) => hit.ref !== first.ref && hit.ref !== rootRef)];
-  const merged = new Map(supportRefsByRef);
-  const priorSupport = merged.get(first.ref) ?? [];
-  for (const entry of priorSupport) appendCurateSupportRef(merged, rootRef, entry);
-  appendCurateSupportRef(merged, rootRef, {
-    ref: first.ref,
-    type: first.type,
-    reason: "Related family asset to inspect next.",
-  });
-  merged.delete(first.ref);
-
-  return { selected: next, supportRefsByRef: merged };
 }
 
 function mergeCurateSupportRefs(
