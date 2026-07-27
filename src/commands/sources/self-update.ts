@@ -178,6 +178,22 @@ export async function checkForUpdate(currentVersion: string): Promise<UpgradeChe
   };
 }
 
+/**
+ * Whether the operator has asked to bypass upgrade checksum verification.
+ *
+ * Deliberately NOT a CLI flag (C6): STABILITY.md states checksum verification
+ * is not optional, so the recovery hatch for a genuinely broken `checksums.txt`
+ * is this internal, undocumented-on-purpose env var — not something
+ * discoverable in `--help` or offered by tab completion.
+ *
+ * Extracted rather than read inline so `performUpgrade` stays under the
+ * function-size bar (`scripts/lint-src-fn-size.ts`), whose baseline only
+ * shrinks.
+ */
+function checksumBypassRequested(): boolean {
+  return process.env.AKM_UPGRADE_SKIP_CHECKSUM === "1";
+}
+
 export async function performUpgrade(
   check: UpgradeCheckResponse,
   opts?: { force?: boolean; skipPostUpgrade?: boolean; migrationConfig?: string },
@@ -299,12 +315,8 @@ export async function performUpgrade(
   }
 
   // Download and verify checksum (mandatory — upgrade is blocked if checksums cannot be fetched).
-  // The bypass is deliberately NOT a CLI flag (C6): checksum verification is
-  // not optional per STABILITY.md, so the recovery hatch is the internal,
-  // undocumented-on-purpose AKM_UPGRADE_SKIP_CHECKSUM env var rather than a
-  // discoverable, tab-completable flag.
   let checksumVerified = false;
-  const skipChecksum = process.env.AKM_UPGRADE_SKIP_CHECKSUM === "1";
+  const skipChecksum = checksumBypassRequested();
   try {
     const checksumsResponse = await fetchWithRetry(checksumsUrl);
     if (!checksumsResponse.ok) {

@@ -425,31 +425,34 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
   // default action and exited 0, and `log`/`lessons`/`registry` fell through to
   // citty's human usage banner on stdout. Matching exit codes was not enough:
   // a script could not parse the failure uniformly.
-  test("every bare command group emits the same usage envelope and exits 2", () => {
-    for (const group of [
-      "graph",
-      "migrate",
-      "registry",
-      "log",
-      "lessons",
-      "config",
-      "proposal",
-      "env",
-      "secret",
-      "tasks",
-      "workflow",
-    ]) {
+  // One test PER GROUP rather than one loop over all eleven. The loop form
+  // spawned eleven real subprocesses inside a single test, and at roughly half
+  // a second of Bun startup each it sat right on the harness's default 5s
+  // per-test budget — green locally, intermittently red under CI load, and
+  // reported as a timeout that names no group. Per-group tests each carry one
+  // spawn, and a failure says which group broke.
+  for (const group of [
+    "graph",
+    "migrate",
+    "registry",
+    "log",
+    "lessons",
+    "config",
+    "proposal",
+    "env",
+    "secret",
+    "tasks",
+    "workflow",
+  ]) {
+    test(`bare akm ${group} emits the canonical usage envelope and exits 2`, () => {
       const { status, stderr } = spawnCli([group], { cwd: repoRoot });
-      expect({ group, status }).toEqual({ group, status: 2 });
+      expect(status).toBe(2);
       const parsed = JSON.parse(stderr.trim());
-      expect({ group, ok: parsed.ok, code: parsed.code }).toEqual({
-        group,
-        ok: false,
-        code: "MISSING_REQUIRED_ARGUMENT",
-      });
+      expect(parsed.ok).toBe(false);
+      expect(parsed.code).toBe("MISSING_REQUIRED_ARGUMENT");
       expect(parsed.error).toContain(`\`akm ${group}\` requires a subcommand`);
-    }
-  });
+    });
+  }
 
   test("akm --help still exits 0 and prints usage (unaffected by the R-032 fix)", () => {
     const { status, stdout } = spawnCli(["--help"], { cwd: repoRoot });
