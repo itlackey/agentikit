@@ -200,8 +200,10 @@ Fixture refs worth using throughout this doc:
 
 ### 6.1 Scoped show
 
-- [ ] `akm show memories/scoped-note --scope user=alice` resolves the memory.
-- [ ] `akm show memories/scoped-note --scope user=bob` fails to resolve it.
+- [ ] `akm show memories/scoped-note --filter user=alice` resolves the memory.
+- [ ] `akm show memories/scoped-note --filter user=bob` fails to resolve it.
+- [ ] `akm show memories/scoped-note --scope user=alice` fails loudly (exit 2 —
+      `--scope` was removed in 0.9.0, not aliased).
 
 ---
 

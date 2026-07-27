@@ -13,8 +13,9 @@ type AnyCmd = Record<string, any>;
 // ── Known flag values ────────────────────────────────────────────────────────
 
 const FLAG_VALUES: Record<string, string[] | (() => string[])> = {
-  "--format": ["json", "text", "yaml", "jsonl"],
-  "--detail": ["brief", "normal", "full", "summary"],
+  "--format": ["json", "jsonl", "yaml", "text", "md", "html"],
+  "--detail": ["brief", "normal", "full"],
+  "--shape": ["human", "agent", "summary"],
   "--type": () => [...placementTypes(), "any"],
   "--source": ["stash", "registry", "both"],
   "--shell": ["bash"],

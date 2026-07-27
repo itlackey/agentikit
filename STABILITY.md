@@ -292,9 +292,10 @@ Not public interfaces. Listed so you can recognize them, not so you can rely
 on them.
 
 - **Migration surfaces** — the standalone `akm-migrate` tool owns the one-time
-  0.8→0.9 cutover and storage migration. `akm migrate` and `akm backup` are thin
-  process forwarders; `akm config migrate` is removed. `akm help migrate
-  <version>` is Stable and only renders release notes.
+  0.8→0.9 cutover, storage migration, and recovery backups (`akm-migrate
+  backup` / `restore`). `akm migrate` is a thin process forwarder; `akm backup`
+  and `akm config migrate` are removed. `akm help migrate <version>` is Stable
+  and only renders release notes.
 - **`akm registry build-index`** — maintainer tooling for building a registry
   index.
 - **Environment variables** — see the table below.

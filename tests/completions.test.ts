@@ -115,12 +115,19 @@ describe("completions command", () => {
 
   test("contains flag value completions for --format", () => {
     expect(script).toContain("--format)");
-    expect(script).toContain("json text yaml jsonl");
+    expect(script).toContain("json jsonl yaml text md html");
   });
 
   test("contains flag value completions for --detail", () => {
     expect(script).toContain("--detail)");
-    expect(script).toContain("brief normal full summary");
+    expect(script).toContain("brief normal full");
+    // `summary` is a --shape value, not a detail level.
+    expect(script).not.toContain("brief normal full summary");
+  });
+
+  test("contains flag value completions for --shape", () => {
+    expect(script).toContain("--shape)");
+    expect(script).toContain("human agent summary");
   });
 
   test("contains flag value completions for --type", () => {

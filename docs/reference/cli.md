@@ -502,8 +502,8 @@ akm show local//meta                # the primary stash explicitly
 akm show github:owner/repo//meta    # an installed stash's .meta/index.md
 
 # Multi-tenant scope filtering:
-akm show memories/retro --scope user=alice
-akm show memories/retro --scope user=alice --scope agent=claude
+akm show memories/retro --filter user=alice
+akm show memories/retro --filter user=alice --filter agent=claude
 ```
 
 `meta` is not an asset type — `[<origin>//]meta[:<name>]` direct-reads a
@@ -513,7 +513,9 @@ extensionless `.meta/<name>`). These files are never indexed, so they do not
 appear in `akm search`. See [concepts.md](../guides/concepts.md#stash-orientation-the-meta-convention)
 for the full convention.
 
-`--scope` accepts the same `<key>=<value>` shape as `akm search --filter`
+`--filter` accepts the same `<key>=<value>` shape as `akm search --filter` — one
+spelling for the scope-narrowing axis on both commands (`--scope` was removed
+in 0.9.0)
 (repeatable; valid keys: `user`, `agent`, `run`, `channel`). When supplied,
 the resolved asset's frontmatter `scope_*` keys must match every supplied
 filter. A mismatch (or absent scope) returns `NotFoundError` so the caller
@@ -1162,7 +1164,7 @@ of the tag-required check. They write the four canonical top-level
 frontmatter keys (`scope_user`, `scope_agent`, `scope_run`, `scope_channel`)
 and a memory with only scope flags is valid (no tags required). Scope is the
 multi-tenant / multi-agent contract; the same shape is read back by
-`akm search --filter` and `akm show --scope`. See
+`akm search --filter` and `akm show --filter`. See
 [Configuration → Memory scope](configuration.md#memory-scope) for the
 frontmatter schema and round-trip rules.
 

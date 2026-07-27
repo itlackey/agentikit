@@ -60,7 +60,7 @@ export const searchCommand = defineJsonCommand({
         "Memory belief filter: all|current|historical. current keeps active memory beliefs; historical keeps contradicted/superseded/archived memory beliefs.",
       default: "all",
     },
-    format: { type: "string", description: "Output format (json|jsonl|text|yaml)" },
+    format: { type: "string", description: "Output format (json|jsonl|yaml|text|md|html)" },
     detail: { type: "string", description: "Detail level (brief|normal|full)" },
     "no-project-context": {
       type: "boolean",
@@ -131,7 +131,7 @@ export const curateCommand = defineJsonCommand({
     // Output-contract flags. The active values are read from the process-level
     // singleton (parsed from argv at startup); these declarations make them
     // visible in `akm curate --help` and document the supported axes.
-    format: { type: "string", description: "Output format (json|jsonl|text|yaml)" },
+    format: { type: "string", description: "Output format (json|jsonl|yaml|text|md|html)" },
     detail: { type: "string", description: "Detail level (brief|normal|full)" },
     shape: { type: "string", description: "Output projection (human|agent)" },
   },
@@ -191,13 +191,13 @@ export const showCommand = defineJsonCommand({
         "Asset ref ([bundle//]conceptId[#fragment]). On a markdown document `#fragment` selects one section by heading slug, and an unmatched fragment lists the available slugs. Example: `akm show knowledge/guide.md#auth`.",
       required: true,
     },
-    format: { type: "string", description: "Output format (json|jsonl|text|yaml)" },
+    format: { type: "string", description: "Output format (json|jsonl|yaml|text|md|html)" },
     detail: { type: "string", description: "Detail level (brief|normal|full)" },
     shape: { type: "string", description: "Output projection (human|agent|summary)" },
-    scope: {
+    filter: {
       type: "string",
       description:
-        "Scope filter (repeatable): --scope user=<id> --scope agent=<id> --scope run=<id> --scope channel=<name>. Narrows resolution to assets whose frontmatter scope matches.",
+        "Scope filter (repeatable): --filter user=<id> --filter agent=<id> --filter run=<id> --filter channel=<name>. Narrows resolution to assets whose frontmatter scope matches. Same axis as `akm search --filter`.",
     },
   },
   async run({ args }) {
@@ -213,10 +213,11 @@ export const showCommand = defineJsonCommand({
     // `--detail brief` forces the brief response regardless of shape.
     const showDetail: ShowDetailLevel | undefined =
       explicitDetail === "brief" ? "brief" : cliShape === "summary" ? "summary" : undefined;
-    // `--scope` is repeatable — citty only exposes the last value, so read
-    // every occurrence directly from argv (same pattern as `--filter`).
-    const scopeTokens = parseAllFlagValues("--scope");
-    const scope = parseScopeFilterFlags(scopeTokens, "--scope");
+    // `--filter` is repeatable — citty only exposes the last value, so read
+    // every occurrence directly from argv (same helper as `akm search`; the two
+    // commands share one spelling for the scope-narrowing axis).
+    const scopeTokens = parseAllFlagValues("--filter");
+    const scope = parseScopeFilterFlags(scopeTokens, "--filter");
     const result = await akmShowUnified({
       ref: args.ref,
       detail: showDetail,

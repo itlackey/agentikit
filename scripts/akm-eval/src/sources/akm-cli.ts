@@ -22,6 +22,8 @@
  */
 
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import {
   getCurrentPlayer,
   getCurrentRecorder,
@@ -58,7 +60,12 @@ export class AkmCli {
   }
 
   protected run(args: string[]): AkmCliRunResult {
-    const res = spawnSync(this.bin, args, { encoding: "utf8", env: this.env });
+    // An `akm-migrate` sentinel in args[0] routes the invocation to the
+    // sibling migration binary instead of akm itself. The sentinel stays in
+    // the recorded args so record/replay match without spawning.
+    const [bin, argv] =
+      args[0] === "akm-migrate" ? [this.resolveMigrateBin(), args.slice(1)] : [this.bin, args];
+    const res = spawnSync(bin, argv, { encoding: "utf8", env: this.env });
     if (res.error) {
       throw new Error(`failed to spawn ${this.bin}: ${res.error.message}`);
     }
@@ -94,9 +101,24 @@ export class AkmCli {
     return this.run(["index", ...extraArgs]);
   }
 
-  /** Capture the mandatory pre-cutover recovery bundle before a fixture writes config. */
+  /**
+   * Capture the mandatory pre-cutover recovery bundle before a fixture writes
+   * config. `akm backup` was removed from the CLI in 0.9.0 (R-029); the
+   * capability lives on the standalone `akm-migrate` binary shipped alongside
+   * akm.
+   */
   createMigrationBackup(): AkmCliRunResult {
-    return this.run(["backup", "create", "--for", "0.9.0"]);
+    return this.run(["akm-migrate", "backup", "--for", "0.9.0"]);
+  }
+
+  /**
+   * Locate the `akm-migrate` binary: prefer a sibling of the configured akm
+   * bin (the npm package installs both into the same directory), fall back to
+   * PATH lookup.
+   */
+  protected resolveMigrateBin(): string {
+    const sibling = path.join(path.dirname(this.bin), "akm-migrate");
+    return path.isAbsolute(this.bin) && fs.existsSync(sibling) ? sibling : "akm-migrate";
   }
 
   /**

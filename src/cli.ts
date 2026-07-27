@@ -82,7 +82,6 @@ import {
 } from "./cli/invocation";
 import { EXIT_CODES, emitJsonError, output, runWithJsonErrors } from "./cli/shared";
 import { agentCommand, lintCommand, proposeCommand } from "./commands/agent/contribute-cli";
-import { backupCommand } from "./commands/backup-cli";
 import { generateBashCompletions, installBashCompletions } from "./commands/completions";
 import { configCommand } from "./commands/config-cli";
 import { envCommand } from "./commands/env/env-cli";
@@ -524,7 +523,6 @@ export const main = defineCommand({
     mv: mvCommand,
     registry: registryCommand,
     migrate: migrateCommand,
-    backup: backupCommand,
     config: configCommand,
     feedback: feedbackCommand,
     history: historyCommand,

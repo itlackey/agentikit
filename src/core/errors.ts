@@ -108,7 +108,7 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
 const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   INVALID_FLAG_VALUE: "Run `akm <command> --help` to see accepted values.",
   INVALID_SOURCE_VALUE: "Pick one of: stash, registry, both.",
-  INVALID_FORMAT_VALUE: "Pick one of: json, jsonl, text, yaml.",
+  INVALID_FORMAT_VALUE: "Pick one of: json, jsonl, yaml, text, md, html.",
   INVALID_DETAIL_VALUE: "Pick one of: brief, normal, full. For agent/summary projections use --shape.",
   INVALID_SHAPE_VALUE: "Pick one of: human, agent, summary (summary is only valid on `akm show`).",
   INVALID_JSON_CONFIG_VALUE:
