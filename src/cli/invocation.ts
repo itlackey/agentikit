@@ -20,7 +20,11 @@
  * of the same algorithms `output/context.ts`'s `parseFlagValue`/
  * `hasBooleanFlag` and (the now-retired) `cli/shared.ts` `parseAllFlagValues`
  * used, kept byte-identical so every converted call site is behavior-
- * preserving.
+ * preserving — with ONE deliberate exception (R-033a): `getAllFlagValuesFrom`
+ * now stops at a literal `--` separator instead of scanning past it, fixing a
+ * bug where a repeatable flag's value placed after `--` (meant to end flag
+ * parsing) was still read as a real flag occurrence. See that function's
+ * docstring.
  *
  * Singleton + fallback semantics (the design decision this module encodes):
  *  - `setParsedInvocation(argv)` is called exactly once, by `src/cli.ts`, in
@@ -80,10 +84,23 @@ function hasFlagIn(argv: readonly string[], flag: string): boolean {
   return argv.some((arg) => arg === flag || arg === `${flag}=true`);
 }
 
+/**
+ * Collect every `--flag value` / `--flag=value` occurrence, stopping at a
+ * literal `--` separator (R-033a). `--` conventionally ends flag parsing —
+ * everything after it is positional/passthrough, never a flag akm should
+ * interpret. Before this fix, a token like `--tag leaked:yes` placed AFTER
+ * `--` (e.g. `akm feedback <ref> --positive -- --tag leaked:yes`) was still
+ * picked up as a real `--tag` value, letting argv content past the boundary
+ * leak into structured output. This is a deliberate BEHAVIOR CHANGE from the
+ * pre-WI-9.9 per-site implementation this module otherwise keeps
+ * byte-identical (see the module docstring) — every caller of
+ * `parseAllFlagValues`/`getAllFlagValues` inherits the fix for free.
+ */
 function getAllFlagValuesFrom(argv: readonly string[], flag: string): string[] {
   const values: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
+    if (arg === "--") break;
     if (arg === flag && i + 1 < argv.length) {
       values.push(argv[i + 1] as string);
       // BUG-M4: skip the value index so `--tag --tag` (literal `--tag` value)
