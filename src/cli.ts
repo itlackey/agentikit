@@ -120,6 +120,7 @@ import { DEFAULT_CONFIG, loadConfig } from "./core/config/config";
 import { UsageError } from "./core/errors";
 import { assertNoPendingMigrationOperation } from "./core/migration-operation";
 import { getConfigPath } from "./core/paths";
+import { DURATION_UNITS, parseDuration } from "./core/time";
 import { plainize } from "./core/tty";
 import { info, isQuiet, setQuiet, setVerbose, warn } from "./core/warn";
 import { disposeDispatchResources } from "./integrations/agent/runner-dispatch";
@@ -343,7 +344,17 @@ const healthCommand = defineCommand({
       // deltas are like-for-like (e.g. last 7d vs the prior 7d). A fixed 24h
       // default made a `--since 7d` report compare its 7-day totals against a
       // 24-hour prior window, producing meaningless deltas.
-      const windowCompare = report ? (args["window-compare"] ?? args.since ?? "24h") : args["window-compare"];
+      // Comparison-window precedence. An explicit `--window-compare` always
+      // wins. Otherwise `--report` seeds a like-for-like comparison from
+      // `--since`, but only when `--since` is a DURATION: `resolveWindowCompare`
+      // parses durations only, so feeding it an absolute date, ISO timestamp, or
+      // epoch value throws. And explicit `--windows` gets no implicit value at
+      // all — the two are mutually exclusive, so synthesizing one turned a valid
+      // invocation into a usage error.
+      const explicitWindows = windows !== undefined && windows.length > 0;
+      const sinceIsDuration = args.since !== undefined && parseDuration(args.since, DURATION_UNITS) !== null;
+      const implicitCompare = explicitWindows ? undefined : ((sinceIsDuration ? args.since : undefined) ?? "24h");
+      const windowCompare = report ? (args["window-compare"] ?? implicitCompare) : args["window-compare"];
       const base = akmHealth({
         since: args.since,
         groupBy: report ? "run" : (groupBy as "run" | undefined),
@@ -357,7 +368,7 @@ const healthCommand = defineCommand({
           ...base,
           report: {
             window: args.since ?? "24h",
-            compare: windowCompare as string,
+            compare: windowCompare ?? "24h",
             pendingProposals: listPendingProposals().map(({ ref, source, createdAt }) => ({ ref, source, createdAt })),
           },
         });

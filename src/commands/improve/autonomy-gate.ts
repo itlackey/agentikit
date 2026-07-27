@@ -64,8 +64,25 @@ const LANE_REASONS: Record<AutonomyLane, string> = {
   contradiction: "writes contradiction edges and belief-state transitions",
 };
 
+/**
+ * The lanes that bypass the strategy config and ask the gate at their own call
+ * site. They have no `processes.<name>.enabled` flag to downgrade, so
+ * {@link applyAutonomyGate} cannot see them — anything reporting the full gated
+ * set has to add these.
+ */
+export const DIRECT_AUTONOMY_LANES = ["memoryCleanup", "contradiction"] as const;
+
 function gatedLane(lane: AutonomyLane): GatedLane {
   return { lane, configKey: IMPROVE_AUTONOMY_CONFIG_KEY, reason: LANE_REASONS[lane] };
+}
+
+/**
+ * Describe lanes for reporting — the warning line, the `improve_skipped` event,
+ * and `akm tasks doctor` all render the same {@link GatedLane} shape, so the
+ * lane name, config key, and reason cannot drift between the three surfaces.
+ */
+export function describeGatedLanes(lanes: readonly AutonomyLane[]): GatedLane[] {
+  return lanes.map(gatedLane);
 }
 
 /**

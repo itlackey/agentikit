@@ -6,7 +6,7 @@ import path from "node:path";
 import { defineCommand } from "citty";
 import { getParsedInvocation } from "../../cli/invocation";
 import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
-import { output, runWithJsonErrors } from "../../cli/shared";
+import { GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { isFullRefInput, parseRefInput } from "../../core/asset/resolve-ref";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
@@ -122,7 +122,11 @@ export const improveCommand = defineCommand({
     description:
       "Analyze existing AKM assets and generate improvement proposals; also consolidates memories when the selected strategy enables consolidate. `akm improve canary [--refresh]` inspects the collapse-detector canary set.",
   },
+  // Raw defineCommand, so the global output flags are declared here explicitly.
+  // Without them citty treats `--format` as a boolean and its space-separated
+  // value falls through to the `scope` positional.
   args: {
+    ...GLOBAL_OUTPUT_ARGS,
     scope: {
       type: "positional",
       description: "Optional asset type or asset ref to improve",

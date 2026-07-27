@@ -26,7 +26,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { defineCommand } from "citty";
 import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
-import { EXIT_CODES, output, runWithJsonErrors } from "../../cli/shared";
+import { EXIT_CODES, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../../core/asset/asset-create";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
@@ -177,7 +177,10 @@ export const proposeCommand = defineCommand({
     name: "propose",
     description: "Ask the configured agent CLI to author a brand-new asset and queue it as a proposal",
   },
+  // Raw defineCommand: declare the global output flags so their space-separated
+  // values are consumed rather than shifting the `type` / `name` positionals.
   args: {
+    ...GLOBAL_OUTPUT_ARGS,
     // Optional in citty so run() is invoked when omitted; we re-validate
     // below to surface a structured UsageError (exit 2) instead of citty's
     // default help-banner exit-0.

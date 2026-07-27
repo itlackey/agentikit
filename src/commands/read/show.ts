@@ -19,6 +19,7 @@
 
 import fs from "node:fs";
 import { recognizeMatch } from "../../core/adapter/recognize-match";
+import { placementTypes } from "../../core/asset/asset-placement";
 import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { extractSection, markdownFragmentSlugs } from "../../core/asset/markdown";
@@ -356,7 +357,7 @@ export async function showLocal(input: {
 
   const fileCtx = buildFileContext(sourceStashDir, assetPath);
   let response: ShowResponse;
-  if (indexedEntry?.adapterId === "okf") {
+  if (indexedEntry && usesIndexedProjection(indexedEntry)) {
     response = buildGenericMarkdownResponse(indexedEntry, assetPath, parsed.fragment);
   } else {
     const match = recognizeMatch(fileCtx);
@@ -530,6 +531,31 @@ export async function showByRef(ref: string): Promise<{ filePath: string; body: 
   }
   const body = await fs.promises.readFile(entry.filePath, "utf8");
   return { filePath: entry.filePath, body };
+}
+
+/**
+ * Whether an indexed item is presented from its adapter's own projection rather
+ * than by re-running the AKM matcher over the file.
+ *
+ * `recognizeMatch` IS the `akm` adapter's native presentation: it infers a type
+ * from the stash layout and picks a type-specific renderer. Running it over an
+ * item another adapter owns re-derives an identity the indexer already
+ * established — which is how a `website` entry came back as `knowledge` and a
+ * generic `file` lost its indexed content.
+ *
+ * Two cases take the projection:
+ *  - OKF, whose `type` is open frontmatter and may legitimately collide with an
+ *    AKM placement type, so it is named explicitly.
+ *  - Any indexed item whose type is not one AKM places (`website`, `document`,
+ *    `file`, …). The matcher has no claim to those.
+ *
+ * Everything else keeps its bespoke renderer. That matters beyond cosmetics:
+ * `env`/`secret` items must stay on the dotenv renderer, which lists keys and
+ * never emits values — this helper must never route them to a content dump.
+ */
+function usesIndexedProjection(entry: NonNullable<Awaited<ReturnType<typeof lookupBundleRef>>>): boolean {
+  if (entry.adapterId === "okf") return true;
+  return entry.document?.content !== undefined && !placementTypes().includes(entry.type);
 }
 
 function buildGenericMarkdownResponse(
