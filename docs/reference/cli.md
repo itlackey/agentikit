@@ -1949,6 +1949,49 @@ Returns `{ ok, exitCode, stdout?, stderr?, durationMs, reason? }`. On
 failure, `reason` is one of `timeout | spawn_failed | non_zero_exit |
 parse_error`.
 
+### extract
+
+Extract durable insights from native coding-agent session files (claude-code,
+opencode) and queue them as proposals. This is the standalone entrypoint for
+session extraction — it replaces the legacy session-checkpoint hook and runs
+independently of the improve-stage extract toggle (see `improve` below).
+
+```sh
+akm extract --type claude-code --session-id <id>
+akm extract --type claude-code --since 24h
+akm extract --type opencode --since 7d --dry-run
+akm extract --auto                 # iterate every available harness
+akm extract --type claude-code --location /custom/path --session-id <id>
+akm extract --watch                # watch session-log dirs and extract on change
+```
+
+| Flag | Description |
+| --- | --- |
+| `--type <harness>` | Harness name (`claude-code`, `opencode`). Required unless `--auto`. |
+| `--session-id <id>` | Process only this session ID. When absent, discover sessions via `--since`. |
+| `--location <path>` | Override the harness's default session-discovery location. |
+| `--since <cutoff>` | Discovery cutoff. ISO timestamp or duration (`24h`, `7d`, `30m`). Default `24h`. |
+| `--auto` | Iterate every available harness with the default `--since`. Mutually exclusive with `--type`. |
+| `--dry-run` | Show candidates without queuing proposals. |
+| `--force` | Re-process sessions even if they were already extracted and have no new events. Default: skip already-seen sessions. |
+| `--timeout-ms <ms>` | Per-session LLM timeout in ms (default `600000`). |
+| `--engine <name>` | Named LLM engine for this invocation. Mutually exclusive with `--strategy`. |
+| `--strategy <name>` | Improve strategy supplying extract behavior and engine. Mutually exclusive with `--engine`. |
+| `--watch` | Watch harness session-log directories and run extract on change (debounced). Stays alive until SIGINT/SIGTERM. |
+| `--debounce-ms <ms>` | Debounce window in ms for `--watch` (default `2000`). |
+
+`--type` and `--auto` are mutually exclusive; one of them (or `--watch`) is
+required. `--auto` iterates `getAvailableHarnesses()` — every harness with a
+detectable session-log location on the current machine — and returns an
+aggregated `extract-auto-result` envelope (`harnessesProcessed`,
+`totalProposals`, per-harness `results`); the run exits non-zero only when
+every harness failed. `--watch` emits an `extract-watch-started` envelope and
+then runs continuously, re-invoking extract (debounced, per harness) whenever
+a watched session-log root changes.
+
+Requires an LLM engine: pass `--engine`, select a `--strategy` whose
+`processes.extract.engine` is set, or configure `defaults.llmEngine`.
+
 ### improve
 
 Improve existing assets and write the results to the proposal queue.
@@ -1971,6 +2014,7 @@ akm improve workflows/release-checklist --task "reduce duplication"
 | `--require-feedback-signal` | Only process assets with recent feedback signals |
 | `--strategy <name>` | Override the active improve strategy (a built-in or entry under `improve.strategies`) |
 | `--json-to-stdout` | Also emit the full persisted JSON result on stdout for a live run. Without this flag, stdout stays empty. Dry-runs always emit their result and are never persisted. |
+| `--no-push` | Commit only for this run; skip the push after the end-of-run sync commit even when the stash is writable with a remote configured. `sync.push` defaults `true` and stays outside the autonomy gate — this is a per-run opt-out, not a default change. |
 
 `akm improve` is the public entrypoint for whole-stash, type-scoped, and
 ref-scoped improvement. It owns the memory-cleanup and lesson-distillation

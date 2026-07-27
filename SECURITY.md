@@ -61,6 +61,14 @@ maintainer could write a system prompt that instructs the LLM to read
 sensitive files in your working tree and exfiltrate them via the LLM
 response. Audit the prompt body the same way you'd audit a script.
 
+### Installing a stash means trusting its code
+
+Installing a stash is not a data-only operation: **`<stashDir>/scripts/wiki-fetchers/*.{ts,js,mjs}` is imported and EXECUTED during `akm index`** (when a website-snapshot source in that stash is synced), with no gate, no prompt, and no allowlist. Every file in that directory is dynamically `import()`ed, and only *after* the module has fully evaluated does akm check that its default export looks like a fetcher (`{ name, matches, fetch }`) — module-level code (anything outside the exported functions) runs unconditionally before that check ever happens, and a file that fails the check still ran. There is no sandboxing: a wiki-fetcher script executes with the full permissions of the akm process, exactly like the scripts and workflow steps documented above.
+
+This is a deliberate design decision (owner ruling), not an oversight, and it will not change without a separate decision to add a gate. **If you install a stash from a source you do not trust, you are trusting its code to run on your machine at index time** — audit `scripts/wiki-fetchers/` the same way you would audit any other executable you're about to run, before installing.
+
+The built-in YouTube snapshot fetcher (`src/sources/snapshot-fetchers/youtube.ts`) deliberately **impersonates the YouTube Android app's InnerTube client** (`clientName: "ANDROID"`, a spoofed `clientVersion`) when calling YouTube's private `youtubei/v1/player` endpoint, because the public web client's caption URLs are Proof-of-Origin-Token gated and return empty bodies. This is known, intentional behavior needed to fetch captions at all, not a bug — documented here so it isn't mistaken for one.
+
 ### Environment and secret assets are plaintext on disk
 
 `env` and `secret` assets are owner-permissioned plaintext under `<stash>/env/`
@@ -69,6 +77,13 @@ filesystem permissions but are not encrypted at rest. Do not commit these
 files to source control. Normal `akm env` and `akm secret` output never echoes
 values; materialize values only at the command boundary with `akm env run`,
 `akm secret run`, or `akm secret path`.
+
+`akm graph export` follows the same owner-only precedent: the artifact is
+written atomically at mode `0600`, and any new parent directories it creates
+are `0700`, since a graph export can carry knowledge-derived content out of
+the stash to an arbitrary `--out` path. It is still plaintext, not encrypted
+at rest, and `--out` can point anywhere the akm process can write — only the
+permission bits changed.
 
 ### Improve / propose send asset content to the configured LLM
 

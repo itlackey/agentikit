@@ -306,8 +306,11 @@ The repo already contains Dockerfiles for:
 - `tests/docker/Dockerfile.fedora-bun`
 - `tests/docker/Dockerfile.ubuntu-binary`
 - `tests/docker/Dockerfile.debian-binary`
-- `tests/docker/Dockerfile.alpine-binary`
 - `tests/docker/Dockerfile.fedora-binary`
+
+`Dockerfile.alpine-binary` does not exist and is deliberately not part of this
+matrix: binary validation excludes Alpine (see above) because the compiled
+binary targets glibc and Alpine is musl-based.
 
 Run one variant if you need a focused repro:
 

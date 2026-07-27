@@ -104,6 +104,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `{"ok":false,"error":"...","code":"INVALID_FLAG_VALUE","hint":...}` on
   stderr and exit code `2` in place of a stack trace and exit code `1`.
 
+- **BREAKING: `akm index --dry-run` without `--clean` now exits `2` instead
+  of running a real index.** The flag only ever gated the `--clean`
+  stale-entry removal pass — every other phase (walk, LLM enrichment,
+  embeddings, FTS, the adapter-detection config write) ran for real
+  regardless, so `akm index --dry-run` alone silently performed a full index
+  despite its name. The combination is now rejected with the standard usage
+  envelope instead of quietly doing something other than what "dry run"
+  promised.
+
+  Migration: a script or cron invoking bare `akm index --dry-run` was
+  already getting a real index, so nothing there needs to change in effect —
+  but it will now fail loudly instead. Pass `akm index --clean --dry-run` to
+  preview the stale-entry removal pass, or `akm index --clean` to apply it;
+  drop `--dry-run` entirely to keep running a plain real index.
+
+- **BREAKING: a corrupt or unparseable `akm.lock` now makes lockfile WRITES
+  throw, instead of silently destroying every entry.** The previous lenient
+  reader returned `[]` on unparseable JSON; a write path that upserted a
+  single entry onto that `[]` then overwrote the file, permanently deleting
+  every other tracked bundle's lock entry. Install/update/remove write paths
+  now use a strict reader that throws on the same corruption instead of
+  reaching the destructive overwrite.
+
+  Migration: if a write now fails with a lockfile-parse error, `akm.lock` is
+  genuinely corrupt — inspect and repair it by hand, or restore it from a
+  backup (e.g. git history), before retrying the write. Reads elsewhere are
+  unaffected; the lenient read contract is unchanged.
+
+- **BREAKING: `AKM_NPM_REGISTRY` now redirects npm package METADATA lookups,
+  not just the trusted-tarball allowlist.** Previously the override only
+  widened which tarball hosts were trusted for download while metadata
+  queries stayed hardcoded to `registry.npmjs.org`, so a configured private
+  mirror was never actually consulted for package info — the error hint that
+  points users at this variable was false. The override now also replaces
+  the metadata registry base, matching how a private npm registry is meant
+  to work (like npm's own `--registry` flag: wholesale replacement, not a
+  merge with the public registry).
+
+  Migration: an operator who set `AKM_NPM_REGISTRY` expecting only tarball
+  downloads to be redirected, with metadata still served from the public
+  registry, should confirm the mirror actually serves equivalent package
+  metadata — `akm add`/`akm update` for npm-sourced bundles now resolve
+  entirely against the configured mirror when it is set.
+
 - **`akm remember --show-similar` and `akm migrate apply --dry-run` are the
   documented, canonical spellings** (previously `--showSimilar` /
   `--dryRun`), matching every other multi-word flag in the CLI. Not a
@@ -186,6 +230,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   --source <TAB>` and `akm remember --source <TAB>`. Value completion is now
   scoped per command path; commands without a fixed value set get no
   suggestion instead of the wrong one.
+
+- **`akm setup --config <file>` / `--from <file>` no longer silently drops
+  six valid config keys** (`index`, `search`, `feedback`,
+  `archiveRetentionDays`, `workflow`, `experimental`). The allowlist was a
+  hand-copied set that had drifted out of sync with the config schema; a
+  user handing setup a config containing any of these keys got a different,
+  silently truncated config written back, with only a warning and exit `0`.
+  The allowlist is now derived from the schema's own key list so it cannot
+  drift again. Keys that remain genuinely retired (`profiles`, `llm`,
+  `agent`, `features`, `stashes`, `bindings`, `writable`) still warn-and-drop
+  as before.
+
+  Note: a config that previously relied on one of these six keys being
+  ignored (because the drop was silent) will now have it applied — re-check
+  `--config`/`--from` inputs if you were unknowingly depending on that gap.
+
+- **`akm index` no longer persists adapter auto-detection to `config.json`
+  with zero disclosure.** Detecting and writing a bundle component's adapter
+  (`bundles.<id>.components.<component>.adapter`) previously happened
+  silently on every index run. It is now reported in the result envelope as
+  an additive `configUpdated.detectedAdapters` map and on stderr, and only
+  when a write actually happened.
+
+- **`akm add owner/repo` now resolves as GitHub shorthand instead of failing
+  with "Local path not found".** Any ref containing a `/` was treated as an
+  explicit local path, so the local-ref resolver threw before the
+  GitHub-shorthand fallback ever ran, making the advertised `owner/repo` form
+  unreachable. A bare two-segment `owner/repo` (or `owner/repo#ref`) now
+  falls through to the registry resolver when no such directory exists on
+  disk; `./`, `../`, absolute, and three-or-more-segment paths still resolve
+  as explicit local paths exactly as before.
+
+- **Internal output-shape command keys renamed `events-list`/`events-tail` →
+  `log-list`/`log-tail`**, matching the `akm log` command they back (the
+  command group used to be `akm events`, removed in 0.9.0). Internal-only:
+  the shape name is a registry lookup key that never reaches the wire (no
+  output field, no schema change), so this is not a user-visible behavior
+  change and carries no `schemaVersion` bump. The documented `[events-tail]`
+  stderr trailer text is deliberately left as-is pending a separate ruling.
 
 ### Removed
 
