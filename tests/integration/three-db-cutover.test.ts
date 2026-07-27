@@ -55,7 +55,7 @@ import {
   RC_TRAIN_LIVE_REFS,
   rcTrainFromStatePaths,
 } from "../_fixtures/migration/rc-train-state";
-import { openStateDbAtCeiling, PRE_CUTOVER_STATE_CEILING } from "../_fixtures/migration/seed-rows";
+import { openFreshStateDb } from "../_fixtures/migration/seed-rows";
 import { runCliCapture } from "../_helpers/cli";
 import {
   type Cleanup,
@@ -337,7 +337,7 @@ test("a real v17 index and v2 resume preserve installed-bundle durable state", a
   const preparedConfig = JSON.parse(fs.readFileSync(prepared, "utf8"));
   preparedConfig.stashDir = primaryRoot;
   fs.writeFileSync(prepared, `${JSON.stringify(preparedConfig)}\n`, { mode: 0o600 });
-  const state = openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING);
+  const state = openFreshStateDb(getStateDbPathInDataDir());
   state
     .prepare(
       "INSERT INTO asset_outcome(asset_ref, retrieval_count, outcome_score, updated_at) VALUES (?, 17, 0.75, 42)",
@@ -415,7 +415,7 @@ test("a real v17 index and v2 resume preserve installed-bundle durable state", a
 test("a v2 journal fails closed when its prepared installed root cannot be recovered", async () => {
   const { prepared } = seedInstalledBundleMigration();
   fs.writeFileSync(getConfigPath(), '{"configVersion":"0.8.0"}\n', { mode: 0o600 });
-  openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+  openFreshStateDb(getStateDbPathInDataDir()).close();
   const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "apply", "--config", prepared], {
     cwd: path.resolve(import.meta.dir, "../.."),
     env: { ...process.env, AKM_TEST_MIGRATION_CRASH_AFTER: "workflow" },
@@ -439,7 +439,7 @@ test("a v2 journal fails closed when its prepared installed root cannot be recov
 
 test("a required installed-bundle lock write keeps forward recovery pending", async () => {
   const { prepared, installedRoot } = seedInstalledBundleMigration();
-  openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+  openFreshStateDb(getStateDbPathInDataDir()).close();
   fs.mkdirSync(path.dirname(getLockfilePath()), { recursive: true });
   fs.writeFileSync(getLockfilePath(), "not a lockfile");
 
@@ -504,7 +504,7 @@ test("relative pre-cutover roots resume against the journaled cwd", async () => 
     `${JSON.stringify({ configVersion: "0.9.0", semanticSearchMode: "off", stashDir: relativeStash })}\n`,
     { mode: 0o600 },
   );
-  openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+  openFreshStateDb(getStateDbPathInDataDir()).close();
 
   const cliPath = path.resolve(import.meta.dir, "../..", "src", "cli.ts");
   const crashed = Bun.spawn([process.execPath, cliPath, "migrate", "apply", "--config", prepared], {
@@ -627,8 +627,8 @@ describe("WI-8.2 (a) — rc-train FROM-state round-trip", () => {
 
     const db = readState();
     try {
-      // Ledger at 020.
-      expect(ledgerIds(db).at(-1)).toBe("020-three-db-cutover");
+      // Ledger at the live tip (W3-M: the squashed sole migration).
+      expect(ledgerIds(db).at(-1)).toBe("001-initial-schema"); // W3-M: sole squashed migration id
 
       // Workflow rows carried bit-exact.
       const run = db.query("SELECT * FROM workflow_runs WHERE id = 'run-1'").get() as Record<string, unknown>;
@@ -760,7 +760,7 @@ describe("WI-8.2 (b) — orphan-bearing state completes with quarantine", () => 
   }, 30_000);
 
   test("historical events for a retired asset type are quarantined as expected orphans", async () => {
-    const state = openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING);
+    const state = openFreshStateDb(getStateDbPathInDataDir());
     const insert = state.prepare("INSERT INTO events (event_type, ts, ref) VALUES ('show', ?, 'vault:default')");
     insert.run("2026-01-01T00:00:00.000Z");
     insert.run("2026-01-02T00:00:00.000Z");
@@ -792,7 +792,7 @@ describe("WI-8.2 (b) — orphan-bearing state completes with quarantine", () => 
 
 describe("WI-8.2 (c) — fresh install records complete without ATTACH", () => {
   test("no workflow.db/index.db, no legacy rows → apply succeeds, empty tables, no stray files", async () => {
-    openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close(); // empty state.db @ 019
+    openFreshStateDb(getStateDbPathInDataDir()).close(); // fully-migrated, data-empty state.db
     const prepared = writeConfigs();
 
     const applied = await runCliCapture(["migrate", "apply", "--config", prepared]);
@@ -805,7 +805,7 @@ describe("WI-8.2 (c) — fresh install records complete without ATTACH", () => {
 
     const db = readState();
     try {
-      expect(ledgerIds(db).at(-1)).toBe("020-three-db-cutover");
+      expect(ledgerIds(db).at(-1)).toBe("001-initial-schema"); // W3-M: sole squashed migration id
       for (const table of [
         "workflow_runs",
         "workflow_run_steps",
@@ -857,7 +857,7 @@ describe("WI-8.2 (d) — the cutover runs exactly once", () => {
 
 describe("WI-8.2 (e) — an integrity failure fails closed to restore", () => {
   test("an unparseable stored ref aborts the cutover and restores the pre-state", async () => {
-    const db = openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING);
+    const db = openFreshStateDb(getStateDbPathInDataDir());
     db.prepare(`INSERT INTO asset_salience (asset_ref, encoding_salience, updated_at) VALUES (?, 0.5, 100)`).run(
       RC_TRAIN_LIVE_REFS.skill,
     );
@@ -888,13 +888,18 @@ describe("WI-8.2 (e) — an integrity failure fails closed to restore", () => {
     const post = readState();
     try {
       // Pre-state preserved: the live scalar ref was not re-keyed, the malformed
-      // event remains present, and the ledger rolled back to the pre-cutover ceiling.
+      // event remains present, and the ledger is unchanged. W3-M: the fixture is
+      // built fully migrated up front (see `openFreshStateDb`), so — unlike the
+      // pre-squash chain, where a failed cutover rolled the ledger back off the
+      // separate `020-three-db-cutover` migration id — there is no longer a
+      // later migration id for a restore to roll back OFF of; the restore
+      // simply returns the ledger to the single id it already had.
       expect(refsIn(post, "asset_salience", "asset_ref").sort()).toEqual(preSalience.sort());
       expect(refsIn(post, "asset_salience", "asset_ref")).toContain(RC_TRAIN_LIVE_REFS.skill);
       expect(refsIn(post, "events", "ref")).toEqual(preEvents);
       expect(refsIn(post, "events", "ref")).toContain(":bad");
       expect(ledgerIds(post)).toEqual(preLedger);
-      expect(ledgerIds(post).at(-1)).toBe(PRE_CUTOVER_STATE_CEILING); // 020 rolled back
+      expect(ledgerIds(post).at(-1)).toBe("001-initial-schema");
       expect(fs.readFileSync(treatmentFile, "utf8")).toBe(`${RC_TRAIN_LIVE_REFS.skill}\n`);
     } finally {
       post.close();
@@ -1016,7 +1021,7 @@ describe("WI-8.2 pilot treatment recovery", () => {
   });
 
   test("keeps forward recovery pending when the treatment rewrite fails", async () => {
-    openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+    openFreshStateDb(getStateDbPathInDataDir()).close();
     seedOldIndexDb();
     const treatmentFile = path.join(getDataDir(), "stash", ".akm", "measurement", "treatment-pilot-2026-06-14.txt");
     fs.mkdirSync(treatmentFile, { recursive: true });
@@ -1037,7 +1042,7 @@ describe("WI-8.2 pilot treatment recovery", () => {
   }, 30_000);
 
   test("resumes after a crash between treatment rewrite and journal advancement", async () => {
-    openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+    openFreshStateDb(getStateDbPathInDataDir()).close();
     seedOldIndexDb();
     const treatmentFile = path.join(getDataDir(), "stash", ".akm", "measurement", "treatment-pilot-2026-06-14.txt");
     fs.mkdirSync(path.dirname(treatmentFile), { recursive: true });
@@ -1127,7 +1132,7 @@ function readContentReport(): ContentMigrationReport {
 
 describe("WI-8.5d (f) — content migration folds .stash.json + D-R6 renames mis-named reserved files", () => {
   test("overrides fold into frontmatter, sidecar deleted, index.md renamed + reported, second apply idempotent", async () => {
-    openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+    openFreshStateDb(getStateDbPathInDataDir()).close();
     seedContentStash();
     const prepared = writeConfigs();
 
@@ -1242,7 +1247,7 @@ function readProposalRows(stashDir: string): Array<{ id: string; status: string;
 
 describe("(g) migrate apply imports pre-0.9 filesystem proposals into state.db", () => {
   test("pending + archived proposals land (backup inlined), corrupt skipped, second apply idempotent", async () => {
-    openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+    openFreshStateDb(getStateDbPathInDataDir()).close();
 
     const stash = CONTENT_STASH();
     fs.mkdirSync(path.join(stash, "lessons"), { recursive: true });

@@ -1,13 +1,15 @@
 /**
- * Tests for the `improve_runs` table (state.db migration 003).
+ * Tests for the `improve_runs` table (state.db's single migration,
+ * "001-initial-schema" — squashed by W3-M from the old per-fragment chain;
+ * this table was originally added by the old "003-improve-runs" fragment).
  *
  * Validates:
- *   1. Migration 003 creates the table + indexes on a fresh DB.
+ *   1. The migration creates the table + indexes on a fresh DB.
  *   2. `recordImproveRun` persists every column for a production run.
  *   3. `recordImproveRun` persists `dry_run=1` for dry-run input — the
  *      specific bug from MEMORY.md feedback_akm_dryrun_artifact_trap.
  *   4. `purgeOldImproveRuns` deletes only rows older than retentionDays.
- *   5. Re-opening a DB that already has migration 003 is a no-op.
+ *   5. Re-opening a DB that already has the migration applied is a no-op.
  *
  * These tests must NOT touch the user's real state.db. Each test mints a
  * temporary XDG_DATA_HOME so `openStateDatabase()` writes into a tmpdir.
@@ -47,7 +49,7 @@ afterEach(() => {
   storage.cleanup();
 });
 
-describe("migration 003 — improve_runs", () => {
+describe("state.db migration — improve_runs", () => {
   test("creates the table and indexes on a fresh database", () => {
     const db = openStateDatabase();
     try {
@@ -91,16 +93,20 @@ describe("migration 003 — improve_runs", () => {
       expect(indexNames).toContain("idx_improve_runs_strategy_started");
 
       // schema_migrations records the migration id so subsequent opens skip it.
-      const applied = db.prepare("SELECT id FROM schema_migrations WHERE id = '003-improve-runs'").all() as Array<{
+      // W3-M: the old "003-improve-runs" fragment is squashed into the single
+      // "001-initial-schema" migration (see the squash note atop
+      // src/core/state/migrations.ts), which creates improve_runs alongside
+      // everything else.
+      const applied = db.prepare("SELECT id FROM schema_migrations WHERE id = '001-initial-schema'").all() as Array<{
         id: string;
       }>;
-      expect(applied).toEqual([{ id: "003-improve-runs" }]);
+      expect(applied).toEqual([{ id: "001-initial-schema" }]);
     } finally {
       db.close();
     }
   });
 
-  test("re-opening a DB that already has migration 003 is a no-op", () => {
+  test("re-opening a DB that already has the migration applied is a no-op", () => {
     // First open applies the migration.
     const db1 = openStateDatabase();
     db1.close();
@@ -110,7 +116,7 @@ describe("migration 003 — improve_runs", () => {
     const db2 = openStateDatabase();
     try {
       const applied = db2
-        .prepare("SELECT COUNT(*) AS c FROM schema_migrations WHERE id = '003-improve-runs'")
+        .prepare("SELECT COUNT(*) AS c FROM schema_migrations WHERE id = '001-initial-schema'")
         .get() as { c: number };
       expect(applied.c).toBe(1);
     } finally {

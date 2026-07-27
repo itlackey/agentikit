@@ -10,7 +10,7 @@ import { getMigrationApplyJournalPath, inspectMigrationState } from "../../scrip
 import type { AkmConfig } from "../../src/core/config/config";
 import { getConfigPath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
-import { openStateDbAtCeiling, PRE_CUTOVER_STATE_CEILING } from "../_fixtures/migration/seed-rows";
+import { openFreshStateDb } from "../_fixtures/migration/seed-rows";
 import { runCliCapture } from "../_helpers/cli";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
@@ -43,7 +43,7 @@ function seedMigration(workflowRef: string, createWorkflow = true): { prepared: 
     })}\n`,
     { mode: 0o600 },
   );
-  openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+  openFreshStateDb(getStateDbPathInDataDir()).close();
   fs.mkdirSync(path.join(storage.stashDir, "tasks"), { recursive: true });
   fs.mkdirSync(path.join(storage.stashDir, "workflows"), { recursive: true });
   if (createWorkflow) fs.writeFileSync(path.join(storage.stashDir, "workflows", "upgrade-noop.md"), "# Noop\n");
