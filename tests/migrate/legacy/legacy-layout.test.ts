@@ -483,11 +483,22 @@ describe("legacy-layout.ts — faithfulness: parseRegistryRef's pure ID-deriving
   }
 
   test(
-    'a bare "owner/repo" shorthand is path-LIKE (contains "/") and throws identically in both, ' +
-      "since it is resolved as an explicit local path relative to cwd before ever reaching github-shorthand parsing",
+    'a bare "owner/repo" shorthand DIVERGES by design: the live parser resolves it as ' +
+      "github shorthand (R-007), the frozen 0.8 copy still throws as an explicit local path",
     () => {
       const ref = "owner/repo";
-      expect(() => parseRegistryRef(ref)).toThrow();
+      // Live: R-007 fixed the advertised shorthand. `isPathLikeRef` used to
+      // return true for any string containing "/", so `tryParseLocalRef` threw
+      // `Local path not found` before the github-shorthand fallback could run,
+      // making the documented `akm add owner/repo` form unreachable.
+      const live = parseRegistryRef(ref);
+      expect(live.source).toBe("github");
+      expect(live.id).toBe("github:owner/repo");
+
+      // Frozen: the migrator is a deliberate snapshot of 0.8-era resolution and
+      // must NOT adopt the fix — migration fidelity depends on reproducing how
+      // the old version resolved refs, bug included. This divergence is the
+      // intended end state, not drift to be reconciled.
       expect(() => frozenParseRegistryRef(ref)).toThrow();
     },
   );
