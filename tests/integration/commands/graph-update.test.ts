@@ -269,4 +269,50 @@ describe("akmGraphUpdate", () => {
     expect(capturedOptions?.candidatePaths?.has(k1Path)).toBe(true);
     expect(capturedOptions?.candidatePaths?.size).toBe(1);
   });
+
+  // R-024 regression: `--source <bundle>` used to validate the name and then
+  // discard it, always passing the FULL unfiltered `sources` array to the
+  // extraction pass (which treats `sources[0]` as its target stash) — so
+  // `--source B` silently extracted from whichever source resolved first
+  // instead of B. Assert the extraction pass actually receives ONLY the
+  // requested source.
+  test("--source scopes the extraction pass to exactly the named source, not the primary stash", async () => {
+    seedIndex();
+    const secondaryStashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-graph-update-secondary-"));
+    try {
+      saveConfig({ semanticSearchMode: "off", bundles: { "sec-b": { path: secondaryStashDir } } });
+
+      let capturedSources: GraphExtractionPassContext["sources"] | undefined;
+      const result = await akmGraphUpdate({
+        source: "sec-b",
+        graphExtractionFn: async (ctx: GraphExtractionPassContext) => {
+          capturedSources = ctx.sources;
+          return fakeExtractionResult(0);
+        },
+      });
+
+      expect(result.ok).toBe(true);
+      expect(capturedSources).toBeDefined();
+      expect(capturedSources?.length).toBe(1);
+      expect(capturedSources?.[0]?.path).toBe(secondaryStashDir);
+      expect(capturedSources?.[0]?.path).not.toBe(stashDir);
+    } finally {
+      fs.rmSync(secondaryStashDir, { recursive: true, force: true });
+    }
+  });
+
+  test("--source with an unknown name throws SOURCE_NOT_FOUND before the extraction pass runs", async () => {
+    seedIndex();
+    let extractionCalled = false;
+    await expect(
+      akmGraphUpdate({
+        source: "no-such-source",
+        graphExtractionFn: async () => {
+          extractionCalled = true;
+          return fakeExtractionResult(0);
+        },
+      }),
+    ).rejects.toThrow(/Source not found/);
+    expect(extractionCalled).toBe(false);
+  });
 });

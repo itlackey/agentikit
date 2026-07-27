@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { displayRef, parseQualifiedRefInput } from "../../core/asset/resolve-ref";
+import { writeFileAtomic } from "../../core/common";
 import { type AkmConfig, loadConfig } from "../../core/config/config";
 import { NotFoundError, UsageError } from "../../core/errors";
 import { getDbPath } from "../../core/paths";
@@ -134,12 +135,19 @@ function resolveGraphStashPath(source?: string): string {
   return matched.path;
 }
 
-function loadGraph(source?: string): LoadedGraph {
+/**
+ * Load a stash's stored graph snapshot. Accepts an already-open `db` handle
+ * (R-068 #5) so callers that need a follow-up query against the same
+ * database (related/entity/orphans) can share one connection instead of
+ * opening it here and then again at the call site. When no handle is passed,
+ * one is opened and closed internally exactly as before.
+ */
+function loadGraph(source?: string, db?: import("../../storage/database").Database): LoadedGraph {
   const stashPath = resolveGraphStashPath(source);
-  let db: import("../../storage/database").Database | undefined;
+  const ownsDb = db === undefined;
+  const activeDb = db ?? openExistingDatabase();
   try {
-    db = openExistingDatabase();
-    const snapshot = loadStoredGraphSnapshot(stashPath, db);
+    const snapshot = loadStoredGraphSnapshot(stashPath, activeDb);
     if (!snapshot) {
       throw new NotFoundError(
         `Graph data not found for source ${stashPath}.`,
@@ -162,7 +170,18 @@ function loadGraph(source?: string): LoadedGraph {
       graphPath: snapshot.graphPath,
     };
   } finally {
-    if (db) closeDatabase(db);
+    if (ownsDb) closeDatabase(activeDb);
+  }
+}
+
+/**
+ * Shared `--limit` validation (R-066 #3): every graph read command accepts an
+ * optional positive-integer `limit` and previously repeated this exact guard
+ * five times verbatim.
+ */
+function assertPositiveLimit(limit: number | undefined): void {
+  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
+    throw new UsageError("--limit must be a positive integer.", "INVALID_FLAG_VALUE");
   }
 }
 
@@ -223,9 +242,7 @@ export function akmGraphSummary(options?: { source?: string }): GraphSummaryResu
 export function akmGraphEntities(options?: { source?: string; limit?: number }): GraphEntitiesResult {
   const { graph, stashPath, graphPath } = loadGraph(options?.source);
   const limit = options?.limit;
-  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
-    throw new UsageError("--limit must be a positive integer.", "INVALID_FLAG_VALUE");
-  }
+  assertPositiveLimit(limit);
   const stats = aggregateEntityStats(graph.files);
   const entities = [...stats.entries()]
     .map(([name, info]) => ({
@@ -249,9 +266,7 @@ export function akmGraphEntities(options?: { source?: string; limit?: number }):
 export function akmGraphRelations(options?: { source?: string; limit?: number }): GraphRelationsResult {
   const { graph, stashPath, graphPath } = loadGraph(options?.source);
   const limit = options?.limit;
-  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
-    throw new UsageError("--limit must be a positive integer.", "INVALID_FLAG_VALUE");
-  }
+  assertPositiveLimit(limit);
   const counts = new Map<string, { from: string; to: string; type?: string; count: number; confidence?: number }>();
   for (const node of graph.files) {
     for (const rel of node.relations) {
@@ -302,7 +317,16 @@ export function akmGraphExport(options: { source?: string; out: string }): Graph
   const format = options.out.trim().toLowerCase().endsWith(".jsonl") ? "jsonl" : "json";
   const { graph, stashPath, graphPath } = loadGraph(options.source);
   const outPath = path.resolve(options.out);
-  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  // R-041: graph exports can carry knowledge-derived content, so this write
+  // gets the same treatment as other sensitive on-disk artifacts (env export,
+  // secrets — see env-cli.ts). `--out` may still point anywhere the caller
+  // chooses (no containment/sandbox check — that would break legitimate use
+  // of an arbitrary destination); the hardening is limited to permissions:
+  // any NEW parent directories are created owner-only (0700, mirroring
+  // scheduler-invocation.ts's lock-dir creation) rather than inheriting the
+  // process umask, and the artifact itself is written atomically at 0600
+  // instead of the previous default 0644.
+  fs.mkdirSync(path.dirname(outPath), { recursive: true, mode: 0o700 });
   const payload =
     format === "json"
       ? `${JSON.stringify(graph, null, 2)}\n`
@@ -314,7 +338,7 @@ export function akmGraphExport(options: { source?: string; out: string }): Graph
             file.relations.map((relation) => JSON.stringify({ kind: "relation", ...relation, file: file.path })),
           ),
         ].join("\n")}\n`;
-  fs.writeFileSync(outPath, payload, "utf8");
+  writeFileAtomic(outPath, payload, 0o600);
   return {
     schemaVersion: 1,
     shape: "graph-export",
@@ -336,32 +360,31 @@ export async function akmGraphRelated(options: {
     throw new UsageError("`akm graph related` requires <ref>.", "MISSING_REQUIRED_ARGUMENT");
   }
   const limit = options.limit;
-  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
-    throw new UsageError("--limit must be a positive integer.", "INVALID_FLAG_VALUE");
-  }
+  assertPositiveLimit(limit);
   const target = await resolveGraphTarget(ref, options.source);
-  const { graph, stashPath, graphPath } = loadGraph(target.stashPath);
+
+  // R-068 #5: one connection shared by the snapshot load and the related-paths
+  // query — previously each opened (and closed) its own handle.
   let db: import("../../storage/database").Database | undefined;
-  const related = (() => {
-    try {
-      db = openExistingDatabase();
-      return listRelatedPathsForFile(stashPath, target.filePath, limit ?? 5, db);
-    } finally {
-      if (db) closeDatabase(db);
-    }
-  })();
-  return {
-    schemaVersion: 1,
-    shape: "graph-related",
-    stashPath,
-    graphPath,
-    generatedAt: graph.generatedAt,
-    ref: target.ref,
-    path: target.filePath,
-    total: related.length,
-    related,
-    ...(related.length === 0 ? { tip: "No related graph neighbors were found for this asset." } : {}),
-  };
+  try {
+    db = openExistingDatabase();
+    const { graph, stashPath, graphPath } = loadGraph(target.stashPath, db);
+    const related = listRelatedPathsForFile(stashPath, target.filePath, limit ?? 5, db);
+    return {
+      schemaVersion: 1,
+      shape: "graph-related",
+      stashPath,
+      graphPath,
+      generatedAt: graph.generatedAt,
+      ref: target.ref,
+      path: target.filePath,
+      total: related.length,
+      related,
+      ...(related.length === 0 ? { tip: "No related graph neighbors were found for this asset." } : {}),
+    };
+  } finally {
+    if (db) closeDatabase(db);
+  }
 }
 
 function normalizeGraphName(value: string): string {
@@ -398,16 +421,19 @@ export function akmGraphEntity(options: { name: string; source?: string; limit?:
     throw new UsageError("`akm graph entity` requires <name>.", "MISSING_REQUIRED_ARGUMENT");
   }
   const limit = options.limit;
-  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
-    throw new UsageError("--limit must be a positive integer.", "INVALID_FLAG_VALUE");
-  }
-  const { graph, stashPath, graphPath } = loadGraph(options.source);
+  assertPositiveLimit(limit);
   const target = normalizeGraphName(name);
 
+  // R-068 #5: one connection shared by the snapshot load and the
+  // ref-by-path lookup — previously each opened (and closed) its own handle.
   let db: import("../../storage/database").Database | undefined;
+  let graph: GraphFile;
+  let stashPath: string;
+  let graphPath: string;
   let refByPath: Map<string, { ref: string; type: string }>;
   try {
     db = openExistingDatabase();
+    ({ graph, stashPath, graphPath } = loadGraph(options.source, db));
     refByPath = buildRefByPath(stashPath, db);
   } finally {
     if (db) closeDatabase(db);
@@ -449,15 +475,18 @@ export function akmGraphEntity(options: { name: string; source?: string; limit?:
 
 export function akmGraphOrphans(options?: { source?: string; limit?: number }): GraphOrphansResult {
   const limit = options?.limit;
-  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
-    throw new UsageError("--limit must be a positive integer.", "INVALID_FLAG_VALUE");
-  }
-  const { graph, stashPath, graphPath } = loadGraph(options?.source);
+  assertPositiveLimit(limit);
 
+  // R-068 #5: one connection shared by the snapshot load and the
+  // ref-by-path lookup — previously each opened (and closed) its own handle.
   let db: import("../../storage/database").Database | undefined;
+  let graph: GraphFile;
+  let stashPath: string;
+  let graphPath: string;
   let refByPath: Map<string, { ref: string; type: string }>;
   try {
     db = openExistingDatabase();
+    ({ graph, stashPath, graphPath } = loadGraph(options?.source, db));
     refByPath = buildRefByPath(stashPath, db);
   } finally {
     if (db) closeDatabase(db);
@@ -528,6 +557,15 @@ export async function akmGraphUpdate(options: {
   if (sources.length === 0) {
     throw new NotFoundError("No stash sources are configured.", "STASH_NOT_FOUND");
   }
+  // R-024: `runGraphExtractionPass` always targets `sources[0]` (its own
+  // "primary (working) stash" convention — see graph-extraction.ts). The
+  // validated `matched` source used to be discarded here and the FULL
+  // unfiltered `sources` array passed through regardless, so `--source B`
+  // validated against B but silently extracted from whichever source
+  // happened to resolve first. Scope the array actually passed to the
+  // extraction pass down to exactly the requested source so `sources[0]`
+  // there really is the one the caller named.
+  let extractionSources = sources;
   if (options.source && options.source !== "primary") {
     const matched = sources.find((s) => s.registryId === options.source || s.path === options.source);
     if (!matched) {
@@ -537,6 +575,7 @@ export async function akmGraphUpdate(options: {
         "Run `akm list` to see source names.",
       );
     }
+    extractionSources = [matched];
   }
 
   const scoped = Array.isArray(options.refs) && options.refs.length > 0;
@@ -608,7 +647,7 @@ export async function akmGraphUpdate(options: {
 
       const result = await extractionFn({
         config,
-        sources,
+        sources: extractionSources,
         signal: undefined,
         db,
         reEnrich: false,

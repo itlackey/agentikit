@@ -32,8 +32,11 @@
  *   - LLM access is exclusively via `resolveIndexPassLLM("graph", config)`.
  *   - The graph rows are an indexer artifact, NOT a user-visible
  *     asset. It does not have an asset ref, does not appear in search
- *     hits, and is not addressable via `akm show`. Direct `fs.writeFile`
- *     is therefore the correct primitive — `writeAssetToSource` is
+ *     hits, and is not addressable via `akm show`. The persisted artifact
+ *     lives in indexer-owned SQLite tables (`replaceStoredGraph` /
+ *     `loadStoredGraphSnapshot` in `../db/graph-db.ts`), NOT as a file on
+ *     disk (R-065 #3 — this comment previously described a retired
+ *     `fs.writeFile`-based storage layout) — `writeAssetToSource` is
  *     reserved for asset writes (CLAUDE.md / spec §10 step 5).
  */
 

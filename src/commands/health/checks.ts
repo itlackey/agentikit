@@ -11,13 +11,12 @@ import { resolveModel } from "../../integrations/agent/model-aliases";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { resolveImprovePlan } from "../improve/improve-strategies";
 import {
+  ACTIVE_RUN_WARN_MS,
   type HealthCheckResult,
   type ImproveHealthMetrics,
   type SessionLogAdvisory,
   TASK_FAIL_RATE_WARN,
 } from "./types";
-
-const ACTIVE_RUN_WARN_MS = 15 * 60 * 1000;
 
 /**
  * Pre-computed inputs shared by the health-check registry. `akmHealth` runs the
