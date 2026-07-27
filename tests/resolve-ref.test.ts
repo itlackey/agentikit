@@ -19,6 +19,7 @@ import {
   parseAssetRef,
 } from "../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import {
+  conceptIdFromTypeName,
   displayRef,
   isFullRefInput,
   parseRefInput,
@@ -205,15 +206,79 @@ describe("parseRefInput", () => {
     });
   });
 
-  test("new-grammar conceptId with an unknown type prefix → NotFoundError naming the ref", () => {
-    let err: unknown;
-    try {
-      parseRefInput("notatype/thing");
-    } catch (e) {
-      err = e;
+  // Q-07/D11 — the ref-parser seam accepts opaque adapter conceptIds. Prior to
+  // this, ANY conceptId whose leading segment was not an AKM placement stashDir
+  // threw here — rejecting perfectly valid adapter-emitted conceptIds (OKF
+  // items, website pages, wiki pageKinds, adapter `instruction` docs) in every
+  // ref-consuming command except `show` (which bypasses this parser). This
+  // test used to pin the OLD (defect) behavior — a NotFoundError for
+  // "notatype/thing" — and is UPDATED here to pin the corrected D11 behavior:
+  // a well-formed `<segment>/<rest>` conceptId is accepted as opaque data.
+  test("new-grammar conceptId with an unknown-but-well-formed prefix → accepted as opaque data (D11)", () => {
+    expect(parseRefInput("notatype/thing")).toEqual({ type: "notatype", name: "notatype/thing", origin: undefined });
+    expect(parseRefInput("tables/customers")).toEqual({
+      type: "tables",
+      name: "tables/customers",
+      origin: undefined,
+    });
+    expect(parseRefInput("adversarial//tables/customers")).toEqual({
+      type: "tables",
+      name: "tables/customers",
+      origin: "adversarial",
+    });
+  });
+
+  test("D11 opaque acceptance round-trips through the UNCHANGED conceptIdFromTypeName", () => {
+    // This is the property the proposals-repository canonical-ref check and the
+    // index-utility-repository event matcher both depend on: reconstructing
+    // `type`/`name` via conceptIdFromTypeName must reproduce the exact input
+    // conceptId, not just its tail.
+    for (const conceptId of ["notatype/thing", "tables/customers", "sub/duplicate-b", "a/b/c/d"]) {
+      const parsed = parseRefInput(conceptId);
+      expect(conceptIdFromTypeName(parsed.type, parsed.name)).toBe(conceptId);
     }
-    expect(err).toBeInstanceOf(NotFoundError);
-    expect((err as Error).message).toContain("notatype/thing");
+  });
+
+  test("D11 collision guard: a leading segment that coincidentally spells a real type KEY (not its stashDir) still round-trips", () => {
+    // "skill" (singular) is a real PLACEMENT_SPECS type key, but ITS stashDir is
+    // "skills" (plural) — so "skill/foo" is not a known placement dir and falls
+    // into the opaque branch. Naively using "skill" as the opaque `type` would
+    // make `conceptIdFromTypeName("skill", …)` resolve via the REAL placement
+    // mapping (`stashDirFor("skill") === "skills"`) and corrupt the round-trip.
+    for (const key of [
+      "skill",
+      "command",
+      "agent",
+      "workflow",
+      "script",
+      "memory",
+      "secret",
+      "lesson",
+      "session",
+      "fact",
+    ]) {
+      const conceptId = `${key}/foo`;
+      const parsed = parseRefInput(conceptId);
+      expect(conceptIdFromTypeName(parsed.type, parsed.name)).toBe(conceptId);
+    }
+  });
+
+  test("D11 does NOT loosen acceptance of a bare (no-slash) name — still the caller's bare-name-to-qualify job", () => {
+    expect(() => parseRefInput("notatype")).toThrow(NotFoundError);
+    expect(() => parseRefInput("prod")).toThrow(NotFoundError);
+  });
+
+  test("D11 does NOT re-accept the retired colon `type:name` grammar (Q-02)", () => {
+    // No slash at all after the colon — already rejected pre-D11 too.
+    expect(() => parseRefInput("skill:code-review")).toThrow(NotFoundError);
+    expect(() => parseRefInput("knowledge:guide.md")).toThrow(NotFoundError);
+    // A slash appears in the NAME after the colon — this is exactly the shape
+    // the naive "accept any well-formed <segment>/<rest>" fallback would have
+    // wrongly re-admitted (the leading segment "script:db" / "workflow:release"
+    // would fail the AKM-placement lookup and fall into the opaque branch).
+    // The colon-in-leading-segment guard must still refuse these.
+    expect(() => parseRefInput("script:db/migrate/run.sh")).toThrow(NotFoundError);
+    expect(() => parseRefInput("workflow:release/train")).toThrow(NotFoundError);
   });
 
   test("an export #fragment is rejected at the input boundary", () => {

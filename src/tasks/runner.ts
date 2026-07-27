@@ -32,6 +32,7 @@ import os from "node:os";
 import path from "node:path";
 import { shouldSkipUnactivatedTask } from "../core/activation-policy";
 import { assertNever } from "../core/assert";
+import { placementSpecFor } from "../core/asset/asset-placement";
 import { parseRefInput } from "../core/asset/resolve-ref";
 import { loadConfig } from "../core/config/config";
 import { AkmError, NotFoundError, rethrowIfTestIsolationError } from "../core/errors";
@@ -576,6 +577,15 @@ async function resolvePromptText(task: TaskDocument, stashDir: string): Promise<
   }
   // asset
   const ref = parseRefInput(src.ref);
+  // D11 — see the matching guard in validator.ts: `resolveAssetPath`
+  // (src/sources/resolve.ts) is placement-dir-only and cannot route an
+  // opaque adapter conceptId, which `parseRefInput` now otherwise accepts.
+  if (placementSpecFor(ref.type) === undefined) {
+    throw new NotFoundError(
+      `Task "${task.id}" prompt asset ref "${src.ref}" is not an AKM-placed asset — adapter-owned (opaque) prompt sources are not resolvable as task inputs yet.`,
+      "ASSET_NOT_FOUND",
+    );
+  }
   const assetPath = await resolveAssetPath(stashDir, ref.type, ref.name);
   return fs.readFileSync(assetPath, "utf8");
 }

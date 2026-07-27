@@ -26,7 +26,17 @@ function normalizeRef(ref: string | AssetRef): AssetRef {
 }
 
 function buildDiskCandidates(sourcePath: string, ref: AssetRef, preserveDirectNameFallback: boolean): string[] {
-  const typeDir = path.join(sourcePath, stashDirFor(ref.type) ?? `${ref.type}s`);
+  const placementStashDir = stashDirFor(ref.type);
+  // D11 — an opaque adapter conceptId (`ref.type` not an AKM placement type;
+  // `parseRefInput` now accepts these) has no placement stash-subdir to route
+  // through, and `ref.name` already carries the FULL conceptId in that case
+  // (the parser's round-trip trick — see resolve-ref.ts). Probe it directly
+  // against the source root rather than calling `assetPathForName`, which
+  // throws for an unregistered type.
+  if (placementStashDir === undefined) {
+    return [path.join(sourcePath, `${ref.name}.md`), path.join(sourcePath, ref.name)];
+  }
+  const typeDir = path.join(sourcePath, placementStashDir);
   const candidates = [
     assetPathForName(ref.type, typeDir, ref.name),
     path.join(sourcePath, ref.type, `${ref.name}.md`),

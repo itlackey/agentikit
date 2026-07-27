@@ -82,6 +82,19 @@ describe("getRetrievalCounts", () => {
     expect(counts.get("commands/release")).toBe(1);
   });
 
+  test("matches an opaque adapter conceptId (Q-07/D11 — a leading segment outside AKM's own placement dirs)", () => {
+    // "tables" is not an AKM placement stash-subdir (skills/, knowledge/, …),
+    // so `bareRefCandidates` must reconstruct the FULL "tables/customers"
+    // conceptId — not just "customers" — to match these stored rows. Before
+    // the D11 parser-seam fix this silently under-counted (or, upstream in the
+    // proposals/tasks/graph/improve consumers, threw at the parser boundary).
+    seed("search", "adversarial//tables/customers");
+    seed("show", "adversarial//tables/customers");
+
+    const counts = getRetrievalCounts(db, stateDb, ["tables/customers"]);
+    expect(counts.get("tables/customers")).toBe(2);
+  });
+
   test("returns no entry for refs with no matching events", () => {
     seed("search", "stash//lessons/present");
     const counts = getRetrievalCounts(db, stateDb, ["lessons/absent"]);
