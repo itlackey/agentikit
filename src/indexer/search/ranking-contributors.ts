@@ -487,7 +487,7 @@ const utilityRankingContributor: UtilityRankingContributor = {
  *
  * Skipped entirely when `projectContext` is absent or has no tokens (e.g.
  * when running from home dir, /tmp, or when disabled via
- * `--no-project-context` / `AKM_DISABLE_PROJECT_CONTEXT=1`).
+ * `--no-project-context`).
  */
 const projectContextRankingContributor: RankingContributor = {
   name: "project-context-ranking",

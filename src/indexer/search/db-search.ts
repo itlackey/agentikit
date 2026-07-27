@@ -222,9 +222,29 @@ export async function searchLocal(input: {
     }
   }
   if (config.semanticSearchMode === "auto" && semanticStatus === "blocked") {
-    warnings.push(
-      "Semantic search is currently blocked. Using keyword search until the semantic backend is healthy again.",
-    );
+    if (!config.embedding?.endpoint || !config.embedding?.model) {
+      // F7/A2: same predicate as the `pending` branch above (#480) — a
+      // `blocked` status can outlive the provider config that produced it
+      // (e.g. the embedding config was later unset). This is not a fault;
+      // there is simply nothing configured to use.
+      warnings.push(
+        "Semantic search is enabled (semanticSearchMode='auto') but no embedding provider is configured. " +
+          'Either: (a) `akm config set embedding \'{"endpoint":"...","model":"..."}\'`, or ' +
+          "(b) `akm config set semanticSearchMode off` to use keyword-only search.",
+      );
+    } else {
+      // F7/A2: surface the ACTUAL diagnostic instead of one fixed generic
+      // string. `rawStatus.reason`/`rawStatus.message` record why the
+      // semantic backend failed (auth, network, a stuck local-model
+      // download, …) — read at `readSemanticStatus()` above and, before
+      // this fix, discarded here in favor of a message that never varied.
+      const detail = rawStatus?.message ?? (rawStatus?.reason ? `reason: ${rawStatus.reason}` : undefined);
+      warnings.push(
+        `Semantic search is blocked${detail ? ` (${detail})` : ""}. Using keyword search until the semantic ` +
+          "backend is healthy again. Run 'akm index --full' to retry, or " +
+          "`akm config set semanticSearchMode off` to silence this warning.",
+      );
+    }
   }
 
   // Bootstrap-only: builds the index inline when it cannot serve this stash.
@@ -446,7 +466,7 @@ async function searchDatabase(
 
   // Resolve project-context tokens from the current working directory once
   // per search invocation. Returns null when running from home dir / /tmp,
-  // or when the caller has set AKM_DISABLE_PROJECT_CONTEXT=1.
+  // or when the caller passed `--no-project-context` (disableProjectContext).
   const projectContext = disableProjectContext ? null : resolveProjectContext(process.cwd());
 
   // Phase 2A / Rec 5: resolve forgetting-curve config and skip the feedback
@@ -466,7 +486,8 @@ async function searchDatabase(
     : undefined;
 
   // Resolve per-project scope key for scoped utility scoring.
-  // AKM_DISABLE_SCOPED_UTILITY=1 opts out (e.g. for registry searches or tests).
+  // `disableScopedUtility` (wired from `akm search --no-project-context`)
+  // opts out (e.g. for registry searches or tests).
   let scopeKey: string | undefined;
   try {
     scopeKey = disableScopedUtility ? undefined : getCurrentWorkflowScopeKey();
