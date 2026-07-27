@@ -70,10 +70,14 @@
  * logic, not re-implementing it. Neither is a taxonomy import-cycle (SCC)
  * participant: `matchers.ts` resolves renderers via `type-presentation.ts`, and
  * `asset-placement.ts` is a pure leaf (only Node builtins + `recognition-util`).
- * Nothing in `src/` imports this adapter back (only the test-only
- * `adapters/index.ts` barrel does, and nothing in `src/` imports THAT), so the
- * adapter is itself a leaf — verified: `bun scripts/lint-import-cycles.ts` stays
- * within baseline and this module is NOT a participant.
+ * Nothing in `src/` imports this adapter back except the `adapters/index.ts`
+ * barrel — which is NOT test-only: `core/adapter/registry.ts:33` imports it
+ * in production for the frozen `BUILTIN_ADAPTERS` list
+ * (`installations.ts#detectAdapterId`, `provider-utils.ts#detectStashRoot`).
+ * The adapter is still itself a leaf, since neither the barrel nor the
+ * registry import anything that imports back into this file — verified: `bun
+ * scripts/lint-import-cycles.ts` reports 0 cycle participants and this module
+ * is NOT one.
  */
 
 import fs from "node:fs";

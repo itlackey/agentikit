@@ -9,6 +9,12 @@
  * JSON-parse-guarded row → {@link DbIndexedEntry} mapping that several queries
  * used to reimplement. Corrupt `entry_json` rows are skipped (warn once) rather
  * than crashing the caller.
+ *
+ * Relocated from `src/indexer/db/entry-mapper.ts` (WI-5a): it now imports the
+ * shared shapes from the leaf types module `./index-entry-types.ts` rather
+ * than reaching across the storage↔indexer boundary into `db.ts`, so it no
+ * longer participates in the `db.ts` / `entry-mapper.ts` / `schema.ts` import
+ * cycle that used to pin them together.
  */
 
 import { warn } from "../../core/warn";

@@ -4,11 +4,12 @@
  *   - harnesses/aider/agent-builder.ts    — headless argv construction
  *   - harnesses/aider/result-extractor.ts — stdout → { text, sessionId? }
  *
- * The builder/extractor are exercised directly (they are NOT registered in
- * builders.ts / harnesses/index.ts yet — wiring is a follow-up integration
- * task). No real binaries are spawned; extractor fixtures are representative
- * captures of aider's documented plain-text terminal output (aider has no
- * structured output mode at all).
+ * The Aider harness IS registered in `HARNESS_REGISTRY` / `BUILTIN_BUILDERS`
+ * (see `src/integrations/harnesses/index.ts`); the builder/extractor are
+ * exercised directly here for focused unit-level coverage of argv
+ * construction and result extraction. No real binaries are spawned;
+ * extractor fixtures are representative captures of aider's documented
+ * plain-text terminal output (aider has no structured output mode at all).
  */
 import { describe, expect, test } from "bun:test";
 import type { AgentProfile } from "../../src/integrations/agent/profiles";

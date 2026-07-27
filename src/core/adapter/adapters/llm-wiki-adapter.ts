@@ -60,11 +60,15 @@
  *
  * ── Cycle-safety ──
  *
- * Imported ONLY by the test-only `adapters/index.ts` barrel (nothing in `src/`
- * imports that), so this leaf can never gain an inbound edge from a cycle
- * participant. It value-imports only pure leaves (`frontmatter`, `shared`) plus
- * Node builtins + `yaml` (already a runtime dep). Verified: `bun
- * scripts/lint-import-cycles.ts` stays within baseline (13) with this file present.
+ * Imported by the `adapters/index.ts` barrel, which is NOT test-only: `core/
+ * adapter/registry.ts:33` imports it in production for the frozen
+ * `BUILTIN_ADAPTERS` list (`installations.ts#detectAdapterId`,
+ * `provider-utils.ts#detectStashRoot`). This still can never gain an inbound
+ * edge from a cycle participant, since neither the barrel nor the registry
+ * import anything that imports back into this file. It value-imports only
+ * pure leaves (`frontmatter`, `shared`) plus Node builtins + `yaml` (already a
+ * runtime dep). Verified: `bun scripts/lint-import-cycles.ts` reports 0 cycle
+ * participants with this file present.
  */
 
 import fs from "node:fs";

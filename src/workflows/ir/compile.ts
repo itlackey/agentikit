@@ -184,8 +184,10 @@ function compileProgramStep(
     id: `${step.id}.gate`,
     stepId: step.id,
     criteria: step.gate?.criteria ?? [],
-    // TODO(R2): maxLoops execution (bounded evaluator-optimizer) is engine
-    // rework scope; carried through the frozen plan now.
+    // maxLoops (bounded evaluator-optimizer gate loop, addendum R2) is
+    // carried through the frozen plan here; the native executor
+    // (`src/workflows/exec/native-executor.ts`) is what actually runs the
+    // bounded re-execution loop on an `artifactSchemaFailure`.
     ...(step.gate?.maxLoops !== undefined ? { maxLoops: step.gate.maxLoops } : {}),
     // Reviewer #18: a required gate rides the frozen plan so BOTH surfaces
     // (engine + report) enforce it identically.
@@ -221,8 +223,9 @@ function compileProgramStep(
           },
         }
       : {}),
-    // TODO(R2): validating the reducer result against this schema (typed step
-    // artifacts) is engine-rework scope; the frozen plan carries it now.
+    // Typed step artifacts (addendum R2): this schema is carried through the
+    // frozen plan here; the native executor validates the promoted artifact
+    // against it before the step can complete (`artifactSchemaFailure`).
     ...(step.output !== undefined ? { outputSchema: step.output } : {}),
     gate,
   };
@@ -241,7 +244,9 @@ function compileProgramUnit(unit: ProgramUnit, id: string, defaults: ProgramDefa
     // the executor resolves them per unit.
     templating: "expressions",
     ...(unit.output !== undefined ? { schema: unit.output } : {}),
-    // TODO(R2): retry dispatch is engine-rework scope; carried through now.
+    // retry (addendum R2) is carried through the frozen plan here; the
+    // native executor re-dispatches a failed unit up to `max` times when its
+    // `failureReason` is in `on`, each attempt journaled under its own row.
     ...(unit.retry ? { retry: { max: unit.retry.max, on: [...unit.retry.on] } } : {}),
     onError: unit.onError ?? defaults?.onError ?? "fail",
     ...(unit.env ? { env: [...unit.env] } : {}),

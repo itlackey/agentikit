@@ -42,9 +42,13 @@ export function getWorkflowTemplate(): string {
  * Minimal valid YAML workflow *program* (redesign addendum, R1), printed by
  * `akm workflow template --yaml`. Kept as an external asset file per the repo
  * convention (see `workflow-program-template.yaml` next to this module);
+ * `tests/workflows/authoring-template.test.ts` pins that it parses AND
+ * compiles (in-process, runs unconditionally in `bun run check`/CI).
  * `tests/integration/node-compat.test.ts` ("workflow template --yaml
- * round-trips through validate on Node") pins that it parses AND compiles,
- * since `akm workflow validate` runs YAML programs through both.
+ * round-trips through validate on Node") additionally round-trips it through
+ * the real CLI on the Node runtime, but that one is gated behind
+ * `AKM_NODE_COMPAT_TESTS=1` and does not run by default — it is a bonus
+ * cross-runtime check, not the thing pinning correctness.
  */
 export function getWorkflowProgramTemplate(): string {
   return workflowProgramTemplate;

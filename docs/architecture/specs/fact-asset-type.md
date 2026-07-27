@@ -120,7 +120,12 @@ search hints (no new DB columns or `StashEntry` fields):
 | Type union | `KNOWN_TYPES` in `src/core/recognition-util.ts`, which includes `fact` |
 
 `fact:` refs resolve automatically — the ref resolver derives its type set
-from `KNOWN_TYPES` (`src/commands/lint/base-linter.ts` contract note).
+from `PLACEMENT_SPECS`, not `KNOWN_TYPES`: `typeNameFromConceptId`
+(`src/core/asset/resolve-ref.ts`) calls `typeForStashDir`
+(`src/core/asset/asset-placement.ts`), and `fact` has a `PLACEMENT_SPECS`
+entry (`stashDir: "facts"`). The ref-resolver contract note in
+`src/commands/lint/base-linter.ts` confirms the same split: `refToRelPath` is
+"DERIVED FROM THE PLACEMENT SPECS ... rather than hand-encoded."
 
 ## Phase 2 (follow-up, not in this change)
 

@@ -6,9 +6,10 @@
  *   - harnesses/codex/result-extractor.ts — JSONL (both dialects) / plain
  *     stdout normalization into { text, sessionId? }
  *
- * The adapter is intentionally NOT registered in HARNESS_REGISTRY /
- * BUILTIN_BUILDERS yet (a follow-up integration task wires it), so everything
- * here imports the modules directly. No real binaries are spawned.
+ * The Codex adapter IS registered in HARNESS_REGISTRY / BUILTIN_BUILDERS (see
+ * `src/integrations/harnesses/index.ts`); this suite still imports the
+ * modules directly for focused unit-level coverage of argv construction and
+ * result extraction. No real binaries are spawned.
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
