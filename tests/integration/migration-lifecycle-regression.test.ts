@@ -304,7 +304,7 @@ function writeApplyJournalForTest(
   fs.writeFileSync(
     journalPath,
     `${JSON.stringify({
-      formatVersion: 2,
+      formatVersion: 4,
       version: "0.9.0",
       operationId: "apply-test-operation",
       installationId: path.basename(getMigrationBackupRoot()),
@@ -312,6 +312,8 @@ function writeApplyJournalForTest(
       backupPath: backup.path,
       phase: "prepared",
       targetConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
+      migrationLockEntries: [],
+      pathResolutionBase: path.resolve(process.cwd()),
       generation: fingerprintMigrationGeneration(),
       ...overrides,
     })}\n`,
@@ -320,7 +322,7 @@ function writeApplyJournalForTest(
   return journalPath;
 }
 
-function seedOlderRcApplyJournal(
+function seedInterruptedApplyJournal(
   phase: "state-applied" | "workflow-applied",
   options?: { failingCutover?: boolean },
 ): {
@@ -328,7 +330,7 @@ function seedOlderRcApplyJournal(
   operationId: string;
 } {
   writeConfig("0.8.0");
-  seedPreCutoverState("older-rc-state");
+  seedPreCutoverState("interrupted-state");
   seedPreCutoverWorkflow();
   const backup = createMigrationBackup();
 
@@ -360,7 +362,7 @@ function seedOlderRcApplyJournal(
   // before deciding whether that generation can be rewound safely.
   fs.rmSync(`${getStateDbPathInDataDir()}-wal`, { force: true });
   fs.rmSync(`${getStateDbPathInDataDir()}-shm`, { force: true });
-  const operationId = `older-rc-${phase}`;
+  const operationId = `interrupted-${phase}`;
   const journalPath = writeApplyJournalForTest(backup, {
     operationId,
     phase,
@@ -370,7 +372,7 @@ function seedOlderRcApplyJournal(
   return { journalPath, operationId };
 }
 
-const OLDER_RC_FORWARD_PHASES = [
+const INTERRUPTED_FORWARD_PHASES = [
   "cutover-applied",
   "config-applied",
   "tasks-prepared",
@@ -380,17 +382,17 @@ const OLDER_RC_FORWARD_PHASES = [
   "committed",
 ] as const;
 
-type OlderRcForwardPhase = (typeof OLDER_RC_FORWARD_PHASES)[number];
+type InterruptedForwardPhase = (typeof INTERRUPTED_FORWARD_PHASES)[number];
 
-function seedOlderRcForwardJournal(
-  phase: OlderRcForwardPhase,
+function seedInterruptedForwardJournal(
+  phase: InterruptedForwardPhase,
   nonexact: boolean,
 ): { backupPath: string; guard: Database; journalPath: string; operationId: string } {
   writeConfig("0.8.0");
-  seedPreCutoverState("older-rc-forward");
+  seedPreCutoverState("interrupted-forward");
   seedPreCutoverWorkflow();
   const backup = createMigrationBackup();
-  const operationId = `older-rc-${phase}-${nonexact ? "nonexact" : "exact"}`;
+  const operationId = `interrupted-${phase}-${nonexact ? "nonexact" : "exact"}`;
   const statePath = getStateDbPathInDataDir();
   const state = openDatabaseFinalizing(statePath);
   runStateMigrations(state);
@@ -867,7 +869,7 @@ describe("migration lifecycle regressions", () => {
 
   for (const phase of ["state-applied", "workflow-applied"] as const) {
     test(`${phase} apply preflight preserves committed workflow WAL without a source SHM`, async () => {
-      const { journalPath } = seedOlderRcApplyJournal(phase);
+      const { journalPath } = seedInterruptedApplyJournal(phase);
       if (phase === "state-applied") {
         const workflow = openDatabaseFinalizing(getLegacyWorkflowDbPath());
         try {
@@ -918,7 +920,7 @@ describe("migration lifecycle regressions", () => {
     }, 20_000);
 
     test(`${phase} apply preflight fails closed on a generation changed after journal authentication`, async () => {
-      const { journalPath } = seedOlderRcApplyJournal(phase);
+      const { journalPath } = seedInterruptedApplyJournal(phase);
       const changedPath = phase === "state-applied" ? getLegacyWorkflowDbPath() : getStateDbPathInDataDir();
       let hookCalls = 0;
       overrideSeam(_setApplyPreflightHookForTests, (actualPhase) => {
@@ -966,7 +968,7 @@ describe("migration lifecycle regressions", () => {
 
   for (const phase of ["state-applied", "workflow-applied"] as const) {
     test(`${phase} apply preserves a source changed during snapshot construction`, async () => {
-      const { journalPath } = seedOlderRcApplyJournal(phase);
+      const { journalPath } = seedInterruptedApplyJournal(phase);
       const changedPath = phase === "state-applied" ? getLegacyWorkflowDbPath() : getStateDbPathInDataDir();
       let hookCalls = 0;
       overrideSeam(_setMigrationSnapshotHookForTests, ({ sourcePath, applyPhase }) => {
@@ -1014,7 +1016,7 @@ describe("migration lifecycle regressions", () => {
   }
 
   test("migrate status reports a source changed during snapshot construction", async () => {
-    const { journalPath } = seedOlderRcApplyJournal("state-applied");
+    const { journalPath } = seedInterruptedApplyJournal("state-applied");
     const changedPath = getLegacyWorkflowDbPath();
     const journalBefore = JSON.parse(fs.readFileSync(journalPath, "utf8")) as { backupPath: string };
     let hookCalls = 0;
@@ -1046,8 +1048,8 @@ describe("migration lifecycle regressions", () => {
   });
 
   for (const phase of ["state-applied", "workflow-applied"] as const) {
-    test(`resumes an exact older-RC ${phase} journal through durable state conversion`, async () => {
-      const { journalPath, operationId } = seedOlderRcApplyJournal(phase);
+    test(`resumes an exact interrupted ${phase} journal through durable state conversion`, async () => {
+      const { journalPath, operationId } = seedInterruptedApplyJournal(phase);
       const generationBeforeStatus = fingerprintMigrationGeneration();
       const journalBeforeStatus = fs.readFileSync(journalPath);
 
@@ -1084,8 +1086,8 @@ describe("migration lifecycle regressions", () => {
       }
     });
 
-    test(`fails closed on a nonexact older-RC ${phase} journal before opening WAL state`, async () => {
-      const { journalPath } = seedOlderRcApplyJournal(phase);
+    test(`fails closed on a nonexact interrupted ${phase} journal before opening WAL state`, async () => {
+      const { journalPath } = seedInterruptedApplyJournal(phase);
       const statePath = getStateDbPathInDataDir();
       const shmPath = `${statePath}-shm`;
       const tripwire = Buffer.from("nonexact generation: SQLite inspection must not touch this SHM path\n");
@@ -1108,10 +1110,10 @@ describe("migration lifecycle regressions", () => {
     });
   }
 
-  for (const phase of OLDER_RC_FORWARD_PHASES) {
+  for (const phase of INTERRUPTED_FORWARD_PHASES) {
     for (const nonexact of [false, true]) {
-      test(`resumes an ${nonexact ? "nonexact" : "exact"} older-RC WAL journal from ${phase} without a conversion marker`, async () => {
-        const { backupPath, guard, journalPath, operationId } = seedOlderRcForwardJournal(phase, nonexact);
+      test(`resumes an ${nonexact ? "nonexact" : "exact"} interrupted WAL journal from ${phase} without a conversion marker`, async () => {
+        const { backupPath, guard, journalPath, operationId } = seedInterruptedForwardJournal(phase, nonexact);
         const journalBeforeStatus = fs.readFileSync(journalPath);
 
         const status = await runCliCapture(["migrate", "status"]);
@@ -1146,8 +1148,8 @@ describe("migration lifecycle regressions", () => {
     }
   }
 
-  test("rejects an older-RC cutover-applied journal with another operation's cutover marker", async () => {
-    const seeded = seedOlderRcForwardJournal("cutover-applied", false);
+  test("rejects an interrupted cutover-applied journal with another operation's cutover marker", async () => {
+    const seeded = seedInterruptedForwardJournal("cutover-applied", false);
     const journalBefore = fs.readFileSync(seeded.journalPath);
     seeded.guard.close();
     const state = new Database(getStateDbPathInDataDir());
@@ -1161,8 +1163,8 @@ describe("migration lifecycle regressions", () => {
     expect(fs.existsSync(seeded.backupPath)).toBe(true);
   });
 
-  test("a rewound older-RC workflow journal retains rollback authority when cutover fails", async () => {
-    const { journalPath } = seedOlderRcApplyJournal("workflow-applied", { failingCutover: true });
+  test("a rewound interrupted workflow journal retains rollback authority when cutover fails", async () => {
+    const { journalPath } = seedInterruptedApplyJournal("workflow-applied", { failingCutover: true });
 
     const resumed = await runCliCapture(["migrate", "apply"]);
     expect(resumed.code).not.toBe(0);

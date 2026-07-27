@@ -49,16 +49,10 @@ import {
 } from "./migration-backup";
 import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { runMigrations as runStateMigrations } from "../../src/core/state/migrations";
-import {
-  isValidLockfileEntry,
-  type LockfileEntry,
-  mergeLockEntriesSync,
-  readLockfile,
-} from "../../src/integrations/lockfile";
+import { isValidLockfileEntry, type LockfileEntry, mergeLockEntriesSync } from "../../src/integrations/lockfile";
 import {
   migrateConfigSourcesToBundles,
   migratedLockEntries,
-  oldConfigHasRelativeSourcePaths,
   oldConfigToSearchSources,
 } from "./migrate/legacy/config-source-migration";
 import { type ContentMigrationReport, runContentMigration } from "./migrate/legacy/content-migration";
@@ -140,7 +134,7 @@ const APPLY_PHASE_ORDER: ApplyPhase[] = [
 ];
 
 interface ApplyJournal {
-  formatVersion: 2 | 3 | 4;
+  formatVersion: 4;
   version: typeof MIGRATION_BACKUP_VERSION;
   operationId: string;
   installationId: string;
@@ -242,58 +236,6 @@ function isMigrationLockEntries(value: unknown): value is LockfileEntry[] {
   );
 }
 
-function applyJournalHasRelativeSourcePaths(journal: ApplyJournal, backupConfig: Record<string, unknown>): boolean {
-  if (oldConfigHasRelativeSourcePaths(backupConfig)) return true;
-  const bundles = journal.targetConfig.bundles;
-  if (bundles && typeof bundles === "object" && !Array.isArray(bundles)) {
-    for (const entry of Object.values(bundles)) {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-      const bundlePath = (entry as { path?: unknown }).path;
-      if (typeof bundlePath === "string" && bundlePath.length > 0 && !path.isAbsolute(expandTilde(bundlePath))) {
-        return true;
-      }
-    }
-  }
-  return journal.migrationLockEntries.some(
-    (entry) => entry.localRoot !== undefined && !path.isAbsolute(expandTilde(entry.localRoot)),
-  );
-}
-
-function recoverV2MigrationLockEntries(journal: ApplyJournal): LockfileEntry[] {
-  const configBackupPath = path.join(journal.backupPath, "config.json");
-  const backupEntries = fs.existsSync(configBackupPath)
-    ? migratedLockEntries(
-        parseConfigText(
-          readTextFileWithLimit(configBackupPath, MAX_CONFIG_FILE_BYTES, "Migration backup config"),
-          configBackupPath,
-        ),
-      )
-    : [];
-  const bundles = journal.targetConfig.bundles;
-  if (!bundles || typeof bundles !== "object" || Array.isArray(bundles)) return [];
-  const managedBundleIds = new Set(
-    Object.entries(bundles)
-      .filter(([, entry]) => {
-        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
-        return "git" in entry || "npm" in entry;
-      })
-      .map(([id]) => id),
-  );
-  const candidates = [...backupEntries, ...readLockfile()];
-  const byId = new Map<string, LockfileEntry>();
-  for (const entry of candidates) {
-    if (managedBundleIds.has(entry.id) && entry.localRoot) byId.set(entry.id, entry);
-  }
-  const missing = [...managedBundleIds].filter((id) => !byId.has(id));
-  if (missing.length > 0) {
-    throw new ConfigError(
-      `Cannot recover materialized roots for format-2 migration journal bundle(s): ${missing.join(", ")}. ` +
-        "Restore the journal's verified backup or supply the missing lock roots before resuming.",
-      "INVALID_CONFIG_FILE",
-    );
-  }
-  return [...byId.values()];
-}
 
 /**
  * Collapse state.db to a SINGLE FILE (DELETE journal) for the rest of the
@@ -1150,8 +1092,6 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
   const journalPath = getMigrationApplyJournalPath();
   if (!fs.existsSync(journalPath)) return {};
   let journal: ApplyJournal;
-  let wasFormat2 = false;
-  let originalFormatVersion: 2 | 3 | 4;
   try {
     const value = JSON.parse(
       readTextFileWithLimit(journalPath, MAX_LOCAL_METADATA_BYTES, "Migration apply journal"),
@@ -1171,19 +1111,15 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
       "rollback-prepared",
       "committed",
     ];
-    const formatVersion =
-      typeof value === "object" && value !== null && !Array.isArray(value)
-        ? (value as { formatVersion?: unknown }).formatVersion
-        : undefined;
     const requiredKeys = [
       "backupPath",
       "backupRunId",
       "formatVersion",
       "generation",
       "installationId",
-      ...(formatVersion === 3 || formatVersion === 4 ? ["migrationLockEntries"] : []),
+      "migrationLockEntries",
       "operationId",
-      ...(formatVersion === 4 ? ["pathResolutionBase"] : []),
+      "pathResolutionBase",
       "phase",
       "targetConfig",
       "version",
@@ -1198,7 +1134,7 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
     }
     const candidate = value as Partial<ApplyJournal>;
     if (
-      (candidate.formatVersion !== 2 && candidate.formatVersion !== 3 && candidate.formatVersion !== 4) ||
+      candidate.formatVersion !== 4 ||
       candidate.version !== MIGRATION_BACKUP_VERSION ||
       typeof candidate.operationId !== "string" ||
       !/^[A-Za-z0-9._-]+$/.test(candidate.operationId) ||
@@ -1211,22 +1147,13 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
       typeof candidate.targetConfig !== "object" ||
       Array.isArray(candidate.targetConfig) ||
       !phases.includes(candidate.phase as ApplyPhase) ||
-      ((candidate.formatVersion === 3 || candidate.formatVersion === 4) &&
-        !isMigrationLockEntries(candidate.migrationLockEntries)) ||
-      (candidate.formatVersion === 4 &&
-        (typeof candidate.pathResolutionBase !== "string" || !path.isAbsolute(candidate.pathResolutionBase)))
+      !isMigrationLockEntries(candidate.migrationLockEntries) ||
+      typeof candidate.pathResolutionBase !== "string" ||
+      !path.isAbsolute(candidate.pathResolutionBase)
     ) {
       return { error: `Invalid or foreign migration apply journal at ${journalPath}.` };
     }
-    wasFormat2 = candidate.formatVersion === 2;
-    originalFormatVersion = candidate.formatVersion;
-    journal = {
-      ...(candidate as ApplyJournal),
-      formatVersion: 4,
-      migrationLockEntries: candidate.formatVersion === 2 ? [] : (candidate.migrationLockEntries ?? []),
-      pathResolutionBase:
-        candidate.formatVersion === 4 ? (candidate.pathResolutionBase as string) : path.resolve(process.cwd()),
-    };
+    journal = candidate as ApplyJournal;
   } catch (error) {
     return {
       error: `Unreadable migration apply journal at ${journalPath}: ${error instanceof Error ? error.message : String(error)}`,
@@ -1252,24 +1179,6 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
         "INVALID_CONFIG_FILE",
       );
     }
-    if (wasFormat2 && journal.phase !== "rollback-prepared") {
-      journal.migrationLockEntries = recoverV2MigrationLockEntries(journal);
-    }
-    if (originalFormatVersion !== 4 && journal.phase !== "rollback-prepared") {
-      const backupConfigPath = path.join(journal.backupPath, "config.json");
-      const backupConfig = fs.existsSync(backupConfigPath)
-        ? parseConfigText(
-            readTextFileWithLimit(backupConfigPath, MAX_CONFIG_FILE_BYTES, "Migration backup config"),
-            backupConfigPath,
-          )
-        : {};
-      if (applyJournalHasRelativeSourcePaths(journal, backupConfig)) {
-        throw new ConfigError(
-          `Cannot safely resume format-${originalFormatVersion} migration apply journal with relative source paths because it lacks the original working-directory binding.`,
-          "INVALID_CONFIG_FILE",
-        );
-      }
-    }
     return { journal, config, manifest };
   } catch (error) {
     return {
@@ -1292,7 +1201,6 @@ function journalArtifactState(
 
 function stateBeforeCompatibilityConversion(journal: ApplyJournal, manifest: MigrationBackupManifest): MigrationState {
   const workflowBackup = manifest.artifacts["workflow.db"];
-  const indexBackup = manifest.artifacts["index.db"];
   return {
     config: journalArtifactState(manifest.artifacts["config.json"]),
     state: { status: manifest.artifacts["state.db"].present ? "current" : "missing" },
@@ -1300,7 +1208,7 @@ function stateBeforeCompatibilityConversion(journal: ApplyJournal, manifest: Mig
       journal.phase === "workflow-applied" && workflowBackup.present
         ? { status: "current" }
         : journalArtifactState(workflowBackup),
-    index: indexBackup ? journalArtifactState(indexBackup) : { status: "missing" },
+    index: journalArtifactState(manifest.artifacts["index.db"]),
   };
 }
 

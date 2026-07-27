@@ -51,27 +51,17 @@ import { STATE_MIGRATIONS } from "../../src/core/state/migrations";
 
 export const MIGRATION_BACKUP_VERSION = "0.9.0" as const;
 const MANIFEST_FORMAT_VERSION = 3 as const;
-/** Pre-cutover manifests (three artifacts, no index.db) stay readable and restorable (plan §3.3 item 1). */
-const LEGACY_MANIFEST_FORMAT_VERSION = 2 as const;
 const RESTORE_JOURNAL_FORMAT_VERSION = 2 as const;
-const CORE_ARTIFACT_NAMES = ["config.json", "state.db", "workflow.db"] as const;
 // index.db joined the backup set at manifest v3 (chunk-8 WI-8.1): it is a
 // regenerable cache backed up ONLY as the pre-rescue home of usage_events,
 // which the three-DB cutover moves into state.db (plan §3.2/§3.3).
-const ARTIFACT_NAMES = [...CORE_ARTIFACT_NAMES, "index.db"] as const;
+const ARTIFACT_NAMES = ["config.json", "state.db", "workflow.db", "index.db"] as const;
 const MAX_BLOCKER_DIRECTORY_SAMPLES = 100;
 const MAX_WORKFLOW_BLOCKER_SAMPLES = 100;
 const MAX_BLOCKER_FIELD_BYTES = 256;
 const MAX_BLOCKER_ITEM_BYTES = 512;
 const MAX_BLOCKER_DIAGNOSTIC_BYTES = 16 * 1024;
-type CoreArtifactName = (typeof CORE_ARTIFACT_NAMES)[number];
 type ArtifactName = (typeof ARTIFACT_NAMES)[number];
-type ManifestFormatVersion = typeof MANIFEST_FORMAT_VERSION | typeof LEGACY_MANIFEST_FORMAT_VERSION;
-
-/** The artifact set a manifest of the given format version records (v2 = pre-cutover three-artifact shape). */
-function artifactNamesFor(formatVersion: ManifestFormatVersion): readonly ArtifactName[] {
-  return formatVersion === LEGACY_MANIFEST_FORMAT_VERSION ? CORE_ARTIFACT_NAMES : ARTIFACT_NAMES;
-}
 export type MigrationArtifactStatus = "old" | "current" | "newer" | "inconsistent" | "missing" | "corrupt";
 
 export interface MigrationArtifactState {
@@ -98,15 +88,14 @@ export interface MigrationBackupArtifact extends MigrationArtifactState {
 }
 
 export interface MigrationBackupManifest {
-  formatVersion: ManifestFormatVersion;
+  formatVersion: typeof MANIFEST_FORMAT_VERSION;
   version: typeof MIGRATION_BACKUP_VERSION;
   targetVersion: typeof MIGRATION_BACKUP_VERSION;
   installationId: string;
   runId: string;
   createdAt: string;
   complete: true;
-  /** v2 manifests carry only the three core artifacts; index.db exists from v3 on. */
-  artifacts: Record<CoreArtifactName, MigrationBackupArtifact> & { "index.db"?: MigrationBackupArtifact };
+  artifacts: Record<ArtifactName, MigrationBackupArtifact>;
 }
 
 /** Artifact lookup that enforces the per-version presence parseManifest guarantees. */
@@ -398,7 +387,7 @@ function parseManifest(bundlePath: string): MigrationBackupManifest {
   }
   const manifest = value as Partial<MigrationBackupManifest>;
   if (
-    (manifest.formatVersion !== MANIFEST_FORMAT_VERSION && manifest.formatVersion !== LEGACY_MANIFEST_FORMAT_VERSION) ||
+    manifest.formatVersion !== MANIFEST_FORMAT_VERSION ||
     manifest.version !== MIGRATION_BACKUP_VERSION ||
     manifest.targetVersion !== MIGRATION_BACKUP_VERSION ||
     manifest.installationId !== path.basename(getMigrationOperationRoot()) ||
@@ -413,7 +402,7 @@ function parseManifest(bundlePath: string): MigrationBackupManifest {
     );
   }
   const expected = expectedSourcePaths();
-  for (const name of artifactNamesFor(manifest.formatVersion as ManifestFormatVersion)) {
+  for (const name of ARTIFACT_NAMES) {
     const artifact = manifest.artifacts?.[name];
     // index.db is never ledger-classified: "current" (readable) or "missing" only.
     const allowedStatuses = name === "index.db" ? ["current", "missing", "corrupt"] : ["old", "current", "missing"];
@@ -483,7 +472,7 @@ export function verifyMigrationBackup(bundlePath = resolveBackupRun()): Migratio
   }
   const manifest = parseManifest(bundlePath);
   const expectedFiles = new Set(["manifest.json"]);
-  for (const name of artifactNamesFor(manifest.formatVersion)) {
+  for (const name of ARTIFACT_NAMES) {
     const artifact = manifestArtifact(manifest, name);
     const artifactPath = path.join(bundlePath, name);
     if (!artifact.present) {
@@ -1034,17 +1023,8 @@ function validateRestoreJournal(raw: unknown, journalPath: string): RestoreJourn
       invalidRestoreJournal(journalPath, `${field} is not a safe operation identifier`);
     }
   }
-  // The exact entry count depends on the SOURCE manifest's format version
-  // (v2 = three artifacts, v3 adds index.db); the precise check happens after
-  // the source backup is verified below. Here: bound the shape.
-  if (
-    !Array.isArray(raw.entries) ||
-    (raw.entries.length !== ARTIFACT_NAMES.length && raw.entries.length !== CORE_ARTIFACT_NAMES.length)
-  ) {
-    invalidRestoreJournal(
-      journalPath,
-      `expected ${CORE_ARTIFACT_NAMES.length} or ${ARTIFACT_NAMES.length} artifact entries`,
-    );
+  if (!Array.isArray(raw.entries) || raw.entries.length !== ARTIFACT_NAMES.length) {
+    invalidRestoreJournal(journalPath, `expected ${ARTIFACT_NAMES.length} artifact entries`);
   }
 
   const operationId = raw.operationId as string;
@@ -1061,15 +1041,8 @@ function validateRestoreJournal(raw: unknown, journalPath: string): RestoreJourn
       `source backup ${sourceRunId} is unavailable or invalid: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  const journalNames = artifactNamesFor(sourceManifest.formatVersion);
-  if (raw.entries.length !== journalNames.length) {
-    invalidRestoreJournal(
-      journalPath,
-      `expected exactly ${journalNames.length} artifact entries for source backup format ${sourceManifest.formatVersion}`,
-    );
-  }
-  const entries = journalNames.map((name) => byDestination.get(expectedPaths[name]) as RestoreJournalEntry);
-  for (const [index, name] of journalNames.entries()) {
+  const entries = ARTIFACT_NAMES.map((name) => byDestination.get(expectedPaths[name]) as RestoreJournalEntry);
+  for (const [index, name] of ARTIFACT_NAMES.entries()) {
     const entry = entries[index];
     if (!entry) {
       invalidRestoreJournal(journalPath, `journal has no entry for ${name}`);
@@ -1352,7 +1325,7 @@ function replaceArtifactsFromBundle(bundlePath: string, manifest: MigrationBacku
   const entries: RestoreJournalEntry[] = [];
   let journal: RestoreJournal | undefined;
   let committed = false;
-  const restoreNames = artifactNamesFor(manifest.formatVersion);
+  const restoreNames = ARTIFACT_NAMES;
   try {
     for (const name of restoreNames) {
       const artifact = manifestArtifact(manifest, name);

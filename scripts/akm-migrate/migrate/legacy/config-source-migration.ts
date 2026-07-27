@@ -209,23 +209,6 @@ export function oldConfigMigratableSources(
   return deduplicated;
 }
 
-/** Whether pre-cutover source resolution depends on the process working directory. */
-export function oldConfigHasRelativeSourcePaths(raw: Record<string, unknown>): boolean {
-  const sources = Array.isArray(raw.sources) ? (raw.sources as Array<Record<string, unknown>>) : [];
-  const installed = Array.isArray(raw.installed) ? (raw.installed as Array<Record<string, unknown>>) : [];
-  const isRelative = (value: unknown): boolean => {
-    const candidate = readString(value);
-    return candidate !== undefined && !path.isAbsolute(expandTilde(candidate));
-  };
-  const primaryEntry = sources.find((entry) => entry.primary === true);
-  if (primaryEntry && sourceEntryDescriptor(primaryEntry) && isRelative(primaryEntry.path)) return true;
-  if (!primaryEntry && isRelative(raw.stashDir)) return true;
-  if (sources.some((entry) => entry !== primaryEntry && sourceEntryDescriptor(entry) && isRelative(entry.path))) {
-    return true;
-  }
-  return installed.some((entry) => isRelative(entry.stashRoot));
-}
-
 /**
  * Derive the §10.2 lock entries the config-shape migration produces for
  * `installed[]` entries whose desired descriptor is a git/npm LOCATOR. Each
