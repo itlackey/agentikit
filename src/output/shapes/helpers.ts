@@ -149,27 +149,6 @@ export function shapeProposalRejectOutput(
   return base;
 }
 
-export function shapeDistillOutput(result: Record<string, unknown>, detail: DetailLevel): Record<string, unknown> {
-  const proposal = result.proposal as Record<string, unknown> | undefined;
-  if (detail === "brief") {
-    return pickFields(result, ["ok", "outcome", "inputRef", "proposalRef", "proposalId", "message"]);
-  }
-  const base: Record<string, unknown> = {
-    ok: result.ok,
-    outcome: result.outcome,
-    inputRef: result.inputRef,
-    proposalRef: result.proposalRef,
-    ...(result.proposalId !== undefined ? { proposalId: result.proposalId } : {}),
-    ...(result.message !== undefined ? { message: result.message } : {}),
-    ...(Array.isArray(result.findings) && result.findings.length > 0 ? { findings: result.findings } : {}),
-    ...(proposal ? { proposal: shapeProposalEntry(proposal, detail) } : {}),
-  };
-  if (detail === "full") {
-    return { schemaVersion: result.schemaVersion, ...base };
-  }
-  return base;
-}
-
 export function shapeProposalDiffOutput(result: Record<string, unknown>, detail: DetailLevel): Record<string, unknown> {
   const base: Record<string, unknown> = {
     id: result.id,
@@ -292,7 +271,6 @@ export function shapeSearchOutput(
       source: result.source,
       hits: shapedHits,
       ...(shapedRegistryHits.length > 0 ? { registryHits: shapedRegistryHits } : {}),
-      ...(result.semanticSearch ? { semanticSearch: result.semanticSearch } : {}),
       ...(result.tip ? { tip: result.tip } : {}),
       ...(result.warnings ? { warnings: result.warnings } : {}),
       ...(result.timing ? { timing: result.timing } : {}),

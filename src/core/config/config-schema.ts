@@ -88,7 +88,7 @@ export { IndexConfigSchema, IndexPassConfigSchema } from "./schema/index-config"
 export { OutputConfigSchema } from "./schema/output";
 export { CURRENT_CONFIG_VERSION, LlmInvocationOverridesSchema } from "./schema/primitives";
 export { SearchConfigSchema } from "./schema/search";
-export { SetupConfigSchema, SetupTaskSchedulesSchema } from "./schema/setup";
+export { SetupConfigSchema } from "./schema/setup";
 export {
   BundleConfigEntrySchema,
   BundlesConfigSchema,

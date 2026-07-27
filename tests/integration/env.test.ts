@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildShellExportScript, createEnv, injectIntoEnv, listKeys, loadEnv } from "../../src/commands/env/env";
+import { buildShellExportScript, createEnv, listKeys, loadEnv } from "../../src/commands/env/env";
 import { getDbPath } from "../../src/core/paths";
 import { resetGraphBoostCache } from "../../src/indexer/graph/graph-boost";
 import { akmIndex } from "../../src/indexer/indexer";
@@ -157,28 +157,6 @@ describe("createEnv", () => {
     const fp = path.join(dir, "env", "secrets.env");
     createEnv(fp);
     expect(fs.statSync(fp).mode & 0o777).toBe(0o600);
-  });
-});
-
-// ── injectIntoEnv ───────────────────────────────────────────────────────────
-
-describe("injectIntoEnv", () => {
-  test("assigns values into the supplied target and returns the list of keys set", () => {
-    const dir = tmpDir();
-    const fp = path.join(dir, "v.env");
-    fs.writeFileSync(fp, "ALPHA=one\nBETA=two\n");
-    const target: Record<string, string | undefined> = { PRE_EXISTING: "kept" };
-    const keys = injectIntoEnv(fp, target);
-    expect(keys.sort()).toEqual(["ALPHA", "BETA"]);
-    expect(target.ALPHA).toBe("one");
-    expect(target.BETA).toBe("two");
-    expect(target.PRE_EXISTING).toBe("kept");
-  });
-
-  test("returns empty list when the file is missing", () => {
-    const target: Record<string, string | undefined> = {};
-    expect(injectIntoEnv(path.join(tmpDir(), "missing.env"), target)).toEqual([]);
-    expect(target).toEqual({});
   });
 });
 

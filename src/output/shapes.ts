@@ -22,7 +22,6 @@
 import { UsageError } from "../core/errors";
 import type { DetailLevel, ShapeMode } from "./context";
 import { curateShapes } from "./shapes/curate";
-import { distillShapes } from "./shapes/distill";
 import { envListShapes } from "./shapes/env-list";
 import { eventsShapes } from "./shapes/events";
 import { historyShapes } from "./shapes/history";
@@ -58,7 +57,6 @@ const BUILT_IN_OUTPUT_SHAPES: OutputShapeEntry[] = [
   ...proposalRejectShapes,
   ...proposalDiffShapes,
   ...proposalProducerShapes,
-  ...distillShapes,
   ...envListShapes,
   ...secretListShapes,
   // Passthrough commands are registered last so an explicit dedicated handler

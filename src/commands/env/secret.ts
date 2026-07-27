@@ -92,33 +92,6 @@ function ensureParentDir(filePath: string): void {
 // ── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Walk a `secrets/` directory and return the POSIX-relative names of every
- * secret file. Lock files (`*.lock`), sensitive markers (`*.sensitive`), and
- * secrets with a sibling `<name>.sensitive` marker are excluded. The file
- * bodies are NEVER read.
- */
-export function listNames(secretsRoot: string): string[] {
-  if (!fs.existsSync(secretsRoot)) return [];
-  const names: string[] = [];
-  const walk = (dir: string): void => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      if (entry.name.endsWith(".lock") || entry.name.endsWith(".sensitive")) continue;
-      // A sibling `<name>.sensitive` marker suppresses listing.
-      if (fs.existsSync(`${full}.sensitive`)) continue;
-      names.push(path.relative(secretsRoot, full).split(path.sep).join("/"));
-    }
-  };
-  walk(secretsRoot);
-  return names.sort();
-}
-
-/**
  * Read a secret's raw bytes. Internal use only (for `secret run`). Callers
  * MUST NOT write the returned value to stdout or any log.
  */

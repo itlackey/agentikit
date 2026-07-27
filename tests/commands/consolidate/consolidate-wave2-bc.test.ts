@@ -6,13 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import {
-  getConfigValue,
-  listConfig,
-  parseConfigValue,
-  setConfigValue,
-  unsetConfigValue,
-} from "../../../src/commands/config-cli";
+import { getConfigValue, listConfig, setConfigValue, unsetConfigValue } from "../../../src/commands/config-cli";
 import type { AkmConfig } from "../../../src/core/config/config";
 import { getDbPath } from "../../../src/core/paths";
 import { deriveEntryProvenance } from "../../../src/indexer/installations";
@@ -33,12 +27,12 @@ import { overrideSeam } from "../../_helpers/seams";
 describe("config-cli: defaultWriteTarget (#21)", () => {
   const base: AkmConfig = { semanticSearchMode: "auto" };
 
-  test("parseConfigValue cannot set defaultWriteTarget without a configured bundle", () => {
-    expect(() => parseConfigValue("defaultWriteTarget", "my-stash")).toThrow(/Unknown bundle/);
-  });
-
-  test("parseConfigValue rejects empty defaultWriteTarget", () => {
-    expect(() => parseConfigValue("defaultWriteTarget", "")).toThrow();
+  // R-063 #5: "setConfigValue cannot set defaultWriteTarget without a
+  // configured bundle" used to be a `parseConfigValue`-shim test (removed —
+  // dead code); it duplicated the "rejects defaultWriteTarget when no
+  // bundles are configured" case below, so it is not re-added here.
+  test("setConfigValue rejects empty defaultWriteTarget", () => {
+    expect(() => setConfigValue(base, "defaultWriteTarget", "")).toThrow();
   });
 
   test("getConfigValue returns null when not set", () => {
@@ -94,40 +88,45 @@ describe("config-cli: defaultWriteTarget (#21)", () => {
 describe("config-cli: engines.* and embedding.* subkeys (#36)", () => {
   const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
 
-  // ── parseConfigValue ──────────────────────────────────────────────────────
+  // ── setConfigValue ────────────────────────────────────────────────────────
+  // R-063 #5: previously exercised via `parseConfigValue`, a compatibility
+  // shim removed as dead code (zero production callers) — see the note in
+  // tests/config-cli.test.ts. `setConfigValue` is the live implementation.
 
-  test("parseConfigValue handles engines.local.endpoint", () => {
-    const result = parseConfigValue("engines.local.endpoint", "http://localhost:11434/v1/chat/completions");
+  test("setConfigValue handles engines.local.endpoint", () => {
+    const result = setConfigValue(base, "engines.local.endpoint", "http://localhost:11434/v1/chat/completions");
     expect(result.engines?.local?.endpoint).toBe("http://localhost:11434/v1/chat/completions");
   });
 
-  test("parseConfigValue handles engines.local.model", () => {
-    const result = parseConfigValue("engines.local.model", "llama3.2");
+  test("setConfigValue handles engines.local.model", () => {
+    const result = setConfigValue(base, "engines.local.model", "llama3.2");
     expect(result.engines?.local?.model).toBe("llama3.2");
   });
 
-  test("parseConfigValue explicitly rejects the retired llm.apiKey path (#454)", () => {
-    expect(() => parseConfigValue("llm.apiKey", "sk-test")).toThrow(/apiKey cannot be persisted/);
-    expect(() => parseConfigValue("llm.apiKey", "sk-test")).toThrow(/AKM_LLM_API_KEY/);
+  // "apiKey cannot be persisted" is covered by "setConfigValue: retired
+  // llm.apiKey is rejected with an env-var hint (#454)" below; this adds the
+  // AKM_LLM_API_KEY hint-text assertion that test doesn't check.
+  test("setConfigValue explicitly rejects the retired llm.apiKey path with the env-var hint (#454)", () => {
+    expect(() => setConfigValue(base, "llm.apiKey", "sk-test")).toThrow(/AKM_LLM_API_KEY/);
   });
 
-  test("parseConfigValue handles embedding.endpoint", () => {
-    const result = parseConfigValue("embedding.endpoint", "http://localhost:11434/v1/embeddings");
+  test("setConfigValue handles embedding.endpoint", () => {
+    const result = setConfigValue(base, "embedding.endpoint", "http://localhost:11434/v1/embeddings");
     expect(result.embedding?.endpoint).toBe("http://localhost:11434/v1/embeddings");
   });
 
-  test("parseConfigValue handles embedding.model", () => {
-    const result = parseConfigValue("embedding.model", "nomic-embed-text");
+  test("setConfigValue handles embedding.model", () => {
+    const result = setConfigValue(base, "embedding.model", "nomic-embed-text");
     expect(result.embedding?.model).toBe("nomic-embed-text");
   });
 
-  test("parseConfigValue accepts symbolic embedding credentials and rejects literals", () => {
-    expect(parseConfigValue("embedding.apiKey", "$AKM_EMBED_API_KEY").embedding?.apiKey).toBe("$AKM_EMBED_API_KEY");
-    expect(() => parseConfigValue("embedding.apiKey", "sk-embed")).toThrow(/apiKey must be \$VAR/);
+  test("setConfigValue accepts symbolic embedding credentials and rejects literals", () => {
+    expect(setConfigValue(base, "embedding.apiKey", "$AKM_EMBED_API_KEY").embedding?.apiKey).toBe("$AKM_EMBED_API_KEY");
+    expect(() => setConfigValue(base, "embedding.apiKey", "sk-embed")).toThrow(/apiKey must be \$VAR/);
   });
 
-  test("parseConfigValue rejects an empty engine endpoint", () => {
-    expect(() => parseConfigValue("engines.local.endpoint", "")).toThrow(/endpoint must be a complete URL/);
+  test("setConfigValue rejects an empty engine endpoint", () => {
+    expect(() => setConfigValue(base, "engines.local.endpoint", "")).toThrow(/endpoint must be a complete URL/);
   });
 
   // ── getConfigValue ────────────────────────────────────────────────────────

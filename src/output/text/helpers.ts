@@ -51,7 +51,6 @@ export {
   formatUpgradePlain,
 } from "./command-format";
 export {
-  formatDistillPlain,
   formatGateDecisionSummary,
   formatProposalAcceptPlain,
   formatProposalDiffPlain,

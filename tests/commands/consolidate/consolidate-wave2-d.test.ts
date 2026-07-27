@@ -11,7 +11,8 @@
 
 import { describe, expect, test } from "bun:test";
 import { parseAssetRef } from "../../../scripts/akm-migrate/migrate/legacy-ref-grammar";
-import { parseConfigValue } from "../../../src/commands/config-cli";
+import { setConfigValue } from "../../../src/commands/config-cli";
+import type { AkmConfig } from "../../../src/core/config/config";
 import { ConfigError, NotFoundError, UsageError } from "../../../src/core/errors";
 
 // ── #15: parseAssetRef — MISSING_REQUIRED_ARGUMENT code ────────────────────
@@ -116,11 +117,18 @@ describe("error hint rendering (#8)", () => {
 });
 
 // ── #16: config set sources error message says "sources" ─────────────────────
+//
+// R-063 #5: previously exercised via `parseConfigValue`, a compatibility
+// shim removed as dead code (zero production callers) — see the note in
+// tests/config-cli.test.ts. `setConfigValue` is the live implementation
+// backing `akm config set`.
 
-describe("config-cli parseConfigValue sources error message (#16)", () => {
+describe("config-cli setConfigValue sources error message (#16)", () => {
+  const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
+
   test("invalid sources value shows 'sources' not 'stashes' in error", () => {
     try {
-      parseConfigValue("sources", "not-json");
+      setConfigValue(base, "sources", "not-json");
       throw new Error("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(UsageError);
@@ -132,7 +140,7 @@ describe("config-cli parseConfigValue sources error message (#16)", () => {
 
   test("retired stashes path is rejected without aliasing to sources", () => {
     try {
-      parseConfigValue("stashes", "not-json");
+      setConfigValue(base, "stashes", "not-json");
       throw new Error("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(UsageError);
@@ -147,7 +155,7 @@ describe("config-cli parseConfigValue sources error message (#16)", () => {
     // used `sources`, which the 0.9.0 bundles cutover retired outright; the
     // surviving `registries` array key exercises the same error-path shape.
     try {
-      parseConfigValue("registries", "[{}]");
+      setConfigValue(base, "registries", "[{}]");
       throw new Error("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(UsageError);

@@ -28,9 +28,11 @@
  * are:
  *
  *   - `akm env run <ref> -- <command>` — values injected into the child
- *     process env (never via a shell), see `injectIntoEnv` / `loadEnv`. This is
- *     the primary path and the only one safe for AI agents (no values ever
- *     reach stdout). For an interactive shell, `akm env run <ref> -- $SHELL`.
+ *     process env (never via a shell), see `loadEnv` (loaded by
+ *     `env-binding.ts#resolveEnvBinding`, then merged into the child env by
+ *     `env-cli.ts`). This is the primary path and the only one safe for AI
+ *     agents (no values ever reach stdout). For an interactive shell, `akm
+ *     env run <ref> -- $SHELL`.
  *   - `akm env export <ref> --out <file>` — write parse-then-reserialized safe
  *     `export KEY='value'` lines to a file (mode 0600) for `source`-ing. Values
  *     are re-emitted single-quoted so a raw `.env` containing `X=$(cmd)` cannot
@@ -102,25 +104,6 @@ export function loadEnv(envPath: string): Record<string, string> {
   if (!fs.existsSync(envPath)) return {};
   const buf = fs.readFileSync(envPath);
   return dotenv.parse(buf);
-}
-
-/**
- * Load an env file and assign its values into `target` (defaults to
- * `process.env`). Returns the list of keys that were set so the caller can
- * log/observe without touching values.
- *
- * Existing keys in `target` are overwritten — callers who want to preserve
- * pre-existing environment variables should filter before calling.
- */
-export function injectIntoEnv(
-  envPath: string,
-  target: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
-): string[] {
-  const env = loadEnv(envPath);
-  for (const [key, value] of Object.entries(env)) {
-    target[key] = value;
-  }
-  return Object.keys(env);
 }
 
 /**

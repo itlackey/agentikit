@@ -134,14 +134,6 @@ export interface IndexResponse {
   directoriesSkipped: number;
   warnings?: string[];
   verification: IndexVerification;
-  graphQuality?: {
-    consideredFiles: number;
-    extractedFiles: number;
-    entityCount: number;
-    relationCount: number;
-    extractionCoverage: number;
-    density: number;
-  };
   /** Timing counters in milliseconds */
   timing?: {
     totalMs: number;
@@ -183,11 +175,6 @@ interface IndexOptions {
    */
   stashDir: string;
   full?: boolean;
-  /**
-   * When true, re-enrich all entries regardless of quality (including already
-   * `"enriched"` entries). Default: false — already-enriched entries are skipped.
-   */
-  reEnrich?: boolean;
   /**
    * When true, run a post-pass after indexing that removes entries whose source
    * file no longer exists on disk. Remote entries (empty file_path) are skipped.
@@ -309,7 +296,7 @@ function applyRemovedSources(ctx: IndexRunContext): void {
  * `ctx.walkWarnings`, and `ctx.dirsNeedingLlm` for downstream phases.
  */
 async function runWalkPhase(ctx: IndexRunContext): Promise<void> {
-  const { db, sources, isIncremental, builtAtMs, hadRemovedSources, full, reEnrich, signal, onProgress, config } = ctx;
+  const { db, sources, isIncremental, builtAtMs, hadRemovedSources, full, signal, onProgress, config } = ctx;
 
   throwIfAborted(signal);
 
@@ -359,7 +346,7 @@ async function runWalkPhase(ctx: IndexRunContext): Promise<void> {
   throwIfAborted(signal);
 
   // LLM enrichment for directories that need it
-  await enhanceDirsWithLlm(db, config, dirsNeedingLlm, onProgress, signal, reEnrich);
+  await enhanceDirsWithLlm(db, config, dirsNeedingLlm, onProgress, signal);
   onProgress({
     phase: "llm",
     message: resolveIndexPassLLM("enrichment", config)
@@ -677,7 +664,6 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       const stashDir = options.stashDir;
       const onProgress = options?.onProgress ?? (() => {});
       const signal = options?.signal;
-      const reEnrich = options?.reEnrich === true;
       const full = options?.full === true;
       const clean = options?.clean === true;
       const dryRun = options?.dryRun === true;
@@ -734,7 +720,6 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           sources: allSourceEntries,
           sourceDirs: allSourceDirs,
           full,
-          reEnrich,
           stashDir,
           onProgress,
           signal,
@@ -1523,8 +1508,7 @@ function persistDirRecords(
         }
 
         // Collect dirs needing LLM enhancement during the first walk.
-        // Only dirs with "generated" entries need enrichment (unless reEnrich
-        // forces re-processing of already-enriched entries).
+        // Only dirs with "generated" entries need enrichment.
         if (stash.entries.some((e) => e.quality === "generated")) {
           dirsNeedingLlm.push({ dirPath, files, currentStashDir, stash });
         }
@@ -1677,7 +1661,6 @@ async function enhanceDirsWithLlm(
   }>,
   onProgress?: (event: IndexProgressEvent) => void,
   signal?: AbortSignal,
-  reEnrich = false,
 ): Promise<void> {
   // Resolve per-pass LLM config via the unified shim. Returns undefined when
   // either no `akm.llm` is configured or the user opted this pass out via
@@ -1694,8 +1677,8 @@ async function enhanceDirsWithLlm(
   const totalDirs = dirsNeedingLlm.length;
   const totalEntries = dirsNeedingLlm.reduce((sum, { stash }) => {
     const entriesToEnhance = stash.entries.filter((e) => {
-      if (e.quality !== "generated" && !(reEnrich && e.quality === "enriched")) return false;
-      if (!reEnrich && isEnrichmentComplete(e)) return false;
+      if (e.quality !== "generated") return false;
+      if (isEnrichmentComplete(e)) return false;
       return true;
     });
     return sum + entriesToEnhance.length;
@@ -1759,13 +1742,12 @@ async function enhanceDirsWithLlm(
       dirsNeedingLlm,
       async ({ dirPath, files, currentStashDir, stash: originalStash }) => {
         if (enrichSignal.aborted) return undefined;
-        // Only enhance generated entries (or all when reEnrich=true);
-        // user-provided overrides should not be overwritten.
-        // Skip entries that are already fully enriched (description + tags + searchHints)
-        // unless the caller explicitly requests re-enrichment via reEnrich=true.
+        // Only enhance generated entries; user-provided overrides should not
+        // be overwritten. Skip entries that are already fully enriched
+        // (description + tags + searchHints).
         const entriesToEnhance = originalStash.entries.filter((e) => {
-          if (e.quality !== "generated" && !(reEnrich && e.quality === "enriched")) return false;
-          if (!reEnrich && isEnrichmentComplete(e)) {
+          if (e.quality !== "generated") return false;
+          if (isEnrichmentComplete(e)) {
             warnVerbose(`[akm] skipping LLM enrichment for "${e.name}" — entry already complete`);
             return false;
           }
@@ -1792,7 +1774,6 @@ async function enhanceDirsWithLlm(
           enrichSignal,
           db,
           entryKeys,
-          reEnrich,
           config,
           (event) => {
             completedEntries++;
@@ -2167,7 +2148,6 @@ async function enhanceStashWithLlm(
   signal?: AbortSignal,
   db?: Database,
   entryKeys?: string[],
-  reEnrich?: boolean,
   akmConfig?: AkmConfig,
   onEntryDone?: (event: { entryName: string; outcome: "cache-hit" | "llm" | "failed" | "skipped" }) => void,
 ): Promise<StashFile> {
@@ -2194,14 +2174,14 @@ async function enhanceStashWithLlm(
           }
         }
 
-        // Incremental cache: skip LLM call when file body is unchanged and
-        // --re-enrich was not requested. The cache key is the entry_key
-        // (stashDir:type:name) which is stable across index runs.
+        // Incremental cache: skip LLM call when file body is unchanged. The
+        // cache key is the entry_key (stashDir:type:name) which is stable
+        // across index runs.
         const cacheBody = fileContent ?? `${entry.name}\n${entry.description ?? ""}`;
         const bodyHash = computeBodyHash(cacheBody);
         const cacheKey = entryKeys?.[idx] ?? `${entry.type}:${entry.name}`;
 
-        if (db && !reEnrich) {
+        if (db) {
           const cached = getLlmCacheEntry(db, cacheKey, bodyHash);
           if (cached) {
             try {

@@ -794,7 +794,6 @@ function mergeAliases(existing: string[] | undefined, generated: string[]): stri
  *
  * This predicate is used by `enhanceDirsWithLlm` to skip the LLM call for
  * entries that were previously enriched and already carry all three fields.
- * Pass `reEnrich = true` in the caller to bypass this check.
  */
 export function isEnrichmentComplete(entry: IndexDocument): boolean {
   const hasDescription = typeof entry.description === "string" && entry.description.trim().length > 0;
