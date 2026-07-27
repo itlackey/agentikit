@@ -558,6 +558,73 @@ export async function akmIndex(options: IndexOptions): Promise<IndexResponse> {
   return akmIndexReal(options);
 }
 
+/**
+ * Detect an adapter for every resolvable source that does not declare one, and
+ * persist each detection into `config.json`.
+ *
+ * R-056: this config write previously had zero disclosure — it appeared in no
+ * result, on no stream, and in no doc. The returned `persistedAdapters` records
+ * exactly which bundle→adapter pairs the mutate callback actually applied, so
+ * the caller can surface them in the result envelope; a stderr notice is
+ * emitted here. The map is cleared at the top of every callback invocation
+ * because `mutateConfig` may retry optimistically, and a retry must not report
+ * a superseded attempt.
+ *
+ * Extracted from `akmIndexReal` as one self-contained named pass, both to keep
+ * that function under the src-wide function-size bar and because the detection
+ * and its disclosure belong together.
+ */
+function detectAndPersistBundleAdapters(
+  allSourceEntries: SearchSource[],
+  config: AkmConfig,
+  mutateConfig: typeof import("../core/config/config.js").mutateConfig,
+): { config: AkmConfig; persistedAdapters: Record<string, string> } {
+  const detectedByBundle = new Map<string, string>();
+  for (const source of allSourceEntries) {
+    if (source.adapterId || source.unresolved) continue;
+    if (allSourceRootsReadable([source.path])) {
+      source.adapterId = detectAdapterId(source.path);
+      if (source.registryId) detectedByBundle.set(source.registryId, source.adapterId);
+    }
+  }
+
+  const persistedAdapters: Record<string, string> = {};
+  if (detectedByBundle.size === 0) return { config, persistedAdapters };
+
+  const nextConfig = mutateConfig(
+    (current) => {
+      if (!current.bundles) return current;
+      let changed = false;
+      const bundles = { ...current.bundles };
+      for (const key of Object.keys(persistedAdapters)) delete persistedAdapters[key];
+      for (const [bundleId, adapter] of detectedByBundle) {
+        const bundle = bundles[bundleId];
+        if (!bundle) continue;
+        const componentEntries = Object.entries(bundle.components ?? {});
+        const [componentId, component] = componentEntries[0] ?? ["main", {}];
+        if (component.adapter) continue;
+        bundles[bundleId] = { ...bundle, components: { [componentId]: { ...component, adapter } } };
+        changed = true;
+        persistedAdapters[bundleId] = adapter;
+      }
+      return changed ? { ...current, bundles } : current;
+    },
+    { absentNoop: true },
+  ).config;
+
+  const persistedCount = Object.keys(persistedAdapters).length;
+  if (persistedCount > 0) {
+    const summary = Object.entries(persistedAdapters)
+      .map(([bundleId, adapter]) => `${bundleId} → ${adapter}`)
+      .join(", ");
+    warn(
+      `[index] Detected adapter${persistedCount === 1 ? "" : "s"} for ${summary}; persisted to config.json ` +
+        "(bundles.<id>.components.<component>.adapter).",
+    );
+  }
+  return { config: nextConfig, persistedAdapters };
+}
+
 async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
   // R-022: `dryRun` only ever gated the `--clean` stale-entry removal pass
   // (see `runCleanPass` below) — every other phase (walk, LLM enrichment,
@@ -614,57 +681,9 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       await ensureSourceCaches(config, { force: full, materialize: options.hydrateSources !== false });
       const sourceCacheEnd = Date.now();
       const allSourceEntries = resolveSourceEntries(stashDir, config);
-      const detectedByBundle = new Map<string, string>();
-      for (const source of allSourceEntries) {
-        if (source.adapterId || source.unresolved) continue;
-        if (allSourceRootsReadable([source.path])) {
-          source.adapterId = detectAdapterId(source.path);
-          if (source.registryId) detectedByBundle.set(source.registryId, source.adapterId);
-        }
-      }
-      // R-056: this write to config.json (persisting an auto-detected bundle
-      // adapter) previously had zero disclosure — not in the result, not on
-      // stderr, not in docs. `persistedAdapters` tracks exactly which
-      // bundle/adapter pairs the mutate callback actually applied (reset on
-      // every invocation so a `mutateConfig` optimistic-retry never reports a
-      // stale attempt), and both a stderr notice and the result envelope
-      // (`configUpdated`) below surface it.
-      const persistedAdapters: Record<string, string> = {};
-      if (detectedByBundle.size > 0) {
-        config = mutateConfig(
-          (current) => {
-            if (!current.bundles) return current;
-            let changed = false;
-            const bundles = { ...current.bundles };
-            for (const key of Object.keys(persistedAdapters)) delete persistedAdapters[key];
-            for (const [bundleId, adapter] of detectedByBundle) {
-              const bundle = bundles[bundleId];
-              if (!bundle) continue;
-              const componentEntries = Object.entries(bundle.components ?? {});
-              const [componentId, component] = componentEntries[0] ?? ["main", {}];
-              if (component.adapter) continue;
-              bundles[bundleId] = {
-                ...bundle,
-                components: { [componentId]: { ...component, adapter } },
-              };
-              changed = true;
-              persistedAdapters[bundleId] = adapter;
-            }
-            return changed ? { ...current, bundles } : current;
-          },
-          { absentNoop: true },
-        ).config;
-        const persistedCount = Object.keys(persistedAdapters).length;
-        if (persistedCount > 0) {
-          const summary = Object.entries(persistedAdapters)
-            .map(([bundleId, adapter]) => `${bundleId} → ${adapter}`)
-            .join(", ");
-          warn(
-            `[index] Detected adapter${persistedCount === 1 ? "" : "s"} for ${summary}; persisted to config.json ` +
-              "(bundles.<id>.components.<component>.adapter).",
-          );
-        }
-      }
+      const detected = detectAndPersistBundleAdapters(allSourceEntries, config, mutateConfig);
+      config = detected.config;
+      const persistedAdapters = detected.persistedAdapters;
       const allSourceDirs = allSourceEntries.map((s) => s.path);
       const recoverableSourceDirs = allSourceEntries
         .filter((source) => !source.unresolved)
