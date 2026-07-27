@@ -2,6 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+/**
+ * RUNTIME-03/ORG-03: the one test here that shelled out to a real `npm pack`
+ * + `npm install --global` moved to
+ * `tests/integration/package-install.test.ts` — a unit test should not shell
+ * out to a global npm install. Every test remaining in this file exercises
+ * pure logic (string/command building, rollback bookkeeping) against injected
+ * fakes, with no real subprocess or global-state dependency.
+ */
+
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,15 +21,10 @@ import {
   deriveLocalVersion,
   globalLauncherPath,
   globalPackageDir,
-  installGlobalTarball,
   launcherExecutionCommand,
-  npmGlobalInstallCommand,
-  packPackage,
   pathLauncherWarning,
   replaceGlobalPackage,
-  uninstallGlobalPackage,
   type VerifiedInstall,
-  verifyGlobalInstall,
   windowsShimOwnsTarget,
 } from "../scripts/package-install";
 
@@ -185,40 +189,9 @@ describe("package install orchestration", () => {
     expect(fs.existsSync(candidate.localTarball)).toBe(true);
   });
 
-  test("installs only the exact tarball under an explicit temporary npm prefix", async () => {
-    const root = tempRoot();
-    const packageName = "akm-package-install-fixture";
-    const version = "1.2.3-rc.4";
-    const sourceDir = writeFixturePackage(root, packageName, version);
-    const tarball = await packPackage(sourceDir, path.join(root, "packed"));
-    const prefix = path.join(root, "temporary npm prefix");
-    const command = npmGlobalInstallCommand(tarball, prefix);
-
-    expect(command).toContain("--global");
-    expect(command).not.toContain("--force");
-    expect(command.slice(command.indexOf("--prefix"), command.indexOf("--prefix") + 2)).toEqual(["--prefix", prefix]);
-    expect(command.at(-1)).toBe(path.resolve(tarball));
-
-    let uninstallCommand: readonly string[] = [];
-    await uninstallGlobalPackage("akm-cli", root, prefix, async (command) => {
-      uninstallCommand = command;
-      return { stdout: "", stderr: "" };
-    });
-    expect(uninstallCommand).toContain("uninstall");
-    expect(uninstallCommand).toContain("akm-cli");
-    expect(uninstallCommand).not.toContain("--force");
-
-    await installGlobalTarball(tarball, root, prefix);
-    const verified = await verifyGlobalInstall(prefix, { name: packageName, version });
-
-    expect(verified.packageDir).toBe(globalPackageDir(prefix, packageName));
-    expect(fs.lstatSync(verified.packageDir).isSymbolicLink()).toBe(false);
-    expect(verified.version).toBe(version);
-    expect(verified.launcher.startsWith(prefix)).toBe(true);
-    expect(Object.keys(verified.launchers).sort()).toEqual(["akm", "akm-migrate"]);
-    expect(fs.existsSync(verified.launchers.akm)).toBe(true);
-    expect(fs.existsSync(verified.launchers["akm-migrate"])).toBe(true);
-  });
+  // "installs only the exact tarball under an explicit temporary npm prefix"
+  // moved to tests/integration/package-install.test.ts (RUNTIME-03/ORG-03) —
+  // it shells out to a real `npm pack` + `npm install --global`.
 
   test("preflights, preserves the prior package, and restores it after verification failure", async () => {
     const root = tempRoot();

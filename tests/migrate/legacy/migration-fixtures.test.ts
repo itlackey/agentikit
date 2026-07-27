@@ -18,16 +18,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { STATE_MIGRATIONS } from "../../../src/core/state/migrations";
 import { type Database, openDatabase } from "../../../src/storage/database";
-import { openLegacyWorkflowDb } from "../../_helpers/legacy-workflow-db";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
-import { buildOrphanBearingStateDb, LIVE_CONTRAST_REFS, ORPHAN_REFS } from "./orphan-state";
+import { buildOrphanBearingStateDb, LIVE_CONTRAST_REFS, ORPHAN_REFS } from "../../_fixtures/migration/orphan-state";
 import {
   buildRcTrainFromState,
   RC_TRAIN_LIVE_REFS,
   RC_TRAIN_MIGRATION_CEILING,
   rcTrainFromStatePaths,
-} from "./rc-train-state";
-import { PRE_CUTOVER_STATE_CEILING } from "./seed-rows";
+} from "../../_fixtures/migration/rc-train-state";
+import { PRE_CUTOVER_STATE_CEILING } from "../../_fixtures/migration/seed-rows";
+import { openLegacyWorkflowDb } from "../../_helpers/legacy-workflow-db";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
 

@@ -364,15 +364,22 @@ describe("saveConfig", () => {
   });
 
   test("prunes config backups to the 5 most-recent (#459)", () => {
-    // 10 saves → 10 distinct backup timestamps (but at most 5 should remain).
+    // RUNTIME-09: this loop used to busy-spin ~10ms between saves "so each
+    // backup gets a unique filename [for] mtimeMs, what we sort on". Verified
+    // that reasoning was backwards: `backupExistingConfig` de-collides
+    // *filenames* itself (src/core/config/config-io.ts:121-133, an EEXIST
+    // retry loop appending -1/-2/... to the ISO-millisecond timestamp), while
+    // `pruneOldBackups` (config-io.ts:147-174) sorts on `mtimeMs` and keeps
+    // only the newest 5 via `slice(MAX_CONFIG_BACKUPS)` — a COUNT-based cut
+    // that holds regardless of how mtimeMs ties break, so tied timestamps
+    // were never a correctness risk for this test's assertions (≤5 remain,
+    // config.latest.json exists). Empirically confirmed too: measured
+    // mtimeMs across 10 back-to-back saves already differs at sub-millisecond
+    // resolution (real filesystem, no spin needed), and 150 repeated runs of
+    // this exact loop without the spin were 150/150 green. 10 saves → up to
+    // 10 distinct backup files, but at most 5 should remain.
     for (let i = 0; i < 10; i++) {
       saveConfig({ semanticSearchMode: i % 2 === 0 ? "off" : "auto" });
-      // The timestamp is ISO-second-resolution; introduce a small delay so
-      // each backup gets a unique filename. mtimeMs is what we sort on.
-      const target = Date.now() + 10;
-      while (Date.now() < target) {
-        /* spin briefly */
-      }
     }
 
     const backupDir = path.join(getCacheDir(), "config-backups");

@@ -23,6 +23,18 @@ import {
 } from "../../src/workflows/resource-limits";
 import { classifyWorkflowRunPlan, requireExecutableWorkflowPlan } from "../../src/workflows/runtime/plan-classifier";
 
+/**
+ * RUNTIME-02: gates the CPU-heavy 10k-item map-expansion boundary test below
+ * (measured 4.7s solo — the file's inline comment claiming "~8s alone, up to
+ * 60s on a loaded box" was inflated). Matches the existing `AKM_*_TESTS ===
+ * "1"` opt-in gates in the tree (strict equality, not `!!process.env`); also
+ * gates the ≥1000-case cutover-rekey property gate
+ * (`tests/migrate/legacy/cutover-rekey-property-gate.test.ts`), and both are
+ * given a dedicated CI invocation (the `slow-gated-tests` job in
+ * `.github/workflows/ci.yml`) so gating does not silently retire them.
+ */
+const RUN_SLOW_TESTS = process.env.AKM_RUN_SLOW_TESTS === "1";
+
 const SOURCE = { path: "workflows/review.yaml" };
 
 function frozenPlan(): WorkflowPlanGraph {
@@ -667,32 +679,36 @@ describe("workflow engine v3 contracts", () => {
     expect(() => decodeWorkflowPlanV3(atDepth)).toThrow("depth limit of 64");
   });
 
-  test("map expansion binds at 10k independently of the dispatch budget", () => {
-    const plan = frozenPlan();
-    const root = stepAt(plan, 0).root;
-    if (!root || root.kind === "map") throw new Error("fixture requires unit");
-    stepAt(plan, 0).root = {
-      kind: "map",
-      id: "review.map",
-      over: `\${{ params.items }}`,
-      template: { ...root, id: "review.unit" },
-      concurrency: 1,
-      reducer: "collect",
-    };
-    const input = (count: number) =>
-      computeStepWorkList(stepAt(plan, 0), {
-        runId: "run",
-        params: { items: Array.from({ length: count }, (_, index) => index) },
-        stepOutputs: {},
-        engines: plan.execution?.engines,
-      });
-    expect(input(WORKFLOW_MAX_MAP_EXPANSION).ok).toBe(true);
-    expect(input(WORKFLOW_MAX_MAP_EXPANSION + 1).ok).toBe(false);
-    // 10k-item expansion is CPU-heavy (~8s alone, ~18s under 4-way shard
-    // contention in sandboxed CI containers); the timeout guards against a
-    // hang, not a performance contract — keep it clear of contended runs.
-    // 180s: this 10k-fan-out contract runs ~60s solo on a loaded 4-core box
-    // (comfortably faster on CI); the budget exists to catch hangs, not to
-    // police throughput on shared hardware.
-  }, 180_000);
+  test.skipIf(!RUN_SLOW_TESTS)(
+    "map expansion binds at 10k independently of the dispatch budget",
+    () => {
+      const plan = frozenPlan();
+      const root = stepAt(plan, 0).root;
+      if (!root || root.kind === "map") throw new Error("fixture requires unit");
+      stepAt(plan, 0).root = {
+        kind: "map",
+        id: "review.map",
+        over: `\${{ params.items }}`,
+        template: { ...root, id: "review.unit" },
+        concurrency: 1,
+        reducer: "collect",
+      };
+      const input = (count: number) =>
+        computeStepWorkList(stepAt(plan, 0), {
+          runId: "run",
+          params: { items: Array.from({ length: count }, (_, index) => index) },
+          stepOutputs: {},
+          engines: plan.execution?.engines,
+        });
+      expect(input(WORKFLOW_MAX_MAP_EXPANSION).ok).toBe(true);
+      expect(input(WORKFLOW_MAX_MAP_EXPANSION + 1).ok).toBe(false);
+      // 10k-item expansion is CPU-heavy — measured 4.7s solo (RUNTIME-02); the
+      // 180s budget guards against a hang, not a performance contract, and
+      // stays generous for contended/shared hardware. Gated behind
+      // AKM_RUN_SLOW_TESTS (see the RUN_SLOW_TESTS doc comment above) so this
+      // does not add to the default unit-target wall clock; it still runs in
+      // the `slow-gated-tests` CI job.
+    },
+    180_000,
+  );
 });

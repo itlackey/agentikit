@@ -16,10 +16,10 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import path from "node:path";
+import { cutoverKeyFor, cutoverRekeyFn } from "../../_fixtures/migration/cutover-rekey-adapter";
+import { generateRekeyState } from "../../_fixtures/migration/rekey-generator";
+import { checkRekeyInvariants } from "../../_fixtures/migration/rekey-invariants";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
-import { cutoverKeyFor, cutoverRekeyFn } from "./cutover-rekey-adapter";
-import { generateRekeyState } from "./rekey-generator";
-import { checkRekeyInvariants } from "./rekey-invariants";
 
 /** WI-8.7 scales this to ≥1000; the smoke tier proves the wiring + engine on 10. */
 const SMOKE_SEED_COUNT = 10;

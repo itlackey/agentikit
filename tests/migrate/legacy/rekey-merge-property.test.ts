@@ -28,11 +28,11 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import path from "node:path";
+import { generateRekeyState } from "../../_fixtures/migration/rekey-generator";
+import { checkRekeyInvariants } from "../../_fixtures/migration/rekey-invariants";
+import { correctReferenceRekey, naiveClobberRekey } from "../../_fixtures/migration/rekey-reference-impls";
+import { snapshotRekeyState } from "../../_fixtures/migration/rekey-snapshot";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
-import { generateRekeyState } from "./rekey-generator";
-import { checkRekeyInvariants } from "./rekey-invariants";
-import { correctReferenceRekey, naiveClobberRekey } from "./rekey-reference-impls";
-import { snapshotRekeyState } from "./rekey-snapshot";
 
 /**
  * Fixed, deterministic smoke-sized seed set. The WI-0b.7 brief suggested

@@ -16,8 +16,13 @@
  * (`cutover-rekey-property.test.ts`) stays as the fast wiring proof.
  *
  * Cost: ~0.5s/seed (template-cached generator + file copy + 2 independent
- * re-key runs + idempotency re-run per seed) ≈ 8-9 min total — slow-listed in
- * `scripts/test-unit.sh`, run under CI / AKM_RUN_SLOW_TESTS=1.
+ * re-key runs + idempotency re-run per seed) — measured 261.9s (~4.4 min)
+ * solo. Gated behind `AKM_RUN_SLOW_TESTS === "1"` (unset by default, so it is
+ * excluded from the default unit target — see `test.skipIf` below) and given
+ * a dedicated CI invocation (the `slow-gated-tests` job in
+ * `.github/workflows/ci.yml`, `AKM_RUN_SLOW_TESTS=1` on every push/PR) so
+ * gating it does not silently retire it. `GATE_SEED_COUNT` (1000) must never
+ * be reduced — the seed count is the point of this suite.
  *
  * Seed spacing is coprime-stepped from a distinct base so the gate never
  * replays the smoke seeds; assetCount alternates through three sizes so the
@@ -26,10 +31,15 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import path from "node:path";
+import { cutoverKeyFor, cutoverRekeyFn } from "../../_fixtures/migration/cutover-rekey-adapter";
+import { generateRekeyState } from "../../_fixtures/migration/rekey-generator";
+import { checkRekeyInvariants } from "../../_fixtures/migration/rekey-invariants";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
-import { cutoverKeyFor, cutoverRekeyFn } from "./cutover-rekey-adapter";
-import { generateRekeyState } from "./rekey-generator";
-import { checkRekeyInvariants } from "./rekey-invariants";
+
+/** Matches the existing `AKM_*_TESTS === "1"` opt-in gates in the tree (e.g.
+ *  `AKM_NODE_COMPAT_TESTS`, `AKM_NATIVE_SCHEDULER_TESTS`) — strict equality,
+ *  not `!!process.env`. */
+const RUN_SLOW_TESTS = process.env.AKM_RUN_SLOW_TESTS === "1";
 
 const GATE_SEED_COUNT = 1000;
 const GATE_SEEDS: readonly number[] = Array.from({ length: GATE_SEED_COUNT }, (_, i) => 1_000_003 + i * 7919);
@@ -54,7 +64,7 @@ function freshDbPath(label: string): string {
 }
 
 describe("WI-8.7 — ≥1000-case re-key merge property gate (chunk-8 DoD)", () => {
-  test(
+  test.skipIf(!RUN_SLOW_TESTS)(
     `rekeyStateDb holds all 5 invariants across ${GATE_SEED_COUNT} generated cases`,
     () => {
       let checked = 0;
