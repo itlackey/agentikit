@@ -81,6 +81,73 @@ describe("akm show view-mode grammar is removed", () => {
   });
 });
 
+// E-3: `akm show <ref> --scope ...` must fail LOUDLY (exit 2) for BOTH
+// spellings of the removed `--scope` flag, and must diagnose the ACTUAL
+// mistake (stale --scope flag, use --filter) rather than blaming the
+// unrelated removed view-mode grammar.
+//
+// `--scope` is deliberately not a declared flag on `show` (R-047, guardrail
+// 6 — no alias, no re-acceptance), which means citty's default handling of an
+// undeclared flag applies, and that default is SILENT ACCEPTANCE — not a
+// uniform error — depending on spelling:
+//   - space form (`--scope user=x`): citty treats `--scope` as boolean and
+//     pushes `user=x` into `args._` as a stray positional, which incidentally
+//     trips the arity check and exits 2 — but (pre-fix) with the wrong
+//     diagnosis, blaming the unrelated retired
+//     toc|section|lines|frontmatter|full view-mode grammar.
+//   - equals form (`--scope=user=x`): citty consumes it as the unknown flag's
+//     own inline value. It never reaches `args._`, so (pre-fix) NOTHING
+//     downstream ever noticed — the command ran to completion and exited 0,
+//     silently ignoring the caller's scope request entirely. This is the
+//     dangerous case a caller could mistake for "my read was scoped" when it
+//     was not, and it directly violated guardrail 6's "must fail loudly, not
+//     silently".
+// Both spellings must now be rejected explicitly and identically, before
+// either could produce a different (or no) error.
+describe("akm show --scope fails loudly for both spellings, diagnosing the removed flag", () => {
+  function seedGuide(): void {
+    const storage = useStorage();
+    writeSandboxConfig({ semanticSearchMode: "off" });
+    writeFixture(path.join(storage.stashDir, "knowledge", "guide.md"), "# Intro\nWelcome.\n");
+  }
+
+  function assertScopeDiagnosis(error: Record<string, unknown>): void {
+    expect(error.ok).toBe(false);
+    expect(String(error.error)).toContain("--scope");
+    expect(String(error.error)).toContain("--filter");
+    expect(String(error.error)).not.toContain("view-mode grammar");
+  }
+
+  test("space form (--scope user=x) exits 2 and points at --filter", async () => {
+    seedGuide();
+
+    const result = await runEntrypoint(["show", "knowledge/guide", "--scope", "user=x", "--format=json"]);
+
+    expect(result.status).toBe(2);
+    assertScopeDiagnosis(JSON.parse(result.stderr) as Record<string, unknown>);
+  });
+
+  test("equals form (--scope=user=x) exits 2 instead of silently succeeding", async () => {
+    seedGuide();
+
+    const result = await runEntrypoint(["show", "knowledge/guide", "--scope=user=x", "--format=json"]);
+
+    expect(result.status).toBe(2);
+    assertScopeDiagnosis(JSON.parse(result.stderr) as Record<string, unknown>);
+  });
+
+  test("--filter (the real spelling) still works and is unaffected", async () => {
+    seedGuide();
+
+    const result = await runEntrypoint(["show", "knowledge/guide", "--filter", "user=x", "--format=json"]);
+
+    // No matching scope_user on disk -> not found in this scope, NOT a usage error.
+    expect(result.status).toBe(1);
+    const error = JSON.parse(result.stderr) as Record<string, unknown>;
+    expect(String(error.error)).toContain("out of scope");
+  });
+});
+
 describe("entrypoint global --shape=summary ordering", () => {
   test("allows global --shape=summary before show", async () => {
     const storage = useStorage();

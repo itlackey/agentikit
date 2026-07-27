@@ -161,11 +161,60 @@ export const curateCommand = defineJsonCommand({
 });
 
 /**
+ * Reject `--scope` (either spelling) on `akm show` (E-3). `--scope` was
+ * removed in favor of `--filter` (R-047, guardrail 6 — no alias, must keep
+ * failing loudly, not silently). It is deliberately NOT a declared flag on
+ * this command, which means citty's default behavior for an undeclared flag
+ * kicks in — and that default is silent acceptance:
+ *
+ *   - `--scope=user=nobody` (equals form): citty consumes it as an unknown
+ *     flag's own inline value. It never reaches `args._`, so nothing downstream
+ *     ever notices — the command runs to completion and exits 0, having
+ *     silently ignored the caller's (unsatisfied) scope request. This is the
+ *     dangerous case: the caller believes a read was scoped when it was not,
+ *     and it directly violates guardrail 6's "removed spelling must fail
+ *     loudly, not silently".
+ *   - `--scope user=nobody` (space form): citty treats `--scope` as boolean
+ *     and pushes `user=nobody` into `args._` as a stray positional, which
+ *     incidentally trips `rejectExtraShowPositionals`'s arity check below —
+ *     but with the wrong diagnosis (it blames the unrelated retired
+ *     `toc|section|lines|frontmatter|full` view-mode grammar).
+ *
+ * This check runs FIRST, before the positional check, so both spellings are
+ * caught by one explicit, correctly-worded error — it does NOT make `--scope`
+ * work, it only makes the failure loud and the diagnosis accurate.
+ *
+ * NOTE (general issue, out of scope here): citty silently accepts ANY
+ * undeclared flag on ANY command (e.g. `akm info --totallybogus` exits 0) —
+ * this same silent-ignore failure mode applies repo-wide, not just to
+ * `--scope` on `show`. Fixing that generally is a separate, wide-blast-radius
+ * owner decision (same family as E-2, `akm list --type skill`); this function
+ * only closes the `--scope`/`show` instance of it.
+ */
+function rejectRemovedScopeFlag(ref: string): void {
+  const usedScopeFlag = getParsedInvocation().userArgs.some(
+    (token) => token === "--scope" || token.startsWith("--scope="),
+  );
+  if (!usedScopeFlag) return;
+  throw new UsageError(
+    "akm show has no --scope flag — it was removed in 0.9.0. Use --filter instead: " +
+      "--filter user=<id> --filter agent=<id> --filter run=<id> --filter channel=<name>.",
+    "INVALID_FLAG_VALUE",
+    `\`akm show ${ref} --filter user=<id>\` narrows resolution to assets whose frontmatter scope matches.`,
+  );
+}
+
+/**
  * Reject any positional after the ref. The
  * `akm show <ref> toc|section "H"|lines A B|frontmatter|full` view grammar was
  * removed in 0.9.0; its keywords used to be rewritten into hidden flags before
  * citty saw argv, so without this guard a stale invocation would silently
  * render the whole item instead of the view the caller asked for.
+ *
+ * `--scope` is handled separately, and earlier, by {@link rejectRemovedScopeFlag}
+ * — by the time this runs, a `--scope`-caused stray positional has already
+ * been intercepted with the correct diagnosis, so this function's generic
+ * message is reached only by genuine leftover view-grammar tokens.
  */
 function rejectExtraShowPositionals(positionals: unknown, ref: string): void {
   const extra = (Array.isArray(positionals) ? (positionals as unknown[]).map(String) : []).slice(1);
@@ -205,6 +254,7 @@ export const showCommand = defineJsonCommand({
     // not a typed asset ref — skip ref validation and let akmShowUnified
     // direct-read it. (the ref parser would reject the non-type `meta`.)
     if (!parseMetaRef(args.ref)) parseBundleRef(args.ref);
+    rejectRemovedScopeFlag(args.ref);
     rejectExtraShowPositionals(args._, args.ref);
     const invocation = getParsedInvocation();
     const cliShape = getOutputMode().shape;
