@@ -41,6 +41,7 @@ import {
   validateCompleteConfig,
 } from "../core/config/config";
 import { readConfigText } from "../core/config/config-io";
+import { listTopLevelConfigKeys } from "../core/config/config-schema";
 import { deepMergeConfig } from "../core/config/deep-merge";
 import { ConfigError, UsageError } from "../core/errors";
 import { getConfigPath, getDefaultStashDir, isTransientStashPath } from "../core/paths";
@@ -763,15 +764,21 @@ export async function runSetupWithDefaults(opts: {
 }): Promise<SetupSummary> {
   assertSetupConfigPreflight();
   const explicitStashDir = opts.dir != null ? path.resolve(opts.dir) : undefined;
+  // R-066 #4: a second `assertSetupSandbox(stashDir, explicitStashDir != null)`
+  // + `applyStashIsolationToEnv(stashDir, explicitStashDir != null)` pair used
+  // to follow `stashDir`'s resolution below. It was strictly redundant: unlike
+  // `runSetupFromConfig` (which can also derive an explicit stash dir from an
+  // incoming config file's bundle path, a case the early block below can't
+  // see yet), `runSetupWithDefaults` has only one source of an explicit dir —
+  // `opts.dir` — so `stashDir` always equals `explicitStashDir` whenever the
+  // `if` below ran, and always fails `dirExplicitlyProvided` (an immediate
+  // no-op in both helpers) whenever it didn't. Removed rather than duplicated.
   if (explicitStashDir) {
     assertSetupSandbox(explicitStashDir, true);
     applyStashIsolationToEnv(explicitStashDir, true);
   }
   const current = loadUserConfig();
   const stashDir = explicitStashDir ?? primaryBundlePath(current) ?? getDefaultStashDir();
-
-  assertSetupSandbox(stashDir, explicitStashDir != null);
-  applyStashIsolationToEnv(stashDir, explicitStashDir != null);
 
   // Run steps in non-interactive mode (applies defaults, skips prompts)
   const ctx = createSetupContext(current, { nonInteractive: true });
@@ -1010,21 +1017,19 @@ export async function runSetupFromConfig(opts: {
       );
     }
   }
-  const ALLOWED_KEYS = new Set([
-    "configVersion",
-    "engines",
-    "defaults",
-    "improve",
-    "modelAliases",
-    "embedding",
-    "semanticSearchMode",
-    "output",
-    "bundles",
-    "defaultBundle",
-    "registries",
-    "defaultWriteTarget",
-    "setup",
-  ]);
+  // Derived from AkmConfigShape (via `listTopLevelConfigKeys`) rather than a
+  // hand-copied set: a hand-copied allowlist silently fell out of sync as the
+  // schema grew (R-017 — `index`, `search`, `feedback`, `archiveRetentionDays`,
+  // `workflow`, and `experimental` were all valid schema keys that this list
+  // forgot, each dropped with only a warning while the command exited 0).
+  // Every key the schema recognizes is a legitimate thing to set via
+  // `--config`/`--from`; there is no key a user can set here that they
+  // couldn't set by hand-editing config.json and letting `akm config set`
+  // validate it. Keys that remain genuinely retired (`profiles`, `llm`,
+  // `agent`, `features`, `stashes`, `bindings`, `writable`) are not part of
+  // the schema shape, so they still fall into the warn-and-drop branch below;
+  // `stashDir`/`sources`/`installed` get the more specific migration error above.
+  const ALLOWED_KEYS = new Set(listTopLevelConfigKeys());
   for (const key of Object.keys(incoming)) {
     if (!ALLOWED_KEYS.has(key)) {
       warn(`[akm setup] Ignoring unknown or restricted config key: "${key}"`);
@@ -1040,6 +1045,25 @@ export async function runSetupFromConfig(opts: {
   }
 
   // Phase 3: Merge with existing config
+  //
+  // R-066 #4 (verified, NOT reduced — unlike the `runSetupWithDefaults` pair
+  // above, this one is NOT strictly redundant): the `assertSetupSandbox` +
+  // `applyStashIsolationToEnv` pair below looks like a duplicate of the pair
+  // here, but each guards a case the other cannot:
+  //   - THIS early pair must run before `loadUserConfig()` so an explicit
+  //     `--dir` pointed at a force-escaped transient sandbox isolates the
+  //     config READ too, not just the later write (the isolation env var has
+  //     to be set before `loadUserConfig()` executes, or `current` below is
+  //     read from the host config instead of the sandboxed one — the exact
+  //     failure class the "2026-05-23 setup-clobbers-user-config incident"
+  //     comment on `assertSetupSandbox` describes).
+  //   - The LATER pair below additionally covers a case this one can't see
+  //     yet: an incoming `--config`/`--file` JSON blob that names its own
+  //     bundle path (`incomingPrimaryPath`) with no `--dir` at all — that
+  //     path is only known after the merge, so it cannot be checked early.
+  // When `explicitStashDir` is set both pairs do end up asserting the same
+  // (stashDir, true), but removing either one changes behavior in the case
+  // it uniquely covers, so both stay.
   const explicitStashDir = opts.dir != null ? path.resolve(opts.dir) : undefined;
   if (explicitStashDir) {
     assertSetupSandbox(explicitStashDir, true);

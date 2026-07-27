@@ -158,6 +158,13 @@ export interface IndexResponse {
   };
   /** Present when --clean was passed: stale-entry purge results. */
   clean?: IndexCleanResult;
+  /**
+   * Present when this run auto-detected a bundle's adapter and persisted it
+   * to config.json (`bundles.<id>.components.<component>.adapter`) — a
+   * maintenance-command config write that would otherwise be invisible
+   * (R-056). Keyed by bundle id, valued by the detected adapter id.
+   */
+  configUpdated?: { detectedAdapters: Record<string, string> };
 }
 
 export interface IndexProgressEvent {
@@ -552,6 +559,24 @@ export async function akmIndex(options: IndexOptions): Promise<IndexResponse> {
 }
 
 async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
+  // R-022: `dryRun` only ever gated the `--clean` stale-entry removal pass
+  // (see `runCleanPass` below) — every other phase (walk, LLM enrichment,
+  // embeddings, FTS, the adapter-detection config write) ran for real
+  // regardless, so `akm index --dry-run` alone silently performed a full,
+  // real index. The flag's own docs (`IndexOptions.dryRun` above, and the
+  // CLI help in stash-cli.ts) already scope it to `--clean`; reject the
+  // combination that was never implemented instead of quietly doing
+  // something other than what "dry run" promised. Checked before the writer
+  // lease is even requested so a bad invocation fails instantly.
+  if (options?.dryRun === true && options?.clean !== true) {
+    const { UsageError } = await import("../core/errors.js");
+    throw new UsageError(
+      "`--dry-run` only applies together with `--clean` (it previews which stale entries `--clean` would remove). " +
+        "Pass `akm index --clean --dry-run`, or drop `--dry-run` to run a real index.",
+      "INVALID_FLAG_VALUE",
+      "Run `akm index --clean --dry-run` to preview, or `akm index --clean` to apply.",
+    );
+  }
   const requestedAt = Date.now();
   let acquiredAt = requestedAt;
   return withIndexWriterLease(
@@ -597,12 +622,21 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           if (source.registryId) detectedByBundle.set(source.registryId, source.adapterId);
         }
       }
+      // R-056: this write to config.json (persisting an auto-detected bundle
+      // adapter) previously had zero disclosure — not in the result, not on
+      // stderr, not in docs. `persistedAdapters` tracks exactly which
+      // bundle/adapter pairs the mutate callback actually applied (reset on
+      // every invocation so a `mutateConfig` optimistic-retry never reports a
+      // stale attempt), and both a stderr notice and the result envelope
+      // (`configUpdated`) below surface it.
+      const persistedAdapters: Record<string, string> = {};
       if (detectedByBundle.size > 0) {
         config = mutateConfig(
           (current) => {
             if (!current.bundles) return current;
             let changed = false;
             const bundles = { ...current.bundles };
+            for (const key of Object.keys(persistedAdapters)) delete persistedAdapters[key];
             for (const [bundleId, adapter] of detectedByBundle) {
               const bundle = bundles[bundleId];
               if (!bundle) continue;
@@ -614,11 +648,22 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
                 components: { [componentId]: { ...component, adapter } },
               };
               changed = true;
+              persistedAdapters[bundleId] = adapter;
             }
             return changed ? { ...current, bundles } : current;
           },
           { absentNoop: true },
         ).config;
+        const persistedCount = Object.keys(persistedAdapters).length;
+        if (persistedCount > 0) {
+          const summary = Object.entries(persistedAdapters)
+            .map(([bundleId, adapter]) => `${bundleId} → ${adapter}`)
+            .join(", ");
+          warn(
+            `[index] Detected adapter${persistedCount === 1 ? "" : "s"} for ${summary}; persisted to config.json ` +
+              "(bundles.<id>.components.<component>.adapter).",
+          );
+        }
       }
       const allSourceDirs = allSourceEntries.map((s) => s.path);
       const recoverableSourceDirs = allSourceEntries
@@ -736,6 +781,9 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           directoriesScanned: ctx.scannedDirs,
           directoriesSkipped: ctx.skippedDirs,
           ...(ctx.walkWarnings.length > 0 ? { warnings: ctx.walkWarnings } : {}),
+          ...(Object.keys(persistedAdapters).length > 0
+            ? { configUpdated: { detectedAdapters: persistedAdapters } }
+            : {}),
           verification,
           timing: {
             totalMs: Date.now() - timing.t0,

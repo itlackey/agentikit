@@ -30,7 +30,7 @@ import path from "node:path";
 import { defineCommand } from "citty";
 import * as p from "../../cli/clack";
 import { getParsedInvocation } from "../../cli/invocation";
-import { defineJsonCommand, output, parseAllFlagValues, runWithJsonErrors } from "../../cli/shared";
+import { defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, parseAllFlagValues, runWithJsonErrors } from "../../cli/shared";
 import { assertFlatAssetName } from "../../core/asset/asset-create";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { isHttpUrl, resolveStashDir } from "../../core/common";
@@ -81,6 +81,12 @@ export const initCommand = defineJsonCommand({
 export const indexCommand = defineCommand({
   meta: { name: "index", description: "Build search index (incremental by default; --full forces full reindex)" },
   args: {
+    // R-051: `index` is a raw `defineCommand` (not `defineJsonCommand`), so it
+    // does not get `GLOBAL_OUTPUT_ARGS` for free. `--format`/`--detail`/
+    // `--shape`/`--output` already parsed correctly here (this command has no
+    // extra positional for a stray value to fall into), so this is purely a
+    // `--help` visibility / consistency fix, not a behavior change.
+    ...GLOBAL_OUTPUT_ARGS,
     full: { type: "boolean", description: "Force full reindex", default: false },
     clean: {
       type: "boolean",
@@ -94,7 +100,17 @@ export const indexCommand = defineCommand({
     },
     background: {
       type: "boolean",
-      description: "Run as a background process (suppresses interactive output, manages PID file).",
+      // R-023: the previous wording ("Run as a background process ... manages
+      // PID file") described a feature that was never implemented — this flag
+      // does not fork, detach, or return control to the shell early, and there
+      // is no PID file anywhere in its code path. It runs in the FOREGROUND
+      // exactly like a plain `akm index` and only changes two things: no
+      // spinner, and (unlike the global `--quiet`) the final JSON result is
+      // suppressed too. Kept as a headless/cron-invocation quiet mode.
+      description:
+        "Quiet mode for headless/unattended invocation (e.g. cron): suppresses the progress spinner and " +
+        "the final result output. Still runs in the foreground and blocks until indexing finishes — it does " +
+        "NOT fork a detached background process and does NOT manage a PID file.",
       default: false,
     },
   },
@@ -110,6 +126,10 @@ export const indexCommand = defineCommand({
           "`akm index --re-enrich` has been removed. Re-enrichment of index-time LLM passes is not exposed in this slice.",
         );
       }
+      // Quiet mode only (see the flag's description above) — NOT a real
+      // background/detached process. Named `isBackground` to match the
+      // `--background` flag it reads; do not read the name as a promise of
+      // actual backgrounding.
       const isBackground = args.background === true;
       const outputMode = getOutputMode();
       const controller = new AbortController();

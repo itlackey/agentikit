@@ -1,10 +1,13 @@
 /**
  * Tests for the `--clean` post-pass of `akm index`.
  *
- * Covers three scenarios:
+ * Covers four scenarios:
  *   1. `clean: true` with no missing files → removed: 0, checked matches entry count
  *   2. `clean: true` with one missing file → entry deleted, removedRefs populated
  *   3. `clean: true, dryRun: true` with missing file → removed: 0, ref listed, entry NOT deleted
+ *   4. (R-022) `dryRun: true` WITHOUT `clean` rejects instead of silently running a
+ *      real index — `dryRun` only ever gated the `--clean` pass above, so a bare
+ *      `akm index --dry-run` used to perform a full real index and write index.db.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -211,4 +214,22 @@ test("akmIndex --clean --dry-run with missing file: removed is 0, ref listed, en
   } finally {
     closeDatabase(db);
   }
+});
+
+test("akmIndex --dry-run without --clean rejects instead of silently running a real index (R-022)", async () => {
+  const stashDir = tmpStash();
+  writeFile(path.join(stashDir, "scripts", "deploy", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n");
+
+  process.env.AKM_STASH_DIR = stashDir;
+  saveConfig({ semanticSearchMode: "off" });
+
+  // Before the fix, `dryRun` was only consulted inside the `--clean` pass, so
+  // a bare `--dry-run` (no `--clean`) silently performed a full real index and
+  // wrote index.db. It must now reject instead.
+  await expect(akmIndex({ stashDir, dryRun: true })).rejects.toThrow(/--dry-run.*--clean/);
+
+  // The rejection must fire before any writer-lease acquisition or database
+  // open — no index.db should exist afterward.
+  const dbPath = getDbPath();
+  expect(fs.existsSync(dbPath)).toBe(false);
 });
