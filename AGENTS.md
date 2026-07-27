@@ -20,11 +20,11 @@
 - `writable` defaults to `true` on `filesystem` and `false` on `git` / `website` / `npm`; `writable: true` on `website` or `npm` is rejected at config load.
 
 ## Tests
-- **Two test targets**: `bun run test:unit` (fast, < 60s, excludes `tests/integration/`) and `bun run test:integration` (slow, covers `tests/integration/`, `tests/commands/`, `tests/workflows/`). `bun run check` runs both in sequence after lint and typecheck.
+- **Two test targets**: `bun run test:unit` (`scripts/test-unit.sh`) runs every `*.test.ts` under `tests/` except `tests/integration/` — that includes the top-level `tests/commands/` and `tests/workflows/` directories (59 files combined, verified 2026-07-27). Do not confuse those with the separate `tests/integration/commands/` and `tests/integration/workflows/` directories, which belong to `bun run test:integration` (`scripts/test-integration.sh`, `tests/integration/**` only). Both scripts shard their target across up to `min(nproc, 8)` concurrent `bun test` processes. `bun run check` runs both targets in sequence after lint and typecheck.
 - For a tight inner feedback loop, use `bun run test:unit` or `bun test tests/<specific-file>.test.ts`.
-- Semantic search e2e is gated: `AKM_SEMANTIC_TESTS=1 bun test tests/semantic-search-e2e.test.ts`. First run downloads Hugging Face models.
+- Semantic search e2e is gated: `AKM_SEMANTIC_TESTS=1 bun test tests/integration/semantic-search-e2e.test.ts`. First run downloads Hugging Face models.
 - Docker install coverage is gated: `AKM_DOCKER_TESTS=1 bun test tests/integration/docker-install.test.ts` or `./tests/docker/run-docker-tests.sh`.
-- Release validation is `./tests/release-check.sh [--skip-docker]`. Its order is intentional: Biome write pass, typecheck, build, npm bin-target check, setup/install regression suite, full test suite, then optional Docker matrix.
+- Release validation is `./tests/release-check.sh [--skip-docker]`. Its order is intentional: workflow checks, lint (verify-only — the same `bun run lint` CI runs, no `--write`), typecheck, build, npm bin-target check, package/install regression suites, then the full test suite (`bun run test:unit` + `bun run test:integration`) and an optional Docker matrix. Every `bun test` invocation in the script uses `--timeout=120000`, matching `scripts/test-unit.sh` and `scripts/test-integration.sh`.
 
 ### Test-isolation harness
 - `bunfig.toml` preloads `tests/_preload.ts` for every `bun test` invocation. The preload owns process state that crosses test boundaries:

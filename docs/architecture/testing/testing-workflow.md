@@ -24,7 +24,7 @@ CLI coverage, then Docker-based deployment and upgrade validation.
 Run these before any release candidate or merge:
 
 ```sh
-bun test
+bun run test:unit
 bunx biome check --write src/ tests/
 bunx tsc --noEmit
 ```
@@ -44,10 +44,15 @@ Relevant coverage:
 
 ### Writing deterministic, isolated tests
 
-`bun test` runs the **entire unit suite in one shared process**. There is one
-`process.env`, one module-singleton namespace, and (under fake timers) one
-global clock for every file. A test that mutates shared state without restoring
-it, or that asserts on a wall-clock measurement, can pass on one scheduling and
+Both `scripts/test-unit.sh` (`bun run test:unit`) and `scripts/test-integration.sh`
+(`bun run test:integration`) shard their target across up to `min(nproc, 8)`
+concurrent `bun test` processes, splitting the file list round-robin — neither
+runner is a single shared process, and neither is "the unit suite" alone.
+Within one shard, every file assigned to that process still runs in **one
+shared process**: one `process.env`, one module-singleton namespace, and
+(under fake timers) one global clock for every file in that shard. A test that
+mutates shared state without restoring it, or that asserts on a wall-clock
+measurement, can pass on one scheduling and
 fail on another — the two release/0.8.0 flakes (scoring-pipeline Issue #14
 reading the wrong index DB after a sibling mutated `XDG_DATA_HOME`; the
 llm-client timeout test racing real timers) were both this class.

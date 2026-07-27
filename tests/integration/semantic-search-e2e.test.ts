@@ -6,7 +6,7 @@
  * Subsequent runs use the cached model and complete in ~1-2 seconds.
  *
  * Usage:
- *   AKM_SEMANTIC_TESTS=1 bun test tests/semantic-search-e2e.test.ts
+ *   AKM_SEMANTIC_TESTS=1 bun test tests/integration/semantic-search-e2e.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -27,7 +27,7 @@ import { type Cleanup, sandboxStashDir, sandboxXdgCacheHome, sandboxXdgConfigHom
 
 // ── Gate ───────────────────────────────────────────────────────────────────
 
-const SEMANTIC_TESTS = !!process.env.AKM_SEMANTIC_TESTS;
+const SEMANTIC_TESTS = process.env.AKM_SEMANTIC_TESTS === "1";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -246,9 +246,25 @@ let moduleEnvCleanup: Cleanup = () => {};
 let testCacheDir = "";
 let testConfigDir = "";
 
+// ISOLATION-03: HF_HOME is not one of the AKM_*/XDG_*/HOME vars the preload
+// tripwire in tests/_preload.ts watches, so a leaked mutation here would not
+// be caught automatically and could affect sibling test files sharing this
+// shard process. Track whether we set it and its prior value so it can be
+// restored exactly, mirroring the sandbox helpers' cleanup pattern.
+let hfHomeMutated = false;
+let savedHfHome: string | undefined;
+
 function restoreEnv(): void {
   moduleEnvCleanup();
   moduleEnvCleanup = () => {};
+  if (hfHomeMutated) {
+    if (savedHfHome === undefined) {
+      delete process.env.HF_HOME;
+    } else {
+      process.env.HF_HOME = savedHfHome;
+    }
+    hfHomeMutated = false;
+  }
   resetConfigCache();
 }
 
@@ -269,8 +285,12 @@ describe.skipIf(!SEMANTIC_TESTS)("Semantic search end-to-end (real embeddings)",
     moduleEnvCleanup = stashResult.cleanup;
     testCacheDir = cacheResult.dir;
     testConfigDir = cfgResult.dir;
-    // Use the user's existing HuggingFace model cache to avoid re-downloading
+    // Use the user's existing HuggingFace model cache to avoid re-downloading.
+    // Only set (and later restore in restoreEnv()) when it wasn't already
+    // present — see the ISOLATION-03 note above hfHomeMutated.
     if (!process.env.HF_HOME) {
+      savedHfHome = process.env.HF_HOME;
+      hfHomeMutated = true;
       process.env.HF_HOME = path.join(process.env.HOME ?? "/tmp", ".cache", "huggingface");
     }
 
