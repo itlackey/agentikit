@@ -46,6 +46,13 @@ let storage: IsolatedAkmStorage;
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
   writeWorkflowTestConfig();
+  // Q-05: `brief`/`report`/`run`/`watch` are gated behind
+  // `experimental.workflowEngine` (off by default). This file's tests exist
+  // to pin the driver-protocol/watch CLI envelope contracts, not the gate
+  // itself (that is `tests/integration/commands/workflow-engine-gate.test.ts`),
+  // so opt in here to keep exercising the same behavior these tests always
+  // have.
+  writeSandboxConfig({ experimental: { workflowEngine: true } });
 });
 
 afterEach(() => storage.cleanup());

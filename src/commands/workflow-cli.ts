@@ -18,6 +18,7 @@ import { getParsedInvocation } from "../cli/invocation";
 import { getStringArg } from "../cli/parse-args";
 import { defineJsonCommand, output, runWithJsonErrors } from "../cli/shared";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
+import { loadConfig } from "../core/config/config";
 import { NotFoundError, UsageError } from "../core/errors";
 import { akmIndex } from "../indexer/indexer";
 import {
@@ -34,6 +35,7 @@ import {
   parseWorkflowStepState,
   WORKFLOW_STEP_STATES,
 } from "../workflows/cli";
+import { requireWorkflowEngineEnabled } from "../workflows/exec/workflow-engine-gate";
 import { isWorkflowProgramPath } from "../workflows/program/project";
 import {
   abandonWorkflowRun,
@@ -236,6 +238,12 @@ const workflowCreateCommand = defineJsonCommand({
         "Refusing to overwrite with template: pass --from <file> to replace content, or --reset to explicitly replace with a fresh template.",
       );
     }
+    // Q-05: a `.yaml`/`.yml` name authors a YAML *program* — the format the
+    // native engine executes — so it is gated the same as running one.
+    // Markdown workflows (the default) are unaffected.
+    if (isWorkflowProgramPath(effectiveName)) {
+      requireWorkflowEngineEnabled(loadConfig(), `create ${effectiveName}`);
+    }
     const result = createWorkflowAsset({
       name: effectiveName,
       from: args.from,
@@ -347,6 +355,7 @@ const workflowRunCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    requireWorkflowEngineEnabled(loadConfig(), "run");
     const { runWorkflowSteps } = await import("../workflows/exec/run-workflow.js");
     const rawMaxSteps = getStringArg(args, "max-steps");
     let maxSteps: number | undefined;
@@ -382,6 +391,7 @@ const workflowBriefCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    requireWorkflowEngineEnabled(loadConfig(), "brief");
     const { buildWorkflowBrief } = await import("../workflows/exec/brief.js");
     const result = await buildWorkflowBrief(args.target);
     output("workflow-brief", result);
@@ -437,6 +447,7 @@ const workflowReportCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    requireWorkflowEngineEnabled(loadConfig(), "report");
     // --settle: the unit-less verb that advances a run parked on a
     // non-dispatching step. Mutually exclusive with the per-unit report flags.
     if (args.settle === true) {
@@ -546,6 +557,7 @@ const workflowWatchCommand = defineJsonCommand({
     "interval-ms": { type: "string", description: "Poll interval in milliseconds for --stream (default: 1000)" },
   },
   async run({ args }) {
+    requireWorkflowEngineEnabled(loadConfig(), "watch");
     const rawInterval = getStringArg(args, "interval-ms");
     let intervalMs: number | undefined;
     if (rawInterval !== undefined) {

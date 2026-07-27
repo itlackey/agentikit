@@ -50,6 +50,7 @@ import {
 import type { TaskDocument } from "../../tasks/schema";
 import { normaliseTaskId } from "../../tasks/task-id";
 import { validateTaskDocument } from "../../tasks/validator";
+import { isWorkflowEngineEnabled, WORKFLOW_ENGINE_CONFIG_KEY } from "../../workflows/exec/workflow-engine-gate";
 import { applyAutonomyGate, configuredDirectAutonomyLanes, describeGatedLanes } from "../improve/autonomy-gate";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
 
@@ -649,6 +650,16 @@ export interface TasksDoctorResult {
     applyMode: string;
     policy: string;
   };
+  /**
+   * Q-05 — the workflow engine gate's state. `akm workflow run`/`brief`/
+   * `report`/`watch`, and creating a YAML workflow program, all refuse until
+   * `experimental.workflowEngine` is set; this is where an operator confirms
+   * why (or whether) those surfaces are available.
+   */
+  workflowEngine: {
+    enabled: boolean;
+    configKey: string;
+  };
 }
 
 export async function akmTasksDoctor(
@@ -708,6 +719,12 @@ export async function akmTasksDoctor(
     configKey: IMPROVE_AUTONOMY_CONFIG_KEY,
     gatedLanes: allGated.map((entry) => ({ lane: entry.lane as string, reason: entry.reason })),
   };
+  // Q-05 — report the workflow engine gate's state alongside the autonomy
+  // gate: both are `experimental.*` opt-ins doctor exists to surface.
+  const workflowEngine = {
+    enabled: isWorkflowEngineEnabled(config),
+    configKey: WORKFLOW_ENGINE_CONFIG_KEY,
+  };
   const triage = effectiveStrategy.processes?.triage;
   const improveTriage = triage
     ? {
@@ -730,6 +747,7 @@ export async function akmTasksDoctor(
     scheduleSubset: SCHEDULE_SUPPORTED_SUBSET_HINT,
     warnings,
     improveAutonomy,
+    workflowEngine,
     ...(improveTriage ? { improveTriage } : {}),
   };
 }

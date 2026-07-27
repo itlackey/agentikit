@@ -15,7 +15,8 @@
       "scheduleSubset",
       "schemaVersion",
       "shape",
-      "warnings"
+      "warnings",
+      "workflowEngine"
     ]
   },
   "history": {

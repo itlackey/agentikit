@@ -23,7 +23,7 @@ please file it.
 | --- | --- |
 | **Stable** | Scripted use is supported. Changes are additive within a minor release; breaking changes are called out in the CHANGELOG with a migration note. |
 | **Evolving** | Available across minor releases, but flag names, prompts, and payload shapes may shift. Breaking changes are flagged in the CHANGELOG. |
-| **Experimental** | Subject to change without notice. Not recommended for scripted use. Some experimental surfaces additionally require an explicit opt-in — see [`akm improve` autonomy](#akm-improve-autonomy--opt-in-in-090). |
+| **Experimental** | Subject to change without notice. Not recommended for scripted use. Some experimental surfaces additionally require an explicit opt-in — see [`akm improve` autonomy](#akm-improve-autonomy--opt-in-in-090) and [`akm workflow` engine](#akm-workflow-engine--opt-in-in-090). |
 | **Internal** | Not a public interface. May change or disappear in any release, without a CHANGELOG note. Listed here only so you can recognize it. |
 
 ## Stable
@@ -228,12 +228,46 @@ for scripted use.
   written as YAML programs (`workflows/*.yaml`, `version: 2`, validated
   against `schemas/akm-workflow.json`), executed by `akm workflow run`, plus
   the harness-neutral driver protocol (`akm workflow brief` / `akm workflow
-  report`) and `akm workflow watch`. These are reachable with no opt-in in
-  0.9.0 — treat them as unstable rather than blocked. The YAML format, its
-  schema, the flags, and all JSON output shapes may change. Classic **linear markdown
+  report`) and `akm workflow watch`. Requires the `experimental.workflowEngine`
+  opt-in — see [below](#akm-workflow-engine--opt-in-in-090). The YAML format,
+  its schema, the flags, and all JSON output shapes may change. Classic **linear markdown
   workflows are unchanged and stable**, as is the workflow CLI contract
   (`start` / `next` / `complete` / `status` / `list` / `create` / `validate` /
-  `template` / `resume` / `abandon`).
+  `template` / `resume` / `abandon`) — none of that is gated.
+
+### `akm workflow` engine — opt-in in 0.9.0
+
+**The native workflow engine requires an explicit opt-in in 0.9.0.** Classic
+linear markdown workflows — `start` / `next` / `complete` / `status` / `list` /
+`create` (markdown, the default) / `template` / `validate` / `resume` /
+`abandon` — are unaffected and ship unconditionally, exactly as before. The
+engine-execution surface is gated:
+
+```sh
+akm config set experimental.workflowEngine true
+```
+
+Without it, these refuse OUTRIGHT rather than degrading — unlike the improve
+autonomy gate below, a workflow step either executes or it does not, so there
+is no partial-execution fallback to downgrade into:
+
+| Surface | What it does when enabled |
+| --- | --- |
+| `akm workflow run` | Executes a run's steps with the native engine, dispatching each step's units to the configured runner |
+| `akm workflow brief` | Read-only half of the harness-neutral driver protocol |
+| `akm workflow report` | Mutating half of the harness-neutral driver protocol |
+| `akm workflow watch` | Streams a run's `workflow_*` events |
+| `akm workflow create <name>.yaml` | Authors a YAML (`version: 2`) workflow *program* — the format the engine executes |
+
+Each refusal is a classified `ConfigError` (`WORKFLOW_ENGINE_NOT_ENABLED`, exit
+78) naming the exact surface and config key — never a silent no-op — and `akm
+tasks doctor` reports the gate's state under `workflowEngine.enabled` /
+`workflowEngine.configKey`. `akm workflow validate` is unaffected even against
+a `.yaml` program file: it type-checks the file without executing anything,
+and creating a *markdown* workflow (the `create` default) is unaffected too.
+
+The engine is never enabled by inference: an absent `experimental` section, an
+absent key, and an explicit `false` all read as off.
 
 ### `akm improve` autonomy — opt-in in 0.9.0
 

@@ -52,7 +52,11 @@ export type ConfigErrorCode =
   // `akm upgrade` refused: the environment blocks the upgrade (version
   // contract, filesystem permissions, or leftover upgrade state). The error
   // message carries the specific remediation.
-  | "UPGRADE_BLOCKED";
+  | "UPGRADE_BLOCKED"
+  // Q-05: `akm workflow run`/`brief`/`report`/`watch`, and creating a YAML
+  // workflow program, refuse outright until `experimental.workflowEngine` is
+  // set — see src/workflows/exec/workflow-engine-gate.ts.
+  | "WORKFLOW_ENGINE_NOT_ENABLED";
 
 /** Stable, machine-readable codes for UsageError. */
 export type UsageErrorCode =
@@ -102,6 +106,7 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
     "Choose a path inside your home directory (e.g. ~/akm) or another empty workspace. The stash directory cannot be the filesystem root, your home directory itself, or a sensitive system path like /etc, /var, ~/.config, or ~/.ssh.",
   UNKNOWN_IMPROVE_STRATEGY:
     "Pass one of the listed strategy names to `--strategy`, or define it under `improve.strategies`. Names are case-sensitive.",
+  WORKFLOW_ENGINE_NOT_ENABLED: "Run `akm config set experimental.workflowEngine true` to enable it.",
 };
 
 /** Default hint for each UsageError code. */

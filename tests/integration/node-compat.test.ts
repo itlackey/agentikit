@@ -967,6 +967,12 @@ describe("workflow LLM import-site parity (reviewer #9)", () => {
       setupStorage();
       configureDeadLlm();
       writeJudgeWorkflow("dispatch-smoke");
+      // Q-05: `workflow run` is gated behind `experimental.workflowEngine`
+      // (off by default) — opt in so this test still exercises the native
+      // engine's import sites instead of stopping at the gate's refusal.
+      const gate = nodeRun(["config", "set", "experimental.workflowEngine", "true"], nodeEnv);
+      assertNoBoundaryLeak(gate, "config set experimental.workflowEngine");
+      expect(gate.status).toBe(0);
 
       const start = nodeRun(["workflow", "start", "workflows/dispatch-smoke"], nodeEnv);
       assertNoBoundaryLeak(start, "dispatch start");
