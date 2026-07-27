@@ -742,12 +742,6 @@ export async function runImprovePostLoopStage(args: {
   consolidationRan: boolean;
   /** R5: this run's advisory merge-information-floor violation count (consolidate pass). */
   consolidationMergeFloorViolations?: number;
-  /**
-   * R5: accepted proposal count so far this run — the churn-volume signal.
-   * Always 0 since the 0.9.0 confidence-gate deletion; the field stays so the
-   * collapse detector's envelope shape is unchanged.
-   */
-  acceptedActions?: number;
 }): Promise<ImprovePostLoopResult> {
   const {
     scope,
@@ -828,7 +822,6 @@ export async function runImprovePostLoopStage(args: {
       runId: options.runId ?? "improve-adhoc",
       ...(improveProfile ? { improveProfile } : {}),
       pass: "consolidate",
-      acceptedActions: args.acceptedActions ?? 0,
       mergeFloorViolations: args.consolidationMergeFloorViolations ?? 0,
       config: options.config ?? loadConfig(),
       ...(eventsCtx ? { eventsCtx } : {}),

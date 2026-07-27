@@ -47,10 +47,13 @@ const ImproveSalienceSchema = z
   })
   .passthrough();
 
-// R5 — longitudinal collapse/churn detector (observe-only in v1; deterministic,
+// R5 — longitudinal collapse detector (observe-only; deterministic,
 // fail-open, runs only on cycles where consolidate did work).
 // Default ON; opt out via `improve.collapseDetector.enabled: false`.
 // See docs/architecture/specs/improve-collapse-churn-detector-design.md.
+// The design's CHURN alert class was removed (never fired in production —
+// its accepted-change-volume input was always a hardcoded 0), so this schema
+// no longer carries `churnMinAcceptedActions`.
 const ImproveCollapseDetectorSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -64,8 +67,6 @@ const ImproveCollapseDetectorSchema = z
     recallDropThreshold: z.number().min(0).max(1).optional(),
     // distinct-content-ratio decline over the window that fires collapse (default 0.05).
     entropyDropThreshold: z.number().min(0).max(1).optional(),
-    // Accepted-action volume over the window below which churn never fires (default 25).
-    churnMinAcceptedActions: z.number().int().min(1).optional(),
     // improve_cycle_metrics retention (default 365 days, owner-approved).
     retentionDays: z.number().int().min(1).optional(),
   })

@@ -102,12 +102,11 @@ function withIndexDb<T>(fn: (db: IndexDatabase) => T): T {
 
 const CFG: CollapseDetectorConfig = { windowCycles: 2 };
 
-function snapshot(runId: string, acceptedActions = 0, mergeFloorViolations = 0): CycleMetricsRow {
+function snapshot(runId: string, mergeFloorViolations = 0): CycleMetricsRow {
   const row = withIndexDb((indexDb) =>
     computeCycleMetrics(stateDb, indexDb, {
       runId,
       pass: "consolidate",
-      acceptedActions,
       mergeFloorViolations,
       cfg: CFG,
     }),
@@ -284,25 +283,6 @@ describe("collapse simulation (synthetic merge passes)", () => {
     expect(last!.mean_recall).toBeLessThan(baselineRecall);
     expect(last!.distinct_content_ratio).toBeLessThan(baseline1.distinct_content_ratio);
   });
-
-  test("churn: paraphrase-only cycles with accepted volume fire churn and nothing else", async () => {
-    seedCorpus();
-    await reindex();
-
-    // Baseline history (windowCycles=2), each cycle reporting accepted work.
-    for (let i = 0; i < 2; i++) {
-      record(snapshot(`cycle-${i}`, 20));
-    }
-    // Paraphrase: append one word to every body — store shape and canary hits
-    // stay stable while "work" accumulates.
-    for (const t of TOPICS) {
-      writeMemory(t.name, `${t.words.join(" ")} in project practice. revised`);
-    }
-    await reindex();
-    const row = snapshot("cycle-2", 20);
-    const alerts = record(row);
-    expect(alerts.map((a) => a.kind)).toEqual(["churn"]);
-  });
 });
 
 // ── evaluateCollapseAlerts — pure table tests ─────────────────────────────────
@@ -389,17 +369,6 @@ describe("evaluateCollapseAlerts (pure)", () => {
     const fired = evaluateCollapseAlerts(hist, row({ store_total: 70, over_generation_count: 3 }), cfg);
     expect(fired.map((a) => a.kind)).toEqual(["collapse-shrink"]);
   });
-
-  test("churn needs volume AND flat score AND flat entropy", () => {
-    const busy = [row({ accepted_actions: 10 }), row({ accepted_actions: 10 }), row({ accepted_actions: 10 })];
-    const fired = evaluateCollapseAlerts(busy, row({}), cfg);
-    expect(fired.map((a) => a.kind)).toEqual(["churn"]);
-    // Moving canary score (≥ 0.02 nDCG delta) → not churn.
-    expect(evaluateCollapseAlerts(busy, row({ mean_ndcg: 0.88 }), cfg)).toHaveLength(0);
-    // Insufficient volume → not churn.
-    const quiet = [row({ accepted_actions: 5 }), row({ accepted_actions: 5 }), row({ accepted_actions: 5 })];
-    expect(evaluateCollapseAlerts(quiet, row({}), cfg)).toHaveLength(0);
-  });
 });
 
 describe("normHash", () => {
@@ -418,7 +387,6 @@ describe("runCollapseDetector orchestrator", () => {
     const result = runCollapseDetector({
       runId: "run-orchestrated",
       pass: "consolidate",
-      acceptedActions: 2,
       mergeFloorViolations: 0,
       config: withTestImproveLlm({ semanticSearchMode: "off" }) as never,
     });
@@ -426,7 +394,9 @@ describe("runCollapseDetector orchestrator", () => {
     expect(result?.run_id).toBe("run-orchestrated");
     const rows = queryRecentCycleMetrics(stateDb, result?.canary_set_id ?? "", 10);
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.accepted_actions).toBe(2);
+    // The CHURN alert class (and its accepted_actions input) was removed —
+    // the column remains (migration-owned) but is always written as 0 now.
+    expect(rows[0]!.accepted_actions).toBe(0);
   });
 
   test("enabled:false is a complete no-op (no canaries minted, no rows)", async () => {
@@ -435,7 +405,6 @@ describe("runCollapseDetector orchestrator", () => {
     const result = runCollapseDetector({
       runId: "run-disabled",
       pass: "consolidate",
-      acceptedActions: 0,
       mergeFloorViolations: 0,
       config: { semanticSearchMode: "off", improve: { collapseDetector: { enabled: false } } } as never,
     });
@@ -448,7 +417,6 @@ describe("runCollapseDetector orchestrator", () => {
     const result = runCollapseDetector({
       runId: "run-broken",
       pass: "consolidate",
-      acceptedActions: 0,
       mergeFloorViolations: 0,
       config: withTestImproveLlm({ semanticSearchMode: "off" }) as never,
       indexDbPath: "/nonexistent/dir/index.db",

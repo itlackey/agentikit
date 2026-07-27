@@ -1,7 +1,27 @@
 # R5 — Longitudinal Collapse/Churn Detector for `akm improve`
 
-> **Status:** Implemented. Implements R5 / closes G7 from the 2026-06 improve
-> self-learning analysis (§4-G7/§5-R5/§6.3, since pruned; see git history).
+> **Status:** Partially implemented. The COLLAPSE alert class (§1, three
+> sub-conditions) and the MERGE-FLOOR advisory are live. **The CHURN alert
+> class described throughout this document (§1, §5.2 `accepted_actions`
+> column, §6.1 `churnMinAcceptedActions` config key, §8 item 2) was removed
+> in the 0.9.0 backlog burn-down (2026-07) and NOT implemented.** Its input
+> signal — `acceptedActions` — was wired to a hardcoded `0` at every call site
+> from the 0.9.0 confidence-gate deletion onward (the design's prescribed
+> source, `computeImproveRunMetrics(result).acceptedCount`, is computed after
+> envelope assembly, strictly AFTER the point in the pipeline where the
+> detector fires, so it was never reachable there), which meant
+> `acceptedSum >= churnMinAcceptedActions` (default 25) could never be
+> satisfied and the alert had never once fired. Rather than wire in a
+> differently-scaled substitute signal (e.g. `consolidate`'s own
+> `merged`/`mergedSecondaries` counts) and recalibrate a threshold that was
+> tuned against the design's original (unreachable) quantity, the alert class
+> was deleted: `CollapseAlertKind` no longer has a `"churn"` member,
+> `evaluateCollapseAlerts` no longer evaluates it, and the config schema no
+> longer accepts `churnMinAcceptedActions`. The `improve_cycle_metrics.
+> accepted_actions` DB column remains (migrations are append-only; dropping
+> it is a separate, unowned migration change) and is now always written as
+> `0`. See `src/commands/improve/collapse-detector.ts`'s module doc comment
+> for the live-code version of this note.
 >
 > **Implementation note (paths below are the ORIGINAL PLAN and no longer match
 > the landed tree in a few places — the plan's intent held, the file layout

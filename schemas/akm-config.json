@@ -1585,10 +1585,6 @@
               "minimum": 0,
               "maximum": 1
             },
-            "churnMinAcceptedActions": {
-              "type": "integer",
-              "minimum": 1
-            },
             "retentionDays": {
               "type": "integer",
               "minimum": 1
@@ -3214,10 +3210,6 @@
                   "type": "number",
                   "minimum": 0,
                   "maximum": 1
-                },
-                "churnMinAcceptedActions": {
-                  "type": "integer",
-                  "minimum": 1
                 },
                 "retentionDays": {
                   "type": "integer",

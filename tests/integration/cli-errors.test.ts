@@ -470,11 +470,14 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
 // declares a positional a stray value could fall into), so this was a
 // `--help` visibility / consistency gap, not a live parsing defect. This
 // package (PKG-8) owns and fixed three of the five (`health`/`index`/
-// `lint`); the other two (`log tail`, `hints`) live in
-// src/commands/observability-cli.ts, owned by a different package — they are
-// intentionally allowlisted below rather than silently excluded, so this
-// guard still fails loudly if a *sixth* leaf appears without declaring the
-// flags, rather than quietly widening its blind spot.
+// `lint`); the other two (`log tail`, `hints`) lived in
+// src/commands/observability-cli.ts, owned by a different package at the
+// time — `hints` was fixed and dropped from the (now-removed)
+// out-of-package allowlist first (it is format-exempt instead, see
+// `formatExemptSurfaces()` below), and `log tail` was the last one, fixed by
+// the W3-A backlog package. All six leaves now declare the flags, so the
+// allowlist this comment used to describe is gone: the guard below simply
+// fails loudly on any leaf that doesn't declare them.
 //
 // Scope note: this walk only considers TERMINAL leaves — commands with a
 // `run` and no `subCommands` of their own. `defineGroupCommand`-based
@@ -525,14 +528,6 @@ describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
     return results;
   }
 
-  // The one remaining known, out-of-package gap
-  // (src/commands/observability-cli.ts) — allowlisted, not silently excluded
-  // (see describe-block comment). `hints` used to be listed here too; it is
-  // now declared format-exempt (src/output/format-exempt.ts), which the
-  // `exemptCommands.includes(topLevel)` check above already skips, so it no
-  // longer needs (or belongs in) this allowlist.
-  const KNOWN_OUT_OF_PACKAGE_GAPS = new Set(["log tail"]);
-
   test("every non-format-exempt terminal leaf declares GLOBAL_OUTPUT_ARGS", () => {
     const { commands: exemptCommands, subcommands: exemptSubcommands } = formatExemptSurfaces();
     const requiredKeys = Object.keys(GLOBAL_OUTPUT_ARGS);
@@ -544,7 +539,6 @@ describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
       const topLevel = path.split(" ")[0] ?? path;
       if (exemptCommands.includes(topLevel)) continue;
       if (exemptSubcommands.includes(path)) continue;
-      if (KNOWN_OUT_OF_PACKAGE_GAPS.has(path)) continue;
       const argKeys = new Set(Object.keys(args));
       const hasAll = requiredKeys.every((key) => argKeys.has(key));
       if (!hasAll) missing.push(`akm ${path}`);

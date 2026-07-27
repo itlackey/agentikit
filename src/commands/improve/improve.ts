@@ -1056,11 +1056,9 @@ async function runPostLoopStageOrSkip(args: {
     improveProfile,
     resolvedPlan,
     consolidationRan: preparation.consolidationRan,
-    // R5: floor violations from this run's consolidate pass, plus the accepted
-    // volume — hardcoded 0 since the 0.9.0 confidence-gate deletion — for churn
-    // detection.
+    // R5: floor violations from this run's consolidate pass, for the collapse
+    // detector's merge-floor advisory.
     consolidationMergeFloorViolations: preparation.consolidation.mergeFloorViolations ?? 0,
-    acceptedActions: 0,
   });
 }
 

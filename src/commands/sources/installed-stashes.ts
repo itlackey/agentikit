@@ -181,7 +181,7 @@ function readBundleCounts(): Map<string, BundleCounts> {
       counts.set(row.bundleId, count);
     }
   } catch (error) {
-    process.stderr.write(`[akm list] failed to read bundle counts from ${dbPath}: ${String(error)}\n`);
+    warn(`[akm list] failed to read bundle counts from ${dbPath}: ${String(error)}`);
   } finally {
     if (db) {
       try {

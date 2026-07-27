@@ -63,9 +63,9 @@ export function assembleInfo(options?: { dbPath?: string }): InfoResponse {
     ...(s.enabled !== undefined ? { enabled: s.enabled } : {}),
   }));
 
-  // Index stats — resolve the DB path from config so info reads the same
-  // database that health and search use, rather than a bare getDbPath() call
-  // that ignores XDG_DATA_HOME or per-config overrides.
+  // Index stats — `options.dbPath` is a test-only override (see the param
+  // doc above); real callers fall through to the same `getDbPath()` that
+  // health and search use, so info reads the same database they do.
   const resolvedDbPath = options?.dbPath ?? getDbPath();
   const indexStats = readIndexStats(resolvedDbPath);
 

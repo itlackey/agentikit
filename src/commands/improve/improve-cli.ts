@@ -80,7 +80,6 @@ async function runCanaryInspection(refresh: boolean): Promise<void> {
         meanRecall: r.mean_recall,
         meanNdcg: r.mean_ndcg,
         distinctContentRatio: r.distinct_content_ratio,
-        acceptedActions: r.accepted_actions,
         mergeFloorViolations: r.merge_floor_violations,
         alerts: JSON.parse(r.alerts_json) as string[],
       })),
@@ -346,8 +345,6 @@ export const improveCommand = defineCommand({
       } finally {
         clearLogFile();
       }
-      const durationMs = Date.now() - startedAtMs;
-
       if (dryRun) {
         // A dry-run never persists its result, so stdout is its only result
         // channel. F4: was `process.exit(0)`, which terminates synchronously
@@ -392,8 +389,6 @@ export const improveCommand = defineCommand({
 
       if (jsonToStdout) output("improve", improveResult);
 
-      // durationMs reserved for future use (no console emission today).
-      void durationMs;
       // F4: was `process.exit(0)` — the run has already been fully recorded
       // above (recordImproveRunResult / the warning path), so nothing here
       // depends on an immediate synchronous exit. This is the last statement

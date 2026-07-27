@@ -6,13 +6,13 @@
  * `akm history` — surfaces internal mutation/usage events for a single asset
  * (`--ref`) or stash-wide.
  *
- * Event sources:
- *   - `usage_events` SQLite table: search, show, and feedback events recorded
+ * Event sources (both SQLite, both in `state.db`):
+ *   - `usage_events` table: search, show, and feedback events recorded
  *     by the local indexer during normal CLI use.
- *   - `events.jsonl` append-only stream (opt-in via `--include-proposals`):
- *     proposal lifecycle events (`promoted`, `rejected`) emitted by
- *     `akm proposal accept` / `akm proposal reject`. Use this flag to see
- *     the full proposal review trail alongside usage events.
+ *   - `events` table (opt-in via `--include-proposals`): proposal lifecycle
+ *     events (`promoted`, `rejected`) emitted by `akm proposal accept` /
+ *     `akm proposal reject`. Use this flag to see the full proposal review
+ *     trail alongside usage events.
  *
  * The two sources are merged and sorted chronologically (oldest first) so
  * consumers see a coherent lifecycle trail in a single output.
@@ -71,7 +71,8 @@ export interface HistoryResponse {
   entries: HistoryEntry[];
   /**
    * Event sources included in this response. Always contains "usage_events".
-   * Also contains "events.jsonl" when `--include-proposals` was specified.
+   * Also contains "state.db" (the `events` table) when `--include-proposals`
+   * was specified.
    */
   sources: string[];
   /**
@@ -92,8 +93,8 @@ export interface HistoryOptions {
   source?: UsageEventSource;
   /**
    * When true, proposal lifecycle events (`promoted`, `rejected`) from the
-   * `events.jsonl` stream are merged into the history output alongside usage
-   * events. This gives a complete view of an asset's lifecycle.
+   * `events` table in state.db are merged into the history output alongside
+   * usage events. This gives a complete view of an asset's lifecycle.
    *
    * Defaults to false — usage_events only — to preserve the existing behaviour
    * for callers that do not need proposal lifecycle visibility.
@@ -114,7 +115,7 @@ export interface HistoryOptions {
    * since Chunk-8 WI-8.3). Defaults to opening state.db.
    */
   db?: Database;
-  /** Test seam — overrides events.jsonl path and clock for proposal events. */
+  /** Test seam — overrides the state.db path and clock for proposal events. */
   eventsCtx?: EventsContext;
 }
 
@@ -147,9 +148,10 @@ function toEntry(row: UsageEventRow): HistoryEntry {
 }
 
 /**
- * Convert an ISO timestamp from events.jsonl ("2026-04-01T12:00:00.000Z")
- * to the SQLite-style format used in HistoryEntry.createdAt
- * ("2026-04-01 12:00:00") so entries sort consistently.
+ * Convert an ISO timestamp from the state.db `events` table
+ * ("2026-04-01T12:00:00.000Z") to the SQLite-style format used in
+ * HistoryEntry.createdAt ("2026-04-01 12:00:00") so entries sort
+ * consistently.
  */
 function isoToSqliteTimestamp(ts: string): string {
   // Normalise to the "YYYY-MM-DD HH:MM:SS" format used by usage_events rows.
@@ -167,8 +169,9 @@ function isoToSqliteTimestamp(ts: string): string {
  * order (oldest first) so consumers can display a lifecycle trail.
  *
  * When `includeProposals` is true, proposal lifecycle events (`promoted`,
- * `rejected`) from events.jsonl are merged into the result set. This provides
- * one coherent view of both usage signals and proposal review decisions.
+ * `rejected`) from the state.db `events` table are merged into the result
+ * set. This provides one coherent view of both usage signals and proposal
+ * review decisions.
  */
 export async function akmHistory(options: HistoryOptions = {}): Promise<HistoryResponse> {
   let normalizedRef: string | undefined;
