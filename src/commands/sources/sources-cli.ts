@@ -116,11 +116,6 @@ export const upgradeCommand = defineJsonCommand({
   args: {
     check: { type: "boolean", description: "Check for updates without installing", default: false },
     force: { type: "boolean", description: "Force upgrade even if on latest", default: false },
-    "skip-checksum": {
-      type: "boolean",
-      description: "Skip checksum verification (not recommended)",
-      default: false,
-    },
     "skip-post-upgrade": {
       type: "boolean",
       description: "Skip the post-upgrade index rebuild (migration preflight and apply still run)",
@@ -137,10 +132,9 @@ export const upgradeCommand = defineJsonCommand({
       output("upgrade", check);
       return;
     }
-    const skipChecksum = args["skip-checksum"];
     const skipPostUpgrade = args["skip-post-upgrade"];
     const migrationConfig = args["migration-config"];
-    const result = await performUpgrade(check, { force: args.force, skipChecksum, skipPostUpgrade, migrationConfig });
+    const result = await performUpgrade(check, { force: args.force, skipPostUpgrade, migrationConfig });
     output("upgrade", result);
   },
 });

@@ -122,8 +122,8 @@ Fixture refs worth using throughout this doc:
       `history`, `log`, `agent`, `lessons`, `lint`, `improve`, `extract`,
       `propose`, `proposal`, `help`, `hints`, `completions`, `env`, `secret`,
       `wiki`, `tasks`.
-- [ ] `akm config enable --help` and `akm config disable --help` mention `skills.sh`
-      only.
+- [ ] `akm config enable` and `akm config disable` fail as unknown subcommands
+      (removed in 0.9.0 — use `akm registry add|remove`).
 - [ ] `akm upgrade --check` returns structured version/install-method info and
       does not modify the sandbox or the host install.
 - [ ] `akm completions` prints a bash completion script to stdout.

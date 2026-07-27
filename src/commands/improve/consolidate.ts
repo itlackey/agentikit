@@ -31,7 +31,7 @@ import { resolveStandardsContext } from "../../core/standards/resolve-standards-
 import { openStateDatabase } from "../../core/state-db";
 import { detectTruncatedDescription } from "../../core/text-truncation";
 import { parseSinceToIsoLenient } from "../../core/time";
-import { warn } from "../../core/warn";
+import { warn, warnVerbose } from "../../core/warn";
 import {
   assertWriteTargetPathsClean,
   captureGitPublication,
@@ -1328,9 +1328,12 @@ async function judgeConsolidationChunks(args: {
       raw = retry;
     }
 
-    if (process.env.AKM_DEBUG_LLM) {
+    // C9 action 1: AKM_DEBUG_LLM was a separate, undocumented env var for this
+    // one diagnostic; folded into the standard AKM_VERBOSE gate (warnVerbose)
+    // rather than kept as its own toggle.
+    {
       const preview = (raw.content ?? "").slice(0, 500);
-      warn(`[akm:consolidate] chunk ${chunkIdx + 1} raw response (first 500 chars): ${preview}`);
+      warnVerbose(`[akm:consolidate] chunk ${chunkIdx + 1} raw response (first 500 chars): ${preview}`);
     }
 
     const parsed = parseEmbeddedJsonResponse<RawChunkPlan>(raw.content);

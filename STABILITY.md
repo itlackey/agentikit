@@ -357,8 +357,21 @@ on them.
 `AKM_EMBED_DETERMINISTIC`, `AKM_CLAUDE_PROJECTS_DIR`,
 `AKM_FORCE_INIT_TMP_STASH`, `AKM_STATE_DIR`.
 
-Anything matching `AKM_TEST_*` is test-only fault injection, compiled out of
-release builds. Never set it.
+Anything matching `AKM_TEST_*` is test-only fault injection. Never set it.
+`AKM_VERSION` is the only variable actually stripped from release builds, via
+`bun build --define` (see `.github/workflows/release.yml`); no `src/` code
+reads an `AKM_TEST_*` variable, so the compiled `akm` binary itself carries
+none. That said, three fault-injection hooks are NOT compiled out and DO ship
+in every install: `AKM_TEST_MIGRATION_CRASH_AFTER`,
+`AKM_TEST_MIGRATION_CRASH_GAP`, `AKM_TEST_MIGRATION_FAIL_WORKFLOW_DELETE`
+(`scripts/akm-migrate/config-migrate.ts`,
+`scripts/akm-migrate/migrate/legacy/three-db-cutover.ts`) — `akm
+migrate`/`akm upgrade` dispatch to `scripts/akm-migrate.ts` as a separate,
+unbundled Bun script (`src/commands/migration-tool.ts`) that ships as plain
+TypeScript source in the npm package, outside the `--compile`/`--define`
+binary build. At rest they are runtime-guarded no-ops (`SIGKILL`/throw only
+when the exact env value matches an internal phase name), but they are
+physically present, not stripped. Never set them.
 
 ## On the horizon
 

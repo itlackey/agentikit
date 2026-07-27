@@ -873,9 +873,13 @@ akm upgrade --migration-config ./prepared-config.json  # Contract-capable releas
 | --- | --- |
 | `--check` | Check for updates without installing |
 | `--force` | Force upgrade even if on latest version |
-| `--skip-checksum` | Skip checksum verification during upgrade (not recommended) |
 | `--skip-post-upgrade` | Skip only the post-migration index rebuild; migration preflight and apply still run |
 | `--migration-config` | On contract-capable upgrades, operator-prepared config passed only to the new binary's migration apply; not a path for crossing from a pre-`migrate` binary |
+
+Checksum verification is not optional and has no flag. If a release's
+`checksums.txt` is genuinely unreachable, the recovery hatch is the
+`AKM_UPGRADE_SKIP_CHECKSUM=1` environment variable (Internal — deliberately
+not a discoverable, tab-completable flag). See STABILITY.md.
 
 ### clone
 

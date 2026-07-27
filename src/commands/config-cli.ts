@@ -19,7 +19,6 @@ import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
 import { resolveStashDir } from "../core/common";
 import { type AkmConfig, DEFAULT_CONFIG, loadConfig, mutateConfig } from "../core/config/config";
 import { configGet, configSet, configUnset, unknownKeyHint } from "../core/config/config-walker";
-import { UsageError } from "../core/errors";
 import { getCacheDir, getConfigPath, getDbPath, getDefaultStashDir } from "../core/paths";
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -81,54 +80,14 @@ export { unknownKeyHint };
 
 // ── `akm config` command surface ────────────────────────────────────────────
 // Extracted verbatim from src/cli.ts (WS6). The `main.subCommands.config` key
-// and every config subcommand's args/output shape are byte-identical. The
-// `skills.sh` toggle helpers and the `CONFIG_SUBCOMMAND_SET` routing constant
-// are used ONLY by this command, so they move with the cluster. Leaf handlers
-// whose body is a plain `runWithJsonErrors(() => { … })` are migrated to
-// `defineJsonCommand`, which emits the same JSON envelope (stdout/stderr/
-// exit-code) as the inline form.
-
-const SKILLS_SH_NAME = "skills.sh";
-const SKILLS_SH_URL = "https://skills.sh";
-const SKILLS_SH_PROVIDER = "skills-sh";
-
-function normalizeToggleTarget(target: string): "skills.sh" {
-  const normalized = target.trim().toLowerCase();
-  if (normalized === "skills.sh" || normalized === "skills-sh") return "skills.sh";
-  throw new UsageError(`Unsupported target "${target}". Supported targets: skills.sh`);
-}
-
-function toggleSkillsShRegistry(enabled: boolean): { changed: boolean; component: string; enabled: boolean } {
-  let changed = false;
-  mutateConfig((config) => {
-    const registries = (config.registries ?? DEFAULT_CONFIG.registries ?? []).map((registry) => ({ ...registry }));
-    const idx = registries.findIndex(
-      (registry) =>
-        registry.provider === SKILLS_SH_PROVIDER || registry.name === SKILLS_SH_NAME || registry.url === SKILLS_SH_URL,
-    );
-    if (idx >= 0) {
-      const target = registries[idx]!;
-      const wasEnabled = target.enabled !== false;
-      target.enabled = enabled;
-      changed = wasEnabled !== enabled;
-      return { ...config, registries };
-    }
-    registries.push({ url: SKILLS_SH_URL, name: SKILLS_SH_NAME, provider: SKILLS_SH_PROVIDER, enabled });
-    changed = true;
-    return { ...config, registries };
-  });
-  return { changed, component: SKILLS_SH_NAME, enabled };
-}
-
-function toggleComponent(
-  targetRaw: string,
-  enabled: boolean,
-): { changed: boolean; component: string; enabled: boolean } {
-  const target = normalizeToggleTarget(targetRaw);
-  if (target === "skills.sh") return toggleSkillsShRegistry(enabled);
-  // normalizeToggleTarget throws for any unsupported target; this is unreachable.
-  throw new UsageError(`Unsupported target "${targetRaw}". Supported targets: skills.sh`);
-}
+// and every config subcommand's args/output shape are byte-identical. Leaf
+// handlers whose body is a plain `runWithJsonErrors(() => { … })` are
+// migrated to `defineJsonCommand`, which emits the same JSON envelope
+// (stdout/stderr/exit-code) as the inline form.
+//
+// `akm config enable|disable` (a hardcoded alias for toggling the skills.sh
+// registry) was removed in 0.9.0 (C4). Use `akm registry add|remove`, the
+// general mechanism, instead.
 
 export const configCommand = defineGroupCommand({
   meta: { name: "config", description: "Show and manage configuration" },
@@ -236,26 +195,6 @@ export const configCommand = defineGroupCommand({
       async run() {
         const { runConfigValidate } = await import("../cli/config-validate.js");
         await runConfigValidate();
-      },
-    }),
-    enable: defineJsonCommand({
-      meta: { name: "enable", description: "Enable an optional component (skills.sh)" },
-      args: {
-        target: { type: "positional", description: "Component to enable (skills.sh)", required: true },
-      },
-      run({ args }) {
-        const result = toggleComponent(args.target, true);
-        output("enable", result);
-      },
-    }),
-    disable: defineJsonCommand({
-      meta: { name: "disable", description: "Disable an optional component (skills.sh)" },
-      args: {
-        target: { type: "positional", description: "Component to disable (skills.sh)", required: true },
-      },
-      run({ args }) {
-        const result = toggleComponent(args.target, false);
-        output("disable", result);
       },
     }),
   },

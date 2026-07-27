@@ -344,7 +344,7 @@ Key behaviors:
 - Per-query response caching with 15-minute TTL
 - Stale cache fallback (up to 24 hours) on network failure
 - No authentication required
-- Toggle on/off via `akm config enable skills.sh` / `akm config disable skills.sh` (the bare `akm enable` / `akm disable` aliases were removed in 0.9.0)
+- Toggle on/off via `akm registry add https://skills.sh --name skills.sh --provider skills-sh` / `akm registry remove skills.sh` (the bare `akm enable` / `akm disable` aliases and `akm config enable|disable` were removed in 0.9.0 — use `akm registry add|remove`, the general mechanism)
 
 To install a skill found via skills.sh, use the `ref` field (GitHub
 `owner/repo`) with `akm add`:
