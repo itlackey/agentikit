@@ -59,6 +59,18 @@ const DIR_TYPE_MAP: DirTypeRule[] = [
     test: (ext) => ext === ".md",
   },
   {
+    // R-045 / Q-18 second half (owner ruling 11) — stash-resident `instruction`
+    // assets live under `instructions/`, mirroring the `knowledge` rule. This
+    // is a walker discovery rule for FILES ON DISK under a stash's
+    // `instructions/` dir; it is unrelated to the adapter-emitted root
+    // CLAUDE.md/AGENTS.md instruction docs (`tool-dir-shared.ts`), which are
+    // synthesized by format-family adapters, carry `ownsPresentation: true`,
+    // and never pass through this matcher at all.
+    dir: "instructions",
+    type: "instruction",
+    test: (ext) => ext === ".md",
+  },
+  {
     dir: "workflows",
     type: "workflow",
     test: (ext) => ext === ".md",

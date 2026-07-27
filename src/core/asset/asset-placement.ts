@@ -27,7 +27,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { SCRIPT_EXTENSIONS, WORKFLOW_EXTENSIONS } from "../recognition-util";
+import { type KnownType, SCRIPT_EXTENSIONS, WORKFLOW_EXTENSIONS } from "../recognition-util";
 
 function toPosix(input: string): string {
   return input.replace(/\\/g, "/");
@@ -86,7 +86,7 @@ const scriptSpec: Omit<AssetSpec, "stashDir"> = {
   toAssetPath: (typeRoot, name) => path.join(typeRoot, name),
 };
 
-const PLACEMENT_SPECS: Record<string, AssetSpec> = {
+const BUILTIN_PLACEMENT_SPECS = {
   skill: {
     stashDir: "skills",
     isRelevantFile: (fileName) => fileName === "SKILL.md",
@@ -100,6 +100,18 @@ const PLACEMENT_SPECS: Record<string, AssetSpec> = {
   command: { stashDir: "commands", ...markdownSpec },
   agent: { stashDir: "agents", ...markdownSpec },
   knowledge: { stashDir: "knowledge", ...markdownSpec },
+  // R-045 / Q-18 second half (owner ruling 11, EXECUTE NOW) — `instruction` as
+  // a real stash-resident type, mirroring `knowledge`'s plain markdown spec.
+  // This is distinct from the ADAPTER-OWNED instruction docs emitted by
+  // format-family adapters (root CLAUDE.md/AGENTS.md via `tool-dir-shared.ts`):
+  // those carry `document.ownsPresentation === true` and are routed straight
+  // to their adapter's own projection by `rendererForIndexedEntry`
+  // (`src/commands/read/show.ts`), which checks `ownsPresentation` BEFORE
+  // ever consulting a type/renderer mapping. A stash-resident `instructions/`
+  // asset never sets that marker, so it always renders via the `knowledge-md`
+  // renderer (`TYPE_PRESENTATION.instruction`, `src/core/type-presentation.ts`)
+  // like any other placement type — no collision with the adapter-owned path.
+  instruction: { stashDir: "instructions", ...markdownSpec },
   workflow: { stashDir: "workflows", ...workflowSpec },
   script: { stashDir: "scripts", ...scriptSpec },
   memory: { stashDir: "memories", ...markdownSpec },
@@ -163,7 +175,28 @@ const PLACEMENT_SPECS: Record<string, AssetSpec> = {
   // Durable stash-level semantic knowledge — facts about the user, team, or
   // project. A plain markdown spec; see docs/architecture/specs/fact-asset-type.md.
   fact: { stashDir: "facts", ...markdownSpec },
-};
+} satisfies Record<string, AssetSpec>;
+
+/**
+ * Compile-time `placementTypes() ⊆ KNOWN_TYPES` subset assertion (owner
+ * ruling 11): every key of the STATIC built-in table above must also be a
+ * {@link KnownType} (`core/recognition-util.ts`), so the two registries can
+ * never silently drift apart again. `satisfies Record<string, AssetSpec>`
+ * above preserves the literal key union (a plain `Record<string, AssetSpec>`
+ * annotation would widen it to `string` and defeat this check); if a future
+ * edit adds a `BUILTIN_PLACEMENT_SPECS` key that is not in `KNOWN_TYPES`,
+ * `_BuiltinPlacementKeysAreKnownTypes` resolves to `never` and the `= true`
+ * assignment below fails to typecheck. This intentionally checks only the
+ * static built-in table, NOT the mutable runtime registry mutated by
+ * {@link registerAssetSpec} — the custom-asset-type extension surface is
+ * allowed to register stash-resident specs for foreign (non-`KnownType`)
+ * types.
+ */
+type _BuiltinPlacementKeysAreKnownTypes = keyof typeof BUILTIN_PLACEMENT_SPECS extends KnownType ? true : never;
+const _placementKeysSubsetOfKnownTypes: _BuiltinPlacementKeysAreKnownTypes = true;
+void _placementKeysSubsetOfKnownTypes;
+
+const PLACEMENT_SPECS: Record<string, AssetSpec> = { ...BUILTIN_PLACEMENT_SPECS };
 
 /** Live placement spec for a type, or `undefined` for an unknown type. */
 export function placementSpecFor(type: string): AssetSpec | undefined {
