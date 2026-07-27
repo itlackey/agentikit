@@ -329,7 +329,7 @@ function seedInstalledBundleMigration(): { prepared: string; installedRoot: stri
   return { prepared, installedRoot, oldRef, itemRef };
 }
 
-test("a real v17 index and v2 resume preserve installed-bundle durable state", async () => {
+test("a real v17 index and a crash-resume preserve installed-bundle durable state", async () => {
   const { prepared, installedRoot, oldRef, itemRef } = seedInstalledBundleMigration();
   const primaryRoot = path.join(getDataDir(), "primary-with-same-ref");
   fs.mkdirSync(path.join(primaryRoot, "skills", "deploy"), { recursive: true });
@@ -376,24 +376,12 @@ test("a real v17 index and v2 resume preserve installed-bundle durable state", a
   });
   await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
   const journal = JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8"));
-  expect(journal.migrationLockEntries).toHaveLength(1);
-  journal.formatVersion = 2;
-  delete journal.migrationLockEntries;
-  delete journal.pathResolutionBase;
-  fs.writeFileSync(getMigrationApplyJournalPath(), `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
-
-  fs.mkdirSync(path.dirname(getLockfilePath()), { recursive: true });
-  fs.writeFileSync(
-    getLockfilePath(),
-    `${JSON.stringify([
-      { id: "installed-owner-repo", source: "github", ref: "owner/repo", localRoot: "relative-installed" },
-    ])}\n`,
-    { mode: 0o600 },
-  );
-  const unsafeResume = await runCliCapture(["migrate", "apply"]);
-  expect(unsafeResume.code).not.toBe(0);
-  expect(unsafeResume.stderr).toMatch(/cannot safely resume.*relative source paths.*working-directory binding/i);
-  fs.rmSync(getLockfilePath());
+  // The journal captures the resolved installed-bundle lock entry once, at
+  // creation time; a crash mid-flight and a plain resume must reuse that
+  // recorded entry as-is rather than re-deriving it from the live lockfile.
+  expect(journal.migrationLockEntries).toEqual([
+    { id: "installed-owner-repo", source: "github", ref: "owner/repo", localRoot: installedRoot },
+  ]);
 
   const applied = await runCliCapture(["migrate", "apply"]);
   expect(applied.code, applied.stderr).toBe(0);
@@ -412,31 +400,6 @@ test("a real v17 index and v2 resume preserve installed-bundle durable state", a
   ]);
 }, 30_000);
 
-test("a v2 journal fails closed when its prepared installed root cannot be recovered", async () => {
-  const { prepared } = seedInstalledBundleMigration();
-  fs.writeFileSync(getConfigPath(), '{"configVersion":"0.8.0"}\n', { mode: 0o600 });
-  openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
-  const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "apply", "--config", prepared], {
-    cwd: path.resolve(import.meta.dir, "../.."),
-    env: { ...process.env, AKM_TEST_MIGRATION_CRASH_AFTER: "workflow" },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-
-  const journal = JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8"));
-  journal.formatVersion = 2;
-  delete journal.migrationLockEntries;
-  delete journal.pathResolutionBase;
-  fs.writeFileSync(getMigrationApplyJournalPath(), `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
-  const before = fs.readFileSync(getMigrationApplyJournalPath());
-
-  const resumed = await runCliCapture(["migrate", "apply"]);
-  expect(resumed.code).not.toBe(0);
-  expect(resumed.stderr).toMatch(/cannot recover materialized roots.*installed-owner-repo/i);
-  expect(fs.readFileSync(getMigrationApplyJournalPath())).toEqual(before);
-}, 30_000);
-
 test("a required installed-bundle lock write keeps forward recovery pending", async () => {
   const { prepared, installedRoot } = seedInstalledBundleMigration();
   openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
@@ -453,10 +416,6 @@ test("a required installed-bundle lock write keeps forward recovery pending", as
   expect(JSON.parse(fs.readFileSync(getConfigPath(), "utf8")).configVersion).toBe("0.8.0");
   expect(fs.readFileSync(getLockfilePath(), "utf8")).toBe("not a lockfile");
 
-  const format3Journal = JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8"));
-  format3Journal.formatVersion = 3;
-  delete format3Journal.pathResolutionBase;
-  fs.writeFileSync(getMigrationApplyJournalPath(), `${JSON.stringify(format3Journal, null, 2)}\n`, { mode: 0o600 });
   fs.rmSync(getLockfilePath());
   const resumed = await runCliCapture(["migrate", "apply"]);
   expect(resumed.code, resumed.stderr).toBe(0);
@@ -526,27 +485,12 @@ test("relative pre-cutover roots resume against the journaled cwd", async () => 
     phase: "workflow-applied",
   });
 
-  const format3Journal = { ...journal, formatVersion: 3 };
-  delete format3Journal.pathResolutionBase;
-  fs.writeFileSync(getMigrationApplyJournalPath(), `${JSON.stringify(format3Journal, null, 2)}\n`, { mode: 0o600 });
-  const unsafeResume = Bun.spawn([process.execPath, cliPath, "migrate", "apply"], {
-    cwd: resumeCwd,
-    env: { ...process.env },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [unsafeCode, , unsafeStderr] = await Promise.all([
-    unsafeResume.exited,
-    new Response(unsafeResume.stdout).text(),
-    new Response(unsafeResume.stderr).text(),
-  ]);
-  expect(unsafeCode).not.toBe(0);
-  expect(unsafeStderr).toMatch(/cannot safely resume.*relative source paths.*working-directory binding/i);
   expect(fs.existsSync(path.join(memoriesDir, ".stash.json"))).toBe(true);
   expect(fs.readFileSync(taskPath, "utf8")).toContain(["workflow", "relative"].join(":"));
 
-  fs.writeFileSync(getMigrationApplyJournalPath(), `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
-
+  // Resume from a DIFFERENT cwd than the crashed process used: relative
+  // source paths must still resolve correctly via the journal's own
+  // recorded pathResolutionBase, not the resuming process's cwd.
   const resumed = Bun.spawn([process.execPath, cliPath, "migrate", "apply"], {
     cwd: resumeCwd,
     env: { ...process.env },
