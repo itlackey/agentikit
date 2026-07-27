@@ -180,7 +180,9 @@ describe("error class hints", () => {
 
   test("UsageError derives hint from code by default", () => {
     expect(new UsageError("bad source", "INVALID_SOURCE_VALUE").hint()).toBe("Pick one of: stash, registry, both.");
-    expect(new UsageError("bad format", "INVALID_FORMAT_VALUE").hint()).toBe("Pick one of: json, jsonl, text, yaml.");
+    expect(new UsageError("bad format", "INVALID_FORMAT_VALUE").hint()).toBe(
+      "Pick one of: json, jsonl, yaml, text, md, html.",
+    );
     expect(new UsageError("bad detail", "INVALID_DETAIL_VALUE").hint()).toBe(
       "Pick one of: brief, normal, full. For agent/summary projections use --shape.",
     );

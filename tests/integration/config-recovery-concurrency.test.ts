@@ -37,7 +37,6 @@ describe("raw recovery startup", () => {
       ["bun", "cli.ts", "config", "validate"],
       ["bun", "cli.ts", "migrate", "status"],
       ["bun", "cli.ts", "config", "path"],
-      ["bun", "cli.ts", "backup", "create", "--for", "0.9.0"],
       ["bun", "cli.ts", "setup", "--detect-only"],
       ["bun", "cli.ts", "workflow", "--help"],
     ]) {

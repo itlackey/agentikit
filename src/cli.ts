@@ -560,7 +560,7 @@ export function shouldBypassConfigStartup(argv: readonly string[]): boolean {
   if (args.includes("--help") || args.includes("-h") || args.includes("--version") || args.includes("-v")) return true;
   const commandIndex = findCittyTopLevelCommandIndex(args, MAIN_TOP_LEVEL_ARGS);
   const command = commandIndex >= 0 ? args[commandIndex] : undefined;
-  if (command === "setup" || command === "backup" || command === "migrate") return true;
+  if (command === "setup" || command === "migrate") return true;
   if (isTaskRunWithId(argv)) return true;
   if (command !== "config") return false;
   const configIndex = args.indexOf("config");

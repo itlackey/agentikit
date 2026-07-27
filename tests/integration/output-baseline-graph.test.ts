@@ -27,8 +27,12 @@ function writeConfig(configDir: string, config: Record<string, unknown>): void {
   fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 
+// `akm backup` was removed from the CLI in 0.9.0 (R-029); the recovery bundle
+// is created via the standalone akm-migrate entry point instead.
+const MIGRATE = path.join(__dirname, "..", "..", "scripts", "akm-migrate.ts");
+
 function ensureFreshRecoveryBundle(stashDir: string, dirs: Required<CliEnvDirs>): void {
-  const result = spawnSync("bun", [CLI, "backup", "create", "--for", "0.9.0"], {
+  const result = spawnSync("bun", [MIGRATE, "backup", "--for", "0.9.0"], {
     encoding: "utf8",
     timeout: 30_000,
     env: {
