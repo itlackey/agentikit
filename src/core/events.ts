@@ -278,6 +278,14 @@ export interface ReadEventsOptions {
   excludeTags?: string[];
   /** Only include events whose metadata.tags contain ALL of these tags. */
   includeTags?: string[];
+  /**
+   * D-38 (`akm log list --limit`): cap the result to the MOST RECENT `limit`
+   * events matching every other filter (since/type/ref AND the tag
+   * post-filter below). Undefined means unlimited — the historical default,
+   * left unchanged so existing scripts that read the whole stream keep
+   * working.
+   */
+  limit?: number;
 }
 
 export interface ReadEventsResult {
@@ -326,14 +334,26 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
     // filter to "no type filter" for that one case and apply the alias match
     // client-side alongside the existing tag post-filter below.
     const typeIsAliased = options.type !== undefined && SAVE_SYNC_EVENT_TYPE_ALIASES.has(options.type);
+    // D-38: a JS-side post-filter (the type alias above, or the tag filters
+    // below) runs AFTER the SQL read, so a SQL-level LIMIT applied before it
+    // could drop rows the post-filter would have kept out anyway, silently
+    // returning fewer than `limit` (or the wrong — oldest-in-the-SQL-window —
+    // events). Only push `limit` into SQL (readStateEvents) when nothing
+    // downstream can shrink the result further; otherwise read unbounded (the
+    // pre-existing behavior) and apply `limit` ourselves, below, AFTER the
+    // post-filter runs.
+    const needsPostFilter =
+      typeIsAliased || (options.excludeTags?.length ?? 0) > 0 || (options.includeTags?.length ?? 0) > 0;
+    const pushLimitToSql = options.limit !== undefined && !needsPostFilter;
     const { events: rawEvents, nextId } = readStateEvents(db, {
       sinceId: options.sinceOffset,
       since: options.since,
       type: typeIsAliased ? undefined : options.type,
       ref: options.ref,
+      ...(pushLimitToSql ? { limit: options.limit } : {}),
     });
 
-    const events = rawEvents.filter((envelope) => {
+    const filtered = rawEvents.filter((envelope) => {
       if (typeIsAliased && !SAVE_SYNC_EVENT_TYPE_ALIASES.has(envelope.eventType)) return false;
       // Apply tag filters after the indexed state.db read.
       const tags = (envelope.metadata?.tags as string[] | undefined) ?? [];
@@ -341,6 +361,12 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
       if (options.includeTags && !options.includeTags.every((t) => tags.includes(t))) return false;
       return true;
     });
+    // `filtered` is ascending by id; slicing off the end keeps the MOST
+    // RECENT `limit` events post-filter, matching the SQL-pushdown path's
+    // semantics exactly. `nextOffset` intentionally stays `nextId` — the
+    // durable resume cursor tracks the underlying SQL read, not this
+    // display-only truncation.
+    const events = options.limit !== undefined && !pushLimitToSql ? filtered.slice(-options.limit) : filtered;
 
     return { events, nextOffset: nextId };
   } finally {

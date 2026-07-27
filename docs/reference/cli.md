@@ -1393,6 +1393,7 @@ akm log list --type feedback                      # Filter by event type
 akm log list --ref skills/deploy                   # Filter by asset ref
 akm log list --since 2026-04-01T00:00:00Z         # ISO timestamp
 akm log list --since '@offset:12345'              # Resume from a row-id cursor
+akm log list --limit 20                           # Only the 20 most recent events (unlimited by default)
 akm log tail --max-events 10                      # Follow until 10 events
 akm log tail --format jsonl                       # Stream as JSONL
 ```
@@ -1730,7 +1731,10 @@ Prints the absolute path to the env file — for the Docker `_FILE` convention
 (`MY_VAR_FILE=$(akm env path env/prod --quiet)`), `docker run --env-file`, or
 editing the file directly. By default a stderr warning steers you away from
 `source`-ing the raw file (its shell substitutions would execute); `--quiet`
-suppresses it for the legitimate file-path uses.
+suppresses it for the legitimate file-path uses. Format-exempt
+(`src/output/format-exempt.ts`) — this command's stdout is always the bare
+path, never a result envelope; passing `--format` warns rather than doing
+anything.
 
 #### env export
 

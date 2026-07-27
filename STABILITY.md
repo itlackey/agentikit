@@ -102,8 +102,9 @@ please file it.
   output is not a result envelope at all: `completions` (shell script source),
   the interactive `setup` wizard, child-process passthrough in `env run` /
   `secret run` / `agent` / `migrate` (`status` and `apply` both spawn the
-  standalone `akm-migrate` tool), and document payloads from `workflow
-  template` / `help migrate` / `hints`. The set is declared in
+  standalone `akm-migrate` tool), a bare-path payload from `env path`, and
+  document payloads from `workflow template` / `help migrate` / `hints`. The
+  set is declared in
   `src/output/format-exempt.ts`, and
   passing `--format` to one of them warns rather than silently doing something
   else. `akm graph export` has no local `--format`: the artifact payload

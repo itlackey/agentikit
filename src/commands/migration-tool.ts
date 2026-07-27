@@ -33,5 +33,16 @@ export function runMigrationTool(args: readonly string[]): void {
   }
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  // R-067: was `process.exit(result.status ?? 1)` on the failure branch,
+  // which terminates the process synchronously and skips the `finally {
+  // await disposeDispatchResources(); }` cleanup in src/cli.ts's
+  // `runCommand`. The success path (status === 0) was already fine — it
+  // just returns and the process exits 0 naturally. Setting
+  // `process.exitCode` and returning still propagates the child's exact
+  // non-zero status once the event loop drains, but lets cleanup run first —
+  // same pattern `emitJsonError` (src/cli/shared.ts) already established.
+  if (result.status !== 0) {
+    process.exitCode = result.status ?? 1;
+    return;
+  }
 }
