@@ -441,7 +441,7 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
         blocked && remoteReason && ctx.embeddingEndpoint
           ? `Configured embedding endpoint ${ctx.embeddingEndpoint} is failing ` +
             `(${ctx.semanticStatus?.reason}${ctx.semanticStatus?.message ? `: ${ctx.semanticStatus.message}` : ""}) ` +
-            `while semanticSearchMode is "${ctx.semanticSearchMode ?? "auto"}". Searches fall back to keyword-only. ` +
+            `while semanticSearchMode is "${ctx.semanticSearchMode ?? "off"}". Searches fall back to keyword-only. ` +
             `Restore the endpoint, or set semanticSearchMode to "off" (or remove embedding.endpoint to use the local model).`
           : undefined;
       return {

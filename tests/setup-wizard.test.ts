@@ -26,6 +26,7 @@ const CANCEL = Symbol("clack:cancel");
 /** Per-test response queues — shift one value per prompt call. */
 const q = {
   confirms: [] as unknown[],
+  confirmConfigs: [] as Array<{ message: string; initialValue?: boolean }>,
   selects: [] as unknown[],
   texts: [] as unknown[],
   multiselects: [] as unknown[],
@@ -39,6 +40,7 @@ const q = {
 
 function reset() {
   q.confirms.length = 0;
+  q.confirmConfigs.length = 0;
   q.selects.length = 0;
   q.texts.length = 0;
   q.multiselects.length = 0;
@@ -73,7 +75,10 @@ function installPromptMock() {
     cancel: (msg: string) => {
       q.logged.push(`[cancel] ${msg}`);
     },
-    confirm: async () => q.confirms.shift() ?? false,
+    confirm: async (config: { message: string; initialValue?: boolean }) => {
+      q.confirmConfigs.push({ message: config.message, initialValue: config.initialValue });
+      return q.confirms.shift() ?? false;
+    },
     select: async () => q.selects.shift() ?? "done",
     text: async () => q.texts.shift() ?? "",
     multiselect: async (config: {
@@ -381,6 +386,40 @@ describe("semantic search setup", () => {
     const result = await stepSemanticSearch({ semanticSearchMode: "auto" } as never);
     expect(result).toEqual({ mode: "auto", prepareAssets: true });
     expect(q.logged.some((entry) => entry.includes("Semantic Search Assets"))).toBe(true);
+  });
+
+  // Owner ruling 9 (R-039), split default: the *runtime* default flipped to
+  // "off" (see tests/integration/config.test.ts), but the interactive wizard
+  // must still pre-select semantic search ON — a human is present to read
+  // the warning and decide. Regression guard: even when the in-progress
+  // setup config already carries the new "off" runtime default (e.g. a
+  // fresh install with no config.json yet), the wizard's "Enable semantic
+  // search?" prompt must still default to checked, and the asset/download
+  // warning must be shown before that prompt is asked.
+  test("pre-selects semantic search ON in the wizard even though the runtime default is now off (R-039)", async () => {
+    q.confirms.push(false);
+
+    await stepSemanticSearch({ semanticSearchMode: "off" } as never);
+
+    expect(q.confirmConfigs).toEqual([{ message: "Enable semantic search?", initialValue: true }]);
+    const noteIndex = q.logged.findIndex((entry) => entry.includes("Semantic Search Assets"));
+    expect(noteIndex).toBeGreaterThanOrEqual(0);
+  });
+
+  test("warns that opting in downloads the model, unless a remote embedding config is provided", async () => {
+    q.confirms.push(false);
+    await stepSemanticSearch({ semanticSearchMode: "off" } as never, undefined);
+    const localWarning = q.logged.find((entry) => entry.includes("Semantic Search Assets"));
+    expect(localWarning).toContain("download");
+
+    reset();
+    q.confirms.push(false);
+    await stepSemanticSearch({ semanticSearchMode: "off" } as never, {
+      endpoint: "https://embed.example.com/v1",
+      model: "text-embedding-3-small",
+    });
+    const remoteWarning = q.logged.find((entry) => entry.includes("Semantic Search Assets"));
+    expect(remoteWarning).toContain("no local model download");
   });
 });
 

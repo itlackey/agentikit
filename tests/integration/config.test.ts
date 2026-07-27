@@ -131,6 +131,17 @@ describe("loadConfig", () => {
     expect(loadConfig()).toEqual(DEFAULT_CONFIG);
   });
 
+  // Owner ruling 9 (R-039), deliberately pinning the NEW default: a bare
+  // install (no config.json) must never silently pull the ~130 MB local
+  // embedding model on first index, so `semanticSearchMode` defaults to
+  // "off". This was previously "auto" — the interactive `akm setup` wizard
+  // is the only place that still pre-selects semantic search ON (see
+  // tests/setup-wizard.test.ts), with a warning, before saving a config.
+  test("defaults semanticSearchMode to 'off' for a bare/headless install (R-039)", () => {
+    expect(DEFAULT_CONFIG.semanticSearchMode).toBe("off");
+    expect(loadConfig().semanticSearchMode).toBe("off");
+  });
+
   test("loads config without requiring AKM_STASH_DIR", () => {
     delete process.env.AKM_STASH_DIR;
     writeCurrentConfig({ semanticSearchMode: "off" });

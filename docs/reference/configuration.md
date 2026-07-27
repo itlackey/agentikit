@@ -154,11 +154,14 @@ that full rebuild completes.
 
 ## Semantic search
 
-`semanticSearchMode` (top-level, `"off" | "auto"`, default `"auto"`) gates
+`semanticSearchMode` (top-level, `"off" | "auto"`, default `"off"`) gates
 embedding-based search. `"auto"` lets AKM set up embeddings (which downloads
 a local model unless you point `embedding` at a remote provider) and falls
 back to keyword-only FTS if the embedding runtime is unavailable; `"off"`
 disables semantic search outright and search is always keyword-only FTS.
+The default is `"off"` so a bare or headless install (`akm init`, `--yes`,
+`--config`) never silently downloads the local embedding model on first
+index.
 The interactive `akm setup` wizard pre-selects semantic search **on**
 regardless of this default, and warns that choosing it downloads the model
 unless a remote `embedding` config is provided.

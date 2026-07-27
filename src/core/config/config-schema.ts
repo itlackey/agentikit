@@ -132,7 +132,7 @@ export const AkmConfigShape = {
   // custom profile's name for the default builder) — unknown keys are inert.
   // Precedence: profile modelAliases > this table > built-in aliases.
   modelAliases: GlobalModelAliasesSchema.optional(),
-  semanticSearchMode: z.enum(["off", "auto"]).default("auto"),
+  semanticSearchMode: z.enum(["off", "auto"]).default("off"),
   embedding: EmbeddingConnectionConfigSchema.optional(),
   index: IndexConfigSchema.optional(),
   registries: z.array(RegistryConfigEntrySchema).optional(),

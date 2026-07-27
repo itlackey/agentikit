@@ -105,7 +105,7 @@ export function resolveBatchSize(configured: number | undefined, contextLength?:
 
 export const DEFAULT_CONFIG: AkmConfig = {
   configVersion: "0.9.0",
-  semanticSearchMode: "auto",
+  semanticSearchMode: "off",
   registries: [
     { url: "https://raw.githubusercontent.com/itlackey/akm-registry/main/index.json", name: "akm-registry" },
     { url: "https://skills.sh", name: "skills.sh", provider: "skills-sh", enabled: false },

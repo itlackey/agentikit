@@ -201,7 +201,7 @@
         "off",
         "auto"
       ],
-      "default": "auto"
+      "default": "off"
     },
     "embedding": {
       "type": "object",
@@ -1846,7 +1846,7 @@
             "off",
             "auto"
           ],
-          "default": "auto"
+          "default": "off"
         },
         "embedding": {
           "type": "object",
