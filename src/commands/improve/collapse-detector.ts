@@ -15,8 +15,9 @@
  * never threaded a real accepted-change-volume signal in (the value was a
  * hardcoded 0 from the 0.9.0 confidence-gate deletion onward), so the alert
  * could never fire. See the design doc's status note for the removal
- * rationale. `improve_cycle_metrics.accepted_actions` remains in the schema
- * (migration-owned, append-only) but is always written as 0 now.
+ * rationale. `improve_cycle_metrics.accepted_actions` went with it — the
+ * migration squash dropped the column, since nothing deployed constrained the
+ * schema.
  *
  * Hard invariants: deterministic only (FTS BM25 + hashing — never an LLM,
  * never an embedding model); bounded storage (< 2 KB per qualifying cycle,
@@ -355,10 +356,6 @@ export function computeCycleMetrics(
     distinct_content_ratio: learningTotal === 0 ? 1 : contentHashes.size / learningTotal,
     mean_bigram_diversity: diversityCount === 0 ? 1 : diversitySum / diversityCount,
     over_generation_count: overGeneration,
-    // CHURN alert removed (never fired — see the module doc comment); the
-    // column stays NOT NULL pending the migration owner dropping it, so it
-    // is always written as 0 now.
-    accepted_actions: 0,
     merge_floor_violations: args.mergeFloorViolations,
     alerts_json: "[]",
   };

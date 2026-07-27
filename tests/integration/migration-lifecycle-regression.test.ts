@@ -48,24 +48,11 @@ import {
 } from "../_helpers/sandbox";
 import { overrideSeam } from "../_helpers/seams";
 
-const STATE_PRE_CUTOVER_IDS = [
-  "001-initial-schema",
-  "002-task-history-per-run",
-  "003-improve-runs",
-  "004-extract-sessions-seen",
-  "005-proposal-fs-imports",
-  "006-proposals-pending-ref-source",
-  "007-consolidation-judged",
-  "008-body-embeddings",
-  "009-asset-salience",
-  "010-asset-outcome",
-  "011-asset-salience-homeostatic-demoted-at",
-  "012-improve-gate-thresholds",
-  "013-extract-sessions-content-hash",
-  "014-recombine-hypotheses",
-  "015-asset-salience-encoding-source",
-  "016-collapse-churn-detector",
-] as const;
+// W3-M: state.db's STATE_MIGRATIONS chain is squashed to a single fragment
+// ("001-initial-schema"), so there is no longer a granular mid-chain id list
+// to hand-seed here — see the squash note atop src/core/state/migrations.ts.
+// The genuine pre-0.9.0 state.db shape is a file with no `schema_migrations`
+// table at all; `seedPreCutoverState` below builds that directly.
 
 const WORKFLOW_PRE_CUTOVER_IDS = [
   "001-add-scope-key",
@@ -78,26 +65,6 @@ const WORKFLOW_PRE_CUTOVER_IDS = [
   "008-unit-attempts",
   "009-unit-claim",
 ] as const;
-
-// The physical schema migration 010 installs. Fixtures below mark
-// 010-asset-outcome as applied, so they must materialize the table it creates —
-// otherwise migration 018's `ALTER TABLE asset_outcome DROP COLUMN review_pressure`
-// (the first-ever DROP COLUMN migration) fails with "no such table".
-const ASSET_OUTCOME_010_DDL = `
-  CREATE TABLE asset_outcome (
-    asset_ref                TEXT    PRIMARY KEY,
-    last_retrieved_at        INTEGER NOT NULL DEFAULT 0,
-    retrieval_count          INTEGER NOT NULL DEFAULT 0,
-    expected_retrieval_rate  REAL    NOT NULL DEFAULT 0.0,
-    negative_feedback_count  INTEGER NOT NULL DEFAULT 0,
-    accepted_change_count    INTEGER NOT NULL DEFAULT 0,
-    review_pressure          INTEGER NOT NULL DEFAULT 0,
-    outcome_score            REAL    NOT NULL DEFAULT 0.0,
-    updated_at               INTEGER NOT NULL DEFAULT 0
-  );
-  CREATE INDEX idx_asset_outcome_review_pressure ON asset_outcome(review_pressure DESC);
-  CREATE INDEX idx_asset_outcome_score ON asset_outcome(outcome_score DESC);
-`;
 
 let cleanup: Cleanup | undefined;
 
@@ -123,17 +90,37 @@ function seedLedger(db: Database, ids: readonly string[]): void {
   for (const id of ids) insert.run(id);
 }
 
+// W3-M: previously also hand-seeded a `schema_migrations` ledger up through
+// the old `016-collapse-churn-detector` id (a synthetic mid-chain snapshot).
+// STATE_MIGRATIONS is squashed to one fragment now, so the true "old" /
+// "needs migrate apply" shape is simply a state.db with NO
+// `schema_migrations` table at all — `openStateDatabase`'s preflight check
+// treats an existing file with an absent/empty ledger as "old" and refuses
+// it regardless (see `inspectMigrationLedger` in
+// `src/storage/engines/sqlite-migrations.ts`), so no ledger row is needed to
+// reproduce that. `events` stays as a hand-created STUB table — its columns
+// are byte-identical to the real migration's `events` shape, so it is a
+// no-op target for the migration's `CREATE TABLE IF NOT EXISTS` once applied
+// (matching the old behavior, where its migration id was already marked
+// "applied" and so never ran). Unlike the old chain, `improve_runs` can NOT
+// get the same stub treatment any more: with everything squashed into one
+// migration, an unapplied ledger means the WHOLE body runs in one shot,
+// including `CREATE INDEX ... ON improve_runs(dry_run)` — a real,
+// non-IF-NOT-EXISTS-guarded statement that fails outright against a
+// partial/stub `improve_runs` shape missing that column. So `improve_runs`
+// is left uncreated here; callers that run the (squashed) migration after
+// seeding get the real, full-shape table, same as any other pending
+// migration apply. `durable` is a synthetic marker table (not part of any
+// real schema) used to verify data survives backup/restore/migrate-apply
+// intact.
 function seedPreCutoverState(value = "before"): void {
   fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
   const db = new Database(getStateDbPathInDataDir());
   db.exec(`
     CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL, ts TEXT NOT NULL, ref TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
-    CREATE TABLE improve_runs(id TEXT PRIMARY KEY, profile TEXT, started_at TEXT);
     CREATE TABLE durable(value TEXT);
     INSERT INTO durable VALUES ('${value}');
-    ${ASSET_OUTCOME_010_DDL}
   `);
-  seedLedger(db, STATE_PRE_CUTOVER_IDS);
   db.close();
 }
 
@@ -337,10 +324,13 @@ function seedInterruptedApplyJournal(
   const state = openDatabaseFinalizing(getStateDbPathInDataDir());
   runStateMigrations(state);
   if (options?.failingCutover) {
-    state.exec(`
-      CREATE TABLE asset_salience(asset_ref TEXT PRIMARY KEY, updated_at INTEGER NOT NULL DEFAULT 0);
-      INSERT INTO asset_salience(asset_ref) VALUES (':bad');
-    `);
+    // W3-M: `runStateMigrations` above already applies the (squashed) single
+    // migration in full, so `asset_salience` already exists at its real
+    // shape — unlike the old chain, where marking early migration ids
+    // pre-applied left this table uncreated for the fixture to define
+    // itself. Every non-PK column has a DEFAULT, so inserting only
+    // `asset_ref` still works against the real table.
+    state.exec(`INSERT INTO asset_salience(asset_ref) VALUES (':bad');`);
   }
   expect(
     state.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='akm_migration_generation'").get(),
@@ -579,14 +569,26 @@ describe("migration lifecycle regressions", () => {
     fs.rmSync(getStateDbPathInDataDir(), { force: true });
     fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
     const future = new Database(getStateDbPathInDataDir());
-    seedLedger(future, [STATE_PRE_CUTOVER_IDS[0], "999-future"]);
+    seedLedger(future, ["001-initial-schema", "999-future"]);
     future.close();
     expect(inspectMigrationState().state.status).toBe("newer");
 
+    // W3-M: STATE_MIGRATIONS is squashed to a single fragment, so the
+    // pre-squash "holey ledger" scenario (a later-but-known id present
+    // without an earlier one) no longer has a second id to omit. The
+    // "inconsistent" status this used to exercise is now reached the way the
+    // brief's squash note describes: a local ledger recording the SAME id
+    // with a checksum that no longer matches the (squashed) released body —
+    // exactly what a pre-squash dev stash's ledger looks like post-squash.
     fs.rmSync(getStateDbPathInDataDir(), { force: true });
-    const holey = new Database(getStateDbPathInDataDir());
-    seedLedger(holey, [STATE_PRE_CUTOVER_IDS[1]]);
-    holey.close();
+    const staleChecksum = new Database(getStateDbPathInDataDir());
+    staleChecksum.exec(
+      "CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')), checksum TEXT)",
+    );
+    staleChecksum
+      .prepare("INSERT INTO schema_migrations(id, checksum) VALUES (?, ?)")
+      .run("001-initial-schema", "0".repeat(64));
+    staleChecksum.close();
     expect(inspectMigrationState().state.status).toBe("inconsistent");
 
     fs.rmSync(getStateDbPathInDataDir(), { force: true });
@@ -608,7 +610,7 @@ describe("migration lifecycle regressions", () => {
   test("canonical writable open refuses a future ledger before changing journal state", () => {
     fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
     const future = new Database(getStateDbPathInDataDir());
-    seedLedger(future, [STATE_PRE_CUTOVER_IDS[0], "999-future"]);
+    seedLedger(future, ["001-initial-schema", "999-future"]);
     expect((future.query("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode).toBe("delete");
     future.close();
 
@@ -629,7 +631,11 @@ describe("migration lifecycle regressions", () => {
 
     expect(inspectMigrationState()).toMatchObject({
       config: { status: "current" },
-      state: { status: "old", migrationIds: [...STATE_PRE_CUTOVER_IDS] },
+      // W3-M: `seedPreCutoverState` no longer hand-seeds a ledger (there is
+      // no granular mid-chain shape left to fake — see the squash note atop
+      // src/core/state/migrations.ts); a state.db with no `schema_migrations`
+      // table reads back as "old" with an empty migrationIds list.
+      state: { status: "old", migrationIds: [] },
       workflow: { status: "old", migrationIds: [...WORKFLOW_PRE_CUTOVER_IDS] },
     });
 
@@ -667,14 +673,15 @@ describe("migration lifecycle regressions", () => {
     expect(fs.existsSync(getMigrationBackupRoot())).toBe(false);
     const db = new Database(getStateDbPathInDataDir(), { readonly: true });
     try {
-      const ids = db.query("SELECT id FROM schema_migrations ORDER BY rowid").all() as Array<{ id: string }>;
-      expect(ids.map((row) => row.id)).toEqual([...STATE_PRE_CUTOVER_IDS]);
-      expect(
-        db
-          .query("PRAGMA table_info(schema_migrations)")
-          .all()
-          .some((column) => (column as { name: string }).name === "checksum"),
-      ).toBe(false);
+      // W3-M: `openStateDatabase`'s preflight check throws BEFORE ever calling
+      // `ensureMigrationsTable`/`runMigrations`, so the refused open leaves the
+      // seeded state.db completely untouched — including never creating a
+      // `schema_migrations` table in the first place (there was none to seed;
+      // see the squash note atop src/core/state/migrations.ts).
+      const schemaMigrationsExists = db
+        .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'")
+        .get();
+      expect(schemaMigrationsExists).toBeFalsy();
       expect((db.query("SELECT COUNT(*) AS count FROM events").get() as { count: number }).count).toBe(0);
     } finally {
       db.close();
@@ -742,7 +749,12 @@ describe("migration lifecycle regressions", () => {
   test("migrate apply refuses existing managed handles and maintenance activities before backup", async () => {
     writeConfig("0.9.0");
     const state = openStateDatabase();
-    state.prepare("DELETE FROM schema_migrations WHERE id = ?").run("017-improve-run-strategy");
+    // W3-M: previously deleted a LATER migration id (017-improve-run-strategy)
+    // off an otherwise-current ledger to force "old" status while keeping an
+    // open handle. With STATE_MIGRATIONS squashed to the single
+    // "001-initial-schema" id, deleting the sole applied row reproduces the
+    // same "not current" ledger state.
+    state.prepare("DELETE FROM schema_migrations WHERE id = ?").run("001-initial-schema");
     try {
       const blockedByHandle = await runCliCapture(["migrate", "apply"]);
       expect(blockedByHandle.code).not.toBe(0);
@@ -833,10 +845,10 @@ describe("migration lifecycle regressions", () => {
     seedPreCutoverState("current-wal-before");
     const state = openDatabaseFinalizing(getStateDbPathInDataDir());
     runStateMigrations(state);
-    state.exec(`
-      CREATE TABLE asset_salience(asset_ref TEXT PRIMARY KEY, updated_at INTEGER NOT NULL DEFAULT 0);
-      INSERT INTO asset_salience(asset_ref) VALUES (':bad');
-    `);
+    // W3-M: `asset_salience` already exists at its real shape post-migration
+    // (see the same note in `seedOlderRcApplyJournal` above); every non-PK
+    // column has a DEFAULT, so inserting only `asset_ref` still works.
+    state.exec(`INSERT INTO asset_salience(asset_ref) VALUES (':bad');`);
     state.exec("PRAGMA journal_mode=WAL");
     expect((state.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode).toBe("wal");
     state.close();
@@ -1189,7 +1201,10 @@ describe("migration lifecycle regressions", () => {
     expect(result.code).not.toBe(0);
     expect(inspectMigrationState()).toMatchObject({
       config: { status: "old" },
-      state: { status: "old", migrationIds: [...STATE_PRE_CUTOVER_IDS] },
+      // W3-M: no hand-seeded ledger any more (see the squash note atop
+      // src/core/state/migrations.ts) — an absent schema_migrations table
+      // reads back with an empty migrationIds list.
+      state: { status: "old", migrationIds: [] },
       workflow: { status: "old", migrationIds: [...WORKFLOW_PRE_CUTOVER_IDS] },
     });
     const state = new Database(getStateDbPathInDataDir(), { readonly: true });
@@ -1245,7 +1260,7 @@ describe("migration lifecycle regressions", () => {
     writeConfig("0.9.0");
     fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
     const future = new Database(getStateDbPathInDataDir());
-    seedLedger(future, [STATE_PRE_CUTOVER_IDS[0], "999-future"]);
+    seedLedger(future, ["001-initial-schema", "999-future"]);
     future.close();
     const prepared = path.join(path.dirname(getConfigPath()), "prepared-0.9.json");
     fs.writeFileSync(prepared, '{"configVersion":"0.9.0"}\n');
@@ -1280,7 +1295,7 @@ describe("migration lifecycle regressions", () => {
     writeConfig("0.9.0");
     fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
     const future = new Database(getStateDbPathInDataDir());
-    seedLedger(future, [STATE_PRE_CUTOVER_IDS[0], "999-future"]);
+    seedLedger(future, ["001-initial-schema", "999-future"]);
     future.close();
     const prepared = path.join(path.dirname(getConfigPath()), "prepared-0.9.json");
     fs.writeFileSync(prepared, '{"configVersion":"0.9.0"}\n');

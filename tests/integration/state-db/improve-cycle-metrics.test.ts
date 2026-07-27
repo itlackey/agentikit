@@ -62,7 +62,6 @@ function makeRow(overrides: Partial<CycleMetricsRow> = {}): CycleMetricsRow {
     distinct_content_ratio: 0.97,
     mean_bigram_diversity: 0.88,
     over_generation_count: 0,
-    accepted_actions: 3,
     merge_floor_violations: 0,
     alerts_json: "[]",
     ...overrides,

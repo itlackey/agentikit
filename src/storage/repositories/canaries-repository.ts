@@ -49,7 +49,6 @@ export interface CycleMetricsRow {
   distinct_content_ratio: number;
   mean_bigram_diversity: number;
   over_generation_count: number;
-  accepted_actions: number;
   merge_floor_violations: number;
   /** JSON array of fired alert kinds for this cycle. */
   alerts_json: string;
@@ -127,9 +126,9 @@ export function insertCycleMetrics(db: Database, row: CycleMetricsRow): void {
     INSERT INTO improve_cycle_metrics
       (run_id, ts, pass, canary_set_id, mean_recall, mean_ndcg, mean_mrr,
        canary_ranks_json, store_total, store_by_type_json, distinct_content_ratio,
-       mean_bigram_diversity, over_generation_count, accepted_actions,
+       mean_bigram_diversity, over_generation_count,
        merge_floor_violations, alerts_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     row.run_id,
     row.ts,
@@ -144,7 +143,6 @@ export function insertCycleMetrics(db: Database, row: CycleMetricsRow): void {
     row.distinct_content_ratio,
     row.mean_bigram_diversity,
     row.over_generation_count,
-    row.accepted_actions,
     row.merge_floor_violations,
     row.alerts_json,
   );
@@ -160,7 +158,7 @@ export function queryRecentCycleMetrics(db: Database, canarySetId: string, limit
     .prepare(
       `SELECT run_id, ts, pass, canary_set_id, mean_recall, mean_ndcg, mean_mrr,
               canary_ranks_json, store_total, store_by_type_json, distinct_content_ratio,
-              mean_bigram_diversity, over_generation_count, accepted_actions,
+              mean_bigram_diversity, over_generation_count,
               merge_floor_violations, alerts_json
        FROM improve_cycle_metrics WHERE canary_set_id = ?
        ORDER BY ts DESC, id DESC LIMIT ?`,
@@ -175,7 +173,7 @@ export function getLatestCycleMetrics(db: Database): CycleMetricsRow | undefined
     .prepare(
       `SELECT run_id, ts, pass, canary_set_id, mean_recall, mean_ndcg, mean_mrr,
               canary_ranks_json, store_total, store_by_type_json, distinct_content_ratio,
-              mean_bigram_diversity, over_generation_count, accepted_actions,
+              mean_bigram_diversity, over_generation_count,
               merge_floor_violations, alerts_json
        FROM improve_cycle_metrics ORDER BY ts DESC, id DESC LIMIT 1`,
     )

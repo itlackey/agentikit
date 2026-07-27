@@ -40,33 +40,7 @@ import type { Database } from "../../../src/storage/database";
 import { insertEvent } from "../../../src/storage/repositories/events-repository";
 import { createLegacyWorkflowDb } from "../../_helpers/legacy-workflow-db";
 import { FIXTURE_BASE_EPOCH_MS } from "./fixed-values";
-import {
-  insertAssetOutcomeRow,
-  insertAssetSalienceRow,
-  openStateDbAtCeiling,
-  PRE_CUTOVER_STATE_CEILING,
-} from "./seed-rows";
-
-/**
- * The migration id this fixture's state.db is captured at: the last state
- * migration BEFORE the WI-8.2 three-DB cutover (`020-three-db-cutover`) —
- * `019-proposal-fingerprints`. This is the true shipped rc-train "FROM-state"
- * pre-cutover ceiling (plan §3.4): a real rc-train install carried exactly this
- * ledger before running `migrate apply` into the cutover.
- *
- * WI-8.2: the fixture is now built EXPLICITLY at this ceiling (via
- * `openStateDbAtCeiling`), not through `openStateDatabase` — the latter always
- * applies the full live chain, which now includes migration 020, so it can no
- * longer produce a genuine pre-cutover snapshot. The migrate-apply flow under
- * test is what applies 020 + runs the cutover data step.
- *
- * The migration-fixtures smoke test cross-checks this literal against
- * `STATE_MIGRATIONS.at(-2)!.id` (the tip is now the cutover, 020): a later chunk
- * appending a NEW migration past the cutover shifts at(-2) forward and fails the
- * check loudly (a signal to re-capture this fixture under review) instead of
- * silently drifting.
- */
-export const RC_TRAIN_MIGRATION_CEILING = PRE_CUTOVER_STATE_CEILING;
+import { insertAssetOutcomeRow, insertAssetSalienceRow, openFreshStateDb } from "./seed-rows";
 
 /**
  * Live-state refs seeded into rc-train's state.db, matching real asset names
@@ -105,7 +79,13 @@ export function buildRcTrainFromState(dir: string): void {
   fs.mkdirSync(dir, { recursive: true });
   const { stateDbPath, workflowDbPath } = rcTrainFromStatePaths(dir);
 
-  const stateDb = openStateDbAtCeiling(stateDbPath, RC_TRAIN_MIGRATION_CEILING);
+  // W3-M: previously built at an explicit pre-cutover ceiling id (a prefix
+  // of the old 20-fragment STATE_MIGRATIONS chain) so the cutover-apply flow
+  // under test had DDL left to apply. The squash folds that DDL into the
+  // same single migration as everything else, so the fixture is now built
+  // fully migrated (schema-complete, cutover data not yet moved) — see the
+  // W3-M note on `openFreshStateDb` in `seed-rows.ts`.
+  const stateDb = openFreshStateDb(stateDbPath);
   try {
     seedLiveState(stateDb);
   } finally {

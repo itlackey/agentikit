@@ -318,51 +318,20 @@ describe("0.9 migration backup", () => {
   // activity, covered by the state.db handle test above and by
   // workflow-db-maintenance.test.ts.
 
-  test("canonical database opens capture both historical databases before migrations 017 and 010", () => {
+  test("canonical database opens capture both historical databases before migration 010", () => {
     seedLegacyConfig();
     fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
-    const state = new Database(getStateDbPathInDataDir());
-    // This fixture marks 010-asset-outcome applied, so it must materialize the
-    // table migration 010 creates — migration 018's DROP COLUMN needs it to exist.
-    state.exec(`
-      CREATE TABLE improve_runs(id TEXT PRIMARY KEY, profile TEXT, started_at TEXT);
-      CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
-      CREATE TABLE asset_outcome (
-        asset_ref                TEXT    PRIMARY KEY,
-        last_retrieved_at        INTEGER NOT NULL DEFAULT 0,
-        retrieval_count          INTEGER NOT NULL DEFAULT 0,
-        expected_retrieval_rate  REAL    NOT NULL DEFAULT 0.0,
-        negative_feedback_count  INTEGER NOT NULL DEFAULT 0,
-        accepted_change_count    INTEGER NOT NULL DEFAULT 0,
-        review_pressure          INTEGER NOT NULL DEFAULT 0,
-        outcome_score            REAL    NOT NULL DEFAULT 0.0,
-        updated_at               INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE INDEX idx_asset_outcome_review_pressure ON asset_outcome(review_pressure DESC);
-      CREATE INDEX idx_asset_outcome_score ON asset_outcome(outcome_score DESC);
-    `);
-    const stateInsert = state.prepare("INSERT INTO schema_migrations(id) VALUES (?)");
-    for (const id of [
-      "001-initial-schema",
-      "002-task-history-per-run",
-      "003-improve-runs",
-      "004-extract-sessions-seen",
-      "005-proposal-fs-imports",
-      "006-proposals-pending-ref-source",
-      "007-consolidation-judged",
-      "008-body-embeddings",
-      "009-asset-salience",
-      "010-asset-outcome",
-      "011-asset-salience-homeostatic-demoted-at",
-      "012-improve-gate-thresholds",
-      "013-extract-sessions-content-hash",
-      "014-recombine-hypotheses",
-      "015-asset-salience-encoding-source",
-      "016-collapse-churn-detector",
-    ]) {
-      stateInsert.run(id);
-    }
-    state.close();
+    // W3-M: state.db's STATE_MIGRATIONS chain is squashed to a single
+    // fragment, so there is no longer a granular "before migration 017"
+    // shape to hand-seed — the squashed migration creates `improve_runs`
+    // WITH its `strategy` column from row one. The only state genuinely
+    // "before" it is a state.db that has never been migrated at all: a bare
+    // SQLite file with no `schema_migrations` table (no akm release has ever
+    // shipped state.db, so this is the true pre-0.9.0 shape, not a synthetic
+    // mid-chain snapshot). `inspectMigrationLedger` treats "no
+    // schema_migrations table, non-empty registry" as ledger status "old"
+    // (safe for backup), not "newer"/"inconsistent".
+    new Database(getStateDbPathInDataDir()).close();
 
     const workflow = new Database(getLegacyWorkflowDbPath());
     workflow.exec(`
