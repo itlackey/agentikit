@@ -104,9 +104,14 @@ load-bearing facts, each verified in code:
    its rewriting is inverted relative to the body-ref grammar, so it ships
    Experimental in 0.9.0 and does not substitute for the lint run — see
    0.9.0-decisions.md D3.) Wikis are excluded from
-   `akm lint` and instead get their own
-   orphan/broken-xref/broken-source/stale-index/uncited-raw checks via
-   `akm wiki lint`.
+   `akm lint`'s directory sweep; the equivalent
+   orphan/broken-xref/broken-source/stale-index/uncited-raw structural checks
+   are implemented in the LLM Wiki adapter
+   (`core/adapter/adapters/llm-wiki-adapter.ts`, ported from the pre-0.9.0
+   `akm wiki lint`). **Amendment:** the `akm wiki` command family, including
+   `akm wiki lint`, was removed in the 0.9.0 bundle-adapter cutover (see
+   [wikis.md](../../guides/wikis.md)) — there is currently no CLI surface that
+   invokes these checks.
 
 ## Research inputs
 

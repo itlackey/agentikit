@@ -23,23 +23,37 @@
  * `runWithJsonErrors` so their byte-for-byte output stays untouched.
  */
 
-import fs from "node:fs";
-import path from "node:path";
 import { defineCommand } from "citty";
 import { parsePositiveIntFlag } from "../cli/parse-args";
 import { defineJsonCommand, output, parseAllFlagValues, runWithJsonErrors } from "../cli/shared";
+import { NotFoundError } from "../core/errors";
 import { EMBEDDED_HINTS, EMBEDDED_HINTS_FULL } from "../output/cli-hints";
 import { getOutputMode, parseDetailLevel } from "../output/context";
+import { registerOutputShape } from "../output/shapes/registry";
 import { formatEventLine } from "../output/text/helpers";
-import { getDirname } from "../runtime";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
-import { collectTagSetFromEntries } from "../storage/repositories/index-entries-repository";
+import {
+  collectTagSetFromEntries,
+  findEntryIdByRef,
+  getAllEntries,
+  getEntryById,
+} from "../storage/repositories/index-entries-repository";
 import { akmEventsList, akmEventsTail } from "./events";
 
 // ── `akm log` ────────────────────────────────────────────────────────────────
 // Append-only events stream surface (#204). `list` reads state.db events
 // with optional --since/--type/--ref filters; `tail` follows the table via
 // a polling loop and prints each event as a single JSONL line.
+//
+// R-060: the internal output()/shape-registry command names are `log-list` /
+// `log-tail` (renamed from the pre-rename `events-list` / `events-tail`, back
+// when the command group was still called `akm events`). These strings never
+// reach the wire — `shapeEventsOutput` (src/output/shapes/helpers.ts) builds
+// its own envelope and never stamps a `shape` field — so the rename is a
+// coherence-only change, not a schemaVersion bump. EXCEPTION: the `[events-tail]`
+// stderr trailer below is left as `events-tail` — it IS documented
+// (docs/reference/cli.md:1421) and is pending an owner ruling on whether it is
+// contract; do not rename it here.
 
 const eventsListCommand = defineJsonCommand({
   meta: { name: "list", description: "List events from the append-only state.db events stream" },
@@ -69,7 +83,7 @@ const eventsListCommand = defineJsonCommand({
       ...(excludeTags.length > 0 ? { excludeTags } : {}),
       ...(includeTags.length > 0 ? { includeTags } : {}),
     });
-    output("events-list", result);
+    output("log-list", result);
   },
 });
 
@@ -130,7 +144,7 @@ const eventsTailCommand = defineCommand({
       // streaming modes already printed each event but we still emit a
       // trailer so callers can persist the resumable cursor).
       if (!stream) {
-        output("events-tail", result);
+        output("log-tail", result);
       } else if (mode.format === "jsonl") {
         // Final discriminated trailer row so jsonl consumers can resume.
         const trailer = {
@@ -198,6 +212,79 @@ const lessonsCoverageCommand = defineJsonCommand({
   },
 });
 
+// R-054: the group description below has long advertised "strength queries"
+// alongside `coverage`, but no such subcommand was ever registered —
+// `lessonStrength` (the count of distinct feedback refs credited to a lesson
+// via `akm feedback --applied-to`, src/commands/feedback-cli.ts) was written
+// and read by search ranking (src/indexer/search/ranking-contributors.ts) but
+// unreadable from any command. `strength` closes that gap: pass a ref for a
+// single lookup, or omit it to list every indexed lesson's strength.
+//
+// Every output() call must have a registered shape (src/output/shapes.ts:
+// "no silent JSON.stringify fallback... fail loudly") or the command dies at
+// the render step with an {ok:false,"output shape not registered"} envelope
+// (see the regression guard at tests/integration/cli-errors.test.ts:320-365).
+// New built-in shapes are normally added to the PASSTHROUGH_COMMANDS array in
+// src/output/shapes/passthrough.ts, which the central src/output/shapes.ts
+// barrel feeds to registerOutputShapes() — but both of those files are
+// outside this package's assigned file list for this change, so the shape is
+// registered directly here instead (registerOutputShape is idempotent and
+// module-load-order-independent; see src/output/shapes/registry.ts). Same
+// schemaVersion/shape stamp as every other PASSTHROUGH_COMMANDS entry.
+// Follow-up: fold "lessons-strength" into PASSTHROUGH_COMMANDS and delete this
+// registerOutputShape call once that file is in scope.
+registerOutputShape("lessons-strength", (result) => {
+  if (result === null || typeof result !== "object" || Array.isArray(result)) return result;
+  const obj = result as Record<string, unknown>;
+  if (obj.shape === undefined) obj.shape = "lessons-strength";
+  if (obj.schemaVersion === undefined) obj.schemaVersion = 1;
+  return obj;
+});
+
+const lessonsStrengthCommand = defineJsonCommand({
+  meta: {
+    name: "strength",
+    description:
+      "Report a lesson's `lessonStrength` — the count of distinct feedback refs credited to it via " +
+      "`akm feedback <feedback-ref> --applied-to <lesson-ref>`, which the search ranker also reads.\n\n" +
+      "Pass a ref to look up one lesson; omit it to list every indexed lesson's strength, highest first.\n\n" +
+      "Default output is JSON: { ref, strength } for a single lookup, or " +
+      "{ lessons: [{ ref, strength }], totalCount } for the list form.",
+  },
+  args: {
+    ref: {
+      type: "positional",
+      description: "Lesson ref ([bundle//]lessons/<name>). Omit to list every lesson's strength.",
+      required: false,
+    },
+  },
+  run({ args }) {
+    const db = openExistingDatabase();
+    try {
+      const refArg = typeof args.ref === "string" ? args.ref : undefined;
+      if (refArg) {
+        const entryId = findEntryIdByRef(db, refArg);
+        const entry = entryId !== undefined ? getEntryById(db, entryId) : undefined;
+        if (!entry || entry.entry.type !== "lesson") {
+          throw new NotFoundError(`No indexed lesson found for ref "${refArg}".`);
+        }
+        output("lessons-strength", {
+          ok: true,
+          ref: entry.itemRef ?? refArg,
+          strength: entry.entry.lessonStrength ?? 0,
+        });
+        return;
+      }
+      const lessons = getAllEntries(db, "lesson")
+        .map((e) => ({ ref: e.itemRef, strength: e.entry.lessonStrength ?? 0 }))
+        .sort((a, b) => b.strength - a.strength || a.ref.localeCompare(b.ref));
+      output("lessons-strength", { ok: true, lessons, totalCount: lessons.length });
+    } finally {
+      closeDatabase(db);
+    }
+  },
+});
+
 export const lessonsCommand = defineCommand({
   meta: {
     name: "lessons",
@@ -206,6 +293,7 @@ export const lessonsCommand = defineCommand({
   },
   subCommands: {
     coverage: lessonsCoverageCommand,
+    strength: lessonsStrengthCommand,
   },
 });
 
@@ -237,21 +325,31 @@ export const hintsCommand = defineCommand({
 
 // ── Hints (embedded AGENTS.md) ──────────────────────────────────────────────
 
+/**
+ * R-006: `loadHints` used to prefer reading `<pkgroot>/docs/agents/AGENTS[.full].md`
+ * off disk, falling back to the embedded `EMBEDDED_HINTS[_FULL]` constants
+ * (from `src/assets/hints/cli-hints-{short,full}.md`, imported `with { type:
+ * "text" }` in `../output/cli-hints`) only when that path didn't resolve.
+ * `package.json`'s `files` array packs `dist` (which mirrors `src/assets/`)
+ * but not `docs/agents/`, so an npm/binary install ALWAYS fell through to the
+ * embedded copy while a git checkout (or an in-repo dev/test run) ALWAYS read
+ * the separate `docs/agents/` copy instead — and the two had already drifted
+ * (`docs/agents/AGENTS.full.md` still taught a whole `akm wiki` command family
+ * that does not exist; the embedded copy did not). `akm hints` therefore
+ * silently varied in content and correctness by install method — the exact
+ * DEVIATION R-006 exists to close.
+ *
+ * Single-sourced now: this function always returns the embedded constant, in
+ * every environment. `docs/agents/AGENTS.md` / `AGENTS.full.md` still exist as
+ * human-readable repo documentation (linked from `docs/agents/README.md` and
+ * `docs/README.md`) and have been brought back into content-agreement with
+ * the embedded copies (no more `akm wiki` teaching, no more dead `type:name`
+ * colon refs) — but they no longer feed this runtime path, so they cannot
+ * make `akm hints`'s behavior diverge by install method again. A drift
+ * between the two is now a documentation-accuracy issue, not the P0 "agent
+ * runs a command that doesn't exist" bug this item was filed for.
+ */
 function loadHints(detail: "brief" | "normal" | "full" = "normal"): string {
-  // `brief` → the short AGENTS.md guide; `normal`/`full` → the complete guide.
-  const wantFull = detail !== "brief";
-  const filename = wantFull ? "AGENTS.full.md" : "AGENTS.md";
-  const fallback = wantFull ? EMBEDDED_HINTS_FULL : EMBEDDED_HINTS;
-
-  // Try reading from the docs/ directory (works in dev and when installed via npm)
-  try {
-    const docsPath = path.resolve(getDirname(import.meta.url), `../../docs/agents/${filename}`);
-    if (fs.existsSync(docsPath)) {
-      return fs.readFileSync(docsPath, "utf8");
-    }
-  } catch {
-    // fall through
-  }
-  // Fallback for compiled binary — inline content
-  return fallback;
+  // `brief` → the short guide; `normal`/`full` → the complete guide.
+  return detail === "brief" ? EMBEDDED_HINTS : EMBEDDED_HINTS_FULL;
 }

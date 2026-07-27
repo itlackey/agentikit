@@ -360,7 +360,7 @@ export async function stepSmallModelConnection(current: AkmConfig): Promise<Smal
     [
       "This connection is used for background processing:",
       "  • akm index           (metadata enhancement)",
-      "  • akm distill         (lesson distillation)",
+      "  • akm improve         (lesson distillation)",
       "  • akm remember --enrich (memory compression)",
       "  • akm curate --rerank   (search reranking)",
     ].join("\n"),
@@ -419,7 +419,7 @@ export async function stepSmallModelConnection(current: AkmConfig): Promise<Smal
       [
         "Enrichment features disabled:",
         "  • akm index           — metadata enhancement disabled",
-        "  • akm distill         — lesson generation",
+        "  • akm improve         — lesson generation",
         "  • akm remember --enrich",
         "  • akm curate --rerank",
         "",

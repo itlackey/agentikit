@@ -1,6 +1,6 @@
 # akm CLI — Full Reference
 
-You have access to a searchable library of scripts, skills, commands, agents, knowledge documents, workflows, env files, secrets, wikis, lessons, and memories via `akm`. Search your sources first before writing something from scratch.
+You have access to a searchable library of scripts, skills, commands, agents, knowledge documents, workflows, env files, secrets, lessons, and memories via `akm`. Search your sources first before writing something from scratch.
 
 ## Search
 
@@ -48,7 +48,6 @@ akm show knowledge/guide#auth                  # Just the "Auth" section
 akm show knowledge/guide#nope                  # Lists the available fragment slugs
 akm show knowledge/my-doc                      # Show a knowledge asset
 akm show research//pages/ml-basics           # Show a page in the "research" LLM Wiki bundle
-akm wiki show research                        # Wiki summary (bundle-level overview)
 ```
 
 | Type | Key fields returned |
@@ -62,12 +61,8 @@ akm wiki show research                        # Wiki summary (bundle-level overv
 | memory | `content` (recalled context) |
 | env | `keys` (values and comment text are never returned) |
 | secret | metadata only (the single value is never returned) |
-| wiki | `content` (same `#fragment` selection as knowledge). For any wiki task, run `akm wiki list`. `akm wiki ingest <name>` dispatches the configured agent engine (defaults.engine or `--engine`) to execute the ingest workflow. |
+| wiki | `content` (an LLM Wiki page, shown like `knowledge`; the same `#fragment` selection works via its `bundle//conceptId` ref — see [LLM Wiki bundles](#llm-wiki-bundles)) |
 | lesson | `content` plus `when_to_use` from frontmatter — read both before applying the lesson |
-
-`akm show wiki:<name>` returns the same summary as `akm wiki show <name>`: path,
-description from `schema.md`, page and raw counts, and the last 3 `log.md`
-entries.
 
 ## Capture Knowledge While You Work
 
@@ -127,43 +122,28 @@ The six proposal subcommands are now accessed via the `proposal` noun group:
 
 The flat verbs were removed in 0.9.0; use the `akm proposal <verb>` forms.
 
-## Wikis
+## LLM Wiki bundles
 
-Multi-wiki knowledge bases (Karpathy-style). Each wiki is a directory at
-`<stashDir>/wikis/<name>/` with `schema.md`, `index.md`, `log.md`, `raw/`,
-and agent-authored pages. akm owns lifecycle + raw-slug + lint + index
-regeneration; page edits use your native Read/Write/Edit tools.
+An LLM Wiki (Karpathy-style knowledge base) is a **bundle format**, not an akm
+asset type — there is no `akm wiki` command family. akm's LLM Wiki adapter
+recognizes one deterministically at install time: a bundle component whose root
+holds a `schema.md` plus a `pages/` directory is mounted as an `llm-wiki`
+component. Its pages are then indexed like any other content and resolve to
+`bundle//conceptId` refs (e.g. `team-catalog//pages/attention`).
+
+Install one as a source, then search and read its pages with the ordinary
+commands — no wiki-specific verbs:
 
 ```sh
-akm wiki list                                  # List wikis (name, pages, raws, last-modified)
-akm wiki create research                       # Scaffold a new wiki
-akm wiki show research                         # Path, description, counts, last 3 log entries
-akm wiki pages research                        # Page refs + descriptions (excludes schema/index/log/raw)
-akm wiki search research "attention"           # Scoped search (equivalent to --type wiki --wiki research)
-akm wiki stash research ./paper.md             # Copy source into raw/<slug>.md (never overwrites)
-akm wiki stash research https://example.com/paper # Fetch one URL into raw/<slug>.md
-akm wiki stash research ./paper.md --target my-stash # Route write to a named writable stash source
-echo "..." | akm wiki stash research -         # stdin form
-akm wiki lint research                         # Structural checks: orphans, broken xrefs, uncited raws, stale index, broken sources
-akm wiki ingest research                       # Dispatch defaults.engine to run the ingest workflow on this wiki
-akm wiki ingest research --engine claude --model sonnet  # Override agent engine and model
-akm wiki ingest research --timeout-ms 600000   # Override agent CLI timeout
-akm wiki remove research -y                    # Delete pages/schema/index/log; preserves raw/
-akm wiki remove research -y --with-sources     # Full nuke, including raw/
+akm add owner/llm-wiki-repo                    # Install an LLM Wiki bundle as a source (npm, GitHub, git, or local dir)
+akm search "attention"                         # Wiki pages surface in ordinary search results
+akm show team-catalog//pages/attention          # Read a page by its bundle//conceptId ref (copy the ref from search)
+akm list                                       # Confirm the bundle is installed
 ```
 
-**For any wiki task, start with `akm wiki list`. Then `akm wiki ingest <name>`
-dispatches the configured agent engine (defaults.engine or `--engine`) to execute
-the wiki's ingest workflow end-to-end — schema read, source dedup, search,
-page create/update, log entry, lint, reindex.** Wiki pages are also addressable as
-`wiki:<name>/<page-path>` and show up in stash-wide `akm search` as
-`type: wiki`. Files under `raw/` and the wiki root infrastructure files
+Files under the bundle's `raw/` directory and the wiki infrastructure files
 `schema.md`, `index.md`, and `log.md` are not indexed and do not appear in
 search results. No `--llm` anywhere — akm never reasons about page content.
-
-`akm wiki lint` exits 1 when findings exist and 0 when the wiki is clean.
-The `broken-source` finding kind flags pages whose `sources:` frontmatter
-entries point to raw files that no longer exist.
 
 See [wikis.md](../guides/wikis.md) for the full guide.
 

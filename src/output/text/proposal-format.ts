@@ -69,7 +69,13 @@ export function formatProposalListPlain(r: Record<string, unknown>): string {
   const proposals = r.proposals as Array<Record<string, unknown>>;
   const total = r.totalCount as number;
   if (proposals.length === 0) {
-    return `${total} proposal(s).\nNo proposals.\nGenerate one with \`akm reflect <ref>\`, \`akm propose <type> <name> --task ...\`, or \`akm distill <ref>\`.`;
+    // NEW-1: `akm reflect` and `akm distill` are internal improve-pipeline
+    // process names (src/commands/improve/{reflect,distill}.ts), not
+    // registered top-level commands (see the subCommands map in src/cli.ts) —
+    // an agent following this hint would run a command that does not exist.
+    // The real ways to queue a proposal are `akm improve <ref>` (which runs
+    // the reflect/distill/consolidate pipeline internally) and `akm propose`.
+    return `${total} proposal(s).\nNo proposals.\nGenerate one with \`akm improve <ref>\` or \`akm propose <type> <name> --task ...\`.`;
   }
   const lines = [`${total} proposal(s)`, ""];
   for (const p of proposals) {
