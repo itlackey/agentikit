@@ -209,6 +209,18 @@ interface IndexOptions {
    * of cloned.
    */
   hydrateSources?: boolean;
+  /**
+   * Whether this run was triggered implicitly by another command's inline
+   * auto-index rather than by an explicit `akm index`.
+   *
+   * Only affects DISCLOSURE, never behavior. The adapter-detection config
+   * write (R-056) is always reported in the result envelope, but its stderr
+   * notice is suppressed for implicit runs: a read command's stderr carries
+   * its JSON error envelope, so an extra human-readable line there makes the
+   * envelope unparseable for callers doing `JSON.parse(stderr)` — and would
+   * also leak past `--quiet`, which a read command is entitled to honor.
+   */
+  implicit?: boolean;
 }
 
 interface IndexedDirCandidate {
@@ -578,6 +590,7 @@ function detectAndPersistBundleAdapters(
   allSourceEntries: SearchSource[],
   config: AkmConfig,
   mutateConfig: typeof import("../core/config/config.js").mutateConfig,
+  opts: { announce: boolean },
 ): { config: AkmConfig; persistedAdapters: Record<string, string> } {
   const detectedByBundle = new Map<string, string>();
   for (const source of allSourceEntries) {
@@ -613,7 +626,7 @@ function detectAndPersistBundleAdapters(
   ).config;
 
   const persistedCount = Object.keys(persistedAdapters).length;
-  if (persistedCount > 0) {
+  if (persistedCount > 0 && opts.announce) {
     const summary = Object.entries(persistedAdapters)
       .map(([bundleId, adapter]) => `${bundleId} → ${adapter}`)
       .join(", ");
@@ -681,7 +694,9 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       await ensureSourceCaches(config, { force: full, materialize: options.hydrateSources !== false });
       const sourceCacheEnd = Date.now();
       const allSourceEntries = resolveSourceEntries(stashDir, config);
-      const detected = detectAndPersistBundleAdapters(allSourceEntries, config, mutateConfig);
+      const detected = detectAndPersistBundleAdapters(allSourceEntries, config, mutateConfig, {
+        announce: options.implicit !== true,
+      });
       config = detected.config;
       const persistedAdapters = detected.persistedAdapters;
       const allSourceDirs = allSourceEntries.map((s) => s.path);

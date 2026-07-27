@@ -104,3 +104,32 @@ test("akmIndex does not re-report a bundle whose adapter is already configured",
   expect(result.configUpdated).toBeUndefined();
   expect(warnCalls.some((m) => m.includes("persisted to config.json"))).toBe(false);
 });
+
+test("an implicit auto-index still reports the write in the envelope but stays off stderr", async () => {
+  // A read command's inline auto-index must not print the disclosure notice:
+  // its stderr carries the JSON error envelope, so an extra human-readable
+  // line makes `JSON.parse(stderr)` fail for callers, and it would leak past
+  // `--quiet`. The structured disclosure is never lost — only the notice is
+  // suppressed. Regression for two goldens (d-quiet-search, f-not-found) that
+  // this notice broke when it fired unconditionally.
+  writeSandboxConfig({
+    semanticSearchMode: "off",
+    bundles: {
+      primary: { path: storage.stashDir, writable: true },
+      team: { path: secondary.dir },
+    },
+    defaultBundle: "primary",
+  });
+  resetConfigCache();
+
+  const warnCalls: string[] = [];
+  overrideSeam(_setWarnSinkForTests, (level, args) => {
+    if (level !== "warn") return;
+    warnCalls.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+  });
+
+  const result = await akmIndex({ stashDir: storage.stashDir, full: true, implicit: true });
+
+  expect(result.configUpdated?.detectedAdapters).toBeDefined();
+  expect(warnCalls.some((m) => m.includes("persisted to config.json"))).toBe(false);
+});

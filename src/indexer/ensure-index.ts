@@ -184,6 +184,7 @@ async function runInlineReindex(
     const { akmIndex } = await import("./indexer.js");
     await akmIndex({
       stashDir,
+      implicit: true,
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.hydrateSources === false ? { hydrateSources: false } : {}),
     });
