@@ -7,9 +7,11 @@
 // for ESM-safety.
 //
 // P3 is OPT-IN / DEFAULT-PRESERVING: nothing here exercises a real
-// LLM/spawn/serve and no test exceeds a few ms, so this is a UNIT test and
-// lives in tests/ (not tests/integration/). Uses sandbox helpers; never touches
-// host state. Run this file individually before any full-suite gate.
+// LLM/spawn/serve and no test exceeds a few ms. It DOES open a real SQLite
+// database (openIndexDatabase) and read/write real files in a sandboxed temp
+// dir (makeStashDir), so — unlike a pure in-memory unit test — it correctly
+// lives here in tests/integration/, not tests/. Uses sandbox helpers; never
+// touches host state. Run this file individually before any full-suite gate.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";

@@ -307,7 +307,9 @@ describe("akm proposal noun group (canonical)", () => {
 
   test("proposal show: requires an id (citty rejects the missing positional)", async () => {
     // Like `proposal diff`/`proposal revert`, the required positional is enforced
-    // by citty, which renders usage and exits 1 (not the JSON envelope path).
+    // by citty, which renders usage and exits 2, not 1 (R-032, commit 96ff2fe;
+    // pinned at tests/integration/cli-errors.test.ts:383-389) — not the JSON
+    // envelope path.
     const stash = makeStashDir();
     const result = await runCli(["proposal", "show", "--format=json"], { stashDir: stash });
     expect(result.status).not.toBe(0);
