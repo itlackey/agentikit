@@ -5,12 +5,14 @@
  *   - harnesses/amazonq/agent-builder.ts    — headless argv construction
  *   - harnesses/amazonq/result-extractor.ts — stdout → { text, sessionId? }
  *
- * The builder/extractor are exercised directly (they are NOT registered in
- * builders.ts / harnesses/index.ts yet — wiring is a follow-up integration
- * task). No real binaries are spawned; extractor fixtures are representative
- * captures of `q chat --no-interactive` plain-text output (Q has no
- * documented structured output — the matrix's tier-"none" harness), including
- * the ANSI color/spinner framing Q writes even to a piped stdout.
+ * The Amazon Q harness IS registered in `HARNESS_REGISTRY` / `BUILTIN_BUILDERS`
+ * (see `src/integrations/harnesses/index.ts`); the builder/extractor are
+ * exercised directly here for focused unit-level coverage of argv
+ * construction and result extraction. No real binaries are spawned;
+ * extractor fixtures are representative captures of `q chat --no-interactive`
+ * plain-text output (Q has no documented structured output — the matrix's
+ * tier-"none" harness), including the ANSI color/spinner framing Q writes
+ * even to a piped stdout.
  */
 import { describe, expect, test } from "bun:test";
 import type { AgentProfile } from "../../src/integrations/agent/profiles";

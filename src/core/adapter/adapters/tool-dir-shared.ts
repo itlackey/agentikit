@@ -42,9 +42,12 @@
  * ── Cycle-safety ──
  *
  * Imported only by `claude-adapter.ts` / `opencode-adapter.ts` (themselves
- * imported only by the test-only `adapters/index.ts` barrel), so this leaf can
- * never gain an inbound edge from a cycle participant. It value-imports only
- * pure leaves (`shared`, `akm-lint`, `frontmatter`) plus Node builtins.
+ * imported by the `adapters/index.ts` barrel — NOT test-only: `core/adapter/
+ * registry.ts:33` imports it in production for the frozen `BUILTIN_ADAPTERS`
+ * list). This leaf still can never gain an inbound edge from a cycle
+ * participant, since nothing on that import chain imports back into it. It
+ * value-imports only pure leaves (`shared`, `akm-lint`, `frontmatter`) plus
+ * Node builtins.
  */
 
 import path from "node:path";

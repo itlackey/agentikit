@@ -142,7 +142,7 @@ const workflowStatusCommand = defineJsonCommand({
       type: "boolean",
       description:
         "Also list per-unit rows from the run journal (unit id, status, failure_reason, and any result/error " +
-        "diagnostic text). Diagnostics only — step evidence stays deterministic and is unaffected (#22).",
+        "diagnostic text). Diagnostics only — step evidence stays deterministic and is unaffected.",
       default: false,
     },
   },
@@ -345,7 +345,7 @@ const workflowRunCommand = defineJsonCommand({
       description:
         "Treat every criteria-bearing completion gate as required: if no LLM judge is available, BLOCK the step " +
         "(for a human to resolve via `akm workflow resume`) instead of failing open. A per-step `gate.required: true` " +
-        "in the workflow does the same on every surface; this is the run-wide override (#18).",
+        "in the workflow does the same on every surface; this is the run-wide override.",
       default: false,
     },
   },

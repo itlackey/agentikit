@@ -697,8 +697,9 @@ function parseGate(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
     ctx.err([...path, "criteria"], `${stepLabel} "gate" requires "criteria": a non-empty list of criterion strings.`);
   }
   if (raw.max_loops !== undefined) {
-    // TODO(R2): max_loops execution (bounded evaluator-optimizer) is engine
-    // rework scope; the parser validates and carries it through.
+    // max_loops (bounded evaluator-optimizer gate loop, addendum R2) is
+    // executed by the native executor's gate loop; the parser here only
+    // validates the value and carries it through to the frozen plan.
     if (typeof raw.max_loops === "number" && Number.isInteger(raw.max_loops) && raw.max_loops >= 1) {
       gate.maxLoops = raw.max_loops;
     } else {

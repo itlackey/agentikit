@@ -4,10 +4,12 @@
  *   - harnesses/gemini/agent-builder.ts    — headless argv construction
  *   - harnesses/gemini/result-extractor.ts — stdout → { text, sessionId? }
  *
- * The builder/extractor are exercised directly (they are NOT registered in
- * builders.ts / harnesses/index.ts yet — wiring is a follow-up integration
- * task). No real binaries are spawned; extractor fixtures are representative
- * captures of the documented `--output-format json` / `stream-json` shapes.
+ * The Gemini harness IS registered in `HARNESS_REGISTRY` / `BUILTIN_BUILDERS`
+ * (see `src/integrations/harnesses/index.ts`); the builder/extractor are
+ * exercised directly here for focused unit-level coverage of argv
+ * construction and result extraction. No real binaries are spawned;
+ * extractor fixtures are representative captures of the documented
+ * `--output-format json` / `stream-json` shapes.
  */
 import { describe, expect, test } from "bun:test";
 import type { AgentProfile } from "../../src/integrations/agent/profiles";

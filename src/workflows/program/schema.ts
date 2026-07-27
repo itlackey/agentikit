@@ -120,7 +120,12 @@ export interface ProgramUnit {
   output?: Record<string, unknown>;
   /** Env asset refs injected into the dispatched unit env. */
   env?: string[];
-  /** TODO(R2): carried through the IR; enforcement lands with the engine rework. */
+  /**
+   * Worktree isolation (addendum R2). Carried through the IR here; the
+   * native executor (`src/workflows/exec/native-executor.ts`) runs each
+   * journaled attempt of an isolated agent/sdk unit in a fresh detached git
+   * worktree and rejects the pairing outright for llm units.
+   */
   isolation?: ProgramIsolation;
   source: SourceRef;
 }
@@ -150,8 +155,11 @@ export interface ProgramRoute {
 }
 
 /**
- * Completion gate criteria. TODO(R2): artifact-judging gates and `max_loops`
- * execution land with the engine rework; the parser carries them through.
+ * Completion gate criteria (addendum R2). Artifact-judging gates and
+ * `max_loops` execution are implemented by the native executor
+ * (`src/workflows/exec/native-executor.ts`'s bounded gate loop, `report.ts`'s
+ * / `run-workflow.ts`'s `frozenSummaryJudge`); the parser here only parses
+ * and carries the declaration through to the frozen plan.
  */
 export interface ProgramGate {
   criteria: string[];
@@ -172,8 +180,10 @@ export interface ProgramStep {
   map?: ProgramMap;
   route?: ProgramRoute;
   /**
-   * Step artifact schema (JSON Schema). TODO(R2): validation of the reducer
-   * result against this schema is engine-rework scope; carried through now.
+   * Step artifact schema (JSON Schema, addendum R2). Validation of the
+   * reducer result against this schema is implemented by the native executor
+   * (`src/workflows/exec/native-executor.ts`, `artifactSchemaFailure`); the
+   * parser here only carries the declaration through.
    */
   output?: Record<string, unknown>;
   gate?: ProgramGate;
