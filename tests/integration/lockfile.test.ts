@@ -250,6 +250,49 @@ describe("upsertLockEntry", () => {
     const result = readLockfile();
     expect(result).toHaveLength(2);
   });
+
+  // R-012: a corrupt lockfile used to fail OPEN on read (readLockfile -> [])
+  // and that empty read then fed straight into the write, so
+  // `writeLockfileUnlocked([...[], entry])` silently replaced every
+  // surviving lock entry with just the one being upserted — permanently
+  // destroying user state. upsertLockEntry must now refuse the write.
+  test("refuses to upsert into a corrupt (unparseable) lockfile — does not destroy surviving entries", async () => {
+    await writeLockfile([
+      validEntry({ id: "team-skills", ref: "owner/team-skills" }),
+      validEntry({ id: "private-tools", ref: "https://example.test/private-tools.git" }),
+    ]);
+    const lockPath = getLockfilePath();
+    const raw = fs.readFileSync(lockPath, "utf8");
+    // Simulate a crash mid-write: truncate the JSON mid-object.
+    fs.writeFileSync(lockPath, raw.slice(0, Math.floor(raw.length / 2)));
+
+    // The lenient read-only path still degrades to [] (unchanged contract —
+    // pinned by the "returns empty array for corrupted JSON" test above).
+    expect(readLockfile()).toEqual([]);
+
+    await expect(upsertLockEntry(validEntry({ id: "new-install", ref: "some-pkg" }))).rejects.toThrow(
+      /existing content is not valid JSON/,
+    );
+
+    // Critical assertion: the on-disk file was NOT overwritten with just the
+    // new entry — the original (corrupt) bytes are still there, untouched
+    // and recoverable, rather than silently destroyed.
+    const finalRaw = fs.readFileSync(lockPath, "utf8");
+    expect(finalRaw).toBe(raw.slice(0, Math.floor(raw.length / 2)));
+    expect(finalRaw).toContain("team-skills");
+    expect(finalRaw).not.toContain("new-install");
+  });
+
+  test("refuses to upsert into a lockfile whose JSON is valid but not an array", async () => {
+    const lockPath = getLockfilePath();
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify({ not: "an array" }));
+
+    await expect(upsertLockEntry(validEntry({ id: "new-install" }))).rejects.toThrow(
+      /existing content is not a JSON array/,
+    );
+    expect(fs.readFileSync(lockPath, "utf8")).toBe(JSON.stringify({ not: "an array" }));
+  });
 });
 
 // ── removeLockEntry ─────────────────────────────────────────────────────────
@@ -281,5 +324,19 @@ describe("removeLockEntry", () => {
     await writeLockfile([validEntry({ id: "only-one" })]);
     await removeLockEntry("only-one");
     expect(readLockfile()).toEqual([]);
+  });
+
+  // R-012: same destructive-overwrite risk as upsertLockEntry.
+  test("refuses to remove from a corrupt (unparseable) lockfile — does not destroy surviving entries", async () => {
+    await writeLockfile([validEntry({ id: "team-skills" }), validEntry({ id: "private-tools" })]);
+    const lockPath = getLockfilePath();
+    const raw = fs.readFileSync(lockPath, "utf8");
+    fs.writeFileSync(lockPath, raw.slice(0, Math.floor(raw.length / 2)));
+
+    await expect(removeLockEntry("team-skills")).rejects.toThrow(/existing content is not valid JSON/);
+
+    const finalRaw = fs.readFileSync(lockPath, "utf8");
+    expect(finalRaw).toBe(raw.slice(0, Math.floor(raw.length / 2)));
+    expect(finalRaw).toContain("team-skills");
   });
 });

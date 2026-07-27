@@ -53,6 +53,31 @@ export function inspectGitUpstream(repoDir: string): GitUpstreamState {
   return { hasRemote: true, upstream: upstream.stdout.trim(), ...relation };
 }
 
+/**
+ * Verify the actually-cloned HEAD matches the revision resolved before the
+ * clone ran (R-011). This is a presence/identity check only — full
+ * content-digest verification across install/update is separate, larger
+ * scope work. `expectedRevision` may be an annotated tag's OBJECT id (which
+ * `git ls-remote` reports, distinct from the commit it points to), so the
+ * comparison peels it (`^{commit}`) before comparing against HEAD; a plain
+ * commit SHA peels to itself.
+ */
+export function verifyClonedRevision(cloneDir: string, url: string, expectedRevision: string | undefined): void {
+  if (!expectedRevision) return;
+  const head = runGit(["-C", cloneDir, "rev-parse", "HEAD"]);
+  if (head.status !== 0 || !head.stdout.trim()) {
+    throw new UsageError(`Failed to read cloned HEAD at ${cloneDir}: ${head.stderr.trim() || "rev-parse failed"}`);
+  }
+  const actual = head.stdout.trim();
+  const peeled = runGit(["-C", cloneDir, "rev-parse", `${expectedRevision}^{commit}`]);
+  const expectedCommit = peeled.status === 0 ? peeled.stdout.trim() : expectedRevision;
+  if (actual !== expectedCommit) {
+    throw new UsageError(
+      `Cloned HEAD ${actual} at ${cloneDir} does not match the revision resolved from ${url} (${expectedRevision}); refusing to install a mismatched checkout.`,
+    );
+  }
+}
+
 function gitRelation(repoDir: string, target: string): { ahead: number; behind: number } {
   const result = runGit(["-C", repoDir, "rev-list", "--left-right", "--count", `HEAD...${target}`]);
   const match = result.stdout.trim().match(/^(\d+)\s+(\d+)$/);
@@ -171,7 +196,7 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
       const provisionalBundleRoot = detectStashRoot(extractedDir);
       const installRoot = applyAkmIncludeConfig(provisionalBundleRoot, cacheDir, extractedDir) ?? provisionalBundleRoot;
       if (installRoot !== provisionalBundleRoot) {
-        throw new UsageError("Writable Git installs do not support .akm-include filtered snapshots.");
+        throw new UsageError("Writable Git installs do not support akm.include (package.json) filtered snapshots.");
       }
       return syncExistingWritableCheckout(
         parsed,
@@ -228,6 +253,13 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
       throw new Error(classifyCloneFailure(parsed.url, cloneResult.stderr, cloneResult.error));
     }
 
+    // R-011: `resolved.resolvedRevision` was resolved via a SEPARATE
+    // `git ls-remote` round-trip before this clone ran (resolveGitArtifact /
+    // resolveGithubArtifact in registry/resolve.ts) and was never checked
+    // against what actually got cloned. Verify it now, while `.git` still
+    // exists (the read-only branch below strips it).
+    verifyClonedRevision(cloneDir, parsed.url, resolved.resolvedRevision);
+
     if (options?.writable) {
       const branch = runGit(["-C", cloneDir, "branch", "--show-current"]);
       if (branch.status !== 0 || !branch.stdout.trim()) {
@@ -235,7 +267,7 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
       }
       const stagedRoot = detectStashRoot(cloneDir);
       if (applyAkmIncludeConfig(stagedRoot, cacheDir, cloneDir)) {
-        throw new UsageError("Writable Git installs do not support .akm-include filtered snapshots.");
+        throw new UsageError("Writable Git installs do not support akm.include (package.json) filtered snapshots.");
       }
       replaceDirectory(cloneDir, extractedDir);
     } else {
@@ -247,7 +279,7 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
     provisionalBundleRoot = detectStashRoot(extractedDir);
     installRoot = applyAkmIncludeConfig(provisionalBundleRoot, cacheDir, extractedDir) ?? provisionalBundleRoot;
     if (options?.writable && installRoot !== provisionalBundleRoot) {
-      throw new UsageError("Writable Git installs do not support .akm-include filtered snapshots.");
+      throw new UsageError("Writable Git installs do not support akm.include (package.json) filtered snapshots.");
     }
     stashRoot = detectStashRoot(installRoot);
   } catch (err) {

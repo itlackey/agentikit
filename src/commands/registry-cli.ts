@@ -6,7 +6,7 @@ import { defineCommand } from "citty";
 import { parsePositiveIntFlag } from "../cli/parse-args";
 import { defineJsonCommand, output } from "../cli/shared";
 import type { RegistryConfigEntry } from "../core/config/config";
-import { DEFAULT_CONFIG, loadUserConfig, mutateConfig } from "../core/config/config";
+import { getEffectiveRegistries, loadUserConfig, mutateConfig } from "../core/config/config";
 import { UsageError } from "../core/errors";
 import { warn } from "../core/warn";
 import { buildRegistryIndex, writeRegistryIndex } from "../registry/build-index";
@@ -19,8 +19,9 @@ export const registryCommand = defineCommand({
       meta: { name: "list", description: "List configured registries" },
       async run() {
         const config = loadUserConfig();
-        const registries = config.registries ?? DEFAULT_CONFIG.registries;
-        output("registry-list", { registries });
+        // R-066 #5: mirror the shared config↔default-fallback helper instead
+        // of re-deriving it inline.
+        output("registry-list", { registries: getEffectiveRegistries(config) });
       },
     }),
     add: defineJsonCommand({
@@ -125,7 +126,17 @@ export const registryCommand = defineCommand({
       },
       async run({ args }) {
         const limitRaw = parsePositiveIntFlag(args.limit ?? undefined);
-        const result = await searchRegistry(args.query, { limit: limitRaw, includeAssets: args.assets });
+        // R-008: this used to omit `registries`, so `searchRegistry` fell
+        // back to `resolveRegistries()`'s no-arg default (DEFAULT_CONFIG,
+        // never the on-disk config) and silently ignored every registry the
+        // user had added via `akm registry add`. Pass the loaded config's
+        // registries, mirroring `akm search --source registry` (search.ts).
+        const config = loadUserConfig();
+        const result = await searchRegistry(args.query, {
+          limit: limitRaw,
+          includeAssets: args.assets,
+          registries: config.registries,
+        });
         output("registry-search", result);
       },
     }),

@@ -98,9 +98,10 @@ export function buildInstallCacheDir(
 }
 
 /**
- * Apply an `.akm-include` config (if any) by copying the selected paths
- * into a sibling `selected/` directory and returning that path. Returns
- * undefined when no include config is found.
+ * Apply an `akm.include` config (a `package.json` `akm.include` array — NOT
+ * a `.akm-include` dotfile) if any, by copying the selected paths into a
+ * sibling `selected/` directory and returning that path. Returns undefined
+ * when no include config is found.
  */
 export function applyAkmIncludeConfig(
   sourceRoot: string,

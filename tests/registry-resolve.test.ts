@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { UsageError } from "../src/core/errors";
+import { NotFoundError, UsageError } from "../src/core/errors";
 import {
   parseRegistryRef,
+  resolveRegistryArtifact,
   trustedNpmTarballHosts,
   UntrustedNpmTarballError,
   validateGitRef,
   validateGitUrl,
   validateNpmTarballUrl,
 } from "../src/registry/resolve";
+import { withMockedFetch } from "./_helpers/sandbox";
 
 // ── validateGitUrl ───────────────────────────────────────────────────────────
 
@@ -200,5 +202,137 @@ describe("parseRegistryRef — bare scoped npm package", () => {
     // Leading ./ marks an explicit path; a missing one must throw the local
     // NotFoundError, proving it did NOT fall through to npm parsing.
     expect(() => parseRegistryRef("./@scope/does-not-exist")).toThrow(/Local path not found/);
+  });
+});
+
+// ── parseRegistryRef — `owner/repo` shorthand (R-007) ───────────────────────
+//
+// R-007: `akm add owner/repo` was unreachable. `isPathLikeRef` returned true
+// for ANY ref containing a `/`, so a bare `owner/repo` shorthand that did not
+// exist as a local directory was routed to `tryParseLocalRef` with
+// `explicitPath=true`, which throws `NotFoundError` before the GitHub
+// shorthand fallback below it ever runs. Reproduced against the pristine
+// pre-fix tree: `parseRegistryRef("itlackey/akm-stash")` threw
+// `Local path not found: <cwd>/itlackey/akm-stash`.
+
+describe("parseRegistryRef — `owner/repo` GitHub shorthand (R-007)", () => {
+  test("a bare owner/repo ref with no matching local directory resolves as GitHub shorthand", () => {
+    // Guaranteed not to exist as a directory relative to the test cwd.
+    const parsed = parseRegistryRef("itlackey/akm-stash-does-not-exist-on-disk");
+    expect(parsed).toMatchObject({
+      source: "github",
+      owner: "itlackey",
+      repo: "akm-stash-does-not-exist-on-disk",
+    });
+  });
+
+  test("owner/repo#ref shorthand also falls through to GitHub resolution when missing locally", () => {
+    const parsed = parseRegistryRef("itlackey/akm-stash-does-not-exist-on-disk#main");
+    expect(parsed).toMatchObject({
+      source: "github",
+      owner: "itlackey",
+      repo: "akm-stash-does-not-exist-on-disk",
+      requestedRef: "main",
+    });
+  });
+
+  test("an EXPLICIT relative owner/repo-shaped path (./owner/repo) still throws when missing", () => {
+    // Regression guard: only the bare (non-explicit) form should fall
+    // through. A leading `./` is unambiguous — it MUST still fail loudly.
+    expect(() => parseRegistryRef("./itlackey/akm-stash-does-not-exist-on-disk")).toThrow(NotFoundError);
+    expect(() => parseRegistryRef("./itlackey/akm-stash-does-not-exist-on-disk")).toThrow(/Local path not found/);
+  });
+
+  test("an EXPLICIT absolute owner/repo-shaped path still throws when missing", () => {
+    expect(() => parseRegistryRef("/tmp/definitely-does-not-exist-akm/owner/repo")).toThrow(/Local path not found/);
+  });
+
+  test("a bare path with 3+ segments (not owner/repo shaped) still throws when missing", () => {
+    // Only the exact 2-segment owner/repo shape is ambiguous with GitHub
+    // shorthand; a deeper bare path is not, and must keep failing loudly
+    // rather than silently falling through to (and failing) npm parsing.
+    expect(() => parseRegistryRef("some/nested/path-does-not-exist")).toThrow(/Local path not found/);
+  });
+});
+
+// ── AKM_NPM_REGISTRY honored for METADATA resolution too (R-035) ───────────
+//
+// R-035: the env var previously only widened the trusted-tarball-host
+// allowlist (`trustedNpmTarballHosts`); the metadata endpoint itself was
+// hardcoded to `https://registry.npmjs.org`, making the
+// `UntrustedNpmTarballError.hint()` text ("Set AKM_NPM_REGISTRY to your
+// private npm mirror's base URL...") false for metadata resolution. Now the
+// override is honored end-to-end: metadata is fetched from the configured
+// mirror, not the public registry.
+
+describe("resolveRegistryArtifact — npm metadata honors AKM_NPM_REGISTRY (R-035)", () => {
+  const originalRegistry = process.env.AKM_NPM_REGISTRY;
+
+  afterEach(() => {
+    if (originalRegistry === undefined) {
+      delete process.env.AKM_NPM_REGISTRY;
+    } else {
+      process.env.AKM_NPM_REGISTRY = originalRegistry;
+    }
+  });
+
+  test("fetches package metadata from the overridden registry base, not registry.npmjs.org", async () => {
+    process.env.AKM_NPM_REGISTRY = "https://npm.internal.example.com";
+    const requestedUrls: string[] = [];
+
+    const parsed = parseRegistryRef("npm:private-pkg");
+    const result = await withMockedFetch(
+      () => resolveRegistryArtifact(parsed),
+      (url) => {
+        requestedUrls.push(url);
+        return new Response(
+          JSON.stringify({
+            "dist-tags": { latest: "1.0.0" },
+            versions: {
+              "1.0.0": {
+                dist: {
+                  tarball: "https://npm.internal.example.com/private-pkg/-/private-pkg-1.0.0.tgz",
+                  shasum: "abc1234def567890abc1234def567890abc12345",
+                },
+              },
+            },
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    );
+
+    expect(requestedUrls).toEqual(["https://npm.internal.example.com/private-pkg"]);
+    expect(requestedUrls.some((u) => u.includes("registry.npmjs.org"))).toBe(false);
+    expect(result.resolvedVersion).toBe("1.0.0");
+  });
+
+  test("falls back to the public registry for metadata when no override is set", async () => {
+    delete process.env.AKM_NPM_REGISTRY;
+    const requestedUrls: string[] = [];
+
+    const parsed = parseRegistryRef("npm:public-pkg");
+    await withMockedFetch(
+      () => resolveRegistryArtifact(parsed),
+      (url) => {
+        requestedUrls.push(url);
+        return new Response(
+          JSON.stringify({
+            "dist-tags": { latest: "2.0.0" },
+            versions: {
+              "2.0.0": {
+                dist: {
+                  tarball: "https://registry.npmjs.org/public-pkg/-/public-pkg-2.0.0.tgz",
+                  shasum: "abc1234def567890abc1234def567890abc12345",
+                },
+              },
+            },
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    );
+
+    expect(requestedUrls).toEqual(["https://registry.npmjs.org/public-pkg"]);
   });
 });

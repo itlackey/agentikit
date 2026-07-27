@@ -7,8 +7,8 @@
  *
  * `sync()` resolves the npm package tarball, downloads it, verifies its
  * integrity, extracts it securely (via `extractTarGzSecure`), detects the
- * stash root inside the package, and applies any nested `.akm-include`
- * configuration. Cache hits short-circuit the fetch.
+ * stash root inside the package, and applies any nested `akm.include`
+ * (package.json) configuration. Cache hits short-circuit the fetch.
  */
 
 import fs from "node:fs";
@@ -81,7 +81,7 @@ function npmRefFromConfig(config: SourceConfigEntry): string {
  *   - resolving the artifact URL and integrity from the npm registry
  *   - reuse cached extraction when present
  *   - download, verify, extract securely, then detect the stash root
- *   - honour `.akm-include` filters
+ *   - honour `akm.include` (package.json) filters
  */
 export async function syncNpmRef(ref: string, options?: SyncOptions): Promise<SourceLockData> {
   const parsed = parseRegistryRef(ref);
@@ -151,7 +151,7 @@ async function doSyncNpm(parsed: ParsedNpmRef, options?: SyncOptions): Promise<S
     const detectedStashRoot = detectStashRoot(installRoot);
     if (!detectedStashRoot) {
       throw new UsageError(
-        `Unable to detect a stash root after applying .akm-include configuration for npm package: ${resolved.ref}`,
+        `Unable to detect a stash root after applying akm.include (package.json) configuration for npm package: ${resolved.ref}`,
       );
     }
     stashRoot = detectedStashRoot;
