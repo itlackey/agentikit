@@ -6,9 +6,15 @@
 // Shares the proposal-producer envelope shape (success carries a proposal
 // entry; failure carries an AgentFailureReason discriminant) with the
 // internal `akmReflect` result shape — but `reflect` has no standalone CLI
-// verb and no `output("reflect", ...)` call site (reflect.ts is called
+// verb and never reaches the output() chokepoint (reflect.ts is called
 // directly by the improve loop, not through this registry), so only
 // `propose` is registered here.
+//
+// Deliberately phrased WITHOUT the literal call spelling: the registry
+// completeness scanner (tests/integration/output-shape-registry-completeness.ts)
+// greps sources for that exact pattern to find commands needing a shape, and
+// it does not skip comments — so writing the spelling here to explain the
+// absence would re-summon the very registration this comment says is gone.
 
 import { shapeProposalProducerOutput } from "../helpers";
 import type { OutputShapeEntry } from "../registry";
