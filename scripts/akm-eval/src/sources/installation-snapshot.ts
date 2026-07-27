@@ -476,22 +476,32 @@ function fingerprintSqliteSourceArtifacts(dataDir: string): Record<string, FileF
   return fingerprints;
 }
 
+/**
+ * Guards against a source database mutating while the snapshot is being
+ * captured. Main `.db` files are always required to be present, byte-for-byte
+ * identical, both before and after.
+ *
+ * `-wal`/`-journal` sidecars are compared only when present on BOTH sides —
+ * a sidecar appearing or disappearing between the two fingerprints is NOT by
+ * itself treated as a mutation. SQLite creates and removes these files as an
+ * ordinary side effect of connections opening, closing, and checkpointing —
+ * including this module's own read-only opens of the source databases a few
+ * lines below. When a `-wal` disappears, SQLite has already checkpointed its
+ * frames into the main file, so the main-file comparison above still catches
+ * the case where the disappearance corresponded to a real content change.
+ * What a presence-only check cannot safely ignore is a sidecar that stays
+ * present the whole time: if its bytes differ, a writer committed new frames
+ * to the WAL without ever checkpointing them into the main file, which the
+ * main-file comparison alone would miss — so that case still fails closed.
+ */
 function assertSqliteSourceArtifactsUnchanged(
   dataDir: string,
   expected: Readonly<Record<string, FileFingerprint>>,
 ): void {
   const actual = fingerprintSqliteSourceArtifacts(dataDir);
-  const expectedNames = Object.keys(expected).sort(compareStrings);
-  const actualNames = Object.keys(actual).sort(compareStrings);
-  if (
-    expectedNames.length !== actualNames.length ||
-    expectedNames.some((name, index) => name !== actualNames[index])
-  ) {
-    throw new Error("SQLite source artifacts changed while the installation snapshot was captured");
-  }
-  for (const name of expectedNames) {
-    const before = expected[name];
-    const after = actual[name];
+  for (const databaseName of DATABASE_NAMES) {
+    const before = expected[databaseName];
+    const after = actual[databaseName];
     if (
       !before ||
       !after ||
@@ -499,7 +509,23 @@ function assertSqliteSourceArtifactsUnchanged(
       before.sha256 !== after.sha256 ||
       !mtimesEqual(before.mtimeMs, after.mtimeMs)
     ) {
-      throw new Error(`SQLite source artifact changed while the installation snapshot was captured: ${name}`);
+      throw new Error(`SQLite database changed while the installation snapshot was captured: ${databaseName}`);
+    }
+  }
+  for (const suffix of STABLE_SQLITE_SIDECAR_SUFFIXES) {
+    for (const databaseName of DATABASE_NAMES) {
+      const name = `${databaseName}${suffix}`;
+      const before = expected[name];
+      const after = actual[name];
+      // Appeared or disappeared — not itself a mutation, see doc comment above.
+      if (!before || !after) continue;
+      if (
+        before.byteSize !== after.byteSize ||
+        before.sha256 !== after.sha256 ||
+        !mtimesEqual(before.mtimeMs, after.mtimeMs)
+      ) {
+        throw new Error(`SQLite source artifact changed while the installation snapshot was captured: ${name}`);
+      }
     }
   }
 }
