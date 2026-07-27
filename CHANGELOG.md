@@ -31,6 +31,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING: a command group invoked with no subcommand is now always a usage
+  error, exit 2** (owner ruling 12). The eleven `akm <group>` groups did three
+  different things when invoked bare: `graph`, `config`, `env`, `secret`,
+  `tasks`, `workflow`, and `proposal` ran an implicit default action and exited
+  0 (bare `akm graph` silently rendered `graph summary`); `registry`, `log`, and
+  `lessons` printed citty's human usage banner to stdout; only `migrate` raised
+  a structured error. All eleven now emit the same
+  `MISSING_REQUIRED_ARGUMENT` envelope on stderr, naming the available
+  subcommands, and exit 2 — matching STABILITY.md's exit-code table (2 =
+  usage) and the exit code already used for unknown commands. Matching exit
+  codes alone was not enough: a script could not parse the failure uniformly
+  while three groups answered on stdout in prose.
+
+  Migration: name the subcommand. `akm graph` → `akm graph summary`,
+  `akm config` → `akm config list`, `akm env` → `akm env list`, `akm secret` →
+  `akm secret list`, `akm tasks` → `akm tasks doctor`, `akm workflow` →
+  `akm workflow list --active`, `akm proposal` → `akm proposal list` (which
+  takes the same `--status`/`--queue`/`--ref`/`--type` flags the bare form did).
+
+- **BREAKING: `akm sync` persists `eventType: "sync"`, not the legacy
+  `"save"`.** The event name now matches the command name. Historical
+  `state.db` rows are left as-is — `akm log` and `akm log tail` treat `"save"`
+  and `"sync"` as synonyms on **read**, so `akm log --type save` keeps
+  returning both old and new rows. Only newly written events use `"sync"`.
+
+  Migration: none for `akm log --type save`. A script matching raw event rows
+  by `eventType === "save"` — reading state.db directly, bypassing `akm log` —
+  should also match `"sync"` to see new syncs.
+
+- **BREAKING: dropped the dead `installedKitCount` field from the `add`,
+  `remove`, and `update` JSON envelopes.** It was a raw lockfile-entry count
+  that nothing — internal code or test — ever read.
+
+  Migration: a script parsing `.config.installedKitCount` should stop; the
+  field is gone, not renamed. `config.sourceCount` remains and is unaffected.
+
+- **BREAKING: dropped the dead `graphPath` field from every `akm graph *` JSON
+  envelope** (`summary`, `entities`, `relations`, `export`, `related`, `entity`,
+  `orphans`). It always resolved to the shared state.db path, never a
+  per-graph artifact, and carried nothing `stashPath` did not already provide.
+
+  Migration: a script reading `.graphPath` from any `akm graph` subcommand
+  should stop; `stashPath` remains.
+
 - **BREAKING: `semanticSearchMode` now defaults to `"off"`.** A bare or
   headless install (`akm init`, `akm setup --yes`, `akm setup --config`) was
   silently downloading the ~130 MB local embedding model on its first `akm
@@ -317,12 +361,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- **`akm secret path` and `akm secret remove` are removed.** The two resolved a
+  secret ref through *different* stash-selection logic — `path` through the
+  read-side, all-sources resolver and `remove` through the write-target
+  resolver — so for a ref present in more than one stash they could name
+  different files: you could inspect one secret and delete another. Rather than
+  reconcile the resolvers, both subcommands are gone; `akm secret` now exposes
+  only `list`, `run`, and `set`. Both spellings exit 2 with `Unknown command`.
+
+  Migration: a ref's file lives at `<stash>/secrets/<name>` (run `akm sources
+  list` for stash roots) — locate or delete it directly, or use `akm secret run
+  <ref> <VAR> -- <command>` to consume the value without it touching disk. `akm
+  env path` and `akm env remove` are unaffected.
+
+- Removed the dead `"backup"` output-shape registration left over from the
+  removed `akm backup` command (superseded by `akm-migrate backup`). Already
+  unreachable; no user-visible effect.
+
 - **`akm tasks list`, `akm tasks show`, and `akm tasks remove` are removed** as
   redundant with the generic asset commands. List and inspect tasks with `akm
   search` / `akm show <bundle//tasks/id>` (both already cross-bundle); to remove a
   scheduled task, delete its file in the owning bundle and run `akm tasks sync`
-  (sync uninstalls the orphaned scheduler entry). Bare `akm tasks` now reports
-  scheduler diagnostics (equivalent to `akm tasks doctor`).
+  (sync uninstalls the orphaned scheduler entry). Run `akm tasks doctor` for
+  scheduler diagnostics — bare `akm tasks` is a usage error, see the canonical
+  bare-group change above.
 
 - **The `akm show <ref> toc|section|lines|frontmatter|full` view-mode grammar is
   removed** (0.9.0 decision D2). `#fragment` is now the only section selector,

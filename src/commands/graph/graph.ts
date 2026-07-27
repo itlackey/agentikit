@@ -29,7 +29,6 @@ export interface GraphSummaryResult {
   schemaVersion: 1;
   shape: "graph-summary";
   stashPath: string;
-  graphPath: string;
   generatedAt: string;
   fileCount: number;
   entityCount: number;
@@ -42,7 +41,6 @@ export interface GraphEntitiesResult {
   schemaVersion: 1;
   shape: "graph-entities";
   stashPath: string;
-  graphPath: string;
   generatedAt: string;
   total: number;
   entities: Array<{ name: string; fileCount: number; confidence?: number }>;
@@ -52,7 +50,6 @@ export interface GraphRelationsResult {
   schemaVersion: 1;
   shape: "graph-relations";
   stashPath: string;
-  graphPath: string;
   generatedAt: string;
   total: number;
   relations: Array<{ from: string; to: string; type?: string; count: number; confidence?: number }>;
@@ -62,7 +59,6 @@ export interface GraphExportResult {
   schemaVersion: 1;
   shape: "graph-export";
   stashPath: string;
-  graphPath: string;
   outPath: string;
   format: "json" | "jsonl";
   bytes: number;
@@ -72,7 +68,6 @@ export interface GraphRelatedResult {
   schemaVersion: 1;
   shape: "graph-related";
   stashPath: string;
-  graphPath: string;
   generatedAt: string;
   ref: string;
   path: string;
@@ -85,7 +80,6 @@ export interface GraphEntityResult {
   schemaVersion: 1;
   shape: "graph-entity";
   stashPath: string;
-  graphPath: string;
   generatedAt: string;
   entity: string;
   total: number;
@@ -96,7 +90,6 @@ export interface GraphOrphansResult {
   schemaVersion: 1;
   shape: "graph-orphans";
   stashPath: string;
-  graphPath: string;
   generatedAt: string;
   totalConsidered: number;
   total: number;
@@ -112,7 +105,6 @@ export interface GraphOrphansResult {
 interface LoadedGraph {
   graph: GraphFile;
   stashPath: string;
-  graphPath: string;
 }
 
 interface ResolvedGraphTarget {
@@ -167,7 +159,6 @@ function loadGraph(source?: string, db?: import("../../storage/database").Databa
         ...(snapshot.telemetry ? { telemetry: snapshot.telemetry } : {}),
       },
       stashPath,
-      graphPath: snapshot.graphPath,
     };
   } finally {
     if (ownsDb) closeDatabase(activeDb);
@@ -222,12 +213,11 @@ function aggregateEntityStats(nodes: GraphFileNode[]): Map<string, { fileCount: 
 }
 
 export function akmGraphSummary(options?: { source?: string }): GraphSummaryResult {
-  const { graph, stashPath, graphPath } = loadGraph(options?.source);
+  const { graph, stashPath } = loadGraph(options?.source);
   return {
     schemaVersion: 1,
     shape: "graph-summary",
     stashPath,
-    graphPath,
     generatedAt: graph.generatedAt,
     fileCount: graph.files.length,
     entityCount: Array.isArray(graph.entities) ? graph.entities.length : countEntitiesByFile(graph.files).size,
@@ -240,7 +230,7 @@ export function akmGraphSummary(options?: { source?: string }): GraphSummaryResu
 }
 
 export function akmGraphEntities(options?: { source?: string; limit?: number }): GraphEntitiesResult {
-  const { graph, stashPath, graphPath } = loadGraph(options?.source);
+  const { graph, stashPath } = loadGraph(options?.source);
   const limit = options?.limit;
   assertPositiveLimit(limit);
   const stats = aggregateEntityStats(graph.files);
@@ -256,7 +246,6 @@ export function akmGraphEntities(options?: { source?: string; limit?: number }):
     schemaVersion: 1,
     shape: "graph-entities",
     stashPath,
-    graphPath,
     generatedAt: graph.generatedAt,
     total: entities.length,
     entities: sliced,
@@ -264,7 +253,7 @@ export function akmGraphEntities(options?: { source?: string; limit?: number }):
 }
 
 export function akmGraphRelations(options?: { source?: string; limit?: number }): GraphRelationsResult {
-  const { graph, stashPath, graphPath } = loadGraph(options?.source);
+  const { graph, stashPath } = loadGraph(options?.source);
   const limit = options?.limit;
   assertPositiveLimit(limit);
   const counts = new Map<string, { from: string; to: string; type?: string; count: number; confidence?: number }>();
@@ -298,7 +287,6 @@ export function akmGraphRelations(options?: { source?: string; limit?: number })
     schemaVersion: 1,
     shape: "graph-relations",
     stashPath,
-    graphPath,
     generatedAt: graph.generatedAt,
     total: relations.length,
     relations: sliced,
@@ -315,7 +303,7 @@ export function akmGraphExport(options: { source?: string; out: string }): Graph
   // and envelope are separate concerns, and overloading one flag with both was
   // what forced the old local/global `--format` collision.
   const format = options.out.trim().toLowerCase().endsWith(".jsonl") ? "jsonl" : "json";
-  const { graph, stashPath, graphPath } = loadGraph(options.source);
+  const { graph, stashPath } = loadGraph(options.source);
   const outPath = path.resolve(options.out);
   // R-041: graph exports can carry knowledge-derived content, so this write
   // gets the same treatment as other sensitive on-disk artifacts (env export,
@@ -343,7 +331,6 @@ export function akmGraphExport(options: { source?: string; out: string }): Graph
     schemaVersion: 1,
     shape: "graph-export",
     stashPath,
-    graphPath,
     outPath,
     format,
     bytes: Buffer.byteLength(payload, "utf8"),
@@ -368,13 +355,12 @@ export async function akmGraphRelated(options: {
   let db: import("../../storage/database").Database | undefined;
   try {
     db = openExistingDatabase();
-    const { graph, stashPath, graphPath } = loadGraph(target.stashPath, db);
+    const { graph, stashPath } = loadGraph(target.stashPath, db);
     const related = listRelatedPathsForFile(stashPath, target.filePath, limit ?? 5, db);
     return {
       schemaVersion: 1,
       shape: "graph-related",
       stashPath,
-      graphPath,
       generatedAt: graph.generatedAt,
       ref: target.ref,
       path: target.filePath,
@@ -429,11 +415,10 @@ export function akmGraphEntity(options: { name: string; source?: string; limit?:
   let db: import("../../storage/database").Database | undefined;
   let graph: GraphFile;
   let stashPath: string;
-  let graphPath: string;
   let refByPath: Map<string, { ref: string; type: string }>;
   try {
     db = openExistingDatabase();
-    ({ graph, stashPath, graphPath } = loadGraph(options.source, db));
+    ({ graph, stashPath } = loadGraph(options.source, db));
     refByPath = buildRefByPath(stashPath, db);
   } finally {
     if (db) closeDatabase(db);
@@ -465,7 +450,6 @@ export function akmGraphEntity(options: { name: string; source?: string; limit?:
     schemaVersion: 1,
     shape: "graph-entity",
     stashPath,
-    graphPath,
     generatedAt: graph.generatedAt,
     entity: name,
     total: matches.length,
@@ -482,11 +466,10 @@ export function akmGraphOrphans(options?: { source?: string; limit?: number }): 
   let db: import("../../storage/database").Database | undefined;
   let graph: GraphFile;
   let stashPath: string;
-  let graphPath: string;
   let refByPath: Map<string, { ref: string; type: string }>;
   try {
     db = openExistingDatabase();
-    ({ graph, stashPath, graphPath } = loadGraph(options?.source, db));
+    ({ graph, stashPath } = loadGraph(options?.source, db));
     refByPath = buildRefByPath(stashPath, db);
   } finally {
     if (db) closeDatabase(db);
@@ -517,7 +500,6 @@ export function akmGraphOrphans(options?: { source?: string; limit?: number }): 
     schemaVersion: 1,
     shape: "graph-orphans",
     stashPath,
-    graphPath,
     generatedAt: graph.generatedAt,
     totalConsidered: graph.files.length,
     total: orphans.length,

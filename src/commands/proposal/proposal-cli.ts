@@ -500,15 +500,11 @@ const proposalDrainCommand = defineJsonCommand({
 
 export const proposalCommand = defineGroupCommand({
   meta: { name: "proposal", description: "Manage the proposal queue: list, show, diff, accept, reject, revert" },
-  args: {
-    queue: { type: "string", description: "Select the proposal queue by source name" },
-    status: {
-      type: "string",
-      description: "Filter by status (pending|accepted|rejected|reverted)",
-    },
-    ref: { type: "string", description: "Filter by asset ref ([bundle//]conceptId, e.g. knowledge/guide.md)" },
-    type: { type: "string", description: "Filter by asset type" },
-  },
+  // The group declared `--queue`/`--status`/`--ref`/`--type` only so the bare
+  // form could act as `proposal list`. That form is gone (see below), and
+  // `proposalListCommand` declares the identical set, so keeping them here
+  // would just advertise flags in `akm proposal --help` that no group-level
+  // body reads.
   subCommands: {
     list: proposalListCommand,
     show: proposalShowCommand,
@@ -518,16 +514,7 @@ export const proposalCommand = defineGroupCommand({
     revert: proposalRevertCommand,
     drain: proposalDrainCommand,
   },
-  // Default body fires only for bare `akm proposal [--status …]`.
-  defaultRun({ args }) {
-    const status = parseProposalStatus(args.status);
-    const result = akmProposalList({
-      queue: args.queue,
-      status,
-      ref: args.ref,
-      type: args.type,
-      includeArchive: status === "accepted" || status === "rejected" || status === "reverted",
-    });
-    output("proposal-list", result);
-  },
+  // No `defaultRun`: bare `akm proposal [--status …]` is a usage error (exit 2),
+  // the canonical bare-group behavior — owner ruling 12. `akm proposal list`
+  // takes the same flags and produces what the bare form used to.
 });

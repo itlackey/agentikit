@@ -262,7 +262,7 @@ export const secretCommand = defineGroupCommand({
     run: secretRunCommand,
     set: secretSetCommand,
   },
-  defaultRun() {
-    output("secret-list", { secrets: listSecretsRecursive() });
-  },
+  // No `defaultRun`: bare `akm secret` is a usage error (exit 2), the canonical
+  // bare-group behavior — owner ruling 12. Run `akm secret list` for what the
+  // bare form used to print.
 });

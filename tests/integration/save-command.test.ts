@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { readEvents } from "../../src/core/events";
+import { getStateDbPath } from "../../src/core/state-db";
 import { parseGitRepoUrl } from "../../src/sources/providers/git";
 import { type CliResult, runCliCapture } from "../_helpers/cli";
 import { withEnv } from "../_helpers/sandbox";
@@ -158,6 +160,49 @@ describe("akm sync", () => {
     // Verify the commit actually landed
     const log = spawnSync("git", ["-C", stashDir, "log", "--oneline"], { encoding: "utf8" });
     expect(log.stdout).toContain("test commit");
+  });
+
+  test("persists eventType 'sync' (0.9.0 rename from legacy 'save')", async () => {
+    const stashDir = makeTempDir("akm-save-eventtype-");
+    initGitRepo(stashDir);
+    fs.mkdirSync(path.join(stashDir, "skills"), { recursive: true });
+    fs.writeFileSync(path.join(stashDir, "skills", "skill.md"), "# Test");
+
+    const xdgCache = makeTempDir("akm-save-cache-");
+    const xdgConfig = makeTempDir("akm-save-cfg-");
+    const xdgData = makeTempDir("akm-save-data-");
+    const xdgState = makeTempDir("akm-save-state-");
+
+    // Everything that depends on the sandboxed XDG_STATE_HOME — running the
+    // command AND reading state.db back — must happen inside the same
+    // withEnv scope; env is restored the moment the callback returns.
+    const { syncEvents, legacyQueryEvents } = await withEnv(
+      {
+        AKM_STASH_DIR: stashDir,
+        XDG_CACHE_HOME: xdgCache,
+        XDG_CONFIG_HOME: xdgConfig,
+        XDG_DATA_HOME: xdgData,
+        XDG_STATE_HOME: xdgState,
+      },
+      async () => {
+        const result = await runCliCapture(["sync", "-m", "eventtype probe"]);
+        expect(result.code).toBe(0);
+        const dbPath = getStateDbPath();
+        return {
+          syncEvents: readEvents({}, { dbPath }).events,
+          // Read side: querying the legacy "save" name must still find the
+          // row (synonym — see SAVE_SYNC_EVENT_TYPE_ALIASES in
+          // src/core/events.ts), so a script still running
+          // `akm log --type save` does not silently go empty.
+          legacyQueryEvents: readEvents({ type: "save" }, { dbPath }).events,
+        };
+      },
+    );
+
+    // Write side: `akm sync` now persists "sync", never the legacy "save".
+    expect(syncEvents.some((e) => e.eventType === "sync")).toBe(true);
+    expect(syncEvents.some((e) => e.eventType === "save")).toBe(false);
+    expect(legacyQueryEvents.some((e) => e.eventType === "sync")).toBe(true);
   });
 
   test("uses timestamp message when -m is omitted", async () => {

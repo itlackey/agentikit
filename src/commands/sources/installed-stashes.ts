@@ -270,7 +270,6 @@ export async function akmRemove(input: { target: string; stashDir?: string }): P
       },
       config: {
         sourceCount: getSources(updatedConfig).length,
-        installedKitCount: readLockfile().length,
       },
       index: {
         mode: index.mode,
@@ -304,7 +303,6 @@ export async function akmRemove(input: { target: string; stashDir?: string }): P
     },
     config: {
       sourceCount: getSources(updatedConfig).length,
-      installedKitCount: readLockfile().length,
     },
     index: {
       mode: index.mode,
@@ -335,7 +333,6 @@ async function buildUpdateResponse(
     processed,
     config: {
       sourceCount: getSources(finalConfig).length,
-      installedKitCount: readLockfile().length,
     },
     index: {
       mode: index.mode,

@@ -96,7 +96,10 @@ function knownTypeList(): string {
  */
 const RESPONSE_CONTRACT_JSON = [
   "Respond ONLY with a single JSON object. No prose before or after.",
-  'Shape: {"ref": "<type>:<name>", "content": "<full file contents>", "frontmatter": {...}, "confidence": <number 0..1>}',
+  // Slash conceptId, not the retired `<type>:<name>` colon grammar (Q-02/Q-08).
+  // This contract is the schema an agent copies from, so a stale spelling here
+  // teaches every proposal to use a ref form the CLI now rejects outright.
+  'Shape: {"ref": "<type>/<name>", "content": "<full file contents>", "frontmatter": {...}, "confidence": <number 0..1>}',
   "`content` is the full file body that will be written if accepted.",
   "`frontmatter` is optional — include it if `content` starts with `---` so reviewers can sanity-check the keys.",
   "`confidence` is REQUIRED. Self-rate this proposal on [0, 1] by how certain you are it materially improves the source asset. Calibrate honestly:",

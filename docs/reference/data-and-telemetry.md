@@ -120,7 +120,7 @@ the set of types the code actually emits at HEAD (verified against every
 | `show` | `akm show <ref>` | `ref`, `type`, `name` |
 | `select` | `akm show` after a search returning the same ref | `ref`, `entryId` |
 | `feedback` | `akm feedback <ref>` | `signal` (positive/negative) |
-| `save` | `akm sync` | `ref` |
+| `sync` | `akm sync` (renamed from `save` in 0.9.0; historical rows keep `save`, and `akm log --type save`/`--type sync` are synonyms on read) | `ref` |
 | `stash_synced` | `akm improve`'s internal auto-sync pass (the `sync.push` feature), **distinct from** the `akm sync` command above | `committed`, `pushed`, `skipped`, `reason` |
 | `env_access` | `akm env run <name> -- <command>` (audit trail: key **names** only, values never recorded) | `ref`, `keys` |
 | `secret_access` | `akm secret run <ref> <VAR> -- <command>` (audit trail: var **name** only, value never recorded) | `ref`, `var` |

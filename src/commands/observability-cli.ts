@@ -26,7 +26,7 @@
 
 import { defineCommand } from "citty";
 import { parsePositiveIntFlag } from "../cli/parse-args";
-import { defineJsonCommand, output, parseAllFlagValues, runWithJsonErrors } from "../cli/shared";
+import { defineGroupCommand, defineJsonCommand, output, parseAllFlagValues, runWithJsonErrors } from "../cli/shared";
 import { NotFoundError } from "../core/errors";
 import { EMBEDDED_HINTS, EMBEDDED_HINTS_FULL } from "../output/cli-hints";
 import { getOutputMode, parseDetailLevel } from "../output/context";
@@ -167,7 +167,7 @@ const eventsTailCommand = defineCommand({
   },
 });
 
-export const logCommand = defineCommand({
+export const logCommand = defineGroupCommand({
   meta: {
     name: "log",
     description: "Read or follow the append-only state.db events stream (mutations, feedback, indexing)",
@@ -286,7 +286,7 @@ const lessonsStrengthCommand = defineJsonCommand({
   },
 });
 
-export const lessonsCommand = defineCommand({
+export const lessonsCommand = defineGroupCommand({
   meta: {
     name: "lessons",
     alias: "lesson",

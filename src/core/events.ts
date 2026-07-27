@@ -53,6 +53,15 @@ export type EventType =
    * nothing.
    */
   | "mv"
+  /**
+   * Emitted by `akm sync` (git-backed stash commit/push). Renamed from the
+   * legacy "save" spelling in 0.9.0 to match the command name — see
+   * CHANGELOG. `readEvents`/`tailEvents` below still accept "save" as a
+   * read-only synonym so historical rows and `akm log --type save` keep
+   * working; only writes moved to "sync".
+   */
+  | "sync"
+  /** @deprecated 0.9.0 — legacy spelling of {@link "sync"}. No longer written; still readable (see SAVE_SYNC_EVENT_TYPE_ALIASES). */
   | "save"
   | "feedback"
   // Proposal substrate (#225). `promoted` and `rejected` are emitted by the
@@ -283,6 +292,18 @@ export interface ReadEventsResult {
 }
 
 /**
+ * 0.9.0 breaking change (owner ruling 12): `akm sync` used to persist
+ * `eventType: "save"`; it now writes `"sync"` instead (matching the command
+ * name). Existing `state.db` rows — and any user script running
+ * `akm log --type save` — still carry the old spelling. Rather than
+ * rewriting historical rows (a migration users never asked for, on data we
+ * don't get to touch at rest), reads treat the two names as synonyms: asking
+ * for either "save" or "sync" returns rows written under both names. Only
+ * the WRITE path (sources-cli.ts's `runSyncBody`) changed.
+ */
+const SAVE_SYNC_EVENT_TYPE_ALIASES = new Set(["save", "sync"]);
+
+/**
  * Read all events matching the filter. Returns a `nextOffset` that callers
  * can persist between processes for monotonic resumption.
  */
@@ -300,15 +321,21 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
   }
 
   try {
+    // A "save"/"sync" query can't be expressed as a single SQL `event_type =
+    // ?` match (see SAVE_SYNC_EVENT_TYPE_ALIASES above), so widen the SQL
+    // filter to "no type filter" for that one case and apply the alias match
+    // client-side alongside the existing tag post-filter below.
+    const typeIsAliased = options.type !== undefined && SAVE_SYNC_EVENT_TYPE_ALIASES.has(options.type);
     const { events: rawEvents, nextId } = readStateEvents(db, {
       sinceId: options.sinceOffset,
       since: options.since,
-      type: options.type,
+      type: typeIsAliased ? undefined : options.type,
       ref: options.ref,
     });
 
-    // Apply tag filters after the indexed state.db read.
     const events = rawEvents.filter((envelope) => {
+      if (typeIsAliased && !SAVE_SYNC_EVENT_TYPE_ALIASES.has(envelope.eventType)) return false;
+      // Apply tag filters after the indexed state.db read.
       const tags = (envelope.metadata?.tags as string[] | undefined) ?? [];
       if (options.excludeTags?.some((t) => tags.includes(t))) return false;
       if (options.includeTags && !options.includeTags.every((t) => tags.includes(t))) return false;

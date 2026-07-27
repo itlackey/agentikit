@@ -4,7 +4,7 @@
 
 import { defineCommand } from "citty";
 import { parsePositiveIntFlag } from "../cli/parse-args";
-import { defineJsonCommand, output } from "../cli/shared";
+import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
 import type { RegistryConfigEntry } from "../core/config/config";
 import { getEffectiveRegistries, loadUserConfig, mutateConfig } from "../core/config/config";
 import { UsageError } from "../core/errors";
@@ -12,7 +12,7 @@ import { warn } from "../core/warn";
 import { buildRegistryIndex, writeRegistryIndex } from "../registry/build-index";
 import { searchRegistry } from "./read/registry-search";
 
-export const registryCommand = defineCommand({
+export const registryCommand = defineGroupCommand({
   meta: { name: "registry", description: "Manage stash registries" },
   subCommands: {
     list: defineJsonCommand({

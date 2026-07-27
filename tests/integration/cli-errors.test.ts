@@ -401,10 +401,36 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
     expect(stderr).toContain("Missing required positional argument");
   });
 
-  test("bare akm log (group with no run, no subcommand given) exits 2", () => {
-    const { status, stderr } = spawnCli(["log"], { cwd: repoRoot });
-    expect(status).toBe(2);
-    expect(stderr).toContain("No command specified");
+  // Owner ruling 12 canonical bare-group behavior: every `akm <group>` with no
+  // subcommand produces the SAME structured usage envelope on stderr and exits
+  // 2. Before 0.9.0 the twelve groups split three ways — some ran an implicit
+  // default action and exited 0, and `log`/`lessons`/`registry` fell through to
+  // citty's human usage banner on stdout. Matching exit codes was not enough:
+  // a script could not parse the failure uniformly.
+  test("every bare command group emits the same usage envelope and exits 2", () => {
+    for (const group of [
+      "graph",
+      "migrate",
+      "registry",
+      "log",
+      "lessons",
+      "config",
+      "proposal",
+      "env",
+      "secret",
+      "tasks",
+      "workflow",
+    ]) {
+      const { status, stderr } = spawnCli([group], { cwd: repoRoot });
+      expect({ group, status }).toEqual({ group, status: 2 });
+      const parsed = JSON.parse(stderr.trim());
+      expect({ group, ok: parsed.ok, code: parsed.code }).toEqual({
+        group,
+        ok: false,
+        code: "MISSING_REQUIRED_ARGUMENT",
+      });
+      expect(parsed.error).toContain(`\`akm ${group}\` requires a subcommand`);
+    }
   });
 
   test("akm --help still exits 0 and prints usage (unaffected by the R-032 fix)", () => {
@@ -434,10 +460,14 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
 // dispatch groups (`akm graph`, `akm tasks`, `akm proposal`, …) also have a
 // `run` (their subcommand-routing + bare-invocation guard), but whether
 // their OWN bare-invocation behavior needs `GLOBAL_OUTPUT_ARGS` is a
-// separate, broader question this triage item didn't scope or fix — several
-// of them (e.g. `akm graph`'s bare invocation calls `output()` directly) may
-// carry a similar gap, but touching them means editing files this package
-// does not own.
+// separate, broader question this triage item didn't scope or fix. Note: as
+// of 0.9.0 (owner ruling 12) the canonical bare-group behavior is a usage
+// error (exit 2) via `defineGroupCommand`'s shared default, not a
+// command-specific `output()` call — `akm graph`'s bare invocation used to
+// call `output()` directly (the gap this comment originally flagged) but no
+// longer does. Some other groups may still carry a similar gap where
+// `defaultRun` remains an explicit override; touching those means editing
+// files this package does not own.
 describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
   // biome-ignore lint/suspicious/noExplicitAny: walking citty's dynamically-shaped command tree
   type AnyCittyCommandForTest = Record<string, any>;

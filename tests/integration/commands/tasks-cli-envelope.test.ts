@@ -58,13 +58,18 @@ async function runCli(args: string[], stashDir: string): Promise<{ stdout: strin
 }
 
 describe("akm tasks — JSON envelope snapshot (WS6)", () => {
-  test("bare `akm tasks` → doctor diagnostics envelope (group defaultRun)", async () => {
+  // Owner ruling 12, canonical bare-group behavior: bare `akm tasks` used to
+  // run doctor implicitly. It is now a usage error naming the subcommands —
+  // the next test covers the explicit `akm tasks doctor` this replaces.
+  test("bare `akm tasks` → usage-error envelope, exit 2", async () => {
     const stash = makeStashDir();
-    const { stdout, status } = await runCli(["--json", "tasks"], stash);
-    expect(status).toBe(0);
-    const env = JSON.parse(stdout);
-    expect(env.shape).toBe("tasks-doctor");
-    expect(typeof env.backend).toBe("string");
+    const { stderr, status } = await runCli(["--json", "tasks"], stash);
+    expect(status).toBe(2);
+    const env = JSON.parse(stderr.trim());
+    expect(env.ok).toBe(false);
+    expect(env.code).toBe("MISSING_REQUIRED_ARGUMENT");
+    expect(env.error).toContain("`akm tasks` requires a subcommand");
+    expect(env.error).toContain("doctor");
   });
 
   test("tasks doctor: success envelope reports the active scheduler backend", async () => {

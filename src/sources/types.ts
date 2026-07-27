@@ -202,7 +202,6 @@ export interface AddResponse {
       };
   config: {
     sourceCount: number;
-    installedKitCount: number;
   };
   index: {
     mode: "full" | "incremental";
@@ -284,7 +283,6 @@ export interface RemoveResponse {
   };
   config: {
     sourceCount: number;
-    installedKitCount: number;
   };
   index: {
     mode: "full" | "incremental";
@@ -319,7 +317,6 @@ export interface UpdateResponse {
   processed: UpdateResultItem[];
   config: {
     sourceCount: number;
-    installedKitCount: number;
   };
   index: {
     mode: "full" | "incremental";

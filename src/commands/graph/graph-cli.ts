@@ -9,6 +9,12 @@
  * `defineJsonCommand`, which wraps the body in `runWithJsonErrors` and emits the
  * same JSON envelope (stdout/stderr/exit-code) as the inline `runWithJsonErrors`
  * form it replaces.
+ *
+ * 0.9.0 breaking change (owner ruling 12): bare `akm graph` (no subcommand)
+ * used to silently render `graph summary` and exit 0. It now leaves
+ * `defaultRun` unset, so `defineGroupCommand` (src/cli/shared.ts) applies the
+ * canonical bare-group behavior — a usage error, exit 2 — instead. Run
+ * `akm graph summary` explicitly to get the old output. See CHANGELOG.
  */
 
 import { parsePositiveIntFlag } from "../../cli/parse-args";
@@ -154,7 +160,6 @@ const graphSubCommands = {
 export const graphCommand = defineGroupCommand({
   meta: { name: "graph", description: "Inspect the indexed entity graph stored in SQLite" },
   subCommands: graphSubCommands,
-  defaultRun() {
-    output("graph-summary", akmGraphSummary());
-  },
+  // No `defaultRun`: bare `akm graph` uses the canonical bare-group behavior
+  // (usage error, exit 2) — see the module docstring above.
 });

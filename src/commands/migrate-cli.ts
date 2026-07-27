@@ -47,7 +47,8 @@ export const migrateCommand = defineGroupCommand({
       },
     }),
   },
-  defaultRun() {
-    throw new UsageError("Choose `migrate status` or `migrate apply`.", "MISSING_REQUIRED_ARGUMENT");
-  },
+  // No `defaultRun`: bare `akm migrate` is a usage error (exit 2). This group
+  // already threw its own hand-rolled UsageError; it now shares the canonical
+  // one from `defineGroupCommand` so the message and hint match every other
+  // group — owner ruling 12.
 });

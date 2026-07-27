@@ -1401,7 +1401,7 @@ for `log` when you care about *the raw, resumable mutation stream*.
 | Flag | Description |
 | --- | --- |
 | `--since` | Lower bound. Accepts ISO 8601, epoch ms, or `@offset:<id>` for a durable row-id cursor that survives across processes. |
-| `--type` | Filter by event type. Common values include `add`, `remove`, `update`, `remember`, `import`, `save`, `feedback`, `promoted`, `rejected`, `propose_invoked`, `reflect_invoked`, `distill_invoked`, `select`, and `improve_skipped`. |
+| `--type` | Filter by event type. Common values include `add`, `remove`, `update`, `remember`, `import`, `sync`, `feedback`, `promoted`, `rejected`, `propose_invoked`, `reflect_invoked`, `distill_invoked`, `select`, and `improve_skipped`. `sync` and the legacy `save` are synonyms on read, so `--type save` still returns rows written before the 0.9.0 rename as well as new ones. |
 | `--ref` | Filter by asset ref (`[bundle//]conceptId`). |
 | `--interval-ms` | (`tail` only) Polling interval. Default `75`. |
 | `--max-events` | (`tail` only) Stop after this many events. |
@@ -2071,12 +2071,12 @@ to a positive integer (milliseconds) to apply a task-specific limit.
 ### proposal
 
 Manage the proposal queue. The canonical grammar is `akm proposal <verb>`:
-`list`, `show`, `diff`, `accept`, `reject`, `revert`. Bare `akm proposal`
-behaves as `akm proposal list`. There are no flat-verb spellings (`akm
-proposals`, `akm accept`, `akm reject`, `akm diff`, `akm revert`) — use the
-`akm proposal <verb>` form.
+`list`, `show`, `diff`, `accept`, `reject`, `revert`. Bare `akm proposal` is a
+usage error (exit 2) as of 0.9.0 — it used to behave as `akm proposal list`;
+name the verb. There are no flat-verb spellings (`akm proposals`, `akm accept`,
+`akm reject`, `akm diff`, `akm revert`) — use the `akm proposal <verb>` form.
 
-All six verbs, bare `akm proposal`, and bulk accept/reject support
+All six verbs and bulk accept/reject support
 `--queue <source>`. It selects the proposal queue stored for that configured
 writable source root; without it, commands use the primary queue. Queue
 selection is not a destination override.

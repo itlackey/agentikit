@@ -16,7 +16,7 @@ import fs from "node:fs";
 import { defineCommand } from "citty";
 import { getParsedInvocation } from "../cli/invocation";
 import { getStringArg } from "../cli/parse-args";
-import { defineJsonCommand, output, runWithJsonErrors } from "../cli/shared";
+import { defineGroupCommand, defineJsonCommand, output, runWithJsonErrors } from "../cli/shared";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
 import { loadConfig } from "../core/config/config";
 import { NotFoundError, UsageError } from "../core/errors";
@@ -29,12 +29,7 @@ import {
   validateWorkflowProgramSource,
   validateWorkflowSource,
 } from "../workflows/authoring/authoring";
-import {
-  hasWorkflowSubcommand,
-  parseWorkflowJsonObject,
-  parseWorkflowStepState,
-  WORKFLOW_STEP_STATES,
-} from "../workflows/cli";
+import { parseWorkflowJsonObject, parseWorkflowStepState, WORKFLOW_STEP_STATES } from "../workflows/cli";
 import { requireWorkflowEngineEnabled } from "../workflows/exec/workflow-engine-gate";
 import { isWorkflowProgramPath } from "../workflows/program/project";
 import {
@@ -606,7 +601,7 @@ const workflowResumeCommand = defineJsonCommand({
   },
 });
 
-export const workflowCommand = defineCommand({
+export const workflowCommand = defineGroupCommand({
   meta: {
     name: "workflow",
     description: "Author, inspect, and execute step-by-step workflow assets",
@@ -627,10 +622,10 @@ export const workflowCommand = defineCommand({
     report: workflowReportCommand,
     watch: workflowWatchCommand,
   },
-  run({ args }) {
-    return runWithJsonErrors(async () => {
-      if (hasWorkflowSubcommand(args)) return;
-      output("workflow-list", await listWorkflowRuns({ activeOnly: true }));
-    });
-  },
+  // No `defaultRun`: bare `akm workflow` is a usage error (exit 2), the
+  // canonical bare-group behavior — owner ruling 12. Run `akm workflow list
+  // --active` for what the bare form used to print. This group was previously
+  // hand-rolled on `defineCommand` with its own `hasWorkflowSubcommand` guard,
+  // which duplicated the subcommand names in a second hand-maintained set;
+  // `defineGroupCommand` derives the guard from `subCommands` directly.
 });

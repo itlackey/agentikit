@@ -160,8 +160,14 @@ async function runSyncBody(args: { name?: string; message?: string; push?: boole
     }
 
     const result = saveGitStash(effectiveName, args.message, writable, { push: args.push !== false });
+    // 0.9.0 breaking change: the persisted eventType for `akm sync` was
+    // renamed from "save" (a holdover from the command's pre-rename name) to
+    // "sync", matching the command itself. Historical state.db rows still
+    // carry "save" — `readEvents`/`tailEvents` (src/core/events.ts) treat
+    // "save" and "sync" as synonyms on READ so `akm log --type save` keeps
+    // returning both old and new rows. Only the WRITE side changes here.
     appendEvent({
-      eventType: "save",
+      eventType: "sync",
       metadata: {
         name: effectiveName ?? null,
         message: args.message ?? null,

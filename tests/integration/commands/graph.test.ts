@@ -206,10 +206,13 @@ afterEach(() => {
 
 describe("akm graph", () => {
   test("summary returns counts and quality telemetry", () => {
-    const graphPath = writeGraphArtifact();
+    writeGraphArtifact();
     const result = akmGraphSummary();
     expect(result.shape).toBe("graph-summary");
-    expect(result.graphPath).toBe(graphPath);
+    // graphPath was a dead envelope field (always the shared state.db path,
+    // never a real per-graph artifact path) and was dropped in 0.9.0 — see
+    // CHANGELOG. This test now pins its absence instead of its value.
+    expect(result).not.toHaveProperty("graphPath");
     expect(result.fileCount).toBe(2);
     expect(result.entityCount).toBe(3);
     expect(result.relationCount).toBe(2);

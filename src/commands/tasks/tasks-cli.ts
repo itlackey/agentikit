@@ -232,8 +232,7 @@ export const tasksCommand = defineGroupCommand({
   },
   // Bare `akm tasks` reports scheduler diagnostics. Inspection of individual
   // tasks moved to the generic `akm search` / `akm show <bundle//tasks/id>`.
-  async defaultRun() {
-    const result = await akmTasksDoctor();
-    output("tasks-doctor", result);
-  },
+  // No `defaultRun`: bare `akm tasks` is a usage error (exit 2), the canonical
+  // bare-group behavior — owner ruling 12. Run `akm tasks doctor` for what the
+  // bare form used to run.
 });

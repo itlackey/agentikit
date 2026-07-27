@@ -12,7 +12,7 @@
 import { type ArgsDef, type CommandContext, type CommandDef, defineCommand } from "citty";
 import { stringify as yamlStringify } from "yaml";
 import { assertNever } from "../core/assert";
-import { AkmError } from "../core/errors";
+import { AkmError, UsageError } from "../core/errors";
 import { getOutputMode, type OutputMode } from "../output/context";
 import { renderGenericHtml, renderGenericMarkdown } from "../output/generic-render";
 import { deliverRendered } from "../output/html-render";
@@ -203,6 +203,43 @@ export function defineJsonCommand<const T extends ArgsDef = ArgsDef>(def: JsonCo
 }
 
 /**
+ * Canonical bare-group behavior (0.9.0 breaking change, owner ruling 12).
+ *
+ * Before 0.9.0 the twelve `akm <group>` command groups did three different
+ * things when invoked with no subcommand: some printed help and exited 1,
+ * some ran an implicit default action and exited 0 (e.g. bare `akm graph`
+ * silently rendering `graph summary`), and one already raised a structured
+ * usage error and exited 2. None of that is discoverable from the exit code
+ * alone, and a script that greps stdout for a specific default action broke
+ * silently the moment someone reordered subcommands.
+ *
+ * The canonical choice, applied uniformly: a bare group invocation is a
+ * USAGE ERROR — exit 2, the same structured JSON envelope every other usage
+ * mistake in this CLI produces (not citty's raw help banner, and not a
+ * silent default action). This matches STABILITY.md's documented exit-code
+ * table (2 = usage) and the exit code the CLI already used for "unknown
+ * command" / "missing required argument" as of the companion 0.9.0 fix.
+ *
+ * `defaultRun` is now OPTIONAL for exactly this reason: omitting it opts a
+ * group into the shared, canonical error below. Passing an explicit
+ * `defaultRun` is a deliberate opt-out and should not be added to new groups
+ * without a documented reason — see CHANGELOG for the migration note.
+ */
+function bareGroupUsageError<T extends ArgsDef>(meta: CommandDef<T>["meta"], subcommandSet: Set<string>): never {
+  const name =
+    typeof meta === "object" && meta !== null && "name" in meta && typeof (meta as { name?: unknown }).name === "string"
+      ? (meta as { name: string }).name
+      : undefined;
+  const usage = name ? `\`akm ${name}\`` : "This command";
+  const subcommands = [...subcommandSet].sort().join(", ");
+  throw new UsageError(
+    `${usage} requires a subcommand. Available: ${subcommands}.`,
+    "MISSING_REQUIRED_ARGUMENT",
+    `Run \`akm ${name ?? "<command>"} --help\` to see usage for each subcommand.`,
+  );
+}
+
+/**
  * Define a citty subcommand-group command (env, secret, proposal, tasks, wiki,
  * graph, …) that shares one wiring shape: a `subCommands` map, a routing set
  * DERIVED from that map's keys (so the set can never silently desync from the
@@ -225,9 +262,11 @@ export function defineGroupCommand<const T extends ArgsDef = ArgsDef>(def: {
   // reject every concrete subcommand. Same precedent as `src/commands/completions.ts`.
   // biome-ignore lint/suspicious/noExplicitAny: citty command tree uses dynamic shapes
   subCommands: Record<string, CommandDef<any>>;
-  defaultRun: (context: CommandContext<T>) => void | Promise<void>;
+  /** Omit for the canonical bare-group behavior (see {@link bareGroupUsageError}). */
+  defaultRun?: (context: CommandContext<T>) => void | Promise<void>;
 }): CommandDef<T> {
   const subcommandSet = new Set(Object.keys(def.subCommands));
+  const defaultRun = def.defaultRun ?? (() => bareGroupUsageError<T>(def.meta, subcommandSet));
   return defineCommand({
     meta: def.meta,
     ...(def.args ? { args: def.args } : {}),
@@ -235,7 +274,7 @@ export function defineGroupCommand<const T extends ArgsDef = ArgsDef>(def: {
     run: (context: CommandContext<T>) =>
       runWithJsonErrors(() => {
         if (hasSubcommand(context.args, subcommandSet)) return;
-        return def.defaultRun(context);
+        return defaultRun(context);
       }),
   } as CommandDef<T>);
 }

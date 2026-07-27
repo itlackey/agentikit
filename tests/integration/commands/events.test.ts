@@ -147,6 +147,26 @@ describe("appendEvent / readEvents", () => {
     expect(filtered.events[0]?.ref).toBe("memories/a");
   });
 
+  test("--type 'save' and --type 'sync' are synonyms (0.9.0 save→sync rename)", () => {
+    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
+    const ctx = { dbPath };
+    // A row written before the 0.9.0 rename (legacy spelling)...
+    appendEvent({ eventType: "save", metadata: { name: null } }, ctx);
+    // ...and a row written by the renamed `akm sync` (current spelling).
+    appendEvent({ eventType: "sync", metadata: { name: null } }, ctx);
+    // An unrelated event type must not be swept in by the alias.
+    appendEvent({ eventType: "remember", ref: "memory:a" }, ctx);
+
+    const bySave = readEvents({ type: "save" }, ctx);
+    expect(bySave.events.map((e) => e.eventType).sort()).toEqual(["save", "sync"]);
+
+    const bySync = readEvents({ type: "sync" }, ctx);
+    expect(bySync.events.map((e) => e.eventType).sort()).toEqual(["save", "sync"]);
+
+    const byOther = readEvents({ type: "remember" }, ctx);
+    expect(byOther.events.map((e) => e.eventType)).toEqual(["remember"]);
+  });
+
   test("all valid appends are readable (SQLite enforces schema integrity)", () => {
     const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
     const ctx = { dbPath };

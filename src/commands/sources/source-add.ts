@@ -114,7 +114,6 @@ async function addLocalSource(
     },
     config: {
       sourceCount: getSources(updatedConfig).length,
-      installedKitCount: readLockfile().length,
     },
     index: {
       mode: index.mode,
@@ -174,7 +173,6 @@ async function addWebsiteSource(
     },
     config: {
       sourceCount: getSources(updatedConfig).length,
-      installedKitCount: readLockfile().length,
     },
     index: {
       mode: index.mode,
@@ -272,7 +270,6 @@ async function addRegistryStash(ref: string, stashDir: string, writable?: boolea
     },
     config: {
       sourceCount: getSources(updatedConfig).length,
-      installedKitCount: readLockfile().length,
     },
     index: {
       mode: index.mode,

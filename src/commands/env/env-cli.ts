@@ -502,8 +502,7 @@ export const envCommand = defineGroupCommand({
     unset: envUnsetCommand,
     remove: envRemoveCommand,
   },
-  async defaultRun() {
-    const { listKeys } = await import("./env.js");
-    output("env-list", { envs: listEnvsRecursive(listKeys) });
-  },
+  // No `defaultRun`: bare `akm env` is a usage error (exit 2), the canonical
+  // bare-group behavior — owner ruling 12. Run `akm env list` for what the
+  // bare form used to print.
 });

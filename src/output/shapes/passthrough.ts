@@ -25,7 +25,6 @@ function makeStampHandler(command: string) {
 const PASSTHROUGH_COMMANDS = [
   "add",
   "agent-result",
-  "backup",
   "clone",
   "config",
   "disable",

@@ -12,23 +12,6 @@ export const WORKFLOW_STEP_STATES: Array<Exclude<WorkflowRunStepStatus, "pending
   "skipped",
 ];
 
-export const WORKFLOW_SUBCOMMANDS = new Set([
-  "start",
-  "next",
-  "complete",
-  "status",
-  "list",
-  "create",
-  "template",
-  "resume",
-  "abandon",
-  "validate",
-  "run",
-  "brief",
-  "report",
-  "watch",
-]);
-
 export function parseWorkflowJsonObject(
   raw: string | undefined,
   flagName: "--params" | "--evidence",
@@ -52,9 +35,4 @@ export function parseWorkflowStepState(value: string | undefined): Exclude<Workf
     return value as Exclude<WorkflowRunStepStatus, "pending">;
   }
   throw new UsageError(`Invalid workflow step state "${value}". Expected one of: ${WORKFLOW_STEP_STATES.join(", ")}`);
-}
-
-export function hasWorkflowSubcommand(args: Record<string, unknown>): boolean {
-  const command = Array.isArray(args._) ? args._[0] : undefined;
-  return typeof command === "string" && WORKFLOW_SUBCOMMANDS.has(command);
 }
