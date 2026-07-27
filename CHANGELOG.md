@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`instruction` is a stash-resident asset type.** It was already in
+  `KNOWN_TYPES` and had a presentation entry, but had no placement spec — so
+  there was nowhere to put one and the indexer never recognized one. `akm init`
+  now creates an `instructions/` directory, `.md` files under it index as
+  `instruction`, and `--type instruction` is accepted and tab-completable
+  everywhere `--type` is. A compile-time assertion now pins
+  `placementTypes() ⊆ KnownType`, so the half-registered state this fixes
+  cannot recur silently.
+
 - **Schedule tasks from any configured bundle via `--target <bundle>`** (#711).
   `akm tasks add`, `enable`, `disable`, `run`, and `sync` (plus `history` /
   `doctor`) now accept `--target <bundle>` to operate on a non-default bundle
@@ -21,6 +30,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   different bundle is a hard error rather than a silent clobber.
 
 ### Changed
+
+- **BREAKING: `semanticSearchMode` now defaults to `"off"`.** A bare or
+  headless install (`akm init`, `akm setup --yes`, `akm setup --config`) was
+  silently downloading the ~130 MB local embedding model on its first `akm
+  index`, because the fallback used when the key is absent was `"auto"`. The
+  interactive `akm setup` wizard still pre-selects semantic search **on** — a
+  human is present to decide — and now shows the asset/download warning
+  *before* the prompt rather than after, so the pre-checked box is an informed
+  choice. When a remote `embedding.endpoint` is configured, enabling semantic
+  search downloads nothing.
+
+  Migration: existing saved configs are unaffected — the flip only changes the
+  fallback used when the key is absent. To keep semantic search on for a
+  headless or CI install, set `semanticSearchMode: "auto"` explicitly, or point
+  `embedding.endpoint` at a remote embedder.
+
+- **BREAKING: `akm workflow run|watch|brief|report|create <name>.yaml` refuse to
+  run until `experimental.workflowEngine` is set** (0.9.0 decision Q-05). The
+  native workflow executor — the fan-out scheduler, worktree isolation, and the
+  YAML v2 program format — is experimental, and shipping it enabled by default
+  would have made an unreviewed execution engine reachable from a plain `akm
+  workflow run`. The gated surfaces now exit `78` with a `ConfigError` naming
+  the exact key, and `akm tasks doctor` reports the gate's state. Every other
+  `akm workflow` subcommand (the document-oriented ones) is unaffected.
+
+  Migration: `akm config set experimental.workflowEngine true`.
+
+- **BREAKING: the `env:<name>` / `secret:<name>` colon ref spelling is
+  rejected** (0.9.0 decision Q-08). Refs are slash conceptIds only — `env/foo`,
+  `secrets/deploy-key`. The colon form previously resolved as an undocumented
+  alias in some places and fell through as a literal filename in others. It now
+  fails with a usage error naming the slash replacement, rather than silently
+  doing the wrong thing.
+
+  Migration: rewrite `env:<name>` as `env/<name>` and `secret:<name>` as
+  `secrets/<name>`. The error message prints the exact replacement.
 
 - **`akm improve` is review-first by default; autonomy is opt-in** (0.9.0
   decision D8). The command stays ON — schedules, reflect/distill proposals, and

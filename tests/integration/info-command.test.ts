@@ -204,7 +204,27 @@ describe("assembleInfo", () => {
     expect(parsed.indexStats).toEqual(info.indexStats);
   });
 
-  test("reports pending semantic search status by default", () => {
+  // Owner ruling 9 (R-039): the runtime default flipped from "auto" to "off",
+  // so a bare install never silently downloads the ~130 MB embedding model.
+  // `akm info` on a fresh install therefore reports mode "off" / status
+  // "disabled" rather than "auto" / "pending". The "auto" case is pinned
+  // separately below so the pending-status path keeps its coverage.
+  test("reports semantic search off by default (R-039)", () => {
+    const info = assembleInfo();
+
+    expect(info.searchModes).toContain("fts");
+    expect(info.searchModes).not.toContain("semantic");
+    expect(info.searchModes).not.toContain("hybrid");
+    expect(info.semanticSearch.mode).toBe("off");
+    expect(info.semanticSearch.status).toBe("disabled");
+  });
+
+  test("reports pending semantic search status when the user opts in to auto", () => {
+    const config = loadConfig();
+    config.semanticSearchMode = "auto";
+    saveConfig(config);
+    resetConfigCache();
+
     const info = assembleInfo();
 
     expect(info.searchModes).toContain("fts");
