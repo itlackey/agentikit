@@ -37,7 +37,7 @@ import { buildChildEnv } from "./child-env";
 /**
  * Walk each stash's env files and return one entry per `.env` file, using the
  * env asset spec's canonical-name logic (e.g. `env/team/prod.env` →
- * `env:team/prod`, `env/team/.env` → `env:team/default`).
+ * `env/team/prod`, `env/team/.env` → `env/team/default`).
  */
 function listEnvsRecursive(
   listKeysFn: (envPath: string) => { keys: string[] },
@@ -251,7 +251,7 @@ async function runEnvInjected(
         if (baseExists) {
           throw new UsageError(
             `'akm env run' injects the whole file; the single-key '<ref>/${maybeKey}' form was removed.\n` +
-              `       For one value use a secret: \`akm secret run secret:${maybeKey} ${maybeKey} -- <command>\`.`,
+              `       For one value use a secret: \`akm secret run secrets/${maybeKey} ${maybeKey} -- <command>\`.`,
             "INVALID_FLAG_VALUE",
           );
         }
@@ -389,7 +389,7 @@ const envSetCommand = defineJsonCommand({
       "Set (create or update) a single KEY in an env file: `akm env set <ref> <KEY>`. The value is read from stdin by default (never via argv); use --from-env <VAR> or --from-file <path>. Preserves existing comments and key order; the value is never printed. Creates the env file if it does not exist.",
   },
   args: {
-    ref: { type: "positional", description: "Env ref (e.g. env:prod or just prod)", required: true },
+    ref: { type: "positional", description: "Env ref (e.g. env/prod or just prod)", required: true },
     key: { type: "positional", description: "Key name to set (e.g. API_URL)", required: true },
     "from-env": { type: "string", description: "Read the value from the named environment variable" },
     "from-file": { type: "string", description: "Read the value from this file" },
@@ -452,7 +452,7 @@ const envUnsetCommand = defineJsonCommand({
       "Remove one or more KEYs from an env file: `akm env unset <ref> <KEY...>`. Preserves other keys and comments. To remove the whole file, use `akm env remove`.",
   },
   args: {
-    ref: { type: "positional", description: "Env ref (e.g. env:prod or just prod)", required: true },
+    ref: { type: "positional", description: "Env ref (e.g. env/prod or just prod)", required: true },
     // `key` is read from the raw positionals (one or more) in run(); declared
     // non-required so citty doesn't block before we emit a structured error.
     key: { type: "positional", description: "Key name(s) to remove (one or more)", required: false },

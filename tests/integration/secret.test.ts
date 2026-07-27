@@ -197,3 +197,49 @@ describe("secret remove", () => {
     expect(fs.existsSync(fp)).toBe(false);
   });
 });
+
+describe("colon ref spelling removed (Q-08)", () => {
+  test("`secret:<name>` fails loudly naming the slash replacement, instead of a confusing not-found", async () => {
+    const stashDir = makeStash();
+    setSecret(path.join(stashDir, "secrets", "deploy-key"), Buffer.from("the-actual-secret-value"));
+
+    const { status, stderr, stdout } = await runCli(["secret", "path", "secret:deploy-key"], {
+      AKM_STASH_DIR: stashDir,
+    });
+
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
+    expect(parsed.error).toContain("secret:");
+    expect(parsed.error).toContain("was removed");
+    expect(parsed.error).toContain("secrets/deploy-key");
+    // Never silently resolves to nothing: no path printed, no value leaked.
+    expect(stdout.trim()).toBe("");
+    expect(stderr).not.toContain("the-actual-secret-value");
+  });
+
+  test("`secrets:<name>` (plural colon variant) is rejected the same way", async () => {
+    const stashDir = makeStash();
+    setSecret(path.join(stashDir, "secrets", "deploy-key"), Buffer.from("v"));
+
+    const { status, stderr } = await runCli(["secret", "path", "secrets:deploy-key"], { AKM_STASH_DIR: stashDir });
+
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
+    expect(parsed.error).toContain("secrets/deploy-key");
+  });
+
+  test("the slash form `secrets/<name>` still resolves normally", async () => {
+    const stashDir = makeStash();
+    const fp = path.join(stashDir, "secrets", "deploy-key");
+    setSecret(fp, Buffer.from("v"));
+
+    const { status, stdout } = await runCli(["secret", "path", "secrets/deploy-key"], { AKM_STASH_DIR: stashDir });
+
+    expect(status).toBe(0);
+    expect(stdout.trim()).toBe(fp);
+  });
+});

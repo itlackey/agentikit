@@ -92,7 +92,7 @@ const secretSetCommand = defineJsonCommand({
   args: {
     ref: {
       type: "positional",
-      description: "Secret ref (flat name, e.g. secret:deploy-key or just deploy-key; use --path for a subdirectory)",
+      description: "Secret ref (flat name, e.g. secrets/deploy-key or just deploy-key; use --path for a subdirectory)",
       required: true,
     },
     path: {
@@ -157,7 +157,7 @@ const secretPathCommand = defineJsonCommand({
   meta: {
     name: "path",
     description:
-      "Print the absolute secret file path for the Docker `_FILE` convention, e.g. `MY_SECRET_FILE=$(akm secret path secret:deploy-key)`.",
+      "Print the absolute secret file path for the Docker `_FILE` convention, e.g. `MY_SECRET_FILE=$(akm secret path secrets/deploy-key)`.",
   },
   args: {
     ref: { type: "positional", description: "Secret ref", required: true },
