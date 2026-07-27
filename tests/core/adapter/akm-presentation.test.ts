@@ -67,7 +67,7 @@ const ACTION_BUILDERS: Record<string, (ref: string) => string> = {
   env: (ref) =>
     `akm show ${ref} -> inspect key names; akm env run ${ref} -- <command> -> run with the whole .env injected (prefer --clean to minimize inherited parent env; child stdout is not redacted). akm env export ${ref} --out <file> writes a sourceable script (values to a file, not stdout).`,
   secret: (ref) =>
-    `akm show ${ref} -> name only (value never shown); akm secret path ${ref} -> file path; akm secret run ${ref} <VAR> -- <command> -> run with value injected into $VAR`,
+    `akm show ${ref} -> name only (value never shown); akm secret run ${ref} <VAR> -- <command> -> run with value injected into $VAR`,
   task: (ref) => `akm show ${ref} -> inspect; akm tasks run <id> -> run now; akm tasks disable <id> -> unschedule`,
   session: (ref) =>
     `akm show ${ref} -> read the session summary; follow the \`access\` frontmatter to open the raw log at \`log_path\``,

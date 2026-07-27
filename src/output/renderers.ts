@@ -432,7 +432,7 @@ const secretFileRenderer: AssetRenderer = {
       name,
       path: ctx.absPath,
       action:
-        "Secret — name only; the file contents are the value and are never written to akm's stdout. Use `akm secret path <ref>` for the file path, or `akm secret run <ref> <VAR> -- <command>` to run with the value injected into $VAR.",
+        "Secret — name only; the file contents are the value and are never written to akm's stdout. Use `akm secret run <ref> <VAR> -- <command>` to run with the value injected into $VAR.",
     };
   },
 };

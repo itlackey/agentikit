@@ -150,9 +150,7 @@ the value; only the name is ever surfaced.
 ```sh
 printf '%s' "$TOKEN" | akm secret set secrets/deploy-token  # Store a single value
 akm secret list                                             # List secrets (names only)
-akm secret path secrets/deploy-token                        # Print the file path (Docker `_FILE`)
 akm secret run secrets/deploy-token GITHUB_TOKEN -- gh release create v1.0.0  # Inject into one env var
-akm secret remove secrets/deploy-token                      # Delete the secret
 ```
 
 ## Workflows

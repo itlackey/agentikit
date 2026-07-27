@@ -5,11 +5,16 @@
 /**
  * WS6 characterization test for the `akm secret` command family. Pins the full
  * JSON envelope (stdout payload shape + the {ok:false,…} error envelope on
- * stderr / exit code) for list / remove and the name-only `path` lookup, proving
- * the extraction of the family from cli.ts into src/commands/secret-cli.ts
- * (helpers in src/core/env-secret-ref.ts) is byte-identical. Crucially it
- * asserts the secret VALUE (file contents) never appears on stdout or stderr —
- * only the ref NAME and the file path are surfaced.
+ * stderr / exit code) for `list`, proving the extraction of the family from
+ * cli.ts into src/commands/secret-cli.ts (helpers in src/core/env-secret-ref.ts)
+ * is byte-identical. Crucially it asserts the secret VALUE (file contents)
+ * never appears on stdout or stderr — only the ref NAME is surfaced.
+ *
+ * `path` and `remove` were REMOVED from this family in 0.9.0 (R-027 / D-49) —
+ * they resolved a ref through different stash-selection logic and could
+ * silently target different files. The regression coverage proving the
+ * removed spellings fail loudly (a real-subprocess concern — see that file's
+ * docstring) lives in tests/integration/secret-path-run.test.ts.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -17,7 +22,6 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { runCliCapture } from "../../_helpers/cli";
-import { durableItemRef } from "../../_helpers/durable-ref";
 import { type Cleanup, sandboxStashDir, writeSandboxConfig } from "../../_helpers/sandbox";
 
 const SECRET_VALUE = "super-secret-token-value";
@@ -62,40 +66,5 @@ describe("akm secret — JSON envelope snapshot (WS6)", () => {
     expect(entry).toBeDefined();
     // The whole file IS the value — it must never leak into structured output.
     expect(stdout).not.toContain(SECRET_VALUE);
-  });
-
-  test("secret path: prints the file path only — never the value", async () => {
-    const file = seedSecret("deploy-key");
-    const { stdout, status } = await runCli(["secret", "path", "secrets/deploy-key"]);
-    expect(status).toBe(0);
-    expect(stdout.trim()).toBe(file);
-    expect(stdout).not.toContain(SECRET_VALUE);
-  });
-
-  test("secret remove: envelope carries ref + removed=true (with --yes); value never echoed", async () => {
-    const file = seedSecret("deploy-key");
-    const { stdout, status } = await runCli(["--json", "secret", "remove", "secrets/deploy-key", "--yes"]);
-    expect(status).toBe(0);
-    const env = JSON.parse(stdout);
-    expect(env.ref).toBe(durableItemRef(stashDir, "secret", "deploy-key"));
-    expect(env.removed).toBe(true);
-    expect(stdout).not.toContain(SECRET_VALUE);
-    expect(fs.existsSync(file)).toBe(false);
-  });
-
-  test("secret path: missing secret → {ok:false} not-found envelope on stderr (exit 1)", async () => {
-    const { stderr, status } = await runCli(["--json", "secret", "path", "secrets/ghost"]);
-    expect(status).toBe(1);
-    const env = JSON.parse(stderr);
-    expect(env.ok).toBe(false);
-    expect(env.error).toMatch(/not found/i);
-  });
-
-  test("secret remove: missing secret → {ok:false} not-found envelope on stderr (exit 1)", async () => {
-    const { stderr, status } = await runCli(["--json", "secret", "remove", "secrets/ghost", "--yes"]);
-    expect(status).toBe(1);
-    const env = JSON.parse(stderr);
-    expect(env.ok).toBe(false);
-    expect(env.error).toMatch(/not found/i);
   });
 });

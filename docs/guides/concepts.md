@@ -103,7 +103,7 @@ There are thirteen asset types:
 | **agent** | An agent definition | A system prompt, model hint, and tool policy |
 | **knowledge** | A reference document | Navigable content with TOC and section views |
 | **env** | A `.env` file of related **configuration** for an app/service | Key names and comments, never values. Holds a group of related settings (URLs, flags, and any credentials it needs); values may or may not be sensitive but are always protected. Key names are intentionally discoverable — they appear in `env list`, search results, and agent context by design. Inject via `akm env run <ref> -- <cmd>`; prefer `--clean` in agent contexts so the child starts from a minimal inherited environment. |
-| **secret** | A single sensitive value for **authentication** (token, key, cert) | Name only — the entire file is the value and never appears in output. Use for one credential used on its own; for a group of related config use `env`. Access via `akm secret path` / `akm secret run` |
+| **secret** | A single sensitive value for **authentication** (token, key, cert) | Name only — the entire file is the value and never appears in output. Use for one credential used on its own; for a group of related config use `env`. Access via `akm secret run` |
 | **workflow** | A structured multi-step procedure | Parsed steps, completion criteria, and resumable run state |
 | **lesson** | A distilled feedback lesson | `when_to_use` guidance plus the lesson body (see [`akm improve`](../reference/cli.md#improve)) |
 | **memory** | Context from external systems | Background information the agent should consider |

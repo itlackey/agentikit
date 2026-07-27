@@ -1747,17 +1747,15 @@ This mirrors Docker's secret model (one value per file, mounted at
 `/run/secrets/<name>`, read at runtime, never baked into the image or env at
 build time). The key security property: **secret values never appear in
 structured output** — not in the index, `akm search`, `akm curate`, or
-`akm show`. The supported value-use paths are `secret run` (inject into a child
-env var) and `secret path` (hand the command the file path).
+`akm show`. The supported value-use path is `secret run` (inject into a child
+env var).
 
 ```sh
 akm secret list
 printf '%s' "$TOKEN" | akm secret set secrets/deploy-token
 akm secret set secrets/deploy-key --from-file ~/.ssh/id_ed25519   # byte-exact
 AKM_VALUE="$TOKEN" akm secret set secrets/api --from-env AKM_VALUE
-akm secret path secrets/deploy-key                                # absolute path
 akm secret run secrets/deploy-token GITHUB_TOKEN -- gh release create v1.0.0
-akm secret remove secrets/deploy-token --yes
 ```
 
 Subcommands:
@@ -1766,9 +1764,16 @@ Subcommands:
 | --- | --- |
 | `list` | List all secrets across all stashes by name (contents never shown) |
 | `set <ref>` | Create/overwrite a secret — value from stdin (default), `--from-file`, or `--from-env` |
-| `path <ref>` | Print the absolute secret file path (for the Docker `_FILE` convention) |
 | `run <ref> <VAR> -- <command>` | Run a command with the secret value injected into `$VAR` in the child only |
-| `remove <ref>` | Delete a secret (and its `.sensitive` marker, if any) |
+
+> **Removed in 0.9.0: `secret path` and `secret remove`.** The two resolved a
+> ref through *different* stash-selection logic — `path` through the read-side,
+> all-sources resolver and `remove` through the write-target resolver — so for a
+> ref present in more than one stash they could silently name different files:
+> you could inspect one secret and delete another. Both now exit 2 with
+> `Unknown command`. A ref's file lives at `<stash>/secrets/<name>` (run
+> `akm sources list` for stash roots); locate or delete it there directly, or
+> use `akm secret run` to consume the value without touching disk.
 
 #### secret set
 
@@ -1789,23 +1794,11 @@ token without the shell-added newline); use `--from-file` for byte-exact storage
 of multi-line material. Writes are atomic (mode 0600) under an exclusive
 `<secret>.lock`. Maximum size is 5 MB.
 
-`secret set` and `secret remove` select their write destination like every other
-write command: an explicit `--target <source>` wins, else `defaultWriteTarget`,
-else the working stash. The chosen source must be writable (a non-writable target
-fails with a `ConfigError`), and on a git-backed writable target the mutation
-lands in a single boundary commit. Reads (`list`, `path`, `run`) still span all
-configured sources.
-
-#### secret path
-
-```sh
-akm secret path secrets/deploy-key
-# Docker `_FILE` convention — hand the command the path, not the value:
-MY_SECRET_FILE="$(akm secret path secrets/deploy-key)" ./start.sh
-```
-
-Prints the absolute path to the secret file. The file's contents are never
-printed.
+`secret set` selects its write destination like every other write command: an
+explicit `--target <source>` wins, else `defaultWriteTarget`, else the working
+stash. The chosen source must be writable (a non-writable target fails with a
+`ConfigError`), and on a git-backed writable target the mutation lands in a
+single boundary commit. Reads (`list`, `run`) still span all configured sources.
 
 #### secret run
 
@@ -1824,16 +1817,16 @@ through in clean mode.
 
 > Secrets injected via `secret run` live in the child process environment for
 > its entire lifetime and are visible to all subprocesses it spawns. For
-> long-lived daemons, prefer `secret path` so the process reads the file
-> directly and the value never sits in an environment variable. Avoid commands
-> that print the environment in agent contexts unless you explicitly intend to
-> expose the child environment.
+> long-lived daemons, point the process at the secret file directly
+> (`<stash>/secrets/<name>`) so the value never sits in an environment
+> variable. Avoid commands that print the environment in agent contexts unless
+> you explicitly intend to expose the child environment.
 
 #### Sensitive marker
 
 A sibling `<name>.sensitive` marker file excludes a secret from `secret list`
 **and** from indexing entirely (parallel to env files). The secret remains usable
-via `secret path` / `secret run`.
+via `secret run`.
 
 ### Wikis (no dedicated command)
 

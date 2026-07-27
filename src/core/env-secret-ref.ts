@@ -201,8 +201,13 @@ export function resolveSecretPath(
 
 // ── Write-target resolution (env/secret mutations) ───────────────────────────
 //
-// READS (`env run`/`show`/`list`/`path`, `secret run`/`path`/`list`) keep the
-// origin-aware, all-sources `findEnvSource` resolution above. WRITES route
+// READS (`env run`/`show`/`list`/`path`, `secret run`/`list`) keep the
+// origin-aware, all-sources `findEnvSource` resolution above. (`secret path`
+// used this same read-side resolver too, until it was REMOVED from the CLI in
+// 0.9.0 alongside `secret remove` — R-027 / D-49 — because `remove` resolved
+// through the WRITE-target path below instead, so the two spellings could
+// silently name different files for the same ref; `resolveSecretPath` below
+// still exists and is still exercised by `secret run`.) WRITES route
 // through the canonical `resolveWriteTarget` selection every other write command
 // (remember/import/tasks/knowledge) shares: explicit `--target` wins, else
 // `defaultWriteTarget`, else the working stash, and the chosen source must be

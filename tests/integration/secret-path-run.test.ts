@@ -3,11 +3,26 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Secret `path` and `run` (in-process cases only).
+ * Secret `path`/`remove` removal (D-49) and `run` validation (in-process).
  *
- *   - `secret path` / error / traversal cases run in-process.
+ *   - `secret path` and `secret remove` were REMOVED from the CLI in 0.9.0
+ *     (R-027 / D-49): an audit found `path` resolved a ref through the
+ *     read-side, all-sources resolver while `remove` resolved it through the
+ *     write-target resolver, so the two spellings could silently name
+ *     DIFFERENT files for the same ref. The owner's ruling was to drop both
+ *     subcommands rather than reconcile the resolvers (src/commands/env/secret-cli.ts).
+ *     The regression tests below prove the removed spellings fail LOUDLY —
+ *     exit 2, citty's "Unknown command" — via a REAL subprocess. citty's own
+ *     CLIError (thrown because "path"/"remove" are no longer keys in
+ *     secretCommand.subCommands) is only reclassified from exit 1 to the
+ *     documented exit 2 in the real entry point (`src/cli.ts`'s
+ *     `import.meta.main`-gated startup block, R-032); the in-process harness
+ *     (`runCliCapture`) drives citty's `runCommand` directly and does not run
+ *     that reclassification, so it would misreport the exit code here. See
+ *     tests/integration/cli-errors.test.ts's "R-032" describe block for the
+ *     same real-subprocess-required pattern applied to other removed surfaces.
  *   - `secret run` validation failures (LD_PRELOAD rejection, invalid var
- *     name, missing command) also run in-process — they fail before any child
+ *     name, missing command) run in-process — they fail before any child
  *     spawn.
  *   - The happy-path `secret run` injection test lives in
  *     tests/integration/secret-run.test.ts: it needs a real process boundary
@@ -15,6 +30,7 @@
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { setSecret } from "../../src/commands/env/secret";
@@ -22,6 +38,23 @@ import { resetGraphBoostCache } from "../../src/indexer/graph/graph-boost";
 import { clearEmbeddingCache, resetLocalEmbedder } from "../../src/llm/embedder";
 import { runCliCapture } from "../_helpers/cli";
 import { makeStashDir, type SandboxedDir, withEnv } from "../_helpers/sandbox";
+
+const repoRoot = path.resolve(import.meta.dir, "..", "..");
+const cliPath = path.join(repoRoot, "src", "cli.ts");
+
+/** Real-subprocess runner — see the module docstring for why this is required. */
+function spawnCli(
+  args: string[],
+  extraEnv: Record<string, string | undefined> = {},
+): { stdout: string; stderr: string; status: number } {
+  const result = spawnSync("bun", [cliPath, ...args], {
+    encoding: "utf8",
+    timeout: 15_000,
+    cwd: repoRoot,
+    env: { ...process.env, AKM_STASH_DIR: undefined, ...extraEnv },
+  });
+  return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? 1 };
+}
 
 const disposers: SandboxedDir[] = [];
 function makeStash(): string {
@@ -59,35 +92,36 @@ async function runCli(
   });
 }
 
-describe("secret path", () => {
-  test("prints the absolute path on stdout when the secret exists", async () => {
+describe("secret path / secret remove — removed in 0.9.0 (R-027 / D-49)", () => {
+  test("`akm secret path <ref>` fails loudly: exit 2, citty's Unknown command, no path printed", () => {
+    const stashDir = makeStash();
+    const fp = path.join(stashDir, "secrets", "demo");
+    setSecret(fp, Buffer.from("super-secret-token-value"));
+
+    const { stdout, stderr, status } = spawnCli(["secret", "path", "secrets/demo"], { AKM_STASH_DIR: stashDir });
+
+    expect(status).toBe(2);
+    expect(stderr).toContain("Unknown command");
+    expect(stderr).toContain("path");
+    // Not a silent no-op: no path on stdout, and the value never leaks either way.
+    expect(stdout).not.toContain(fp);
+    expect(stdout).not.toContain("super-secret-token-value");
+    expect(stderr).not.toContain("super-secret-token-value");
+  });
+
+  test("`akm secret remove <ref>` fails loudly: exit 2, citty's Unknown command, secret left untouched", () => {
     const stashDir = makeStash();
     const fp = path.join(stashDir, "secrets", "demo");
     setSecret(fp, Buffer.from("v"));
 
-    const { stdout, stderr, status } = await runCli(["secret", "path", "secrets/demo"], { AKM_STASH_DIR: stashDir });
-    expect(status).toBe(0);
-    expect(stdout.trim()).toBe(fp);
-    expect(stderr.trim()).toBe("");
-  });
+    const { stderr, status } = spawnCli(["secret", "remove", "secrets/demo", "--yes"], { AKM_STASH_DIR: stashDir });
 
-  test("returns {ok:false} on stderr and exits 1 when the secret does not exist", async () => {
-    const stashDir = makeStash();
-    fs.mkdirSync(path.join(stashDir, "secrets"), { recursive: true });
-    const { stdout, stderr, status } = await runCli(["secret", "path", "secrets/nope"], { AKM_STASH_DIR: stashDir });
-    expect(status).toBe(1);
-    expect(JSON.parse(stderr.trim()).error).toContain("Secret not found");
-    expect(stdout.trim()).toBe("");
-  });
-
-  test("rejects a traversal name that escapes the secrets dir", async () => {
-    const stashDir = makeStash();
-    fs.mkdirSync(path.join(stashDir, "secrets"), { recursive: true });
-    const { status, stderr } = await runCli(["secret", "path", "../../etc/passwd"], {
-      AKM_STASH_DIR: stashDir,
-    });
     expect(status).toBe(2);
-    expect(JSON.parse(stderr.trim()).ok).toBe(false);
+    expect(stderr).toContain("Unknown command");
+    expect(stderr).toContain("remove");
+    // Not a silent no-op: the file must still exist — a removed verb must
+    // never fall through to some other mutation path.
+    expect(fs.existsSync(fp)).toBe(true);
   });
 });
 

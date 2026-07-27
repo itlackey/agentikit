@@ -447,12 +447,13 @@ Confirm that guarantee carefully.
 - [ ] `printf '%s' "token-value" | akm secret set secrets/test-token` succeeds.
 - [ ] `akm secret list --format json` contains `secrets/test-token` with only path
       output.
-- [ ] `akm secret path secrets/test-token` prints the absolute secret file path and
-      no secret value.
 - [ ] `akm secret run secrets/test-token CI_TOKEN -- bash -lc 'test "$CI_TOKEN" = "token-value"'`
       injects only that variable.
+- [ ] `akm secret path secrets/test-token` and `akm secret remove secrets/test-token`
+      both exit 2 with `Unknown command` (removed in 0.9.0).
 - [ ] `akm env unset env/test-env API_KEY` removes the key.
-- [ ] `akm secret remove secrets/test-token -y` removes the secret.
+- [ ] `rm "$AKM_STASH_DIR/secrets/test-token"` removes the secret (there is no
+      `akm secret remove`).
 
 ---
 
