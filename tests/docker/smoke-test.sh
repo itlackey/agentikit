@@ -32,8 +32,15 @@ assert_output_contains() {
 	shift
 	local needle="$1"
 	shift
-	local out
-	out=$("$@" 2>&1) || true
+	local out status
+	set +e
+	out=$("$@" 2>&1)
+	status=$?
+	set -e
+	if [ "$status" -ne 0 ]; then
+		fail "$desc — command exited $status: ${out:0:200}"
+		return
+	fi
 	if echo "$out" | grep -qi "$needle"; then
 		pass "$desc"
 	else
@@ -47,8 +54,15 @@ assert_json_field() {
 	shift
 	local field="$1"
 	shift
-	local out
-	out=$("$@" 2>&1) || true
+	local out status
+	set +e
+	out=$("$@" 2>&1)
+	status=$?
+	set -e
+	if [ "$status" -ne 0 ]; then
+		fail "$desc — command exited $status: ${out:0:300}"
+		return
+	fi
 	# Check that the JSON output has the expected field
 	if echo "$out" | grep -q "\"$field\""; then
 		pass "$desc"
@@ -190,18 +204,23 @@ assert_output_contains "search type:skill finds code-review" "code-review\|revie
 assert_output_contains "search 'docker' finds knowledge" "docker" akm search docker
 
 # Search with limit
-RESULT=$(akm search deploy --format json --limit 1 2>&1) || true
-if echo "$RESULT" | grep -q "hits"; then
+set +e
+RESULT=$(akm search deploy --format json --limit 1 2>&1)
+RESULT_STATUS=$?
+set -e
+if [ "$RESULT_STATUS" -ne 0 ]; then
+	fail "search with --limit 1 failed — command exited $RESULT_STATUS: ${RESULT:0:200}"
+elif echo "$RESULT" | grep -q "hits"; then
 	pass "search with --limit 1 returns JSON with hits"
 else
-	fail "search with --limit 1 failed"
+	fail "search with --limit 1 failed — no 'hits' field in output"
 fi
 
 # ── 6. Show ──────────────────────────────────────────────────────────────────
 
 echo "--- Show ---"
-assert_exit_zero "akm show script:deploy/deploy-app.sh exits 0" akm show script:deploy/deploy-app.sh
-assert_output_contains "show displays script content" "deploy\|Deploy" akm show script:deploy/deploy-app.sh
+assert_exit_zero "akm show scripts/deploy/deploy-app.sh exits 0" akm show scripts/deploy/deploy-app.sh
+assert_output_contains "show displays script content" "deploy\|Deploy" akm show scripts/deploy/deploy-app.sh
 
 # ── 7. Info ──────────────────────────────────────────────────────────────────
 
@@ -213,8 +232,7 @@ assert_json_field "info has indexStats" "indexStats" akm info --format json
 
 echo "--- List ---"
 # list may return empty but should not error
-akm list >/dev/null 2>&1 || true
-pass "akm list does not crash"
+assert_exit_zero "akm list does not crash" akm list
 
 # ── 9. Re-index (incremental) ───────────────────────────────────────────────
 
