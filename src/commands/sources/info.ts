@@ -4,13 +4,15 @@
 
 import fs from "node:fs";
 import { placementTypes } from "../../core/asset/asset-placement";
+import { resolveStashDir } from "../../core/common";
 import { getSources, loadConfig } from "../../core/config/config";
 import { getDbPath } from "../../core/paths";
+import { error } from "../../core/warn";
 import { getEffectiveSemanticStatus, readSemanticStatus } from "../../indexer/search/semantic-status";
 import type { InfoResponse } from "../../sources/types";
 import type { Database } from "../../storage/database";
 import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
-import { getEntryCount } from "../../storage/repositories/index-entries-repository";
+import { getEntryCount, getEntryCountByType } from "../../storage/repositories/index-entries-repository";
 import { getMeta } from "../../storage/repositories/index-meta-repository";
 import { isVecAvailable } from "../../storage/repositories/index-vec-repository";
 import { pkgVersion } from "../../version";
@@ -23,6 +25,12 @@ import { pkgVersion } from "../../version";
  */
 export function assembleInfo(options?: { dbPath?: string }): InfoResponse {
   const config = loadConfig();
+
+  // Primary stash directory + default bundle name — same resolution
+  // `akm sources list` uses (R-057), so `akm info` and `akm sources list`
+  // agree on which stash is primary.
+  const stashDir = resolveStashDir();
+  const defaultBundle = config.defaultBundle ?? null;
 
   // Asset types (copy into a mutable array — `placementTypes()` returns readonly)
   const assetTypes = [...placementTypes()];
@@ -64,6 +72,8 @@ export function assembleInfo(options?: { dbPath?: string }): InfoResponse {
   return {
     schemaVersion: 1,
     version: pkgVersion,
+    stashDir,
+    defaultBundle,
     assetTypes,
     searchModes,
     semanticSearch: {
@@ -81,6 +91,7 @@ export function assembleInfo(options?: { dbPath?: string }): InfoResponse {
 function readIndexStats(resolvedPath: string): InfoResponse["indexStats"] {
   const EMPTY: InfoResponse["indexStats"] = {
     entryCount: 0,
+    byType: {},
     lastBuiltAt: null,
     hasEmbeddings: false,
     vecAvailable: false,
@@ -93,6 +104,7 @@ function readIndexStats(resolvedPath: string): InfoResponse["indexStats"] {
     db = openExistingDatabase(resolvedPath);
     return {
       entryCount: getEntryCount(db),
+      byType: getEntryCountByType(db),
       lastBuiltAt: getMeta(db, "builtAt") ?? null,
       hasEmbeddings: getMeta(db, "hasEmbeddings") === "1",
       vecAvailable: isVecAvailable(db),
@@ -100,7 +112,9 @@ function readIndexStats(resolvedPath: string): InfoResponse["indexStats"] {
   } catch (err) {
     // Surface the error so operators can diagnose mismatches between
     // `akm info` and `akm health` rather than silently returning zeros.
-    process.stderr.write(`[akm info] failed to read index stats from ${resolvedPath}: ${String(err)}\n`);
+    // Routed through core/warn's `error()` (not a raw process.stderr.write)
+    // so `--quiet`/`setQuiet()` actually gate this line (R-057).
+    error(`[akm info] failed to read index stats from ${resolvedPath}: ${String(err)}`);
     return EMPTY;
   } finally {
     if (db) {

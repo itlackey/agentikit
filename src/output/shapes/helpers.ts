@@ -454,6 +454,10 @@ export function shapeShowOutput(
     return pickFields(result, [
       "type",
       "name",
+      // ref is present on every show shape (human/summary/agent) — it is the
+      // canonical identity of the asset, not an agent-only convenience field
+      // (R-020).
+      "ref",
       "description",
       "tags",
       "parameters",
@@ -469,6 +473,8 @@ export function shapeShowOutput(
   const base = pickFields(result, [
     "type",
     "name",
+    // ref is always projected, same as path/editable below (R-020).
+    "ref",
     "origin",
     "action",
     "description",
@@ -489,8 +495,9 @@ export function shapeShowOutput(
     "activeRun",
     "keys",
     "related",
-    // path and editable are always projected so JSON consumers can locate and
-    // edit the asset without needing --detail full (QA #7).
+    // ref, path, and editable are always projected — at every --detail level,
+    // not just --detail full — so JSON consumers can locate and edit the
+    // asset without needing --detail full (QA #7 / D-14).
     "path",
     "editable",
   ]);

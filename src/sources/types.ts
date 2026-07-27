@@ -435,6 +435,10 @@ export interface UpgradeResponse {
 export interface InfoResponse {
   schemaVersion: number;
   version: string;
+  /** Primary stash directory (spec §10.1), same resolution `akm sources list` uses (R-057). */
+  stashDir: string;
+  /** Name of the primary bundle from config, or `null` when none is configured (R-057). */
+  defaultBundle: string | null;
   assetTypes: string[];
   searchModes: string[];
   semanticSearch: {
@@ -447,6 +451,8 @@ export interface InfoResponse {
   sourceProviders: Array<{ type: string; name?: string; path?: string; url?: string; enabled?: boolean }>;
   indexStats: {
     entryCount: number;
+    /** Per-asset-type breakdown of `entryCount`, keyed by asset type (e.g. "skill", "knowledge") (R-057). */
+    byType: Record<string, number>;
     lastBuiltAt: string | null;
     hasEmbeddings: boolean;
     vecAvailable: boolean;

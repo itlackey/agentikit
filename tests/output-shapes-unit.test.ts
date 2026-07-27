@@ -308,6 +308,33 @@ describe("shapeShowOutput", () => {
     expect(out).not.toHaveProperty("schemaVersion");
     expect(out.name).toBe("deploy");
   });
+
+  // R-020: `ref` is the canonical identity of the shown asset and must be
+  // present in EVERY show shape (human default, summary, and agent) — it was
+  // previously stripped by the human/summary field lists, leaving `--shape
+  // agent` as the only projection that carried it.
+  test("ref is present in shape=human at every detail level", () => {
+    expect(shapeShowOutput(fullShow, "brief", "human").ref).toBe("team//skills/deploy");
+    expect(shapeShowOutput(fullShow, "normal", "human").ref).toBe("team//skills/deploy");
+    expect(shapeShowOutput(fullShow, "full", "human").ref).toBe("team//skills/deploy");
+  });
+
+  test("ref is present in shape=summary", () => {
+    expect(shapeShowOutput(fullShow, "normal", "summary").ref).toBe("team//skills/deploy");
+  });
+
+  test("ref is present in shape=agent", () => {
+    expect(shapeShowOutput(fullShow, "normal", "agent").ref).toBe("team//skills/deploy");
+  });
+
+  // D-14: `path` and `editable` are projected at every --detail level, not
+  // gated behind --detail full — only `schemaVersion`/`editHint` are full-only.
+  test("path and editable are present in shape=human at --detail brief (not full-gated)", () => {
+    const out = shapeShowOutput(fullShow, "brief", "human");
+    expect(out.path).toBe("/tmp/team/skills/deploy/SKILL.md");
+    expect(out.editable).toBe(false);
+    expect(out).not.toHaveProperty("schemaVersion");
+  });
 });
 
 describe("shapeForCommand", () => {

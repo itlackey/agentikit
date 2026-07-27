@@ -58,7 +58,7 @@ those warns and is otherwise ignored.
 Strips output to only action-relevant fields:
 
 - **search**: keeps `name`, canonical `ref`, absolute `path`, `editable`, `type`, `description`, `action`, `score`, and optional `estimatedTokens`/`keys`
-- **show**: keeps canonical `ref`, absolute `path`, `editable`, and the existing type-specific action/content fields
+- **show**: adds absolute `path`, `editable`, and the existing type-specific action/content fields on top of the canonical `ref` that every `show` shape returns (`ref` is not agent-exclusive — see `--shape summary` below)
 - **curate**: local items keep canonical `ref`, absolute `path`, `editable`, and their follow-up fields
 
 For local materialized assets, `editHint` is added only when `editable` is
@@ -73,7 +73,7 @@ with an `INVALID_SHAPE_VALUE` usage error (exit 2) — an honest rejection rathe
 than a silent fallback. It returns a compact view suitable for capability
 discovery:
 
-- **show**: `type`, `name`, `description`, `tags`, `parameters`, `workflowTitle`, `action`, `run`, `origin`, `keys`, `related`
+- **show**: `type`, `name`, canonical `ref`, `description`, `tags`, `parameters`, `workflowTitle`, `action`, `run`, `origin`, `keys`, `related`
 
 ## Exit Codes and Error Envelope
 
@@ -210,12 +210,14 @@ Returns a JSON object with:
 | Field | Description |
 | --- | --- |
 | `version` | Current akm version |
+| `stashDir` | Primary stash directory — same resolution `akm sources list` uses |
+| `defaultBundle` | Name of the primary bundle from config, or `null` when none is configured |
 | `assetTypes` | List of recognized asset types |
 | `searchModes` | Active search modes (`fts`, optionally `semantic` and `hybrid`) |
 | `semanticSearch` | Semantic search status: `mode`, `status`, and optional `reason`/`message` |
 | `registries` | Configured registries |
 | `sourceProviders` | Configured sources (filesystem, git, website, npm) |
-| `indexStats` | Index stats: `entryCount`, `lastBuiltAt`, `hasEmbeddings`, `vecAvailable` |
+| `indexStats` | Index stats: `entryCount`, `byType` (per-asset-type breakdown), `lastBuiltAt`, `hasEmbeddings`, `vecAvailable` |
 
 `semanticSearch.status` values:
 - `"ready-vec"` — native sqlite-vec extension active (fastest)
@@ -521,12 +523,19 @@ the resolved asset's frontmatter `scope_*` keys must match every supplied
 filter. A mismatch (or absent scope) returns `NotFoundError` so the caller
 cannot accidentally read out-of-scope content.
 
-The default `show` JSON includes the asset body when applicable. Use
-`--detail brief` for a reduced metadata-first view without
-`content`/`template`/`prompt`; `--detail full` adds verbose metadata such as
-`schemaVersion`, `path`, and `editable`; `--shape agent` also includes canonical
-`ref`, absolute `path`, and `editable`; `--shape summary`
-returns a compact view with only `type`, `name`, `description`, `tags`,
+The default `show` JSON includes the asset body when applicable. Canonical
+`ref` is always present, in every `--shape` (`human`, `agent`, and `summary`
+alike) and at every `--detail` level. Absolute `path` and `editable` are
+always present too, at every `--detail` level, in the `human` (default) and
+`agent` shapes — `--shape summary` omits both, since it is a compact
+capability-discovery view, not an edit-target view. None of `ref`/`path`/
+`editable` are gated behind `--detail full`. Use `--detail brief` for a
+reduced metadata-first view without `content`/`template`/`prompt`;
+`--detail full` adds verbose extras such as `schemaVersion` and, when
+`editable` is `false`, `editHint`; `--shape agent` strips non-action metadata
+(e.g. `origin`, `tags`) down to the action-relevant field set while still
+including `ref`/`path`/`editable`; `--shape summary`
+returns a compact view with only `type`, `name`, `ref`, `description`, `tags`,
 `parameters`, `workflowTitle`, `action`, `run`, `origin`, and `keys`.
 
 Returns type-specific payloads:

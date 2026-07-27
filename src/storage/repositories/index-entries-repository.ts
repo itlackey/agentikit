@@ -759,6 +759,23 @@ export function getEntryCount(db: Database): number {
   return row.cnt;
 }
 
+/**
+ * Per-asset-type entry counts (keyed by `entry_type`, e.g. "skill",
+ * "knowledge", "memory"). Used by `akm info` to break down the aggregate
+ * `indexStats.entryCount` (R-057). Rows with a null/empty `entry_type` are
+ * omitted rather than surfaced under a synthetic key.
+ */
+export function getEntryCountByType(db: Database): Record<string, number> {
+  const rows = db
+    .prepare("SELECT entry_type AS type, COUNT(*) AS cnt FROM entries WHERE entry_type IS NOT NULL GROUP BY entry_type")
+    .all() as Array<{ type: string; cnt: number }>;
+  const out: Record<string, number> = {};
+  for (const row of rows) {
+    out[row.type] = row.cnt;
+  }
+  return out;
+}
+
 export function getEmbeddableEntryCount(db: Database): number {
   return getEntryCount(db);
 }

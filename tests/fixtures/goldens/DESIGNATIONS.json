@@ -147,12 +147,12 @@
     },
     {
       "path": "tests/fixtures/goldens/cli/a-info.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
+      "reBaselineChunk": "9",
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `info` JSON envelope key-set. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "5f11bcd0fa30fe192291cdd25a5ada83b3ea44a7eb9feb18e4ed33fcfb9295ea"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `info` JSON envelope key-set. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals. | Re-baselined by the 0.9.0 backlog burn-down package W1-D (finding R-057(a)): `akm info` deliberately gained top-level `stashDir` and `defaultBundle` fields, so operators/agents can see which stash/bundle is primary without a separate `akm sources list` call. Surface-owner rule applied: designation moved from frozen-migration-input to re-baseline (same Chunk 9 cross-cutting-sweep bucket a-show-shapes.json already uses for this kind of additive CLI-output-surface change) and the sha256 pin was dropped since re-baseline assets are not integrity-pinned. Diff is additive-only — `stdoutKeys` gained exactly `defaultBundle` and `stashDir`; every previously-pinned key is unchanged."
     },
     {
       "path": "tests/fixtures/goldens/cli/a-list.json",
@@ -197,7 +197,7 @@
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `show --shape=agent` / `--shape=summary` JSON key-sets. Re-baselined by the multi-bundle agent-access change: agent show output now deliberately includes the indexed canonical ref, materialized path, current-policy editable flag, and conditional editHint while preserving show/run/use as the primary action. Chunk 9 owns the CLI output surface under the surface-owner rule; key-set/count/boolean assertions only, no production ref literals."
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `show --shape=agent` / `--shape=summary` JSON key-sets. Re-baselined by the multi-bundle agent-access change: agent show output now deliberately includes the indexed canonical ref, materialized path, current-policy editable flag, and conditional editHint while preserving show/run/use as the primary action. Chunk 9 owns the CLI output surface under the surface-owner rule; key-set/count/boolean assertions only, no production ref literals. | Re-baselined again by the 0.9.0 backlog burn-down package W1-D (finding R-020): `summaryKeys` gained `ref` — canonical ref is now present in every show shape (human/summary/agent), not just agent, so `--shape summary` consumers can identify the asset without a follow-up `--shape agent` call. `agentKeys` is unchanged."
     },
     {
       "path": "tests/fixtures/goldens/cli/b-health-fail-warn-exit.json",
@@ -376,7 +376,7 @@
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `show` per-asset-type (script/command/skill/agent/knowledge) JSON key-sets, keyed by fixture-local ref string (object keys, not values). Ref-serializing text output — designated re-baseline @ Chunk 5's §15.2 grammar codemod per brief §3.3's CLI-output-baseline policy row.",
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `show` per-asset-type (script/command/skill/agent/knowledge) JSON key-sets, keyed by fixture-local ref string (object keys, not values). Ref-serializing text output — designated re-baseline @ Chunk 5's §15.2 grammar codemod per brief §3.3's CLI-output-baseline policy row. | Re-baselined again by the 0.9.0 backlog burn-down package W1-D (finding R-020): every type's `jsonKeys` gained `ref` — the default (human) show shape now always carries the canonical ref, matching `--shape agent` (it previously omitted it). No other key changed for any type.",
       "reBaselineChunk": "5"
     },
     {

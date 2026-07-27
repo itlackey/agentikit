@@ -1,9 +1,11 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { assembleInfo } from "../../src/commands/sources/info";
+import { resolveStashDir } from "../../src/core/common";
 import { loadConfig, resetConfigCache, saveConfig } from "../../src/core/config/config";
+import { resetQuiet, setQuiet } from "../../src/core/warn";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
@@ -50,6 +52,10 @@ beforeEach(() => {
 afterEach(() => {
   envCleanup();
   envCleanup = () => {};
+  // Some tests below call setQuiet() directly to exercise the readIndexStats
+  // error path without going through the CLI's argv-parsing startup — reset
+  // it so quiet state never leaks into a later test (R-057).
+  resetQuiet();
 });
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -134,6 +140,106 @@ describe("assembleInfo", () => {
     expect(info.indexStats.entryCount).toBe(1);
     expect(info.indexStats.lastBuiltAt).toBe("2026-03-17T00:00:00Z");
     expect(typeof info.indexStats.vecAvailable).toBe("boolean");
+  });
+
+  // R-057(a): indexStats previously carried only an aggregate entryCount with
+  // no per-type breakdown. `byType` must sum back to entryCount and reflect
+  // the actual mix of indexed asset types.
+  test("indexStats.byType breaks entryCount down per asset type", () => {
+    const stashDir = makeStashDir();
+    const dbPath = path.join(tmpDir("db"), "test.db");
+    const db = openIndexDatabase(dbPath);
+    upsertEntry(
+      db,
+      "skills/test-skill",
+      "/fake/skill",
+      "/fake/skill/test-skill",
+      stashDir,
+      makeEntry("skill", "test-skill"),
+      "test skill",
+    );
+    upsertEntry(
+      db,
+      "skills/test-skill-2",
+      "/fake/skill2",
+      "/fake/skill2/test-skill-2",
+      stashDir,
+      makeEntry("skill", "test-skill-2"),
+      "test skill 2",
+    );
+    upsertEntry(
+      db,
+      "knowledge/test-doc",
+      "/fake/doc",
+      "/fake/doc/test-doc",
+      stashDir,
+      makeEntry("knowledge", "test-doc"),
+      "test doc",
+    );
+    rebuildFts(db);
+    closeDatabase(db);
+
+    const info = assembleInfo({ dbPath });
+
+    expect(info.indexStats.entryCount).toBe(3);
+    expect(info.indexStats.byType).toEqual({ skill: 2, knowledge: 1 });
+    const total = Object.values(info.indexStats.byType).reduce((sum, n) => sum + n, 0);
+    expect(total).toBe(info.indexStats.entryCount);
+  });
+
+  test("indexStats.byType is an empty object when there is no index", () => {
+    const info = assembleInfo();
+    expect(info.indexStats.byType).toEqual({});
+  });
+
+  // R-057(a): akm info previously had no top-level stashDir/defaultBundle,
+  // even though akm sources list resolves and reports both (SourceListResponse).
+  // akm info must agree with akm sources list on which stash/bundle is primary
+  // — i.e. use the SAME resolution (resolveStashDir(), env override first).
+  test("stashDir matches resolveStashDir() and defaultBundle matches the configured bundle", () => {
+    const config = loadConfig();
+    config.bundles = { primary: { path: makeStashDir() } };
+    config.defaultBundle = "primary";
+    saveConfig(config);
+    resetConfigCache();
+
+    const info = assembleInfo();
+
+    expect(info.stashDir).toBe(resolveStashDir());
+    expect(info.defaultBundle).toBe("primary");
+  });
+
+  test("defaultBundle is null when no bundle is configured", () => {
+    const info = assembleInfo();
+    expect(info.defaultBundle).toBeNull();
+    expect(typeof info.stashDir).toBe("string");
+  });
+
+  // R-057(b): readIndexStats' error branch used to write straight to
+  // process.stderr, bypassing core/warn's setQuiet()-gated error() helper —
+  // the byte-identical stderr line was emitted with AND without --quiet. It
+  // must now route through error(), which IS gated by setQuiet().
+  test("the corrupted-index error message is suppressed by setQuiet(true), emitted otherwise", () => {
+    const dbPath = path.join(tmpDir("db"), "corrupt.db");
+    fs.writeFileSync(dbPath, "not a sqlite database");
+
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      setQuiet(true);
+      const quietInfo = assembleInfo({ dbPath });
+      expect(errorSpy).not.toHaveBeenCalled();
+      // The read still fails safe to the empty stats shape.
+      expect(quietInfo.indexStats.entryCount).toBe(0);
+
+      resetQuiet();
+      errorSpy.mockClear();
+      assembleInfo({ dbPath });
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(String(errorSpy.mock.calls[0]?.[0])).toContain("failed to read index stats");
+    } finally {
+      errorSpy.mockRestore();
+      resetQuiet();
+    }
   });
 
   test("does not downgrade embedding metadata when reading info", () => {
