@@ -14,6 +14,19 @@ import {
   unsetConfigValue,
 } from "../../../src/commands/config-cli";
 import type { AkmConfig } from "../../../src/core/config/config";
+import { getDbPath } from "../../../src/core/paths";
+import { deriveEntryProvenance } from "../../../src/indexer/installations";
+import type { IndexDocument } from "../../../src/indexer/passes/metadata";
+import { searchLocal } from "../../../src/indexer/search/db-search";
+import { deriveSemanticProviderFingerprint, writeSemanticStatus } from "../../../src/indexer/search/semantic-status";
+import { _setEmbedderForTests } from "../../../src/llm/embedder";
+import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
+import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
+import { rebuildFts } from "../../../src/storage/repositories/index-fts-repository";
+import { setMeta } from "../../../src/storage/repositories/index-meta-repository";
+import { upsertEmbedding } from "../../../src/storage/repositories/index-vec-repository";
+import { withIsolatedAkmStorage } from "../../_helpers/sandbox";
+import { overrideSeam } from "../../_helpers/seams";
 
 // ── Cluster B: #21 defaultWriteTarget ────────────────────────────────────────
 
@@ -281,13 +294,117 @@ describe("search.minScore floor in config (#6)", () => {
     expect(config.search?.minScore).toBe(0);
   });
 
-  test("minScore default is 0.2 in db-search (white-box)", () => {
-    // Verify the default is what the implementation docs: if search is
-    // undefined then minScore should be 0.2 (defaulted in db-search.ts).
-    const config: AkmConfig = { semanticSearchMode: "auto" };
-    expect(config.search?.minScore).toBeUndefined();
-    // The effective default 0.2 is applied inside searchDatabase; we just
-    // confirm the config field default is undefined here. An integration test
-    // would require a live DB with semantic hits, which is out of scope.
+  // VALUE-01 (Phase 2 triage): the prior version of this test only asserted
+  // `config.search?.minScore` is `undefined` when unset — it never drove the
+  // actual floor at src/indexer/search/db-search.ts:500
+  // (`const minScore = config.search?.minScore ?? 0.2;`). That left the 0.2
+  // default completely unpinned anywhere in the tree. This replacement drives
+  // the REAL code path end-to-end through `searchLocal`, with two
+  // vector-only ("semantic" rankingMode, no FTS match) hits whose cosine
+  // similarity is fully controlled (mocked query embedding + hand-inserted
+  // stored embeddings), so their pre-boost score is deterministic:
+  // `score = cosine * VEC_WEIGHT(0.3)`. Both entries use `type: "task"`
+  // (TYPE_BOOST.task = 0, see ranking-contributors.ts) and carry no
+  // tags/searchHints/quality/beliefState/captureMode, and the query shares no
+  // token with either entry's name/description — so no other ranking
+  // contributor fires and the floor comparison operates on the raw
+  // cosine*0.3 value (verified empirically at exactly 0.18 / 0.27, matching
+  // the hand-derived math with no boost contamination).
+  test("minScore floor: default 0.2 is actually enforced against semantic-only hits, and is configurable", async () => {
+    const storage = withIsolatedAkmStorage();
+    try {
+      const dbPath = getDbPath();
+      const db = openIndexDatabase(dbPath, { embeddingDim: 4 });
+      try {
+        // cosine 0.6 -> score 0.6 * 0.3 = 0.18 (below the 0.2 default floor)
+        const belowFloorId = upsertEntry(
+          db,
+          "task/below-floor",
+          "/fake/tasks",
+          "/fake/tasks/below-floor.md",
+          storage.stashDir,
+          { type: "task", name: "below-floor", description: "unrelated filler content alpha" } as IndexDocument,
+          "below-floor unrelated filler content alpha",
+          deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, "task", "below-floor"),
+        );
+        upsertEmbedding(db, belowFloorId, [0.6, 0.8, 0, 0]);
+
+        // cosine 0.9 -> score 0.9 * 0.3 = 0.27 (above the 0.2 default floor)
+        const aboveFloorId = upsertEntry(
+          db,
+          "task/above-floor",
+          "/fake/tasks",
+          "/fake/tasks/above-floor.md",
+          storage.stashDir,
+          { type: "task", name: "above-floor", description: "unrelated filler content beta" } as IndexDocument,
+          "above-floor unrelated filler content beta",
+          deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, "task", "above-floor"),
+        );
+        upsertEmbedding(db, aboveFloorId, [0.9, Math.sqrt(1 - 0.81), 0, 0]);
+
+        rebuildFts(db);
+        setMeta(db, "hasEmbeddings", "1");
+        // Satisfies ensure-index.ts's indexCanServeStash() so searchLocal serves
+        // this hand-built DB instead of triggering a real reindex.
+        setMeta(db, "stashDir", storage.stashDir);
+
+        writeSemanticStatus({
+          status: "ready-vec",
+          providerFingerprint: deriveSemanticProviderFingerprint(undefined),
+          lastCheckedAt: new Date().toISOString(),
+        });
+
+        // Mock the query embedding only — stored embeddings above are real
+        // BLOB rows, so cosine similarity is computed by the real vector
+        // search path (tryVecScores -> searchVec), not faked.
+        overrideSeam(_setEmbedderForTests, { embed: async () => [1, 0, 0, 0] });
+
+        // Shares no token with either entry's name/description, so neither
+        // entry gets an FTS match — both surface only via the vector index
+        // (rankingMode "semantic"), which is exactly what the floor gates.
+        const query = "gizmoquery9000";
+        const sources = [{ path: storage.stashDir }];
+        const baseConfig: AkmConfig = { semanticSearchMode: "auto" };
+        const searchArgs = {
+          query,
+          searchType: "any" as const,
+          limit: 10,
+          stashDir: storage.stashDir,
+          sources,
+          disableProjectContext: true,
+          disableScopedUtility: true,
+        };
+
+        // (a) Default: no explicit search.minScore -> the coded 0.2 default applies.
+        const defaultResult = await searchLocal({ ...searchArgs, config: baseConfig });
+        const defaultNames = defaultResult.hits.map((h) => h.name);
+        expect(defaultNames).not.toContain("below-floor");
+        expect(defaultNames).toContain("above-floor");
+
+        // (b) Explicit 0 disables the floor entirely -> both survive.
+        const disabledResult = await searchLocal({
+          ...searchArgs,
+          config: { ...baseConfig, search: { minScore: 0 } },
+        });
+        const disabledNames = disabledResult.hits.map((h) => h.name);
+        expect(disabledNames).toContain("below-floor");
+        expect(disabledNames).toContain("above-floor");
+
+        // (c) Explicit 0.3 (above both scores) -> both are dropped, proving the
+        // floor genuinely compares against the hit's score rather than being a
+        // fixed on/off switch that only ever reads the built-in default.
+        const raisedResult = await searchLocal({
+          ...searchArgs,
+          config: { ...baseConfig, search: { minScore: 0.3 } },
+        });
+        const raisedNames = raisedResult.hits.map((h) => h.name);
+        expect(raisedNames).not.toContain("below-floor");
+        expect(raisedNames).not.toContain("above-floor");
+      } finally {
+        closeDatabase(db);
+      }
+    } finally {
+      storage.cleanup();
+    }
   });
 });

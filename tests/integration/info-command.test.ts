@@ -174,6 +174,25 @@ describe("assembleInfo", () => {
     expect(Array.isArray(info.sourceProviders)).toBe(true);
   });
 
+  // Precondition for consolidate-wave2-e.test.ts's D5 deletion (Phase 2
+  // triage): that file's "assembleInfo — sourceProviders populated" test only
+  // asserted `typeof assembleInfo === "function"`. This strengthens the real
+  // coverage: sourceProviders is empty with no configured bundle, and once a
+  // bundle IS configured it projects the bundle → source shape assembleInfo
+  // actually emits (src/commands/sources/info.ts:47-56).
+  test("sourceProviders is empty with no configured bundle, and reflects a configured bundle", () => {
+    expect(assembleInfo().sourceProviders).toEqual([]);
+
+    const stashDir = makeStashDir();
+    const config = loadConfig();
+    config.bundles = { primary: { path: stashDir } };
+    config.defaultBundle = "primary";
+    saveConfig(config);
+
+    const info = assembleInfo();
+    expect(info.sourceProviders).toEqual([{ type: "filesystem", name: "primary", path: stashDir }]);
+  });
+
   test("output is valid JSON-serializable", () => {
     const info = assembleInfo();
     const json = JSON.stringify(info);
