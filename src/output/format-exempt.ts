@@ -32,6 +32,21 @@ const EXEMPT_COMMANDS: ReadonlySet<string> = new Set([
   "setup",
   // Hands stdout to a child process; the child's output is not ours to shape.
   "agent",
+  // Both subcommands (`status`, `apply`) are also a child-process passthrough:
+  // `runMigrationTool` (src/commands/migration-tool.ts) spawns the standalone
+  // `scripts/akm-migrate.ts` tool and writes its stdout/stderr verbatim — the
+  // spawned script always emits its own fixed JSON shape and never consults
+  // `--format`. Found while verifying F1 (D7 B1): the finding's repro list
+  // named `akm migrate status --format text` alongside `secret list` as the
+  // SAME defect (missing text renderer inside `output()`), but `migrate
+  // status`/`apply` never reach `output()` at all, so that fix cannot and
+  // does not change their behavior — this is the `env run`/`secret run`
+  // passthrough pattern, not the generic-text-fallback one.
+  "migrate",
+  // Document payload, exactly like `workflow template` / `help migrate`
+  // below: prints the embedded CLI-reference guide verbatim
+  // (`src/commands/observability-cli.ts`), not a result envelope.
+  "hints",
 ]);
 
 /**

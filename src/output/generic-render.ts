@@ -3,13 +3,16 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Generic `md` / `html` rendering of a shaped output envelope (D7).
+ * Generic `md` / `html` / `text` rendering of a shaped output envelope (D7).
  *
  * Every command gets `json`, `jsonl`, and `yaml` for free because those are
- * serializations of the envelope rather than renderings of it. `md` and `html`
- * are renderings, and before D7 only `akm health` had them: `md` silently
- * emitted the JSON envelope everywhere else and `html` threw. Three failure
- * modes on one documented-Stable contract.
+ * serializations of the envelope rather than renderings of it. `md`, `html`,
+ * and `text` are renderings, and before D7 only `akm health` had `md`/`html`:
+ * `md` silently emitted the JSON envelope everywhere else and `html` threw.
+ * `text` had the same silent-JSON gap for any command with no registered
+ * text formatter, closed later than `md`/`html` — see `renderGenericText`
+ * below for why it is its own function rather than a reuse of
+ * `renderGenericMarkdown`.
  *
  * These functions close that gap structurally rather than per command. A
  * command that registers a bespoke renderer (`akm health`) still wins; every
@@ -189,4 +192,88 @@ export function renderGenericHtml(command: string, value: unknown): string {
     "</html>",
     "",
   ].join("\n");
+}
+
+// ── Text ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Root-level envelope metadata the shape registry stamps on top of a
+ * command's actual result: `shape` (the discriminator) and `schemaVersion`
+ * (the envelope's own version), both added by the passthrough stamp in
+ * `src/output/shapes/passthrough.ts` and equivalent per-command shapers
+ * elsewhere. Transport bookkeeping, not a result anyone asked for — a `##
+ * shape` / `## schemaVersion` section is noise in every command's output, so
+ * the text renderer drops both. ONLY at the root, though: some shapes reuse
+ * `schemaVersion` as genuine per-entry content one level down (each event in
+ * `log list`'s `events[]` carries its own `schemaVersion`, see
+ * `shapeEventEntry` in `src/output/shapes/helpers.ts`), and that must
+ * survive untouched. `renderGenericMarkdown`/`renderGenericHtml` do not
+ * apply this filter and so have the identical noise problem one level up
+ * (`## shape` / `<h2>shape</h2>` sections) — a pre-existing gap in the
+ * already-shipped md/html renderers, left alone here because their output is
+ * pinned by existing tests; see this change's report for the follow-up.
+ */
+const ENVELOPE_META_KEYS = new Set(["shape", "schemaVersion"]);
+
+/**
+ * Flatten `value` onto `lines` as `dotted.path=value` entries — the exact
+ * algorithm `formatConfigPlain` (`src/output/text/command-format.ts`)
+ * already established as this CLI's real plain-text house style for `akm
+ * config list`. Arrays serialize as one compact-JSON line rather than
+ * index-per-line (`items.0.name=…`), matching that same precedent instead of
+ * inventing a second convention: the arrays that reach this generic
+ * fallback are typically short id/tag lists, where one JSON-array line reads
+ * better than N extra `path.0=`, `path.1=`, … lines.
+ */
+function flattenForText(value: unknown, path: string, lines: string[]): void {
+  if (value === null || value === undefined) {
+    lines.push(`${path}=`);
+  } else if (Array.isArray(value)) {
+    lines.push(`${path}=${JSON.stringify(value)}`);
+  } else if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) {
+      lines.push(`${path}={}`);
+      return;
+    }
+    for (const [key, nested] of entries) {
+      flattenForText(nested, `${path}.${key}`, lines);
+    }
+  } else {
+    lines.push(`${path}=${String(value)}`);
+  }
+}
+
+/**
+ * Render a shaped envelope as flat `key=value` text — no markup characters.
+ *
+ * This is a DISTINCT function from `renderGenericMarkdown`, not a reuse of
+ * it, and that is a deliberate reversal of this fallback's first cut, which
+ * called `renderGenericMarkdown` directly for `text` on the reasoning that
+ * it emits no HTML and is therefore "plain-text-safe." That reasoning was
+ * wrong: `#` heading markers, `_..._` emphasis, and `| ... |` table syntax
+ * ARE markup — a terminal happens to print them as literal characters
+ * instead of throwing, but a user piping `--format text` into `grep` or a
+ * line-oriented script still sees literal `#`/`_`/`|` noise that plain JSON
+ * at least didn't have. That is the exact "one format wearing another
+ * format's flag" defect this whole fallback exists to close, with Markdown
+ * substituted for JSON instead of JSON itself.
+ *
+ * `akm config list --format text` and `akm info --format text` already
+ * establish this CLI's real plain-text convention — flat `dotted.path=value`
+ * lines, no markup — so the generic fallback now matches its registered
+ * siblings (what a command looks like once someone writes it a bespoke
+ * formatter) instead of matching `md`'s.
+ */
+export function renderGenericText(command: string, value: unknown): string {
+  const lines: string[] = [];
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      if (ENVELOPE_META_KEYS.has(key)) continue; // transport metadata, not a result
+      flattenForText(nested, key, lines);
+    }
+  } else {
+    flattenForText(value, command, lines);
+  }
+  return lines.length === 0 ? `${command}: (empty)\n` : `${lines.join("\n")}\n`;
 }

@@ -13,7 +13,14 @@
  * runtime gap.
  *
  * `formatPlain` dispatches to those formatters. Returning `null` means "no
- * plain rendering available — fall back to YAML".
+ * plain rendering available"; the caller (`output()` in `src/cli/shared.ts`)
+ * falls back to `renderGenericText`'s flat `key=value` rendering of the
+ * shaped envelope (`src/output/generic-render.ts` — NOT `renderGenericMarkdown`;
+ * markdown syntax is markup, not plain text, so `text` gets its own generic
+ * renderer rather than reusing `md`'s). NOT YAML either: this comment (and
+ * the one on `formatPlain` below) used to say the fallback was YAML, but it
+ * never was — the fallback was pretty-printed JSON until it became a generic
+ * renderer.
  *
  * Pure functions — no IO.
  */
@@ -108,12 +115,14 @@ export function outputJsonl(command: string, shaped: unknown): void {
 
 /**
  * Return a plain-text string for commands that are better as short messages,
- * or null to fall through to YAML output.
+ * or null to fall through to the generic text rendering of the shaped
+ * envelope (`renderGenericText`, applied in `output()` in
+ * `src/cli/shared.ts` — this module stays dependency-free of that renderer).
  */
 export function formatPlain(command: OutputCommandName, result: unknown, detail: DetailLevel): string | null {
   const handler = getTextFormatterHandler(command);
   if (handler) {
     return handler(result as Record<string, unknown>, detail);
   }
-  return null; // fall through to YAML
+  return null; // fall through to the generic text renderer, not YAML
 }

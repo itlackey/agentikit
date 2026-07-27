@@ -90,6 +90,24 @@ describe("every --format value produces real output on every read command", () =
           // wrong-format output is exactly what D7 removed.
           expect(result.stdout.trimStart().startsWith("{")).toBe(false);
         }
+        if (format === "text") {
+          // Same guard as `md`, symmetric: a command with no registered text
+          // formatter must fall through to the generic text renderer, not to
+          // the JSON envelope wearing a text flag (that silent wrong-format
+          // output shipped undetected because this suite only checked
+          // non-empty output for `text` — see `renderGenericText` in
+          // `output()`'s `text` case, src/cli/shared.ts).
+          expect(result.stdout.trimStart().startsWith("{")).toBe(false);
+          // Stronger than the `md` guard above on purpose: an earlier cut of
+          // this fallback reused `renderGenericMarkdown` for `text`, which
+          // passed the JSON-envelope check above while still emitting `#`
+          // heading markers, `_..._` emphasis, and `| ... |` table syntax —
+          // markdown wearing a text flag instead of JSON wearing one. Assert
+          // no markdown heading-marker line at all, which is exactly what
+          // that reuse would have produced for every top-level and nested
+          // key (`renderGenericMarkdown` headers each key it recurses into).
+          expect(result.stdout).not.toMatch(/^#{1,6}\s/m);
+        }
         if (format === "json") {
           expect(() => JSON.parse(result.stdout)).not.toThrow();
         }

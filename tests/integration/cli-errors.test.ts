@@ -504,9 +504,13 @@ describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
     return results;
   }
 
-  // The two known, out-of-package gaps (src/commands/observability-cli.ts) —
-  // allowlisted, not silently excluded (see describe-block comment).
-  const KNOWN_OUT_OF_PACKAGE_GAPS = new Set(["log tail", "hints"]);
+  // The one remaining known, out-of-package gap
+  // (src/commands/observability-cli.ts) — allowlisted, not silently excluded
+  // (see describe-block comment). `hints` used to be listed here too; it is
+  // now declared format-exempt (src/output/format-exempt.ts), which the
+  // `exemptCommands.includes(topLevel)` check above already skips, so it no
+  // longer needs (or belongs in) this allowlist.
+  const KNOWN_OUT_OF_PACKAGE_GAPS = new Set(["log tail"]);
 
   test("every non-format-exempt terminal leaf declares GLOBAL_OUTPUT_ARGS", () => {
     const { commands: exemptCommands, subcommands: exemptSubcommands } = formatExemptSurfaces();
