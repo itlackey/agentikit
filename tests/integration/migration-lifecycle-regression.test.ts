@@ -1265,6 +1265,41 @@ describe("migration lifecycle regressions", () => {
     expect(fs.existsSync(getMigrationBackupRoot())).toBe(false);
   });
 
+  // R-062: `dryRun` was renamed to the kebab-case `dry-run` for consistency
+  // with every other multi-word flag in the CLI. citty registers BOTH the
+  // camelCase and kebab-case spelling of any declared flag name
+  // automatically (verified against the pinned citty@^0.2.2 dependency), so
+  // this is a pure rename — `--dryRun` is kept as an explicit, documented
+  // alias rather than becoming a silent accident, and both spellings must
+  // keep behaving identically. Reuses the exact fixture above (a blocked
+  // eligibility check) rather than a byte-for-byte comparison, since the
+  // envelope may carry a volatile timestamp.
+  test("apply --dryRun (legacy camelCase spelling) behaves identically to --dry-run (R-062)", async () => {
+    writeConfig("0.9.0");
+    fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
+    const future = new Database(getStateDbPathInDataDir());
+    seedLedger(future, [STATE_PRE_CUTOVER_IDS[0], "999-future"]);
+    future.close();
+    const prepared = path.join(path.dirname(getConfigPath()), "prepared-0.9.json");
+    fs.writeFileSync(prepared, '{"configVersion":"0.9.0"}\n');
+    const configBefore = fs.readFileSync(getConfigPath());
+    const stateBefore = fs.readFileSync(getStateDbPathInDataDir());
+
+    const kebab = await runCliCapture(["migrate", "apply", "--config", prepared, "--dry-run"]);
+    const camel = await runCliCapture(["migrate", "apply", "--config", prepared, "--dryRun"]);
+    expect(camel.code).toBe(kebab.code);
+    for (const output of [kebab.stdout, camel.stdout]) {
+      expect(output).toContain('"config"');
+      expect(output).toContain('"targetConfig"');
+      expect(output).toContain('"newer"');
+      expect(output).toContain('"blocked"');
+    }
+    // Neither spelling mutates anything (both are the dry-run path).
+    expect(fs.readFileSync(getConfigPath())).toEqual(configBefore);
+    expect(fs.readFileSync(getStateDbPathInDataDir())).toEqual(stateBefore);
+    expect(fs.existsSync(getMigrationBackupRoot())).toBe(false);
+  });
+
   test("status reports a durable interrupted apply journal without mutating it", async () => {
     writeConfig("0.9.0");
     const backup = createMigrationBackup();

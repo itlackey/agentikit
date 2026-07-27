@@ -71,8 +71,9 @@ process.on("uncaughtException", (err) => {
 });
 
 import fs from "node:fs";
-import { type ArgsDef, defineCommand, parseArgs, runMain } from "citty";
+import { type ArgsDef, type CommandDef, defineCommand, parseArgs, runCommand, showUsage } from "citty";
 import {
+  type CittyArgsDefinitionForScan,
   findCittyTopLevelCommand,
   findCittyTopLevelCommandIndex,
   getParsedInvocation,
@@ -80,7 +81,7 @@ import {
   resolveHelpMigrateVersionArg,
   setParsedInvocation,
 } from "./cli/invocation";
-import { EXIT_CODES, emitJsonError, output, runWithJsonErrors } from "./cli/shared";
+import { EXIT_CODES, emitJsonError, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "./cli/shared";
 import { agentCommand, lintCommand, proposeCommand } from "./commands/agent/contribute-cli";
 import { generateBashCompletions, installBashCompletions } from "./commands/completions";
 import { configCommand } from "./commands/config-cli";
@@ -298,6 +299,12 @@ const setupCommand = defineCommand({
 const healthCommand = defineCommand({
   meta: { name: "health", description: "Check akm runtime health, artifacts, and improve metrics" },
   args: {
+    // R-051: `health` is a raw `defineCommand` (not `defineJsonCommand`), so
+    // it does not get `GLOBAL_OUTPUT_ARGS` for free. `--format`/`--detail`/
+    // `--shape`/`--output` already parsed correctly here (this command has
+    // no positional for a stray value to fall into), so this is purely a
+    // `--help` visibility / consistency fix, not a behavior change.
+    ...GLOBAL_OUTPUT_ARGS,
     since: {
       type: "string",
       description: "Rolling window start (ISO timestamp, date, epoch ms, or shorthand like 24h / 7d)",
@@ -324,6 +331,7 @@ const healthCommand = defineCommand({
   },
   async run({ args }) {
     let resultStatus: "pass" | "warn" | "fail" | undefined;
+    const exitCodeBeforeRun = process.exitCode;
     await runWithJsonErrors(async () => {
       // citty only surfaces the last value of a repeated flag, so read --windows
       // directly from argv to support multi-window comparison.
@@ -385,11 +393,19 @@ const healthCommand = defineCommand({
       }
       output("health", base);
     });
+    // R-067: `emitJsonError` (src/cli/shared.ts) no longer force-exits on the
+    // error path — it sets `process.exitCode` and returns, so a `--report`
+    // failure thrown AFTER `resultStatus` was already assigned (e.g. the
+    // proposal-queue read above) would otherwise leave `resultStatus`
+    // populated here too. Skip the status-derived exit entirely once
+    // `runWithJsonErrors` has already recorded a classified failure, so it is
+    // never clobbered by a mismatched health status.
+    if (process.exitCode !== exitCodeBeforeRun) return;
     if (resultStatus === "fail") {
-      process.exit(EXIT_GENERAL);
+      process.exitCode = EXIT_GENERAL;
     }
     if (resultStatus === "warn") {
-      process.exit(EXIT_HEALTH_WARN);
+      process.exitCode = EXIT_HEALTH_WARN;
     }
   },
 });
@@ -451,17 +467,27 @@ const completionsCommand = defineCommand({
     },
   },
   run({ args }) {
-    if (args.shell !== "bash") {
-      throw new UsageError(`Unsupported shell: ${args.shell}. Only bash is supported.`);
-    }
-    const script = generateBashCompletions(main);
-    if (args.install) {
-      const dest = installBashCompletions(script);
-      info(`Completions installed to ${dest}`);
-      info(`Restart your shell or run:  source ${dest}`);
-    } else {
-      process.stdout.write(script);
-    }
+    // R-052(b): this was a bare `run()` throwing directly, so an unsupported
+    // `--shell` value escaped straight to citty's top-level error handling
+    // instead of the standard JSON envelope — exit 1 with a raw stack trace
+    // instead of the classified exit-2 usage error every other command
+    // produces (`completions` is format-exempt, so it stays a raw
+    // `defineCommand` rather than `defineJsonCommand`, but still needs the
+    // same error-classification wrapper other bare `defineCommand`s in this
+    // file use, e.g. `help migrate` below).
+    return runWithJsonErrors(() => {
+      if (args.shell !== "bash") {
+        throw new UsageError(`Unsupported shell: ${args.shell}. Only bash is supported.`);
+      }
+      const script = generateBashCompletions(main);
+      if (args.install) {
+        const dest = installBashCompletions(script);
+        info(`Completions installed to ${dest}`);
+        info(`Restart your shell or run:  source ${dest}`);
+      } else {
+        process.stdout.write(script);
+      }
+    });
   },
 });
 
@@ -594,22 +620,98 @@ export function shouldBypassConfigStartup(argv: readonly string[]): boolean {
 const EXIT_GENERAL = EXIT_CODES.GENERAL;
 const EXIT_HEALTH_WARN = EXIT_CODES.HEALTH_WARN;
 
-// Only run the CLI when this module is the direct entry point. When it is
-// imported (e.g. by the in-process test harness in tests/_helpers/cli.ts),
-// `import.meta.main` is false and we skip all startup side effects (argv
-// mutation, output-mode init, index cleanup, banner, runMain) so importers
-// can drive the `main` command themselves without the process exiting.
+// ── Top-level driver (replaces citty's `runMain`) ───────────────────────────
 //
-// Node path: this module carries a `#!/usr/bin/env bun` shebang and is launched
-// under Node via the `dist/cli-node.mjs` wrapper, which `import()`s this file
-// (so `import.meta.main` is false here even though the CLI is the real entry).
-// The wrapper sets `AKM_NODE_ENTRY=1` to opt into the startup block. The test
-// harness never sets it, so importing cli.ts under Bun stays inert as before.
-if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
+// R-032: citty's own `runMain` catches EVERY error escaping `runCommand` —
+// including its unexported `CLIError`, thrown for "Unknown command …", "No
+// command specified.", "Missing required argument/positional …", and invalid
+// enum values — and unconditionally calls `process.exit(1)`, regardless of
+// error kind (node_modules/citty/dist/index.mjs). That collapsed usage
+// mistakes (`akm totally-bogus`, `akm wiki list`, bare `akm log`) onto exit
+// code 1 instead of the documented usage-error code 2 (STABILITY.md's
+// exit-code table), and there is no way to override it from outside
+// `runMain`'s own call frame: once it calls `process.exit`, nothing run
+// afterward — including a `finally` further up the stack — gets a chance to
+// execute. So the CLI drives citty's exported `runCommand` directly instead
+// of `runMain`, replicating `runMain`'s `--help` / `--version`
+// short-circuits and its CLIError → usage-banner rendering, but classifying
+// a CLIError as USAGE (2) instead of GENERAL (1). Every other error escaping
+// this boundary keeps the previous GENERAL (1) mapping — this only
+// reclassifies the one error family citty itself throws before any of our
+// own command bodies (and their `runWithJsonErrors` / `emitJsonError`
+// classification) ever run.
+
+const HELP_FLAGS = ["--help", "-h"];
+const VERSION_FLAGS = ["--version", "-v"];
+
+// biome-ignore lint/suspicious/noExplicitAny: citty command tree uses dynamic shapes (same precedent as src/commands/completions.ts and defineGroupCommand in src/cli/shared.ts)
+type AnyCittyCommand = CommandDef<any>;
+
+/**
+ * Duck-types citty's internal, unexported `CLIError`
+ * (node_modules/citty/dist/index.mjs) — the class `runCommand` throws for
+ * "Unknown command …", "No command specified.", "Missing required
+ * argument/positional …", and invalid enum values. citty does not export
+ * this class, so `instanceof` isn't available; `name` is set in its
+ * constructor (`this.name = "CLIError"`) and is stable across the pinned
+ * `citty@^0.2.2` dependency.
+ */
+function isCittyCliError(error: unknown): error is Error {
+  return error instanceof Error && error.name === "CLIError";
+}
+
+function findCittySubCommandByName(
+  subCommands: Record<string, AnyCittyCommand>,
+  name: string,
+): AnyCittyCommand | undefined {
+  if (name in subCommands) return subCommands[name];
+  for (const sub of Object.values(subCommands)) {
+    const alias = (sub.meta as { alias?: string | string[] } | undefined)?.alias;
+    const aliases = Array.isArray(alias) ? alias : alias ? [alias] : [];
+    if (aliases.includes(name)) return sub;
+  }
+  return undefined;
+}
+
+/**
+ * Re-implementation of citty's own (unexported) `resolveSubCommand`: walks
+ * `rawArgs` down the subcommand tree the same way its private
+ * `findSubCommandIndex` / `_findSubCommand` do, so the usage banner rendered
+ * on a CLIError names the deepest command the user was actually invoking —
+ * matching what citty's own `runMain` would have shown, byte-for-byte.
+ */
+function resolveDeepestCittyCommand(
+  cmd: AnyCittyCommand,
+  rawArgs: readonly string[],
+  parent?: AnyCittyCommand,
+): [AnyCittyCommand, AnyCittyCommand | undefined] {
+  const subCommands = cmd.subCommands as Record<string, AnyCittyCommand> | undefined;
+  if (subCommands && Object.keys(subCommands).length > 0) {
+    const idx = findCittyTopLevelCommandIndex(rawArgs, (cmd.args ?? {}) as CittyArgsDefinitionForScan);
+    const name = idx >= 0 ? rawArgs[idx] : undefined;
+    if (name !== undefined) {
+      const sub = findCittySubCommandByName(subCommands, name);
+      if (sub) return resolveDeepestCittyCommand(sub, rawArgs.slice(idx + 1), cmd);
+    }
+  }
+  return [cmd, parent];
+}
+
+/**
+ * The CLI's real startup sequence, extracted into a function so error paths
+ * can `return` early — top-level `return` is a syntax error in an ES module,
+ * and this used to rely on `emitJsonError`'s `never` return type (a
+ * synchronous `process.exit`) to stop execution instead. Now that
+ * `emitJsonError` (src/cli/shared.ts, R-067) only records `process.exitCode`
+ * and returns, every direct call site here needs its own explicit `return;`
+ * to stop the rest of startup from running after a fatal early error.
+ */
+async function runCli(): Promise<void> {
   try {
     process.argv = consumeSchedulerContextArg(process.argv);
   } catch (error: unknown) {
     emitJsonError(error);
+    return;
   }
   // Mint the ParsedInvocation singleton from the (normalized) argv — the ONE
   // place argv is parsed for the whole process (plan §10.7 / chunk-9 WI-9.9).
@@ -628,6 +730,7 @@ if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
     initOutputMode(process.argv, bypassConfig ? (DEFAULT_CONFIG.output ?? {}) : (loadConfig().output ?? {}));
   } catch (error: unknown) {
     emitJsonError(error);
+    return;
   }
 
   // `--shape summary` is only meaningful on `akm show`. Reject it up front for
@@ -639,6 +742,7 @@ if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
   const topLevelCommand = findCittyTopLevelCommand(process.argv.slice(2), MAIN_TOP_LEVEL_ARGS);
   if (getOutputMode().shape === "summary" && topLevelCommand !== "show") {
     emitJsonError(new UsageError("'--shape summary' is only valid on 'akm show'.", "INVALID_SHAPE_VALUE"));
+    return;
   }
 
   // D7 — every command that renders through output() honours all six --format
@@ -680,9 +784,58 @@ if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
     );
   })();
 
+  const rawArgs = process.argv.slice(2);
   try {
-    await runMain(main);
+    // Mirrors citty's own builtin-flag short-circuit in `runMain` (main's own
+    // args never declare `help`/`h`/`version`/`v`, so both stay the fixed
+    // defaults citty would have computed too).
+    if (HELP_FLAGS.some((flag) => rawArgs.includes(flag))) {
+      const [resolved, parent] = resolveDeepestCittyCommand(main, rawArgs);
+      await showUsage(resolved as CommandDef, parent as CommandDef | undefined);
+      return;
+    }
+    if (rawArgs.length === 1 && VERSION_FLAGS.includes(rawArgs[0] as string)) {
+      console.log(pkgVersion);
+      return;
+    }
+    await runCommand(main, { rawArgs });
+  } catch (error) {
+    if (isCittyCliError(error)) {
+      // R-032: reclassify citty's own "unknown command" / "no command
+      // specified" / "missing required argument" family as USAGE (2) —
+      // citty's `runMain` would have printed this same usage banner +
+      // message, then unconditionally called `process.exit(1)`.
+      const [resolved, parent] = resolveDeepestCittyCommand(main, rawArgs);
+      await showUsage(resolved as CommandDef, parent as CommandDef | undefined);
+      console.error(error.message);
+      process.exitCode = EXIT_CODES.USAGE;
+      return;
+    }
+    // Anything else escaping here is a genuinely unexpected failure outside
+    // any command's own error handling — every command wraps its body in
+    // `runWithJsonErrors`, `defineJsonCommand`, or `defineGroupCommand`, all
+    // three of which route thrown errors through `emitJsonError` before they
+    // could ever reach this boundary. Preserve citty's prior GENERAL(1)
+    // mapping for this residual case.
+    console.error(error, "\n");
+    process.exitCode = EXIT_CODES.GENERAL;
   } finally {
     await disposeDispatchResources();
   }
+}
+
+// Only run the CLI when this module is the direct entry point. When it is
+// imported (e.g. by the in-process test harness in tests/_helpers/cli.ts),
+// `import.meta.main` is false and we skip all startup side effects (argv
+// mutation, output-mode init, index cleanup, banner, command dispatch) so
+// importers can drive the `main` command themselves without the process
+// exiting.
+//
+// Node path: this module carries a `#!/usr/bin/env bun` shebang and is launched
+// under Node via the `dist/cli-node.mjs` wrapper, which `import()`s this file
+// (so `import.meta.main` is false here even though the CLI is the real entry).
+// The wrapper sets `AKM_NODE_ENTRY=1` to opt into the startup block. The test
+// harness never sets it, so importing cli.ts under Bun stays inert as before.
+if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
+  await runCli();
 }

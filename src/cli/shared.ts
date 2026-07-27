@@ -82,10 +82,28 @@ function extractHint(error: unknown): string | undefined {
 }
 
 /**
- * Serialize an error to the standard JSON envelope and exit.
- * Used in both the startup try/catch and `runWithJsonErrors`.
+ * Serialize an error to the standard JSON envelope and record the mapped
+ * exit code. Used in both the startup try/catch and `runWithJsonErrors`.
+ *
+ * R-067: this used to call `process.exit(exitCode)` directly, which
+ * terminates the process synchronously and skips every pending `finally`
+ * block up the call stack — including `src/cli.ts`'s own
+ * `disposeDispatchResources()` cleanup and citty's per-command `cleanup`
+ * hooks. `process.exitCode = exitCode; return;` is equivalent for every
+ * caller here: Node/Bun exits with that code once the event loop drains
+ * naturally, but cleanup on the way there still runs.
+ * `src/commands/improve/extract-cli.ts` already uses this exact pattern for
+ * its own non-throw failure signal.
+ *
+ * Because this no longer throws or exits, it no longer terminates control
+ * flow on its own — every call site MUST treat it like a normal return and
+ * stop doing further work itself (an explicit `return;` right after the
+ * call, same as any other caller of a fallible function). `runWithJsonErrors`
+ * below satisfies this for free (this call is its catch block's last
+ * statement); `src/cli.ts`'s three direct call sites add the `return;`
+ * explicitly.
  */
-export function emitJsonError(error: unknown): never {
+export function emitJsonError(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   const hint = extractHint(error);
   const exitCode = classifyExitCode(error);
@@ -93,7 +111,7 @@ export function emitJsonError(error: unknown): never {
   // internal errors have none.
   const code = error instanceof AkmError ? error.code : undefined;
   console.error(JSON.stringify({ ok: false, error: message, ...(code ? { code } : {}), hint }, null, 2));
-  process.exit(exitCode);
+  process.exitCode = exitCode;
 }
 
 /**
@@ -137,8 +155,28 @@ export type JsonCommandDef<T extends ArgsDef = ArgsDef> = Omit<CommandDef<T>, "r
  */
 export const GLOBAL_OUTPUT_ARGS = {
   format: { type: "string", description: "Output format: json|jsonl|yaml|text|md|html (global flag)" },
-  detail: { type: "string", description: "Output detail: brief|normal|full (global flag)" },
-  shape: { type: "string", description: "Output projection: human|agent|summary (global flag)" },
+  // R-050(b): `--detail` genuinely changes the payload on most commands
+  // (e.g. `show` has three distinct brief/normal/full payloads), but is a
+  // verified no-op — byte-identical output at every level — on `info`,
+  // `list`, and `remember` specifically. Naming that here rather than
+  // implying uniform effect everywhere.
+  detail: {
+    type: "string",
+    description:
+      "Output detail: brief|normal|full (global flag). No effect on `info`, `list`, or `remember` — " +
+      "their payload is identical at every level.",
+  },
+  // R-050(c): mirrors the root command's own `--shape` help
+  // (`main.args.shape` in src/cli.ts) so the caveat is visible from every
+  // leaf's own `--help`, not only the top-level one. `summary` outside
+  // `show` is a hard usage error (exit 2, INVALID_SHAPE_VALUE), enforced at
+  // startup in src/cli.ts before any command body runs.
+  shape: {
+    type: "string",
+    description:
+      "Output projection: human|agent|summary (global flag). 'summary' is only valid on 'akm show' " +
+      "(a usage error, exit 2, everywhere else).",
+  },
   output: { type: "string", description: "Write rendered output to a file instead of stdout (global flag)" },
 } as const satisfies ArgsDef;
 

@@ -72,7 +72,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   named "json". The global output flags (`--format`, `--detail`, `--shape`,
   `--output`) are now declared on every leaf command so their values are
   consumed by the parser; the two bespoke argv-inspection workarounds this
-  replaces are deleted.
+  replaces are deleted. Three more non-exempt commands (`akm health`, `akm
+  index`, `akm lint`) now declare these flags too, purely for `--help`
+  visibility — all three already parsed `--format`/`--detail`/`--shape`/
+  `--output` correctly, since none of them has a positional a stray value
+  could fall into.
+
+- **BREAKING: unknown commands and missing required arguments now exit `2`
+  (usage), not `1`.** citty's own command-dispatch wrapper unconditionally
+  called `process.exit(1)` for any error it raised before a command's own
+  body ever ran — `akm totally-bogus` (unknown command), bare `akm log` /
+  `akm lessons` (a subcommand group invoked with no subcommand), and a
+  command missing a required positional (e.g. bare `akm import`) all exited
+  `1`, contradicting the documented exit-code table (`1` = general error /
+  not found, `2` = usage / bad input). The CLI now drives command dispatch
+  directly instead of going through that wrapper, so it can reclassify this
+  one error family as `2` while leaving `--help`, `--version`, and every
+  other exit code unchanged.
+
+  Migration: a script that treated exit `1` as "something went wrong" for a
+  mistyped command or missing argument should check for `2` instead (or
+  keep treating any non-zero exit as failure, which was already correct).
+
+- **BREAKING: `akm completions --shell <unsupported>` now exits `2` with the
+  standard JSON error envelope, not `1` with a raw stack trace.**
+  `completions` stays format-exempt (its own output is shell-script source,
+  not a result envelope — see STABILITY.md), but its body is now wrapped in
+  the same error-classification path every other command uses.
+
+  Migration: a script parsing this failure should now expect
+  `{"ok":false,"error":"...","code":"INVALID_FLAG_VALUE","hint":...}` on
+  stderr and exit code `2` in place of a stack trace and exit code `1`.
+
+- **`akm remember --show-similar` and `akm migrate apply --dry-run` are the
+  documented, canonical spellings** (previously `--showSimilar` /
+  `--dryRun`), matching every other multi-word flag in the CLI. Not a
+  breaking change: citty registers both the camelCase and kebab-case
+  spelling of any declared flag name automatically, so `--showSimilar` /
+  `--dryRun` keep working — they're now explicit, documented aliases instead
+  of an undocumented accident.
+
+- **`--detail` and `--shape` help text is scoped honestly.** The per-command
+  `--detail` description now names `info`, `list`, and `remember` as the
+  commands where it has no effect (verified byte-identical output at every
+  level — `akm show` is not one of these; it has three distinct
+  brief/normal/full payloads). `--shape`'s per-command help now repeats the
+  "`summary` is only valid on `akm show`" caveat the root help already
+  documented.
 
 - **All six `--format` values work on every command** (0.9.0 decision D7).
   `json|jsonl|yaml|text|md|html` are now universal. Previously there were three
@@ -128,6 +174,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   still never activates code. When the target is the default bundle (or omitted),
   installed scheduler entries are byte-identical to before, so upgrading shows no
   spurious drift.
+
+### Fixed
+
+- **Shell completion for `--source` no longer suggests `stash|registry|both`
+  on commands where that enum doesn't apply.** `--source` means a closed
+  `stash|registry|both` enum on `akm search`/`akm curate`, but a free-form
+  stash name/path on every `akm graph` subcommand and a free-form URL/ref/
+  path on `akm remember`. The generated completion script keyed its value
+  list by flag name only, so the search/curate enum leaked onto `akm graph
+  --source <TAB>` and `akm remember --source <TAB>`. Value completion is now
+  scoped per command path; commands without a fixed value set get no
+  suggestion instead of the wrong one.
 
 ### Removed
 

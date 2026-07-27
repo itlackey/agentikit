@@ -3,7 +3,10 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
+import { main } from "../../src/cli";
+import { GLOBAL_OUTPUT_ARGS } from "../../src/cli/shared";
 import { ConfigError, NotFoundError, UsageError } from "../../src/core/errors";
+import { formatExemptSurfaces } from "../../src/output/format-exempt";
 import { runCliCapture } from "../_helpers/cli";
 import { makeSandboxDir, makeStashDir, type SandboxedDir, withEnv, withEnvSync } from "../_helpers/sandbox";
 
@@ -362,4 +365,169 @@ describe("output shape registry — every CLI verb returns a registered shape", 
       expect(stdout).not.toContain("output shape not registered");
     });
   }
+});
+
+// R-032: unknown commands and missing required args must exit 2 (usage),
+// matching STABILITY.md's exit-code table — not 1. The root cause was
+// citty's own `runMain` unconditionally calling `process.exit(1)` for any
+// error escaping `runCommand`, including its unexported `CLIError` (unknown
+// command / missing args / "no command specified"). `src/cli.ts` no longer
+// calls `runMain`; it drives `runCommand` directly and reclassifies that one
+// error family as USAGE (2). This can only be observed through a real
+// subprocess: the in-process harness (`runCliCapture` in
+// tests/_helpers/cli.ts) drives citty's `runCommand` directly and never runs
+// `src/cli.ts`'s `import.meta.main`-gated startup block where the fix lives
+// (see that harness's own module docstring, and
+// tests/integration/commands/distill/distill-cli-flag.test.ts's comment on
+// the same split).
+describe("R-032: citty CLIError family exits 2, not 1", () => {
+  test("akm totally-bogus (unknown top-level command) exits 2", () => {
+    const { status, stderr } = spawnCli(["totally-bogus"], { cwd: repoRoot });
+    expect(status).toBe(2);
+    expect(stderr).toContain("Unknown command");
+    expect(stderr).toContain("totally-bogus");
+  });
+
+  test("akm wiki list (unknown top-level command, pre-0.9.0 surface) exits 2", () => {
+    const { status, stderr } = spawnCli(["wiki", "list"], { cwd: repoRoot });
+    expect(status).toBe(2);
+    expect(stderr).toContain("Unknown command");
+    expect(stderr).toContain("wiki");
+  });
+
+  test("akm import (missing required SOURCE positional) exits 2", () => {
+    const { status, stderr } = spawnCli(["import"], { cwd: repoRoot });
+    expect(status).toBe(2);
+    expect(stderr).toContain("Missing required positional argument");
+  });
+
+  test("bare akm log (group with no run, no subcommand given) exits 2", () => {
+    const { status, stderr } = spawnCli(["log"], { cwd: repoRoot });
+    expect(status).toBe(2);
+    expect(stderr).toContain("No command specified");
+  });
+
+  test("akm --help still exits 0 and prints usage (unaffected by the R-032 fix)", () => {
+    const { status, stdout } = spawnCli(["--help"], { cwd: repoRoot });
+    expect(status).toBe(0);
+    expect(stdout).toContain("USAGE");
+  });
+});
+
+// R-051: five non-exempt TERMINAL leaf commands (akm health, akm index, akm
+// lint, akm log tail, akm hints) were declared via a raw
+// `defineCommand`/inline `runWithJsonErrors` rather than `defineJsonCommand`,
+// so they did not automatically inherit `GLOBAL_OUTPUT_ARGS`
+// (src/cli/shared.ts) the way every `defineJsonCommand` leaf does. All five
+// already PARSED `--format`/`--detail`/`--shape`/`--output` correctly (none
+// declares a positional a stray value could fall into), so this was a
+// `--help` visibility / consistency gap, not a live parsing defect. This
+// package (PKG-8) owns and fixed three of the five (`health`/`index`/
+// `lint`); the other two (`log tail`, `hints`) live in
+// src/commands/observability-cli.ts, owned by a different package — they are
+// intentionally allowlisted below rather than silently excluded, so this
+// guard still fails loudly if a *sixth* leaf appears without declaring the
+// flags, rather than quietly widening its blind spot.
+//
+// Scope note: this walk only considers TERMINAL leaves — commands with a
+// `run` and no `subCommands` of their own. `defineGroupCommand`-based
+// dispatch groups (`akm graph`, `akm tasks`, `akm proposal`, …) also have a
+// `run` (their subcommand-routing + bare-invocation guard), but whether
+// their OWN bare-invocation behavior needs `GLOBAL_OUTPUT_ARGS` is a
+// separate, broader question this triage item didn't scope or fix — several
+// of them (e.g. `akm graph`'s bare invocation calls `output()` directly) may
+// carry a similar gap, but touching them means editing files this package
+// does not own.
+describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
+  // biome-ignore lint/suspicious/noExplicitAny: walking citty's dynamically-shaped command tree
+  type AnyCittyCommandForTest = Record<string, any>;
+
+  interface RunnableCommand {
+    /** Space-joined path, e.g. "log tail" — matches format-exempt.ts's naming. */
+    path: string;
+    args: Record<string, unknown>;
+  }
+
+  /**
+   * Walk the full `main` command tree and collect every TERMINAL leaf — a
+   * node with its own `run` and no `subCommands` of its own — at every
+   * depth. Excludes both pure routing groups with no `run` at all (e.g. `akm
+   * log`, `akm lessons`, which never render output) and `defineGroupCommand`
+   * dispatch groups that have both a `run` AND `subCommands` (out of scope —
+   * see the describe-block comment above).
+   */
+  function collectTerminalLeafCommands(
+    cmd: AnyCittyCommandForTest,
+    parentPath: readonly string[] = [],
+  ): RunnableCommand[] {
+    const results: RunnableCommand[] = [];
+    const subCommands = cmd.subCommands as Record<string, AnyCittyCommandForTest> | undefined;
+    const hasSubCommands = !!subCommands && Object.keys(subCommands).length > 0;
+    if (typeof cmd.run === "function" && parentPath.length > 0 && !hasSubCommands) {
+      results.push({ path: parentPath.join(" "), args: (cmd.args ?? {}) as Record<string, unknown> });
+    }
+    if (subCommands) {
+      for (const [key, sub] of Object.entries(subCommands)) {
+        results.push(...collectTerminalLeafCommands(sub, [...parentPath, key]));
+      }
+    }
+    return results;
+  }
+
+  // The two known, out-of-package gaps (src/commands/observability-cli.ts) —
+  // allowlisted, not silently excluded (see describe-block comment).
+  const KNOWN_OUT_OF_PACKAGE_GAPS = new Set(["log tail", "hints"]);
+
+  test("every non-format-exempt terminal leaf declares GLOBAL_OUTPUT_ARGS", () => {
+    const { commands: exemptCommands, subcommands: exemptSubcommands } = formatExemptSurfaces();
+    const requiredKeys = Object.keys(GLOBAL_OUTPUT_ARGS);
+    const leaves = collectTerminalLeafCommands(main as unknown as AnyCittyCommandForTest);
+    expect(leaves.length).toBeGreaterThan(20); // sanity: the walk actually found the tree
+
+    const missing: string[] = [];
+    for (const { path, args } of leaves) {
+      const topLevel = path.split(" ")[0] ?? path;
+      if (exemptCommands.includes(topLevel)) continue;
+      if (exemptSubcommands.includes(path)) continue;
+      if (KNOWN_OUT_OF_PACKAGE_GAPS.has(path)) continue;
+      const argKeys = new Set(Object.keys(args));
+      const hasAll = requiredKeys.every((key) => argKeys.has(key));
+      if (!hasAll) missing.push(`akm ${path}`);
+    }
+    expect(missing).toEqual([]);
+  });
+
+  test("the three PKG-8-owned sites (health, index, lint) declare GLOBAL_OUTPUT_ARGS", () => {
+    const requiredKeys = Object.keys(GLOBAL_OUTPUT_ARGS);
+    const leaves = collectTerminalLeafCommands(main as unknown as AnyCittyCommandForTest);
+    for (const path of ["health", "index", "lint"]) {
+      const leaf = leaves.find((entry) => entry.path === path);
+      expect(leaf).toBeDefined();
+      const argKeys = new Set(Object.keys(leaf?.args ?? {}));
+      for (const key of requiredKeys) {
+        expect(argKeys.has(key)).toBe(true);
+      }
+    }
+  });
+});
+
+// R-050(b)/(c): the per-leaf `--detail`/`--shape` help strings
+// (GLOBAL_OUTPUT_ARGS in src/cli/shared.ts) used to imply uniform effect
+// everywhere. `--detail` is a genuine no-op on `info`/`list`/`remember`
+// (verified byte-identical output at every level; `show` is NOT one of
+// these — it has three distinct payloads, so the pre-existing register claim
+// "brief==normal on show" was false). `--shape summary` is a hard usage
+// error everywhere except `akm show`. Both caveats should be visible from a
+// leaf's own `--help`, not only the root's.
+describe("GLOBAL_OUTPUT_ARGS help text is scoped honestly (R-050b/c)", () => {
+  test("--detail names the commands where it has no effect", () => {
+    expect(GLOBAL_OUTPUT_ARGS.detail.description).toContain("info");
+    expect(GLOBAL_OUTPUT_ARGS.detail.description).toContain("list");
+    expect(GLOBAL_OUTPUT_ARGS.detail.description).toContain("remember");
+  });
+
+  test("--shape repeats the 'summary is show-only' caveat root help documents", () => {
+    expect(GLOBAL_OUTPUT_ARGS.shape.description).toContain("summary");
+    expect(GLOBAL_OUTPUT_ARGS.shape.description).toContain("akm show");
+  });
 });

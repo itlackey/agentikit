@@ -189,3 +189,36 @@ describe("remember --target", () => {
     expect(json.error).toContain("source frozen-stash is not writable");
   });
 });
+
+// R-062: `showSimilar` was renamed to the kebab-case `show-similar` for
+// consistency with every other multi-word flag in the CLI. citty registers
+// BOTH the camelCase and kebab-case spelling of any declared flag name
+// automatically (verified against the pinned citty@^0.2.2 dependency), so
+// this is a pure rename — `--showSimilar` is kept as an explicit, documented
+// alias rather than becoming a silent accident, and both spellings must
+// keep behaving identically.
+describe("remember --show-similar / --showSimilar (R-062 rename, both spellings work)", () => {
+  test("--show-similar (canonical kebab-case spelling) includes a similar[] array", async () => {
+    const { result } = await runCli(["remember", "pinned note about deploy pipelines", "--show-similar"]);
+    expect(result.status).toBe(0);
+    const json = JSON.parse(result.stdout) as { ok: boolean; similar?: unknown[] };
+    expect(json.ok).toBe(true);
+    expect(Array.isArray(json.similar)).toBe(true);
+  });
+
+  test("--showSimilar (legacy camelCase spelling) behaves identically", async () => {
+    const { result } = await runCli(["remember", "pinned note about deploy pipelines", "--showSimilar"]);
+    expect(result.status).toBe(0);
+    const json = JSON.parse(result.stdout) as { ok: boolean; similar?: unknown[] };
+    expect(json.ok).toBe(true);
+    expect(Array.isArray(json.similar)).toBe(true);
+  });
+
+  test("omitting the flag entirely omits `similar` from the result", async () => {
+    const { result } = await runCli(["remember", "pinned note about deploy pipelines"]);
+    expect(result.status).toBe(0);
+    const json = JSON.parse(result.stdout) as { ok: boolean; similar?: unknown[] };
+    expect(json.ok).toBe(true);
+    expect(json.similar).toBeUndefined();
+  });
+});

@@ -25,7 +25,18 @@ export const migrateCommand = defineGroupCommand({
       meta: { name: "apply", description: "Create a verified backup and atomically apply pending migrations" },
       args: {
         config: configArg,
-        dryRun: { type: "boolean", default: false, description: "Run the same eligibility checks without mutation" },
+        // R-062: canonical spelling is kebab-case, matching every other
+        // multi-word flag in the CLI. `--dryRun` (the pre-rename spelling)
+        // is kept as an explicit, documented alias — citty registers BOTH
+        // the camelCase and kebab-case spelling of any declared flag name
+        // automatically, so this is a rename, not a breaking change: both
+        // spellings already worked, and both keep working.
+        "dry-run": {
+          type: "boolean",
+          alias: "dryRun",
+          default: false,
+          description: "Run the same eligibility checks without mutation. Alias: --dryRun.",
+        },
       },
       run({ args }) {
         runMigrationTool([

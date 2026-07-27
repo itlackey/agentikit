@@ -230,15 +230,30 @@ export async function runCliCapture(args: string[]): Promise<CliResult> {
       // code — NOT citty's plain-text error. Mirror that split here so e.g.
       // `health --detail verbose` produces the same JSON the spawn version
       // asserted on, rather than the bare exception message.
+      // `emitJsonError` (src/cli/shared.ts, R-067 / PKG-8) no longer
+      // force-exits on the error path — it records `process.exitCode` and
+      // returns, so a caller must stop on its own instead of relying on a
+      // synchronous `process.exit` to unwind the stack. The real entry point
+      // (src/cli.ts) adds an explicit `return;` at each of its three direct
+      // `emitJsonError` call sites for the same reason; mirror that here with
+      // a guard flag (a bare `return` here would skip this function's own
+      // final `return { code, stdout, stderr }` below and hand callers
+      // `undefined`) so a bad `--format`/`--detail`/`--shape` doesn't fall
+      // through to `runCommand` with a broken output-mode state and produce
+      // some OTHER exit code that clobbers the one `emitJsonError` just set.
+      let initFailed = false;
       try {
         initOutputMode(
           argv,
           shouldBypassConfigStartup(argv) ? (DEFAULT_CONFIG.output ?? {}) : (loadConfig().output ?? {}),
         );
       } catch (initError) {
-        emitJsonError(initError); // JSON envelope to stderr, then process.exit → ExitSignal
+        emitJsonError(initError);
+        initFailed = true;
       }
-      await runCommand(cmd, { rawArgs });
+      if (!initFailed) {
+        await runCommand(cmd, { rawArgs });
+      }
     }
   } catch (error) {
     if (error instanceof ExitSignal) {

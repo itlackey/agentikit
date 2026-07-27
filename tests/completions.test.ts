@@ -141,6 +141,26 @@ describe("completions command", () => {
     expect(script).toContain("--source)");
     expect(script).toContain("stash registry both");
   });
+
+  // R-052(a): --source means a closed enum on search/curate but a free-form
+  // stash name (graph) or free-form ref/URL/path (remember) elsewhere.
+  // FLAG_VALUES used to be a flat Record keyed by flag NAME, so the enum
+  // leaked onto every command with a --source flag. The fix scopes the rule
+  // to a cmd_path match inside the --source case.
+  test("scopes --source completion to search/curate, not globally (R-052a)", () => {
+    const sourceCase = script.match(/--source\)[\s\S]*?return 0\n\s*;;/)?.[0];
+    expect(sourceCase).toBeDefined();
+    // Literal bash text, not a JS template placeholder.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on generated bash source, not a JS template
+    expect(sourceCase).toContain('case "${cmd_path}" in');
+    expect(sourceCase).toContain('"akm search"|"akm curate")');
+    expect(sourceCase).toContain("stash registry both");
+    // graph's --source (a free-form stash name) must not be lumped into the
+    // search/curate enum branch, and there must be no unscoped fallback
+    // branch re-offering the enum to every other command.
+    expect(sourceCase).not.toContain('"akm graph"');
+    expect(sourceCase).not.toMatch(/\*\)\s*\n\s*COMPREPLY/);
+  });
 });
 
 // The `--install` real-subprocess test lives in
@@ -155,5 +175,19 @@ describe("completions unsupported shell", () => {
     const { stderr, status } = await runCli("completions", "--shell", "zsh");
     expect(status).not.toBe(0);
     expect(stderr).toContain("Unsupported shell");
+  });
+
+  // R-052(b): `completionsCommand` used to be a bare `run()` that threw
+  // directly, so the error escaped the standard JSON envelope entirely — a
+  // real subprocess printed a raw stack trace and exited 1 instead of the
+  // classified exit-2 usage error every other command produces. Wrapping the
+  // body in `runWithJsonErrors` fixes both the envelope and the exit code.
+  test("--shell fish produces a classified JSON error envelope and exits 2 (R-052b)", async () => {
+    const { stderr, status } = await runCli("completions", "--shell", "fish");
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
+    expect(parsed.error).toContain("Unsupported shell: fish");
   });
 });
