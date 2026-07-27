@@ -6,7 +6,7 @@
  * `index.db` FTS5 search + rebuild repository.
  *
  * Owns the `entries_fts` full-text query path and the incremental/full FTS
- * rebuild. Extracted verbatim from `src/indexer/db/db.ts` (WI-5a).
+ * rebuild.
  */
 
 import { warn } from "../../core/warn";

@@ -8,7 +8,7 @@
 - Prefer focused verification with `bun test tests/<file>.test.ts`. `bun run check:changed` runs a small set of output/contract suites (output-baseline, registry-search, show-argv-entrypoint, output-shapes-unit) plus `bun run lint` and `bunx tsc --noEmit`.
 
 ## Architecture
-- This is a CLI-only package. There is no public API, no barrel exports, and no `exports` map. `src/cli.ts` is the thin dispatcher; add CLI verbs under `src/commands/*.ts`.
+- This is a CLI-only package. There is no public API, no barrel exports, and no `exports` map. `src/cli.ts` is the thin dispatcher; command implementations live under `src/commands/`, mostly in per-family directories (`src/commands/read/`, `src/commands/improve/`, `src/commands/sources/`, `src/commands/env/`, `src/commands/graph/`, `src/commands/tasks/`, `src/commands/agent/`, `src/commands/proposal/`, `src/commands/health/`, `src/commands/lint/`), with a handful of standalone `*-cli.ts` files (e.g. `config-cli.ts`, `mv-cli.ts`, `workflow-cli.ts`, `migrate-cli.ts`) still at the top level.
 - If you touch providers, refs, search/show behavior, config, or output shaping, read `docs/architecture/architecture.md` first. `tests/contracts/` pins active contracts and is meant to catch contract drift.
 - Supported source providers are locked to `filesystem`, `git`, `website`, and `npm`. Do not add `context-hub`; do not reintroduce `openviking`.
 - `SourceProvider` is exactly `{ name, kind, path, sync? }`. All providers materialize files to local disk.
@@ -37,15 +37,18 @@
 - New test files should not mutate `process.env.HOME =`, `process.chdir(...)`, or `globalThis.fetch =` directly. The lint rule `bun scripts/lint-tests-isolation.ts` (wired into `bun run lint`) flags new occurrences; existing offenders are allow-listed. Use `withMockedFetch` for fetch swaps and restore cwd in a `finally` block when chdir is unavoidable.
 
 ## CLI Contract
-- Failures render to `stderr` as `{ok:false, error, code}`. Exit codes are `2` for usage, `78` for config, and `1` for general errors.
+- Failures render to `stderr` as `{ok:false, error, code}`. The canonical exit-code table (`EXIT_CODES` in `src/cli/shared.ts`) is: `0` success, `1` general error / not found, `2` usage error, `4` health warn (`akm health` only), `70` internal / unclassified (any thrown value that is not an `AkmError` — sysexits `EX_SOFTWARE`), `78` config error.
 
 ## LLM Defaults
 
 LLM defaults follow a "works correctly for the lowest common denominator" philosophy — a slow local model on a single-threaded server. Do not add per-call tuning knobs without a strong reason.
 
-- `max_tokens` is **not sent** by default in `chatCompletion`. The model/API already knows its own limits; a hardcoded default creates silent truncation failures. Users who need a cap can set `llm.maxTokens` in config.json. The only exception is `probeLlmCapabilities`, which sends `maxTokens: 64` because it expects a tiny fixed-shape response.
-- `DEFAULT_TIMEOUT_MS` in `tryLlmFeature` is **600 000 ms** (10 minutes). There is a single timeout knob: `llm.timeoutMs` in config.json (forwarded as `opts.timeoutMs`). The removed `featureGateTimeoutMs` field was a band-aid; do not re-add it.
-- `concurrency` defaults to **1** in `concurrentMap`. Cloud users can set `llm.concurrency: 4` in config.json. Local model servers (LM Studio, Ollama) run one inference at a time — the old default of 4 crashed them with "Model reloaded" / HTTP 500 errors.
+- `max_tokens` is **not sent** by default in `chatCompletion`. The model/API already knows its own limits; a hardcoded default creates silent truncation failures. Users who need a cap can set `engines.<name>.maxTokens` in config.json. The only exception is `probeLlmCapabilities`, which sends `maxTokens: 64` because it expects a tiny fixed-shape response.
+- `DEFAULT_TIMEOUT_MS` in `tryLlmFeature` is **600 000 ms** (10 minutes). There is a single timeout knob: `engines.<name>.timeoutMs` in config.json (forwarded as `opts.timeoutMs`). The removed `featureGateTimeoutMs` field was a band-aid; do not re-add it.
+- `concurrency` defaults to **1** in `concurrentMap`. Cloud users can set `engines.<name>.concurrency: 4` in config.json. Local model servers (LM Studio, Ollama) run one inference at a time — the old default of 4 crashed them with "Model reloaded" / HTTP 500 errors.
+- There is no top-level `llm` config key in 0.9 — it is retired and rejected at
+  config load (`akm config set/unset llm...` fails with `Unknown config key`).
+  Per-call tuning lives on each named engine under `engines.<name>.*`.
 
 ## Code Style
 - Prefer external `.md` (or `.xml`) files over long inline strings in TypeScript. Multi-line template literals containing markdown, XML, or prose belong in a standalone file in the same directory as the module that uses them. Import them with `import x from "./x.md" with { type: "text" }` and use `.replace`/`.replaceAll` with `{{PLACEHOLDER}}` tokens at call time. This keeps templates editable without touching TS source and avoids escaping noise inside template literals. See `src/tasks/backends/schtasks.ts` (which imports `src/assets/backends/schtasks-template.xml`), `src/output/cli-hints.ts`, and `scripts/copy-assets.ts` for the established pattern.

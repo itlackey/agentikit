@@ -238,7 +238,7 @@ export const feedbackCommand = defineJsonCommand({
     "failure-mode": {
       type: "string",
       description:
-        `Structured failure-mode taxonomy for negative feedback (F-3 / #384). ` +
+        "Structured failure-mode taxonomy for negative feedback. " +
         `Accepted values: ${FEEDBACK_FAILURE_MODES.join(", ")}. ` +
         "Stored alongside --reason in event metadata for aggregation by the distill pipeline.",
     },

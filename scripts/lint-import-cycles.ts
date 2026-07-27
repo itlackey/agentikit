@@ -197,7 +197,7 @@ export function measureCycleParticipants(): string[] {
  * `workflows/validator.ts`. `common.ts` itself stays a participant via a
  * separate `common.ts <-> paths.ts` round trip. Empirically re-verified
  * against the live tree (`bun scripts/lint-import-cycles.ts` → 18), not just
- * reasoned about — see `docs/design/execution/chunk-1.5/anchors.md` §E.1.
+ * reasoned about.
  */
 // chunk-8 (WI-8.6) drove the count 10 → 0 and the baseline EMPTY — the ratchet
 // is now ABSOLUTE (DoD 11): any import cycle in src/ is a hard failure. The
@@ -256,12 +256,10 @@ export const DYNAMIC_IMPORT_BASELINE: Readonly<Record<string, number>> = {
   "src/commands/remember.ts": 2,
   "src/commands/sources/add-cli.ts": 2,
   "src/commands/sources/sources-cli.ts": 1,
-  "src/commands/wiki-cli.ts": 13,
   "src/commands/workflow-cli.ts": 7,
   "src/indexer/ensure-index.ts": 1,
   "src/indexer/indexer.ts": 10,
   "src/indexer/init.ts": 3,
-  "src/indexer/passes/metadata-contributors.ts": 1,
   "src/indexer/search/db-search.ts": 1,
   "src/indexer/walk/file-context.ts": 1,
   "src/integrations/harnesses/opencode-sdk/sdk-runner.ts": 2,

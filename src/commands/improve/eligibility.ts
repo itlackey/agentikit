@@ -332,7 +332,7 @@ export function isLessonCandidate(ref: string): boolean {
  * which was true *only* for `lesson:*` refs — exactly the set distill refuses.
  * The result: every hourly run re-queued the same lesson refs, the same skip
  * message returned, and no work was ever done. See
- * `tests/commands/improve-distill-planner-skip-lessons.test.ts`.
+ * `tests/integration/commands/improve-distill-planner-skip-lessons.test.ts`.
  */
 export function isDistillCandidateRef(ref: string, stashDir?: string): boolean {
   const parsed = parseRefInput(ref);

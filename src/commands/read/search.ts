@@ -486,11 +486,12 @@ function normalizeScopeFilters(raw: StashEntryScope | undefined): StashEntryScop
 }
 
 /**
- * Parse repeated `--filter k=v` / `--scope k=v` argv tokens into a
+ * Parse repeated `--filter k=v` argv tokens into a
  * `StashEntryScope`. Throws a {@link UsageError} for malformed tokens
  * (missing `=`, unknown key) so callers don't see ambiguous misses.
  *
- * Used by both `akm search --filter` and `akm show --scope`.
+ * Used by both `akm search --filter` and `akm show --filter` — the two
+ * commands share one spelling for the scope-narrowing axis.
  */
 export function parseScopeFilterFlags(values: string[], flagName = "--filter"): StashEntryScope | undefined {
   if (values.length === 0) return undefined;

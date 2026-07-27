@@ -109,18 +109,18 @@ search hints (no new DB columns or `StashEntry` fields):
 
 | Concern | File |
 | --- | --- |
-| Type spec | `src/core/asset/asset-spec.ts` — `fact` in `ASSET_SPECS_INTERNAL` |
-| Renderer + action | `src/core/asset/asset-registry.ts` — `TYPE_TO_RENDERER`, `ACTION_BUILDERS` |
+| Type spec | `PLACEMENT_SPECS` in `src/core/asset/asset-placement.ts` — `fact: { stashDir: "facts", ...markdownSpec }` |
+| Renderer + action | `TYPE_PRESENTATION` in `src/core/type-presentation.ts` (supersedes the earlier `TYPE_TO_RENDERER`/`ACTION_BUILDERS` split) |
 | Renderer + metadata | `src/output/renderers.ts` — `factMdRenderer`, `applyFactMetadata` |
 | File classification | `src/indexer/walk/matchers.ts` — `DIR_TYPE_MAP` `facts/` |
-| Ranking | `src/indexer/search/ranking-contributors.ts` — `TYPE_BOOST` + pinned contributor |
-| Lint | `src/commands/lint/fact-linter.ts` + `registry.ts` (warns on missing `category`) |
+| Ranking | `src/indexer/search/ranking-contributors.ts` — `TYPE_BOOST` + `pinnedFactRankingContributor` |
+| Lint | `factDiagnostics` in `src/core/adapter/adapters/akm-lint.ts`, called from `src/commands/lint/index.ts` (warns `missing-category` on absent/unrecognized `category`) |
 | Authoring hint | `src/integrations/agent/prompts.ts` — `TYPE_HINTS.fact` |
-| Graph extraction (opt-in) | `src/core/config/config-schema.ts` — allow `fact` |
-| Type union | derived automatically from the registry (`src/core/common.ts`) |
+| Graph extraction (opt-in) | not currently wired: `graphExtractionIncludeTypes` (`src/core/config/schema/index-config.ts`) takes any string, but the runtime consumer's `SUPPORTED_GRAPH_EXTRACTION_INCLUDE_TYPES` set (`src/indexer/graph/graph-extraction.ts`) does not include `fact` — configuring it is a silent no-op today |
+| Type union | `KNOWN_TYPES` in `src/core/recognition-util.ts`, which includes `fact` |
 
 `fact:` refs resolve automatically — the ref resolver derives its type set
-from the registry (`src/commands/lint/base-linter.ts` contract note).
+from `KNOWN_TYPES` (`src/commands/lint/base-linter.ts` contract note).
 
 ## Phase 2 (follow-up, not in this change)
 

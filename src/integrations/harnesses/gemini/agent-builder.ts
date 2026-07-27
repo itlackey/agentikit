@@ -44,9 +44,11 @@
  *   `gemini -p "<p>"`; autonomy flags (`--yolo`, `--approval-mode`) belong in
  *   `profile.args` where the operator opts in explicitly.
  *
- * NOT registered anywhere: `builders.ts` / `harnesses/index.ts` wiring is a
- * follow-up integration task. Exported standalone so that task only adds a
- * registry entry.
+ * Registered: `geminiBuilder` is `GeminiHarness.agentBuilder` (`./index.ts`),
+ * one of the ten harnesses `HARNESS_REGISTRY` constructs
+ * (`harnesses/index.ts`); `agent/builders.ts` derives `BUILTIN_BUILDERS` from
+ * that registry, so this builder is reachable under the `"gemini"` platform
+ * name without any further wiring.
  */
 
 import {

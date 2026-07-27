@@ -8,7 +8,6 @@
  * Owns the raw SQL for `utility_scores` / `utility_scores_scoped` and the
  * retrieval-frequency counting over `usage_events`. The bounded-step EMA policy
  * itself lives in `indexer/feedback/utility-policy`; this repo only reads/writes.
- * Extracted verbatim from `src/indexer/db/db.ts` (WI-5a).
  */
 
 import path from "node:path";

@@ -36,11 +36,12 @@ way the person who wrote it does.
    akm show {{ spec_ref }} > {{ workspace_dir }}/spec.md
    ```
 
-2. Search for related decisions and prior implementations:
+2. Search for related decisions and prior implementations. Wiki pages are
+   indexed like any other asset, so a plain stash search covers both
+   (there is no `akm wiki search`):
 
    ```sh
    akm search "{{ feature_slug }}"
-   akm wiki search {{ knowledge_wiki }} "{{ feature_slug }}"
    ```
 
    Capture relevant hits in `{{ workspace_dir }}/related.md` with one line on
@@ -188,12 +189,15 @@ The PR is the durable artefact. Make it readable.
    `test-plan.md` (verification), and a manual test plan derived from
    `integration.log`.
 2. If the spec implied a non-trivial architectural choice, write or
-   update an ADR-style page under `wiki:{{ knowledge_wiki }}/decisions/`
-   recording the choice, the rejected alternatives, and the reasoning.
+   update an ADR-style page under `pages/decisions/` in the
+   `{{ knowledge_wiki }}` wiki, recording the choice, the rejected
+   alternatives, and the reasoning. Pages are edited directly with your
+   file tools — there is no `akm wiki` write command; find the wiki's
+   filesystem path with `akm list --format json` if you do not already
+   have it.
 3. Re-index so the new decision is searchable:
 
    ```sh
-   akm wiki ingest {{ knowledge_wiki }}
    akm index
    ```
 
@@ -208,5 +212,5 @@ The PR is the durable artefact. Make it readable.
 - A PR is open with a body that summarises intent, verification, and
   manual test plan.
 - Architectural decisions implied by the spec are recorded as a wiki
-  page under `decisions/`.
-- The knowledge wiki and stash index are refreshed.
+  page under `pages/decisions/`.
+- `akm index` completes cleanly so the new decision page is searchable.

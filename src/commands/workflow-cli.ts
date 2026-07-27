@@ -59,7 +59,7 @@ const workflowStartCommand = defineJsonCommand({
     params: { type: "string", description: "Workflow parameters as a JSON object" },
     force: {
       type: "boolean",
-      description: "Allow a parallel run when an active run already exists in this scope (#485)",
+      description: "Allow a parallel run when an active run already exists in this scope",
       default: false,
     },
   },

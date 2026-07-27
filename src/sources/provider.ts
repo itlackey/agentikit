@@ -16,7 +16,7 @@
  *
  * All other writing/reading concerns live outside this interface:
  *   - Writes:    src/core/write-source.ts
- *   - Reads:     src/indexer.ts
+ *   - Reads:     src/indexer/indexer.ts
  *   - Install:   src/sources/providers/sync-from-ref.ts
  */
 

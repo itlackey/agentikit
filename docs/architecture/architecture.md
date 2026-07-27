@@ -24,17 +24,19 @@ Built-in asset types are:
 - `fact`
 - `env`
 - `secret`
-- `wiki`
 - `task`
 - `session`
 
 The deprecated `vault` type was removed in 0.9.0 and replaced by `env` (whole
-`.env` files) and `secret` (single-value secret files).
+`.env` files) and `secret` (single-value secret files). `wiki` is not an item
+type: multi-page wikis are a bundle *format* owned by the `llm-wiki` adapter,
+not a per-file type stamped by the classifier (see
+[Classification](internals/classification.md)).
 
-Each type maps to a canonical source directory through `src/core/asset/asset-spec.ts`
-(`skills/`, `commands/`, `agents/`, `knowledge/`, `workflows/`, `scripts/`,
-`memories/`, `lessons/`, `facts/`, `env/`, `secrets/`, `wikis/`, `tasks/`,
-`sessions/`).
+Each type maps to a canonical source directory through
+`src/core/asset/asset-placement.ts`'s `PLACEMENT_SPECS` map (`skills/`,
+`commands/`, `agents/`, `knowledge/`, `workflows/`, `scripts/`, `memories/`,
+`lessons/`, `facts/`, `env/`, `secrets/`, `tasks/`, `sessions/`).
 
 ---
 
@@ -456,18 +458,18 @@ async execution context; unrelated work and child processes remain excluded.
 
 | Module | Responsibility |
 | --- | --- |
-| `src/cli.ts` | composition root (~620 LOC); per-family parsing lives in `commands/<family>/*-cli.ts` |
+| `src/cli.ts` | composition root; per-family parsing lives in `commands/<family>/*-cli.ts` |
 | `src/cli/` | citty composition helpers |
-| `src/core/asset/asset-spec.ts` | asset type registry and canonical source directories (re-export shim at `src/core/asset-spec.ts`) |
-| `src/core/asset/asset-ref.ts` | asset ref parsing and normalization (re-export shim at `src/core/asset-ref.ts`) |
-| `src/core/config/config.ts` | config loading, validation, env resolution (re-export shim at `src/core/config.ts`) |
+| `src/core/asset/asset-placement.ts` | asset type registry and canonical source directories (`PLACEMENT_SPECS`) |
+| `src/core/asset/asset-ref.ts` | asset ref parsing and normalization (`parseBundleRef`) |
+| `src/core/config/config.ts` | config loading, validation, env resolution |
 | `src/core/errors.ts` | error classes with stable codes and hints |
 | `src/core/parse.ts` | shared JSON parsing: think/fence stripping, balanced-brace extraction |
 | `src/core/concurrent.ts` | bounded concurrency pool (`concurrentMap`, default 1 worker) |
 | `src/core/write-source.ts` | the single write helper (branches on `source.kind`) |
 | `src/sources/provider.ts` | minimal `SourceProvider` interface |
 | `src/sources/providers/` | filesystem / git / website / npm implementations |
-| `src/sources/source-resolve.ts` | filesystem path resolution for refs |
+| `src/sources/resolve.ts` | filesystem path resolution for refs |
 | `src/indexer/indexer.ts` | walking, metadata generation, index rebuilds, embeddings, utility recompute |
 | `src/indexer/walk/` | walker, matchers, path/file/index/project context — the walk phase |
 | `src/indexer/db/` | `db`, `db-backup`, `graph-db`, `llm-cache` — the persistence phase |

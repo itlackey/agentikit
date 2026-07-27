@@ -27,7 +27,7 @@
  * changes outnumber retrievals, the term paid a live *bonus* for churn —
  * an asset's score could rise by being rewritten under auto-accept.
  * `accepted_change_count` remains persisted as raw telemetry only; it must
- * never re-enter the score (pinned by tests/commands/improve/outcome-invariance.test.ts).
+ * never re-enter the score (pinned by tests/integration/commands/improve/outcome-invariance.test.ts).
  *
  * ## Eligibility-trace decay
  *

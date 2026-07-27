@@ -49,12 +49,15 @@ akm search "deploy" --type script
 and remote providers — so you know what is in your library.
 
 ```sh
-akm list                        # All sources
-akm list --kind local           # Only local directories
-akm list --kind managed         # Only git / npm packages
-akm list --kind remote          # Only remote providers
-akm list --kind local,managed   # Multiple kinds
+akm list                          # All sources
+akm list --kind filesystem        # Only local directories
+akm list --kind git               # Only git-cloned sources
+akm list --kind npm               # Only npm packages
+akm list --kind filesystem,git    # Multiple kinds (comma-separated)
 ```
+
+Valid `--kind` values are the four source providers: `filesystem`, `git`,
+`npm`, `website`.
 
 ## akm update / akm remove
 

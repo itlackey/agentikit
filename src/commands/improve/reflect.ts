@@ -279,9 +279,10 @@ function readRejectedProposals(stash: string, ref?: string): RejectedProposalCon
 /**
  * Synthesize a tmp draft-file path for the agent/sdk file-write contract.
  *
- * Mirrors `src/commands/propose.ts:163-178` — when the runner is agent-CLI or
- * the OpenCode SDK, we instruct the agent to write the proposal body directly
- * to this file instead of inlining it in JSON on stdout. This bypasses two
+ * Mirrors the draft-path synthesis in `src/commands/proposal/propose.ts` —
+ * when the runner is agent-CLI or the OpenCode SDK, we instruct the agent to
+ * write the proposal body directly to this file instead of inlining it in
+ * JSON on stdout. This bypasses two
  * known failure modes for long assets: (a) ARG_MAX truncation on prompt
  * round-trips through fenced JSON, and (b) embedded-JSON parser brittleness
  * on multi-KB bodies (e.g. the `knowledge/systems/KOKORO_USAGE_GUIDE` 8.4KB
@@ -1910,7 +1911,7 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
 
   // Track every draft file path we synthesize so cleanup can remove them on
   // every return path (success and failure). Mirrors propose's unlink pattern
-  // in `src/commands/propose.ts:215-226` but generalised to N refinement
+  // in `src/commands/proposal/propose.ts` but generalised to N refinement
   // iterations. Always called via {@link cleanupDrafts} below.
   const draftPathsToCleanup: string[] = [];
 

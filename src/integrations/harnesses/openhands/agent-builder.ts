@@ -64,10 +64,13 @@
  * - **effort** — stays unconsumed (reserved; the shared request contract's
  *   "no builder consumes it yet" note stays true).
  *
- * NOT registered anywhere: `builders.ts` / `harnesses/index.ts` wiring is a
- * follow-up integration task (as is the registry entry declaring
- * `pattern: "local-runner"`, `structuredOutput: "native-json"`).
- * Exported standalone so that task only adds a registry entry.
+ * Registered: `openhandsBuilder` is `OpenhandsHarness.agentBuilder`
+ * (`./index.ts`), one of the ten harnesses `HARNESS_REGISTRY` constructs
+ * (`harnesses/index.ts`); `agent/builders.ts` derives `BUILTIN_BUILDERS` from
+ * that registry, so this builder is reachable under the `"openhands"`
+ * platform name without any further wiring. The registry entry also declares
+ * `pattern: "local-runner"`, `structuredOutput: "native-json"` alongside it
+ * (`./index.ts`).
  */
 
 import {
@@ -83,8 +86,8 @@ export const OPENHANDS_PLATFORM = "openhands";
 /**
  * Env var OpenHands reads its LLM model from — the platform's documented
  * model-selection channel for headless runs (there is no headless model
- * flag). Exported so the follow-up integration task and tests share the one
- * constant.
+ * flag). Exported (re-exported from `./index.ts`) so this harness's tests
+ * share the one constant.
  */
 export const OPENHANDS_MODEL_ENV = "LLM_MODEL";
 

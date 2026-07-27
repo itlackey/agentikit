@@ -3,14 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * index.db schema, version stamps, and targeted migrations — relocated from
- * `src/indexer/db/schema.ts` (WI-5a) into the storage layer. This isolates the
- * one genuinely risky area (schema evolution) from the CRUD/FTS/vector queries.
+ * index.db schema, version stamps, and targeted migrations, kept in the
+ * storage layer. This isolates the one genuinely risky area (schema
+ * evolution) from the CRUD/FTS/vector queries.
  *
  * The meta accessors, embedding purge, and vec-availability probe that
- * `ensureSchema` leans on now live in the sibling `index-meta-repository` /
- * `index-vec-repository` modules; importing them from there (rather than from
- * the old `db.ts` hub) is what lets this module leave the import cycle.
+ * `ensureSchema` leans on live in the sibling `index-meta-repository` /
+ * `index-vec-repository` modules.
  */
 
 import { bestEffort } from "../../core/best-effort";

@@ -25,7 +25,7 @@ export interface TaskWorkflowTarget {
 
 export type TaskPromptSource =
   | { kind: "inline"; text: string }
-  /** A stash asset ref like `agent:my-agent` or `command:foo`. */
+  /** A stash asset ref like `agents/my-agent` or `commands/foo`. */
   | { kind: "asset"; ref: string }
   /** A path resolved relative to the task file's directory. */
   | { kind: "file"; path: string };

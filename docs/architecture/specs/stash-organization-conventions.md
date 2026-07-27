@@ -63,7 +63,7 @@ load-bearing facts, each verified in code:
    project-context boost (`projectContextRankingContributor`, +0.2/token,
    cap 0.5). No "indexing-confidence bump" for subdirectories exists in code.
 3. **The FTS surface is `name`, `description`, `tags`, `hints`, `content`**
-   (`entries_fts`, `src/indexer/db/schema.ts`). There is **no `project` field** —
+   (`entries_fts`, `src/storage/repositories/index-schema.ts`). There is **no `project` field** —
    a bare `project:` frontmatter value is invisible to search. Off-axis facets
    must be `tags` to be retrievable.
 4. **`xrefs:` fold into the FTS `hints` field for all types**
@@ -370,7 +370,7 @@ provenance channel.
   onto the facts' tokens fires only when nothing matches the query exactly,
   and a real domain asset always outranks the facts. The rank-time demotion
   contributor was therefore dropped;
-  `tests/search-convention-fact-demotion.test.ts` pins the no-crowding
+  `tests/integration/search-convention-fact-demotion.test.ts` pins the no-crowding
   invariant and is the regression guard if demotion is ever revisited.*
 - **Automate correction demotion.** Closed by SPEC-5 in
   [stash-conventions-code-spec.md](stash-conventions-code-spec.md)

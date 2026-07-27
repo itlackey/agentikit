@@ -39,8 +39,10 @@
  * Non-event JSON lines (e.g. a bare JSON answer printed without framing) are
  * ignored by the event scan and land in the raw-stdout fallback untouched.
  *
- * NOT registered anywhere yet (`AkmHarness.resultExtractor` wiring is the
- * follow-up integration task). Exported cleanly for that task to import.
+ * Registered: `codexResultExtractor` is `CodexHarness.resultExtractor`
+ * (`./index.ts`); the engine resolves it via `getHarness()` in
+ * `workflows/exec/native-executor.ts` to normalize agent-unit stdout before
+ * schema validation.
  */
 
 import type { AgentResultExtraction, AgentResultExtractor } from "../../agent/builder-shared";

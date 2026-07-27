@@ -1,6 +1,6 @@
 # akm CLI — Full Reference
 
-You have access to a searchable library of scripts, skills, commands, agents, knowledge documents, workflows, and memories via `akm`. Search your sources first before writing something from scratch.
+You have access to a searchable library of scripts, skills, commands, agents, knowledge documents, workflows, env files, secrets, lessons, and memories via `akm`. Search your sources first before writing something from scratch.
 
 ## Search
 
@@ -70,6 +70,7 @@ akm show knowledge/my-doc                     # Show content (local or remote)
 | memory | `content` (recalled context) |
 | env | `keys` (key names only — values and comment text never returned) |
 | secret | `name` only (the whole file is the value — never returned) |
+| lesson | `content` plus `action` (rendered from the `when_to_use` frontmatter) — read both before applying the lesson |
 
 ## Capture Knowledge While You Work
 
@@ -294,10 +295,16 @@ akm config path --all                         # Show all config paths
 ## Other Commands
 
 ```sh
-akm init                                      # Initialize working stash
+akm init                                      # Initialize working stash (scaffold only)
+akm setup                                     # Interactive wizard: stash + LLM/embedding + agent + registry config
+akm setup --dir ~/custom-stash                # Run the wizard against a custom stash path
+akm setup --yes                               # Non-interactive, accepts all defaults
 akm index                                     # Rebuild search index (metadata enrichment when configured)
 akm index --full                              # Full reindex (metadata enrichment when configured)
 akm list                                      # List all sources
+akm lint                                      # Structural lint over the stash; exits 0 regardless of findings
+akm lint --fix                                # Auto-fix Tier 1 issues
+akm lint --fail-on-flagged                    # Exit non-zero when summary.flagged > 0 (CI-friendly)
 akm upgrade                                   # Upgrade akm using its install method
 akm upgrade --check                           # Check for updates
 akm help migrate 0.6.0                        # Print migration notes for a release (or: latest)
@@ -305,6 +312,11 @@ akm hints                                     # Print this reference
 akm completions                               # Print bash completion script
 akm completions --install                     # Install completions
 ```
+
+`akm init` only scaffolds the stash directory and registers it in config;
+`akm setup` additionally walks through embedding/LLM connections, agent
+profiles, sources, and registries. Use `setup` for first-time onboarding,
+`init` when you just need a bare stash.
 
 ## Proposals & Improvement (0.8.0+)
 
@@ -338,6 +350,8 @@ All commands accept `--format`, `--detail`, and `--shape` flags:
 - `--format jsonl` — one JSON object per line (streaming-friendly)
 - `--format text` — human-readable plain text
 - `--format yaml` — YAML output
+- `--format md` — Markdown output
+- `--format html` — HTML output
 - `--detail brief` (default) — compact output
 - `--detail normal` — adds tags, refs, origins
 - `--detail full` — includes scores, paths, timing, debug info
@@ -346,3 +360,51 @@ All commands accept `--format`, `--detail`, and `--shape` flags:
 - `--shape summary` — metadata only (no content/template/prompt), under 200 tokens; only valid on `akm show`
 
 Run `akm -h` or `akm <command> -h` for per-command help.
+
+### Piping JSON to jq
+
+For any akm command emitting more than ~64KB of JSON, prefer
+`akm <cmd> | cat | jq …` over the direct pipe. A known Bun stdout chunking
+interaction with `jq 1.6` can truncate the stream mid-document on direct
+pipes; `cat` re-buffers and presents a clean pipe to jq. `jq 1.7+` tolerates
+the chunked writes without the workaround.
+
+## Error Shapes and Exit Codes
+
+Every command returns JSON by default. On success, the shape is command-specific.
+On failure, every command emits:
+
+```json
+{"ok": false, "error": "<message>", "hint": "<optional remediation hint>"}
+```
+
+The `hint` field is present only when there is an actionable next step (a
+suggested flag or alternate command).
+
+Exit codes:
+
+| Code | Meaning | Error class |
+| --- | --- | --- |
+| 0 | Success | — |
+| 1 | Not found or general error | `NotFoundError`, other |
+| 2 | Usage / bad input | `UsageError` |
+| 78 | Configuration error | `ConfigError` |
+
+To detect failure reliably, check either:
+
+- `ok === false` in the parsed JSON response, or
+- a non-zero exit code (`$?` in shell, process exit code in SDK calls)
+
+Both signals are always set consistently. The JSON envelope is the preferred
+signal for agents parsing output programmatically; the exit code is the
+preferred signal for shell scripts.
+
+`akm lint` is the one command that does not follow the exit-code table above:
+it exits **0 on every successful run regardless of findings**. Read
+`summary.flagged` to detect issues, or pass `--fail-on-flagged` to opt into
+the CI-friendly "exit 1 when findings exist" behavior:
+
+```sh
+akm lint | jq '.summary.flagged'              # always exit 0; read the count
+akm lint --fail-on-flagged && deploy          # exit 1 if any flagged issues
+```

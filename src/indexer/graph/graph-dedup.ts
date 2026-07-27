@@ -6,7 +6,7 @@
  * Pure graph deduplication utility — no LLM calls, no I/O.
  *
  * Extracted from src/llm/graph-extract.ts so it can be imported by
- * src/indexer/graph-extraction.ts without being replaced by test mocks
+ * src/indexer/graph/graph-extraction.ts without being replaced by test mocks
  * that stub the LLM layer.
  */
 

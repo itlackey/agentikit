@@ -61,10 +61,12 @@
  * - **effort** — stays unconsumed (reserved; the shared request contract's
  *   "no builder consumes it yet" note stays true).
  *
- * NOT registered anywhere: `builders.ts` / `harnesses/index.ts` wiring is a
- * follow-up integration task (as is the registry entry declaring
- * `structuredOutput: "none"`). Exported standalone so that
- * task only adds a registry entry.
+ * Registered: `aiderBuilder` is `AiderHarness.agentBuilder` (`./index.ts`),
+ * one of the ten harnesses `HARNESS_REGISTRY` constructs
+ * (`harnesses/index.ts`); `agent/builders.ts` derives `BUILTIN_BUILDERS` from
+ * that registry, so this builder is reachable under the `"aider"` platform
+ * name without any further wiring. The registry entry also declares
+ * `structuredOutput: "none"` alongside it (`./index.ts`).
  */
 
 import {

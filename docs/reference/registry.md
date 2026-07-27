@@ -428,7 +428,7 @@ Each asset entry supports:
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `type` | yes | Any registered asset type (e.g. `script`, `skill`, `command`, `agent`, `knowledge`, `memory`, `workflow`, `env`, `secret`, `wiki`, `lesson`). The live asset registry in `src/core/asset/asset-spec.ts` is the authority. |
+| `type` | yes | AKM's own asset type keys (`skill`, `command`, `agent`, `knowledge`, `workflow`, `script`, `memory`, `env`, `secret`, `lesson`, `task`, `session`, `fact`, `instruction` — the authority is `KNOWN_TYPES` in `src/core/recognition-util.ts`), or a foreign/adapter-owned type (e.g. an `llm-wiki` page kind). This field is not a strict validation gate, so an unrecognized type still round-trips. Note: `wiki` was retired as an AKM-owned type — the LLM Wiki structure now lives in the first-class `llm-wiki` adapter, whose page kinds are foreign types rather than an AKM-owned `wiki` type. |
 | `name` | yes | Asset name |
 | `description` | no | One-line summary |
 | `tags` | no | Searchable keywords |

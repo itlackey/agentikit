@@ -11,9 +11,10 @@
  * These three surfaces are cohesive read-only "tell me what happened / what to
  * do" commands: `log` reads the append-only state.db events stream, `lessons
  * coverage` reports tag-coverage gaps from the index, and `hints` prints the
- * embedded AGENTS.md guidance. They share no helpers with any command still
- * inline in cli.ts, so the `loadHints` private helper and the
- * `formatEventLine` / `EMBEDDED_HINTS*` / db-tag-set imports move with them.
+ * embedded CLI-reference guidance (`src/assets/hints/cli-hints-{short,full}.md`).
+ * They share no helpers with any command still inline in cli.ts, so the
+ * `loadHints` private helper and the `formatEventLine` / `EMBEDDED_HINTS*` /
+ * db-tag-set imports move with them.
  *
  * The leaf handlers whose body is a plain `runWithJsonErrors(...) + output(...)`
  * (`events list`, `lessons coverage`) are migrated onto `defineJsonCommand`,
@@ -341,14 +342,15 @@ export const hintsCommand = defineCommand({
  * DEVIATION R-006 exists to close.
  *
  * Single-sourced now: this function always returns the embedded constant, in
- * every environment. `docs/agents/AGENTS.md` / `AGENTS.full.md` still exist as
- * human-readable repo documentation (linked from `docs/agents/README.md` and
- * `docs/README.md`) and have been brought back into content-agreement with
- * the embedded copies (no more `akm wiki` teaching, no more dead `type:name`
- * colon refs) — but they no longer feed this runtime path, so they cannot
- * make `akm hints`'s behavior diverge by install method again. A drift
- * between the two is now a documentation-accuracy issue, not the P0 "agent
- * runs a command that doesn't exist" bug this item was filed for.
+ * every environment. `docs/agents/AGENTS.md` and `AGENTS.full.md` never fed
+ * this runtime path after R-006 landed, kept re-diverging from the embedded
+ * copies with no test to catch it (stale `--format` lists, a retired `wiki`
+ * type, commands that no longer exist), and have since been deleted; their
+ * few genuinely-current sections (the exit-code/error-shape reference, the
+ * `akm lint` exit-code contract, the full `akm proposal`/`akm propose`
+ * surface) were folded into `src/assets/hints/cli-hints-{short,full}.md`
+ * instead. `akm hints` (and `--detail brief`) is the only reference to point
+ * readers at now; browse the embedded files directly for the source text.
  */
 function loadHints(detail: "brief" | "normal" | "full" = "normal"): string {
   // `brief` → the short guide; `normal`/`full` → the complete guide.

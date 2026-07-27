@@ -22,13 +22,6 @@ import { HARNESS_REGISTRY } from "../harnesses";
 // BUILTIN_BUILDERS (#563).
 import type { AgentCommandBuilder } from "./builder-shared";
 
-// ── Platform builders ─────────────────────────────────────────────────────────
-
-// The OpenCode builder was migrated to its harness directory in #564
-// (`harnesses/opencode/agent-builder.ts`) and the Claude Code builder in #563
-// (`harnesses/claude/agent-builder.ts`). Both are imported back into
-// BUILTIN_BUILDERS below so platform routing is unchanged.
-
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 /**

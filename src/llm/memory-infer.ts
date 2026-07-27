@@ -6,7 +6,7 @@
  * LLM helper for the `akm index` memory-inference pass (#201).
  *
  * Compresses a single memory body into one higher-signal derived memory. The
- * pass itself (in `src/indexer/memory-inference.ts`) is responsible for
+ * pass itself (in `src/indexer/passes/memory-inference.ts`) is responsible for
  * deciding which memories are pending, persisting the derived memory with the
  * correct frontmatter (`inferred: true`, `source: <parent-ref>`), and marking
  * the parent as processed for idempotency.

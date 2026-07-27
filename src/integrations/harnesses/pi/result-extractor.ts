@@ -41,8 +41,10 @@
  *     downstream for schema units;
  *   - non-JSON banner lines interleaved in the stream are skipped.
  *
- * NOT registered anywhere: attaching this as `AkmHarness.resultExtractor` on
- * a pi registry entry is the follow-up integration task.
+ * Registered: `piResultExtractor` is `PiHarness.resultExtractor`
+ * (`./index.ts`); the engine resolves it via `getHarness()` in
+ * `workflows/exec/native-executor.ts` to normalize agent-unit stdout before
+ * schema validation.
  */
 
 import type { AgentResultExtraction, AgentResultExtractor } from "../../agent/builder-shared";

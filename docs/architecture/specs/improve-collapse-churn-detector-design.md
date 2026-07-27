@@ -1,9 +1,29 @@
 # R5 — Longitudinal Collapse/Churn Detector for `akm improve`
 
-> **Status:** Design, ready to implement (2026-07-02). Implements R5 / closes G7 from
-> the 2026-06 improve self-learning analysis (§4-G7/§5-R5/§6.3, since pruned; see git history).
-> Deliberately deferred off `feat/improve-self-learning-wiring`; this document is the
-> implementation spec for a follow-up branch.
+> **Status:** Implemented. Implements R5 / closes G7 from the 2026-06 improve
+> self-learning analysis (§4-G7/§5-R5/§6.3, since pruned; see git history).
+>
+> **Implementation note (paths below are the ORIGINAL PLAN and no longer match
+> the landed tree in a few places — the plan's intent held, the file layout
+> didn't):** the merge guards landed in `checkGenerationGuard` /
+> `checkLexicalDiversity` / `checkMergeInformationFloor`, all in
+> `src/commands/improve/anti-collapse.ts` (planned below as `homeostatic.ts`,
+> which does not exist); the rank-metrics module landed at
+> `scripts/akm-eval/src/rank-metrics.ts` (planned below as
+> `src/core/eval/rank-metrics.ts` — the move stopped one directory short once
+> it turned out `src/` had zero importers of it, so there was no `src/`-side
+> reason to relocate it there); the canary/cycle-metrics DB helpers landed in
+> `src/storage/repositories/canaries-repository.ts` (planned below as
+> `state-db.ts`, part of the broader repository-extraction split of
+> `src/core/state-db.ts` / `src/indexer/db/db.ts`); the config schema landed
+> in `src/core/config/schema/improve.ts` (planned below as the monolithic
+> `config-schema.ts`); the health advisory landed in
+> `src/commands/health/advisories.ts` (planned below as `health.ts`); the
+> `akm improve canary` subcommand landed as documented. Section §10 carries
+> the same corrections in its file-by-file table. One naming note beyond file
+> layout: the frontmatter field this document calls `source_refs` landed as
+> `xrefs` (see `injectGenerationFrontmatter`, which lives in `consolidate.ts`
+> alongside its merge-branch call site) — read `source_refs` below as `xrefs`.
 >
 > **Scope discipline.** The field has *measured* the two failure modes this detects
 > (repeated LLM merge passes collapsing a store to one entry in ~10 passes; unbounded
@@ -105,7 +125,7 @@ what the store actually contains and then held fixed.
 A canary anchor being **legitimately merged** must not read as collapse. When scoring,
 a canary counts as a hit if the top-K contains (a) the anchor ref itself, OR (b) any
 entry whose frontmatter `source_refs` array contains the anchor ref (consolidate's
-`injectGenerationFrontmatter` at `src/commands/improve/consolidate.ts:764-781` already
+`injectGenerationFrontmatter` in `src/commands/improve/consolidate.ts` already
 writes `source_refs` = all merge participants; recombine writes `source_refs` at
 `recombine.ts:878`). One level of indirection only — if a merged asset is merged
 *again* and provenance is dropped, the canary misses, and that is precisely the
@@ -116,7 +136,7 @@ where the answer came from."
 ### 2.3 Retrieval path: FTS-only BM25 (decision + justification)
 
 The canary runs **`runFtsQuery`-path BM25 search** against the live `index.db`
-(`searchFts`, `src/indexer/db/db.ts:1309`; bm25 weights name 10 / description 5 /
+(`searchFts` in `src/storage/repositories/index-fts-repository.ts`; bm25 weights name 10 / description 5 /
 tags 3 / hints 2 / content 1), via a thin exported wrapper (§6.1). No embeddings, no
 LLM, no model download, byte-deterministic given the same index.
 
@@ -140,14 +160,16 @@ complementary and share their metric code (§2.4).
 
 ### 2.4 Metrics — reuse curate-golden's rank metrics (with a small move)
 
-`scripts/akm-eval/src/curate-metrics.ts` already implements pure, IO-free
+`scripts/akm-eval/src/curate-metrics.ts` already implemented (at design time) pure, IO-free
 `ndcgAtK`, `recallAtK`, `mrr`, `scoreCurateCase`, `summarizeCurateMetrics`. The
 detector must not duplicate them, and `src/` should not import from `scripts/`
 (bundling + layering). **Move the module to `src/core/eval/rank-metrics.ts`** and make
 `scripts/akm-eval/src/curate-metrics.ts` a one-line re-export so the bench, the CI
 test, and the detector share one implementation. The module has no imports, so the move
 is mechanical. Rejected alternative: copy the three functions into the detector —
-that's the parallel-mechanism accretion this repo bans.
+that's the parallel-mechanism accretion this repo bans. *(Landed as
+`scripts/akm-eval/src/rank-metrics.ts` instead of `src/core/eval/rank-metrics.ts` —
+see the implementation note at the top of this document.)*
 
 Per-canary the detector computes `recall@K`, `ndcg@K`, `rank of first hit` (K =
 `collapseDetector.k`, default 10, binary relevance with the single anchor + its
@@ -175,13 +197,14 @@ default-profile runs that touch no merges) the detector does nothing — zero co
 
 All computed from a single pass over `index.db` `entries` for
 `entry_type IN ('memory','lesson','knowledge')` (columns: `entry_key`, `entry_type`,
-`search_text`, `entry_json` — see `src/indexer/db/db.ts:247-257`). No filesystem reads.
+`search_text`, `entry_json` — see the `entries` table DDL in
+`src/storage/repositories/index-schema.ts`). No filesystem reads.
 
 | Metric | Definition | Source |
 |---|---|---|
 | `store_total`, `store_by_type_json` | Row counts, total and per type (also per-type for the remaining asset types, one `GROUP BY entry_type`) | `entries` |
 | `distinct_content_ratio` | `COUNT(DISTINCT normHash(search_text)) / COUNT(*)` over the three learning types. `normHash` = FNV-1a-64 of lowercased, whitespace-collapsed `search_text`. 1.0 = all distinct; downtrend = convergence. | `entries.search_text` (no JSON parse) |
-| `mean_bigram_diversity` | Mean of `computeBigramDiversity(search_text)` (**reuse** `src/commands/improve/homeostatic.ts:305`) over a deterministic sample: sort by `entry_key`, take every ⌈N/2000⌉-th row, cap 2,000. | `entries.search_text` |
+| `mean_bigram_diversity` | Mean of `computeBigramDiversity(search_text)` (**reuse** `computeBigramDiversity` in `src/commands/improve/anti-collapse.ts`) over a deterministic sample: sort by `entry_key`, take every ⌈N/2000⌉-th row, cap 2,000. | `entries.search_text` |
 | `over_generation_count` | Count of entries whose `entry_json` frontmatter carries `generation > maxGeneration` (parse `generation` from `entry_json` with a cheap `LIKE '%"generation"%'` SQL pre-filter so only the few merged assets get JSON.parsed). | `entries.entry_json` |
 | `accepted_actions` | This run's `acceptedCount` from the already-computed `computeImproveRunMetrics` result (threaded in, not re-derived). | improve run in flight |
 | `merge_floor_violations` | Count from §4, threaded from the consolidate pass result. | consolidate result |
@@ -202,19 +225,19 @@ requirement that merges strictly increase information, not just shorten.
 
 ### 4.1 (a) The hard re-merge floor already exists — turn it on
 
-`checkGenerationGuard` (`src/commands/improve/homeostatic.ts:282`) already refuses a
+`checkGenerationGuard` (`src/commands/improve/anti-collapse.ts`) already refuses a
 merge when ≥ 2 participants exceed `maxGeneration` (default 2), and
 `computeMergedGeneration`/`readAssetGeneration` maintain the frontmatter `generation`
-counter through `injectGenerationFrontmatter` (`consolidate.ts:777`, wired at
-`consolidate.ts:1941-1998`). It is gated on
+counter through `injectGenerationFrontmatter`, called from the merge branch of
+`consolidate.ts`. It is gated on
 `processes.consolidate.antiCollapse.enabled`, **default OFF**.
 
 **Change: flip the anti-collapse guard suite to default-ON (opt out via
 `antiCollapse: { enabled: false }`).** Concretely, the three call-site gates change
 from `config.enabled` truthy-checks to `config.enabled !== false`:
-`checkGenerationGuard` (`homeostatic.ts:286`), `checkLexicalDiversity`
-(`homeostatic.ts:334`), and the random-cluster injection gate
-(`consolidate.ts:1271`). This matches this branch's precedent (distill quality judge
+`checkGenerationGuard` and `checkLexicalDiversity` (both in `anti-collapse.ts`,
+landed name — planned below as `homeostatic.ts`), and the random-cluster injection
+gate in `consolidate.ts`. This matches this branch's precedent (distill quality judge
 and extract schema-similarity gate both flipped to default-ON, fail-open) and is
 narrow: the generation guard only refuses the pathological case of merging two
 *already-twice-merged* assets. Rejected alternative: a new separate re-merge counter —
@@ -223,7 +246,8 @@ malfunction.
 
 ### 4.2 (b) Information floor — new deterministic check beside the generation guard
 
-New pure function in `homeostatic.ts` (colocated with the other anti-collapse guards):
+New pure function in `homeostatic.ts` (colocated with the other anti-collapse guards;
+landed in `anti-collapse.ts` as `checkMergeInformationFloor`):
 
 ```ts
 export interface MergeInformationFloorResult {
@@ -278,7 +302,7 @@ surface.
 ### 5.1 Why not events alone
 
 The events log is capped at **90-day retention** (`purgeOldEvents`,
-`src/core/state-db.ts:396-411`) and stores metadata as JSON blobs. Collapse is a
+`purgeOldEvents` in `src/storage/repositories/events-repository.ts`) and stores metadata as JSON blobs. Collapse is a
 *slow* failure — the field's measured case took ~10 merge passes, and AKM's
 consolidate/recombine cycles are days-to-weeks apart in practice (`consolidate` 4 runs
 and `recombine-only` 1 run in a recent 7-day window) — so a meaningful trend window
@@ -389,24 +413,25 @@ export function runCollapseDetector(args: { stateDbPath?: string;
   config: AkmConfig; eventsCtx?: EventsContext }): CycleMetrics | undefined;
 ```
 
-Canary retrieval goes through `searchFts` (`src/indexer/db/db.ts:1309`); rank metrics
-import from the relocated `src/core/eval/rank-metrics.ts` (§2.4); bigram diversity
-imports `computeBigramDiversity` from `./homeostatic`.
+Canary retrieval goes through `searchFts` (`src/storage/repositories/index-fts-repository.ts`); rank metrics
+import from the relocated rank-metrics module (§2.4, landed at
+`scripts/akm-eval/src/rank-metrics.ts`); bigram diversity
+imports `computeBigramDiversity` from `./anti-collapse` (landed name).
 
 ### 6.2 Hook + config + existing-file edits
 
 | File | Change |
 |---|---|
-| `src/commands/improve/loop-stages.ts` (~line 833, end of `runImprovePostLoopStage` after the procedural block) | Call `runCollapseDetector(...)` when enabled AND (`consolidationRan` OR `recombination?.processed > 0`) AND `!options.dryRun`. Thread `consolidationRan` (already a param of `runImproveMaintenancePasses`) and the run's accepted/merge-floor counts. Attach the returned `CycleMetrics` to the post-loop result so it lands in `result_json` for free. |
-| `src/core/config/config-schema.ts` (`ImproveConfigSchema`, ~line 673-681) | Add `collapseDetector: z.object({ enabled, canaryCount, k, windowCycles, recallDropThreshold, entropyDropThreshold, churnMinAcceptedActions, retentionDays }).passthrough().optional()` with the bounds above (all `.optional()`, numeric mins/maxes mirroring §6.1 defaults). Add `mergeInformationFloor: z.boolean().optional()` and `minSpecificityRetention: z.number().min(0).max(1).optional()` to the existing `antiCollapse` object (~line 312). |
-| `src/core/config/config-types.ts` (`ImproveConfig`, ~line 387 region) | Mirror the two shapes with doc comments (keep the schema↔type pair in sync — this repo's config audit flagged two-source-of-truth drift as the root rot; add both sides in one commit). |
+| `src/commands/improve/loop-stages.ts` (end of `runImprovePostLoopStage`, after the procedural block) | Call `runCollapseDetector(...)` when enabled AND (`consolidationRan` OR `recombination?.processed > 0`) AND `!options.dryRun`. Thread `consolidationRan` (already a param of `runImproveMaintenancePasses`) and the run's accepted/merge-floor counts. Attach the returned `CycleMetrics` to the post-loop result so it lands in `result_json` for free. |
+| `src/core/config/schema/improve.ts` (`ImproveCollapseDetectorSchema`; landed here, not in the monolithic `config-schema.ts` as originally planned) | Add `collapseDetector: z.object({ enabled, canaryCount, k, windowCycles, recallDropThreshold, entropyDropThreshold, churnMinAcceptedActions, retentionDays }).passthrough().optional()` with the bounds above (all `.optional()`, numeric mins/maxes mirroring §6.1 defaults). Add `mergeInformationFloor: z.boolean().optional()` and `minSpecificityRetention: z.number().min(0).max(1).optional()` to the existing `antiCollapse` object. |
+| Config types (inferred via `z.infer` from the schema above, not a hand-mirrored `config-types.ts` type as originally planned) | Keep the schema as the single source of truth (this repo's config audit flagged two-source-of-truth drift as the root rot). |
 | `src/core/state/migrations.ts` (append after 015) | Migration `016-collapse-churn-detector` (§5.2 DDL, verbatim). |
-| `src/core/state-db.ts` | `insertCycleMetrics`, `queryRecentCycleMetrics(db, canarySetId, limit)`, `purgeOldCycleMetrics(db, retentionDays)` + canary CRUD (`insertCanaries`, `getActiveCanaries`, `deactivateCanarySet`) — same style as the recombine-hypotheses helpers at :1415-1675. |
-| `src/commands/improve/homeostatic.ts` | `checkMergeInformationFloor` (§4.2); flip the three `!config.enabled` gates to `config.enabled === false` (default-on). |
-| `src/commands/improve/consolidate.ts` (~line 1998) | Call the floor check after `injectGenerationFrontmatter`; extend `injectGenerationFrontmatter` (:764) to union `source_refs` instead of set-if-absent; count violations into the pass result. |
-| `src/core/events.ts` (`EventType` union, ~line 140 region) | Add `"collapse_detector_alert"` with a doc comment (metadata: `{kind, detail, metrics, canarySetId, runId}`). |
-| `src/commands/health.ts` (~line 2222, beside the `outcome_proxy_inverted` advisory) | Advisory `"collapse-churn-detector"`: read `collapse_detector_alert` events in the health window plus the latest `improve_cycle_metrics` row; `warn` on any alert, `pass` with the latest mean recall / entropy in the message otherwise, `unknown` when no cycle row exists yet. |
-| `src/core/eval/rank-metrics.ts` (new, moved) + `scripts/akm-eval/src/curate-metrics.ts` (becomes re-export) | §2.4. |
+| `src/storage/repositories/canaries-repository.ts` (landed here as part of the broader repository-extraction split, not in `state-db.ts` as originally planned) | `insertCycleMetrics`, `queryRecentCycleMetrics(db, canarySetId, limit)`, `purgeOldCycleMetrics(db, retentionDays)` + canary CRUD (`insertCanaries`, `getActiveCanaries`, `deactivateCanarySet`). |
+| `src/commands/improve/anti-collapse.ts` (landed name; originally planned as `homeostatic.ts`) | `checkMergeInformationFloor` (§4.2); the three `!config.enabled` gates read `config.enabled === false` (default-on). |
+| `src/commands/improve/consolidate.ts` | Call the floor check after `injectGenerationFrontmatter`; `injectGenerationFrontmatter` unions `xrefs` (the landed field name for what this document calls `source_refs`) instead of set-if-absent; count violations into the pass result. |
+| `src/core/events.ts` (`EventType` union) | Add `"collapse_detector_alert"` with a doc comment (metadata: `{kind, detail, metrics, canarySetId, runId}`). |
+| `src/commands/health/advisories.ts` (landed here, not in the monolithic `health.ts` as originally planned), beside the `outcome_proxy_inverted` advisory | Advisory `"collapse-churn-detector"`: read `collapse_detector_alert` events in the health window plus the latest `improve_cycle_metrics` row; `warn` on any alert, `pass` with the latest mean recall / entropy in the message otherwise, `unknown` when no cycle row exists yet. |
+| `scripts/akm-eval/src/rank-metrics.ts` (new; landed here instead of `src/core/eval/rank-metrics.ts` — see the implementation note at the top of this document) + `scripts/akm-eval/src/curate-metrics.ts` (becomes re-export) | §2.4. |
 | `src/commands/improve/improve-cli.ts` | `akm improve canary` subcommand: default = print active set + last `windowCycles` rows (table); `--refresh` mints a new set; `--json` for scripting. Rejected alternative: a new top-level `akm collapse` command — this is improve-internal observability and the health advisory is the primary surface. |
 
 ### 6.3 Default-on vs opt-in: **default-ON**, justified
@@ -448,23 +473,30 @@ operator who remembered to enable it is the one who didn't need it. Opt-out:
 
 ## 8. Test plan
 
-All tests use `tests/_helpers/sandbox` `withIsolatedAkmStorage` (per
-`tests/curate-golden-eval.test.ts:54-76`); no raw `process.env` mutation
-(`scripts/lint-tests-isolation.ts` enforces this). No test touches a live DB. All new
-tests are CI-fast unit tests under `tests/` (no `Bun.spawn`/`Bun.serve`/60s timeouts —
-the unit-vs-integration boundary rule).
+All tests use the `_helpers/sandbox` `withIsolatedAkmStorage` helper (per
+`withSeededGolden` in `tests/integration/curate-golden-eval.test.ts`); no raw
+`process.env` mutation (`scripts/lint-tests-isolation.ts` enforces this). No test
+touches a live DB. All new tests are CI-fast unit tests under `tests/` (no
+`Bun.spawn`/`Bun.serve`/60s timeouts — the unit-vs-integration boundary rule).
 
-1. **`tests/commands/improve/collapse-detector.test.ts` — deterministic collapse
+*(Landed layout differs from the plan below: the simulation/pure-function/orchestrator
+tests (items 1-3, 7) and the curate-golden reuse guard (item 6) all landed together in
+`tests/integration/commands/improve/collapse-detector.test.ts`; item 4 landed in
+`tests/commands/improve/anti-collapse.test.ts`; item 5 landed in
+`tests/integration/state-db/improve-cycle-metrics.test.ts`. See the implementation
+note at the top of this document.)*
+
+1. **`collapse-detector.test.ts` — deterministic collapse
    simulation (the headline test).** Seed an isolated stash with 30 distinct
    memories (distinct topics, distinct vocabularies), `akmIndex` it (FTS only — the
    detector path needs no embeddings; set `semanticSearchMode: "off"` in the sandbox
    config), mint the canary set, snapshot cycle 0. Then simulate merge passes
    directly on the stash files: each pass replaces groups of 3 memories with one
-   generic merged body (progressively blander shared phrasing, `source_refs` written
+   generic merged body (progressively blander shared phrasing, `xrefs` written
    for pass 1 then deliberately dropped for pass 2+ to model provenance loss),
    reindex, run `computeCycleMetrics` + `evaluateCollapseAlerts`. Assert:
    `distinct_content_ratio` and `mean_bigram_diversity` decrease monotonically; mean
-   recall survives pass 1 (merge-following via `source_refs`) and drops afterward; a
+   recall survives pass 1 (merge-following via `xrefs`) and drops afterward; a
    `collapse-recall` or `collapse-entropy` alert fires by pass ≤ 4; the
    `collapse_detector_alert` event is written.
 2. **Churn simulation** (same file): paraphrase bodies without merging (store shape
@@ -474,26 +506,27 @@ the unit-vs-integration boundary rule).
    each §1 clause boundary (just-below/just-above each threshold; median-window
    robustness against a single-cycle recall spike; window shorter than `W` never
    alerts).
-4. **Merge-information floor unit tests** (extend `tests/commands/improve/homeostatic.test.ts`):
+4. **Merge-information floor unit tests** (`anti-collapse.test.ts`):
    provenance-union enforcement, specificity retention at the 0.6 boundary, shortening
    merge fails, genuinely-additive merge passes; plus the default-on flip
    (`enabled` absent ⇒ guards active; `enabled: false` ⇒ inert — byte-identical to the
    old default for opted-out configs).
-5. **`tests/state-db/improve-cycle-metrics.test.ts`:** migration 016 applies on a
+5. **`improve-cycle-metrics.test.ts`:** migration 016 applies on a
    fresh and an existing DB; insert/query round-trip; `purgeOldCycleMetrics` deletes
    only rows past retention and returns the count; canary set mint / deactivate /
    re-mint preserves history rows with the old `canary_set_id`.
 6. **Curate-golden reuse guard:** the metrics move in §2.4 keeps
-   `tests/curate-golden-eval.test.ts` green unchanged (it imports through the
+   `curate-golden-eval.test.ts` green unchanged (it imports through the
    re-export) — that existing test IS the regression guard for the shared module; add
-   one assertion in the detector test importing `ndcgAtK` from
-   `src/core/eval/rank-metrics.ts` to pin the canonical path. Additionally, one
+   one assertion in the detector test importing `ndcgAtK` from the landed
+   rank-metrics module (`scripts/akm-eval/src/rank-metrics.ts`) to pin the canonical
+   path. Additionally, one
    detector test seeds the *curate-golden fixture corpus* with
    `AKM_EMBED_DETERMINISTIC: "1"` (exactly as `withSeededGolden` does), mints canaries
    against it, and asserts cycle-0 mean recall ≥ 0.9 — proving the canary mechanism
    itself finds well-formed content on a known-good corpus.
-7. **Wiring test** (extend `tests/commands/improve/improve-multi-cycle.test.ts`
-   pattern): an improve run with a stubbed consolidate that reports work writes
+7. **Wiring test** (same `collapse-detector.test.ts` file, "post-loop hook gating"
+   group): an improve run with a stubbed consolidate that reports work writes
    exactly one cycle row; a run with no consolidate/recombine work writes none;
    `dryRun` writes none; a detector that throws (inject a bad `indexDbPath`) leaves
    the improve run green with a warning (fail-open).
@@ -534,24 +567,27 @@ demotion pass.
 
 ## 10. Estimated diff size & file-by-file change list
 
+Estimates below are as planned; paths marked "landed at" are where §6.2's
+implementation note says the code actually ended up.
+
 | File | Change | Est. LOC |
 |---|---|---|
 | `src/commands/improve/collapse-detector.ts` | new module (§6.1) | +250 |
-| `src/core/eval/rank-metrics.ts` | moved from `scripts/akm-eval/src/curate-metrics.ts` (net zero; new home) | +200 / −0 |
+| `src/core/eval/rank-metrics.ts` (landed at `scripts/akm-eval/src/rank-metrics.ts`) | moved from `scripts/akm-eval/src/curate-metrics.ts` (net zero; new home) | +200 / −0 |
 | `scripts/akm-eval/src/curate-metrics.ts` | body replaced by re-export | −195 |
 | `src/core/state/migrations.ts` | migration 016 | +60 |
-| `src/core/state-db.ts` | cycle-metrics + canary CRUD, purge | +90 |
-| `src/commands/improve/homeostatic.ts` | `checkMergeInformationFloor`; default-on flips | +70 |
-| `src/commands/improve/consolidate.ts` | floor call site; `source_refs` union fix | +30 |
+| `src/core/state-db.ts` (landed at `src/storage/repositories/canaries-repository.ts`) | cycle-metrics + canary CRUD, purge | +90 |
+| `src/commands/improve/homeostatic.ts` (landed at `src/commands/improve/anti-collapse.ts`) | `checkMergeInformationFloor`; default-on flips | +70 |
+| `src/commands/improve/consolidate.ts` | floor call site; `xrefs` union fix (this document's `source_refs`) | +30 |
 | `src/commands/improve/loop-stages.ts` | post-loop hook | +25 |
-| `src/core/config/config-schema.ts` | `collapseDetector` + 2 `antiCollapse` keys | +30 |
-| `src/core/config/config-types.ts` | mirrored types | +30 |
+| `src/core/config/config-schema.ts` (landed at `src/core/config/schema/improve.ts`) | `collapseDetector` + 2 `antiCollapse` keys | +30 |
+| `src/core/config/config-types.ts` (landed as inferred `z.infer` types, no hand-mirrored file) | mirrored types | +30 |
 | `src/core/events.ts` | 1 event type + comment | +8 |
-| `src/commands/health.ts` | advisory | +30 |
+| `src/commands/health.ts` (landed at `src/commands/health/advisories.ts`) | advisory | +30 |
 | `src/commands/improve/improve-cli.ts` | `canary` subcommand | +40 |
-| `tests/commands/improve/collapse-detector.test.ts` | simulations + pure tests (§8.1-3, 6-7) | +350 |
-| `tests/commands/improve/homeostatic.test.ts` | floor + default-flip tests | +80 |
-| `tests/state-db/improve-cycle-metrics.test.ts` | schema/CRUD/purge | +90 |
+| `tests/commands/improve/collapse-detector.test.ts` (landed at `tests/integration/commands/improve/collapse-detector.test.ts`) | simulations + pure tests (§8.1-3, 6-7) | +350 |
+| `tests/commands/improve/homeostatic.test.ts` (landed at `tests/commands/improve/anti-collapse.test.ts`) | floor + default-flip tests | +80 |
+| `tests/state-db/improve-cycle-metrics.test.ts` (landed at `tests/integration/state-db/improve-cycle-metrics.test.ts`) | schema/CRUD/purge | +90 |
 
 **Total: ~+1,290 / −195 (net ~+1,100 incl. ~520 test LOC; production code ~+660).**
 For calibration: the moved metrics module and the simulation tests are the two biggest

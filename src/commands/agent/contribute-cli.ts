@@ -16,10 +16,10 @@
  * (which is reserved for plain runWithJsonErrors+output handlers).
  *
  * NOTE on `propose` vs `proposal`: the proposal MANAGEMENT family
- * (list/show/accept/reject/…) lives in src/commands/proposal-cli.ts. The
- * `propose` (create) verb here is the asset-authoring entry point and shares
- * no private helper with that module — its path/name helpers come from the
- * shared src/core/asset-create.ts module, imported below.
+ * (list/show/accept/reject/…) lives in src/commands/proposal/proposal-cli.ts.
+ * The `propose` (create) verb here is the asset-authoring entry point and
+ * shares no private helper with that module — its path/name helpers come from
+ * the shared src/core/asset/asset-create.ts module, imported below.
  */
 
 import fs from "node:fs";

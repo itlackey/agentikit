@@ -10,9 +10,11 @@
  * implementations historically maintained overlapping-but-not-identical
  * vocabularies of hanging-connector words, which was a maintenance trap.
  *
- * This module is the single source of truth. `distill` continues to layer its
- * own section-heading regex on top (those patterns are distill-specific and
- * intentionally stay local to that module).
+ * This module is the single source of truth. A separate section-heading regex
+ * (`HEADING_FRAGMENT_PATTERNS` in
+ * `src/commands/proposal/validators/proposal-quality-validators.ts`) layers on
+ * top of these heuristics and is shared across distill, consolidate, and
+ * reflect rather than staying local to any one of them.
  */
 
 /**
@@ -90,8 +92,10 @@ export const TRUNCATION_TRAILING_WORDS: ReadonlySet<string> = new Set([
  *   - Trailing ellipsis (`...` or `…`)
  *   - Last word matches {@link TRUNCATION_TRAILING_WORDS}
  *
- * Does NOT detect section-heading fragments — that check is distill-specific
- * and lives in `src/commands/distill.ts` (`HEADING_FRAGMENT_PATTERNS`).
+ * Does NOT detect section-heading fragments — that check lives in
+ * `HEADING_FRAGMENT_PATTERNS` in
+ * `src/commands/proposal/validators/proposal-quality-validators.ts`, shared by
+ * distill, consolidate, and reflect.
  */
 export function detectTruncatedDescription(description: string): string | null {
   const trimmed = description.trim();

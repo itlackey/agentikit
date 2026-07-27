@@ -2,6 +2,20 @@
 
 Branch: `refactor/di-seams`
 
+> **Implementation note (added later):** this plan has landed — the seam
+> pattern (`_set…ForTests` delegators, `tests/_helpers/seams.ts`,
+> `overrideSeam`/`withSeam`) is in production use (e.g.
+> `_setChatCompletionForTests` in `src/llm/client.ts`, consumed by multiple
+> test files), `mock.module(` no longer appears as live code anywhere under
+> `tests/` (only two historical comments reference the retired pattern), and
+> `src/indexer/db/db.ts` — flagged below as needing its stale mock deleted —
+> no longer exists at all; its functionality (`openIndexDatabase`) now lives
+> in `src/storage/repositories/index-connection.ts`. Several of the specific
+> test file paths named per-module below were renamed or consolidated by a
+> later, unrelated test reorganization; those are annotated in place rather
+> than silently repointed, since this document's per-module breakdown is
+> itself the historical record of how the migration was planned.
+
 ## Guardrails (binding, non-negotiable)
 
 This workstream was previously done wrong (~900 dependency-injection parameter
@@ -165,13 +179,20 @@ As specified above. Land with module 1 (the helper is exercised immediately).
   `chatCompletion`; the spread + `mock.module` block deletes, the responder
   var + `overrideSeam` call replaces it):
   - `tests/indexer/staleness-detect.test.ts` — deterministic validator fake →
-    `overrideSeam(_setChatCompletionForTests, fake)` in `beforeEach`.
+    `overrideSeam(_setChatCompletionForTests, fake)` in `beforeEach`. *(This
+    path no longer exists; no equivalently-named test was found by a later
+    search of `tests/indexer/` and `tests/integration/indexer/`.)*
   - `tests/llm/memory-infer.test.ts` — `chatResponder` + `chatCalls` counter
     pattern translates directly (see canonical migration above).
   - `tests/llm/metadata-enhance.test.ts` — same shape.
-  - `tests/commands/reflect-response-schema.test.ts` — same shape.
+  - `tests/integration/commands/reflect-response-schema.test.ts` — same shape.
+    (Landed under `tests/integration/commands/`, not `tests/commands/`.)
   - `tests/commands/consolidate/consolidate-judged-cache.test.ts` — same shape
-    (`chatCalls` recording preserved by the fake closure).
+    (`chatCalls` recording preserved by the fake closure). *(This path no
+    longer exists; `tests/commands/consolidate/goldens-consolidate-journal.test.ts`
+    and `tests/commands/consolidate/goldens-consolidate-ops.test.ts` both use
+    `_setChatCompletionForTests` today and are the closest surviving
+    candidates, but neither is confirmed as this file's direct successor.)*
 - No module state, no extra reset needed beyond the registry.
 
 ### 2. `src/core/warn` — 3 test files
@@ -249,12 +270,17 @@ math — the real ones satisfy every test).
   - `tests/integration/indexer.test.ts` — spreads real via specifier
     `'../../src/llm/embedder.js'` with a mutable `embedBatch` impl var →
     `overrideSeam(_setEmbedderForTests, { embedBatch: (...) => impl(...) })`.
-    Kills the `.js`-specifier fragility entirely.
+    Kills the `.js`-specifier fragility entirely. *(This flat path no longer
+    exists; indexer tests now live under `tests/indexer/` and
+    `tests/integration/indexer/` as multiple smaller files.)*
   - `tests/commands/improve/dedup-cache-wiring.test.ts` — mocks
     `{embedBatch, resolveEmbeddingModelId, cosineSimilarity}` WITHOUT
     spreading → seam `{embedBatch, resolveEmbeddingModelId}`; real
     `cosineSimilarity` is used as-is. Deletes the "mock.module must run before
-    import" dance; `dedup` can be statically imported.
+    import" dance; `dedup` can be statically imported. *(This path no longer
+    exists; `tests/integration/commands/consolidate/consolidate-promote-dedup.test.ts`
+    is the closest surviving dedup-focused test but is not confirmed as this
+    file's direct successor.)*
   - `tests/integration/setup-run.test.ts` — replaces with only
     `{DEFAULT_LOCAL_MODEL, isTransformersAvailable, checkEmbeddingAvailability}`
     → seam `{isTransformersAvailable, checkEmbeddingAvailability}`; real
@@ -335,8 +361,9 @@ change (forbidden). Module seam instead:
   ```
   Both exports gain a first-line delegation check (bodies are small switches;
   no rename needed).
-- **Test migration**: `tests/commands/tasks-write-target.test.ts:23` →
+- **Test migration**: `tests/integration/commands/tasks-write-target.test.ts` →
   `overrideSeam(_setBackendsForTests, { selectBackend: () => fakeBackend, backendNameForPlatform: () => "cron" })`.
+  (Landed under `tests/integration/commands/`, not `tests/commands/`.)
 
 ### 7-14. The `tests/integration/setup-run.test.ts` cluster (one file, 74 `mock.module` calls across 9 near-identical blocks)
 
@@ -403,7 +430,10 @@ sandboxed tmp dirs (this is an integration test; that is the honest behavior
 and un-swallows the probe). Fallback only if a real open proves too slow or
 vec-extension-dependent in CI: minimal
 `_setIndexDbForTests({ openIndexDatabase?, isVecAvailable? })` delegators.
-Default is deletion.
+Default is deletion. *(Landed as deletion, confirmed: `tests/integration/setup-run.test.ts`
+has zero `mock.module` calls today. `src/indexer/db/db.ts` no longer exists —
+`openIndexDatabase` now lives in `src/storage/repositories/index-connection.ts`
+— though `setup-run.test.ts` still has a stale comment naming the old path.)*
 
 #### 13. `src/integrations/agent` — seam in the DEFINING module
 

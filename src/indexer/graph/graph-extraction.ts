@@ -9,7 +9,7 @@
  * configured LLM to extract entities and relations from each one, and
  * persists the result to stash-local SQLite graph tables keyed by stash root.
  * The artifact is consumed by the search
- * pipeline (see `src/indexer/graph-boost.ts`) as a single boost component
+ * pipeline (see `src/indexer/graph/graph-boost.ts`) as a single boost component
  * inside the existing FTS5+boosts loop — there is NO second SearchHit
  * scorer and no parallel ranking track.
  *

@@ -10,8 +10,8 @@
  * The types mirror the YAML surface pinned by the addendum and the published
  * JSON Schema (`schemas/akm-workflow.json`); the compiler lowers this shape
  * into the plan-graph IR. Enum vocabularies here are the single TypeScript
- * source of truth — `tests/workflows/program-parser.test.ts` pins the JSON
- * Schema's enums against these constants so the two cannot drift.
+ * source of truth — `tests/integration/workflows/program-parser.test.ts` pins
+ * the JSON Schema's enums against these constants so the two cannot drift.
  *
  * Naming: YAML keys are snake_case (`on_error`, `max_loops`); the parsed
  * document uses the repo's camelCase convention (`onError`, `maxLoops`).

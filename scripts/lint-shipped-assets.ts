@@ -24,6 +24,18 @@
  *   - scripts/akm-eval/cases/** (eval cases + judge-calibration probes - an
  *                              embedded `skill:`/`knowledge:` ref there fails
  *                              akm-eval-smoke at cutover, plan 16)
+ *   - scripts/akm-eval/example-stash/** (agent workflow/skill/command prompts
+ *                              executed as eval material - added after a real
+ *                              incident: `workflows/*.md` taught the retired
+ *                              `akm wiki` verb family for 24 lines across 6
+ *                              files, undetected because this gate never
+ *                              scanned the directory. NOTE this gate only
+ *                              catches the dead `type:name` COLON grammar
+ *                              below, not arbitrary references to a removed
+ *                              command name with no colon (e.g. `akm wiki
+ *                              search`) - that class of defect needs a
+ *                              maintained-command-surface check, which this
+ *                              script does not attempt.)
  *
  * What is NOT the dead grammar (not flagged):
  *  1. `${type:NAME}` env/secret SUBSTITUTION tokens (`${secret:API_KEY}`) -
@@ -43,7 +55,7 @@ import path from "node:path";
 const REPO_ROOT = path.resolve(import.meta.dir, "..");
 
 // Agent-facing shipped roots (plan 7.3/16).
-const SCAN_ROOTS = ["src/assets", "scripts/akm-asset", "scripts/akm-eval/cases"];
+const SCAN_ROOTS = ["src/assets", "scripts/akm-asset", "scripts/akm-eval/cases", "scripts/akm-eval/example-stash"];
 
 // The sanctioned `memory:<name>` derived-from / belief-transition channel lives
 // here; those refs MUST match the CLI's emitted spelling, so the suite keeps the

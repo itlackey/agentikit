@@ -31,11 +31,12 @@ Pull the bug into the workspace before doing any analysis.
 
 1. Create `{{ workspace_dir }}/report.md` with the verbatim bug body, reporter,
    timestamps, attachments, and any reproduction steps the reporter offered.
-2. Search the local stash for prior incidents that look related:
+2. Search the local stash for prior incidents that look related. Wiki pages
+   are indexed like any other asset, so a plain stash search covers both
+   (there is no `akm wiki search`):
 
    ```sh
    akm search "<symptom keywords from {{ bug_ref }}>"
-   akm wiki search {{ knowledge_wiki }} "<symptom keywords>"
    ```
 
 3. Record the top 5 hits in `{{ workspace_dir }}/prior-art.md` with one line of
@@ -129,14 +130,19 @@ Step ID: promote-lessons
 
 ### Instructions
 The point of doing triage inside a workflow is that the *next* triage gets
-faster. This step makes that real.
+faster. This step makes that real. A wiki is a plain directory (`schema.md`
++ `pages/`) that the agent edits directly with its normal file tools — there
+is no `akm wiki` write command. Find the wiki's filesystem path with
+`akm list --format json` (the matching source's `path` field) if you do not
+already have it, and follow that wiki's own `schema.md` for voice and
+page-kind conventions.
 
 1. Decide what about this bug is worth keeping:
-   - Is the root cause an instance of a recurring pattern? If so, add or
-     update a page in `wiki:{{ knowledge_wiki }}` describing the pattern,
-     symptoms, and fix shape.
+   - Is the root cause an instance of a recurring pattern? If so, write or
+     update a page under `pages/` in the `{{ knowledge_wiki }}` wiki
+     describing the pattern, symptoms, and fix shape.
    - Is the diagnostic technique you used reusable? Add it to the same wiki
-     under a `techniques/` page.
+     under a `pages/techniques/` page.
 2. Save personal heuristics that are not team-shareable (style preferences,
    intuitions, "always check this first") with `akm remember`:
 
@@ -145,19 +151,20 @@ faster. This step makes that real.
    config before the query parser."
    ```
 
-3. Refresh the knowledge wiki index so the new pages are searchable:
+3. Reindex so the new/updated page is searchable:
 
    ```sh
-   akm wiki ingest {{ knowledge_wiki }}
    akm index
-   akm wiki lint {{ knowledge_wiki }}
    ```
 
 ### Completion Criteria
 - At least one of: a new/updated wiki page, a stored memory, or an explicit
   note that the bug carried no durable lesson.
-- `akm wiki lint` runs cleanly on `{{ knowledge_wiki }}`.
-- `akm wiki search {{ knowledge_wiki }} "<symptom>"` now returns the new page.
+- Any new/updated page was checked by hand against `schema.md` (xrefs
+  resolve, sources cite real files) — there is no `akm wiki lint` command,
+  and `akm lint` does not currently reach bundle-adapter content such as
+  wiki pages.
+- `akm search "<symptom>"` now returns the new page.
 
 ## Step: Hand off
 Step ID: handoff

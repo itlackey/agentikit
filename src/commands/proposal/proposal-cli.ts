@@ -104,21 +104,21 @@ const proposalAcceptCommand = defineJsonCommand({
     generator: {
       type: "string",
       description:
-        "F-6: Bulk-accept all pending proposals from this generator (e.g. reflect, distill). Requires no positional id.",
+        "Bulk-accept all pending proposals from this generator (e.g. reflect, distill). Requires no positional id.",
     },
     "max-diff-lines": {
       type: "string",
       description:
-        "F-6: When bulk-accepting, only accept proposals whose content is <= this many lines. Skips larger proposals.",
+        "When bulk-accepting, only accept proposals whose content is <= this many lines. Skips larger proposals.",
     },
     "older-than": {
       type: "string",
       description:
-        "F-6: When bulk-accepting, only accept proposals created more than this many days ago (e.g. '7' for 7 days).",
+        "When bulk-accepting, only accept proposals created more than this many days ago (e.g. '7' for 7 days).",
     },
     "dry-run": {
       type: "boolean",
-      description: "F-6: List proposals that would be bulk-accepted without accepting them.",
+      description: "List proposals that would be bulk-accepted without accepting them.",
       default: false,
     },
     yes: {
@@ -184,21 +184,21 @@ const proposalRejectCommand = defineJsonCommand({
     generator: {
       type: "string",
       description:
-        "F-6: Bulk-reject all pending proposals from this generator (e.g. reflect, distill). Requires no positional id.",
+        "Bulk-reject all pending proposals from this generator (e.g. reflect, distill). Requires no positional id.",
     },
     "max-diff-lines": {
       type: "string",
       description:
-        "F-6: When bulk-rejecting, only reject proposals whose content is <= this many lines. Skips larger proposals.",
+        "When bulk-rejecting, only reject proposals whose content is <= this many lines. Skips larger proposals.",
     },
     "older-than": {
       type: "string",
       description:
-        "F-6: When bulk-rejecting, only reject proposals created more than this many days ago (e.g. '7' for 7 days).",
+        "When bulk-rejecting, only reject proposals created more than this many days ago (e.g. '7' for 7 days).",
     },
     "dry-run": {
       type: "boolean",
-      description: "F-6: List proposals that would be bulk-rejected without rejecting them.",
+      description: "List proposals that would be bulk-rejected without rejecting them.",
       default: false,
     },
     yes: {

@@ -51,7 +51,7 @@ export const searchCommand = defineJsonCommand({
     },
     "include-proposed": {
       type: "boolean",
-      description: 'Include entries with quality:"proposed" in the result set. Excluded by default (v1 spec §4.2).',
+      description: 'Include entries with quality:"proposed" in the result set. Excluded by default.',
       default: false,
     },
     belief: {

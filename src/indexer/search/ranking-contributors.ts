@@ -176,7 +176,7 @@ function beliefStateBoost(item: RankedEntryInput): number {
  * a ceilinged one; demoted entries still list (belief FILTERING stays a
  * separate opt-in axis, `--belief`), and scores already below a ceiling keep
  * their relative ordering. Ceiling order mirrors the additive-penalty
- * severity order pinned in tests/belief-state-phase1a.test.ts:
+ * severity order pinned in tests/integration/belief-state-phase1a.test.ts:
  * deprecated (mildest) > superseded > contradicted > archived.
  */
 const BELIEF_STATE_SCORE_CEILINGS: Record<string, number> = {

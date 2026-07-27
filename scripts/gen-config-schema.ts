@@ -70,7 +70,7 @@ function generate(): JsonSchema {
       "Configuration file for the akm CLI (Agent Knowledge Management). Stored at " +
       "~/.config/akm/config.json (Linux/macOS) or %APPDATA%\\akm\\config.json " +
       "(Windows). Supports JSONC (JavaScript-style comments). Auto-generated " +
-      "from src/core/config-schema.ts by scripts/gen-config-schema.ts — do NOT edit by hand.",
+      "from src/core/config/config-schema.ts by scripts/gen-config-schema.ts — do NOT edit by hand.",
     ...top,
     $defs: defs,
   };

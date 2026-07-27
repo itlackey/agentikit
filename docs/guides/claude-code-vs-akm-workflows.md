@@ -240,12 +240,14 @@ state machine driven by an external agent through a CLI command loop
 (`src/workflows/runtime/runs.ts`, `src/commands/workflow-cli.ts`):
 
 ```
-akm workflow start   → snapshot steps into state.db, set currentStepId
-akm workflow next    → return the current step's instructions (auto-starts if none)
-   … the AGENT reads the instructions and does the work in its own environment …
+akm workflow start    → snapshot steps into state.db, set currentStepId
+akm workflow next     → return the current step's instructions (auto-starts if none)
 akm workflow complete → validate summary, advance currentStepId
-   … repeat until deriveRunState() reports "completed" …
 ```
+
+The AGENT reads the instructions returned by `next` and does the work in its
+own environment, then repeats `next` → work → `complete` until
+`deriveRunState()` reports `"completed"`.
 
 Key semantics:
 

@@ -6,9 +6,8 @@
  * `index.db` entries repository — CRUD, lookup, re-key, delete-cascade, and the
  * usage-event relink + workflow-document + tag-set reads that key on `entries`.
  *
- * Owns ALL raw SQL against the `entries` table (WS5). Extracted verbatim from
- * `src/indexer/db/db.ts` (WI-5a); the shared row/option shapes now come from the
- * leaf types + mapper modules rather than from the old `db.ts` hub.
+ * Owns ALL raw SQL against the `entries` table. The shared row/option shapes
+ * come from the leaf types + mapper modules.
  */
 
 import fs from "node:fs";

@@ -29,7 +29,7 @@ AKM writes to these locations on your machine. All paths follow [XDG Base Direct
 
 | Path | Contents | Safe to delete? |
 |---|---|---|
-| `config.json` | Your AKM configuration: engines, strategies, stash paths, and feature settings | **No** — deleting resets all settings |
+| `config.json` | Your AKM configuration: engines, improve strategies, bundles (stash sources), and experimental opt-ins — see [Configuration](configuration.md) | **No** — deleting resets all settings |
 
 Override: set `AKM_CONFIG_DIR` or `XDG_CONFIG_HOME`.
 
@@ -39,6 +39,7 @@ Override: set `AKM_CONFIG_DIR` or `XDG_CONFIG_HOME`.
 |---|---|---|
 | `index.db` | Search index for all your stash assets (FTS5 + metadata) | Yes — rebuilds via `akm index --full` |
 | `state.db` | Events, local usage telemetry, proposals, task history, improve run results, and workflow run state/history (the former `workflow.db` was folded in during the 0.9.0 cutover) | **No** — deletes event/usage logs, proposal queue, improve history, and workflow run history |
+| `logs.db` | Structured, high-volume task/run log lines (`{ts, task_id, run_id, stream, level, line}`), joined to `state.db`'s `task_history` rows by `task_id@started_at`. Kept separate from `state.db` because log lines are append-only and freely purgeable, unlike durable state | Yes — log lines are regenerable per run; deleting loses historical run output only |
 | `akm.lock` | Inter-process write lock | Yes — recreated automatically |
 | `akm.lock.lck` | Lock write sentinel | Yes — recreated automatically |
 
@@ -68,7 +69,7 @@ Override: set `AKM_CACHE_DIR` or `XDG_CACHE_HOME`.
 | `<stash>/` | All your asset files: agents, skills, commands, knowledge, workflows, memories, env files, secrets, wikis, lessons, facts | **No** — this is YOUR data |
 | `<stash>/.akm/` | Hidden AKM metadata (v0.7 proposals, legacy runs) | Caution — check for pending proposals first |
 
-Override: set `AKM_STASH_DIR` (or configure `stashDir` in `config.json`).
+Override: set `AKM_STASH_DIR`, or configure `bundles`/`defaultBundle` in `config.json` (the top-level `stashDir` key from 0.8 is retired and rejected in 0.9 — see [Configuration](configuration.md#bundles-and-write-target)).
 
 ---
 
@@ -92,9 +93,14 @@ An append-only log of every mutating action you perform with AKM. Events are sto
 - API keys or secrets (config is not stored in events)
 - Personal information
 
-**Retention:** Events older than 90 days are purged automatically when `akm improve` runs its maintenance pass. Purge is controlled by `purgeOldEvents()` with a 90-day default.
+**Retention:** Events older than 90 days are purged automatically when `akm improve` runs its maintenance pass. The window is `improve.eventRetentionDays` (default `90`; set `0` to disable), enforced by `purgeOldEvents()`.
 
-**Full event type list:**
+**Full event type list.** `EventType` (`src/core/events.ts`) is an open
+string union — new types can be added without a schema bump — so this is
+the set of types the code actually emits at HEAD (verified against every
+`appendEvent(...)` call site, 2026-07-27), grouped by area:
+
+*Asset lifecycle*
 
 | Event type | When emitted | Key metadata fields |
 |---|---|---|
@@ -103,33 +109,86 @@ An append-only log of every mutating action you perform with AKM. Events are sto
 | `update` | `akm update [source]` | `ref` |
 | `remember` | `akm remember <text>` | `ref` |
 | `import` | `akm import <file>` | `ref` |
-| `save` | `akm sync` | `ref` |
-| `feedback` | `akm feedback <ref>` | `signal` (positive/negative) |
+| `mv` | A successful `akm mv` rename only — nothing is emitted on failure | `ref` (the new ref); metadata `{from, to, rewroteFiles, readOnlyCiters, twinMoved}` (counts only) |
+
+*Search, retrieval, sync*
+
+| Event type | When emitted | Key metadata fields |
+|---|---|---|
 | `search` | `akm search <query>` | `query`, `source`, `signal` |
 | `curate` | `akm curate <prompt>` | `query`, `source` |
 | `show` | `akm show <ref>` | `ref`, `type`, `name` |
 | `select` | `akm show` after a search returning the same ref | `ref`, `entryId` |
+| `feedback` | `akm feedback <ref>` | `signal` (positive/negative) |
+| `save` | `akm sync` | `ref` |
+| `stash_synced` | `akm improve`'s internal auto-sync pass (the `sync.push` feature), **distinct from** the `akm sync` command above | `committed`, `pushed`, `skipped`, `reason` |
+| `env_access` | `akm env run <name> -- <command>` (audit trail: key **names** only, values never recorded) | `ref`, `keys` |
+| `secret_access` | `akm secret run <ref> <VAR> -- <command>` (audit trail: var **name** only, value never recorded) | `ref`, `var` |
+
+*Proposals*
+
+| Event type | When emitted | Key metadata fields |
+|---|---|---|
 | `promoted` | `akm proposal accept <id>` | `ref` |
 | `rejected` | `akm proposal reject <id>` | `ref` |
+| `proposal_reverted` | `akm proposal revert <id>` (undoes a previously-accepted proposal, restores prior content) | `ref` |
+| `proposal_expired` | A pending proposal aged past the retention window and was auto-expired | `ref` |
+| `proposal_expiration_pass` | Summary emitted once per `akm improve` maintenance run after per-proposal `proposal_expired` events | expiry counts |
+| `proposal_orphan_purge` | Stale proposals whose target asset no longer exists on disk, pruned by improve maintenance | `checked`, `rejected` |
+| `proposal_creation_rejected` | `createProposal()` validation failed before write | `ref`, `reason`, `source` |
+| `triage_drained` | `akm proposal drain` run summary | `promoted`, `rejected`, `deferredByReason`, `skippedByCap`, `policy`, `applyMode` |
+| `triage_deferred` | `akm proposal drain` left items unresolved after the (optional) judgment tier | `deferred`, `deferredByReason`, `reason` |
+
+*`akm improve` pipeline*
+
+| Event type | When emitted | Key metadata fields |
+|---|---|---|
+| `improve_invoked` | Start of an `akm improve` run | `ref` (scope); `strategy`, `scope`, `dryRun`, `eligibleCount` |
+| `improve_completed` | `akm improve` run finished | run stats |
+| `improve_failed` | `akm improve` run errored | error |
+| `improve_skipped` | Asset skipped by cooldown or budget | `ref`, `reason` |
+| `improve_lock_recovered` | Stale improve lock cleared at startup | |
+| `improve_review_needed` | `akm feedback` pushed a high-utility asset's utility below the review threshold — a review-needed escalation is recorded (not a proposal, so it can't accidentally overwrite the asset) | `ref`, `previousUtility`, `nextUtility` |
 | `reflect_invoked` | Start of reflect phase in `akm improve` | `ref`, engine |
 | `reflect_completed` | Reflect phase produced a proposal | `ref` |
 | `improve_reflect_outcome` | Per-asset reflect result | `ref`, `ok`, `durationMs`, `reason` |
 | `propose_invoked` | `akm propose` | `ref` |
-| `distill_invoked` | `akm distill` | |
-| `improve_skipped` | Asset skipped by cooldown or budget | `ref`, `reason` |
-| `improve_completed` | `akm improve` run finished | run stats |
-| `improve_failed` | `akm improve` run errored | error |
-| `improve_lock_recovered` | Stale lock cleared at startup | |
-| `proposal_orphan_purge` | Stale proposals pruned | `checked`, `rejected` |
-| `proposal_creation_rejected` | `createProposal()` validation failed | `ref`, `reason`, `source` |
-| `proposal_expired` | Proposal expired | `ref` |
-| `events_purged` | Old events deleted by maintenance | `purgedCount`, `retentionDays` |
+| `distill_invoked` | Distill phase inside the `akm improve`/`akm propose` pipeline. **`akm distill` is not a CLI command** — there is no standalone verb by that name | `ref`, outcome |
+| `consolidate_completed` | `akm improve`'s consolidate pass processed at least one memory | `ref` (`memories/_consolidation`) |
+| `extract_invoked` | `akm extract --type <harness>` / `--auto`, or improve-stage session extraction | `outcome`, `sessionId`, `harness` |
+| `extract_triaged` | The pre-LLM extract triage gate evaluated at least one session | `evaluated`, `passed`, `triagedOut`, `sourceRun` (aggregated) |
+| `schema_repair_invoked` | The schema-repair pass inside `akm improve` (`runSchemaRepairPass`) attempts to patch missing frontmatter on an asset that failed schema validation. **There is no `akm lint --repair` flag** — `lint` has `--fix`/`--auto-fix`, unrelated to this event | `ref`, outcome |
+| `proactive_selected` | The proactive-maintenance selector runs (once per `akm improve` run) | `count`, `dueTotal`, `neverReflected` (aggregated) |
+| `improve_replay_selected` | Bounded replay-budget selection ran | `count`, `budget`, `convergedSkipped`, `candidatePool` (aggregated) |
+| `improve_salience_first_run` | First improve run with no pre-existing salience baseline to compare against | `candidateCount`, `note` |
+| `improve_salience_rank_change` | Stash-wide rank-change report, from the second improve run onward | `stashSize`, `totalChanged`, `forgettingCandidates`, `topDrops` |
+| `outcome_proxy_inverted` | Proxy-adequacy tripwire: `outcome_score` correlates *negatively* with accepted-change rate (corr < −0.3) | `correlation`, `n` |
+| `outcome_proxy_dead` | Proxy-adequacy tripwire: `outcome_score` is statistically unrelated to accepted-change rate (\|corr\| < 0.1, n ≥ 500) | `correlation`, `n` |
+| `collapse_detector_alert` | The collapse/churn detector trips an alert rule during an improve cycle | `kind` (collapse-recall\|collapse-entropy\|collapse-shrink\|churn\|merge-floor), `detail`, `metrics`, `canarySetId`, `runId` |
+| `events_purged` | Old events deleted by improve maintenance (90-day default retention) | `purgedCount`, `retentionDays` |
+| `improve_runs_purged` | Old `improve_runs` rows deleted by improve maintenance (same retention window as events) | `purgedCount`, `retentionDays` |
+| `improve_cycle_metrics_purged` | Old `improve_cycle_metrics` rows (365-day retention) deleted by improve maintenance | `purgedCount`, `retentionDays` |
+| `task_logs_purged` | Old scheduled-task log files purged by improve maintenance | |
+
+*Workflows*
+
+| Event type | When emitted | Key metadata fields |
+|---|---|---|
 | `workflow_started` | `akm workflow start <ref>` | `ref`, `runId` |
 | `workflow_step_completed` | `akm workflow next` (genuine `completed` transition only) | `ref`, `runId`, `stepId`, `status` |
 | `workflow_step_updated` | `akm workflow next` (non-`completed` transitions: `failed`/`skipped`/`blocked`) | `ref`, `runId`, `stepId`, `status` |
-| `workflow_finished` | `akm workflow complete` | `ref`, `runId` |
-| `schema_repair_invoked` | `akm lint --repair` triggered schema repair | `ref` |
-| `archive_cleanup` | Archive cleanup during consolidation | |
+| `workflow_finished` | `akm workflow complete`, or a run reaching a terminal status | `ref`, `runId` |
+| `workflow_abandoned` | `akm workflow abandon` | `runId` only — never the workflow title |
+| `workflow_unit_started` | A workflow-engine unit dispatch begins (native `akm workflow run` or the `brief`/`report` driver protocol — both require `experimental.workflowEngine`, see [Workflows](workflows.md#enabling-the-workflow-engine-opt-in-in-090)) | ids/status only — never unit instructions or results |
+| `workflow_unit_finished` | A workflow-engine unit terminates | ids/status/tokens only — never unit instructions or results |
+
+*LLM usage and health*
+
+| Event type | When emitted | Key metadata fields |
+|---|---|---|
+| `llm_usage` | Per-attempt LLM call usage telemetry (#576) | model provenance, terminal outcome, duration, optional token usage |
+| `llm_usage_summary` | The owning LLM telemetry sink's terminal-record count marker | `expectedTerminalRecords` |
+| `health_probe` | `akm health`'s state.db round-trip write/read probe. **Not durably retained**: the row is inserted then deleted within the same connection once the round trip is confirmed, so the net effect on the `events` table is always zero rows | n/a (ephemeral) |
 
 ### 2. Usage Events Table
 
@@ -234,8 +293,8 @@ rm -rf ~/.cache/akm/registry/
 rm -rf ~/.cache/akm/config-backups/
 
 # Delete the events log from state.db (non-reversible)
-# There is no akm CLI command to do this directly in 0.8.0.
-# Use SQLite directly:
+# There is no akm CLI command to do this directly (`akm log` only exposes
+# `list`/`tail`, no delete/purge verb). Use SQLite directly:
 sqlite3 ~/.local/share/akm/state.db "DELETE FROM events;"
 
 # Delete all proposals

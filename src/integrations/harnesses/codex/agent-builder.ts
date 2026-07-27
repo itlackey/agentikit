@@ -47,8 +47,11 @@
  *     `-c model_reasoning_effort=<v>` — left to the integration task so the
  *     shared request contract's "no builder consumes it yet" note stays true).
  *
- * NOT registered anywhere yet: `HARNESS_REGISTRY` / `BUILTIN_BUILDERS` wiring
- * is a follow-up integration task. Exported cleanly for that task to import.
+ * Registered: `codexBuilder` is `CodexHarness.agentBuilder` (`./index.ts`),
+ * one of the ten harnesses `HARNESS_REGISTRY` constructs
+ * (`harnesses/index.ts`); `agent/builders.ts` derives `BUILTIN_BUILDERS` from
+ * that registry, so this builder is reachable under the `"codex"` platform
+ * name without any further wiring.
  */
 
 import { mkdtempSync, writeFileSync } from "node:fs";

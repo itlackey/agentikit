@@ -6,11 +6,10 @@
  * `index.db` connection lifecycle for the storage layer.
  *
  * Opens/closes the index database, arming the sqlite-vec extension and (for the
- * managed open path) running `ensureSchema`. Extracted verbatim from
- * `src/indexer/db/db.ts` (WI-5a); it now lives BELOW the indexer, so the storage
- * loan helpers (`index-db.ts`, `registry-cache.ts`) import their opener from a
- * sibling here instead of reaching up into the indexer — inverting the old
- * storage→indexer arrow.
+ * managed open path) running `ensureSchema`. This module lives BELOW the
+ * indexer, so the storage loan helpers (`index-db.ts`, `registry-cache.ts`)
+ * import their opener from a sibling here instead of reaching up into the
+ * indexer — inverting the old storage→indexer arrow.
  */
 
 import fs from "node:fs";

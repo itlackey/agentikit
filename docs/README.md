@@ -27,7 +27,7 @@ Task-oriented guides for using akm.
 
 ## [Agents](agents/README.md)
 
-- [AGENTS.md](agents/AGENTS.md) -- The system-prompt reference agents load to use akm
+- `akm hints` (or `akm hints --detail brief`) -- The CLI reference agents load to use akm; always the embedded corpus at `src/assets/hints/cli-hints-{full,short}.md`
 - [Agent Install Guide](agents/agent-install.md) -- Step-by-step automated install for agents
 - [Curate Workmap](agents/curate-workmap.md) -- Read before changing `akm curate` ranking or output
 

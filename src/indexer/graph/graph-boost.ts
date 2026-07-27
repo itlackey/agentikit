@@ -7,9 +7,10 @@
  *
  * This module is the consumer half of the graph-extraction pass. It loads
  * the persisted graph snapshot from SQLite and exposes a single helper,
- * {@link computeGraphBoost}, that the existing FTS5+boosts loop in
- * `src/indexer/db-search.ts` calls per-entry to obtain an additive boost
- * value.
+ * {@link computeGraphBoost}, that the `graph-ranking` contributor in
+ * `search/ranking-contributors.ts` calls per-entry — part of the existing
+ * FTS5+boosts pipeline `search/db-search.ts` drives — to obtain an additive
+ * boost value.
  *
  * CLAUDE.md / v1 spec compliance:
  *   - The graph signal feeds the **single** FTS5+boosts pipeline as one

@@ -122,7 +122,7 @@ export interface StashEntryScope {
   channel?: string;
 }
 
-/** Allowed keys in `--filter k=v` and `--scope k=v` flags. */
+/** Allowed keys in the `--filter k=v` flag (used by `akm search` and `akm show`). */
 export type ScopeKey = keyof StashEntryScope;
 
 // ── §3 — IndexDocument (Chunk 5 F4a M-core-1: IS IndexDocument + provenance) ─────
@@ -205,7 +205,7 @@ export interface IndexDocument {
   /**
    * Multi-tenant / multi-agent scope. Populated from the canonical
    * `scope_user`, `scope_agent`, `scope_run`, `scope_channel`
-   * frontmatter keys. Used by `akm search --filter` and `akm show --scope`.
+   * frontmatter keys. Used by `akm search --filter` and `akm show --filter`.
    */
   scope?: StashEntryScope;
   /**
@@ -220,7 +220,7 @@ export interface IndexDocument {
    * `note`, `decision-record`). Wiki conventions live in `schema.md`.
    */
   pageKind?: string;
-  /** Cross-references to other knowledge entries by ref (e.g. "knowledge:auth-design"). */
+  /** Cross-references to other knowledge entries by ref (e.g. "knowledge/auth-design"). */
   xrefs?: string[];
   /** Source identifiers this page was distilled from (typically `raw/<slug>` files). */
   sources?: string[];
@@ -269,7 +269,7 @@ export interface IndexDocument {
   /**
    * For derived memories (Phase 5A / Advantage D5), the parent ref that this
    * entry was distilled from. Surfaced from the `source:` frontmatter key
-   * (form: `"memory:<parent-name>"`) when the entry is recognized as a
+   * (form: `"memories/<parent-name>"`) when the entry is recognized as a
    * derived child. The indexer mirrors this value into the dedicated
    * `entries.derived_from` column so `getDerivedForParent()` can resolve the
    * child by parent ref without a full table scan.

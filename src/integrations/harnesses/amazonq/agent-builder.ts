@@ -55,10 +55,13 @@
  * - **effort** — stays unconsumed (reserved; the shared request contract's
  *   "no builder consumes it yet" note stays true).
  *
- * NOT registered anywhere: `builders.ts` / `harnesses/index.ts` wiring is a
- * follow-up integration task (as is the registry-side capability entry —
- * pattern `local-runner`, structuredOutput `none`). Exported standalone so
- * that task only adds a registry entry.
+ * Registered: `amazonqBuilder` is `AmazonqHarness.agentBuilder`
+ * (`./index.ts`), one of the ten harnesses `HARNESS_REGISTRY` constructs
+ * (`harnesses/index.ts`); `agent/builders.ts` derives `BUILTIN_BUILDERS` from
+ * that registry, so this builder is reachable under the `"amazonq"` platform
+ * name without any further wiring. The registry-side capability entry —
+ * pattern `local-runner`, structuredOutput `none` — is declared alongside it
+ * (`./index.ts`).
  */
 
 import {

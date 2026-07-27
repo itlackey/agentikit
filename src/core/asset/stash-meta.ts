@@ -8,7 +8,7 @@
  * A stash may carry an optional, human-authored `.meta/` directory at its
  * root holding orientation docs for the stash as a whole: purpose, key
  * assets, conventions, maintainer info. Because `.meta/` is a dot-directory,
- * the indexer's walker already skips it (see `src/indexer/walker.ts`), so
+ * the indexer's walker already skips it (see `src/indexer/walk/walker.ts`), so
  * these files never pollute the search corpus. They are surfaced on demand
  * via `akm show [<origin>//]meta[:<name>]`, which direct-reads the file
  * rather than going through the index.

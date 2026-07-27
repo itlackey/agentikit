@@ -1,5 +1,25 @@
 # Curate Workmap
 
+> **Implementation note (added later, verified against `src/commands/read/curate.ts`):**
+> much of the "Preferred direction" / "Next Fix Candidates" work below has
+> already shipped. `curateSearchResults` now selects via `selectCuratedStashHits`
+> (score-first ranking through `annotateCurateHit`/`compareCurateHits`/
+> `passesCurateScoreFloor`, not "take the first hit per type"),
+> `collapseCurateFamilies`/`preferBroadRootRepresentative`/`getCurateFamily`
+> implement the asset-family root/child collapsing this document recommends,
+> `shouldRunCurateFallback` triggers fallback on a weak result set (not only
+> on zero hits, reversing the "Fallback Search Behavior" section below), and
+> `appendCurateSupportRef`/`mergeCurateSupportRefs` attach graph-derived
+> support refs (the "Graph Leverage" recommendation). The `orderCuratedTypes`
+> function this document's "Execution Path" section names no longer exists —
+> regex-based type reordering was replaced by the scoring pipeline above. The
+> "Current Behavior" / "Current Curate Contract" sections below were accurate
+> at the time they were written but are now describing the PRE-fix state in
+> several places; re-verify against the functions above before trusting any
+> specific "current behavior" claim in this document. Not fully re-audited
+> line by line — this note flags the drift rather than rewriting the
+> analysis.
+
 ## When To Read This
 
 Read this before changing `akm curate` ranking, fallback, follow-up generation, or agent-facing output.
@@ -57,14 +77,18 @@ Read these first:
 - `src/commands/read/search.ts`
 - `src/commands/read/show.ts`
 
-Key functions in `src/commands/read/curate.ts`:
+Key functions in `src/commands/read/curate.ts` (current names; `orderCuratedTypes()`
+no longer exists — see the implementation note above):
 
 - `akmCurate()`
 - `searchForCuration()`
 - `deriveCurateFallbackQueries()`
 - `mergeCurateSearchResponses()`
 - `curateSearchResults()`
-- `orderCuratedTypes()`
+- `selectCuratedStashHits()` / `annotateCurateHit()` / `compareCurateHits()` / `passesCurateScoreFloor()`
+- `collapseCurateFamilies()` / `preferBroadRootRepresentative()` / `getCurateFamily()`
+- `shouldRunCurateFallback()`
+- `appendCurateSupportRef()` / `mergeCurateSupportRefs()`
 - `enrichCuratedStashHit()`
 
 ## Ranking And Selection Rules
@@ -182,7 +206,7 @@ Important details:
 Read:
 
 - `src/commands/read/curate.ts`
-- `tests/get-retrieval-counts.test.ts`
+- `tests/integration/get-retrieval-counts.test.ts`
 
 Important detail:
 
@@ -224,9 +248,9 @@ What not to do yet:
 
 Start with these:
 
-- `tests/curate-command.test.ts`
+- `tests/integration/curate-command.test.ts`
 - `tests/curate-logic.test.ts`
-- `tests/curate-search-for-curation.test.ts`
+- `tests/integration/curate-search-for-curation.test.ts`
 
 What they cover:
 
@@ -245,8 +269,8 @@ What they cover:
 
 Search-ranking baselines that curate should respect:
 
-- `tests/commands/search.test.ts`
-- `tests/ranking-regression.test.ts`
+- `tests/integration/db-scoring.test.ts` (no `tests/commands/search.test.ts` exists in the current tree; this is the closest surviving search-scoring baseline, not a confirmed direct successor)
+- `tests/integration/ranking-regression.test.ts`
 
 ## Known Gaps / Mismatches
 

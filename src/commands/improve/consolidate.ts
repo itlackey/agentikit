@@ -787,8 +787,8 @@ function archiveMemory(
  * Resolve the LLM connection for the consolidate pass.
  *
  * Priority order (mirrors extract / reflect / distill — see
- * `src/commands/extract.ts:421-438` and the canonical
- * `resolveImproveProcessRunner` pattern):
+ * `resolveExtractRunConfig` in `src/commands/improve/extract.ts` and the
+ * canonical `resolveImproveProcessRunner` pattern):
  *
  *   1. `improve.strategies.<name>.processes.consolidate.engine`
  *      via {@link resolveImproveProcessRunner}. Lets the user pin

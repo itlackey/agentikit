@@ -20,7 +20,8 @@ import { register } from "node:module";
 register("./text-import-hook.mjs", import.meta.url);
 
 // cli.js gates its startup block on `import.meta.main`, which is false when we
-// `import()` it here. Opt in explicitly so the CLI actually runs `runMain`.
+// `import()` it here. Opt in explicitly so the CLI actually runs its startup
+// block (dispatch, `runCli`).
 process.env.AKM_NODE_ENTRY = "1";
 
 await import("./cli.js");

@@ -6,8 +6,8 @@
  * The first-class `llm-wiki` adapter — akm 0.9.0 chunk-4 (DEV-7 restore).
  *
  * The `wiki` ASSET-TYPE dies in chunk 4 (plan §11 Chunk 4 / §7.4), but the LLM
- * Wiki structure stays first-class as its OWN adapter. This relocates the native
- * wiki semantics from `src/wiki/wiki.ts` + `src/wiki/wiki-templates.ts` into a
+ * Wiki structure stays first-class as its OWN adapter. This relocates the
+ * native wiki semantics from the retired `src/wiki/` module into a
  * `BundleAdapter` implementing `docs/architecture/specs/akm-0.9.0-bundle-adapter-spec.md` §7
  * (llm-wiki row), §6 (wiki-page row), §0.2 (the `wiki` asset-type is retired;
  * the adapter is first-class), §1.2 (probe = schema.md + pages/), §9 (links).
@@ -43,7 +43,8 @@
  *
  * ── validate (spec §6/§7, §9) — native wiki checks ONLY ──
  *
- * The native structural checks ported from `wiki.ts#lintWiki`: `broken-xref`
+ * The native structural checks ported from the retired `src/wiki/` module's
+ * `lintWiki`: `broken-xref`
  * (an xref target that does not resolve to an existing page), `uncited-raw`
  * (a `raw/` source not cited by any page's `sources:`), `missing-description`
  * (a page with no description), and `broken-source` (a page `sources:` entry

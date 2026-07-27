@@ -185,9 +185,12 @@ export const improveCommand = defineCommand({
     },
   },
   async run({ args }) {
-    // "canary" is a reserved scope word (never a valid asset type, and refs
-    // contain ":"): dispatch to the detector inspection verb instead of an
-    // improve run.
+    // "canary" is a reserved scope word: no `canary` stash subdir exists, so
+    // it can never be a real asset type, and it can never parse as a full
+    // ref either (isFullRefInput requires a slash-qualified conceptId with a
+    // known type prefix). So intercepting it here can't collide with a
+    // legitimate --type/ref positional. Dispatch to the detector inspection
+    // verb instead of an improve run.
     if (args.scope === "canary") {
       await runWithJsonErrors(() => runCanaryInspection(args.refresh));
       return;

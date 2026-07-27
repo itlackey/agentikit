@@ -35,8 +35,10 @@
  * fallback instead of hard-failing — version churn stays contained in this
  * one file, per the adapter contract.
  *
- * NOT registered anywhere: attaching this as `AkmHarness.resultExtractor` on
- * a copilot registry entry is the follow-up integration task.
+ * Registered: `copilotResultExtractor` is `CopilotHarness.resultExtractor`
+ * (`./index.ts`); the engine resolves it via `getHarness()` in
+ * `workflows/exec/native-executor.ts` to normalize agent-unit stdout before
+ * schema validation.
  */
 
 import type { AgentResultExtraction, AgentResultExtractor } from "../../agent/builder-shared";

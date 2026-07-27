@@ -32,7 +32,7 @@ export type ConfigErrorCode =
   | "UNSUPPORTED_CONFIG_VERSION"
   // Defense-in-depth sentinel raised by `akm init` under `bun test` to
   // refuse persisting a temp-dir stashDir to the user's real config.
-  // See src/commands/init.ts.
+  // See src/commands/sources/init.ts.
   | "INIT_TMP_STASH_REFUSED"
   | "SETUP_TMP_STASH_REFUSED"
   | "UNKNOWN_IMPROVE_STRATEGY"

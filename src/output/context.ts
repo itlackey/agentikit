@@ -10,7 +10,9 @@
  * calls read from this in-memory singleton instead of re-scanning argv and
  * re-loading config on every call.
  *
- * Initialized from `cli.ts` before `runMain`.
+ * Initialized from `cli.ts` before `runCli` dispatches the command (`cli.ts`
+ * drives citty's `runCommand` directly rather than `runMain` — see the
+ * top-level driver comment there).
  */
 
 import { UsageError } from "../core/errors";

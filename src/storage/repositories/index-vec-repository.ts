@@ -7,7 +7,6 @@
  *
  * Owns the sqlite-vec extension load/availability probe, the BLOB `embeddings`
  * table, the `entries_vec` virtual table, and the JS-cosine fallback path.
- * Extracted verbatim from `src/indexer/db/db.ts` (WI-5a).
  */
 
 import { createRequire } from "node:module";

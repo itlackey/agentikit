@@ -73,7 +73,7 @@ for `proposal_creation_rejected` events. Reports:
 - accept rate (of decided proposals)
 - reject rate (of decided proposals)
 - **accept-rate-by-source** — the canonical PROV-DM metric named in
-  `src/core/proposals.ts`
+  `acceptRateBySource` (`src/commands/sources/history.ts`)
 
 Tells you whether `akm improve`'s output is actually being kept, broken
 down by `reflect` / `distill` / `consolidate` / `schema-repair` /
@@ -520,7 +520,9 @@ Computes:
 
 #### Verdict thresholds + rationale
 
-Named constants in `src/proactive-verdict.ts`, each overridable by flag:
+Named constants (`DEFAULT_ACCEPT_RATIO`, `DEFAULT_MAX_REVERSION`,
+`DEFAULT_MIN_RETRIEVAL_DELTA`, `DEFAULT_MIN_DECIDED`) in
+`scripts/akm-eval/src/proactive-verdict.ts`, each overridable by flag:
 
 | Constant | Default | Flag | Rationale |
 | --- | ---: | --- | --- |
