@@ -277,15 +277,6 @@ describe("buildRegistryIndex", () => {
       "utf8",
     );
 
-    await expect(
-      buildRegistryIndex({
-        manualEntriesPath,
-        npmRegistryBase: serverBase,
-        githubApiBase: serverBase,
-      }),
-    ).resolves.toBeDefined();
-
-    // Re-run to inspect the actual result; resolves above proves no throw.
     const result = await buildRegistryIndex({
       manualEntriesPath,
       npmRegistryBase: serverBase,

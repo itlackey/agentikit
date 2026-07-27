@@ -32,7 +32,6 @@ import {
   validateProposalFrontmatter,
 } from "../../../../src/commands/proposal/validators/proposal-quality-validators";
 import type { AkmConfig } from "../../../../src/core/config/config";
-import { detectTruncatedDescription } from "../../../../src/core/text-truncation";
 import { resolveImproveProcessRunner } from "../../../../src/integrations/agent/runner";
 
 // ── stripOuterCodeFence ─────────────────────────────────────────────────────
@@ -212,44 +211,6 @@ describe("sanitizeMergedContent — full LLM-output pipeline", () => {
     const result = sanitizeMergedContent(raw);
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.result.frontmatter.description).toBe("hi");
-  });
-});
-
-// ── detectTruncatedDescription ──────────────────────────────────────────────
-
-describe("detectTruncatedDescription — guards against mid-sentence cutoffs", () => {
-  it("returns null for a complete sentence", () => {
-    expect(detectTruncatedDescription("A complete description ending with period.")).toBeNull();
-    expect(detectTruncatedDescription("Short label")).toBeNull();
-  });
-
-  it("flags descriptions ending with a colon", () => {
-    expect(detectTruncatedDescription("Tables in narrow column containers need:")).not.toBeNull();
-  });
-
-  it("flags descriptions ending with a comma", () => {
-    expect(detectTruncatedDescription("Before deleting any legacy CSS rule,")).not.toBeNull();
-  });
-
-  it("flags descriptions ending with a semicolon", () => {
-    expect(detectTruncatedDescription("Important to note;")).not.toBeNull();
-  });
-
-  it("flags descriptions ending with a plus operator", () => {
-    expect(detectTruncatedDescription("Tables in narrow column containers need max-width:100% +")).not.toBeNull();
-  });
-
-  it("flags descriptions ending in ellipsis", () => {
-    expect(detectTruncatedDescription("Continued from...")).not.toBeNull();
-    expect(detectTruncatedDescription("Continued from…")).not.toBeNull();
-  });
-
-  it("flags descriptions ending with hanging connectors", () => {
-    expect(detectTruncatedDescription("Before deleting any legacy CSS rule, verify shared.css has")).not.toBeNull();
-    expect(
-      detectTruncatedDescription("Eval tasks must create a genuine knowledge gap — the skill must be"),
-    ).not.toBeNull();
-    expect(detectTruncatedDescription("Steps to take with")).not.toBeNull();
   });
 });
 

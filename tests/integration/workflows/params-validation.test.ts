@@ -139,10 +139,15 @@ describe("#12 — journaled params must still satisfy the frozen schemas (brief/
     // (separately-detected) replay divergence, not a params integrity failure.
     writeProgram("param-guard", PARAM_GUARD_WF);
     const started = await startWorkflowRun("workflows/param-guard", { files: ["a.ts"], mode: "fast" });
-    tamperParams(started.run.id, JSON.stringify({ files: ["a.ts", "b.ts"], mode: "slow" }));
+    const tampered = { files: ["a.ts", "b.ts"], mode: "slow" };
+    tamperParams(started.run.id, JSON.stringify(tampered));
 
-    // brief no longer trips the param-integrity assert (it may still surface
-    // other state, but must not throw the integrity-check corruption error).
-    await expect(buildWorkflowBrief(started.run.id)).resolves.toBeDefined();
+    // brief no longer trips the param-integrity assert: it must not throw the
+    // integrity-check corruption error, AND must surface the tampered (but
+    // schema-valid) params verbatim rather than silently reverting to the
+    // originally-started values.
+    const brief = await buildWorkflowBrief(started.run.id);
+    expect(brief.run.id).toBe(started.run.id);
+    expect(brief.run.params).toEqual(tampered);
   });
 });

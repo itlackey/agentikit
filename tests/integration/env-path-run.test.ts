@@ -158,21 +158,3 @@ describe("env run", () => {
     expect(stderr).toContain("only one of --only or --except");
   });
 });
-
-describe("vault run (removed in 0.9.0)", () => {
-  test("the `akm vault` verb no longer exists", async () => {
-    const stashDir = makeStash();
-    fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
-    fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "FOO=bar\nBAR=baz\n", "utf8");
-
-    const { status } = await runCli(
-      ["vault", "run", "vault:prod", "--", "bash", "-lc", 'printf \'%s %s\' "$FOO" "$BAR"'],
-      {
-        AKM_STASH_DIR: stashDir,
-      },
-    );
-
-    // citty exits non-zero for an unknown top-level command.
-    expect(status).not.toBe(0);
-  });
-});

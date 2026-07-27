@@ -87,20 +87,40 @@ describe("migration help", () => {
   });
 
   test("dist build resolves release-notes relative to the compiled module", () => {
-    // Simulate the published layout: a `<pkg>/dist` directory alongside
-    // `<pkg>/docs/migration/release-notes`. The loader derives its path
-    // from `import.meta.dir`, so we rebuild that relationship in a temp
-    // directory and assert the expected file resolves.
+    // VALUE-07: the previous version of this test reimplemented the
+    // path-resolution logic under test and got it wrong — it resolved only
+    // ONE directory level up from a flat `<pkg>/dist`, so it could never
+    // fail even if production's traversal broke. Production's
+    // `releaseNotesDir()` (src/commands/sources/migration-help.ts) computes
+    // `path.resolve(getDirname(import.meta.url), "../../../docs/migration/release-notes")`
+    // — THREE levels up — because `tsc` (see package.json "build") mirrors
+    // `src/` into `dist/` 1:1, so the compiled module really lives three
+    // levels deep at `<pkg>/dist/commands/sources/migration-help.js`.
+    //
+    // This rewrite extracts the literal traversal string straight out of the
+    // production source (so it can't silently drift from what production
+    // actually does) and applies it at a module directory that mirrors the
+    // REAL `dist/commands/sources` nesting (a structural fact independent of
+    // that literal). If production's traversal depth ever stops matching the
+    // real src/dist nesting, `resolved` points at a directory that doesn't
+    // exist in this fixture and the test fails.
+    const migrationHelpSrcPath = path.join(PROJECT_ROOT, "src", "commands", "sources", "migration-help.ts");
+    const migrationHelpSrc = fs.readFileSync(migrationHelpSrcPath, "utf8");
+    const traversalMatch = migrationHelpSrc.match(/path\.resolve\(getDirname\(import\.meta\.url\),\s*"([^"]+)"\)/);
+    expect(traversalMatch, "releaseNotesDir()'s path.resolve(...) call shape changed").not.toBeNull();
+    const traversal = traversalMatch![1]!;
+
     const tempPkg = fs.mkdtempSync(path.join(os.tmpdir(), "akm-pkg-layout-"));
     try {
-      fs.mkdirSync(path.join(tempPkg, "dist"));
+      // `tsc` preserves the src/ directory structure, so the compiled module
+      // for src/commands/sources/migration-help.ts lands at this same depth.
+      const moduleDir = path.join(tempPkg, "dist", "commands", "sources");
+      fs.mkdirSync(moduleDir, { recursive: true });
       fs.mkdirSync(path.join(tempPkg, "docs", "migration", "release-notes"), { recursive: true });
       const notePath = path.join(tempPkg, "docs", "migration", "release-notes", "0.6.0.md");
       fs.writeFileSync(notePath, "Migration notes for akm v0.6.0\n- stub body for test\n", "utf8");
 
-      // Resolve exactly the way migration-help does (path.resolve(<mod>, "../docs/migration/release-notes")).
-      const moduleDir = path.join(tempPkg, "dist");
-      const resolved = path.resolve(moduleDir, "../docs/migration/release-notes", "0.6.0.md");
+      const resolved = path.resolve(moduleDir, traversal, "0.6.0.md");
       expect(fs.existsSync(resolved)).toBe(true);
       expect(fs.readFileSync(resolved, "utf8")).toContain("Migration notes for akm v0.6.0");
     } finally {
