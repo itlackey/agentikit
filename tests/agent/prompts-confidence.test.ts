@@ -4,7 +4,7 @@ import {
   buildReflectPrompt,
   buildSchemaRepairPrompt,
   extractDraftConfidence,
-} from "../../../src/integrations/agent/prompts";
+} from "../../src/integrations/agent/prompts";
 
 describe("RESPONSE_CONTRACT_JSON — explicit confidence elicitation", () => {
   test("buildReflectPrompt asks for a self-rated confidence score in [0, 1]", () => {

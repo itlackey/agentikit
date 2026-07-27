@@ -3,13 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
-import type { LlmConnectionConfig } from "../../../src/core/config/config";
-import type { AgentRunResult } from "../../../src/integrations/agent";
-import type { AgentProfile } from "../../../src/integrations/agent/profiles";
-import type { RunnerSpec } from "../../../src/integrations/agent/runner";
+import type { LlmConnectionConfig } from "../../src/core/config/config";
+import type { AgentRunResult } from "../../src/integrations/agent";
+import type { AgentProfile } from "../../src/integrations/agent/profiles";
+import type { RunnerSpec } from "../../src/integrations/agent/runner";
 // X3: the unified RunnerSpec dispatch seam (executeRunner in runner-dispatch.ts).
-import { executeRunner, type RunnerSeams } from "../../../src/integrations/agent/runner-dispatch";
-import { withEnv } from "../../_helpers/sandbox";
+import { executeRunner, type RunnerSeams } from "../../src/integrations/agent/runner-dispatch";
+import { withEnv } from "../_helpers/sandbox";
 
 function okResult(stdout: string): AgentRunResult {
   return { ok: true, exitCode: 0, stdout, stderr: "", durationMs: 1 };
