@@ -68,9 +68,10 @@ akm show knowledge/<name>
 akm show memories/<name>
 akm show commands/<name>
 
-# List available assets by type
-akm list --type skill
-akm list --type knowledge
+# Browse available assets by type (a trailing slash lists the subtree)
+akm search "skills/"
+akm search "knowledge/"
+akm search "<query>" --type skill
 ```
 
 ### Recording feedback and new knowledge

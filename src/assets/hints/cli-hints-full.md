@@ -205,10 +205,12 @@ A memory's `.derived.md` twin must move with its base. Moving an item between
 bundles is `akm clone` (or a copy) followed by deleting the source — both the
 bundle and the concept identity change.
 
-(`akm mv` ships, but it is **Experimental** and defective for prose-ref
-rewriting: it rewrites bare conceptIds, which are prose rather than refs, and
-matches no fully-qualified `bundle//` form at all — so it edits text that is not
-a ref while leaving real refs dangling. Use the procedure above.)
+(`akm mv` ships, but it is **Experimental**: its ref rewrite is a
+boundary-delimited text match, not ref-aware. It rewrites both the bare
+conceptId and its `bundle//`-qualified form wherever either appears — but it
+cannot tell a real ref from a coincidental mention of the same words in
+ordinary prose, so it can rewrite text that was never meant as a ref. Use the
+procedure above if you need finer control.)
 
 ## Sync
 
@@ -323,9 +325,10 @@ The flat verbs `akm proposals` / `akm show proposal` / `akm accept` /
 `akm reject` / `akm diff` / `akm revert` were removed in 0.9.0 — use the
 `akm proposal <verb>` forms above.
 
-Per-task `timeoutMs`: task markdown frontmatter may set `timeoutMs: null` to
-disable the agent kill timer for long-running local-model tasks, or a number
-(milliseconds) to override `config.agent.timeoutMs` for that task only.
+Per-task `timeoutMs`: a task's `<stash>/tasks/<id>.yml` file (pure YAML) may
+set `timeoutMs: null` to disable the agent kill timer for long-running
+local-model tasks, or a number (milliseconds) to override
+`config.agent.timeoutMs` for that task only.
 
 ## Output Control
 

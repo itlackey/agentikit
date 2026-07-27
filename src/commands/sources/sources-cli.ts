@@ -240,7 +240,7 @@ export const historyCommand = defineJsonCommand({
       "Event sources:\n" +
       "  usage_events (default): search, show, and feedback events from the local index.\n" +
       "  state.db events (--include-proposals): proposal lifecycle events (promoted, rejected)\n" +
-      "    emitted by `akm accept` / `akm reject`.\n\n" +
+      "    emitted by `akm proposal accept` / `akm proposal reject`.\n\n" +
       "Results from all active sources are merged and sorted chronologically.",
   },
   args: {

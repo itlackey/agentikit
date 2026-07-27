@@ -302,7 +302,8 @@ export const lessonsCommand = defineCommand({
 export const hintsCommand = defineCommand({
   meta: {
     name: "hints",
-    description: "Print agent instructions on how to use akm, use --detail full for a complete guide",
+    description:
+      "Print agent instructions on how to use akm — the complete guide by default; pass --detail brief for the short one",
   },
   args: {
     detail: {

@@ -112,10 +112,10 @@ export async function akmShowUnified(input: {
 
   // Try local filesystem (FTS5 index lookup)
   const result = await showLocal(input);
-  // Scope filter narrows resolution: if --scope was supplied, the asset's
-  // frontmatter scope must satisfy every supplied key. We re-read the file
-  // (cheap — already on the show hot path) so we don't have to thread scope
-  // through the renderer chain just for one verification step.
+  // Scope filter narrows resolution: if a scope filter was supplied, the
+  // asset's frontmatter scope must satisfy every supplied key. We re-read the
+  // file (cheap — already on the show hot path) so we don't have to thread
+  // scope through the renderer chain just for one verification step.
   if (input.scope && hasAnyScopeKey(input.scope) && result.path) {
     enforceScopeOrThrow(result.path, ref, input.scope);
   }
@@ -359,7 +359,7 @@ export async function showLocal(input: {
   if (!sourceStashDir) {
     throw new UsageError(
       `Could not determine stash root for asset: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
-        "Run `akm init` to create the stash directory, or check `akm stash list` for configured paths.",
+        "Run `akm init` to create the stash directory, or check `akm list` for configured paths.",
     );
   }
 
