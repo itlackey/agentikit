@@ -606,12 +606,35 @@ describe("ensureSourceCaches", () => {
 
   test("reads from sources[] not stashes[] — website entries in sources[] are processed", async () => {
     // A config where sources[] has a website entry and stashes is undefined.
-    // The mirror will fail (unreachable host) but the function warns, not throws.
+    // Mock the mirror (no network) and verify it's actually invoked for a
+    // sources[]-only config, matching the neighbouring tests in this describe.
+    //
+    // RUNTIME-05: the URL must NOT be under the `.invalid` TLD. `.invalid` is
+    // rejected synchronously by assertWebsiteRequestUrl
+    // (src/sources/snapshot-fetchers/website-ingest.ts:677-679) inside the
+    // website provider FACTORY (src/sources/providers/website.ts:16-18) — i.e.
+    // before `sync()`/`ensureWebsiteMirror` is ever reached. With the old
+    // `example.invalid` URL, `ensureSourceCaches` caught that construction
+    // error and warned+continued (src/indexer/search/search-source.ts:362-371),
+    // so the mocked mirror below would never actually be called — this test
+    // would silently stop proving "website entries are processed" at all.
+    // `.test` (used by the neighbouring tests in this describe) is not
+    // special-cased there, so the mocked path is genuinely exercised.
+    const websiteSpy = spyOn(websiteIngest, "ensureWebsiteMirror").mockResolvedValue({
+      rootDir: "/tmp/root",
+      stashDir: "/tmp/stash",
+      manifestPath: "/tmp/manifest.json",
+    });
     const config: AkmConfig = {
       semanticSearchMode: "off",
-      bundles: { "test-website": { website: { url: "https://example.invalid/docs" } } },
+      bundles: { "test-website": { website: { url: "https://example.test/docs" } } },
     };
-    await expect(ensureSourceCaches(config)).resolves.toBeUndefined();
+    try {
+      await expect(ensureSourceCaches(config)).resolves.toBeUndefined();
+      expect(websiteSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      websiteSpy.mockRestore();
+    }
   });
 
   // R2 bug fix: npm sources are cache-backed too, but the old type-gated loops

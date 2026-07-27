@@ -13,8 +13,21 @@ describe("provider-registry", () => {
       type: "test-provider",
       search: async () => ({ hits: [] }),
     });
+    // ISOLATION-04: createProviderRegistry (src/registry/create-provider-registry.ts)
+    // is a module-level singleton Map exposing register/resolve/list only — no
+    // unregister/delete — so a leaked registration here would outlive this test
+    // for the rest of the process. Mirror the save-and-restore pattern used at
+    // tests/integration/indexer/index-bundle-identity.test.ts:106,130,170,200,
+    // adapted for a synthetic key with no prior registration: `resolve()`
+    // applies `?? null` (src/registry/create-provider-registry.ts:20), so
+    // re-registering `undefined` in `finally` restores "unregistered" exactly.
+    expect(resolveRegistryProviderFactory("test-roundtrip")).toBeNull();
     registerRegistryProvider("test-roundtrip", factory);
-    expect(resolveRegistryProviderFactory("test-roundtrip")).toBe(factory);
+    try {
+      expect(resolveRegistryProviderFactory("test-roundtrip")).toBe(factory);
+    } finally {
+      registerRegistryProvider("test-roundtrip", undefined as unknown as RegistryProviderFactory);
+    }
   });
 
   test("static-index is registered after import", async () => {

@@ -103,9 +103,19 @@ describe("engine resolution", () => {
   });
 
   test("materializes an explicit symbolic credential only at dispatch", () => {
+    // ISOLATION-01/02: FAST_API_KEY is not one of the AKM_*/XDG_*/HOME vars
+    // tests/_preload.ts owns (HARNESSED + the leak tripwire only cover those
+    // prefixes), so an unrestored set here would leak into every later test
+    // in the shard. Snapshot + restore explicitly, even on assertion failure.
+    const originalFastApiKey = process.env.FAST_API_KEY;
     process.env.FAST_API_KEY = "engine-secret";
-    const resolved = resolveLlmEngineUse(config, [{ engine: "fast" }]);
-    expect(materializeLlmConnection(resolved)?.apiKey).toBe("engine-secret");
+    try {
+      const resolved = resolveLlmEngineUse(config, [{ engine: "fast" }]);
+      expect(materializeLlmConnection(resolved)?.apiKey).toBe("engine-secret");
+    } finally {
+      if (originalFastApiKey === undefined) delete process.env.FAST_API_KEY;
+      else process.env.FAST_API_KEY = originalFastApiKey;
+    }
   });
 
   test("revalidates extraParams at the dispatch boundary", () => {
@@ -144,20 +154,37 @@ describe("engine resolution", () => {
   });
 
   test("applies exact timeout precedence and preserves explicit null in direct HTTP materialization", () => {
-    const defaults = resolveLlmEngineUse(config, [{ engine: "fast" }]);
-    expect(defaults.timeoutMs).toBe(600_000);
-    expect(materializeLlmConnection(defaults).timeoutMs).toBe(600_000);
+    // ISOLATION-01/02 fallout: `materializeLlmConnection` throws unless the
+    // "fast" engine's required FAST_API_KEY credential resolves (see
+    // src/integrations/agent/engine-resolution.ts:242-247). This test only
+    // cares about timeoutMs, but before FAST_API_KEY was brought under
+    // explicit save/restore in the "materializes an explicit symbolic
+    // credential" test above, this test silently depended on that other
+    // test's UNRESTORED leak of `process.env.FAST_API_KEY` to avoid throwing
+    // here — a hidden order dependency masked by the very isolation bug this
+    // package fixes. Set and restore it locally so this test is hermetic on
+    // its own.
+    const originalFastApiKey = process.env.FAST_API_KEY;
+    process.env.FAST_API_KEY = "timeout-precedence-fixture-key";
+    try {
+      const defaults = resolveLlmEngineUse(config, [{ engine: "fast" }]);
+      expect(defaults.timeoutMs).toBe(600_000);
+      expect(materializeLlmConnection(defaults).timeoutMs).toBe(600_000);
 
-    const disabled = resolveLlmEngineUse(config, [{ engine: "fast", timeoutMs: null }]);
-    expect(disabled.timeoutMs).toBeNull();
-    expect(Object.hasOwn(materializeLlmConnection(disabled), "timeoutMs")).toBe(true);
-    expect(materializeLlmConnection(disabled).timeoutMs).toBeNull();
+      const disabled = resolveLlmEngineUse(config, [{ engine: "fast", timeoutMs: null }]);
+      expect(disabled.timeoutMs).toBeNull();
+      expect(Object.hasOwn(materializeLlmConnection(disabled), "timeoutMs")).toBe(true);
+      expect(materializeLlmConnection(disabled).timeoutMs).toBeNull();
 
-    const overridden = resolveLlmEngineUse(
-      { ...config, engines: { ...config.engines, fast: { ...config.engines.fast, timeoutMs: 90_000 } } },
-      [{ engine: "fast" }, { timeoutMs: 12_000 }],
-    );
-    expect(overridden.timeoutMs).toBe(12_000);
+      const overridden = resolveLlmEngineUse(
+        { ...config, engines: { ...config.engines, fast: { ...config.engines.fast, timeoutMs: 90_000 } } },
+        [{ engine: "fast" }, { timeoutMs: 12_000 }],
+      );
+      expect(overridden.timeoutMs).toBe(12_000);
+    } finally {
+      if (originalFastApiKey === undefined) delete process.env.FAST_API_KEY;
+      else process.env.FAST_API_KEY = originalFastApiKey;
+    }
   });
 
   test("uses 60s for CLI agents and inherits the fallback LLM timeout for SDK agents", () => {
