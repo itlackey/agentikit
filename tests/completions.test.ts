@@ -132,8 +132,11 @@ describe("completions command", () => {
 
   test("contains flag value completions for --type", () => {
     expect(script).toContain("--type)");
+    // Derived from placementTypes(), so this list grows when a new
+    // stash-resident asset type is registered — `instruction` joined it with
+    // owner ruling 11. Update deliberately rather than loosening the match.
     expect(script).toContain(
-      "skill command agent knowledge workflow script memory env secret lesson task session fact any",
+      "skill command agent knowledge instruction workflow script memory env secret lesson task session fact any",
     );
   });
 
