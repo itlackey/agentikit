@@ -73,16 +73,22 @@ const eventsListCommand = defineJsonCommand({
       type: "string",
       description: "Only include events with ALL these tags (repeatable)",
     },
+    limit: {
+      type: "string",
+      description: "Return only the most recent N events matching every other filter (default: unlimited)",
+    },
   },
   run({ args }) {
     const excludeTags = parseAllFlagValues("--exclude-tags");
     const includeTags = parseAllFlagValues("--include-tags");
+    const limit = parsePositiveIntFlag(args.limit);
     const result = akmEventsList({
       since: args.since,
       type: args.type,
       ref: args.ref,
       ...(excludeTags.length > 0 ? { excludeTags } : {}),
       ...(includeTags.length > 0 ? { includeTags } : {}),
+      ...(limit !== undefined ? { limit } : {}),
     });
     output("log-list", result);
   },

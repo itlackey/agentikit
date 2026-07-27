@@ -192,6 +192,11 @@ export function shapeEventsOutput(result: Record<string, unknown>, detail: Detai
     ...(result.type !== undefined ? { type: result.type } : {}),
     ...(result.since !== undefined ? { since: result.since } : {}),
     ...(typeof result.sinceOffset === "number" ? { sinceOffset: result.sinceOffset } : {}),
+    // D-38: echo `--limit` through the shaped envelope too — `akmEventsList`
+    // already conditionally includes it in its raw result (see
+    // src/commands/events.ts) only when the caller passed it, so this mirrors
+    // that same "present only if requested" convention.
+    ...(typeof result.limit === "number" ? { limit: result.limit } : {}),
     totalCount: result.totalCount ?? shapedEvents.length,
     events: shapedEvents,
   };

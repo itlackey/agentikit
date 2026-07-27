@@ -45,6 +45,16 @@ const EXEMPT_SUBCOMMANDS: ReadonlySet<string> = new Set([
   // Document payloads: the document is the output, not a field within one.
   "workflow template",
   "help migrate",
+  // B3/B4 (W1-F): a bare absolute filesystem path IS the payload — the
+  // documented shell-substitution primitive (`$(akm env path <ref>)`,
+  // Docker `_FILE` / `--env-file`) — not a field worth wrapping in an
+  // envelope. Wrapping it broke every existing substitution silently: the
+  // CLI's default format is `json`, so an un-flagged `akm env path <ref>`
+  // (exactly how the substitution is always written) started emitting
+  // `{"path":"..."}` instead of the raw path. Unlike `config path`, this
+  // command has no `--all`-style multi-field variant, so the whole surface
+  // can be exempt without wrongly warning on a real envelope case.
+  "env path",
 ]);
 
 /**

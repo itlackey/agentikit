@@ -24,6 +24,8 @@ export interface EventsListOptions {
   ref?: string;
   excludeTags?: string[];
   includeTags?: string[];
+  /** D-38: cap the result to the most recent `limit` matching events. Undefined is unlimited. */
+  limit?: number;
   /** Test seam — overrides the state database / clock. */
   ctx?: EventsContext;
 }
@@ -64,6 +66,8 @@ export interface EventsListResult {
   since?: string;
   /** Echoed when --since @offset:N was used. */
   sinceOffset?: number;
+  /** Echoed when --limit was passed. */
+  limit?: number;
   nextOffset: number;
   events: EventEnvelope[];
 }
@@ -89,6 +93,7 @@ export function akmEventsList(options: EventsListOptions = {}): EventsListResult
       ref,
       excludeTags: options.excludeTags,
       includeTags: options.includeTags,
+      limit: options.limit,
     },
     options.ctx,
   );
@@ -99,6 +104,7 @@ export function akmEventsList(options: EventsListOptions = {}): EventsListResult
     ...(options.type !== undefined ? { type: options.type } : {}),
     ...(parsed.since !== undefined ? { since: parsed.since } : {}),
     ...(parsed.sinceOffset !== undefined ? { sinceOffset: parsed.sinceOffset } : {}),
+    ...(options.limit !== undefined ? { limit: options.limit } : {}),
     nextOffset: result.nextOffset,
     events: result.events,
   };

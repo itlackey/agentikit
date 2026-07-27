@@ -338,8 +338,16 @@ describe("family A — search/show/list/info/curate/history/proposal/env/secret/
     // src/output/shapes/events.ts); the actual CLI command group is `akm log`
     // (see src/commands/observability-cli.ts). DEVIATION from the brief's
     // literal `events list` / `events tail --limit 1` spelling: there is no
-    // top-level `events` command and no `--limit` flag — the real surface is
-    // `akm log list` / `akm log tail --max-events <n>`.
+    // top-level `events` command — the real surface is `akm log list` /
+    // `akm log tail --max-events <n>`. `log list --limit <n>` now also exists
+    // (D-38, src/commands/observability-cli.ts's `eventsListCommand`) — not
+    // exercised here since this test doesn't pass it, so it never appears in
+    // this golden's key set (the field is only present in the envelope when
+    // `--limit` is actually supplied); see the "log list --limit (D-38)"
+    // describe block in tests/integration/commands/events.test.ts for its own
+    // coverage.
+    // `log tail` still has no `--limit` (it already has the equivalent
+    // `--max-events`, which this test does exercise).
     await runCli(["remember", "an events fixture note", "--name", "events-fixture", "--format=json"]);
     const list = await runCli(["log", "list", "--format=json"]);
     expect(list.code).toBe(0);

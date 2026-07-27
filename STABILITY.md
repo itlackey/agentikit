@@ -101,8 +101,9 @@ please file it.
   Experimental). A small set of commands is **format-exempt** because their
   output is not a result envelope at all: `completions` (shell script source),
   the interactive `setup` wizard, child-process passthrough in `env run` /
-  `secret run` / `agent`, and document payloads from `workflow template` /
-  `help migrate`. The set is declared in `src/output/format-exempt.ts`, and
+  `secret run` / `agent`, a bare-path payload from `env path`, and document
+  payloads from `workflow template` / `help migrate`. The set is declared in
+  `src/output/format-exempt.ts`, and
   passing `--format` to one of them warns rather than silently doing something
   else. `akm graph export` has no local `--format`: the artifact payload
   follows the `--out` extension (`.jsonl` writes JSONL, anything else JSON),

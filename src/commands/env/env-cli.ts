@@ -186,6 +186,22 @@ const envPathCommand = defineJsonCommand({
           `         To inject values run: akm env run ${args.ref} -- <command>\n`,
       );
     }
+    // F3/B3: this stdout write IS the payload — a bare absolute path for
+    // shell substitution (`$(akm env path <ref>)`, Docker `_FILE` /
+    // `--env-file`) — not a field inside a result envelope. `env path` is
+    // now declared format-exempt (src/output/format-exempt.ts, same
+    // classification as `env run`/`secret run`/`hints`), so `--format`
+    // WARNS rather than doing anything to this write (src/cli.ts's startup
+    // `isFormatExemptCommand` check). An earlier version of this fix routed
+    // this through `output()` with a `{ path }` envelope so `--format`
+    // "worked" — but the CLI's process-wide default format is `json`, so a
+    // bare `akm env path <ref>` (exactly how `$(akm env path foo)` is
+    // written, with no explicit `--format`) started emitting
+    // `{"path":"..."}` instead of the raw path, breaking every existing
+    // shell substitution silently. Declaring the exemption is the correct
+    // fix: it keeps this byte-identical to history and makes the
+    // already-broken combination (`--format` + this command) loud instead
+    // of silent, per STABILITY.md's promise for exempt commands.
     process.stdout.write(`${absPath}\n`);
   },
 });
@@ -302,7 +318,15 @@ async function runEnvInjected(
     }
     throw err;
   }
-  process.exit(result.status ?? 0);
+  // R-067: was `process.exit(result.status ?? 0)`, which terminates the
+  // process synchronously and skips the `finally { await
+  // disposeDispatchResources(); }` block in src/cli.ts's `runCommand` — even
+  // on the success path, since this call was unconditional. Setting
+  // `process.exitCode` and returning lets cleanup run while still exiting
+  // with the child's exact status once the event loop drains, matching the
+  // pattern `emitJsonError` (src/cli/shared.ts) already established.
+  process.exitCode = result.status ?? 0;
+  return;
 }
 
 /** Parse a comma/space-separated key list flag into a trimmed, non-empty array. */
