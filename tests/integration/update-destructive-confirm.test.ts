@@ -27,6 +27,14 @@ import { akmUpdate } from "../../src/commands/sources/installed-stashes";
 import { saveConfig } from "../../src/core/config/config";
 import { mergeLockEntriesSync, readLockfile } from "../../src/integrations/lockfile";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
+import {
+  type Cleanup,
+  sandboxStashDir,
+  sandboxXdgCacheHome,
+  sandboxXdgConfigHome,
+  sandboxXdgDataHome,
+  sandboxXdgStateHome,
+} from "../_helpers/sandbox";
 
 const createdTmpDirs: string[] = [];
 
@@ -34,12 +42,6 @@ function createTmpDir(prefix = "akm-update-confirm-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   createdTmpDirs.push(dir);
   return dir;
-}
-
-function makeStashDir(base: string): void {
-  for (const sub of ["skills", "commands", "agents", "knowledge", "scripts"]) {
-    fs.mkdirSync(path.join(base, sub), { recursive: true });
-  }
 }
 
 afterAll(() => {
@@ -61,46 +63,29 @@ function withTTY<T>(isTTY: boolean, fn: () => Promise<T>): Promise<T> {
   });
 }
 
-const originalXdgCacheHome = process.env.XDG_CACHE_HOME;
-const originalXdgDataHome = process.env.XDG_DATA_HOME;
-const originalXdgStateHome = process.env.XDG_STATE_HOME;
-const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
-const originalStashDir = process.env.AKM_STASH_DIR;
-let testCacheDir = "";
-let testConfigDir = "";
-let testDataDir = "";
-let testStateDir = "";
+// Env/temp-dir isolation goes through the allowlisted sandbox helpers rather
+// than raw mkdtempSync + process.env writes — `scripts/lint-tests-isolation.ts`
+// rejects the hand-rolled form, and the helpers already restore a previously
+// ABSENT var by deleting it rather than setting it to "undefined".
+// `sandboxStashDir` also creates the stash skeleton subdirs for us.
+let envCleanup: Cleanup = () => {};
 let stashDir = "";
+let testCacheDir = "";
 
 beforeEach(() => {
-  testCacheDir = createTmpDir("akm-update-confirm-cache-");
-  testConfigDir = createTmpDir("akm-update-confirm-config-");
-  testDataDir = createTmpDir("akm-update-confirm-data-");
-  testStateDir = createTmpDir("akm-update-confirm-state-");
-  stashDir = createTmpDir("akm-update-confirm-stash-");
-  makeStashDir(stashDir);
-  process.env.XDG_CACHE_HOME = testCacheDir;
-  process.env.XDG_CONFIG_HOME = testConfigDir;
-  process.env.XDG_DATA_HOME = testDataDir;
-  process.env.XDG_STATE_HOME = testStateDir;
-  process.env.AKM_STASH_DIR = stashDir;
+  const cacheResult = sandboxXdgCacheHome();
+  testCacheDir = cacheResult.dir;
+  const cfgResult = sandboxXdgConfigHome(cacheResult.cleanup);
+  const dataResult = sandboxXdgDataHome(cfgResult.cleanup);
+  const stateResult = sandboxXdgStateHome(dataResult.cleanup);
+  const stashResult = sandboxStashDir(stateResult.cleanup);
+  stashDir = stashResult.dir;
+  envCleanup = stashResult.cleanup;
 });
 
 afterEach(() => {
-  if (originalXdgCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
-  else process.env.XDG_CACHE_HOME = originalXdgCacheHome;
-
-  if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
-  else process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
-
-  if (originalXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
-  else process.env.XDG_DATA_HOME = originalXdgDataHome;
-
-  if (originalXdgStateHome === undefined) delete process.env.XDG_STATE_HOME;
-  else process.env.XDG_STATE_HOME = originalXdgStateHome;
-
-  if (originalStashDir === undefined) delete process.env.AKM_STASH_DIR;
-  else process.env.AKM_STASH_DIR = originalStashDir;
+  envCleanup();
+  envCleanup = () => {};
 });
 
 /** Configure a non-local, non-writable managed bundle whose lock localRoot is `oldRoot`. */

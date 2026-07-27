@@ -255,6 +255,13 @@ export const DYNAMIC_IMPORT_BASELINE: Readonly<Record<string, number>> = {
   "src/commands/registry-cli.ts": 1,
   "src/commands/remember.ts": 2,
   "src/commands/sources/add-cli.ts": 2,
+  // R-058: `update`'s destructive branch now confirms before deleting a moved
+  // install root, and reaches `confirmDestructive` the same lazy way its
+  // sibling `remove` already does in sources-cli.ts (which is the entry
+  // directly below). Not a cycle dodge — a static import compiles fine; this
+  // matches the house convention of not pulling the interactive prompt module
+  // into every command's startup path.
+  "src/commands/sources/installed-stashes.ts": 1,
   "src/commands/sources/sources-cli.ts": 1,
   "src/commands/workflow-cli.ts": 7,
   "src/indexer/ensure-index.ts": 1,
