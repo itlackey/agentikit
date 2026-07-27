@@ -69,6 +69,23 @@ function nodeRun(args: string[], env: Record<string, string>, stdin?: string): N
   };
 }
 
+// Safety net for every `withEnv` override below: well under this file's own
+// 120s per-test budget (`test:node-compat` passes --timeout=120000), and
+// comfortably above the slowest legitimate call observed in this suite
+// (~14.5s for a workflow create+start+status round-trip). `fn()` here always
+// wraps a real subprocess spawn or CLI dispatch with no timeout of its own,
+// so a hang is possible (see CI incident 2026-07-27: a stalled `history`
+// call left `AKM_FORCE_INIT_TMP_STASH`/`AKM_OUTPUT` applied to `process.env`
+// for the rest of the run because `withEnv`'s restore-on-finally never got a
+// chance to fire, cascading one hang into 19 unrelated failures via
+// tests/_preload.ts's leak tripwire). Bounding the race here guarantees the
+// override is undone on schedule regardless of what `fn()` does.
+const WITH_ENV_SAFETY_MS = 60_000;
+
+function boundedWithEnv<T>(overrides: Record<string, string | undefined>, fn: () => Promise<T> | T): Promise<T> {
+  return withEnv(overrides, fn, WITH_ENV_SAFETY_MS);
+}
+
 function generatedCronCommand(crontab: string, id: string): string {
   const lines = crontab.split(/\r?\n/);
   const begin = lines.indexOf(`# akm:task ${id} BEGIN`);
@@ -184,7 +201,7 @@ describe("init / remember / show parity", () => {
     setupStorage();
 
     // Seed via Bun (in-process)
-    const bunRem = await withEnv(
+    const bunRem = await boundedWithEnv(
       {
         AKM_STASH_DIR: stashDir,
         ...nodeEnv,
@@ -206,8 +223,9 @@ describe("init / remember / show parity", () => {
     expect(nodeShowJson?.type).toBe("memory");
 
     // Read back via Bun in-process — same shape
-    const bunShow = await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-      runCliCapture(["show", ref]),
+    const bunShow = await boundedWithEnv(
+      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["show", ref]),
     );
     expect(bunShow.code).toBe(0);
     const bunShowJson = parseJson(bunShow.stdout) as { type?: string } | undefined;
@@ -235,7 +253,7 @@ describe("index / search parity", () => {
   test.skipIf(!ENABLED)("index runs and search finds remembered content on Node", async () => {
     setupStorage();
     // Write a memory via Bun
-    await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
+    await boundedWithEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
       runCliCapture(["remember", "node-compat-index-widget searchable content"]),
     );
 
@@ -253,8 +271,9 @@ describe("index / search parity", () => {
     expect([0, 1]).toContain(searchResult.status);
 
     // Search via Bun — same exit code
-    const bunSearch = await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-      runCliCapture(["search", "node-compat-index-widget"]),
+    const bunSearch = await boundedWithEnv(
+      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["search", "node-compat-index-widget"]),
     );
     expect(bunSearch.code).toBe(searchResult.status);
   });
@@ -275,8 +294,9 @@ describe("health parity", () => {
     const nodeJson = parseJson(nodeResult.stdout) as { shape?: string } | undefined;
     expect(nodeJson?.shape).toBe("health");
 
-    const bunResult = await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-      runCliCapture(["health"]),
+    const bunResult = await boundedWithEnv(
+      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["health"]),
     );
     const bunJson = parseJson(bunResult.stdout) as { shape?: string } | undefined;
     expect(bunJson?.shape).toBe("health");
@@ -299,8 +319,9 @@ describe("env parity", () => {
     const sourceEnv = { ...nodeEnv, MY_NODE_SRC_VAL: "hello-from-bun" };
 
     // set via Bun (in-process)
-    const bunSet = await withEnv({ AKM_STASH_DIR: stashDir, ...sourceEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-      runCliCapture(["env", "set", "default", "MY_NODE_VAR", "--from-env", "MY_NODE_SRC_VAL"]),
+    const bunSet = await boundedWithEnv(
+      { AKM_STASH_DIR: stashDir, ...sourceEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["env", "set", "default", "MY_NODE_VAR", "--from-env", "MY_NODE_SRC_VAL"]),
     );
     expect(bunSet.code).toBe(0);
 
@@ -316,8 +337,9 @@ describe("env parity", () => {
     expect(nodeUnset.status).toBe(0);
 
     // verify gone via Bun — `env list` no longer mentions the key
-    const bunList = await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-      runCliCapture(["env", "list"]),
+    const bunList = await boundedWithEnv(
+      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["env", "list"]),
     );
     expect(bunList.code).toBe(0);
     expect(bunList.stdout).not.toContain("MY_NODE_VAR");
@@ -337,8 +359,9 @@ describe("config path parity", () => {
     expect(nodeResult.status).toBe(0);
     expect(nodeResult.stdout.trim()).toBeTruthy();
 
-    const bunResult = await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-      runCliCapture(["config", "path"]),
+    const bunResult = await boundedWithEnv(
+      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["config", "path"]),
     );
     expect(bunResult.stdout.trim()).toBe(nodeResult.stdout.trim());
   });
@@ -357,7 +380,7 @@ describe("history parity", () => {
     // better-sqlite3 "no such table: usage_events"). Running `index` first makes
     // the command SUCCEED identically on both runtimes — a real parity check,
     // not an assertion worked around.
-    await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
+    await boundedWithEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
       await runCliCapture(["remember", "history parity test"]);
       await runCliCapture(["index"]);
     });
@@ -366,8 +389,9 @@ describe("history parity", () => {
     assertNoBoundaryLeak(nodeResult, "history");
     expect(nodeResult.status).toBe(0);
 
-    const bunResult = await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-      runCliCapture(["history"]),
+    const bunResult = await boundedWithEnv(
+      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["history"]),
     );
     expect(bunResult.code).toBe(0);
 
@@ -386,7 +410,7 @@ describe("events parity", () => {
     setupStorage();
     // The append-only events stream is read by `akm log list` (there is no
     // top-level `events` command). Seed + index so the events table exists.
-    await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
+    await boundedWithEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
       await runCliCapture(["remember", "events parity test"]);
       await runCliCapture(["index"]);
     });
@@ -397,8 +421,9 @@ describe("events parity", () => {
     const nodeJson = parseJson(nodeResult.stdout) as { totalCount?: number; events?: unknown[] } | undefined;
     expect(Array.isArray(nodeJson?.events)).toBe(true);
 
-    const bunResult = await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-      runCliCapture(["log", "list"]),
+    const bunResult = await boundedWithEnv(
+      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["log", "list"]),
     );
     expect(bunResult.code).toBe(0);
     const bunJson = parseJson(bunResult.stdout) as { totalCount?: number; events?: unknown[] } | undefined;
@@ -422,8 +447,9 @@ describe("sources parity", () => {
     assertNoBoundaryLeak(nodeResult, "list");
     expect(nodeResult.status).toBe(0);
 
-    const bunResult = await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-      runCliCapture(["list"]),
+    const bunResult = await boundedWithEnv(
+      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["list"]),
     );
     const nodeJson = parseJson(nodeResult.stdout) as { shape?: string } | undefined;
     const bunJson = parseJson(bunResult.stdout) as { shape?: string } | undefined;
@@ -448,8 +474,9 @@ describe("stash parity", () => {
     const nodeJson = parseJson(nodeResult.stdout) as { stash?: string } | undefined;
     expect(nodeJson?.stash).toBe(stashDir);
 
-    const bunResult = await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-      runCliCapture(["config", "path", "--all"]),
+    const bunResult = await boundedWithEnv(
+      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["config", "path", "--all"]),
     );
     expect(bunResult.code).toBe(0);
     const bunJson = parseJson(bunResult.stdout) as { stash?: string } | undefined;
@@ -465,7 +492,7 @@ describe("graph parity", () => {
   test.skipIf(!ENABLED)("graph returns same shape on Bun and Node", async () => {
     setupStorage();
     // seed two memories + index so graph has something
-    await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
+    await boundedWithEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
       await runCliCapture(["remember", "node compat graph node A test"]);
       await runCliCapture(["remember", "node compat graph node B test"]);
       await runCliCapture(["index"]);
@@ -477,8 +504,9 @@ describe("graph parity", () => {
     assertNoBoundaryLeak(nodeResult, "graph");
     expect([0, 1]).toContain(nodeResult.status);
 
-    const bunResult = await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-      runCliCapture(["graph", "summary"]),
+    const bunResult = await boundedWithEnv(
+      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["graph", "summary"]),
     );
     // Both should succeed or both should have nothing (empty graph → exit 1)
     expect(nodeResult.status).toBe(bunResult.code);
@@ -508,8 +536,9 @@ describe("import parity", () => {
       const nodeJson = parseJson(nodeResult.stdout) as { ok?: boolean } | undefined;
       expect(nodeJson?.ok).toBe(true);
 
-      const bunResult = await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-        runCliCapture(["import", bunFile]),
+      const bunResult = await boundedWithEnv(
+        { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+        () => runCliCapture(["import", bunFile]),
       );
       expect(bunResult.code).toBe(0);
       const bunJson = parseJson(bunResult.stdout) as { ok?: boolean } | undefined;
@@ -614,7 +643,7 @@ describe("output format parity", () => {
     "show --format text and --format json produce structurally same data on Bun and Node",
     async () => {
       setupStorage();
-      await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
+      await boundedWithEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
         const rem = await runCliCapture(["remember", "format parity test memory"]);
         const j = parseJson(rem.stdout) as { ref?: string } | undefined;
         const ref = j?.ref as string;
@@ -790,7 +819,7 @@ describe("scope flag parity", () => {
 
   test.skipIf(!ENABLED)("--scope type:memory search returns same exit on Bun and Node", async () => {
     setupStorage();
-    await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
+    await boundedWithEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
       await runCliCapture(["remember", "scope flag parity test"]);
       await runCliCapture(["index"]);
     });
@@ -799,8 +828,9 @@ describe("scope flag parity", () => {
     assertNoBoundaryLeak(nodeResult, "scope-search");
     expect([0, 1]).toContain(nodeResult.status);
 
-    const bunResult = await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-      runCliCapture(["search", "scope flag parity", "--scope", "type:memory"]),
+    const bunResult = await boundedWithEnv(
+      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["search", "scope flag parity", "--scope", "type:memory"]),
     );
     expect(nodeResult.status).toBe(bunResult.code);
   });
@@ -818,8 +848,9 @@ describe("registry parity", () => {
     assertNoBoundaryLeak(nodeResult, "registry list");
     expect(nodeResult.status).toBe(0);
 
-    const bunResult = await withEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
-      runCliCapture(["registry", "list"]),
+    const bunResult = await boundedWithEnv(
+      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["registry", "list"]),
     );
     const nodeJson = parseJson(nodeResult.stdout) as { shape?: string } | undefined;
     const bunJson = parseJson(bunResult.stdout) as { shape?: string } | undefined;
