@@ -290,7 +290,7 @@ export function buildReflectPrompt(input: ReflectPromptInput): ReflectPromptResu
     const goalSentence = isLesson
       ? `Your task is to distill what usage signals reveal about this ${input.type} asset — when to reach for it, what goes wrong without it, and what real use has revealed that the asset itself does not say. Do not reproduce the source content; your proposal must add information the source does not contain.`
       : isSkill
-        ? "Your task is to review this skill asset, identify what the feedback and related distilled lessons show is broken, missing, unclear, or durable enough to promote into long-term documentation, and produce a single improved proposal. If the strongest evidence points to companion reference material rather than the main SKILL.md, you may instead propose a skill-adjacent knowledge doc such as `knowledge:skills/<skill>/references/<topic>`."
+        ? "Your task is to review this skill asset, identify what the feedback and related distilled lessons show is broken, missing, unclear, or durable enough to promote into long-term documentation, and produce a single improved proposal. If the strongest evidence points to companion reference material rather than the main SKILL.md, you may instead propose a skill-adjacent knowledge doc such as `knowledge/skills/<skill>/references/<topic>`."
         : `Your task is to review this ${input.type} asset, identify what the feedback signals as broken, missing, or unclear, and produce an improved version. Do not reproduce the source content unchanged; your proposal must correct or add something the source lacks.`;
     sections.push(goalSentence);
     sections.push(`Target ref: ${input.ref}`);
@@ -399,7 +399,7 @@ export function buildReflectPrompt(input: ReflectPromptInput): ReflectPromptResu
       "Promote only guidance that is durable, generally applicable, and supported by repeated evidence. Do not copy anecdotal details, one-off incidents, or duplicate wording verbatim.",
     );
     sections.push(
-      "If the guidance belongs in the main skill instructions, update the skill proposal. If it belongs in a companion reference document, return a `knowledge:skills/<skill>/references/<topic>` proposal instead.",
+      "If the guidance belongs in the main skill instructions, update the skill proposal. If it belongs in a companion reference document, return a `knowledge/skills/<skill>/references/<topic>` proposal instead.",
     );
   }
 

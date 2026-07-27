@@ -58,7 +58,10 @@ export function formatWorkflowListPlain(result: Record<string, unknown>): string
   return runs
     .map((run) => {
       const id = typeof run.id === "string" ? run.id : "unknown";
-      const ref = typeof run.workflowRef === "string" ? run.workflowRef : "workflow:unknown";
+      // Fallback matches the `id`/`status` convention just below (plain
+      // "unknown", not a `type:name`-shaped placeholder — that shape reads as
+      // a ref in the dead colon grammar, which this fallback must not model).
+      const ref = typeof run.workflowRef === "string" ? run.workflowRef : "unknown";
       const status = typeof run.status === "string" ? run.status : "unknown";
       const currentStep = typeof run.currentStepId === "string" ? ` (current: ${run.currentStepId})` : "";
       return `${id} ${ref} [${status}]${currentStep}`;
@@ -76,7 +79,7 @@ export function formatWorkflowStatusPlain(result: Record<string, unknown>): stri
   if (!run || !workflow) return null;
 
   const lines = [
-    `workflow: ${String(workflow.ref ?? "workflow:unknown")}`,
+    `workflow: ${String(workflow.ref ?? "unknown")}`,
     `run: ${String(run.id ?? "unknown")}`,
     `title: ${String(run.workflowTitle ?? workflow.title ?? "Workflow")}`,
     `status: ${String(run.status ?? "unknown")}`,

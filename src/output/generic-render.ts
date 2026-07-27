@@ -61,6 +61,24 @@ function displayScalar(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/**
+ * Root-level envelope metadata the shape registry stamps on top of a
+ * command's actual result: `shape` (the discriminator) and `schemaVersion`
+ * (the envelope's own version), both added by the passthrough stamp in
+ * `src/output/shapes/passthrough.ts` and equivalent per-command shapers
+ * elsewhere. Transport bookkeeping, not a result anyone asked for — a `##
+ * shape` / `## schemaVersion` section (`renderGenericMarkdown`), an
+ * `<h2>shape</h2>` block (`renderGenericHtml`), or a `shape=…` line
+ * (`renderGenericText`) is noise in every command's output, so every generic
+ * renderer drops both. ONLY at the root, though: some shapes reuse
+ * `schemaVersion` as genuine per-entry content one level down (each event in
+ * `log list`'s `events[]` carries its own `schemaVersion`, see
+ * `shapeEventEntry` in `src/output/shapes/helpers.ts`), and that must
+ * survive untouched — every renderer below applies this filter only to the
+ * top-level `Object.entries` loop over the envelope, never recursively.
+ */
+const ENVELOPE_META_KEYS = new Set(["shape", "schemaVersion"]);
+
 // ── Markdown ─────────────────────────────────────────────────────────────────
 
 /** Escape the one character that can break a Markdown table row. */
@@ -104,7 +122,9 @@ function markdownValue(value: unknown, depth: number): string[] {
 export function renderGenericMarkdown(command: string, value: unknown): string {
   const body =
     value !== null && typeof value === "object" && !Array.isArray(value)
-      ? Object.entries(value).flatMap(([key, nested]) => [`## ${key}`, "", ...markdownValue(nested, 3), ""])
+      ? Object.entries(value)
+          .filter(([key]) => !ENVELOPE_META_KEYS.has(key)) // transport metadata, not a result
+          .flatMap(([key, nested]) => [`## ${key}`, "", ...markdownValue(nested, 3), ""])
       : markdownValue(value, 2);
   const lines = [`# ${command}`, "", ...body];
   const rendered = lines
@@ -166,6 +186,7 @@ export function renderGenericHtml(command: string, value: unknown): string {
   const body =
     value !== null && typeof value === "object" && !Array.isArray(value)
       ? Object.entries(value)
+          .filter(([key]) => !ENVELOPE_META_KEYS.has(key)) // transport metadata, not a result
           .map(([key, nested]) => `<h2>${escapeHtml(key)}</h2>${htmlValue(nested, 3)}`)
           .join("")
       : htmlValue(value, 2);
@@ -195,25 +216,6 @@ export function renderGenericHtml(command: string, value: unknown): string {
 }
 
 // ── Text ─────────────────────────────────────────────────────────────────────
-
-/**
- * Root-level envelope metadata the shape registry stamps on top of a
- * command's actual result: `shape` (the discriminator) and `schemaVersion`
- * (the envelope's own version), both added by the passthrough stamp in
- * `src/output/shapes/passthrough.ts` and equivalent per-command shapers
- * elsewhere. Transport bookkeeping, not a result anyone asked for — a `##
- * shape` / `## schemaVersion` section is noise in every command's output, so
- * the text renderer drops both. ONLY at the root, though: some shapes reuse
- * `schemaVersion` as genuine per-entry content one level down (each event in
- * `log list`'s `events[]` carries its own `schemaVersion`, see
- * `shapeEventEntry` in `src/output/shapes/helpers.ts`), and that must
- * survive untouched. `renderGenericMarkdown`/`renderGenericHtml` do not
- * apply this filter and so have the identical noise problem one level up
- * (`## shape` / `<h2>shape</h2>` sections) — a pre-existing gap in the
- * already-shipped md/html renderers, left alone here because their output is
- * pinned by existing tests; see this change's report for the follow-up.
- */
-const ENVELOPE_META_KEYS = new Set(["shape", "schemaVersion"]);
 
 /**
  * Flatten `value` onto `lines` as `dotted.path=value` entries — the exact
