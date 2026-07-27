@@ -508,6 +508,19 @@ export function formatListPlain(r: Record<string, unknown>): string {
 }
 
 export function formatAddPlain(r: Record<string, unknown>): string {
+  // `akm add <ref>` (source-add.ts `AddResponse`) and `akm add <target>
+  // --provider <kind>` (source-manage.ts `SourceAddResult`) are genuinely
+  // different operations that happen to share the "add" command name: the
+  // former eagerly fetches and indexes content, the latter only writes a
+  // desired locator to config — nothing is synced until a later `akm
+  // update`. Force-fitting the declarative shape's `added`/`entry`/`message`
+  // fields into the "Installed <ref> (N scanned...)" wording produced
+  // "Installed undefined (0 directories scanned...)" (R-014) because it
+  // implied a sync that never happened. `AddResponse` always carries an
+  // `index` block (even when zero entries were scanned); `SourceAddResult`
+  // never does — that is the reliable shape discriminator used below to
+  // render each honestly instead of unifying them.
+  if (!("index" in r)) return formatDeclarativeAddPlain(r);
   const index = r.index as Record<string, unknown> | undefined;
   const scanned = index?.directoriesScanned ?? 0;
   const total = index?.totalEntries ?? 0;
@@ -520,6 +533,27 @@ export function formatAddPlain(r: Record<string, unknown>): string {
   return lines.join("\n");
 }
 
+/** Render a `SourceAddResult` (declarative `--provider` add) — see {@link formatAddPlain}. */
+function formatDeclarativeAddPlain(r: Record<string, unknown>): string {
+  if (r.added !== true) {
+    return typeof r.message === "string" ? r.message : "add: no changes";
+  }
+  const entry = r.entry as Record<string, unknown> | undefined;
+  const kind = typeof entry?.type === "string" ? entry.type : "source";
+  const name =
+    (typeof entry?.name === "string" && entry.name) ||
+    (typeof entry?.path === "string" && entry.path) ||
+    (typeof entry?.url === "string" && entry.url) ||
+    "source";
+  // A filesystem bundle reflects files already on disk — nothing to fetch,
+  // just index it. Every other declarative kind (git/website/npm) is a
+  // locator only; its content is not materialized until `akm update`.
+  if (kind === "filesystem") {
+    return `Added ${name} (filesystem) — run \`akm index\` to index it.`;
+  }
+  return `Added ${name} (${kind}) — not yet synced; run \`akm update ${name}\` to fetch it.`;
+}
+
 export function formatRemovePlain(r: Record<string, unknown>): string {
   const target = r.target ?? r.ref ?? "";
   const ok = r.ok !== false ? "OK" : "FAILED";
@@ -527,20 +561,36 @@ export function formatRemovePlain(r: Record<string, unknown>): string {
 }
 
 export function formatUpdatePlain(r: Record<string, unknown>): string {
+  // R-015: `processed` alone conflated three cases into one empty array —
+  // a true no-op (--all with nothing configured), a source this call flatly
+  // never looked at (a plain source under --all), and a plain git/website
+  // source that WAS just synced successfully but has no `UpdateResultItem`
+  // shape to report (no version/lock to diff). All three rendered as the
+  // same misleading "nothing to update". `plainSynced` and `skipped` (see
+  // sources/types.ts) cover the other two so this can report accurately.
   const processed = r.processed as Array<Record<string, unknown>> | undefined;
-  if (!processed?.length) return `update: nothing to update`;
-  const lines = processed.map((item) => {
+  const plainSynced = r.plainSynced as Array<Record<string, unknown>> | undefined;
+  const skipped = r.skipped as Array<Record<string, unknown>> | undefined;
+  const lines: string[] = [];
+  for (const item of processed ?? []) {
     const changed = item.changed as Record<string, unknown> | undefined;
     const installed = item.installed as Record<string, unknown> | undefined;
     const previous = item.previous as Record<string, unknown> | undefined;
     if (changed?.any) {
       const prev = previous?.resolvedVersion ?? "unknown";
       const next = installed?.resolvedVersion ?? "unknown";
-      return `update: ${item.id} v${prev} → v${next}`;
+      lines.push(`update: ${item.id} v${prev} → v${next}`);
+    } else {
+      lines.push(`update: ${item.id} (unchanged)`);
     }
-    return `update: ${item.id} (unchanged)`;
-  });
-  return lines.join("\n");
+  }
+  for (const item of plainSynced ?? []) {
+    lines.push(`update: ${item.id} synced (${item.kind})`);
+  }
+  for (const item of skipped ?? []) {
+    lines.push(`update: ${item.id} skipped — ${item.reason}`);
+  }
+  return lines.length > 0 ? lines.join("\n") : `update: nothing to update`;
 }
 
 export function formatUpgradePlain(r: Record<string, unknown>): string | null {

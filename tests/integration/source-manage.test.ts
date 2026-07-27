@@ -143,6 +143,55 @@ describe("addStash", () => {
     expect(getSources(loadConfig())).toEqual([]);
   });
 
+  // ── R-013: --provider npm with a bare package spec ──────────────────────
+  //
+  // Regression coverage for R-013: `akm add <pkg> --provider npm` used to
+  // silently ignore `providerType` for any non-URL target and create a
+  // filesystem bundle for `<cwd>/<pkg>` instead. A bare package spec must
+  // become a declarative npm bundle descriptor (`{ npm: <spec> }`), and a URL
+  // target must be rejected loudly at add time (never a valid npm spec).
+
+  test("a bare package spec with --provider npm creates an npm bundle, not a filesystem one", () => {
+    const result = addStash({ target: "lodash", providerType: "npm" });
+
+    expect(result.added).toBe(true);
+    expect(result.entry?.type).toBe("npm");
+    // npm sources carry their package spec in `path` (config-sources.ts
+    // bundleEntryToSourceEntry) — never `filesystem` and never a resolved
+    // absolute path under cwd.
+    expect(result.entry?.path).toBe("lodash");
+
+    const config = loadConfig();
+    expect(config.bundles?.lodash).toEqual({ npm: "lodash" });
+    expect(getSources(config)).toHaveLength(1);
+    expect(getSources(config)[0]!.type).toBe("npm");
+  });
+
+  test("a scoped package spec with --provider npm and an explicit name is stored as given", () => {
+    const result = addStash({ target: "@scope/pkg@^2", providerType: "npm", name: "scoped-pkg" });
+
+    expect(result.added).toBe(true);
+    expect(result.entry?.name).toBe("scoped-pkg");
+    expect(result.entry?.type).toBe("npm");
+    expect(result.entry?.path).toBe("@scope/pkg@^2");
+  });
+
+  test("rejects a URL target with --provider npm instead of deferring to a sync-time failure", () => {
+    expect(() => addStash({ target: "https://example.com/lodash.tgz", providerType: "npm" })).toThrow(
+      /--provider npm expects a package spec.*not a URL/s,
+    );
+    // Nothing should be written to config on rejection.
+    expect(getSources(loadConfig())).toEqual([]);
+  });
+
+  test("deduplicates a bare npm spec added twice", () => {
+    addStash({ target: "lodash", providerType: "npm" });
+    const result = addStash({ target: "lodash", providerType: "npm" });
+
+    expect(result.added).toBe(false);
+    expect(result.message).toContain("already configured");
+  });
+
   test("adds an http:// URL source", () => {
     const url = "http://example.com";
     const result = addStash({ target: url, providerType: "website" });

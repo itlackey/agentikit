@@ -256,7 +256,9 @@ export const addCommand = defineJsonCommand({
     const allowInsecure = args["allow-insecure"];
     const allowDangerousKeys = allowInsecure;
 
-    // URL with --provider → stash source (remote or git provider)
+    // --provider → declarative bundle source (URL for git/website; bare
+    // package spec for npm — R-013). Config-only write; content is not
+    // synced until a later `akm update`.
     if (args.provider) {
       if (shouldWarnOnPlainHttp(ref)) {
         if (!allowInsecure) {

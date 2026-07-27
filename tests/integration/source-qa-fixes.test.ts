@@ -358,10 +358,16 @@ describe("issue #19: akm update website sources", () => {
 
       // Should not throw TARGET_NOT_UPDATABLE
       const result = await akmUpdate({ target: "test-site", stashDir });
-      // Returns an UpdateResponse with processed[] (empty for website sources)
+      // Returns an UpdateResponse with processed[] (empty for website sources
+      // — a website re-crawl has no UpdateResultItem shape, no version/lock to
+      // diff). R-015-adjacent: this success must still be reported somewhere,
+      // via `plainSynced`, instead of `processed: []` rendering as the same
+      // "nothing to update" text a true no-op would (pinned in
+      // output-text-add-update-formatters.test.ts).
       expect(result).toBeDefined();
       expect(result.schemaVersion).toBe(1);
       expect(result.processed).toEqual([]);
+      expect(result.plainSynced).toEqual([{ id: "test-site", kind: "website", ref: siteUrl }]);
     } finally {
       server.stop(true);
     }
@@ -387,6 +393,11 @@ describe("issue #19: akm update website sources", () => {
 
     const result = await akmUpdate({ target: "test-git", stashDir });
     expect(result.processed).toEqual([]);
+    // R-015-adjacent: a successful git mirror sync has no UpdateResultItem
+    // shape either (no lock/version to diff), so it must show up via
+    // `plainSynced` rather than vanishing into an empty `processed: []` that
+    // renders identically to a true no-op.
+    expect(result.plainSynced).toEqual([{ id: "test-git", kind: "git", ref: "https://github.com/example/repo" }]);
     // updateGitSource must refresh via syncMirroredRepo (not treat the URL as a
     // local path), passing force + the resolved writable flag. The subsequent
     // re-index also refreshes every cache-backed source through the provider
@@ -533,5 +544,137 @@ describe("update preserves entry.source for writable installed entries", () => {
 
     expect(readLockfile().find((entry) => entry.id === "dimm-city-agent-stash")?.localRoot).toBe(stashRoot);
     expect(loadConfig().bundles?.["dimm-city-agent-stash"]?.components?.main?.writable).toBe(true);
+  });
+});
+
+// ── Regression: R-015 — `akm update --all` must account for plain sources ───
+
+describe("R-015: akm update --all with mixed plain and managed sources", () => {
+  test("accounts for every configured source: syncs git+npm, reports website+filesystem as skipped", async () => {
+    const fsDir = createTmpDir("akm-r015-fs-");
+    makeStashDir(fsDir);
+
+    const server = Bun.serve({
+      port: 0,
+      fetch(_req: Request) {
+        return new Response("<html><head><title>T</title></head><body><h1>T</h1><p>hi</p></body></html>", {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      },
+    });
+    const siteUrl = `http://127.0.0.1:${server.port}`;
+
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        "local-fs": { path: fsDir, components: { main: { root: ".", adapter: "akm", writable: true } } },
+        "docs-site": { website: { url: siteUrl } },
+        "mirror-git": { git: "https://github.com/example/mirror-git.git" },
+        "left-pad": { npm: "left-pad" },
+      },
+    });
+
+    const gitSyncSpy = spyOn(gitProvider, "syncMirroredRepo").mockResolvedValue({
+      id: "https://github.com/example/mirror-git",
+      source: "git",
+      ref: "https://github.com/example/mirror-git",
+      artifactUrl: "https://github.com/example/mirror-git",
+      contentDir: stashDir,
+      cacheDir: testCacheDir,
+      extractedDir: stashDir,
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+    const npmSyncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+      id: "left-pad",
+      source: "npm",
+      ref: "npm:left-pad",
+      artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+      resolvedVersion: "1.3.0",
+      contentDir: stashDir,
+      cacheDir: testCacheDir,
+      extractedDir: stashDir,
+      integrity: "sha512-fake",
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+
+    let result: Awaited<ReturnType<typeof akmUpdate>>;
+    try {
+      result = await akmUpdate({ all: true, stashDir });
+    } finally {
+      gitSyncSpy.mockRestore();
+      npmSyncSpy.mockRestore();
+      server.stop(true);
+    }
+
+    // Before R-015: `selectManagedTargets` returned `installs` (empty, since
+    // none of these four sources are lock-backed) immediately for `all`,
+    // so `processed` was `[]` and NOTHING else in the response mentioned any
+    // of the four configured sources — the CLI rendered "nothing to update".
+
+    // git: synced in place, reported via plainSynced (no lock/version to diff).
+    expect(result.plainSynced).toContainEqual({
+      id: "mirror-git",
+      kind: "git",
+      ref: "https://github.com/example/mirror-git.git",
+    });
+    // npm: promoted to a managed (lock-backed) install on first sync, so it
+    // is reported via `processed` like any other managed update.
+    expect(result.processed).toHaveLength(1);
+    expect(result.processed[0]?.id).toBe("left-pad");
+    expect(result.processed[0]?.installed.resolvedVersion).toBe("1.3.0");
+    // website + filesystem: no --all sync path exists for either, so both
+    // must be visibly reported as skipped (with the SAME explanatory wording
+    // the single-target path already used) rather than silently omitted.
+    const skippedIds = (result.skipped ?? []).map((s) => s.id).sort();
+    expect(skippedIds).toEqual(["docs-site", "local-fs"]);
+    const websiteSkip = result.skipped?.find((s) => s.id === "docs-site");
+    expect(websiteSkip?.kind).toBe("website");
+    expect(websiteSkip?.reason).toContain("not yet implemented for --all");
+    const fsSkip = result.skipped?.find((s) => s.id === "local-fs");
+    expect(fsSkip?.kind).toBe("filesystem");
+    expect(fsSkip?.reason).toContain("akm index");
+
+    // The npm source must now be a genuine managed install (lock-backed).
+    const npmLock = readLockfile().find((entry) => entry.id === "left-pad");
+    expect(npmLock?.resolvedVersion).toBe("1.3.0");
+  });
+
+  test("akm update <plain-npm-name> promotes it to a managed install instead of the wrong 'local directory' error", async () => {
+    // Before this fix: a plain (lockless) npm bundle wasn't recognized by any
+    // branch of akmUpdate's single-target dispatch, so it fell through to
+    // the generic filesystem-source fallback message ("is a local directory
+    // — it reflects your files in place"), which is actively wrong for an
+    // unsynced npm package and gives the user no way to ever sync it.
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: { "left-pad": { npm: "left-pad" } },
+    });
+
+    const npmSyncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+      id: "left-pad",
+      source: "npm",
+      ref: "npm:left-pad",
+      artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+      resolvedVersion: "1.3.0",
+      contentDir: stashDir,
+      cacheDir: testCacheDir,
+      extractedDir: stashDir,
+      integrity: "sha512-fake",
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+    try {
+      const result = await akmUpdate({ target: "left-pad", stashDir });
+      expect(result.processed).toHaveLength(1);
+      expect(result.processed[0]?.id).toBe("left-pad");
+      expect(result.processed[0]?.changed.any).toBe(true);
+      expect(npmSyncSpy).toHaveBeenCalledWith("npm:left-pad", expect.objectContaining({ force: false }));
+    } finally {
+      npmSyncSpy.mockRestore();
+    }
+
+    expect(readLockfile().find((entry) => entry.id === "left-pad")?.resolvedVersion).toBe("1.3.0");
   });
 });

@@ -63,17 +63,34 @@ export function addStash(opts: {
   }
   let result: SourceAddResult | undefined;
 
-  if (isRemoteUrl(target)) {
-    if (!providerType) {
-      throw new UsageError("--provider is required for URL sources (e.g. --provider git --provider website)");
-    }
+  const targetIsUrl = isRemoteUrl(target);
+  if (targetIsUrl && !providerType) {
+    throw new UsageError("--provider is required for URL sources (e.g. --provider git --provider website)");
   }
+  // R-013: `--provider npm` names an npm package SPEC (e.g. "lodash",
+  // "@scope/pkg@^2"), never a URL — a tarball URL is not installable as a
+  // package spec and would only fail much later, at first sync, with a
+  // confusing "Invalid npm package name" error. Reject it loudly here instead.
+  if (providerType === "npm" && targetIsUrl) {
+    throw new UsageError(
+      `--provider npm expects a package spec (e.g. "lodash" or "@scope/pkg@^2"), not a URL: "${target}". ` +
+        "Drop --provider npm and re-run `akm add <package>` to add an npm source.",
+    );
+  }
+  // A bare (non-URL) target with --provider npm is a declarative npm source
+  // add — the same "locator, not a URL" descriptor path used for git/website
+  // URL sources below. Without this, a non-URL target fell through to the
+  // filesystem branch below and `--provider npm` was silently ignored,
+  // creating a bogus filesystem bundle for the current working directory
+  // (R-013).
+  const useDescriptorPath = targetIsUrl || providerType === "npm";
   mutateConfig((config) => {
     const bundles: Record<string, BundleConfigEntry> = { ...(config.bundles ?? {}) };
     let key: string;
-    if (isRemoteUrl(target)) {
+    if (useDescriptorPath) {
       if (bundleKeyForUrl(config, target)) {
-        result = { sources: getSources(config), added: false, message: "Source URL already configured" };
+        const already = targetIsUrl ? "Source URL already configured" : "Source already configured";
+        result = { sources: getSources(config), added: false, message: already };
         return config;
       }
       key = nextBundleKey(bundles, name, target);
@@ -101,10 +118,15 @@ export function addStash(opts: {
   return result as SourceAddResult;
 }
 
-/** Build the 0.9.0 bundle descriptor for a URL source (spec §10.1). */
+/**
+ * Build the 0.9.0 bundle descriptor for a declarative (non-filesystem) source
+ * (spec §10.1). `locator` is a URL for git/website; for npm it is a bare
+ * package spec (e.g. "lodash", "@scope/pkg@^2") — never a URL (R-013,
+ * rejected earlier in {@link addStash}).
+ */
 function urlBundleDescriptor(
   providerType: string,
-  url: string,
+  locator: string,
   options: Record<string, unknown> | undefined,
   writable: boolean,
 ): BundleConfigEntry {
@@ -112,12 +134,12 @@ function urlBundleDescriptor(
     // Website provider options ride on the (passthrough) website descriptor and
     // round-trip back to `entry.options` via bundleEntryToSourceEntry.
     return {
-      website: { url, ...(options ?? {}) },
+      website: { url: locator, ...(options ?? {}) },
       components: { main: { root: ".", adapter: "website-snapshot", writable: false } },
     };
   }
-  if (providerType === "npm") return { npm: url };
-  if (providerType === "git") return { git: url, ...(writable ? { writable: true } : {}) };
+  if (providerType === "npm") return { npm: locator };
+  if (providerType === "git") return { git: locator, ...(writable ? { writable: true } : {}) };
   throw new ConfigError(
     `unsupported source type "${providerType}"; expected filesystem, git, website, or npm`,
     "INVALID_CONFIG_FILE",

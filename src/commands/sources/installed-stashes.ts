@@ -41,8 +41,10 @@ import type {
   SourceKind,
   SourceListResponse,
   SourceLock,
+  UpdatePlainSyncedItem,
   UpdateResponse,
   UpdateResultItem,
+  UpdateSkippedItem,
 } from "../../sources/types";
 import type { Database } from "../../storage/database";
 import { closeDatabase, openReadonlyExistingDatabase } from "../../storage/repositories/index-connection";
@@ -321,9 +323,9 @@ async function buildUpdateResponse(
   target: string | undefined,
   all: boolean,
   processed: UpdateResponse["processed"],
-  full = false,
+  opts?: { full?: boolean; plainSynced?: UpdatePlainSyncedItem[]; skipped?: UpdateSkippedItem[] },
 ): Promise<UpdateResponse> {
-  const index = await akmIndex({ stashDir, ...(full ? { full: true } : {}) });
+  const index = await akmIndex({ stashDir, ...(opts?.full ? { full: true } : {}) });
   const finalConfig = loadConfig();
   return {
     schemaVersion: 1,
@@ -331,6 +333,8 @@ async function buildUpdateResponse(
     target,
     all,
     processed,
+    ...(opts?.plainSynced?.length ? { plainSynced: opts.plainSynced } : {}),
+    ...(opts?.skipped?.length ? { skipped: opts.skipped } : {}),
     config: {
       sourceCount: getSources(finalConfig).length,
     },
@@ -343,31 +347,78 @@ async function buildUpdateResponse(
   };
 }
 
-/** Sync a git-mirrored (plain) source and return an UpdateResponse. */
-async function updateGitSource(
-  stashDir: string,
-  target: string,
-  all: boolean,
-  gitSource: ReturnType<typeof getSources>[number],
-): Promise<UpdateResponse> {
+/**
+ * Sync a git-mirrored (plain) source in place. Returns the {@link UpdatePlainSyncedItem}
+ * record instead of building the full response, so `--all` can batch several of
+ * these into one response alongside managed installs (R-015).
+ */
+async function syncGitPlainSource(gitSource: ReturnType<typeof getSources>[number]): Promise<UpdatePlainSyncedItem> {
   await syncMirroredRepo(gitSource, { force: true, writable: gitSource.writable === true });
-  return buildUpdateResponse(stashDir, target, all, [], true);
+  return { id: gitSource.name ?? gitSource.url ?? "", kind: "git", ref: gitSource.url ?? "" };
 }
 
-/** Re-crawl a website (plain) source and return an UpdateResponse. */
-async function updateWebsiteSource(
-  stashDir: string,
-  target: string,
-  all: boolean,
+/** Re-crawl a website (plain) source in place. See {@link syncGitPlainSource}. */
+async function syncWebsitePlainSource(
   websiteSource: ReturnType<typeof getSources>[number],
-): Promise<UpdateResponse> {
+): Promise<UpdatePlainSyncedItem> {
   // TODO: full incremental re-crawl with delta tracking (#19)
   await ensureWebsiteMirror(websiteSource, {
     requireStashDir: true,
     force: true,
     ...(shouldAllowPrivateWebsiteUrlForTests(websiteSource.url ?? "") ? { allowPrivateHosts: true } : {}),
   });
-  return buildUpdateResponse(stashDir, target, all, []);
+  return { id: websiteSource.name ?? websiteSource.url ?? "", kind: "website", ref: websiteSource.url ?? "" };
+}
+
+/** Sync a git-mirrored (plain) source and return an UpdateResponse (single-target path). */
+async function updateGitSource(
+  stashDir: string,
+  target: string,
+  all: boolean,
+  gitSource: ReturnType<typeof getSources>[number],
+): Promise<UpdateResponse> {
+  const synced = await syncGitPlainSource(gitSource);
+  return buildUpdateResponse(stashDir, target, all, [], { full: true, plainSynced: [synced] });
+}
+
+/** Re-crawl a website (plain) source and return an UpdateResponse (single-target path). */
+async function updateWebsiteSource(
+  stashDir: string,
+  target: string,
+  all: boolean,
+  websiteSource: ReturnType<typeof getSources>[number],
+): Promise<UpdateResponse> {
+  const synced = await syncWebsitePlainSource(websiteSource);
+  return buildUpdateResponse(stashDir, target, all, [], { plainSynced: [synced] });
+}
+
+/**
+ * A plain (lockless) npm bundle has no deterministic content path — unlike
+ * git/website, resolving an npm package requires a registry round-trip to
+ * pick a concrete version/tarball, which is exactly what the lock records.
+ * So a plain npm source is synced via the same registry-install pipeline as
+ * `akm add <package>` and PROMOTED to a registry-managed (lock-backed)
+ * install as a side effect of its first successful sync; it is reported via
+ * `processed` like any other managed install from then on. Building a
+ * {@link ManagedInstall} view onto the plain entry lets this reuse
+ * {@link updateManagedInstall} verbatim rather than duplicating its lock/config
+ * bookkeeping.
+ */
+function managedInstallViewOfPlainNpm(npmSource: ReturnType<typeof getSources>[number]): ManagedInstall {
+  const spec = npmSource.path ?? "";
+  const ref = spec.startsWith("npm:") ? spec : `npm:${spec}`;
+  const id = npmSource.name ?? ref;
+  return {
+    bundleKey: id,
+    installId: id,
+    source: "npm",
+    ref,
+    localRoot: "",
+    resolvedVersion: undefined,
+    resolvedRevision: undefined,
+    writable: false,
+    requiredRoots: [],
+  };
 }
 
 /** Sync a single registry-managed install and return the processed record. */
@@ -496,6 +547,22 @@ export async function akmUpdate(input?: {
       return false;
     });
     if (websiteMatch) return updateWebsiteSource(stashDir, target, all, websiteMatch);
+
+    // Plain npm source (bundle without a lock) — sync via the registry
+    // pipeline and promote to a managed install (see
+    // managedInstallViewOfPlainNpm's doc comment for why npm can't stay
+    // plain the way git/website do).
+    const npmMatch = stashes.find((s) => {
+      if (s.type !== "npm") return false;
+      if (s.name === target) return true;
+      if (s.path === target) return true;
+      return false;
+    });
+    if (npmMatch) {
+      return buildUpdateResponse(stashDir, target, all, [
+        await updateManagedInstall(managedInstallViewOfPlainNpm(npmMatch), force),
+      ]);
+    }
   }
 
   const selected = selectManagedTargets(config, managedInstalls, target, all);
@@ -504,7 +571,55 @@ export async function akmUpdate(input?: {
     processed.push(await updateManagedInstall(managed, force));
   }
 
-  return buildUpdateResponse(stashDir, target, all, processed);
+  // `--all` must account for EVERY configured source, not only the
+  // registry-managed (lock-backed) ones (R-015) — `selectManagedTargets`
+  // above returns only `installs` for `all`, so plain sources were
+  // previously never even looked at. Git/npm plain sources are synced here
+  // too (git in place; npm promoted to managed, same as the single-target
+  // path above); website/filesystem sources have no `--all` sync path, so
+  // they are reported as skipped with the same explanatory wording
+  // `selectManagedTargets` already uses for a single unmatched target.
+  let plainSynced: UpdatePlainSyncedItem[] | undefined;
+  let skipped: UpdateSkippedItem[] | undefined;
+  let sawGitSync = false;
+  if (all) {
+    const managedKeys = new Set(managedInstalls.map((m) => m.bundleKey));
+    const plainSources = getSources(config).filter((s) => !managedKeys.has(s.name ?? ""));
+    plainSynced = [];
+    skipped = [];
+    for (const plain of plainSources) {
+      const id = plain.name ?? plain.path ?? plain.url ?? "";
+      try {
+        if (plain.type === "git") {
+          plainSynced.push(await syncGitPlainSource(plain));
+          sawGitSync = true;
+        } else if (plain.type === "npm") {
+          processed.push(await updateManagedInstall(managedInstallViewOfPlainNpm(plain), force));
+        } else if (plain.type === "website") {
+          skipped.push({
+            id,
+            kind: "website",
+            reason: `website caching not yet implemented for --all; run \`akm update ${id}\` to re-mirror this source individually.`,
+          });
+        } else {
+          skipped.push({
+            id,
+            kind: plain.type as SourceKind,
+            reason:
+              "reflects your files in place and has no remote to sync; run `akm index` to refresh the search index.",
+          });
+        }
+      } catch (err) {
+        skipped.push({
+          id,
+          kind: plain.type as SourceKind,
+          reason: `sync failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+  }
+
+  return buildUpdateResponse(stashDir, target, all, processed, { full: sawGitSync, plainSynced, skipped });
 }
 
 function selectManagedTargets(
