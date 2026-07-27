@@ -12,6 +12,21 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+// Import the CLI entrypoint FOR ITS MODULE-LOAD SIDE EFFECTS ONLY. This test
+// must be able to run alone (`bun test <this file>`, the exact command the
+// repo's own test-discipline guardrails prescribe) and still exercise the
+// FULL registered-shape surface. Most shapes are registered deterministically
+// by the `src/output/shapes.ts` barrel (imported transitively below), but at
+// least one command (`lessons-strength`, src/commands/observability-cli.ts)
+// registers its shape as an ad-hoc module-level `registerOutputShape(...)`
+// side effect outside that barrel. Without importing a module that reaches
+// it, this test only passes when co-scheduled with some OTHER file that
+// happens to import `src/cli` (e.g. tasks-run-attempt-observability.test.ts)
+// — an order-dependent false green that defeats the entire point of this
+// regression guard. `src/cli` transitively imports every command module, so
+// importing it here is the one import guaranteed to reach every registration
+// site regardless of future command additions.
+import "../../src/cli";
 import { shapeForCommand } from "../../src/output/shapes";
 
 const SRC_ROOT = path.join(__dirname, "..", "..", "src");

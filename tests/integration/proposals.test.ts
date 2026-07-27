@@ -949,6 +949,23 @@ describe("Phase 6B: expireStaleProposals archives proposals past retention", () 
 // ── Phase 6C — Proposal reversion (Advantage D6c) ───────────────────────────
 
 describe("Phase 6C: promoteProposal captures backup; revertProposal restores it", () => {
+  // RUNTIME-07(e): the three "waits for the shared asset-mutation lease"
+  // tests below used to burn a real `Bun.sleep(150)` between starting the
+  // mutation and asserting it hasn't completed yet. That sleep was not
+  // needed for correctness and was a source of narrow-margin timing risk on
+  // a loaded runner. `withAssetMutationLease` (src/indexer/index-writer-lock.ts,
+  // `acquireIndexWriterLease`) makes its FIRST lock-acquisition attempt
+  // (`tryAcquireMaintenanceBarrier` + `tryAcquireLockSync` + `probeLock`,
+  // src/core/file-lock.ts) entirely synchronously — none of those calls
+  // `await` anything. Per JS async-function semantics, that means by the
+  // time `akmProposalAccept`/`akmProposalReject`/`akmProposalRevert` returns
+  // a pending promise to the caller, the first attempt has ALREADY run
+  // synchronously and failed against the lockPath we wrote (since it exists
+  // on disk before the call), and the loop is already parked on a real
+  // `await delay(100)`. So the "not done yet" assertion is true the instant
+  // the call returns — no sleep, real or fake, is required to observe it,
+  // and none of these three tests carry any margin-based flake risk (unlike
+  // the elapsed-vs-timeout percentage check in llm-client.test.ts).
   test("accept waits for the shared asset-mutation lease", async () => {
     const stash = makeStashDir();
     const config = makeConfig(stash);
@@ -965,7 +982,6 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     fs.writeFileSync(lockPath, JSON.stringify({ pid: process.ppid, startedAt: new Date().toISOString() }), "utf8");
 
     const accepting = akmProposalAccept({ stashDir: stash, id: created.id, config });
-    await Bun.sleep(150);
     expect(fs.existsSync(assetPath)).toBe(false);
     fs.rmSync(lockPath, { force: true });
     await accepting;
@@ -988,7 +1004,6 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     const rejecting = Promise.resolve(
       akmProposalReject({ stashDir: stash, id: created.id, reason: "serialized rejection" }),
     );
-    await Bun.sleep(150);
     expect(getProposal(stash, created.id).status).toBe("pending");
     fs.rmSync(lockPath, { force: true });
     await rejecting;
@@ -1044,7 +1059,6 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     fs.writeFileSync(lockPath, JSON.stringify({ pid: process.ppid, startedAt: new Date().toISOString() }), "utf8");
 
     const reverting = akmProposalRevert({ stashDir: stash, id: created.id, config });
-    await Bun.sleep(150);
     expect(fs.readFileSync(assetPath, "utf8")).toContain("Prefer rg over grep");
     fs.rmSync(lockPath, { force: true });
     await reverting;

@@ -1,4 +1,4 @@
-import { describe, expect, jest, test } from "bun:test";
+import { describe, expect, jest, setSystemTime, test } from "bun:test";
 import type { LlmConnectionConfig } from "../../src/core/config/config";
 import { parseEmbeddedJsonResponse } from "../../src/core/parse";
 import { chatCompletion, LlmCallError, probeLlmCapabilities, redactErrorBody } from "../../src/llm/client";
@@ -847,11 +847,21 @@ describe("chatCompletion single bounded retry", () => {
   test("retry is skipped when the first attempt consumes >= 90% of timeoutMs", async () => {
     const originalFetch = globalThis.fetch;
     let calls = 0;
-    // First attempt fails with a retryable 500 but only after burning ~95% of
-    // the budget, so the budget guard must suppress the retry.
+    // The production budget guard (src/llm/client.ts) compares REAL elapsed
+    // wall-clock time (`Date.now() - started`) against `timeoutMs * 0.9`.
+    // This test used to manufacture that elapsed time by actually sleeping
+    // 460ms inside the fetch stub, leaving only 40ms (8%) of headroom before
+    // the real 500ms AbortController timer armed by `fetchWithTimeout` could
+    // race it — under a loaded runner the abort could fire first and turn
+    // the failure into "timeout" instead of the expected "provider_error".
+    // Fix: advance the FAKED system clock deterministically inside the stub
+    // instead of sleeping. `Date.now()` then reports exactly the intended
+    // ~460ms of elapsed time to the budget guard with no real wait at all,
+    // which also eliminates the race entirely (the stub now resolves
+    // immediately, so the real abort timer never gets close to firing).
     globalThis.fetch = (async () => {
       calls += 1;
-      await new Promise((r) => setTimeout(r, 460));
+      setSystemTime(new Date(Date.now() + 460));
       return new Response("boom", { status: 500 });
     }) as unknown as typeof fetch;
     let retries = 0;
@@ -867,6 +877,7 @@ describe("chatCompletion single bounded retry", () => {
       caught = err as LlmCallError;
     } finally {
       globalThis.fetch = originalFetch;
+      setSystemTime(); // restore the real clock so later tests are unaffected
     }
     expect(caught?.code).toBe("provider_error");
     expect(retries).toBe(0);
