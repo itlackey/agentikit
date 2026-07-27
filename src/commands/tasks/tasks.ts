@@ -50,7 +50,7 @@ import {
 import type { TaskDocument } from "../../tasks/schema";
 import { normaliseTaskId } from "../../tasks/task-id";
 import { validateTaskDocument } from "../../tasks/validator";
-import { applyAutonomyGate } from "../improve/autonomy-gate";
+import { applyAutonomyGate, DIRECT_AUTONOMY_LANES, describeGatedLanes } from "../improve/autonomy-gate";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
 
 export interface TasksAddInput {
@@ -696,10 +696,16 @@ export async function akmTasksDoctor(
   // command lying about the thing it exists to diagnose.
   const rawStrategy = resolveImproveStrategy(config.defaults?.improveStrategy, config).config;
   const { config: effectiveStrategy, gated } = applyAutonomyGate(rawStrategy, config);
+  const autonomyEnabled = isImproveAutonomyEnabled(config);
+  // The strategy-derived lanes are only part of the picture: the memory-cleanup
+  // and contradiction passes have no strategy flag to downgrade, so
+  // `applyAutonomyGate` cannot see them. Doctor reports the lanes a scheduled
+  // run would be denied, so it has to name those two as well.
+  const allGated = autonomyEnabled ? [] : [...gated, ...describeGatedLanes(DIRECT_AUTONOMY_LANES)];
   const improveAutonomy = {
-    enabled: isImproveAutonomyEnabled(config),
+    enabled: autonomyEnabled,
     configKey: IMPROVE_AUTONOMY_CONFIG_KEY,
-    gatedLanes: gated.map((entry) => ({ lane: entry.lane as string, reason: entry.reason })),
+    gatedLanes: allGated.map((entry) => ({ lane: entry.lane as string, reason: entry.reason })),
   };
   const triage = effectiveStrategy.processes?.triage;
   const improveTriage = triage

@@ -16,7 +16,7 @@
 
 import { defineCommand } from "citty";
 import { parsePositiveIntFlag } from "../../cli/parse-args";
-import { defineGroupCommand, defineJsonCommand, output, runWithJsonErrors } from "../../cli/shared";
+import { defineGroupCommand, defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { detectServerDefault, registerDefaultTasks } from "./default-tasks";
 import {
   akmTasksAdd,
@@ -148,7 +148,10 @@ const tasksRunCommand = defineCommand({
     name: "run",
     description: "Execute a task now (this is what cron / launchd / schtasks invoke at the scheduled time)",
   },
+  // Raw defineCommand (it forwards the task's exit code), so the global output
+  // flags are declared here or `--format md nightly` loses the task id.
   args: {
+    ...GLOBAL_OUTPUT_ARGS,
     id: { type: "positional", description: "Task id", required: true },
     ...targetArg,
     scheduled: { type: "boolean", description: "Internal marker for scheduler-generated runs", default: false },

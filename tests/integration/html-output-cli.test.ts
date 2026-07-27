@@ -148,6 +148,38 @@ describe("akm health --report", () => {
     expect(Array.isArray(parsed.report.pendingProposals)).toBe(true);
   });
 
+  test.each([
+    ["ISO date", "2026-07-01"],
+    ["ISO timestamp", "2026-07-01T12:34:56.000Z"],
+    ["epoch milliseconds", String(Date.parse("2026-07-01T12:34:56.000Z"))],
+  ] as const)("accepts an absolute %s --since value", async (_label, since) => {
+    const { code, stdout } = await runCliCapture(["health", "--report", "--since", since, "--format=json"]);
+
+    expect([0, 4]).toContain(code);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.report.window).toBe(since);
+    expect(Array.isArray(parsed.runs)).toBe(true);
+  });
+
+  test("explicit report windows do not conflict with an implicit comparison window", async () => {
+    const { code, stdout } = await runCliCapture([
+      "health",
+      "--report",
+      "--since",
+      "7d",
+      "--windows",
+      "name=older,since=2026-07-01T00:00:00.000Z,until=2026-07-02T00:00:00.000Z",
+      "--windows",
+      "name=newer,since=2026-07-02T00:00:00.000Z,until=2026-07-03T00:00:00.000Z",
+      "--format=json",
+    ]);
+
+    expect([0, 4]).toContain(code);
+    const parsed = JSON.parse(stdout) as { windows?: Array<{ name: string }>; report: { window: string } };
+    expect(parsed.report.window).toBe("7d");
+    expect(parsed.windows?.map((window) => window.name)).toEqual(["older", "newer"]);
+  });
+
   test("plain akm health carries no report dataset and renders html generically", async () => {
     const { code, stdout } = await runCliCapture(["health", "--format", "json"]);
     expect([0, 4]).toContain(code);

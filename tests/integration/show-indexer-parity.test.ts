@@ -16,10 +16,12 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { akmSearch } from "../../src/commands/read/search";
 import { akmShowUnified } from "../../src/commands/read/show";
 import { parseBundleRef } from "../../src/core/asset/asset-ref";
 import { resetConfigCache, saveConfig } from "../../src/core/config/config";
 import { akmIndex, lookupBundleRef } from "../../src/indexer/indexer";
+import type { SourceSearchHit } from "../../src/sources/types";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { getMeta } from "../../src/storage/repositories/index-meta-repository";
 import { searchVec } from "../../src/storage/repositories/index-vec-repository";
@@ -33,6 +35,8 @@ import {
 } from "../_helpers/sandbox";
 
 const createdTmpDirs: string[] = [];
+const WEBSITE_ROOT = path.resolve(__dirname, "../fixtures/bundles/website-snapshot");
+const GENERIC_ROOT = path.resolve(__dirname, "../fixtures/bundles/generic-files");
 
 function _createTmpDir(prefix = "akm-parity-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -40,9 +44,57 @@ function _createTmpDir(prefix = "akm-parity-"): string {
   return dir;
 }
 
+function copyFixtureToTmp(sourceRoot: string): string {
+  const parent = _createTmpDir("akm-parity-fixture-");
+  const root = path.join(parent, path.basename(sourceRoot));
+  fs.cpSync(sourceRoot, root, { recursive: true });
+  return root;
+}
+
 function writeFile(filePath: string, content: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content, "utf8");
+}
+
+async function indexAdapterBundle(
+  bundleId: string,
+  root: string,
+  adapter: "website-snapshot" | "generic-files",
+  writable: boolean,
+): Promise<void> {
+  saveConfig({
+    semanticSearchMode: "off",
+    defaultBundle: "local",
+    bundles: {
+      local: {
+        path: stashDir,
+        writable: true,
+        components: { main: { root: ".", adapter: "akm", writable: true } },
+      },
+      [bundleId]: {
+        path: root,
+        writable,
+        components: { main: { root: ".", adapter, writable } },
+      },
+    },
+  });
+  resetConfigCache();
+  await akmIndex({ stashDir, full: true });
+}
+
+async function onlyHit(bundleId: string, query: string): Promise<SourceSearchHit> {
+  const result = await akmSearch({
+    query,
+    source: bundleId,
+    skipLogging: true,
+    disableProjectContext: true,
+    disableScopedUtility: true,
+  });
+  const hits = result.hits.filter((hit): hit is SourceSearchHit => "path" in hit);
+  expect(hits).toHaveLength(1);
+  const hit = hits[0];
+  if (!hit) throw new Error(`expected one search hit for ${bundleId}:${query}`);
+  return hit;
 }
 
 function createMockEmbeddingServer(embedding: number[] = [1, 0, 0, 0]): {
@@ -197,5 +249,65 @@ describe("Phase 4 parity: indexer.lookupBundleRef ↔ akmShowUnified", () => {
     await akmIndex({ stashDir, full: true });
     const result = await lookupBundleRef(parseBundleRef("skills/does-not-exist"));
     expect(result).toBeNull();
+  });
+
+  test("website search results retain their indexed projection through show", async () => {
+    await indexAdapterBundle("website-fixture", WEBSITE_ROOT, "website-snapshot", false);
+
+    const hit = await onlyHit("website-fixture", "second crawled");
+    const indexed = await lookupBundleRef(parseBundleRef(hit.ref));
+    const shown = await akmShowUnified({ ref: hit.ref, skipLogging: true });
+
+    expect(hit).toMatchObject({
+      type: "website",
+      name: "About Example",
+      ref: "website-fixture//example-com/about",
+      description: "Snapshot of https://example.com/about",
+    });
+    expect(indexed).toMatchObject({ adapterId: "website-snapshot", type: "website" });
+    expect(shown).toMatchObject({
+      type: hit.type,
+      name: hit.name,
+      ref: hit.ref,
+      path: hit.path,
+      description: hit.description,
+      content: indexed?.document?.content,
+    });
+  });
+
+  test("generic Markdown search results retain their indexed document type through show", async () => {
+    await indexAdapterBundle("generic-fixture", copyFixtureToTmp(GENERIC_ROOT), "generic-files", true);
+
+    const hit = await onlyHit("generic-fixture", "special structure");
+    const indexed = await lookupBundleRef(parseBundleRef(hit.ref));
+    const shown = await akmShowUnified({ ref: hit.ref, skipLogging: true });
+
+    expect(hit).toMatchObject({ type: "document", name: "notes", ref: "generic-fixture//notes" });
+    expect(indexed).toMatchObject({ adapterId: "generic-files", type: "document" });
+    expect(shown).toMatchObject({
+      type: hit.type,
+      name: hit.name,
+      ref: hit.ref,
+      path: hit.path,
+      content: indexed?.document?.content,
+    });
+  });
+
+  test("generic non-Markdown search results can be shown from their indexed projection", async () => {
+    await indexAdapterBundle("generic-fixture", copyFixtureToTmp(GENERIC_ROOT), "generic-files", true);
+
+    const hit = await onlyHit("generic-fixture", "alpha");
+    const indexed = await lookupBundleRef(parseBundleRef(hit.ref));
+    const shown = await akmShowUnified({ ref: hit.ref, skipLogging: true });
+
+    expect(hit).toMatchObject({ type: "file", name: "data.csv", ref: "generic-fixture//data.csv" });
+    expect(indexed).toMatchObject({ adapterId: "generic-files", type: "file" });
+    expect(shown).toMatchObject({
+      type: hit.type,
+      name: hit.name,
+      ref: hit.ref,
+      path: hit.path,
+      content: indexed?.document?.content,
+    });
   });
 });

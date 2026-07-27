@@ -44,7 +44,7 @@ import { getEntryCount } from "../../storage/repositories/index-entries-reposito
 import { type DrainResult, drainProposals } from "../proposal/drain";
 import { resolveDrainPolicy } from "../proposal/drain-policies";
 import type { EligibilitySource } from "../proposal/proposal-types";
-import { isAutonomyLaneAllowed } from "./autonomy-gate";
+import { type AutonomyLane, DIRECT_AUTONOMY_LANES, describeGatedLanes, isAutonomyLaneAllowed } from "./autonomy-gate";
 import { akmDistill } from "./distill";
 // Eligibility / candidate-selection predicates live in ./eligibility.
 import {
@@ -186,6 +186,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
   let memorySummary: Awaited<ReturnType<typeof collectEligibleRefs>>["memorySummary"] = { eligible: 0, derived: 0 };
   let strategyFilteredRefs: Awaited<ReturnType<typeof collectEligibleRefs>>["strategyFilteredRefs"] = [];
   let memoryCleanupPlan: ReturnType<typeof analyzeMemoryCleanup> | undefined;
+  let autonomyGatedDirectLanes: AutonomyLane[] = [];
   let guidance: string | undefined;
   let triageDrain: DrainResult | undefined;
 
@@ -251,6 +252,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
     memorySummary = collected.memorySummary;
     strategyFilteredRefs = collected.strategyFilteredRefs;
     memoryCleanupPlan = collected.memoryCleanupPlan;
+    autonomyGatedDirectLanes = collected.autonomyGatedDirectLanes;
     guidance = collected.guidance;
     preEnsureCleanupWarnings.push(...collected.warnings);
 
@@ -293,7 +295,10 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
       run: setup,
       strategyFilteredRefs,
       plannedRefs,
-      memoryCleanupPlan,
+      // The preview stays on the result envelope below; the stage sequence is
+      // what APPLIES the plan, so a gated run must not receive it.
+      memoryCleanupPlan: autonomyGatedDirectLanes.length > 0 ? undefined : memoryCleanupPlan,
+      autonomyGatedDirectLanes,
       memorySummary,
       preEnsureCleanupWarnings,
       eventsCtx,
@@ -631,6 +636,12 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
   memorySummary: Awaited<ReturnType<typeof collectEligibleRefs>>["memorySummary"];
   strategyFilteredRefs: NonNullable<Awaited<ReturnType<typeof collectEligibleRefs>>["strategyFilteredRefs"]>;
   memoryCleanupPlan?: ReturnType<typeof analyzeMemoryCleanup>;
+  /**
+   * Direct lanes that were eligible to run but denied by the autonomy gate.
+   * Empty when autonomy is on OR when the lanes were not eligible anyway — the
+   * caller turns these into the operator warning and `improve_skipped` event.
+   */
+  autonomyGatedDirectLanes: AutonomyLane[];
   guidance?: string;
   warnings: string[];
 }> {
@@ -712,19 +723,22 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
   } = await collectEligibleRefsImpl(scope, options.stashDir, improveProfile));
   const cleanupParentRef = memoryCleanupParentRef(scope, options.stashDir);
 
+  // D8 — the two direct lanes share one eligibility predicate, which reads scope
+  // and eligible-memory count and no strategy flag at all. Compute it once: it
+  // decides whether each lane would have run, which is also what decides whether
+  // a gated lane is worth REPORTING. A lane that was never eligible was not
+  // suppressed by the gate, so claiming it was would be noise.
+  const cleanupEligible = shouldAnalyzeMemoryCleanup(scope, memorySummary.eligible, primaryStashDir);
+  const autonomyAllowsDirectLanes = isAutonomyLaneAllowed("memoryCleanup", _earlyConfig);
+  const autonomyGatedDirectLanes: AutonomyLane[] =
+    cleanupEligible && !autonomyAllowsDirectLanes ? [...DIRECT_AUTONOMY_LANES] : [];
+
   // M-1 (#367): Run contradiction-detection BEFORE analyzeMemoryCleanup so
   // the SCC resolver in resolveFamilyContradictions has edges to work on.
   // Best-effort: failures are warnings, never fatal.
-  // D8 — `shouldAnalyzeMemoryCleanup` reads scope and eligible-memory count and
-  // no strategy flag at all, so before the autonomy gate this pass ran on ANY
-  // improve run covering memories. It writes contradiction edges and
-  // belief-state transitions, so it needs the opt-in.
-  if (
-    !options.dryRun &&
-    primaryStashDir &&
-    isAutonomyLaneAllowed("contradiction", _earlyConfig) &&
-    shouldAnalyzeMemoryCleanup(scope, memorySummary.eligible, primaryStashDir)
-  ) {
+  // It writes contradiction edges and belief-state transitions, so it needs the
+  // opt-in.
+  if (!options.dryRun && primaryStashDir && autonomyAllowsDirectLanes && cleanupEligible) {
     try {
       // Reuse the config resolved at the top of the run instead of a second load.
       const contradictionDetectionFn = options.contradictionDetectionFn ?? detectAndWriteContradictions;
@@ -749,13 +763,14 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
     }
   }
 
-  // D8 — same gate: the cleanup plan drives belief-state frontmatter rewrites
-  // and archive moves, and had no strategy flag either.
-  const memoryCleanupPlan =
-    isAutonomyLaneAllowed("memoryCleanup", _earlyConfig) &&
-    shouldAnalyzeMemoryCleanup(scope, memorySummary.eligible, primaryStashDir)
-      ? analyzeMemoryCleanup(primaryStashDir as string, cleanupParentRef ? { parentRef: cleanupParentRef } : undefined)
-      : undefined;
+  // `analyzeMemoryCleanup` is READ-ONLY — it produces the preview that a dry run
+  // and the result envelope report. The autonomy gate belongs on APPLYING that
+  // plan (`applyMemoryCleanup`, which rewrites frontmatter and moves files),
+  // not on computing it: gating the analysis is what made review-first dry runs
+  // silently drop `memoryCleanup` from their output.
+  const memoryCleanupPlan = cleanupEligible
+    ? analyzeMemoryCleanup(primaryStashDir as string, cleanupParentRef ? { parentRef: cleanupParentRef } : undefined)
+    : undefined;
   const guidance =
     memorySummary.eligible > 0
       ? "Improve folds memory cleanup into the same proposal queue: speculative promotions still go through reflect/distill proposals, while high-confidence redundant derived memories are moved into a recoverable cleanup archive instead of being left active in the stash."
@@ -765,6 +780,7 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
     memorySummary,
     strategyFilteredRefs: strategyFilteredRefs ?? [],
     memoryCleanupPlan,
+    autonomyGatedDirectLanes,
     guidance,
     warnings,
   };
@@ -1046,6 +1062,8 @@ async function runImproveStageSequence(args: {
   strategyFilteredRefs: NonNullable<Awaited<ReturnType<typeof collectEligibleRefs>>["strategyFilteredRefs"]>;
   plannedRefs: Awaited<ReturnType<typeof collectEligibleRefs>>["plannedRefs"];
   memoryCleanupPlan?: ReturnType<typeof analyzeMemoryCleanup>;
+  /** Direct lanes the autonomy gate denied on this run (see indexAndCollect). */
+  autonomyGatedDirectLanes: AutonomyLane[];
   memorySummary: { eligible: number; derived: number };
   preEnsureCleanupWarnings: string[];
   eventsCtx: EventsContext;
@@ -1101,7 +1119,7 @@ async function runImproveStageSequence(args: {
   // and a silent no-op: whatever the user would have seen happen, they now see
   // explained. `health` already aggregates `improve_skipped` by reason
   // (buildImproveSkipSummary), so these surface there without new machinery.
-  for (const lane of args.run.resolvedPlan.autonomyGated) {
+  for (const lane of [...args.run.resolvedPlan.autonomyGated, ...describeGatedLanes(args.autonomyGatedDirectLanes)]) {
     warn(`[improve] ${lane.lane} skipped — it ${lane.reason}. Set \`${lane.configKey}: true\` to enable it.`);
     appendEvent(
       {
