@@ -152,6 +152,113 @@ toggling it so all entries and embeddings are rebuilt consistently. If the
 setting differs from the state used to build the current index, AKM warns until
 that full rebuild completes.
 
+## Semantic search
+
+`semanticSearchMode` (top-level, `"off" | "auto"`, default `"auto"`) gates
+embedding-based search. `"auto"` lets AKM set up embeddings (which downloads
+a local model unless you point `embedding` at a remote provider) and falls
+back to keyword-only FTS if the embedding runtime is unavailable; `"off"`
+disables semantic search outright and search is always keyword-only FTS.
+The interactive `akm setup` wizard pre-selects semantic search **on**
+regardless of this default, and warns that choosing it downloads the model
+unless a remote `embedding` config is provided.
+
+```jsonc
+{ "semanticSearchMode": "off" }
+```
+
+`embedding` configures the connection used for semantic search and
+`akm improve`'s memory-inference/consolidate passes when they call an
+embedding model: `provider`, `endpoint`, `model`, `apiKey` (symbolic
+reference, same rules as engine `apiKey`), `dimension`, `localModel`,
+`maxTokens`, `batchSize`, `chunkSize`, `contextLength`, and
+`ollamaOptions.num_ctx`.
+
+## Search tuning
+
+`search` tunes ranking, not behavior an ordinary user needs to touch:
+
+| Key | Purpose |
+| --- | --- |
+| `search.minScore` | Drop results below this score |
+| `search.defaultExcludeTypes` | Asset types excluded from results by default |
+| `search.graphBoost.*` | Entity-graph relevance boost: `directBoostPerEntity`/`directBoostCap` (directly related entities), `hopBoostPerEntity`/`hopBoostCap` (multi-hop, capped at `maxHops` ≤ 3), `confidenceMode` (`off`\|`blend`\|`multiply`, default `blend`), `confidenceWeight` (0–1, default `0.2`) |
+
+## Feedback
+
+`feedback` shapes the `akm feedback` taxonomy:
+
+| Key | Purpose |
+| --- | --- |
+| `feedback.requireReason` | Whether `akm feedback --negative` without `--reason`/`--failure-mode` is a hard error. **Defaults to `true`** when unset — set `false` to downgrade the check to a warning instead |
+| `feedback.allowedFailureModes` | Restrict `--failure-mode` values accepted by `akm feedback`. Curated set (also the default when unset): `incorrect`, `outdated`, `dangerous`, `incomplete`, `redundant` |
+
+## Bundles and write target
+
+`bundles` (replacing the retired `stashDir`/`sources[]`/`installed[]` trio)
+and `defaultBundle` are the 0.9 source configuration shape — see
+[Concepts](../guides/concepts.md) and the [CLI reference](cli.md) for the
+full bundle model (`path`, `git`, `website`, `npm`, `writable`, `registryId`,
+`components`). `defaultBundle` must name a key in `bundles` when set.
+
+`defaultWriteTarget` names the bundle that write commands (`akm remember`,
+`akm env`/`secret create`, `akm improve`, etc.) fall back to when no
+explicit `--target` is given and the command isn't already scoped to a
+specific source. It must name a configured bundle; setting it with no
+`bundles` configured, or naming an unconfigured bundle, is rejected at
+`config set`/`config validate` time.
+
+`archiveRetentionDays` (default `90` when unset) controls how long a pending
+proposal is kept before `akm improve`'s maintenance pass archives it (status
+`rejected`, reason `"expired: no action within retention window"`) — `akm
+proposal` itself has no archive/expire verb. Setting it to `0` or less
+disables expiry entirely.
+
+## Output defaults
+
+`output.format` (one of `json`\|`yaml`\|`text`\|`jsonl`\|`md`\|`html`,
+default `json`) and `output.detail` (`brief`\|`normal`\|`full`, default
+`brief`) set the CLI's default `--format`/`--detail` when the flags are
+omitted. Per-command flags always override these.
+
+## Setup-derived recommendations
+
+`setup.taskSchedules.improve` and `setup.taskSchedules.index` record the
+cron-style cadence `akm setup --reset-recommended` last recommended for the
+scheduled improve/index tasks. This is advisory metadata for the wizard;
+actual scheduling lives in the tasks subsystem (`akm tasks`).
+
+## Experimental opt-ins
+
+`experimental` holds explicit opt-ins for behavior outside the 0.9
+stability contract (see [STABILITY.md](../../STABILITY.md) for full
+classification). Every key defaults to **off**; an absent `experimental`
+section, an absent key, and an explicit `false` all read identically as off.
+
+```jsonc
+{
+  "experimental": {
+    "improveAutonomy": false,
+    "workflowEngine": false
+  }
+}
+```
+
+- **`experimental.improveAutonomy`** — allows `akm improve` to mutate assets
+  without review: consolidate's merge/delete/contradict actions, the
+  memory-cleanup and contradiction passes, memory-inference writes, and
+  triage `applyMode: "promote"`. `akm improve` itself always runs; this only
+  gates the lanes that act without a human in the loop. `sync.push` is
+  deliberately **not** gated by this key.
+- **`experimental.workflowEngine`** — allows the native `akm workflow`
+  orchestration engine to run: `akm workflow run`/`brief`/`report`/`watch`,
+  and authoring a YAML (`version: 2`) workflow program via `akm workflow
+  create <name>.yaml`. Classic linear markdown workflows
+  (`start`/`next`/`complete`/`status`/`list`/`create` for markdown/`template`/
+  `validate`/`resume`/`abandon`) are unaffected either way. See
+  [Workflows](workflows.md#enabling-the-workflow-engine-opt-in-in-090) for
+  the full gate behavior and error shape.
+
 ## Managing Config
 
 ```sh

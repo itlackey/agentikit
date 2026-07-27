@@ -2,7 +2,7 @@
 
 `akm` is a package manager for AI agent capabilities. It organizes scripts,
 skills, commands, agents, knowledge documents, env files, secrets, workflows,
-wikis, and memories into a searchable library that any AI coding assistant can use.
+and memories into a searchable library that any AI coding assistant can use.
 
 ## Mental Model
 
@@ -34,7 +34,7 @@ The user never picks the kind. `akm add` infers it from the input shape.
    registries with `akm registry add`.
 3. **Assets** are the individual capabilities an agent discovers and uses:
    scripts, skills, commands, agents, knowledge documents, env files,
-   secrets, workflows, wikis, and memories.
+   secrets, workflows, and memories.
 
 Your **working stash** (`~/akm`) is created by `akm setup` — it's the
 primary directory for your personal, editable assets, and is registered as
@@ -79,11 +79,17 @@ my-stash/
   env/            # Environment files (.env) — groups of related config, loaded whole
   secrets/        # Secrets — one sensitive value per file (auth tokens, keys, certs)
   workflows/      # Workflow documents (.md) and YAML v2 programs (.yaml/.yml)
-  wikis/          # LLM Wiki bundles, recognized by the llm-wiki adapter (see docs/guides/wikis.md)
   lessons/        # Distilled lessons (.md, see akm improve / proposals)
   memories/       # Recalled context fragments (.md)
+  facts/          # Durable stash-level facts (.md, see "Asset Types" below)
+  tasks/          # Scheduled or on-demand automation tasks (.yml)
+  sessions/       # Machine-placed indexed session summaries (.md)
   .meta/          # Optional stash orientation, not indexed (see "Metadata" below)
 ```
+
+LLM Wikis are a related but separate concept: a wiki is its own installable
+bundle (`akm add github:team/research-wiki`), not a type-subdirectory inside a
+regular stash. See [Wikis](wikis.md) for how akm recognizes and indexes them.
 
 ## Asset Types
 
@@ -164,9 +170,11 @@ them in search. The supported values, from strongest to weakest authority:
 | `archived` | Soft-deleted; retained for audit | strongest penalty |
 
 `akm search` filters via `--belief current|historical|all`:
-- `current` (default for memory search) → `active` + `asserted`
+- `current` → `active` + `asserted`
 - `historical` → `deprecated` + `superseded` + `contradicted` + `archived`
-- `all` → no filter
+- `all` (default — no filter) → every belief state, including `archived` and
+  `contradicted` memories, is eligible to surface. Pass `--belief current`
+  explicitly to keep only active/asserted memories.
 
 ### Derived memories as retrieval shortcuts
 
@@ -288,7 +296,7 @@ time.
 Future iterations (no committed dates):
 
 - A `--namespace <ns>` flag will provide a thin name-prefix normalizer on
-  `search`, `remember`, `improve`, `distill`, and `feedback` so the same
+  `search`, `remember`, `improve`, and `feedback` so the same
   prefix doesn't have to be typed every time.
 - A `::` delimiter (for example `projectA::memories/auth-tip`) will provide
   strict isolation so refs from different namespaces never collide in
@@ -315,7 +323,7 @@ sidecar: frontmatter for markdown assets, and structured comments for
 scripts. The indexer derives metadata from filenames, code comments,
 frontmatter, and package.json.
 
-See [technical/filesystem.md](../architecture/internals/storage-locations.md) for the full field reference.
+See [Filesystem Layout](../architecture/internals/storage-locations.md) for the full field reference.
 
 ### Stash orientation: the `.meta/` convention
 

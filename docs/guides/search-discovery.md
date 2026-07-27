@@ -41,10 +41,12 @@ akm search "docker" --source both --detail full
 | `--type` | Narrow to one asset type: `skill`, `script`, `workflow`, `knowledge`, etc. |
 | `--limit` | Maximum hits returned (default 20) |
 | `--source` | `stash` (default), `registry`, or `both` |
-| `--shape agent` | Trims the result to `ref` + score without the full payload — use this from agents |
+| `--shape agent` | Adds agent-oriented fields (`path`, `editable`, `description`, `score`) on top of the default hit shape — use this from agents |
 
-The `ref` field (e.g. `scripts/deploy.sh`) is only present at `--detail full`
-or `--shape agent`. Pass that ref directly to `akm show`.
+The `ref` field (e.g. `scripts/deploy.sh`) is present at `--detail brief`
+(the default) and `--detail full`, and at any `--detail` level under
+`--shape agent`. It is dropped at `--detail normal` (the `human`-shaped
+"normal" hit has no `ref` field). Pass it directly to `akm show`.
 
 **Example: find a deploy script**
 
@@ -61,8 +63,10 @@ actually about to do. It keeps search ranking as the backbone, uses only small
 type-aware nudges for close calls, falls back when phrase hits are weak, and can
 attach support refs for closely related assets. Curate still includes follow-up
 commands (`akm show <ref>`) so you can immediately inspect any result.
-`--detail` works on curate output, and `--shape agent` trims the result to an
-LLM-friendly field set.
+`--detail` works on curate output (`normal`/`full` add `preview` and `run`),
+and `--shape agent` adds agent-oriented fields (`path`, `editable`,
+`description`, `score`) to the default item shape — the same additive
+behavior as on `akm search`.
 
 ```sh
 akm curate "plan a release"

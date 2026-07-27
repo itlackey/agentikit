@@ -20,11 +20,18 @@ my-stash/
   agents/         # .md files with model, tools, or toolPolicy frontmatter
   knowledge/      # .md reference documents
   env/            # .env environment files (mode-0600)
+  secrets/        # One sensitive value per file (auth tokens, keys, certs)
   workflows/      # .md step-by-step workflow documents
-  wikis/          # Multi-wiki knowledge bases (see docs/guides/wikis.md)
   lessons/        # .md distilled feedback lessons
   memories/       # .md recalled context fragments
+  facts/          # .md durable stash-level facts
+  tasks/          # .yml scheduled or on-demand automation tasks
+  sessions/       # .md machine-placed indexed session summaries
 ```
+
+LLM Wikis are a separate, related concept: a wiki is its own installable
+bundle, not a type-subdirectory inside a regular stash — see
+[docs/guides/wikis.md](wikis.md).
 
 These directories are hints, not requirements. A `.sh` file is a script
 whether it lives in `scripts/`, `deploy/`, or at the stash root. A `.md` file
@@ -245,7 +252,7 @@ Legacy example:
 }
 ```
 
-See [technical/filesystem.md](../architecture/internals/storage-locations.md) for the legacy field reference.
+See [Filesystem Layout](../architecture/internals/storage-locations.md) for the legacy field reference.
 
 ## Step 3.5: Orient Readers with `.meta/` (optional)
 
@@ -459,7 +466,9 @@ them during install.
 **Dangerous key detection.** `akm add` and `akm lint` scan env files for
 environment variable names that can be used to hijack process execution when
 the file is loaded via `akm env run`. The flagged names include `LD_PRELOAD`,
-`PATH`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`, and 20 others. When these keys
+`PATH`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`, and 37 others (41 literal
+keys total), plus two pattern-based families (`BASH_FUNC_*`, Shellshock-class
+injection; `GIT_CONFIG_*`, git config override injection). When these keys
 are found, `akm add` pauses in interactive mode and asks the user to confirm
 before continuing. In non-interactive (CI) mode the install fails unless the
 user passes `--allow-insecure`. `akm env run` applies the same scan at run time:
@@ -472,8 +481,9 @@ the following before publishing:
 
 1. Document the reason clearly in your `README.md`. Explain which key is set,
    why it is needed, and what the value does.
-2. Run `akm lint` against your stash locally to see the `dangerous-vault-key`
-   findings before your users do:
+2. Run `akm lint` against your stash locally to see the `dangerous-env-key`
+   findings before your users do (suppress a specific key with a
+   `# akm-lint-ok: dangerous-env-key` comment on the preceding line):
 
    ```sh
    akm lint

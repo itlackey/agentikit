@@ -3,8 +3,11 @@
 This page outlines the high-level focus for the next two releases.
 
 It is intentionally directional rather than exhaustive. Detailed command,
-schema, and migration behavior still lives in the release notes, migration
-guides, and the v1 architecture spec.
+schema, and migration behavior still lives in the release notes, the
+migration guides, and [STABILITY.md](../../STABILITY.md), which classifies
+today's public contract by surface. The internal design specs behind the
+0.9.0 architecture consolidation live under
+[`docs/architecture/specs/`](../architecture/specs/).
 
 ## 0.8 Foundation
 
@@ -80,8 +83,10 @@ Release `1.0` is focused on freezing the public contract and shipping the first
 stable ecosystem layer around that core.
 
 - Freeze the supported source model, the `[bundle//]conceptId` ref format,
-  search behavior, write-target rules, and other public contracts documented in
-  the v1 spec.
+  search behavior, and write-target rules — the surfaces
+  [STABILITY.md](../../STABILITY.md)'s own 1.0 contract-freeze section
+  already names — and settle the surfaces it currently classifies as
+  Evolving or Experimental.
 - Carry the `0.8` agent and improvement workflow forward as a stable,
   documented product surface rather than a collection of pre-release features.
 - Ship an official akm SDK for building integrations against the stable v1

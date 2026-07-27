@@ -9,12 +9,14 @@ scattered memories into durable knowledge.
 ## akm feedback
 
 `akm feedback` records a positive or negative signal for any indexed asset.
-Feedback influences utility scores at the next index run, so highly-rated assets
-rank higher and underperformers surface less often.
+The signal updates the asset's utility score immediately — a bounded-step EMA
+nudges the score toward the signal on every call, no reindex required — so
+highly-rated assets rank higher and underperformers surface less often right
+away.
 
 ```sh
 akm feedback skills/code-review --positive
-akm feedback agents/reviewer --negative
+akm feedback agents/reviewer --negative --reason "Gave outdated migration steps"
 akm feedback workflows/ship-release --positive --reason "Worked end-to-end on 0.8.0"
 akm feedback skills/planner --negative --reason "Doesn't account for merge conflicts"
 
@@ -23,7 +25,11 @@ akm feedback skills/planner --negative --reason "incomplete-edge-cases"
 ```
 
 Specify exactly one of `--positive` or `--negative`. The ref must be present in
-the current local index.
+the current local index. `--negative` additionally requires `--reason` —
+negative signals need a written reason for the distillation pipeline to use, and
+omitting it exits 2. `--failure-mode` adds a curated taxonomy label but does
+**not** substitute for `--reason`. (Set `feedback.requireReason: false` to
+downgrade the gate to a warning.)
 
 **Example: flag a skill that gave bad advice**
 
@@ -57,10 +63,16 @@ akm log tail --max-events 20
 `akm log tail` supports `--since '@offset:<id>'` cursors so you can resume
 from exactly where you left off across process boundaries without duplicates.
 
-**Example: see what was used in the last week**
+**Example: see what was used recently**
+
+`akm log list --since` (like `akm history --since`) takes an ISO timestamp or
+epoch ms — not a duration shorthand like `7d`. That shorthand is accepted by a
+different parser, used by both `akm health --since` and `akm extract --since`
+(e.g. `akm extract --since 24h`); several commands share the `--since` flag
+name but not all of them accept the same format.
 
 ```sh
-akm log list --since 7d --type select --format text
+akm log list --since 2026-05-01T00:00:00Z --type select --format text
 ```
 
 ## akm improve

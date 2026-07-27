@@ -19,7 +19,11 @@ curl -fsSL https://github.com/itlackey/akm/releases/latest/download/install.sh |
 # 2. Initialize stash and accept all defaults (no prompts)
 akm setup --yes
 
-# 3. Local embeddings are on by default — nothing to configure
+# 3. Don't rely on the implicit semantic-search default in an unattended
+#    script — the default can vary by release and by install path. Set it
+#    explicitly so this script's behavior is deterministic. `auto` uses local
+#    embeddings (downloaded on first index run); `off` skips them entirely.
+akm config set semanticSearchMode auto
 
 # 4. Add sources (adjust paths as needed)
 # akm add ~/.claude/skills
@@ -134,45 +138,79 @@ akm setup --config '{
 akm setup --config '{"engines":{"default":{"kind":"llm",...}}}' --probe
 ```
 
-The `--config` flag accepts a JSON object with any of these top-level keys:
-`stashDir`, `engines`, `defaults`, `improve`, `embedding`,
-`semanticSearchMode`, `output`, `sources`, and `registries`. Agent and LLM
-engines share `engines.*`; selections live under `defaults.engine`,
-`defaults.llmEngine`, and `defaults.improveStrategy`.
+The `--config` flag accepts a JSON object using any top-level key the config
+schema recognizes — generated from `src/core/config/config-schema.ts` into
+[`schemas/akm-config.json`](../../schemas/akm-config.json), and validated
+against directly (not a hand-copied list, so it can't silently fall out of
+sync with the schema). As of this writing that's:
+
+`archiveRetentionDays`, `bundles`, `configVersion`, `defaultBundle`,
+`defaultWriteTarget`, `defaults`, `embedding`, `engines`, `experimental`,
+`feedback`, `improve`, `index`, `modelAliases`, `output`, `registries`,
+`search`, `semanticSearchMode`, `setup`, `workflow`.
+
+Agent and LLM engines share `engines.*`; selections live under
+`defaults.engine`, `defaults.llmEngine`, and `defaults.improveStrategy`.
+`stashDir` and `sources` are pre-0.9 spellings — passing either fails loudly
+(exit 78) with a message pointing at the standalone `akm-migrate` tool, rather
+than being silently dropped. Use `bundles`/`defaultBundle` instead. Any other
+unrecognized key is dropped with a warning, and the run still exits 0.
+
 It **merges** with the existing config rather than replacing it, so
 subsequent runs are safe to use in idempotent scripts.
 
 Verify:
 
 ```sh
-akm config get stashDir
+akm config path --all
 akm config get engines.default
+```
+
+To see the exact set of top-level keys your installed version accepts (in
+case this list has drifted since this doc was written), trigger the
+validation error deliberately — it lists every valid key:
+
+```sh
+akm config get not-a-real-key
 ```
 
 ## 4. Configure Semantic Search (Local Embeddings)
 
-The default configuration uses local embeddings with no external dependencies.
-This is the recommended mode for automated installs.
-
-**No action needed** — local embeddings are on by default. The model
-(`Xenova/bge-small-en-v1.5`) is downloaded automatically on the first index
-run and cached at `~/.cache/akm/models/`.
-
-To confirm the embedding mode:
+Local embeddings need no external dependencies beyond a one-time model
+download. Whether semantic search is *effectively* on depends on the release
+and on how the stash was set up (interactive `akm setup` wizard vs. headless
+`--yes`/`--config`) — check rather than assume:
 
 ```sh
-akm config get embedding   # Should return null (local mode)
+akm config get semanticSearchMode   # "auto" (embeddings enabled) or "off"
+akm config get embedding            # null unless a remote embedding endpoint is configured
 ```
 
-To explicitly disable semantic search (e.g. on memory-constrained hosts):
+The interactive `akm setup` wizard pre-selects semantic search **ON**, shows
+a note before anything downloads, then asks a separate confirmation —
+"Download and verify semantic-search assets now?" (also pre-selected
+**yes**). Accepting that prompt with no remote `embedding` endpoint
+configured downloads and caches a local model (`Xenova/bge-small-en-v1.5`,
+~130 MB) **immediately, during `akm setup` itself** — not deferred to the
+first `akm index` run — and may first shell out to install
+`@huggingface/transformers` (`bun add`, bounded to 10 minutes) if it isn't
+already present. The model is cached at `~/.cache/akm/models/`. Pointing the
+wizard at a remote embedding endpoint skips the local download entirely.
+Deferring the download to the first `akm index` run is what happens in
+**headless** setups (`--yes`/`--config`, no wizard prompts), not the
+interactive path described above.
+
+For headless installs, don't rely on the implicit default — set the mode
+explicitly so the script's behavior doesn't change across releases:
 
 ```sh
+# Enable (local embeddings; downloads the model on first `akm index` run)
+akm config set semanticSearchMode auto
+
+# Disable (e.g. on memory-constrained hosts, or to skip the download)
 akm config set semanticSearchMode off
-```
 
-To re-enable (default):
-
-```sh
+# Fall back to whatever this version's config schema default is
 akm config unset semanticSearchMode
 ```
 
@@ -180,7 +218,7 @@ akm config unset semanticSearchMode
 
 | Resource | Requirement |
 | --- | --- |
-| Model download | ~30 MB (one-time, cached) |
+| Model download | ~130 MB (one-time, cached) |
 | RAM during indexing | ~200 MB peak |
 | Indexing time | Seconds to minutes depending on stash size |
 
@@ -249,7 +287,8 @@ Or add it manually:
 ## Resources & Capabilities
 
 You have access to a searchable library of scripts, skills, commands, agents,
-knowledge, workflows, env files, secrets, wikis, lessons, and memories via the `akm` CLI.
+knowledge, workflows, env files, secrets, lessons, memories, tasks, sessions,
+and facts via the `akm` CLI.
 
 Use `akm search "<query>"` to find assets and `akm show <ref>` to inspect them.
 Run `akm -h` for the full command reference.
