@@ -25,9 +25,7 @@
  * `~1MB` `echarts.min.js` self-contained/"inline" mode was removed along with
  * the asset itself — `buildEchartsTag` always emits a `<script src>` tag
  * pointed at the jsDelivr CDN, so viewing the report now requires network
- * access. BEHAVIOR CHANGE (plan-accepted, ledgered): previously
- * `AKM_ECHARTS=cdn` opted IN to the CDN with "inline" as the default; there is
- * no more env var or option to opt back into an offline report.
+ * access. There is no env var or option to opt back into an offline report.
  */
 
 import { escapeHtml } from "../../output/html-render";

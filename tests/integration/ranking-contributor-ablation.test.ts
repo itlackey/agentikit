@@ -8,14 +8,17 @@ import os from "node:os";
 import path from "node:path";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { recognizeStashEntries } from "../../src/indexer/scan/drain-dir";
+import { applyRankingRules } from "../../src/indexer/search/ranking";
 import {
   applyBeliefStateScoreCeiling,
   applyContributorAblation,
   defaultRankingContributors,
   defaultUtilityRankingContributors,
   type RankingContext,
+  typeBoostFor,
 } from "../../src/indexer/search/ranking-contributors";
 import type { RankedEntryInput } from "../../src/indexer/search/ranking-types";
+import type { Database } from "../../src/storage/database";
 
 describe("applyContributorAblation (eval-only AKM_ABLATE_CONTRIBUTORS filter)", () => {
   const all = defaultRankingContributors;
@@ -55,6 +58,54 @@ describe("applyContributorAblation (eval-only AKM_ABLATE_CONTRIBUTORS filter)", 
     const before = all.length;
     applyContributorAblation(all, "belief-state-ranking");
     expect(all.length).toBe(before);
+  });
+});
+
+// C9 (env-var hygiene): `applyRankingRules` (src/indexer/search/ranking.ts)
+// now accepts `ablateContributors` directly on `RankEntriesOptions` instead
+// of requiring the caller to set the AKM_ABLATE_CONTRIBUTORS env var. This
+// exercises that DI seam through the real ranking entrypoint (not just the
+// pure `applyContributorAblation` helper above), with no env var involved.
+describe("applyRankingRules — ablateContributors option (DI, no env var)", () => {
+  // Stub db: `getUtilityScoresByIds`/`loadSalienceRankScores` only ever call
+  // `db.prepare(...).all(...)` for a set of ids, and this test's single item
+  // resolves to an empty result set either way — the exact-name-ranking
+  // contributor under test never touches the db at all.
+  const stubDb = { prepare: () => ({ all: () => [] }) } as unknown as Database;
+
+  function makeExactNameItem(query: string): RankedEntryInput {
+    const entry: IndexDocument = {
+      name: query,
+      type: "memory",
+      description: "exact-name fixture",
+      filename: `${query}.md`,
+    } as IndexDocument;
+    return { id: 1, entry, filePath: `/stash/memories/${query}.md`, score: 1, rankingMode: "fts" };
+  }
+
+  // The "memory" type also carries its own (small, unrelated) type-ranking
+  // boost, so the ablated expectation is "just the type boost", not exactly
+  // the pre-boost score of 1 — computed via the exported typeBoostFor rather
+  // than a hardcoded magic number, so this doesn't silently drift if the
+  // constant changes.
+  const memoryTypeBoostMultiplier = 1 + typeBoostFor("memory");
+
+  test("without ablateContributors, exact-name-ranking applies its boost", () => {
+    const item = makeExactNameItem("needle");
+    applyRankingRules({ db: stubDb, query: "needle", items: [item], graphContext: null });
+    expect(item.score).toBeGreaterThan(memoryTypeBoostMultiplier);
+  });
+
+  test("ablateContributors: 'exact-name-ranking' suppresses that boost via DI, not env", () => {
+    const item = makeExactNameItem("needle");
+    applyRankingRules({
+      db: stubDb,
+      query: "needle",
+      items: [item],
+      graphContext: null,
+      ablateContributors: "exact-name-ranking",
+    });
+    expect(item.score).toBeCloseTo(memoryTypeBoostMultiplier, 10);
   });
 });
 

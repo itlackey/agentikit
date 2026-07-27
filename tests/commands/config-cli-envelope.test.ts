@@ -6,12 +6,17 @@
  * WS6 characterization test for the `akm config` command family. Pins the full
  * JSON envelope (stdout payload shape + the {ok:false,code} error envelope on
  * stderr / exit code) for the representative subcommands
- * list/show/get/set/unset/path/enable/disable, proving the extraction of the
- * family from cli.ts into src/commands/config-cli.ts is byte-identical. The
- * `skills.sh` toggle helpers and the `CONFIG_SUBCOMMAND_SET` routing constant
- * moved with the cluster; the leaf handlers were migrated onto
- * `defineJsonCommand`, which emits the same JSON envelope (stdout/stderr/
- * exit-code) as the inline form.
+ * list/show/get/set/unset/path, proving the extraction of the family from
+ * cli.ts into src/commands/config-cli.ts is byte-identical. The leaf handlers
+ * were migrated onto `defineJsonCommand`, which emits the same JSON envelope
+ * (stdout/stderr/exit-code) as the inline form.
+ *
+ * `config enable`/`config disable` (a hardcoded skills.sh registry toggle)
+ * were removed in 0.9.0 (C4) — use `akm registry add|remove`, the general
+ * mechanism. See tests/integration/cli-errors.test.ts ("R-032: citty CLIError
+ * family exits 2, not 1") for the real-subprocess exit-code check that the
+ * removed subcommands now fail as unknown (the in-process harness here does
+ * not reproduce citty's unknown-subcommand exit code).
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -84,30 +89,6 @@ describe("akm config — JSON envelope snapshot (WS6)", () => {
     expect(typeof env.stash).toBe("string");
     expect(typeof env.cache).toBe("string");
     expect(typeof env.index).toBe("string");
-  });
-
-  test("config enable: skills.sh toggle returns component + enabled flag", async () => {
-    const { stdout, status } = await runCli(["--json", "config", "enable", "skills.sh"]);
-    expect(status).toBe(0);
-    const env = JSON.parse(stdout);
-    expect(env.component).toBe("skills.sh");
-    expect(env.enabled).toBe(true);
-  });
-
-  test("config disable: skills.sh toggle returns component + enabled=false", async () => {
-    const { stdout, status } = await runCli(["--json", "config", "disable", "skills.sh"]);
-    expect(status).toBe(0);
-    const env = JSON.parse(stdout);
-    expect(env.component).toBe("skills.sh");
-    expect(env.enabled).toBe(false);
-  });
-
-  test("config enable: unsupported target → {ok:false} usage envelope on stderr (exit 2)", async () => {
-    const { stderr, status } = await runCli(["--json", "config", "enable", "nope"]);
-    expect(status).toBe(2);
-    const env = JSON.parse(stderr);
-    expect(env.ok).toBe(false);
-    expect(env.error).toMatch(/Unsupported target/);
   });
 
   // A config subcommand must not fall through to the group's default list body.

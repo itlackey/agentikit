@@ -257,8 +257,8 @@ akm add @scope/stash                            # From npm (managed)
 akm add owner/repo                            # From GitHub (managed)
 akm add ./path/to/local/stash                   # Local directory
 akm add git@github.com:org/repo.git --provider git --name my-skills --writable
-akm config enable skills.sh                   # Enable the skills.sh registry
-akm config disable skills.sh                  # Disable the skills.sh registry
+akm registry add https://skills.sh --name skills.sh --provider skills-sh  # Add the skills.sh registry
+akm registry remove skills.sh                 # Remove the skills.sh registry
 akm list                                      # List all sources
 akm list --kind managed                       # List managed sources only
 akm remove <target>                           # Remove by id, ref, path, or name

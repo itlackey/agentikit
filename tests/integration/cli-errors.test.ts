@@ -395,6 +395,24 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
     expect(stderr).toContain("wiki");
   });
 
+  // C4: `config enable`/`config disable` (a hardcoded skills.sh registry
+  // toggle) were removed in 0.9.0 — use `akm registry add|remove`. Real
+  // subprocess required: the in-process harness does not reproduce citty's
+  // exit code for an unknown subcommand of a known group.
+  test("akm config enable <target> (removed in 0.9.0) exits 2 as an unknown subcommand", () => {
+    const { status, stderr } = spawnCli(["config", "enable", "skills.sh"], { cwd: repoRoot });
+    expect(status).toBe(2);
+    expect(stderr).toContain("Unknown command");
+    expect(stderr).toContain("enable");
+  });
+
+  test("akm config disable <target> (removed in 0.9.0) exits 2 as an unknown subcommand", () => {
+    const { status, stderr } = spawnCli(["config", "disable", "skills.sh"], { cwd: repoRoot });
+    expect(status).toBe(2);
+    expect(stderr).toContain("Unknown command");
+    expect(stderr).toContain("disable");
+  });
+
   test("akm import (missing required SOURCE positional) exits 2", () => {
     const { status, stderr } = spawnCli(["import"], { cwd: repoRoot });
     expect(status).toBe(2);

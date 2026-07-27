@@ -62,6 +62,23 @@ export interface RankEntriesOptions {
    * already hold the data).
    */
   salienceRankScores?: Map<number, number> | null;
+  /**
+   * C9 (env-var hygiene) — DI seam for the eval/debug contributor-ablation
+   * harness. Comma-separated contributor `name`s to drop; see
+   * {@link applyContributorAblation}. Callers (tests, the ablation harness)
+   * should pass this directly rather than setting an env var.
+   *
+   * When `undefined`, this still falls back to the `AKM_ABLATE_CONTRIBUTORS`
+   * env var (see `applyRankingRules`). That fallback is TEMPORARY: the public
+   * `akm search` surface (`src/commands/read/search.ts` →
+   * `src/indexer/search/db-search.ts`) does not yet thread an option through
+   * to here, and both files were outside this change's edit boundary — see
+   * tests/integration/downstream-value-attribution.test.ts's "graph
+   * contributor ablation" test, which still drives this via env through the
+   * full `akmSearch()` stack. Once that threading lands, delete the env
+   * fallback so this field is the only path.
+   */
+  ablateContributors?: string;
 }
 
 /**
@@ -218,10 +235,14 @@ export function applyRankingRules(options: RankEntriesOptions): RankedEntryInput
     projectContext: options.projectContext,
   };
 
-  // Eval/debug only: AKM_ABLATE_CONTRIBUTORS lets the ablation harness drop
-  // named contributors to measure their effect. Resolved once per query;
-  // a no-op (full lists) when the env var is unset — see applyContributorAblation.
-  const ablateEnv = process.env.AKM_ABLATE_CONTRIBUTORS;
+  // Eval/debug only: lets the ablation harness drop named contributors to
+  // measure their effect. Resolved once per query; a no-op (full lists) when
+  // unset — see applyContributorAblation. C9: DI via
+  // `options.ablateContributors` is now the primary path (see the field's
+  // doc comment on RankEntriesOptions); AKM_ABLATE_CONTRIBUTORS is a
+  // temporary fallback for the one caller that cannot yet thread the option
+  // through (see that doc comment for why).
+  const ablateEnv = options.ablateContributors ?? process.env.AKM_ABLATE_CONTRIBUTORS;
   const activeScoreContributors = applyContributorAblation(defaultRankingContributors, ablateEnv);
   const activeUtilityContributors = applyContributorAblation(defaultUtilityRankingContributors, ablateEnv);
 

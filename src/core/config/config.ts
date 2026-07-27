@@ -357,7 +357,7 @@ export async function mutateConfigWithPrecommit<T>(
 /**
  * Strip literal apiKey fields before writing config to disk.
  * API keys are expected to come from environment variables
- * (AKM_EMBED_API_KEY, AKM_LLM_API_KEY, AKM_PROFILE_<NAME>_API_KEY).
+ * (AKM_EMBED_API_KEY, AKM_LLM_API_KEY, AKM_ENGINE_<NAME>_API_KEY).
  *
  * `${VAR}` / `$VAR` references are preserved — they are not secrets, they
  * are deferred lookups resolved at consumption by `resolveSecret`. Dropping
