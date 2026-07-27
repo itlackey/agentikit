@@ -14,7 +14,7 @@ import { stringify as yamlStringify } from "yaml";
 import { assertNever } from "../core/assert";
 import { AkmError, UsageError } from "../core/errors";
 import { getOutputMode, type OutputMode } from "../output/context";
-import { renderGenericHtml, renderGenericMarkdown } from "../output/generic-render";
+import { renderGenericHtml, renderGenericMarkdown, renderGenericText } from "../output/generic-render";
 import { deliverRendered } from "../output/html-render";
 import { getHtmlRendererHandler, getMdRendererHandler } from "../output/render-registry";
 import { shapeForCommand } from "../output/shapes";
@@ -302,8 +302,19 @@ export function output(command: string, result: unknown): void {
       deliverRendered(yamlStringify(shaped), mode.outputPath);
       return;
     case "text": {
+      // D7 — registry first, generic rendering of the shaped envelope second.
+      // Mirrors the md/html fallback immediately below: a command with no
+      // registered text formatter used to fall through to
+      // `JSON.stringify(shaped, null, 2)`, i.e. silently hand back JSON while
+      // claiming `--format text` — the same "wrong format wearing the right
+      // flag" bug D7 already closed for md/html. `renderGenericText` (a
+      // DISTINCT function from `renderGenericMarkdown` — see its doc comment
+      // in src/output/generic-render.ts for why reusing the md renderer here
+      // was itself a version of the same bug) renders flat `key=value` text
+      // matching the house style already established by registered text
+      // formatters like `config list`.
       const plain = formatPlain(command, shaped, mode.detail);
-      deliverRendered(plain ?? JSON.stringify(shaped, null, 2), mode.outputPath);
+      deliverRendered(plain ?? renderGenericText(command, shaped), mode.outputPath);
       return;
     }
     case "md": {
