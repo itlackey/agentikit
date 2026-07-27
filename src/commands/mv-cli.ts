@@ -1049,7 +1049,7 @@ export const mvCommand = defineJsonCommand({
       }
       if (!MV_SUPPORTED_TYPES.includes(source.type)) {
         throw new UsageError(
-          `akm mv supports flat-markdown asset types (${MV_SUPPORTED_TYPES.join(", ")}); "${source.type}:" refs cannot be moved.`,
+          `akm mv supports flat-markdown asset types (${MV_SUPPORTED_TYPES.join(", ")}); "${source.type}" refs cannot be moved.`,
           "INVALID_FLAG_VALUE",
         );
       }
@@ -1061,7 +1061,7 @@ export const mvCommand = defineJsonCommand({
       if (source.type === "memory" && /\.derived(\.md)?$/.test(source.name)) {
         const baseRef = `memories/${source.name.replace(/\.derived(\.md)?$/, "")}`;
         throw new UsageError(
-          `"${`${source.type}:${source.name}`}" names a .derived.md distilled twin — a twin ` +
+          `"${conceptIdFromTypeName(source.type, source.name)}" names a .derived.md distilled twin — a twin ` +
             "cannot be moved on its own without breaking its belief-inheritance coupling to the base memory. " +
             `Rename the base ref instead (akm mv ${baseRef} <new-name>); the twin moves with it.`,
           "INVALID_FLAG_VALUE",
@@ -1077,8 +1077,8 @@ export const mvCommand = defineJsonCommand({
       }
       if (target.type !== source.type) {
         throw new UsageError(
-          `Cross-type move is not supported: "${`${source.type}:${source.name}`}" is a ` +
-            `${source.type}: asset but the target names the ${target.type}: type. akm mv renames within one asset type.`,
+          `Cross-type move is not supported: "${conceptIdFromTypeName(source.type, source.name)}" is a ` +
+            `${source.type} asset but the target names the ${target.type} type. akm mv renames within one asset type.`,
           "INVALID_FLAG_VALUE",
         );
       }
@@ -1143,7 +1143,7 @@ export const mvCommand = defineJsonCommand({
       if (!oldRelPath || !newRelPath) {
         // Unreachable for MV_SUPPORTED_TYPES; guards a future registry change.
         throw new UsageError(
-          `"${source.type}:" refs are not path-resolvable and cannot be moved.`,
+          `"${source.type}" refs are not path-resolvable and cannot be moved.`,
           "INVALID_FLAG_VALUE",
         );
       }
@@ -1151,7 +1151,7 @@ export const mvCommand = defineJsonCommand({
       const oldPath = resolveMoveSourcePath(stashDir, oldRelPath, source.type, source.name);
       if (!oldPath) {
         throw new UsageError(
-          `Cannot resolve ${`${source.type}:${source.name}`} in the writable stash at ` +
+          `Cannot resolve ${conceptIdFromTypeName(source.type, source.name)} in the writable stash at ` +
             `${stashDir} — nothing moved.`,
           "MISSING_REQUIRED_ARGUMENT",
           "akm mv renames assets in the primary writable stash only. Check the ref with `akm show <ref>` or `akm search`.",

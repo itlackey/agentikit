@@ -238,9 +238,11 @@ describe("source commands and resolution", () => {
     const stashDir = createTmpDir("akm-stash-");
     try {
       process.env.AKM_STASH_DIR = stashDir;
-      // QA #27: error should not leak "Stash type root" wording; be user-facing
+      // QA #27: error should not leak "Stash type root" wording; be user-facing.
+      // 0.9.0 (Q-02): the retired `type:name` colon grammar is gone — the
+      // message now emits the slash conceptId (`agents/missing.md`).
       await expect(akmShow({ ref: "agents/missing.md" })).rejects.toThrow(
-        /Asset not found for ref: agent:missing\.md|not found for ref/i,
+        /Asset not found for ref: agents\/missing\.md|not found for ref/i,
       );
     } finally {
       fs.rmSync(stashDir, { recursive: true, force: true });

@@ -95,7 +95,7 @@ const proposalAcceptCommand = defineJsonCommand({
     id: {
       type: "positional",
       description:
-        "Proposal id (uuid / prefix) or asset ref (e.g. skill:akm-dream). Optional when --generator is provided.",
+        "Proposal id (uuid / prefix) or asset ref (e.g. skills/akm-dream). Optional when --generator is provided.",
       required: false,
     },
     queue: { type: "string", description: "Select the proposal queue by source name" },
@@ -175,7 +175,7 @@ const proposalRejectCommand = defineJsonCommand({
     id: {
       type: "positional",
       description:
-        "Proposal id (uuid / prefix) or asset ref (e.g. skill:akm-dream). Optional when --generator is provided.",
+        "Proposal id (uuid / prefix) or asset ref (e.g. skills/akm-dream). Optional when --generator is provided.",
       required: false,
     },
     reason: { type: "string", description: "Reason for rejection (required)" },
@@ -268,7 +268,7 @@ const proposalDiffCommand = defineJsonCommand({
   args: {
     id: {
       type: "positional",
-      description: "Proposal id (uuid / prefix) or asset ref (e.g. skill:akm-dream)",
+      description: "Proposal id (uuid / prefix) or asset ref (e.g. skills/akm-dream)",
       required: true,
     },
     queue: { type: "string", description: "Select the proposal queue by source name" },
@@ -301,7 +301,7 @@ const proposalRevertCommand = defineJsonCommand({
     id: {
       type: "positional",
       description:
-        "Proposal id (full uuid) or asset ref (e.g. skill:akm-dream). UUID prefixes are not supported for archived proposals — use the full UUID.",
+        "Proposal id (full uuid) or asset ref (e.g. skills/akm-dream). UUID prefixes are not supported for archived proposals — use the full UUID.",
       required: true,
     },
     queue: { type: "string", description: "Select the proposal queue by source name" },
@@ -323,7 +323,7 @@ const proposalShowCommand = defineJsonCommand({
   args: {
     id: {
       type: "positional",
-      description: "Proposal id (uuid / prefix) or asset ref (e.g. skill:akm-dream)",
+      description: "Proposal id (uuid / prefix) or asset ref (e.g. skills/akm-dream)",
       required: true,
     },
     queue: { type: "string", description: "Select the proposal queue by source name" },

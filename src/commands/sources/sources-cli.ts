@@ -210,7 +210,7 @@ export const cloneCommand = defineJsonCommand({
     description: "Clone an asset from any source into a managed bundle or an unmanaged custom destination",
   },
   args: {
-    ref: { type: "positional", description: "Asset ref (e.g. npm:@scope/pkg//script:deploy.sh)", required: true },
+    ref: { type: "positional", description: "Asset ref (e.g. npm:@scope/pkg//scripts/deploy.sh)", required: true },
     name: { type: "string", description: "New name for the cloned asset" },
     force: { type: "boolean", description: "Overwrite if the asset already exists at the destination", default: false },
     target: {

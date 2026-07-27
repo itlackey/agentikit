@@ -662,6 +662,8 @@ describe("commit message sanitization (issue #270, via boundary commit)", () => 
 
     const log = spawnSync("git", ["-C", workDir, "log", "--format=%s", "-1"], { encoding: "utf8" });
     expect(log.stdout.includes("\x00")).toBe(false);
-    expect(log.stdout.trim()).toBe("Update teamhidden//memory:beta");
+    // 0.9.0 (Q-02): formatRefForMessage emits the slash conceptId grammar
+    // (`memories/beta`), not the retired `memory:beta` colon form.
+    expect(log.stdout.trim()).toBe("Update teamhidden//memories/beta");
   });
 });

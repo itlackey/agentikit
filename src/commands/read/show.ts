@@ -358,7 +358,7 @@ export async function showLocal(input: {
 
   if (!sourceStashDir) {
     throw new UsageError(
-      `Could not determine stash root for asset: ${displayType}:${displayName}. ` +
+      `Could not determine stash root for asset: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
         "Run `akm init` to create the stash directory, or check `akm stash list` for configured paths.",
     );
   }
@@ -382,7 +382,9 @@ export async function showLocal(input: {
     match.meta = { ...match.meta, name: displayName };
     const renderer = await getRenderer(match.renderer);
     if (!renderer) {
-      throw new UsageError(`Renderer "${match.renderer}" not found for asset: ${displayType}:${displayName}`);
+      throw new UsageError(
+        `Renderer "${match.renderer}" not found for asset: ${makeBundleRef(parsed.bundle, parsed.conceptId)}`,
+      );
     }
 
     const renderBundle = indexedEntry ? indexedEntry.bundleId : source?.registryId;
@@ -393,7 +395,7 @@ export async function showLocal(input: {
     if (parsed.fragment !== undefined) {
       if (!match.renderer.endsWith("-md")) {
         throw new UsageError(
-          `Fragments are not supported for ${displayType}:${displayName}. Only Markdown documents support heading fragments.`,
+          `Fragments are not supported for ${makeBundleRef(parsed.bundle, parsed.conceptId)}. Only Markdown documents support heading fragments.`,
           "INVALID_FLAG_VALUE",
         );
       }
@@ -578,7 +580,7 @@ function buildIndexedProjectionResponse(
 ): ShowResponse {
   if (fragment !== undefined && path.extname(assetPath).toLowerCase() !== ".md") {
     throw new UsageError(
-      `Fragments are not supported for ${entry.type}:${entry.name}. Only Markdown documents support heading fragments.`,
+      `Fragments are not supported for ${entry.conceptId}. Only Markdown documents support heading fragments.`,
       "INVALID_FLAG_VALUE",
     );
   }

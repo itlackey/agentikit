@@ -46,7 +46,7 @@ import { detectAdapterId } from "./adapter/detect-adapter";
 import { ensureAkmMarkdownType } from "./asset/akm-markdown";
 import { assetPathForName, stashDirFor } from "./asset/asset-placement";
 import type { AssetRef } from "./asset/resolve-ref";
-import { displayRef } from "./asset/resolve-ref";
+import { conceptIdFromTypeName, displayRef } from "./asset/resolve-ref";
 import { deriveBundleId } from "./bundle-id";
 import { isWithin, resolveStashDir } from "./common";
 import type { AkmConfig, ConfiguredSource, SourceConfigEntry } from "./config/config";
@@ -1218,7 +1218,12 @@ export function formatRefForMessage(ref: AssetRef): string {
   const origin = ref.origin ? sanitizeCommitMessage(ref.origin) : "";
   const type = sanitizeCommitMessage(ref.type);
   const name = sanitizeCommitMessage(ref.name);
-  return origin ? `${origin}//${type}:${name}` : `${type}:${name}`;
+  // 0.9.0 (Q-02): the retired `type:name` colon grammar is gone — emit the
+  // slash conceptId (`workflows/name`), qualified with `origin//` when the
+  // ref carries one. Mirrors the `displayRef`/`conceptIdFromTypeName` rule
+  // used elsewhere in this file (see `resolveAssetFilePath` callers above).
+  const conceptId = conceptIdFromTypeName(type, name);
+  return origin ? `${origin}//${conceptId}` : conceptId;
 }
 
 /**

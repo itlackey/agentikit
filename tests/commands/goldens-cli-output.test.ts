@@ -193,6 +193,30 @@ describe("family A — search/show/list/info/curate/history/proposal/env/secret/
     });
   });
 
+  test("show command — APPLY footer feedback ref is a runnable slash ref (R-002/E-05 regression)", async () => {
+    // 0.9.0 (Q-02): the colon `type:name` ref grammar is retired with no
+    // re-acceptance. `appendShowDirectives` (src/output/text/show-directives.ts)
+    // used to build the APPLY-footer feedback suggestion as `${assetType}:${r.name}`
+    // (e.g. `skill:cli-a-ops`), which `akm feedback` rejects outright. Assert the
+    // footer now emits the slash conceptId AND that the exact suggested command
+    // actually runs — not just that it looks right.
+    const shown = await runCli(["show", skillRef(), "--format=text"]);
+    expect(shown.code).toBe(0);
+
+    const match = shown.stdout.match(/akm feedback '([^']+)' --positive/);
+    expect(match).not.toBeNull();
+    const suggestedRef = match?.[1] ?? "";
+
+    // Slash conceptId, not the retired `type:name` colon grammar.
+    expect(suggestedRef).toBe(skillRef());
+    expect(suggestedRef).not.toContain(":");
+    expect(suggestedRef).toMatch(/^skills\//);
+
+    // The suggestion must actually be runnable, verbatim.
+    const feedback = await runCli(["feedback", suggestedRef, "--positive"]);
+    expect(feedback.code).toBe(0);
+  });
+
   test("show --shape=agent and --shape=summary", async () => {
     const agent = await runCli(["show", commandRef(), "--format=json", "--shape=agent"]);
     expect(agent.code).toBe(0);

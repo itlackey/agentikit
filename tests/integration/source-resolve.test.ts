@@ -40,8 +40,10 @@ describe("resolveAssetPath", () => {
     // No scripts/ directory created
 
     // QA #27: error message no longer leaks internal "Stash type root" wording
+    // 0.9.0 (Q-02): the retired `type:name` colon grammar is gone — the
+    // message now emits the slash conceptId (`scripts/deploy.sh`).
     await expect(resolveAssetPath(stashDir, "script", "deploy.sh")).rejects.toThrow(
-      /Asset not found for ref: script:deploy\.sh|not found for ref/i,
+      /Asset not found for ref: scripts\/deploy\.sh|not found for ref/i,
     );
   });
 
@@ -50,7 +52,7 @@ describe("resolveAssetPath", () => {
     fs.mkdirSync(path.join(stashDir, "scripts"), { recursive: true });
 
     await expect(resolveAssetPath(stashDir, "script", "nonexistent.sh")).rejects.toThrow(
-      "Stash asset not found for ref: script:nonexistent.sh",
+      "Stash asset not found for ref: scripts/nonexistent.sh",
     );
   });
 
