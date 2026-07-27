@@ -85,6 +85,13 @@ export function describeGatedLanes(lanes: readonly AutonomyLane[]): GatedLane[] 
   return lanes.map(gatedLane);
 }
 
+/** Direct lanes enabled by the selected strategy before the autonomy gate. */
+export function configuredDirectAutonomyLanes(strategy: ImproveProfileConfig): AutonomyLane[] {
+  const lanes: AutonomyLane[] = ["memoryCleanup"];
+  if (strategy.processes?.consolidate?.contradictionDetection?.enabled === true) lanes.push("contradiction");
+  return lanes;
+}
+
 /**
  * True when a lane may mutate. Used by the two lanes that bypass the strategy
  * config; the other three are handled by {@link applyAutonomyGate}.

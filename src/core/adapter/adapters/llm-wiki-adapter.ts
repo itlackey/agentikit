@@ -288,6 +288,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
     path: file.absPath,
     hash: hashContent(raw),
     adapterId: "llm-wiki",
+    ownsPresentation: true,
     type: isRaw ? WIKI_SOURCE_TYPE : (fm.pageKind ?? DEFAULT_PAGE_KIND),
     name: lastSegment,
     content: body.length > MAX_CONTENT_CHARS ? body.slice(0, MAX_CONTENT_CHARS) : body,

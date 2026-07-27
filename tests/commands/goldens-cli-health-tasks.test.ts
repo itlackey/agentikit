@@ -266,7 +266,7 @@ describe("family C — akm tasks", () => {
   test("tasks run / history / doctor — command-type task running `true`", async () => {
     writeTrueTask();
 
-    const run = await runCli(["tasks", "run", TASK_TRUE_ID, "--format=json"]);
+    const run = await runCli(["tasks", "run", "--format", "json", TASK_TRUE_ID]);
     expect(run.code).toBe(0);
     const runJson = JSON.parse(run.stdout) as { result: Record<string, unknown> };
     expect(runJson.result.status).toBe("completed");

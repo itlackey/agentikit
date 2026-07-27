@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { type ArgsDef, parseArgs } from "citty";
-import { proposeCommand } from "../src/commands/agent/contribute-cli";
+import { agentCommand, proposeCommand } from "../src/commands/agent/contribute-cli";
 import { improveCommand } from "../src/commands/improve/improve-cli";
 import { tasksCommand } from "../src/commands/tasks/tasks-cli";
 
@@ -32,6 +32,14 @@ describe("space-separated global output flags on raw command leaves", () => {
     expect(args.format).toBe("html");
     expect(args.type).toBe("skill");
     expect(args.name).toBe("foo");
+  });
+
+  test("agent consumes the format value instead of treating it as the agent ref", () => {
+    const args = parseLeaf(agentCommand, ["--format", "md", "--prompt", "review the change"]);
+
+    expect(args.format).toBe("md");
+    expect(args["agent-ref"]).toBeUndefined();
+    expect(args.prompt).toBe("review the change");
   });
 
   test("tasks run consumes the format value instead of treating it as the task id", () => {

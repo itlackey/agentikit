@@ -222,7 +222,7 @@ function renderExecSummary(vm: HealthReportViewModel): string {
 
   const windowRows = [
     li("Report window", esc(vm.window)),
-    li("Compare window", esc(vm.compare)),
+    li(vm.comparisonMode === "custom" ? "Comparison windows" : "Compare window", esc(vm.compare)),
     li("Runs", `${num(vm.totalRuns)} (${vm.failedRuns} failed)`),
     li("Included result rows", num(vm.includedResultRows)),
     li("Invalid result rows skipped", num(vm.skippedInvalidResultRows)),
@@ -262,7 +262,7 @@ function renderExecSummary(vm: HealthReportViewModel): string {
         <ul>${quickNumbers}</ul>
       </div>
       <div>
-        <h4>Trend vs prior ${esc(vm.compare)}</h4>
+        <h4>${vm.comparisonMode === "custom" ? `Trend: ${esc(vm.compare)}` : `Trend vs prior ${esc(vm.compare)}`}</h4>
         <ul>${trendRows}</ul>
         <h4 style="margin-top:14px;">Period-over-period deltas</h4>
         <ul>${deltaRows}</ul>
@@ -277,7 +277,9 @@ function renderExecSummary(vm: HealthReportViewModel): string {
       </div>
     </div>
     <div class="overall">Overall trend: <b>${esc(vm.trend.overall)}</b> ${overallEmoji}
-      &nbsp;·&nbsp; based on decision quality, output volume, failures, and latency vs the prior window.</div>`.trim();
+      &nbsp;·&nbsp; based on decision quality, output volume, failures, and latency ${
+        vm.comparisonMode === "custom" ? "across the selected windows" : "vs the prior window"
+      }.</div>`.trim();
 }
 
 /**

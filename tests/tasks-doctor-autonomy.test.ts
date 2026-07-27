@@ -57,10 +57,42 @@ describe("tasks doctor autonomy reporting", () => {
     expect(result.improveAutonomy?.configKey).toBe(IMPROVE_AUTONOMY_CONFIG_KEY);
     expect(result.improveAutonomy?.gatedLanes.map((lane) => lane.lane).sort()).toEqual([
       "consolidate",
-      "contradiction",
       "memoryCleanup",
     ]);
     expect(result.improveAutonomy?.gatedLanes.every((lane) => lane.reason.length > 0)).toBe(true);
+  });
+
+  test("reports contradiction only when the selected strategy enables its pass", async () => {
+    saveConfig({
+      semanticSearchMode: "off",
+      defaults: { improveStrategy: "contradiction-report" },
+      improve: {
+        strategies: {
+          "contradiction-report": {
+            processes: {
+              reflect: { enabled: false },
+              distill: { enabled: false },
+              consolidate: { enabled: true, contradictionDetection: { enabled: true } },
+              memoryInference: { enabled: false },
+              graphExtraction: { enabled: false },
+              extract: { enabled: false },
+              validation: { enabled: false },
+              triage: { enabled: false },
+              proactiveMaintenance: { enabled: false },
+            },
+          },
+        },
+      },
+    });
+    resetConfigCache();
+
+    const result = await akmTasksDoctor();
+
+    expect(result.improveAutonomy?.gatedLanes.map((lane) => lane.lane).sort()).toEqual([
+      "consolidate",
+      "contradiction",
+      "memoryCleanup",
+    ]);
   });
 
   test("reports autonomy on with no gated lanes", async () => {

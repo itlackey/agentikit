@@ -25,8 +25,10 @@ import type { DeltaEntry, WindowResult } from "./types-windows";
 export interface HealthReportContext {
   /** Window label as the user typed it (`--since`), e.g. "24h". */
   window: string;
-  /** Comparison-window label (`--window-compare`), e.g. "24h". */
+  /** Duration label or chronological explicit-window names, e.g. "24h" or "older → newer". */
   compare: string;
+  /** Whether `compare` names one duration or the explicit `--windows` sequence. */
+  comparisonMode: "duration" | "custom";
   /** Pending proposal queue at report time. */
   pendingProposals: { ref: string; source: string; createdAt: string }[];
 }

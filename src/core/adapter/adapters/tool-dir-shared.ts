@@ -160,6 +160,7 @@ export function recognizeToolDir(layout: ToolDirLayout, c: BundleComponent, file
     name,
     content: body.length > MAX_CONTENT_CHARS ? body.slice(0, MAX_CONTENT_CHARS) : body,
   };
+  if (cls.type === "instruction") doc.ownsPresentation = true;
   if (description !== undefined) doc.description = description;
   if (tags !== undefined) doc.tags = tags;
   return doc;

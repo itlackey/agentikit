@@ -44,6 +44,7 @@ export const agentCommand = defineCommand({
       "Dispatch an agent CLI (opencode, claude, …) with an optional agent asset that provides the system prompt, model, and tool policy. Use <agent-ref> to embody a stash agent, --model to override the model, and --prompt/--command/--workflow to provide the task.",
   },
   args: {
+    ...GLOBAL_OUTPUT_ARGS,
     "agent-ref": {
       type: "positional",
       description:

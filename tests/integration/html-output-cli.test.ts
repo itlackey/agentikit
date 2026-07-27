@@ -162,7 +162,7 @@ describe("akm health --report", () => {
   });
 
   test("explicit report windows do not conflict with an implicit comparison window", async () => {
-    const { code, stdout } = await runCliCapture([
+    const reportArgs = [
       "health",
       "--report",
       "--since",
@@ -171,13 +171,23 @@ describe("akm health --report", () => {
       "name=older,since=2026-07-01T00:00:00.000Z,until=2026-07-02T00:00:00.000Z",
       "--windows",
       "name=newer,since=2026-07-02T00:00:00.000Z,until=2026-07-03T00:00:00.000Z",
-      "--format=json",
-    ]);
+    ];
+    const { code, stdout } = await runCliCapture([...reportArgs, "--format=json"]);
 
     expect([0, 4]).toContain(code);
-    const parsed = JSON.parse(stdout) as { windows?: Array<{ name: string }>; report: { window: string } };
+    const parsed = JSON.parse(stdout) as {
+      windows?: Array<{ name: string }>;
+      report: { window: string; compare: string; comparisonMode: string };
+    };
     expect(parsed.report.window).toBe("7d");
+    expect(parsed.report.compare).toBe("older → newer");
+    expect(parsed.report.comparisonMode).toBe("custom");
     expect(parsed.windows?.map((window) => window.name)).toEqual(["older", "newer"]);
+
+    const html = await runCliCapture([...reportArgs, "--format=html"]);
+    expect([0, 4]).toContain(html.code);
+    expect(html.stdout).toContain("Trend: older → newer");
+    expect(html.stdout).not.toContain("Trend vs prior 24h");
   });
 
   test("plain akm health carries no report dataset and renders html generically", async () => {

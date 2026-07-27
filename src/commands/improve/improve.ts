@@ -44,7 +44,12 @@ import { getEntryCount } from "../../storage/repositories/index-entries-reposito
 import { type DrainResult, drainProposals } from "../proposal/drain";
 import { resolveDrainPolicy } from "../proposal/drain-policies";
 import type { EligibilitySource } from "../proposal/proposal-types";
-import { type AutonomyLane, DIRECT_AUTONOMY_LANES, describeGatedLanes, isAutonomyLaneAllowed } from "./autonomy-gate";
+import {
+  type AutonomyLane,
+  configuredDirectAutonomyLanes,
+  describeGatedLanes,
+  isAutonomyLaneAllowed,
+} from "./autonomy-gate";
 import { akmDistill } from "./distill";
 // Eligibility / candidate-selection predicates live in ./eligibility.
 import {
@@ -297,7 +302,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
       plannedRefs,
       // The preview stays on the result envelope below; the stage sequence is
       // what APPLIES the plan, so a gated run must not receive it.
-      memoryCleanupPlan: autonomyGatedDirectLanes.length > 0 ? undefined : memoryCleanupPlan,
+      memoryCleanupPlan: autonomyGatedDirectLanes.includes("memoryCleanup") ? undefined : memoryCleanupPlan,
       autonomyGatedDirectLanes,
       memorySummary,
       preEnsureCleanupWarnings,
@@ -730,15 +735,22 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
   // suppressed by the gate, so claiming it was would be noise.
   const cleanupEligible = shouldAnalyzeMemoryCleanup(scope, memorySummary.eligible, primaryStashDir);
   const autonomyAllowsDirectLanes = isAutonomyLaneAllowed("memoryCleanup", _earlyConfig);
+  const configuredDirectLanes = configuredDirectAutonomyLanes(improveProfile);
   const autonomyGatedDirectLanes: AutonomyLane[] =
-    cleanupEligible && !autonomyAllowsDirectLanes ? [...DIRECT_AUTONOMY_LANES] : [];
+    cleanupEligible && !autonomyAllowsDirectLanes ? configuredDirectLanes : [];
 
   // M-1 (#367): Run contradiction-detection BEFORE analyzeMemoryCleanup so
   // the SCC resolver in resolveFamilyContradictions has edges to work on.
   // Best-effort: failures are warnings, never fatal.
   // It writes contradiction edges and belief-state transitions, so it needs the
   // opt-in.
-  if (!options.dryRun && primaryStashDir && autonomyAllowsDirectLanes && cleanupEligible) {
+  if (
+    !options.dryRun &&
+    primaryStashDir &&
+    autonomyAllowsDirectLanes &&
+    cleanupEligible &&
+    configuredDirectLanes.includes("contradiction")
+  ) {
     try {
       // Reuse the config resolved at the top of the run instead of a second load.
       const contradictionDetectionFn = options.contradictionDetectionFn ?? detectAndWriteContradictions;
@@ -763,14 +775,14 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
     }
   }
 
-  // `analyzeMemoryCleanup` is READ-ONLY — it produces the preview that a dry run
-  // and the result envelope report. The autonomy gate belongs on APPLYING that
-  // plan (`applyMemoryCleanup`, which rewrites frontmatter and moves files),
-  // not on computing it: gating the analysis is what made review-first dry runs
-  // silently drop `memoryCleanup` from their output.
-  const memoryCleanupPlan = cleanupEligible
-    ? analyzeMemoryCleanup(primaryStashDir as string, cleanupParentRef ? { parentRef: cleanupParentRef } : undefined)
-    : undefined;
+  // `analyzeMemoryCleanup` is READ-ONLY, so a dry run may compute the preview
+  // even when autonomy is off. A live gated run has no preview contract and
+  // skips the stash-wide analysis as well as application; autonomy-on live runs
+  // compute the plan that `applyMemoryCleanup` will consume downstream.
+  const memoryCleanupPlan =
+    cleanupEligible && (options.dryRun || autonomyAllowsDirectLanes)
+      ? analyzeMemoryCleanup(primaryStashDir as string, cleanupParentRef ? { parentRef: cleanupParentRef } : undefined)
+      : undefined;
   const guidance =
     memorySummary.eligible > 0
       ? "Improve folds memory cleanup into the same proposal queue: speculative promotions still go through reflect/distill proposals, while high-confidence redundant derived memories are moved into a recoverable cleanup archive instead of being left active in the stash."

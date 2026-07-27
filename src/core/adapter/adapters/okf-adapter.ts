@@ -154,6 +154,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
     // incrementality/fingerprints (`types.ts` hash doc comment).
     hash: hashContent(raw),
     adapterId: "okf",
+    ownsPresentation: true,
     type,
     name,
     content: body.length > MAX_CONTENT_CHARS ? body.slice(0, MAX_CONTENT_CHARS) : body,

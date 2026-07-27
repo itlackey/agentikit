@@ -37,6 +37,10 @@ import {
 const createdTmpDirs: string[] = [];
 const WEBSITE_ROOT = path.resolve(__dirname, "../fixtures/bundles/website-snapshot");
 const GENERIC_ROOT = path.resolve(__dirname, "../fixtures/bundles/generic-files");
+const TASK_ROOT = path.resolve(__dirname, "../fixtures/bundles/akm-task");
+const OPENCODE_ROOT = path.resolve(__dirname, "../fixtures/bundles/opencode");
+const LLM_WIKI_ROOT = path.resolve(__dirname, "../fixtures/bundles/llm-wiki");
+const WORKFLOW_ROOT = path.resolve(__dirname, "../fixtures/bundles/akm-workflow");
 
 function _createTmpDir(prefix = "akm-parity-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -59,7 +63,7 @@ function writeFile(filePath: string, content: string): void {
 async function indexAdapterBundle(
   bundleId: string,
   root: string,
-  adapter: "website-snapshot" | "generic-files",
+  adapter: "website-snapshot" | "generic-files" | "akm-task" | "opencode" | "llm-wiki" | "akm-workflow",
   writable: boolean,
 ): Promise<void> {
   saveConfig({
@@ -264,7 +268,11 @@ describe("Phase 4 parity: indexer.lookupBundleRef ↔ akmShowUnified", () => {
       ref: "website-fixture//example-com/about",
       description: "Snapshot of https://example.com/about",
     });
-    expect(indexed).toMatchObject({ adapterId: "website-snapshot", type: "website" });
+    expect(indexed).toMatchObject({
+      adapterId: "website-snapshot",
+      type: "website",
+      document: { ownsPresentation: true },
+    });
     expect(shown).toMatchObject({
       type: hit.type,
       name: hit.name,
@@ -283,7 +291,11 @@ describe("Phase 4 parity: indexer.lookupBundleRef ↔ akmShowUnified", () => {
     const shown = await akmShowUnified({ ref: hit.ref, skipLogging: true });
 
     expect(hit).toMatchObject({ type: "document", name: "notes", ref: "generic-fixture//notes" });
-    expect(indexed).toMatchObject({ adapterId: "generic-files", type: "document" });
+    expect(indexed).toMatchObject({
+      adapterId: "generic-files",
+      type: "document",
+      document: { ownsPresentation: true },
+    });
     expect(shown).toMatchObject({
       type: hit.type,
       name: hit.name,
@@ -309,5 +321,71 @@ describe("Phase 4 parity: indexer.lookupBundleRef ↔ akmShowUnified", () => {
       path: hit.path,
       content: indexed?.document?.content,
     });
+  });
+
+  test("standalone task bundles use the indexed task renderer outside a tasks directory", async () => {
+    await indexAdapterBundle("task-fixture", copyFixtureToTmp(TASK_ROOT), "akm-task", true);
+
+    const shown = await akmShowUnified({ ref: "task-fixture//nightly-index", skipLogging: true });
+
+    expect(shown).toMatchObject({
+      type: "task",
+      name: "nightly-index",
+      ref: "task-fixture//nightly-index",
+    });
+    expect(shown.content).toContain('schedule: "@daily"');
+  });
+
+  test("OpenCode singular command and instruction paths keep their indexed native types", async () => {
+    await indexAdapterBundle("opencode-fixture", copyFixtureToTmp(OPENCODE_ROOT), "opencode", true);
+
+    const command = await akmShowUnified({ ref: "opencode-fixture//command/legacy", skipLogging: true });
+    const indexedInstruction = await lookupBundleRef(parseBundleRef("opencode-fixture//AGENTS"));
+    const instruction = await akmShowUnified({ ref: "opencode-fixture//AGENTS", skipLogging: true });
+
+    expect(command).toMatchObject({ type: "command", name: "legacy", ref: "opencode-fixture//command/legacy" });
+    expect(command.template).toContain("Run the legacy migration");
+    expect(indexedInstruction?.document?.ownsPresentation).toBe(true);
+    expect(instruction).toMatchObject({ type: "instruction", name: "AGENTS", ref: "opencode-fixture//AGENTS" });
+    expect(instruction.content).toContain("# Sample AGENTS.md");
+  });
+
+  test("open llm-wiki page kinds cannot opt into an AKM agent renderer", async () => {
+    const root = copyFixtureToTmp(LLM_WIKI_ROOT);
+    const pagePath = path.join(root, "pages", "http-caching.md");
+    fs.writeFileSync(
+      pagePath,
+      fs
+        .readFileSync(pagePath, "utf8")
+        .replace("pageKind: concept", "pageKind: agent\nmodel: attacker/model\ntools: [write]"),
+      "utf8",
+    );
+    await indexAdapterBundle("wiki-fixture", root, "llm-wiki", false);
+
+    const shown = await akmShowUnified({ ref: "wiki-fixture//pages/http-caching", skipLogging: true });
+
+    expect(shown.type).toBe("agent");
+    expect(shown.content).toContain("# HTTP caching");
+    expect(shown.prompt).toBeUndefined();
+    expect(shown.modelHint).toBeUndefined();
+    expect(shown.toolPolicy).toBeUndefined();
+  });
+
+  test("standalone workflow actions use the adapter-owned canonical ref", async () => {
+    await indexAdapterBundle("workflow-fixture", copyFixtureToTmp(WORKFLOW_ROOT), "akm-workflow", true);
+
+    const shown = await akmShowUnified({ ref: "workflow-fixture//release", skipLogging: true });
+
+    expect(shown.type).toBe("workflow");
+    expect(shown.action).toContain("'workflow-fixture//release'");
+    expect(shown.action).not.toContain("workflow-fixture//workflows/release");
+  });
+
+  test("non-Markdown indexed files reject Markdown heading fragments", async () => {
+    await indexAdapterBundle("generic-fixture", copyFixtureToTmp(GENERIC_ROOT), "generic-files", true);
+
+    await expect(akmShowUnified({ ref: "generic-fixture//data.csv#alpha", skipLogging: true })).rejects.toThrow(
+      "Fragments are not supported",
+    );
   });
 });

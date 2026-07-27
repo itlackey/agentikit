@@ -45,6 +45,7 @@ registerHtmlRenderer("health", (result) => {
     buildHealthHtmlReplacements(result, {
       window: result.report.window,
       compare: result.report.compare,
+      comparisonMode: result.report.comparisonMode,
       proposals: result.report.pendingProposals,
       deltas: result.deltas,
     }),

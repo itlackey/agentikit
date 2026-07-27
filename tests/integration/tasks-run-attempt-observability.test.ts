@@ -132,6 +132,7 @@ describe("tasks run attempt observability", () => {
     expect(
       shouldBypassConfigStartup(["bun", "cli.ts", "--format", "json", "task", "run", "nightly", "--scheduled"]),
     ).toBe(true);
+    expect(shouldBypassConfigStartup(["bun", "cli.ts", "tasks", "run", "--format", "md", "nightly"])).toBe(true);
 
     expect(shouldBypassConfigStartup(["bun", "cli.ts", "tasks", "run"])).toBe(false);
     expect(shouldBypassConfigStartup(["bun", "cli.ts", "tasks", "list"])).toBe(false);

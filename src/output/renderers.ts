@@ -272,11 +272,12 @@ const knowledgeMdRenderer: AssetRenderer = {
   name: "knowledge-md",
 
   buildShowResponse(ctx: RenderContext): ShowResponse {
+    const instruction = ctx.matchResult.type === "instruction";
     return {
-      type: "knowledge",
+      type: instruction ? "instruction" : "knowledge",
       name: deriveName(ctx),
       path: ctx.absPath,
-      action: KNOWLEDGE_ACTION,
+      action: instruction ? "Project instructions — read and follow the content below." : KNOWLEDGE_ACTION,
       content: ctx.content(),
     };
   },

@@ -64,6 +64,7 @@ export function indexDocumentToStashEntry(doc: IndexDocument): IndexDocument {
   if (doc.description !== undefined) entry.description = doc.description;
   if (doc.tags !== undefined) entry.tags = doc.tags;
   if (doc.content !== undefined) entry.content = doc.content;
+  if (doc.ownsPresentation !== undefined) entry.ownsPresentation = doc.ownsPresentation;
   if (doc.updated !== undefined) entry.updated = doc.updated;
   if (doc.links !== undefined) entry.links = doc.links;
   if (doc.adapterId === "okf") {

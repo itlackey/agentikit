@@ -83,6 +83,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
     name,
     content: body.length > MAX_CONTENT_CHARS ? body.slice(0, MAX_CONTENT_CHARS) : body,
   };
+  if (type !== "script") doc.ownsPresentation = true;
   const description = nonEmptyString(parsed.data.description);
   if (description !== undefined) doc.description = description;
   const tags = readTags(parsed.data.tags);

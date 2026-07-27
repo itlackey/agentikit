@@ -71,7 +71,7 @@ process.on("uncaughtException", (err) => {
 });
 
 import fs from "node:fs";
-import { type ArgsDef, defineCommand, runMain } from "citty";
+import { type ArgsDef, defineCommand, parseArgs, runMain } from "citty";
 import {
   findCittyTopLevelCommand,
   findCittyTopLevelCommandIndex,
@@ -360,6 +360,15 @@ const healthCommand = defineCommand({
         windowCompare,
         windows,
       });
+      const reportCompare =
+        windowCompare ??
+        (explicitWindows
+          ? [...(base.windows ?? [])]
+              .sort((a, b) => new Date(a.since).getTime() - new Date(b.since).getTime())
+              .map((window) => window.name)
+              .join(" → ")
+          : undefined) ??
+        "24h";
       resultStatus = base.status;
       if (report) {
         const { listPendingProposals } = await import("./commands/proposal/proposal");
@@ -367,7 +376,8 @@ const healthCommand = defineCommand({
           ...base,
           report: {
             window: args.since ?? "24h",
-            compare: windowCompare ?? "24h",
+            compare: reportCompare,
+            comparisonMode: explicitWindows ? "custom" : "duration",
             pendingProposals: listPendingProposals().map(({ ref, source, createdAt }) => ({ ref, source, createdAt })),
           },
         });
@@ -551,7 +561,15 @@ function isTaskRunWithId(argv: readonly string[]): boolean {
   const command = commandIndex >= 0 ? args[commandIndex] : undefined;
   if (command !== "tasks" && command !== "task") return false;
   const taskArgs = args.slice(commandIndex + 1);
-  return taskArgs[0] === "run" && typeof taskArgs[1] === "string" && !taskArgs[1].startsWith("-");
+  if (taskArgs[0] !== "run") return false;
+  const runCommand = (tasksCommand.subCommands as unknown as Record<string, { args?: ArgsDef }> | undefined)?.run;
+  if (!runCommand?.args) return false;
+  try {
+    const parsed = parseArgs(taskArgs.slice(1), runCommand.args) as Record<string, unknown>;
+    return typeof parsed.id === "string" && parsed.id.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /** Recovery/setup surfaces must remain reachable when config.json is invalid. */

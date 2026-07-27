@@ -18,8 +18,8 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 import { recognizeMatch } from "../../core/adapter/recognize-match";
-import { placementTypes } from "../../core/asset/asset-placement";
 import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { extractSection, markdownFragmentSlugs } from "../../core/asset/markdown";
@@ -30,6 +30,7 @@ import { getIndexPassConfig, loadConfig } from "../../core/config/config";
 import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
 import { appendEvent, readEvents } from "../../core/events";
 import { withStateDbTelemetry } from "../../core/state-db";
+import { presentationFor } from "../../core/type-presentation";
 import { hasGraphData } from "../../indexer/db/graph-db";
 import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
 import { extractGraphForSingleFile } from "../../indexer/graph/graph-extraction";
@@ -39,7 +40,13 @@ import { ensurePrimaryIndexForRead, resolveReadSources } from "../../indexer/rea
 import { usageEventAttributionMetadata } from "../../indexer/search/search-attribution";
 import { buildEditHint, findSourceForPath, isEditable, resolveSourceEntries } from "../../indexer/search/search-source";
 import { insertUsageEvent, type UsageEventSource } from "../../indexer/usage/usage-events";
-import { buildFileContext, buildRenderContext, getRenderer } from "../../indexer/walk/file-context";
+import {
+  buildFileContext,
+  buildRenderContext,
+  type FileContext,
+  getRenderer,
+  type MatchResult,
+} from "../../indexer/walk/file-context";
 import { resolveAssetPath } from "../../indexer/walk/path-resolver";
 import { resolveIndexPassLLM } from "../../llm/index-passes";
 import { resolveSourcesForOrigin } from "../../registry/origin-resolve";
@@ -57,6 +64,7 @@ import { computeBodyHash } from "../../storage/repositories/index-llm-cache-repo
 import "../../sources/providers/index";
 import type { ShowDetailLevel, ShowResponse } from "../../sources/types";
 import { getCurrentWorkflowScopeKey } from "../../workflows/authoring/scope-key";
+import { buildWorkflowAction, WORKFLOW_PROGRAM_RENDERER_NAME } from "../../workflows/renderer";
 import { getActiveWorkflowRun } from "../../workflows/runtime/runs";
 
 /**
@@ -356,11 +364,15 @@ export async function showLocal(input: {
   }
 
   const fileCtx = buildFileContext(sourceStashDir, assetPath);
+  const indexedRenderer = indexedEntry ? rendererForIndexedEntry(indexedEntry, fileCtx) : undefined;
   let response: ShowResponse;
-  if (indexedEntry && usesIndexedProjection(indexedEntry)) {
-    response = buildGenericMarkdownResponse(indexedEntry, assetPath, parsed.fragment);
+  if (indexedEntry && indexedRenderer === null) {
+    response = buildIndexedProjectionResponse(indexedEntry, assetPath, parsed.fragment);
   } else {
-    const match = recognizeMatch(fileCtx);
+    const match =
+      indexedEntry && typeof indexedRenderer === "string"
+        ? indexedMatch(indexedEntry, indexedRenderer)
+        : recognizeMatch(fileCtx);
     if (!match) {
       throw new UsageError(
         `Could not display asset "${makeBundleRef(parsed.bundle, parsed.conceptId)}" — unsupported file type or unrecognized layout`,
@@ -388,6 +400,10 @@ export async function showLocal(input: {
       applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, displayName);
     }
   }
+  if (indexedEntry) {
+    response.type = indexedEntry.type;
+    response.name = indexedEntry.name;
+  }
   const isPrimaryStash = source !== undefined && source.path === allSources[0]?.path;
   const canonicalRef = displayRef(
     {
@@ -398,6 +414,7 @@ export async function showLocal(input: {
     },
     config.defaultBundle ?? (isPrimaryStash ? indexedEntry?.bundleId : undefined),
   );
+  if (response.type === "workflow") response.action = buildWorkflowAction(canonicalRef);
   // 07 P1-D: provenance-aware toolPolicy CEILING. An agent's self-declared
   // `tools` frontmatter is honoured ONLY for the operator's own PRIMARY stash —
   // the assets they authored. Every other source is content pulled from
@@ -533,36 +550,38 @@ export async function showByRef(ref: string): Promise<{ filePath: string; body: 
   return { filePath: entry.filePath, body };
 }
 
-/**
- * Whether an indexed item is presented from its adapter's own projection rather
- * than by re-running the AKM matcher over the file.
- *
- * `recognizeMatch` IS the `akm` adapter's native presentation: it infers a type
- * from the stash layout and picks a type-specific renderer. Running it over an
- * item another adapter owns re-derives an identity the indexer already
- * established — which is how a `website` entry came back as `knowledge` and a
- * generic `file` lost its indexed content.
- *
- * Two cases take the projection:
- *  - OKF, whose `type` is open frontmatter and may legitimately collide with an
- *    AKM placement type, so it is named explicitly.
- *  - Any indexed item whose type is not one AKM places (`website`, `document`,
- *    `file`, …). The matcher has no claim to those.
- *
- * Everything else keeps its bespoke renderer. That matters beyond cosmetics:
- * `env`/`secret` items must stay on the dotenv renderer, which lists keys and
- * never emits values — this helper must never route them to a content dump.
- */
-function usesIndexedProjection(entry: NonNullable<Awaited<ReturnType<typeof lookupBundleRef>>>): boolean {
-  if (entry.adapterId === "okf") return true;
-  return entry.document?.content !== undefined && !placementTypes().includes(entry.type);
+type IndexedEntry = NonNullable<Awaited<ReturnType<typeof lookupBundleRef>>>;
+
+/** `null` selects adapter-owned projection; a string selects a core renderer. */
+function rendererForIndexedEntry(entry: IndexedEntry, file: FileContext): string | null | undefined {
+  if (entry.document?.ownsPresentation === true) return null;
+  switch (entry.adapterId) {
+    case null:
+    case undefined:
+    case "akm":
+      return undefined;
+    case "akm-workflow":
+      return file.ext === ".yaml" || file.ext === ".yml" ? WORKFLOW_PROGRAM_RENDERER_NAME : "workflow-md";
+    default:
+      return presentationFor(entry.type).renderer;
+  }
 }
 
-function buildGenericMarkdownResponse(
-  entry: NonNullable<Awaited<ReturnType<typeof lookupBundleRef>>>,
+function indexedMatch(entry: IndexedEntry, renderer: string): MatchResult {
+  return { type: entry.type, specificity: Number.MAX_SAFE_INTEGER, renderer, meta: { name: entry.name } };
+}
+
+function buildIndexedProjectionResponse(
+  entry: IndexedEntry,
   assetPath: string,
   fragment: string | undefined,
 ): ShowResponse {
+  if (fragment !== undefined && path.extname(assetPath).toLowerCase() !== ".md") {
+    throw new UsageError(
+      `Fragments are not supported for ${entry.type}:${entry.name}. Only Markdown documents support heading fragments.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
   const raw = fs.readFileSync(assetPath, "utf8");
   const parsed = parseFrontmatter(raw);
   const content = fragment ? requireMarkdownSection(parsed.content, fragment, entry.name).content : parsed.content;

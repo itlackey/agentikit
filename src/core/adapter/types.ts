@@ -151,6 +151,12 @@ export interface IndexDocument {
   path?: string;
   hash?: string;
   adapterId?: string;
+  /**
+   * The owning adapter provides the complete generic presentation projection.
+   * When true, `show` must not reinterpret the open `type` through AKM's native
+   * renderer table. Omitted means the core may apply its type renderer.
+   */
+  ownsPresentation?: boolean;
 
   // ── Identity + FTS surface ──
   /** = OKF `type`; open; frontmatter (native) or adapter-derived (foreign). Presents/ranks/filters; NEVER executes or identifies. Required — the durable IndexDocument contract. */

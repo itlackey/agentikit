@@ -50,7 +50,7 @@ import {
 import type { TaskDocument } from "../../tasks/schema";
 import { normaliseTaskId } from "../../tasks/task-id";
 import { validateTaskDocument } from "../../tasks/validator";
-import { applyAutonomyGate, DIRECT_AUTONOMY_LANES, describeGatedLanes } from "../improve/autonomy-gate";
+import { applyAutonomyGate, configuredDirectAutonomyLanes, describeGatedLanes } from "../improve/autonomy-gate";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
 
 export interface TasksAddInput {
@@ -699,9 +699,10 @@ export async function akmTasksDoctor(
   const autonomyEnabled = isImproveAutonomyEnabled(config);
   // The strategy-derived lanes are only part of the picture: the memory-cleanup
   // and contradiction passes have no strategy flag to downgrade, so
-  // `applyAutonomyGate` cannot see them. Doctor reports the lanes a scheduled
-  // run would be denied, so it has to name those two as well.
-  const allGated = autonomyEnabled ? [] : [...gated, ...describeGatedLanes(DIRECT_AUTONOMY_LANES)];
+  // `applyAutonomyGate` cannot see them. Doctor also reports configured direct
+  // lanes a scheduled run would be denied; contradiction is included only when
+  // the selected strategy enables its nested detection pass.
+  const allGated = autonomyEnabled ? [] : [...gated, ...describeGatedLanes(configuredDirectAutonomyLanes(rawStrategy))];
   const improveAutonomy = {
     enabled: autonomyEnabled,
     configKey: IMPROVE_AUTONOMY_CONFIG_KEY,

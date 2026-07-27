@@ -41,8 +41,10 @@ export interface PendingProposalLike {
 export interface HealthHtmlReportOptions {
   /** Window label as the user typed it (`--since`), e.g. "24h". */
   window: string;
-  /** Comparison-window label (`--compare`), e.g. "24h". */
+  /** Duration label or chronological explicit-window names. */
   compare: string;
+  /** Whether the comparison is a generated duration pair or explicit named windows. */
+  comparisonMode?: "duration" | "custom";
   /** Pending proposal queue (from `listPendingProposals`). */
   proposals: PendingProposalLike[];
   /**
@@ -319,6 +321,7 @@ export interface HealthReportViewModel {
   // Window / meta
   window: string;
   compare: string;
+  comparisonMode: "duration" | "custom";
   sinceIso: string;
   reportDate: string;
   reportTitle: string;
@@ -786,6 +789,7 @@ export function buildHealthReportViewModel(
   return {
     window: opts.window,
     compare: opts.compare,
+    comparisonMode: opts.comparisonMode ?? "duration",
     ...meta,
 
     runs: runsPhase.runs,

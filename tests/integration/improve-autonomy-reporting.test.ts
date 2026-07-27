@@ -14,8 +14,25 @@ import { overrideSeam } from "../_helpers/seams";
 const config = {
   configVersion: "0.9.0",
   semanticSearchMode: "off",
-  defaults: { improveStrategy: "consolidate" },
-} as AkmConfig;
+  defaults: { improveStrategy: "contradiction-report" },
+  improve: {
+    strategies: {
+      "contradiction-report": {
+        processes: {
+          reflect: { enabled: false },
+          distill: { enabled: false },
+          consolidate: { enabled: true, contradictionDetection: { enabled: true } },
+          memoryInference: { enabled: false },
+          graphExtraction: { enabled: false },
+          extract: { enabled: false },
+          validation: { enabled: false },
+          triage: { enabled: false },
+          proactiveMaintenance: { enabled: false },
+        },
+      },
+    },
+  },
+} as unknown as AkmConfig;
 
 const emptyPreparation = {
   actionableRefs: [],
@@ -97,6 +114,7 @@ describe("review-first improve autonomy reporting", () => {
     });
 
     expect(result.ok).toBe(true);
+    expect(result.memoryCleanup).toBeUndefined();
     expect(contradictionDetectionFn).not.toHaveBeenCalled();
 
     const expectedLanes = ["consolidate", "contradiction", "memoryCleanup"];
