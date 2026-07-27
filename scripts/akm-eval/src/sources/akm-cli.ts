@@ -112,13 +112,17 @@ export class AkmCli {
   }
 
   /**
-   * Locate the `akm-migrate` binary: prefer a sibling of the configured akm
-   * bin (the npm package installs both into the same directory), fall back to
-   * PATH lookup.
+   * Locate the `akm-migrate` binary: when the akm bin is a path (relative or
+   * absolute, e.g. `./dist/cli.js` in CI), prefer the sibling install — both
+   * `bun run build` and the npm package place akm-migrate next to akm. A bare
+   * command name falls through to PATH lookup, same as the akm bin itself.
    */
   protected resolveMigrateBin(): string {
-    const sibling = path.join(path.dirname(this.bin), "akm-migrate");
-    return path.isAbsolute(this.bin) && fs.existsSync(sibling) ? sibling : "akm-migrate";
+    if (this.bin.includes(path.sep)) {
+      const sibling = path.join(path.dirname(this.bin), "akm-migrate");
+      if (fs.existsSync(sibling)) return sibling;
+    }
+    return "akm-migrate";
   }
 
   /**
