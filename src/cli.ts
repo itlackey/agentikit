@@ -124,7 +124,7 @@ import { DURATION_UNITS, parseDuration } from "./core/time";
 import { plainize } from "./core/tty";
 import { info, isQuiet, setQuiet, setVerbose, warn } from "./core/warn";
 import { disposeDispatchResources } from "./integrations/agent/runner-dispatch";
-import { getHyphenatedBoolean, getOutputMode, initOutputMode } from "./output/context";
+import { getOutputMode, initOutputMode } from "./output/context";
 import { isFormatExemptCommand } from "./output/format-exempt";
 import { consumeSchedulerContextArg } from "./tasks/scheduler-invocation";
 import { pkgVersion } from "./version";
@@ -199,10 +199,17 @@ const setupCommand = defineCommand({
       type: "string",
       description: "Stash directory path (overrides stashDir in config or --config JSON)",
     },
-    "no-init": {
+    // Declared as the POSITIVE name with `default: true` so citty's native
+    // `--no-<name>` negation (it strips a leading `--no-` from ANY token and
+    // negates the remainder BEFORE consulting the declared-args table) does
+    // the work, matching the `sync --push/--no-push` pattern. A flag
+    // DECLARED as `no-init` can never be negated: `--no-init` parses as
+    // "negate `init`", a name nothing declared, leaving the real key at its
+    // default forever — see `search --no-project-context`'s identical fix.
+    init: {
       type: "boolean",
-      default: false,
-      description: "Write configuration without scaffolding the stash directory",
+      default: true,
+      description: "Scaffold the stash directory. Use --no-init to write configuration without scaffolding it.",
     },
     probe: {
       type: "boolean",
@@ -224,9 +231,7 @@ const setupCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      // citty treats a leading `no-` as boolean negation on some parse paths,
-      // so retain the raw argv spelling as the authoritative compatibility form.
-      const noInit = getHyphenatedBoolean(args, "no-init") || process.argv.includes("--no-init");
+      const noInit = !args.init;
       const detectOnly = args["detect-only"];
       const resetRecommended = args["reset-recommended"];
       if (detectOnly) {

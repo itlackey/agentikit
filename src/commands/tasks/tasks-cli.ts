@@ -9,7 +9,8 @@
  * `runWithJsonErrors(...) + output(...)` are migrated to `defineJsonCommand`,
  * which emits the same JSON envelope (stdout/stderr/exit-code) as the inline
  * form. `tasks run` keeps a plain `defineCommand` because it forwards the
- * task's own exit code via `process.exit`. The private helper
+ * task's own exit code via `process.exitCode` (F4: not `process.exit()` —
+ * that would skip pending cleanup). The private helper
  * `makeTasksToggleCommand` and the `TASKS_SUBCOMMAND_SET` routing constant move
  * with the family.
  */
@@ -163,7 +164,12 @@ const tasksRunCommand = defineCommand({
         ...(args.target !== undefined ? { target: args.target } : {}),
       });
       output("tasks-run", envelope);
-      if (envelope.exitCode !== 0) process.exit(envelope.exitCode);
+      // F4: was `process.exit(envelope.exitCode)`, terminating synchronously
+      // and skipping any pending cleanup (this command forwards a run task's
+      // own exit code, so it can be any value, not just 0/1). output() has
+      // already run and this is the last statement, so process.exitCode +
+      // the implicit return is equivalent without the synchronous cutoff.
+      if (envelope.exitCode !== 0) process.exitCode = envelope.exitCode;
     });
   },
 });

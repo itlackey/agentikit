@@ -9,11 +9,14 @@
  * `main.subCommands.{agent,lint,propose}` keys and every command's args /
  * output shape stay byte-identical.
  *
- * These three handlers each branch on the result and call `process.exit`
- * conditionally (exit 1 on a failed dispatch / proposal, or on
- * `--fail-on-flagged` lint findings), so they keep the inline
- * `runWithJsonErrors` form rather than migrating to `defineJsonCommand`
- * (which is reserved for plain runWithJsonErrors+output handlers).
+ * These three handlers each branch on the result and set a non-zero
+ * `process.exitCode` conditionally (exit 1 on a failed dispatch / proposal,
+ * or on `--fail-on-flagged` lint findings) rather than emitting through the
+ * thrown-error path, so they keep the inline `runWithJsonErrors` form rather
+ * than migrating to `defineJsonCommand` (which is reserved for plain
+ * runWithJsonErrors+output handlers). `process.exitCode` (not
+ * `process.exit()`) so the process still exits via natural event-loop drain
+ * rather than skipping pending cleanup — see R-067 / F4.
  *
  * NOTE on `propose` vs `proposal`: the proposal MANAGEMENT family
  * (list/show/accept/reject/…) lives in src/commands/proposal/proposal-cli.ts.
@@ -126,7 +129,16 @@ export const agentCommand = defineCommand({
       output("agent-result", result);
 
       if (!result.ok) {
-        process.exit(EXIT_GENERAL);
+        // R-067-style fix: this used to call `process.exit(EXIT_GENERAL)`
+        // directly, which terminates synchronously and skips any pending
+        // `finally`/cleanup up the call stack (including the dispatched
+        // agent process' own bookkeeping). `output()` has already run above,
+        // so there is nothing left in this handler that depends on
+        // terminating immediately — `process.exitCode` + `return` (this is
+        // the last statement anyway) lets the process exit naturally once
+        // the event loop drains.
+        process.exitCode = EXIT_GENERAL;
+        return;
       }
     });
   },
@@ -238,7 +250,11 @@ export const proposeCommand = defineCommand({
       });
       output("propose", result);
       if (result.ok === false) {
-        process.exit(EXIT_GENERAL);
+        // Same reasoning as agentCommand above: output() already ran, this
+        // is the last statement in the handler, so process.exitCode + return
+        // is equivalent without skipping any pending cleanup.
+        process.exitCode = EXIT_GENERAL;
+        return;
       }
     });
   },

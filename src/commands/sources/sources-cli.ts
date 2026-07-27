@@ -93,9 +93,20 @@ export const updateCommand = defineJsonCommand({
     target: { type: "positional", description: "Source to update (id or ref)", required: false },
     all: { type: "boolean", description: "Update all installed entries", default: false },
     force: { type: "boolean", description: "Force fresh download even if version is unchanged", default: false },
+    // F1/R-058: gates ONLY the rare branch where the resolved content
+    // directory moves and the previous `localRoot` is deleted — a normal
+    // refresh (the overwhelming majority of updates) deletes nothing and
+    // never consults this flag. Mirrors `remove`'s `-y/--yes`.
+    yes: {
+      type: "boolean",
+      alias: "y",
+      description:
+        "Skip the confirmation prompt when an update needs to delete a previous install directory (because the resolved content location moved). No effect on a normal refresh, which deletes nothing.",
+      default: false,
+    },
   },
   async run({ args }) {
-    const result = await akmUpdate({ target: args.target, all: args.all, force: args.force });
+    const result = await akmUpdate({ target: args.target, all: args.all, force: args.force, yes: args.yes });
     appendEvent({
       eventType: "update",
       metadata: {

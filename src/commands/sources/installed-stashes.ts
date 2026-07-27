@@ -22,6 +22,7 @@ import type { AkmConfig, BundleConfigEntry } from "../../core/config/config";
 import { getSources, loadConfig } from "../../core/config/config";
 import { NotFoundError, UsageError } from "../../core/errors";
 import { getDbPath } from "../../core/paths";
+import { warn } from "../../core/warn";
 import { akmIndex } from "../../indexer/indexer";
 import type { LockfileEntry } from "../../integrations/lockfile";
 import { readLockfile, upsertLockEntry } from "../../integrations/lockfile";
@@ -255,7 +256,7 @@ export async function akmRemove(input: { target: string; stashDir?: string }): P
   if (managed) {
     const updatedConfig = await removeInstalledRegistryEntry(managed.installId);
     if (managed.source !== "local" && managed.localRoot) {
-      cleanupDirectoryBestEffort(managed.localRoot);
+      cleanupDirectoryBestEffort(managed.localRoot, "remove");
     }
     const index = await akmIndex({ stashDir });
 
@@ -421,8 +422,18 @@ function managedInstallViewOfPlainNpm(npmSource: ReturnType<typeof getSources>[n
   };
 }
 
-/** Sync a single registry-managed install and return the processed record. */
-async function updateManagedInstall(managed: ManagedInstall, force: boolean): Promise<UpdateResultItem> {
+/**
+ * Sync a single registry-managed install and return the processed record.
+ *
+ * `yes` gates ONLY the destructive branch below (deleting a previous
+ * `localRoot` whose content moved) — it has no effect on the sync itself. A
+ * normal refresh that resolves the SAME content directory (the overwhelming
+ * majority of updates) never reaches that branch, so it never prompts and
+ * never requires `--yes` (F1/R-058: `update` must stay usable bare in
+ * scripts; only the branch that can `rm -rf` needs a gate, not the whole
+ * command).
+ */
+async function updateManagedInstall(managed: ManagedInstall, force: boolean, yes: boolean): Promise<UpdateResultItem> {
   // No pre-cleanup of the old root, even under --force: the providers already
   // re-materialize staging-first (git clones into a `.tmp-*` sibling and swaps
   // only on success), so destroying `managed.localRoot` BEFORE `syncFromRef`
@@ -472,7 +483,42 @@ async function updateManagedInstall(managed: ManagedInstall, force: boolean): Pr
     managed.source !== "local" &&
     !managed.writable
   ) {
-    cleanupDirectoryBestEffort(managed.localRoot);
+    // F1/R-058: this branch deletes a directory (`rm -rf`-equivalent via
+    // `cleanupDirectoryBestEffort`) that may still hold content an operator
+    // cares about, e.g. if the resolved content path moved out from under an
+    // install they expected to be stable. `remove` already requires
+    // confirmation (or `--yes`) before deleting anything; `update`'s
+    // routine "resync in place" path deletes nothing and stays exactly as
+    // it was (no prompt, no flag, unchanged exit code) — only this specific
+    // "the content directory moved" branch is gated, mirroring `remove`'s
+    // `confirmDestructive` usage in sources-cli.ts.
+    //
+    // Unlike `remove` — where declining aborts BEFORE any work happens —
+    // the lock/registry-entry writes above have ALREADY landed by the time
+    // this gate runs, pointing at `synced.contentDir`. That ordering is
+    // deliberate and predates this fix (see the "staging-first" comment at
+    // the top of this function): the new content is proven-good before
+    // anything about the old install is touched, and rolling back an
+    // already-successful resync just because a script forgot `--yes` would
+    // throw away good work over a cleanup step. So declining (or a
+    // non-interactive NON_INTERACTIVE_REQUIRES_YES failure) stops ONLY the
+    // deletion — the resync itself is NOT undone, and a re-run afterwards
+    // will see `managed.localRoot` already equal to `synced.contentDir` (no
+    // move to detect), so it will NOT retry the cleanup on its own. A
+    // directory left behind this way is orphaned but harmless — the warning
+    // below names it explicitly for manual removal.
+    const { confirmDestructive } = await import("../../cli/confirm.js");
+    const confirmed = await confirmDestructive(
+      `Update resolved a new content directory for "${managed.installId}" (${synced.contentDir}) and would delete the previous install directory at ${managed.localRoot}. This cannot be undone.`,
+      { yes },
+    );
+    if (confirmed) {
+      cleanupDirectoryBestEffort(managed.localRoot, "update");
+    } else {
+      warn(
+        `[akm update] kept previous install directory at ${managed.localRoot} for "${managed.installId}" (deletion not confirmed). Remove it manually if it is no longer needed.`,
+      );
+    }
   }
 
   const versionChanged = (managed.resolvedVersion ?? "") !== (synced.resolvedVersion ?? "");
@@ -503,11 +549,19 @@ export async function akmUpdate(input?: {
   all?: boolean;
   force?: boolean;
   stashDir?: string;
+  /**
+   * Skips the confirmation prompt for the destructive branch of
+   * {@link updateManagedInstall} (deleting a previous `localRoot` whose
+   * resolved content directory moved). Has no effect otherwise — most
+   * updates never reach that branch (F1/R-058).
+   */
+  yes?: boolean;
 }): Promise<UpdateResponse> {
   const stashDir = input?.stashDir ?? resolveStashDir();
   const target = input?.target?.trim();
   const all = input?.all === true;
   const force = input?.force === true;
+  const yes = input?.yes === true;
   const config = loadConfig();
   const managedInstalls = listManagedInstalls(config);
 
@@ -515,7 +569,7 @@ export async function akmUpdate(input?: {
     // Registry-managed install (lock-backed) — re-download from its locator.
     const managed = resolveManagedTarget(config, target);
     if (managed) {
-      return buildUpdateResponse(stashDir, target, all, [await updateManagedInstall(managed, force)]);
+      return buildUpdateResponse(stashDir, target, all, [await updateManagedInstall(managed, force, yes)]);
     }
 
     // Plain git / website source (bundles without a lock) — provider re-sync.
@@ -560,7 +614,7 @@ export async function akmUpdate(input?: {
     });
     if (npmMatch) {
       return buildUpdateResponse(stashDir, target, all, [
-        await updateManagedInstall(managedInstallViewOfPlainNpm(npmMatch), force),
+        await updateManagedInstall(managedInstallViewOfPlainNpm(npmMatch), force, yes),
       ]);
     }
   }
@@ -568,7 +622,7 @@ export async function akmUpdate(input?: {
   const selected = selectManagedTargets(config, managedInstalls, target, all);
   const processed: UpdateResponse["processed"] = [];
   for (const managed of selected) {
-    processed.push(await updateManagedInstall(managed, force));
+    processed.push(await updateManagedInstall(managed, force, yes));
   }
 
   // `--all` must account for EVERY configured source, not only the
@@ -594,7 +648,7 @@ export async function akmUpdate(input?: {
           plainSynced.push(await syncGitPlainSource(plain));
           sawGitSync = true;
         } else if (plain.type === "npm") {
-          processed.push(await updateManagedInstall(managedInstallViewOfPlainNpm(plain), force));
+          processed.push(await updateManagedInstall(managedInstallViewOfPlainNpm(plain), force, yes));
         } else if (plain.type === "website") {
           skipped.push({
             id,
@@ -667,11 +721,24 @@ function selectManagedTargets(
   throw new NotFoundError(`No matching source for target: ${target}`, "SOURCE_NOT_FOUND");
 }
 
-function cleanupDirectoryBestEffort(target: string): void {
+/**
+ * Best-effort removal of a directory that is no longer referenced by config
+ * or the lockfile. `context` labels the call site (e.g. "remove", "update")
+ * in the warning so an operator can tell which command left the directory
+ * behind. Failure does not throw — callers already committed the config/lock
+ * change that made `target` orphaned — but it must not be silent either
+ * (F1/R-058): a swallowed `rmSync` error used to leave no trace anywhere the
+ * caller could inspect, so a confirmed deletion that then failed (permission
+ * error, file in use, …) looked identical to a successful one.
+ */
+function cleanupDirectoryBestEffort(target: string, context: string): void {
   try {
     fs.rmSync(target, { recursive: true, force: true });
-  } catch {
-    // Best-effort cleanup only.
+  } catch (err) {
+    warn(
+      `[akm ${context}] failed to remove directory ${target}: ${err instanceof Error ? err.message : String(err)}. ` +
+        "Remove it manually if it is no longer needed.",
+    );
   }
 }
 

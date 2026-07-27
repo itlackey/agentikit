@@ -350,9 +350,13 @@ export const improveCommand = defineCommand({
 
       if (dryRun) {
         // A dry-run never persists its result, so stdout is its only result
-        // channel.
+        // channel. F4: was `process.exit(0)`, which terminates synchronously
+        // and skips pending cleanup (e.g. the `finally { clearLogFile(); }`
+        // above already ran, but any citty/runWithJsonErrors-level cleanup
+        // on the way out would not). Exit code is 0 either way — `return`
+        // alone is sufficient since success is the default `process.exitCode`.
         output("improve", improveResult);
-        process.exit(0);
+        return;
       }
 
       // Default mode (0.8.0+): persist the full result as a row in the
@@ -390,7 +394,10 @@ export const improveCommand = defineCommand({
 
       // durationMs reserved for future use (no console emission today).
       void durationMs;
-      process.exit(0);
+      // F4: was `process.exit(0)` — the run has already been fully recorded
+      // above (recordImproveRunResult / the warning path), so nothing here
+      // depends on an immediate synchronous exit. This is the last statement
+      // in the handler, so a plain fall-through is equivalent.
     });
   },
 });
