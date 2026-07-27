@@ -12,8 +12,6 @@
  * `configVersion` is controlled by the config lifecycle. All execution
  * settings use their canonical engine/strategy paths; retired aliases are not
  * rewritten at this boundary.
- *   - `parseConfigValue` returns a Partial<AkmConfig> so it can be merged with
- *     the runtime config object via `mergeConfigValue`.
  */
 import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
 import { resolveStashDir } from "../core/common";
@@ -33,26 +31,6 @@ export function setConfigValue(config: AkmConfig, key: string, rawValue: string)
 
 export function unsetConfigValue(config: AkmConfig, key: string): AkmConfig {
   return configUnset(config as unknown as Record<string, unknown>, key) as unknown as AkmConfig;
-}
-
-/**
- * Compatibility shim: returns a `Partial<AkmConfig>` containing just the
- * change. Older code merged this onto the live config — new code should call
- * `setConfigValue` directly (which returns the full merged config).
- */
-export function parseConfigValue(key: string, value: string): Partial<AkmConfig> {
-  // Use a "marker" base so we can detect which top-level fields actually got
-  // touched by the set call. Anything still equal to the marker is untouched.
-  const SENTINEL = Symbol("untouched");
-  const base: Record<string, unknown> = { semanticSearchMode: SENTINEL };
-  const next = setConfigValue(base as unknown as AkmConfig, key, value) as unknown as Record<string, unknown>;
-  const patch: Record<string, unknown> = {};
-  for (const k of Object.keys(next)) {
-    if (next[k] !== SENTINEL) {
-      patch[k] = next[k];
-    }
-  }
-  return patch as Partial<AkmConfig>;
 }
 
 export function listConfig(config: AkmConfig): Record<string, unknown> {
@@ -91,9 +69,6 @@ export { unknownKeyHint };
 
 export const configCommand = defineGroupCommand({
   meta: { name: "config", description: "Show and manage configuration" },
-  args: {
-    list: { type: "boolean", description: "List current configuration", default: false },
-  },
   subCommands: {
     path: defineJsonCommand({
       meta: { name: "path", description: "Show paths to config, stash, cache, and index" },

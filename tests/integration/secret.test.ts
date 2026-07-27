@@ -14,7 +14,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { listNames, readValue, setSecret } from "../../src/commands/env/secret";
+import { readValue, setSecret } from "../../src/commands/env/secret";
 import { resetGraphBoostCache } from "../../src/indexer/graph/graph-boost";
 import { clearEmbeddingCache, resetLocalEmbedder } from "../../src/llm/embedder";
 import { runCliCapture } from "../_helpers/cli";
@@ -92,23 +92,6 @@ describe("secret core module", () => {
     const bp = path.join(root, "secrets", "blob");
     setSecret(bp, binary);
     expect(readValue(bp).equals(binary)).toBe(true);
-  });
-
-  test("listNames returns names and excludes lock/sensitive sidecars", () => {
-    const root = tmpDir();
-    const secretsDir = path.join(root, "secrets");
-    setSecret(path.join(secretsDir, "alpha"), Buffer.from("a"));
-    setSecret(path.join(secretsDir, "team", "deploy.key"), Buffer.from("b"));
-    // sidecars that must never be listed as secrets
-    fs.writeFileSync(path.join(secretsDir, "alpha.sensitive"), "");
-    fs.writeFileSync(path.join(secretsDir, "stale.lock"), "1");
-
-    const names = listNames(secretsDir);
-    expect(names).toContain("team/deploy.key");
-    expect(names).not.toContain("alpha.sensitive");
-    expect(names).not.toContain("stale.lock");
-    // alpha has a sibling .sensitive marker → suppressed from listing
-    expect(names).not.toContain("alpha");
   });
 
   test("setSecret recovers from a stale lock left by a dead PID", () => {

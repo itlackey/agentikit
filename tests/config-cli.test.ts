@@ -1,11 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  getConfigValue,
-  listConfig,
-  parseConfigValue,
-  setConfigValue,
-  unsetConfigValue,
-} from "../src/commands/config-cli";
+import { getConfigValue, listConfig, setConfigValue, unsetConfigValue } from "../src/commands/config-cli";
 import type { AkmConfig } from "../src/core/config/config";
 
 describe("config CLI helpers", () => {
@@ -16,81 +10,99 @@ describe("config CLI helpers", () => {
     expect(config.output).toEqual({ format: "json", detail: "brief" });
   });
 
-  test("parseConfigValue supports output config keys", () => {
-    expect(parseConfigValue("output.format", "yaml")).toEqual({ output: { format: "yaml" } });
-    expect(parseConfigValue("output.detail", "full")).toEqual({ output: { detail: "full" } });
+  // R-063 #5: these used to go through `parseConfigValue`, a compatibility
+  // shim (removed — dead code, zero production callers) that just called
+  // `setConfigValue` against a sentinel base and diffed out the touched
+  // top-level keys. `setConfigValue` is the live implementation backing
+  // `akm config set`, so these now call it directly and read back the
+  // touched sub-path — same coverage of the config-walker validation rules,
+  // no shim in between.
+  test("setConfigValue supports output config keys", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
+    expect(setConfigValue(base, "output.format", "yaml").output).toEqual({ format: "yaml" });
+    expect(setConfigValue(base, "output.detail", "full").output).toEqual({ detail: "full" });
   });
 
-  test("parseConfigValue supports embedding JSON with dimensions", () => {
+  test("setConfigValue supports embedding JSON with dimensions", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
     expect(
-      parseConfigValue(
+      setConfigValue(
+        base,
         "embedding",
         '{"endpoint":"https://api.openai.com/v1/embeddings","model":"text-embedding-3-small","dimension":384}',
-      ),
+      ).embedding,
     ).toEqual({
-      embedding: {
-        endpoint: "https://api.openai.com/v1/embeddings",
-        model: "text-embedding-3-small",
-        dimension: 384,
-      },
+      endpoint: "https://api.openai.com/v1/embeddings",
+      model: "text-embedding-3-small",
+      dimension: 384,
     });
   });
 
-  test("parseConfigValue supports an LLM engine JSON with sampling fields", () => {
+  test("setConfigValue supports an LLM engine JSON with sampling fields", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
     expect(
-      parseConfigValue(
+      setConfigValue(
+        base,
         "engines.fast",
         '{"kind":"llm","endpoint":"https://api.openai.com/v1/chat/completions","model":"gpt-4o-mini","temperature":0.6,"maxTokens":300}',
-      ),
+      ).engines,
     ).toEqual({
-      engines: {
-        fast: {
-          kind: "llm",
-          endpoint: "https://api.openai.com/v1/chat/completions",
-          model: "gpt-4o-mini",
-          temperature: 0.6,
-          maxTokens: 300,
-        },
+      fast: {
+        kind: "llm",
+        endpoint: "https://api.openai.com/v1/chat/completions",
+        model: "gpt-4o-mini",
+        temperature: 0.6,
+        maxTokens: 300,
       },
     });
   });
 
-  test("parseConfigValue rejects an LLM engine JSON with endpoint and omitted model", () => {
+  test("setConfigValue rejects an LLM engine JSON with endpoint and omitted model", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
     expect(() =>
-      parseConfigValue("engines.fast", '{"kind":"llm","endpoint":"http://localhost:11434/v1/chat/completions"}'),
+      setConfigValue(base, "engines.fast", '{"kind":"llm","endpoint":"http://localhost:11434/v1/chat/completions"}'),
     ).toThrow(/Invalid input/);
   });
 
-  test("parseConfigValue rejects the retired sources key outright (#37)", () => {
+  test("setConfigValue rejects the retired sources key outright (#37)", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
     expect(() =>
-      parseConfigValue("sources", '[{"type":"website","url":"https://example.com","writable":true}]'),
+      setConfigValue(base, "sources", '[{"type":"website","url":"https://example.com","writable":true}]'),
     ).toThrow(/Unknown config key: sources/);
   });
 
-  test("parseConfigValue rejects writable non-filesystem bundles through config CLI", () => {
+  test("setConfigValue rejects writable non-filesystem bundles through config CLI", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
     expect(() =>
-      parseConfigValue("bundles", '{"w":{"website":{"url":"https://example.com"},"writable":true}}'),
+      setConfigValue(base, "bundles", '{"w":{"website":{"url":"https://example.com"},"writable":true}}'),
     ).toThrow("writable: true is only supported on path and git bundle sources");
   });
 
-  test("parseConfigValue rejects empty and multi-entry component maps", () => {
-    expect(() => parseConfigValue("bundles", '{"empty":{"path":"/tmp/empty","components":{}}}')).toThrow(
+  test("setConfigValue rejects empty and multi-entry component maps", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
+    expect(() => setConfigValue(base, "bundles", '{"empty":{"path":"/tmp/empty","components":{}}}')).toThrow(
       "a bundle components map must contain exactly one component",
     );
     expect(() =>
-      parseConfigValue("bundles", '{"multi":{"path":"/tmp/multi","components":{"a":{"root":"a"},"b":{"root":"b"}}}}'),
+      setConfigValue(
+        base,
+        "bundles",
+        '{"multi":{"path":"/tmp/multi","components":{"a":{"root":"a"},"b":{"root":"b"}}}}',
+      ),
     ).toThrow("a bundle components map must contain exactly one component");
   });
 
-  test("parseConfigValue rejects component-level writable website and npm bundles", () => {
+  test("setConfigValue rejects component-level writable website and npm bundles", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
     expect(() =>
-      parseConfigValue(
+      setConfigValue(
+        base,
         "bundles",
         '{"web":{"website":{"url":"https://example.com"},"components":{"main":{"writable":true}}}}',
       ),
     ).toThrow("writable: true is only supported on path and git bundle sources");
     expect(() =>
-      parseConfigValue("bundles", '{"pkg":{"npm":"example-package","components":{"main":{"writable":true}}}}'),
+      setConfigValue(base, "bundles", '{"pkg":{"npm":"example-package","components":{"main":{"writable":true}}}}'),
     ).toThrow("writable: true is only supported on path and git bundle sources");
   });
 
@@ -207,40 +219,48 @@ describe("config CLI helpers", () => {
     expect(() => setConfigValue(base, "totally.unknown.path", "x")).toThrow("Unknown config key");
   });
 
-  test("parseConfigValue rejects non-integer embedding dimension in JSON", () => {
+  test("setConfigValue rejects non-integer embedding dimension in JSON", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
     expect(() =>
-      parseConfigValue(
+      setConfigValue(
+        base,
         "embedding",
         '{"endpoint":"https://api.openai.com/v1/embeddings","model":"text-embedding-3-small","dimension":384.5}',
       ),
     ).toThrow(/Expected integer/);
   });
 
-  test("parseConfigValue rejects invalid output values", () => {
-    expect(() => parseConfigValue("output.format", "xml")).toThrow(/Expected 'json' \| 'yaml' \| 'text'/);
-    expect(() => parseConfigValue("output.detail", "max")).toThrow(/Expected 'brief' \| 'normal' \| 'full'/);
+  test("setConfigValue rejects invalid output values", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
+    expect(() => setConfigValue(base, "output.format", "xml")).toThrow(/Expected 'json' \| 'yaml' \| 'text'/);
+    expect(() => setConfigValue(base, "output.detail", "max")).toThrow(/Expected 'brief' \| 'normal' \| 'full'/);
   });
 
-  test("parseConfigValue rejects retired boolean semanticSearchMode value 'true'", () => {
-    expect(() => parseConfigValue("semanticSearchMode", "true")).toThrow(/Invalid value for semanticSearchMode/);
+  test("setConfigValue rejects retired boolean semanticSearchMode value 'true'", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
+    expect(() => setConfigValue(base, "semanticSearchMode", "true")).toThrow(/Invalid value for semanticSearchMode/);
   });
 
-  test("parseConfigValue rejects retired boolean semanticSearchMode value 'false'", () => {
-    expect(() => parseConfigValue("semanticSearchMode", "false")).toThrow(/Invalid value for semanticSearchMode/);
+  test("setConfigValue rejects retired boolean semanticSearchMode value 'false'", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
+    expect(() => setConfigValue(base, "semanticSearchMode", "false")).toThrow(/Invalid value for semanticSearchMode/);
   });
 
-  test("parseConfigValue accepts 'auto' for semanticSearchMode", () => {
-    const result = parseConfigValue("semanticSearchMode", "auto");
-    expect(result).toEqual({ semanticSearchMode: "auto" });
+  test("setConfigValue accepts 'auto' for semanticSearchMode", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
+    const result = setConfigValue(base, "semanticSearchMode", "auto");
+    expect(result.semanticSearchMode).toBe("auto");
   });
 
-  test("parseConfigValue accepts 'off' for semanticSearchMode", () => {
-    const result = parseConfigValue("semanticSearchMode", "off");
-    expect(result).toEqual({ semanticSearchMode: "off" });
+  test("setConfigValue accepts 'off' for semanticSearchMode", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
+    const result = setConfigValue(base, "semanticSearchMode", "off");
+    expect(result.semanticSearchMode).toBe("off");
   });
 
-  test("parseConfigValue rejects invalid semanticSearchMode", () => {
-    expect(() => parseConfigValue("semanticSearchMode", "yes")).toThrow("Invalid value for semanticSearchMode");
+  test("setConfigValue rejects invalid semanticSearchMode", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
+    expect(() => setConfigValue(base, "semanticSearchMode", "yes")).toThrow("Invalid value for semanticSearchMode");
   });
 });
 

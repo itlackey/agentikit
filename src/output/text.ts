@@ -31,7 +31,6 @@ import { addFormatters } from "./text/add";
 import { cloneFormatters } from "./text/clone";
 import { configFormatters } from "./text/config";
 import { curateFormatters } from "./text/curate";
-import { distillFormatters } from "./text/distill";
 import { enableDisableFormatters } from "./text/enable-disable";
 import { envFormatters } from "./text/env";
 import { eventsFormatters } from "./text/events";
@@ -78,7 +77,6 @@ const BUILT_IN_TEXT_FORMATTERS: TextFormatterEntry[] = [
   ...eventsFormatters,
   ...proposalFormatters,
   ...proposalProducerFormatters,
-  ...distillFormatters,
   ...infoFormatters,
   ...configFormatters,
   ...feedbackFormatters,

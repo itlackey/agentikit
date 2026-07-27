@@ -66,8 +66,6 @@ export interface IndexRunContext {
   sourceDirs: string[];
   /** Whether to perform a full rebuild (true) or incremental update (false). */
   full: boolean;
-  /** Whether to re-enrich already-enriched entries. */
-  reEnrich: boolean;
   /** Primary stash directory. */
   stashDir: string;
   /** Progress emitter (always defined; may be a no-op). */

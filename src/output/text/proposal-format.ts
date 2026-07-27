@@ -3,12 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Plain-text renderers for `akm proposal *` and `akm distill` commands.
+ * Plain-text renderers for `akm proposal *` commands.
  *
  * Split out of `helpers.ts` (formerly 1418 lines / 59 fns) as its own
  * sibling module: proposal listing/show share the gate-decision summary
- * helpers, and distill is the producer of proposals, so the cluster stays
- * together.
+ * helpers. (`akm distill` has no registered top-level command — its former
+ * plain-text renderer, `formatDistillPlain`, was dead code; removed per
+ * R-063/B5.)
  */
 
 export function formatProposalProducerPlain(command: string, r: Record<string, unknown>): string {
@@ -184,27 +185,6 @@ export function formatProposalDrainPlain(r: Record<string, unknown>): string {
     lines.push(`    - ${String(d.id ?? "?")} (${String(d.reason ?? "?")})`);
   }
   return lines.join("\n").trimEnd();
-}
-
-export function formatDistillPlain(r: Record<string, unknown>): string {
-  const outcome = String(r.outcome);
-  const inputRef = String(r.inputRef);
-  const proposalRef = String(r.proposalRef);
-  if (outcome === "queued") {
-    const id = String(r.proposalId);
-    return `Distilled ${inputRef} → proposal ${id} (${proposalRef}). Run \`akm proposal show ${id}\` to review.`;
-  }
-  if (outcome === "validation_failed") {
-    const findings = Array.isArray(r.findings) ? (r.findings as Array<Record<string, unknown>>) : [];
-    const lines = [`Distillation produced an invalid lesson for ${inputRef}; no proposal queued.`];
-    for (const f of findings) {
-      lines.push(`  - ${String(f.message ?? f.kind ?? "validation finding")}`);
-    }
-    return lines.join("\n");
-  }
-  // skipped
-  const message = typeof r.message === "string" ? r.message : "feature disabled or LLM unavailable";
-  return `Distill skipped for ${inputRef}: ${message}`;
 }
 
 export function formatProposalDiffPlain(r: Record<string, unknown>): string {
