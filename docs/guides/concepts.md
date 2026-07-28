@@ -349,13 +349,21 @@ demand**:
 akm show meta                       # working stash's .meta/index.md
 akm show meta:about                 # working stash's .meta/about.md
 akm show local//meta                # the primary stash explicitly
-akm show github:owner/repo//meta    # an installed stash's .meta/index.md
 ```
 
 `akm show <origin>//meta:<name>` resolves `<name>.md` first, then an
 extensionless `<name>`. The convention is open-ended: stash owners add new docs
 by dropping files into `.meta/` — no configuration or code changes required.
 `akm init` scaffolds a starter `.meta/index.md`.
+
+**Known gap (Q-19):** an install-ref origin (`akm show github:owner/repo//meta`)
+does not currently resolve even for an installed stash — `resolveSourcesForOrigin`
+(`src/registry/origin-resolve.ts`) matches only derived installation ids, not
+raw install refs, and this is pinned by a test
+(`tests/integration/origin-resolve.test.ts`: "does not parse a full install
+locator as an asset bundle"). Use `local//meta` for the primary stash, or the
+bundle key you gave it in `bundles` (`config.json`), not the original install
+ref.
 
 ## Script Execution (ExecHints)
 

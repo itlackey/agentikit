@@ -911,9 +911,7 @@ website snapshot
 Example:
 
 ```text
-akm ingest typescript-docs/pages \
-  --to personal/knowledge \
-  --adapter okf
+akm ingest typescript-docs/pages --to personal/knowledge --adapter okf   // doclint:ignore — not yet implemented, target surface
 ```
 
 The live website installation remains refreshable and read-only. The exported destination is separately editable, versioned, and eligible for ordinary improvement.
@@ -1702,16 +1700,16 @@ akm init
 akm info
 akm health
 
-akm bundle create|install|list|show|items|update|remove|sync|export
+akm bundle create|install|list|show|items|update|remove|sync|export  // doclint:ignore — not yet implemented, target surface
 akm registry search|show
 
 akm search
 akm show
 akm lint
 akm import
-akm ingest
+akm ingest                      // doclint:ignore — not yet implemented, target surface
 
-akm bind|unbind|bindings        # Tier B — deferred with the Binding record (§18 staging note)
+akm bind|unbind|bindings        // Tier B — deferred with the Binding record (§18 staging note); doclint:ignore — not yet implemented
 
 akm proposal list|show|diff|accept|reject|revert
 akm improve

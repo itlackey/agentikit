@@ -185,6 +185,11 @@ reference, same rules as engine `apiKey`), `dimension`, `localModel`,
 | --- | --- |
 | `search.minScore` | Drop results below this score |
 | `search.defaultExcludeTypes` | Asset types excluded from results by default |
+
+### Graph boost search tuning
+
+| Key | Purpose |
+| --- | --- |
 | `search.graphBoost.*` | Entity-graph relevance boost: `directBoostPerEntity`/`directBoostCap` (directly related entities), `hopBoostPerEntity`/`hopBoostCap` (multi-hop, capped at `maxHops` ≤ 3), `confidenceMode` (`off`\|`blend`\|`multiply`, default `blend`), `confidenceWeight` (0–1, default `0.2`) |
 
 ## Feedback
@@ -204,18 +209,45 @@ and `defaultBundle` are the 0.9 source configuration shape — see
 full bundle model (`path`, `git`, `website`, `npm`, `writable`, `registryId`,
 `components`). `defaultBundle` must name a key in `bundles` when set.
 
+### defaultWriteTarget
+
 `defaultWriteTarget` names the bundle that write commands (`akm remember`,
 `akm env`/`secret create`, `akm improve`, etc.) fall back to when no
 explicit `--target` is given and the command isn't already scoped to a
 specific source. It must name a configured bundle; setting it with no
 `bundles` configured, or naming an unconfigured bundle, is rejected at
-`config set`/`config validate` time.
+`config set`/`config validate` time. The full write-target resolution order
+is `--target` -> `defaultWriteTarget` -> working stash (`defaultBundle`) ->
+`ConfigError`.
+
+### Memory scope
+
+`akm remember`'s scope flags (`--user`, `--agent`, `--run`, `--channel`)
+write four canonical top-level frontmatter keys on the memory file:
+`scope_user`, `scope_agent`, `scope_run`, `scope_channel` (one key per
+non-empty scope value; string values). This is not a config-file setting —
+it is documented here because it is the multi-tenant/multi-agent contract
+that `akm search --filter` and `akm show --filter` read back:
+`--filter user=<id>` / `--filter agent=<id>` / `--filter run=<id>` /
+`--filter channel=<name>` (repeatable) narrow results/resolution to assets
+whose frontmatter scope matches, without changing ranking. A memory with
+only scope flags and no tags is valid — the tag-required check is
+independent of scope. `--scope` was removed in 0.9.0 with no alias; use
+`--filter`.
 
 `archiveRetentionDays` (default `90` when unset) controls how long a pending
 proposal is kept before `akm improve`'s maintenance pass archives it (status
 `rejected`, reason `"expired: no action within retention window"`) — `akm
 proposal` itself has no archive/expire verb. Setting it to `0` or less
 disables expiry entirely.
+
+## Registries
+
+`registries` (top-level array, distinct from `bundles`) lists remote package
+registries `akm registry`/`akm add --registry` can search and install from.
+Each entry is `{ url, name?, enabled?, provider?, options? }`; `provider`
+defaults to `"static-index"`. See [Registries](registry.md) for the full
+field reference and provider list.
 
 ## Output defaults
 
@@ -286,12 +318,18 @@ generic walker.
 
 | Variable | Purpose |
 | --- | --- |
-| `AKM_CONFIG_DIR` | Override the user config directory |
+| `AKM_CONFIG_DIR` | Override the user config directory (or set `XDG_CONFIG_HOME`) |
 | `AKM_ENGINE_<NAME>_API_KEY` | Fallback credential for LLM engine `<name>` |
 | `AKM_LLM_API_KEY` | Fallback only for the selected `defaults.llmEngine` |
 | `AKM_EMBED_API_KEY` | Embedding credential |
 | `AKM_STASH_DIR` | Override the stash directory |
+| `AKM_DATA_DIR` | Override the data directory — durable `index.db`/`workflow.db`/`state.db`, `akm.lock`, config backups (or set `XDG_DATA_HOME`) |
+| `AKM_CACHE_DIR` | Override the cache directory — regenerable caches (or set `XDG_CACHE_HOME`) |
+| `AKM_STATE_DIR` | Override the state directory — task-scheduler invocation state (or set `XDG_STATE_HOME`) |
 | `AKM_SQLITE_JOURNAL_MODE` | SQLite journal mode: `WAL` (default), `DELETE`, or `TRUNCATE` |
+| `AKM_VERBOSE` | Truthy value enables the same diagnostics as `--verbose` |
+| `AKM_DEBUG` | `1` prints a stack trace on unexpected internal errors |
+| `AKM_DISABLE_PROJECT_CONTEXT` | Referenced in help text and comments as a way to disable the project-context ranking boost, but **not currently read anywhere in `src/`** — use `search --no-project-context` instead, which does work |
 
 For an engine named `fast`, its fallback variable is
 `AKM_ENGINE_FAST_API_KEY`. An explicit `apiKey` symbolic reference is

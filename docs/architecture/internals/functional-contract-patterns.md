@@ -211,18 +211,27 @@ The purpose of these patterns is to remove concrete duplication and switchboard 
 
 ---
 
-## 3.9 Agent Runner Contract
+## 3.9 Agent/LLM Runner Dispatch Contract
 
-Use one narrow runner seam for agent harness execution.
+**[0.9.0 change]** The shipped seam is not a `AgentRunner` interface —
+it is a single dispatch function, `executeRunner()`
+(`src/integrations/agent/runner-dispatch.ts`), switching exhaustively
+(`assertNever`-checked) over the `RunnerSpec` tagged union
+(`llm | agent | sdk`, `src/integrations/agent/runner.ts`):
 
-Recommended onboarding model:
+1. the `agent` and `sdk` arms are byte-identical default runners
+   (`runAgent` / `runOpencodeSdk`) shared by every call site
+2. the `llm` arm is caller-specific by design — there is no default `llm`
+   handler, so each caller (reflect, drain, …) supplies its own
+3. higher-level command flows dispatch a frozen `RunnerSpec` rather than
+   branching on harness name
+4. `resolveEngine()` lowers a config-selected named engine into a
+   `RunnerSpec`; the OpenCode SDK runtime is an internal lowering of an
+   `opencode-sdk` agent engine, not a public engine kind
 
-1. new harnesses should usually be added as spawned CLI commands
-2. harness-specific launch logic lives behind one `AgentRunner`
-3. higher-level command flows must not branch on harness name
-4. OpenCode SDK remains the documented special-case fallback harness when no CLI harness is configured or available
-
-This keeps the common path simple while allowing one CLI-free fallback.
+This keeps the common path simple (one switch, one seam) while keeping the
+irreducibly caller-specific `llm` arm a required parameter instead of a
+shared default.
 
 ---
 
@@ -238,53 +247,35 @@ Rule:
 
 ---
 
-## 4. Recommended Contracts
+## 4. Implemented Contracts
 
-## 4.1 `PathResolver`
+**[0.9.0 change, ruled Q-06/Q-16]** This section previously listed twelve
+"recommended" contracts; seven had no implementation anywhere in `src/`
+(`PathResolver`, `MatchContributor`, `MetadataContributor`,
+`LintContributor`, `ImproveContributor`, `IndexPostProcessor`,
+`AgentRunner`) and were aspirational, not a contract any code followed.
+Trimmed to the five that ship — see the [drift
+register](../specs/0.9.0-docs-code-drift-register.md#q-16--functional-contract-patternsmd-4-aspiration-or-contract)
+if a removed entry needs reviving; add it back only alongside a real
+implementation.
 
-For ref-to-path and canonical naming.
-
-## 4.2 `MatchContributor`
-
-For file classification.
-
-## 4.3 `MetadataContributor`
-
-For indexed-entry enrichment.
-
-## 4.4 `RankingContributor`
+## 4.1 `RankingContributor`
 
 For search score adjustments and explanations.
 
-## 4.5 `SearchHitEnricher`
+## 4.2 `SearchHitEnricher`
 
 For post-ranking hit augmentation.
 
-## 4.6 `ActionContributor`
+## 4.3 `ActionContributor`
 
 For action text generation.
 
-## 4.7 `ProposalValidator`
+## 4.4 `ProposalValidator`
 
 For proposal acceptance checks.
 
-## 4.8 `LintContributor`
-
-For lint rules.
-
-## 4.9 `ImproveContributor`
-
-For one stage of the improve pipeline.
-
-## 4.10 `IndexPostProcessor`
-
-For indexing side-effects after walk or persist.
-
-## 4.11 `AgentRunner`
-
-For CLI- and SDK-backed agent harness execution.
-
-## 4.12 `SessionLogHarness`
+## 4.5 `SessionLogHarness`
 
 For raw session-log or history ingestion from external harnesses.
 

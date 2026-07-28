@@ -81,8 +81,13 @@ akm log list --since 2026-05-01T00:00:00Z --type select --format text
 feedback signals and usage patterns, then runs whichever processes the active
 strategy enables — reflect, distill, consolidate, memory inference, graph
 extraction, session extraction, and proactive maintenance — to generate
-proposals. Generated proposals always queue for review; there is no auto-accept
-threshold.
+proposals. By default, generated proposals always queue for review: the
+built-in `proactive-maintenance` strategy's `triage.applyMode: "promote"`
+(auto-accept up to `maxAcceptsPerRun`) is downgraded to `"queue"` unless you
+explicitly opt in via `experimental.improveAutonomy` (see
+[Configuration](../reference/configuration.md#experimental-opt-ins)).
+`akm proposal drain --promote` is a second, explicit promote surface,
+independent of that gate.
 
 ```sh
 akm improve                           # Full stash pass

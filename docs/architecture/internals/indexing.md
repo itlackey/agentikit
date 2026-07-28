@@ -2,9 +2,12 @@
 
 `akm index` builds and refreshes the local SQLite search index.
 
-By default it builds the local index and keeps metadata in the index. When
-`akm.llm` is configured and `index.enrichment.llm` is not `false`, metadata
-enhancement runs during indexing.
+By default it builds the local index and keeps metadata in the index. When an
+LLM engine is selected (`defaults.llmEngine`, or `index.enrichment.engine`
+overriding it) and `index.enrichment.enabled` is not `false`, metadata
+enhancement runs during indexing. There is no top-level `llm` config key in
+0.9 — it is retired and hard-rejected at load; per-call tuning lives on each
+named engine under `engines.<name>.*`.
 
 ## High-Level Flow
 
@@ -75,9 +78,13 @@ entries are upserted and FTS is rebuilt. Key properties:
 **Concurrency** — directories are enriched in parallel using a bounded
 concurrency pool (`concurrentMap` from `src/core/concurrent.ts`). The pool
 width defaults to 2 for remote LLM endpoints and 1 for local model servers
-(localhost endpoints — one loaded model at a time); `llm.concurrency` in
-config.json overrides the default. Individual entry failures within a
-directory are isolated; the pool continues with remaining work.
+(localhost endpoints — one loaded model at a time), auto-derived by
+`getDefaultLlmConcurrency` (`src/indexer/indexer.ts`). `engines.<name>.concurrency`
+is a valid schema field, but it is **not honored** on this path — the engine
+resolver used here (`resolveLlmEngineUse`) never copies `concurrency` into the
+resolved connection, so setting it in config.json has no effect on indexing
+concurrency. Individual entry failures within a directory are isolated; the
+pool continues with remaining work.
 
 **`quality: "enriched"` caching** — after a successful LLM enrichment call,
 the entry's `quality` field is set to `"enriched"` and written back to the
@@ -85,8 +92,9 @@ index. On subsequent `akm index` runs, entries already marked `"enriched"`
 are skipped unless the caller explicitly requests re-enrichment.
 
 **Enrichment deadline** — the pass runs under an `AbortSignal.timeout()`
-deadline sized as a per-entry timeout (default 10 minutes, `llm.timeoutMs`
-overrides) multiplied by the number of entries being enriched. Once the
+deadline sized as a per-entry timeout (default 10 minutes; `engines.<name>.timeoutMs`,
+or an `index.enrichment.timeoutMs` / `index.defaults.timeoutMs` override,
+takes precedence) multiplied by the number of entries being enriched. Once the
 deadline fires, no new enrichment calls are started; entries that were not
 reached are left at `quality: "generated"` and will be picked up on the next
 eligible run.
@@ -103,15 +111,31 @@ skipped unless the caller explicitly requests re-enrichment.
 
 ## Database Tables
 
+`index.db`'s schema (`ensureSchema()`,
+`src/storage/repositories/index-schema.ts`) creates 17 tables (2 of them
+virtual). Full column-level detail lives in
+[Storage Locations](storage-locations.md#dataindexdb--main-search-index);
+this is a purpose summary:
+
 | Table | Purpose |
 | --- | --- |
 | `entries` | normalized asset records |
-| `entries_fts` | multi-column FTS5 index |
-| `embeddings` | stored embeddings |
-| `entries_vec` | optional sqlite-vec index |
-| `utility_scores` | recomputed utility boost state |
+| `entries_fts` (virtual, FTS5) | multi-column full-text index |
+| `entries_fts_dirty` | queue of entries needing an FTS rebuild |
+| `embeddings` | stored embedding vectors (JS cosine-similarity fallback) |
+| `entries_vec` (virtual, conditional) | `sqlite-vec` ANN index, created only when the extension loads |
+| `utility_scores` | recomputed utility boost state (global) |
+| `utility_scores_scoped` | same EMA per `(entry, project-anchor)` pair |
 | `index_meta` | schema/version/runtime metadata |
 | `workflow_documents` | validated `WorkflowDocument` JSON for indexed workflows |
+| `index_dir_state` | incremental-indexing cache (per-directory hash + mtime) |
+| `llm_enrichment_cache` | cached LLM enrichment/graph-extraction/memory-inference results |
+| `registry_index_cache` | cached registry index JSON (replaces flat cache files) |
+| `graph_meta` | per-stash knowledge-graph telemetry (model, prompt version, cache hits) |
+| `graph_files` | per-file graph-extraction status |
+| `graph_file_entities` | extracted entities per file |
+| `graph_file_relations` | extracted entity relations per file |
+| `graph_extraction_queue` | lazy, priority-ordered backlog of files awaiting graph extraction |
 
 `usage_events` (search/show/feedback telemetry) and workflow runtime state
 both live in `state.db`, not `index.db` — the three-DB cutover (Chunk-8

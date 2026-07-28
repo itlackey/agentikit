@@ -40,7 +40,13 @@ By default the runner reads from `$AKM_STASH_DIR` (falling back to
 
 ## What it measures
 
-Three runner types ship in Phases 1 + 2:
+`EvalCaseType` (`scripts/akm-eval/src/types.ts`) declares nine case types.
+Eight have a real runner under `scripts/akm-eval/src/runners/`; the ninth,
+`lesson-application`, is declared in the schema and scoring tables but has
+no runner yet — a case of that type is skipped with `runner not implemented
+yet` (`run.ts`).
+
+### Retrieval, proposal quality, and regression
 
 ### Retrieval
 
@@ -92,6 +98,30 @@ eval-run-id (resolved like `latest` or a literal id). Surfaces:
 Available both as an `EvalCase` of `type: "regression"` embedded in a
 suite (with `input.previousRunId` and optional `input.threshold`) and
 as a standalone command via `akm-eval-compare`.
+
+### Reflect quality, planner waste, memory safety, workflow compliance, judge calibration
+
+Five more runner types ship (`scripts/akm-eval/src/runners/`):
+
+- **`reflect-quality`** — classifies `reflect`/`reflect-failed` improve
+  actions into `succeeded` / `schema-shape` / `content-policy` /
+  `gate-refused` / `other-failure` buckets from recent improve-run results.
+- **`planner-waste`** — flags improve-planner actions that were queued and
+  then immediately refused as no-ops by the underlying command (the
+  motivating bug: a planner with no memory that certain refs were
+  unservable re-queuing the same doomed action every run).
+- **`memory-safety`** — copies a fixture stash into a mandatory sandbox,
+  runs `akm index` then `akm improve --json-to-stdout`, and scores the
+  resulting mutations against per-case expectations (preserved/archived
+  refs, allowed/forbidden status transitions, contradiction edges, belief
+  state, and retrieval exclusions).
+- **`workflow-compliance`** — reads `state.db` events and scores them
+  against required/forbidden event types, min/max counts, ordering, and
+  proposal-queue-respect constraints; skips cleanly when the window has no
+  events.
+- **`judge-calibration`** — measures the distill judge's agreement with
+  hand-graded probes and its variance across resamples, against
+  `cases/judge-calibration/probes/*.json`.
 
 ## Paired mode
 
@@ -176,9 +206,10 @@ Writes a summary to `<stash>/.akm/evals/collected/<improve-run-id>.json`.
 
 A suite is a directory under `scripts/akm-eval/cases/`. Each case is a
 JSON file matching the `EvalCase` shape in
-`scripts/akm-eval/src/types.ts`. The `improve-smoke` suite ships five
-retrieval + three proposal-quality cases designed to run on any stash
-without per-stash customization.
+`scripts/akm-eval/src/types.ts`. The `improve-smoke` suite ships 12 cases —
+five retrieval, three proposal-quality, two reflect-quality, and two
+planner-waste — designed to run on any stash without per-stash
+customization.
 
 To author your own suite, copy `improve-smoke/` to a sibling directory
 and edit the JSON.

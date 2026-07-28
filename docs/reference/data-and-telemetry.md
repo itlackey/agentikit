@@ -66,7 +66,7 @@ Override: set `AKM_CACHE_DIR` or `XDG_CACHE_HOME`.
 
 | Path | Contents | Safe to delete? |
 |---|---|---|
-| `<stash>/` | All your asset files: agents, skills, commands, knowledge, workflows, memories, env files, secrets, wikis, lessons, facts | **No** — this is YOUR data |
+| `<stash>/` | All your asset files: agents, skills, commands, knowledge, instructions, workflows, scripts, memories, env files, secrets, lessons, tasks, sessions, facts, plus any bundle-adapter-owned content (e.g. `llm-wiki` bundle roots — not an AKM `PLACEMENT_SPECS` type) | **No** — this is YOUR data |
 | `<stash>/.akm/` | Hidden AKM metadata (v0.7 proposals, legacy runs) | Caution — check for pending proposals first |
 
 Override: set `AKM_STASH_DIR`, or configure `bundles`/`defaultBundle` in `config.json` (the top-level `stashDir` key from 0.8 is retired and rejected in 0.9 — see [Configuration](configuration.md#bundles-and-write-target)).
@@ -175,9 +175,9 @@ the set of types the code actually emits at HEAD (verified against every
 | Event type | When emitted | Key metadata fields |
 |---|---|---|
 | `workflow_started` | `akm workflow start <ref>` | `ref`, `runId` |
-| `workflow_step_completed` | `akm workflow next` (genuine `completed` transition only) | `ref`, `runId`, `stepId`, `status` |
-| `workflow_step_updated` | `akm workflow next` (non-`completed` transitions: `failed`/`skipped`/`blocked`) | `ref`, `runId`, `stepId`, `status` |
-| `workflow_finished` | `akm workflow complete`, or a run reaching a terminal status | `ref`, `runId` |
+| `workflow_step_completed` | `akm workflow complete` (genuine `completed` transition only; `completeWorkflowStep`, `src/workflows/runtime/runs.ts`) | `ref`, `runId`, `stepId`, `status` |
+| `workflow_step_updated` | `akm workflow complete` (non-`completed` transitions: `failed`/`skipped`/`blocked`) | `ref`, `runId`, `stepId`, `status` |
+| `workflow_finished` | `akm workflow complete`, when that step completion brings the run to a terminal status | `ref`, `runId` |
 | `workflow_abandoned` | `akm workflow abandon` | `runId` only — never the workflow title |
 | `workflow_unit_started` | A workflow-engine unit dispatch begins (native `akm workflow run` or the `brief`/`report` driver protocol — both require `experimental.workflowEngine`, see [Workflows](workflows.md#enabling-the-workflow-engine-opt-in-in-090)) | ids/status only — never unit instructions or results |
 | `workflow_unit_finished` | A workflow-engine unit terminates | ids/status/tokens only — never unit instructions or results |

@@ -214,13 +214,6 @@ fields.
 
 `--format jsonl` outputs one JSON object per line for streaming consumption.
 
-### Manifest
-
-The manifest API (`akmManifest()`) returns a compact listing of all assets
-(name, type, ref, description) — typically under 200 bytes per asset, enabling
-cheap capability discovery without loading full content or running a search
-query.
-
 ## Explainability
 
 `whyMatched` explains which signals contributed to a hit's ranking. Examples:

@@ -108,6 +108,13 @@ segment to be an AKM placement directory.
 
 ## Fragments
 
+**Scope: `show` only in 0.9.0 (ruled 2026-07-26, Q-06).** `parseRefInput`
+still rejects any `#fragment` outright; `show` is the only command that
+accepts one, by bypassing that shared parser. Every other ref-consuming
+command (graph, tasks, improve, proposals, the utility repo, the indexer
+walk) routes through `parseRefInput` and does not accept fragments yet.
+Wider rollout is post-0.9.0.
+
 **[0.9.0 change]** Before 0.9.0 the fragment production existed in the grammar
 and in this document, but every input boundary rejected it
 (`parseRefInput` threw `INVALID_FLAG_VALUE` for any `#fragment`) and nothing
