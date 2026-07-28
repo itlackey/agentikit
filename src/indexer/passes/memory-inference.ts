@@ -355,8 +355,8 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
         precheck: false,
       } as const;
     },
-    // Default concurrency of 4 for cloud APIs. Set `llm.concurrency: 1`
-    // in config.json for local model servers (LM Studio, Ollama).
+    // Caller-set connection concurrency or 1: `resolveLlmEngineUse` does
+    // not forward `engines.<name>.concurrency`, so config cannot raise this.
     llmConfig.concurrency ?? 1,
   );
 

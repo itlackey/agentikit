@@ -70,6 +70,7 @@ import {
   loadCutoverRefMap,
   migratePilotTreatmentFiles,
   quarantineIndexDb,
+  rekeyStateDb,
   runThreeDbCutover,
 } from "./migrate/legacy/three-db-cutover";
 import { FROZEN_WORKFLOW_MIGRATIONS } from "./migrate/legacy/workflow-migrations-bodies";
@@ -1973,9 +1974,12 @@ function runCutoverStep(journal: ApplyJournal, target: AkmConfig): void {
 
   // WI-8.5d: the content migration (`.stash.json` fold + delete, D-R6 reserved-
   // filename conformance) is an ADDITIVE filesystem step of the same phase. It
-  // also runs AFTER the committed state txn, is best-effort (a throw is swallowed
-  // + logged, never aborting a committed cutover), and idempotent (a resumed
-  // apply finds no sidecars and no mis-named concepts, so it re-runs to a no-op).
+  // also runs AFTER the committed state txn and is idempotent (a resumed apply
+  // finds no sidecars and no mis-named concepts, so it re-runs to a no-op). A
+  // step-level failure FAILS the apply with the journal intact — the committed
+  // cutover is unaffected and the next apply retries — because the 0.9 runtime
+  // no longer reads sidecars or fs proposals, so a swallowed failure would
+  // strand that data permanently behind an apparently successful upgrade.
   runContentMigrationStep(journal, target);
 }
 
@@ -2007,7 +2011,57 @@ function contentMigrationReportPath(): string {
   return path.join(path.dirname(getMigrationApplyJournalPath()), "content-migration-report.json");
 }
 
-/** Best-effort content migration + report persistence (see {@link runCutoverStep}). */
+/**
+ * Merge reserved renames persisted by PRIOR step runs into this run's report,
+ * so a crash between rename and re-key never loses the pairs: the renamed file
+ * no longer matches on a retry walk, so the persisted report is the only
+ * durable record of the old→new identity.
+ */
+function mergePriorReservedRenames(report: ContentMigrationReport): ContentMigrationReport {
+  try {
+    const prior = JSON.parse(fs.readFileSync(contentMigrationReportPath(), "utf8")) as {
+      reservedRenames?: Array<{ from: string; to: string }>;
+    };
+    const seen = new Set(report.reservedRenames.map((r) => r.from));
+    for (const rename of prior.reservedRenames ?? []) {
+      if (typeof rename?.from === "string" && typeof rename?.to === "string" && !seen.has(rename.from)) {
+        report.reservedRenames.push({ from: rename.from, to: rename.to });
+      }
+    }
+  } catch {
+    // No prior report (first run) or unreadable — nothing to merge.
+  }
+  return report;
+}
+
+/**
+ * Build the re-key map for D-R6 reserved renames: for each renamed file, map
+ * the old conceptId to the new one, in both the bare and the bundle-qualified
+ * spelling of the root that owns it. Rename pairs outside any known root (or
+ * non-`.md`) contribute nothing.
+ */
+function reservedRenameRefMap(
+  renames: ReadonlyArray<{ from: string; to: string }>,
+  roots: readonly CutoverStashRoot[],
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const rename of renames) {
+    const owner = roots.find((root) => rename.from.startsWith(`${path.resolve(root.path)}${path.sep}`));
+    if (!owner) continue;
+    const toConceptId = (absolute: string): string | undefined => {
+      const rel = path.relative(path.resolve(owner.path), absolute).split(path.sep).join("/");
+      return rel.endsWith(".md") ? rel.slice(0, -".md".length) : undefined;
+    };
+    const oldId = toConceptId(rename.from);
+    const newId = toConceptId(rename.to);
+    if (!oldId || !newId) continue;
+    map.set(oldId, newId);
+    if (owner.bundleId) map.set(`${owner.bundleId}//${oldId}`, `${owner.bundleId}//${newId}`);
+  }
+  return map;
+}
+
+/** Content migration + report persistence (see {@link runCutoverStep}). */
 function runContentMigrationStep(journal: ApplyJournal, target: AkmConfig): void {
   try {
     const roots = cutoverStashRootsFromConfig(
@@ -2042,7 +2096,17 @@ function runContentMigrationStep(journal: ApplyJournal, target: AkmConfig): void
         : [],
     );
     report.legacyProposalsImported = importLegacyProposalsIntoState(getStateDbPathInDataDir(), proposalRoots);
-    persistContentMigrationReport(report);
+    // D-R6 renames change asset IDENTITY, and the cutover already keyed every
+    // durable row (usage, salience, proposals, canary anchors, ...) to the OLD
+    // conceptId — an untracked filesystem-only rename would strand that
+    // learned state and dangle stored refs. Re-key through the same engine the
+    // cutover uses. Ordering makes a crash retryable: the report (with the
+    // rename list) is persisted BEFORE the re-key, and each step run replays
+    // prior runs' persisted renames too — a replayed pair whose old ref no
+    // longer appears in any row is a no-op.
+    persistContentMigrationReport(mergePriorReservedRenames(report));
+    const renameRefMap = reservedRenameRefMap(report.reservedRenames, roots);
+    if (renameRefMap.size > 0) rekeyStateDb(getStateDbPathInDataDir(), renameRefMap);
     if (report.sidecarsFolded > 0 || report.reservedRenames.length > 0 || report.legacyProposalsImported > 0) {
       console.log(
         JSON.stringify({
@@ -2053,8 +2117,20 @@ function runContentMigrationStep(journal: ApplyJournal, target: AkmConfig): void
       );
     }
   } catch (error) {
-    console.error(
-      `[akm] content migration skipped (${error instanceof Error ? error.message : String(error)}); the committed cutover is unaffected.`,
+    // Do NOT swallow: the 0.9 runtime removed the live `.stash.json` and
+    // filesystem-proposal readers, so a failure here is not "recovered later"
+    // — if the apply were allowed to advance and clear its journal, the
+    // affected sidecar metadata and pending proposals would remain on disk but
+    // be permanently inaccessible behind an apparently successful upgrade.
+    // Rethrowing keeps the journal at its current phase; the committed cutover
+    // is untouched, and the next `migrate apply` resumes through
+    // `isPostCutoverPhase → runCutoverStep` and retries this idempotent step
+    // (per-file tolerance for individual malformed sidecars/proposals lives
+    // inside `runContentMigration` and is unaffected).
+    throw new ConfigError(
+      `Content migration failed after the committed cutover: ${error instanceof Error ? error.message : String(error)}. ` +
+        "The cutover itself is intact. Re-run `akm-migrate apply` to retry this step.",
+      "INVALID_CONFIG_FILE",
     );
   }
 }

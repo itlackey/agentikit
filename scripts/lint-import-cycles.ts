@@ -249,6 +249,11 @@ export const DYNAMIC_IMPORT_BASELINE: Readonly<Record<string, number>> = {
   "src/commands/env/env-cli.ts": 10,
   "src/commands/env/secret-cli.ts": 5,
   "src/commands/migrate-cli.ts": 2,
+  // Codex F6: in a COMPILED standalone there is no scripts/ tree on disk, so
+  // the migrator cannot be spawned as a subprocess — this lazy import is the
+  // bundler-embedded in-process fallback, reached only in that layout. Not a
+  // cycle dodge: it also keeps the whole migrator out of ordinary CLI startup.
+  "src/commands/migration-tool.ts": 1,
   "src/commands/proposal/proposal-cli.ts": 7,
   "src/commands/proposal/propose.ts": 4,
   "src/commands/read/show.ts": 2,

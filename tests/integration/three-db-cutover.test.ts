@@ -55,7 +55,11 @@ import {
   RC_TRAIN_LIVE_REFS,
   rcTrainFromStatePaths,
 } from "../_fixtures/migration/rc-train-state";
-import { openStateDbAtCeiling, PRE_CUTOVER_STATE_CEILING } from "../_fixtures/migration/seed-rows";
+import {
+  insertAssetSalienceRow,
+  openStateDbAtCeiling,
+  PRE_CUTOVER_STATE_CEILING,
+} from "../_fixtures/migration/seed-rows";
 import { runCliCapture } from "../_helpers/cli";
 import {
   type Cleanup,
@@ -696,6 +700,14 @@ describe("WI-8.2 (b) — orphan-bearing state completes with quarantine", () => 
             .get(surface, orphan) as { row_count: number; reason: string } | undefined;
           expect(row?.row_count).toBe(1);
           expect(row?.reason).toBe("orphan");
+
+          // ...and the COMPLETE row is retained, not just its count. The guide
+          // promises unresolvable refs are quarantined, not dropped.
+          const retained = db
+            .query("SELECT row_json FROM legacy_state_rows WHERE surface = ? AND old_ref = ?")
+            .all(surface, orphan) as Array<{ row_json: string }>;
+          expect(retained).toHaveLength(1);
+          expect(JSON.parse(retained[0]!.row_json)).toMatchObject({ asset_ref: orphan });
         }
       }
     } finally {
@@ -724,6 +736,16 @@ describe("WI-8.2 (b) — orphan-bearing state completes with quarantine", () => 
           .query("SELECT row_count, reason FROM legacy_state WHERE surface = 'events' AND old_ref = 'vault:default'")
           .get(),
       ).toEqual({ row_count: 2, reason: "orphan" });
+
+      // Both event rows survive in full — timestamps and event_type included —
+      // so a quarantined history stays recoverable rather than becoming a count.
+      const retained = migrated
+        .query("SELECT row_json FROM legacy_state_rows WHERE surface = 'events' AND old_ref = 'vault:default'")
+        .all() as Array<{ row_json: string }>;
+      expect(retained).toHaveLength(2);
+      const parsed = retained.map((r) => JSON.parse(r.row_json) as Record<string, unknown>);
+      expect(parsed.map((r) => r.ts).sort()).toEqual(["2026-01-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z"]);
+      expect(parsed.every((r) => r.event_type === "show" && r.ref === "vault:default")).toBe(true);
     } finally {
       migrated.close();
     }
@@ -1071,7 +1093,21 @@ function readContentReport(): ContentMigrationReport {
 
 describe("WI-8.5d (f) — content migration folds .stash.json + D-R6 renames mis-named reserved files", () => {
   test("overrides fold into frontmatter, sidecar deleted, index.md renamed + reported, second apply idempotent", async () => {
-    openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+    const preState = openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING);
+    // Durable state keyed to the MIS-NAMED concept: the D-R6 rename changes the
+    // asset's identity, so this row must be re-keyed with it, not stranded.
+    insertAssetSalienceRow(preState, {
+      assetRef: "knowledge/index",
+      encodingSalience: 0.5,
+      outcomeSalience: 0.5,
+      retrievalSalience: 0.5,
+      rankScore: 0.5,
+      consecutiveNoOps: 0,
+      updatedAt: 1_700_000_000,
+      homeostaticDemotedAt: null,
+      encodingSource: null,
+    });
+    preState.close();
     seedContentStash();
     const prepared = writeConfigs();
 
@@ -1107,6 +1143,21 @@ describe("WI-8.5d (f) — content migration folds .stash.json + D-R6 renames mis
     expect(report.entriesFolded).toBe(1);
     expect(report.reservedRenames).toHaveLength(1);
     expect(report.reservedRenames[0]).toEqual({ from: misnamedIndex, to: renamedIndex });
+
+    // (3a) The rename re-keys durable state to the NEW identity: the salience
+    // row seeded against the mis-named concept follows the file instead of
+    // dangling on a ref no asset can ever mint again.
+    const state = readState();
+    try {
+      const salRefs = state
+        .query(
+          "SELECT asset_ref FROM asset_salience WHERE asset_ref LIKE 'knowledge/%' OR asset_ref LIKE '%//knowledge/%'",
+        )
+        .all() as Array<{ asset_ref: string }>;
+      expect(salRefs.map((r) => r.asset_ref)).toEqual(["knowledge/index-content"]);
+    } finally {
+      state.close();
+    }
 
     // (3b) Group-C item 2: the derived memory's legacy `source: memory:<parent>`
     // backref is rewritten forward to the 0.9.0 conceptId and counted.

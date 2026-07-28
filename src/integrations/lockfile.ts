@@ -235,8 +235,20 @@ export function mergeLockEntriesSync(entries: LockfileEntry[]): void {
     }
     existing = raw;
   }
-  const incoming = new Set(entries.map((e) => e.id));
-  writeLockfileUnlocked([...existing.filter((e) => !incoming.has(e.id)), ...entries]);
+  // MERGE per id, never replace: the migrator's entries are sparse (id/source/
+  // ref/localRoot), while an existing row may carry `resolvedVersion`,
+  // `resolvedRevision`, `integrity`, `installedAt`, … from a real install.
+  // Replacing the whole row discarded the user's recorded resolution/pin and
+  // left later update reporting comparing against an unknown prior version.
+  // Incoming DEFINED fields win; existing fields absent from the incoming
+  // entry are preserved.
+  const byId = new Map(existing.map((e) => [e.id, e]));
+  const merged = entries.map((incoming) => {
+    const prior = byId.get(incoming.id);
+    return prior ? { ...prior, ...incoming } : incoming;
+  });
+  const incomingIds = new Set(entries.map((e) => e.id));
+  writeLockfileUnlocked([...existing.filter((e) => !incomingIds.has(e.id)), ...merged]);
 }
 
 export async function removeLockEntry(id: string): Promise<void> {

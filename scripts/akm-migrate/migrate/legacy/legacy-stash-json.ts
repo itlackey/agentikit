@@ -61,6 +61,19 @@ export function inspectLegacyStashOverrides(dirPath: string, options?: LegacySta
     for (const e of raw.entries) {
       const validated = validateStashEntry(e);
       if (validated) {
+        // Legacy provenance fold: pre-0.9 sidecars carry `sourceRefs`, which
+        // `validateStashEntry` (live-runtime code) no longer copies and whose
+        // old `source_refs` frontmatter destination has no 0.9 readers. The
+        // sidecar is DELETED after the fold, so this is the last chance to
+        // keep that provenance — merge it into `xrefs`, the current
+        // cross-reference channel the indexer round-trips.
+        const rawSourceRefs = (e as Record<string, unknown>).sourceRefs;
+        if (Array.isArray(rawSourceRefs)) {
+          const refs = rawSourceRefs.filter((r): r is string => typeof r === "string" && r.trim().length > 0);
+          if (refs.length > 0) {
+            validated.xrefs = [...new Set([...(validated.xrefs ?? []), ...refs.map((r) => r.trim())])];
+          }
+        }
         if (options?.requireFilename && !validated.filename) {
           complete = false;
           continue;

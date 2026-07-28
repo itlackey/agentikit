@@ -26,6 +26,7 @@ import { resolveEntryContentDir } from "../../../../src/indexer/search/search-so
 import type { LockfileEntry } from "../../../../src/integrations/lockfile";
 import { parseTaskDocument } from "../../../../src/tasks/parser";
 import { classifyRefGrammar, legacyConceptId, parseAssetRef } from "../legacy-ref-grammar";
+import { warn } from "../../../../src/core/warn";
 import { normalizeLegacyTask } from "./legacy-task-normalize";
 import {
   canonicalizeWorkflowName,
@@ -54,6 +55,15 @@ export interface TaskTargetRefRewrite {
 export interface TaskTargetRefMigrationPlan {
   rewrites: TaskTargetRefRewrite[];
   durabilityPaths: string[];
+  /**
+   * v1 task files found in read-only bundles. The migration NEVER rewrites a
+   * read-only bundle (lock-materialized git/npm caches would be clobbered by
+   * the next update; `writable: false` filesystem sources are user-protected),
+   * but the 0.9 runtime removed the v1 parser, so these tasks will fail after
+   * upgrade. Surfaced per bundle — and warned about at plan time — instead of
+   * being silently omitted.
+   */
+  readOnlyLegacyTasks: Array<{ bundleId: string; files: string[] }>;
 }
 
 function migrationError(filePath: string, detail: string): ConfigError {
@@ -241,8 +251,26 @@ export function planTaskTargetRefMigration(
   const bundles = bundlesFromConfig(config, pathResolutionBase, migrationLockEntries);
   const rewrites: TaskTargetRefRewrite[] = [];
   const durabilityPaths: string[] = [];
+  const readOnlyLegacyTasks: Array<{ bundleId: string; files: string[] }> = [];
   for (const bundle of bundles) {
-    if (!bundle.writable) continue;
+    if (!bundle.writable) {
+      // The migration must not write into a read-only bundle, but SILENTLY
+      // skipping it strands any persisted v1 tasks there: the 0.9 runtime
+      // removed the v1 compatibility parser, so those tasks fail after an
+      // upgrade that reported current. Surface them with the remedy instead —
+      // never block the apply on content only the bundle's maintainer can fix.
+      const legacy = legacyTaskFilesIn(bundle);
+      if (legacy.length > 0) {
+        readOnlyLegacyTasks.push({ bundleId: bundle.id, files: legacy });
+        warn(
+          `[akm] migrate: bundle "${bundle.id}" is read-only and contains v1 task file(s) the 0.9 runtime can ` +
+            `no longer parse: ${legacy.join(", ")}. They will not run after upgrade. Update them where the bundle ` +
+            "is maintained (its upstream repo/package), or for a local read-only source set `writable: true` and " +
+            "rerun `akm-migrate apply` to have them rewritten.",
+        );
+      }
+      continue;
+    }
     const tasksDir = path.join(bundle.root, "tasks");
     if (!fs.existsSync(tasksDir)) continue;
     const tasksStat = fs.lstatSync(tasksDir);
@@ -273,7 +301,39 @@ export function planTaskTargetRefMigration(
       if (rewrite) rewrites.push(rewrite);
     }
   }
-  return { rewrites, durabilityPaths };
+  return { rewrites, durabilityPaths, readOnlyLegacyTasks };
+}
+
+/**
+ * Names of task files in a bundle that still carry the v1 shape (`version`
+ * absent or `1`). Read-only detection support for the preflight: parse
+ * failures are reported as legacy too — an unparseable task in a bundle the
+ * migration cannot rewrite needs the same operator attention.
+ */
+function legacyTaskFilesIn(bundle: MigrationBundle): string[] {
+  const tasksDir = path.join(bundle.root, "tasks");
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(tasksDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const legacy: string[] = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isFile() || !entry.name.endsWith(".yml")) continue;
+    try {
+      const doc = parseDocument(fs.readFileSync(path.join(tasksDir, entry.name), "utf8"), { uniqueKeys: true });
+      if (doc.errors.length > 0 || !isMap(doc.contents)) {
+        legacy.push(entry.name);
+        continue;
+      }
+      const version = (doc.toJS() as Record<string, unknown>).version;
+      if (version === undefined || version === 1) legacy.push(entry.name);
+    } catch {
+      legacy.push(entry.name);
+    }
+  }
+  return legacy;
 }
 
 function syncParentDirectory(filePath: string): void {

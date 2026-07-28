@@ -155,3 +155,50 @@ test("migrate status and apply repair a legacy task after core artifacts are alr
     workflow: { status: "missing" },
   });
 });
+
+test("a v1 task in a READ-ONLY bundle is surfaced in the plan, instead of being silently skipped", () => {
+  // The 0.9 runtime removed the v1 task parser, so a skipped v1 task in a
+  // writable:false bundle would start failing after an upgrade that reported
+  // current. The migration never rewrites a read-only bundle (pinned by
+  // "resolves targets from a lock-materialized read-only bundle..." in
+  // tests/migrate/legacy/task-target-ref-migration.test.ts), so the preflight
+  // surfaces the stranded files per bundle rather than blocking or omitting.
+  const readOnlyRoot = path.join(storage.root, "readonly-bundle-root");
+  fs.mkdirSync(path.join(readOnlyRoot, "tasks"), { recursive: true });
+  const v1Task = path.join(readOnlyRoot, "tasks", "legacy.yml");
+  fs.writeFileSync(v1Task, `schedule: "@daily"\nworkflow: ${["workflow", "legacy"].join(":")}\n`);
+  const config = {
+    semanticSearchMode: "off",
+    bundles: {
+      stash: { path: storage.stashDir, writable: true },
+      frozen: { path: readOnlyRoot, writable: false },
+    },
+    defaultBundle: "stash",
+  } as AkmConfig;
+
+  const plan = planTaskTargetRefMigration(config, storage.root);
+  expect(plan.readOnlyLegacyTasks).toEqual([{ bundleId: "frozen", files: ["legacy.yml"] }]);
+  // The read-only bundle is still never rewritten.
+  expect(plan.rewrites).toEqual([]);
+});
+
+test("a read-only bundle with only v2 tasks (or none) does not block planning", () => {
+  const readOnlyRoot = path.join(storage.root, "readonly-v2-root");
+  fs.mkdirSync(path.join(readOnlyRoot, "tasks"), { recursive: true });
+  fs.writeFileSync(
+    path.join(readOnlyRoot, "tasks", "current.yml"),
+    'version: 2\nschedule: "@daily"\nworkflow: workflows/anything\nenabled: true\n',
+  );
+  const config = {
+    semanticSearchMode: "off",
+    bundles: {
+      stash: { path: storage.stashDir, writable: true },
+      frozen: { path: readOnlyRoot, writable: false },
+    },
+    defaultBundle: "stash",
+  } as AkmConfig;
+
+  const plan = planTaskTargetRefMigration(config, storage.root);
+  expect(plan.rewrites).toEqual([]);
+  expect(plan.readOnlyLegacyTasks).toEqual([]);
+});

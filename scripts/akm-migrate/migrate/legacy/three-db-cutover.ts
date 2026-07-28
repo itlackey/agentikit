@@ -462,6 +462,50 @@ function ensureLegacyStateTable(db: Database): void {
   `);
 }
 
+/**
+ * Full-row retention for quarantined refs.
+ *
+ * `legacy_state` records only a COUNT, so quarantining used to destroy the
+ * payload — proposals (a user's pending queue), event and task history,
+ * fingerprints, canary anchors — while
+ * `docs/migration/v0.8-to-v0.9.md` promises "unresolvable refs are
+ * quarantined, not dropped". Each row is preserved verbatim as JSON here
+ * before it leaves its live table, so nothing the migration cannot re-key is
+ * destroyed.
+ *
+ * Created ad hoc by the migrator (like `legacy_state`), NOT by a
+ * `STATE_MIGRATIONS` body: those bodies are released and append-only.
+ */
+function ensureLegacyStateRowsTable(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS legacy_state_rows (
+      surface        TEXT NOT NULL,
+      old_ref        TEXT NOT NULL,
+      row_json       TEXT NOT NULL,
+      quarantined_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS legacy_state_rows_lookup ON legacy_state_rows (surface, old_ref);
+  `);
+}
+
+/**
+ * Retain the complete rows for one quarantined ref. `__rowid` is stripped: it
+ * is a read artifact, not part of the row's data.
+ */
+function retainQuarantinedRows(
+  db: Database,
+  surface: string,
+  oldRef: string,
+  rows: ReadonlyArray<Record<string, unknown>>,
+): void {
+  if (rows.length === 0) return;
+  const stmt = db.prepare(`INSERT INTO legacy_state_rows (surface, old_ref, row_json) VALUES (?, ?, ?)`);
+  for (const row of rows) {
+    const { __rowid: _ignored, ...data } = row as Record<string, unknown> & { __rowid?: number };
+    stmt.run(surface, oldRef, JSON.stringify(data));
+  }
+}
+
 function quarantineRow(db: Database, surface: string, oldRef: string, count: number, reason: string): void {
   db.prepare(
     `INSERT INTO legacy_state (surface, old_ref, row_count, reason, quarantined_at)
@@ -483,6 +527,7 @@ function isMissingTableOrColumn(err: unknown): boolean {
 export function rekeyStateDbCore(db: Database, refMap: Map<string, string>): CutoverRekeyReport {
   const report = emptyReport();
   ensureLegacyStateTable(db);
+  ensureLegacyStateRowsTable(db);
   for (const spec of SCALAR_REKEY_TABLES) rekeyScalarTable(db, spec, refMap, report);
   for (const spec of EVENT_REKEY_TABLES) rekeyEventTable(db, spec, refMap, report);
   return report;
@@ -537,7 +582,9 @@ function rekeyScalarTable(
   }
 
   const groups = new Map<string, Array<Record<string, SqlValue> & { __rowid: number }>>();
-  const orphans = new Map<string, number[]>(); // oldRef → rowids
+  // oldRef → the FULL rows (not just rowids): a quarantined row is retained
+  // verbatim before deletion, so its payload has to still be in hand here.
+  const orphans = new Map<string, Array<Record<string, SqlValue> & { __rowid: number }>>();
 
   for (const row of rows) {
     const key = String(row[spec.keyColumn]);
@@ -545,7 +592,7 @@ function rekeyScalarTable(
     if (resolution.kind === "integrity") throw new CutoverIntegrityError(`${spec.table}: ${resolution.reason}`);
     if (resolution.kind === "orphan") {
       const list = orphans.get(key) ?? [];
-      list.push(row.__rowid);
+      list.push(row);
       orphans.set(key, list);
       continue;
     }
@@ -555,10 +602,11 @@ function rekeyScalarTable(
     groups.set(target, group);
   }
 
-  // Expected orphans: audit + delete.
-  for (const [oldRef, rowids] of orphans) {
-    quarantineRow(db, spec.table, oldRef, rowids.length, "orphan");
-    for (const rowid of rowids) db.prepare(`DELETE FROM ${spec.table} WHERE rowid = ?`).run(rowid);
+  // Expected orphans: audit, RETAIN the full rows, then delete.
+  for (const [oldRef, orphanRows] of orphans) {
+    quarantineRow(db, spec.table, oldRef, orphanRows.length, "orphan");
+    retainQuarantinedRows(db, spec.table, oldRef, orphanRows);
+    for (const row of orphanRows) db.prepare(`DELETE FROM ${spec.table} WHERE rowid = ?`).run(row.__rowid);
     bump(report.quarantined, spec.table);
   }
 
@@ -636,10 +684,12 @@ function rekeyEventTable(
     if (resolution.kind === "integrity") throw new CutoverIntegrityError(`${spec.table}: ${resolution.reason}`);
     if (resolution.kind === "skip") continue;
     if (resolution.kind === "orphan") {
-      const n = (
-        db.prepare(`SELECT COUNT(*) AS n FROM ${spec.table} WHERE ${spec.keyColumn} = ?`).get(ref) as { n: number }
-      ).n;
+      const orphanRows = db
+        .prepare(`SELECT * FROM ${spec.table} WHERE ${spec.keyColumn} = ?`)
+        .all(ref) as Array<Record<string, unknown>>;
+      const n = orphanRows.length;
       quarantineRow(db, spec.table, ref, n, "orphan");
+      retainQuarantinedRows(db, spec.table, ref, orphanRows);
       db.prepare(`DELETE FROM ${spec.table} WHERE ${spec.keyColumn} = ?`).run(ref);
       orphanRowsDeleted += n;
       bump(report.quarantined, spec.table);

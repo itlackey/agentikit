@@ -236,8 +236,11 @@ export function getDefaultLlmConcurrency(llmConfig?: LlmConnectionConfig): numbe
   // Remote endpoints default to a modest 2-wide pool (owner ruling 2026-07-21):
   // enough to overlap request latency without hammering rate-limited APIs.
   // Local model servers stay at 1 (single loaded model; parallel requests
-  // trigger reload thrash). `engines.<name>.concurrency` in config.json
-  // overrides both — there is no top-level `llm` namespace.
+  // trigger reload thrash). The explicit-override branch above only fires for
+  // callers that put `concurrency` on the connection themselves —
+  // `engines.<name>.concurrency` is a valid schema field but `resolveLlmEngineUse`
+  // does NOT copy it into the resolved connection, so on the enrichment path the
+  // auto-derived 1/2 is what runs (see docs/architecture/internals/indexing.md).
   return 2;
 }
 
@@ -1828,7 +1831,8 @@ async function enhanceDirsWithLlm(
       },
       // Defaults: 2 for remote LLM APIs, 1 for local model servers (LM
       // Studio, Ollama run one inference at a time — parallel requests cause
-      // "Model reloaded" / 500 errors). `engines.<name>.concurrency` overrides.
+      // "Model reloaded" / 500 errors). No config override reaches this path:
+      // `resolveLlmEngineUse` does not forward `engines.<name>.concurrency`.
       getDefaultLlmConcurrency(llmConfig),
     );
   } finally {
@@ -2268,8 +2272,8 @@ async function enhanceStashWithLlm(
         return entry;
       }
     },
-    // Defaults: 2 for remote LLM APIs, 1 for local model servers.
-    // `llm.concurrency` in config.json overrides.
+    // Defaults: 2 for remote LLM APIs, 1 for local model servers. No config
+    // override reaches this path (see getDefaultLlmConcurrency).
     getDefaultLlmConcurrency(llmConfig),
   );
 

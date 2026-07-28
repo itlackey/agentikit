@@ -112,3 +112,45 @@ test("rescues reserved files indexed by the frozen layout without renaming wiki 
     sandbox.cleanup();
   }
 });
+
+test("folds provenance: legacy sourceRefs merge into xrefs; xrefs/sources survive the fold", () => {
+  const sandbox = makeSandboxDir("akm-content-provenance-fold");
+  try {
+    const dir = path.join(sandbox.dir, "memories");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "note.md"), "# Note\n");
+    const sidecarPath = path.join(dir, ".stash.json");
+    fs.writeFileSync(
+      sidecarPath,
+      `${JSON.stringify({
+        entries: [
+          {
+            name: "note",
+            type: "memory",
+            filename: "note.md",
+            description: "Curated note",
+            // Legacy provenance channel — validateStashEntry no longer copies
+            // it, and its old `source_refs` destination has no 0.9 readers.
+            sourceRefs: ["knowledge/auth-flow"],
+            // Current channels, both validated and round-tripped by the indexer.
+            xrefs: ["skills/code-review"],
+            sources: ["sessions/claude/abc123"],
+          },
+        ],
+      })}\n`,
+    );
+
+    const report = runContentMigration([sandbox.dir]);
+    expect(report.entriesFolded).toBe(1);
+    expect(report.sidecarsFolded).toBe(1);
+    expect(fs.existsSync(sidecarPath)).toBe(false); // the only copy is gone...
+
+    // ...so everything it carried must now live in the asset's frontmatter.
+    const fm = parseFrontmatter(fs.readFileSync(path.join(dir, "note.md"), "utf8")).data;
+    expect(fm.xrefs).toEqual(["skills/code-review", "knowledge/auth-flow"]);
+    expect(fm.sources).toEqual(["sessions/claude/abc123"]);
+    expect(fm).not.toHaveProperty("source_refs"); // the dead destination stays dead
+  } finally {
+    sandbox.cleanup();
+  }
+});

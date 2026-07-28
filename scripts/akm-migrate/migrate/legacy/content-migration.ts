@@ -102,8 +102,9 @@ const RESERVED_BASENAMES = new Set(["index.md", "log.md"]);
 /**
  * The sidecar `IndexDocument` fields that {@link applyCuratedFrontmatter} reads
  * back off frontmatter, paired with the frontmatter KEY the indexer expects
- * (two keys are renamed on the way in: `whenToUse`→`when_to_use`,
- * `sourceRefs`→`source_refs`). Fields the indexer never reads off frontmatter
+ * (one key is renamed on the way in: `whenToUse`→`when_to_use`; legacy
+ * `sourceRefs` arrives already merged into `xrefs` by the sidecar reader).
+ * Fields the indexer never reads off frontmatter
  * (`confidence`/`source`/`fileSize`/`filename`/…) are intentionally absent — the
  * fold preserves only what survives a re-index, so it stays faithful.
  */
@@ -123,7 +124,14 @@ const CURATED_FIELD_MAP: ReadonlyArray<readonly [keyof IndexDocument | "sourceRe
   ["supersededBy", "supersededBy"],
   ["contradictedBy", "contradictedBy"],
   ["generation", "generation"],
-  ["sourceRefs", "source_refs"],
+  // `xrefs` carries both the sidecar's own xrefs and any legacy `sourceRefs`
+  // (merged in by the migrator's sidecar reader — see legacy-stash-json.ts):
+  // the retired `sourceRefs`→`source_refs` mapping could never fire, because
+  // `validateStashEntry` stopped copying the field, and `source_refs` has no
+  // 0.9 readers anyway. `sources` is the wiki provenance list, validated and
+  // round-tripped by the indexer alongside `xrefs`.
+  ["xrefs", "xrefs"],
+  ["sources", "sources"],
   ["currentBeliefRefs", "currentBeliefRefs"],
   ["captureMode", "captureMode"],
   ["whenToUse", "when_to_use"],

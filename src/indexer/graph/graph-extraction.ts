@@ -605,8 +605,8 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
         reportProgress(candidate.absPath, result);
         return result;
       },
-      // Default concurrency of 4 for cloud APIs. Set `llm.concurrency: 1`
-      // in config.json for local model servers (LM Studio, Ollama).
+      // Caller-set connection concurrency or 1: `resolveLlmEngineUse` does
+      // not forward `engines.<name>.concurrency`, so config cannot raise this.
       llmConfig.concurrency ?? 1,
     );
   } else {

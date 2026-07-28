@@ -352,6 +352,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The compiled standalone binary can run `akm migrate`.** Release binaries
+  compile only `src/cli.ts`, and the migrator was resolved as a sibling file
+  and spawned — neither candidate exists inside a compiled executable, so the
+  documented `./akm-0.9 migrate status/apply` upgrade path always failed with
+  `FILE_NOT_FOUND`. The migrator is now bundled into the executable and runs
+  in-process there; the repo and npm layouts keep the subprocess path.
+
+- **Quarantined migration rows are retained in full, not reduced to a count.**
+  When the 0.8→0.9 cutover met a durable ref it could not map, it recorded
+  surface/ref/count in `legacy_state` and then deleted the rows — destroying
+  proposal payloads, event and task history, fingerprints, and canary anchors,
+  contrary to the migration guide's "quarantined, not dropped". Complete rows
+  are now preserved as JSON in `legacy_state_rows` before leaving the live
+  tables.
+
+- **A failed content migration fails the apply instead of reporting success.**
+  Root discovery, sidecar folding, or the legacy-proposal import throwing was
+  swallowed and logged; the apply then advanced and cleared its journal, and —
+  because 0.9 removed the live `.stash.json` and filesystem-proposal readers —
+  the affected metadata and pending proposals became permanently inaccessible
+  behind an apparently successful upgrade. The step now fails the apply with
+  the journal intact; the committed cutover is untouched and the next apply
+  retries.
+
+- **Sidecar provenance survives the fold.** Folding a `.stash.json` into
+  frontmatter dropped `xrefs` and `sources` entirely and mapped legacy
+  `sourceRefs` to a `source_refs` key that could never fire (the validator
+  stopped copying the field) and that 0.9 never reads — then deleted the only
+  copy. `xrefs`/`sources` now fold through, and legacy `sourceRefs` merge into
+  `xrefs`.
+
+- **A reserved-filename rename re-keys durable state.** The D-R6 rename of a
+  mis-named `index.md`/`log.md` concept ran after the cutover had keyed usage,
+  salience, and proposal rows to the old conceptId, stranding that learned
+  state. The rename now feeds the same re-key engine the cutover uses, with
+  the pairs persisted before re-keying so a crash between the two stays
+  retryable.
+
+- **v1 tasks in a read-only bundle are surfaced with a remedy instead of being
+  silently skipped.** The 0.9 runtime removed the v1 task parser, so silently
+  skipping a `writable: false` bundle left tasks that would start failing after
+  an upgrade that reported current. The preflight now warns per bundle and
+  lists the stranded files in the plan (`readOnlyLegacyTasks`). It does not
+  block the apply: the migration deliberately never rewrites a read-only
+  bundle, and the fix for a lock-materialized git/npm bundle belongs upstream.
+
+- **Lock resolution metadata survives migration.** Merging the migrator's
+  sparse lock entries replaced whole rows by id, discarding
+  `resolvedVersion`/`resolvedRevision`/`integrity`/`installedAt` recorded by a
+  real install. Merge now preserves existing fields the incoming entry does
+  not define.
+
 - **Migrating a pre-0.9 config no longer silently changes source policy.**
   Three settings were dropped by the config-shape migration: an explicit
   `writable: false` (an omitted filesystem `writable` reads as `true` in the
@@ -393,9 +445,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Config keys named in indexer output and comments now exist.** Four sites
   pointed at a top-level `llm.*` namespace that the config schema has no such
   key for — including the user-facing "Increase llm.timeoutMs" warning on an
-  exceeded enrichment budget. Concurrency lives at
-  `engines.<name>.concurrency`; the enrichment budget at
-  `index.enrichment.timeoutMs` (or `index.defaults.timeoutMs`).
+  exceeded enrichment budget. The enrichment budget lives at
+  `index.enrichment.timeoutMs` (or `index.defaults.timeoutMs`). Indexing
+  concurrency is auto-derived (2 remote / 1 local) and currently has no config
+  override on that path: `engines.<name>.concurrency` is a valid schema field
+  but the engine resolver does not forward it (documented in
+  `docs/architecture/internals/indexing.md`).
 
 - **The bundle-identity-drift warning stops naming a command that doesn't
   exist.** It told users to "rekey it atomically via the bundle-rename

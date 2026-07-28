@@ -18,7 +18,7 @@ export const migrateCommand = defineGroupCommand({
       meta: { name: "status", description: "Read-only cross-artifact migration eligibility check" },
       args: { config: configArg },
       run({ args }) {
-        runMigrationTool(["status", ...(args.config ? ["--config", args.config] : [])]);
+        return runMigrationTool(["status", ...(args.config ? ["--config", args.config] : [])]);
       },
     }),
     apply: defineJsonCommand({
@@ -39,7 +39,7 @@ export const migrateCommand = defineGroupCommand({
         },
       },
       run({ args }) {
-        runMigrationTool([
+        return runMigrationTool([
           "apply",
           ...(args.config ? ["--config", args.config] : []),
           ...(args.dryRun ? ["--dry-run"] : []),

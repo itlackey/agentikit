@@ -7,19 +7,30 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { NotFoundError } from "../core/errors";
 
-function migrationEntryPoint(): string {
+function migrationEntryPoint(): string | undefined {
   const candidates = [
     fileURLToPath(new URL("../../scripts/akm-migrate.ts", import.meta.url)),
     fileURLToPath(new URL("../scripts/akm-migrate.js", import.meta.url)),
   ];
-  const entry = candidates.find((candidate) => fs.existsSync(candidate));
-  if (!entry) throw new NotFoundError("The standalone akm-migrate tool is not installed.", "FILE_NOT_FOUND");
-  return entry;
+  return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
-export function runMigrationTool(args: readonly string[]): void {
+export async function runMigrationTool(args: readonly string[]): Promise<void> {
+  const entry = migrationEntryPoint();
+  if (!entry) {
+    // Compiled standalone (`bun build --compile src/cli.ts`): there is no
+    // scripts/ tree on disk — `import.meta.url` resolves inside the binary's
+    // virtual filesystem — so the documented `./akm-<ver> migrate status/apply`
+    // upgrade path used to dead-end with FILE_NOT_FOUND. The static specifier
+    // below is resolved by the bundler at BUILD time, embedding the migrator
+    // in the executable; run it in-process instead. This branch is unreachable
+    // in the repo and npm-dist layouts, where a file candidate always exists.
+    const { main } = await import("../../scripts/akm-migrate");
+    await main([...args]);
+    return;
+  }
   const runtime = process.versions.bun ? process.execPath : "bun";
-  const result = spawnSync(runtime, [migrationEntryPoint(), ...args], {
+  const result = spawnSync(runtime, [entry, ...args], {
     encoding: "utf8",
     env: process.env,
     maxBuffer: 16 * 1024 * 1024,
