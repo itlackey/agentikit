@@ -33,16 +33,37 @@ import { asNonEmptyString } from "../../../core/common";
 import { DERIVED_SUFFIX } from "../../../core/recognition-util";
 
 /**
- * Parse the belief-edge identity `memory:<name>` to its bare memory name.
- * Asset conceptIds are a separate channel and are not accepted here.
+ * Parse a belief edge (`supersededBy` / `contradictedBy` / `currentBeliefRefs`)
+ * to the bare memory name the identity channel keys on.
+ *
+ * Accepts BOTH spellings, because both reach this function:
+ *   - `memory:<name>` — the internal identity spelling, and what belief edges
+ *     written before 0.9.0 carry on disk;
+ *   - `memories/<name>` / `<bundle>//memories/<name>` — the conceptId grammar
+ *     the current writers emit (`akm remember --supersedes` and `akm import
+ *     --supersedes` go through `writeSupersededEdge` with the write result's
+ *     `ref`, which is fully qualified).
+ *
+ * Accepting only the first spelling silently reduced every edge written by the
+ * current code path to nothing, so a superseded memory read back as active.
+ * Both normalize to the bare name; the caller re-mints the internal
+ * `memory:<name>` form via {@link memoryIdentityRef}, so there is still exactly
+ * one identity spelling downstream.
  */
 export function parseMemoryName(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const trimmed = value.trim();
   const MEMORY_PREFIX = "memory:";
-  if (!trimmed.startsWith(MEMORY_PREFIX)) return undefined;
-  const name = trimmed.slice(MEMORY_PREFIX.length);
-  return name.length > 0 ? name : undefined;
+  if (trimmed.startsWith(MEMORY_PREFIX)) {
+    const name = trimmed.slice(MEMORY_PREFIX.length);
+    return name.length > 0 ? name : undefined;
+  }
+  try {
+    const parsed = parseRefInput(trimmed);
+    return parsed.type === "memory" && parsed.name.length > 0 ? parsed.name : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

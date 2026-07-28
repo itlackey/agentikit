@@ -969,18 +969,58 @@ async function finalizeMoveTransaction(txn: MvTxn): Promise<{
 }
 
 /**
+ * Durable source identity used when the working stash has no configured bundle
+ * owner — the spelling stored rows carried before 0.9.0's bundle map existed.
+ */
+const DEFAULT_MOVE_SOURCE_NAME = "stash";
+
+/**
+ * Refuse a move into a source the user protected with `writable: false`, and
+ * assert adapter compatibility.
+ *
+ * `assertAkmAssetWrite` checks only the ADAPTER, so on its own it let `mv`
+ * rename files inside a read-only bundle that every other write command
+ * refuses. `SearchSource.writable` is already the EFFECTIVE policy (post
+ * `resolveWritable`), so it is read directly. Both checks run before recovery
+ * or any filesystem mutation.
+ */
+function assertMoveTargetWritable(
+  sourceOwner: ReturnType<typeof resolveSourceEntries>[number] | undefined,
+  stashDir: string,
+  defaultBundle: string | undefined,
+): void {
+  const ownerName = sourceOwner?.registryId ?? defaultBundle ?? DEFAULT_MOVE_SOURCE_NAME;
+  assertAkmAssetWrite({
+    kind: sourceOwner?.type ?? "filesystem",
+    name: ownerName,
+    path: stashDir,
+    adapterId: sourceOwner?.adapterId ?? detectAdapterId(stashDir),
+  });
+  if (sourceOwner?.writable === false) {
+    throw new ConfigError(
+      `Bundle "${ownerName}" is not writable, so \`akm mv\` cannot rename assets in it — nothing moved.`,
+      "INVALID_CONFIG_FILE",
+      "Set `writable: true` on the bundle in your config, or move the asset in a writable stash.",
+    );
+  }
+}
+
+/**
  * Resolve the move's durable source identity from the configured bundle that
- * owns the primary stash.
+ * owns the primary stash, falling back to {@link DEFAULT_MOVE_SOURCE_NAME} for
+ * an explicit working-stash override.
  */
 function resolveMoveSourceIdentity(
   configuredSources: ReturnType<typeof resolveSourceEntries>,
   stashDir: string,
 ): string {
   const primarySource = configuredSources.find((entry) => path.resolve(entry.path) === path.resolve(stashDir));
-  if (!primarySource?.registryId) {
-    throw new ConfigError(`No configured bundle owns move source ${stashDir}.`, "INVALID_CONFIG_FILE");
-  }
-  return primarySource.registryId;
+  // An explicit `AKM_STASH_DIR` override is a supported CI/scripting entry
+  // point, and `resolveSourceEntries` surfaces it as an identity-less source.
+  // Throwing here would break every `mv` under the override; fall back to the
+  // durable name the pre-0.9.0 implementation used so stored rows keep the
+  // same identity they had before.
+  return primarySource?.registryId ?? DEFAULT_MOVE_SOURCE_NAME;
 }
 
 // ── Command ───────────────────────────────────────────────────────────────────
@@ -1127,12 +1167,7 @@ export const mvCommand = defineJsonCommand({
       const sourceOwner = configuredSources.find(
         (candidate) => path.resolve(candidate.path) === path.resolve(stashDir),
       );
-      assertAkmAssetWrite({
-        kind: sourceOwner?.type ?? "filesystem",
-        name: sourceOwner?.registryId ?? config.defaultBundle ?? "stash",
-        path: stashDir,
-        adapterId: sourceOwner?.adapterId ?? detectAdapterId(stashDir),
-      });
+      assertMoveTargetWritable(sourceOwner, stashDir, config.defaultBundle);
       const durableSourceName = resolveMoveSourceIdentity(configuredSources, stashDir);
       await recoverInterruptedMoveTransactions(stashDir);
       const typeDir = stashDirFor(source.type) as string;

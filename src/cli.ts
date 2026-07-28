@@ -794,7 +794,14 @@ async function runCli(): Promise<void> {
     // Mirrors citty's own builtin-flag short-circuit in `runMain` (main's own
     // args never declare `help`/`h`/`version`/`v`, so both stay the fixed
     // defaults citty would have computed too).
-    if (HELP_FLAGS.some((flag) => rawArgs.includes(flag))) {
+    //
+    // Scan only akm's OWN arguments: everything after a literal `--` belongs to
+    // the child process (`akm env run <ref> -- tool --help`, `akm secret run
+    // <ref> -- tool -h`). Scanning the tail printed akm's usage and returned
+    // without ever launching the requested command.
+    const passthroughAt = rawArgs.indexOf("--");
+    const ownArgs = passthroughAt === -1 ? rawArgs : rawArgs.slice(0, passthroughAt);
+    if (HELP_FLAGS.some((flag) => ownArgs.includes(flag))) {
       const [resolved, parent] = resolveDeepestCittyCommand(main, rawArgs);
       await showUsage(resolved as CommandDef, parent as CommandDef | undefined);
       return;
@@ -820,10 +827,13 @@ async function runCli(): Promise<void> {
     // any command's own error handling — every command wraps its body in
     // `runWithJsonErrors`, `defineJsonCommand`, or `defineGroupCommand`, all
     // three of which route thrown errors through `emitJsonError` before they
-    // could ever reach this boundary. Preserve citty's prior GENERAL(1)
-    // mapping for this residual case.
-    console.error(error, "\n");
-    process.exitCode = EXIT_CODES.GENERAL;
+    // could ever reach this boundary. Route it the same way rather than
+    // hard-coding GENERAL(1): the CLI contract reserves 1 for general/not-found
+    // and requires a non-`AkmError` throw to render the JSON failure envelope
+    // with INTERNAL(70) (AGENTS.md "CLI Contract"), which is what lets
+    // automation tell an internal defect apart from an ordinary failure.
+    // `emitJsonError` classifies and sets `process.exitCode` itself.
+    emitJsonError(error);
   } finally {
     await disposeDispatchResources();
   }

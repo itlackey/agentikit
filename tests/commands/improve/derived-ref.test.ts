@@ -13,7 +13,12 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { isDerivedMemory, parseMemoryRef, resolveParentRef } from "../../../src/commands/improve/memory/derived-ref";
+import {
+  isDerivedMemory,
+  parseMemoryName,
+  parseMemoryRef,
+  resolveParentRef,
+} from "../../../src/commands/improve/memory/derived-ref";
 import { DERIVED_SUFFIX } from "../../../src/core/recognition-util";
 
 describe("isDerivedMemory", () => {
@@ -73,6 +78,32 @@ describe("parseMemoryRef", () => {
     expect(parseMemoryRef("knowledge/x")).toBeUndefined();
     expect(parseMemoryRef(undefined)).toBeUndefined();
     expect(parseMemoryRef("")).toBeUndefined();
+  });
+});
+
+describe("parseMemoryName", () => {
+  test("accepts the conceptId spelling the current writers actually persist", () => {
+    // `akm remember --supersedes` / `akm import --supersedes` call
+    // writeSupersededEdge with the write result's `ref`, which is a
+    // fully-qualified conceptId. Accepting only `memory:<name>` silently
+    // reduced every such edge to nothing, so a superseded memory read back as
+    // active during belief analysis.
+    expect(parseMemoryName("stash//memories/corrected-note")).toBe("corrected-note");
+    expect(parseMemoryName("memories/corrected-note")).toBe("corrected-note");
+    expect(parseMemoryName("memories/sub/dir-note")).toBe("sub/dir-note");
+  });
+
+  test("still accepts the internal identity spelling written before 0.9.0", () => {
+    expect(parseMemoryName("memory:corrected-note")).toBe("corrected-note");
+    expect(parseMemoryName("  memory:spaced  ")).toBe("spaced");
+  });
+
+  test("rejects non-memory, empty, and unparseable values", () => {
+    expect(parseMemoryName("knowledge/x")).toBeUndefined();
+    expect(parseMemoryName("memory:")).toBeUndefined();
+    expect(parseMemoryName("not a ref at all!!")).toBeUndefined();
+    expect(parseMemoryName(undefined)).toBeUndefined();
+    expect(parseMemoryName("")).toBeUndefined();
   });
 });
 

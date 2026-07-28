@@ -156,4 +156,26 @@ describe("F4c M1 — akm mv rewrites current refs only", () => {
     expect(fs.existsSync(path.join(storage.stashDir, "memories", "new-note.md"))).toBe(false);
     expect(fs.existsSync(path.join(localDir, "memories", "new-note.md"))).toBe(false);
   });
+
+  test("a read-only default bundle is refused instead of renamed", async () => {
+    // `assertAkmAssetWrite` checks adapter compatibility, not writability, so
+    // `mv` used to rename files inside a bundle the user explicitly protected
+    // with `writable: false` — while every other write command refused it.
+    storage = withIsolatedAkmStorage();
+    fs.mkdirSync(path.join(storage.stashDir, "memories"), { recursive: true });
+    const asset = path.join(storage.stashDir, "memories", "protected-note.md");
+    fs.writeFileSync(asset, "Protected content.\n", "utf8");
+    writeSandboxConfig({
+      bundles: { stash: { path: storage.stashDir, writable: false } },
+      defaultBundle: "stash",
+    });
+
+    const result = await runCliCapture(["mv", "memories/protected-note", "renamed-note"]);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("not writable");
+    // Nothing moved: the original is intact and no destination was created.
+    expect(fs.readFileSync(asset, "utf8")).toBe("Protected content.\n");
+    expect(fs.existsSync(path.join(storage.stashDir, "memories", "renamed-note.md"))).toBe(false);
+  });
 });
