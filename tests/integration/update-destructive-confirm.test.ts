@@ -283,6 +283,83 @@ describe("akm update — destructive-branch confirmation gate (F1/R-058)", () =>
     expect(fs.existsSync(path.join(oldRoot, "marker.txt"))).toBe(true);
   });
 
+  test("skips old-root deletion when another configured bundle is nested beneath it", async () => {
+    const oldRoot = createTmpDir("akm-update-nested-old-");
+    const newRoot = createTmpDir("akm-update-nested-new-");
+    const nestedRoot = path.join(oldRoot, "..notes");
+    fs.mkdirSync(nestedRoot);
+    const marker = path.join(nestedRoot, "marker.txt");
+    fs.writeFileSync(marker, "user content");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        "left-pad": { npm: "left-pad" },
+        notes: { path: nestedRoot },
+      },
+    });
+    mergeLockEntriesSync([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+      id: "left-pad",
+      source: "npm",
+      ref: "npm:left-pad",
+      artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+      resolvedVersion: "1.3.0",
+      contentDir: newRoot,
+      cacheDir: testCacheDir,
+      extractedDir: newRoot,
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+
+    try {
+      await akmUpdate({ target: "left-pad", stashDir, yes: true });
+    } finally {
+      syncSpy.mockRestore();
+    }
+    expect(fs.readFileSync(marker, "utf8")).toBe("user content");
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "skips old-root deletion when a configured source is a nested symlink",
+    async () => {
+      const oldRoot = createTmpDir("akm-update-symlink-old-");
+      const newRoot = createTmpDir("akm-update-symlink-new-");
+      const externalRoot = createTmpDir("akm-update-symlink-external-");
+      const linkedRoot = path.join(oldRoot, "linked-notes");
+      const marker = path.join(externalRoot, "marker.txt");
+      fs.writeFileSync(marker, "external content");
+      fs.symlinkSync(externalRoot, linkedRoot, "dir");
+      saveConfig({
+        semanticSearchMode: "off",
+        bundles: {
+          "left-pad": { npm: "left-pad" },
+          notes: { path: linkedRoot },
+        },
+      });
+      mergeLockEntriesSync([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
+      const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+        id: "left-pad",
+        source: "npm",
+        ref: "npm:left-pad",
+        artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+        resolvedVersion: "1.3.0",
+        contentDir: newRoot,
+        cacheDir: testCacheDir,
+        extractedDir: newRoot,
+        syncedAt: new Date().toISOString(),
+        writable: false,
+      });
+
+      try {
+        await akmUpdate({ target: "left-pad", stashDir, yes: true });
+      } finally {
+        syncSpy.mockRestore();
+      }
+      expect(fs.lstatSync(linkedRoot).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(marker, "utf8")).toBe("external content");
+    },
+  );
+
   test("explicit disabled managed update preserves enabled and passthrough policy fields", async () => {
     const root = createTmpDir("akm-update-disabled-managed-");
     saveConfig({

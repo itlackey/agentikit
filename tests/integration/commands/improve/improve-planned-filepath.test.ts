@@ -21,6 +21,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { collectEligibleRefsReadOnly } from "../../../../src/commands/improve/eligibility";
 import { akmImprove } from "../../../../src/commands/improve/improve";
 import { saveConfig } from "../../../../src/core/config/config";
 import { appendEvent } from "../../../../src/core/events";
@@ -121,6 +122,56 @@ describe("#591: planned refs carry a pre-resolved filePath", () => {
     expect(result.plannedRefs[0]?.ref).toBe("lessons/alpha");
     expect(result.plannedRefs[0]?.itemRef).toBe(durableRef("lessons/alpha"));
     expect(fs.realpathSync(result.plannedRefs[0]?.filePath ?? "")).toBe(fs.realpathSync(alphaPath));
+  });
+
+  test("an unqualified scope resolves duplicate concepts through the current default bundle", async () => {
+    const stash = storage.stashDir;
+    const other = path.join(storage.root, "other-bundle");
+    const stashPath = writeLesson(stash, "shared");
+    writeLesson(other, "shared");
+    saveConfig(
+      withTestImproveLlm({
+        semanticSearchMode: "off",
+        bundles: {
+          other: { path: other },
+          stash: { path: stash, writable: false },
+        },
+        defaultBundle: "other",
+        defaultWriteTarget: "stash",
+      }),
+    );
+    await akmIndex({ stashDir: other, full: true });
+    const pinnedConfig = withTestImproveLlm({
+      semanticSearchMode: "off",
+      bundles: {
+        other: { path: other },
+        stash: { path: stash, writable: true },
+      },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+    });
+    saveConfig(
+      withTestImproveLlm({
+        semanticSearchMode: "off",
+        bundles: {
+          other: { path: other },
+          stash: { path: stash, writable: false },
+        },
+        defaultBundle: "other",
+        defaultWriteTarget: "stash",
+      }),
+    );
+
+    const result = await collectEligibleRefsReadOnly(
+      { mode: "ref", value: "lessons/shared" },
+      stash,
+      undefined,
+      pinnedConfig,
+    );
+
+    expect(result.plannedRefs).toEqual([
+      expect.objectContaining({ itemRef: "stash//lessons/shared", filePath: stashPath, reason: "scope-ref" }),
+    ]);
   });
 
   test("scope-ref reports a valid but missing indexed ref as not found", async () => {

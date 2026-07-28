@@ -320,6 +320,21 @@ test("cutover consumes resolved lock metadata only for the matching desired iden
   expect(cutoverStashRootsFromConfig(config, [stale])).toEqual([]);
 });
 
+test("cutover matches persisted github locators to migrated git bundle URLs", () => {
+  const localRoot = path.join(getDataDir(), "resolved-github-package");
+  const config = {
+    bundles: { package: { git: "https://github.com/owner/repo/tree/v1" } },
+    defaultBundle: "package",
+  } as unknown as AkmConfig;
+
+  for (const source of ["github", "git"] as const) {
+    const lock = { id: "package", source, ref: "github:owner/repo#v1", localRoot };
+    expect(cutoverStashRootsFromConfig(config, [lock])).toContainEqual(
+      expect.objectContaining({ path: localRoot, bundleId: "package" }),
+    );
+  }
+});
+
 function seedInstalledBundleMigration(): { prepared: string; installedRoot: string; oldRef: string; itemRef: string } {
   const installedRoot = path.join(getDataDir(), "installed-owner-repo");
   fs.mkdirSync(path.join(installedRoot, "skills", "deploy"), { recursive: true });

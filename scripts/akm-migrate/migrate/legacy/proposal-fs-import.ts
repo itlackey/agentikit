@@ -292,6 +292,7 @@ function readLegacyProposalFile(
 
   const { backup, ...rest } = parsed;
   let migratedRef = rest.ref;
+  let migratedBundle = stash.bundleId;
   if (classifyRefGrammar(rest.ref) === "legacy") {
     try {
       const translated = legacyRefToBundleRef(rest.ref);
@@ -313,6 +314,7 @@ function readLegacyProposalFile(
           ? bundleAliases.get(translated.bundle)
           : stash.bundleId;
       if (!bundle || !bundleRoots.has(bundle)) throw new Error(`unmapped legacy proposal origin: ${legacyOrigin}`);
+      migratedBundle = bundle;
       migratedRef = `${bundle}//${translated.conceptId}`;
     } catch (err) {
       warn(`[akm] content-migration: skipping legacy proposal at ${filePath}: ${errMsg(err)}`);
@@ -323,6 +325,7 @@ function readLegacyProposalFile(
       const translated = parseBundleRef(rest.ref);
       const bundle = translated.bundle ? bundleAliases.get(translated.bundle) : stash.bundleId;
       if (!bundle || !bundleRoots.has(bundle)) throw new Error(`unmapped proposal bundle: ${translated.bundle}`);
+      migratedBundle = bundle;
       migratedRef = `${bundle}//${translated.conceptId}`;
     } catch (err) {
       warn(`[akm] content-migration: skipping legacy proposal at ${filePath}: ${errMsg(err)}`);
@@ -339,6 +342,7 @@ function readLegacyProposalFile(
       // surface "no backup available", same as a new-asset proposal.
     }
   }
+  const migratedRoot = path.resolve(bundleRoots.get(migratedBundle) as string);
 
   return {
     ...rest,
@@ -355,6 +359,12 @@ function readLegacyProposalFile(
     updatedAt: rest.updatedAt ?? rest.createdAt ?? "",
     status: rest.status ?? "pending",
     source: rest.source ?? "import",
+    ...(rest.proposedTarget
+      ? { proposedTarget: { ...rest.proposedTarget, source: migratedBundle, root: migratedRoot } }
+      : {}),
+    ...(rest.acceptedTarget
+      ? { acceptedTarget: { ...rest.acceptedTarget, source: migratedBundle, root: migratedRoot } }
+      : {}),
     ...(backupContent !== undefined ? { backupContent } : {}),
   };
 }

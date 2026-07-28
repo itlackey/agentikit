@@ -170,7 +170,7 @@ test("resumes the persisted rename batch after publication removed the source", 
   }
 });
 
-test("resumes after the authentic target was published before source unlink", () => {
+test("resumes after the hard-linked target was published before source unlink", () => {
   const sandbox = makeSandboxDir("akm-content-reserved-both");
   try {
     const knowledge = path.join(sandbox.dir, "knowledge");
@@ -180,11 +180,31 @@ test("resumes after the authentic target was published before source unlink", ()
     const batchPath = path.join(sandbox.dir, "rename-batch.json");
     fs.writeFileSync(source, "---\ndescription: Legacy\n---\nBody\n");
     const batch = planReservedRenameBatch([sandbox.dir], batchPath, "operation-both");
-    fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+    fs.linkSync(source, target);
 
     applyReservedRenameBatch(batch, "operation-both");
     expect(fs.existsSync(source)).toBe(false);
     expect(fs.readFileSync(target, "utf8")).toContain("Legacy");
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
+test("preserves both paths when an independent byte-identical target appears", () => {
+  const sandbox = makeSandboxDir("akm-content-reserved-independent-copy");
+  try {
+    const knowledge = path.join(sandbox.dir, "knowledge");
+    fs.mkdirSync(knowledge, { recursive: true });
+    const source = path.join(knowledge, "index.md");
+    const target = path.join(knowledge, "index-content.md");
+    const batchPath = path.join(sandbox.dir, "rename-batch.json");
+    fs.writeFileSync(source, "---\ndescription: Legacy\n---\nBody\n");
+    const batch = planReservedRenameBatch([sandbox.dir], batchPath, "operation-independent-copy");
+    fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
+
+    expect(() => applyReservedRenameBatch(batch, "operation-independent-copy")).toThrow(/hard link/i);
+    expect(fs.existsSync(source)).toBe(true);
+    expect(fs.existsSync(target)).toBe(true);
   } finally {
     sandbox.cleanup();
   }

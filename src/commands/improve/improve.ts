@@ -708,7 +708,7 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
     plannedRefs,
     memorySummary,
     strategyFilteredRefs = [],
-  } = await collectEligibleRefsImpl(scope, options.stashDir, improveProfile));
+  } = await collectEligibleRefsImpl(scope, options.stashDir, improveProfile, _earlyConfig));
   const cleanupParentRef = memoryCleanupParentRef(scope, options.stashDir);
 
   // D8 — the two direct lanes share one eligibility predicate, which reads scope

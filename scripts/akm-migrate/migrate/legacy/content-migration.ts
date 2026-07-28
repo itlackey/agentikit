@@ -440,6 +440,12 @@ function matchesRenameEntry(filePath: string, entry: ReservedRenameBatch["entrie
   return bytes.byteLength === entry.byteSize && createHash("sha256").update(bytes).digest("hex") === entry.sha256;
 }
 
+function isSameHardLinkedFile(source: string, target: string): boolean {
+  const sourceStat = fs.lstatSync(source, { bigint: true });
+  const targetStat = fs.lstatSync(target, { bigint: true });
+  return sourceStat.isFile() && targetStat.isFile() && sourceStat.dev === targetStat.dev && sourceStat.ino === targetStat.ino;
+}
+
 function syncRenameDirectory(directory: string): void {
   if (process.platform === "win32") return;
   const fd = fs.openSync(directory, "r");
@@ -473,6 +479,9 @@ export function applyReservedRenameBatch(batch: ReservedRenameBatch, operationId
     const directory = path.dirname(entry.to);
     if (fs.existsSync(entry.to)) {
       if (!matchesRenameEntry(entry.to, entry)) throw new Error(`Reserved rename target is not authentic: ${entry.to}`);
+      if (!isSameHardLinkedFile(entry.from, entry.to)) {
+        throw new Error(`Reserved rename target is not the published hard link: ${entry.to}`);
+      }
       fs.unlinkSync(entry.from);
       syncRenameDirectory(directory);
       continue;

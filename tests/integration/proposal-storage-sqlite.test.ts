@@ -364,25 +364,39 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     expect(getProposal(stash, id).proposedTarget).toBeUndefined();
   });
 
-  test("preserves recorded proposedTarget and acceptedTarget exactly", () => {
+  test("rebinds recorded targets to the canonical migrated bundle and root", () => {
     const stash = makeStashDir();
+    const team = makeStashDir();
     const id = "12121212-1212-4212-8212-121212121212";
-    const proposedTarget = { source: "historical", root: "/historical/proposed" };
+    const proposedTarget = { source: "github:example/team", root: "/historical/proposed" };
     const acceptedTarget = {
-      source: "historical",
+      source: "github:example/team",
       root: "/historical/accepted",
-      path: "/historical/accepted/lesson.md",
+      path: path.join(team, "lessons", "recorded-target.md"),
       contentHash: "a".repeat(64),
     };
     writeLegacyProposal(
       stash,
-      legacyRecord(id, "lessons/recorded-target", "accepted", { proposedTarget, acceptedTarget }),
+      legacyRecord(id, "github:example/team//lesson:recorded-target", "accepted", {
+        proposedTarget,
+        acceptedTarget,
+      }),
       { archive: true },
     );
 
-    expect(runLegacyImport(stash)).toBe(1);
-    expect(getProposal(stash, id).proposedTarget).toEqual(proposedTarget);
-    expect(getProposal(stash, id).acceptedTarget).toEqual(acceptedTarget);
+    openStateDatabase(getStateDbPath()).close();
+    expect(
+      importLegacyProposalsIntoState(getStateDbPath(), [
+        { path: stash, bundleId: "primary" },
+        { path: team, bundleId: "team", registryId: "github:example/team" },
+      ]),
+    ).toBe(1);
+    expect(getProposal(stash, id).proposedTarget).toEqual({ source: "team", root: path.resolve(team) });
+    expect(getProposal(stash, id).acceptedTarget).toEqual({
+      ...acceptedTarget,
+      source: "team",
+      root: path.resolve(team),
+    });
   });
 
   test("pending + archived proposals import; backups are inlined; corrupt skipped", () => {
@@ -433,7 +447,7 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     expect(getProposal(stash, id).status).toBe("accepted");
   });
 
-  test("an accepted target is preserved without inventing a proposed target", () => {
+  test("an accepted target is rebound without inventing a proposed target", () => {
     const stash = makeStashDir();
     const id = "44444444-4444-4444-8444-444444444444";
     const assetPath = path.join(stash, "lessons", "accepted-target.md");
@@ -455,7 +469,7 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
 
     expect(runLegacyImport(stash, "primary")).toBe(1);
     expect(getProposal(stash, id).acceptedTarget).toEqual({
-      source: "stash",
+      source: "primary",
       root: stash,
       path: assetPath,
       contentHash: createHash("sha256").update(acceptedBody, "utf8").digest("hex"),

@@ -17,7 +17,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { resolveStashDir } from "../../core/common";
+import { isWithin, resolveStashDir } from "../../core/common";
 import type { AkmConfig, BundleConfigEntry } from "../../core/config/config";
 import { getSources, loadConfig } from "../../core/config/config";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
@@ -558,12 +558,19 @@ function referencesRoot(target: string, config: AkmConfig, locks: LockfileEntry[
   for (const [bundleId, bundle] of Object.entries(config.bundles ?? {})) {
     const root = bundle.path ?? locksById.get(bundleId)?.localRoot;
     if (!root) continue;
-    if (path.resolve(root) === resolvedTarget) return true;
+    if (isRootAtOrBelow(root, resolvedTarget)) return true;
     for (const component of Object.values(bundle.components ?? {})) {
-      if (path.resolve(root, component.root ?? ".") === resolvedTarget) return true;
+      if (isRootAtOrBelow(path.resolve(root, component.root ?? "."), resolvedTarget)) return true;
     }
   }
-  return locks.some((entry) => entry.localRoot && path.resolve(entry.localRoot) === resolvedTarget);
+  return locks.some((entry) => entry.localRoot && isRootAtOrBelow(entry.localRoot, resolvedTarget));
+}
+
+function isRootAtOrBelow(candidate: string, root: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  const lexicallyWithin =
+    relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  return lexicallyWithin || isWithin(candidate, root);
 }
 
 function concurrentGenerationError(managed: ManagedInstall): ConfigError {

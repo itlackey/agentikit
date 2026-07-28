@@ -1998,7 +1998,9 @@ function migrationLockMatchesBundle(lock: LockfileEntry, bundle: Record<string, 
   if (typeof bundle.git === "string") {
     let resolvedRef = lock.ref;
     if (resolvedRef.startsWith("git+")) resolvedRef = resolvedRef.slice(4);
-    if (lock.source === "github" && /^[^/:#]+\/[^/#]+(?:#.+)?$/.test(resolvedRef)) {
+    const githubLocator = resolvedRef.startsWith("github:");
+    if (githubLocator) resolvedRef = resolvedRef.slice("github:".length);
+    if ((lock.source === "github" || githubLocator) && /^[^/:#]+\/[^/#]+(?:#.+)?$/.test(resolvedRef)) {
       const [repository, requestedRef] = resolvedRef.split("#", 2);
       resolvedRef = `https://github.com/${repository?.replace(/\.git$/i, "")}${requestedRef ? `/tree/${requestedRef}` : ""}`;
     }
