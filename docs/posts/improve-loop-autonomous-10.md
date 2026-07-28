@@ -66,7 +66,7 @@ To scope the pass to a specific asset type:
 ```sh
 akm improve memory          # memory pool only
 akm improve skill           # skills only
-akm improve skill:deploy    # one specific asset
+akm improve skills/deploy   # one specific asset
 ```
 
 To add extra guidance for the pass — useful when you know a particular focus area is relevant:
@@ -97,8 +97,8 @@ A profile controls which phases run, which LLM connections are used, whether aut
 Pass `--profile` to override for a single run:
 
 ```sh
-akm improve --profile quick
-akm improve --profile memory-focus
+akm improve --profile quick  # doclint:ignore (0.8.0-era flag spelling for this configVersion-0.8.0 post; renamed `--strategy` in 0.9.0)
+akm improve --profile memory-focus  # doclint:ignore (0.8.0-era flag spelling for this configVersion-0.8.0 post; renamed `--strategy` in 0.9.0)
 ```
 
 Define custom profiles in your config under `profiles.improve.<name>`. Each process entry in the profile uses a unified `{mode, profile, timeoutMs, options}` shape, so you can point reflect at a fast local model and consolidation at a more capable one:
@@ -153,8 +153,8 @@ akm proposal reject <id> --reason "duplicates the deployment-gotchas lesson"
 The `--auto-accept` flag enables confidence-threshold-based auto-promotion. The default safe threshold is 90 — proposals where the LLM scored its own confidence at 90 or above are promoted automatically; everything below goes to the queue for manual review:
 
 ```sh
-akm improve --auto-accept=90     # explicit threshold (same as the default)
-akm improve --auto-accept=false  # disable auto-accept, send everything to queue
+akm improve --auto-accept=90     # explicit threshold (same as the default) — doclint:ignore (0.8.0-only flag; 0.9.0 replaced threshold auto-accept with the proposal queue/drain engine)
+akm improve --auto-accept=false  # disable auto-accept, send everything to queue — doclint:ignore (0.8.0-only flag; 0.9.0 replaced threshold auto-accept with the proposal queue/drain engine)
 ```
 
 For the first few runs on a new stash, disable auto-accept and review the queue manually. Once you have a sense of what the pipeline generates, you can raise the threshold progressively.

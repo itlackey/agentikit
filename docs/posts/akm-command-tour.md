@@ -30,7 +30,7 @@ You can think about `akm` in seven layers:
 1. **Set up the workspace** — `setup`, `init`, `config`, `info`, `index`
 2. **Connect sources and discover new ones** — `add`, `list`, `update`, `remove`, `clone`, `sync`, `registry`
 3. **Find and inspect assets** — `curate`, `search`, `show`
-4. **Build local knowledge and operational context** — `remember`, `import`, `wiki`, `env`
+4. **Build local knowledge and operational context** — `remember`, `import`, LLM wiki bundles, `env`
 5. **Run repeatable procedures** — `workflow`
 6. **Continuously improve the stash** — `feedback`, `history`, `log`, `improve`, `propose`, `proposal`
 7. **Operate the CLI comfortably** — `help`, `hints`, `completions`, `upgrade`
@@ -182,8 +182,8 @@ Real-world use: a website source became noisy or outdated and you want it out of
 Copies a single asset into your working stash or another directory so you can edit it locally.
 
 ```sh
-akm clone skill:code-review
-akm clone "npm:@scope/platform-stash//workflow:ship-release"
+akm clone skills/code-review
+akm clone "npm:@scope/platform-stash//workflows/ship-release"
 ```
 
 Real-world use: you find a good community skill, clone it into your local stash, and tailor it for your team's code review conventions.
@@ -240,9 +240,9 @@ Real-world use: `curate` gave you a solid starting point, but now you want to di
 Load the full content of a specific asset.
 
 ```sh
-akm show skill:code-review
-akm show workflow:ship-release
-akm show knowledge:incident-runbook section "Rollback"
+akm show skills/code-review
+akm show workflows/ship-release
+akm show knowledge/incident-runbook#rollback
 ```
 
 Real-world use: `curate` or `search` identifies the right asset; `show` gives the agent the actual instructions, prompt template, workflow steps, or document section it needs to act.
@@ -274,27 +274,28 @@ akm import https://example.com/internal-guide/auth
 
 Real-world use: you have a good architecture note or ops runbook outside the stash and want it indexed alongside everything else.
 
-### `akm wiki`
+### LLM wikis
 
-Use wikis for long-lived, agent-maintained knowledge bases.
+Use an LLM wiki for a long-lived, agent-maintained knowledge base. As of 0.9.0 a wiki isn't a separate command family — it's a **bundle format**: a directory with a `schema.md` rulebook and a `pages/` directory is recognized and indexed automatically the next time you run `akm index`.
 
 ```sh
-akm wiki create architecture
-akm wiki stash architecture ./notes/auth-redesign.md
-akm wiki lint architecture
+akm index
+akm search "architecture" --type knowledge
+akm show research-wiki//pages/attention
+akm lint
 ```
 
-Real-world use: your team wants a research or architecture wiki with raw sources, curated pages, and deterministic linting instead of ad hoc markdown sprawl.
+Real-world use: your team wants a research or architecture wiki with raw sources, curated pages, and deterministic linting instead of ad hoc markdown sprawl. Page writes go through the agent's own file tools (akm's job is recognition and search, not authoring); see the [LLM Wikis guide](../guides/wikis.md) for the directory layout.
 
-`wiki` belongs with local knowledge, not off to the side. It's the command family you reach for when a single imported doc or memory is not enough and you need a maintained body of team knowledge.
+Wiki pages belong with local knowledge, not off to the side. It's the shape you reach for when a single imported doc or memory is not enough and you need a maintained body of team knowledge, discovered through the same `akm search`/`akm show` surface as everything else.
 
 ### `akm env`
 
 Use environment groups when the agent needs operational context about secrets without seeing the secret values.
 
 ```sh
-akm show env:production
-akm env run env:production -- env
+akm show env/production
+akm env run production -- env
 ```
 
 Real-world use: a deploy workflow needs `DATABASE_URL` and `DEPLOY_TOKEN`. The agent can verify the keys are present, then load the environment only at execution time.
@@ -337,8 +338,8 @@ These commands should be thought about as one system, not as isolated features.
 Record whether an asset helped.
 
 ```sh
-akm feedback workflow:ship-release --positive
-akm feedback skill:legacy-deploy --negative --reason "Outdated after platform migration"
+akm feedback workflows/ship-release --positive
+akm feedback skills/legacy-deploy --negative --reason "Outdated after platform migration"
 ```
 
 Real-world use: over time, assets that consistently help rise in ranking and stale ones become easier to spot.
@@ -368,7 +369,7 @@ Real-world use: another process is watching `akm` activity and reacting when new
 Ask an external agent to improve an existing asset.
 
 ```sh
-akm improve skill:code-review --task "make this stricter about test coverage"
+akm improve skills/code-review --task "make this stricter about test coverage"
 ```
 
 Real-world use: you have a decent review skill, but you want an agent to improve it based on how it's actually being used.
@@ -456,7 +457,7 @@ akm feedback <ref> --positive
 If your use case grows, the rest of the command surface is there:
 
 - `workflow` when procedures need state
-- `wiki` when local knowledge needs structure
+- an LLM wiki bundle (`schema.md` + `pages/`) when local knowledge needs structure
 - `env` when local operational context includes secrets
 - `registry` when discovery goes beyond your local stash
 - `feedback` / `history` / `log` / `improve` / `propose` / `proposal` when you want a real improvement loop
@@ -469,12 +470,12 @@ Let's say your team is onboarding a new service.
 2. Run `akm add ./docs/runbooks`
 3. Run `akm index`
 4. Start with `akm curate "onboard a new service"`
-5. Open the best match with `akm show workflow:service-onboarding`
-6. Check required environment keys with `akm show env:staging`
-7. Add the final onboarding notes to the team wiki with `akm wiki stash onboarding ./notes/service-onboarding.md`
+5. Open the best match with `akm show workflows/service-onboarding`
+6. Check required environment keys with `akm show env/staging`
+7. Add the final onboarding notes as an agent-authored page under the team wiki bundle's `pages/`, then `akm index` to pick it up
 8. Capture a new lesson with `akm remember "Service onboarding requires DNS approval from ops" --tag ops`
-9. Record whether the workflow helped with `akm feedback workflow:service-onboarding --positive`
-10. If the workflow was weak, run `akm improve workflow:service-onboarding --task "improve this after the latest run"`
+9. Record whether the workflow helped with `akm feedback workflows/service-onboarding --positive`
+10. If the workflow was weak, run `akm improve workflows/service-onboarding --task "improve this after the latest run"`
 
 That's `akm` in a nutshell: connect sources, index them, find what matters, load only what you need, and keep the library getting better.
 
@@ -494,7 +495,7 @@ akm add ~/.claude/skills
 akm add github:your-org/team-agent-toolkit
 akm index
 akm curate "code review"
-akm show skill:code-review
+akm show skills/code-review
 ```
 
 That gets you from "I installed it" to "my agent can actually use it" in a few minutes.

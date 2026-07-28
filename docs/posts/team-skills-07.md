@@ -90,11 +90,15 @@ A new developer runs `akm add`, and they've got the entire team's skill library 
 For larger teams or organizations that want discoverability without mandating specific skills, `akm` supports private registries. Think npm for agent skills, but hosted internally.
 
 ```sh
-# Search the team registry
-akm search "deploy" --registry https://registry.internal.company.com
+# Configure the team registry once (applies to all subsequent searches)
+akm registry add https://registry.internal.company.com --name team
 
-# Install a specific skill from the registry
-akm add registry:deploy-to-k8s
+# Search — registries you've added are searched automatically
+akm search "deploy" --source registry
+
+# Install a specific skill from the registry (each hit's `action` field
+# prints the exact `akm add <installRef>` to run)
+akm add https://registry.internal.company.com/skills/deploy-to-k8s
 ```
 
 This makes more sense when your organization has dozens of teams, each with their own skills, and you want cross-team discovery without requiring everyone to index everything. Also handy when you need access control — some skills are sensitive.

@@ -48,9 +48,9 @@ Multiple proposals for the same ref coexist without filesystem collisions. Auto-
 These three commands are the primary way to generate proposals.
 
 ```sh
-akm reflect [ref] [--task ...]        # reflect on an asset and propose improvements
+akm reflect [ref] [--task ...]        # reflect on an asset and propose improvements — doclint:ignore (historical — akm 0.7.0 release announcement; folded into `akm improve` later)
 akm propose <type> <name> --task "…"  # generate a new asset as a proposal
-akm distill <ref>                     # synthesize a lesson from an asset
+akm distill <ref>                     # synthesize a lesson from an asset — doclint:ignore (historical — akm 0.7.0 release announcement; folded into `akm improve` later)
 ```
 
 `reflect` and `propose` shell out to your configured agent CLI and write only to the proposal queue — they never mutate live stash content. `distill` is a bounded in-tree LLM call, gated behind `llm.features.feedback_distillation`, that produces a `lesson`-type proposal from an existing asset.
@@ -144,7 +144,7 @@ akm proposal list          # queue starts empty — that's expected
 ```sh
 akm setup                                            # detects installed agent CLIs
 akm config set llm.features.feedback_distillation true
-akm distill memory:my-debugging-notes               # produces a lesson proposal
+akm distill memory:my-debugging-notes               # produces a lesson proposal — doclint:ignore (historical — akm 0.7.0 release announcement; `distill` command + ref grammar both retired later)
 akm proposal list
 akm proposal accept <id>
 ```
