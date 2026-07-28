@@ -57,7 +57,7 @@ jobs:
           bun run build
           mkdir artifacts
           while read -r target output; do
-            bun build ./src/cli.ts \
+            bun build ./scripts/akm-standalone.ts \
               --compile \
               --target="$target" \
               --external @huggingface/transformers \

@@ -131,7 +131,7 @@ run_step \
 if [ "$(uname -s)" = "Linux" ]; then
 	run_step \
 		"Build Linux Standalone Scheduler Artifact" \
-		bun build ./src/cli.ts --compile --external @huggingface/transformers --outfile "$CANDIDATE_DIR/akm-linux-x64" --define "AKM_VERSION='$(node -p "require('./package.json').version")'"
+		bun build ./scripts/akm-standalone.ts --compile --external @huggingface/transformers --outfile "$CANDIDATE_DIR/akm-linux-x64" --define "AKM_VERSION='$(node -p "require('./package.json').version")'"
 	run_step \
 		"Linux Standalone Outside PATH" \
 		env AKM_STANDALONE_SCHEDULER_TESTS=1 AKM_STANDALONE_TEST_BIN="$CANDIDATE_DIR/akm-linux-x64" AKM_CANDIDATE_ARCH="$(node -p 'process.arch')" AKM_CANDIDATE_VERSION="$(node -p "require('./package.json').version")" bun test --timeout=120000 tests/integration/linux-standalone-scheduler.test.ts

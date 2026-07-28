@@ -849,8 +849,11 @@ async function runCli(): Promise<void> {
 // Node path: this module carries a `#!/usr/bin/env bun` shebang and is launched
 // under Node via the `dist/cli-node.mjs` wrapper, which `import()`s this file
 // (so `import.meta.main` is false here even though the CLI is the real entry).
-// The wrapper sets `AKM_NODE_ENTRY=1` to opt into the startup block. The test
-// harness never sets it, so importing cli.ts under Bun stays inert as before.
-if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
+// The wrapper sets `AKM_NODE_ENTRY=1` to opt into the startup block. Compiled
+// standalone binaries are the same shape: their entry is
+// `scripts/akm-standalone.ts` (which also embeds the akm-migrate tool), and it
+// sets `AKM_STANDALONE_ENTRY=1` before importing this file. The test harness
+// sets neither, so importing cli.ts under Bun stays inert as before.
+if (import.meta.main || process.env.AKM_NODE_ENTRY === "1" || process.env.AKM_STANDALONE_ENTRY === "1") {
   await runCli();
 }

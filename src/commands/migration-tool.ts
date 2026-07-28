@@ -17,22 +17,27 @@ function migrationEntryPoint(): string | undefined {
 
 export async function runMigrationTool(args: readonly string[]): Promise<void> {
   const entry = migrationEntryPoint();
-  if (!entry) {
-    // Compiled standalone (`bun build --compile src/cli.ts`): there is no
-    // scripts/ tree on disk — `import.meta.url` resolves inside the binary's
-    // virtual filesystem — so the documented `./akm-<ver> migrate status/apply`
-    // upgrade path used to dead-end with FILE_NOT_FOUND. The static specifier
-    // below is resolved by the bundler at BUILD time, embedding the migrator
-    // in the executable; run it in-process instead. This branch is unreachable
-    // in the repo and npm-dist layouts, where a file candidate always exists.
-    const { main } = await import("../../scripts/akm-migrate");
-    await main([...args]);
-    return;
+  if (!entry && process.env.AKM_MIGRATE_ENTRY === "1") {
+    // Re-exec loop guard: we ARE the marked child, yet no migrator entry
+    // resolved and the standalone wrapper did not intercept the marker — this
+    // binary was compiled without `scripts/akm-standalone.ts`.
+    throw new NotFoundError(
+      "This binary was built without the embedded akm-migrate tool.",
+      "FILE_NOT_FOUND",
+      "Rebuild from scripts/akm-standalone.ts, or run akm-migrate from a source/npm install.",
+    );
   }
+  // Compiled standalone: no scripts/ tree exists on disk (`import.meta.url`
+  // resolves inside the binary's virtual filesystem), so the documented
+  // `./akm-<ver> migrate status/apply` path used to dead-end with
+  // FILE_NOT_FOUND. Release binaries are compiled from
+  // `scripts/akm-standalone.ts`, which embeds the migrator and dispatches to
+  // it when `AKM_MIGRATE_ENTRY=1` — so re-exec ourselves with the marker.
+  // (src must not import scripts/: the dist build's tsc has `rootDir: src`.)
   const runtime = process.versions.bun ? process.execPath : "bun";
-  const result = spawnSync(runtime, [entry, ...args], {
+  const result = spawnSync(runtime, entry ? [entry, ...args] : [...args], {
     encoding: "utf8",
-    env: process.env,
+    env: entry ? process.env : { ...process.env, AKM_MIGRATE_ENTRY: "1" },
     maxBuffer: 16 * 1024 * 1024,
   });
   if (result.error) {

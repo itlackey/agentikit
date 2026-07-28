@@ -353,11 +353,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **The compiled standalone binary can run `akm migrate`.** Release binaries
-  compile only `src/cli.ts`, and the migrator was resolved as a sibling file
+  compiled only `src/cli.ts`, and the migrator was resolved as a sibling file
   and spawned — neither candidate exists inside a compiled executable, so the
   documented `./akm-0.9 migrate status/apply` upgrade path always failed with
-  `FILE_NOT_FOUND`. The migrator is now bundled into the executable and runs
-  in-process there; the repo and npm layouts keep the subprocess path.
+  `FILE_NOT_FOUND`. Standalone builds now compile `scripts/akm-standalone.ts`,
+  a wrapper that embeds both the CLI and the migrator (src never imports
+  scripts/ — the dist build's tsc forbids it); `akm migrate` re-execs the
+  binary with an `AKM_MIGRATE_ENTRY` marker the wrapper dispatches on. The
+  repo and npm layouts keep the subprocess path.
 
 - **Quarantined migration rows are retained in full, not reduced to a count.**
   When the 0.8→0.9 cutover met a durable ref it could not map, it recorded
