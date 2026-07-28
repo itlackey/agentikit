@@ -21,24 +21,21 @@ import { akmSearch } from "../../src/commands/read/search";
 import { resetConfigCache, saveConfig } from "../../src/core/config/config";
 import { akmIndex } from "../../src/indexer/indexer";
 import { deriveSemanticProviderFingerprint, writeSemanticStatus } from "../../src/indexer/search/semantic-status";
-import { type Cleanup, sandboxStashDir, sandboxXdgConfigHome, withEnv } from "../_helpers/sandbox";
-
-function makeTmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "akm-sem-blocked-test-"));
-}
+import { type Cleanup, sandboxEnvDir, sandboxStashDir, sandboxXdgConfigHome, withEnv } from "../_helpers/sandbox";
 
 let stashDir = "";
 let envCleanup: Cleanup = () => {};
-let cacheDir = "";
-const originalCacheDir = process.env.AKM_CACHE_DIR;
 
 beforeEach(async () => {
+  // AKM_CACHE_DIR goes through the generic allowlisted helper rather than a
+  // raw mkdtempSync + process.env write — scripts/lint-tests-isolation.ts
+  // rejects the hand-rolled form, and the helper restores a previously ABSENT
+  // var by deleting it instead of setting the string "undefined".
   const cfgResult = sandboxXdgConfigHome();
-  const stashResult = sandboxStashDir(cfgResult.cleanup);
+  const cacheResult = sandboxEnvDir("akm-sb-akmcache-", "AKM_CACHE_DIR", cfgResult.cleanup);
+  const stashResult = sandboxStashDir(cacheResult.cleanup);
   stashDir = stashResult.dir;
   envCleanup = stashResult.cleanup;
-  cacheDir = makeTmpDir();
-  process.env.AKM_CACHE_DIR = cacheDir;
 
   fs.mkdirSync(path.join(stashDir, "skills"), { recursive: true });
   fs.writeFileSync(path.join(stashDir, "skills", "widget.md"), "---\ndescription: a widget skill\n---\n# Widget\n");
@@ -52,9 +49,6 @@ beforeEach(async () => {
 afterEach(() => {
   envCleanup();
   envCleanup = () => {};
-  fs.rmSync(cacheDir, { recursive: true, force: true });
-  if (originalCacheDir === undefined) delete process.env.AKM_CACHE_DIR;
-  else process.env.AKM_CACHE_DIR = originalCacheDir;
 });
 
 describe("semantic 'blocked' warning (F7/A2)", () => {
