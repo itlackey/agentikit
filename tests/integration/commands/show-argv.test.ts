@@ -171,3 +171,64 @@ describe("entrypoint global --shape=summary ordering", () => {
     expect(json).not.toHaveProperty("template");
   });
 });
+
+// F6/R-021: `show` must resolve `--detail` through ONE explicit path, and
+// (owner ruling) deliberately does NOT inherit `config.output.detail` the
+// way `search`/`curate` do — a bare `akm show <ref>` always returns the
+// FULL asset body, regardless of the config default. Before this fix,
+// `showCommand` read `--detail` via a raw argv scan
+// (`invocation.getFlagValue`) that happened to ignore config as a side
+// effect of not being config-aware at all; there was zero test coverage for
+// `--detail brief`, `--detail full`, or the config-default case at either
+// the CLI or `buildBriefResponse` layer.
+describe("akm show --detail resolution (F6/R-021)", () => {
+  function seedCommand(storage: ReturnType<typeof useStorage>): void {
+    writeFixture(
+      path.join(storage.stashDir, "commands", "release.md"),
+      "---\ndescription: Release\n---\nRun release {{version}}\n",
+    );
+  }
+
+  test("explicit --detail brief returns the reduced payload", async () => {
+    const storage = useStorage();
+    writeSandboxConfig({ semanticSearchMode: "off" });
+    seedCommand(storage);
+
+    const result = await runEntrypoint(["show", "commands/release.md", "--detail", "brief", "--format=json"]);
+
+    expect(result.status).toBe(0);
+    const json = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(json.type).toBe("command");
+    expect(json.description).toBe("Release");
+    expect(json).not.toHaveProperty("template");
+  });
+
+  test("explicit --detail full returns the full payload", async () => {
+    const storage = useStorage();
+    writeSandboxConfig({ semanticSearchMode: "off" });
+    seedCommand(storage);
+
+    const result = await runEntrypoint(["show", "commands/release.md", "--detail", "full", "--format=json"]);
+
+    expect(result.status).toBe(0);
+    const json = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(json.type).toBe("command");
+    expect(json.template).toBe("Run release {{version}}\n");
+  });
+
+  test("no --detail flag returns full, even when config.output.detail is 'brief' (deliberate exemption)", async () => {
+    const storage = useStorage();
+    // config.output.detail defaults to "brief" (DEFAULT_CONFIG.output.detail)
+    // and search/curate DO inherit it via getOutputMode().detail — show must
+    // not, so pin the default explicitly here rather than relying on it.
+    writeSandboxConfig({ semanticSearchMode: "off", output: { detail: "brief" } });
+    seedCommand(storage);
+
+    const result = await runEntrypoint(["show", "commands/release.md", "--format=json"]);
+
+    expect(result.status).toBe(0);
+    const json = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(json.type).toBe("command");
+    expect(json.template).toBe("Run release {{version}}\n");
+  });
+});

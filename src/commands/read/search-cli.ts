@@ -21,7 +21,7 @@ import { parseBundleRef } from "../../core/asset/asset-ref";
 import { parseMetaRef } from "../../core/asset/stash-meta";
 import { UsageError } from "../../core/errors";
 import { resolveUsageEventSource } from "../../indexer/usage/usage-events";
-import { getHyphenatedBoolean, getOutputMode } from "../../output/context";
+import { getOutputMode } from "../../output/context";
 import type { ShowDetailLevel } from "../../sources/types";
 import { akmCurate } from "./curate";
 import { akmSearch, parseBeliefFilterMode, parseScopeFilterFlags, parseSearchSource } from "./search";
@@ -62,11 +62,22 @@ export const searchCommand = defineJsonCommand({
     },
     format: { type: "string", description: "Output format (json|jsonl|yaml|text|md|html)" },
     detail: { type: "string", description: "Detail level (brief|normal|full)" },
-    "no-project-context": {
+    // Declared as the POSITIVE name with `default: true` so citty's native
+    // `--no-<name>` negation (it strips a leading `--no-` from ANY token and
+    // negates the remainder BEFORE consulting the declared-args table — see
+    // node_modules/citty/dist/index.mjs) does the work, the same pattern
+    // `sync --push/--no-push` uses. A flag DECLARED as `no-project-context`
+    // can never be negated: `--no-project-context` parses as "negate
+    // `project-context`", a name nothing declared, leaving the real key at
+    // its default `false` forever (F1/A1).
+    "project-context": {
       type: "boolean",
+      default: true,
       description:
-        "Disable the automatic project-context ranking boost (also disabled by AKM_DISABLE_PROJECT_CONTEXT=1).",
-      default: false,
+        "Automatic project-context ranking boost: assets whose name/tags/aliases match the current working " +
+        "directory's project get a small score boost, and this search's usage also feeds the scoped-utility " +
+        "ranking signal. Default: on. Use --no-project-context to disable BOTH the project-context boost and " +
+        "the scoped-utility signal for this search only.",
     },
     "include-sessions": {
       type: "boolean",
@@ -74,16 +85,20 @@ export const searchCommand = defineJsonCommand({
         "Include session assets (excluded from default search results via config.search.defaultExcludeTypes).",
       default: false,
     },
+    // Declared as the POSITIVE name with `default: true` for the same reason
+    // as `project-context` above — never declare a flag whose NAME starts
+    // with `no-`.
+    "track-usage": {
+      type: "boolean",
+      default: true,
+      description:
+        "A successful search updates ranking signals (usage-events telemetry and the MemRL utility-score bump " +
+        "used to prioritize future results). Default: on. Use --no-track-usage to run a read-only search that " +
+        "does not influence future ranking.",
+    },
   },
   async run({ args }) {
     const query = (args.query ?? "").trim();
-    if (!query) {
-      throw new UsageError(
-        'A search query is required. Usage: akm search "<query>" [--type <type>] [--limit <n>]',
-        "MISSING_REQUIRED_ARGUMENT",
-        'Pass a query like `akm search "docker"` or `akm search "code review" --type skill`.',
-      );
-    }
     const type = args.type as string | undefined;
     const limit = parsePositiveIntFlag(args.limit ?? undefined);
     const source = parseSearchSource(args.source);
@@ -93,7 +108,8 @@ export const searchCommand = defineJsonCommand({
     const filters = parseScopeFilterFlags(filterTokens, "--filter");
     const includeProposed = args["include-proposed"] === true;
     const belief = parseBeliefFilterMode(typeof args.belief === "string" ? args.belief : undefined);
-    const noProjectContext = getHyphenatedBoolean(args, "no-project-context");
+    const disableProjectContext = args["project-context"] === false;
+    const skipLogging = args["track-usage"] === false;
     const includeSessions = args["include-sessions"];
     const outputMode = getOutputMode();
     const result = await akmSearch({
@@ -105,8 +121,9 @@ export const searchCommand = defineJsonCommand({
       includeProposed,
       belief,
       includeSessions,
-      disableProjectContext: noProjectContext,
-      disableScopedUtility: noProjectContext,
+      disableProjectContext,
+      disableScopedUtility: disableProjectContext,
+      skipLogging,
       eventSource: resolveUsageEventSource(),
       attributionProjection: outputMode.shape === "agent" ? "agent" : outputMode.detail,
     });
@@ -134,6 +151,17 @@ export const curateCommand = defineJsonCommand({
     format: { type: "string", description: "Output format (json|jsonl|yaml|text|md|html)" },
     detail: { type: "string", description: "Detail level (brief|normal|full)" },
     shape: { type: "string", description: "Output projection (human|agent)" },
+    // Declared as the POSITIVE name with `default: true` — see the
+    // `project-context` comment on `searchCommand` above for why a flag NAME
+    // must never start with `no-`.
+    "track-usage": {
+      type: "boolean",
+      default: true,
+      description:
+        "A successful curate updates ranking signals (usage-events telemetry for the curated items and the " +
+        "underlying search). Default: on. Use --no-track-usage to run a read-only curate that does not " +
+        "influence future ranking.",
+    },
   },
   async run({ args }) {
     if (!args.query || !String(args.query).trim()) {
@@ -147,12 +175,14 @@ export const curateCommand = defineJsonCommand({
     const limitParsed = parsePositiveIntFlag(args.limit ?? undefined);
     const limit = limitParsed && limitParsed > 0 ? limitParsed : 4;
     const source = parseSearchSource(args.source ?? "stash");
+    const skipLogging = args["track-usage"] === false;
     const outputMode = getOutputMode();
     const curated = await akmCurate({
       query: args.query,
       type,
       limit,
       source,
+      skipLogging,
       eventSource: resolveUsageEventSource(),
       attributionProjection: outputMode.shape === "agent" ? "agent" : outputMode.detail,
     });
@@ -248,6 +278,17 @@ export const showCommand = defineJsonCommand({
       description:
         "Scope filter (repeatable): --filter user=<id> --filter agent=<id> --filter run=<id> --filter channel=<name>. Narrows resolution to assets whose frontmatter scope matches. Same axis as `akm search --filter`.",
     },
+    // Declared as the POSITIVE name with `default: true` — see the
+    // `project-context` comment on `searchCommand` above for why a flag NAME
+    // must never start with `no-`.
+    "track-usage": {
+      type: "boolean",
+      default: true,
+      description:
+        "A successful show updates ranking signals (usage-events telemetry, including the search-selection " +
+        "linkage when this show follows a recent search). Default: on. Use --no-track-usage to run a " +
+        "read-only show that does not influence future ranking.",
+    },
   },
   async run({ args }) {
     // `[origin//]meta[:name]` targets the stash `.meta/` convention, which is
@@ -258,20 +299,40 @@ export const showCommand = defineJsonCommand({
     rejectExtraShowPositionals(args._, args.ref);
     const invocation = getParsedInvocation();
     const cliShape = getOutputMode().shape;
+    // F6/R-021 — `show` deliberately does NOT inherit `output.detail` from
+    // config the way `search`/`curate` do via `getOutputMode().detail`
+    // (which merges an explicit `--detail` flag with the config default,
+    // "brief" out of the box). A bare `akm show <ref>` must always return
+    // the FULL asset body regardless of `config.output.detail` — that is
+    // the point of the command. This is a deliberate, permanent exemption,
+    // not an oversight, so it is resolved through exactly one path here:
+    // read the raw `--detail` flag directly (bypassing the config-merged
+    // output mode on purpose) and only ever narrow the response when the
+    // caller EXPLICITLY passed `--detail brief` on this invocation.
+    // `--detail full` (explicit or, since it's also the implicit default,
+    // omitted) and any other value fall through to the full response.
     const explicitDetail = invocation.getFlagValue("--detail");
     // `--shape summary` selects the compact metadata projection for show.
     // `--detail brief` forces the brief response regardless of shape.
     const showDetail: ShowDetailLevel | undefined =
-      explicitDetail === "brief" ? "brief" : cliShape === "summary" ? "summary" : undefined;
+      explicitDetail === "brief"
+        ? "brief"
+        : explicitDetail === "full"
+          ? "full"
+          : cliShape === "summary"
+            ? "summary"
+            : undefined;
     // `--filter` is repeatable — citty only exposes the last value, so read
     // every occurrence directly from argv (same helper as `akm search`; the two
     // commands share one spelling for the scope-narrowing axis).
     const scopeTokens = parseAllFlagValues("--filter");
     const scope = parseScopeFilterFlags(scopeTokens, "--filter");
+    const skipLogging = args["track-usage"] === false;
     const result = await akmShowUnified({
       ref: args.ref,
       detail: showDetail,
       scope,
+      skipLogging,
       eventSource: resolveUsageEventSource(),
     });
     output("show", result);

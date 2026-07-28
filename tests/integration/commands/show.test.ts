@@ -563,3 +563,29 @@ describe("akmShow markdown fragments", () => {
     expect(result.action).not.toContain("toc");
   });
 });
+
+// F6/R-021: direct unit coverage for `input.detail === "brief"` /
+// `buildBriefResponse` on `akmShowUnified` itself — previously ZERO test in
+// the suite exercised this path (the CLI-layer resolution that feeds it is
+// covered separately in tests/integration/commands/show-argv.test.ts).
+describe("akmShow detail levels", () => {
+  test("detail: 'brief' strips content/template/prompt but keeps identity + edit fields", async () => {
+    writeFile(
+      path.join(stashDir, "commands", "release.md"),
+      "---\ndescription: Release\n---\nRun release {{version}}\n",
+    );
+    saveConfig({ semanticSearchMode: "off" });
+
+    const full = await akmShow({ ref: "commands/release.md" });
+    expect(full.template).toBe("Run release {{version}}\n");
+
+    const brief = await akmShow({ ref: "commands/release.md", detail: "brief" });
+    expect(brief.type).toBe("command");
+    expect(brief.name).toBe("release");
+    expect(brief.description).toBe("Release");
+    expect(brief.editable).toBe(true);
+    expect(brief).not.toHaveProperty("template");
+    expect(brief).not.toHaveProperty("content");
+    expect(brief).not.toHaveProperty("related");
+  });
+});

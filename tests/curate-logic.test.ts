@@ -164,18 +164,25 @@ describe("curateSearchResults", () => {
     ]);
   });
 
-  test("selectedType bypasses diversification and keeps top hits of that type", async () => {
+  // F3/R-018 (was "selectedType bypasses diversification and keeps top hits
+  // of that type"): the OLD behavior pinned here was the BUG — a set
+  // `selectedType` skipped `selectCuratedStashHits` entirely and did a raw
+  // `stashHits.slice(0, limit)` of the array AS RECEIVED, which neither
+  // filtered by type NOR ranked by score. That the old fixture happened to
+  // still exclude the skill hit (it sat past `limit` in array order) and
+  // happened to keep the two commands in score order masked both defects.
+  // This fixture makes both defects observable: the highest-scoring hit
+  // (score 1) is a `skill`, placed FIRST in array order, and the two
+  // `command` hits are given out of score order. `--type command` must (a)
+  // exclude the skill despite its higher score/earlier position and (b) rank
+  // the two commands by the real curation pipeline (score-descending here),
+  // not by their raw array order.
+  test("--type narrows the candidate pool and still runs the full curation pipeline over it", async () => {
     const result = await curateSearchResults(
       "release",
       searchResponse({
         hits: [
-          stashHit({
-            type: "command",
-            name: "release-manager",
-            ref: "commands/release-manager",
-            path: "/tmp/1",
-            score: 0.9,
-          }),
+          stashHit({ type: "skill", name: "release-review", ref: "skills/release-review", path: "/tmp/1", score: 1 }),
           stashHit({
             type: "command",
             name: "release-notes",
@@ -183,7 +190,13 @@ describe("curateSearchResults", () => {
             path: "/tmp/2",
             score: 0.7,
           }),
-          stashHit({ type: "skill", name: "release-review", ref: "skills/release-review", path: "/tmp/3", score: 1 }),
+          stashHit({
+            type: "command",
+            name: "release-manager",
+            ref: "commands/release-manager",
+            path: "/tmp/3",
+            score: 0.9,
+          }),
         ],
       }),
       2,
@@ -196,7 +209,14 @@ describe("curateSearchResults", () => {
     ]);
   });
 
-  test("uses registry hits only to fill remaining slots and caps them at two", async () => {
+  // F4/R-019 (was "uses registry hits only to fill remaining slots and caps
+  // them at two"): the OLD behavior pinned here was the BUG — registry fill
+  // was hard-capped at a bare literal `Math.min(2, remaining)` regardless of
+  // `--limit`, so a caller asking for `--limit 4` with 1 stash hit and 3
+  // registry hits got only 2 registry hits back, silently dropping the
+  // third free slot. The fix respects `--limit`: the remaining slots after
+  // stash hits ARE the cap, with no separate registry-specific ceiling.
+  test("uses registry hits to fill ALL remaining slots up to --limit", async () => {
     const result = await curateSearchResults(
       "deploy",
       searchResponse({
@@ -216,6 +236,7 @@ describe("curateSearchResults", () => {
       "scripts/deploy-check",
       "registry:reg-a",
       "registry:reg-b",
+      "registry:reg-c",
     ]);
   });
 

@@ -103,6 +103,16 @@ export interface CurateOptions {
   eventSource?: UsageEventSource;
   /** Internal projection used only to decide whether derived surface content was emitted. */
   attributionProjection?: AttributionProjection;
+  /**
+   * When true, skip logging usage events for this curate call (F2/R-055):
+   * neither the top-level curate event nor the underlying search/show reads
+   * feed usage-events telemetry or ranking signals. Wired to `akm curate
+   * --no-track-usage`. Internal callers already pass `skipLogging: true` on
+   * their own nested `akmSearch`/`akmShowUnified` calls unconditionally
+   * (searchForCuration, enrichCuratedStashHit) — this flag additionally
+   * silences curate's OWN top-level event.
+   */
+  skipLogging?: boolean;
 }
 
 const CURATE_FALLBACK_FILTER_WORDS = new Set([
@@ -236,7 +246,9 @@ export async function akmCurate(options: CurateOptions): Promise<CurateResponse>
       source,
     }));
   const result = await curateSearchResults(options.query, searchResponse, limit, options.type, options.eventSource);
-  logCurateEvent(options.query, result, options.eventSource, options.attributionProjection);
+  if (!options.skipLogging) {
+    logCurateEvent(options.query, result, options.eventSource, options.attributionProjection);
+  }
   return result;
 }
 
@@ -247,21 +259,29 @@ export async function curateSearchResults(
   selectedType?: string,
   eventSource?: UsageEventSource,
 ): Promise<CurateResponse> {
-  const stashHits = result.hits.filter((hit): hit is SourceSearchHit => hit.type !== "registry");
+  const allStashHits = result.hits.filter((hit): hit is SourceSearchHit => hit.type !== "registry");
   const registryHits = result.registryHits ?? [];
 
-  let selectedStashHits: SourceSearchHit[];
-  let supportRefsByRef = new Map<string, CurateSupportRef[]>();
-  if (selectedType && selectedType !== "any") {
-    selectedStashHits = stashHits.slice(0, limit);
-  } else {
-    const selected = selectCuratedStashHits(query, stashHits, limit);
-    selectedStashHits = selected.selected;
-    supportRefsByRef = selected.supportRefsByRef;
-  }
+  // F3/R-018: `--type` must NARROW the candidate pool, not bypass curation.
+  // Previously a set `selectedType` skipped `selectCuratedStashHits` (ranking,
+  // intent nudges, score floor) entirely, taking the raw top-N of whatever
+  // order the hits arrived in. Filtering the pool down to the requested type up front and
+  // then running the SAME pipeline over it gives `--type` its intended
+  // "narrow, don't disable" semantics — and matters even when the caller's
+  // search already applied a type filter at the DB layer, because
+  // `curateSearchResults` is also driven directly (tests, `searchResponse`
+  // fixtures) with a `SearchResponse` that was never type-filtered.
+  const stashHits =
+    selectedType && selectedType !== "any" ? allStashHits.filter((hit) => hit.type === selectedType) : allStashHits;
 
+  const selected = selectCuratedStashHits(query, stashHits, limit);
+  const selectedStashHits = selected.selected;
+  const supportRefsByRef = selected.supportRefsByRef;
+
+  // F4/R-019: respect `--limit` for registry fill instead of hard-capping it
+  // at a bare literal 2 — the remaining slots after stash hits ARE the cap.
   const selectedRegistryHits =
-    selectedStashHits.length >= limit ? [] : registryHits.slice(0, Math.min(2, limit - selectedStashHits.length));
+    selectedStashHits.length >= limit ? [] : registryHits.slice(0, limit - selectedStashHits.length);
   const selectedRefs = new Set(selectedStashHits.map((hit) => hit.ref));
 
   const items = [
