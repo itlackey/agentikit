@@ -6,7 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **`akm update` no longer deletes a previous install directory without
+  confirmation.** When a managed source's resolved content location moves,
+  `update` removed the old directory outright, while `akm remove` had always
+  required `--yes` in non-interactive mode. Only that destructive branch is
+  gated — a normal refresh, where the location does not move, still needs no
+  prompt and no flag, so existing CI invocations are unaffected. Pass
+  `-y`/`--yes` to allow the deletion non-interactively. A cleanup that fails
+  now warns instead of failing silently.
+
+- **The dangerous-env-key install gate now scans `env/` recursively.** It
+  previously read only the top level, so a stash carrying `LD_PRELOAD` in
+  `env/nested/inner.env` installed cleanly with no warning. Files without a
+  `.env` suffix are still not scanned — no akm code path loads them as
+  environment variables.
+
 ### Added
+
+- **`akm log list --limit <n>`** returns the most recent N events. The flag was
+  documented but silently ignored, and there was no limiting mechanism at all
+  in the read path — the command returned the entire events table regardless of
+  history size. The default remains unlimited.
+
+- **`--track-usage` (default on) on `akm search`, `akm curate`, and `akm show`.**
+  Pass `--no-track-usage` for a read-only lookup that does not feed usage
+  telemetry or the utility-score ranking signal. Previously a bare `akm search`
+  silently wrote a `utility_scores` row that influenced future ranking, with no
+  disclosure and no way to opt out.
+
+- **`akm show` returns the canonical `ref` in every shape.** It was present only
+  under `--shape agent`, so a `--shape summary` consumer had to make a second
+  call at a different shape just to learn which asset it was looking at.
+
+- **`akm info` gained `stashDir`, `defaultBundle`, and `indexStats.byType`.**
+  Answering "which stash is primary" previously required a separate
+  `akm sources list`.
 
 - **`instruction` is a stash-resident asset type.** It was already in
   `KNOWN_TYPES` and had a presentation entry, but had no placement spec — so
@@ -310,6 +346,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`akm add <pkg> --provider npm` adds an npm source instead of a broken
+  filesystem bundle.** `--provider` was only read inside the remote-URL branch,
+  so any non-URL target fell through to the filesystem path with the flag
+  ignored, producing a bundle pointed at `<cwd>/<pkg>`. A URL target with
+  `--provider npm` is now rejected at add time rather than storing the URL as a
+  package spec and failing much later at first sync.
+
+- **`akm add --provider` no longer prints `Installed undefined`.** Two
+  incompatible result shapes reached one text formatter; each is now rendered
+  honestly, including whether a follow-up `akm update` or `akm index` is needed.
+
+- **`akm update --all` accounts for every configured source.** It previously
+  considered only registry-managed installs and reported `nothing to update`
+  for a stash full of plain sources — nothing was updated because nothing was
+  looked at. Plain git and npm sources are now synced (npm is promoted to a
+  lock-backed install on first sync) and website/filesystem sources are
+  reported through a new `skipped` field with the reason. A successful update of
+  a plain source no longer renders as `nothing to update` either.
+
+- **`akm search` with no query browses**, as `--help` has always documented,
+  instead of exiting 2.
+
+- **`akm curate --type <t>` curates within the type instead of bypassing
+  curation.** The filter skipped ranking, intent nudges, the score floor, and
+  family collapse entirely — and could return a hit of the *wrong* type while
+  dropping a higher-scoring correct one.
+
+- **`akm curate` respects `--limit` for registry hits**, which were capped at a
+  hard-coded 2 regardless.
+
+- **`akm search --no-project-context` works.** citty strips a leading `--no-`
+  before consulting declared args, so a flag *declared* as `no-project-context`
+  could never be set — the ranking boost was identical with and without it. The
+  flag users type is unchanged.
+
+- **`akm env run`, `akm secret run`, `akm migrate`, `akm agent`, `akm propose`,
+  `akm tasks run`, and `akm improve` no longer skip cleanup on exit.** They
+  called `process.exit()` directly — in two cases even on success — bypassing
+  teardown of spawned subprocesses. Exit codes, including forwarded non-zero
+  child codes, are unchanged.
+
+- **The `blocked` semantic-search warning names the cause.** It emitted one
+  fixed string for every failure and discarded the status ledger's reason, so
+  "no embedding provider configured" and "the configured endpoint is failing"
+  read identically.
+
 - **Shell completion for `--source` no longer suggests `stash|registry|both`
   on commands where that enum doesn't apply.** `--source` means a closed
   `stash|registry|both` enum on `akm search`/`akm curate`, but a free-form
@@ -360,6 +442,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stderr trailer text is deliberately left as-is pending a separate ruling.
 
 ### Removed
+
+- **BREAKING: `akm upgrade --skip-checksum` is removed.** STABILITY.md has
+  always said checksum verification is not optional and that the recovery hatch
+  is an environment variable — but the flag shipped anyway, tab-completable,
+  while the documented variable existed nowhere in the source. The code now
+  matches the spec: set `AKM_UPGRADE_SKIP_CHECKSUM=1` if you must bypass a
+  genuinely broken `checksums.txt`. It is deliberately undiscoverable.
+
+- **BREAKING: `akm config enable|disable` is removed.** It was a hard-coded
+  toggle for one target, the skills.sh registry, and the bare `akm enable` /
+  `akm disable` aliases were already removed in 0.9.0. Use
+  `akm registry add|remove`.
+
+- **BREAKING: the state.db migration chain is squashed from 20 fragments to a
+  single `001-initial-schema`.** No release has ever shipped with state.db in
+  the picture, so no fragment was guarded by a deployed ledger. The squashed
+  schema is byte-identical to what the old chain produced, verified by diffing
+  a database built each way — except for two deliberate omissions:
+  `improve_gate_thresholds` (readers died with the 0.9.0 confidence-gate
+  deletion) and `improve_cycle_metrics.accepted_actions` (fed the removed CHURN
+  alert). Most of the reduction is migrations that only ever undid each other —
+  `018-drop-dead-lane-schema` existed solely to delete what `007`, `010`, and
+  `014` created.
+
+  **Migration: delete and recreate any local development stash predating this
+  change.** Its `schema_migrations` ledger will not checksum-match, and akm will
+  refuse to open it as inconsistent rather than silently corrupting it.
+
+- **The CHURN alert class is removed from the collapse detector.** Its input was
+  a hard-coded `0` from the 0.9.0 confidence-gate deletion onward, so the alert
+  could never fire. The `accepted_actions` column went with it. The other three
+  alert classes are unaffected.
+
+- **`IndexResponse.graphQuality` is removed** from the `akm index` envelope — it
+  was declared but never assigned in any code path, so it was always absent.
 
 - **`akm secret path` and `akm secret remove` are removed.** The two resolved a
   secret ref through *different* stash-selection logic — `path` through the
