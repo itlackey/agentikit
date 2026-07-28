@@ -151,7 +151,7 @@ This is enough for the agent to confirm "yes, the right secrets are configured f
 When a script actually needs the values — at runtime, not at planning time — the agent runs the command through `vault run`:
 
 ```sh
-akm vault run vault:production -- ./deploy.sh
+akm vault run vault:production -- ./deploy.sh  # doclint:ignore (historical — akm 0.5.0 release-era post; `vault` type removed in 0.9.0, see `env`/`secret`)
 ```
 
 The values are loaded into the child process environment. They never pass through the agent's structured output. The agent's conversation log is clean.
@@ -170,7 +170,7 @@ akm add git@github.com:your-org/skills.git --provider git --name team-skills --w
 
 ```sh
 # After editing or adding an asset
-akm save team-skills -m "Add deploy workflow"
+akm save team-skills -m "Add deploy workflow"  # doclint:ignore (historical — akm 0.5.0 release-era post; `save` renamed `sync` in 0.9.0, `-m` survives as `sync`'s own alias)
 ```
 
 The behavior depends on the stash configuration:
@@ -204,7 +204,7 @@ The vault file lives at `vaults/production.env` in your stash. The keys are ther
 **Step 3: Save both to the team stash.**
 
 ```sh
-akm save team-skills -m "Add ship-release workflow and production vault"
+akm save team-skills -m "Add ship-release workflow and production vault"  # doclint:ignore (historical — akm 0.5.0 release-era post; `save` renamed `sync` in 0.9.0, `-m` survives as `sync`'s own alias)
 ```
 
 Every developer on the team pulls the update with `akm update --all`. Now everyone has the same workflow and the same vault definition.
@@ -243,7 +243,7 @@ No context reconstruction. No "where did we leave off?" The procedure state is i
 When the deploy is done, commit any skill or workflow improvements back to the team repo:
 
 ```sh
-akm save team-skills -m "Improve staging health check step"
+akm save team-skills -m "Improve staging health check step"  # doclint:ignore (historical — akm 0.5.0 release-era post; `save` renamed `sync` in 0.9.0, `-m` survives as `sync`'s own alias)
 ```
 
 The team gets the improvement on next `akm update`.

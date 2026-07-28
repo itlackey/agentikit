@@ -78,8 +78,29 @@ const SKIP_MARKER = "doclint:ignore";
  * Individually-justified (file, line, token) exceptions — NOT a directory or
  * file carve-out. Keep empty by default; see `scripts/lint-shipped-assets.ts`
  * for the precedent this mirrors.
+ *
+ * docs/migration/v0.7-to-v0.8.md:1154 — the line is inside a literal
+ * box-drawing terminal-banner illustration (the exact text 0.8.0's
+ * auto-migration notice printed), not a runnable shell line. A trailing
+ * `# doclint:ignore` comment would visibly corrupt the banner's right
+ * border for readers, so the exception lives here instead. `akm config
+ * migrate` was a real, wired-in 0.8.0 subcommand (see the surrounding
+ * "Config layer rewrite" section) — historical, not a current-syntax bug.
+ *
+ * docs/posts/task-assets-persistent-workflows-11.md:73 — the line is inside
+ * a YAML `prompt: |` literal block scalar (a dated 0.8.0-era task-assets
+ * post's worked example). A trailing `# doclint:ignore` comment would become
+ * part of the literal prompt STRING VALUE, not a comment, silently changing
+ * the documented prompt text — so the exception lives here instead. `akm
+ * wiki ingest`/`akm wiki lint` were real 0.8.0-era commands; the whole
+ * `wiki` family was removed in 0.9.0.
  */
-const ALLOWED_VIOLATIONS: ReadonlySet<string> = new Set();
+const ALLOWED_VIOLATIONS: ReadonlySet<string> = new Set([
+  "docs/migration/v0.7-to-v0.8.md:1154:migrate",
+  "docs/migration/v0.7-to-v0.8.md:1154:--dry-run",
+  "docs/migration/v0.7-to-v0.8.md:1154:--print-diff",
+  "docs/posts/task-assets-persistent-workflows-11.md:73:wiki",
+]);
 
 // ── 1. Build the real command tree from src/cli.ts (single source of truth —
 // no hand-maintained mirror; see the module doc of lint-shipped-assets.ts for
@@ -291,10 +312,19 @@ function processBlock(file: string, startLine: number, rawLines: string[], viola
   for (let i = 0; i < lines.length; i++) {
     let text = lines[i]!;
     const lineNo = startLine + i;
+    // Check the SKIP_MARKER against the RAW (pre-stripComment) line, not the
+    // stripped one: the marker is documented to live in a trailing shell
+    // comment (`akm wiki list  # doclint:ignore`), but stripComment() cuts
+    // the line at the first unquoted `#` — checking the already-stripped
+    // text would silently discard the marker along with the rest of the
+    // comment and never match, breaking the documented escape hatch.
+    let skip = rawLines[i]!.includes(SKIP_MARKER);
     while (text.trimEnd().endsWith("\\") && i + 1 < lines.length) {
-      text = `${text.trimEnd().slice(0, -1)} ${lines[++i]!.trim()}`;
+      i++;
+      if (rawLines[i]!.includes(SKIP_MARKER)) skip = true;
+      text = `${text.trimEnd().slice(0, -1)} ${lines[i]!.trim()}`;
     }
-    if (text.includes(SKIP_MARKER)) continue;
+    if (skip) continue;
     for (const segment of splitSegments(text)) {
       const trimmed = segment.trim().replace(/^\$ /, ""); // shell-prompt prefix
       const tokens = trimmed.match(TOKEN_RE) ?? [];

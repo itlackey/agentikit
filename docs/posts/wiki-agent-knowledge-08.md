@@ -60,7 +60,7 @@ A wiki in akm is a named subdirectory under `~/akm/wikis/`. Each wiki has a fixe
 You create a wiki with one command:
 
 ```sh
-akm wiki create research
+akm wiki create research  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
 ```
 
 That scaffolds the directory, stubs out `schema.md` with sensible defaults, creates empty `index.md` and `log.md`, and makes the `raw/` directory. You're not starting from a blank directory — you're starting from a structural contract.
@@ -74,9 +74,9 @@ Say you're building a research wiki on transformer architectures. You have a pap
 Start by bringing in the raw sources:
 
 ```sh
-akm wiki stash research ./attention-paper.pdf --as attention
-akm wiki stash research ./transformer-scaling-notes.md --as scaling-notes
-echo "# Key quote from Sutton talk" | akm wiki stash research -
+akm wiki stash research ./attention-paper.pdf --as attention  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
+akm wiki stash research ./transformer-scaling-notes.md --as scaling-notes  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
+echo "# Key quote from Sutton talk" | akm wiki stash research -  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
 ```
 
 The `stash` command copies each source into `raw/` with a unique slug. If you try to stash the same slug twice, it errors rather than overwriting. That's one of those invariants the agent can't reliably maintain — akm handles it.
@@ -84,7 +84,7 @@ The `stash` command copies each source into `raw/` with a unique slug. If you tr
 Now ask your agent to start the ingest workflow:
 
 ```sh
-akm wiki ingest research
+akm wiki ingest research  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
 ```
 
 This dispatches the configured agent (from `config.defaults.agent` or `--profile`) with the wiki's ingest workflow as its prompt. The workflow tells the agent to: read `schema.md` to understand the page structure, check `index.md` to see what pages already exist, read each unprocessed file in `raw/`, synthesize content into pages using Write or Edit, update `index.md`, append a summary to `log.md`. `akm` owns the schema-aware commands (stash, search, lint, index, show); the agent owns the reasoning.
@@ -92,7 +92,7 @@ This dispatches the configured agent (from `config.defaults.agent` or `--profile
 After the agent runs the ingest workflow:
 
 ```sh
-akm wiki pages research
+akm wiki pages research  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
 # → research/attention.md   "Self-attention mechanism and complexity analysis"
 # → research/transformers/architecture.md   "Encoder-decoder structure, residual connections"
 ```
@@ -100,7 +100,7 @@ akm wiki pages research
 Later, when you want to check the health of the wiki:
 
 ```sh
-akm wiki lint research
+akm wiki lint research  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
 ```
 
 Lint runs deterministic structural checks: orphan pages (not in index.md), broken xrefs in frontmatter, missing descriptions, raw files that appear uncited in any page, and whether the index is stale relative to the directory contents. These are checks that require counting and comparing file state — exactly the kind of thing agents do inconsistently.
@@ -146,7 +146,7 @@ Here's the complete workflow for setting up and using a research wiki from scrat
 **Initial setup:**
 
 ```sh
-akm wiki create research
+akm wiki create research  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
 # Edit wikis/research/schema.md to define your page kinds
 # (technical-summary, comparison, open-question, etc.)
 ```
@@ -154,36 +154,36 @@ akm wiki create research
 **Bring in sources as you find them:**
 
 ```sh
-akm wiki stash research ./papers/attention-is-all-you-need.pdf --as attention-2017
-akm wiki stash research ./papers/flash-attention-v2.pdf --as flash-attention-v2
-akm wiki stash research ./notes/scaling-laws-talk.md --as scaling-laws-notes
+akm wiki stash research ./papers/attention-is-all-you-need.pdf --as attention-2017  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
+akm wiki stash research ./papers/flash-attention-v2.pdf --as flash-attention-v2  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
+akm wiki stash research ./notes/scaling-laws-talk.md --as scaling-laws-notes  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
 ```
 
 **Run ingest when you're ready to synthesize:**
 
 ```sh
-akm wiki ingest research
+akm wiki ingest research  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
 # Agent reads the recipe, reads raw/ files, writes pages, updates index, logs activity
 ```
 
 **Check what exists:**
 
 ```sh
-akm wiki pages research
-akm wiki show research
+akm wiki pages research  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
+akm wiki show research  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
 ```
 
 **Search when working on a related task:**
 
 ```sh
-akm wiki search research "KV cache memory"
+akm wiki search research "KV cache memory"  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
 # Returns: research/attention.md, research/flash-attention/optimization.md
 ```
 
 **Lint before a long agent session to catch structural drift:**
 
 ```sh
-akm wiki lint research
+akm wiki lint research  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
 # Orphans: none
 # Broken xrefs: research/flash-attention/optimization.md → research/kv-cache.md (missing)
 # Stale index: yes (run akm index)
@@ -211,8 +211,8 @@ As of 0.8.0, `akm wiki ingest <name>` dispatches the configured agent (`defaults
 Multi-wiki has been available since akm 0.5.0. If you're already using akm, upgrade and try:
 
 ```sh
-akm wiki create research
-akm wiki list
+akm wiki create research  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
+akm wiki list  # doclint:ignore (historical — akm multi-wiki era post; `wiki` family removed in 0.9.0)
 ```
 
 The [Getting Started guide](https://github.com/itlackey/akm/blob/main/docs/getting-started.md) covers initial setup if you're new to akm. The wiki commands are available immediately once you have a stash configured.

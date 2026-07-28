@@ -149,10 +149,10 @@ If you are on 0.7.x, you do not need to hand-edit your config. The migration com
 
 ```sh
 # Preview the transformation without writing
-akm config migrate --dry-run
+akm config migrate --dry-run  # doclint:ignore (0.7.x→0.8.0 config-schema migration command, not present in 0.9.0)
 
 # Apply migration — writes a timestamped backup first
-akm config migrate
+akm config migrate  # doclint:ignore (0.7.x→0.8.0 config-schema migration command, not present in 0.9.0)
 ```
 
 `--dry-run` shows which keys move and what the new shape looks like without writing anything. When you run without `--dry-run`, akm writes a timestamped backup to `~/.cache/akm/config-backups/` before touching the live file. Locate it with:
