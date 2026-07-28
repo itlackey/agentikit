@@ -539,11 +539,7 @@ function unitOutputValue(unit: UnitOutcome): unknown {
   return unit.text ?? null;
 }
 
-export function buildEvidence(
-  units: UnitOutcome[],
-  reducer: "collect" | "vote" | "best-of-n",
-  isFanOut: boolean,
-): Record<string, unknown> {
+export function buildEvidence(units: UnitOutcome[], reducer: IrMapReducer, isFanOut: boolean): Record<string, unknown> {
   // Per-unit evidence is the DURABLE, surface-independent projection the two
   // driver surfaces (engine + brief/report) must agree on byte-for-byte (R4
   // conformance, "identical unit graph"). It therefore carries ONLY fields both
@@ -635,7 +631,7 @@ export interface ExecutedStepOutcome {
  */
 export function reduceStepOutcomes(
   plan: IrStepPlan,
-  reducer: "collect" | "vote" | "best-of-n",
+  reducer: IrMapReducer,
   isFanOut: boolean,
   onError: IrOnError,
   units: UnitOutcome[],
@@ -684,7 +680,7 @@ export function reduceStepOutcomes(
  * an empty step has no successful results to count, and a vote-tie "failure"
  * would diverge from the engine's long-standing empty-list semantics.
  */
-export function reduceEmptyStep(plan: IrStepPlan, reducer: "collect" | "vote" | "best-of-n"): ExecutedStepOutcome {
+export function reduceEmptyStep(plan: IrStepPlan, reducer: IrMapReducer): ExecutedStepOutcome {
   const evidence: Record<string, unknown> = { units: [], itemCount: 0, output: reducer === "collect" ? [] : null };
   const schemaFailure = validateStepArtifact(plan, evidence);
   return {

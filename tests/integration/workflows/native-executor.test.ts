@@ -1511,7 +1511,11 @@ steps:
     expect(result.executed[0]!.ok).toBe(false);
     expect(result.executed[0]!.summary).toContain("lifetime unit cap");
     expect(result.run.status).toBe("failed");
-  });
+    // ~10s solo: this case drives the engine loop until it trips the lifetime
+    // unit cap, so it legitimately exceeds bun's 5s default. The sharded gate
+    // runs with --timeout=120000 and never saw it, but anyone running this
+    // file directly got a false red.
+  }, 30_000);
 
   const ROUTED_WF = `version: 2
 name: Router

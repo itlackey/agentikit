@@ -2,23 +2,34 @@
 
 A technical comparison of two things that share a name but occupy different
 layers of the stack: the **Claude Code `Workflow` tool** (the harness-native
-orchestration DSL) and **akm workflows** (`akm workflow …`, the durable
-step-run engine in this repo).
+orchestration DSL) and **akm workflows** (`akm workflow …`, the workflow
+subsystem in this repo).
 
-The short version: they are not competitors. Claude Code workflows are an
-**ephemeral, parallel, self-executing** orchestration layer that lives inside a
-single agent session and runs LLM subagents. akm workflows are a **durable,
-sequential, human-in-the-loop** run-state tracker that outlives sessions and
-delegates all actual execution to whatever agent is driving. One *executes*;
-the other *remembers*. That difference explains almost every technical
-divergence below, and it is also the reason the two compose unusually well.
+The short version: they are not competitors, and the shape of that claim
+depends on which of akm's two workflow formats you mean. A **markdown**
+workflow is still what it always was — a durable, sequential,
+human-in-the-loop run-state tracker: akm hands the current step's instructions
+to whatever agent is driving and records what comes back, one step at a time.
+A **YAML v2 workflow program**, run through `akm workflow run`, is a different
+animal: akm compiles it to a plan graph and a native engine fans work out to
+concurrent runner units, retries, gates on typed artifacts, and enforces
+budget ceilings — genuine execution, not just tracking. That engine (and the
+YAML format it executes) is **experimental and opt-in** — see [Part
+B.0](#b0-two-formats-one-cli-and-an-experimental-gate) — so the "akm just
+remembers, Claude Code executes" framing is still the *default* truth for
+everyone who hasn't opted in, but it is no longer the *only* truth. The most
+interesting seam is not either engine in isolation: akm also ships a
+**harness-neutral driver protocol** (`akm workflow brief` / `akm workflow
+report`) that lets Claude Code itself execute an akm-orchestrated run's units
+and report results back through the exact code path the native engine uses —
+the clearest point where the two systems compose.
 
 > **Scope.** This report analyzes akm's own workflow subsystem
 > (`src/workflows/**`, `src/commands/workflow-cli.ts`) against the Claude Code
-> `Workflow` tool. It deliberately **excludes**
-> `docs/reviews/akm-meta-review/run-review.workflow.mjs`, which is not part of
-> akm's workflow engine — it is a *Claude Code* workflow script that happens to
-> live in this repo (a consumer of the other system, not an instance of akm's).
+> `Workflow` tool. It deliberately **excludes** any `.workflow.mjs` Claude Code
+> workflow scripts that may live elsewhere in this repo (e.g. under internal
+> review tooling) — those are *consumers* of the Claude Code system, not
+> instances of akm's own workflow engine.
 
 ---
 
@@ -159,85 +170,130 @@ the session's normal permission model.
 
 ## Part B — akm workflows: technical details
 
-### B.1 Representation: a declarative Markdown document
+This part deliberately stays high-level: `docs/reference/workflows.md` is the
+maintained, exhaustive reference for both formats (markdown grammar, YAML v2
+program grammar, expression language, gates, budgets, the run lease, the
+brief/report protocol). What follows is the comparison-relevant subset —
+read the reference doc for anything this section doesn't answer.
 
-An akm workflow **is a document**, not a program. It is Markdown with a fixed
-heading grammar (`src/assets/workflows/workflow-template.md`):
+### B.0 Two formats, one CLI, and an experimental gate
 
-```markdown
----
-description: Ship a tagged release to production
-tags: [release]
-params:
-  version: The semver version string to release
----
+An akm workflow asset is one of two things, both addressed as
+`workflows/<name>`:
 
-# Workflow: Ship Release
+- A **markdown document** (`.md`) — a fixed heading grammar
+  (`# Workflow: <title>`, `## Step: <title>` / `Step ID:`, `### Instructions`,
+  optional `### Completion Criteria`). This is the original, **stable**
+  format: linear, one step at a time, no fan-out.
+- A **YAML v2 program** (`.yaml`/`.yml`) — `version: 2`, with `unit` (single
+  dispatch), `map` (fan-out over `over:` with `concurrency`/`reducer`), and
+  `route` (classify-and-dispatch) step kinds, run parameters, per-unit
+  retry/timeout/isolation, and run-level budget ceilings. This format is
+  **experimental**.
 
-## Step: Validate inputs
-Step ID: validate
+Both formats share the same `start`/`next`/`complete`/`status`/`list`/`resume`/
+`abandon` CLI contract for the manual step-by-step loop — that loop is stable
+and works on either format unconditionally. What's gated is *executing* a YAML
+program with the native engine, and the driver protocol that mirrors it:
 
-### Instructions
-Check that `version` follows semver and the tag does not already exist.
+`akm workflow run|watch|brief|report`, plus authoring a YAML program via `akm
+workflow create <name>.yaml`, all refuse with a classified `ConfigError`
+(`WORKFLOW_ENGINE_NOT_ENABLED`, **exit code 78**) until
+`experimental.workflowEngine` is set:
 
-### Completion Criteria
-- `git tag v<version>` does not already exist
+```console
+$ akm workflow run some-run-id
+{
+  "ok": false,
+  "error": "`akm workflow run` is EXPERIMENTAL and refuses to run until `experimental.workflowEngine` is set. Run `akm config set experimental.workflowEngine true` to enable it.",
+  "code": "WORKFLOW_ENGINE_NOT_ENABLED",
+  "hint": "Run `akm config set experimental.workflowEngine true` to enable it."
+}
+$ echo $?
+78
+$ akm config set experimental.workflowEngine true
+$ akm workflow run some-run-id
+{"ok":false,"error":"Workflow run or workflow \"some-run-id\" not found.", ...}
 ```
 
-The grammar is strict: exactly one `# Workflow: <title>`, each step is a
-`## Step: <title>` with a `Step ID:` line, a required `### Instructions` body,
-and optional `### Completion Criteria` bullets. Nothing else is permitted at
-levels 1–2 (`src/workflows/parser.ts`).
+(Both refusals above were reproduced against a real build,
+`src/workflows/exec/workflow-engine-gate.ts`; the second command clears the
+gate and fails for the ordinary reason instead.) `akm workflow validate` is
+**not** gated even against a `.yaml` program — it only type-checks. Creating a
+*markdown* workflow with `akm workflow create <name>` (no `.yaml`/`.yml`
+suffix) is unaffected either way.
 
-### B.2 Parser & validated document model
+The rest of Part B describes the union of both formats; each subsection says
+which format(s) it applies to.
 
-`parseWorkflow` (`src/workflows/parser.ts`) compiles the Markdown into a
-`WorkflowDocument` (`src/workflows/schema.ts`, `WORKFLOW_SCHEMA_VERSION = 1`).
-Notable properties:
+### B.1 Representation
 
-- It **composes existing infrastructure** — `yaml` for frontmatter,
-  `parseMarkdownToc` for headings, line-range slicing for bodies — rather than a
-  bespoke parser.
-- It **accumulates `WorkflowError`s rather than throwing**; each error is
-  `path:line — message` with the fix baked into the message (no severity/code).
-- Every element carries a **`SourceRef` line span** (`{ path, start, end }`), so
-  editors/agents can rewrite content in place without a full re-parse.
-- A cheap `looksLikeWorkflow()` structural probe keeps the indexer matcher and
-  the parser from drifting.
+**Markdown** (`src/assets/workflows/workflow-template.md`) is a document, not
+a program — plain prose instructions per step, human-authorable, no control
+flow. **YAML v2** (`schemas/akm-workflow.json`) is closer to a program: steps
+declare `unit`/`map`/`route`, and a `${{ … }}` expression language (four
+reference kinds — `params.<name>`, `steps.<id>.output.<path>`, `item`,
+`item_index`) wires step outputs into later steps. Expressions are **parsed
+once, never re-scanned** — a value that happens to contain `${{ params.x }}`
+is inserted literally, so substituted content can't inject a further
+reference.
 
-The compiled document is cached into `index.db` (`workflow_documents`) and is the
-single source consumed by the renderer, indexer, and run engine.
+### B.2 Parsers & compiled models
+
+- `parseWorkflow` (`src/workflows/parser.ts`) compiles markdown into a
+  `WorkflowDocument` (`src/workflows/schema.ts`). It accumulates
+  `WorkflowError`s instead of throwing, and every element carries a
+  `SourceRef` line span.
+- `parseWorkflowProgram` (`src/workflows/program/parser.ts`) compiles a YAML
+  v2 program into a `WorkflowProgram` (`src/workflows/program/schema.ts`), and
+  the IR compiler (`src/workflows/ir/compile.ts`) lowers that into a plan graph
+  (`src/workflows/ir/schema.ts`) — the shape the engine and the brief/report
+  driver protocol both execute.
+
+Both compiled forms are cached in `index.db` and are what the renderer,
+indexer, and run engine consume — `index.db` stays regenerable; only run
+state (B.3, below) is not.
 
 ### B.3 Persistence: durable SQLite run state
 
-Run state lives in **`state.db`** (`src/storage/repositories/workflow-runs-repository.ts`;
-the former `workflow.db` was folded into `state.db` in the 0.9.0 cutover), whose
-rows are explicitly **non-regenerable** ("losing them is data loss"), unlike the
-regenerable `index.db`. Two tables:
+Run state lives in **`state.db`**
+(`src/storage/repositories/workflow-runs-repository.ts`; the former
+`workflow.db` was folded into `state.db` in the 0.9.0 three-database cutover),
+whose rows are explicitly **non-regenerable**. **Three** tables, not two:
 
 - `workflow_runs` — `id`, `workflow_ref`, `workflow_title`, `status`
   (`active|completed|blocked|failed`), `params_json`, `current_step_id`,
-  timestamps, plus columns added by migration: `scope_key`, `agent_harness`,
-  `agent_session_id`, `checkin_armed_at`.
+  timestamps, `scope_key`, `agent_harness`, `agent_session_id`,
+  `checkin_armed_at`, plus the engine's own columns: `plan_json`/`plan_hash`
+  (the frozen YAML-program plan) and `engine_lease_holder`/
+  `engine_lease_until` (the run lease, see B.5).
 - `workflow_run_steps` — `(run_id, step_id)` PK, `step_title`, `instructions`,
   `completion_json`, `sequence_index`, `status`
   (`pending|completed|blocked|failed|skipped`), `notes`, `evidence_json`,
-  `completed_at`, and `summary`.
+  `completed_at`, `summary`.
+- `workflow_run_units` — one row per dispatched (or driver-reported) unit of
+  work under the native engine or the brief/report protocol: `run_id`,
+  `unit_id`, `step_id`, `status` (`pending|running|completed|failed|skipped`),
+  `input_hash`, `result_json`, `tokens`, `failure_reason`, `worktree_path`,
+  `session_id`, `last_checkin_at`, `attempts`, `claim_holder`/
+  `claim_expires_at`. This table doesn't exist for a run that only ever used
+  the markdown `next`/`complete` loop.
 
-Schema evolves through an **additive, idempotent migration engine** (shared with
-`state.db`) recorded in `schema_migrations` — migrations `001` (scope_key),
-`002` (agent identity), and `003` (check-in + per-step summary) illustrate the
-additive discipline — with a `bootstrapPreVersioningDb()` hook that back-fills
-the migrations table for databases created before versioning existed. Standard
-pragmas apply a 30s busy timeout so concurrent writers don't fail immediately
-with `SQLITE_BUSY`. The repository layer fully materializes every read
-(`.all()`/`.get()`) so no live cursor escapes the connection scope.
+Schema evolves through an additive, idempotent migration engine, recorded in
+`schema_migrations`. The three-table shape above is the current baseline
+(`001-initial-schema` in `src/core/state/migrations.ts`); the pre-cutover
+`workflow.db` history that produced it is preserved for reference in
+`scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts` —
+`004-workflow-run-units` (the table itself), `005`/`007` (unit session id /
+check-in columns), `006-frozen-plan-and-lease` (the engine's frozen plan +
+run lease), `008`/`009` (unit attempts / claim columns).
 
-### B.4 Execution model: akm tracks; the agent executes
+### B.4 Execution model: two engines, one memory
 
-This is the crux. **akm does not execute workflow steps.** It is a persisted
-state machine driven by an external agent through a CLI command loop
-(`src/workflows/runtime/runs.ts`, `src/commands/workflow-cli.ts`):
+**Markdown workflows: akm tracks, the agent executes — unchanged.** This is
+still exactly the pre-engine model, and it is still what happens by default:
+a persisted state machine driven by an external agent through a CLI command
+loop (`src/workflows/runtime/runs.ts`):
 
 ```
 akm workflow start    → snapshot steps into state.db, set currentStepId
@@ -245,344 +301,328 @@ akm workflow next     → return the current step's instructions (auto-starts if
 akm workflow complete → validate summary, advance currentStepId
 ```
 
-The AGENT reads the instructions returned by `next` and does the work in its
-own environment, then repeats `next` → work → `complete` until
-`deriveRunState()` reports `"completed"`.
+The agent reads the instructions `next` returns and does the work in its own
+environment (full user shell, no sandbox — see the Security section below),
+then repeats `next` → work → `complete` until the run is `completed`.
+Sequentiality is strict: exactly one `current_step_id`; `complete` refuses any
+step that isn't the current one.
 
-Key semantics:
+**YAML v2 programs, run with `akm workflow run`: akm executes.** This is the
+part that did not exist when this document was first written and is the
+single biggest fact this comparison used to get wrong. `akm workflow start`
+compiles the program and **freezes** the resulting plan on the run row
+(`plan_json`/`plan_hash`) — edits to the source file need a new run. `akm
+workflow run <run-id>` then dispatches each step's units to the configured
+runner (`llm`, `agent`, or `sdk`), with:
 
-- **Snapshot-at-start.** `startWorkflowRun` copies the step list into
-  `workflow_run_steps` at start time; later edits to the source `.md` do not
-  affect in-flight runs.
-- **Strict sequentiality.** There is exactly one `current_step_id`.
-  `completeWorkflowStep` refuses any step that isn't the current one
-  ("Complete `<current>` first"). `deriveRunState` walks steps in order: any
-  `failed`/`blocked` step sets the run to that status; else the first `pending`
-  step is the current one; else the run is `completed`.
-- **Execution is the agent's shell.** Any shell commands in a step's
-  instructions run with the **full environment and PATH of the invoking user** —
-  no sandbox, no env allowlist. The docs (`docs/reference/workflows.md`) are
-  explicit that a workflow source is executed code and must be trusted like a
-  package dependency: "`akm add github:x/stash` + `akm workflow next` is
-  functionally piping a stranger's bash into your shell." Trust is by pinning
-  versions and auditing before run.
-- **The write path is transactional and lock-careful.** The LLM validation gate
-  (B.7) runs *outside* the DB write transaction so a slow model never holds a
-  write lock.
+- **Real concurrency.** A `map` step's units run through a scheduler
+  (`src/workflows/exec/scheduler.ts`) capped by `min(map's concurrency,
+  workflow.maxConcurrency, the selected engine's concurrency, a CPU-derived
+  host safety limit)`. The CPU-derived default — `min(16, max(1, cores − 2))`
+  — is, deliberately, the same formula Claude Code's own `agent()` cap uses
+  (A.3).
+- **Retries** (`retry: { max, on: [<failure-reason>…] }`), journaled per
+  attempt so no attempt's row is clobbered.
+- **Worktree isolation** (`isolation: worktree`) — a fresh detached git
+  worktree per unit attempt for file-mutating agent/sdk units, so parallel
+  fan-out can't trample a shared working tree; a clean one is auto-removed,
+  a dirty one is retained and its path logged.
+- **Typed step artifacts** — a step's declared `output` JSON Schema validates
+  the promoted artifact (a solo unit's result, a `collect` fan-out's array, or
+  a `vote` fan-out's majority winner) before the step can complete.
+- **Gates that judge the artifact**, with `gate.max_loops` turning a rejection
+  into a bounded evaluator-optimizer loop (re-run with the judge's feedback
+  threaded into every unit prompt), and `gate.required: true` to make a
+  gate `BLOCKED` rather than fail-open when no judge is configured.
+- **Budget ceilings** (`budget.max_units`/`max_tokens`), enforced across
+  resumes because both counters are seeded from the unit journal.
 
-### B.5 Scoping & concurrency guard
+Crucially, the engine is not the only thing that can execute an orchestrated
+run: the **harness-neutral driver protocol** (`akm workflow brief` / `akm
+workflow report`) lets any agent session — Claude Code included — read the
+same frozen plan's active-step work-list and report results back through the
+identical shared step semantics (`src/workflows/exec/step-work.ts`) the
+engine uses. An engine-driven run and a driver-driven run of the same plan
+produce **byte-identical unit graphs**; a run lease (B.5) ensures only one of
+the two drives at a time. See *Driving a run from any agent* in
+`docs/reference/workflows.md` for the full protocol — it is the sharpest point
+of contact between the two systems in this whole comparison.
+
+### B.5 Scoping & concurrency guards (two different guards)
 
 Runs are partitioned by **`scope_key`** — a `sha256` of the nearest project
 anchor (`.akm/config.json` root → git root → stash dir → cwd),
-`src/workflows/authoring/scope-key.ts`. This keeps concurrent runs in different
-directories independent.
+`src/workflows/authoring/scope-key.ts`. Within a `(workflow_ref, scope_key)`
+pair, `startWorkflowRun` enforces a **single active run** unless `--force` is
+passed, so two terminals starting the same ref can't leave two runs racing
+for `next` to pick between. This guard is unchanged and applies to both
+formats.
 
-Within a `(workflow_ref, scope_key)` pair, `startWorkflowRun` enforces a
-**single active run** unless `--force` is passed (#485) — so two terminals
-running `akm workflow start <ref>` can't leave two runs racing for `next` to
-pick between.
+Orchestrated runs add a second, unrelated guard: the **run lease**. `akm
+workflow run` takes a lease (a random holder id, 90s expiry, renewed between
+steps) before dispatching anything; a second `run` invocation against a
+live-leased run refuses, and manual `complete`/driver `report` calls are
+likewise refused while the lease is live — the engine owns the step spine
+while it drives. An expired lease is claimable, so a crashed engine never
+wedges a run. `next`/`status`/`brief` stay read-only and always work.
 
 ### B.6 Progress tracking
 
-Progress is **pull-based and durable** — the opposite of Claude Code's live
-push:
+For the markdown loop, progress is still **pull-based**: `next`/`status`
+report step rows, notes, evidence, and summary; there's no daemon, the agent
+(or human) polls. This much is unchanged from before the engine existed.
 
-- Each `workflow next` / `status` call reads step rows and reports statuses,
-  `notes`, `evidence` (arbitrary JSON), and per-step `summary`.
-- There is no live tree and no notification channel; the agent (or human)
-  **polls** `akm workflow next` / `status` / `list`. Each command emits a JSON
-  envelope.
-- State survives context-window breaks and process exits by construction: it's
-  all rows, read back on the next command.
+What's new: **`akm workflow watch <run-id>`** prints a run's `workflow_*` /
+`workflow_unit_*` events as NDJSON and exits; `--stream` polls from the last
+seen event (default 1000ms) in the foreground — no daemon — and exits when
+the run reaches a terminal status. It's not a push channel in Claude Code's
+`/workflows`-live-tree sense (there's no server pushing to a client — the
+watcher polls under the hood), but it closes most of the practical gap: a
+second terminal running `akm workflow watch <run-id> --stream` next to `akm
+workflow run <run-id>` gets a live-feeling tail with no polling of its own.
+Event metadata is ids/status/enums only, never workflow-authored content, so
+it's safe to pipe into logs or dashboards.
 
-### B.7 Quality gates: summary validation + human review
+### B.7 Quality gates
 
-Completion is gated (#506):
+The markdown `next`/`complete` loop keeps its original gate: completing a
+step requires a `--summary`; when the step has completion criteria and an LLM
+is configured, `validateStepSummary`
+(`src/workflows/validate-summary.ts`) judges the summary text against each
+criterion, fail-open (no criteria/no judge/an errored verdict all let the
+step complete). `blocked` status still models human-review gates;
+`akm workflow resume` still flips a `blocked`/`failed` run back to `active`.
 
-- Completing a step **requires a `--summary`** of work done.
-- When the step has `### Completion Criteria` and an LLM is configured,
-  `validateStepSummary` (`src/workflows/validate-summary.ts`) asks the model to
-  judge the summary against each criterion. A well-formed `complete: false`
-  verdict leaves the step **pending** and returns structured corrective feedback
-  (`missing[]`, `feedback`). The gate is **fail-open**: no criteria, no judge, or
-  an unparseable/errored verdict all let the step complete — offline use keeps
-  working.
-- `blocked` status models **human-review gates**; `resumeWorkflowRun` flips a
-  `blocked`/`failed` run back to `active` and reopens the current step.
+The engine-driven gate (B.4) is stricter and judges different material: it
+evaluates the step's **promoted artifact** (real JSON data, clipped at 4000
+chars) against the criteria, not a machine-generated prose summary — and
+`gate.required: true` closes the fail-open hole for a specific step. Both
+gates are LLM calls; both are journaled.
 
 ### B.8 Check-in: stall nudging without a daemon
 
-akm records the driving **agent identity** (`agent_harness`, `agent_session_id`)
-from environment hints — notably `CLAUDE_SESSION_ID` → harness `claude-code`
-(`src/workflows/runtime/agent-identity.ts`). It then arms a **check-in**: a
-timestamp (`checkin_armed_at`), *not* a background thread. On the next
-`workflow next` / `status` poll, the pure `evaluateCheckin()`
+Unchanged from before the engine: akm records the driving **agent identity**
+(`agent_harness`, `agent_session_id`) from environment hints
+(`src/workflows/runtime/agent-identity.ts`), arms a **check-in** timestamp
+(`checkin_armed_at`) — not a background thread — and on the next `workflow
+next`/`status` poll, `evaluateCheckin()`
 (`src/workflows/runtime/checkin.ts`) compares `now` against
-`max(updated_at, checkin_armed_at)`; past a 90s stall window it surfaces a strong
-`continue` directive **through the normal command output**. The ADR
-(the workflow-agent check-in ADR) explicitly rejects the
-background-thread alternative (#501): "No daemon in a CLI… the command loop is
-already the heartbeat."
+`max(updated_at, checkin_armed_at)`; past a 90s stall window it surfaces a
+`continue` directive through the normal command output. The design ADR
+explicitly rejects a background-thread alternative: "No daemon in a CLI… the
+command loop is already the heartbeat." A parallel, independent check-in
+exists at the *unit* level for the brief/report driver protocol
+(`--status running` claims and heartbeats a long-running unit so a second
+driver can reclaim it if the first goes silent) — same no-daemon,
+pure-timestamp design, different granularity.
 
 ### B.9 CLI surface
 
-`akm workflow` (`src/commands/workflow-cli.ts`) exposes:
-`start`, `next`, `complete`, `status`, `list`, `create`, `template`, `resume`,
-`validate`. Authoring (`create`/`validate`/`template`) and execution
-(`start`/`next`/`complete`/`resume`) are the same family; `create` re-indexes the
-new file so `start` can resolve it immediately.
+`akm workflow` (`src/commands/workflow-cli.ts`) exposes **fourteen**
+subcommands — derived here from `workflowCommand.subCommands`, not
+hand-listed:
+
+```
+akm workflow start|next|complete|status|list|create|template|resume|abandon|validate|run|brief|report|watch
+```
+
+`start`, `next`, `complete`, `status`, `list`, `create` (markdown), `template`,
+`resume`, `abandon`, and `validate` are stable and ungated. `run`, `brief`,
+`report`, and `watch` — plus `create <name>.yaml` — are the experimental,
+gated engine surface (B.0). Bare `akm workflow` with no subcommand is a usage
+error (exit 2); there is no default action.
 
 ---
 
 ## Part C — Side-by-side
 
-| Dimension | Claude Code workflow | akm workflow |
-|---|---|---|
-| **Artifact** | Imperative JS program (`script`) | Declarative Markdown document (`.md`) |
-| **Authored by** | The agent, inline, per-task, ephemeral | Human or agent, saved as a reusable stash asset |
-| **Who executes work** | The harness runs the script; subagents do the work | The external agent does the work; akm only tracks state |
-| **Unit of work** | `agent()` — a fresh LLM subagent context | A step — an instruction handed to the driving agent |
-| **Concurrency** | Massively parallel (≤16 concurrent, ≤1000 total, `pipeline`/`parallel`) | Strictly sequential — one `current_step_id` |
-| **Control flow** | Full JS: loops, conditionals, fan-out, budget-scaled | Fixed linear step sequence |
-| **State store** | Transcript dir (`journal.jsonl`, `agent-*.jsonl`) | SQLite `state.db` (durable, non-regenerable) |
-| **Scope / lifetime** | One session, one turn-shaped fan-out | Cross-session, per-project `scope_key`, resumable indefinitely |
-| **Progress model** | Push: live `/workflows` tree + `task-notification` | Pull: poll `workflow next`/`status`, JSON envelopes |
-| **Resume** | Prefix-cache replay keyed on `runId` (needs determinism) | Re-read durable rows; `resume` reopens blocked/failed |
-| **Determinism constraint** | `Date.now`/`random`/`new Date()` forbidden | None — it advances rows, it doesn't replay a script |
-| **Quality gates** | Agent-authored (adversarial verify, judge panels, schemas) | Built-in LLM summary judge + `blocked` human gates |
-| **Sandbox / trust** | Restricted JS interpreter, no FS; subagents use tools | No sandbox — steps run in the user's full shell |
-| **Identity** | `runId`, token budget | `agent_harness` + `agent_session_id`, check-in timestamp |
-| **Nesting** | `workflow()`, one level deep, sharing the parent's concurrency cap/budget | None built-in — a step could shell out to another `akm workflow` |
+akm's row is split where the two formats genuinely differ; a single cell means
+both formats agree.
+
+| Dimension | Claude Code workflow | akm markdown workflow | akm YAML v2 program (`workflow run`, experimental) |
+|---|---|---|---|
+| **Artifact** | Imperative JS program (`script`) | Declarative Markdown document (`.md`) | Declarative YAML program (`version: 2`), compiled to a plan graph |
+| **Authored by** | The agent, inline, per-task, ephemeral | Human or agent, saved as a reusable stash asset | Human or agent, saved as a reusable stash asset |
+| **Who executes work** | The harness runs the script; subagents do the work | The external agent does the work; akm only tracks state | The native engine dispatches units to a configured runner (`llm`/`agent`/`sdk`) — **or** any external driver via `brief`/`report`, producing a byte-identical unit graph |
+| **Unit of work** | `agent()` — a fresh LLM subagent context | A step — an instruction handed to the driving agent | A unit — one dispatch, or one item of a `map` fan-out |
+| **Concurrency** | Massively parallel (≤16 concurrent, ≤1000 total, `pipeline`/`parallel`) | Strictly sequential — one `current_step_id` | Real, bounded: `min(map concurrency, workflow.maxConcurrency, engine cap, CPU-derived default min(16, cores−2))` — the same default formula as Claude Code's `agent()` cap |
+| **Control flow** | Full JS: loops, conditionals, fan-out, budget-scaled | Fixed linear step sequence | `unit`/`map`/`route` steps + a closed `${{ … }}` expression language; no loops/conditionals beyond routing and the bounded gate-retry loop |
+| **State store** | Transcript dir (`journal.jsonl`, `agent-*.jsonl`) | SQLite `state.db`, `workflow_runs` + `workflow_run_steps` | Same `state.db`, plus `workflow_run_units` (one row per dispatched/reported unit) and a frozen `plan_json`/`plan_hash` on the run |
+| **Scope / lifetime** | One session, one turn-shaped fan-out | Cross-session, per-project `scope_key`, resumable indefinitely | Same, plus a 90s **run lease** arbitrating one engine *or* one external driver at a time |
+| **Progress model** | Push: live `/workflows` tree + `task-notification` | Pull: poll `workflow next`/`status`, JSON envelopes | Pull, but near-live: `workflow watch --stream` polls and tails `workflow_*` events as NDJSON with no daemon |
+| **Resume** | Prefix-cache replay keyed on `runId` (needs determinism) | Re-read durable rows; `resume` reopens blocked/failed | Journaled replay keyed on content-derived unit identity; a completed unit with matching inputs is reused, a mismatched one is a hard "replay divergence" error |
+| **Determinism constraint** | `Date.now`/`random`/`new Date()` forbidden | None — it advances rows, it doesn't replay a script | None on the plan itself, but a unit's *recorded inputs* must reproduce under its content-derived identity or replay fails loudly |
+| **Quality gates** | Agent-authored (adversarial verify, judge panels, schemas) | Built-in LLM summary judge (fail-open) + `blocked` human gates | LLM judge over the step's **typed artifact** (not prose), with `gate.max_loops` (bounded retry) and `gate.required` (closes the fail-open hole) |
+| **Sandbox / trust** | Restricted JS interpreter, no FS; subagents use tools | No sandbox — steps run in the user's full shell | Same trust model for shell-capable units; adds opt-in `isolation: worktree` (a fresh detached git worktree per unit, not a security sandbox) |
+| **Identity** | `runId`, token budget | `agent_harness` + `agent_session_id`, check-in timestamp | Same, plus `engine_lease_holder`/`engine_lease_until` (run) and `claim_holder`/`claim_expires_at` (unit) |
+| **Nesting** | `workflow()`, one level deep, sharing the parent's concurrency cap/budget | None built-in — a step could shell out to another `akm workflow` | Same — no built-in nesting |
+| **Stability** | Stable harness feature | Stable, unconditional | Experimental; refuses with exit 78 until `experimental.workflowEngine` is set |
 
 ---
 
 ## Part D — Where they overlap
 
-Despite living on different layers, they converge on several ideas:
+Despite living on different layers, they converge on several ideas — and the
+YAML v2 engine (Part B.4) made two of these convergences much closer than they
+used to be:
 
-1. **Task decomposition into named units** — phases/agents vs. steps.
+1. **Task decomposition into named units** — phases/agents vs. steps/units.
 2. **Durable run identity and resume** — `runId` prefix-cache vs. `state.db`
-   workflow-run rows. Both are built to survive interruption and pick up where they left off.
+   workflow-run rows. Both are built to survive interruption and pick up where
+   they left off; the YAML engine's resume is now also **journaled replay**
+   keyed on content-derived unit identity, much closer in spirit to Claude
+   Code's cache-and-replay than the markdown loop's plain row re-read.
 3. **Per-unit status + evidence** — journal return values vs. step
-   `status`/`notes`/`evidence`/`summary`.
-4. **A "keep going" nudge** — Claude Code's `task-notification`/resume vs. akm's
-   `continue` check-in directive.
+   `status`/`notes`/`evidence`/`summary`, or (for YAML programs) per-unit
+   `workflow_run_units` rows with the same shape.
+4. **A "keep going" nudge** — Claude Code's `task-notification`/resume vs.
+   akm's `continue` check-in directive (run-level, both formats) and its unit-
+   level `--status running` heartbeat (YAML programs via the driver protocol).
 5. **Structured validation of results** — Claude Code's `schema` option
-   (forced `StructuredOutput`, retried) vs. akm's LLM summary-vs-criteria judge.
+   (forced `StructuredOutput`, retried) vs. akm's per-unit `output` JSON
+   Schema (YAML programs, validated with a retry-on-mismatch) and, for
+   markdown, the LLM summary-vs-criteria judge.
 6. **Scaffolding + validation of the artifact** — `meta` shape checks vs.
-   `akm workflow template` / `validate` and the accumulating parser.
-7. **Awareness of the driving session** — Claude Code owns the session; akm
-   *records* it (`CLAUDE_SESSION_ID` → `claude-code`), already anticipating
-   correlation across the two systems.
+   `akm workflow template` / `validate` and the accumulating parser (for both
+   akm formats).
+7. **Bounded, capped concurrency with the same default formula.** Claude
+   Code's `agent()` cap and akm's YAML-program unit scheduler both default to
+   `min(16, cores − 2)` — not a coincidence; the engine's CPU-derived default
+   was written to match it (B.4).
+8. **Awareness of the driving session** — Claude Code owns the session; akm
+   *records* it (`CLAUDE_SESSION_ID` → `claude-code`). For YAML programs this
+   awareness becomes load-bearing, not just descriptive: the run lease (B.5)
+   uses it to arbitrate who is allowed to drive a given run right now.
+9. **A shared execution surface, by design.** The harness-neutral driver
+   protocol (`brief`/`report`) means a Claude Code session can literally *be*
+   the thing executing an akm-orchestrated run's units — the two systems don't
+   just resemble each other, one can drive the other through a stable
+   contract with byte-identical results to the native engine (B.4).
 
 ---
 
-## Part E — Where they fundamentally diverge
+## Part E — Where they still diverge, and where they no longer do
 
-Every difference reduces to one axis: **who holds the execution loop.**
+The old axis — "who holds the execution loop" — is still the right frame, but
+it no longer sorts cleanly by *system*. It sorts by **which akm workflow
+format, and which surface, is in play.**
 
-- **Claude Code workflows own execution.** The harness is the runtime; the script
-  is the plan; subagents are the workers. Because the harness replays the script
-  to resume, it must constrain the script (no wall-clock, no randomness, no FS)
-  and keep it ephemeral. Parallelism is free because the runtime schedules it.
+- **Claude Code workflows always own execution.** The harness is the runtime;
+  the script is the plan; subagents are the workers. Because the harness
+  replays the script to resume, it must constrain the script (no wall-clock,
+  no randomness, no FS) and keep it ephemeral. Parallelism is free because the
+  runtime schedules it.
 
-- **akm workflows own memory, not execution.** akm's *workflow engine* never
-  runs a step; it hands instructions to an external agent and records what came
-  back. Because it never replays anything, it needs no determinism constraints —
-  but as an engine it also doesn't parallelize and doesn't spawn workers of its
-  own. Its value is *durability and gating*: state that outlives any session,
-  plus completion criteria and human `blocked` gates that a fire-and-forget
-  fan-out has no place to put.
+- **An akm markdown workflow still owns memory, not execution** — this half
+  of the old thesis is entirely unchanged. `next`/`complete` hands
+  instructions to an external agent and records what comes back; it never
+  parallelizes, never spawns a worker of its own, needs no determinism
+  constraints because it never replays a script. Its value is durability and
+  gating: state that outlives any session, plus `blocked` human gates a
+  fire-and-forget fan-out has no place to put.
 
-  > **Important qualification.** This is a property of the *current workflow
-  > engine*, not of akm the tool. akm is already multi-harness and already
-  > spawns agents elsewhere: `RunnerSpec` (`llm|agent|sdk`) + `executeRunner`
-  > (`src/integrations/agent/`), the OpenCode SDK runner (`runOpencodeSdk`), the
-  > agent-CLI spawner (`runAgent`), and schema-validated output
-  > (`callStructured`). Concretely, `agent-builder.ts`
-  > (`src/integrations/harnesses/claude/agent-builder.ts`) builds a
-  > `claude [--system-prompt] [--model] [--allowedTools] --print -- <prompt>`
-  > invocation (non-interactive captured mode), dispatched by
-  > `src/integrations/agent/spawn.ts` with hard timeouts and a fixed
-  > failure-reason vocabulary (`timeout`, `spawn_failed`, `non_zero_exit`,
-  > `parse_error`). This is akm's nearest existing analog to Workflow's
-  > `agent()` primitive — and it never imports an LLM SDK; agents are reachable
-  > only via shell-out, a pre-emptive guarantee against invariant #222. That
-  > spawner is used today by the `improve`/`reflect` pipeline, **not** by the
-  > workflow engine — the workflow engine simply doesn't *use* that substrate
-  > yet. That is exactly what the extension plan changes — see
-   > [the current workflow documentation](../reference/workflows.md).
+- **An akm YAML v2 program, run with `akm workflow run`, now owns execution
+  too** — this is the half of the old thesis that changed. The native engine
+  dispatches real concurrent units (through the existing multi-harness
+  substrate: `RunnerSpec` `llm|agent|sdk` + `executeRunner`, the same spawner
+  `akm improve`/`reflect` already used), retries them, isolates them in
+  worktrees, judges their typed artifacts, and enforces budget ceilings — a
+  genuine executor, gated behind `experimental.workflowEngine` (B.0) while it
+  earns stability. **It still doesn't replace the markdown model — it sits
+  next to it**, and it keeps every durability/gating property the markdown
+  format has (frozen plan, journaled resume, `blocked` gates) rather than
+  trading them away for parallelism, the way a from-scratch executor might
+  have.
 
-Concretely:
+Concretely, per surface:
 
-- **Ephemeral vs. durable.** A Claude Code workflow evaporates with the session;
-  an akm run persists in SQLite across sessions, machines (via the repo), and
-  context resets.
-- **Parallel vs. sequential.** Claude Code fans out to thousands of agents; akm
-  advances one step at a time by design.
-- **Self-contained vs. delegated.** A Claude Code workflow carries its own
-  workers; an akm workflow is inert without an agent to execute its
-  instructions.
-- **Sandbox vs. shell.** Claude Code isolates the orchestrator and permissions
-  the workers; akm runs steps with the user's full environment and treats
-  workflow sources as trusted executable code.
-- **Executable script vs. managed content.** A Claude Code workflow is an
-  executable script; an akm workflow is a Markdown *asset* that akm can index,
-  search, `curate`, version, and improve over time like any other stash asset.
-  This is akm's genuine edge on the authoring side — its workflows are managed
-  content, not just executable files.
+| | Claude Code workflow | akm markdown | akm YAML v2 (`run`, experimental) |
+|---|---|---|---|
+| Lifetime | Ephemeral (session-scoped) | Durable (SQLite, cross-session) | Durable (SQLite, cross-session) |
+| Parallel? | Yes, by construction | No, by design | Yes, bounded (B.4) |
+| Self-contained? | Yes — carries its own workers | No — inert without a driving agent | Partially — the native engine can drive itself, or hand off to `brief`/`report` |
+| Sandbox | Restricted JS interpreter, no FS for the script itself | None — full user shell | None for the shell/agent substrate; opt-in `isolation: worktree` for file mutation, not a security boundary |
+| Artifact | Executable script | Managed markdown asset (indexed, searched, `curate`d, versioned) | Managed YAML asset, same treatment, plus a compiled/frozen plan graph |
 
-They are complementary: Claude Code is strong exactly where akm is weak
-(in-session parallel LLM execution) and akm is strong exactly where Claude Code
-is weak (durable, gated, cross-session procedures a human signs off on).
+The genuinely durable conclusion, restated for 0.9.0: Claude Code is strong
+where akm's *markdown* format is weak (in-session parallel LLM execution),
+and akm's *markdown* format is strong where Claude Code is weak (durable,
+gated, cross-session procedures a human signs off on). The YAML v2 engine is
+akm's attempt to keep the second half of that trade while buying back some of
+the first — and the driver protocol means that even where it *hasn't* fully
+closed the gap yet, Claude Code can step in and close it live, on the same
+durable spine, rather than the two systems staying separate.
 
 ---
 
-## Part F — How akm could integrate better with Claude Code workflows
+## Part F — What's left to integrate
 
-> **Superseded by the extension plan.** The integration ideas below were written
-> for the *current* passive-tracker engine. The direction akm is taking is more
-> ambitious: extend the workflow engine into a **harness-agnostic orchestrator**
-> that either compiles a workflow to a Claude Code script and delegates (with
-> report-back), or executes the same definition natively on the OpenCode SDK /
-> other harnesses — providing Claude-Code-equivalent parallelism, structured
-> output, phases, and budgeting on top of akm's existing agent-execution
-> substrate, while keeping akm's durable/gated spine. See
-> [the current workflow documentation](../reference/workflows.md)
-> for the full technical design. The lighter-weight ideas below remain valid as
-> incremental stepping stones.
+Most of what this section used to propose as *future* integration work has
+**shipped** as the YAML v2 engine and the harness-neutral driver protocol
+described in Part B — not as Claude-Code-specific features, but as
+harness-agnostic ones any driver (including Claude Code) can use today:
 
-The two systems are natural partners: a Claude Code workflow is the ideal
-*driver* for an akm run, and an akm run is the ideal *durable spine* for a
-long-lived procedure that a single Claude Code turn can't hold. Concrete steps,
-roughly in order of leverage:
+| Formerly-proposed idea | Status |
+|---|---|
+| A blessed "akm-driver" loop pattern any agent runs to drive an akm run, with structured per-step results | **Shipped**, generalized: the `brief`/`report` driver protocol (Part B.4) — not Claude-Code-specific, any agent session works |
+| Machine-readable, near-live progress instead of polling `status` | **Shipped**: `akm workflow watch --stream` (Part B.6) |
+| Structural (schema) validation of step output, not just an LLM prose judge | **Shipped**: per-unit `output` JSON Schema + typed step artifacts, validated before a gate ever runs (Part B.4/B.7) |
+| An explicit, opt-in fan-out step type | **Shipped**: `map` steps with `over`/`concurrency`/`reducer` (Part B.4) |
 
-### F.1 Ship a first-party "akm-driver" Claude Code workflow pattern
+What's genuinely still not built, as of this writing:
 
-Provide a documented, copy-pasteable Claude Code workflow that pipelines the akm
-command loop:
+### F.1 Correlate an akm run with the driving harness's own run/session id
 
-```js
-// pseudo-shape
-let step = await agentRunsCli(`akm workflow next ${ref} --json`)
-while (!step.done) {
-  const result = await agent(`Do this akm step:\n${step.step.instructions}`,
-                             { schema: STEP_RESULT, phase: step.step.title })
-  await agentRunsCli(`akm workflow complete ${step.run.id} --step ${step.step.id} ` +
-                     `--summary ${quote(result.summary)}`)
-  step = await agentRunsCli(`akm workflow next ${step.run.id} --json`)
-}
-```
+`agent-identity.ts` captures `agent_harness`/`agent_session_id` from
+environment hints, and the driver protocol's `--session-id` flag records a
+harness-native session id per unit (Part B.3). Neither captures a *workflow-
+level* id from an external orchestrator (e.g. a Claude Code `Workflow` tool's
+own `runId`) when one is driving an akm run — there is no env-hint or CLI flag
+for it today, so correlating "this akm run was driven by that Claude Code
+workflow invocation" still has to be done by hand (matching timestamps, logs).
 
-This gives akm runs live `/workflows` progress and Claude Code's subagent
-execution *for free*, while akm keeps the durable, gated state. Today the two
-systems can already interoperate via the shell, but there's no blessed recipe;
-publishing one (and a `whenToUse` note) turns an implicit possibility into a
-supported path.
+### F.2 Let a stalled run's check-in wake the driver instead of waiting to be polled
 
-A lighter-weight variant of the same idea: ship the loop contract as an
-**akm-authored skill/asset** instead of an inline script — call `next`, do the
-step, call `complete` with a summary that satisfies the criteria, honour a
-`checkin` directive. A Workflow script could then simply
-`agent("Drive akm workflows/ship-release to completion", …)` and get correct
-behaviour, making an akm workflow callable as a single Workflow leaf with zero
-engine changes.
+The check-in (Part B.8) is still exactly as passive as the ADR mandates: it
+surfaces only on the next `workflow next`/`status` poll, never proactively.
+There is no signal-file or other out-of-band mechanism that lets a stalled
+run *notify* a harness capable of receiving one (the ADR's own design
+contemplates "a best-effort checkin signal file under the run scope" as a
+future extension) — this remains unbuilt.
 
-### F.2 Record the Claude Code workflow `runId`, not just the session
+### F.3 Two-way compilation between the artifacts
 
-`agent-identity.ts` already captures `agent_harness` / `agent_session_id`. When
-an akm run is driven from inside a Claude Code workflow, also capture the
-workflow `runId` (e.g. via an `AKM_CC_WORKFLOW_RUN_ID` env hint) in a new
-nullable column. That makes an akm run traceable back to the exact orchestration
-that drove it, and lets a future monitor correlate the two progress views.
+Neither direction exists: there is no `akm workflow export` that emits a
+driver script/pattern specialized to a given workflow for a specific harness,
+and there is no `akm workflow ingest-journal` (or equivalent) that backs an
+externally-orchestrated run with an akm run for durability. The driver
+protocol (shipped) covers the *live* case — an external agent driving an akm
+plan in real time — but not converting between the artifacts themselves after
+the fact.
 
-### F.3 Emit machine-readable progress for a live consumer
+### F.4 Suppress the check-in when the driving harness already owns liveness
 
-akm progress is pull-only JSON envelopes. Add an opt-in **NDJSON progress
-stream** (or a stable event on `appendEvent` that a wrapper can tail) so a
-Claude Code workflow — or any external UI — can render akm step transitions
-live instead of re-polling `status`. This narrows the biggest UX gap
-(push vs. pull) without adding a daemon, staying faithful to the check-in ADR's
-"no resident process" principle.
+The check-in fires uniformly for any active run past the stall window
+(`evaluateCheckin`, Part B.8) — it does not special-case a recorded
+`agent_harness` that is known to own its own liveness/orchestration (so
+wouldn't stall the way a free-form chat agent can). This is a small, purely
+local trim on top of the existing check-in logic, not a new subsystem, but it
+is not implemented today.
 
-### F.4 Structured step evidence via a schema, mirroring `agent(..., {schema})`
+### F.5 Distribute non-akm executable workflow scripts as akm assets
 
-Claude Code's `schema` option validates a subagent's output *structurally* with
-retries. akm validates a step's `--summary` only *semantically* (LLM judge).
-Let a step declare an optional **evidence JSON Schema** (in frontmatter or the
-step body); `completeWorkflowStep` would validate `--evidence` against it before
-the LLM gate. That gives akm the same structural guarantee Claude Code workflows
-rely on, and makes an akm step a clean drop-in target for a schema-returning
-Claude Code subagent.
+The `workflow` asset type still only carries akm's own two formats
+(markdown, YAML v2). There is no mechanism for it to carry or reference an
+externally-executable script (a Claude Code `Workflow` tool script, or
+anything else) as an alternate form alongside the runbook, which would let
+akm's package-manager strengths (`add`, search, `curate`, version pinning,
+feedback/improve) apply to *that* artifact too. This is the largest and most
+speculative item on this list.
 
-### F.5 Bounded parallelism as an explicit, opt-in step attribute
-
-akm's strict sequentiality is the right default for gated runbooks, but it
-forecloses the one thing Claude Code does best. akm already supports parallel
-runs via `scope_key` + `--force`; a natural next step is a **fan-out step type**
-— a step that declares "run this instruction over N items" and records N child
-results — which a Claude Code driver could satisfy with a single `parallel()` /
-`pipeline()` call while akm still tracks the aggregate as one durable step.
-Kept opt-in, this doesn't compromise the sequential-by-default gating model.
-
-### F.6 Let the check-in wake the driver instead of waiting to be polled
-
-akm's check-in is deliberately passive — it only surfaces on the next poll. When
-the driving harness is Claude Code (already detected), akm could additionally
-drop the check-in directive into a location the harness watches, so a stalled run
-can be *re-targeted* rather than waiting for a poll that may never come if the
-agent has stopped. The ADR's file-signal design already contemplates "a
-best-effort checkin signal file under the run scope"; formalizing that path for
-the `claude-code` harness closes the loop with Claude Code's
-`task-notification` / `ScheduleWakeup` mechanics.
-
-### F.7 Two-way compilation between the artifacts
-
-- **akm `.md` → Claude Code driver script**: a `akm workflow export --harness
-  claude-code` that emits the F.1 pattern specialized to a given workflow — so a
-  durable akm runbook can be *launched* as a Claude Code workflow with one
-  command. Since akm already parses a workflow into a structured
-  `WorkflowDocument` with steps, instructions, and completion criteria, the
-  emitted script is close to mechanical: a `meta.phases` entry per step and a
-  sequential body where each stage is
-  `agent(step.instructions, { schema: criteriaSchema })` — completion criteria
-  become the `schema`/verification contract.
-- **Claude Code workflow → akm run (for the durable spine)**: when a Claude Code
-  workflow represents a long-lived, resumable, human-gated procedure (not a
-  one-turn fan-out), backing it with an akm run gives it cross-session
-  persistence and `blocked` gates that the transcript-only model lacks. A thin
-  `akm workflow ingest-journal <path>` (or a Workflow that calls
-  `akm workflow complete` at each phase boundary) would give a Claude Code run
-  the cross-session durability, `status`/`list` querying, and feedback/improve
-  hooks akm already provides for its own runs — without Workflow having to grow
-  a database.
-
-### F.8 Suppress the check-in when the harness already owns the run
-
-akm's check-in exists because akm can't see whether the driving agent is
-alive. Inside a Claude Code workflow, the harness *does* own the run and *does*
-have a live progress tree, so the check-in is redundant there. When a run's
-`agent_harness` indicates it is being driven by a harness that owns
-orchestration end-to-end, akm could suppress the `continue` check-in directive
-(that harness won't stall the way a free-form chat agent can) and treat phase
-transitions as the heartbeat instead — avoiding two systems both trying to
-nudge the same agent.
-
-### F.9 Distribute Claude Code workflow scripts as akm assets
-
-A more strategic, larger step: let the `workflow` asset type carry (or
-reference) a Claude Code workflow script as an alternate executable form
-alongside the Markdown runbook. Then akm's existing strengths — `add` from
-GitHub/npm, unified FTS search, `curate`, version pinning, feedback/improve —
-would apply to *executable* Workflow scripts too. `akm curate "release"` could
-surface either a runbook to step through or a harness-executable workflow, and
-`akm show workflows/x` would display the script for the mandatory pre-run audit
-that akm's security model already demands. This is the version where akm
-becomes a package manager for Claude Code workflows specifically — squarely
-on-mission, but a larger commitment than F.1–F.8.
-
-The guiding principle: **don't make akm imitate Claude Code's executor, and
-don't make Claude Code imitate akm's durability.** Let akm remain the durable,
-gated, cross-session memory of *what a procedure is and where a run stands*, and
-let Claude Code remain the in-session parallel executor — with clean, documented
-seams (F.1–F.4) so each drives the other instead of reinventing it.
+The guiding principle from the original version of this section still holds
+and is, if anything, more clearly demonstrated now that part of it has
+shipped: **don't make akm imitate Claude Code's executor, and don't make
+Claude Code imitate akm's durability.** The YAML v2 engine gives akm real
+concurrency without discarding its durable/gated spine (Part E), and the
+driver protocol means Claude Code can drive that spine directly instead of
+either side reinventing the other.
