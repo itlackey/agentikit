@@ -79,11 +79,11 @@ please file it.
   unrecognized type returns zero hits, not an error. Adapters emit types
   outside the built-in set, so there is no closed list to validate against —
   `--type website` or `--type wiki-source` are ordinary, valid filters.
-- **Output contracts** — JSON output shape (the top-level keys) and the
-  error envelope `{ok: false, error, code?, hint?}`: `ok` and `error` are
-  always present; `code` is a stable machine-readable identifier present on
-  every classified failure (exit 1 / 2 / 78) and absent only on unexpected
-  internal errors (exit 70); `hint` is best-effort and may be absent. Prefer
+- **Output contracts** — JSON output shape (the top-level keys) and the error
+  envelope `{ok: false, error, code?, hint?}` on envelope surfaces: `ok` and
+  `error` are always present; `code` is a stable machine-readable identifier
+  present on every classified failure (exit 1 / 2 / 78) and absent only on
+  unexpected internal errors (exit 70); `hint` is best-effort and may be absent. Prefer
   `code` over matching on `error` prose. Plus the exit-code table below.
   **All six** `--format` values (`json|jsonl|yaml|text|md|html`) are available
   on every non-exempt command. `json`, `jsonl`, and `yaml` serialize the
@@ -100,21 +100,24 @@ please file it.
   `--shape` (`human|agent|summary`) is the output-projection axis (see
   Experimental). A small set of commands is **format-exempt** because their
   output is not a result envelope at all: `completions` (shell script source),
-  the interactive `setup` wizard, child-process passthrough in `env run` /
-  `secret run` / `agent` / `migrate` (`status` and `apply` both spawn the
+  child-process passthrough in `env run` / `secret run` / `migrate` (`status`
+  and `apply` both spawn the
   standalone `akm-migrate` tool), a bare-path payload from `env path`, and
   document payloads from `workflow template` / `help migrate` / `hints`. The
   set is declared in
   `src/output/format-exempt.ts`, and
   passing `--format` to one of them warns rather than silently doing something
-  else. `akm graph export` has no local `--format`: the artifact payload
+  else. Scripted `setup` modes emit a normal format-aware result; interactive
+  `setup` is a terminal UI and emits no result document. `agent` leaves
+  inherited child streams raw and formats its final result envelope. `akm graph
+  export` has no local `--format`: the artifact payload
   follows the `--out` extension (`.jsonl` writes JSONL, anything else JSON),
   and the global flag only renders the command's own envelope.
 
   | Exit code | Meaning |
   | --- | --- |
   | `0` | Success |
-  | `1` | General error / not found |
+  | `1` | Not found / command-reported failure |
   | `2` | Usage / bad input |
   | `4` | Health warning (`akm health` only) |
   | `70` | Internal / unclassified |
@@ -282,7 +285,7 @@ the lanes that mutate assets *without* review require an explicit opt-in:
 akm config set experimental.improveAutonomy true
 ```
 
-Without it, these five lanes are downgraded, and each downgrade is **reported,
+Without it, these three lanes are downgraded, and each downgrade is **reported,
 not silent**: it warns on stderr naming the lane and the key, appends an
 `improve_skipped` event with `reason: "autonomy_gated"`, is counted in
 `akm health`'s improve skip-reason summary, and is listed by `akm tasks doctor`
@@ -293,11 +296,13 @@ review-first config correctly shows `queue`.
 
 | Lane | What it does when enabled | With autonomy off |
 | --- | --- | --- |
-| `consolidate` | Merges memories and **deletes** the superseded files (archived to `.akm/archive/` first) | disabled |
 | `memoryInference` | Writes `.derived.md` children and rewrites parent frontmatter | disabled |
-| memory cleanup | Belief-state frontmatter rewrites, archive moves | not analyzed |
-| contradiction pass | Writes contradiction edges and belief-state transitions | not run |
+| memory cleanup | Belief-state frontmatter rewrites, archive moves | analyzed but not applied |
 | `triage` `applyMode: "promote"` | Auto-accepts queued proposals into the stash | downgraded to `queue` — triage still runs, it just does not auto-accept |
+
+Consolidation remains enabled with autonomy off because merge, delete, and
+contradiction operations are advisory; promotion only emits a reviewable
+proposal.
 
 Because the gate is applied before the LLM preflight, a review-first workspace
 also needs fewer engines configured: a strategy whose only model-backed process

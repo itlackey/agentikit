@@ -16,7 +16,11 @@ const launcher = path.join(packageDir, "akm");
 const migrateLauncher = path.join(packageDir, "akm-migrate");
 
 const akmCase = { bin: "akm-fixture", bunArtifact: "bun-cli", nodeArtifact: "node-cli" } as const;
-const migrateCase = { bin: "akm-migrate-fixture", bunArtifact: "bun-migrate" } as const;
+const migrateCase = {
+  bin: "akm-migrate-fixture",
+  bunArtifact: "bun-migrate",
+  nodeArtifact: "node-migrate",
+} as const;
 const launchers = [akmCase, migrateCase];
 
 function result(stdout: Uint8Array): { artifact: string; args: string[] } {
@@ -105,7 +109,7 @@ beforeAll(async () => {
   );
   fs.writeFileSync(
     path.join(packageDir, "scripts", "akm-migrate.js"),
-    'console.log(JSON.stringify({ artifact: "bun-migrate", args: process.argv.slice(2) }));\n',
+    'console.log(JSON.stringify({ artifact: process.versions.bun ? "bun-migrate" : "node-migrate", args: process.argv.slice(2) }));\n',
   );
   fs.writeFileSync(path.join(consumerDir, "package.json"), JSON.stringify({ name: "consumer", private: true }));
 
@@ -151,16 +155,16 @@ describe("package launcher", () => {
     }
   });
 
-  test("the core launcher falls back to Node and the migration launcher requires Bun", () => {
+  test("both launchers fall back to Node", () => {
     const core = launchThroughNpmShim(akmCase.bin, nodeOnlyPathDir);
     expect(new TextDecoder().decode(core.stderr)).toBe("");
     expect(core.exitCode).toBe(0);
     expect(result(core.stdout)).toEqual({ artifact: akmCase.nodeArtifact, args: ["argument with spaces"] });
 
     const migration = launchThroughNpmShim(migrateCase.bin, nodeOnlyPathDir);
-    expect(new TextDecoder().decode(migration.stdout)).toBe("");
-    expect(new TextDecoder().decode(migration.stderr)).toContain("akm-migrate requires Bun >= 1.0");
-    expect(migration.exitCode).toBe(1);
+    expect(new TextDecoder().decode(migration.stderr)).toBe("");
+    expect(migration.exitCode).toBe(0);
+    expect(result(migration.stdout)).toEqual({ artifact: migrateCase.nodeArtifact, args: ["argument with spaces"] });
   });
 
   test("handles Bun below the supported floor or unusable according to each launcher contract", () => {
@@ -175,9 +179,12 @@ describe("package launcher", () => {
       expect(result(core.stdout)).toEqual({ artifact: akmCase.nodeArtifact, args: ["argument with spaces"] });
 
       const migration = launchThroughNpmShim(migrateCase.bin, pathValue);
-      expect(new TextDecoder().decode(migration.stdout)).toBe("");
-      expect(new TextDecoder().decode(migration.stderr)).toContain("akm-migrate requires Bun >= 1.0");
-      expect(migration.exitCode).toBe(1);
+      expect(new TextDecoder().decode(migration.stderr)).toBe("");
+      expect(migration.exitCode).toBe(0);
+      expect(result(migration.stdout)).toEqual({
+        artifact: migrateCase.nodeArtifact,
+        args: ["argument with spaces"],
+      });
     }
   });
 

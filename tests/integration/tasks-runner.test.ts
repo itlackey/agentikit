@@ -5,8 +5,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
 import { buildTaskRunId, openLogsDatabase, queryTaskLogs, type TaskLogRow } from "../../src/core/logs-db";
+import { openStateDatabase } from "../../src/core/state-db";
 import type { SpawnedSubprocess, SpawnFn } from "../../src/core/subprocess";
 import type { AgentRunResult } from "../../src/integrations/agent";
+import { upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
 import { resolveAkmInvocation } from "../../src/tasks/resolve-akm-bin";
 import { exitCodeForStatus, readTaskHistory, runTask } from "../../src/tasks/runner";
 import { withEnv } from "../_helpers/sandbox";
@@ -90,6 +92,61 @@ function readRunLogRows(taskId: string): TaskLogRow[] {
     db.close();
   }
 }
+
+test("task history applies its public limit in SQL before decoding metadata", () => {
+  const db = openStateDatabase();
+  try {
+    for (let index = 0; index < 6; index++) {
+      upsertTaskHistory(db, {
+        task_id: `history-${index}`,
+        status: "completed",
+        started_at: `2025-01-01T00:00:0${index}.000Z`,
+        completed_at: `2025-01-01T00:00:0${index}.000Z`,
+        failed_at: null,
+        log_path: null,
+        target_kind: "command",
+        target_ref: null,
+        metadata_json:
+          index === 0 ? "{not json" : JSON.stringify({ metadataVersion: 2, durationMs: index, detail: null }),
+      });
+    }
+  } finally {
+    db.close();
+  }
+
+  expect(readTaskHistory({ limit: 5 }).map((row) => row.id)).toEqual([
+    "history-5",
+    "history-4",
+    "history-3",
+    "history-2",
+    "history-1",
+  ]);
+});
+
+test("task history projects a v1 prompt profile as legacyProfile, never engine", () => {
+  const db = openStateDatabase();
+  try {
+    upsertTaskHistory(db, {
+      task_id: "legacy-prompt",
+      status: "completed",
+      started_at: "2025-01-01T00:00:00.000Z",
+      completed_at: "2025-01-01T00:00:01.000Z",
+      failed_at: null,
+      log_path: null,
+      target_kind: "prompt",
+      target_ref: null,
+      metadata_json: JSON.stringify({ durationMs: 1000, detail: null, profile: "reviewer" }),
+    });
+  } finally {
+    db.close();
+  }
+
+  expect(readTaskHistory({ id: "legacy-prompt" })[0]?.target).toEqual({
+    kind: "prompt",
+    engine: null,
+    legacyProfile: "reviewer",
+  });
+});
 
 function emptyReadableStream(): ReadableStream<Uint8Array> {
   return new ReadableStream({

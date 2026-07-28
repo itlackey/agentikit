@@ -503,6 +503,35 @@ describe("akm propose", () => {
     expect(events.events[0]?.ref).toBe(durableItemRef(stash, "skill", "hello"));
   });
 
+  test("file-written drafts use the resolved bundle name rather than the source root", async () => {
+    const stash = makeStashDir();
+    const config = {
+      ...quietQualityGateConfig(),
+      bundles: { team: { path: stash, writable: true } },
+      defaultBundle: "team",
+    } as ReturnType<typeof quietQualityGateConfig>;
+    const spawn: SpawnFn = (cmd) => {
+      const prompt = cmd.join(" ");
+      const draftPath = prompt.match(/\/tmp\/akm-propose-[^\s`"']+\.md/)?.[0];
+      if (!draftPath) throw new Error("draft path missing from propose prompt");
+      fs.writeFileSync(draftPath, "---\ndescription: A file-written skill draft\n---\n\nDraft body.\n", "utf8");
+      return fakeSpawn("", "", 0)(cmd, {});
+    };
+
+    const result = await akmPropose({
+      type: "skill",
+      name: "file-draft",
+      task: "Write through the draft file",
+      stashDir: stash,
+      agentConfig: config,
+      runAgentOptions: { spawn },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.proposal.ref).toBe("team//skills/file-draft");
+  });
+
   test("rejects unknown type with UsageError", async () => {
     const stash = makeStashDir();
     let thrown: unknown;

@@ -78,12 +78,18 @@ Exit codes:
 | Code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | Not found or general error |
+| 1 | Not found or command-reported failure |
 | 2 | Usage / bad input |
+| 4 | Health warning (`akm health` only) |
+| 70 | Internal / unclassified error |
 | 78 | Configuration error |
 
 Check `ok === false` or a non-zero exit code to detect failure. The `hint`
 field, when present, describes a corrective action.
+
+`env run`, `secret run`, and `migrate` preserve the spawned process's exact
+status. `tasks run` and `agent` map a failed result to exit 1 while retaining
+the child status in their result envelope.
 
 `akm lint` is the exception: it exits **0 on every successful run regardless
 of findings**. Read `summary.flagged` to detect issues, or pass

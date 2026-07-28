@@ -4,6 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { makeBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { typeNameFromConceptId } from "../../core/asset/resolve-ref";
 import { daysToMs } from "../../core/common";
@@ -24,6 +25,7 @@ import { listStateProposals } from "../../storage/repositories/proposals-reposit
 import { akmLint } from "../lint/index";
 import type { EligibilitySource } from "../proposal/proposal-types";
 import { runSchemaRepairPass } from "../sources/schema-repair";
+import { isAutonomyLaneAllowed } from "./autonomy-gate";
 import { akmConsolidate } from "./consolidate";
 // Eligibility / candidate-selection predicates live in ./eligibility.
 import {
@@ -190,11 +192,15 @@ function evaluateConsolidationEligibility(args: {
   // consolidate_completed event. Time-based cooldowns produced the same
   // synchronised-wave failure mode the reflect/distill cooldowns did; the
   // pool-delta gate ties consolidation to actual work-to-do.
+  const sourceName = options.sourceName ?? options.writeTarget?.source.name ?? options.config?.defaultBundle ?? "stash";
   const recentConsolidations = readEvents({ type: "consolidate_completed" });
   const lastConsolidation = recentConsolidations.events
-    .filter((e) => e.metadata?.processed && Number(e.metadata.processed) > 0)
+    .filter((e) => e.metadata?.source === sourceName && Number(e.metadata?.processed) > 0)
     .sort((a, b) => new Date(b.ts ?? 0).getTime() - new Date(a.ts ?? 0).getTime())[0];
-  const lastConsolidateTs = lastConsolidation?.ts;
+  const lastConsolidateTs =
+    typeof lastConsolidation?.metadata?.completedThrough === "string"
+      ? lastConsolidation.metadata.completedThrough
+      : lastConsolidation?.ts;
 
   // #551 smarter gate: build the set of memory asset paths whose only delta
   // since the last consolidate is their OWN promotion. Those files
@@ -235,18 +241,25 @@ function evaluateConsolidationEligibility(args: {
     const memoriesDir = path.join(primaryStashDir, "memories");
     if (!fs.existsSync(memoriesDir)) return false;
     try {
-      return fs.readdirSync(memoriesDir).some((f) => {
-        if (!f.endsWith(".md")) return false;
-        const filePath = path.join(memoriesDir, f);
-        // #551: skip files that were only touched by their own promotion this
-        // cohort — they have no settled merge/contradiction candidates yet.
-        if (promotedSinceConsolidate.has(path.resolve(filePath))) return false;
-        try {
-          return fs.statSync(filePath).mtime.toISOString() > lastConsolidateTs;
-        } catch {
-          return false;
+      const pending = [memoriesDir];
+      while (pending.length > 0) {
+        const current = pending.pop() as string;
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+          const filePath = path.join(current, entry.name);
+          if (entry.isDirectory()) {
+            pending.push(filePath);
+            continue;
+          }
+          if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+          if (promotedSinceConsolidate.has(path.resolve(filePath))) continue;
+          try {
+            if (fs.statSync(filePath).mtime.toISOString() > lastConsolidateTs) return true;
+          } catch {
+            // Ignore files that disappear during the scan.
+          }
         }
-      });
+      }
+      return false;
     } catch {
       return false;
     }
@@ -355,12 +368,14 @@ export async function runConsolidationPass(args: {
     );
     info(`[improve] consolidation skipped (pool ${eligiblePoolSize} < minPoolSize ${minPoolSize})`);
   } else if (!consolidationOnCooldown) {
+    const consolidationStartedAt = new Date().toISOString();
     consolidation = await withLlmStage(
       "consolidate",
       () =>
         akmConsolidate({
           ...options.consolidateOptions,
           config: consolidationConfig,
+          dryRun: options.dryRun ?? false,
           stashDir: options.stashDir,
           // Active profile for this improve run — lets consolidate's secondary
           // process-config reads honor `--profile <name>` instead of `default`.
@@ -376,17 +391,9 @@ export async function runConsolidationPass(args: {
           // recently-changed memories + graph neighbours — use this for frequent
           // passes (quick-shredder). Leave absent in the nightly default profile for
           // a full-pool sweep that catches stale-but-unmerged duplicates.
-          incrementalSince: improveProfile?.processes?.consolidate?.incrementalSince,
           limit: improveProfile?.processes?.consolidate?.limit,
           neighborsPerChanged: improveProfile?.processes?.consolidate?.neighborsPerChanged,
           maxChunkSize: improveProfile?.processes?.consolidate?.maxChunkSize,
-          // The improve pipeline is an automated batch flow: it must never
-          // block on consolidate's interactive HTTP-path confirm prompt, and
-          // scheduled runs must keep APPLYING the consolidation plan (the
-          // shipped tasks previously got this via `--auto-accept safe`'s
-          // prompt-bypass role; the confidence gate itself died in 0.9.0).
-          // An explicit caller-provided consolidateOptions.assumeYes wins.
-          assumeYes: options.consolidateOptions?.assumeYes ?? true,
           // WS-3a: forward budget signal for graceful abort on timeout, and pass
           // the profile's p90 estimate for cold-start budget reduction.
           signal: budgetSignal,
@@ -397,13 +404,28 @@ export async function runConsolidationPass(args: {
         }),
       { engine: resolvedPlan.processes.consolidate.runner?.engine, process: "consolidate" },
     );
-    if (consolidation.processed > 0) {
+    const sourceName = options.sourceName ?? options.writeTarget?.source.name ?? baseConfig.defaultBundle ?? "stash";
+    const complete =
+      (consolidation.failedChunks ?? 0) === 0 &&
+      (consolidation.failedChunkMemories ?? 0) === 0 &&
+      (consolidation.failedPromotions ?? 0) === 0 &&
+      (consolidation.deferredMemories ?? 0) === 0;
+    const hasUnappliedAdvisoryOperations = consolidation.planned?.some((op) => op.op !== "promote") ?? false;
+    if (
+      consolidation.ok &&
+      !consolidation.dryRun &&
+      complete &&
+      !hasUnappliedAdvisoryOperations &&
+      consolidation.processed > 0
+    ) {
       appendEvent(
         {
           eventType: "consolidate_completed",
-          ref: "memories/_consolidation",
+          ref: makeBundleRef(sourceName, "memories/_consolidation"),
           metadata: {
             processed: consolidation.processed,
+            source: sourceName,
+            completedThrough: consolidationStartedAt,
             merged: consolidation.merged,
             deleted: consolidation.deleted,
             contradicted: consolidation.contradicted,
@@ -431,7 +453,11 @@ export async function runConsolidationPass(args: {
 
   // D9: track whether consolidation wrote any data so graph extraction can reindex if needed
   const consolidationRan =
-    !consolidateDisabledByProfile && !poolBelowMinSize && !consolidationOnCooldown && consolidation.processed > 0;
+    !consolidateDisabledByProfile &&
+    !poolBelowMinSize &&
+    !consolidationOnCooldown &&
+    !consolidation.previewOnly &&
+    consolidation.processed > 0;
 
   return { consolidation, consolidationRan };
 }
@@ -792,7 +818,14 @@ export async function runImprovePreparationStage(args: {
   // pass after a DB version upgrade (#339). Any failure messages from that
   // earlier call were threaded in via args.initialCleanupWarnings.
 
-  const cleanup = await applyCleanupPass({ primaryStashDir, memoryCleanupPlan, plannedRefs, reindexFn, budgetSignal });
+  const cleanup = await applyCleanupPass({
+    primaryStashDir,
+    memoryCleanupPlan,
+    plannedRefs,
+    reindexFn,
+    budgetSignal,
+    allowApply: isAutonomyLaneAllowed("memoryCleanup", options.config ?? loadConfig()),
+  });
   const appliedCleanup = cleanup.appliedCleanup;
   const postCleanupRefs = cleanup.postCleanupRefs;
   actions.push(...cleanup.pruneActions);
@@ -812,7 +845,7 @@ export async function runImprovePreparationStage(args: {
   let lintSummary: { fixed: number; flagged: number } | undefined;
   if (primaryStashDir) {
     try {
-      const lintResult = akmLint({ fix: true, dir: primaryStashDir });
+      const lintResult = akmLint({ fix: false, dir: primaryStashDir });
       lintSummary = { fixed: lintResult.summary.fixed, flagged: lintResult.summary.flagged };
     } catch {
       // lint is best-effort; never block improve
@@ -946,19 +979,22 @@ async function applyCleanupPass(args: {
   plannedRefs: ImproveEligibleRef[];
   reindexFn: (options: { stashDir: string; signal?: AbortSignal }) => Promise<unknown>;
   budgetSignal?: AbortSignal;
+  allowApply: boolean;
 }): Promise<{
   appliedCleanup?: Awaited<ReturnType<typeof applyMemoryCleanup>>;
   postCleanupRefs: ImproveEligibleRef[];
   pruneActions: ImproveActionResult[];
   warnings: string[];
 }> {
-  const { primaryStashDir, memoryCleanupPlan, plannedRefs, reindexFn, budgetSignal } = args;
+  const { primaryStashDir, memoryCleanupPlan, plannedRefs, reindexFn, budgetSignal, allowApply } = args;
   const pruneActions: ImproveActionResult[] = [];
   const warnings: string[] = [];
   let appliedCleanup: Awaited<ReturnType<typeof applyMemoryCleanup>> | undefined;
   try {
     appliedCleanup =
-      primaryStashDir && memoryCleanupPlan ? applyMemoryCleanup(primaryStashDir, memoryCleanupPlan) : undefined;
+      primaryStashDir && memoryCleanupPlan && allowApply
+        ? applyMemoryCleanup(primaryStashDir, memoryCleanupPlan)
+        : undefined;
   } catch (err) {
     warnings.push(`applyMemoryCleanup failed: ${err instanceof Error ? err.message : String(err)}`);
   }

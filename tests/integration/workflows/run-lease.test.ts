@@ -11,10 +11,12 @@ import {
   WorkflowRunsRepository,
   withWorkflowRunsRepo,
 } from "../../../src/storage/repositories/workflow-runs-repository";
+import { buildWorkflowBrief } from "../../../src/workflows/exec/brief";
 import { reportWorkflowUnit } from "../../../src/workflows/exec/report";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
 import {
+  abandonWorkflowRun,
   completeWorkflowStep,
   getNextWorkflowStep,
   getWorkflowStatus,
@@ -33,8 +35,8 @@ import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfi
  *   - Manual `workflow complete` is refused while a live engine lease is held
  *     (the engine owns the spine while driving) and allowed after release or
  *     expiry. Manual `workflow next` never takes a lease.
- *   - The lease is released on engine failure paths too (dispatcher throws,
- *     frozen-plan integrity failure).
+ *   - A failed run retains its final lease columns for forensics; failures
+ *     before the run changes status still release normally.
  */
 
 let storage: IsolatedAkmStorage;
@@ -126,6 +128,43 @@ describe("repository lease primitives", () => {
       const row = repo.getRunById(runId);
       expect(row?.engine_lease_holder).toBeNull();
       expect(row?.engine_lease_until).toBeNull();
+    });
+  });
+
+  test("failed runs cannot acquire, renew, release, or refresh forensic lease and unit claims", async () => {
+    writeWorkflow("lease-forensics");
+    const started = await startWorkflowRun("workflows/lease-forensics", {});
+    const runId = started.run.id;
+    const originalUntil = isoIn(90_000);
+
+    await withWorkflowRunsRepo((repo) => {
+      expect(repo.acquireEngineLease(runId, "stale-engine", originalUntil, new Date().toISOString())).toBe(true);
+      repo.insertUnit({
+        runId,
+        unitId: "only-step:solo",
+        stepId: "only-step",
+        nodeId: "only-step",
+        parentUnitId: null,
+        phase: null,
+        runner: "agent",
+        model: null,
+        inputHash: "hash",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        claimHolder: "stale-driver",
+        claimExpiresAt: originalUntil,
+      });
+    });
+    execOnWorkflowDb("UPDATE workflow_runs SET status = 'failed' WHERE id = ?", runId);
+
+    await withWorkflowRunsRepo((repo) => {
+      expect(repo.renewEngineLease(runId, "stale-engine", isoIn(180_000))).toBe(false);
+      expect(repo.acquireEngineLease(runId, "new-engine", isoIn(180_000), new Date().toISOString())).toBe(false);
+      repo.releaseEngineLease(runId, "stale-engine");
+      expect(
+        repo.updateUnitClaim(runId, "only-step:solo", "stale-driver", isoIn(180_000), new Date().toISOString()),
+      ).toBe(false);
+      expect(repo.getRunById(runId)?.engine_lease_until).toBe(originalUntil);
+      expect(repo.getUnit(runId, "only-step:solo")?.claim_expires_at).toBe(originalUntil);
     });
   });
 });
@@ -319,8 +358,63 @@ describe("engine run lease (single driver)", () => {
     // The dispatcher throw becomes a failed unit → failed step → failed run…
     expect(result.run.status).toBe("failed");
     expect(result.executed[0]?.ok).toBe(false);
-    // …and the finally released the lease anyway.
-    expect(await readLease(started.run.id)).toEqual({ holder: null, until: null });
+    // …and the failed run retains the last holder/expiry as forensic state.
+    expect((await readLease(started.run.id)).holder).toBeTruthy();
+  });
+
+  test("an abandoned in-flight run rejects stale renewal, aborts continuation, and retains forensic rows", async () => {
+    writeWorkflow("lease-abandoned-in-flight");
+    const started = await startWorkflowRun("workflows/lease-abandoned-in-flight", {});
+    let tick: (() => Promise<void>) | undefined;
+    let finishDispatch: ((value: { ok: true; text: string }) => void) | undefined;
+    let markStarted: (() => void) | undefined;
+    const dispatchStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const dispatchResult = new Promise<{ ok: true; text: string }>((resolve) => {
+      finishDispatch = resolve;
+    });
+
+    const running = runWorkflowSteps({
+      target: started.run.id,
+      heartbeatScheduler: (scheduled) => {
+        tick = scheduled;
+        return () => {};
+      },
+      dispatcher: async () => {
+        markStarted?.();
+        return dispatchResult;
+      },
+    });
+    await dispatchStarted;
+    const leaseBefore = await readLease(started.run.id);
+    expect(leaseBefore.holder).toBeTruthy();
+
+    await abandonWorkflowRun(started.run.id);
+    if (!tick) throw new Error("heartbeat was not scheduled");
+    await tick();
+    finishDispatch?.({ ok: true, text: "stale result" });
+
+    await expect(running).rejects.toThrow(/lost its run lease mid-dispatch/);
+    expect((await getWorkflowStatus(started.run.id)).run.status).toBe("failed");
+    expect(await readLease(started.run.id)).toEqual(leaseBefore);
+    const units = await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(started.run.id));
+    expect(units).toHaveLength(1);
+    expect(units[0]).toMatchObject({ status: "running", result_json: null, finished_at: null });
+    const db = openStateDatabase(resolveStorageLocations().stateDb);
+    try {
+      const successfulFinishes = db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM events
+           WHERE event_type = 'workflow_unit_finished'
+             AND json_extract(metadata_json, '$.runId') = ?
+             AND json_extract(metadata_json, '$.status') = 'completed'`,
+        )
+        .get(started.run.id) as { count: number };
+      expect(successfulFinishes.count).toBe(0);
+    } finally {
+      db.close();
+    }
   });
 
   test("the lease is released when the engine throws before dispatching (frozen-plan integrity failure)", async () => {
@@ -341,6 +435,32 @@ describe("engine run lease (single driver)", () => {
 });
 
 describe("manual loop under the lease", () => {
+  test("a stale report driver cannot claim a unit after the run is abandoned between snapshot and claim", async () => {
+    writeWorkflow("report-abandon-race");
+    const started = await startWorkflowRun("workflows/report-abandon-race", {});
+    const brief = await buildWorkflowBrief(started.run.id);
+    const unitId = brief.workList.units[0]?.unitId;
+    if (!unitId) throw new Error("fixture requires one reportable unit");
+
+    const realTransaction = WorkflowRunsRepository.prototype.transaction;
+    let transactions = 0;
+    spyOn(WorkflowRunsRepository.prototype, "transaction").mockImplementation(function <T>(
+      this: WorkflowRunsRepository,
+      fn: () => T,
+    ): T {
+      transactions++;
+      if (transactions === 2) {
+        execOnWorkflowDb("UPDATE workflow_runs SET status = 'failed' WHERE id = ?", started.run.id);
+      }
+      return realTransaction.call(this, fn) as T;
+    });
+
+    await expect(reportWorkflowUnit({ target: started.run.id, unitId, status: "running" })).rejects.toThrow(
+      /stale driver continuation/i,
+    );
+    expect(await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(started.run.id))).toEqual([]);
+  });
+
   test("manual complete is refused during a live engine lease, allowed after release", async () => {
     writeWorkflow("lease-manual");
     const started = await startWorkflowRun("workflows/lease-manual", {});
@@ -434,7 +554,12 @@ describe("terminal run no-op (no lease, no plan load, no dispatch)", () => {
     // plan_json. Classification must reject it before the no-op can return and
     // must not disturb the planted lease columns.
     const until = isoIn(90_000);
-    await plantLease(runId, "planted-holder", until);
+    execOnWorkflowDb(
+      "UPDATE workflow_runs SET engine_lease_holder = ?, engine_lease_until = ? WHERE id = ?",
+      "planted-holder",
+      until,
+      runId,
+    );
     execOnWorkflowDb("UPDATE workflow_runs SET plan_json = ? WHERE id = ?", "{ this is not valid json", runId);
 
     let dispatches = 0;
@@ -473,12 +598,10 @@ describe("terminal run no-op (no lease, no plan load, no dispatch)", () => {
       },
     });
     expect(crashed.run.status).toBe("failed");
-    // The crash path released the lease.
-    expect(await readLease(runId)).toEqual({ holder: null, until: null });
-
-    // Plant a lease so we can prove the refused re-invocation leaves it untouched.
-    const until = isoIn(90_000);
-    await plantLease(runId, "planted-holder", until);
+    // The crash path retains the final lease so we can prove the refused
+    // re-invocation leaves the forensic row untouched.
+    const retained = await readLease(runId);
+    expect(retained.holder).toBeTruthy();
 
     let dispatches = 0;
     let planLoads = 0;
@@ -499,8 +622,8 @@ describe("terminal run no-op (no lease, no plan load, no dispatch)", () => {
 
     expect(dispatches).toBe(0);
     expect(planLoads).toBe(0);
-    // The refusal happened before any lease write — the planted lease is intact.
-    expect(await readLease(runId)).toEqual({ holder: "planted-holder", until });
+    // The refusal happened before any lease write — the retained lease is intact.
+    expect(await readLease(runId)).toEqual(retained);
   });
 });
 

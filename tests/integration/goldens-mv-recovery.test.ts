@@ -242,7 +242,6 @@ describe("goldens: mv SIGKILL roll-forward phases (WI-04, R3, integration)", () 
       expect(trigger.stderr).toBe("");
       expect(trigger.code).toBe(0);
 
-      const toRef = memoryRef(`${name}-new`);
       const storedToRef = memoryStoredRef(`${name}-new`);
       const stateToRef = memoryItemRef(`${name}-new`);
       expect(fs.existsSync(path.join(storage.stashDir, "memories", `${name}-new.md`))).toBe(true);
@@ -257,7 +256,7 @@ describe("goldens: mv SIGKILL roll-forward phases (WI-04, R3, integration)", () 
       expect(state.salience).toBe(stateToRef);
       expect(state.outcomeRetrievalCount).toBe(7);
 
-      const mvEvent = mvEventOutcome(toRef);
+      const mvEvent = mvEventOutcome(stateToRef);
       expect(mvEvent.matchingCount).toBe(1);
       expect(mvEvent.distinctIdempotencyKeyCount).toBe(1);
       expect(transactionsRootIsClean(storage.stashDir)).toBe(true);
@@ -279,7 +278,7 @@ describe("goldens: mv recovery entry points, pinned individually (WI-04, R3, int
     ]);
     expect(trigger.code).toBe(0);
     expect(fs.existsSync(path.join(storage.stashDir, "memories", `${MV_RECOVERY_ENTRY_MVRUN_NAME}-new.md`))).toBe(true);
-    const events = readEvents({ type: "mv", ref: memoryRef(`${MV_RECOVERY_ENTRY_MVRUN_NAME}-new`) }).events;
+    const events = readEvents({ type: "mv", ref: memoryItemRef(`${MV_RECOVERY_ENTRY_MVRUN_NAME}-new`) }).events;
     expect(events).toHaveLength(1);
   });
 
@@ -304,7 +303,7 @@ describe("goldens: mv recovery entry points, pinned individually (WI-04, R3, int
     expect(fs.existsSync(path.join(storage.stashDir, "memories", `${MV_RECOVERY_ENTRY_PROMOTE_NAME}-new.md`))).toBe(
       true,
     );
-    const events = readEvents({ type: "mv", ref: memoryRef(`${MV_RECOVERY_ENTRY_PROMOTE_NAME}-new`) }).events;
+    const events = readEvents({ type: "mv", ref: memoryItemRef(`${MV_RECOVERY_ENTRY_PROMOTE_NAME}-new`) }).events;
     expect(events).toHaveLength(1);
   });
 
@@ -432,7 +431,6 @@ describe("golden fixture: serialize mv SIGKILL crash-recovery outcomes (WI-04, R
 
       await crashAt(phase, ref, `${name}-new`);
       const trigger = await runCliCapture(["mv", memoryRef(triggerName), `${triggerName}-new`]);
-      const toRef = memoryRef(`${name}-new`);
       const storedToRef = memoryStoredRef(`${name}-new`);
       db = openExistingDatabase(getDbPath());
       const after = db.prepare("SELECT id FROM entries WHERE entry_key LIKE ?").get(`%:${storedToRef}`) as
@@ -447,7 +445,7 @@ describe("golden fixture: serialize mv SIGKILL crash-recovery outcomes (WI-04, R
         indexRowIdPreserved: after?.id === before?.id,
         stateSalienceRekeyed: state.salience === stateToRef,
         stateOutcomeRekeyed: state.outcomeRetrievalCount === 7,
-        mvEvent: mvEventOutcome(toRef),
+        mvEvent: mvEventOutcome(stateToRef),
         journalPhasesObserved: [phase],
       };
     }
@@ -467,7 +465,7 @@ describe("golden fixture: serialize mv SIGKILL crash-recovery outcomes (WI-04, R
         ]);
         return {
           recovered: trigger.code === 0 && fs.existsSync(path.join(storage.stashDir, "memories", `${name}-new.md`)),
-          mvEvent: mvEventOutcome(memoryRef(`${name}-new`)),
+          mvEvent: mvEventOutcome(memoryItemRef(`${name}-new`)),
         };
       })();
 
@@ -490,7 +488,7 @@ describe("golden fixture: serialize mv SIGKILL crash-recovery outcomes (WI-04, R
         const accepted = await akmProposalAccept({ stashDir: storage.stashDir, id: proposal.id });
         return {
           recovered: accepted.ok && fs.existsSync(path.join(storage.stashDir, "memories", `${name}-new.md`)),
-          mvEvent: mvEventOutcome(memoryRef(`${name}-new`)),
+          mvEvent: mvEventOutcome(memoryItemRef(`${name}-new`)),
         };
       })();
 

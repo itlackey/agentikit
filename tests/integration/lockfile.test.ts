@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getLockfileLockPath } from "../../src/core/paths";
 import {
+  compareAndSwapLockfile,
   type LockfileEntry,
   mergeLockEntriesSync,
   readLockfile,
@@ -154,6 +155,16 @@ describe("readLockfile", () => {
 // ── writeLockfile ───────────────────────────────────────────────────────────
 
 describe("writeLockfile", () => {
+  test("compare-and-swap refuses a stale expected generation without overwriting the third generation", async () => {
+    const oldGeneration = [validEntry({ id: "pkg", ref: "old" })];
+    const desiredGeneration = [validEntry({ id: "pkg", ref: "desired" })];
+    const thirdGeneration = [validEntry({ id: "pkg", ref: "third" })];
+    await writeLockfile(thirdGeneration);
+
+    expect(await compareAndSwapLockfile(oldGeneration, desiredGeneration)).toBe(false);
+    expect(readLockfile()).toEqual(thirdGeneration);
+  });
+
   test("writes formatted JSON with trailing newline", async () => {
     const entries = [validEntry()];
     await writeLockfile(entries);

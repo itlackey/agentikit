@@ -268,6 +268,11 @@ describe("parseRefInput", () => {
     expect(() => parseRefInput("prod")).toThrow(NotFoundError);
   });
 
+  test("a qualified root-level opaque conceptId is a complete parseable ref", () => {
+    expect(parseRefInput("catalog//readme")).toEqual({ type: "readme", name: "readme", origin: "catalog" });
+    expect(isFullRefInput("catalog//readme")).toBe(true);
+  });
+
   test("D11 does NOT re-accept the retired colon `type:name` grammar (Q-02)", () => {
     // No slash at all after the colon — already rejected pre-D11 too.
     expect(() => parseRefInput("skill:code-review")).toThrow(NotFoundError);
@@ -299,6 +304,11 @@ describe("isFullRefInput", () => {
     expect(isFullRefInput("prod")).toBe(false);
     expect(isFullRefInput("projectA/new-note")).toBe(false); // leading segment maps to no type
     expect(isFullRefInput("")).toBe(false);
+  });
+
+  test("qualified opaque conceptIds are syntactically complete", () => {
+    expect(isFullRefInput("catalog//tables/customers")).toBe(true);
+    expect(isFullRefInput("tables/customers")).toBe(false);
   });
 });
 

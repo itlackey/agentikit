@@ -123,7 +123,7 @@ describe("env path", () => {
 
     expect(result.status).toBe(0);
     expect((result.stdout ?? "").trim()).toBe(envPath);
-    expect(result.stderr ?? "").toContain("'--format' has no effect on 'akm env'");
+    expect(result.stderr ?? "").toContain("'--format' has no effect on 'akm env path'");
   });
 });
 

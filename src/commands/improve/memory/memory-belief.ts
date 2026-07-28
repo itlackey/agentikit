@@ -76,7 +76,7 @@ function readEdgeList(value: unknown): string[] {
  * present WITHOUT the demotion (e.g. a hand-written `contradictedBy:` line,
  * or a beliefState lost to a partial edit) is repaired, not skipped — an
  * edge-only guard would make such a file a permanent no-op while
- * consolidate's handleContradictOp reports the contradiction as applied.
+ * contradiction writers report the contradiction as applied.
  *
  * Never weakens a stronger demotion: `archived` ranks BELOW `contradicted`
  * (see `BELIEF_STATE_SCORE_CEILINGS` in

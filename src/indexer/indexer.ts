@@ -59,7 +59,7 @@ import {
   getAllEntries,
   getEmbeddableEntryCount,
   getEntryCount,
-  getIndexedDirPathsWithDifferentAdapter,
+  getIndexedDirPathsByStashDir,
   getIndexedStashDirsByDir,
   relinkUsageEvents,
   upsertEntry,
@@ -300,7 +300,7 @@ function applyRemovedSources(ctx: IndexRunContext): void {
  * `ctx.walkWarnings`, and `ctx.dirsNeedingLlm` for downstream phases.
  */
 async function runWalkPhase(ctx: IndexRunContext): Promise<void> {
-  const { db, sources, isIncremental, builtAtMs, hadRemovedSources, full, signal, onProgress, config } = ctx;
+  const { db, sources, isIncremental, builtAtMs, hadRemovedSources, full, clean, signal, onProgress, config } = ctx;
 
   throwIfAborted(signal);
 
@@ -315,6 +315,7 @@ async function runWalkPhase(ctx: IndexRunContext): Promise<void> {
     hadRemovedSources,
     doFullDelete,
     onProgress,
+    !clean,
   );
 
   ctx.scannedDirs = scannedDirs;
@@ -724,6 +725,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           sources: allSourceEntries,
           sourceDirs: allSourceDirs,
           full,
+          clean,
           stashDir,
           onProgress,
           signal,
@@ -953,12 +955,10 @@ function sourceSnapshotRemovals(
   db: Database,
   currentStashDir: string,
   currentDirs: ReadonlySet<string>,
-  adapterId: string,
   allIndexedDirsBySource?: ReadonlyMap<string, ReadonlySet<string>>,
 ): Array<DirRecord & { reason: DirScanReason }> {
   const indexedDirs =
-    allIndexedDirsBySource?.get(path.resolve(currentStashDir)) ??
-    getIndexedDirPathsWithDifferentAdapter(db, currentStashDir, adapterId);
+    allIndexedDirsBySource?.get(path.resolve(currentStashDir)) ?? getIndexedDirPathsByStashDir(db, currentStashDir);
   return [...indexedDirs]
     .map((dirPath) => path.resolve(dirPath))
     .filter((dirPath) => !currentDirs.has(dirPath))
@@ -977,6 +977,7 @@ function buildSourceScanPlans(
   db: Database,
   allSourceEntries: SearchSource[],
   isIncremental: boolean,
+  reconcileMissingDirs: boolean,
 ): { plans: SourceScanPlan[]; handoffDirs: Set<string> } {
   const componentBySource = buildComponentBySource(allSourceEntries);
   const handoffDirs = new Set<string>();
@@ -1032,7 +1033,7 @@ function buildSourceScanPlans(
 
   // A full, globally-complete run uses the atomic table wipe below. Every
   // other run reconciles only sources that produced trustworthy snapshots.
-  if (isIncremental || !allComplete) {
+  if (reconcileMissingDirs && (isIncremental || !allComplete)) {
     const allIndexedDirsBySource = !isIncremental ? new Map<string, Set<string>>() : undefined;
     if (allIndexedDirsBySource) {
       for (const entry of getAllEntries(db)) {
@@ -1045,13 +1046,7 @@ function buildSourceScanPlans(
     for (const plan of plans) {
       if (!plan.walkComplete || !plan.adapter) continue;
       const currentDirs = new Set([...plan.dirGroups.keys()].map((dirPath) => path.resolve(dirPath)));
-      for (const removal of sourceSnapshotRemovals(
-        db,
-        plan.currentStashDir,
-        currentDirs,
-        plan.adapter.id,
-        allIndexedDirsBySource,
-      )) {
+      for (const removal of sourceSnapshotRemovals(db, plan.currentStashDir, currentDirs, allIndexedDirsBySource)) {
         addRemoval(plan, removal.dirPath, removal.currentStashDir);
       }
     }
@@ -1089,6 +1084,15 @@ function buildSourceScanPlans(
  * outside `db.transaction()` so the persist pass can be a single synchronous
  * transaction.
  */
+function reportSourceScanProgress(
+  onProgress: ((event: IndexProgressEvent) => void) | undefined,
+  processed: number,
+  total: number,
+  message: string,
+): void {
+  onProgress?.({ phase: "scan", message, processed, total });
+}
+
 async function scanSourceDirs(
   db: Database,
   allSourceEntries: SearchSource[],
@@ -1096,26 +1100,21 @@ async function scanSourceDirs(
   builtAtMs: number,
   hadRemovedSources: boolean,
   onProgress?: (event: IndexProgressEvent) => void,
+  reconcileMissingDirs = true,
 ): Promise<SourceScanResult> {
   let scannedDirs = 0;
   let skippedDirs = 0;
   let generatedCount = 0;
   const warnings: string[] = [];
   const seenPaths = new Set<string>();
-  const { plans, handoffDirs } = buildSourceScanPlans(db, allSourceEntries, isIncremental);
+  const { plans, handoffDirs } = buildSourceScanPlans(db, allSourceEntries, isIncremental, reconcileMissingDirs);
 
   const dirRecords: DirRecord[] = [];
   let processedDirs = 0;
   let priorDirsChanged = hadRemovedSources;
 
-  const reportScanProgress = (message: string) => {
-    onProgress?.({
-      phase: "scan",
-      message,
-      processed: processedDirs,
-      total: allSourceEntries.length,
-    });
-  };
+  const reportScanProgress = (message: string) =>
+    reportSourceScanProgress(onProgress, processedDirs, allSourceEntries.length, message);
 
   const reportDirDecision = (
     kind: "scan" | "skip",
@@ -1574,6 +1573,7 @@ async function indexEntries(
   hadRemovedSources: boolean,
   doFullDelete = false,
   onProgress?: (event: IndexProgressEvent) => void,
+  reconcileMissingDirs = true,
 ): Promise<{
   scannedDirs: number;
   skippedDirs: number;
@@ -1591,6 +1591,7 @@ async function indexEntries(
     builtAtMs,
     hadRemovedSources,
     onProgress,
+    reconcileMissingDirs,
   );
 
   // Phase 2 (sync): write all pre-generated metadata inside a single transaction.

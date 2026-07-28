@@ -42,36 +42,3 @@ export function isHotCapturedMemory(filePath: string): boolean {
     return false;
   }
 }
-
-/**
- * Strict guard for the consolidate delete/merge paths.
- *
- * Returns a verdict that distinguishes "hot" (refuse, user-explicit) from
- * "unparseable" (refuse, frontmatter integrity broken — could have hidden a
- * hot flag) from "safe" (proceed). The legacy `isHotCapturedMemory` returns
- * false on read/parse errors, which would let consolidate delete a memory
- * whose frontmatter was corrupted between capture and consolidate runs.
- *
- * Use this for any destructive operation; use `isHotCapturedMemory` only
- * when a missing/unparseable file is genuinely safe to ignore.
- */
-export type ConsolidateGuardVerdict = "hot" | "safe" | "unparseable" | "missing";
-
-export function consolidateGuardStatus(filePath: string): ConsolidateGuardVerdict {
-  if (!fs.existsSync(filePath)) return "missing";
-  let content: string;
-  try {
-    content = fs.readFileSync(filePath, "utf8");
-  } catch {
-    return "unparseable";
-  }
-  let parsed: ReturnType<typeof parseFrontmatter>;
-  try {
-    parsed = parseFrontmatter(content);
-  } catch {
-    return "unparseable";
-  }
-  const data = parsed.data as Record<string, unknown> | undefined;
-  if (!data || Object.keys(data).length === 0) return "unparseable";
-  return hasHotCaptureMode(data) ? "hot" : "safe";
-}

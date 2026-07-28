@@ -22,6 +22,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { getParsedInvocation, parseAllFlagValues } from "../../src/cli/invocation";
+import { hasBooleanFlag, parseFlagValue } from "../../src/output/context";
 
 function withArgv<T>(userArgs: string[], fn: () => T): T {
   const real = process.argv;
@@ -68,6 +69,20 @@ describe("invocation.ts argv `--` boundary (R-033a)", () => {
       getParsedInvocation().getAllFlagValues("--filter"),
     );
     expect(values).toEqual(["type:memory"]);
+  });
+
+  test("first-value and boolean scans ignore flags after `--`", () => {
+    const invocation = withArgv(["env", "run", "env/prod", "--", "tool", "--format", "text", "--quiet"], () =>
+      getParsedInvocation(),
+    );
+    expect(invocation.getFlagValue("--format")).toBeUndefined();
+    expect(invocation.hasFlag("--quiet")).toBe(false);
+  });
+
+  test("output-mode first-value and boolean primitives stop at `--`", () => {
+    const argv = ["bun", "cli.ts", "env", "run", "env/prod", "--", "tool", "--format", "text", "--quiet"];
+    expect(parseFlagValue(argv, "--format")).toBeUndefined();
+    expect(hasBooleanFlag(argv, "--quiet")).toBe(false);
   });
 
   test("passthroughArgs() is unaffected — it still returns everything after `--`", () => {

@@ -119,7 +119,15 @@ describe("#591: planned refs carry a pre-resolved filePath", () => {
     expect(result.ok).toBe(true);
     expect(result.plannedRefs).toHaveLength(1);
     expect(result.plannedRefs[0]?.ref).toBe("lessons/alpha");
+    expect(result.plannedRefs[0]?.itemRef).toBe(durableRef("lessons/alpha"));
     expect(fs.realpathSync(result.plannedRefs[0]?.filePath ?? "")).toBe(fs.realpathSync(alphaPath));
+  });
+
+  test("scope-ref reports a valid but missing indexed ref as not found", async () => {
+    await indexStash(storage.stashDir);
+    await expect(
+      akmImprove({ stashDir: storage.stashDir, scope: "lessons/missing", dryRun: true }),
+    ).rejects.toMatchObject({ kind: "not-found" });
   });
 
   test("a stale pre-resolved filePath still falls back to the async lookup (deletion race)", async () => {

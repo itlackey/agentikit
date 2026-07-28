@@ -73,8 +73,9 @@ describe("CONSOLIDATE_PLAN_JSON_SCHEMA — per-variant required fields", () => {
     expect(v.required).toContain("primary");
     expect(v.required).toContain("secondaries");
     expect(v.required).toContain("mergeStrategy");
-    const secs = v.properties.secondaries as { minItems?: number; items?: { type?: string } };
+    const secs = v.properties.secondaries as { minItems?: number; maxItems?: number; items?: { type?: string } };
     expect(secs.minItems).toBe(1);
+    expect(secs.maxItems).toBe(1);
     expect(secs.items?.type).toBe("string");
   });
 

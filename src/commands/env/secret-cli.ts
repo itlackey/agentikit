@@ -37,16 +37,17 @@ import { defineGroupCommand, defineJsonCommand, output } from "../../cli/shared"
 import { deriveCanonicalAssetName } from "../../core/asset/asset-placement";
 import { loadConfig } from "../../core/config/config";
 import {
-  commitEnvSecretWrite,
   makeSecretRef,
   resolveSecretPath,
   resolveSecretWriteTarget,
+  withEnvSecretWrite,
 } from "../../core/env-secret-ref";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { resolveSourceEntries } from "../../indexer/search/search-source";
 import { readStdin } from "../../runtime";
 import { buildChildEnv } from "./child-env";
+import { sensitiveMarkerPath } from "./marker-path";
 
 function parseKeyListFlag(raw: string | undefined): string[] | undefined {
   if (raw === undefined) return undefined;
@@ -73,7 +74,7 @@ function listSecretsRecursive(): Array<{ ref: string; path: string }> {
         if (!entry.isFile()) continue;
         if (entry.name.endsWith(".lock") || entry.name.endsWith(".sensitive")) continue;
         // A sibling `<name>.sensitive` marker suppresses listing.
-        if (fs.existsSync(`${full}.sensitive`)) continue;
+        if (fs.existsSync(sensitiveMarkerPath(full, "secret"))) continue;
         const canonical = deriveCanonicalAssetName("secret", secretsDir, full);
         if (!canonical) continue;
         result.push({ ref: makeSecretRef(canonical, source), path: full });
@@ -158,8 +159,7 @@ const secretSetCommand = defineJsonCommand({
       value = Buffer.from(stdinBuf.toString("utf8").replace(/\n$/, ""), "utf8");
     }
 
-    setSecret(absPath, value);
-    commitEnvSecretWrite(target, { type: "secret", name }, "Update", [absPath]);
+    withEnvSecretWrite(target, { type: "secret", name }, "Update", [absPath], () => setSecret(absPath, value));
     output("secret-set", { ref });
   },
 });

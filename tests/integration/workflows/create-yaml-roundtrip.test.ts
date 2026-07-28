@@ -21,8 +21,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { openStateDatabase } from "../../../src/core/state-db";
+import { resolveStorageLocations } from "../../../src/storage/locations";
+import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { createWorkflowAsset, validateWorkflowProgramSource } from "../../../src/workflows/authoring/authoring";
-import { getWorkflowStatus, listWorkflowRuns, startWorkflowRun } from "../../../src/workflows/runtime/runs";
+import { buildWorkflowBrief } from "../../../src/workflows/exec/brief";
+import { reportWorkflowUnit } from "../../../src/workflows/exec/report";
+import {
+  getNextWorkflowStep,
+  getWorkflowStatus,
+  listWorkflowRuns,
+  startWorkflowRun,
+} from "../../../src/workflows/runtime/runs";
 import { loadWorkflowAsset } from "../../../src/workflows/runtime/workflow-asset-loader";
 import {
   type IsolatedAkmStorage,
@@ -74,7 +84,7 @@ describe("workflow create with a .yaml/.yml name writes a YAML program", () => {
     // start → status round-trip on the canonical ref.
     const started = await startWorkflowRun("workflows/foo");
     const status = await getWorkflowStatus(started.run.id);
-    expect(status.workflow.ref).toBe("workflows/foo");
+    expect(status.workflow.ref).toBe("stash//workflows/foo");
     expect(status.run.status).toBe("active");
   });
 
@@ -131,7 +141,174 @@ describe("workflow_ref canonicalization collapses foo.yaml and foo", () => {
     // Both spellings resolve to exactly the same (single) run; the stored ref
     // is canonical.
     expect(byAlias.runs).toEqual(byCanonical.runs);
-    for (const run of byCanonical.runs) expect(run.workflowRef).toBe("workflows/listed");
+    for (const run of byCanonical.runs) expect(run.workflowRef).toBe("stash//workflows/listed");
+  });
+
+  test("short and qualified sequential starts share the resolved bundle identity", async () => {
+    createWorkflowAsset({ name: "qualified.yaml" });
+
+    const started = await startWorkflowRun("workflows/qualified");
+    expect(started.run.workflowRef).toBe("stash//workflows/qualified");
+    await expect(startWorkflowRun("stash//workflows/qualified.yaml")).rejects.toThrow(/already has an active run/);
+  });
+
+  test("canonical and historical exact refs form one latest-updated active set", async () => {
+    createWorkflowAsset({ name: "history.yaml" });
+    const historical = await startWorkflowRun("workflows/history");
+    const newer = await startWorkflowRun("stash//workflows/history", {}, { force: true });
+
+    const db = openStateDatabase(resolveStorageLocations().stateDb);
+    try {
+      db.prepare("UPDATE workflow_runs SET workflow_ref = ?, updated_at = ? WHERE id = ?").run(
+        "workflows/history",
+        "2026-01-01T00:00:00.000Z",
+        historical.run.id,
+      );
+      db.prepare("UPDATE workflow_runs SET updated_at = ? WHERE id = ?").run("2026-01-02T00:00:00.000Z", newer.run.id);
+    } finally {
+      db.close();
+    }
+
+    const listed = await listWorkflowRuns({ workflowRef: "workflows/history" });
+    expect(listed.runs.map((run) => run.id)).toEqual([newer.run.id, historical.run.id]);
+    expect((await getNextWorkflowStep("workflows/history")).run.id).toBe(newer.run.id);
+    expect((await getNextWorkflowStep("stash//workflows/history")).run.id).toBe(newer.run.id);
+  });
+
+  test("brief and report select the latest forced run across canonical and historical refs", async () => {
+    createWorkflowAsset({ name: "driver-history.yaml" });
+    const historical = await startWorkflowRun("workflows/driver-history");
+    const newer = await startWorkflowRun("stash//workflows/driver-history", {}, { force: true });
+    const db = openStateDatabase(resolveStorageLocations().stateDb);
+    try {
+      db.prepare("UPDATE workflow_runs SET workflow_ref = ?, updated_at = ? WHERE id = ?").run(
+        "workflows/driver-history",
+        "2026-01-01T00:00:00.000Z",
+        historical.run.id,
+      );
+      db.prepare("UPDATE workflow_runs SET updated_at = ? WHERE id = ?").run("2026-01-02T00:00:00.000Z", newer.run.id);
+    } finally {
+      db.close();
+    }
+
+    const brief = await buildWorkflowBrief("workflows/driver-history");
+    expect(brief.run.id).toBe(newer.run.id);
+    const unitId = brief.workList.units[0]?.unitId;
+    if (!unitId) throw new Error("fixture requires one reportable unit");
+    const reported = await reportWorkflowUnit({
+      target: "workflows/driver-history",
+      unitId,
+      status: "running",
+    });
+    expect(reported.runId).toBe(newer.run.id);
+    expect(await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(historical.run.id))).toEqual([]);
+  });
+
+  test("detached exact history remains listable but an unresolved short active row is not rebound", async () => {
+    const created = createWorkflowAsset({ name: "detached.yaml" });
+    const started = await startWorkflowRun("workflows/detached");
+    const db = openStateDatabase(resolveStorageLocations().stateDb);
+    try {
+      db.prepare("UPDATE workflow_runs SET workflow_ref = ? WHERE id = ?").run("workflows/detached", started.run.id);
+    } finally {
+      db.close();
+    }
+    fs.rmSync(created.path);
+
+    expect((await listWorkflowRuns({ workflowRef: "workflows/detached" })).runs.map((run) => run.id)).toEqual([
+      started.run.id,
+    ]);
+    await expect(getNextWorkflowStep("workflows/detached")).rejects.toThrow(/not found/i);
+  });
+
+  test("a detached qualified active ref remains an exact lookup", async () => {
+    const created = createWorkflowAsset({ name: "detached-qualified.yaml" });
+    const started = await startWorkflowRun("stash//workflows/detached-qualified");
+    fs.rmSync(created.path);
+
+    expect((await getNextWorkflowStep("stash//workflows/detached-qualified")).run.id).toBe(started.run.id);
+    const brief = await buildWorkflowBrief("stash//workflows/detached-qualified");
+    expect(brief.run.id).toBe(started.run.id);
+    const unitId = brief.workList.units[0]?.unitId;
+    if (!unitId) throw new Error("fixture requires one reportable unit");
+    expect(
+      (await reportWorkflowUnit({ target: "stash//workflows/detached-qualified", unitId, status: "running" })).runId,
+    ).toBe(started.run.id);
+  });
+
+  test("a qualified exact active row survives when its bundle is absent from current config", async () => {
+    createWorkflowAsset({ name: "config-detached.yaml" });
+    const started = await startWorkflowRun("stash//workflows/config-detached");
+    const detachedRef = "native//workflows/config-detached";
+    const db = openStateDatabase(resolveStorageLocations().stateDb);
+    try {
+      db.prepare("UPDATE workflow_runs SET workflow_ref = ? WHERE id = ?").run(detachedRef, started.run.id);
+    } finally {
+      db.close();
+    }
+
+    expect((await getNextWorkflowStep(detachedRef)).run.id).toBe(started.run.id);
+    expect((await buildWorkflowBrief(detachedRef)).run.id).toBe(started.run.id);
+    expect((await listWorkflowRuns({ workflowRef: detachedRef })).runs.map((run) => run.id)).toEqual([started.run.id]);
+  });
+
+  test("brief and report fail closed for a detached historical short ref", async () => {
+    const created = createWorkflowAsset({ name: "driver-detached.yaml" });
+    const started = await startWorkflowRun("workflows/driver-detached");
+    const brief = await buildWorkflowBrief(started.run.id);
+    const unitId = brief.workList.units[0]?.unitId;
+    if (!unitId) throw new Error("fixture requires one reportable unit");
+    const db = openStateDatabase(resolveStorageLocations().stateDb);
+    try {
+      db.prepare("UPDATE workflow_runs SET workflow_ref = ? WHERE id = ?").run(
+        "workflows/driver-detached",
+        started.run.id,
+      );
+    } finally {
+      db.close();
+    }
+    fs.rmSync(created.path);
+
+    await expect(buildWorkflowBrief("workflows/driver-detached")).rejects.toThrow(/not found/i);
+    await expect(
+      reportWorkflowUnit({ target: "workflows/driver-detached", unitId, status: "running" }),
+    ).rejects.toThrow(/not found/i);
+  });
+
+  test("a qualified bundle does not adopt a colliding historical short ref owned by the current default bundle", async () => {
+    const betaAsset = createWorkflowAsset({ name: "collision.yaml" });
+    const alphaRoot = path.join(path.dirname(storage.stashDir), "alpha-bundle");
+    const alphaPath = path.join(alphaRoot, "workflows", "collision.yaml");
+    fs.mkdirSync(path.dirname(alphaPath), { recursive: true });
+    fs.copyFileSync(betaAsset.path, alphaPath);
+    writeSandboxConfig({
+      bundles: {
+        beta: { path: storage.stashDir, writable: true },
+        alpha: { path: alphaRoot, writable: true },
+      },
+      defaultBundle: "beta",
+    });
+
+    const beta = await startWorkflowRun("workflows/collision");
+    expect(beta.run.workflowRef).toBe("beta//workflows/collision");
+    const db = openStateDatabase(resolveStorageLocations().stateDb);
+    try {
+      db.prepare("UPDATE workflow_runs SET workflow_ref = ?, updated_at = ? WHERE id = ?").run(
+        "workflows/collision",
+        "2026-01-02T00:00:00.000Z",
+        beta.run.id,
+      );
+    } finally {
+      db.close();
+    }
+
+    const alphaRun = await startWorkflowRun("alpha//workflows/collision");
+    expect(alphaRun.run.workflowRef).toBe("alpha//workflows/collision");
+    expect((await getNextWorkflowStep("alpha//workflows/collision")).run.id).toBe(alphaRun.run.id);
+    expect((await buildWorkflowBrief("alpha//workflows/collision")).run.id).toBe(alphaRun.run.id);
+    expect((await listWorkflowRuns({ workflowRef: "alpha//workflows/collision" })).runs.map((run) => run.id)).toEqual([
+      alphaRun.run.id,
+    ]);
   });
 });
 

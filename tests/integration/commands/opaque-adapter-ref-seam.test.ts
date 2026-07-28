@@ -119,18 +119,17 @@ describe("Q-07 / D11 — opaque adapter conceptIds at the ref-consuming commands
     expect(result.ref).toBe("adversarial//tables/customers");
   });
 
-  test("indexer walk: `resolveAssetPath` resolves an opaque conceptId, index-first and disk-only", async () => {
+  test("indexer walk resolves opaque conceptIds from the index without guessing a disk serialization", async () => {
     await akmIndex({ stashDir: storage.stashDir, full: true });
     const indexed = await resolveAssetPath("adversarial//tables/customers", { honorOrigin: true });
     expect(indexed).toBe(conceptPath);
 
-    // disk-only (pre-index / no DB row): the disk-fallback candidate builder
-    // must not crash trying to route an opaque type through a placement dir.
+    // Core cannot assume an opaque adapter serializes a concept as `<id>.md`.
     const diskOnly = await resolveAssetPath("adversarial//tables/customers", {
       mode: "disk-only",
       honorOrigin: true,
     });
-    expect(diskOnly).toBe(conceptPath);
+    expect(diskOnly).toBeNull();
   });
 
   test("improve: `--scope` recognizes an opaque conceptId as a REF, not a bogus type filter", async () => {
@@ -159,7 +158,7 @@ describe("Q-07 / D11 — opaque adapter conceptIds at the ref-consuming commands
       frontmatter_json: null,
       metadata_json: JSON.stringify({
         proposedTarget: { source: "adversarial", root: okfRoot },
-        changes: [{ path: "tables/customers.md", op: "modify" }],
+        changes: [{ path: "tables/customers.md", op: "update" }],
       }),
     };
     // Pre-fix, `currentProposalRef` reconstructed `conceptIdFromTypeName("tables",

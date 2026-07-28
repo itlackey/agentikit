@@ -39,7 +39,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureAkmMarkdownType } from "../../core/asset/akm-markdown";
 import { assetPathForName, placementTypes, stashDirFor } from "../../core/asset/asset-placement";
-import { isBundleSlug } from "../../core/asset/asset-ref";
+import { isBundleSlug, parseBundleRef } from "../../core/asset/asset-ref";
 import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import { isWithin } from "../../core/common";
 import { type AkmConfig, loadConfig } from "../../core/config/config";
@@ -355,6 +355,47 @@ function withProposalsDb<T>(_stashDir: string, ctx: ProposalsContext | undefined
   return withStateDb(fn, { path: ctx?.dbPath });
 }
 
+function persistProposalUpdate(db: Database, proposal: Proposal, stashDir: string): void {
+  if (proposal.changes.length > 0 && proposal.proposedTarget) {
+    upsertProposal(db, proposal, stashDir);
+    return;
+  }
+  const row = db
+    .prepare("SELECT metadata_json FROM proposals WHERE id = ? AND stash_dir = ?")
+    .get(proposal.id, stashDir) as { metadata_json: string } | undefined;
+  if (!row) throw new NotFoundError(`Proposal "${proposal.id}" not found.`, "FILE_NOT_FOUND");
+  const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
+  for (const field of [
+    "sourceRun",
+    "beforeHash",
+    "review",
+    "confidence",
+    "gateDecision",
+    "backupContent",
+    "acceptedTarget",
+    "eligibilitySource",
+  ] as const) {
+    const value = proposal[field];
+    if (value === undefined) delete metadata[field];
+    else metadata[field] = value;
+  }
+  db.prepare(
+    `UPDATE proposals
+     SET ref = ?, status = ?, source = ?, updated_at = ?, content = ?, frontmatter_json = ?, metadata_json = ?
+     WHERE id = ? AND stash_dir = ?`,
+  ).run(
+    proposal.ref,
+    proposal.status,
+    proposal.source,
+    proposal.updatedAt,
+    proposal.payload.content,
+    proposal.payload.frontmatter ? JSON.stringify(proposal.payload.frontmatter) : null,
+    JSON.stringify(metadata),
+    proposal.id,
+    stashDir,
+  );
+}
+
 /**
  * WI-8.5a — the durable `proposals.ref` key in the final `bundle//conceptId`
  * item_ref grammar (D-R3). The conceptId is BUILT from the D-R2 static table
@@ -379,10 +420,11 @@ interface ProposalRefIdentity {
 
 function proposalRefIdentity(ref: string): ProposalRefIdentity | undefined {
   try {
-    const parsed = parseRefInput(ref);
+    const parsed = parseBundleRef(ref);
+    if (parsed.fragment !== undefined || isRetiredProposalConceptId(parsed.conceptId)) return undefined;
     return {
-      conceptId: conceptIdFromTypeName(parsed.type, parsed.name),
-      ...(parsed.origin !== undefined ? { bundle: parsed.origin } : {}),
+      conceptId: parsed.conceptId,
+      ...(parsed.bundle !== undefined ? { bundle: parsed.bundle } : {}),
     };
   } catch {
     return undefined;
@@ -391,10 +433,13 @@ function proposalRefIdentity(ref: string): ProposalRefIdentity | undefined {
 
 function filterRefIdentity(ref: string): ProposalRefIdentity {
   try {
-    const p = parseRefInput(ref);
+    const p = parseBundleRef(ref);
+    if (p.fragment !== undefined || isRetiredProposalConceptId(p.conceptId)) {
+      throw new Error("not a current proposal identity");
+    }
     return {
-      conceptId: conceptIdFromTypeName(p.type, p.name),
-      ...(p.origin !== undefined ? { bundle: p.origin } : {}),
+      conceptId: p.conceptId,
+      ...(p.bundle !== undefined ? { bundle: p.bundle } : {}),
     };
   } catch {
     throw new UsageError(
@@ -402,6 +447,11 @@ function filterRefIdentity(ref: string): ProposalRefIdentity {
       "INVALID_FLAG_VALUE",
     );
   }
+}
+
+function isRetiredProposalConceptId(conceptId: string): boolean {
+  const colon = conceptId.indexOf(":");
+  return colon > 0 && stashDirFor(conceptId.slice(0, colon)) !== undefined;
 }
 
 function proposalMatchesRef(proposalRef: string, filter: ProposalRefIdentity): boolean {
@@ -903,6 +953,7 @@ export function archiveProposal(
   status: "accepted" | "rejected",
   reason: string | undefined,
   ctx?: ProposalsContext,
+  gateDecision?: Omit<ProposalGateDecision, "decidedAt"> & { decidedAt?: string },
 ): Proposal {
   return withProposalsDb(stashDir, ctx, (db) => {
     return withImmediateTransaction(db, () => {
@@ -923,8 +974,9 @@ export function archiveProposal(
           ...(reason !== undefined ? { reason } : {}),
           decidedAt,
         },
+        ...(gateDecision ? { gateDecision: { ...gateDecision, decidedAt: gateDecision.decidedAt ?? decidedAt } } : {}),
       };
-      upsertProposal(db, updated, stashDir);
+      persistProposalUpdate(db, updated, stashDir);
       return updated;
     });
   });
@@ -959,7 +1011,7 @@ export function recordGateDecision(
         ...existing,
         gateDecision: { ...decision, decidedAt: decision.decidedAt ?? nowIso(ctx) },
       };
-      upsertProposal(db, updated, stashDir);
+      persistProposalUpdate(db, updated, stashDir);
       return updated;
     });
   });
@@ -1142,6 +1194,7 @@ interface ProposalTxnPayload {
   gitPublication?: GitPublication;
   gitSnapshots?: GitPathSnapshots;
   eventMetadata?: Record<string, unknown>;
+  gateDecision?: Omit<ProposalGateDecision, "decidedAt"> & { decidedAt?: string };
 }
 
 type ProposalTxn = Txn<ProposalTxnPayload>;
@@ -1245,8 +1298,23 @@ function persistProposalTransactionState(txn: ProposalTxn, proposal: Proposal, c
         if (current.status !== "pending") {
           throw new Error(`Proposal ${p.proposalId} changed status during acceptance (${current.status}).`);
         }
+        const persistedProposal: Proposal =
+          proposal.changes.length > 0 && proposal.changes.every((change) => change.path.length > 0)
+            ? withProposalContent(proposal, publishedContent)
+            : {
+                ...proposal,
+                payload: { ...proposal.payload, content: publishedContent },
+                changes: [
+                  {
+                    path: path.relative(txn.journal.root, p.assetPath),
+                    op: p.originalHash === null ? "create" : "update",
+                    after: publishedContent,
+                  },
+                ],
+                proposedTarget: { source: p.targetSource, root: txn.journal.root },
+              };
         const accepted: Proposal = {
-          ...withProposalContent(proposal, publishedContent),
+          ...persistedProposal,
           status: "accepted",
           updatedAt: decidedAt,
           review: { outcome: "accepted", decidedAt },
@@ -1256,6 +1324,9 @@ function persistProposalTransactionState(txn: ProposalTxn, proposal: Proposal, c
             path: p.assetPath,
             contentHash: p.publishedHash,
           },
+          ...(p.gateDecision
+            ? { gateDecision: { ...p.gateDecision, decidedAt: p.gateDecision.decidedAt ?? decidedAt } }
+            : {}),
           ...(backupContent !== undefined ? { backupContent } : {}),
         };
         upsertProposal(db, accepted, p.stashDir);
@@ -1487,6 +1558,7 @@ interface RejectTxnPayload {
   proposalId: string;
   stashDir: string;
   reason?: string;
+  gateDecision?: Omit<ProposalGateDecision, "decidedAt"> & { decidedAt?: string };
 }
 
 type RejectTxn = Txn<RejectTxnPayload>;
@@ -1500,10 +1572,14 @@ function finalizeRejectTransaction(txn: RejectTxn, ctx?: ProposalsContext): Prop
   let proposal = getProposal(p.stashDir, p.proposalId, ctx);
   if (txn.journal.phase === "prepared") {
     if (proposal.status === "pending") {
-      proposal = archiveProposal(p.stashDir, p.proposalId, "rejected", p.reason, {
-        ...ctx,
-        now: () => Date.parse(decidedAt),
-      });
+      proposal = archiveProposal(
+        p.stashDir,
+        p.proposalId,
+        "rejected",
+        p.reason,
+        { ...ctx, now: () => Date.parse(decidedAt) },
+        p.gateDecision,
+      );
     } else if (proposal.status !== "rejected") {
       throw new Error(`Proposal ${p.proposalId} changed status during rejection (${proposal.status}).`);
     }
@@ -1564,6 +1640,7 @@ export function rejectProposalDurably(
   proposalId: string,
   reason?: string,
   ctx?: ProposalsContext,
+  gateDecision?: Omit<ProposalGateDecision, "decidedAt"> & { decidedAt?: string },
 ): Proposal {
   const recovered = recoverRejectTransaction(stashDir, proposalId, ctx);
   if (recovered) return recovered;
@@ -1578,7 +1655,12 @@ export function rejectProposalDurably(
     kind: REJECT_TXN_KIND,
     root: stashDir,
     changes: [],
-    payload: { proposalId, stashDir, ...(reason !== undefined ? { reason } : {}) },
+    payload: {
+      proposalId,
+      stashDir,
+      ...(reason !== undefined ? { reason } : {}),
+      ...(gateDecision ? { gateDecision } : {}),
+    },
     decidedAt: nowIso(ctx),
   });
   const rejected = finalizeRejectTransaction(txn, ctx);
@@ -1597,6 +1679,7 @@ function prepareProposalTransaction(
     originalHash: string | null;
     backup?: Buffer;
     eventMetadata?: Record<string, unknown>;
+    gateDecision?: Omit<ProposalGateDecision, "decidedAt"> & { decidedAt?: string };
   },
   ctx?: ProposalsContext,
 ): ProposalTxn {
@@ -1653,6 +1736,7 @@ function prepareProposalTransaction(
       publishedHash,
       ...(gitPublication ? { gitPublication } : {}),
       ...(options.eventMetadata ? { eventMetadata: options.eventMetadata } : {}),
+      ...(options.gateDecision ? { gateDecision: options.gateDecision } : {}),
     },
     decidedAt: nowIso(ctx),
   });
@@ -1736,7 +1820,34 @@ function resolveProposalWriteTarget(
   queueTarget?: ResolvedWriteTarget,
 ): ResolvedWriteTarget {
   if (!proposal.proposedTarget) {
-    throw new UsageError(`Proposal ${proposal.id} has no write target.`, "INVALID_PROPOSAL");
+    const identity = proposalRefIdentity(proposal.ref);
+    if (!identity) throw new UsageError(`Proposal ${proposal.id} has an invalid ref.`, "INVALID_PROPOSAL");
+    if (identity.bundle !== undefined) {
+      const target = resolveBundleWriteTarget(config, identity.bundle);
+      const targetBundleId = canonicalBundleIdForTarget(config, target);
+      if (explicitTarget !== undefined) {
+        const explicit = resolveWriteTarget(config, explicitTarget);
+        if (canonicalBundleIdForTarget(config, explicit) !== identity.bundle) {
+          throw new UsageError(
+            `Proposal ${proposal.id} ref is bound to bundle "${identity.bundle}", which conflicts with --target "${explicitTarget}".`,
+            "INVALID_FLAG_VALUE",
+          );
+        }
+      }
+      if (queueTarget && canonicalBundleIdForTarget(config, queueTarget) !== identity.bundle) {
+        throw new UsageError(`Proposal ${proposal.id} is bound to a different queue target.`, "INVALID_FLAG_VALUE");
+      }
+      return { ...target, source: { ...target.source, name: targetBundleId } };
+    }
+    const target = explicitTarget ? resolveWriteTarget(config, explicitTarget) : queueTarget;
+    if (!target) {
+      throw new UsageError(
+        `Unbound short proposal ${proposal.id} requires an explicit --target or authenticated --queue context.`,
+        "INVALID_PROPOSAL",
+      );
+    }
+    const targetBundleId = canonicalBundleIdForTarget(config, target);
+    return { ...target, source: { ...target.source, name: targetBundleId } };
   }
   if (queueTarget && explicitTarget === undefined) {
     const queueBundleId = canonicalBundleIdForTarget(config, queueTarget);
@@ -1766,7 +1877,12 @@ export async function promoteProposal(
   stashDir: string,
   config: AkmConfig,
   id: string,
-  options: { target?: string; queueTarget?: ResolvedWriteTarget; eventMetadata?: Record<string, unknown> } = {},
+  options: {
+    target?: string;
+    queueTarget?: ResolvedWriteTarget;
+    eventMetadata?: Record<string, unknown>;
+    gateDecision?: Omit<ProposalGateDecision, "decidedAt"> & { decidedAt?: string };
+  } = {},
   ctx?: ProposalsContext,
 ): Promise<PromoteResult> {
   return withAssetMutationLease("proposal-accept", () => promoteProposalWithLease(stashDir, config, id, options, ctx));
@@ -1776,9 +1892,15 @@ async function promoteProposalWithLease(
   stashDir: string,
   config: AkmConfig,
   id: string,
-  options: { target?: string; queueTarget?: ResolvedWriteTarget; eventMetadata?: Record<string, unknown> },
+  options: {
+    target?: string;
+    queueTarget?: ResolvedWriteTarget;
+    eventMetadata?: Record<string, unknown>;
+    gateDecision?: Omit<ProposalGateDecision, "decidedAt"> & { decidedAt?: string };
+  },
   ctx?: ProposalsContext,
 ): Promise<PromoteResult> {
+  recoverRejectTransaction(stashDir, id, ctx);
   let proposal = getProposal(stashDir, id, ctx);
 
   // Attempt bounded auto-repair of mechanically-fixable structural defects
@@ -1806,7 +1928,7 @@ async function promoteProposalWithLease(
   // final promoted payload (not the defective original).
   if (repairedContent !== proposalContent(proposal)) {
     withProposalsDb(stashDir, ctx, (db) => {
-      upsertProposal(db, withProposalContent(proposal, repairedContent), stashDir);
+      persistProposalUpdate(db, withProposalContent(proposal, repairedContent), stashDir);
     });
   }
 
@@ -1878,10 +2000,15 @@ async function promoteProposalWithLease(
       "INVALID_FLAG_VALUE",
     );
   }
+  const refIdentity = proposalRefIdentity(proposalToValidate.ref);
+  const proposalForMutation: Proposal =
+    refIdentity?.bundle === undefined
+      ? { ...proposalToValidate, ref: `${target.source.name}//${refIdentity?.conceptId ?? ""}` }
+      : proposalToValidate;
   const transaction = prepareProposalTransaction(
     stashDir,
     mutationTarget,
-    proposalToValidate,
+    proposalForMutation,
     ref,
     repairedContent,
     {
@@ -1889,13 +2016,14 @@ async function promoteProposalWithLease(
       originalHash: backup ? proposalHash(backup) : null,
       backup,
       eventMetadata: options.eventMetadata,
+      gateDecision: options.gateDecision,
     },
     ctx,
   );
   publishProposalAsset(transaction, mutationTarget);
-  const accepted = await finalizeProposalTransaction(transaction, mutationTarget, proposalToValidate, ctx);
+  const accepted = await finalizeProposalTransaction(transaction, mutationTarget, proposalForMutation, ctx);
   cleanupTxn(transaction.dir);
-  return { proposal: accepted, assetPath: transaction.journal.payload.assetPath, ref: proposal.ref };
+  return { proposal: accepted, assetPath: transaction.journal.payload.assetPath, ref: accepted.ref };
 }
 
 // ── Reversion (Phase 6C) ────────────────────────────────────────────────────

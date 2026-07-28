@@ -38,10 +38,10 @@ const DEFAULT_STRATEGY = {
 };
 
 describe("applyAutonomyGate with autonomy OFF", () => {
-  test("disables consolidate and memoryInference", () => {
+  test("keeps review-only consolidate planning enabled and disables memoryInference", () => {
     const { config } = applyAutonomyGate(DEFAULT_STRATEGY, REVIEW_FIRST);
 
-    expect(config.processes?.consolidate?.enabled).toBe(false);
+    expect(config.processes?.consolidate?.enabled).toBe(true);
     expect(config.processes?.memoryInference?.enabled).toBe(false);
   });
 
@@ -70,7 +70,7 @@ describe("applyAutonomyGate with autonomy OFF", () => {
     const { gated } = applyAutonomyGate(DEFAULT_STRATEGY, REVIEW_FIRST);
     const lanes = gated.map((g) => g.lane);
 
-    expect(lanes).toContain("consolidate");
+    expect(lanes).not.toContain("consolidate");
     expect(lanes).toContain("memoryInference");
     expect(lanes).toContain("triagePromote");
     for (const entry of gated) {
@@ -86,9 +86,8 @@ describe("applyAutonomyGate with autonomy OFF", () => {
     expect(gated).toEqual([]);
   });
 
-  test("blocks the plan-bypassing cleanup and contradiction lanes", () => {
+  test("blocks the plan-bypassing cleanup lane", () => {
     expect(isAutonomyLaneAllowed("memoryCleanup", REVIEW_FIRST)).toBe(false);
-    expect(isAutonomyLaneAllowed("contradiction", REVIEW_FIRST)).toBe(false);
   });
 });
 
@@ -102,17 +101,14 @@ describe("applyAutonomyGate with autonomy ON", () => {
     expect(gated).toEqual([]);
   });
 
-  test("allows the plan-bypassing lanes", () => {
+  test("allows the plan-bypassing cleanup lane", () => {
     expect(isAutonomyLaneAllowed("memoryCleanup", AUTONOMOUS)).toBe(true);
-    expect(isAutonomyLaneAllowed("contradiction", AUTONOMOUS)).toBe(true);
   });
 });
 
 describe("lane inventory", () => {
-  test("covers exactly the five lanes D8 gates, and not sync.push", () => {
+  test("covers exactly the three lanes D8 gates, and not advisory consolidation or sync.push", () => {
     expect([...(AUTONOMY_LANES as readonly string[])].sort()).toEqual([
-      "consolidate",
-      "contradiction",
       "memoryCleanup",
       "memoryInference",
       "triagePromote",

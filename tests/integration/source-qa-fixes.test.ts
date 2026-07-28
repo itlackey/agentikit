@@ -486,10 +486,9 @@ describe("update preserves entry.source for writable installed entries", () => {
     const config = loadConfig();
     const bundle = Object.values(config.bundles ?? {}).find((b) => b.registryId === "github:dimm-city/agent-stash");
     expect(bundle).toBeDefined();
-    // Desired descriptor stays git (#37 split: desired in config, resolved in lock)
-    expect(bundle?.git).toBe("https://github.com/dimm-city/agent-stash");
-    // writable must survive the update
-    expect(bundle?.writable).toBe(true);
+    // Desired descriptor stays byte-for-byte policy-equivalent; only resolved lock state advances.
+    expect(bundle?.git).toBe("https://github.com/dimm-city/agent-stash.git");
+    expect(bundle?.writable).toBeUndefined();
     expect(bundle?.components).toEqual({ main: { root: ".", adapter: "okf", writable: true } });
     // resolved revision lives in the lock and should be updated
     const lock = readLockfile().find((e) => e.ref === "github:dimm-city/agent-stash");
@@ -550,6 +549,59 @@ describe("update preserves entry.source for writable installed entries", () => {
 // ── Regression: R-015 — `akm update --all` must account for plain sources ───
 
 describe("R-015: akm update --all with mixed plain and managed sources", () => {
+  test("filters disabled managed and plain sources from --all without changing explicit targeting", async () => {
+    const disabledManagedRoot = createTmpDir("akm-disabled-managed-");
+    makeStashDir(disabledManagedRoot);
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        local: { path: stashDir },
+        managed: { npm: "managed", enabled: false },
+        plain: { git: "https://github.com/example/plain.git", enabled: false },
+      },
+    });
+    mergeLockEntriesSync([{ id: "managed", source: "npm", ref: "npm:managed", localRoot: disabledManagedRoot }]);
+    const managedSync = spyOn(syncFromRefModule, "syncFromRef").mockRejectedValue(new Error("disabled managed synced"));
+    const plainSync = spyOn(gitProvider, "syncMirroredRepo").mockRejectedValue(new Error("disabled plain synced"));
+
+    try {
+      const result = await akmUpdate({ all: true, stashDir });
+      expect(result.processed).toEqual([]);
+      expect(result.plainSynced ?? []).toEqual([]);
+      expect(result.skipped?.map((item) => item.id)).toEqual(["local"]);
+      expect(managedSync).not.toHaveBeenCalled();
+      expect(plainSync).not.toHaveBeenCalled();
+    } finally {
+      managedSync.mockRestore();
+      plainSync.mockRestore();
+    }
+  });
+
+  test("still updates a disabled source when it is explicitly targeted", async () => {
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: { plain: { git: "https://github.com/example/plain.git", enabled: false } },
+    });
+    const plainSync = spyOn(gitProvider, "syncMirroredRepo").mockResolvedValue({
+      id: "plain",
+      source: "git",
+      ref: "https://github.com/example/plain.git",
+      artifactUrl: "https://github.com/example/plain.git",
+      contentDir: stashDir,
+      cacheDir: testCacheDir,
+      extractedDir: stashDir,
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+
+    try {
+      await akmUpdate({ target: "plain", stashDir });
+      expect(plainSync).toHaveBeenCalled();
+    } finally {
+      plainSync.mockRestore();
+    }
+  });
+
   test("accounts for every configured source: syncs git+npm, reports website+filesystem as skipped", async () => {
     const fsDir = createTmpDir("akm-r015-fs-");
     makeStashDir(fsDir);

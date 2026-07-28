@@ -90,7 +90,7 @@ export interface TaskRunResult {
   log: string;
   target:
     | { kind: "workflow"; ref: string }
-    | { kind: "prompt"; engine: string | null }
+    | { kind: "prompt"; engine: string | null; legacyProfile?: string }
     | { kind: "command"; cmd?: string[] }
     | { kind: "unknown" };
   /** Workflow run id (for workflow targets) or agent reason/error (for prompt targets). */
@@ -842,18 +842,14 @@ export interface ReadHistoryOptions {
 
 export function readTaskHistory(options: ReadHistoryOptions = {}): TaskRunResult[] {
   return withStateDb((db) => {
-    let rows: TaskRunResult[];
+    if (options.limit === 0) return [];
     if (options.id) {
       const row = getTaskHistory(db, options.id);
-      rows = row ? [taskHistoryRowToResult(row)] : [];
-    } else {
-      rows = queryTaskHistory(db, {}).map(taskHistoryRowToResult);
+      return row ? [taskHistoryRowToResult(row)] : [];
     }
-    rows.sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
-    if (options.limit !== undefined && options.limit >= 0) {
-      return rows.slice(0, options.limit);
-    }
-    return rows;
+    return queryTaskHistory(db, options.limit !== undefined && options.limit > 0 ? { limit: options.limit } : {}).map(
+      taskHistoryRowToResult,
+    );
   });
 }
 
@@ -872,7 +868,13 @@ function taskHistoryRowToResult(
       : row.target_kind === "command"
         ? { kind: "command" }
         : row.target_kind === "prompt"
-          ? { kind: "prompt", engine: meta.engine ?? null }
+          ? meta.metadataVersion === 1
+            ? {
+                kind: "prompt",
+                engine: null,
+                ...(meta.legacyProfile !== undefined ? { legacyProfile: meta.legacyProfile } : {}),
+              }
+            : { kind: "prompt", engine: meta.engine ?? null }
           : { kind: "unknown" };
 
   return {

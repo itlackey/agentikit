@@ -36,6 +36,7 @@
  * touching the filesystem or spawning a process.
  */
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { assetPathForName, stashDirFor } from "../../core/asset/asset-placement";
@@ -440,6 +441,11 @@ interface JudgmentTierInput {
    * promote mode (queue mode promotes nothing). Defaults to unbounded.
    */
   remainingAcceptBudget: number;
+  gateLabel: string;
+}
+
+function judgedContentHash(proposal: Proposal): string {
+  return createHash("sha256").update(proposalContent(proposal), "utf8").digest("hex");
 }
 
 /**
@@ -495,7 +501,12 @@ async function runJudgmentTier(input: JudgmentTierInput): Promise<{
         continue;
       }
       try {
-        await input.rejectFn({ stashDir: input.stashDir, id: item.id, reason: verdict.reason || "judgment: reject" });
+        await input.rejectFn({
+          stashDir: input.stashDir,
+          id: item.id,
+          reason: verdict.reason || "judgment: reject",
+          gateDecision: { outcome: "auto-rejected", reason: "judgment-reject", gate: input.gateLabel },
+        });
         rejected.push(item.id);
       } catch (err) {
         warn(`[triage] judgment reject failed for ${item.id}: ${err instanceof Error ? err.message : String(err)}`);
@@ -511,6 +522,20 @@ async function runJudgmentTier(input: JudgmentTierInput): Promise<{
       // is RESOLVED (the runner judged it). Track separately so it is NOT
       // reported as "left unresolved" and a follow-up promote run picks it up.
       staged.push(item.id);
+      if (!input.dryRun) {
+        try {
+          recordGateDecision(input.stashDir, item.id, {
+            outcome: "staged",
+            reason: "judgment-accept",
+            contentHash: judgedContentHash(proposal),
+            gate: input.gateLabel,
+          });
+        } catch (err) {
+          warn(`[triage] failed to stage judgment for ${item.id}: ${err instanceof Error ? err.message : String(err)}`);
+          staged.pop();
+          stillDeferred.push(item);
+        }
+      }
       continue;
     }
     // Accept cap: once the shared budget is exhausted, route further accepts to
@@ -530,6 +555,7 @@ async function runJudgmentTier(input: JudgmentTierInput): Promise<{
         id: item.id,
         ...(input.target ? { target: input.target } : {}),
         ...(input.config ? { config: input.config } : {}),
+        gateDecision: { outcome: "auto-accepted", reason: "judgment-accept", gate: input.gateLabel },
       });
       promoted.push(item.id);
       acceptBudget -= 1;
@@ -566,6 +592,7 @@ export async function drainProposals(
 
   // First, classify every proposal deterministically.
   const acceptIds: string[] = [];
+  const acceptGateReasons = new Map<string, "policy-accept" | "judgment-accept">();
   const rejectTargets: Array<{ id: string; reason: string }> = [];
   const gateLabel = `triage:${opts.policy.name}`;
   // Items deferred purely because they need a judge (no threshold-based reason)
@@ -579,22 +606,34 @@ export async function drainProposals(
     // the audit trail and silently promote content the gate explicitly rejected.
     // Such proposals remain pending until the TTL expires them — the queue is
     // audited-autonomous; no manual-review rung exists (06-M3).
-    if (proposal.gateDecision?.outcome === "auto-rejected") continue;
+    if (proposal.gateDecision?.outcome === "auto-rejected" && !proposal.gateDecision.gate?.startsWith("triage:")) {
+      continue;
+    }
+
+    if (
+      proposal.gateDecision?.outcome === "staged" &&
+      proposal.gateDecision.gate === gateLabel &&
+      proposal.gateDecision.contentHash === judgedContentHash(proposal)
+    ) {
+      acceptIds.push(proposal.id);
+      acceptGateReasons.set(proposal.id, "judgment-accept");
+      continue;
+    }
 
     const decision = classifyProposal(proposal, opts.policy, opts.maxDiffLines);
     if (decision === null) continue;
     // #577: stamp the gate's verdict onto the proposal so `akm proposal show`
     // can explain WHY it landed here. A dry-run performs zero writes, so it
     // records nothing.
-    const outcome =
-      decision.verdict === "accept" ? "auto-accepted" : decision.verdict === "reject" ? "auto-rejected" : "deferred";
-    stampGateDecision(opts, proposal.id, {
-      outcome,
-      reason: decision.gate.reason,
-      ...(decision.gate.measured !== undefined ? { measured: decision.gate.measured } : {}),
-      ...(decision.gate.thresholds ? { thresholds: decision.gate.thresholds } : {}),
-      gate: gateLabel,
-    });
+    if (decision.verdict === "defer") {
+      stampGateDecision(opts, proposal.id, {
+        outcome: "deferred",
+        reason: decision.gate.reason,
+        ...(decision.gate.measured !== undefined ? { measured: decision.gate.measured } : {}),
+        ...(decision.gate.thresholds ? { thresholds: decision.gate.thresholds } : {}),
+        gate: gateLabel,
+      });
+    }
     // A defer with no threshold (mid-band / possible-dup from the defer list) is
     // pending only because it needs adjudication — re-stampable to
     // `no-judge-configured`. A band-based defer keeps its specific reason.
@@ -604,6 +643,7 @@ export async function drainProposals(
 
     if (decision.verdict === "accept") {
       acceptIds.push(proposal.id);
+      acceptGateReasons.set(proposal.id, "policy-accept");
     } else if (decision.verdict === "reject") {
       rejectTargets.push({ id: proposal.id, reason: decision.reason });
     } else {
@@ -618,7 +658,12 @@ export async function drainProposals(
       continue;
     }
     try {
-      await rejectFn({ stashDir: opts.stashDir, id: target.id, reason: target.reason });
+      await rejectFn({
+        stashDir: opts.stashDir,
+        id: target.id,
+        reason: target.reason,
+        gateDecision: { outcome: "auto-rejected", reason: "empty-diff", gate: gateLabel },
+      });
       result.rejected.push(target.id);
     } catch (err) {
       warn(`[triage] reject failed for ${target.id}: ${err instanceof Error ? err.message : String(err)}`);
@@ -647,6 +692,11 @@ export async function drainProposals(
           id,
           ...(opts.target ? { target: opts.target } : {}),
           ...(opts.config ? { config: opts.config } : {}),
+          gateDecision: {
+            outcome: "auto-accepted",
+            reason: acceptGateReasons.get(id) ?? "policy-accept",
+            gate: gateLabel,
+          },
         });
         result.promoted.push(id);
         deterministicPromoted += 1;
@@ -684,6 +734,7 @@ export async function drainProposals(
       ...(opts.target ? { target: opts.target } : {}),
       ...(opts.config ? { config: opts.config } : {}),
       remainingAcceptBudget,
+      gateLabel,
     });
     result.promoted.push(...tier.promoted);
     result.rejected.push(...tier.rejected);
@@ -695,15 +746,6 @@ export async function drainProposals(
       info(
         `[triage] accept ceiling reached in judgment tier: ${tier.skippedByCap.length} judged-accept items skipped by cap (maxAccepts=${opts.maxAccepts})`,
       );
-    }
-    // #577: re-stamp the gate decision for items the judgment tier resolved so
-    // `akm proposal show` reflects the judge's verdict, not the earlier
-    // deterministic defer.
-    for (const id of tier.promoted) {
-      stampGateDecision(opts, id, { outcome: "auto-accepted", reason: "judgment-accept", gate: gateLabel });
-    }
-    for (const id of tier.rejected) {
-      stampGateDecision(opts, id, { outcome: "auto-rejected", reason: "judgment-reject", gate: gateLabel });
     }
     // Replace the deferred list with only the items the judgment tier could NOT
     // resolve (verdict "defer", parse failure, or runner error). Staged

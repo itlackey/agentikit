@@ -512,7 +512,7 @@ describe("chaos: lease contention", () => {
     expect(rows).toHaveLength(0);
   });
 
-  test("a crash releases the lease (finally) and an expired lease is reclaimed — an immediate re-run works", async () => {
+  test("a crash retains the forensic lease and explicit resume clears it for an immediate re-run", async () => {
     writeProgram("leased-fanout", SOLO_FANOUT_WF);
     const params = { files: ["a.ts", "b.ts"] };
     const started = await startWorkflowRun("workflows/leased-fanout", params);
@@ -531,7 +531,7 @@ describe("chaos: lease contention", () => {
     });
 
     // The expired lease is claimable — the run proceeds — but the dispatcher
-    // throws, failing the run. The finally must still release the lease.
+    // throws, failing the run. The final holder remains as forensic state.
     let holderDuringDispatch: string | null | undefined;
     const crashed = await runWorkflowSteps({
       target: runId,
@@ -546,13 +546,14 @@ describe("chaos: lease contention", () => {
     // The stale holder was replaced while driving…
     expect(holderDuringDispatch).toBeTruthy();
     expect(holderDuringDispatch).not.toBe("dead-engine");
-    // …and released on the crash path.
+    // …and retained on the failed run.
     const afterCrash = await withWorkflowRunsRepo((repo) => repo.getRunById(runId));
-    expect(afterCrash?.engine_lease_holder).toBeNull();
-    expect(afterCrash?.engine_lease_until).toBeNull();
+    expect(afterCrash?.engine_lease_holder).toBe(holderDuringDispatch);
+    expect(afterCrash?.engine_lease_until).toBeTruthy();
 
-    // An immediate re-run is not wedged: resume + drive to completion.
+    // Explicit resume clears the forensic lease, so an immediate re-run is not wedged.
     await resumeWorkflowRun(runId);
+    expect((await withWorkflowRunsRepo((repo) => repo.getRunById(runId)))?.engine_lease_holder).toBeNull();
     const rerun = await runWorkflowSteps({
       target: runId,
       summaryJudge: null,

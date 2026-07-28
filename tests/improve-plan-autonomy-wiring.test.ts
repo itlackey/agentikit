@@ -19,32 +19,38 @@
 
 import { describe, expect, test } from "bun:test";
 import { resolveImprovePlan } from "../src/commands/improve/improve-strategies";
-import { IMPROVE_AUTONOMY_CONFIG_KEY } from "../src/core/config/experimental";
 
 const BASE = { configVersion: "0.9.0" } as unknown as Parameters<typeof resolveImprovePlan>[1];
 
-function configWith(experimental?: { improveAutonomy?: boolean }): Parameters<typeof resolveImprovePlan>[1] {
-  return { ...BASE, ...(experimental ? { experimental } : {}) } as Parameters<typeof resolveImprovePlan>[1];
+function configWith(
+  experimental?: { improveAutonomy?: boolean },
+  withEngine = false,
+): Parameters<typeof resolveImprovePlan>[1] {
+  return {
+    ...BASE,
+    ...(experimental ? { experimental } : {}),
+    ...(withEngine
+      ? {
+          engines: { test: { kind: "llm", endpoint: "http://localhost:1/v1/chat/completions", model: "test" } },
+          defaults: { llmEngine: "test" },
+        }
+      : {}),
+  } as Parameters<typeof resolveImprovePlan>[1];
 }
 
 describe("resolveImprovePlan applies the autonomy gate", () => {
-  test("autonomy OFF disables consolidate and reports it", () => {
-    const plan = resolveImprovePlan("consolidate", configWith());
+  test("autonomy OFF keeps review-only consolidate planning enabled", () => {
+    const plan = resolveImprovePlan("consolidate", configWith(undefined, true));
 
-    expect(plan.processes.consolidate.enabled).toBe(false);
-    expect(plan.autonomyGated.map((g) => g.lane)).toEqual(["consolidate"]);
-    expect(plan.autonomyGated[0]?.configKey).toBe(IMPROVE_AUTONOMY_CONFIG_KEY);
+    expect(plan.processes.consolidate.enabled).toBe(true);
+    expect(plan.autonomyGated).toEqual([]);
   });
 
-  test("autonomy OFF needs no LLM engine, because the gate precedes the preflight", () => {
-    // If the gate ran after buildImprovePlan this would throw LLM_NOT_CONFIGURED.
-    expect(() => resolveImprovePlan("consolidate", configWith())).not.toThrow();
+  test("autonomy OFF still requires the planner's LLM engine", () => {
+    expect(() => resolveImprovePlan("consolidate", configWith())).toThrow(/requires an LLM engine/);
   });
 
-  test("autonomy ON restores the lane, and then the engine really is required", () => {
-    // The mirror of the previous case: with the lane enabled the preflight has
-    // something to demand, which proves the OFF case was gated rather than
-    // merely misconfigured.
+  test("autonomy ON does not change the review-only planner's engine requirement", () => {
     expect(() => resolveImprovePlan("consolidate", configWith({ improveAutonomy: true }))).toThrow(
       /requires an LLM engine/,
     );

@@ -353,6 +353,14 @@ export async function showLocal(input: {
     );
   }
 
+  if (indexedEntry) {
+    try {
+      fs.accessSync(assetPath, fs.constants.R_OK);
+    } catch (error) {
+      throwIndexedPathNotFound(error, input.ref);
+    }
+  }
+
   const source = findSourceForPath(assetPath, allSources);
   const sourceStashDir = source?.path ?? allSourceDirs[0];
 
@@ -366,41 +374,46 @@ export async function showLocal(input: {
   const fileCtx = buildFileContext(sourceStashDir, assetPath);
   const indexedRenderer = indexedEntry ? rendererForIndexedEntry(indexedEntry, fileCtx) : undefined;
   let response: ShowResponse;
-  if (indexedEntry && indexedRenderer === null) {
-    response = buildIndexedProjectionResponse(indexedEntry, assetPath, parsed.fragment);
-  } else {
-    const match =
-      indexedEntry && typeof indexedRenderer === "string"
-        ? indexedMatch(indexedEntry, indexedRenderer)
-        : recognizeMatch(fileCtx);
-    if (!match) {
-      throw new UsageError(
-        `Could not display asset "${makeBundleRef(parsed.bundle, parsed.conceptId)}" — unsupported file type or unrecognized layout`,
-      );
-    }
-
-    match.meta = { ...match.meta, name: displayName };
-    const renderer = await getRenderer(match.renderer);
-    if (!renderer) {
-      throw new UsageError(
-        `Renderer "${match.renderer}" not found for asset: ${makeBundleRef(parsed.bundle, parsed.conceptId)}`,
-      );
-    }
-
-    const renderBundle = indexedEntry ? indexedEntry.bundleId : source?.registryId;
-    const renderDefaultBundle =
-      config.defaultBundle ?? (source?.path === allSources[0]?.path ? renderBundle : undefined);
-    const renderCtx = buildRenderContext(fileCtx, match, allSourceDirs, renderBundle, renderDefaultBundle);
-    response = renderer.buildShowResponse(renderCtx);
-    if (parsed.fragment !== undefined) {
-      if (!match.renderer.endsWith("-md")) {
+  try {
+    if (indexedEntry && indexedRenderer === null) {
+      response = buildIndexedProjectionResponse(indexedEntry, assetPath, parsed.fragment);
+    } else {
+      const match =
+        indexedEntry && typeof indexedRenderer === "string"
+          ? indexedMatch(indexedEntry, indexedRenderer)
+          : recognizeMatch(fileCtx);
+      if (!match) {
         throw new UsageError(
-          `Fragments are not supported for ${makeBundleRef(parsed.bundle, parsed.conceptId)}. Only Markdown documents support heading fragments.`,
-          "INVALID_FLAG_VALUE",
+          `Could not display asset "${makeBundleRef(parsed.bundle, parsed.conceptId)}" — unsupported file type or unrecognized layout`,
         );
       }
-      applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, displayName);
+
+      match.meta = { ...match.meta, name: displayName };
+      const renderer = await getRenderer(match.renderer);
+      if (!renderer) {
+        throw new UsageError(
+          `Renderer "${match.renderer}" not found for asset: ${makeBundleRef(parsed.bundle, parsed.conceptId)}`,
+        );
+      }
+
+      const renderBundle = indexedEntry ? indexedEntry.bundleId : source?.registryId;
+      const renderDefaultBundle =
+        config.defaultBundle ?? (source?.path === allSources[0]?.path ? renderBundle : undefined);
+      const renderCtx = buildRenderContext(fileCtx, match, allSourceDirs, renderBundle, renderDefaultBundle);
+      response = renderer.buildShowResponse(renderCtx);
+      if (parsed.fragment !== undefined) {
+        if (!match.renderer.endsWith("-md")) {
+          throw new UsageError(
+            `Fragments are not supported for ${makeBundleRef(parsed.bundle, parsed.conceptId)}. Only Markdown documents support heading fragments.`,
+            "INVALID_FLAG_VALUE",
+          );
+        }
+        applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, displayName);
+      }
     }
+  } catch (error) {
+    if (indexedEntry) throwIndexedPathNotFound(error, input.ref);
+    throw error;
   }
   if (indexedEntry) {
     response.type = indexedEntry.type;
@@ -548,8 +561,25 @@ export async function showByRef(ref: string): Promise<{ filePath: string; body: 
   if (!entry) {
     throw new NotFoundError(`Asset not found for ref: ${makeBundleRef(parsed.bundle, parsed.conceptId)}`);
   }
-  const body = await fs.promises.readFile(entry.filePath, "utf8");
+  let body: string;
+  try {
+    body = await fs.promises.readFile(entry.filePath, "utf8");
+  } catch (error) {
+    throwIndexedPathNotFound(error, ref);
+  }
   return { filePath: entry.filePath, body };
+}
+
+function throwIndexedPathNotFound(error: unknown, ref: string): never {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (code === "ENOENT" || code === "ENOTDIR" || code === "EACCES" || code === "EPERM") {
+    throw new NotFoundError(
+      `The indexed file for ${ref} is missing or unreadable. The search index may be stale.`,
+      "ASSET_NOT_FOUND",
+      "Run `akm index` to reconcile indexed paths, then retry `akm show`.",
+    );
+  }
+  throw error;
 }
 
 type IndexedEntry = NonNullable<Awaited<ReturnType<typeof lookupBundleRef>>>;

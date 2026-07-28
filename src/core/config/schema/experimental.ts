@@ -17,10 +17,11 @@ export const ExperimentalConfigSchema = z
     /**
      * Allow `akm improve` to mutate assets without review.
      *
-     * OFF by default. Gates consolidate's merge/delete/contradict actions, the
-     * memory-cleanup and contradiction passes, memory-inference writes, and
-     * triage `applyMode: "promote"`. `akm improve` itself stays on either way —
-     * what this gates is autonomy, not the feature.
+     * OFF by default. Gates memory-cleanup, memory-inference writes, and triage
+     * `applyMode: "promote"`. Consolidation stays enabled because destructive
+     * operations are advisory and promotion emits a reviewable proposal.
+     * `akm improve` itself stays on either way — what this gates is autonomy,
+     * not the feature.
      *
      * `sync.push` is deliberately NOT gated by this key: it publishes
      * already-committed content to a remote the user configured for that

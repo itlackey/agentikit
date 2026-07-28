@@ -584,6 +584,7 @@ function mergeImproveMetrics(dst: ImproveHealthMetrics, src: ImproveHealthMetric
   dst.memoryInference.skippedAborted += src.memoryInference.skippedAborted;
   dst.memoryInference.unaccounted += src.memoryInference.unaccounted;
   dst.memoryInference.htmlErrorCount += src.memoryInference.htmlErrorCount;
+  dst.memoryInference.retryAttempts += src.memoryInference.retryAttempts;
   dst.memoryInference.durationMs += src.memoryInference.durationMs;
   dst.graphExtraction.extractedFiles += src.graphExtraction.extractedFiles;
   dst.graphExtraction.entities += src.graphExtraction.entities;
@@ -594,6 +595,7 @@ function mergeImproveMetrics(dst: ImproveHealthMetrics, src: ImproveHealthMetric
   dst.graphExtraction.failures += src.graphExtraction.failures;
   dst.graphExtraction.htmlErrors += src.graphExtraction.htmlErrors;
   dst.graphExtraction.nonArrayBatchFailures += src.graphExtraction.nonArrayBatchFailures;
+  dst.graphExtraction.retryAttempts += src.graphExtraction.retryAttempts;
   dst.graphExtraction.durationMs += src.graphExtraction.durationMs;
   dst.sessionExtraction.sessionsScanned += src.sessionExtraction.sessionsScanned;
   dst.sessionExtraction.sessionsExtracted += src.sessionExtraction.sessionsExtracted;

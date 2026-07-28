@@ -49,7 +49,7 @@ export function resolveImproveScope(scope: string | undefined): { mode: "all" | 
     // deliberately-removed type like tool/vault, D1.5-6) — that must still
     // surface as a real error, not be silently absorbed into a type filter
     // that will never match anything.
-    if (!trimmed.includes(":")) {
+    if (!/[/:#]/.test(trimmed)) {
       return { mode: "type", value: trimmed };
     }
     const message = err instanceof Error ? err.message : String(err);
@@ -58,7 +58,8 @@ export function resolveImproveScope(scope: string | undefined): { mode: "all" | 
 }
 
 /**
- * Dedupe a list of eligible refs by `ref`, preserving first-seen order. Used to
+ * Dedupe eligible refs by their durable item ref when available, preserving
+ * the first candidate and its display ref. Used to
  * merge the eligibility sources (feedback-signal, Layer-2 proactive-maintenance,
  * high-salience) without admitting a ref into the loop twice.
  */
@@ -66,8 +67,9 @@ export function dedupeRefs(refs: ImproveEligibleRef[]): ImproveEligibleRef[] {
   const seen = new Set<string>();
   const out: ImproveEligibleRef[] = [];
   for (const r of refs) {
-    if (seen.has(r.ref)) continue;
-    seen.add(r.ref);
+    const key = r.itemRef ?? r.ref;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push(r);
   }
   return out;
@@ -120,22 +122,47 @@ async function collectEligibleRefsFromIndex(
   if (scope.mode === "ref" && scope.value) {
     const parsed = parseRefInput(scope.value);
     const writableDirs = new Set(getWritableStashDirs(stashDir).map((dir) => path.resolve(dir)));
-    const filePath = await findAssetFilePath(scope.value, stashDir, writableDirs);
-    if (!filePath) {
+    let db: Database | undefined;
+    try {
+      db = readOnly ? openReadonlyExistingDatabase() : openExistingDatabase();
+      if (!db) {
+        return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+      }
+      const requestedConceptId = conceptIdFromTypeName(parsed.type, parsed.name);
+      const indexed = getAllEntries(db).find((entry) => {
+        if (entry.conceptId !== requestedConceptId) return false;
+        if (parsed.origin && entry.bundleId !== parsed.origin) return false;
+        return true;
+      });
+      if (!indexed?.bundleId || !indexed.conceptId || !fs.existsSync(indexed.filePath)) {
+        if (await findAssetFilePath(scope.value, stashDir)) {
+          return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+        }
+        throw new NotFoundError(`Asset not found in the selected writable source: ${scope.value}`, "ASSET_NOT_FOUND");
+      }
+      if (
+        !isEntryInScope(indexed.stashDir, indexed.filePath, stashDir) ||
+        !isEntryInWritableSource(indexed.stashDir, indexed.filePath, writableDirs)
+      ) {
+        return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+      }
+      const itemRef = `${indexed.bundleId}//${indexed.conceptId}`;
       return {
-        plannedRefs: [],
-        memorySummary: { eligible: 0, derived: 0 },
+        plannedRefs: [{ ref: indexed.conceptId, itemRef, reason: "scope-ref", filePath: indexed.filePath }],
+        memorySummary: {
+          eligible: indexed.entry.type === "memory" ? 1 : 0,
+          derived: indexed.entry.type === "memory" && indexed.entry.name.endsWith(".derived") ? 1 : 0,
+        },
         strategyFilteredRefs: [],
       };
+    } catch (error) {
+      if (error instanceof Error && /no such table:\s*entries/i.test(error.message)) {
+        return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+      }
+      throw error;
+    } finally {
+      if (db) closeDatabase(db);
     }
-    return {
-      plannedRefs: [{ ref: scope.value, reason: "scope-ref", filePath }],
-      memorySummary: {
-        eligible: parsed.type === "memory" ? 1 : 0,
-        derived: parsed.type === "memory" && parsed.name.endsWith(".derived") ? 1 : 0,
-      },
-      strategyFilteredRefs: [],
-    };
   }
 
   let sources: ReturnType<typeof resolveSourceEntries>;

@@ -231,7 +231,7 @@ export async function akmPropose(options: AkmProposeOptions): Promise<AkmPropose
     const draftContent = fs.readFileSync(resolvedDraftPath, "utf8");
     fs.unlinkSync(resolvedDraftPath);
     payload = {
-      ref: proposeItemRef(stash, options.type, options.name), // WI-8.5a item_ref flip
+      ref: proposeItemRef(target.source, options.type, options.name),
       content: draftContent,
     };
   } else {

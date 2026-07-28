@@ -68,6 +68,22 @@ function createLease(lockPath: string, ownership: LockOwnership): IndexWriterLea
   };
 }
 
+function tryAcquireIndexWriterLease(lockPath: string, purpose: string): IndexWriterLease | undefined {
+  while (true) {
+    const releaseBarrier = tryAcquireMaintenanceBarrier();
+    if (!releaseBarrier) return undefined;
+    try {
+      const ownership = tryAcquireLockSync(lockPath, buildPayload(purpose));
+      if (ownership) return createLease(lockPath, ownership);
+
+      const probe = probeLock(lockPath, { staleAfterMs: INDEX_WRITER_LOCK_STALE_AFTER_MS });
+      if (probe.state !== "stale" || !reclaimStaleLock(lockPath, probe)) return undefined;
+    } finally {
+      releaseBarrier();
+    }
+  }
+}
+
 export async function acquireIndexWriterLease(
   options: AcquireIndexWriterLeaseOptions,
 ): Promise<IndexWriterLease | undefined> {
@@ -82,22 +98,10 @@ export async function acquireIndexWriterLease(
   while (true) {
     throwIfAborted(options.signal);
 
-    const releaseBarrier = tryAcquireMaintenanceBarrier();
-    if (releaseBarrier) {
-      try {
-        const ownership = tryAcquireLockSync(lockPath, buildPayload(options.purpose));
-        if (ownership) {
-          options.onAcquired?.({ waitedMs: Date.now() - startedAt });
-          return createLease(lockPath, ownership);
-        }
-
-        const probe = probeLock(lockPath, { staleAfterMs: INDEX_WRITER_LOCK_STALE_AFTER_MS });
-        if (probe.state === "stale") {
-          if (reclaimStaleLock(lockPath, probe)) continue;
-        }
-      } finally {
-        releaseBarrier();
-      }
+    const lease = tryAcquireIndexWriterLease(lockPath, options.purpose);
+    if (lease) {
+      options.onAcquired?.({ waitedMs: Date.now() - startedAt });
+      return lease;
     }
     if (mode === "try") return undefined;
 
@@ -142,6 +146,37 @@ export async function withIndexWriterLease<T>(
 /** Asset writes and index rebuilds share one lease so scans cannot publish stale snapshots. */
 export function withAssetMutationLease<T>(purpose: string, run: () => Promise<T>): Promise<T> {
   return withIndexWriterLease({ purpose }, run);
+}
+
+/** Synchronous asset-write boundary over the same interprocess lease. */
+export function withAssetMutationLeaseSync<T>(purpose: string, run: () => T): T {
+  const lockPath = getIndexWriterLockPath();
+  const inherited = leaseContext.getStore();
+  if (inherited?.has(lockPath)) return run();
+
+  const context = inherited ?? new Set<string>();
+  const execute = (): T => {
+    const startedAt = Date.now();
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    let lease: IndexWriterLease | undefined;
+    while (!lease) {
+      lease = tryAcquireIndexWriterLease(lockPath, purpose);
+      if (!lease) {
+        if (Date.now() - startedAt >= DEFAULT_INDEX_WRITER_MAX_WAIT_MS) {
+          throw new Error(`timed out waiting for index writer lease for ${purpose}`);
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, INDEX_WRITER_WAIT_MS);
+      }
+    }
+    context.add(lockPath);
+    try {
+      return run();
+    } finally {
+      context.delete(lockPath);
+      lease.release();
+    }
+  };
+  return inherited ? execute() : leaseContext.run(context, execute);
 }
 
 export function probeIndexWriterLease() {

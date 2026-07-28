@@ -53,6 +53,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { warn } from "../../../../src/core/warn";
+import { writeFileAtomic } from "../../../../src/core/common";
 import { type Database, openDatabaseFinalizing, type SqlValue } from "../../../../src/storage/database";
 import { applyStandardPragmas } from "../../../../src/storage/sqlite-pragmas";
 import { classifyRefGrammar, parseStoredRef } from "../legacy-ref-grammar";
@@ -121,9 +122,16 @@ export interface BuildCutoverRefMapOptions {
   stashRoots?: readonly CutoverStashRoot[];
   /** Where the computed map is persisted as JSON (next to the ApplyJournal), fsynced. */
   mapOutputPath: string;
+  identity?: CutoverRefMapIdentity;
 }
 
 const CUTOVER_REFMAP_FORMAT = 1 as const;
+
+export interface CutoverRefMapIdentity {
+  operationId: string;
+  backupRunId: string;
+  backupPath: string;
+}
 
 /**
  * Compute the old-ref → new item_ref map BEFORE any re-layout, and persist it as
@@ -159,7 +167,7 @@ export function buildCutoverRefMap(opts: BuildCutoverRefMapOptions): Map<string,
   // ── Source (b): the frozen legacy-layout walk (completeness for stale-index refs). ──
   for (const root of opts.stashRoots ?? []) walkLegacyLayoutInto(map, root);
 
-  persistRefMapJson(opts.mapOutputPath, map);
+  persistRefMapJson(opts.mapOutputPath, map, opts.identity);
   return map;
 }
 
@@ -215,8 +223,9 @@ function walkLegacyLayoutInto(map: Map<string, string>, root: CutoverStashRoot):
     let files: string[];
     try {
       files = listFilesRecursive(typeRoot);
-    } catch {
-      continue; // dir absent / unreadable
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
     }
     for (const filePath of files) {
       const name = safeDerive(type, typeRoot, filePath);
@@ -273,35 +282,20 @@ function samePath(a: string, b: string | null | undefined): boolean {
   return path.resolve(a) === path.resolve(b);
 }
 
-function persistRefMapJson(outputPath: string, map: Map<string, string>): void {
+function persistRefMapJson(outputPath: string, map: Map<string, string>, identity?: CutoverRefMapIdentity): void {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });
+  const entries = Object.fromEntries([...map.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   const payload = {
     formatVersion: CUTOVER_REFMAP_FORMAT,
-    entries: Object.fromEntries([...map.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
+    ...(identity ? { active: true, ...identity } : {}),
+    entries,
+    ...(identity ? { entriesSha256: crypto.createHash("sha256").update(JSON.stringify(entries)).digest("hex") } : {}),
   };
-  const tmp = `${outputPath}.tmp`;
-  const fd = fs.openSync(tmp, "w", 0o600);
-  try {
-    fs.writeFileSync(fd, `${JSON.stringify(payload, null, 2)}\n`);
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  fs.renameSync(tmp, outputPath);
-  try {
-    const dirFd = fs.openSync(path.dirname(outputPath), "r");
-    try {
-      fs.fsyncSync(dirFd);
-    } finally {
-      fs.closeSync(dirFd);
-    }
-  } catch {
-    // Directory fsync is unavailable on some filesystems.
-  }
+  writeFileAtomic(outputPath, `${JSON.stringify(payload, null, 2)}\n`, 0o600);
 }
 
 /** Load the persisted cutover map when a committed migration resumes at a boundary step. */
-export function loadCutoverRefMap(inputPath: string): Map<string, string> {
+export function loadCutoverRefMap(inputPath: string, identity?: CutoverRefMapIdentity): Map<string, string> {
   if (!fs.existsSync(inputPath)) {
     throw new CutoverIntegrityError(`persisted cutover ref map is missing: ${inputPath}`);
   }
@@ -317,6 +311,25 @@ export function loadCutoverRefMap(inputPath: string): Map<string, string> {
   ) {
     throw new CutoverIntegrityError(`invalid persisted cutover ref map: ${inputPath}`);
   }
+  if (identity) {
+    const authenticated = parsed as typeof parsed & {
+      active?: unknown;
+      operationId?: unknown;
+      backupRunId?: unknown;
+      backupPath?: unknown;
+      entriesSha256?: unknown;
+    };
+    const digest = crypto.createHash("sha256").update(JSON.stringify(parsed.entries)).digest("hex");
+    if (
+      authenticated.active !== true ||
+      authenticated.operationId !== identity.operationId ||
+      authenticated.backupRunId !== identity.backupRunId ||
+      authenticated.backupPath !== identity.backupPath ||
+      authenticated.entriesSha256 !== digest
+    ) {
+      throw new CutoverIntegrityError(`persisted cutover ref map identity does not match: ${inputPath}`);
+    }
+  }
   const map = new Map<string, string>();
   for (const [oldRef, itemRef] of Object.entries(parsed.entries)) {
     if (!oldRef || typeof itemRef !== "string" || !itemRef) {
@@ -325,6 +338,90 @@ export function loadCutoverRefMap(inputPath: string): Map<string, string> {
     map.set(oldRef, itemRef);
   }
   return map;
+}
+
+export function completeCutoverRefMap(
+  inputPath: string,
+  outputPath: string,
+  identity?: CutoverRefMapIdentity,
+): void {
+  try {
+    fs.statSync(inputPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (!identity) {
+      loadCutoverRefMap(outputPath);
+      return;
+    }
+    const completed = JSON.parse(fs.readFileSync(outputPath, "utf8")) as Record<string, unknown>;
+    const entries = completed.entries;
+    const digest = crypto.createHash("sha256").update(JSON.stringify(entries)).digest("hex");
+    if (
+      completed.active !== false ||
+      completed.operationId !== identity.operationId ||
+      completed.backupRunId !== identity.backupRunId ||
+      completed.backupPath !== identity.backupPath ||
+      completed.entriesSha256 !== digest
+    ) {
+      throw new CutoverIntegrityError(`completed cutover ref map identity does not match: ${outputPath}`);
+    }
+    return;
+  }
+  if (!identity) {
+    persistRefMapJson(outputPath, loadCutoverRefMap(inputPath));
+    fs.unlinkSync(inputPath);
+    return;
+  }
+  const entries = Object.fromEntries(loadCutoverRefMap(inputPath, identity));
+  const payload = {
+    formatVersion: CUTOVER_REFMAP_FORMAT,
+    active: false,
+    ...identity,
+    entries,
+    entriesSha256: crypto.createHash("sha256").update(JSON.stringify(entries)).digest("hex"),
+  };
+  writeFileAtomic(outputPath, `${JSON.stringify(payload, null, 2)}\n`, 0o600);
+  fs.unlinkSync(inputPath);
+}
+
+export function loadCompletedCutoverRefMap(inputPath: string): {
+  map: Map<string, string>;
+  identity?: CutoverRefMapIdentity;
+} {
+  const completed = JSON.parse(fs.readFileSync(inputPath, "utf8")) as Record<string, unknown>;
+  const entries = completed.entries;
+  if (completed.formatVersion === CUTOVER_REFMAP_FORMAT && completed.active === undefined) {
+    return { map: loadCutoverRefMap(inputPath) };
+  }
+  const digest = crypto.createHash("sha256").update(JSON.stringify(entries)).digest("hex");
+  if (
+    completed.formatVersion !== CUTOVER_REFMAP_FORMAT ||
+    completed.active !== false ||
+    typeof completed.operationId !== "string" ||
+    typeof completed.backupRunId !== "string" ||
+    typeof completed.backupPath !== "string" ||
+    !entries ||
+    typeof entries !== "object" ||
+    Array.isArray(entries) ||
+    completed.entriesSha256 !== digest
+  ) {
+    throw new CutoverIntegrityError(`invalid completed cutover ref map: ${inputPath}`);
+  }
+  const map = new Map<string, string>();
+  for (const [oldRef, itemRef] of Object.entries(entries)) {
+    if (!oldRef || typeof itemRef !== "string" || !itemRef) {
+      throw new CutoverIntegrityError(`invalid completed cutover ref map entry for ${oldRef}`);
+    }
+    map.set(oldRef, itemRef);
+  }
+  return {
+    map,
+    identity: {
+      operationId: completed.operationId,
+      backupRunId: completed.backupRunId,
+      backupPath: completed.backupPath,
+    },
+  };
 }
 
 const PILOT_TREATMENT_FILE = path.join(".akm", "measurement", "treatment-pilot-2026-06-14.txt");
@@ -546,6 +643,75 @@ export function rekeyStateDb(dbPath: string, refMap: Map<string, string>): Cutov
     let report: CutoverRekeyReport = emptyReport();
     db.transaction(() => {
       report = rekeyStateDbCore(db, refMap);
+    })();
+    return report;
+  } finally {
+    db.close();
+  }
+}
+
+export interface ProposalRefRepairReport {
+  rekeyed: number;
+  quarantined: number;
+}
+
+export function countLegacyProposalRefs(dbPath: string): number {
+  if (!fs.existsSync(dbPath)) return 0;
+  const db = openDatabaseFinalizing(dbPath, { readonly: true });
+  try {
+    if (!tableExists(db, "main", "proposals")) return 0;
+    const refs = db.prepare("SELECT ref FROM proposals").all() as Array<{ ref: string }>;
+    return refs.filter((row) => classifyRefGrammar(row.ref) === "legacy").length;
+  } finally {
+    db.close();
+  }
+}
+
+export function assertLegacyProposalRefsRepairable(dbPath: string, refMap: Map<string, string>): void {
+  if (!fs.existsSync(dbPath)) return;
+  const db = openDatabaseFinalizing(dbPath, { readonly: true });
+  try {
+    if (!tableExists(db, "main", "proposals")) return;
+    const pending = db
+      .prepare("SELECT id, ref FROM proposals WHERE status = 'pending'")
+      .all() as Array<{ id: string; ref: string }>;
+    for (const row of pending) {
+      if (classifyRefGrammar(row.ref) === "legacy" && !refMap.has(row.ref)) {
+        throw new CutoverIntegrityError(`pending proposal ${row.id} has unmappable legacy ref ${row.ref}`);
+      }
+    }
+  } finally {
+    db.close();
+  }
+}
+
+/** Narrow current-RC repair for the retired proposal ref grammar. */
+export function repairAlreadyCurrentProposalRefs(dbPath: string, refMap: Map<string, string>): ProposalRefRepairReport {
+  const db = openDatabaseFinalizing(dbPath);
+  try {
+    const report: ProposalRefRepairReport = { rekeyed: 0, quarantined: 0 };
+    db.transaction(() => {
+      ensureLegacyStateTable(db);
+      ensureLegacyStateRowsTable(db);
+      const rows = db.prepare("SELECT rowid AS __rowid, * FROM proposals").all() as Array<
+        Record<string, SqlValue> & { __rowid: number; ref: string; status: string }
+      >;
+      for (const row of rows) {
+        if (classifyRefGrammar(row.ref) !== "legacy") continue;
+        const target = refMap.get(row.ref);
+        if (target) {
+          db.prepare("UPDATE proposals SET ref = ? WHERE rowid = ?").run(target, row.__rowid);
+          report.rekeyed++;
+          continue;
+        }
+        if (row.status === "pending") {
+          throw new CutoverIntegrityError(`pending proposal ${String(row.id)} has unmappable legacy ref ${row.ref}`);
+        }
+        quarantineRow(db, "proposals", row.ref, 1, "unmappable-terminal-proposal-ref");
+        retainQuarantinedRows(db, "proposals", row.ref, [row]);
+        db.prepare("DELETE FROM proposals WHERE rowid = ?").run(row.__rowid);
+        report.quarantined++;
+      }
     })();
     return report;
   } finally {

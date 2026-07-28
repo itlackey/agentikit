@@ -14,7 +14,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readValue, setSecret } from "../../src/commands/env/secret";
+import { readValue, secretLockPath, setSecret, withSecretLock } from "../../src/commands/env/secret";
 import { resetGraphBoostCache } from "../../src/indexer/graph/graph-boost";
 import { clearEmbeddingCache, resetLocalEmbedder } from "../../src/llm/embedder";
 import { runCliCapture } from "../_helpers/cli";
@@ -94,14 +94,45 @@ describe("secret core module", () => {
     expect(readValue(bp).equals(binary)).toBe(true);
   });
 
-  test("setSecret recovers from a stale lock left by a dead PID", () => {
+  test("setSecret leaves no lock or mutex state inside the bundle", () => {
     const root = tmpDir();
     const fp = path.join(root, "secrets", "locked");
-    fs.mkdirSync(path.dirname(fp), { recursive: true });
-    fs.writeFileSync(`${fp}.lock`, "999999999");
     setSecret(fp, Buffer.from("recovered"));
     expect(readValue(fp).toString("utf8")).toBe("recovered");
-    expect(fs.existsSync(`${fp}.lock`)).toBe(false);
+    expect(fs.readdirSync(path.dirname(fp))).toEqual(["locked"]);
+  });
+
+  test("setSecret recovers an external stale lock left by a dead PID", () => {
+    const root = tmpDir();
+    const fp = path.join(root, "secrets", "stale");
+    const lock = secretLockPath(fp);
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, "999999999");
+    setSecret(fp, Buffer.from("recovered"));
+    expect(readValue(fp).toString("utf8")).toBe("recovered");
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  test("the active secret lock and its mutex stay outside the bundle", () => {
+    const root = tmpDir();
+    const fp = path.join(root, "secrets", "active");
+    fs.mkdirSync(path.dirname(fp), { recursive: true });
+    withSecretLock(fp, () => {
+      expect(fs.readdirSync(path.dirname(fp))).toEqual([]);
+    });
+  });
+
+  test("secret lock identity follows a symlinked parent and normalizes Windows case", () => {
+    const realRoot = tmpDir("secret-lock-real");
+    const linkedRoot = `${realRoot}-link`;
+    fs.symlinkSync(realRoot, linkedRoot);
+    expect(secretLockPath(path.join(linkedRoot, "secrets", "token"))).toBe(
+      secretLockPath(path.join(realRoot, "secrets", "token")),
+    );
+    expect(secretLockPath(path.join(realRoot, "Secrets", "TOKEN"), "win32")).toBe(
+      secretLockPath(path.join(realRoot, "secrets", "token"), "win32"),
+    );
+    fs.rmSync(linkedRoot);
   });
 });
 

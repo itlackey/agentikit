@@ -14,7 +14,6 @@
     "tests/fixtures/stashes/curate-golden/judgments.json",
     "tests/integration/belief-state-phase1a.test.ts",
     "tests/integration/commands/consolidate/consolidate-incremental.test.ts",
-    "tests/integration/commands/consolidate/consolidate-op-handlers.test.ts",
     "tests/integration/commands/consolidate/consolidate-promote-dedup.test.ts",
     "tests/integration/commands/distill/distill-response-schema.test.ts",
     "tests/integration/commands/events.test.ts",

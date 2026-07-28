@@ -238,7 +238,7 @@ export interface IndexDocument {
   contradictedBy?: string[];
   /**
    * R5 — merge depth counter (frontmatter `generation`), maintained by
-   * consolidate's injectGenerationFrontmatter. Absent = original asset.
+   * consolidation provenance metadata. Absent = original asset.
    */
   generation?: number;
   currentBeliefRefs?: string[];

@@ -27,12 +27,13 @@ import { defineGroupCommand, defineJsonCommand, output } from "../../cli/shared"
 import { deriveCanonicalAssetName } from "../../core/asset/asset-placement";
 import { writeFileAtomic } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
-import { commitEnvSecretWrite, makeEnvRef, resolveEnvPath, resolveEnvWriteTarget } from "../../core/env-secret-ref";
+import { makeEnvRef, resolveEnvPath, resolveEnvWriteTarget, withEnvSecretWrite } from "../../core/env-secret-ref";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { isQuiet } from "../../core/warn";
 import { resolveSourceEntries } from "../../indexer/search/search-source";
 import { readStdin } from "../../runtime";
 import { buildChildEnv } from "./child-env";
+import { sensitiveMarkerPath } from "./marker-path";
 
 /**
  * Walk each stash's env files and return one entry per `.env` file, using the
@@ -59,7 +60,7 @@ function listEnvsRecursive(
         const canonical = deriveCanonicalAssetName("env", root, full);
         if (!canonical) continue;
         // Skip sensitive envs: a sibling .sensitive marker file suppresses listing.
-        const markerPath = full.replace(/\.env$/, ".sensitive");
+        const markerPath = sensitiveMarkerPath(full, "env");
         if (fs.existsSync(markerPath)) continue;
         const { keys } = listKeysFn(full);
         result.push({ ref: makeEnvRef(canonical, source), path: full, keys });
@@ -122,6 +123,7 @@ const envCreateCommand = defineJsonCommand({
       throw new UsageError("Pass only one of --from-file or --from-stdin.", "INVALID_FLAG_VALUE");
     }
 
+    let content: string | undefined;
     if (fromFile !== undefined || fromStdin) {
       // Ingest path: never silently clobber an existing env file.
       if (fs.existsSync(absPath)) {
@@ -130,7 +132,6 @@ const envCreateCommand = defineJsonCommand({
           "RESOURCE_ALREADY_EXISTS",
         );
       }
-      let content: string;
       if (fromFile !== undefined) {
         if (!fs.existsSync(fromFile)) {
           throw new NotFoundError(`Source file not found: ${fromFile}`, "FILE_NOT_FOUND");
@@ -144,20 +145,22 @@ const envCreateCommand = defineJsonCommand({
         );
         content = buf.toString("utf8");
       }
-      writeEnv(absPath, content);
-    } else {
-      createEnv(absPath);
     }
 
     const written = [absPath];
+    const markerPath = sensitiveMarkerPath(absPath, "env");
     if (args.sensitive) {
-      const markerPath = absPath.replace(/\.env$/, ".sensitive");
-      if (!fs.existsSync(markerPath)) {
-        fs.writeFileSync(markerPath, "", { mode: 0o600 });
-      }
       written.push(markerPath);
     }
-    commitEnvSecretWrite(target, { type: "env", name }, "Update", written);
+    withEnvSecretWrite(target, { type: "env", name }, "Update", written, () => {
+      if (content !== undefined) writeEnv(absPath, content);
+      else createEnv(absPath);
+      if (args.sensitive) {
+        if (!fs.existsSync(markerPath)) {
+          writeFileAtomic(markerPath, "", 0o600);
+        }
+      }
+    });
     output("env-create", { ref });
   },
 });
@@ -400,8 +403,13 @@ const envRemoveCommand = defineJsonCommand({
       throw new NotFoundError(`Env not found: ${ref}`);
     }
     const { removeEnv } = await import("./env.js");
-    const removed = removeEnv(absPath);
-    commitEnvSecretWrite(target, { type: "env", name }, "Remove", [absPath, `${absPath}.sensitive`]);
+    const removed = withEnvSecretWrite(
+      target,
+      { type: "env", name },
+      "Remove",
+      [absPath, sensitiveMarkerPath(absPath, "env")],
+      () => removeEnv(absPath),
+    );
     output("env-remove", { ref, removed });
   },
 });
@@ -456,8 +464,7 @@ const envSetCommand = defineJsonCommand({
       // Strip a single trailing newline so `echo "$VAL" | akm env set` is exact.
       value = buf.toString("utf8").replace(/\n$/, "");
     }
-    setEnvKey(absPath, key, value);
-    commitEnvSecretWrite(target, { type: "env", name }, "Update", [absPath]);
+    withEnvSecretWrite(target, { type: "env", name }, "Update", [absPath], () => setEnvKey(absPath, key, value));
     // Warn (never block) on process-hijacking key names, matching the env-run audit.
     const { isDangerousEnvKey } = await import("../lint/env-key-rules.js");
     if (isDangerousEnvKey(key) && !isQuiet()) {
@@ -504,8 +511,9 @@ const envUnsetCommand = defineJsonCommand({
     if (invalid.length > 0) {
       throw new UsageError(`Invalid env key(s): ${invalid.join(", ")}.`, "INVALID_FLAG_VALUE");
     }
-    const { removed, missing } = unsetEnvKeys(absPath, keys);
-    commitEnvSecretWrite(target, { type: "env", name }, "Update", [absPath]);
+    const { removed, missing } = withEnvSecretWrite(target, { type: "env", name }, "Update", [absPath], () =>
+      unsetEnvKeys(absPath, keys),
+    );
     output("env-unset", { ref, removed, missing });
   },
 });

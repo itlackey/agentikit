@@ -5,47 +5,19 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import readline from "node:readline";
 import consolidateSystemPrompt from "../../assets/prompts/consolidate-system.md" with { type: "text" };
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { assembleAssetFromString, serializeFrontmatter } from "../../core/asset/asset-serialize";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { conceptIdFromTypeName, displayRef, parseRefInput } from "../../core/asset/resolve-ref";
-import { timestampForFilename } from "../../core/common";
 import type { AkmConfig, ImproveProfileConfig } from "../../core/config/config";
 import { getImproveProcessConfig, loadConfig } from "../../core/config/config";
-import { ConfigError } from "../../core/errors";
-import {
-  advanceTxn,
-  beginTxn,
-  canonicalTxnRoot,
-  cleanupTxn,
-  registerTxnKind,
-  type Txn,
-  type TxnJournal,
-  txnNamespaceDir,
-} from "../../core/fs-txn";
-// Note: appendEvent import removed (WS-3a: archive TTL machinery retired)
 import { parseEmbeddedJsonResponse } from "../../core/parse";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
 import { openStateDatabase } from "../../core/state-db";
-import { detectTruncatedDescription } from "../../core/text-truncation";
 import { parseSinceToIsoLenient } from "../../core/time";
 import { warn, warnVerbose } from "../../core/warn";
-import {
-  assertWriteTargetPathsClean,
-  captureGitPublication,
-  captureWriteTargetPathSnapshot,
-  deleteAssetFromSource,
-  type GitPathSnapshots,
-  type GitPublication,
-  prepareWriteTargetForMutation,
-  publishWriteTargetTransaction,
-  type ResolvedWriteTarget,
-  recordWriteTargetPath,
-  resolveWriteTarget,
-  writeAssetToSource,
-} from "../../core/write-source";
+import { type ResolvedWriteTarget, resolveWriteTarget } from "../../core/write-source";
 import { getDefaultLlmConfig } from "../../integrations/agent/engine-resolution";
 import { materializeLlmRunnerConnection, resolveImproveProcessRunner } from "../../integrations/agent/runner";
 import { cosineSimilarity, embedBatch, resolveEmbeddingModelId } from "../../llm/embedder";
@@ -56,24 +28,11 @@ import { closeDatabase, openExistingDatabase } from "../../storage/repositories/
 import { findEntryIdByRef, getAllEntries, getEntryById } from "../../storage/repositories/index-entries-repository";
 import type { DbIndexedEntry } from "../../storage/repositories/index-entry-types";
 import { getNeighborsByEntryId } from "../../storage/repositories/index-vec-repository";
-import { isProposalSkipped, listProposals, proposalContent } from "../proposal/repository";
-import {
-  hasSupersededStatus,
-  MERGE_ABSOLUTE_FLOOR_CHARS,
-  MERGE_SHRINK_RATIO_MIN,
-  validateProposalFrontmatter,
-} from "../proposal/validators/proposal-quality-validators";
-import {
-  type AntiCollapseConfig,
-  checkGenerationGuard,
-  checkLexicalDiversity,
-  checkMergeInformationFloor,
-  computeMergedGeneration,
-  readAssetGeneration,
-} from "./anti-collapse";
-import { cacheHash, stripFrontmatterBody } from "./content-hash";
+import { isProposalSkipped, listProposals, type ProposalsContext, proposalContent } from "../proposal/repository";
+import { hasSupersededStatus, validateProposalFrontmatter } from "../proposal/validators/proposal-quality-validators";
+import type { AntiCollapseConfig } from "./anti-collapse";
+import { cacheHash } from "./content-hash";
 import { resolveImproveStrategy, resolveProcessEnabled } from "./improve-strategies";
-import { writeContradictEdge } from "./memory/memory-belief";
 import { emitProposal } from "./proposal-envelope";
 import { createRunContext, type RunContext } from "./run-context";
 
@@ -84,28 +43,15 @@ import type { ConsolidateOpKind, ConsolidateResult } from "../../core/improve-ty
 // Chunk sizing + per-chunk prompt assembly live in ./consolidate/chunking.
 import { buildChunkPrompt, computeSafeChunkSize, DEFAULT_CONTEXT_LENGTH_TOKENS } from "./consolidate/chunking";
 // Eligibility / safety predicates live in ./consolidate/eligibility.
-import {
-  type ConsolidateGuardVerdict,
-  consolidateGuardStatus,
-  isConsolidationEligibleMemoryName,
-  isHotCapturedMemory,
-} from "./consolidate/eligibility";
+import { isConsolidationEligibleMemoryName, isHotCapturedMemory } from "./consolidate/eligibility";
 // Plan parsing / merging (pure op-reconciliation algebra) lives in
 // ./consolidate/merge.
 import { isValidOp, mergePlans } from "./consolidate/merge";
 // LLM-output sanitization (pure string/frontmatter transforms) lives in
 // ./consolidate/sanitize.
-import { normalizeUpdatedField, sanitizeMergedContent } from "./consolidate/sanitize";
+import { sanitizeMergedContent } from "./consolidate/sanitize";
 // Shared consolidate domain types live in ./consolidate/types.
-import type {
-  ConsolidateContradictOp,
-  ConsolidateDeleteOp,
-  ConsolidateMergeOp,
-  ConsolidateOperation,
-  ConsolidatePromoteOp,
-  MemoryEntry,
-  RawChunkPlan,
-} from "./consolidate/types";
+import type { ConsolidateOperation, ConsolidatePromoteOp, MemoryEntry, RawChunkPlan } from "./consolidate/types";
 
 export interface AkmConsolidateOptions {
   /**
@@ -119,13 +65,6 @@ export interface AkmConsolidateOptions {
   /** Write target resolved by the parent improve invocation. */
   writeTarget?: ResolvedWriteTarget;
   dryRun?: boolean; // generate AI plan but skip all writes
-  /**
-   * Skip the interactive confirm prompt on the HTTP consolidation path and
-   * apply the plan directly. Unset/false: the prompt fires on an interactive
-   * TTY; non-interactive contexts (CI, cron, piped stdin, AKM_NON_INTERACTIVE)
-   * default to a non-destructive "no".
-   */
-  assumeYes?: boolean;
   task?: string; // extra guidance appended to the system prompt
   stashDir?: string;
   config?: AkmConfig;
@@ -133,8 +72,6 @@ export interface AkmConsolidateOptions {
   llmConfig?: import("../../core/config/config").LlmConnectionConfig | null;
   /** When true, indicates the run was triggered automatically by volume threshold rather than by the memory_consolidation feature flag. */
   autoTriggered?: boolean;
-  /** How to handle stale/incomplete consolidate journals from prior interrupted runs. */
-  recoveryMode?: "abort" | "clean";
   /**
    * Incremental gate (ISO timestamp). When set, consolidation considers only
    * memories modified after this time PLUS their top-k semantic neighbours from
@@ -163,6 +100,8 @@ export interface AkmConsolidateOptions {
    * containing improve run.
    */
   sourceRun?: string;
+  /** Proposal persistence seam used by callers that isolate state storage. */
+  proposalsCtx?: ProposalsContext;
   /**
    * AbortSignal from the caller's budget controller (e.g. `improve.ts`
    * `budgetAbortController`). When aborted the consolidation loop breaks cleanly
@@ -225,6 +164,7 @@ export const CONSOLIDATE_PLAN_JSON_SCHEMA: Record<string, unknown> = {
               secondaries: {
                 type: "array",
                 minItems: 1,
+                maxItems: 1,
                 items: { type: "string", minLength: 1 },
               },
               mergeStrategy: { type: "string", minLength: 1 },
@@ -310,6 +250,7 @@ async function clusterMemoriesBySimilarity(
   memories: MemoryEntry[],
   config: AkmConfig,
   stateDb?: Database,
+  signal?: AbortSignal,
 ): Promise<{ ordered: MemoryEntry[]; embedTelemetry: ClusterEmbedTelemetry }> {
   const noTelemetry: ClusterEmbedTelemetry = { embedMs: 0, cacheHits: 0, cacheMisses: 0 };
   if (memories.length < 3 || !config.embedding) return { ordered: memories, embedTelemetry: noTelemetry };
@@ -363,7 +304,7 @@ async function clusterMemoriesBySimilarity(
   if (missTexts.length > 0) {
     const embedStart = Date.now();
     try {
-      missVecs = await embedBatch(missTexts, config.embedding);
+      missVecs = await embedBatch(missTexts, config.embedding, signal);
     } catch {
       // Fail open: embedding failures degrade gracefully to original order.
       return { ordered: memories, embedTelemetry: { embedMs, cacheHits, cacheMisses } };
@@ -471,235 +412,6 @@ function loadPendingConsolidateProposalHashes(stashDir: string): Set<string> {
   return hashes;
 }
 
-// ── Journal (unified fs-txn engine, WI-6.3e) ────────────────────────────────
-//
-// The consolidate journal records planned ops, diagnostic completion marks,
-// per-file backups, and an exact Git publication boundary. An interrupted
-// `applying` phase remains an explicit abort/clean decision; `publishing` rolls
-// forward only the recorded transaction-owned commit. The old in-stash
-// `.akm/consolidate-journal.json` + `.akm/consolidate-backup/<ts>/` homes are
-// gone; the journal rides the engine home (kind `consolidate`, root = stash)
-// with backups under the transaction directory.
-
-interface ConsolidateJournalPayload {
-  startedAt: string;
-  operations: ConsolidateOperation[];
-  completed: string[];
-  targetSource: string;
-  targetKind: string;
-  commitMessage?: string;
-  /** Exact repo-relative paths owned by this consolidation's Git boundary. */
-  gitPaths: string[];
-  gitSnapshots: GitPathSnapshots;
-  gitPublication?: GitPublication;
-}
-
-type ConsolidateTxn = Txn<ConsolidateJournalPayload>;
-
-const CONSOLIDATE_TXN_KIND = "consolidate";
-// Generic fs-txn recovery cannot reconstruct command config, so consolidate's
-// own run-entry path handles publication. The registered handler fails closed.
-const CONSOLIDATE_TXN_PHASES = ["applying", "publishing", "committed"] as const;
-
-function consolidateBackupDir(txn: ConsolidateTxn): string {
-  return path.join(txn.dir, "backup");
-}
-
-/** Open the checklist journal for this run (durably, before any mutation). */
-function beginConsolidateTxn(
-  stashDir: string,
-  ops: ConsolidateOperation[],
-  target: ResolvedWriteTarget,
-): ConsolidateTxn {
-  const gitPublication = captureGitPublication(target);
-  return beginTxn<ConsolidateJournalPayload>({
-    kind: CONSOLIDATE_TXN_KIND,
-    root: stashDir,
-    changes: [],
-    payload: {
-      startedAt: new Date().toISOString(),
-      operations: ops,
-      completed: [],
-      targetSource: target.source.name,
-      targetKind: target.source.kind,
-      gitPaths: [],
-      gitSnapshots: {},
-      ...(gitPublication ? { gitPublication } : {}),
-    },
-  });
-}
-
-function recordConsolidateMutationPath(txn: ConsolidateTxn, target: ResolvedWriteTarget, filePath: string): void {
-  recordWriteTargetPath(target.source, filePath);
-  const snapshot = captureWriteTargetPathSnapshot(target, filePath);
-  if (!snapshot) return;
-  const previous = txn.journal.payload.gitSnapshots[snapshot.path];
-  if (!txn.journal.payload.gitPaths.includes(snapshot.path)) {
-    txn.journal.payload.gitPaths.push(snapshot.path);
-  }
-  if (
-    !Object.hasOwn(txn.journal.payload.gitSnapshots, snapshot.path) ||
-    JSON.stringify(previous) !== JSON.stringify(snapshot.state)
-  ) {
-    txn.journal.payload.gitSnapshots[snapshot.path] = snapshot.state;
-    advanceTxn(txn, "applying");
-  }
-}
-
-/** Durably mark one op complete on the checklist. Best-effort, like before. */
-function markJournalCompleted(txn: ConsolidateTxn, opRef: string): void {
-  try {
-    txn.journal.payload.completed.push(opRef);
-    advanceTxn(txn, "applying");
-  } catch {
-    // best-effort
-  }
-}
-
-/** Finish a transaction-owned Git commit/push and remove its durable journal. */
-function finishConsolidationPublication(txn: ConsolidateTxn, target: ResolvedWriteTarget): void {
-  if (canonicalTxnRoot(target.source.path) !== canonicalTxnRoot(txn.journal.root)) {
-    throw new ConfigError(
-      `Consolidation transaction ${txn.journal.transactionId} is bound to a different target root.`,
-      "INVALID_CONFIG_FILE",
-    );
-  }
-  const payload = txn.journal.payload;
-  if (payload.targetSource !== target.source.name || payload.targetKind !== target.source.kind) {
-    throw new ConfigError(
-      `Consolidation transaction ${txn.journal.transactionId} is bound to a different target source.`,
-      "INVALID_CONFIG_FILE",
-    );
-  }
-  const prepared = prepareWriteTargetForMutation(target, { allowAhead: true });
-  const paths = payload.gitPaths;
-  publishWriteTargetTransaction(prepared, payload.gitPublication, {
-    transactionId: txn.journal.transactionId,
-    message: payload.commitMessage ?? "Consolidate assets",
-    paths,
-    snapshots: payload.gitSnapshots ?? {},
-    // Preserve this command's ConfigError (exit 78) for a journal missing its
-    // publication identity; the shared helper's default is a plain Error.
-    missingPublicationError: () =>
-      new ConfigError(
-        `Consolidation transaction ${txn.journal.transactionId} lacks durable Git publication identity.`,
-        "INVALID_CONFIG_FILE",
-      ),
-    onCommitRecorded: (commit) => {
-      // biome-ignore lint/style/noNonNullAssertion: publishWriteTargetTransaction throws when absent
-      const publication = payload.gitPublication!;
-      if (publication.commit !== commit) {
-        publication.commit = commit;
-        advanceTxn(txn, "publishing");
-      }
-    },
-  });
-  advanceTxn(txn, "committed");
-  cleanupTxn(txn.dir);
-}
-
-function checkForIncompleteJournal(
-  stashDir: string,
-  recoveryMode: "abort" | "clean",
-  warnings: string[],
-  target: ResolvedWriteTarget,
-): void {
-  const nsDir = txnNamespaceDir(stashDir);
-  if (!fs.existsSync(nsDir)) return;
-  for (const entry of fs.readdirSync(nsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const transactionDir = path.join(nsDir, entry.name);
-    const journalPath = path.join(transactionDir, "journal.json");
-    if (!fs.existsSync(journalPath)) continue;
-    let journal: TxnJournal<ConsolidateJournalPayload>;
-    try {
-      journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as TxnJournal<ConsolidateJournalPayload>;
-    } catch {
-      // An unreadable journal CANNOT be attributed to a kind — it may fence a
-      // sibling domain's interrupted, irreversible mutation (mv/proposal
-      // journals share the stash namespace). Never destroy it from here:
-      // `clean` skips it with a warning; the default aborts fail-closed with
-      // kind-agnostic guidance.
-      if (recoveryMode === "clean") {
-        warnings.push(
-          `Unreadable transaction journal at ${journalPath} may belong to another transaction kind; not removed — inspect manually.`,
-        );
-        continue;
-      }
-      throw new ConfigError(
-        `Incomplete transaction state detected: unreadable journal at ${journalPath}. It may fence an interrupted mv or proposal mutation — inspect or remove the file manually.`,
-        "INVALID_CONFIG_FILE",
-      );
-    }
-    if (journal.kind !== CONSOLIDATE_TXN_KIND) continue;
-    const operationCount = Array.isArray(journal.payload?.operations) ? journal.payload.operations.length : 0;
-    const completedCount = Array.isArray(journal.payload?.completed) ? journal.payload.completed.length : 0;
-    if (journal.phase === "committed") {
-      cleanupTxn(transactionDir);
-      continue;
-    }
-    if (journal.phase === "publishing") {
-      finishConsolidationPublication({ journal, journalPath, dir: transactionDir }, target);
-      continue;
-    }
-    if (recoveryMode === "clean") {
-      const cleanupWarning = cleanupTxn(transactionDir);
-      warnings.push(
-        cleanupWarning
-          ? `Failed to remove stale consolidation journal at ${journalPath}.`
-          : `Removed stale consolidation journal at ${journalPath} (${completedCount}/${operationCount} operations completed).`,
-      );
-      continue;
-    }
-    throw new ConfigError(
-      `Incomplete consolidation run detected at ${journalPath} (${completedCount}/${operationCount} operations completed). Re-run with --consolidate-recovery clean to remove stale journal artifacts. Backup dir: ${path.join(transactionDir, "backup")}.`,
-      "INVALID_CONFIG_FILE",
-    );
-  }
-}
-
-function backupFile(filePath: string, backupDir: string, name: string): void {
-  try {
-    fs.mkdirSync(backupDir, { recursive: true });
-    fs.copyFileSync(filePath, path.join(backupDir, `${name}.md`));
-  } catch {
-    // best-effort
-  }
-}
-
-// ── WS-3b: Generation frontmatter injection ───────────────────────────────────
-
-/**
- * Inject `generation` and canonical `xrefs` into merged content.
- * generation = max(sourceGenerations) + 1.
- * xrefs = UNION of the provided provenance refs (participants + their cited
- * sources) with anything already present in xrefs.
- * Fails open — returns original content if frontmatter can't be parsed.
- */
-export function injectGenerationFrontmatter(
-  mergedContent: string,
-  sourceGenerations: number[],
-  provenanceRefs: string[],
-): string {
-  try {
-    const parsed = parseFrontmatter(mergedContent);
-    const existingFm = parsed.data as Record<string, unknown>;
-    const existingRefs = Array.isArray(existingFm.xrefs) ? existingFm.xrefs.map(String) : [];
-    const canonicalRefs = [...existingRefs, ...provenanceRefs].flatMap((ref) => {
-      const canonical = canonicalStoredXref(ref);
-      return canonical === undefined ? [] : [canonical];
-    });
-    const updatedFm: Record<string, unknown> = {
-      ...existingFm,
-      generation: computeMergedGeneration(sourceGenerations),
-      xrefs: [...new Set(canonicalRefs)],
-    };
-    return assembleAssetFromString(serializeFrontmatter(updatedFm), parsed.content);
-  } catch {
-    return mergedContent; // fail open
-  }
-}
-
 /** Parse a stored provenance ref and emit its canonical D-R5 display spelling. */
 function canonicalStoredXref(ref: string): string | undefined {
   try {
@@ -722,63 +434,6 @@ function canonicalXref(ref: string): string {
 function promoteProvenanceXrefs(existing: unknown, sourceRef: string): string[] {
   const priors = Array.isArray(existing) ? existing.map(String) : [];
   return [...new Set([...priors, sourceRef].map(canonicalXref))];
-}
-
-// ── Archive helper (P1-B: soft-invalidation) ─────────────────────────────────
-
-/**
- * Move a memory asset to `.akm/archive/` with `status: superseded` frontmatter
- * instead of deleting it outright. The live stash delete still happens after
- * this call — this is belt-and-suspenders archival that survives the hard delete.
- *
- * Archive filename: `<iso-ts>-<opIndex>-<basename>.md`
- * New frontmatter fields: status, superseded_at, superseded_by (optional),
- * superseded_reason.
- */
-function archiveMemory(
-  filePath: string,
-  stashDir: string,
-  target: ResolvedWriteTarget,
-  ref: string,
-  reason: string,
-  opIndex: number,
-  supersededBy?: string,
-  warnings?: string[],
-): string | undefined {
-  const archiveDir = path.join(stashDir, ".akm", "archive");
-  let raw: string;
-  try {
-    raw = fs.readFileSync(filePath, "utf8");
-  } catch {
-    if (warnings) warnings.push(`archiveMemory: could not read ${ref} for archiving — skipping archive write`);
-    return undefined;
-  }
-  let content = raw;
-  try {
-    const parsed = parseFrontmatter(raw);
-    const newFm: Record<string, unknown> = {
-      ...parsed.data,
-      status: "superseded",
-      superseded_at: new Date().toISOString(),
-      ...(supersededBy ? { superseded_by: supersededBy } : {}),
-      superseded_reason: reason,
-    };
-    content = assembleAssetFromString(serializeFrontmatter(newFm), parsed.content);
-  } catch {
-    if (warnings) warnings.push(`archiveMemory: could not parse frontmatter for ${ref} — archiving raw`);
-  }
-  const ts = timestampForFilename();
-  const safeName = path.basename(filePath, ".md");
-  const archivePath = path.join(archiveDir, `${ts}-${opIndex}-${safeName}.md`);
-  assertWriteTargetPathsClean(target.source, [archivePath]);
-  try {
-    fs.mkdirSync(archiveDir, { recursive: true });
-    fs.writeFileSync(archivePath, content, "utf8");
-    return archivePath;
-  } catch (e) {
-    if (warnings) warnings.push(`archiveMemory: write failed for ${ref}: ${String(e)}`);
-    return undefined;
-  }
 }
 
 // ── LLM resolution ──────────────────────────────────────────────────────────
@@ -883,7 +538,7 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
   // handle. consolidate.ts has no `eventsCtx`/proposals-`ctx` option at all
   // (WS-3a retired its only appendEvent usage; `emitProposal` here is always
   // called with the default, seam-less ProposalsContext — see
-  // handlePromoteOp below), so both get the safe empty-object default,
+  // emitPromotionProposal below), so both get the safe empty-object default,
   // behaviorally identical to `undefined` (EventsContext/ProposalsContext
   // fields are all optional-chained by their consumers). `getLlmConfig`
   // mirrors `planConsolidation`'s own resolution (`resolveConsolidateLlmConfig`)
@@ -909,7 +564,6 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
   });
 
   const warnings: string[] = [];
-  checkForIncompleteJournal(stashDir, opts.recoveryMode ?? "abort", warnings, writeTarget);
 
   if (!resolveProcessEnabled("consolidate", opts.improveProfile ?? resolveImproveStrategy(undefined, config).config)) {
     return makeConsolidateResult({
@@ -936,7 +590,7 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
   }
 
   try {
-    return await akmConsolidateInner(opts, config, stashDir, startMs, sourceRun, warnings, sharedStateDb);
+    return await akmConsolidateInner(opts, config, stashDir, startMs, warnings, sharedStateDb);
   } finally {
     sharedStateDb?.close();
   }
@@ -1295,7 +949,12 @@ async function judgeConsolidationChunks(args: {
           { role: "system", content: CONSOLIDATE_SYSTEM_PROMPT },
           { role: "user", content: userPrompt },
         ],
-        request: { responseSchema: CONSOLIDATE_PLAN_JSON_SCHEMA, enableThinking: false },
+        request: {
+          responseSchema: CONSOLIDATE_PLAN_JSON_SCHEMA,
+          enableThinking: false,
+          timeoutMs: llmConfig.timeoutMs,
+          signal: opts.signal,
+        },
         parse: (raw) => ({ ok: true as const, content: raw ?? "" }),
         // A transport throw was caught INSIDE the gated fn and returned as an
         // {ok:false} envelope (never reaching the gate's fallback); onError
@@ -1387,8 +1046,8 @@ async function planConsolidation(
   allOps: ConsolidateOperation[];
   totalChunks: number;
   llmPoolSize: number;
+  deferredMemories: number;
   embedTelemetry: ClusterEmbedTelemetry;
-  isHttpPath: boolean;
   sourceName: string;
 }> {
   // Consolidation always uses the HTTP LLM client directly — never the agent
@@ -1400,7 +1059,6 @@ async function planConsolidation(
   const llmConfig = Object.hasOwn(opts, "llmConfig")
     ? (opts.llmConfig ?? undefined)
     : resolveConsolidateLlmConfig(config, opts.improveProfile);
-  const isHttpPath = !!llmConfig;
 
   // Chunk sizing: derive a safe chunk size from the configured model context
   // window so that the full prompt (system prompt + chunk user prompt) never
@@ -1419,8 +1077,36 @@ async function planConsolidation(
   // -- Phase A: plan generation -----------------------------------------------
   const sourceName = opts.target ?? stashDir;
 
-  // WS-5: capture llmPoolSize = memories entering the LLM (after all filtering).
-  const llmPoolSize = memories.length;
+  let budgetedMemories = memories;
+  if (opts.signal) {
+    const budgetMs = (opts.signal as AbortSignal & { remainingBudgetMs?: number }).remainingBudgetMs;
+    if (budgetMs !== undefined) {
+      const p90Chunk = opts.p90ChunkSecondsDefault ?? 30;
+      const safeChunks = Math.max(0, Math.floor((Math.max(0, budgetMs) / 1000 / p90Chunk) * 0.6));
+      const cap = safeChunks * chunkSize;
+      if (cap < memories.length) {
+        budgetedMemories = memories
+          .map((entry) => {
+            let mtimeMs = 0;
+            try {
+              mtimeMs = fs.statSync(entry.filePath).mtimeMs;
+            } catch {
+              // Missing files sort first and are filtered by the existing guards.
+            }
+            return { entry, mtimeMs };
+          })
+          .sort((a, b) => a.mtimeMs - b.mtimeMs || a.entry.name.localeCompare(b.entry.name))
+          .map(({ entry }) => entry)
+          .slice(0, cap);
+        const msg = `[consolidate] cold-start budget: reducing pool from ${memories.length} to ${budgetedMemories.length} memories (${safeChunks} safe chunks; remainder deferred).`;
+        warn(msg);
+        warnings.push(msg);
+      }
+    }
+  }
+
+  // WS-5: capture llmPoolSize after every pre-LLM cap.
+  const llmPoolSize = budgetedMemories.length;
 
   // C-1 / #380: Pre-cluster memories by embedding similarity before chunking.
   // This ensures that semantically similar memories land in the same LLM
@@ -1429,9 +1115,10 @@ async function planConsolidation(
   // mem0 arXiv:2504.19413, A-MEM arXiv:2502.12110.
   // Fails open: if embeddings are unavailable or fail, original order is used.
   const { ordered: clusteredMemories, embedTelemetry } = await clusterMemoriesBySimilarity(
-    memories,
+    budgetedMemories,
     config,
     sharedStateDb,
+    opts.signal,
   );
 
   // WS-3b Anti-collapse step 8c: inject random (non-similar) clusters.
@@ -1495,44 +1182,8 @@ async function planConsolidation(
   // /tmp/akm-health-investigations/tuning-reasons-investigation.md §Q3.
   const pendingProposalBodyHashes = loadPendingConsolidateProposalHashes(stashDir);
 
-  // ── Cold-start budget estimation ─────────────────────────────────────────────
-  // Estimate wall-clock cost BEFORE issuing any LLM calls. When a signal is
-  // provided and the estimated cost exceeds ~60% of the remaining budget we
-  // auto-reduce the pool and log the reduction so the run never starts work
-  // it cannot finish (avoiding SIGTERM mid-LLM-call).
-  //
-  // Formula: chunks.length × p90_chunk_seconds. The p90 comes from
-  // `opts.p90ChunkSecondsDefault` (caller-supplied, typically from the profile
-  // config); absent = 30 s (conservative default matching a medium local LLM).
-  //
-  // "Remaining budget" is read from a custom property on the AbortSignal if
-  // the caller (improve.ts) has attached one. Without it no auto-reduction
-  // fires but the check is still cheap to run.
-  if (chunks.length > 10 && opts.signal) {
-    const p90Chunk = opts.p90ChunkSecondsDefault ?? 30;
-    const estimatedSeconds = chunks.length * p90Chunk;
-    // remainingBudgetMs is a non-standard extension set by improve.ts when it
-    // creates the budget AbortController. Undefined = no budget information.
-    const budgetMs = (opts.signal as AbortSignal & { remainingBudgetMs?: number }).remainingBudgetMs;
-    if (budgetMs !== undefined && budgetMs > 0) {
-      const remainingSeconds = budgetMs / 1000;
-      if (estimatedSeconds > remainingSeconds * 0.6) {
-        const safeCaps = Math.max(1, Math.floor((remainingSeconds * 0.6) / p90Chunk));
-        const removedChunks = chunks.length - safeCaps;
-        if (removedChunks > 0) {
-          const msg =
-            `[consolidate] cold-start budget: estimated ${estimatedSeconds.toFixed(0)}s > 60% of remaining ${remainingSeconds.toFixed(0)}s; ` +
-            `reducing pool from ${chunks.length} to ${safeCaps} chunks (${removedChunks} deferred to next run).`;
-          warn(msg);
-          warnings.push(msg);
-          chunks.splice(safeCaps);
-        }
-      }
-    }
-  }
-
   warn(
-    `[consolidate] ${memories.length} memories / ${chunks.length} chunk(s) / chunk_size=${chunkSize}` +
+    `[consolidate] ${budgetedMemories.length} memories / ${chunks.length} chunk(s) / chunk_size=${chunkSize}` +
       ` / pending-proposal hashes: ${pendingProposalBodyHashes.size}`,
   );
 
@@ -1556,133 +1207,18 @@ async function planConsolidation(
 
   // Build the known-refs set from the already-filtered memory pool so
   // mergePlans() can reject LLM-hallucinated primary refs before execution.
-  const knownRefs = new Set(memories.map((m) => conceptIdFromTypeName("memory", m.name)));
+  const knownRefs = new Set(budgetedMemories.map((m) => conceptIdFromTypeName("memory", m.name)));
   const { ops: allOps, warnings: mergeWarnings } = mergePlans(chunkOpsArrays, knownRefs);
   warnings.push(...mergeWarnings);
 
-  return { allOps, totalChunks: chunks.length, llmPoolSize, embedTelemetry, isHttpPath, sourceName };
-}
-
-/**
- * Pass 3 — execute the reconciled plan against the filesystem: resolve the
- * write target, journal the batch, dispatch each op to its handler, then commit
- * the batch at the boundary and clean up the journal. Mutates `accounting` via
- * the op-handlers' `pushSkipReason`. Behavior-identical to the former inlined
- * write block. Never invoked on the dry-run or aborted-confirm paths.
- */
-async function applyConsolidationPlan(
-  config: AkmConfig,
-  stashDir: string,
-  target: ResolvedWriteTarget,
-  sourceRun: string,
-  memories: MemoryEntry[],
-  warnings: string[],
-  allOps: ConsolidateOperation[],
-  accounting: ConsolidateAccounting,
-  activeProfile?: ImproveProfileConfig,
-  llmConfig?: import("../../core/config/config").LlmConnectionConfig | null,
-): Promise<{
-  merged: number;
-  deleted: number;
-  contradicted: number;
-  mergeFloorViolations: number;
-  mergedSecondaries: number;
-  promoted: string[];
-}> {
-  const mutationTarget = prepareWriteTargetForMutation(target);
-  // -- Phase B + writes -------------------------------------------------------
-  // Open the checklist journal (durably) before any mutations; backups live
-  // under the transaction directory.
-  const txn = beginConsolidateTxn(stashDir, allOps, mutationTarget);
-  const backupDir = consolidateBackupDir(txn);
-
-  const counts = {
-    merged: 0,
-    deleted: 0,
-    contradicted: 0, // C-3 / #382: count of contradiction edges written
-    mergeFloorViolations: 0, // R5 §4.2: advisory merge-information-floor failures
-    mergedSecondaries: 0,
+  return {
+    allOps,
+    totalChunks: chunks.length,
+    llmPoolSize,
+    deferredMemories: memories.length - budgetedMemories.length,
+    embedTelemetry,
+    sourceName,
   };
-  const promoted: string[] = [];
-
-  // Within-run dedup: track source refs for which a promote proposal was
-  // already created this run. The LLM can return multiple promote ops for
-  // different source memories that happen to have identical content (all are
-  // duplicate memories), so we also need a content-hash guard below.
-  const promotedSourceRefs = new Set<string>();
-
-  // Build a lookup map: ref → MemoryEntry
-  const memoryByRef = new Map<string, MemoryEntry>();
-  for (const m of memories) {
-    memoryByRef.set(conceptIdFromTypeName("memory", m.name), m);
-  }
-
-  const opCtx: ConsolidateOpContext = {
-    config,
-    txn,
-    improveProfile: activeProfile,
-    llmConfig: llmConfig ?? null,
-    stashDir,
-    sourceRun,
-    target: mutationTarget,
-    backupDir,
-    memoryByRef,
-    promoted,
-    promotedSourceRefs,
-    warnings,
-    counts,
-    pushSkipReason: accounting.pushSkipReason,
-  };
-
-  // Thin dispatch over the op discriminator — each branch is now an isolated,
-  // independently-testable handler that mutates `opCtx`.
-  for (let opIndex = 0; opIndex < allOps.length; opIndex++) {
-    const op = allOps[opIndex]!;
-    const opDisplayRef =
-      op.op === "merge" ? op.primary : op.op === "contradict" ? `${op.ref} ↔ ${op.contradictedByRef}` : op.ref;
-    warn(`[consolidate] ${opIndex + 1}/${allOps.length} ${op.op} ${opDisplayRef}`);
-    switch (op.op) {
-      case "merge":
-        await handleMergeOp(op, opIndex, opCtx);
-        break;
-      case "delete":
-        await handleDeleteOp(op, opIndex, opCtx);
-        break;
-      case "promote":
-        await handlePromoteOp(op, opCtx);
-        break;
-      case "contradict":
-        await handleContradictOp(op, opCtx);
-        break;
-    }
-  }
-
-  const { merged, deleted, contradicted, mergeFloorViolations, mergedSecondaries } = counts;
-
-  // 0.9.0 (issue #507): batch-at-boundary commit. The merge/delete loop above
-  // wrote one merged primary and deleted N secondaries to the resolved target
-  // with NO per-asset commit. If the target is a writable git source and any
-  // asset was mutated, commit the whole batch ONCE here (stages .akm/ +
-  // siblings together). No-op for filesystem/primary-stash targets.
-  txn.journal.payload.commitMessage = `Consolidate: ${merged} merged, ${deleted} removed`;
-  advanceTxn(txn, "publishing");
-  finishConsolidationPublication(txn, mutationTarget);
-
-  // [signoff 2026-06-15] TTL archive cleanup machinery RETIRED (WS-3a).
-  // The elaborate archiveRetentionDays / archive-dir scan existed only to satisfy
-  // the old irrecoverability constraint. Stashes are now git-backed, so git
-  // history is the recovery path — no bespoke archive TTL needed. Any files in
-  // .akm/archive/ will stay there harmlessly until the operator prunes them with
-  // `git rm` or `find .akm/archive -mtime +90 -delete`. Changed N files this
-  // run; recover any via `git show <sha>:<path>` or `git restore <path>`.
-  if (merged > 0 || deleted > 0) {
-    const totalChanged = merged + deleted;
-    warnings.push(
-      `Changed ${totalChanged} file(s) this run. Recover any via git if needed (git history is the backstop).`,
-    );
-  }
-
-  return { merged, deleted, contradicted, mergeFloorViolations, mergedSecondaries, promoted };
 }
 
 async function akmConsolidateInner(
@@ -1690,7 +1226,6 @@ async function akmConsolidateInner(
   config: import("../../core/config/config").AkmConfig,
   stashDir: string,
   startMs: number,
-  sourceRun: string,
   warnings: string[],
   sharedStateDb: Database | undefined,
 ): Promise<ConsolidateResult> {
@@ -1701,7 +1236,7 @@ async function akmConsolidateInner(
 
   // -- Pass 2: build the LLM plan (populates the shared accounting counters) ---
   const accounting = createConsolidateAccounting();
-  const { allOps, totalChunks, llmPoolSize, embedTelemetry, isHttpPath, sourceName } = await planConsolidation(
+  const { allOps, totalChunks, llmPoolSize, deferredMemories, embedTelemetry, sourceName } = await planConsolidation(
     opts,
     config,
     stashDir,
@@ -1718,7 +1253,7 @@ async function akmConsolidateInner(
       dryRun: true,
       previewOnly: true,
       target: sourceName,
-      processed: memories.length,
+      processed: llmPoolSize,
       failedChunks: accounting.totalChunksFailed,
       totalChunks,
       judgedNoAction: accounting.judgedNoAction,
@@ -1727,6 +1262,7 @@ async function akmConsolidateInner(
       // provably still 0 here (it only increments in the op-execution loop).
       mergedSecondaries: 0,
       failedChunkMemories: accounting.failedChunkMemories,
+      deferredMemories,
       planned: allOps,
       warnings,
       durationMs: Date.now() - startMs,
@@ -1735,532 +1271,73 @@ async function akmConsolidateInner(
 
   warn(`[consolidate] plan: ${allOps.length} operation(s)`);
 
-  // -- HTTP path: warn about quality and confirm unless assumeYes ------------
-  if (isHttpPath) {
-    warnings.push("Running on HTTP path — plan generated from truncated memory excerpts; quality may vary.");
-    // Gate the interactive-confirm path for manual/HTTP invocations. Callers
-    // that must apply without a prompt (goldens, programmatic batch runs)
-    // pass `assumeYes: true`.
-    if (opts.assumeYes !== true && allOps.length > 0) {
-      const n = allOps.length;
-      // Non-interactive contexts (CI / test runners / piped stdin) must not
-      // block on an unanswerable prompt. Default to a non-destructive "no"
-      // so callers in those contexts get the same "aborted, preview only"
-      // shape they'd get from explicit user dismissal. AKM_NON_INTERACTIVE
-      // lets callers force this path even when stdin happens to be a TTY.
-      const nonInteractive = process.stdin.isTTY === false || process.env.AKM_NON_INTERACTIVE === "1";
-      const answer = nonInteractive ? false : await promptConfirm(`Apply ${n} operations? [y/N] `);
-      if (!answer) {
-        return makeConsolidateResult({
-          previewOnly: true,
-          target: sourceName,
-          processed: memories.length,
-          failedChunks: accounting.totalChunksFailed,
-          totalChunks,
-          judgedNoAction: accounting.judgedNoAction,
-          skipReasons: accounting.skipReasons,
-          // No merge executed on the abort path — mergedSecondaries is still 0.
-          mergedSecondaries: 0,
-          failedChunkMemories: accounting.failedChunkMemories,
-          planned: allOps,
-          warnings: [...warnings, nonInteractive ? "Non-interactive context: skipped apply." : "Aborted by user."],
-          durationMs: Date.now() - startMs,
-        });
-      }
-    }
+  // Destructive operations remain advisory. Promote is safe to execute because
+  // it emits a reviewable proposal rather than mutating an asset.
+  const promoted: string[] = [];
+  const promotionFailures = { count: 0 };
+  const memoryByRef = new Map(memories.map((memory) => [conceptIdFromTypeName("memory", memory.name), memory]));
+  const promoteContext: PromoteContext = {
+    config,
+    stashDir,
+    sourceRun: opts.sourceRun ?? `consolidate-${startMs}`,
+    proposalsCtx: opts.proposalsCtx,
+    target: opts.writeTarget as ResolvedWriteTarget,
+    memoryByRef,
+    promoted,
+    promotedSourceRefs: new Set<string>(),
+    promotionFailures,
+    warnings,
+    pushSkipReason: accounting.pushSkipReason,
+    llmConfig: Object.hasOwn(opts, "llmConfig")
+      ? (opts.llmConfig ?? null)
+      : (resolveConsolidateLlmConfig(config, opts.improveProfile) ?? null),
+  };
+  for (const op of allOps) {
+    if (op.op === "promote") await emitPromotionProposal(op, promoteContext);
   }
 
-  // -- Pass 3: execute the plan against the filesystem ------------------------
-  const { merged, deleted, contradicted, mergeFloorViolations, mergedSecondaries, promoted } =
-    await applyConsolidationPlan(
-      config,
-      stashDir,
-      opts.writeTarget as ResolvedWriteTarget,
-      sourceRun,
-      memories,
-      warnings,
-      allOps,
-      accounting,
-      opts.improveProfile,
-      Object.hasOwn(opts, "llmConfig")
-        ? (opts.llmConfig ?? null)
-        : (resolveConsolidateLlmConfig(config, opts.improveProfile) ?? null),
-    );
-
-  const runDurationMs = Date.now() - startMs;
-  const budgetFraction =
-    opts.runBudgetMs !== undefined && opts.runBudgetMs > 0 ? runDurationMs / opts.runBudgetMs : undefined;
-
-  return {
-    schemaVersion: 1 as const,
-    ok: true,
-    shape: "consolidate-result",
-    dryRun: false,
-    previewOnly: false,
+  return makeConsolidateResult({
     target: sourceName,
-    processed: memories.length,
-    merged,
-    deleted,
-    promoted,
-    contradicted,
-    mergeFloorViolations,
+    processed: llmPoolSize,
     failedChunks: accounting.totalChunksFailed,
     totalChunks,
     judgedNoAction: accounting.judgedNoAction,
     skipReasons: accounting.skipReasons,
-    mergedSecondaries,
+    mergedSecondaries: 0,
     failedChunkMemories: accounting.failedChunkMemories,
+    deferredMemories,
+    promoted,
+    failedPromotions: promotionFailures.count,
+    planned: allOps,
     warnings,
-    durationMs: runDurationMs,
+    durationMs: Date.now() - startMs,
     perfTelemetry: {
       dedupPoolSize,
       llmPoolSize,
       embedMs: embedTelemetry.embedMs,
       embedCacheHits: embedTelemetry.cacheHits,
       embedCacheMisses: embedTelemetry.cacheMisses,
-      ...(budgetFraction !== undefined ? { estimatedBudgetFractionUsed: budgetFraction } : {}),
     },
-  };
+  });
 }
 
-/**
- * Mutable state threaded through the four consolidate op-handlers. A plain
- * struct (NOT a DI container): it carries the resolved write-target facts plus
- * the run's accounting accumulators, exactly the locals the inlined op-branches
- * closed over. Each handler mutates `counts` / `promoted` / `promotedSourceRefs`
- * in place; `pushSkipReason` is the orchestrator's skip-histogram closure.
- */
-export interface ConsolidateOpContext {
+interface PromoteContext {
   config: AkmConfig;
-  /** The run's checklist journal transaction (WI-6.3e). */
-  txn: ConsolidateTxn;
-  /** Active improve profile for this run, if any (see AkmConsolidateOptions). */
-  improveProfile?: ImproveProfileConfig;
-  llmConfig?: import("../../core/config/config").LlmConnectionConfig | null;
   stashDir: string;
   sourceRun: string;
-  target: ReturnType<typeof resolveWriteTarget>;
-  backupDir: string;
+  proposalsCtx?: ProposalsContext;
+  target: ResolvedWriteTarget;
   memoryByRef: Map<string, MemoryEntry>;
   promoted: string[];
   promotedSourceRefs: Set<string>;
+  promotionFailures: { count: number };
   warnings: string[];
-  counts: {
-    merged: number;
-    deleted: number;
-    contradicted: number;
-    mergeFloorViolations: number;
-    mergedSecondaries: number;
-  };
-  pushSkipReason: (op: ConsolidateOpKind | "unknown", ref: string, reason: string) => void;
-  generateMergedContentFn?: typeof generateMergedContent;
+  pushSkipReason: ConsolidateAccounting["pushSkipReason"];
+  llmConfig?: import("../../core/config/config").LlmConnectionConfig | null;
 }
 
-/** Execute one `merge` op (behavior-identical to the former inlined branch). */
-/**
- * Finalize a merge whose content has already been generated and validated:
- * provenance/anti-collapse guards (generation guard, lexical-diversity + info-floor
- * advisories), generation frontmatter injection, then backup/write/archive/journal
- * and the 2026-05-26 accounting counters. Extracted verbatim from `handleMergeOp`
- * — logic and every counter increment are byte-identical (the
- * `processed == actioned + noAction + Σskips` invariant is preserved). All
- * refusal paths emit a skip reason and return.
- */
-async function finalizeMerge(
-  op: ConsolidateMergeOp,
-  opIndex: number,
-  ctx: ConsolidateOpContext,
-  mergedContentArg: string,
-  emitMergeFailureSkips: (reason: string) => void,
-): Promise<void> {
-  const { stashDir, target, backupDir, memoryByRef, warnings, counts } = ctx;
-  let mergedContent = mergedContentArg;
-
-  const allParticipants = [op.primary, ...op.secondaries];
-  // Generation and provenance are mandatory merge metadata, independent of
-  // whether the optional anti-collapse refusal/advisory checks are enabled.
-  const participantInfo = allParticipants.map((ref) => {
-    const e = memoryByRef.get(ref);
-    if (!e) return { ref, generation: 0, body: "", xrefs: [] as string[] };
-    try {
-      const raw = fs.readFileSync(e.filePath, "utf8");
-      const parsed = parseFrontmatter(raw);
-      const fm = parsed.data as Record<string, unknown>;
-      const xrefs = (Array.isArray(fm.xrefs) ? fm.xrefs.map(String) : []).flatMap((ref) => {
-        const canonical = canonicalStoredXref(ref);
-        return canonical === undefined ? [] : [canonical];
-      });
-      return { ref, generation: readAssetGeneration(fm), body: stripFrontmatterBody(raw), xrefs };
-    } catch {
-      return { ref, generation: 0, body: "", xrefs: [] as string[] };
-    }
-  });
-  const sourceGenerations = participantInfo.map((p) => p.generation);
-
-  // WS-3b: Anti-collapse generation guard (step 8a).
-  // DEFAULT ON since R5 (opt out via antiCollapse.enabled: false). Refuses
-  // to merge two assets both above generation N (default 2) — prevents the
-  // pipeline from building ever-deeper LLM-merged trees that lose the
-  // source fidelity of the original episodes.
-  const antiCollapseConfig: AntiCollapseConfig =
-    (getImproveProcessConfig("consolidate", ctx.improveProfile)?.antiCollapse as AntiCollapseConfig | undefined) ?? {};
-  if (antiCollapseConfig.enabled !== false) {
-    const generationCheck = checkGenerationGuard(sourceGenerations, antiCollapseConfig);
-    if (generationCheck.refused) {
-      warnings.push(`Merge: ${generationCheck.reason}`);
-      emitMergeFailureSkips("merge_generation_guard");
-      return;
-    }
-
-    // WS-3b: Lexical diversity check (step 8b).
-    // Low n-gram diversity ⇒ likely correlated-extraction artifact; raise merge threshold.
-    if (antiCollapseConfig.lexicalDiversityCheck !== false) {
-      const bodies = participantInfo.map((p) => p.body).filter((b) => b.length > 0);
-
-      const diversityCheck = checkLexicalDiversity(bodies, antiCollapseConfig);
-      if (diversityCheck.lowDiversity) {
-        // Low-diversity cluster: just warn (don't refuse merge since the dedup
-        // path handles exact twins). The warning surfaces in health telemetry.
-        warnings.push(
-          `Merge: cluster around ${op.primary} has low lexical diversity (${diversityCheck.diversity?.toFixed(2) ?? "?"} < 0.30) — likely correlated extraction; merge proceeds but review is recommended.`,
-        );
-      }
-    }
-  }
-
-  // merged.generation = max(sourceGenerations) + 1. xrefs is the UNION of
-  // participants + canonical provenance already carried by them.
-  const provenanceUnion = [...new Set([...allParticipants, ...participantInfo.flatMap((p) => p.xrefs)])];
-  mergedContent = injectGenerationFrontmatter(mergedContent, sourceGenerations, provenanceUnion);
-
-  if (antiCollapseConfig.enabled !== false) {
-    // R5 §4.2: merge-information floor — ADVISORY in v1. A merge that
-    // shrinks provenance or genericizes below the retention floor is
-    // counted + warned, never refused (promotion path: design doc §7).
-    try {
-      const mergedParsed = parseFrontmatter(mergedContent);
-      const mergedFm = mergedParsed.data as Record<string, unknown>;
-      const mergedSourceRefs = Array.isArray(mergedFm.xrefs) ? mergedFm.xrefs.map(String) : [];
-      const floorCheck = checkMergeInformationFloor(
-        mergedParsed.content,
-        mergedSourceRefs,
-        participantInfo,
-        antiCollapseConfig,
-      );
-      if (!floorCheck.passed) {
-        counts.mergeFloorViolations++;
-        warnings.push(
-          `Merge: information floor advisory for ${op.primary}: ${floorCheck.reason ?? "unspecified"} — merge proceeds (v1 observe-only).`,
-        );
-      }
-    } catch {
-      // Floor measurement is best-effort; never blocks the merge path.
-    }
-  }
-
-  // Backup secondaries before deleting
-  for (const secRef of op.secondaries) {
-    const secEntry = memoryByRef.get(secRef);
-    if (secEntry && fs.existsSync(secEntry.filePath)) {
-      backupFile(secEntry.filePath, backupDir, secEntry.name);
-    }
-  }
-
-  // Write merged primary
-  try {
-    const parsedPrimary = parseRefInput(op.primary);
-    const written = await writeAssetToSource(target.source, target.config, parsedPrimary, mergedContent);
-    recordConsolidateMutationPath(ctx.txn, target, written.path);
-  } catch (e) {
-    warnings.push(`Merge: write failed for ${op.primary}: ${String(e)}`);
-    emitMergeFailureSkips("merge_write_failed");
-    return;
-  }
-
-  // Archive and delete secondaries (P1-B: soft-invalidation)
-  for (const secRef of op.secondaries) {
-    const secEntry = memoryByRef.get(secRef);
-    if (!secEntry) continue;
-    if (fs.existsSync(secEntry.filePath)) {
-      const archivePath = archiveMemory(
-        secEntry.filePath,
-        stashDir,
-        target,
-        secRef,
-        "merged into primary",
-        opIndex,
-        op.primary,
-        warnings,
-      );
-      if (archivePath) recordConsolidateMutationPath(ctx.txn, target, archivePath);
-    }
-    try {
-      const parsedSec = parseRefInput(secRef);
-      const deleted = await deleteAssetFromSource(target.source, target.config, parsedSec);
-      recordConsolidateMutationPath(ctx.txn, target, deleted.path);
-      markJournalCompleted(ctx.txn, secRef);
-    } catch (e) {
-      warnings.push(`Merge: delete failed for ${secRef}: ${String(e)}`);
-    }
-  }
-
-  markJournalCompleted(ctx.txn, op.primary);
-  counts.merged++;
-  // 2026-05-26 accounting-leak fix: `merged` is op-level, but each
-  // successful merge actions `1 + secondaries.length` memories. Without
-  // this counter the accounting invariant breaks by `secondaries.length`
-  // per successful merge (chunk loop excluded all secondaries from
-  // judgedNoAction via targetRefs, but only the primary is credited to
-  // `merged`). Count only loaded-memory secondaries; phantom secondary
-  // refs never affected any chunk's targetRefs in the first place.
-  for (const secRef of op.secondaries) {
-    if (memoryByRef.has(secRef)) counts.mergedSecondaries++;
-  }
-  // Prune consumed refs from memoryByRef so later ops in this run cannot
-  // reference an absorbed secondary as a merge primary and proceed with a
-  // stale entry. Primary is rewritten (not deleted), so we only remove
-  // secondaries; the primary ref remains valid under its new content.
-  for (const secRef of op.secondaries) {
-    memoryByRef.delete(secRef);
-  }
-}
-
-export async function handleMergeOp(op: ConsolidateMergeOp, opIndex: number, ctx: ConsolidateOpContext): Promise<void> {
-  const { config, memoryByRef, warnings, pushSkipReason } = ctx;
-  // Accounting helper: emit a per-participant skipReason for failed
-  // merges so primary + every loaded-memory secondary land in the
-  // structured skip histogram. Pre-2026-05-26 only the primary was
-  // counted (1 skipReason per failed merge), leaving N secondaries
-  // unaccounted for in the `processed == actioned + noAction + Σskips`
-  // invariant — the source of the 4–11 silent leaks per run.
-  const emitMergeFailureSkips = (reason: string): void => {
-    if (memoryByRef.has(op.primary)) pushSkipReason("merge", op.primary, reason);
-    for (const secRef of op.secondaries) {
-      if (memoryByRef.has(secRef)) pushSkipReason("merge", secRef, reason);
-    }
-  };
-
-  const primaryEntry = memoryByRef.get(op.primary);
-  if (!primaryEntry) {
-    // This fires when a prior op in the same run consumed this ref as a
-    // secondary and Fix-A pruned it from memoryByRef. It should NOT fire
-    // for hallucinated primaries (those are dropped by mergePlans() before
-    // reaching here). If this counter is non-zero, suspect an intra-run
-    // cross-chunk race, not a filter regression.
-    warnings.push(
-      `Merge: primary ${op.primary} not found in loaded memories (pruned by prior op this run) — skipping.`,
-    );
-    emitMergeFailureSkips("merge_primary_missing");
-    return;
-  }
-  // Defense-in-depth: even if the entry is in memoryByRef (pre-flight ran
-  // before this run's own ops), the file may have been deleted by a
-  // concurrent process or an edge case the pre-flight filter missed.
-  if (!fs.existsSync(primaryEntry.filePath)) {
-    warnings.push(`Merge: primary ${op.primary} file gone at execution time (stale entry) — skipping.`);
-    emitMergeFailureSkips("merge_primary_file_gone");
-    return;
-  }
-
-  // Phase B: generate merged content
-  const secondaryBodies: string[] = [];
-  for (const secRef of op.secondaries) {
-    const secEntry = memoryByRef.get(secRef);
-    if (!secEntry) {
-      warnings.push(`Merge: secondary ${secRef} not found — skipping merge op.`);
-      // No accounting impact: a missing secondary is a phantom ref and
-      // never contributed to any chunk's targetRefs reduction. We still
-      // continue the loop to gather the remaining valid secondaries.
-      continue;
-    }
-    secondaryBodies.push(secRef);
-  }
-
-  if (secondaryBodies.length === 0) {
-    warnings.push(`Merge: ${op.primary} has no valid secondaries — skipping.`);
-    emitMergeFailureSkips("merge_no_valid_secondaries");
-    return;
-  }
-
-  // Pre-flight hot guard — skip the LLM call entirely if any participant
-  // is hot or unparseable. Without this, mixed chunks still send hot merges
-  // to the planner which proposes them; generateMergedContent() is then
-  // called, produces output without `description`, and the skip is
-  // misattributed to merge_missing_description instead of the real cause.
-  const preflightParticipants: string[] = [op.primary, ...op.secondaries];
-  const preflightBlocked = preflightParticipants.flatMap<{ ref: string; verdict: ConsolidateGuardVerdict }>((ref) => {
-    const e = memoryByRef.get(ref);
-    if (!e) return [];
-    const verdict = consolidateGuardStatus(e.filePath);
-    if (verdict === "hot" || verdict === "unparseable") return [{ ref, verdict }];
-    return [];
-  });
-  if (preflightBlocked.length > 0) {
-    const detail = preflightBlocked.map((p) => `${p.ref} (${p.verdict})`).join(", ");
-    warnings.push(
-      `Merge: refused for ${op.primary} — ${preflightBlocked.length} participant(s) blocked by hot/unparseable frontmatter guard (pre-flight): ${detail}`,
-    );
-    emitMergeFailureSkips("merge_participant_blocked");
-    return;
-  }
-
-  let primaryBody = "";
-  try {
-    primaryBody = fs.readFileSync(primaryEntry.filePath, "utf8");
-  } catch {
-    warnings.push(`Merge: could not read primary ${op.primary} — skipping.`);
-    emitMergeFailureSkips("merge_read_failed");
-    return;
-  }
-
-  const mergeResult = await (ctx.generateMergedContentFn ?? generateMergedContent)(
-    config,
-    op.primary,
-    primaryBody,
-    op.secondaries,
-    memoryByRef,
-    ctx.improveProfile,
-    ctx.llmConfig,
-  );
-
-  if ("error" in mergeResult) {
-    warnings.push(`Merge: ${mergeResult.error} for ${mergeResult.detail}.`);
-    emitMergeFailureSkips(mergeResult.error);
-    return;
-  }
-  const mergedContent = mergeResult.content;
-
-  // Validate frontmatter of merged content — must have a `---` block
-  // with at minimum a `description` field. We parse via the hand-rolled
-  // parser (cheap) AND require non-empty description. This guards against
-  // the historical defect where merged memories were written back with
-  // empty `description` and later polluted the promote path.
-  let parsedMerged: ReturnType<typeof parseFrontmatter>;
-  try {
-    parsedMerged = parseFrontmatter(mergedContent);
-  } catch {
-    warnings.push(`Merge: merged content for ${op.primary} has invalid frontmatter — skipping.`);
-    emitMergeFailureSkips("merge_invalid_frontmatter");
-    return;
-  }
-  if (parsedMerged.frontmatter === null) {
-    warnings.push(`Merge: merged content for ${op.primary} has no frontmatter block — skipping.`);
-    emitMergeFailureSkips("merge_invalid_frontmatter");
-    return;
-  }
-  const mergedDesc = parsedMerged.data.description;
-  if (typeof mergedDesc !== "string" || mergedDesc.trim().length === 0) {
-    warnings.push(`Merge: merged content for ${op.primary} missing description — skipping.`);
-    emitMergeFailureSkips("merge_missing_description");
-    return;
-  }
-  const truncReason = detectTruncatedDescription(mergedDesc);
-  if (truncReason) {
-    warnings.push(`Merge: merged content for ${op.primary} has truncated description (${truncReason}) — skipping.`);
-    emitMergeFailureSkips("merge_truncated_description");
-    return;
-  }
-
-  // captureMode:hot guard — refuse the merge if ANY participating memory
-  // (primary or secondary) was user-captured or has unparseable frontmatter
-  // (could have hidden a hot flag). Hot memories are user-explicit and
-  // must not be deleted/overwritten by the consolidate LLM. 14 user
-  // memories were silent-deleted by consolidate before this guard landed;
-  // recovery required copying from .akm/archive/ by hand.
-  const mergeParticipants: string[] = [op.primary, ...op.secondaries];
-  const blockedParticipants = mergeParticipants.flatMap<{ ref: string; verdict: ConsolidateGuardVerdict }>((ref) => {
-    const e = memoryByRef.get(ref);
-    if (!e) return [];
-    const verdict = consolidateGuardStatus(e.filePath);
-    if (verdict === "hot" || verdict === "unparseable") return [{ ref, verdict }];
-    return [];
-  });
-  if (blockedParticipants.length > 0) {
-    const detail = blockedParticipants.map((p) => `${p.ref} (${p.verdict})`).join(", ");
-    warnings.push(
-      `Merge: refused for ${op.primary} — ${blockedParticipants.length} participant(s) blocked by hot/unparseable frontmatter guard: ${detail}`,
-    );
-    emitMergeFailureSkips("merge_participant_blocked");
-    return;
-  }
-
-  await finalizeMerge(op, opIndex, ctx, mergedContent, emitMergeFailureSkips);
-}
-
-/** Execute one `delete` op (behavior-identical to the former inlined branch). */
-export async function handleDeleteOp(
-  op: ConsolidateDeleteOp,
-  opIndex: number,
-  ctx: ConsolidateOpContext,
-): Promise<void> {
-  const { stashDir, target, backupDir, memoryByRef, warnings, pushSkipReason, counts } = ctx;
-  const entry = memoryByRef.get(op.ref);
-  if (!entry) {
-    warnings.push(`Delete: ${op.ref} not found in loaded memories — skipping.`);
-    // Phantom ref: not in the batch so not in processed. Pushing to
-    // skipReasons would inflate Σ(skipReasons) without a matching processed
-    // entry, breaking the accounting invariant. Visibility is preserved via
-    // the warnings array above.
-    return;
-  }
-
-  // captureMode:hot guard — refuse to delete user-captured memories OR
-  // memories whose frontmatter is unparseable (could have hidden the hot
-  // flag). The consolidate LLM was deleting hot-captured user memos as
-  // "redundant" — 14 such deletes were silently archived between
-  // 2026-05-19 and 2026-05-20 before this guard. Hot memories are
-  // user-explicit and may only be deleted by the user.
-  const guard = consolidateGuardStatus(entry.filePath);
-  if (guard === "hot" || guard === "unparseable") {
-    warnings.push(
-      `Delete: refused for ${op.ref} — ${guard === "hot" ? "captureMode:hot (user-explicit; never auto-delete)" : "frontmatter unparseable (cannot verify hot flag absent)"}. Reason from LLM: "${op.reason ?? "n/a"}"`,
-    );
-    pushSkipReason("delete", op.ref, "captureMode_hot_refused");
-    return;
-  }
-
-  if (fs.existsSync(entry.filePath)) {
-    backupFile(entry.filePath, backupDir, entry.name);
-    // P1-B: soft-invalidation archive before hard delete
-    const archivePath = archiveMemory(
-      entry.filePath,
-      stashDir,
-      target,
-      op.ref,
-      op.reason,
-      opIndex,
-      undefined,
-      warnings,
-    );
-    if (archivePath) recordConsolidateMutationPath(ctx.txn, target, archivePath);
-  }
-
-  try {
-    const parsedRef = parseRefInput(op.ref);
-    const deleted = await deleteAssetFromSource(target.source, target.config, parsedRef);
-    recordConsolidateMutationPath(ctx.txn, target, deleted.path);
-    markJournalCompleted(ctx.txn, op.ref);
-    counts.deleted++;
-    // Prune from memoryByRef so later ops in this run cannot reference a
-    // deleted memory as a merge primary or secondary.
-    memoryByRef.delete(op.ref);
-  } catch (e) {
-    // Distinguish "file already absent" from genuine failures. A prior run
-    // may have deleted the file but the DB was not yet re-indexed, so the
-    // ref still appeared in memoryByRef. The delete goal is already met.
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("not found in source")) {
-      warnings.push(`Delete: ${op.ref} — file already absent (stale DB entry); skipping.`);
-      pushSkipReason("delete", op.ref, "delete_already_gone");
-    } else {
-      warnings.push(`Delete: failed for ${op.ref}: ${String(e)}`);
-      pushSkipReason("delete", op.ref, "delete_failed");
-    }
-  }
-}
-
-/** Execute one `promote` op (behavior-identical to the former inlined branch). */
-export async function handlePromoteOp(op: ConsolidatePromoteOp, ctx: ConsolidateOpContext): Promise<void> {
+/** Execute one reconciled promotion by emitting a reviewable proposal. */
+async function emitPromotionProposal(op: ConsolidatePromoteOp, ctx: PromoteContext): Promise<void> {
   const { config, stashDir, sourceRun, target, memoryByRef, warnings, pushSkipReason, promoted, promotedSourceRefs } =
     ctx;
   const entry = memoryByRef.get(op.ref);
@@ -2444,7 +1521,7 @@ export async function handlePromoteOp(op: ConsolidatePromoteOp, ctx: Consolidate
     }
 
     const proposalResult = emitProposal(
-      { stashDir },
+      { stashDir, proposalsCtx: ctx.proposalsCtx },
       {
         ref: knowledgeRef,
         target: { source: target.source.name, root: target.source.path },
@@ -2465,59 +1542,11 @@ export async function handlePromoteOp(op: ConsolidatePromoteOp, ctx: Consolidate
     } else {
       promoted.push(proposalResult.id);
       promotedSourceRefs.add(op.ref);
-      markJournalCompleted(ctx.txn, op.ref);
     }
   } catch (e) {
+    ctx.promotionFailures.count++;
     warnings.push(`Promote: createProposal failed for ${op.ref}: ${String(e)}`);
     pushSkipReason("promote", op.ref, "promote_create_failed");
-  }
-}
-
-/** Execute one `contradict` op (behavior-identical to the former inlined branch). */
-export async function handleContradictOp(op: ConsolidateContradictOp, ctx: ConsolidateOpContext): Promise<void> {
-  const { memoryByRef, warnings, pushSkipReason, counts, target } = ctx;
-  // Confidence gate: surface-level topic overlap causes false positives
-  // (investigation 2026-06-18). Require ≥0.92 confidence before writing
-  // contradiction edges. Missing confidence is not sufficient evidence.
-  const opConfidence = typeof op.confidence === "number" ? op.confidence : 0;
-  if (opConfidence < 0.92) {
-    warnings.push(
-      `Contradict: confidence ${opConfidence.toFixed(2)} below 0.92 threshold for ${op.ref} <-> ${op.contradictedByRef} — skipping.`,
-    );
-    pushSkipReason("contradict", op.ref, "contradict_low_confidence");
-    return;
-  }
-
-  // C-3 / #382: Write contradictedBy edges so resolveFamilyContradictions
-  // (the SCC resolver in memory-improve.ts) has edges to work on.
-  // Zep arXiv:2501.13956 §3 — unified belief-revision with contradiction edges.
-  const entry = memoryByRef.get(op.ref);
-  const contradictorEntry = memoryByRef.get(op.contradictedByRef);
-
-  if (!entry) {
-    warnings.push(`Contradict: ${op.ref} not found in loaded memories — skipping.`);
-    // Phantom ref: not in processed, so no skipReason (same rationale as
-    // delete_ref_missing).
-    return;
-  }
-  if (!contradictorEntry) {
-    warnings.push(`Contradict: ${op.contradictedByRef} not found — skipping.`);
-    // op.ref IS in the batch (entry found above) so the skipReason is
-    // correctly charged against a real processed memory.
-    pushSkipReason("contradict", op.ref, "contradict_target_missing");
-    return;
-  }
-
-  try {
-    // Write the contradiction edge: op.ref is contradicted by op.contradictedByRef
-    assertWriteTargetPathsClean(target.source, [entry.filePath]);
-    writeContradictEdge(entry.filePath, op.contradictedByRef);
-    recordConsolidateMutationPath(ctx.txn, target, entry.filePath);
-    counts.contradicted++;
-    markJournalCompleted(ctx.txn, op.ref);
-  } catch (e) {
-    warnings.push(`Contradict: failed to write edge for ${op.ref}: ${String(e)}`);
-    pushSkipReason("contradict", op.ref, "contradict_write_failed");
   }
 }
 
@@ -2727,196 +1756,3 @@ function loadMemoriesForSource(source: string | undefined, stashDir: string, war
   }
   return memories;
 }
-
-type MergeFailureReason =
-  | "merge_read_failed"
-  | "merge_transport_failed"
-  | "merge_fence_rejected"
-  | "merge_yaml_invalid"
-  | "merge_content_too_short"
-  | "merge_frontmatter_keys_lost";
-
-type MergeResult = { content: string } | { error: MergeFailureReason; detail: string };
-
-async function generateMergedContent(
-  config: AkmConfig,
-  primaryRef: string,
-  primaryBody: string,
-  secondaryRefs: string[],
-  memoryByRef: Map<string, MemoryEntry>,
-  activeProfile?: ImproveProfileConfig,
-  resolvedLlmConfig?: import("../../core/config/config").LlmConnectionConfig | null,
-): Promise<MergeResult> {
-  // Only handle single-secondary merges per design (one call per merge op)
-  const secRef = secondaryRefs[0];
-  const secEntry = secRef !== undefined ? memoryByRef.get(secRef) : undefined;
-  if (!secEntry) return { error: "merge_read_failed", detail: `secondary ${secRef} not in memoryByRef` };
-
-  let secBody = "";
-  try {
-    secBody = fs.readFileSync(secEntry.filePath, "utf8");
-  } catch {
-    return { error: "merge_read_failed", detail: `could not read secondary ${secRef}` };
-  }
-
-  const primaryFmKeys = Object.keys(parseFrontmatter(primaryBody).data);
-  const secFmKeys = Object.keys(parseFrontmatter(secBody).data);
-  const requiredFmKeys = [...new Set([...primaryFmKeys, ...secFmKeys])];
-
-  const prompt = [
-    "Merge these two memory assets into one. Output ONLY the merged markdown (with YAML frontmatter). Do not explain, do not use code fences.",
-    "",
-    "## OUTPUT FORMAT (MANDATORY)",
-    "Return raw markdown content beginning DIRECTLY with the `---` frontmatter delimiter.",
-    "DO NOT wrap your entire response in a code fence.",
-    "",
-    'GOOD: "---\\ndescription: ...\\n---\\nBody content."',
-    'BAD:  "```markdown\\n---\\ndescription: ...\\n---\\nBody content.\\n```"',
-    'BAD:  "```yaml\\n---\\ndescription: ...\\n---\\nBody content.\\n```"',
-    "",
-    "## FRONTMATTER RULES (MANDATORY)",
-    "- The `updated:` field, if present, MUST be a real ISO date (e.g. `updated: 2026-05-20`). NEVER emit `updated: today`, `updated: now`, or `updated: {today: null}`. If you don't have a real date, OMIT the field — the post-processor will not invent one.",
-    "- REQUIRED: The merged frontmatter MUST include a `description` field with a concise one-sentence summary of the merged asset's content. If neither source has a `description` field, synthesize one from the content.",
-    requiredFmKeys.length > 0
-      ? `- CRITICAL: The merged frontmatter MUST include ALL of these keys from both source memories: ${requiredFmKeys.join(", ")}. Do NOT drop any of them.`
-      : null,
-    "",
-    `=== Primary memory (${primaryRef}) ===`,
-    primaryBody,
-    "",
-    `=== Secondary memory (${secRef}) ===`,
-    secBody,
-  ]
-    .filter((line) => line !== null)
-    .join("\n");
-
-  // Use the same per-process profile resolution as the chunk-plan call above
-  // so the merge generation step doesn't silently revert to the default LLM.
-  const llmConfig =
-    resolvedLlmConfig === null ? undefined : (resolvedLlmConfig ?? resolveConsolidateLlmConfig(config, activeProfile));
-  // Same envelope semantics as the chunk-plan call above: the gate runs with
-  // enabled:true, the missing-LLM guard returns the envelope the gated fn
-  // used to return, a transport throw becomes an {ok:false} envelope via
-  // onError, and the fallback fires only on wrapper timeout.
-  const result = !llmConfig
-    ? { ok: false as const, error: "No LLM configured for consolidation" }
-    : await callStructured<{ ok: true; content: string } | { ok: false; error: string }>({
-        feature: "memory_consolidation",
-        akmConfig: config,
-        enabled: true,
-        config: llmConfig,
-        messages: [{ role: "user", content: prompt }],
-        request: { enableThinking: false },
-        parse: (raw) => ({ ok: true as const, content: raw ?? "" }),
-        onError: (_cls, e) => ({ ok: false as const, error: String(e) }),
-        fallback: { ok: false as const, error: `merge content generation failed for ${primaryRef}` },
-      });
-
-  if (!result.ok) {
-    return {
-      error: "merge_transport_failed",
-      detail: result.error ?? `merge content generation failed for ${primaryRef}`,
-    };
-  }
-
-  // Sanitize LLM output: strip outer code fences (defends against the
-  // ```markdown … ``` leak observed in production), re-serialise frontmatter
-  // through the yaml lib (fixes quote-escaping mistakes), and reject empty
-  // or fence-only responses.
-  const sanitized = sanitizeMergedContent(result.content ?? "");
-  if (!sanitized.ok) {
-    const reason = sanitized.reason;
-    const isFenceError =
-      reason === "UNBALANCED_CODE_FENCE" ||
-      reason === "MISSING_FRONTMATTER_SENTINEL" ||
-      reason === "MALFORMED_FRONTMATTER_BLOCK" ||
-      reason === "FRONTMATTER_NOT_OBJECT";
-    const mergeReason: MergeFailureReason = isFenceError ? "merge_fence_rejected" : "merge_yaml_invalid";
-    return { error: mergeReason, detail: `${primaryRef} — ${reason}` };
-  }
-  const mergedRaw = sanitized.result.content;
-
-  // C-4 / #383: Content-preservation lint (mem0 §3.2, arXiv:2504.19413).
-  // Guards against LLM-generated merged content that silently drops information
-  // from the source assets. Two checks:
-  //   1. Body size: merged body must be >= 50% of the larger source body.
-  //   2. Frontmatter superset: merged frontmatter must contain all keys present
-  //      in both source frontmatters.
-  // Failures return a discriminated error so the call site can emit a specific
-  // skip-reason key in the histogram.
-  try {
-    const primaryFm = parseFrontmatter(primaryBody);
-    const secFm = parseFrontmatter(secBody);
-    const mergedFm = parseFrontmatter(mergedRaw);
-
-    // Check body size — blended floor: max(ratio × largerLen, absoluteFloor).
-    // Deduplication is expected, so the ratio is lower than the reflect gate
-    // (0.3 vs 0.5). The absolute floor protects very short memory pairs where
-    // the ratio alone would produce a near-zero threshold.
-    const primaryBodyLen = (primaryFm.content ?? "").trim().length;
-    const secBodyLen = (secFm.content ?? "").trim().length;
-    const mergedBodyLen = (mergedFm.content ?? "").trim().length;
-    const largerBodyLen = Math.max(primaryBodyLen, secBodyLen);
-    const mergeFloor = Math.max(MERGE_SHRINK_RATIO_MIN * largerBodyLen, MERGE_ABSOLUTE_FLOOR_CHARS);
-    if (largerBodyLen > 0 && mergedBodyLen < mergeFloor) {
-      return {
-        error: "merge_content_too_short",
-        detail: `${primaryRef} — merged body (${mergedBodyLen} chars) is less than floor (${Math.round(mergeFloor)} chars; max(${MERGE_SHRINK_RATIO_MIN}×${largerBodyLen}, ${MERGE_ABSOLUTE_FLOOR_CHARS}))`,
-      };
-    }
-
-    // Check frontmatter superset — attempt repair before rejecting.
-    const primaryKeys = Object.keys(primaryFm.data ?? {});
-    const secKeys = Object.keys(secFm.data ?? {});
-    const mergedKeys = new Set(Object.keys(mergedFm.data ?? {}));
-    const missingKeys = [...new Set([...primaryKeys, ...secKeys])].filter((k) => !mergedKeys.has(k));
-    if (missingKeys.length > 0) {
-      // Inject missing keys from source FMs. Primary value wins on conflict.
-      const repairedFmData = { ...(mergedFm.data as Record<string, unknown>) };
-      for (const key of missingKeys) {
-        repairedFmData[key] =
-          key in (primaryFm.data as Record<string, unknown>)
-            ? (primaryFm.data as Record<string, unknown>)[key]
-            : (secFm.data as Record<string, unknown>)[key];
-      }
-      normalizeUpdatedField(repairedFmData);
-      const repairedYaml = serializeFrontmatter(repairedFmData);
-      const bodyPart = typeof mergedFm.content === "string" ? mergedFm.content : "";
-      return { content: assembleAssetFromString(repairedYaml, bodyPart) };
-    }
-  } catch {
-    // parseFrontmatter failures are non-fatal — allow the merge to proceed.
-  }
-
-  return { content: mergedRaw };
-}
-
-async function promptConfirm(message: string): Promise<boolean> {
-  process.stdout.write(message);
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = (answer: boolean) => {
-      if (settled) return;
-      settled = true;
-      rl.close();
-      resolve(answer);
-    };
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.once("line", (line: string) => done(line.trim().toLowerCase() === "y"));
-    rl.once("close", () => done(false));
-  });
-}
-
-// Command-owned run-entry recovery handles `publishing`; generic recovery has
-// no resolved target/config and therefore fails closed instead of improvising.
-registerTxnKind<ConsolidateJournalPayload>(CONSOLIDATE_TXN_KIND, {
-  phases: CONSOLIDATE_TXN_PHASES,
-  commitPhase: "applying",
-  rollback: () => {},
-  finalize: (txn) => {
-    throw new ConfigError(
-      `Incomplete consolidation run detected at ${txn.journalPath}. Re-run with --consolidate-recovery clean to remove stale journal artifacts.`,
-      "INVALID_CONFIG_FILE",
-    );
-  },
-});

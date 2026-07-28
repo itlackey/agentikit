@@ -130,10 +130,12 @@ import { consumeSchedulerContextArg } from "./tasks/scheduler-invocation";
 import { pkgVersion } from "./version";
 
 function applyEarlyStderrFlags(argv: string[]): void {
-  if (argv.includes("--quiet") || argv.includes("-q")) {
+  const separator = argv.indexOf("--");
+  const ownArgv = separator === -1 ? argv : argv.slice(0, separator);
+  if (ownArgv.includes("--quiet") || ownArgv.includes("-q")) {
     setQuiet(true);
   }
-  if (argv.includes("--verbose")) {
+  if (ownArgv.includes("--verbose")) {
     setVerbose(true);
   }
 }
@@ -504,9 +506,10 @@ export const main = defineCommand({
       "Agent Knowledge Management — search, show, and manage assets from your stash.\n\n" +
       "Exit codes:\n" +
       "  0   success\n" +
-      "  1   general error / not found\n" +
+      "  1   not found / command-reported failure\n" +
       "  2   usage error\n" +
       "  4   health warn (akm health only)\n" +
+      "  70  internal / unclassified error\n" +
       "  78  config error",
   },
   args: {
@@ -605,7 +608,9 @@ function isTaskRunWithId(argv: readonly string[]): boolean {
 
 /** Recovery/setup surfaces must remain reachable when config.json is invalid. */
 export function shouldBypassConfigStartup(argv: readonly string[]): boolean {
-  const args = argv.slice(2);
+  const userArgs = argv.slice(2);
+  const separator = userArgs.indexOf("--");
+  const args = separator === -1 ? userArgs : userArgs.slice(0, separator);
   if (args.includes("--help") || args.includes("-h") || args.includes("--version") || args.includes("-v")) return true;
   const commandIndex = findCittyTopLevelCommandIndex(args, MAIN_TOP_LEVEL_ARGS);
   const command = commandIndex >= 0 ? args[commandIndex] : undefined;
@@ -702,6 +707,22 @@ function resolveDeepestCittyCommand(
   return [cmd, parent];
 }
 
+function resolveCittyCommandPath(
+  cmd: AnyCittyCommand,
+  rawArgs: readonly string[],
+  path: readonly string[] = [],
+): string[] {
+  const subCommands = cmd.subCommands as Record<string, AnyCittyCommand> | undefined;
+  if (!subCommands || Object.keys(subCommands).length === 0) return [...path];
+  const index = findCittyTopLevelCommandIndex(rawArgs, (cmd.args ?? {}) as CittyArgsDefinitionForScan);
+  const token = index >= 0 ? rawArgs[index] : undefined;
+  if (token === undefined) return [...path];
+  const sub = findCittySubCommandByName(subCommands, token);
+  if (!sub) return [...path];
+  const name = Object.entries(subCommands).find(([, candidate]) => candidate === sub)?.[0] ?? token;
+  return resolveCittyCommandPath(sub, rawArgs.slice(index + 1), [...path, name]);
+}
+
 /**
  * The CLI's real startup sequence, extracted into a function so error paths
  * can `return` early — top-level `return` is a syntax error in an ES module,
@@ -744,7 +765,8 @@ async function runCli(): Promise<void> {
   // output-shaping time after the side effect has already happened. The
   // shape-registry gate in shapeForCommand() remains as defense-in-depth (and
   // covers the in-process test harness, which skips this startup block).
-  const topLevelCommand = findCittyTopLevelCommand(process.argv.slice(2), MAIN_TOP_LEVEL_ARGS);
+  const commandPath = resolveCittyCommandPath(main, process.argv.slice(2));
+  const topLevelCommand = commandPath[0] ?? findCittyTopLevelCommand(process.argv.slice(2), MAIN_TOP_LEVEL_ARGS);
   if (getOutputMode().shape === "summary" && topLevelCommand !== "show") {
     emitJsonError(new UsageError("'--shape summary' is only valid on 'akm show'.", "INVALID_SHAPE_VALUE"));
     return;
@@ -759,9 +781,9 @@ async function runCli(): Promise<void> {
   const invocation = getParsedInvocation();
   if (
     (invocation.hasFlag("--format") || invocation.getFlagValue("--format") !== undefined) &&
-    isFormatExemptCommand(topLevelCommand, invocation.userArgs[1])
+    isFormatExemptCommand(commandPath)
   ) {
-    warn(`[output] '--format' has no effect on 'akm ${topLevelCommand}' — its output is not a result envelope.`);
+    warn(`[output] '--format' has no effect on 'akm ${commandPath.join(" ")}' — its output is not a result envelope.`);
   }
 
   // First-time-user breadcrumb: when run with no subcommand AND no config

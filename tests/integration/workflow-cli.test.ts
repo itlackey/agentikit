@@ -361,7 +361,7 @@ describe("workflow CLI", async () => {
     expect(listed.status).toBe(0);
     const listJson = JSON.parse(listed.stdout) as { runs: Array<{ id: string; workflowRef: string }> };
     expect(listJson.runs).toHaveLength(1);
-    expect(listJson.runs[0]?.workflowRef).toBe("workflows/release");
+    expect(listJson.runs[0]?.workflowRef).toBe("stash//workflows/release");
 
     expect(
       (

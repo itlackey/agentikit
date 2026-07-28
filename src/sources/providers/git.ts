@@ -27,6 +27,7 @@ export {
   syncMirroredRepo,
 } from "./git-provider";
 export {
+  GitStashPushError,
   isGitBackedStash,
   listGitChangedPaths,
   resolveWritableOverride,

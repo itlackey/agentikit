@@ -137,6 +137,7 @@ import { collectSensitiveValues, isEnvPassthroughValueSafeToExpose, redactSensit
 import { runStructured } from "../../core/structured";
 import { warn } from "../../core/warn";
 import type { AgentTokenUsage } from "../../integrations/agent/spawn";
+import { insertEventStrict } from "../../storage/repositories/events-repository";
 import { type WorkflowRunUnitRow, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
 import type { FrozenEngineSnapshot, IrBudget, IrInvocation, IrStepPlan } from "../ir/schema";
 import { LIFETIME_UNIT_CAP, scheduleUnits, UnitCapExceededError } from "./scheduler";
@@ -217,6 +218,8 @@ export type UnitDispatcher = (request: UnitDispatchRequest, feedback?: string) =
 export interface StepExecutionContext {
   runId: string;
   workflowRef: string;
+  /** Engine lease holder expected to own this run when a dispatch result commits. */
+  leaseHolder?: string;
   params: Record<string, unknown>;
   /** Evidence of prior steps, keyed by step id — fan-out `over:` sources. */
   evidence: Record<string, Record<string, unknown> | undefined>;
@@ -872,39 +875,46 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
 
   const outcome = redactUnitOutcome(await dispatchUnit(request, dispatcher), request.sensitiveValues ?? []);
 
-  await enqueueUnitWrite(async () => {
-    await withWorkflowRunsRepo((repo) =>
-      repo.finishUnit({
-        runId: ctx.runId,
-        unitId: attemptId,
-        status: outcome.ok ? "completed" : "failed",
-        resultJson:
-          outcome.result !== undefined
-            ? JSON.stringify(outcome.result)
-            : outcome.text
-              ? JSON.stringify(outcome.text)
-              : null,
-        tokens: outcome.tokens ?? null,
-        failureReason: outcome.failureReason ?? null,
-        // Harness-native session id (P2): journaled so resume can replay the
-        // harness's own context cache (e.g. `codex exec resume <id>`).
-        sessionId: outcome.sessionId ?? null,
-        finishedAt: new Date().toISOString(),
+  const finishedAt = new Date().toISOString();
+  await enqueueUnitWrite(() =>
+    withWorkflowRunsRepo((repo) =>
+      repo.immediateTransaction((db) => {
+        const run = repo.getRunById(ctx.runId);
+        if (run?.status !== "active") return;
+        if (ctx.leaseHolder !== undefined && run.engine_lease_holder !== ctx.leaseHolder) return;
+        repo.finishUnit({
+          runId: ctx.runId,
+          unitId: attemptId,
+          status: outcome.ok ? "completed" : "failed",
+          resultJson:
+            outcome.result !== undefined
+              ? JSON.stringify(outcome.result)
+              : outcome.text
+                ? JSON.stringify(outcome.text)
+                : null,
+          tokens: outcome.tokens ?? null,
+          failureReason: outcome.failureReason ?? null,
+          // Harness-native session id (P2): journaled so resume can replay the
+          // harness's own context cache (e.g. `codex exec resume <id>`).
+          sessionId: outcome.sessionId ?? null,
+          finishedAt,
+        });
+        insertEventStrict(db, {
+          eventType: "workflow_unit_finished",
+          ts: finishedAt,
+          ref: ctx.workflowRef,
+          metadata: {
+            runId: ctx.runId,
+            stepId: plan.stepId,
+            unitId: attemptId,
+            status: outcome.ok ? "completed" : "failed",
+            ...(outcome.failureReason ? { failureReason: outcome.failureReason } : {}),
+            ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}),
+          },
+        });
       }),
-    );
-  });
-  appendEvent({
-    eventType: "workflow_unit_finished",
-    ref: ctx.workflowRef,
-    metadata: {
-      runId: ctx.runId,
-      stepId: plan.stepId,
-      unitId: attemptId,
-      status: outcome.ok ? "completed" : "failed",
-      ...(outcome.failureReason ? { failureReason: outcome.failureReason } : {}),
-      ...(outcome.tokens !== undefined ? { tokens: outcome.tokens } : {}),
-    },
-  });
+    ),
+  );
 
   // Worktree lifecycle epilogue: a CLEAN worktree (`git status --porcelain`
   // empty) is removed; a DIRTY one is retained and logged — the unit left
@@ -1225,9 +1235,8 @@ function redactUnitOutcome(outcome: UnitOutcome, sensitiveValues: readonly strin
  * vocabulary `retry.on` accepts and the journal's `failure_reason` column
  * carries. Exhaustive over the code union (typecheck fails on drift):
  *
- *   - `timeout`        → `timeout`         (wall-clock expiry; also covers
- *                                           signal aborts, which chatCompletion
- *                                           folds into its timeout code)
+ *   - `timeout`        → `timeout`         (wall-clock expiry)
+ *   - `aborted`        → `aborted`         (caller/budget cancellation)
  *   - `rate_limited`   → `llm_rate_limit`  (HTTP 429 — the canonical transient)
  *   - `parse_error` / `provider_html_error`
  *                      → `parse_error`     (a response arrived but was not the
@@ -1242,6 +1251,8 @@ export function llmFailureReasonFor(
   code: import("../../llm/client").LlmCallErrorCode,
 ): import("../../integrations/agent/spawn").AgentFailureReason {
   switch (code) {
+    case "aborted":
+      return "aborted";
     case "timeout":
       return "timeout";
     case "rate_limited":

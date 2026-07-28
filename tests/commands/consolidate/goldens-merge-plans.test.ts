@@ -77,6 +77,14 @@ function contradictOp(ref: string, contradictedByRef: string): ConsolidateContra
 }
 
 describe("mergePlans — hallucinated-ref drop", () => {
+  test("retains only the first valid secondary from a multi-secondary planner response", () => {
+    const { ops, warnings } = mergePlans(
+      [[{ op: "merge", primary: "memories/a", secondaries: ["memories/b", "memories/c"], mergeStrategy: "merge" }]],
+      new Set(["memories/a", "memories/b", "memories/c"]),
+    );
+    expect(ops).toEqual([{ op: "merge", primary: "memories/a", secondaries: ["memories/b"], mergeStrategy: "merge" }]);
+    expect(warnings.join("\n")).toContain("one secondary");
+  });
   test("drops a merge op whose primary is not in knownRefs", () => {
     const chunk: ConsolidateOperation[] = [mergeOp(MP_HALLUCINATED_PRIMARY, [MP_REAL_SECONDARY])];
     const knownRefs = new Set([MP_REAL_PRIMARY, MP_REAL_SECONDARY]);

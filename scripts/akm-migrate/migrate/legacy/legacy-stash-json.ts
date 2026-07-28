@@ -37,7 +37,8 @@ export interface LegacyStashOptions {
 }
 
 export type LegacyStashReadResult =
-  | { status: "missing" | "invalid" }
+  | { status: "missing" }
+  | { status: "invalid"; detail: string }
   | { status: "valid"; stash: StashFile; complete: boolean };
 
 /** Absolute path of a directory's legacy metadata sidecar. */
@@ -52,13 +53,27 @@ export function legacyStashFilePath(dirPath: string): string {
  */
 export function inspectLegacyStashOverrides(dirPath: string, options?: LegacyStashOptions): LegacyStashReadResult {
   const filePath = legacyStashFilePath(dirPath);
-  if (!fs.existsSync(filePath)) return { status: "missing" };
+  let text: string;
   try {
-    const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    if (!raw || !Array.isArray(raw.entries)) return { status: "invalid" };
+    text = fs.readFileSync(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: "missing" };
+    throw error;
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    return { status: "invalid", detail: error instanceof Error ? error.message : String(error) };
+  }
+  if (!raw || typeof raw !== "object" || !Array.isArray((raw as { entries?: unknown }).entries)) {
+    return { status: "invalid", detail: "sidecar is not an object with an entries array" };
+  }
+  try {
+    const rawEntries = (raw as { entries: unknown[] }).entries;
     const entries: IndexDocument[] = [];
     let complete = true;
-    for (const e of raw.entries) {
+    for (const e of rawEntries) {
       const validated = validateStashEntry(e);
       if (validated) {
         // Legacy provenance fold: pre-0.9 sidecars carry `sourceRefs`, which
@@ -89,8 +104,8 @@ export function inspectLegacyStashOverrides(dirPath: string, options?: LegacySta
       }
     }
     return { status: "valid", stash: { entries }, complete };
-  } catch {
-    return { status: "invalid" };
+  } catch (error) {
+    return { status: "invalid", detail: error instanceof Error ? error.message : String(error) };
   }
 }
 

@@ -180,9 +180,11 @@ export interface ProposalReview {
  *   - `auto-accepted` — the gate promoted the proposal without review.
  *   - `deferred`      — the gate left the proposal pending for human (or
  *                       later automated) review.
+ *   - `staged`        — judgment accepted this exact content in queue mode;
+ *                       a promote run may consume it without re-judgment.
  *   - `auto-rejected` — the gate rejected the proposal without review.
  */
-export type ProposalGateDecisionOutcome = "auto-accepted" | "deferred" | "auto-rejected";
+export type ProposalGateDecisionOutcome = "auto-accepted" | "deferred" | "staged" | "auto-rejected";
 
 /**
  * Per-proposal record of the automated gate decision (#577).
@@ -305,7 +307,7 @@ export interface Proposal {
    * The drain/triage engine's verdict for this proposal (#577), recorded at
    * adjudication time (drain-owned audit machinery).
    *
-   * Carries the decision (auto-accepted / deferred / auto-rejected), the reason
+   * Carries the decision (auto-accepted / deferred / staged / auto-rejected), the reason
    * token, measured value, and thresholds in effect, so `akm proposal show` /
    * `list` can explain why a proposal is pending without the operator
    * reconstructing it from run-level aggregates.

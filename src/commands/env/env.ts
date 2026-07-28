@@ -59,6 +59,7 @@ import path from "node:path";
 import dotenv from "dotenv";
 import { writeFileAtomic } from "../../core/common";
 import { UsageError } from "../../core/errors";
+import { sensitiveMarkerPath } from "./marker-path";
 
 /** Matches a KEY=value assignment line, capturing only the key. */
 const ASSIGN_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
@@ -211,7 +212,7 @@ export function writeEnv(envPath: string, content: string): void {
 export function removeEnv(envPath: string): boolean {
   if (!fs.existsSync(envPath)) return false;
   fs.rmSync(envPath);
-  const marker = `${envPath}.sensitive`;
+  const marker = sensitiveMarkerPath(envPath, "env");
   if (fs.existsSync(marker)) fs.rmSync(marker);
   return true;
 }

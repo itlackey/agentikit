@@ -187,17 +187,7 @@ test.skipIf(!ENABLED)(
       expectSuccess(oldInstall, "install published akm-cli@0.8.14");
 
       const currentInstall = run(
-        [
-          "npm",
-          "install",
-          "--prefix",
-          currentPrefix,
-          "--ignore-scripts",
-          "--omit=optional",
-          "--no-audit",
-          "--no-fund",
-          tarball,
-        ],
+        ["npm", "install", "--prefix", currentPrefix, "--no-audit", "--no-fund", tarball],
         npmEnv,
       );
       expectSuccess(currentInstall, "install packed current artifact");
@@ -371,18 +361,19 @@ test.skipIf(!ENABLED)(
       fs.writeFileSync(preparedPath, `${JSON.stringify(preparedConfig, null, 2)}\n`, { mode: 0o600 });
 
       const currentCli = path.join(currentPackageRoot, "dist", "akm");
+      const currentMigrate = path.join(currentPackageRoot, "dist", "akm-migrate");
+      fs.writeFileSync(path.join(fakeBin, "bun"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
       const currentInstallPath = [
         fakeBin,
         path.join(currentPrefix, "node_modules", ".bin"),
-        path.dirname(process.execPath),
         executableDir("node"),
         "/usr/bin",
         "/bin",
       ].join(path.delimiter);
       const currentEnv = { ...storageEnv, PATH: currentInstallPath };
 
-      const status = run([currentCli, "migrate", "status", "--config", preparedPath], currentEnv);
-      expectSuccess(status, "packed 0.9 migrate status");
+      const status = run([currentMigrate, "status", "--config", preparedPath], currentEnv);
+      expectSuccess(status, "packed Node-only 0.9 migrate status");
       const statusJson = JSON.parse(status.stdout) as {
         status: string;
         artifacts: { config: { status: string }; state: { status: string } };
@@ -395,8 +386,8 @@ test.skipIf(!ENABLED)(
       });
       expectTasksUnchanged(stashDir, originalTasks);
 
-      const apply = run([currentCli, "migrate", "apply", "--config", preparedPath], currentEnv);
-      expectSuccess(apply, "packed 0.9 migrate apply");
+      const apply = run([currentMigrate, "apply", "--config", preparedPath], currentEnv);
+      expectSuccess(apply, "packed Node-only 0.9 migrate apply");
       const applyJson = JSON.parse(apply.stdout) as { status: string; backupPath: string; backupRunId: string };
       expect(applyJson.status).toBe("current");
       expect(path.basename(applyJson.backupPath)).toBe(applyJson.backupRunId);
@@ -437,15 +428,17 @@ test.skipIf(!ENABLED)(
       // rewritten by that RC. Status must still advertise work and apply must
       // run the journaled task-only phase without replaying the DB cutover.
       fs.writeFileSync(path.join(stashDir, "tasks", "upgrade-workflow.yml"), legacyWorkflowTask);
-      const repairStatus = run([currentCli, "migrate", "status"], currentEnv);
+      const repairStatus = run([currentMigrate, "status"], currentEnv);
       expectSuccess(repairStatus, "packed 0.9 current-RC repair status");
       expect(JSON.parse(repairStatus.stdout)).toMatchObject({
         status: "ready",
         artifacts: { config: { status: "current" }, state: { status: "current" }, workflow: { status: "missing" } },
       });
-      const repairApply = run([currentCli, "migrate", "apply"], currentEnv);
+      const repairApply = run([currentMigrate, "apply"], currentEnv);
       expectSuccess(repairApply, "packed 0.9 current-RC task repair apply");
       expectTasksUnchanged(stashDir, migratedTasks);
+      fs.unlinkSync(path.join(fakeBin, "bun"));
+      fs.symlinkSync(process.execPath, path.join(fakeBin, "bun"));
 
       expect(fs.readFileSync(path.join(legacyBackupPath, "backup.meta.json"), "utf8")).toBe(legacyBackupMetadata);
       expect(fs.readFileSync(path.join(legacyBackupPath, "state.db"))).toEqual(legacyBackupState);
@@ -454,8 +447,12 @@ test.skipIf(!ENABLED)(
         [currentCli, "tasks", "history", "--id", "upgrade-command", "--limit", "1"],
         currentEnv,
       );
-      expect(migratedOldHistory.status).not.toBe(0);
-      expect(`${migratedOldHistory.stdout}\n${migratedOldHistory.stderr}`).toContain("unsupported metadataVersion");
+      expectSuccess(migratedOldHistory, "read published 0.8.14 task history after migration");
+      expect((JSON.parse(migratedOldHistory.stdout) as { rows: TaskHistoryRow[] }).rows[0]).toMatchObject({
+        id: "upgrade-command",
+        status: "completed",
+        detail: { exitCode: 0 },
+      });
       expect(fs.readFileSync(oldHistory!.log, "utf8")).toBe(oldHistoryLog);
 
       const version = run([currentCli, "--version"], currentEnv);

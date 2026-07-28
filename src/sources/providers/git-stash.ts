@@ -58,6 +58,16 @@ export interface SaveGitStashResult {
   commit?: string;
 }
 
+export class GitStashPushError extends Error {
+  readonly commit: string;
+
+  constructor(message: string, commit: string) {
+    super(message);
+    this.name = "GitStashPushError";
+    this.commit = commit;
+  }
+}
+
 export interface GitExactPathState {
   oid: string;
   mode: "100644" | "100755" | "120000";
@@ -253,7 +263,7 @@ export function saveGitStash(
     { timeout: GIT_PUSH_TIMEOUT_MS },
   );
   if (pushResult.status !== 0) {
-    throw new Error(`git push failed: ${pushResult.stderr?.trim() || "unknown error"}`);
+    throw new GitStashPushError(`git push failed: ${pushResult.stderr?.trim() || "unknown error"}`, exactCommit);
   }
 
   return {

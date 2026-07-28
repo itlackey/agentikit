@@ -263,6 +263,19 @@ function writeTrueTask(): void {
 }
 
 describe("family C — akm tasks", () => {
+  test("tasks run maps a command task's non-zero status to akm failure exit 1", async () => {
+    const id = "golden-false";
+    fs.mkdirSync(path.join(storage.stashDir, "tasks"), { recursive: true });
+    fs.writeFileSync(
+      path.join(storage.stashDir, "tasks", `${id}.yml`),
+      ["version: 2", 'schedule: "@daily"', "enabled: true", 'command: ["/bin/sh", "-c", "exit 7"]', ""].join("\n"),
+    );
+
+    const run = await runCli(["tasks", "run", id, "--format=json"]);
+    expect(run.code).toBe(1);
+    expect(JSON.parse(run.stdout).result.detail.exitCode).toBe(7);
+  });
+
   test("tasks run / history / doctor — command-type task running `true`", async () => {
     writeTrueTask();
 

@@ -20,31 +20,6 @@ async function runCli(args: string[]): Promise<{ status: number; stdout: string;
   return { status: code, stdout, stderr };
 }
 
-describe("improve CLI flags (0.8.0)", () => {
-  // 0.8.0 deleted --reflect-cooldown-days / --distill-cooldown-days /
-  // --consolidate-cooldown-days. The reflect/distill gates now use
-  // signal-delta eligibility (see tests/improve-eligibility.test.ts);
-  // consolidate uses pool-delta. citty silently ignores unknown flags
-  // so we cannot pin rejection here — the flag-rejection tests were
-  // dropped along with the flags.
-
-  // NOTE: the `rejects negative min retrieval count` test was dropped here —
-  // chunk-7's improve refactor removed the --min-retrieval-count validation,
-  // and citty silently ignores the now-unknown flag, so rejection can no longer
-  // be pinned (same reason the cooldown-flag rejection tests were dropped above).
-
-  test("rejects invalid consolidate recovery mode", async () => {
-    const result = await runCli(["improve", "--consolidate-recovery", "resume", "--dry-run"]);
-    expect(result.status).toBe(2);
-    const parsed = JSON.parse(result.stderr) as { ok: boolean; error: string; code?: string };
-    expect(parsed.ok).toBe(false);
-    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
-    expect(parsed.error).toContain("--consolidate-recovery");
-    expect(parsed.error).toContain("abort");
-    expect(parsed.error).toContain("clean");
-  });
-});
-
 describe("standalone extract CLI engine boundary", () => {
   test("rejects --engine with --strategy before resolving either selection", async () => {
     const result = await runCli(["extract", "--type", "claude-code", "--engine", "fast", "--strategy", "thorough"]);

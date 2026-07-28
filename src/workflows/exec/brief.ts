@@ -31,18 +31,15 @@
  * invariant R4 asserts.
  */
 
-import { NotFoundError, UsageError } from "../../core/errors";
-import type { WorkflowRunUnitStatus } from "../../storage/repositories/workflow-runs-repository";
-import { type WorkflowRunUnitRow, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
-import { getCurrentWorkflowScopeKey } from "../authoring/scope-key";
+import { UsageError } from "../../core/errors";
+import type { WorkflowRunUnitRow, WorkflowRunUnitStatus } from "../../storage/repositories/workflow-runs-repository";
 import { assertRunParamsSatisfyPlan } from "../ir/params";
 import type { IrMapReducer, IrOnError, IrRetry, IrRuntimeKind } from "../ir/schema";
 import type { ExpressionScope } from "../program/expressions";
 import { frozenStepRows, requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
-import { snapshotRunForDriver } from "../runtime/runs";
+import { resolveExistingWorkflowRunId, snapshotRunForDriver } from "../runtime/runs";
 import { evaluateStaleUnits, type StaleUnit } from "../runtime/unit-checkin";
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
-import { canonicalizeWorkflowRefInput } from "../runtime/workflow-asset-loader";
 import { detectSecretShapedParams } from "./param-secrets";
 import {
   activeGateLoop,
@@ -720,30 +717,5 @@ function buildMessage(
  * would mutate).
  */
 export async function resolveRunId(target: string): Promise<string> {
-  return withWorkflowRunsRepo(async (repo) => {
-    const byId = repo.getRunById(target);
-    if (byId) return byId.id;
-
-    const scopeKey = getCurrentWorkflowScopeKey();
-    const exact = repo.getActiveRunRowForScope(target.trim(), scopeKey);
-    if (exact) return exact.id;
-    let ref: string;
-    try {
-      ref = await canonicalizeWorkflowRefInput(target);
-    } catch (error) {
-      if (error instanceof NotFoundError || (!target.includes(":") && !target.includes("/"))) {
-        throw new NotFoundError(`Workflow run or workflow "${target}" not found.`, "WORKFLOW_NOT_FOUND");
-      }
-      throw error;
-    }
-    const active = repo.getActiveRunRowForScope(ref, scopeKey);
-    if (!active) {
-      throw new NotFoundError(
-        `No active workflow run for ${ref} in this scope. \`akm workflow brief\` describes an existing run and never ` +
-          `starts one — run \`akm workflow start ${ref}\` (or \`akm workflow run ${ref}\`) first.`,
-        "WORKFLOW_NOT_FOUND",
-      );
-    }
-    return active.id;
-  });
+  return resolveExistingWorkflowRunId(target);
 }

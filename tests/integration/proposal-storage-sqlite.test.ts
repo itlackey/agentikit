@@ -350,6 +350,41 @@ function runLegacyImport(stash: string, bundleId = "stash"): number {
 }
 
 describe("migrator legacy-import output round-trips the proposal lifecycle", () => {
+  test("missing state.db is an operational error", () => {
+    const missing = path.join(makeTempDir("akm-proposal-import-missing-db-"), "state.db");
+    expect(() => importLegacyProposalsIntoState(missing, [])).toThrow(/state\.db.*not found/i);
+  });
+
+  test("does not invent proposedTarget for an unbound legacy proposal", () => {
+    const stash = makeStashDir();
+    const id = "10101010-1010-4010-8010-101010101010";
+    writeLegacyProposal(stash, legacyRecord(id, "lessons/unbound", "pending"));
+
+    expect(runLegacyImport(stash)).toBe(1);
+    expect(getProposal(stash, id).proposedTarget).toBeUndefined();
+  });
+
+  test("preserves recorded proposedTarget and acceptedTarget exactly", () => {
+    const stash = makeStashDir();
+    const id = "12121212-1212-4212-8212-121212121212";
+    const proposedTarget = { source: "historical", root: "/historical/proposed" };
+    const acceptedTarget = {
+      source: "historical",
+      root: "/historical/accepted",
+      path: "/historical/accepted/lesson.md",
+      contentHash: "a".repeat(64),
+    };
+    writeLegacyProposal(
+      stash,
+      legacyRecord(id, "lessons/recorded-target", "accepted", { proposedTarget, acceptedTarget }),
+      { archive: true },
+    );
+
+    expect(runLegacyImport(stash)).toBe(1);
+    expect(getProposal(stash, id).proposedTarget).toEqual(proposedTarget);
+    expect(getProposal(stash, id).acceptedTarget).toEqual(acceptedTarget);
+  });
+
   test("pending + archived proposals import; backups are inlined; corrupt skipped", () => {
     const stash = makeStashDir();
     const pendingId = "11111111-1111-4111-8111-111111111111";
@@ -398,7 +433,7 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     expect(getProposal(stash, id).status).toBe("accepted");
   });
 
-  test("an accepted target is re-keyed with the migrated bundle before revert", async () => {
+  test("an accepted target is preserved without inventing a proposed target", () => {
     const stash = makeStashDir();
     const id = "44444444-4444-4444-8444-444444444444";
     const assetPath = path.join(stash, "lessons", "accepted-target.md");
@@ -419,19 +454,13 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     );
 
     expect(runLegacyImport(stash, "primary")).toBe(1);
-    expect(getProposal(stash, id).acceptedTarget).toMatchObject({
-      source: "primary",
-      root: path.resolve(stash),
+    expect(getProposal(stash, id).acceptedTarget).toEqual({
+      source: "stash",
+      root: stash,
       path: assetPath,
+      contentHash: createHash("sha256").update(acceptedBody, "utf8").digest("hex"),
     });
-    const config = {
-      bundles: { primary: { path: stash, writable: true } } as AkmConfig["bundles"],
-      defaultBundle: "primary",
-      defaultWriteTarget: "primary",
-    } as AkmConfig;
-    const reverted = await akmProposalRevert({ stashDir: stash, id, config });
-    expect(reverted.ok).toBe(true);
-    expect(fs.readFileSync(assetPath, "utf8")).toContain("PRIOR BODY.");
+    expect(getProposal(stash, id).proposedTarget).toBeUndefined();
   });
 
   test("re-running the import never duplicates rows (INSERT OR IGNORE on UUID)", () => {
@@ -444,6 +473,18 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     expect(importLegacyProposalsIntoState(getStateDbPath(), [{ path: stash, bundleId: "stash" }])).toBe(0);
     expect(listProposals(stash)).toHaveLength(1);
     expect(countRows(stash)).toBe(1);
+  });
+
+  test("an existing UUID must match the exact imported row", () => {
+    const stash = makeStashDir();
+    const id = "67676767-6767-4676-8676-676767676767";
+    writeLegacyProposal(stash, legacyRecord(id, "lessons/stable", "pending"));
+    expect(runLegacyImport(stash)).toBe(1);
+    writeLegacyProposal(stash, legacyRecord(id, "lessons/different", "pending"));
+
+    expect(() => importLegacyProposalsIntoState(getStateDbPath(), [{ path: stash, bundleId: "stash" }])).toThrow(
+      /UUID.*different content/i,
+    );
   });
 
   test("legacy pending proposals accept through the normal flow after import", async () => {
@@ -477,7 +518,7 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
       "primary//lessons/transitional-short",
     ]);
     for (const proposal of migrated) {
-      expect(proposal.proposedTarget).toEqual({ source: "primary", root: path.resolve(stash) });
+      expect(proposal.proposedTarget).toBeUndefined();
     }
   });
 
@@ -499,7 +540,7 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     expect(listProposals(team, { ref: "team//lessons/legacy-origin" }).map((proposal) => proposal.id)).toEqual([id]);
     const migrated = getProposal(team, id);
     expect(migrated.ref).toBe("team//lessons/legacy-origin");
-    expect(migrated.proposedTarget).toEqual({ source: "team", root: path.resolve(team) });
+    expect(migrated.proposedTarget).toBeUndefined();
 
     const config = {
       bundles: {
@@ -538,10 +579,10 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
 
     const migrated = getProposal(primary, id);
     expect(migrated.ref).toBe("team//lessons/legacy-locator");
-    expect(migrated.proposedTarget).toEqual({ source: "team", root: path.resolve(team) });
+    expect(migrated.proposedTarget).toBeUndefined();
     const relative = getProposal(primary, relativeId);
     expect(relative.ref).toBe("team//lessons/legacy-relative");
-    expect(relative.proposedTarget).toEqual({ source: "team", root: path.resolve(team) });
+    expect(relative.proposedTarget).toBeUndefined();
 
     const config = {
       bundles: {
@@ -568,8 +609,8 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     ).toBe(1);
     expect(getProposal(physical, id)).toMatchObject({
       ref: "primary//lessons/path-owned",
-      proposedTarget: { source: "primary", root: path.resolve(physical) },
     });
+    expect(getProposal(physical, id).proposedTarget).toBeUndefined();
   });
 
   test("canonical bundle ids win alias collisions and ambiguous aliases are skipped", () => {
@@ -595,8 +636,8 @@ describe("migrator legacy-import output round-trips the proposal lifecycle", () 
     ).toBe(1);
     expect(getProposal(primary, canonicalId)).toMatchObject({
       ref: "team//lessons/canonical-wins",
-      proposedTarget: { source: "team", root: path.resolve(team) },
     });
+    expect(getProposal(primary, canonicalId).proposedTarget).toBeUndefined();
     expect(() => getProposal(primary, ambiguousId)).toThrow(/not found/i);
   });
 });

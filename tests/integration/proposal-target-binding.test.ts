@@ -10,6 +10,7 @@ import {
   resolveProposalId,
 } from "../../src/commands/proposal/repository";
 import { type AkmConfig, resetConfigCache } from "../../src/core/config/config";
+import { openStateDatabase } from "../../src/core/state-db";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 const VALID_LESSON = `---\ndescription: Proposal with a stable bound destination\nwhen_to_use: Testing proposal destinations\n---\n\nBound content.\n`;
@@ -53,6 +54,42 @@ afterEach(() => {
 });
 
 describe("proposal queue target binding", () => {
+  function insertHistorical(stashDir: string, id: string, ref: string): void {
+    const db = openStateDatabase();
+    try {
+      db.prepare(
+        `INSERT INTO proposals
+         (id, stash_dir, ref, status, source, created_at, updated_at, content, frontmatter_json, metadata_json)
+         VALUES (?, ?, ?, 'pending', 'reflect', ?, ?, ?, NULL, '{}')`,
+      ).run(id, stashDir, ref, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z", VALID_LESSON);
+    } finally {
+      db.close();
+    }
+  }
+
+  test("an unbound qualified historical row binds its named bundle, but a short row has no ambient default", async () => {
+    const primary = stash("akm-proposal-historical-primary-");
+    const team = stash("akm-proposal-historical-team-");
+    const cfg = config(primary, team);
+    insertHistorical(primary, "historical-qualified", "team//lessons/historical-qualified");
+    insertHistorical(primary, "historical-short", "lessons/historical-short");
+    insertHistorical(team, "historical-queue", "lessons/historical-queue");
+
+    const qualified = await akmProposalAccept({ stashDir: primary, id: "historical-qualified", config: cfg });
+    expect(qualified.assetPath).toBe(path.join(team, "lessons", "historical-qualified.md"));
+    await expect(akmProposalAccept({ stashDir: primary, id: "historical-short", config: cfg })).rejects.toThrow(
+      /explicit target|queue context/i,
+    );
+    const explicit = await akmProposalAccept({
+      stashDir: primary,
+      id: "historical-short",
+      target: "team",
+      config: cfg,
+    });
+    expect(explicit.assetPath).toBe(path.join(team, "lessons", "historical-short.md"));
+    const queued = await akmProposalAccept({ queue: "team", id: "historical-queue", config: cfg });
+    expect(queued.assetPath).toBe(path.join(team, "lessons", "historical-queue.md"));
+  });
   test("an unqualified ref in a named secondary queue uses and records the configured source identity", async () => {
     const primary = stash("akm-proposal-primary-");
     const team = stash("akm-proposal-directory-name-is-not-identity-");
@@ -71,6 +108,31 @@ describe("proposal queue target binding", () => {
     const accepted = await akmProposalAccept({ queue: "team", id: created.id, config: cfg });
     expect(accepted.assetPath).toBe(path.join(team, "lessons", "bound-secondary.md"));
     expect(fs.existsSync(path.join(primary, "lessons", "bound-secondary.md"))).toBe(false);
+  });
+
+  test("accept persists its terminal gate decision in the acceptance transaction", async () => {
+    const primary = stash("akm-proposal-terminal-primary-");
+    const team = stash("akm-proposal-terminal-team-");
+    const cfg = config(primary, team);
+    const { proposal: created } = akmProposalCreate({
+      queue: "team",
+      config: cfg,
+      ref: "lessons/terminal-accept",
+      source: "propose",
+      payload: { content: VALID_LESSON },
+    });
+
+    await akmProposalAccept({
+      queue: "team",
+      id: created.id,
+      config: cfg,
+      gateDecision: { outcome: "auto-accepted", reason: "policy-accept", gate: "triage:test" },
+    });
+    expect(resolveProposalId(team, created.id)).toMatchObject({
+      status: "accepted",
+      review: { outcome: "accepted" },
+      gateDecision: { outcome: "auto-accepted", reason: "policy-accept", gate: "triage:test" },
+    });
   });
 
   test("a secondary-queue proposal records its configured bundle instead of the default", async () => {

@@ -13,6 +13,7 @@ import { CONSERVATIVE, MANUAL, PERSONAL_STASH, resolveDrainPolicy } from "../../
 import type { ProposalAcceptResult, ProposalRejectResult } from "../../src/commands/proposal/proposal";
 import {
   createProposal,
+  getProposal,
   isProposalSkipped,
   listProposals,
   type Proposal,
@@ -546,6 +547,96 @@ describe("drainProposals — judgment tier (agent mode)", () => {
     expect(result.promoted).toEqual([]);
     expect(result.staged).toEqual([deferred.id]);
     expect(result.deferred).toEqual([]);
+    expect(getProposal(stash, deferred.id).gateDecision).toMatchObject({
+      outcome: "staged",
+      reason: "judgment-accept",
+    });
+
+    const secondJudge = mock(async () => agentResult(JSON.stringify({ decision: "reject", reason: "should not run" })));
+    const promoted = fakeAccept();
+    const second = await drainProposals(
+      baseOpts(stash, { judgment: FAKE_AGENT_RUNNER, applyMode: "promote" }),
+      promoted,
+      fakeReject(),
+      { runAgentFn: secondJudge },
+    );
+    expect(secondJudge).not.toHaveBeenCalled();
+    expect(second.promoted).toEqual([deferred.id]);
+  });
+
+  test("a staged personal-stash judgment is not consumed by the manual policy", async () => {
+    const stash = makeStashDir();
+    const deferred = seed(stash, "lessons/cross-policy", "consolidate", BIG_LESSON);
+    const stageJudge = mock(async () => agentResult(JSON.stringify({ decision: "accept", reason: "personal" })));
+    await drainProposals(
+      baseOpts(stash, { policy: PERSONAL_STASH, judgment: FAKE_AGENT_RUNNER, applyMode: "queue" }),
+      fakeAccept(),
+      fakeReject(),
+      { runAgentFn: stageJudge },
+    );
+
+    const manualJudge = mock(async () => agentResult(JSON.stringify({ decision: "accept", reason: "manual" })));
+    const promoteFn = fakeAccept();
+    const result = await drainProposals(
+      baseOpts(stash, { policy: MANUAL, judgment: FAKE_AGENT_RUNNER, applyMode: "promote" }),
+      promoteFn,
+      fakeReject(),
+      { runAgentFn: manualJudge },
+    );
+
+    expect(result.promoted).toEqual([]);
+    expect(promoteFn).not.toHaveBeenCalled();
+    expect(manualJudge).not.toHaveBeenCalled();
+    expect(getProposal(stash, deferred.id).gateDecision).toMatchObject({
+      outcome: "staged",
+      gate: "triage:personal-stash",
+    });
+  });
+});
+
+describe("drainProposals — terminal transition ordering", () => {
+  test("a failed rejection does not leave an auto-rejected pre-stamp and is retried", async () => {
+    const stash = makeStashDir();
+    const empty = seed(stash, "lessons/retry-empty", "extract", EMPTY_LESSON);
+    const failingReject = mock(async () => {
+      throw new Error("transient");
+    });
+
+    await drainProposals(baseOpts(stash), fakeAccept(), failingReject);
+    expect(getProposal(stash, empty.id).gateDecision).toBeUndefined();
+
+    const retry = fakeReject();
+    const result = await drainProposals(baseOpts(stash), fakeAccept(), retry);
+    expect(result.rejected).toEqual([empty.id]);
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  test("content changes invalidate a staged judgment", async () => {
+    const stash = makeStashDir();
+    const deferred = seed(stash, "lessons/staged-change", "consolidate", BIG_LESSON);
+    const acceptJudge = mock(async () => agentResult(JSON.stringify({ decision: "accept", reason: "ok" })));
+    await drainProposals(
+      baseOpts(stash, { judgment: FAKE_AGENT_RUNNER, applyMode: "queue" }),
+      fakeAccept(),
+      fakeReject(),
+      { runAgentFn: acceptJudge },
+    );
+
+    const { openStateDatabase } = await import("../../src/core/state-db");
+    const db = openStateDatabase();
+    try {
+      db.prepare("UPDATE proposals SET content = content || ? WHERE id = ?").run("\nchanged", deferred.id);
+    } finally {
+      db.close();
+    }
+    const rejudge = mock(async () => agentResult(JSON.stringify({ decision: "defer", reason: "changed" })));
+    await drainProposals(
+      baseOpts(stash, { judgment: FAKE_AGENT_RUNNER, applyMode: "promote" }),
+      fakeAccept(),
+      fakeReject(),
+      { runAgentFn: rejudge },
+    );
+    expect(rejudge).toHaveBeenCalledTimes(1);
   });
 });
 

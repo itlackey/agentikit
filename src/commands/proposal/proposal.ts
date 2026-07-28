@@ -26,6 +26,7 @@ import {
   isProposalSkipped,
   listProposals,
   type Proposal,
+  type ProposalGateDecision,
   type ProposalsContext,
   promoteProposal,
   proposalContent,
@@ -143,6 +144,8 @@ export interface ProposalAcceptOptions {
   config?: AkmConfig;
   /** Test seam — overrides clock / id source. */
   ctx?: ProposalsContext;
+  /** Internal drain adjudication metadata, persisted with the terminal transition. */
+  gateDecision?: Omit<ProposalGateDecision, "decidedAt"> & { decidedAt?: string };
 }
 
 export interface ProposalAcceptResult {
@@ -163,7 +166,7 @@ export async function akmProposalAccept(options: ProposalAcceptOptions): Promise
     stash,
     config,
     resolvedId,
-    { target: options.target, queueTarget: queue.target },
+    { target: options.target, queueTarget: queue.target, gateDecision: options.gateDecision },
     options.ctx,
   );
 
@@ -186,6 +189,8 @@ export interface ProposalRejectOptions {
   reason?: string;
   ctx?: ProposalsContext;
   config?: AkmConfig;
+  /** Internal drain adjudication metadata, persisted with the terminal transition. */
+  gateDecision?: Omit<ProposalGateDecision, "decidedAt"> & { decidedAt?: string };
 }
 
 export interface ProposalRejectResult {
@@ -203,7 +208,7 @@ export async function akmProposalReject(options: ProposalRejectOptions): Promise
     const { stashDir: stash } = resolveProposalQueue(options.stashDir, options.queue, config);
     const proposalId = resolveProposalId(stash, options.id).id;
     await recoverProposalTransactionsForStash(stash, config, options.ctx, proposalId);
-    const updated = rejectProposalDurably(stash, proposalId, options.reason, options.ctx);
+    const updated = rejectProposalDurably(stash, proposalId, options.reason, options.ctx, options.gateDecision);
 
     return {
       schemaVersion: 1,

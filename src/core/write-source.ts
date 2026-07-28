@@ -26,8 +26,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { withAssetMutationLeaseSync } from "../indexer/index-writer-lock";
 import { lockContentRootFor } from "../integrations/lockfile";
 import {
+  GitStashPushError,
   getCachePaths,
   inspectGitUpstream,
   isGitBackedStash,
@@ -40,6 +42,7 @@ import {
   assertNoIgnoredExactPaths,
   type GitExactPathSnapshots,
   type GitExactPathState,
+  listIgnoredExactPaths,
   reconcileGitExactPathIndex,
 } from "../sources/providers/git-stash";
 import { detectAdapterId } from "./adapter/detect-adapter";
@@ -133,6 +136,128 @@ export function assertWriteTargetPathsClean(source: WriteTargetSource, filePaths
       assertGitExactPathsClean(repoDir, [relativePath]);
     }
   }
+}
+
+export interface WriteTargetPublicationPlan {
+  readonly target: ResolvedWriteTarget;
+  readonly paths: readonly string[];
+  readonly publish: boolean;
+  readonly expectedBaseHead?: string | null;
+}
+
+export interface WriteTargetMutationOptions {
+  ignored: "reject" | "local-only";
+  purpose: string;
+  message: string;
+}
+
+/** Preflight one operation's complete exact-path set before its first mutation. */
+export function planWriteTargetPublication(
+  target: ResolvedWriteTarget,
+  filePaths: string[],
+  options: { ignored: "reject" | "local-only" },
+): WriteTargetPublicationPlan {
+  const paths = [...new Set(filePaths.map((filePath) => path.resolve(filePath)))];
+  assertNoWritePathDescendantSymlinks(target.source, paths);
+  if (target.source.kind !== "git") return { target, paths, publish: false };
+  const repoDir = path.resolve(target.source.repoPath ?? target.source.path);
+  if (!isGitBackedStash(repoDir)) return { target, paths, publish: false };
+  const expectedBaseHead = readOptionalGitHead(repoDir);
+  const relativePaths = paths.map((filePath) => repoRelativeGitPath(target.source, filePath));
+  const ignored = new Set(listIgnoredExactPaths(repoDir, relativePaths));
+  if (ignored.size > 0) {
+    if (options.ignored === "reject") {
+      throw new UsageError(
+        `Exact Git publication path is ignored: ${[...ignored][0]}. Update .gitignore or choose a tracked destination before writing.`,
+      );
+    }
+  }
+  const unignoredPaths = paths.filter((_, index) => !ignored.has(relativePaths[index] as string));
+  assertWriteTargetPathsClean(target.source, unignoredPaths);
+  assertWriteTargetPlanBase(target, expectedBaseHead);
+  return { target, paths, publish: ignored.size === 0, expectedBaseHead };
+}
+
+function assertNoWritePathDescendantSymlinks(source: WriteTargetSource, filePaths: readonly string[]): void {
+  const lexicalRoot = path.resolve(source.path);
+  const canonicalRoot = fs.realpathSync(lexicalRoot);
+  for (const filePath of filePaths) {
+    const relative = path.relative(lexicalRoot, filePath);
+    if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new UsageError(`Write path resolves outside source "${source.name}".`, "PATH_ESCAPE_VIOLATION");
+    }
+    let current = canonicalRoot;
+    for (const segment of relative.split(path.sep)) {
+      current = path.join(current, segment);
+      try {
+        if (fs.lstatSync(current).isSymbolicLink()) {
+          throw new UsageError(`Write path contains a symbolic link below source "${source.name}": ${relative}`);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+        throw error;
+      }
+    }
+  }
+}
+
+function assertWriteTargetPlanBase(target: ResolvedWriteTarget, expectedBaseHead: string | null): void {
+  const repoDir = path.resolve(target.source.repoPath ?? target.source.path);
+  if (readOptionalGitHead(repoDir) !== expectedBaseHead) {
+    throw new UsageError(`Git target "${target.source.name}" advanced after exact-path preflight.`);
+  }
+}
+
+/** Revalidate a publication plan immediately before its first mutation. */
+export function beginWriteTargetMutation(plan: WriteTargetPublicationPlan): void {
+  if (plan.expectedBaseHead === undefined) return;
+  assertWriteTargetPlanBase(plan.target, plan.expectedBaseHead);
+}
+
+/** Publish exactly the paths bound by {@link planWriteTargetPublication}. */
+export function publishWriteTargetPlan(
+  plan: WriteTargetPublicationPlan,
+  message: string,
+  expectedSnapshots?: GitPathSnapshots,
+): void {
+  if (!plan.publish) return;
+  if (plan.expectedBaseHead === undefined) {
+    throw new UsageError(`Git publication plan for "${plan.target.source.name}" has no preflight base.`);
+  }
+  assertWriteTargetPlanBase(plan.target, plan.expectedBaseHead);
+  for (const filePath of plan.paths) recordWriteTargetPath(plan.target.source, filePath);
+  commitWriteTargetBoundary(plan.target, message, {
+    paths: [...plan.paths],
+    expectedBaseHead: plan.expectedBaseHead,
+    ...(expectedSnapshots ? { expectedSnapshots } : {}),
+  });
+}
+
+/** Hold the shared asset lease from exact-path preflight through publication. */
+export function withWriteTargetMutation<T>(
+  target: ResolvedWriteTarget,
+  paths: string[],
+  options: WriteTargetMutationOptions,
+  mutate: () => T,
+): T {
+  return withAssetMutationLeaseSync(options.purpose, () => {
+    const plan = planWriteTargetPublication(target, paths, { ignored: options.ignored });
+    beginWriteTargetMutation(plan);
+    const result = mutate();
+    const expectedSnapshots = captureIntendedWriteTargetState(plan);
+    publishWriteTargetPlan(plan, options.message, expectedSnapshots);
+    return result;
+  });
+}
+
+function captureIntendedWriteTargetState(plan: WriteTargetPublicationPlan): GitPathSnapshots | undefined {
+  if (plan.expectedBaseHead === undefined) return undefined;
+  const snapshots: GitPathSnapshots = {};
+  for (const filePath of plan.paths) {
+    const snapshot = captureGitPathSnapshot(plan.target, filePath);
+    snapshots[snapshot.path] = snapshot.state;
+  }
+  return snapshots;
 }
 
 function readOptionalGitHead(repoDir: string): string | null {
@@ -442,7 +567,13 @@ export function commitWriteTargetBoundary(
     });
     pendingGitMutations.delete(key);
   } catch (error) {
-    if (pending && readOptionalGitHead(repoDir) !== pending.baseHead) pendingGitMutations.delete(key);
+    const currentHead = readOptionalGitHead(repoDir);
+    if (pending && currentHead !== pending.baseHead) pendingGitMutations.delete(key);
+    if (error instanceof GitStashPushError) {
+      throw new Error(`Changes were committed as ${error.commit}, but publication failed: ${error.message}`, {
+        cause: error,
+      });
+    }
     throw error;
   }
 }

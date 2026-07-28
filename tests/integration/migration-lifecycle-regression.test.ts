@@ -32,7 +32,7 @@ import { MAX_CONFIG_FILE_BYTES } from "../../src/core/common";
 import { loadUserConfig, mutateConfig, saveConfig } from "../../src/core/config/config";
 import { acquireMaintenanceActivity } from "../../src/core/maintenance-barrier";
 import { _setAfterPendingOperationCheckHookForTests } from "../../src/core/migration-operation";
-import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../../src/core/paths";
+import { getConfigPath, getDataDir, getDbPath, getLockfilePath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { runMigrations as runStateMigrations, STATE_MIGRATIONS } from "../../src/core/state/migrations";
 import { openStateDatabase } from "../../src/core/state-db";
 import { openDatabaseFinalizing } from "../../src/storage/database";
@@ -301,26 +301,66 @@ function writeApplyJournalForTest(
   overrides: Record<string, unknown> = {},
 ): string {
   const journalPath = getMigrationApplyJournalPath();
+  const targetConfig = { configVersion: "0.9.0", semanticSearchMode: "off" };
+  const desiredConfig = `${JSON.stringify(targetConfig, null, 2)}\n`;
+  const authenticated = (bytes: string | null) => {
+    const data = bytes === null ? Buffer.alloc(0) : Buffer.from(bytes);
+    return { bytes, byteSize: data.byteLength, sha256: crypto.createHash("sha256").update(data).digest("hex") };
+  };
+  const formatVersion = overrides.formatVersion === 4 ? 4 : 5;
+  const formatFields =
+    formatVersion === 5
+      ? {
+          desiredConfigBytes: authenticated(desiredConfig),
+          oldLockBytes: authenticated(null),
+          desiredLockBytes: authenticated(null),
+        }
+      : {};
   fs.writeFileSync(
     journalPath,
     `${JSON.stringify({
-      formatVersion: 4,
+      formatVersion,
       version: "0.9.0",
       operationId: "apply-test-operation",
       installationId: path.basename(getMigrationBackupRoot()),
       backupRunId: backup.manifest.runId,
       backupPath: backup.path,
       phase: "prepared",
-      targetConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
+      targetConfig,
       migrationLockEntries: [],
       pathResolutionBase: path.resolve(process.cwd()),
       generation: fingerprintMigrationGeneration(),
+      ...formatFields,
       ...overrides,
     })}\n`,
     { mode: 0o600 },
   );
   return journalPath;
 }
+
+test("format-4 active journals remain structurally compatible in every phase", async () => {
+  writeConfig("0.9.0");
+  const backup = createMigrationBackup();
+  for (const phase of [
+    "prepared",
+    "state-converting",
+    "state-collapsing",
+    "state-applied",
+    "workflow-applied",
+    "cutover-applied",
+    "config-applied",
+    "tasks-prepared",
+    "tasks-applied",
+    "pilot-prepared",
+    "pilot-applied",
+    "rollback-prepared",
+    "committed",
+  ] as const) {
+    writeApplyJournalForTest(backup, { formatVersion: 4, phase });
+    const status = await runCliCapture(["migrate", "status"]);
+    expect(status.stdout, phase).not.toContain("Invalid migration apply journal");
+  }
+});
 
 function seedInterruptedApplyJournal(
   phase: "state-applied" | "workflow-applied",
@@ -387,6 +427,7 @@ type InterruptedForwardPhase = (typeof INTERRUPTED_FORWARD_PHASES)[number];
 function seedInterruptedForwardJournal(
   phase: InterruptedForwardPhase,
   nonexact: boolean,
+  options: { formatVersion?: 4 | 5; migrationLockEntries?: Array<Record<string, unknown>> } = {},
 ): { backupPath: string; guard: Database; journalPath: string; operationId: string } {
   writeConfig("0.8.0");
   seedPreCutoverState("interrupted-forward");
@@ -421,7 +462,19 @@ function seedInterruptedForwardJournal(
   }
   const refMapPath = path.join(path.dirname(getMigrationApplyJournalPath()), `cutover-refmap-${operationId}.json`);
   fs.mkdirSync(path.dirname(refMapPath), { recursive: true });
-  fs.writeFileSync(refMapPath, '{"formatVersion":1,"entries":{}}\n', { mode: 0o600 });
+  const refMap =
+    options.formatVersion === 4
+      ? { formatVersion: 1, entries: {} }
+      : {
+          formatVersion: 1,
+          active: true,
+          operationId,
+          backupRunId: backup.manifest.runId,
+          backupPath: backup.path,
+          entries: {},
+          entriesSha256: crypto.createHash("sha256").update("{}").digest("hex"),
+        };
+  fs.writeFileSync(refMapPath, `${JSON.stringify(refMap)}\n`, { mode: 0o600 });
 
   const guard = new Database(statePath, { readonly: true });
   guard.exec("BEGIN");
@@ -432,9 +485,11 @@ function seedInterruptedForwardJournal(
   expect(fs.existsSync(`${statePath}-wal`)).toBe(true);
 
   const journalPath = writeApplyJournalForTest(backup, {
+    formatVersion: options.formatVersion ?? 5,
     operationId,
     phase,
     generation: fingerprintMigrationGeneration(),
+    migrationLockEntries: options.migrationLockEntries ?? [],
   });
   if (nonexact) {
     const external = new Database(statePath);
@@ -1148,6 +1203,77 @@ describe("migration lifecycle regressions", () => {
     }
   }
 
+  test("format-4 apply fails closed from cutover-applied and preserves concurrent config and lock", async () => {
+    const migratedLock = {
+      id: "migrated-package",
+      source: "npm",
+      ref: "@example/migrated-package@1",
+      localRoot: path.join(getDataDir(), "migrated-package"),
+    };
+    const seeded = seedInterruptedForwardJournal("cutover-applied", false, {
+      formatVersion: 4,
+      migrationLockEntries: [migratedLock],
+    });
+    const concurrentConfig = `${JSON.stringify({
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      output: { format: "yaml" },
+    })}\n`;
+    const concurrentLock = [
+      {
+        id: "concurrent-package",
+        source: "npm",
+        ref: "@example/concurrent-package@1",
+        localRoot: path.join(getDataDir(), "concurrent-package"),
+      },
+    ];
+    fs.writeFileSync(getConfigPath(), concurrentConfig, { mode: 0o600 });
+    fs.mkdirSync(path.dirname(getLockfilePath()), { recursive: true });
+    fs.writeFileSync(getLockfilePath(), `${JSON.stringify(concurrentLock, null, 2)}\n`, { mode: 0o600 });
+
+    let resumed: Awaited<ReturnType<typeof runCliCapture>>;
+    try {
+      resumed = await runCliCapture(["migrate", "apply"]);
+    } finally {
+      seeded.guard.close();
+    }
+    expect(resumed.code).not.toBe(0);
+    expect(resumed.stderr).toMatch(/third generation/i);
+    expect(fs.readFileSync(getConfigPath(), "utf8")).toBe(concurrentConfig);
+    expect(JSON.parse(fs.readFileSync(getLockfilePath(), "utf8"))).toEqual(concurrentLock);
+    expect(fs.existsSync(seeded.journalPath)).toBe(true);
+  });
+
+  test("format-4 apply fails closed from config-applied and preserves concurrent config and lock", async () => {
+    const seeded = seedInterruptedForwardJournal("config-applied", false, { formatVersion: 4 });
+    const concurrentConfig = `${JSON.stringify({
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      output: { format: "yaml" },
+    })}\n`;
+    const concurrentLock = `${JSON.stringify([
+      {
+        id: "concurrent-package",
+        source: "npm",
+        ref: "@example/concurrent-package@2",
+        localRoot: path.join(getDataDir(), "concurrent-package-v2"),
+      },
+    ])}\n`;
+    fs.writeFileSync(getConfigPath(), concurrentConfig, { mode: 0o600 });
+    fs.mkdirSync(path.dirname(getLockfilePath()), { recursive: true });
+    fs.writeFileSync(getLockfilePath(), concurrentLock, { mode: 0o600 });
+    const journalBefore = fs.readFileSync(seeded.journalPath);
+    seeded.guard.close();
+
+    const resumed = await runCliCapture(["migrate", "apply"]);
+    expect(resumed.code).not.toBe(0);
+    expect(resumed.stderr).toMatch(/reachable config\/state\/workflow artifact state/i);
+    expect(fs.readFileSync(getConfigPath(), "utf8")).toBe(concurrentConfig);
+    expect(fs.readFileSync(getLockfilePath(), "utf8")).toBe(concurrentLock);
+    expect(fs.readFileSync(seeded.journalPath)).toEqual(journalBefore);
+    expect(fs.existsSync(seeded.backupPath)).toBe(true);
+  });
+
   test("rejects an interrupted cutover-applied journal with another operation's cutover marker", async () => {
     const seeded = seedInterruptedForwardJournal("cutover-applied", false);
     const journalBefore = fs.readFileSync(seeded.journalPath);
@@ -1372,7 +1498,7 @@ describe("migration lifecycle regressions", () => {
     fs.appendFileSync(path.join(backup.path, "manifest.json"), oversized);
     expect(() => verifyMigrationBackup(backup.path)).toThrow(/exceed|too large|limit/i);
 
-    fs.writeFileSync(getMigrationApplyJournalPath(), `{}${oversized}`, { mode: 0o600 });
+    fs.writeFileSync(getMigrationApplyJournalPath(), `{}${" ".repeat(5 * 1024 * 1024)}`, { mode: 0o600 });
     const applyStatus = await runCliCapture(["migrate", "status"]);
     expect(applyStatus.code).not.toBe(0);
     expect(applyStatus.stdout).toMatch(/exceed|too large|limit/i);

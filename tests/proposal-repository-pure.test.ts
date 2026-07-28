@@ -11,6 +11,20 @@ import {
   isValidProposalSource,
   PROPOSAL_SOURCES,
 } from "../src/commands/proposal/repository";
+import { proposalRowToProposal, proposalToRowValues } from "../src/storage/repositories/proposals-repository";
+
+const historicalRow = {
+  id: "historical",
+  stash_dir: "/tmp/stash",
+  ref: "team//lessons/history",
+  status: "pending",
+  source: "reflect",
+  created_at: "2026-01-01T00:00:00.000Z",
+  updated_at: "2026-01-01T00:00:00.000Z",
+  content: "historical body",
+  frontmatter_json: null,
+  metadata_json: "{}",
+};
 
 describe("proposal repository — pure helpers (post-split)", () => {
   test("isValidProposalSource accepts known sources and rejects typos", () => {
@@ -44,5 +58,34 @@ describe("proposal repository — pure helpers (post-split)", () => {
     expect(out).toContain(" one");
     expect(out).toContain("-two");
     expect(out).toContain("+TWO");
+  });
+
+  test("projects valid historical rows with absent envelope fields to sentinels", () => {
+    const proposal = proposalRowToProposal(historicalRow);
+    expect(proposal.changes).toEqual([{ path: "", op: "update", after: historicalRow.content }]);
+    expect(proposal.proposedTarget).toBeUndefined();
+  });
+
+  test("rejects malformed JSON and malformed present envelope fields", () => {
+    expect(() => proposalRowToProposal({ ...historicalRow, metadata_json: "{" })).toThrow(/metadata_json/i);
+    expect(() => proposalRowToProposal({ ...historicalRow, frontmatter_json: "[]" })).toThrow(/frontmatter_json/i);
+    expect(() =>
+      proposalRowToProposal({
+        ...historicalRow,
+        metadata_json: JSON.stringify({ changes: [{ path: 1, op: "create" }] }),
+      }),
+    ).toThrow(/changes/i);
+    expect(() =>
+      proposalRowToProposal({
+        ...historicalRow,
+        metadata_json: JSON.stringify({ proposedTarget: { source: "team" } }),
+      }),
+    ).toThrow(/proposedTarget/i);
+  });
+
+  test("current writers still reject historical sentinels", () => {
+    expect(() => proposalToRowValues(proposalRowToProposal(historicalRow), historicalRow.stash_dir)).toThrow(
+      /invalid file changes/i,
+    );
   });
 });

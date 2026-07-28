@@ -9,18 +9,13 @@ import { adapterForId } from "../../core/adapter/registry";
 import type { BundleComponent } from "../../core/adapter/types";
 import { ensureAkmMarkdownType } from "../../core/asset/akm-markdown";
 import { makeBundleRef } from "../../core/asset/asset-ref";
-import { isWithin } from "../../core/common";
+import { isWithin, writeFileAtomic } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { defaultBundleForTarget } from "../../core/mutation-target";
 import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../../core/recognition-util";
 import { warn } from "../../core/warn";
-import {
-  commitWriteTargetBoundary,
-  prepareWriteTargetForMutation,
-  recordWriteTargetPath,
-  resolveWriteTarget,
-} from "../../core/write-source";
+import { prepareWriteTargetForMutation, resolveWriteTarget, withWriteTargetMutation } from "../../core/write-source";
 import { compileWorkflowProgram } from "../ir/compile";
 import { parseWorkflow } from "../parser";
 import { parseWorkflowProgram } from "../program/parser";
@@ -137,7 +132,12 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
     ? (adapterForId("akm-workflow")?.placeNew?.(component, `${normalizedName}${targetSuffix}`) ??
       path.join(typeRoot, `${normalizedName}${targetSuffix}`))
     : path.join(typeRoot, `${normalizedName}${targetSuffix}`);
-  if (!isWithin(assetPath, typeRoot)) {
+  const relativeAssetPath = path.relative(path.resolve(typeRoot), path.resolve(assetPath));
+  if (
+    relativeAssetPath === ".." ||
+    relativeAssetPath.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeAssetPath)
+  ) {
     throw new UsageError(`Resolved workflow path escapes the stash: "${normalizedName}"`, "PATH_ESCAPE_VIOLATION");
   }
   // Codex round-3 finding C: a `workflows/<name>` ref is canonical across every
@@ -193,13 +193,19 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
   }
 
   const authoredContent = isProgram ? content : ensureAkmMarkdownType(content, "workflow");
-  fs.mkdirSync(path.dirname(assetPath), { recursive: true });
-  fs.writeFileSync(assetPath, authoredContent.endsWith("\n") ? authoredContent : `${authoredContent}\n`, "utf8");
-  recordWriteTargetPath(target.source, assetPath);
+  const mode = fs.existsSync(assetPath) ? fs.lstatSync(assetPath).mode & 0o777 : 0o644;
 
   const defaultBundle = defaultBundleForTarget(config);
   const ref = makeBundleRef(target.source.name === defaultBundle ? undefined : target.source.name, conceptId);
-  commitWriteTargetBoundary(target, `Create ${ref}`);
+  withWriteTargetMutation(
+    target,
+    [assetPath],
+    { ignored: "reject", purpose: "workflow-authoring", message: `Create ${ref}` },
+    () => {
+      fs.mkdirSync(path.dirname(assetPath), { recursive: true });
+      writeFileAtomic(assetPath, authoredContent.endsWith("\n") ? authoredContent : `${authoredContent}\n`, mode);
+    },
+  );
 
   return {
     ref,

@@ -118,6 +118,7 @@ import {
   MV_TRANSIENT_REKEY_TARGET_REL,
   MV_TRANSIENT_REKEY_TRIGGER_NAME,
   MV_TRANSIENT_REKEY_TRIGGER_TARGET_REL,
+  memoryItemRef,
   memoryRef,
   memoryStoredRef,
   mvBodyCiterContent,
@@ -259,7 +260,7 @@ describe("goldens: mv move with citers + .derived twin (WI-04, R3)", () => {
       expect(fs.readFileSync(taskYamlPath, "utf8")).toBe(`schedule: "0 9 * * *"\nprompt: ${toRef}\n`);
 
       // Exactly one mv event.
-      const mvEvent = mvEventOutcome(toRef);
+      const mvEvent = mvEventOutcome(memoryItemRef(MV_MOVE_TARGET_REL));
       expect(mvEvent.matchingCount).toBe(1);
       expect(mvEvent.distinctIdempotencyKeyCount).toBe(1);
       expect(transactionsRootIsClean(storage.stashDir)).toBe(true);
@@ -512,7 +513,6 @@ describe("golden fixture: serialize mv move-transaction outcomes (WI-04, R3)", (
 
         const { code, stdout } = await runCliCapture(["mv", fromRef, MV_MOVE_TARGET_REL]);
         const json = JSON.parse(stdout) as MvOutput;
-        const toRef = memoryRef(MV_MOVE_TARGET_REL);
         return {
           ok: code === 0 && json.ok,
           from: json.from,
@@ -530,7 +530,7 @@ describe("golden fixture: serialize mv move-transaction outcomes (WI-04, R3)", (
           readOnlyCiterCountsMatch: json.readOnlyCiters.every((r) => r.count === 1),
           readOnlyCiterFileUntouched: fs.readFileSync(roCiterPath, "utf8") === mvBodyCiterContent(fromRef),
           fileTree: fileTreeManifest(storage.stashDir),
-          mvEvent: mvEventOutcome(toRef),
+          mvEvent: mvEventOutcome(memoryItemRef(MV_MOVE_TARGET_REL)),
           transactionsRootClean: transactionsRootIsClean(storage.stashDir),
         };
       } finally {

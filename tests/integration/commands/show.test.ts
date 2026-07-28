@@ -2,8 +2,9 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { akmShowUnified as akmShow } from "../../../src/commands/read/show";
+import { akmShowUnified as akmShow, showByRef, showLocal } from "../../../src/commands/read/show";
 import { saveConfig } from "../../../src/core/config/config";
+import { NotFoundError } from "../../../src/core/errors";
 import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { mergeLockEntriesSync } from "../../../src/integrations/lockfile";
 
@@ -326,6 +327,26 @@ describe("akmShow search path", () => {
     expect(result.type).toBe("script");
     expect(result.name).toBe("deploy.sh");
     expect(result.path).toContain(searchPathDir);
+  });
+});
+
+describe("akmShow stale indexed paths", () => {
+  test("converts only indexed-path disappearance into actionable not-found errors", async () => {
+    const file = path.join(stashDir, "knowledge", "gone.md");
+    writeFile(file, "# Gone\n");
+    saveConfig({ semanticSearchMode: "off" });
+    await akmShow({ ref: "knowledge/gone", skipLogging: true });
+    fs.rmSync(file);
+
+    for (const read of [() => showLocal({ ref: "knowledge/gone" }), () => showByRef("knowledge/gone")]) {
+      try {
+        await read();
+        throw new Error("expected stale indexed path to fail");
+      } catch (error) {
+        expect(error).toBeInstanceOf(NotFoundError);
+        expect((error as NotFoundError).hint()).toContain("akm index");
+      }
+    }
   });
 });
 

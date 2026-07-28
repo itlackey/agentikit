@@ -44,7 +44,8 @@
  * Run lease (redesign addendum, R2): exactly one engine invocation drives a
  * run at a time. The lease (random holder id + 90s expiry on the run row) is
  * acquired before any dispatch, renewed between steps, and released in a
- * `finally`; a second `workflow run` on a live-leased run refuses up front,
+ * `finally` unless a failed run retains it as forensic state; a second
+ * `workflow run` on a live-leased run refuses up front,
  * and an expired lease is claimable (crash recovery). While the lease is
  * live, manual `workflow complete` is refused too — the engine owns the
  * spine while driving (enforced inside `completeWorkflowStep`).
@@ -414,7 +415,6 @@ async function driveRun(
   heartbeat: LeaseHeartbeat | undefined,
 ): Promise<RunWorkflowResult> {
   let next = initial;
-
   // A terminal (completed) run is a PURE no-op. `runWorkflowSteps` already
   // skipped lease acquisition for a done run (`leased = !next.done`), and this
   // path must ALSO refuse to read the journal or load/integrity-check the
@@ -621,6 +621,7 @@ async function driveRun(
             }
           : await executeStepPlan(stepPlan, {
               runId: next.run.id,
+              leaseHolder,
               workflowRef: next.run.workflowRef,
               params: next.run.params ?? {},
               evidence,

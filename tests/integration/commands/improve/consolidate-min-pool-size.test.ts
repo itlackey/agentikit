@@ -21,13 +21,16 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmHealth } from "../../../../src/commands/health";
+import type { AkmConsolidateOptions } from "../../../../src/commands/improve/consolidate";
 import { akmImprove } from "../../../../src/commands/improve/improve";
 import type { AkmConfig } from "../../../../src/core/config/config";
 import { saveConfig } from "../../../../src/core/config/config";
 import { readEvents } from "../../../../src/core/events";
 import { akmIndex } from "../../../../src/indexer/indexer";
+import { _setChatCompletionForTests } from "../../../../src/llm/client";
 import { withImproveAutonomy, withTestImproveLlm } from "../../../_helpers/improve-config";
 import { type Cleanup, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
+import { overrideSeam } from "../../../_helpers/seams";
 
 const TIMEOUT_MS = 20_000;
 
@@ -57,11 +60,15 @@ function configWithMinPoolSize(minPoolSize: number): AkmConfig {
 }
 
 /** Drive an improve(memory) run with no LLM connection configured. */
-async function runImprove(config: AkmConfig): Promise<void> {
-  await akmImprove({
+async function runImprove(
+  config: AkmConfig,
+  consolidateOptions?: AkmConsolidateOptions,
+): Promise<Awaited<ReturnType<typeof akmImprove>>> {
+  return akmImprove({
     scope: "memory",
     config,
     stashDir,
+    consolidateOptions,
     ensureIndexFn: async () => false,
     reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
   });
@@ -146,6 +153,70 @@ describe("#553 consolidate minPoolSize guard", () => {
     },
     TIMEOUT_MS,
   );
+
+  test("advisory actionable operations do not advance the consolidation watermark", async () => {
+    writeMemory(
+      "primary",
+      "A substantive primary memory that remains unchanged while its proposed merge awaits review. Its promotion proposal may succeed, but that cannot complete the pending merge.",
+    );
+    writeMemory(
+      "secondary",
+      "A substantive secondary memory that remains unchanged while its proposed merge awaits review.",
+    );
+    await akmIndex({ stashDir, full: true });
+    overrideSeam(_setChatCompletionForTests, async () =>
+      JSON.stringify({
+        operations: [
+          {
+            op: "promote",
+            ref: "memories/primary",
+            knowledgeRef: "knowledge/primary-guidance",
+            reason: "Stable guidance",
+            description: "Stable primary guidance awaiting review.",
+          },
+          {
+            op: "merge",
+            primary: "memories/primary",
+            secondaries: ["memories/secondary"],
+            mergeStrategy: "combine",
+          },
+        ],
+      }),
+    );
+
+    const result = await runImprove(configWithMinPoolSize(0));
+
+    expect(result.consolidation?.promoted).toHaveLength(1);
+    expect(readEvents({ type: "consolidate_completed" }).events).toEqual([]);
+  });
+
+  test("failed promotion proposal emission does not advance the consolidation watermark", async () => {
+    writeMemory(
+      "primary",
+      "A substantive memory whose promotion must remain retryable when proposal persistence is temporarily unavailable.",
+    );
+    await akmIndex({ stashDir, full: true });
+    overrideSeam(_setChatCompletionForTests, async () =>
+      JSON.stringify({
+        operations: [
+          {
+            op: "promote",
+            ref: "memories/primary",
+            knowledgeRef: "knowledge/primary-guidance",
+            reason: "Stable guidance",
+            description: "Stable primary guidance awaiting review.",
+          },
+        ],
+      }),
+    );
+    const unusableDbPath = path.join(stashDir, "proposal-db-directory");
+    fs.mkdirSync(unusableDbPath);
+
+    const result = await runImprove(configWithMinPoolSize(0), { proposalsCtx: { dbPath: unusableDbPath } });
+
+    expect(result.consolidation?.failedPromotions).toBe(1);
+    expect(readEvents({ type: "consolidate_completed" }).events).toEqual([]);
+  });
 
   test(
     "health surfaces pool_below_min_size in improve skip-reason aggregation",

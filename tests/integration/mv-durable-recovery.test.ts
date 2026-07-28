@@ -137,7 +137,7 @@ describe("mv durable journal crash recovery", () => {
       .all() as Array<{ asset_ref: string; retrieval_count: number }>;
     after.close();
     expect(rows).toEqual([{ asset_ref: "stash//memories/crash-after-state-new", retrieval_count: 9 }]);
-    const events = readEvents({ type: "mv", ref: "memories/crash-after-state-new" }).events;
+    const events = readEvents({ type: "mv", ref: "stash//memories/crash-after-state-new" }).events;
     expect(events).toHaveLength(1);
   });
 
@@ -148,7 +148,7 @@ describe("mv durable journal crash recovery", () => {
 
     const trigger = await runCliCapture(["mv", "memories/mv-event-recovery-trigger", "mv-event-recovery-trigger-new"]);
     expect(trigger.code).toBe(0);
-    const events = readEvents({ type: "mv", ref: "memories/crash-after-mv-event-new" }).events;
+    const events = readEvents({ type: "mv", ref: "stash//memories/crash-after-mv-event-new" }).events;
     expect(events).toHaveLength(1);
   });
 

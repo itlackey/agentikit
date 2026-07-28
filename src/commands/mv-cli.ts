@@ -898,9 +898,11 @@ function persistMoveEvent(journal: TxnJournal<MvTxnPayload>): void {
       insertEventOnce(db, {
         eventType: "mv",
         ts: p.eventTs,
-        ref: p.toRef,
+        ref: `${p.sourceName}//${p.toRef}`,
         metadata: {
           ...p.eventMetadata,
+          from: `${p.sourceName}//${p.fromRef}`,
+          to: `${p.sourceName}//${p.toRef}`,
           mutationTransactionId: journal.transactionId,
         },
         idempotencyKey: journal.transactionId,
@@ -947,7 +949,7 @@ async function finalizeMoveTransaction(txn: MvTxn): Promise<{
       if (citer.absPath === p.oldPath || citer.absPath === p.twinOldPath) continue;
       touched.add(citer.absPath);
     }
-    if (!(await indexWrittenAssets(stashDir, [...touched], { recoverMoves: false }))) {
+    if (!(await indexWrittenAssets(stashDir, [...touched], { recoverMoves: false, bundleId: p.sourceName }))) {
       utilityPreserved = false;
       warnings.push("write-path index refresh failed; the derived index will heal on the next full index");
     }
@@ -1013,6 +1015,7 @@ function assertMoveTargetWritable(
 function resolveMoveSourceIdentity(
   configuredSources: ReturnType<typeof resolveSourceEntries>,
   stashDir: string,
+  defaultBundle?: string,
 ): string {
   const primarySource = configuredSources.find((entry) => path.resolve(entry.path) === path.resolve(stashDir));
   // An explicit `AKM_STASH_DIR` override is a supported CI/scripting entry
@@ -1020,7 +1023,7 @@ function resolveMoveSourceIdentity(
   // Throwing here would break every `mv` under the override; fall back to the
   // durable name the pre-0.9.0 implementation used so stored rows keep the
   // same identity they had before.
-  return primarySource?.registryId ?? DEFAULT_MOVE_SOURCE_NAME;
+  return primarySource?.registryId ?? defaultBundle ?? DEFAULT_MOVE_SOURCE_NAME;
 }
 
 // ── Command ───────────────────────────────────────────────────────────────────
@@ -1168,7 +1171,7 @@ export const mvCommand = defineJsonCommand({
         (candidate) => path.resolve(candidate.path) === path.resolve(stashDir),
       );
       assertMoveTargetWritable(sourceOwner, stashDir, config.defaultBundle);
-      const durableSourceName = resolveMoveSourceIdentity(configuredSources, stashDir);
+      const durableSourceName = resolveMoveSourceIdentity(configuredSources, stashDir, config.defaultBundle);
       await recoverInterruptedMoveTransactions(stashDir);
       const typeDir = stashDirFor(source.type) as string;
       const typeRoot = path.join(stashDir, typeDir);

@@ -371,7 +371,7 @@ describe("chatCompletion error redaction", () => {
       return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
         headers: { "Content-Type": "application/json" },
       });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     try {
       const config: LlmConnectionConfig = {
         endpoint: "http://localhost:0/v1/chat/completions",
@@ -402,7 +402,7 @@ describe("chatCompletion error redaction", () => {
           once: true,
         });
       });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     try {
       const config: LlmConnectionConfig = {
         endpoint: "http://localhost:0/v1/chat/completions",
@@ -495,8 +495,8 @@ describe("chatCompletion direct HTTP timeout and abort semantics", () => {
         { timeoutMs: null, signal: controller.signal },
       );
       setTimeout(() => controller.abort(), 5);
-      await expect(pending).rejects.toMatchObject({ code: "network_error" });
-      await expect(pending).rejects.toThrow("Request aborted");
+      await expect(pending).rejects.toMatchObject({ code: "aborted" });
+      await expect(pending).rejects.toThrow("request aborted");
     } finally {
       server.stop(true);
     }
@@ -741,7 +741,7 @@ describe("chatCompletion single bounded retry", () => {
         if (!signal) return;
         signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
       });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     let retries = 0;
     let caught: LlmCallError | undefined;
     try {
@@ -900,6 +900,76 @@ describe("chatCompletion single bounded retry", () => {
     }
     expect(observedMs).toBeGreaterThanOrEqual(200);
     expect(observedMs).toBeLessThan(800);
+  });
+
+  test("caller cancellation during retry backoff is classified as aborted and prevents retry", async () => {
+    const originalFetch = globalThis.fetch;
+    const controller = new AbortController();
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response("temporary", { status: 500 });
+    }) as unknown as typeof fetch;
+    try {
+      const result = chatCompletion(baseConfig, [{ role: "user", content: "hi" }], {
+        signal: controller.signal,
+        sleep: async () => {
+          controller.abort();
+        },
+      } as RetryTestOptions);
+      await expect(result).rejects.toMatchObject({ code: "aborted" });
+      expect(calls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("caller cancellation remains active while reading the response body", async () => {
+    const originalFetch = globalThis.fetch;
+    const controller = new AbortController();
+    globalThis.fetch = (async () =>
+      new Response(
+        new ReadableStream({
+          start(stream) {
+            stream.enqueue(new TextEncoder().encode('{"choices":['));
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as unknown as typeof fetch;
+    try {
+      const pending = chatCompletion(baseConfig, [{ role: "user", content: "hi" }], {
+        signal: controller.signal,
+      });
+      setTimeout(() => controller.abort(), 5);
+      await expect(pending).rejects.toMatchObject({ code: "aborted" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("one attempt timeout is shared by response headers and body", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return new Response(
+        new ReadableStream({
+          async start(stream) {
+            await new Promise((resolve) => setTimeout(resolve, 40));
+            stream.enqueue(
+              new TextEncoder().encode(JSON.stringify({ choices: [{ message: { content: "too late" } }] })),
+            );
+            stream.close();
+          },
+        }),
+      );
+    }) as unknown as typeof fetch;
+    try {
+      await expect(
+        chatCompletion(baseConfig, [{ role: "user", content: "hi" }], { timeoutMs: 50 }),
+      ).rejects.toMatchObject({ code: "timeout" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

@@ -35,7 +35,7 @@ Useful for streaming consumption by scripts or agents.
 ### `--format md` and `--format html`
 
 `json`, `jsonl`, and `yaml` serialize the result envelope; `text`, `md`, and
-`html` render it. Every command supports all six.
+`html` render it. Every result-envelope command supports all six.
 
 A command may register a renderer for a document format when it has something
 better to say than the generic one: `akm health --group-by run --format md`
@@ -49,8 +49,8 @@ self-contained document with no external references, so it can be redirected to
 a file and opened directly.
 
 A small set of commands is **format-exempt** because their output is not a
-result envelope at all — `completions`, the interactive `setup` wizard,
-child-process passthrough (`env run`, `secret run`, `agent`, and `migrate`
+result envelope at all — `completions`, child-process passthrough (`env run`,
+`secret run`, and `migrate`
 `status`/`apply`, which spawn the standalone migration tool and print its
 fixed JSON verbatim), document payloads (`hints`, `workflow template`,
 `help migrate`), and `env path` (a bare filesystem path is the payload, the
@@ -58,6 +58,10 @@ documented shell-substitution primitive — wrapping it in an envelope would
 break `$(akm env path <ref>)` substitutions). Passing `--format` to one of
 those **warns on stderr** and is otherwise ignored; the exempt set is declared
 in `src/output/format-exempt.ts`.
+
+Scripted `setup` modes emit a normal format-aware result. Interactive `setup`
+is a terminal UI and emits no result document. `agent` leaves inherited child
+streams raw, then formats its final `agent-result` envelope normally.
 
 ### `--shape=agent`
 
@@ -88,14 +92,14 @@ Every command exits with one of the following codes:
 | Exit code | Meaning | Error class |
 | --- | --- | --- |
 | 0 | Success | — |
-| 1 | Not found or general error | `NotFoundError`, other |
+| 1 | Not found or command-reported failure | `NotFoundError`, command result |
 | 2 | Usage / bad input | `UsageError` |
 | 4 | Health warning (`akm health` only) | — |
+| 70 | Internal / unclassified error | unexpected throw |
 | 78 | Configuration error | `ConfigError` |
 
-On failure, every command emits a JSON error envelope on **stderr** before
-exiting; stdout is left empty (or contains only command-specific side-effect
-output such as a direct path from `env path`):
+Failures classified by akm emit a JSON error envelope on **stderr** before
+exiting; stdout is normally left empty:
 
 ```json
 {"ok": false, "error": "<message>", "hint": "<optional hint>"}
@@ -105,6 +109,12 @@ The `hint` field is present only when actionable remediation is available
 (e.g. a suggested flag or alternate command). Agents should check
 `ok === false` on the parsed stderr envelope or a non-zero exit code to
 detect failure. Scripts can rely on the exit code alone.
+
+`env run`, `secret run`, and `migrate` preserve the spawned process's exact
+status and raw streams instead of replacing them with an akm failure envelope.
+`tasks run` maps task status to 0 or 1 while retaining a command child's exact
+status in `result.detail.exitCode`. `agent` maps a failed dispatch to 1 while
+retaining the child status in its formatted result envelope.
 
 ## Commands
 
@@ -2138,7 +2148,10 @@ akm agent --engine opencode --model opencode/claude-opus-4-7 --prompt "audit the
 
 Returns `{ ok, exitCode, stdout?, stderr?, durationMs, reason? }`. On
 failure, `reason` is one of `timeout | spawn_failed | non_zero_exit |
-parse_error`.
+parse_error`. Captured dispatches render this final envelope using the selected
+akm format. Interactive child stdout/stderr remain inherited and raw. A failed
+dispatch exits 1; `exitCode` in the envelope retains the child's exact status
+when one exists.
 
 ### extract
 
@@ -2235,7 +2248,6 @@ akm improve canary --refresh           # mint a new canary set, deactivating the
 | `--target` | Select the proposal/write target; when the ref scope is bundle-qualified, it must name the same bundle |
 | `--limit <n>` | Maximum number of assets to process (highest utility first) |
 | `--timeout-ms <ms>` | Wall-clock budget for the run (default: `7200000` = 2 hours) |
-| `--consolidate-recovery <abort|clean>` | Handle stale consolidate journal by aborting (default) or cleaning stale artifacts |
 | `--require-feedback-signal` | Only process assets with recent feedback signals |
 | `--strategy <name>` | Override the active improve strategy (a built-in or entry under `improve.strategies`) |
 | `--json-to-stdout` | Also emit the full persisted JSON result on stdout for a live run. Without this flag, stdout stays empty. Dry-runs always emit their result and are never persisted. |
@@ -2328,8 +2340,9 @@ New qualified proposals record their destination source name and materialized
 root. `proposal diff`, `accept`, and `revert` use that recorded target by
 default; an explicit `--target` must resolve to the same source and root or the
 command fails with exit 2. An unbound proposal in a selected non-primary queue
-uses that queue root by default. Historical unbound proposals otherwise retain
-normal write-target fallback and may still use an explicit target.
+uses that authenticated queue root. A short historical unbound proposal
+mutation requires either an explicit `--target` or a selected `--queue` that
+authenticates its root; it never falls back to an ambient write target.
 
 #### proposal list
 

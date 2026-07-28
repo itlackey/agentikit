@@ -8,9 +8,7 @@
  * `tasks doctor` is where an operator checks what a scheduled `akm improve` will
  * actually do. Two requirements follow from that:
  *
- *  1. It must list the lanes the gate is suppressing. A scheduled run that
- *     quietly stopped consolidating is exactly the silent no-op D8 forbids, and
- *     doctor is the surface where someone would look for the explanation.
+ *  1. It must list the lanes the gate is suppressing.
  *  2. Its existing `improveTriage.applyMode` must report the EFFECTIVE mode, not
  *     the strategy's raw value. It resolved the raw strategy before D8, so a
  *     `promote` strategy under a review-first config would have reported
@@ -55,14 +53,11 @@ describe("tasks doctor autonomy reporting", () => {
 
     expect(result.improveAutonomy?.enabled).toBe(false);
     expect(result.improveAutonomy?.configKey).toBe(IMPROVE_AUTONOMY_CONFIG_KEY);
-    expect(result.improveAutonomy?.gatedLanes.map((lane) => lane.lane).sort()).toEqual([
-      "consolidate",
-      "memoryCleanup",
-    ]);
+    expect(result.improveAutonomy?.gatedLanes.map((lane) => lane.lane)).toEqual(["memoryCleanup"]);
     expect(result.improveAutonomy?.gatedLanes.every((lane) => lane.reason.length > 0)).toBe(true);
   });
 
-  test("reports contradiction only when the selected strategy enables its pass", async () => {
+  test("does not report advisory consolidation operations as gated writers", async () => {
     saveConfig({
       semanticSearchMode: "off",
       defaults: { improveStrategy: "contradiction-report" },
@@ -88,11 +83,7 @@ describe("tasks doctor autonomy reporting", () => {
 
     const result = await akmTasksDoctor();
 
-    expect(result.improveAutonomy?.gatedLanes.map((lane) => lane.lane).sort()).toEqual([
-      "consolidate",
-      "contradiction",
-      "memoryCleanup",
-    ]);
+    expect(result.improveAutonomy?.gatedLanes.map((lane) => lane.lane)).toEqual(["memoryCleanup"]);
   });
 
   test("reports autonomy on with no gated lanes", async () => {

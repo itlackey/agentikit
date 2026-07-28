@@ -8,6 +8,44 @@ import { openStateDatabase } from "../src/core/state-db";
 import { recordImproveRun } from "../src/storage/repositories/improve-runs-repository";
 
 describe("health v3 strategy metrics", () => {
+  test("sums retry attempts for memory inference and graph extraction across runs", () => {
+    const db = openStateDatabase();
+    try {
+      const clock = Date.now();
+      for (const [i, retryAttempts] of [2, 3].entries()) {
+        const now = new Date(clock + i).toISOString();
+        recordImproveRun(db, {
+          id: `retry-metric-${i}`,
+          startedAt: now,
+          completedAt: now,
+          stashDir: "/tmp/stash",
+          dryRun: false,
+          strategy: "nightly",
+          scopeMode: "all",
+          scopeValue: null,
+          guidance: null,
+          ok: true,
+          result: {
+            schemaVersion: 2,
+            ok: true,
+            strategy: "nightly",
+            scope: { mode: "all" },
+            dryRun: false,
+            memorySummary: { eligible: 0, derived: 0 },
+            plannedRefs: [],
+            memoryInference: { retryAttempts },
+            graphExtraction: { telemetry: { retryAttempts } },
+          } as never,
+        });
+      }
+      const metrics = summarizeImproveRuns(db, new Date(clock - 60_000).toISOString()).metrics;
+      expect(metrics.memoryInference.retryAttempts).toBe(5);
+      expect(metrics.graphExtraction.retryAttempts).toBe(5);
+    } finally {
+      db.close();
+    }
+  });
+
   test("reads strategyFilteredRefs from v2 improve results", () => {
     const db = openStateDatabase();
     try {

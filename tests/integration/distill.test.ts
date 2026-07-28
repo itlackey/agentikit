@@ -387,6 +387,10 @@ describe("akmDistill — feature gate", () => {
 
   test("explicit `distill: false` → also config_disabled, NO event emitted", async () => {
     const stash = makeStashDir();
+    const inputPath = path.join(stash, "skills", "deploy.md");
+    const original = "---\ndescription: Deploy safely\n---\n\nUse the checklist.\n";
+    fs.writeFileSync(inputPath, original);
+    let lookups = 0;
     const result = await akmDistill({
       ref: "skills/deploy",
       config: configDisabled(stash),
@@ -394,10 +398,15 @@ describe("akmDistill — feature gate", () => {
       chat: async () => {
         throw new Error("chat must not be called when gate is disabled");
       },
-      lookupFn: noopLookup,
+      lookupFn: async () => {
+        lookups += 1;
+        return inputPath;
+      },
       readEventsFn: emptyEvents,
     });
     expect(result.outcome).toBe("config_disabled");
+    expect(lookups).toBe(0);
+    expect(fs.readFileSync(inputPath, "utf8")).toBe(original);
     expect(listProposals(stash)).toEqual([]);
 
     const { events } = readEvents({ type: "distill_invoked" });

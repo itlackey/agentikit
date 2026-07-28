@@ -20,7 +20,11 @@ import os from "node:os";
 import path from "node:path";
 import { drainProposals } from "../../src/commands/proposal/drain";
 import { PERSONAL_STASH } from "../../src/commands/proposal/drain-policies";
-import type { ProposalAcceptResult, ProposalRejectResult } from "../../src/commands/proposal/proposal";
+import {
+  akmProposalReject,
+  type ProposalAcceptResult,
+  type ProposalRejectResult,
+} from "../../src/commands/proposal/proposal";
 import {
   createProposal,
   getProposal,
@@ -142,7 +146,7 @@ describe("drainProposals records a gate decision per path (#577)", () => {
     );
   }
 
-  test("auto-accepted: deterministic accept stamps outcome=auto-accepted", async () => {
+  test("queue-mode deterministic accepts do not pre-stamp a terminal outcome", async () => {
     const stash = makeStashDir();
     const p = seed(stash, "lessons/ok", "extract", VALID_LESSON);
 
@@ -153,23 +157,48 @@ describe("drainProposals records a gate decision per path (#577)", () => {
     );
 
     const decision = getProposal(stash, p.id).gateDecision;
-    expect(decision?.outcome).toBe("auto-accepted");
-    expect(decision?.gate).toBe("triage:personal-stash");
+    expect(decision).toBeUndefined();
   });
 
-  test("auto-rejected: empty diff stamps outcome=auto-rejected reason=empty-diff", async () => {
+  test("a mocked empty-diff rejection does not pre-stamp a terminal outcome", async () => {
     const stash = makeStashDir();
     const p = seed(stash, "lessons/empty", "reflect", EMPTY_LESSON);
+    const rejectFn = fakeReject();
 
     await drainProposals(
       { stashDir: stash, policy: PERSONAL_STASH, applyMode: "queue", maxAccepts: 25, dryRun: false },
       fakeAccept(),
-      fakeReject(),
+      rejectFn,
     );
 
     const decision = getProposal(stash, p.id).gateDecision;
-    expect(decision?.outcome).toBe("auto-rejected");
-    expect(decision?.reason).toBe("empty-diff");
+    expect(decision).toBeUndefined();
+    expect(rejectFn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gateDecision: {
+          outcome: "auto-rejected",
+          reason: "empty-diff",
+          gate: "triage:personal-stash",
+        },
+      }),
+    );
+  });
+
+  test("real rejection persists status, review, and gate decision together", async () => {
+    const stash = makeStashDir();
+    const p = seed(stash, "lessons/terminal-reject", "extract", EMPTY_LESSON);
+
+    await drainProposals(
+      { stashDir: stash, policy: PERSONAL_STASH, applyMode: "queue", maxAccepts: 25, dryRun: false },
+      fakeAccept(),
+      akmProposalReject,
+    );
+
+    expect(getProposal(stash, p.id)).toMatchObject({
+      status: "rejected",
+      review: { outcome: "rejected", reason: "empty diff" },
+      gateDecision: { outcome: "auto-rejected", reason: "empty-diff", gate: "triage:personal-stash" },
+    });
   });
 
   test("deferred (max-diff-lines): over-band consolidate carries the threshold", async () => {

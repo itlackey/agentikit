@@ -46,8 +46,8 @@ for await (const src of schemaGlob.scan(".")) {
 }
 
 // 5. Copy the published launchers plus the core CLI's Node-runtime entry
-//    wrapper and text-import loader hook into dist/. The akm launcher can fall
-//    back to Node; the standalone migration launcher requires Bun.
+//    wrapper and text-import loader hook into dist/. Both launchers prefer Bun
+//    and fall back to Node.
 const runtimeFiles = [
   "scripts/node-runtime/akm",
   "scripts/node-runtime/akm-migrate",
@@ -68,7 +68,7 @@ for (const entry of migrationEntrypoints) {
   await mkdir(dirname(outfile), { recursive: true });
   const result = await Bun.build({
     entrypoints: [entry],
-    target: "bun",
+    target: "node",
     outdir: dirname(outfile),
     naming: basename(outfile),
     minify: false,

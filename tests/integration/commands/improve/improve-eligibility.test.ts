@@ -20,6 +20,8 @@ import {
   buildLatestFeedbackTsMap,
   buildLatestProposalTsMap,
   collectEligibleRefs,
+  dedupeRefs,
+  resolveImproveScope,
 } from "../../../../src/commands/improve/eligibility";
 import { akmImprove } from "../../../../src/commands/improve/improve";
 import type { AssetSalienceRow } from "../../../../src/commands/improve/salience";
@@ -37,6 +39,25 @@ import { openStateDatabase } from "../../../../src/core/state-db";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { closeDatabase, openExistingDatabase } from "../../../../src/storage/repositories/index-connection";
 import { withImproveAutonomy, withTestImproveLlm } from "../../../_helpers/improve-config";
+
+describe("resolveImproveScope syntax classification", () => {
+  test("rejects colon, fragment, and malformed slash-shaped explicit refs as usage errors", () => {
+    for (const input of ["memory:old", "memories/item#section", "memories/../item"]) {
+      expect(() => resolveImproveScope(input)).toThrow(/Invalid --scope/);
+    }
+  });
+});
+
+describe("dedupeRefs durable identity", () => {
+  test("dedupes by itemRef while preserving the first display ref", () => {
+    expect(
+      dedupeRefs([
+        { ref: "lessons/first-display", itemRef: "stash//lessons/shared", reason: "scope-type" },
+        { ref: "lessons/second-display", itemRef: "stash//lessons/shared", reason: "scope-type" },
+      ]),
+    ).toEqual([{ ref: "lessons/first-display", itemRef: "stash//lessons/shared", reason: "scope-type" }]);
+  });
+});
 
 // Deterministic, strictly-ordered timestamps for signal-delta ordering.
 // These replace `await sleep(10)` between two appendEvent() calls: instead of
@@ -474,7 +495,7 @@ describe("consolidate pool-delta eligibility", () => {
       {
         eventType: "consolidate_completed",
         ref: "memories/_consolidation",
-        metadata: { processed: 1 },
+        metadata: { processed: 1, source: "stash" },
       },
       { now: () => farFutureMs },
     );
@@ -501,11 +522,11 @@ describe("consolidate pool-delta eligibility", () => {
       {
         eventType: "consolidate_completed",
         ref: "memories/_consolidation",
-        metadata: { processed: 1 },
+        metadata: { processed: 1, source: "stash" },
       },
       { now: () => new Date("2020-01-01T00:00:00.000Z").getTime() },
     );
-    writeMemory(stash, "fresh-mem", "Recent edit.");
+    writeMemory(stash, "nested/fresh-mem", "Recent nested edit.");
     await buildIndex(stash);
 
     await akmImprove({
@@ -541,7 +562,11 @@ describe("#551 consolidation reorder + adjacent-run promotion gate", () => {
     // nothing on disk is newer.
     const farFutureMs = new Date("2099-01-01T00:00:00.000Z").getTime();
     appendEvent(
-      { eventType: "consolidate_completed", ref: "memories/_consolidation", metadata: { processed: 1 } },
+      {
+        eventType: "consolidate_completed",
+        ref: "stash//memories/_consolidation",
+        metadata: { processed: 1, source: "stash" },
+      },
       { now: () => farFutureMs },
     );
 
@@ -581,7 +606,11 @@ describe("#551 consolidation reorder + adjacent-run promotion gate", () => {
     const stash = makeTempDir("akm-551-promoted-skip-");
     // Last consolidate well in the past.
     appendEvent(
-      { eventType: "consolidate_completed", ref: "memories/_consolidation", metadata: { processed: 1 } },
+      {
+        eventType: "consolidate_completed",
+        ref: "stash//memories/_consolidation",
+        metadata: { processed: 1, source: "stash" },
+      },
       { now: () => new Date("2020-01-01T00:00:00.000Z").getTime() },
     );
     // Freshly-promoted memory: file mtime is naturally newer than 2020. WITHOUT
@@ -617,7 +646,11 @@ describe("#551 consolidation reorder + adjacent-run promotion gate", () => {
   test("settled prior-run memory (no same-cohort promotion) → consolidation NOT skipped", async () => {
     const stash = makeTempDir("akm-551-settled-runs-");
     appendEvent(
-      { eventType: "consolidate_completed", ref: "memories/_consolidation", metadata: { processed: 1 } },
+      {
+        eventType: "consolidate_completed",
+        ref: "stash//memories/_consolidation",
+        metadata: { processed: 1, source: "stash" },
+      },
       { now: () => new Date("2020-01-01T00:00:00.000Z").getTime() },
     );
     // Two memories edited after the last consolidate, with NO `promoted` event

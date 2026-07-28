@@ -831,10 +831,11 @@ export function getEntriesByDir(db: Database, dirPath: string): DbIndexedEntry[]
   return parseEntryRows(rows, "getEntriesByDir");
 }
 
-export function getIndexedDirPathsWithDifferentAdapter(db: Database, stashDir: string, adapterId: string): string[] {
-  const rows = db
-    .prepare("SELECT DISTINCT dir_path FROM entries WHERE stash_dir = ? AND COALESCE(adapter_id, '') <> ?")
-    .all(stashDir, adapterId) as Array<{ dir_path: string }>;
+/** Return every directory previously indexed for one physical source root. */
+export function getIndexedDirPathsByStashDir(db: Database, stashDir: string): string[] {
+  const rows = db.prepare("SELECT DISTINCT dir_path FROM entries WHERE stash_dir = ?").all(stashDir) as Array<{
+    dir_path: string;
+  }>;
   return rows.map((row) => row.dir_path);
 }
 
