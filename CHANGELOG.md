@@ -67,6 +67,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **akm is described as a knowledge toolkit, not a package manager** (R-048).
+  The npm one-liner, the README lede, and the `concepts.md` opener all led with
+  "a package manager for AI agent capabilities", which misstates the product to
+  its distribution channel and sets package-manager expectations for verbs
+  (`update` / `upgrade` / `sync`) that don't mean what a package manager's do.
+
 - **BREAKING: a command group invoked with no subcommand is now always a usage
   error, exit 2** (owner ruling 12). The eleven `akm <group>` groups did three
   different things when invoked bare: `graph`, `config`, `env`, `secret`,
@@ -345,6 +351,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   spurious drift.
 
 ### Fixed
+
+- **Config keys named in indexer output and comments now exist.** Four sites
+  pointed at a top-level `llm.*` namespace that the config schema has no such
+  key for — including the user-facing "Increase llm.timeoutMs" warning on an
+  exceeded enrichment budget. Concurrency lives at
+  `engines.<name>.concurrency`; the enrichment budget at
+  `index.enrichment.timeoutMs` (or `index.defaults.timeoutMs`).
+
+- **The bundle-identity-drift warning stops naming a command that doesn't
+  exist.** It told users to "rekey it atomically via the bundle-rename
+  command"; 0.9.0 ships no such command. It now gives the two remedies that
+  work: restore the previous bundle id in `config.json`, or keep the new id and
+  `akm index --full` to re-mint, accepting the loss of learned state keyed to
+  the old id.
+
+- **The scaffolded `organization.md` convention no longer contradicts `akm
+  mv`.** It told authoring agents "there is no command that preserves an
+  asset's identity or learned state" across a rename and showed a raw `mv`.
+  `akm mv` does exactly that — it rewrites inbound refs and re-keys the index
+  row, usage history, and state.db salience/outcome rows. The convention now
+  points at it, flagged Experimental.
+
+- **`setup.taskSchedules` is no longer documented.** The key was removed from
+  the schema in 0.9.0 (nothing ever read or wrote it), but
+  `docs/reference/configuration.md` still described its two sub-keys.
 
 - **A freshly scaffolded stash passes its own `akm lint`.** All 12 shipped
   `facts/conventions/**` convention templates carry frontmatter but none

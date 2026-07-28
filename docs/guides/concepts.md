@@ -1,8 +1,9 @@
 # Concepts
 
-`akm` is a package manager for AI agent capabilities. It organizes scripts,
-skills, commands, agents, knowledge documents, env files, secrets, workflows,
-and memories into a searchable library that any AI coding assistant can use.
+`akm` is a knowledge toolkit for AI agents. It organizes scripts, skills,
+commands, agents, knowledge documents, env files, secrets, workflows, and
+memories into a searchable library that any AI coding assistant can use, and
+gives you the verbs to capture, curate, and share what accumulates there.
 
 ## Mental Model
 

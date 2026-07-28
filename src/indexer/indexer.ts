@@ -236,7 +236,8 @@ export function getDefaultLlmConcurrency(llmConfig?: LlmConnectionConfig): numbe
   // Remote endpoints default to a modest 2-wide pool (owner ruling 2026-07-21):
   // enough to overlap request latency without hammering rate-limited APIs.
   // Local model servers stay at 1 (single loaded model; parallel requests
-  // trigger reload thrash). `llm.concurrency` in config.json overrides both.
+  // trigger reload thrash). `engines.<name>.concurrency` in config.json
+  // overrides both — there is no top-level `llm` namespace.
   return 2;
 }
 
@@ -1684,9 +1685,10 @@ async function enhanceDirsWithLlm(
     return sum + entriesToEnhance.length;
   }, 0);
 
-  // P3 — wall-clock budget for the enrichment pass. Defaults to llm.timeoutMs
-  // (or 10 minutes if not set). Users can extend this via llm.timeoutMs in
-  // config — no separate knob needed.
+  // P3 — wall-clock budget for the enrichment pass. Defaults to the resolved
+  // engine's timeoutMs (or 10 minutes if not set). Users can extend it via
+  // `index.enrichment.timeoutMs` (or `index.defaults.timeoutMs`, or the
+  // engine's own `engines.<name>.timeoutMs`) — no separate knob needed.
   const enrichDeadline = createEnrichmentDeadline(llmConfig.timeoutMs, totalEntries);
   let deadlineHit = false;
   const enrichSignal: AbortSignal = (() => {
@@ -1826,7 +1828,7 @@ async function enhanceDirsWithLlm(
       },
       // Defaults: 2 for remote LLM APIs, 1 for local model servers (LM
       // Studio, Ollama run one inference at a time — parallel requests cause
-      // "Model reloaded" / 500 errors). `llm.concurrency` overrides.
+      // "Model reloaded" / 500 errors). `engines.<name>.concurrency` overrides.
       getDefaultLlmConcurrency(llmConfig),
     );
   } finally {
@@ -1835,7 +1837,7 @@ async function enhanceDirsWithLlm(
 
   if (deadlineHit) {
     warn(
-      "[akm] LLM enrichment budget exceeded. Re-run `akm index` to continue. Increase llm.timeoutMs for a larger budget.",
+      "[akm] LLM enrichment budget exceeded. Re-run `akm index` to continue. Increase index.enrichment.timeoutMs for a larger budget.",
     );
   }
 

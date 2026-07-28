@@ -258,10 +258,10 @@ omitted. Per-command flags always override these.
 
 ## Setup-derived recommendations
 
-`setup.taskSchedules.improve` and `setup.taskSchedules.index` record the
-cron-style cadence `akm setup --reset-recommended` last recommended for the
-scheduled improve/index tasks. This is advisory metadata for the wizard;
-actual scheduling lives in the tasks subsystem (`akm tasks`).
+`setup` is reserved for configuration derived by `akm setup`. It currently
+holds no keys — the `setup.taskSchedules` sub-key was removed in 0.9.0 after
+nothing in the setup flow or the tasks subsystem was found to read or write
+it. Scheduling lives in the tasks subsystem (`akm tasks`).
 
 ## Experimental opt-ins
 
