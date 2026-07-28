@@ -107,9 +107,10 @@ Fixture refs worth using throughout this doc:
 
 ## 4. First-Run Surface
 
-- [ ] `akm info` returns JSON with `schemaVersion`, `version`, `assetTypes`,
-      `searchModes`, `semanticSearch`, `registries`, `sourceProviders`, and
-      `indexStats`.
+- [ ] `akm info` returns JSON with `schemaVersion`, `version`, `stashDir`,
+      `defaultBundle`, `assetTypes`, `searchModes`, `semanticSearch`,
+      `registries`, `sourceProviders`, and `indexStats` (incl. `byType`, a
+      per-asset-type breakdown of `entryCount`).
 - [ ] `akm config list` emits `sources`, not legacy `stashes`, for current
       persisted config.
 - [ ] `akm config path --all` returns sandbox-local paths only.
@@ -118,10 +119,11 @@ Fixture refs worth using throughout this doc:
 - [ ] `akm --help` lists the current command surface:
       `setup`, `init`, `index`, `health`, `info`, `graph`, `add`, `list`,
       `remove`, `update`, `upgrade`, `search`, `curate`, `show`, `workflow`,
-      `remember`, `import`, `sync`, `clone`, `registry`, `config`, `feedback`,
-      `history`, `log`, `agent`, `lessons`, `lint`, `improve`, `extract`,
-      `propose`, `proposal`, `help`, `hints`, `completions`, `env`, `secret`,
-      `wiki`, `tasks`.
+      `remember`, `import`, `sync`, `clone`, `mv`, `registry`, `migrate`,
+      `config`, `feedback`, `history`, `log`, `agent`, `lessons`, `lint`,
+      `improve`, `extract`, `propose`, `proposal`, `help`, `hints`,
+      `completions`, `env`, `secret`, `tasks`. There is no `wiki` command
+      (removed in 0.9.0 in favor of the `llm-wiki` bundle format).
 - [ ] `akm config enable` and `akm config disable` fail as unknown subcommands
       (removed in 0.9.0 — use `akm registry add|remove`).
 - [ ] `akm upgrade --check` returns structured version/install-method info and
@@ -398,34 +400,34 @@ Workflows now include authoring, validation, execution, and recovery flows.
 
 ---
 
-## 12. Wiki
+## 12. LLM Wiki (bundle format, no dedicated command family)
 
-- [ ] `akm wiki list` is empty initially.
-- [ ] `akm wiki create my-wiki` scaffolds the wiki.
-- [ ] `akm wiki list` shows `my-wiki` with counts.
-- [ ] `akm wiki show my-wiki` returns path, counts, and recent log entries.
-- [ ] Add one markdown page under the wiki dir and confirm `akm wiki pages my-wiki`
-      lists it.
-- [ ] `akm wiki search my-wiki <term-from-page>` returns only page hits from
-      that wiki.
-- [ ] `echo "# Raw source" | akm wiki stash my-wiki - --as raw-source` creates a
-      raw source file.
-- [ ] `akm wiki stash my-wiki http://127.0.0.1:<port>/paper` fetches one URL and
-      writes converted markdown into `wikis/my-wiki/raw/` without crawling.
-- [ ] Re-running the same explicit slug with `--as raw-source` fails rather than
-      overwriting.
-- [ ] `akm wiki ingest my-wiki` dispatches the configured agent engine (from
-      `defaults.engine` or `--engine`) to execute the ingest workflow. Without
-      an accessible engine it fails with a clear `UsageError` pointing at
-      `engines`.
-- [ ] `akm wiki lint my-wiki` returns deterministic findings or a clean pass;
-      findings may exit non-zero but should still be structured and not crash.
-- [ ] `akm show my-wiki//pages/<page-slug>` renders a wiki page with the
-      standard `akm show` machinery (toc / section / lines / frontmatter views).
-- [ ] `akm wiki remove my-wiki -y` removes the wiki.
+**[0.9.0 change]** The `akm wiki` command family (`list`/`create`/`show`/
+`pages`/`search`/`stash`/`lint`/`ingest`/`remove`) was removed in the
+0.9.0 bundle-adapter cutover. A wiki is now a plain bundle recognized
+deterministically at install/index time by the `llm-wiki` adapter — a bundle
+component whose root holds `schema.md` plus a `pages/` directory. There is
+no `akm wiki` subcommand to test; verify the adapter surface instead:
 
-`wiki register` should only be tested against disposable paths or repos. Do not
-register a real long-lived knowledge repo unless you intend to exercise it.
+- [ ] A directory with `schema.md` + `pages/<page>.md` + `raw/<source>.md`,
+      registered as a `bundles` entry (or installed via `akm add`), is
+      recognized as an `llm-wiki` component on `akm index --full` — no
+      manual registration step beyond the normal bundle config/install.
+- [ ] `akm search <term-from-a-page>` returns the page as a hit (its `type`
+      is the page's `pageKind`, default `note`, not `wiki`).
+- [ ] `akm search <term-from-a-raw-source>` also returns a hit — `raw/**.md`
+      files are indexed as first-class `wiki-source` documents, not just
+      structural inputs.
+- [ ] `akm show <bundle>//pages/<page-slug>` renders the page with the
+      standard `akm show` machinery (`#fragment` section addressing, not the
+      removed `toc`/`section`/`lines`/`frontmatter` view-mode grammar).
+- [ ] `akm show <bundle>//raw/<slug>` renders the raw source directly.
+- [ ] Page writes (create/append/xref/log) use the agent's native file-write
+      tools, not an akm command — akm's role here is recognition and
+      discovery only. No LLM calls or network access happen anywhere in this
+      surface.
+
+See [Wikis](../../guides/wikis.md) for the full page/raw/schema model.
 
 ---
 
@@ -655,8 +657,6 @@ checklist did not exercise.
 
 - [ ] `akm remember "note" --target <stash>` writes to the named target.
 - [ ] `akm import ./file.md --target <stash>` writes to the named target.
-- [ ] `akm wiki stash <wiki> ./page.md --target <stash>` writes to the named
-      target.
 - [ ] Legacy `--stash` on any of the above is rejected with a structured
       usage error.
 

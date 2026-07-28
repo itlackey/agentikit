@@ -232,8 +232,9 @@ boundary, which stages and commits only those files (so unrelated staged work,
 including work under the same asset directory, is not included). Improve
 auto-sync similarly subtracts the Git dirty-path baseline captured at invocation
 start. Push remains gated on `writable && hasRemote && push !== false`. The old
-per-asset commit/push path (`options.pushOnCommit`) is deprecated and no longer
-commits per asset.
+per-asset commit/push path (`options.pushOnCommit`) is **hard-rejected** at
+config load — not merely deprecated — by a `superRefine` on the bundle/source
+schema (`src/core/config/schema/sources-bundles.ts`).
 
 `writable` is a config flag, not an interface concern. Defaults: `true` for
 `filesystem`, `false` for everything else. `writable: true` on `website` or
@@ -291,19 +292,19 @@ lives in `src/registry/providers/types.ts`:
 ```ts
 interface RegistryProvider {
   readonly type: string;            // "static-index" | "skills-sh"
-  search(options): Promise<RegistryProviderResult>;
-  searchKits(q): Promise<KitResult[]>;
-  searchAssets?(q): Promise<AssetPreview[]>;
-  getKit(id): Promise<KitManifest | null>;
-  canHandle(ref: ParsedRegistryRef): boolean;
+  search(options: RegistryProviderSearchOptions): Promise<RegistryProviderResult>;
 }
 ```
+
+The contract is a single `search()` method — the orchestrator's only entry
+point. Implementations must never throw; errors are returned as
+`warnings[]` on the result.
 
 Built-in registries:
 
 | Kind | Role |
 | --- | --- |
-| `static-index` | Reads the v2 JSON index schema (official akm registry, team mirrors). |
+| `static-index` | Reads the v2 or v3 JSON index schema, same `stashes[]` wire format (official akm registry, team mirrors). `akm registry build-index` emits v3; the live official registry currently publishes v2. |
 | `skills-sh` | Wraps the skills.sh REST API. |
 
 Context Hub is **not** a registry provider type. It is just a recommended git
@@ -487,7 +488,7 @@ async execution context; unrelated work and child processes remain excluded.
 | `src/commands/tasks/` | scheduled-task command surface |
 | `src/commands/agent/` | contribute/agent command surface |
 | `src/registry/providers/` | registry provider implementations (static-index, skills-sh) |
-| `src/output/shapes/`, `src/output/text/` | JSON-envelope and text-output registries per command (#490; replaces the old `renderers.ts`) |
+| `src/output/shapes/`, `src/output/text/` | JSON-envelope and text-output registries per command (#490) — a parallel concern to `src/output/renderers.ts`'s per-asset-type `show` renderers, which is still live and self-registering, not replaced |
 | `src/workflows/authoring/` | workflow authoring + scope-key helpers |
 | `src/workflows/runtime/runs.ts` | workflow run persistence (raw SQL lives in `src/storage/repositories/workflow-runs-repository.ts`) |
 | `src/workflows/runtime/` | run lifecycle: runs, checkin, document-cache, agent-identity |

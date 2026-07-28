@@ -196,7 +196,7 @@ For `skills/*` refs, reflect also reviews related distilled lessons as consolida
 
 **Internal steps:**
 
-1. Validate the input ref shape (`parseAssetRef`).
+1. Validate the input ref shape (`parseRefInput`, `src/core/asset/resolve-ref.ts`).
 2. Best-effort load asset content via `lookupFn` (defaults to indexer `lookup`).
 3. Read feedback events via `readEvents({ ref, type: "feedback" })`. Apply `excludeFeedbackFromRefs` filtering before the LLM sees the events.
 4. Memory promotion fast path: when `proposalKind` is `"auto"` or `"knowledge"` and `assessMemoryKnowledgePromotionCandidate` returns `promote: true`, create a `knowledge:` proposal immediately without an LLM call.

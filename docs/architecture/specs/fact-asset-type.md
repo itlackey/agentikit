@@ -111,7 +111,7 @@ search hints (no new DB columns or `StashEntry` fields):
 | --- | --- |
 | Type spec | `PLACEMENT_SPECS` in `src/core/asset/asset-placement.ts` — `fact: { stashDir: "facts", ...markdownSpec }` |
 | Renderer + action | `TYPE_PRESENTATION` in `src/core/type-presentation.ts` (supersedes the earlier `TYPE_TO_RENDERER`/`ACTION_BUILDERS` split) |
-| Renderer + metadata | `src/output/renderers.ts` — `factMdRenderer`, `applyFactMetadata` |
+| Renderer + metadata | `src/output/renderers.ts` — `factMdRenderer` (frontmatter `category`/`pinned` parsed inline in `buildShowResponse`) |
 | File classification | `src/indexer/walk/matchers.ts` — `DIR_TYPE_MAP` `facts/` |
 | Ranking | `src/indexer/search/ranking-contributors.ts` — `TYPE_BOOST` + `pinnedFactRankingContributor` |
 | Lint | `factDiagnostics` in `src/core/adapter/adapters/akm-lint.ts`, called from `src/commands/lint/index.ts` (warns `missing-category` on absent/unrecognized `category`) |

@@ -98,7 +98,7 @@ bundle     := slug                      # no "/", ":", ".", "#" ; workspace bund
 conceptId  := adapter-owned path within bundle  # MAY contain "/"; MUST NOT contain "#"; opaque to the core below the first "//"
 ```
 
-Normative §11.1 rules apply verbatim: **all durable state keys store the fully-qualified `bundle//conceptId` form** (the short form is CLI sugar only); **short refs inside bundle content resolve to the containing bundle**; conceptIds are NFC-normalized, `/`-separated, byte-wise case-sensitive, with `case-collision` diagnostics; body refs in prose use only the fully-qualified anchored form. `akm bundle rename` is a first-class rekey transaction (normative §11.5).
+Normative §11.1 rules apply verbatim: **all durable state keys store the fully-qualified `bundle//conceptId` form** (the short form is CLI sugar only); **short refs inside bundle content resolve to the containing bundle**; conceptIds are NFC-normalized, `/`-separated, byte-wise case-sensitive, with `case-collision` diagnostics; body refs in prose use only the fully-qualified anchored form. `akm bundle rename` was specced as a first-class rekey transaction (normative §11.5), but the `bundle` command group itself was removed (D5, `0.9.0-decisions.md`) — no `akm bundle` subcommand exists in the shipped CLI. The startup guard that references it (`src/indexer/bundle-identity-guard.ts`) still points at a command that does not exist; see the drift register.
 
 ```
 personal//knowledge/http-caching     # bundle-qualified; "knowledge" is part of the AKM concept path
@@ -180,6 +180,18 @@ export interface BundleAdapter {
   validateMemoryPlan?(c: BundleComponent, plan: MemorySemanticPlan, changes: FileChange[]): Promise<Diagnostic[]>;
 }
 ```
+
+**Status (verified against `src/core/adapter/bundle-adapter.ts`): the 7
+OPTIONAL authoring/export/memory facet methods above (`getAuthoringContext`,
+`create`, `listExports`, `planBinding`, `listMemories`, `renderMemoryPlan`,
+`validateMemoryPlan`) are not declared on the shipped `BundleAdapter`
+interface.** They are deliberately deferred Tier-B — the referenced types
+(`AuthoringContext`, `CreateRequest`, `BundleExport`, `BindingRequest`,
+`BindingPlan`, `MemoryRecord`, `MemorySemanticPlan`) are shapeless in every
+spec doc, and the code leaves an explicit "FLAGGED for maintainer" note
+rather than committing placeholder `Record<string, unknown>` types. The
+`recognize`/`index?`/`affectedItems?`/`validate`/`placeNew?`/`directoryList?`/
+`looksLikeRoot?` methods above are shipped as declared.
 
 **Renderer/action = data table keyed on the open `type`, pointing at a named-function core module** (plan §2.3; normative §15.4). The *mapping* is data; the renderer *implementations* (env-keys-only, secret-name-only, script-exec-hints, markdown view modes, generic) remain a small static core module — env/secret redaction is existing behavior ported as code, keyed on the **adapter**, never on `type`. The table is **typed over the `KNOWN_TYPES` const tuple** so the compiler enforces an entry for every type AKM itself knows (restoring the closed union's exhaustiveness for our own tables), while lookup stays open-string with a generic fallback:
 
