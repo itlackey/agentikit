@@ -29,6 +29,7 @@ Historical review registers (0.9.0 release-review audit trail, kept for provenan
 - [0.9.0 Docs–Code Drift Register](specs/0.9.0-docs-code-drift-register.md) -- Ruled record of places documentation and code disagreed, and open-intent questions (Q-01..Q-19)
 - [0.9.0 Public API Issue Backlog](specs/0.9.0-public-api-issue-backlog.md) -- Implementation-only findings from the CLI surface review
 - [0.9.0 Release Surface Review](specs/0.9.0-release-surface-review.md) -- Reconciled action list from the end-to-end user-facing surface sweep
+- [0.9.0 Release Readiness Plan](specs/0.9.0-release-readiness-plan.md) -- Verified findings from the PR #729 readiness review and the remediation plan gating the 0.9.0 tag
 
 ## Internals (`internals/`)
 
