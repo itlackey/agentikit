@@ -15,9 +15,10 @@
  * never threaded a real accepted-change-volume signal in (the value was a
  * hardcoded 0 from the 0.9.0 confidence-gate deletion onward), so the alert
  * could never fire. See the design doc's status note for the removal
- * rationale. `improve_cycle_metrics.accepted_actions` went with it — the
- * migration squash dropped the column, since nothing deployed constrained the
- * schema.
+ * rationale. `improve_cycle_metrics.accepted_actions` stays in the schema and
+ * is written as 0: its migration body is released, and 0.8 ships `state.db`,
+ * so a deployed ledger may already have sealed that body's checksum. Editing
+ * it would fail those installs closed.
  *
  * Hard invariants: deterministic only (FTS BM25 + hashing — never an LLM,
  * never an embedding model); bounded storage (< 2 KB per qualifying cycle,
@@ -356,6 +357,9 @@ export function computeCycleMetrics(
     distinct_content_ratio: learningTotal === 0 ? 1 : contentHashes.size / learningTotal,
     mean_bigram_diversity: diversityCount === 0 ? 1 : diversitySum / diversityCount,
     over_generation_count: overGeneration,
+    // Always 0 — the CHURN alert this fed was removed. The column is NOT NULL
+    // in a released migration body, so it is written rather than dropped.
+    accepted_actions: 0,
     merge_floor_violations: args.mergeFloorViolations,
     alerts_json: "[]",
   };

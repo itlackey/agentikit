@@ -17,16 +17,13 @@
  * Also seeds a couple of NON-orphan (live) contrast rows keyed to refs that
  * match real assets shipped in the WI-0b.2 `tests/fixtures/stashes/all-types/`
  * fixture stash, so Chunk 8's quarantine logic (the `legacy_state` table it
- * populates) has both a positive (orphan -> quarantine) and negative (live ->
+ * builds) has both a positive (orphan -> quarantine) and negative (live ->
  * stays) case in one fixture.
  *
- * `legacy_state` exists (empty) in the built fixture — the W3-M migration
- * squash folds its DDL into the same single migration that creates
- * `asset_salience`/`asset_outcome`, so there is no schema state where one
- * exists without the other. This module still does NOT resurrect
- * `recombine_hypotheses` or `asset_outcome.review_pressure`: the squashed
- * schema never creates either (see the squash note atop
- * `src/core/state/migrations.ts`).
+ * Deliberately does NOT create a `legacy_state` table (Chunk 8's to build,
+ * anchors.md E.3) and does NOT resurrect `recombine_hypotheses` or
+ * `asset_outcome.review_pressure` (both dropped by migration
+ * `018-drop-dead-lane-schema` — brief trap list #6).
  *
  * This module is a deterministic BUILDER (code), not a committed binary .db
  * blob — Chunk 8 imports and runs it directly against the (then-current) real
@@ -35,7 +32,12 @@
 
 import type { Database } from "../../../src/storage/database";
 import { FIXTURE_BASE_EPOCH_MS } from "./fixed-values";
-import { insertAssetOutcomeRow, insertAssetSalienceRow, openFreshStateDb } from "./seed-rows";
+import {
+  insertAssetOutcomeRow,
+  insertAssetSalienceRow,
+  openStateDbAtCeiling,
+  PRE_CUTOVER_STATE_CEILING,
+} from "./seed-rows";
 
 /** Origin qualifier used for the origin-qualified ref shapes below. Matches
  *  the real `sourceName` value `rekeyStateDbForMove` (mv-cli.ts:898-967) uses
@@ -84,19 +86,16 @@ export const USAGE_EVENT_ORPHAN_REF = "skill:deleted-ghost";
 
 /**
  * Build the orphan-bearing state.db fixture at `dbPath`. Applies the real
- * (now single-fragment) migration chain in full, then seeds the 4-shape
- * orphan rows plus 2 live-contrast rows into both `asset_salience` and
- * `asset_outcome`. The cutover under test moves DATA (workflow.db rows,
- * usage_events, the old-ref->item_ref re-key) into the already-created
- * `legacy_state`/`workflow_runs`/etc. tables — this fixture leaves them
- * schema-only/empty, exactly the state a real pre-cutover install's state.db
- * was in by the time the cutover step ran (see the W3-M note on
- * `openFreshStateDb` in `seed-rows.ts`). Every value is a fixed literal (no
+ * migration chain up to the PRE-CUTOVER ceiling (`019-proposal-fingerprints`,
+ * via `openStateDbAtCeiling` — NOT the full live chain, so `legacy_state` /
+ * migration 020 are deliberately absent: the cutover under test is what creates
+ * them), then seeds the 4-shape orphan rows plus 2 live-contrast rows into both
+ * `asset_salience` and `asset_outcome`. Every value is a fixed literal (no
  * `Date.now()` / `Math.random()`) so the fixture is byte/row-stable across
  * builds.
  */
 export function buildOrphanBearingStateDb(dbPath: string): void {
-  const db = openFreshStateDb(dbPath);
+  const db = openStateDbAtCeiling(dbPath, PRE_CUTOVER_STATE_CEILING);
   try {
     seedOrphanRows(db);
     seedLiveContrastRows(db);

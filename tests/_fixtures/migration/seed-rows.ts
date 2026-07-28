@@ -39,30 +39,32 @@ import { runMigrations as runSqliteMigrations } from "../../../src/storage/engin
 import { applyStandardPragmas } from "../../../src/storage/sqlite-pragmas";
 
 /**
- * Open a fully-migrated state.db via the real shared migration runner (never
- * hand-written DDL — the checksum stays sealed). Caller owns the returned
- * handle (seed, then close).
- *
- * W3-M note: this fixture used to be built at an explicit PRE-CUTOVER
- * ceiling id (`019-proposal-fingerprints`, a prefix of the old 20-fragment
- * STATE_MIGRATIONS chain), one migration short of the WI-8.2 three-DB cutover
- * DDL (the old `020-three-db-cutover`) — so the cutover-apply flow under test
- * had something to apply. That distinction no longer exists: the W3-M
- * migration squash folded the whole chain (including the cutover DDL) into a
- * single fragment, so there is no schema state between "unmigrated" and
- * "fully migrated" to pin a FROM-state fixture at. This is also a MORE
- * faithful FROM-state than the old ceiling ever was: even pre-squash, the
- * real `migrate apply` flow's `state-applied` phase always ran the FULL
- * pending chain (including 020) before the `cutover-applied` phase moved any
- * data — so by the time a real cutover ran, the DDL (workflow_runs,
- * usage_events, legacy_state, …) already existed, just empty. Building this
- * fixture at "fully migrated, no cutover data yet" reproduces exactly that.
+ * The pre-cutover state.db migration ceiling: the LAST migration that existed
+ * before the WI-8.2 three-DB cutover (`020-three-db-cutover`) was appended.
+ * The rc-train / orphan FROM-state fixtures pin themselves here so they are a
+ * faithful pre-cutover snapshot — the exact ledger a real rc-train install
+ * carried before it ran `migrate apply` into the cutover. Migration 020 is then
+ * applied by the migrate-apply flow under test, never baked into the fixture.
  */
-export function openFreshStateDb(dbPath: string): Database {
+export const PRE_CUTOVER_STATE_CEILING = "019-proposal-fingerprints";
+
+/**
+ * Open a state.db migrated to an EXPLICIT ceiling migration id (a prefix of
+ * STATE_MIGRATIONS), NOT the live tip. `openStateDatabase` always applies the
+ * full live chain (which now includes the cutover DDL), so a genuine
+ * pre-cutover FROM-state fixture cannot use it. This applies exactly the prefix
+ * `[001 … ceilingId]` via the real shared migration runner (never hand-written
+ * DDL — the checksums are still sealed), leaving the DB legitimately "old"
+ * relative to the live ledger. Caller owns the returned handle (seed, then
+ * close).
+ */
+export function openStateDbAtCeiling(dbPath: string, ceilingId: string): Database {
+  const ceilingIndex = STATE_MIGRATIONS.findIndex((m) => m.id === ceilingId);
+  if (ceilingIndex < 0) throw new Error(`Unknown state.db migration ceiling "${ceilingId}"`);
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = openDatabaseFinalizing(dbPath);
   applyStandardPragmas(db, { dataDir: path.dirname(dbPath) });
-  runSqliteMigrations(db, STATE_MIGRATIONS);
+  runSqliteMigrations(db, STATE_MIGRATIONS.slice(0, ceilingIndex + 1));
   return db;
 }
 

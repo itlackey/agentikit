@@ -4,6 +4,25 @@ exports[`SQLite migration runner characterization state.db: fresh-DB migration r
 {
   "migrations": [
     "001-initial-schema",
+    "002-task-history-per-run",
+    "003-improve-runs",
+    "004-extract-sessions-seen",
+    "005-proposal-fs-imports",
+    "006-proposals-pending-ref-source",
+    "007-consolidation-judged",
+    "008-body-embeddings",
+    "009-asset-salience",
+    "010-asset-outcome",
+    "011-asset-salience-homeostatic-demoted-at",
+    "012-improve-gate-thresholds",
+    "013-extract-sessions-content-hash",
+    "014-recombine-hypotheses",
+    "015-asset-salience-encoding-source",
+    "016-collapse-churn-detector",
+    "017-improve-run-strategy",
+    "018-drop-dead-lane-schema",
+    "019-proposal-fingerprints",
+    "020-three-db-cutover",
   ],
   "schema": [
     {
@@ -95,10 +114,7 @@ exports[`SQLite migration runner characterization state.db: fresh-DB migration r
     },
     {
       "name": "idx_improve_runs_strategy_started",
-      "sql": 
-"CREATE INDEX idx_improve_runs_strategy_started
-        ON improve_runs(strategy, started_at)"
-,
+      "sql": "CREATE INDEX idx_improve_runs_strategy_started ON improve_runs(strategy, started_at)",
       "type": "index",
     },
     {
@@ -255,16 +271,14 @@ exports[`SQLite migration runner characterization state.db: fresh-DB migration r
       "name": "asset_salience",
       "sql": 
 "CREATE TABLE asset_salience (
-        asset_ref              TEXT    PRIMARY KEY,
-        encoding_salience       REAL    NOT NULL DEFAULT 0.5,
-        outcome_salience        REAL    NOT NULL DEFAULT 0.0,
-        retrieval_salience      REAL    NOT NULL DEFAULT 0.0,
-        rank_score               REAL    NOT NULL DEFAULT 0.0,
-        consecutive_no_ops       INTEGER NOT NULL DEFAULT 0,
-        updated_at                INTEGER NOT NULL DEFAULT 0,
-        homeostatic_demoted_at    INTEGER DEFAULT NULL,
-        encoding_source           TEXT    DEFAULT NULL
-      )"
+        asset_ref          TEXT    PRIMARY KEY,
+        encoding_salience  REAL    NOT NULL DEFAULT 0.5,
+        outcome_salience   REAL    NOT NULL DEFAULT 0.0,
+        retrieval_salience REAL    NOT NULL DEFAULT 0.0,
+        rank_score         REAL    NOT NULL DEFAULT 0.0,
+        consecutive_no_ops INTEGER NOT NULL DEFAULT 0,
+        updated_at         INTEGER NOT NULL DEFAULT 0
+      , homeostatic_demoted_at INTEGER DEFAULT NULL, encoding_source TEXT DEFAULT NULL)"
 ,
       "type": "table",
     },
@@ -321,8 +335,7 @@ exports[`SQLite migration runner characterization state.db: fresh-DB migration r
         proposal_count   INTEGER NOT NULL DEFAULT 0,
         rationale        TEXT,
         source_run       TEXT,
-        metadata_json    TEXT    NOT NULL DEFAULT '{}',
-        content_hash     TEXT    DEFAULT NULL,
+        metadata_json    TEXT    NOT NULL DEFAULT '{}', content_hash TEXT DEFAULT NULL,
         PRIMARY KEY (harness, session_id)
       )"
 ,
@@ -346,8 +359,20 @@ exports[`SQLite migration runner characterization state.db: fresh-DB migration r
         distinct_content_ratio  REAL    NOT NULL,
         mean_bigram_diversity   REAL    NOT NULL,
         over_generation_count   INTEGER NOT NULL,
+        accepted_actions        INTEGER NOT NULL,
         merge_floor_violations  INTEGER NOT NULL DEFAULT 0,
         alerts_json             TEXT    NOT NULL DEFAULT '[]'
+      )"
+,
+      "type": "table",
+    },
+    {
+      "name": "improve_gate_thresholds",
+      "sql": 
+"CREATE TABLE improve_gate_thresholds (
+        phase       TEXT    NOT NULL PRIMARY KEY,
+        threshold   INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
       )"
 ,
       "type": "table",
@@ -368,9 +393,8 @@ exports[`SQLite migration runner characterization state.db: fresh-DB migration r
         ok            INTEGER NOT NULL,
         result_json   TEXT    NOT NULL,
         metrics_json  TEXT,
-        metadata_json TEXT    NOT NULL DEFAULT '{}',
-        strategy      TEXT
-      )"
+        metadata_json TEXT    NOT NULL DEFAULT '{}'
+      , strategy TEXT)"
 ,
       "type": "table",
     },

@@ -30,6 +30,25 @@ import {
   sandboxXdgDataHome,
 } from "../_helpers/sandbox";
 
+const STATE_IDS = [
+  "001-initial-schema",
+  "002-task-history-per-run",
+  "003-improve-runs",
+  "004-extract-sessions-seen",
+  "005-proposal-fs-imports",
+  "006-proposals-pending-ref-source",
+  "007-consolidation-judged",
+  "008-body-embeddings",
+  "009-asset-salience",
+  "010-asset-outcome",
+  "011-asset-salience-homeostatic-demoted-at",
+  "012-improve-gate-thresholds",
+  "013-extract-sessions-content-hash",
+  "014-recombine-hypotheses",
+  "015-asset-salience-encoding-source",
+  "016-collapse-churn-detector",
+] as const;
+
 const WORKFLOW_IDS = [
   "001-add-scope-key",
   "002-add-agent-identity",
@@ -41,6 +60,26 @@ const WORKFLOW_IDS = [
   "008-unit-attempts",
   "009-unit-claim",
 ] as const;
+
+// The physical schema migration 010 installs. Synthetic fixtures below mark
+// 010-asset-outcome as applied, so they must materialize the table it creates —
+// otherwise migration 018's `ALTER TABLE asset_outcome DROP COLUMN review_pressure`
+// (the first-ever DROP COLUMN migration) fails with "no such table".
+const ASSET_OUTCOME_010_DDL = `
+  CREATE TABLE asset_outcome (
+    asset_ref                TEXT    PRIMARY KEY,
+    last_retrieved_at        INTEGER NOT NULL DEFAULT 0,
+    retrieval_count          INTEGER NOT NULL DEFAULT 0,
+    expected_retrieval_rate  REAL    NOT NULL DEFAULT 0.0,
+    negative_feedback_count  INTEGER NOT NULL DEFAULT 0,
+    accepted_change_count    INTEGER NOT NULL DEFAULT 0,
+    review_pressure          INTEGER NOT NULL DEFAULT 0,
+    outcome_score            REAL    NOT NULL DEFAULT 0.0,
+    updated_at               INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_asset_outcome_review_pressure ON asset_outcome(review_pressure DESC);
+  CREATE INDEX idx_asset_outcome_score ON asset_outcome(outcome_score DESC);
+`;
 
 let cleanup: Cleanup | undefined;
 
@@ -65,14 +104,13 @@ function ledger(db: Database, ids: readonly string[]): void {
 function seed(options?: { failingWorkflow?: boolean }): string {
   fs.writeFileSync(getConfigPath(), '{"configVersion":"0.8.0"}\n', { mode: 0o600 });
   fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
-  // W3-M: state.db's STATE_MIGRATIONS chain is squashed to a single fragment
-  // (no akm release ever shipped state.db, so there is no granular mid-chain
-  // shape to hand-seed any more — see the squash note atop
-  // src/core/state/migrations.ts). The true pre-0.9.0 state is simply a
-  // state.db that has never been migrated: a bare SQLite file with no
-  // `schema_migrations` table. `migrate apply`'s state-applying phase runs
-  // the (now single) pending migration from here, same as it always has.
-  new Database(getStateDbPathInDataDir()).close();
+  const state = new Database(getStateDbPathInDataDir());
+  state.exec(`
+    CREATE TABLE improve_runs(id TEXT PRIMARY KEY, profile TEXT, started_at TEXT);
+    ${ASSET_OUTCOME_010_DDL}
+  `);
+  ledger(state, STATE_IDS);
+  state.close();
   const workflow = new Database(getLegacyWorkflowDbPath());
   workflow.exec(
     options?.failingWorkflow

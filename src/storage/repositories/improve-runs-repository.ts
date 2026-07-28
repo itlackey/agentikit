@@ -9,10 +9,9 @@
  * repository boundary. Re-exported by core/state-db.ts so existing importers
  * resolve.
  *
- * The `improve_gate_thresholds` per-phase auto-tune store lost its readers
- * with the 0.9.0 confidence-gate deletion and, with no akm release ever
- * having shipped state.db, was dropped from the schema entirely by the W3-M
- * migration squash rather than kept as dead weight (`src/core/state/migrations.ts`).
+ * The `improve_gate_thresholds` per-phase auto-tune store (migration 012)
+ * lost its readers with the 0.9.0 confidence-gate deletion; the table itself
+ * remains (migrations are append-only).
  *
  * @module improve-runs-repository
  */

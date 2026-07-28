@@ -106,6 +106,28 @@ const EXCLUDED_DIRS = ["scripts/akm-eval/cases/memory-regression"];
 // Binary extensions to skip outright (the assets tree is otherwise all text).
 const SKIP_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".otf"]);
 
+/**
+ * Individually-justified (file, line, token) exceptions - NOT a directory
+ * carve-out. Each entry is a token that genuinely IS the dead grammar but
+ * cannot be edited in place, with the specific reason why. Keep this list
+ * empty by default; every entry here is a deliberate, narrow decision, not a
+ * template to copy for convenience.
+ *
+ *  - `src/core/state/migrations.ts:71` - a `--` SQL comment INSIDE the `up`
+ *    body of migration `001-initial-schema`. That body is checksum-sealed
+ *    (`migrationChecksum` in `src/storage/engines/sqlite-migrations.ts`
+ *    hashes `id + "\0" + up` verbatim) and compared against the checksum
+ *    already recorded in every deployed stash's `schema_migrations` ledger -
+ *    per this repo's migration-safety contract, a released migration body
+ *    (comments included) can NEVER be edited, only superseded by a new
+ *    append-only migration. This is a real, permanent dead-grammar token
+ *    that cannot be fixed at the source; a directory/file-level exclusion
+ *    would be too broad (this same file is append-only and WILL grow new
+ *    migrations that must stay covered by this gate), so it is named down to
+ *    the exact line instead.
+ */
+const ALLOWED_OFFENSES: ReadonlySet<string> = new Set(["src/core/state/migrations.ts:71:lesson:alpha"]);
+
 // `wiki` was a real AKM-owned type up through chunk 3 and was deliberately
 // RETIRED in chunk 4 ("the wiki ASSET-TYPE dies", plan §11 Chunk 4/§7.4) - the
 // LLM Wiki structure now lives behind the first-class `llm-wiki` adapter,
@@ -217,6 +239,11 @@ function scanTsFile(abs: string, rel: string, offenses: Offense[]): void {
   visit(sf);
 }
 
+/** True when `o` matches an entry in {@link ALLOWED_OFFENSES} exactly. */
+function isAllowedOffense(o: Offense): boolean {
+  return ALLOWED_OFFENSES.has(`${o.file}:${o.line}:${o.token}`);
+}
+
 function main(): void {
   const verbose = process.argv.includes("--verbose") || process.argv.includes("--list");
   const rawOffenses: Offense[] = [];
@@ -242,12 +269,14 @@ function main(): void {
     }
   }
 
-  if (rawOffenses.length > 0) {
+  const offenses = rawOffenses.filter((o) => !isAllowedOffense(o));
+
+  if (offenses.length > 0) {
     process.stderr.write(
-      `lint-shipped-assets: FAIL - ${rawOffenses.length} dead \`type:name\` ref token(s) in shipped assets. ` +
+      `lint-shipped-assets: FAIL - ${offenses.length} dead \`type:name\` ref token(s) in shipped assets. ` +
         "Shipped/agent-facing assets must use the 0.9.0 conceptId grammar (`<subdir>/<name>`, e.g. `skills/code-review`).\n",
     );
-    for (const o of rawOffenses) process.stderr.write(`  ${o.file}:${o.line}\t${o.token}\n`);
+    for (const o of offenses) process.stderr.write(`  ${o.file}:${o.line}\t${o.token}\n`);
     process.exit(1);
   }
 

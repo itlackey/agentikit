@@ -70,13 +70,7 @@ describe("SQLite migration runner characterization", () => {
   test("state.db: released initial migration body remains checksum-sealed", () => {
     const initial = STATE_MIGRATIONS[0];
     if (!initial) throw new Error("Initial state migration is missing");
-    // W3-M: the 20-fragment chain (001-initial-schema … 020-three-db-cutover)
-    // was squashed into this single fragment (no akm release ever shipped
-    // state.db, so none of those 20 bodies was checksum-sealed against a real
-    // deployed ledger — see the squash note atop src/core/state/migrations.ts).
-    // This checksum pins the SQUASHED body; it changes again only if the
-    // squashed schema itself changes.
-    expect(migrationChecksum(initial)).toBe("d3834088256886f95d6fcaedf730e1fffde02a1d3384ef7c05ef1b7cc2221efe");
+    expect(migrationChecksum(initial)).toBe("670c210dabf8c12022678aac76b90531321b33f7a328b99c52f38bda224be6c3");
   });
 
   test("state.db: fresh-DB migration replay produces a stable schema + ledger", () => {
@@ -84,39 +78,47 @@ describe("SQLite migration runner characterization", () => {
     try {
       const snap = snapshotSchema(db);
 
-      // W3-M: the ledger is now a single fragment — the 20-id list this used
-      // to pin (002-task-history-per-run … 020-three-db-cutover) was pure
-      // migration-mechanism history with no deployed ledger behind it, and
-      // squashing it is the whole point of the package.
-      expect(snap.migrations).toEqual(["001-initial-schema"]);
+      // The full ledger of applied migrations, in order.
+      expect(snap.migrations).toEqual([
+        "001-initial-schema",
+        "002-task-history-per-run",
+        "003-improve-runs",
+        "004-extract-sessions-seen",
+        "005-proposal-fs-imports",
+        "006-proposals-pending-ref-source",
+        "007-consolidation-judged",
+        "008-body-embeddings",
+        "009-asset-salience",
+        "010-asset-outcome",
+        "011-asset-salience-homeostatic-demoted-at",
+        "012-improve-gate-thresholds",
+        "013-extract-sessions-content-hash",
+        "014-recombine-hypotheses",
+        "015-asset-salience-encoding-source",
+        "016-collapse-churn-detector",
+        "017-improve-run-strategy",
+        "018-drop-dead-lane-schema",
+        "019-proposal-fingerprints",
+        // Chunk 8, WI-8.2: the three-DB cutover baseline DDL (pure additive
+        // CREATE TABLE IF NOT EXISTS — the merge-target tables at final shape).
+        "020-three-db-cutover",
+      ]);
 
-      // The set of durable objects the migration creates.
+      // The set of durable objects the migrations create.
       const names = snap.schema.map((o) => `${o.type}:${o.name}`);
       expect(names).toContain("table:events");
       expect(names).toContain("table:proposals");
       expect(names).toContain("table:task_history");
       expect(names).toContain("table:schema_migrations");
       expect(names).toContain("table:body_embeddings");
-      // consolidation_judged and recombine_hypotheses were created by the old
-      // chain and then DROPPED by the old migration 018 (Chunk 7, WI-7.3)
-      // before ever being read by a live release; the squashed schema never
-      // creates them. improve_gate_thresholds (old migration 012) is dropped
-      // for the same reason (W3-M F2) — see
-      // src/storage/repositories/improve-runs-repository.ts.
+      // consolidation_judged (migration 007) and recombine_hypotheses (migration
+      // 014) are created and then DROPPED by migration 018 (Chunk 7, WI-7.3) —
+      // the ledger records both migration ids (append-only), but neither table
+      // survives to the final schema.
       expect(names).not.toContain("table:consolidation_judged");
       expect(names).not.toContain("table:recombine_hypotheses");
-      expect(names).not.toContain("table:improve_gate_thresholds");
-      // improve_cycle_metrics.accepted_actions: dropped alongside the CHURN
-      // alert class it fed (that class's only writer hardcoded the input to
-      // the literal 0 and never fired pre-release) — a hand-off from the
-      // sibling package that deleted it, addressed in this squash since
-      // migrations were this package's to touch.
-      const cycleMetricsColumns = (
-        db.prepare("PRAGMA table_info(improve_cycle_metrics)").all() as Array<{ name: string }>
-      ).map((c) => c.name);
-      expect(cycleMetricsColumns).not.toContain("accepted_actions");
-      // The three-DB cutover baseline DDL (workflow.db tables + the
-      // index.db usage_events / legacy_state homes) folds into state.db.
+      // Migration 020 (three-DB cutover) folds the workflow.db tables + the
+      // index.db usage_events / legacy_state homes into state.db at final shape.
       expect(names).toContain("table:workflow_runs");
       expect(names).toContain("table:workflow_run_steps");
       expect(names).toContain("table:workflow_run_units");

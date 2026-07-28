@@ -22,8 +22,10 @@ import { buildOrphanBearingStateDb, LIVE_CONTRAST_REFS, ORPHAN_REFS } from "../.
 import {
   buildRcTrainFromState,
   RC_TRAIN_LIVE_REFS,
+  RC_TRAIN_MIGRATION_CEILING,
   rcTrainFromStatePaths,
 } from "../../_fixtures/migration/rc-train-state";
+import { PRE_CUTOVER_STATE_CEILING } from "../../_fixtures/migration/seed-rows";
 import { openLegacyWorkflowDb } from "../../_helpers/legacy-workflow-db";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
@@ -83,16 +85,15 @@ describe("WI-0b.6a — orphan-bearing state.db builder", () => {
 
     expect(fs.existsSync(dbPath)).toBe(true);
 
-    // Opened READ-ONLY, though it makes no observable difference any more:
-    // W3-M squashed STATE_MIGRATIONS to a single fragment, so
-    // `buildOrphanBearingStateDb` already applies the full live chain (the
-    // sole migration id below IS the tip — there is no later cutover
-    // migration left to apply on a writable open).
+    // Opened READ-ONLY so the as-built pre-cutover shape is observed verbatim —
+    // `openStateDatabase` would apply the pending cutover migration (020) on
+    // open, minting `legacy_state` and shifting the ceiling off the FROM-state.
     const db = openDatabase(dbPath, { readonly: true });
     try {
-      // Gate 3 "loads": the DB is at the live migration tip.
-      expect(currentMigrationCeiling(db)).toBe(STATE_MIGRATIONS.at(-1)?.id);
-      expect(currentMigrationCeiling(db)).toBe("001-initial-schema");
+      // Gate 3 "loads": the DB is a valid pre-cutover FROM-state, pinned one
+      // migration behind the live tip (the tip is now the cutover, 020).
+      expect(currentMigrationCeiling(db)).toBe(STATE_MIGRATIONS.at(-2)?.id);
+      expect(currentMigrationCeiling(db)).toBe(PRE_CUTOVER_STATE_CEILING);
 
       const salienceRefs = readRefs(db, "asset_salience").map((r) => r.asset_ref);
       const outcomeRefs = readRefs(db, "asset_outcome").map((r) => r.asset_ref);
@@ -133,15 +134,11 @@ describe("WI-0b.6a — orphan-bearing state.db builder", () => {
         .get();
       expect(recombineTable).toBeFalsy();
 
-      // legacy_state's DDL is part of the same squashed migration as
-      // asset_salience/asset_outcome (W3-M) — it exists here, empty; the
-      // cutover under test is what POPULATES it, not what creates it.
+      // legacy_state is Chunk 8's to build — 0b must not create it.
       const legacyStateTable = db
         .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'legacy_state'")
         .get();
-      expect(legacyStateTable).toBeTruthy();
-      const legacyStateRows = db.prepare("SELECT COUNT(*) AS n FROM legacy_state").get() as { n: number };
-      expect(legacyStateRows.n).toBe(0);
+      expect(legacyStateTable).toBeFalsy();
 
       // One concrete orphan row's full value set, spot-checked against the
       // builder's fixed literals.
@@ -170,17 +167,18 @@ describe("WI-0b.6b — rc-train FROM-state builder", () => {
     expect(fs.existsSync(stateDbPath)).toBe(true);
     expect(fs.existsSync(workflowDbPath)).toBe(true);
 
-    // Migration ceiling: W3-M squashed STATE_MIGRATIONS to a single fragment,
-    // so the FROM-state fixture is now built at the live tip — there is no
-    // pre-cutover ceiling short of it any more (see the W3-M note on
-    // `openFreshStateDb` in `seed-rows.ts`).
+    // Migration ceiling: the FROM-state is pinned one migration behind the live
+    // tip — the tip is now the WI-8.2 cutover (020), so the pre-cutover ceiling
+    // is at(-2). The literal is kept and cross-checked both ways.
+    expect(RC_TRAIN_MIGRATION_CEILING).toBe(STATE_MIGRATIONS.at(-2)?.id as string);
+    expect(RC_TRAIN_MIGRATION_CEILING).toBe("019-proposal-fingerprints");
+    expect(PRE_CUTOVER_STATE_CEILING).toBe("019-proposal-fingerprints");
 
-    // Opened READ-ONLY, though a writable open would be a no-op too: the
-    // fixture is already at the live migration tip.
+    // Opened READ-ONLY so the as-built pre-cutover ledger is observed verbatim
+    // (an `openStateDatabase` open would apply the pending cutover migration).
     const stateDb = openDatabase(stateDbPath, { readonly: true });
     try {
-      expect(currentMigrationCeiling(stateDb)).toBe(STATE_MIGRATIONS.at(-1)?.id);
-      expect(currentMigrationCeiling(stateDb)).toBe("001-initial-schema");
+      expect(currentMigrationCeiling(stateDb)).toBe(RC_TRAIN_MIGRATION_CEILING);
 
       const salienceRefs = readRefs(stateDb, "asset_salience").map((r) => r.asset_ref);
       const outcomeRefs = readRefs(stateDb, "asset_outcome").map((r) => r.asset_ref);

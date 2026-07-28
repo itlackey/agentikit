@@ -302,6 +302,7 @@ function row(overrides: Partial<CycleMetricsRow>): CycleMetricsRow {
     distinct_content_ratio: 0.95,
     mean_bigram_diversity: 0.9,
     over_generation_count: 0,
+    accepted_actions: 0,
     merge_floor_violations: 0,
     alerts_json: "[]",
     ...overrides,
@@ -393,10 +394,10 @@ describe("runCollapseDetector orchestrator", () => {
     expect(result?.run_id).toBe("run-orchestrated");
     const rows = queryRecentCycleMetrics(stateDb, result?.canary_set_id ?? "", 10);
     expect(rows).toHaveLength(1);
-    // The CHURN alert class, its accepted_actions input, and the column
-    // itself are all gone — the migration squash dropped it. Pin the absence
-    // so a reintroduction has to be deliberate.
-    expect(rows[0]).not.toHaveProperty("accepted_actions");
+    // The CHURN alert class is gone, but the column is NOT — its migration
+    // body is released and must not be edited. Pin that it is always written
+    // as 0, so a future attempt to feed it real data is deliberate.
+    expect(rows[0]!.accepted_actions).toBe(0);
   });
 
   test("enabled:false is a complete no-op (no canaries minted, no rows)", async () => {

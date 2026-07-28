@@ -455,25 +455,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `akm disable` aliases were already removed in 0.9.0. Use
   `akm registry add|remove`.
 
-- **BREAKING: the state.db migration chain is squashed from 20 fragments to a
-  single `001-initial-schema`.** No release has ever shipped with state.db in
-  the picture, so no fragment was guarded by a deployed ledger. The squashed
-  schema is byte-identical to what the old chain produced, verified by diffing
-  a database built each way — except for two deliberate omissions:
-  `improve_gate_thresholds` (readers died with the 0.9.0 confidence-gate
-  deletion) and `improve_cycle_metrics.accepted_actions` (fed the removed CHURN
-  alert). Most of the reduction is migrations that only ever undid each other —
-  `018-drop-dead-lane-schema` existed solely to delete what `007`, `010`, and
-  `014` created.
-
-  **Migration: delete and recreate any local development stash predating this
-  change.** Its `schema_migrations` ledger will not checksum-match, and akm will
-  refuse to open it as inconsistent rather than silently corrupting it.
-
 - **The CHURN alert class is removed from the collapse detector.** Its input was
   a hard-coded `0` from the 0.9.0 confidence-gate deletion onward, so the alert
-  could never fire. The `accepted_actions` column went with it. The other three
-  alert classes are unaffected.
+  could never fire. The other three alert classes are unaffected. The
+  `improve_cycle_metrics.accepted_actions` column stays and is written as `0`:
+  it lives in a released migration body, and 0.8 ships `state.db`, so a deployed
+  ledger can already have sealed that body's checksum.
 
 - **`IndexResponse.graphQuality` is removed** from the `akm index` envelope — it
   was declared but never assigned in any code path, so it was always absent.
