@@ -70,7 +70,20 @@ interface MigratableSource {
   derivationPath: string;
   /** Original registry id (source name / installed id), or `undefined`. */
   registryId?: string;
+  /**
+   * The old entry's `writable` EXACTLY as configured — `undefined` when it was
+   * absent. Collapsing an explicit `false` into "absent" silently reactivated
+   * writes: an omitted filesystem `writable` defaults to `true` in the new
+   * shape (`resolveWritable`), so a source the user deliberately protected
+   * became writable after upgrade.
+   */
   writable?: boolean;
+  /**
+   * The old entry's `enabled` EXACTLY as configured. Dropping an explicit
+   * `false` resumed network refreshes and indexing for sources the operator
+   * had turned off.
+   */
+  enabled?: boolean;
   primary?: boolean;
   descriptor: BundleConfigEntry;
   /**
@@ -94,13 +107,28 @@ function sourceEntryDescriptor(entry: Record<string, unknown>): BundleConfigEntr
   const url = readString(entry.url);
   const options = (entry.options as Record<string, unknown> | undefined) ?? undefined;
   const maxPages = typeof options?.maxPages === "number" ? (options.maxPages as number) : undefined;
+  // The bundle website descriptor still supports `maxDepth` (and `refresh`),
+  // and `bundleEntryToSourceEntry` round-trips every non-`url` key back into
+  // the runtime `options` bag. Copying only `maxPages` silently reset the
+  // configured crawl depth, changing which pages get fetched and indexed.
+  const maxDepth = typeof options?.maxDepth === "number" ? (options.maxDepth as number) : undefined;
+  const refresh = readString(options?.refresh);
   switch (type) {
     case "filesystem":
       return entryPath ? { path: entryPath } : undefined;
     case "git":
       return url ? { git: url } : undefined;
     case "website":
-      return url ? { website: { url, ...(maxPages !== undefined ? { maxPages } : {}) } } : undefined;
+      return url
+        ? {
+            website: {
+              url,
+              ...(maxPages !== undefined ? { maxPages } : {}),
+              ...(maxDepth !== undefined ? { maxDepth } : {}),
+              ...(refresh !== undefined ? { refresh } : {}),
+            },
+          }
+        : undefined;
     case "npm":
       // Today's npm source carries the package spec in `path` (parseSourceSpec).
       return entryPath ? { npm: entryPath } : undefined;
@@ -133,7 +161,8 @@ export function oldConfigMigratableSources(
       out.push({
         derivationPath: p ? path.resolve(pathResolutionBase, expandTilde(p)) : (readString(primaryEntry.url) ?? ""),
         registryId: readString(primaryEntry.name),
-        writable: primaryEntry.writable === true,
+        writable: typeof primaryEntry.writable === "boolean" ? primaryEntry.writable : undefined,
+        ...(typeof primaryEntry.enabled === "boolean" ? { enabled: primaryEntry.enabled } : {}),
         primary: true,
         descriptor,
       });
@@ -156,7 +185,8 @@ export function oldConfigMigratableSources(
     out.push({
       derivationPath: p ? path.resolve(pathResolutionBase, expandTilde(p)) : (readString(entry.url) ?? ""),
       registryId: readString(entry.name),
-      writable: entry.writable === true,
+      writable: typeof entry.writable === "boolean" ? entry.writable : undefined,
+      ...(typeof entry.enabled === "boolean" ? { enabled: entry.enabled } : {}),
       descriptor,
     });
   }
@@ -177,7 +207,8 @@ export function oldConfigMigratableSources(
     out.push({
       derivationPath: resolvedRoot,
       registryId: readString(entry.id),
-      writable: entry.writable === true,
+      writable: typeof entry.writable === "boolean" ? entry.writable : undefined,
+      ...(typeof entry.enabled === "boolean" ? { enabled: entry.enabled } : {}),
       descriptor,
       ...(needsLock ? { lock: { source: source as InstallKind, ref: ref as string, localRoot: resolvedRoot } } : {}),
     });
@@ -203,7 +234,8 @@ export function oldConfigMigratableSources(
       continue;
     }
     prior.registryId ??= source.registryId;
-    prior.writable ||= source.writable;
+    prior.writable ??= source.writable;
+    prior.enabled ??= source.enabled;
     prior.primary ||= source.primary;
   }
   return deduplicated;
@@ -245,7 +277,7 @@ export function oldConfigToSearchSources(
   return oldConfigMigratableSources(raw, pathResolutionBase).map((src) => ({
     path: src.derivationPath,
     ...(src.registryId ? { registryId: src.registryId } : {}),
-    ...(src.writable ? { writable: true } : {}),
+    ...(src.writable === true ? { writable: true } : {}),
   }));
 }
 
@@ -271,7 +303,11 @@ export function migrateConfigSourcesToBundles(raw: Record<string, unknown>): Rec
     // installation id by construction (D-R5).
     const id = ids[index] as string;
     const entry: BundleConfigEntry = { ...src.descriptor };
-    if (src.writable) entry.writable = true;
+    // Emit BOTH booleans, not just `true`: an omitted filesystem `writable`
+    // reads as `true` in the new shape, so dropping an explicit `false` would
+    // hand write access to a source the user protected.
+    if (src.writable !== undefined) entry.writable = src.writable;
+    if (src.enabled !== undefined) entry.enabled = src.enabled;
     // Preserve the original registry id when the slug-legal key differs from it
     // (a non-slug-legal id like `github:owner/repo`), so the locator is not lost.
     if (src.registryId && src.registryId !== id) entry.registryId = src.registryId;

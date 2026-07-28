@@ -186,7 +186,18 @@ export function getConfigLockPath(): string {
   return path.join(getConfigDir(), "config.json.lck");
 }
 
-const CONFIG_LOCK_MAX_RETRIES = 10;
+// Total wait budget for a CONTENDED lock: retries × delay. An abandoned lock
+// is not covered by this budget — it is reclaimed by the stale-lock probe
+// below — so this only bounds how long a caller queues behind live writers.
+//
+// 10 × 50ms (500ms) was too thin: N concurrent `akm config set` processes
+// serialize on this lock, so the last one in line waits for all N-1 holders.
+// On a loaded machine (CI runs four test shards in parallel) eight contenders
+// exhausted the budget and one exited with "Timed out waiting for config
+// lock", which is a spurious failure — the lock was healthy and simply busy.
+// 2s gives real concurrent use headroom while still failing promptly against a
+// genuinely wedged (but non-stale) holder.
+const CONFIG_LOCK_MAX_RETRIES = 40;
 const CONFIG_LOCK_RETRY_DELAY_MS = 50;
 
 /**

@@ -79,6 +79,7 @@ export function bundleEntryToSourceEntry(
   const base = {
     name: key,
     ...(bundle.writable !== undefined ? { writable: bundle.writable } : {}),
+    ...(bundle.enabled !== undefined ? { enabled: bundle.enabled } : {}),
     ...(isPrimary ? { primary: true } : {}),
   };
   if (typeof bundle.path === "string" && bundle.path.length > 0) {

@@ -352,6 +352,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Migrating a pre-0.9 config no longer silently changes source policy.**
+  Three settings were dropped by the config-shape migration: an explicit
+  `writable: false` (an omitted filesystem `writable` reads as `true` in the
+  new shape, so a source the user deliberately protected became writable), an
+  explicit `enabled: false` (resuming refreshes and indexing for content the
+  operator had turned off), and a website source's `maxDepth` (silently
+  resetting crawl depth). All three now round-trip to the runtime source entry;
+  `bundles.<id>.enabled` is a supported key.
+
+- **`akm mv` refuses a bundle marked `writable: false`.** It renamed the file
+  and rewrote citers anyway, because its preflight checked adapter
+  compatibility rather than writability — every other write command already
+  refused.
+
+- **Memory belief edges written by `--supersedes` are no longer ignored.**
+  `writeSupersededEdge` persists a fully-qualified conceptId, but the belief
+  analyzer accepted only the internal `memory:<name>` spelling, so every edge
+  from `akm remember --supersedes` / `akm import --supersedes` was dropped and
+  a superseded memory read back as active.
+
+- **`akm env run <ref> -- <cmd> --help` runs the command.** The builtin
+  help-flag scan read the child tail after `--` and printed akm's own usage
+  instead.
+
+- **`akm mv` works under an `AKM_STASH_DIR` override again.** A valid override
+  not owned by a configured bundle failed with `No configured bundle owns move
+  source`.
+
+- **An unexpected internal error exits 70 with the JSON failure envelope.** The
+  residual dispatch boundary exited 1 with an unstructured message, so
+  automation could not tell an internal defect from an ordinary failure.
+
+- **Concurrent `akm config set` processes no longer give up prematurely.** The
+  contended-lock wait budget was 500ms total, so several concurrent writers on
+  a loaded machine could exhaust it and fail with "Timed out waiting for config
+  lock" against a healthy but busy lock. Abandoned locks are still reclaimed by
+  the stale probe, which this budget does not gate.
+
 - **Config keys named in indexer output and comments now exist.** Four sites
   pointed at a top-level `llm.*` namespace that the config schema has no such
   key for — including the user-facing "Increase llm.timeoutMs" warning on an

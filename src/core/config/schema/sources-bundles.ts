@@ -108,6 +108,12 @@ export const BundleConfigEntrySchema = z
     website: BundleWebsiteDescriptorSchema.optional(),
     npm: z.string().min(1).optional(),
     writable: z.boolean().optional(),
+    // Opt a bundle out of indexing, search, refresh, and write targeting
+    // without deleting it. Carried over from the pre-cutover `sources[].enabled`
+    // flag, which the runtime still honors on the derived source entry
+    // (`write-source.ts`, `search-source.ts`); without it here, migrating a
+    // disabled source would silently reactivate it.
+    enabled: z.boolean().optional(),
     // The original registry install id when the bundle KEY was slug-derived from
     // it (e.g. registryId `github:owner/repo` → key `repo`). Preserved so the
     // source locator survives the config-shape migration (D-R5). Absent when the

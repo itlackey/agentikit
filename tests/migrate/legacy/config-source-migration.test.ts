@@ -290,3 +290,55 @@ describe("migrateConfigSourcesToBundles", () => {
     expect(validateConfigShape(migrated).ok).toBe(true);
   });
 });
+
+describe("settings that must survive the config-shape migration", () => {
+  test("an explicit `writable: false` is preserved through to the runtime source entry", () => {
+    // An omitted filesystem `writable` reads as TRUE in the new shape
+    // (`resolveWritable`), so collapsing an explicit false into "absent" handed
+    // write access to a source the user deliberately protected.
+    const migrated = migrateConfigSourcesToBundles({
+      configVersion: "0.9.0",
+      stashDir: "/tmp/primary",
+      sources: [{ type: "filesystem", path: "/tmp/protected", name: "protected", writable: false }],
+    }) as Record<string, unknown>;
+    const bundles = migrated.bundles as Record<string, Record<string, unknown>>;
+    expect(bundles.protected?.writable).toBe(false);
+    expect(bundleEntryToSourceEntry("protected", bundles.protected as never)?.writable).toBe(false);
+    expect(validateConfigShape(migrated).ok).toBe(true);
+  });
+
+  test("an explicit `enabled: false` is preserved instead of reactivating the source", () => {
+    // The runtime honors `enabled: false` on the derived source entry
+    // (write-source.ts, search-source.ts); dropping it during migration resumed
+    // refreshes and indexing for content the operator had turned off.
+    const migrated = migrateConfigSourcesToBundles({
+      configVersion: "0.9.0",
+      stashDir: "/tmp/primary",
+      sources: [{ type: "filesystem", path: "/tmp/off", name: "off", enabled: false }],
+    }) as Record<string, unknown>;
+    const bundles = migrated.bundles as Record<string, Record<string, unknown>>;
+    expect(bundles.off?.enabled).toBe(false);
+    expect(bundleEntryToSourceEntry("off", bundles.off as never)?.enabled).toBe(false);
+    expect(validateConfigShape(migrated).ok).toBe(true);
+  });
+
+  test("website crawl options beyond maxPages survive", () => {
+    const migrated = migrateConfigSourcesToBundles({
+      configVersion: "0.9.0",
+      stashDir: "/tmp/primary",
+      sources: [
+        {
+          type: "website",
+          url: "https://docs.example.com",
+          name: "docs",
+          options: { maxPages: 50, maxDepth: 3 },
+        },
+      ],
+    }) as Record<string, unknown>;
+    const bundles = migrated.bundles as Record<string, Record<string, unknown>>;
+    expect(bundles.docs?.website).toEqual({ url: "https://docs.example.com", maxPages: 50, maxDepth: 3 });
+    // Every non-`url` key round-trips into the runtime entry's options bag.
+    expect(bundleEntryToSourceEntry("docs", bundles.docs as never)?.options).toEqual({ maxPages: 50, maxDepth: 3 });
+    expect(validateConfigShape(migrated).ok).toBe(true);
+  });
+});

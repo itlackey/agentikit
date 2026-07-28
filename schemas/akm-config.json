@@ -472,6 +472,9 @@
           "writable": {
             "type": "boolean"
           },
+          "enabled": {
+            "type": "boolean"
+          },
           "registryId": {
             "type": "string",
             "minLength": 1
@@ -2096,6 +2099,9 @@
                 "minLength": 1
               },
               "writable": {
+                "type": "boolean"
+              },
+              "enabled": {
                 "type": "boolean"
               },
               "registryId": {
