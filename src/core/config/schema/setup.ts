@@ -9,23 +9,12 @@
 import { z } from "zod";
 
 // ── Setup-derived recommendations ──────────────────────────────────────────
-
-/**
- * Cron-style schedule hints derived by `akm setup --reset-recommended`.
- *
- * These record the *recommended* cadence for the improve and index background
- * tasks. They are advisory metadata persisted into config so the value
- * survives a re-run; actual task scheduling lives in the tasks subsystem.
- */
-export const SetupTaskSchedulesSchema = z
-  .object({
-    improve: z.string().min(1).optional(),
-    index: z.string().min(1).optional(),
-  })
-  .passthrough();
-
-export const SetupConfigSchema = z
-  .object({
-    taskSchedules: SetupTaskSchedulesSchema.optional(),
-  })
-  .passthrough();
+//
+// R-063 #11: this object previously carried a `taskSchedules` sub-key (cron
+// hints nominally derived by `akm setup --reset-recommended`), but nothing in
+// the tasks subsystem or setup flow ever read or wrote it — confirmed dead at
+// HEAD (deriveRecommendedConfig's return type never included it either; see
+// tests/integration/setup/detect-environment.test.ts's regression guard).
+// Removed. The `setup` namespace itself is kept (passthrough) for future
+// setup-derived config.
+export const SetupConfigSchema = z.object({}).passthrough();

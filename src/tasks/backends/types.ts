@@ -10,8 +10,7 @@
  * `index.ts` imports by value to build the platform-selection barrel) do not
  * need a type-only import back into `index.ts` — that back-edge is a
  * static-graph cycle even though it is type-only (chunk 9 WI-9.8 KILL 7
- * sever). `index.ts` re-exports these types so existing import sites are
- * unaffected.
+ * sever). Backend consumers import these shared types directly.
  */
 
 import type { ScheduleBackend } from "../schedule";
@@ -20,9 +19,9 @@ import type { TaskDocument } from "../schema";
 export interface InstalledTaskRef {
   id: string;
   /** Absolute bootstrap argv parsed from the actual installed definition. */
-  binding?: string[];
+  binding: string[];
   /** Immutable scheduler context descriptor used by the installed definition. */
-  contextPath?: string;
+  contextPath: string;
   /**
    * Opaque, backend-specific fingerprint of the *currently installed* entry
    * (e.g. the cron line incl. enabled/disabled state). `tasks sync` compares
@@ -41,6 +40,13 @@ export interface InstalledTaskRef {
   target?: string;
 }
 
+/** Native scheduler ownership visible without trusting the installed invocation. */
+export interface RebindTaskRef {
+  id: string;
+  signature?: string;
+  target?: string;
+}
+
 /**
  * Optional per-install context. `target` is the bundle name embedded as a
  * `--target <bundle>` token in the scheduled invocation — passed ONLY for a
@@ -50,10 +56,10 @@ export interface InstalledTaskRef {
  */
 export interface TaskInstallOptions {
   target?: string;
-  /** Existing binding to preserve, or the explicitly selected rebind candidate. */
+  /** Existing binding to preserve, or an explicitly selected replacement. */
   binding?: readonly string[];
-  /** Undefined preserves the backend default; null explicitly renders a legacy entry without a descriptor. */
-  contextPath?: string | null;
+  /** Existing descriptor to preserve; undefined creates one from the current context. */
+  contextPath?: string;
 }
 
 export interface TaskBackend {
@@ -64,6 +70,8 @@ export interface TaskBackend {
   uninstall(id: string): Promise<void> | void;
   setEnabled(id: string, enabled: boolean): Promise<void> | void;
   list(): Promise<InstalledTaskRef[]> | InstalledTaskRef[];
+  /** Enumerate owned definitions for an explicit destructive rebind. */
+  listForRebind?(): Promise<RebindTaskRef[]> | RebindTaskRef[];
   /**
    * The signature the task *should* have once installed, derived from its
    * current on-disk definition. Compared against {@link InstalledTaskRef.signature}

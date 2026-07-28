@@ -1,7 +1,7 @@
 {
   "accept": {
     "asset-published": {
-      "acceptedContentHashPresent": true,
+      "acceptedTargetHashPresent": true,
       "assetContentMatchesProposal": true,
       "backupContentMatchesOriginal": true,
       "journalPhasesObserved": [
@@ -15,7 +15,7 @@
       "status": "accepted"
     },
     "event-persisted": {
-      "acceptedContentHashPresent": true,
+      "acceptedTargetHashPresent": true,
       "assetContentMatchesProposal": true,
       "backupContentMatchesOriginal": true,
       "journalPhasesObserved": [
@@ -29,7 +29,7 @@
       "status": "accepted"
     },
     "index-finalized": {
-      "acceptedContentHashPresent": true,
+      "acceptedTargetHashPresent": true,
       "assetContentMatchesProposal": true,
       "backupContentMatchesOriginal": true,
       "journalPhasesObserved": [
@@ -43,7 +43,7 @@
       "status": "accepted"
     },
     "prepared": {
-      "acceptedContentHashPresent": true,
+      "acceptedTargetHashPresent": true,
       "assetContentMatchesProposal": true,
       "backupContentMatchesOriginal": true,
       "journalPhasesObserved": [
@@ -57,7 +57,7 @@
       "status": "accepted"
     },
     "proposal-persisted": {
-      "acceptedContentHashPresent": true,
+      "acceptedTargetHashPresent": true,
       "assetContentMatchesProposal": true,
       "backupContentMatchesOriginal": true,
       "journalPhasesObserved": [

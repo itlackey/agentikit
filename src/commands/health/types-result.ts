@@ -15,6 +15,24 @@ import type { ImproveRunSummary } from "./types-runs";
 import type { SessionLogAdvisory } from "./types-session-log";
 import type { DeltaEntry, WindowResult } from "./types-windows";
 
+/**
+ * The extra dataset `akm health --report` adds over the plain check: the
+ * report parameters as the user spelled them, plus the pending proposal queue.
+ * A DATA field, not presentation — its presence is what lets the registered
+ * md/html report renderers stay pure functions of the result, and it is what
+ * makes the full report reachable in every `--format`, not just `html`.
+ */
+export interface HealthReportContext {
+  /** Window label as the user typed it (`--since`), e.g. "24h". */
+  window: string;
+  /** Duration label or chronological explicit-window names, e.g. "24h" or "older → newer". */
+  compare: string;
+  /** Whether `compare` names one duration or the explicit `--windows` sequence. */
+  comparisonMode: "duration" | "custom";
+  /** Pending proposal queue at report time. */
+  pendingProposals: { ref: string; source: string; createdAt: string }[];
+}
+
 export interface AkmHealthResult {
   schemaVersion: 3;
   ok: boolean;
@@ -28,6 +46,7 @@ export interface AkmHealthResult {
   runs?: ImproveRunSummary[];
   windows?: WindowResult[];
   deltas?: Record<string, DeltaEntry>;
+  report?: HealthReportContext;
 }
 
 /** Event type recorded on each completed improve run. */

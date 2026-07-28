@@ -7,12 +7,13 @@ subsystem internals.
 - [Core Principles](akm-core-principles.md) -- Design principles and constraints
 - [Runtime Boundary Design](runtime-boundary-design.md) -- Isolating `bun:sqlite`/`Bun.*` from the core
 - [Architecture Decision History](akm-architecture-decision-history.md) -- ADR-style record of the major architecture rulings
-- [Brain Workflow (diagram)](brain-workflow.html) -- Visual map of the improve/self-learning loop
 
 ## Specs (`specs/`)
 
 Normative specifications and binding conventions.
 
+- [OKF format support](specs/okf-support.md) -- OKF is a first-class format supported through the built-in `okf` adapter
+- [0.9.0 surface decisions](specs/0.9.0-decisions.md) -- The decision record (D1-D11) behind the 0.9.0 breaking changes
 - [Bundle & Adapter Spec (0.9.0)](specs/akm-0.9.0-bundle-adapter-spec.md) -- Normative spec for bundles, adapters, and stash recognition
 - [Ref Grammar Decision (0.9.0)](specs/akm-0.9.0-ref-grammar-decision.md) -- The `[bundle//]conceptId` ref grammar
 - [Ref Format](specs/ref.md) -- Wire format for asset references
@@ -22,6 +23,12 @@ Normative specifications and binding conventions.
 - [Stash Organization Conventions](specs/stash-organization-conventions.md) -- How a stash is laid out
 - [DI Seams Plan](specs/di-seams-plan.md) -- Dependency-injection seams used by the test suite
 - [Improve Collapse/Churn Detector](specs/improve-collapse-churn-detector-design.md) -- Longitudinal collapse/churn detection design (§6.3 is the operator runbook referenced by `akm health`)
+
+Historical review registers (0.9.0 release-review audit trail, kept for provenance, not normative going forward):
+
+- [0.9.0 Docs–Code Drift Register](specs/0.9.0-docs-code-drift-register.md) -- Ruled record of places documentation and code disagreed, and open-intent questions (Q-01..Q-19)
+- [0.9.0 Public API Issue Backlog](specs/0.9.0-public-api-issue-backlog.md) -- Implementation-only findings from the CLI surface review
+- [0.9.0 Release Surface Review](specs/0.9.0-release-surface-review.md) -- Reconciled action list from the end-to-end user-facing surface sweep
 
 ## Internals (`internals/`)
 
@@ -40,3 +47,4 @@ Current-truth subsystem references.
 
 - [Testing Workflow](testing/testing-workflow.md) -- End-to-end, Docker, deployment, and upgrade validation, plus the coverage gap guide
 - [Manual Testing Checklist](testing/manual-testing-checklist.md) -- Pre-release manual QA checklist
+- [OKF v0.1 Conformance Re-Evaluation Runbook](testing/okf-v0.1-conformance-runbook.md) -- Acceptance procedure to re-run after changing adapters, indexing, refs, writes, or lint behavior

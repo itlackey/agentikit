@@ -1,7 +1,9 @@
 ---
+type: fact
 category: convention
 description: The closed vocabulary of domain prefixes for reuse-born assets (knowledge/skill/fact/script), plus canonical entity spellings. Edit this to match your stash.
 when_to_use: Surfaced to authoring agents alongside the other convention facts; consult it when picking a domain prefix for a knowledge, skill, fact, or script asset.
+updated: 2026-07-28
 ---
 
 <!--

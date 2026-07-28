@@ -36,7 +36,7 @@
  * # Lesson-name derivation rule
  *
  * A nested input preserves its first legitimate scope segment
- * (`memory:project-a/deploy` → `lesson:project-a/memory-deploy-lesson`). An
+ * (`memories/project-a/deploy` → `lessons/project-a/memory-deploy-lesson`). An
  * unscoped input stays flat; asset types are not project scopes. Origin prefixes
  * remain durable provenance but are not embedded in the output path.
  *
@@ -60,8 +60,9 @@ import type { AkmConfig, ImproveProfileConfig, LlmConnectionConfig } from "../..
 import { getImproveProcessConfig, loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent, type EventsContext, readEvents } from "../../core/events";
-import type { AkmDistillResult, EligibilitySource } from "../../core/improve-types";
+import type { AkmDistillResult } from "../../core/improve-types";
 import { lintLessonContent } from "../../core/lesson-lint";
+import { parseEmbeddedJsonResponse } from "../../core/parse";
 import { getDbPath } from "../../core/paths";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
 import { withStateDb } from "../../core/state-db";
@@ -69,10 +70,11 @@ import { warnVerbose } from "../../core/warn";
 import { resolveAssetPath } from "../../indexer/walk/path-resolver";
 import { getDefaultLlmConfig } from "../../integrations/agent/engine-resolution";
 import { materializeLlmRunnerConnection, resolveImproveProcessRunner } from "../../integrations/agent/runner";
-import { type ChatMessage, chatCompletion, parseEmbeddedJsonResponse } from "../../llm/client";
+import { type ChatMessage, chatCompletion } from "../../llm/client";
 import { callStructured } from "../../llm/structured-call";
 import { closeDatabase, openIndexDatabase } from "../../storage/repositories/index-connection";
 import { getAllEntries } from "../../storage/repositories/index-entries-repository";
+import type { EligibilitySource } from "../proposal/proposal-types";
 import {
   isProposalSkipped,
   listProposals,
@@ -103,28 +105,14 @@ import { emitProposal } from "./proposal-envelope";
 import { createRunContext, type RunContext, resolveRunStashDir } from "./run-context";
 import { computeSalience, upsertAssetSalience } from "./salience";
 import { MAX_REJECTED_PROPOSALS } from "./shared";
-import { bareImproveRef, durableImproveRef } from "./source-identity";
-
-// Re-exported for `reflect.ts`, which applies the same LLM-as-judge gate to
-// reflect proposals (R-5 / #374).
-export { runLessonQualityJudge };
-
-// ── Types ───────────────────────────────────────────────────────────────────
-
-// DistillOutcome / AkmDistillResult moved DOWN to core/improve-types.ts
-// (WI-9.8 KILL 2 — the §10.7 layering inversion: core/improve-types.ts
-// imported AkmDistillResult UP from this module, and distill/promote-memory.ts
-// + distill/quality-gate.ts each imported it back from here too, forming a
-// sub-cycle). Re-exported here verbatim so existing import sites
-// (`from "./distill"`) are unchanged.
-export type { AkmDistillResult, DistillOutcome } from "../../core/improve-types";
+import { durableImproveRef } from "./source-identity";
 
 /**
  * Asset-ref types that `akm distill` structurally refuses as inputs.
  *
  * Distill *produces* lessons from non-lesson sources (memory, skill, knowledge,
- * etc.). Calling distill on an existing `lesson:*` ref would derive
- * `lesson:lesson-<name>-lesson-lesson` (double `-lesson` suffix) — the
+ * etc.). Calling distill on an existing `lessons/*` ref would derive
+ * `lessons/lesson-<name>-lesson-lesson` (double `-lesson` suffix) — the
  * recursive-ref defect observed across 323 archived rejected proposals.
  *
  * 08-F2: `env` and `secret` are refused as a STRUCTURAL floor — distill reads
@@ -154,7 +142,7 @@ export function isDistillRefusedInputType(type: string): boolean {
 }
 
 export interface AkmDistillOptions {
-  /** Asset ref to distil from (`[origin//]type:name`). */
+  /** Asset ref to distil from (`[bundle//]conceptId`). */
   ref: string;
   /**
    * Active improve profile for this run. When set, its per-process `distill`
@@ -162,7 +150,7 @@ export interface AkmDistillOptions {
    */
   improveProfile?: ImproveProfileConfig;
   /**
-   * Proposal target mode. `lesson` preserves the legacy behaviour.
+   * Proposal target mode. `lesson` always emits a lesson proposal.
    * `auto` lets memory refs graduate into knowledge proposals when a
    * deterministic stability heuristic says they are reinforced enough.
    */
@@ -213,7 +201,7 @@ export interface AkmDistillOptions {
    * filtering that still lets distill run on tasks where the target ref is
    * unrelated to the evaluator's gold refs.
    *
-   * Each entry MUST be a valid `[origin//]type:name` ref; the CLI validates
+   * Each entry MUST be a valid `[bundle//]conceptId` ref; the CLI validates
    * before plumbing here.
    */
   excludeFeedbackFromRefs?: readonly string[];
@@ -241,17 +229,10 @@ export interface AkmDistillOptions {
    * direct `akm distill` invocations (no lane → downstream treats as `"unknown"`).
    */
   eligibilitySource?: EligibilitySource;
-  /** Source identity used for durable events, salience, and provenance keys. */
-  sourceName?: string;
-  /** Read pre-source-qualification feedback only for the historical local stash. */
-  legacyBareState?: boolean;
   /**
-   * Chunk-5 flip F5e — the input asset's durable `item_ref`
-   * (`<bundle>//<conceptId>`), resolved from the index entry at planning time
-   * (`ImproveEligibleRef.itemRef`). When present, distill keys its
-   * `asset_salience` write by it — matching the preparation-stage salience
-   * writer — instead of the pre-flip source-qualified `type:name`. Unset for a
-   * NULL-provenance ref or a direct `akm distill` invocation.
+   * The input asset's durable `item_ref` (`<bundle>//<conceptId>`), resolved
+   * from the index entry at planning time. When present, distill keys its
+   * `asset_salience` write by it; direct invocations use the input conceptId.
    */
   itemRef?: string;
 }
@@ -261,8 +242,8 @@ export interface AkmDistillOptions {
 /** Derive the proposed lesson ref from the input ref. See module docblock. */
 export function deriveLessonRef(inputRef: string): string {
   const parsed = parseRefInput(inputRef);
-  // Strip origin: a feedback signal recorded against `team//skill:deploy`
-  // distils into the same lesson namespace as `skill:deploy`. The proposal
+  // Strip the bundle: a feedback signal recorded against `team//skills/deploy`
+  // distils into the same lesson namespace as `skills/deploy`. The proposal
   // id (a UUID) keeps the queue entries distinct, so collisions are not a
   // problem — and reviewers want to see them next to each other anyway.
   const parts = parsed.name.split("/");
@@ -286,15 +267,11 @@ export function deriveLessonRef(inputRef: string): string {
 //
 // The actual implementations now live in `core/proposal-quality-validators.ts`
 // so the same checks run inside `runProposalValidators` on `proposal accept`.
-// We re-export the public-facing helpers here so existing imports
-// (`from "../../src/commands/distill"`) continue to resolve.
 import {
   detectDoubleFrontmatter,
   isValidDescription,
   isValidWhenToUse,
 } from "../proposal/validators/proposal-quality-validators";
-
-export { detectDoubleFrontmatter, isValidDescription, isValidWhenToUse };
 
 // ── Prompt assembly ─────────────────────────────────────────────────────────
 
@@ -304,11 +281,11 @@ const KNOWLEDGE_SYSTEM_PROMPT = distillKnowledgeSystemPrompt;
 
 // ── Structured-output schemas (responseSchema lift) ─────────────────────────
 //
-// PR 1 of the asset-writers decision (see knowledge:projects/akm/
+// PR 1 of the asset-writers decision (see knowledge/projects/akm/
 // asset-writers-investigation/00-synthesis): on providers that honour
 // `response_format: json_schema`, ask the LLM for a typed JSON object and
-// re-assemble the markdown locally. The previous "emit raw markdown with
-// embedded frontmatter" path remains as a fallback for providers that ignore
+// re-assemble the markdown locally. The "emit raw markdown with embedded
+// frontmatter" path supports providers that ignore
 // the schema (and for the `chat` test seam, which is wired to return strings
 // today). Shape-level rejection codes — MALFORMED_FRONTMATTER_BLOCK,
 // FRONTMATTER_NOT_OBJECT, INVALID_YAML, UNBALANCED_CODE_FENCE — become
@@ -631,9 +608,8 @@ async function loadAndScoreInputSalience(args: {
   inputRef: string;
   durableInputRef: string;
   /**
-   * Chunk-5 flip F5e — the durable `asset_salience` WRITE key for the input
-   * asset: its `item_ref` when resolved, else `durableInputRef` (the pre-flip
-   * source-qualified `type:name`). Matches the preparation-stage salience writer.
+   * Durable `asset_salience` write key for the input asset: its `item_ref` when
+   * resolved, otherwise its conceptId. Matches the preparation-stage writer.
    */
   salienceWriteKey: string;
   stash: string;
@@ -742,7 +718,7 @@ async function loadAndScoreInputSalience(args: {
 /**
  * Recursive-distillation + secret-material input guard. Distill produces
  * *lessons* from non-lesson sources; a lesson input would derive a recursive
- * `lesson:lesson-<name>` ref (the 323-archived-proposals defect) and
+ * `lessons/lesson-<name>` ref (the 323-archived-proposals defect) and
  * env/secret inputs must never be read or sent to the LLM. Emits the
  * `distill_invoked(skipped)` event and returns the terminal skipped result,
  * or `null` when the input type is allowed. Extracted verbatim from
@@ -767,12 +743,11 @@ function refuseDisallowedDistillInput(args: {
   appendEvent(
     {
       eventType: "distill_invoked",
-      // Chunk-5 flip F5f — key on item_ref when the planner resolved one, else
-      // the pre-flip source-qualified durable ref (dormant: item_ref NULL today).
+      // Key on item_ref when the planner resolved one, otherwise the conceptId.
       ref: options.itemRef ?? durableInputRef,
       metadata: {
         outcome: "skipped" as const,
-        lessonRef: skippedRef,
+        proposalRef: skippedRef,
         message,
         skipReason: isSecretInput ? "refused_secret_input" : "recursive_lesson_input",
         ...eligMeta,
@@ -785,7 +760,8 @@ function refuseDisallowedDistillInput(args: {
     ok: true,
     outcome: "skipped",
     inputRef,
-    lessonRef: skippedRef,
+    proposalRef: skippedRef,
+    skipReason: isSecretInput ? "refused_secret_input" : "recursive_lesson_input",
     message,
   };
 }
@@ -797,9 +773,9 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
   }
   // Validate the ref shape up front so a typo never reaches the LLM.
   const parsedInputRef = parseRefInput(inputRef);
-  const durableInputRef = durableImproveRef(inputRef, options.sourceName);
-  // Chunk-5 flip F5e — the input asset's durable salience write key: item_ref
-  // when the planner resolved one, else the pre-flip source-qualified spelling.
+  const durableInputRef = durableImproveRef(inputRef);
+  // The input asset's durable salience write key is item_ref when resolved,
+  // otherwise the input conceptId.
   const salienceWriteKey = options.itemRef ?? durableInputRef;
   const targetKind = options.proposalKind ?? "lesson";
 
@@ -877,7 +853,6 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     readEventsImpl,
     options,
     durableInputRef,
-    inputRef,
   });
   const feedback = filteredEvents.slice(-20).map((e) => ({
     ts: e.ts,
@@ -896,7 +871,6 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     inputRef,
     durableInputRef,
     ...(options.itemRef ? { itemRef: options.itemRef } : {}),
-    sourceName: options.sourceName,
     assetContent,
     filteredEvents,
     config,
@@ -1132,11 +1106,11 @@ async function emitDistillLessonProposal(args: {
     appendEvent(
       {
         eventType: "distill_invoked",
-        // Chunk-5 flip F5f — item_ref when resolved, else durable (dormant today).
+        // Use item_ref when resolved, otherwise the input conceptId.
         ref: options.itemRef ?? durableInputRef,
         metadata: {
           outcome: "skipped" as const,
-          lessonRef: effectiveLessonRef,
+          proposalRef: effectiveLessonRef,
           message: proposalResult2.message,
           skipReason: proposalResult2.reason,
           ...eligMeta,
@@ -1149,7 +1123,8 @@ async function emitDistillLessonProposal(args: {
       ok: true,
       outcome: "skipped",
       inputRef,
-      lessonRef: effectiveLessonRef,
+      proposalRef: effectiveLessonRef,
+      skipReason: proposalResult2.reason,
       message: proposalResult2.message,
     };
   }
@@ -1159,7 +1134,7 @@ async function emitDistillLessonProposal(args: {
   // salience (encoding_source='content') from creation — lessons never get
   // another chance (they are refused as distill inputs).
   persistOutputEncodingSalience(
-    durableImproveRef(effectiveLessonRef, options.sourceName),
+    durableImproveRef(effectiveLessonRef),
     content,
     existingRefVocabulary,
     outcomeWeightEnabled,
@@ -1167,11 +1142,10 @@ async function emitDistillLessonProposal(args: {
   appendEvent(
     {
       eventType: "distill_invoked",
-      // Chunk-5 flip F5f — item_ref when resolved, else durable (dormant today).
+      // Use item_ref when resolved, otherwise the input conceptId.
       ref: options.itemRef ?? durableInputRef,
       metadata: {
         outcome: "queued" as const,
-        lessonRef: effectiveLessonRef,
         proposalRef: effectiveLessonRef,
         proposalKind: effectiveProposalKind,
         proposalId: proposal2.id,
@@ -1192,7 +1166,6 @@ async function emitDistillLessonProposal(args: {
     ok: true,
     outcome: "queued",
     inputRef,
-    lessonRef: effectiveLessonRef,
     proposalRef: effectiveLessonRef,
     proposalKind: effectiveProposalKind,
     proposalId: proposal2.id,
@@ -1214,7 +1187,7 @@ function assembleAndValidateDistillContent(args: {
   effectiveProposalKind: "lesson" | "knowledge";
   inputRef: string;
   durableInputRef: string;
-  /** Chunk-5 flip F5f — item_ref for the distill_invoked event key (dormant today). */
+  /** Fully-qualified item_ref for the distill_invoked event key. */
   itemRef?: string;
   effectiveLessonRef: string;
   exclusionSet: Set<string>;
@@ -1236,8 +1209,8 @@ function assembleAndValidateDistillContent(args: {
   } = args;
   // Structured-output path: when the provider honoured the JSON schema, `raw`
   // is a JSON object string (not a markdown blob). Try to parse it and assemble
-  // the canonical `---\nfm\n---\n\nbody` form before falling through to the
-  // legacy markdown pipeline. Failure here (non-JSON response, missing
+  // the canonical `---\nfm\n---\n\nbody` form before using the markdown
+  // response path. Failure here (non-JSON response, missing
   // required field, unexpected types) is non-fatal — we drop down to the
   // markdown path which has its own auto-repair + lint pass.
   let content: string;
@@ -1290,11 +1263,11 @@ function assembleAndValidateDistillContent(args: {
     appendEvent(
       {
         eventType: "distill_invoked",
-        // Chunk-5 flip F5f — item_ref when resolved, else durable (dormant today).
+        // Use item_ref when resolved, otherwise the input conceptId.
         ref: itemRef ?? durableInputRef,
         metadata: {
           outcome: "validation_failed" as const,
-          lessonRef: effectiveLessonRef,
+          proposalRef: effectiveLessonRef,
           proposalKind: effectiveProposalKind,
           findingKinds: findings.map((f) => f.kind),
           ...(exclusionSet.size > 0 ? { filteredFeedbackCount } : {}),
@@ -1395,7 +1368,7 @@ function distillEmptyResponseResult(args: {
   fallbackReason: "disabled" | "timeout" | "error" | undefined;
   inputRef: string;
   durableInputRef: string;
-  /** Chunk-5 flip F5f — item_ref for the distill_invoked event key (dormant today). */
+  /** Fully-qualified item_ref for the distill_invoked event key. */
   itemRef?: string;
   effectiveLessonRef: string;
   effectiveProposalKind: "lesson" | "knowledge";
@@ -1429,7 +1402,6 @@ function distillEmptyResponseResult(args: {
       ok: true,
       outcome: "config_disabled",
       inputRef,
-      lessonRef: effectiveLessonRef,
       proposalRef: effectiveLessonRef,
       proposalKind: effectiveProposalKind,
       message: "distill is disabled in config; enable processes.distill.enabled to activate.",
@@ -1442,11 +1414,11 @@ function distillEmptyResponseResult(args: {
   appendEvent(
     {
       eventType: "distill_invoked",
-      // Chunk-5 flip F5f — item_ref when resolved, else durable (dormant today).
+      // Use item_ref when resolved, otherwise the input conceptId.
       ref: itemRef ?? durableInputRef,
       metadata: {
         outcome: "llm_failed" as const,
-        lessonRef: effectiveLessonRef,
+        proposalRef: effectiveLessonRef,
         proposalKind: effectiveProposalKind,
         ...(exclusionSet.size > 0 ? { filteredFeedbackCount } : {}),
         ...eligMeta,
@@ -1459,7 +1431,6 @@ function distillEmptyResponseResult(args: {
     ok: true,
     outcome: "llm_failed",
     inputRef,
-    lessonRef: effectiveLessonRef,
     proposalRef: effectiveLessonRef,
     proposalKind: effectiveProposalKind,
     message: "LLM call returned no usable output (timeout, empty, or error).",
@@ -1563,30 +1534,25 @@ function readDistillFeedback(args: {
   readEventsImpl: typeof readEvents;
   options: AkmDistillOptions;
   durableInputRef: string;
-  inputRef: string;
 }): {
   filteredEvents: ReturnType<typeof readEvents>["events"];
   exclusionSet: Set<string>;
   filteredFeedbackCount: number;
   feedbackFullyFiltered: boolean;
 } {
-  const { readEventsImpl, options, durableInputRef, inputRef } = args;
+  const { readEventsImpl, options, durableInputRef } = args;
   const { events: unfilteredEvents } = readEventsImpl({
-    ...(!options.legacyBareState ? { ref: durableInputRef } : {}),
+    ref: options.itemRef ?? durableInputRef,
     type: "feedback",
     excludeTags: options.excludeTags,
     includeTags: options.includeTags,
   });
-  const events = options.legacyBareState
-    ? unfilteredEvents.filter((event) => event.ref === durableInputRef || event.ref === bareImproveRef(inputRef))
-    : unfilteredEvents;
+  const events = unfilteredEvents;
 
   // #267 — feedback exclusion. Filter events whose `ref` matches the
   // exclusion list BEFORE the prompt is built. The original event stream
   // is never mutated; only the `feedback` slice that reaches the LLM is
-  // affected. The exclusion set is normalised through the durable/bare ref
-  // helpers so callers can pass canonical or origin-prefixed refs and the
-  // comparison still works against the event payload's `ref`.
+  // affected. Exclusion refs are compared with event refs exactly.
   const exclusionList = options.excludeFeedbackFromRefs ?? [];
   const exclusionSet = new Set(exclusionList.map((ref) => ref.trim()).filter((ref) => ref.length > 0));
   const originalEventCount = events.length;

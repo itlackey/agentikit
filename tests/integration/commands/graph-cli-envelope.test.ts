@@ -163,14 +163,21 @@ describe("graph CLI success-path JSON envelope (characterization)", () => {
     expect((parsed.relations ?? []).length).toBe(2);
   });
 
-  test("bare `graph` (no subcommand) falls through to summary", async () => {
+  test("bare `graph` (no subcommand) is a usage error, exit 2 (0.9.0 canonical bare-group behavior)", async () => {
+    // 0.9.0 breaking change (owner ruling 12): bare `akm graph` used to
+    // silently fall through to `graph summary` (exit 0). It now uses the
+    // canonical bare-group behavior — a structured usage error, exit 2 — via
+    // `defineGroupCommand`'s shared default (src/cli/shared.ts). See
+    // CHANGELOG. `graph summary` still works when named explicitly.
     const stash = makeStashDir();
     seedGraph(stash);
     const { code, stdout, stderr } = await runCliCapture(["graph"]);
-    expect(stderr).toBe("");
-    expect(code).toBe(0);
-    const parsed = JSON.parse(stdout) as { shape?: string; entityCount?: number };
-    expect(parsed.shape).toBe("graph-summary");
-    expect(parsed.entityCount).toBe(3);
+    expect(code).toBe(2);
+    expect(stdout).toBe("");
+    const parsed = JSON.parse(stderr) as { ok?: boolean; error?: string; code?: string };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("MISSING_REQUIRED_ARGUMENT");
+    expect(parsed.error).toContain("akm graph");
+    expect(parsed.error).toContain("summary");
   });
 });

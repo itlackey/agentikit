@@ -29,9 +29,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildChunkPrompt } from "../../src/commands/improve/consolidate";
+import { buildChunkPrompt } from "../../src/commands/improve/consolidate/chunking";
 import { buildDistillPrompt } from "../../src/commands/improve/distill";
 import { buildExtractPrompt } from "../../src/commands/improve/extract-prompt";
+import { resolveStandardsContext } from "../../src/core/standards/resolve-standards-context";
 import { resolveStashStandards } from "../../src/core/standards/resolve-stash-standards";
 import { buildProposePrompt, buildReflectPrompt, buildSchemaRepairPrompt } from "../../src/integrations/agent/prompts";
 
@@ -137,11 +138,37 @@ describe("standards prompt injection", () => {
 
     const standardsContext = resolveStashStandards(stashDir);
     expect(standardsContext).toContain(factBody);
-    expect(standardsContext).toContain("# fact:conventions/naming");
+    // Slash conceptId (guardrail: colon `type:name` refs are retired — never
+    // re-emitted, see E-1). Was `# fact:conventions/naming` before the fix.
+    expect(standardsContext).toContain("# facts/conventions/naming");
 
     const prompt = buildDistillPrompt({ inputRef: "skills/foo", assetContent: "body", feedback: [], standardsContext });
     expect(prompt).toContain(LEAD_IN);
     expect(prompt).toContain(factBody);
+  });
+
+  test("E-1 regression: rendered standards sections never contain a colon-form ref", () => {
+    const factBody = "ALWAYS_NAME_SKILLS_KEBAB_CASE";
+    const facts = path.join(stashDir, "facts", "conventions");
+    fs.mkdirSync(facts, { recursive: true });
+    fs.writeFileSync(
+      path.join(facts, "naming.md"),
+      `---\ndescription: naming rules\ncategory: convention\n---\n\n${factBody}\n`,
+    );
+    const typeConventions = path.join(stashDir, "facts", "conventions", "assets");
+    fs.mkdirSync(typeConventions, { recursive: true });
+    fs.writeFileSync(
+      path.join(typeConventions, "skill.md"),
+      "---\ndescription: skill conventions\n---\n\nSkills should be concise.\n",
+    );
+
+    const standardsContext = resolveStandardsContext("skills/foo", stashDir);
+    expect(standardsContext).not.toMatch(/(^|[^a-zA-Z0-9_-])fact:/);
+    expect(standardsContext).toContain("facts/conventions/naming");
+    expect(standardsContext).toContain("facts/conventions/assets/skill");
+
+    const prompt = buildDistillPrompt({ inputRef: "skills/foo", assetContent: "body", feedback: [], standardsContext });
+    expect(prompt).not.toMatch(/(^|[^a-zA-Z0-9_-])fact:/);
   });
 });
 

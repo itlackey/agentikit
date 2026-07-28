@@ -38,9 +38,8 @@
  * row (`plan_json`, persisted by `startWorkflowRun` under migration 006) with
  * a `plan_hash` integrity check — the workflow asset file is NEVER re-read
  * for an in-flight run, so a mid-run asset edit cannot change behavior.
- * Legacy runs (created before migration 006, NULL plan_json) fall back to
- * compile-from-asset with a warning. Durable-row resume: re-invoking a
- * partially-executed run re-dispatches only work that never completed.
+ * Durable-row resume: re-invoking a partially-executed run re-dispatches only
+ * work that never completed.
  *
  * Run lease (redesign addendum, R2): exactly one engine invocation drives a
  * run at a time. The lease (random holder id + 90s expiry on the run row) is
@@ -103,8 +102,7 @@ export interface RunWorkflowOptions {
   dispatcher?: UnitDispatcher;
   /**
    * Test seam: plan loader. Default: the run row's FROZEN plan (`plan_json`
-   * + `plan_hash` integrity check, migration 006); legacy runs with NULL
-   * plan_json fall back to loadWorkflowAsset + compile with a warning.
+   * + `plan_hash` integrity check, migration 006).
    */
   loadPlan?: (workflowRef: string) => Promise<WorkflowPlanGraph>;
   /** Test seam for the engine concurrency cap. */
@@ -472,7 +470,7 @@ async function driveRun(
 
   // The decoded/hash-verified row plan is the sole execution authority. The
   // loader seam may assert an expected plan in tests, but can never replace it.
-  const plan = await loadFrozenPlan(next.run.id, next.run.workflowRef);
+  const plan = await loadFrozenPlan(next.run.id);
   if (options.loadPlan) {
     const expected = decodeWorkflowPlanV3(await options.loadPlan(next.run.workflowRef));
     if (computePlanHash(expected) !== computePlanHash(plan))
@@ -499,7 +497,7 @@ async function driveRun(
   // the unselected targets with empty in-memory state and execute the wrong
   // branch. Decisions stay pure functions of (frozen plan, params, journaled
   // results) — the addendum determinism bar. A done run skips the seeding:
-  // nothing will dispatch, so an unrecoverable historical decision must not
+  // nothing will dispatch, so an unrecoverable prior decision must not
   // block the no-op status return below.
   if (!next.done) {
     seedJournaledRouteDecisions(plan, next, routeSelected, routeUnselected);
@@ -545,7 +543,7 @@ async function driveRun(
       continue;
     }
 
-    // `dependsOn` edges (reserved in IR v2 — no frontend emits them today,
+    // `dependsOn` edges (no frontend emits them today,
     // but a frozen plan may carry them) are a declared ordering contract:
     // every dependency must already be resolved before this step dispatches.
     // Execution is sequential (spine order), so a violation means the plan
@@ -744,10 +742,10 @@ async function driveRun(
  *     canonical JSON). A mismatch means the journaled plan was tampered with
  *     or corrupted — fail loudly, never silently recompile. The workflow
  *     asset file is NEVER touched on this path.
- * Historical v2/null rows are inspection-only in the engine cutover. They are
- * never recompiled from a mutable source asset.
+ * Missing and non-current plans fail validation and are never rebuilt from a
+ * mutable source asset.
  */
-async function loadFrozenPlan(runId: string, _workflowRef: string): Promise<WorkflowPlanGraph> {
+async function loadFrozenPlan(runId: string): Promise<WorkflowPlanGraph> {
   const row = await withWorkflowRunsRepo((repo) => {
     const run = repo.getRunById(runId);
     return run;

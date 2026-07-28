@@ -5,6 +5,7 @@ import path from "node:path";
 import { akmProposalAccept } from "../../../src/commands/proposal/proposal";
 import { createProposal, isProposalSkipped } from "../../../src/commands/proposal/repository";
 import type { AkmConfig } from "../../../src/core/config/config";
+import { slugForPath } from "../../../src/indexer/installations";
 import { runCliCapture } from "../../_helpers/cli";
 import { durableItemRef } from "../../_helpers/durable-ref";
 import { makeSandboxDir, type SandboxedDir, withEnv, writeSandboxConfig } from "../../_helpers/sandbox";
@@ -31,6 +32,12 @@ function makeStashDir(): string {
   for (const sub of ["lessons", "skills", "memories", "knowledge"]) {
     fs.mkdirSync(path.join(stash, sub), { recursive: true });
   }
+  const bundleId = slugForPath(stash);
+  writeSandboxConfig({
+    bundles: { [bundleId]: { path: stash, writable: true } },
+    defaultBundle: bundleId,
+    defaultWriteTarget: bundleId,
+  });
   return stash;
 }
 
@@ -71,6 +78,7 @@ describe("akm proposal drain strategy selector", () => {
       configVersion: "0.9.0",
       bundles: { stash: { path: stashDir, writable: true } },
       defaultBundle: "stash",
+      defaultWriteTarget: "stash",
       defaults: { improveStrategy: "queue-only" },
       improve: {
         strategies: {
@@ -268,22 +276,38 @@ describe("akm proposal noun group (canonical)", () => {
     expect(result.stderr).not.toContain("deprecated");
   });
 
-  test("bare `akm proposal` defaults to list", async () => {
-    const stash = makeStashDir();
-    const created = seedProposal(stash);
-    const result = await runCli(["proposal", "--format=json"], { stashDir: stash });
-    expect(result.status).toBe(0);
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.totalCount).toBe(1);
-    expect(parsed.proposals[0].id).toBe(created.id);
-  });
-
-  test("bare `akm proposal --status` filters (group args mirror list filters)", async () => {
+  // Owner ruling 12, canonical bare-group behavior: bare `akm proposal` used to
+  // act as `akm proposal list`, and the group mirrored list's filter flags so
+  // `akm proposal --status=…` worked too. Both are now a usage error — naming
+  // the verb is required, and `akm proposal list` still takes the same flags.
+  // Deliberately pinning the NEW behavior, including the dropped group flags:
+  // the mirrored args were removed with the default body, so `--status` on the
+  // bare form is no longer even declared.
+  test("bare `akm proposal` is a usage error, with or without the old group filters", async () => {
     const stash = makeStashDir();
     seedProposal(stash);
-    const result = await runCli(["proposal", "--status=reverted", "--format=json"], { stashDir: stash });
-    expect(result.status).toBe(0);
-    expect(JSON.parse(result.stdout).totalCount).toBe(0);
+    for (const argv of [["proposal"], ["proposal", "--status=reverted"]]) {
+      const result = await runCli([...argv, "--format=json"], { stashDir: stash });
+      expect({ argv, status: result.status }).toEqual({ argv, status: 2 });
+      const parsed = JSON.parse(result.stderr.trim());
+      expect(parsed.code).toBe("MISSING_REQUIRED_ARGUMENT");
+      expect(parsed.error).toContain("`akm proposal` requires a subcommand");
+    }
+  });
+
+  test("`akm proposal list --status` still filters (the bare form's replacement)", async () => {
+    const stash = makeStashDir();
+    const created = seedProposal(stash);
+
+    const all = await runCli(["proposal", "list", "--format=json"], { stashDir: stash });
+    expect(all.status).toBe(0);
+    const parsed = JSON.parse(all.stdout);
+    expect(parsed.totalCount).toBe(1);
+    expect(parsed.proposals[0].id).toBe(created.id);
+
+    const filtered = await runCli(["proposal", "list", "--status=reverted", "--format=json"], { stashDir: stash });
+    expect(filtered.status).toBe(0);
+    expect(JSON.parse(filtered.stdout).totalCount).toBe(0);
   });
 
   test("proposal show: returns proposal + validation report", async () => {
@@ -299,7 +323,9 @@ describe("akm proposal noun group (canonical)", () => {
 
   test("proposal show: requires an id (citty rejects the missing positional)", async () => {
     // Like `proposal diff`/`proposal revert`, the required positional is enforced
-    // by citty, which renders usage and exits 1 (not the JSON envelope path).
+    // by citty, which renders usage and exits 2, not 1 (R-032, commit 96ff2fe;
+    // pinned at tests/integration/cli-errors.test.ts:383-389) — not the JSON
+    // envelope path.
     const stash = makeStashDir();
     const result = await runCli(["proposal", "show", "--format=json"], { stashDir: stash });
     expect(result.status).not.toBe(0);

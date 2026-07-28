@@ -216,9 +216,12 @@ akm add file:///absolute/path/to/stash
 6. **Selective include** -- If the package's `package.json` contains an
    `akm.include` array, only the listed paths are copied into the
    install cache. This lets a stash ship a subset of its repo as the stash.
-7. **Config registration** -- The installed entry is saved to
-   `config.installed` with its id, source, ref, resolved version,
-   cache path, and install timestamp.
+7. **Config registration** -- The desired source descriptor (`path`/`git`/
+   `website`/`npm`, `writable`, the original `registryId`) is saved to
+   `config.bundles.<key>`. Resolved cache state -- id, source, ref, resolved
+   version/revision, integrity, local materialized root, and install
+   timestamp -- is recorded separately in `<dataDir>/akm.lock`, never
+   duplicated into `config.json`.
 8. **Re-index** -- `akm index` runs automatically so the new assets appear in
    search immediately.
 
@@ -313,7 +316,7 @@ specify a `provider` type that determines how it is searched. When omitted,
 the provider defaults to `"static-index"`.
 
 Registries discover *stashes* (installable source bundles). They never store
-asset content directly — installing a stash creates a regular `sources[]`
+asset content directly — installing a stash creates a regular `bundles`
 entry that the indexer walks like any other source.
 
 ### Built-in Providers
@@ -321,8 +324,13 @@ entry that the indexer walks like any other source.
 #### `static-index` (default)
 
 Fetches a static JSON v3 index from the configured URL and performs
-client-side scoring. The index is cached locally with a 1-hour TTL and a
-7-day stale fallback.
+client-side scoring. The index is cached locally with a 1-hour TTL. There is
+currently no fallback to a stale cache row past that TTL on fetch failure —
+`fetchCachedJson` (`src/storage/repositories/registry-cache.ts`) only
+consults the cache row that its own `getRegistryIndexCache` lookup returned
+under the same TTL, and that lookup returns nothing once the row is older
+than `maxAgeMs`, so a fetch failure after the TTL expires surfaces as an
+error rather than serving older data.
 
 ```bash
 akm registry add https://example.com/registry/index.json --name my-team
@@ -342,9 +350,10 @@ Key behaviors:
 - Hit IDs are namespaced with `"skills-sh:"` prefix to avoid collisions
 - Scores are normalized from install counts (0-1 range)
 - Per-query response caching with 15-minute TTL
-- Stale cache fallback (up to 24 hours) on network failure
+- No stale-cache fallback past that TTL on network failure — same shared
+  cache mechanism as `static-index`, see the note there
 - No authentication required
-- Toggle on/off via `akm config enable skills.sh` / `akm config disable skills.sh` (the bare `akm enable` / `akm disable` aliases were removed in 0.9.0)
+- Toggle on/off via `akm registry add https://skills.sh --name skills.sh --provider skills-sh` / `akm registry remove skills.sh` (the bare `akm enable` / `akm disable` aliases and `akm config enable|disable` were removed in 0.9.0 — use `akm registry add|remove`, the general mechanism)
 
 To install a skill found via skills.sh, use the `ref` field (GitHub
 `owner/repo`) with `akm add`:
@@ -390,8 +399,11 @@ To generate the index automatically, use the built-in `build-index` subcommand:
 akm registry build-index --out dist/index.json
 ```
 
-This scans the current directory for asset type directories and produces a v3
-index with stash and asset entries. You can also use the tooling in the
+This does not scan the current directory. It fans out to three discovery
+sources -- a manually curated `manual-entries.json`, an npm registry keyword
+search for `akm-stash`, and a GitHub topic search for `akm-stash` -- and
+deduplicates the results into a v3 index with stash and asset entries. You
+can also use the tooling in the
 [akm-registry](https://github.com/itlackey/akm-registry) repository used by the
 official registry.
 
@@ -428,7 +440,7 @@ Each asset entry supports:
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `type` | yes | Any registered asset type (e.g. `script`, `skill`, `command`, `agent`, `knowledge`, `memory`, `workflow`, `env`, `secret`, `wiki`, `lesson`). The live asset registry in `src/core/asset/asset-spec.ts` is the authority. |
+| `type` | yes | AKM's own asset type keys (`skill`, `command`, `agent`, `knowledge`, `workflow`, `script`, `memory`, `env`, `secret`, `lesson`, `task`, `session`, `fact`, `instruction` — the authority is `KNOWN_TYPES` in `src/core/recognition-util.ts`), or a foreign/adapter-owned type (e.g. an `llm-wiki` page kind). This field is not a strict validation gate, so an unrecognized type still round-trips. Note: `wiki` was retired as an AKM-owned type — the LLM Wiki structure now lives in the first-class `llm-wiki` adapter, whose page kinds are foreign types rather than an AKM-owned `wiki` type. |
 | `name` | yes | Asset name |
 | `description` | no | One-line summary |
 | `tags` | no | Searchable keywords |
@@ -441,16 +453,18 @@ treats unknown fields inside a v3 entry as forward-compatible.
 
 ## Cache Layout
 
-Installed stashes are cached under `~/.cache/akm/registry/`:
+Installed stashes are cached under `~/.cache/akm/registry/`
+(`buildInstallCacheDir`, `src/sources/providers/provider-utils.ts`):
 
 ```
 ~/.cache/akm/registry/
   npm-@scope-my-stash/
-    <timestamp>-<random>/
-      artifact.tar.gz     # Downloaded archive
+    1.2.3/                 # the resolved version — reused across installs
+      artifact.tar.gz      # Downloaded archive
       extracted/           # Extracted contents
-      selected/            # Subset from akm.include (if applicable)
+      selected/             # Subset from akm.include (if applicable)
 ```
 
-Each install creates a new timestamped directory. Previous versions are
-cleaned up automatically when a stash is updated.
+The version segment is the resolved version string for `npm`/`git` sources
+(so re-installing the same version reuses the cache), or a random UUID for
+`local` sources, which are always isolated per install.

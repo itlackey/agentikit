@@ -14,8 +14,8 @@ the agent that `akm` is available and how to discover it.
 ## Resources & Capabilities
 
 You have access to a searchable library of scripts, skills, commands, agents,
-knowledge, workflows, env files, secrets, wikis, lessons, and memories via the `akm` CLI.
-Use `akm -h` for details.
+knowledge, workflows, env files, secrets, lessons, memories, tasks, sessions,
+and facts via the `akm` CLI. Use `akm -h` for details.
 ```
 
 That is the minimum. The agent can then run `akm curate <task>` at the start
@@ -107,10 +107,18 @@ akm show knowledge/api-guide
 akm show env/prod           # shows key names only; values never appear in output
 akm show ops//pages/runbook # a page in the "ops" LLM Wiki bundle
 
-# From a specific bundle (bundle-qualified ref):
-akm show "npm:@scope/pkg//scripts/deploy.sh"
-akm show "github:owner/repo//workflows/release"
+# From a specific bundle (bundle-qualified ref — the bundle name is whatever
+# `akm add` registered it as, e.g. via `--name`, NOT the install source):
+akm show "team-catalog//scripts/deploy.sh"
+akm show "personal//knowledge/guide"
 ```
+
+Note: `npm:@scope/pkg` and `github:owner/repo` are **install refs** — they
+name a source to fetch, and are only accepted by `akm add`/`akm clone`. A
+bundle-qualified `show`/`search` ref never contains a `:`; passing an install
+ref to `show` fails (exit 2, "A bundle slug may not contain ':'"). See
+[Concepts](../guides/concepts.md#namespacing-assets-across-projects-and-teams)
+for the full distinction.
 
 **Get refs from search.** Agents should call `akm search --shape agent` or
 `akm curate` to discover refs — not guess them. The `ref` field in search

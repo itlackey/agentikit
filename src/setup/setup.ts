@@ -22,14 +22,17 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import * as p from "../cli/clack";
 import { akmInit } from "../commands/sources/init";
+import { deriveBundleIds } from "../core/bundle-id";
 import type {
   AkmConfig,
   BundleConfigEntry,
   EmbeddingConnectionConfig,
   HarnessId,
   LlmConnectionConfig,
+  SourceConfigEntry,
 } from "../core/config/config";
 import {
+  bundleEntryToSourceEntry,
   DEFAULT_CONFIG,
   loadUserConfig,
   mutateConfigWithPrecommit,
@@ -38,6 +41,7 @@ import {
   validateCompleteConfig,
 } from "../core/config/config";
 import { readConfigText } from "../core/config/config-io";
+import { listTopLevelConfigKeys } from "../core/config/config-schema";
 import { deepMergeConfig } from "../core/config/deep-merge";
 import { ConfigError, UsageError } from "../core/errors";
 import { getConfigPath, getDefaultStashDir, isTransientStashPath } from "../core/paths";
@@ -52,7 +56,6 @@ import { detectAgentCliProfiles, pickDefaultAgentProfile } from "../integrations
 import { defaultProfileName } from "../integrations/harnesses";
 import { readLockfile } from "../integrations/lockfile";
 import { probeLlmCapabilities } from "../llm/client";
-import { migrateConfigSourcesToBundles } from "../migrate/legacy/config-source-migration";
 import {
   type DetectedEnvironment,
   detectEnvironment,
@@ -83,10 +86,10 @@ import { stepScheduledTasks } from "./steps/tasks";
 // ── Setup sandbox guard ─────────────────────────────────────────────────────
 
 /**
- * Refuse to persist an explicit `--dir /tmp/...` stashDir to the user's
- * config. The OS may reap the directory at any time, and the next run will
- * see a `stashDir` that points at a deleted path (falling back to ~/akm
- * silently). Mirrors the `assertInitSandbox` check in commands/init.ts, but
+ * Refuse to persist an explicit `--dir /tmp/...` as the default bundle path.
+ * The OS may reap the directory at any time, leaving the next run with a
+ * default bundle that points at a deleted path. Mirrors the
+ * `assertInitSandbox` check in commands/init.ts, but
  * fires under all runtimes (not just `bun test`) because `akm setup --dir
  * /tmp/X` is a documented isolation pattern that has been observed to
  * silently clobber the host config (the 2026-05-23 setup-clobbers-user-config
@@ -104,7 +107,7 @@ function assertSetupSandbox(stashDir: string, dirExplicitlyProvided: boolean): v
   if (!isTransientStashPath(stashDir)) return;
   throw new ConfigError(
     `refusing to run \`akm setup --dir ${stashDir}\`: the path is in a transient/sandbox directory family the OS may reap. ` +
-      "Persisting it as the user's stashDir would leave the next run pointing at a deleted path (silently falling back to ~/akm). " +
+      "Persisting it as the default bundle would leave the next run pointing at a deleted path. " +
       "Use a persistent directory, OR set AKM_FORCE_SETUP_TMP_STASH=1 if you intentionally want a sandbox setup " +
       "(setup will also auto-isolate config + cache writes into $stashDir/.akm/ so the host config is preserved).",
     "SETUP_TMP_STASH_REFUSED",
@@ -253,51 +256,119 @@ async function saveSetupConfig<T>(
   return { config: result.config, precommit: result.precommit };
 }
 
-/** The registry-managed (lock-backed) bundles of a config, preserved through setup. */
-function managedBundles(bundles: AkmConfig["bundles"]): Record<string, BundleConfigEntry> {
-  if (!bundles) return {};
-  const lockIds = new Set(readLockfile().map((entry) => entry.id));
-  const out: Record<string, BundleConfigEntry> = {};
-  for (const [key, bundle] of Object.entries(bundles)) {
-    if (lockIds.has(key)) out[key] = bundle;
-  }
-  return out;
+/** Registry-managed bundles are not editable through setup's source picker. */
+function managedBundleIds(): Set<string> {
+  return new Set(readLockfile().map((entry) => entry.id));
 }
 
-/**
- * Fold the wizard's flat scratch model (`stashDir` primary + `sources[]`) into
- * the persisted 0.9.0 `bundles` + `defaultBundle` shape (spec §10.1), reusing the
- * shared migrator mapping (D-R5 / Decision E). The registry-managed (lock-backed)
- * bundles from the loaded config are preserved verbatim — the wizard only
- * re-specifies the primary and the plain sources. Returns a config that is never
- * half-migrated (no `stashDir`/`sources`/`installed` leak through).
- */
+function setupSourceDescriptor(source: SourceConfigEntry): BundleConfigEntry | undefined {
+  switch (source.type) {
+    case "filesystem":
+      return source.path ? { path: source.path } : undefined;
+    case "git":
+      return source.url ? { git: source.url } : undefined;
+    case "website":
+      return source.url ? { website: { url: source.url, ...(source.options ?? {}) } } : undefined;
+    case "npm":
+      return source.path ? { npm: source.path } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function selectsExistingBundle(source: SourceConfigEntry, id: string, bundle: BundleConfigEntry): boolean {
+  const configured = bundleEntryToSourceEntry(id, bundle);
+  return (
+    configured !== undefined &&
+    configured.type === source.type &&
+    configured.path === source.path &&
+    configured.url === source.url
+  );
+}
+
+type NewSetupBundle = {
+  descriptor: BundleConfigEntry;
+  derivationPath: string;
+  preferredId?: string;
+  primary: boolean;
+  writable?: boolean;
+};
+
+/** Convert only the wizard's private drafts, leaving current bundle entries intact. */
 function finalizeSetupDraft(draft: SetupDraftConfig): AkmConfig {
-  const raw = { ...(draft as Record<string, unknown>) };
-  const hasScratch = raw.stashDir !== undefined || raw.sources !== undefined || raw.installed !== undefined;
-  if (!hasScratch) return draft as AkmConfig;
-  const preservedManaged = managedBundles(draft.bundles);
-  // When the sources step never ran (non-interactive --yes/--from paths set
-  // only the scratch stashDir), the user made no choice about existing PLAIN
-  // secondary bundles — preserve them rather than silently dropping config.
-  // The interactive flow re-specifies them via the toggle list into scratch
-  // `sources`, so this branch stays empty there.
-  const preservedPlain: Record<string, BundleConfigEntry> = {};
-  if (raw.sources === undefined && draft.bundles) {
-    const managedKeys = new Set(Object.keys(preservedManaged));
-    for (const [key, bundle] of Object.entries(draft.bundles)) {
-      if (!managedKeys.has(key) && key !== draft.defaultBundle) preservedPlain[key] = bundle;
+  const { primaryPath, additionalSources, ...canonical } = draft;
+  const finalized = canonical as AkmConfig;
+  if (primaryPath === undefined && additionalSources === undefined) return finalized;
+
+  const bundles: Record<string, BundleConfigEntry> = { ...(draft.bundles ?? {}) };
+  const managedIds = managedBundleIds();
+  const newBundles: NewSetupBundle[] = [];
+
+  if (additionalSources !== undefined) {
+    const selectedExistingIds = new Set<string>();
+    for (const source of additionalSources) {
+      const existing = source.name ? bundles[source.name] : undefined;
+      if (
+        source.name &&
+        source.name !== draft.defaultBundle &&
+        existing &&
+        selectsExistingBundle(source, source.name, existing)
+      ) {
+        selectedExistingIds.add(source.name);
+        continue;
+      }
+
+      const descriptor = setupSourceDescriptor(source);
+      if (!descriptor) continue;
+      newBundles.push({
+        descriptor,
+        derivationPath: source.path ? path.resolve(source.path) : (source.url ?? ""),
+        preferredId: source.name,
+        primary: false,
+        writable: source.writable,
+      });
+    }
+
+    for (const id of Object.keys(bundles)) {
+      if (id === draft.defaultBundle || managedIds.has(id) || selectedExistingIds.has(id)) continue;
+      delete bundles[id];
     }
   }
-  // Drop the stale bundles so the migrator re-derives the primary + plain
-  // sources cleanly from the scratch fields; then merge the managed bundles back.
-  delete raw.bundles;
-  delete raw.defaultBundle;
-  const derived = migrateConfigSourcesToBundles(raw) as AkmConfig;
-  const bundles = { ...preservedManaged, ...(derived.bundles ?? {}) };
-  const finalized: AkmConfig = { ...derived };
+
+  let defaultBundle = draft.defaultBundle;
+  const configuredPrimaryPath = primaryBundlePath(draft);
+  if (
+    primaryPath !== undefined &&
+    (configuredPrimaryPath === undefined || path.resolve(configuredPrimaryPath) !== path.resolve(primaryPath))
+  ) {
+    if (defaultBundle && !managedIds.has(defaultBundle)) delete bundles[defaultBundle];
+    defaultBundle = undefined;
+    newBundles.unshift({
+      descriptor: { path: primaryPath },
+      derivationPath: path.resolve(primaryPath),
+      primary: true,
+      writable: true,
+    });
+  }
+
+  const reserved = Object.keys(bundles).map((id) => ({ path: id, registryId: id }));
+  const ids = deriveBundleIds([
+    ...reserved,
+    ...newBundles.map((bundle) => ({ path: bundle.derivationPath, registryId: bundle.preferredId })),
+  ]).slice(reserved.length);
+  for (const [index, bundle] of newBundles.entries()) {
+    const id = ids[index] as string;
+    bundles[id] = {
+      ...bundle.descriptor,
+      ...(bundle.writable !== undefined ? { writable: bundle.writable } : {}),
+    };
+    if (bundle.primary) defaultBundle = id;
+  }
+
   if (Object.keys(bundles).length > 0) finalized.bundles = bundles;
   else delete finalized.bundles;
+  if (defaultBundle !== undefined) finalized.defaultBundle = defaultBundle;
+  else delete finalized.defaultBundle;
   return finalized;
 }
 
@@ -369,7 +440,7 @@ export function buildSetupSteps(options: {
           nonInteractive: ctx.nonInteractive,
           preferredDir: options.preferredStashDir,
         });
-        ctx.apply({ stashDir });
+        ctx.apply({ primaryPath: stashDir });
       },
     },
     {
@@ -420,13 +491,13 @@ export function buildSetupSteps(options: {
       label: "Stash Sources",
       async run(ctx) {
         const stashes = await stepAddSources(ctx.config, { promptForAdditional: false });
-        const platforms = await stepAgentPlatforms({ ...ctx.config, sources: stashes });
+        const platforms = await stepAgentPlatforms({ ...ctx.config, additionalSources: stashes });
         const merged = [...stashes];
         for (const ps of platforms) {
           if (!merged.some((s) => s.path === ps.path)) merged.push(ps);
         }
         const withAdditional = await stepAdditionalSources(merged);
-        ctx.apply({ sources: withAdditional.length > 0 ? withAdditional : undefined });
+        ctx.apply({ additionalSources: withAdditional });
       },
     },
     {
@@ -546,14 +617,13 @@ export async function runSetupWizard(opts?: { dir?: string; noInit?: boolean }):
   const agentConfig = await stepAgentConnection(ctx.config, smallModelResult);
   ctx.apply(writeAgentEngines(ctx.config, agentConfig));
 
-  // Registry-managed (lock-backed) bundles are preserved by finalizeSetupDraft.
   const newConfig: SetupDraftConfig = { ...ctx.config };
   const semanticSearchMode = outcome.semantic;
-  const stashDir = newConfig.stashDir ?? primaryBundlePath(current) ?? getDefaultStashDir();
+  const stashDir = newConfig.primaryPath ?? primaryBundlePath(current) ?? getDefaultStashDir();
   const embedding = newConfig.embedding;
   const llm = readCurrentLlmEngine(newConfig);
   const registries = newConfig.registries;
-  const allStashes = newConfig.sources ?? [];
+  const allStashes = newConfig.additionalSources ?? [];
 
   // Feature capability summary
   const agentConfigured = Boolean(agentConfig && !agentConfig.disabled);
@@ -586,7 +656,7 @@ export async function runSetupWizard(opts?: { dir?: string; noInit?: boolean }):
   const finalConfig = finalizeSetupDraft(newConfig);
   validateCompleteConfig(finalConfig);
   const { config: savedConfig } = await saveSetupConfig(current, finalConfig, async () => {
-    if (!opts?.noInit) await akmInit({ dir: resolvedStashDir, setDefault: true, persistConfig: false });
+    if (!opts?.noInit) await akmInit({ dir: stashDir, setDefault: true, persistConfig: false });
   });
 
   // After config persistence, the task step reviews the plan and asks one
@@ -694,15 +764,21 @@ export async function runSetupWithDefaults(opts: {
 }): Promise<SetupSummary> {
   assertSetupConfigPreflight();
   const explicitStashDir = opts.dir != null ? path.resolve(opts.dir) : undefined;
+  // R-066 #4: a second `assertSetupSandbox(stashDir, explicitStashDir != null)`
+  // + `applyStashIsolationToEnv(stashDir, explicitStashDir != null)` pair used
+  // to follow `stashDir`'s resolution below. It was strictly redundant: unlike
+  // `runSetupFromConfig` (which can also derive an explicit stash dir from an
+  // incoming config file's bundle path, a case the early block below can't
+  // see yet), `runSetupWithDefaults` has only one source of an explicit dir —
+  // `opts.dir` — so `stashDir` always equals `explicitStashDir` whenever the
+  // `if` below ran, and always fails `dirExplicitlyProvided` (an immediate
+  // no-op in both helpers) whenever it didn't. Removed rather than duplicated.
   if (explicitStashDir) {
     assertSetupSandbox(explicitStashDir, true);
     applyStashIsolationToEnv(explicitStashDir, true);
   }
   const current = loadUserConfig();
   const stashDir = explicitStashDir ?? primaryBundlePath(current) ?? getDefaultStashDir();
-
-  assertSetupSandbox(stashDir, explicitStashDir != null);
-  applyStashIsolationToEnv(stashDir, explicitStashDir != null);
 
   // Run steps in non-interactive mode (applies defaults, skips prompts)
   const ctx = createSetupContext(current, { nonInteractive: true });
@@ -713,11 +789,10 @@ export async function runSetupWithDefaults(opts: {
   });
   await runSetupSteps(steps, ctx);
 
-  // Ensure stashDir is set
-  if (!ctx.config.stashDir) ctx.apply({ stashDir });
+  if (!ctx.config.primaryPath) ctx.apply({ primaryPath: stashDir });
 
   // Aggregate environment detection — apply detected values directly.
-  const env = await detectEnvironment({ existingStashDir: ctx.config.stashDir });
+  const env = await detectEnvironment({ existingStashDir: ctx.config.primaryPath });
 
   // Apply a detected LLM (live local server) when the config has none yet.
   if (!readCurrentLlmEngine(ctx.config as AkmConfig) && opts.probe) {
@@ -798,7 +873,7 @@ export async function runDetectOnly(): Promise<DetectedEnvironment> {
  * - Fastest live local model, else the first detected cloud key's provider.
  * - `nomic-embed-text` embeddings when a local LLM is live.
  *
- * Returns a partial `AkmConfig`-shaped object plus a legacy `llm` block, ready
+ * Returns a partial `AkmConfig`-shaped object plus an LLM connection block, ready
  * to merge. Never includes an API key value.
  */
 export function deriveRecommendedConfig(env: DetectedEnvironment): {
@@ -922,35 +997,39 @@ export async function runSetupFromConfig(opts: {
 }): Promise<SetupSummary> {
   assertSetupConfigPreflight();
   // Phase 1: Parse JSON
-  let incoming: Partial<AkmConfig>;
+  let parsed: unknown;
   try {
-    incoming = JSON.parse(opts.configJson);
+    parsed = JSON.parse(opts.configJson);
   } catch (e) {
     throw new Error(`Invalid JSON in --config: ${(e as Error).message}`);
   }
+  if (!isPlainRecord(parsed)) {
+    throw new ConfigError("Setup config must contain a top-level object.", "INVALID_CONFIG_FILE");
+  }
+  const incoming = parsed as Partial<AkmConfig>;
 
   // Phase 2: Validate — only allow safe top-level keys
-  const ALLOWED_KEYS = new Set([
-    "configVersion",
-    "engines",
-    "defaults",
-    "improve",
-    "modelAliases",
-    "stashDir",
-    "embedding",
-    "semanticSearchMode",
-    "output",
-    "sources",
-    // 0.9.0 (spec §10.1): the persisted source shape. Old-shape input files
-    // (stashDir/sources) stay accepted and are normalized by finalizeSetupDraft
-    // (Decision E); new-shape input files pass through their bundles directly.
-    "bundles",
-    "defaultBundle",
-    "registries",
-    "defaultWriteTarget",
-    "defaults",
-    "setup",
-  ]);
+  for (const key of ["stashDir", "sources", "installed"] as const) {
+    if (key in incoming) {
+      throw new ConfigError(
+        `${key} is not supported by the current config schema; run the standalone akm-migrate tool first.`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
+  }
+  // Derived from AkmConfigShape (via `listTopLevelConfigKeys`) rather than a
+  // hand-copied set: a hand-copied allowlist silently fell out of sync as the
+  // schema grew (R-017 — `index`, `search`, `feedback`, `archiveRetentionDays`,
+  // `workflow`, and `experimental` were all valid schema keys that this list
+  // forgot, each dropped with only a warning while the command exited 0).
+  // Every key the schema recognizes is a legitimate thing to set via
+  // `--config`/`--from`; there is no key a user can set here that they
+  // couldn't set by hand-editing config.json and letting `akm config set`
+  // validate it. Keys that remain genuinely retired (`profiles`, `llm`,
+  // `agent`, `features`, `stashes`, `bindings`, `writable`) are not part of
+  // the schema shape, so they still fall into the warn-and-drop branch below;
+  // `stashDir`/`sources`/`installed` get the more specific migration error above.
+  const ALLOWED_KEYS = new Set(listTopLevelConfigKeys());
   for (const key of Object.keys(incoming)) {
     if (!ALLOWED_KEYS.has(key)) {
       warn(`[akm setup] Ignoring unknown or restricted config key: "${key}"`);
@@ -966,24 +1045,46 @@ export async function runSetupFromConfig(opts: {
   }
 
   // Phase 3: Merge with existing config
-  const incomingStashDir = (incoming as SetupDraftConfig).stashDir;
-  const explicitStashDir =
-    opts.dir != null ? path.resolve(opts.dir) : incomingStashDir != null ? path.resolve(incomingStashDir) : undefined;
+  //
+  // R-066 #4 (verified, NOT reduced — unlike the `runSetupWithDefaults` pair
+  // above, this one is NOT strictly redundant): the `assertSetupSandbox` +
+  // `applyStashIsolationToEnv` pair below looks like a duplicate of the pair
+  // here, but each guards a case the other cannot:
+  //   - THIS early pair must run before `loadUserConfig()` so an explicit
+  //     `--dir` pointed at a force-escaped transient sandbox isolates the
+  //     config READ too, not just the later write (the isolation env var has
+  //     to be set before `loadUserConfig()` executes, or `current` below is
+  //     read from the host config instead of the sandboxed one — the exact
+  //     failure class the "2026-05-23 setup-clobbers-user-config incident"
+  //     comment on `assertSetupSandbox` describes).
+  //   - The LATER pair below additionally covers a case this one can't see
+  //     yet: an incoming `--config`/`--file` JSON blob that names its own
+  //     bundle path (`incomingPrimaryPath`) with no `--dir` at all — that
+  //     path is only known after the merge, so it cannot be checked early.
+  // When `explicitStashDir` is set both pairs do end up asserting the same
+  // (stashDir, true), but removing either one changes behavior in the case
+  // it uniquely covers, so both stay.
+  const explicitStashDir = opts.dir != null ? path.resolve(opts.dir) : undefined;
   if (explicitStashDir) {
     assertSetupSandbox(explicitStashDir, true);
     applyStashIsolationToEnv(explicitStashDir, true);
   }
   const current = loadUserConfig();
-  const stashDir = explicitStashDir ?? primaryBundlePath(current) ?? getDefaultStashDir();
+  let merged = deepMergeConfig(
+    current as Record<string, unknown>,
+    incoming as Record<string, unknown>,
+  ) as SetupDraftConfig;
+  const incomingPrimaryPath = primaryBundlePath(incoming as AkmConfig);
+  const configuredPrimaryPath = primaryBundlePath(merged);
+  const stashDir = explicitStashDir ?? configuredPrimaryPath ?? getDefaultStashDir();
 
-  const stashDirExplicit = explicitStashDir != null;
+  const stashDirExplicit = explicitStashDir != null || incomingPrimaryPath !== undefined;
   assertSetupSandbox(stashDir, stashDirExplicit);
   applyStashIsolationToEnv(stashDir, stashDirExplicit);
 
-  let merged = deepMergeConfig(current as Record<string, unknown>, {
-    ...(incoming as Record<string, unknown>),
-    stashDir,
-  }) as SetupDraftConfig;
+  if (explicitStashDir !== undefined || configuredPrimaryPath === undefined) {
+    merged = deepMergeConfig(merged, { primaryPath: stashDir }) as SetupDraftConfig;
+  }
   // Deep-merge canonical keys: nested objects merge key-by-key so a
   // partial `--file` only updates the keys it carries and never drops sibling
   // subkeys (e.g. output.detail survives an output.format-only file). Arrays
@@ -1000,7 +1101,7 @@ export async function runSetupFromConfig(opts: {
       preferredStashDir: stashDir,
     });
     await runSetupSteps(steps, ctx);
-    if (!ctx.config.stashDir) ctx.apply({ stashDir });
+    if (!ctx.config.primaryPath) ctx.apply({ primaryPath: stashDir });
     if (!ctx.config.defaults?.engine) {
       const detected = detectAgentCliProfiles(undefined);
       const defaultProfile = pickDefaultAgentProfile(detected, undefined);
@@ -1011,9 +1112,7 @@ export async function runSetupFromConfig(opts: {
     merged = ctx.config;
   }
 
-  // Fold the flat scratch model (stashDir + sources) into the persisted 0.9.0
-  // bundles shape (Decision E) so old-shape and new-shape input files both land
-  // as bundles; nothing half-migrated is ever validated or written.
+  // Convert the private setup draft to the persisted bundle shape.
   let finalizedMerged: AkmConfig = finalizeSetupDraft(merged);
 
   // Reject an invalid merged engine graph before probing or touching the stash.

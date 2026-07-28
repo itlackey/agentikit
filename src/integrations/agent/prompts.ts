@@ -13,11 +13,11 @@
  * `src/integrations/agent/` rather than `src/llm/` is deliberate: these are
  * shell-out prompts targeting an agent CLI, not in-tree LLM API calls.
  *
- * The legacy stdout output an agent must produce is a *strict* JSON object:
+ * The stdout output an agent must produce is a strict JSON object:
  *
  * ```json
  * {
- *   "ref": "lesson:my-lesson",
+ *   "ref": "lessons/my-lesson",
  *   "content": "---\ndescription: ...\nwhen_to_use: ...\n---\n\nbody",
  *   "frontmatter": { "description": "...", "when_to_use": "..." }
  * }
@@ -31,6 +31,7 @@ import reflectLlmFramedContract from "../../assets/prompts/reflect-llm-framed-co
 import reflectLlmSchemaContract from "../../assets/prompts/reflect-llm-schema-contract.md" with { type: "text" };
 import reflectOutputRepair from "../../assets/prompts/reflect-output-repair.md" with { type: "text" };
 import { placementTypes } from "../../core/asset/asset-placement";
+import { parseRefInput } from "../../core/asset/resolve-ref";
 import {
   authoringRulesForType,
   DESCRIPTION_MAX_CHARS,
@@ -74,7 +75,7 @@ const TYPE_HINTS: Record<string, string> = {
   workflow:
     "workflow assets are markdown describing a multi-step process. Include `# <Title>` and ordered `## Step N` sections.",
   script: "script assets are executable text files. Include a shebang and minimal usage comment.",
-  env: "env assets are `.env` files holding a group of related CONFIGURATION for an app/service (KEY=VALUE pairs, `#` comments) — URLs, flags, and any credentials it needs. Values may or may not be sensitive; all are protected (key names discoverable, values stay on disk). Inject with `akm env run env:<name> -- <cmd>`; prefer `--clean` in agent contexts so the child starts from a minimal inherited environment. AKM itself does not print values, but the child command can print its environment, so do not run `env`, `printenv`, shell tracing, or similar diagnostics when secrets are in scope. For a single sensitive value used on its own for authentication (token, key, cert) use a `secret` instead. Never echo values back to the user.",
+  env: "env assets are `.env` files holding a group of related CONFIGURATION for an app/service (KEY=VALUE pairs, `#` comments) — URLs, flags, and any credentials it needs. Values may or may not be sensitive; all are protected (key names discoverable, values stay on disk). Inject with `akm env run env/<name> -- <cmd>`; prefer `--clean` in agent contexts so the child starts from a minimal inherited environment. AKM itself does not print values, but the child command can print its environment, so do not run `env`, `printenv`, shell tracing, or similar diagnostics when secrets are in scope. For a single sensitive value used on its own for authentication (token, key, cert) use a `secret` instead. Never echo values back to the user.",
   wiki: "wiki assets are markdown reference pages with `# Title` and structured headings.",
   fact: "fact assets are durable stash-level facts (personal/team/project details, coding conventions, stash-meta). Frontmatter SHOULD include `description` and a `category` (personal|team|project|convention|meta); set `pinned: true` only for the small always-injected core. Keep each fact short, high-signal, and self-contained — it is durable context, not an episodic note.",
 };
@@ -95,7 +96,10 @@ function knownTypeList(): string {
  */
 const RESPONSE_CONTRACT_JSON = [
   "Respond ONLY with a single JSON object. No prose before or after.",
-  'Shape: {"ref": "<type>:<name>", "content": "<full file contents>", "frontmatter": {...}, "confidence": <number 0..1>}',
+  // Slash conceptId, not the retired `<type>:<name>` colon grammar (Q-02/Q-08).
+  // This contract is the schema an agent copies from, so a stale spelling here
+  // teaches every proposal to use a ref form the CLI now rejects outright.
+  'Shape: {"ref": "<type>/<name>", "content": "<full file contents>", "frontmatter": {...}, "confidence": <number 0..1>}',
   "`content` is the full file body that will be written if accepted.",
   "`frontmatter` is optional — include it if `content` starts with `---` so reviewers can sanity-check the keys.",
   "`confidence` is REQUIRED. Self-rate this proposal on [0, 1] by how certain you are it materially improves the source asset. Calibrate honestly:",
@@ -286,7 +290,7 @@ export function buildReflectPrompt(input: ReflectPromptInput): ReflectPromptResu
     const goalSentence = isLesson
       ? `Your task is to distill what usage signals reveal about this ${input.type} asset — when to reach for it, what goes wrong without it, and what real use has revealed that the asset itself does not say. Do not reproduce the source content; your proposal must add information the source does not contain.`
       : isSkill
-        ? "Your task is to review this skill asset, identify what the feedback and related distilled lessons show is broken, missing, unclear, or durable enough to promote into long-term documentation, and produce a single improved proposal. If the strongest evidence points to companion reference material rather than the main SKILL.md, you may instead propose a skill-adjacent knowledge doc such as `knowledge:skills/<skill>/references/<topic>`."
+        ? "Your task is to review this skill asset, identify what the feedback and related distilled lessons show is broken, missing, unclear, or durable enough to promote into long-term documentation, and produce a single improved proposal. If the strongest evidence points to companion reference material rather than the main SKILL.md, you may instead propose a skill-adjacent knowledge doc such as `knowledge/skills/<skill>/references/<topic>`."
         : `Your task is to review this ${input.type} asset, identify what the feedback signals as broken, missing, or unclear, and produce an improved version. Do not reproduce the source content unchanged; your proposal must correct or add something the source lacks.`;
     sections.push(goalSentence);
     sections.push(`Target ref: ${input.ref}`);
@@ -325,7 +329,7 @@ export function buildReflectPrompt(input: ReflectPromptInput): ReflectPromptResu
   }
 
   {
-    const resolvedType = input.type ?? (input.ref?.includes(":") ? input.ref.split(":")[0] : "");
+    const resolvedType = input.type ?? (input.ref ? parseRefInput(input.ref).type : "");
     const authoringRules = resolvedType ? authoringRulesForType(resolvedType) : "";
     if (authoringRules) {
       sections.push(authoringRules);
@@ -395,7 +399,7 @@ export function buildReflectPrompt(input: ReflectPromptInput): ReflectPromptResu
       "Promote only guidance that is durable, generally applicable, and supported by repeated evidence. Do not copy anecdotal details, one-off incidents, or duplicate wording verbatim.",
     );
     sections.push(
-      "If the guidance belongs in the main skill instructions, update the skill proposal. If it belongs in a companion reference document, return a `knowledge:skills/<skill>/references/<topic>` proposal instead.",
+      "If the guidance belongs in the main skill instructions, update the skill proposal. If it belongs in a companion reference document, return a `knowledge/skills/<skill>/references/<topic>` proposal instead.",
     );
   }
 
@@ -615,7 +619,7 @@ export function buildSchemaRepairPrompt(input: SchemaRepairPromptInput): string 
  * can map to {@link AgentFailureReason} `parse_error`.
  *
  * Resilient to two common local-LLM failure modes:
- *  1. `<think>…</think>` blocks emitted before the JSON (stripped by `stripJsonFences`).
+ *  1. `<think>…</think>` blocks emitted before the JSON (stripped before parsing).
  *  2. Prose preamble / postamble around the JSON object (handled by `extractEmbeddedJson`).
  */
 export function parseAgentProposalPayload(stdout: string): AgentProposalPayload {

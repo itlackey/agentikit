@@ -3,7 +3,7 @@
  * migrate-storage.ts — Versioned akm storage migration tool.
  *
  * Usage:
- *   bun scripts/migrate-storage.ts [--dry-run] [--yes] [--from <version>] [--list]
+ *   bun scripts/akm-migrate.ts storage [--dry-run] [--yes] [--from <version>] [--list]
  *
  * Flags:
  *   --dry-run        Print what would happen without making any changes.
@@ -32,16 +32,12 @@ import path from "node:path";
 import readline from "node:readline";
 
 import { getCacheDir, getConfigDir, getDefaultStashDir } from "../src/core/paths";
-import { MIGRATED_MARKER } from "../src/indexer/usage/unmigrated-vaults-guard";
+
+const MIGRATED_MARKER = ".migrated";
 
 // ── Argument parsing ─────────────────────────────────────────────────────────
 
-const args = process.argv.slice(2);
-const DRY_RUN = args.includes("--dry-run");
-const YES = args.includes("--yes");
-const LIST_ONLY = args.includes("--list");
-
-function parseFromArg(): string | null {
+function parseFromArg(args: readonly string[]): string | null {
   const idx = args.indexOf("--from");
   if (idx === -1) return null;
   const val = args[idx + 1];
@@ -51,7 +47,6 @@ function parseFromArg(): string | null {
   }
   return val;
 }
-const FROM_VERSION = parseFromArg();
 
 // ── Path resolution ──────────────────────────────────────────────────────────
 
@@ -1028,8 +1023,8 @@ export const MIGRATIONS: MigrationVersion[] = [v07To08Migration, v08To09Migratio
 
 // ── Confirmation prompt ──────────────────────────────────────────────────────
 
-async function confirm(): Promise<boolean> {
-  if (YES) return true;
+async function confirm(yes: boolean): Promise<boolean> {
+  if (yes) return true;
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
@@ -1078,9 +1073,9 @@ function compareVersion(a: string, b: string): number {
   return 0;
 }
 
-function filteredMigrations(): MigrationVersion[] {
-  if (!FROM_VERSION) return MIGRATIONS;
-  return MIGRATIONS.filter((m) => compareVersion(m.sourceVersion, FROM_VERSION) >= 0);
+function filteredMigrations(fromVersion: string | null): MigrationVersion[] {
+  if (!fromVersion) return MIGRATIONS;
+  return MIGRATIONS.filter((m) => compareVersion(m.sourceVersion, fromVersion) >= 0);
 }
 
 // ── Summary printing ─────────────────────────────────────────────────────────
@@ -1119,7 +1114,7 @@ function printGroupedSummary(): void {
     // migration didn't actually complete (#475).
     console.log(`
 Migration did NOT fully complete. DO NOT delete any legacy files yet.
-Re-run \`akm-migrate-storage --yes\` after addressing the failure(s) above.
+Re-run \`akm-migrate storage --yes\` after addressing the failure(s) above.
 The migration is idempotent — successful steps are skipped on re-run via
 their dedup keys (events: (event_type, ts, ref, metadata_json);
 task_history: task_id PK).
@@ -1151,12 +1146,12 @@ Next step — repopulate graph data (if migrating from 0.7):
 // ── Runner ───────────────────────────────────────────────────────────────────
 
 export async function runMigrations(
-  opts: { dryRun: boolean; paths?: ResolvedPaths } = { dryRun: DRY_RUN },
+  opts: { dryRun: boolean; paths?: ResolvedPaths; fromVersion?: string | null } = { dryRun: false },
 ): Promise<VersionRunReport[]> {
   const paths = opts.paths ?? PATHS;
   const reports: VersionRunReport[] = [];
 
-  const migrations = filteredMigrations();
+  const migrations = filteredMigrations(opts.fromVersion ?? null);
 
   for (const migration of migrations) {
     const stepResults: StepResult[] = [];
@@ -1200,8 +1195,13 @@ export async function runMigrations(
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-export async function main(): Promise<void> {
-  if (LIST_ONLY) {
+export async function main(args: readonly string[] = process.argv.slice(2)): Promise<void> {
+  const dryRun = args.includes("--dry-run");
+  const yes = args.includes("--yes");
+  const listOnly = args.includes("--list");
+  const fromVersion = parseFromArg(args);
+
+  if (listOnly) {
     printList();
     return;
   }
@@ -1214,14 +1214,14 @@ export async function main(): Promise<void> {
   console.log(`  $STATE  = ${stateDir}`);
   console.log();
   console.log("Planned migrations (after --from filter):");
-  for (const m of filteredMigrations()) {
+  for (const m of filteredMigrations(fromVersion)) {
     console.log(`  • ${m.label}`);
   }
-  if (FROM_VERSION) console.log(`  (filtered: --from ${FROM_VERSION})`);
+  if (fromVersion) console.log(`  (filtered: --from ${fromVersion})`);
   console.log();
 
-  if (!DRY_RUN) {
-    const proceed = await confirm();
+  if (!dryRun) {
+    const proceed = await confirm(yes);
     if (!proceed) {
       console.log("Aborted. No changes made.");
       return;
@@ -1230,28 +1230,12 @@ export async function main(): Promise<void> {
     console.log("[dry-run] No changes will be written.\n");
   }
 
-  const reports = await runMigrations({ dryRun: DRY_RUN, paths: PATHS });
+  const reports = await runMigrations({ dryRun, paths: PATHS, fromVersion });
   versionReports.push(...reports);
 
   printGroupedSummary();
 
-  if (DRY_RUN) {
+  if (dryRun) {
     console.log("Dry run complete. No changes made.");
   }
-}
-
-// Run main only when this file is executed directly (not when imported by tests).
-const invokedDirectly = (() => {
-  try {
-    const entry = process.argv[1];
-    if (!entry) return false;
-    const here = new URL(import.meta.url).pathname;
-    return path.resolve(entry) === here;
-  } catch {
-    return false;
-  }
-})();
-
-if (invokedDirectly) {
-  await main();
 }

@@ -73,7 +73,7 @@ afterEach(() => {
 // ── Zero-flag path (backward compatibility) ──────────────────────────────────
 
 describe("zero-flag remember", () => {
-  test("writes memory with captureMode: hot + beliefState: asserted and nothing else", async () => {
+  test("writes memory with captureMode, beliefState, and its AKM type", async () => {
     const { stashDir, result } = await runCli(["remember", "Deployment needs VPN access"]);
     expect(result.status).toBe(0);
 
@@ -85,8 +85,8 @@ describe("zero-flag remember", () => {
     const parsed = parseFrontmatter(content);
     expect(parsed.data.captureMode).toBe("hot");
     expect(parsed.data.beliefState).toBe("asserted");
-    // No other frontmatter keys
-    expect(Object.keys(parsed.data).sort()).toEqual(["beliefState", "captureMode"]);
+    expect(parsed.data.type).toBe("memory");
+    expect(Object.keys(parsed.data).sort()).toEqual(["beliefState", "captureMode", "type"]);
     expect(parsed.content).toContain("Deployment needs VPN access");
     expect(stashDir).toBeTruthy();
   });

@@ -63,8 +63,17 @@ export function indexDocumentToStashEntry(doc: IndexDocument): IndexDocument {
   // ── First-class IndexDocument members (spec §3) ──
   if (doc.description !== undefined) entry.description = doc.description;
   if (doc.tags !== undefined) entry.tags = doc.tags;
+  if (doc.content !== undefined) entry.content = doc.content;
+  if (doc.ownsPresentation !== undefined) entry.ownsPresentation = doc.ownsPresentation;
+  if (doc.updated !== undefined) entry.updated = doc.updated;
+  if (doc.links !== undefined) entry.links = doc.links;
+  if (doc.adapterId === "okf") {
+    if (doc.documentJson !== undefined) entry.documentJson = doc.documentJson;
+    return entry;
+  }
   if (doc.aliases !== undefined) entry.aliases = doc.aliases;
   if (doc.searchHints !== undefined) entry.searchHints = doc.searchHints;
+  if (doc.hints !== undefined) entry.hints = doc.hints;
   if (doc.quality !== undefined) entry.quality = doc.quality;
   if (doc.confidence !== undefined) entry.confidence = doc.confidence;
   if (doc.beliefState !== undefined) entry.beliefState = doc.beliefState;
@@ -73,6 +82,7 @@ export function indexDocumentToStashEntry(doc: IndexDocument): IndexDocument {
   if (doc.captureMode !== undefined) entry.captureMode = doc.captureMode;
   if (doc.lessonStrength !== undefined) entry.lessonStrength = doc.lessonStrength;
   if (doc.derivedFrom !== undefined) entry.derivedFrom = doc.derivedFrom;
+  if (doc.pinned !== undefined) entry.pinned = doc.pinned;
 
   // ── documentJson-carried extras (DOCUMENT_JSON_CARRIED_FIELDS) ──
   // The `renderer` key on documentJson is adapter-internal (WI-C presentation),
@@ -96,21 +106,12 @@ export function indexDocumentToStashEntry(doc: IndexDocument): IndexDocument {
   if (dj.wikiRole !== undefined) entry.wikiRole = dj.wikiRole as IndexDocument["wikiRole"];
   assignStringList(entry, "sources", dj.sources);
   if (typeof dj.generation === "number") entry.generation = dj.generation;
-  assignStringList(entry, "sourceRefs", dj.sourceRefs);
   assignStringList(entry, "evidenceSources", dj.evidenceSources);
 
   return entry;
 }
 
-type StringListKey =
-  | "examples"
-  | "usage"
-  | "xrefs"
-  | "supersededBy"
-  | "contradictedBy"
-  | "sources"
-  | "sourceRefs"
-  | "evidenceSources";
+type StringListKey = "examples" | "usage" | "xrefs" | "supersededBy" | "contradictedBy" | "sources" | "evidenceSources";
 
 type StringKey = "pageKind" | "whenToUse" | "bodyOpening" | "category" | "run" | "setup" | "cwd";
 

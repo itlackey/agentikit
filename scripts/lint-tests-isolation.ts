@@ -78,8 +78,36 @@ import path from "node:path";
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
-/** AKM-specific env vars that should be managed via sandbox helpers. */
-const AKM_ENV_VARS: readonly string[] = ["AKM_STASH_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "HOME"];
+/**
+ * AKM-specific env vars that should be managed via sandbox helpers.
+ *
+ * Kept in sync with the `HARNESSED` list in `tests/_preload.ts` — that list is
+ * the actual isolation contract (every var the suite-wide sandbox snapshots,
+ * restores, and leak-checks in its `afterEach` tripwire); this list is the
+ * linter's static approximation of it. Before 2026-07 this list only had 5 of
+ * the 15 `HARNESSED` names (missing all four `AKM_*_DIR` overrides,
+ * `XDG_STATE_HOME`, and the diagnostic/secret/registry vars), so a raw
+ * `mkdtempSync` + `process.env.AKM_DATA_DIR = …` assignment was invisible to
+ * Rule 1/2 even though a leak of that exact var is caught by the runtime
+ * tripwire. ISOLATION-08.
+ */
+const AKM_ENV_VARS: readonly string[] = [
+  "AKM_STASH_DIR",
+  "AKM_CONFIG_DIR",
+  "AKM_CACHE_DIR",
+  "AKM_DATA_DIR",
+  "AKM_STATE_DIR",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_STATE_HOME",
+  "HOME",
+  "AKM_VERBOSE",
+  "AKM_LLM_API_KEY",
+  "AKM_EMBED_API_KEY",
+  "AKM_REGISTRY_URL",
+  "AKM_NPM_REGISTRY",
+];
 
 /**
  * Rule 2 exemptions: files that assign AKM/XDG/HOME env vars without going
@@ -100,10 +128,13 @@ const ENV_ASSIGN_ALLOWED = new Set<string>([
   // restores the captured original. Synchronous, no real I/O.
   "tests/registry-resolve.test.ts",
 
-  // fixtures/stashes/load.test.ts: sets AKM_STASH_DIR to a sentinel string to
-  // verify the fixture loader's env handling; captures and restores the prior
-  // value in afterEach (both branches). No temp dir, no leak.
-  "tests/fixtures/stashes/load.test.ts",
+  // ISOLATION-06/RUNTIME-04: tests/fixtures/stashes/load.test.ts's sentinel-
+  // value AKM_STASH_DIR test moved to
+  // tests/integration/fixtures/stashes/load.test.ts (it also exercises
+  // loadFixtureStash's real-subprocess default path, which Rule 5 requires
+  // to live under tests/integration/) and was rewritten there to route the
+  // sentinel override through withEnv instead of a raw assignment — so no
+  // entry is needed for either path.
 ]);
 
 /**
@@ -150,12 +181,6 @@ const ALLOWED_FILES = new Set<string>([
   // spawned CLI subprocess reads it. Deliberate fixture setup; XDG vars are
   // sandboxed via beforeEach/afterEach.
   "tests/integration/search-include-proposed-cli.test.ts",
-
-  // ripgrep.test.ts: one integration test creates a stash with specific script
-  // content and sets AKM_STASH_DIR to that stash for the index+search pipeline.
-  // All other tests only manipulate PATH (not an AKM env var); XDG vars are
-  // sandboxed via beforeEach/afterEach.
-  "tests/integration/ripgrep.test.ts",
 
   // common.test.ts: resolveStashDir tests intentionally set/delete AKM_STASH_DIR
   // to verify the function's env-var lookup precedence (nonexistent path, file vs
@@ -235,7 +260,6 @@ const ALLOWED_FILES = new Set<string>([
   "tests/integration/setup-tmp-stash-guard.test.ts",
   "tests/integration/source-qa-fixes.test.ts",
   "tests/integration/source-source.test.ts",
-  "tests/integration/tasks-legacy-md-warning.test.ts",
   "tests/integration/test-isolation-no-swallow.test.ts",
 
   // The following files were not yet migrated (grandfathered alongside the
@@ -243,6 +267,40 @@ const ALLOWED_FILES = new Set<string>([
   // migration is deferred to a follow-up PR.
   "tests/integration/commands/improve-memory-misc.test.ts",
   "tests/integration/commands/improve/improve-eligibility.test.ts",
+
+  // ISOLATION-08 batch: newly caught the moment AKM_ENV_VARS widened from 5
+  // names to the full 15-name tests/_preload.ts HARNESSED contract (the four
+  // AKM_*_DIR overrides + XDG_STATE_HOME + the diagnostic/secret/registry
+  // vars were previously invisible to Rule 1/2). Each file below already uses
+  // the standard mkdtempSync-fixture-dir + per-test env-override-with-restore
+  // idiom used throughout tests/integration/ (same shape as the pre-existing
+  // ALLOWED_FILES entries above) for one of the newly-covered vars; none of
+  // them were flagged before this widening. Mirrors the 2026-07-02 Rule 5
+  // precedent (baseline bumped up, then drained as files migrated) — these
+  // are grandfathered now that the gap is visible; migrating them onto
+  // withIsolatedAkmStorage/withEnv is follow-up work, not blocking here.
+  "tests/integration/akm-eval-planner-waste.test.ts",
+  "tests/integration/akm-eval-reflect-quality.test.ts",
+  "tests/integration/proposals-validation.test.ts",
+  "tests/integration/registry-index-v2.test.ts",
+  "tests/integration/registry-search.test.ts",
+  "tests/integration/semantic-status.test.ts",
+  "tests/integration/storage/index-db-loan.characterization.test.ts",
+  "tests/integration/storage/workflow-runs-repository.characterization.test.ts",
+  "tests/integration/tasks-runner.test.ts",
+  "tests/integration/workflows/brief.test.ts",
+  "tests/integration/workflows/checkin-surfacing.test.ts",
+  "tests/integration/workflows/complete-summary.test.ts",
+  "tests/integration/workflows/conformance/conformance.test.ts",
+  "tests/integration/workflows/conformance/driver-parity.test.ts",
+  "tests/integration/workflows/gate-artifacts.test.ts",
+  "tests/integration/workflows/indexer-rejection.test.ts",
+  "tests/integration/workflows/native-executor.test.ts",
+  "tests/integration/workflows/report.test.ts",
+  "tests/integration/workflows/run-units.test.ts",
+  "tests/integration/workflows/status-units.test.ts",
+  "tests/integration/workflows/step-work.test.ts",
+  "tests/integration/worktree-isolation.test.ts",
 ]);
 
 /**
@@ -273,8 +331,22 @@ const SPAWN_ALLOWED = new Set<string>([]);
  * SPAWN_ALLOWED — then back down to 64 the same day, when those 13 files were
  * drained (migrated onto the in-process harness or moved to
  * tests/integration/). SPAWN_ALLOWED is now empty and must stay empty.
+ *
+ * 2026-07-27 (Phase 2 P6): 54 → 73. ISOLATION-07 removed 2 entries that
+ * pointed at files no longer in the tree (`tests/integration/ripgrep.test.ts`,
+ * `tests/integration/tasks-legacy-md-warning.test.ts`) → 52.
+ * ISOLATION-06/RUNTIME-04 moved `tests/fixtures/stashes/load.test.ts`'s one
+ * real-subprocess-spawning test to tests/integration/ and rewrote its env
+ * override to use `withEnv`, retiring its `ENV_ASSIGN_ALLOWED` entry with no
+ * replacement → 51. ISOLATION-08 widened `AKM_ENV_VARS` from 5 names to the
+ * full 15-name `tests/_preload.ts` `HARNESSED` contract, which — exactly
+ * like the 2026-07-02 Rule 5 rollout above — surfaced 22 pre-existing files
+ * using the newly-covered vars (`AKM_*_DIR`, `XDG_STATE_HOME`, diagnostic/
+ * secret/registry vars) that were invisible to Rule 1 under the old 5-name
+ * list; grandfathered into `ALLOWED_FILES` pending migration → 73. Draining
+ * those 22 (and the pre-existing balance) toward the ~5 KPI is follow-up work.
  */
-export const ALLOWLIST_RATCHET_BASELINE = 54;
+export const ALLOWLIST_RATCHET_BASELINE = 73;
 
 /** Live size of the combined grandfather allowlist (all rule sets). */
 export function combinedAllowlistSize(): number {
@@ -464,34 +536,66 @@ function lintFile(filePath: string): Violation[] {
   }
 
   // ── Rule 3: wall-clock elapsed-time assertion ──────────────────────────────
-  // Targets the precise flaky shape: a LOCAL variable assigned a measured
-  // wall-clock delta (`const elapsed = Date.now() - start`) then bounded with
-  // toBeLessThan/toBeGreaterThan. We require BOTH (a) a bare-identifier subject
-  // (no `.` — so `result.improve.wallTime.minMs`, an aggregate over fixture
-  // rows, is NOT flagged) AND (b) that identifier being assigned from a
-  // `Date.now()`/`performance.now()` subtraction somewhere in the file. This
-  // keeps the rule from firing on deterministic duration fields computed from
-  // injected fixtures.
+  // Targets the precise flaky shape: a wall-clock delta bounded with
+  // toBeLessThan/toBeGreaterThan. Two subject shapes are covered:
+  //
+  //   (a) Bare-identifier subject (no `.` — so `result.improve.wallTime.minMs`,
+  //       an aggregate over fixture rows, is NOT flagged) that is assigned
+  //       from a `Date.now()`/`performance.now()` subtraction somewhere in the
+  //       file — e.g. `const elapsed = Date.now() - start; …
+  //       expect(elapsed).toBeLessThan(…)`.
+  //   (b) An INLINE wall-clock subtraction written directly inside the
+  //       `expect(…)` call — e.g. `expect(Date.now() - before).toBeLessThan(…)`
+  //       — which evades (a) because there is no local variable to
+  //       cross-reference. NEW-B: this shape is caught by requiring only that
+  //       the captured `expect(…)` argument text itself contains a
+  //       `Date.now()`/`performance.now()` call AND a `-`, with no
+  //       cross-reference needed.
+  //
+  // Both shapes keep the rule from firing on deterministic duration fields
+  // computed from injected fixtures (no `Date.now()`/`performance.now()` text
+  // appears in either the subject expression or a qualifying assignment).
   {
     const lines = src.split("\n");
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i]!;
       if (/^\s*(\/\/|\*)/.test(l)) continue;
-      const m = l.match(/expect\(\s*([A-Za-z_$][\w$]*)\s*\)\.toBe(LessThan|GreaterThan)(OrEqual)?\(/);
-      if (!m) continue;
-      const subject = m[1];
-      // The subject must be a locally-measured wall-clock delta.
-      const measured = new RegExp(
-        `(?:const|let|var)\\s+${subject}\\s*=\\s*[^;\\n]*(?:Date\\.now\\(\\)|performance\\.now\\(\\))[^;\\n]*-`,
-      );
-      const measuredReverse = new RegExp(
-        `(?:const|let|var)\\s+${subject}\\s*=\\s*[^;\\n]*-[^;\\n]*(?:Date\\.now\\(\\)|performance\\.now\\(\\))`,
-      );
-      if (!measured.test(src) && !measuredReverse.test(src)) continue;
+
+      // Non-greedy capture of whatever sits inside `expect( … )`, stopping at
+      // the first `)` immediately followed by `.toBe(LessThan|GreaterThan)…(`.
+      // Regexes don't track paren nesting, but that's fine here: an inner
+      // call like `Date.now()` closes on a `)` that is NOT itself followed by
+      // `.toBe…`, so the engine keeps extending until it reaches the real
+      // closing paren of the `expect(...)` argument.
+      const em = l.match(/expect\(([\s\S]*?)\)\.toBe(LessThan|GreaterThan)(OrEqual)?\(/);
+      if (!em) continue;
+      const argExpr = em[1]!;
+
+      // Shape (b): the expect() argument itself measures a wall-clock delta
+      // inline — no bare-identifier indirection to evade the check.
+      const inlineWallClock = /(?:Date\.now\(\)|performance\.now\(\))/.test(argExpr) && /-/.test(argExpr);
+
+      // Shape (a): a bare identifier subject, cross-referenced against a
+      // local measured-delta assignment elsewhere in the file.
+      const bareIdent = argExpr.match(/^\s*([A-Za-z_$][\w$]*)\s*$/);
+      let bareIdentWallClock = false;
+      if (bareIdent) {
+        const subject = bareIdent[1];
+        const measured = new RegExp(
+          `(?:const|let|var)\\s+${subject}\\s*=\\s*[^;\\n]*(?:Date\\.now\\(\\)|performance\\.now\\(\\))[^;\\n]*-`,
+        );
+        const measuredReverse = new RegExp(
+          `(?:const|let|var)\\s+${subject}\\s*=\\s*[^;\\n]*-[^;\\n]*(?:Date\\.now\\(\\)|performance\\.now\\(\\))`,
+        );
+        bareIdentWallClock = measured.test(src) || measuredReverse.test(src);
+      }
+
+      if (!inlineWallClock && !bareIdentWallClock) continue;
+      const subjectLabel = bareIdent ? bareIdent[1]! : argExpr.trim();
       violations.push({
         file: rel,
         rule: "elapsed-assertion",
-        detail: `wall-clock assertion on measured delta \`${subject}\` — assert the observable result (e.g. result.reason === "timeout") or drive time with fake timers instead`,
+        detail: `wall-clock assertion on measured delta \`${subjectLabel}\` — assert the observable result (e.g. result.reason === "timeout") or drive time with fake timers instead`,
         line: i + 1,
       });
     }

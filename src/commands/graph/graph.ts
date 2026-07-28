@@ -5,19 +5,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import { displayRef, parseQualifiedRefInput } from "../../core/asset/resolve-ref";
+import { writeFileAtomic } from "../../core/common";
 import { type AkmConfig, loadConfig } from "../../core/config/config";
 import { NotFoundError, UsageError } from "../../core/errors";
 import { getDbPath } from "../../core/paths";
 import { warn } from "../../core/warn";
 import { loadStoredGraphSnapshot } from "../../indexer/db/graph-db";
 import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
-import type {
-  GraphExtractionPassOptions,
-  GraphExtractionTelemetry,
-  GraphFile,
-  GraphFileNode,
-} from "../../indexer/graph/graph-extraction";
-import { runGraphExtractionPass } from "../../indexer/graph/graph-extraction";
+import { type GraphExtractionPassOptions, runGraphExtractionPass } from "../../indexer/graph/graph-extraction";
+import type { GraphExtractionTelemetry, GraphFile, GraphFileNode } from "../../indexer/graph/graph-types";
 import { withIndexWriterLease } from "../../indexer/index-writer-lock";
 import { lookup } from "../../indexer/indexer";
 import { findSourceForPath, resolveSourceEntries } from "../../indexer/search/search-source";
@@ -33,7 +29,6 @@ export interface GraphSummaryResult {
   schemaVersion: 1;
   shape: "graph-summary";
   stashPath: string;
-  graphPath: string;
   generatedAt: string;
   fileCount: number;
   entityCount: number;
@@ -46,7 +41,6 @@ export interface GraphEntitiesResult {
   schemaVersion: 1;
   shape: "graph-entities";
   stashPath: string;
-  graphPath: string;
   generatedAt: string;
   total: number;
   entities: Array<{ name: string; fileCount: number; confidence?: number }>;
@@ -56,7 +50,6 @@ export interface GraphRelationsResult {
   schemaVersion: 1;
   shape: "graph-relations";
   stashPath: string;
-  graphPath: string;
   generatedAt: string;
   total: number;
   relations: Array<{ from: string; to: string; type?: string; count: number; confidence?: number }>;
@@ -66,7 +59,6 @@ export interface GraphExportResult {
   schemaVersion: 1;
   shape: "graph-export";
   stashPath: string;
-  graphPath: string;
   outPath: string;
   format: "json" | "jsonl";
   bytes: number;
@@ -76,7 +68,6 @@ export interface GraphRelatedResult {
   schemaVersion: 1;
   shape: "graph-related";
   stashPath: string;
-  graphPath: string;
   generatedAt: string;
   ref: string;
   path: string;
@@ -89,7 +80,6 @@ export interface GraphEntityResult {
   schemaVersion: 1;
   shape: "graph-entity";
   stashPath: string;
-  graphPath: string;
   generatedAt: string;
   entity: string;
   total: number;
@@ -100,7 +90,6 @@ export interface GraphOrphansResult {
   schemaVersion: 1;
   shape: "graph-orphans";
   stashPath: string;
-  graphPath: string;
   generatedAt: string;
   totalConsidered: number;
   total: number;
@@ -116,7 +105,6 @@ export interface GraphOrphansResult {
 interface LoadedGraph {
   graph: GraphFile;
   stashPath: string;
-  graphPath: string;
 }
 
 interface ResolvedGraphTarget {
@@ -139,12 +127,19 @@ function resolveGraphStashPath(source?: string): string {
   return matched.path;
 }
 
-function loadGraph(source?: string): LoadedGraph {
+/**
+ * Load a stash's stored graph snapshot. Accepts an already-open `db` handle
+ * (R-068 #5) so callers that need a follow-up query against the same
+ * database (related/entity/orphans) can share one connection instead of
+ * opening it here and then again at the call site. When no handle is passed,
+ * one is opened and closed internally exactly as before.
+ */
+function loadGraph(source?: string, db?: import("../../storage/database").Database): LoadedGraph {
   const stashPath = resolveGraphStashPath(source);
-  let db: import("../../storage/database").Database | undefined;
+  const ownsDb = db === undefined;
+  const activeDb = db ?? openExistingDatabase();
   try {
-    db = openExistingDatabase();
-    const snapshot = loadStoredGraphSnapshot(stashPath, db);
+    const snapshot = loadStoredGraphSnapshot(stashPath, activeDb);
     if (!snapshot) {
       throw new NotFoundError(
         `Graph data not found for source ${stashPath}.`,
@@ -164,10 +159,20 @@ function loadGraph(source?: string): LoadedGraph {
         ...(snapshot.telemetry ? { telemetry: snapshot.telemetry } : {}),
       },
       stashPath,
-      graphPath: snapshot.graphPath,
     };
   } finally {
-    if (db) closeDatabase(db);
+    if (ownsDb) closeDatabase(activeDb);
+  }
+}
+
+/**
+ * Shared `--limit` validation (R-066 #3): every graph read command accepts an
+ * optional positive-integer `limit` and previously repeated this exact guard
+ * five times verbatim.
+ */
+function assertPositiveLimit(limit: number | undefined): void {
+  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
+    throw new UsageError("--limit must be a positive integer.", "INVALID_FLAG_VALUE");
   }
 }
 
@@ -208,12 +213,11 @@ function aggregateEntityStats(nodes: GraphFileNode[]): Map<string, { fileCount: 
 }
 
 export function akmGraphSummary(options?: { source?: string }): GraphSummaryResult {
-  const { graph, stashPath, graphPath } = loadGraph(options?.source);
+  const { graph, stashPath } = loadGraph(options?.source);
   return {
     schemaVersion: 1,
     shape: "graph-summary",
     stashPath,
-    graphPath,
     generatedAt: graph.generatedAt,
     fileCount: graph.files.length,
     entityCount: Array.isArray(graph.entities) ? graph.entities.length : countEntitiesByFile(graph.files).size,
@@ -226,11 +230,9 @@ export function akmGraphSummary(options?: { source?: string }): GraphSummaryResu
 }
 
 export function akmGraphEntities(options?: { source?: string; limit?: number }): GraphEntitiesResult {
-  const { graph, stashPath, graphPath } = loadGraph(options?.source);
+  const { graph, stashPath } = loadGraph(options?.source);
   const limit = options?.limit;
-  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
-    throw new UsageError("--limit must be a positive integer.", "INVALID_FLAG_VALUE");
-  }
+  assertPositiveLimit(limit);
   const stats = aggregateEntityStats(graph.files);
   const entities = [...stats.entries()]
     .map(([name, info]) => ({
@@ -244,7 +246,6 @@ export function akmGraphEntities(options?: { source?: string; limit?: number }):
     schemaVersion: 1,
     shape: "graph-entities",
     stashPath,
-    graphPath,
     generatedAt: graph.generatedAt,
     total: entities.length,
     entities: sliced,
@@ -252,11 +253,9 @@ export function akmGraphEntities(options?: { source?: string; limit?: number }):
 }
 
 export function akmGraphRelations(options?: { source?: string; limit?: number }): GraphRelationsResult {
-  const { graph, stashPath, graphPath } = loadGraph(options?.source);
+  const { graph, stashPath } = loadGraph(options?.source);
   const limit = options?.limit;
-  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
-    throw new UsageError("--limit must be a positive integer.", "INVALID_FLAG_VALUE");
-  }
+  assertPositiveLimit(limit);
   const counts = new Map<string, { from: string; to: string; type?: string; count: number; confidence?: number }>();
   for (const node of graph.files) {
     for (const rel of node.relations) {
@@ -288,24 +287,34 @@ export function akmGraphRelations(options?: { source?: string; limit?: number })
     schemaVersion: 1,
     shape: "graph-relations",
     stashPath,
-    graphPath,
     generatedAt: graph.generatedAt,
     total: relations.length,
     relations: sliced,
   };
 }
 
-export function akmGraphExport(options: { source?: string; out: string; format?: string }): GraphExportResult {
+export function akmGraphExport(options: { source?: string; out: string }): GraphExportResult {
   if (!options.out?.trim()) {
     throw new UsageError("`akm graph export` requires --out <path>.", "MISSING_REQUIRED_ARGUMENT");
   }
-  const format = options.format ?? "json";
-  if (format !== "json" && format !== "jsonl") {
-    throw new UsageError("--format must be one of: json, jsonl.", "INVALID_FLAG_VALUE");
-  }
-  const { graph, stashPath, graphPath } = loadGraph(options.source);
+  // The artifact payload follows the destination, not a flag: `--out g.jsonl`
+  // writes JSONL, anything else writes JSON. The global `--format` is about
+  // rendering the command's own envelope and never reaches the file — payload
+  // and envelope are separate concerns, and overloading one flag with both was
+  // what forced the old local/global `--format` collision.
+  const format = options.out.trim().toLowerCase().endsWith(".jsonl") ? "jsonl" : "json";
+  const { graph, stashPath } = loadGraph(options.source);
   const outPath = path.resolve(options.out);
-  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  // R-041: graph exports can carry knowledge-derived content, so this write
+  // gets the same treatment as other sensitive on-disk artifacts (env export,
+  // secrets — see env-cli.ts). `--out` may still point anywhere the caller
+  // chooses (no containment/sandbox check — that would break legitimate use
+  // of an arbitrary destination); the hardening is limited to permissions:
+  // any NEW parent directories are created owner-only (0700, mirroring
+  // scheduler-invocation.ts's lock-dir creation) rather than inheriting the
+  // process umask, and the artifact itself is written atomically at 0600
+  // instead of the previous default 0644.
+  fs.mkdirSync(path.dirname(outPath), { recursive: true, mode: 0o700 });
   const payload =
     format === "json"
       ? `${JSON.stringify(graph, null, 2)}\n`
@@ -317,12 +326,11 @@ export function akmGraphExport(options: { source?: string; out: string; format?:
             file.relations.map((relation) => JSON.stringify({ kind: "relation", ...relation, file: file.path })),
           ),
         ].join("\n")}\n`;
-  fs.writeFileSync(outPath, payload, "utf8");
+  writeFileAtomic(outPath, payload, 0o600);
   return {
     schemaVersion: 1,
     shape: "graph-export",
     stashPath,
-    graphPath,
     outPath,
     format,
     bytes: Buffer.byteLength(payload, "utf8"),
@@ -339,32 +347,30 @@ export async function akmGraphRelated(options: {
     throw new UsageError("`akm graph related` requires <ref>.", "MISSING_REQUIRED_ARGUMENT");
   }
   const limit = options.limit;
-  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
-    throw new UsageError("--limit must be a positive integer.", "INVALID_FLAG_VALUE");
-  }
+  assertPositiveLimit(limit);
   const target = await resolveGraphTarget(ref, options.source);
-  const { graph, stashPath, graphPath } = loadGraph(target.stashPath);
+
+  // R-068 #5: one connection shared by the snapshot load and the related-paths
+  // query — previously each opened (and closed) its own handle.
   let db: import("../../storage/database").Database | undefined;
-  const related = (() => {
-    try {
-      db = openExistingDatabase();
-      return listRelatedPathsForFile(stashPath, target.filePath, limit ?? 5, db);
-    } finally {
-      if (db) closeDatabase(db);
-    }
-  })();
-  return {
-    schemaVersion: 1,
-    shape: "graph-related",
-    stashPath,
-    graphPath,
-    generatedAt: graph.generatedAt,
-    ref: target.ref,
-    path: target.filePath,
-    total: related.length,
-    related,
-    ...(related.length === 0 ? { tip: "No related graph neighbors were found for this asset." } : {}),
-  };
+  try {
+    db = openExistingDatabase();
+    const { graph, stashPath } = loadGraph(target.stashPath, db);
+    const related = listRelatedPathsForFile(stashPath, target.filePath, limit ?? 5, db);
+    return {
+      schemaVersion: 1,
+      shape: "graph-related",
+      stashPath,
+      generatedAt: graph.generatedAt,
+      ref: target.ref,
+      path: target.filePath,
+      total: related.length,
+      related,
+      ...(related.length === 0 ? { tip: "No related graph neighbors were found for this asset." } : {}),
+    };
+  } finally {
+    if (db) closeDatabase(db);
+  }
 }
 
 function normalizeGraphName(value: string): string {
@@ -401,16 +407,18 @@ export function akmGraphEntity(options: { name: string; source?: string; limit?:
     throw new UsageError("`akm graph entity` requires <name>.", "MISSING_REQUIRED_ARGUMENT");
   }
   const limit = options.limit;
-  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
-    throw new UsageError("--limit must be a positive integer.", "INVALID_FLAG_VALUE");
-  }
-  const { graph, stashPath, graphPath } = loadGraph(options.source);
+  assertPositiveLimit(limit);
   const target = normalizeGraphName(name);
 
+  // R-068 #5: one connection shared by the snapshot load and the
+  // ref-by-path lookup — previously each opened (and closed) its own handle.
   let db: import("../../storage/database").Database | undefined;
+  let graph: GraphFile;
+  let stashPath: string;
   let refByPath: Map<string, { ref: string; type: string }>;
   try {
     db = openExistingDatabase();
+    ({ graph, stashPath } = loadGraph(options.source, db));
     refByPath = buildRefByPath(stashPath, db);
   } finally {
     if (db) closeDatabase(db);
@@ -442,7 +450,6 @@ export function akmGraphEntity(options: { name: string; source?: string; limit?:
     schemaVersion: 1,
     shape: "graph-entity",
     stashPath,
-    graphPath,
     generatedAt: graph.generatedAt,
     entity: name,
     total: matches.length,
@@ -452,15 +459,17 @@ export function akmGraphEntity(options: { name: string; source?: string; limit?:
 
 export function akmGraphOrphans(options?: { source?: string; limit?: number }): GraphOrphansResult {
   const limit = options?.limit;
-  if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
-    throw new UsageError("--limit must be a positive integer.", "INVALID_FLAG_VALUE");
-  }
-  const { graph, stashPath, graphPath } = loadGraph(options?.source);
+  assertPositiveLimit(limit);
 
+  // R-068 #5: one connection shared by the snapshot load and the
+  // ref-by-path lookup — previously each opened (and closed) its own handle.
   let db: import("../../storage/database").Database | undefined;
+  let graph: GraphFile;
+  let stashPath: string;
   let refByPath: Map<string, { ref: string; type: string }>;
   try {
     db = openExistingDatabase();
+    ({ graph, stashPath } = loadGraph(options?.source, db));
     refByPath = buildRefByPath(stashPath, db);
   } finally {
     if (db) closeDatabase(db);
@@ -491,7 +500,6 @@ export function akmGraphOrphans(options?: { source?: string; limit?: number }): 
     schemaVersion: 1,
     shape: "graph-orphans",
     stashPath,
-    graphPath,
     generatedAt: graph.generatedAt,
     totalConsidered: graph.files.length,
     total: orphans.length,
@@ -531,6 +539,15 @@ export async function akmGraphUpdate(options: {
   if (sources.length === 0) {
     throw new NotFoundError("No stash sources are configured.", "STASH_NOT_FOUND");
   }
+  // R-024: `runGraphExtractionPass` always targets `sources[0]` (its own
+  // "primary (working) stash" convention — see graph-extraction.ts). The
+  // validated `matched` source used to be discarded here and the FULL
+  // unfiltered `sources` array passed through regardless, so `--source B`
+  // validated against B but silently extracted from whichever source
+  // happened to resolve first. Scope the array actually passed to the
+  // extraction pass down to exactly the requested source so `sources[0]`
+  // there really is the one the caller named.
+  let extractionSources = sources;
   if (options.source && options.source !== "primary") {
     const matched = sources.find((s) => s.registryId === options.source || s.path === options.source);
     if (!matched) {
@@ -540,6 +557,7 @@ export async function akmGraphUpdate(options: {
         "Run `akm list` to see source names.",
       );
     }
+    extractionSources = [matched];
   }
 
   const scoped = Array.isArray(options.refs) && options.refs.length > 0;
@@ -611,7 +629,7 @@ export async function akmGraphUpdate(options: {
 
       const result = await extractionFn({
         config,
-        sources,
+        sources: extractionSources,
         signal: undefined,
         db,
         reEnrich: false,

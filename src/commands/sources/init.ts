@@ -23,7 +23,7 @@ import { copyStashSkeleton, ensureStashGitignore, scaffoldStashMeta } from "./st
  * Refuse to persist a temporary-directory stashDir to the user's config when
  * running under a test runner AND `--dir <tempdir>` was passed explicitly.
  * This guard targets the exact agent-overreach pattern documented in
- * `memory:akm-init-persists-stashdir-warning`: an agent ran
+ * `memories/akm-init-persists-stashdir-warning`: an agent ran
  * `akm init --dir $(mktemp -d)` for an E2E test and silently rewrote the
  * developer's real config to point at a now-deleted temp dir.
  *
@@ -149,7 +149,7 @@ async function akmInitReal(options?: {
   // Persist stashDir in config.json — but ONLY when the user is actually
   // setting up / opting into a default. A bare `akm init --dir <secondary>`
   // must NOT silently repoint the user's real default stash (the footgun
-  // documented in memory:akm-init-persists-stashdir-warning).
+  // documented in memories/akm-init-persists-stashdir-warning).
   //
   // Decision matrix — persist when ANY of:
   //   (a) no --dir provided           → default HOME-resolved setup flow

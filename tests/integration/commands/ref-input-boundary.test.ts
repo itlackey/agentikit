@@ -4,14 +4,16 @@
 
 /**
  * Chunk-5 flip F1b (ref-grammar decision D-R1/D-R4): the CLI/API input
- * boundaries route raw refs through `parseRefInput`, which accepts BOTH the new
- * `[bundle//]conceptId` grammar and the pre-0.9.0 `[origin//]type:name` grammar.
+ * boundaries route raw refs through `parseRefInput`, which accepts the
+ * `[bundle//]conceptId` grammar. The pre-0.9.0 `[origin//]type:name` colon
+ * grammar is retired (owner ruling 5, Q-02) — it is NOT accepted here, and it
+ * must never be re-accepted by any parser.
  *
  * This drives THREE representative commands (`show`, `feedback`, `graph`) at the
- * command level and proves that the SAME asset resolves through all three
- * spellings of its ref — legacy `type:name`, the short new-grammar `conceptId`,
- * and the fully-qualified `bundle//conceptId` — so F2's re-keyed test literals
- * no longer throw at the parse edge before reaching the F1 dual-keyed readers.
+ * command level and proves that the SAME asset resolves through both surviving
+ * spellings of its ref — the short `conceptId` and the fully-qualified
+ * `bundle//conceptId` — so F2's re-keyed test literals no longer throw at the
+ * parse edge before reaching the F1 dual-keyed readers.
  *
  * The asset lives ONLY in an installed source whose id (`catalog`) is a legal
  * bundle slug, so the `catalog//…` spelling exercises real origin resolution
@@ -40,8 +42,14 @@ let storage: IsolatedAkmStorage;
 let catalogRoot = "";
 let guidePath = "";
 
-/** The three spellings of the SAME `knowledge/guide` concept in the `catalog` bundle. */
-const SPELLINGS = ["knowledge/guide", "knowledge/guide", "catalog//knowledge/guide"] as const;
+/**
+ * The two surviving spellings of the SAME `knowledge/guide` concept in the
+ * `catalog` bundle: the short conceptId and the fully-qualified
+ * `bundle//conceptId` form. The retired colon `type:name` grammar (owner
+ * ruling 5, Q-02) is deliberately NOT included — its rejection is pinned at
+ * `tests/resolve-ref.test.ts:271-274`.
+ */
+const SPELLINGS = ["knowledge/guide", "catalog//knowledge/guide"] as const;
 
 beforeEach(async () => {
   storage = withIsolatedAkmStorage();
@@ -77,7 +85,7 @@ afterEach(() => {
 });
 
 describe("F1b input boundaries accept both ref grammars (command level)", () => {
-  test("`akm show` resolves the same file via type:name, conceptId, and bundle//conceptId", async () => {
+  test("`akm show` resolves the same file via conceptId and bundle//conceptId", async () => {
     const paths: string[] = [];
     for (const ref of SPELLINGS) {
       const result = await akmShowUnified({ ref });
@@ -88,10 +96,9 @@ describe("F1b input boundaries accept both ref grammars (command level)", () => 
     // Every spelling resolves to the SAME on-disk file.
     expect(paths[0]).toBe(guidePath);
     expect(paths[1]).toBe(guidePath);
-    expect(paths[2]).toBe(guidePath);
   });
 
-  test("`akm feedback` records against the same asset via all three spellings", async () => {
+  test("`akm feedback` records against the same asset via both spellings", async () => {
     // Sanity: the index the beforeEach built must be present for feedback.
     expect(fs.existsSync(getDbPath())).toBe(true);
     for (const ref of SPELLINGS) {
@@ -100,7 +107,7 @@ describe("F1b input boundaries accept both ref grammars (command level)", () => 
     }
   });
 
-  test("`akm graph related` resolves the same target via all three spellings", async () => {
+  test("`akm graph related` resolves the same target via both spellings", async () => {
     // Seed a stored graph snapshot for the catalog source so `graph related`
     // gets past its data-load step; the entry rows already exist (akmIndex).
     const db = openIndexDatabase(getDbPath());
@@ -133,6 +140,5 @@ describe("F1b input boundaries accept both ref grammars (command level)", () => 
     }
     expect(targets[0]).toBe(guidePath);
     expect(targets[1]).toBe(guidePath);
-    expect(targets[2]).toBe(guidePath);
   });
 });

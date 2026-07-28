@@ -16,7 +16,6 @@ import {
 import { backupExistingConfig } from "../../src/core/config/config-io";
 import { ConfigError } from "../../src/core/errors";
 import { getCacheDir, getConfigDir, getConfigPath } from "../../src/core/paths";
-import { setQuiet } from "../../src/core/warn";
 import { getDefaultLlmConfig, requireLlmConfig } from "../../src/integrations/agent/engine-resolution";
 
 function makeTmpDir(): string {
@@ -132,6 +131,17 @@ describe("loadConfig", () => {
     expect(loadConfig()).toEqual(DEFAULT_CONFIG);
   });
 
+  // Owner ruling 9 (R-039), deliberately pinning the NEW default: a bare
+  // install (no config.json) must never silently pull the ~130 MB local
+  // embedding model on first index, so `semanticSearchMode` defaults to
+  // "off". This was previously "auto" — the interactive `akm setup` wizard
+  // is the only place that still pre-selects semantic search ON (see
+  // tests/setup-wizard.test.ts), with a warning, before saving a config.
+  test("defaults semanticSearchMode to 'off' for a bare/headless install (R-039)", () => {
+    expect(DEFAULT_CONFIG.semanticSearchMode).toBe("off");
+    expect(loadConfig().semanticSearchMode).toBe("off");
+  });
+
   test("loads config without requiring AKM_STASH_DIR", () => {
     delete process.env.AKM_STASH_DIR;
     writeCurrentConfig({ semanticSearchMode: "off" });
@@ -198,8 +208,8 @@ describe("loadConfig", () => {
 
   test("project-level .akm/config.json is no longer merged (single-layer load)", () => {
     // Multi-layer project config was removed; only the user-level config is
-    // read. A project-level file under cwd-ancestors emits a deprecation
-    // warning but does NOT contribute settings.
+    // read. A project-level file under cwd-ancestors does not contribute
+    // settings.
     const projectDir = makeTmpDir();
     const restoreCwd = process.cwd();
     try {
@@ -245,7 +255,7 @@ describe("loadConfig", () => {
 
     expect(() => loadConfig()).toThrow(ConfigError);
     expect(() => loadConfig()).toThrow(/sources is the retired pre-cutover source shape/);
-    expect(() => loadConfig()).toThrow(/akm migrate apply/);
+    expect(() => loadConfig()).toThrow(/akm-migrate apply/);
   });
 
   test("hard-rejects the retired `installed[]` key (0.9.0 cutover)", () => {
@@ -270,39 +280,6 @@ describe("loadConfig", () => {
 
     expect(() => loadConfig()).toThrow(ConfigError);
     expect(() => loadConfig()).toThrow(/installed is the retired pre-cutover source shape/);
-  });
-
-  test("emits a one-time deprecation warning when a project-level config is discovered (#457)", () => {
-    const projectDir = makeTmpDir();
-    const restoreCwd = process.cwd();
-    try {
-      writeRawConfig(
-        path.join(projectDir, ".akm", "config.json"),
-        JSON.stringify({ sources: [{ type: "filesystem", path: "/project-stash" }] }),
-      );
-
-      const messages: string[] = [];
-      const originalWarn = console.warn;
-      // setQuiet(false): harness defaults to quiet=true; opt into noisy mode so
-      // warn() inside warnIfProjectConfigPresent reaches the patched console.warn.
-      setQuiet(false);
-      console.warn = (...args: unknown[]) => {
-        messages.push(args.map(String).join(" "));
-      };
-      try {
-        process.chdir(projectDir);
-        loadConfig();
-      } finally {
-        console.warn = originalWarn;
-        setQuiet(true); // restore harness default
-      }
-      // Warning mentions deprecation + project-level + that the file is ignored.
-      expect(messages.some((m) => m.includes("DEPRECATED") && m.includes("project-level"))).toBe(true);
-      expect(messages.some((m) => m.includes("ignored"))).toBe(true);
-    } finally {
-      process.chdir(restoreCwd);
-      cleanup(projectDir);
-    }
   });
 });
 
@@ -398,15 +375,22 @@ describe("saveConfig", () => {
   });
 
   test("prunes config backups to the 5 most-recent (#459)", () => {
-    // 10 saves → 10 distinct backup timestamps (but at most 5 should remain).
+    // RUNTIME-09: this loop used to busy-spin ~10ms between saves "so each
+    // backup gets a unique filename [for] mtimeMs, what we sort on". Verified
+    // that reasoning was backwards: `backupExistingConfig` de-collides
+    // *filenames* itself (src/core/config/config-io.ts:121-133, an EEXIST
+    // retry loop appending -1/-2/... to the ISO-millisecond timestamp), while
+    // `pruneOldBackups` (config-io.ts:147-174) sorts on `mtimeMs` and keeps
+    // only the newest 5 via `slice(MAX_CONFIG_BACKUPS)` — a COUNT-based cut
+    // that holds regardless of how mtimeMs ties break, so tied timestamps
+    // were never a correctness risk for this test's assertions (≤5 remain,
+    // config.latest.json exists). Empirically confirmed too: measured
+    // mtimeMs across 10 back-to-back saves already differs at sub-millisecond
+    // resolution (real filesystem, no spin needed), and 150 repeated runs of
+    // this exact loop without the spin were 150/150 green. 10 saves → up to
+    // 10 distinct backup files, but at most 5 should remain.
     for (let i = 0; i < 10; i++) {
       saveConfig({ semanticSearchMode: i % 2 === 0 ? "off" : "auto" });
-      // The timestamp is ISO-second-resolution; introduce a small delay so
-      // each backup gets a unique filename. mtimeMs is what we sort on.
-      const target = Date.now() + 10;
-      while (Date.now() < target) {
-        /* spin briefly */
-      }
     }
 
     const backupDir = path.join(getCacheDir(), "config-backups");
@@ -734,6 +718,20 @@ describe("primary stash config", () => {
       defaultBundle: "main",
     });
     expect(primaryBundlePath(loadConfig())).toBe("/home/user/my-stash");
+  });
+
+  test("resolves the primary stash from the default bundle's component root", () => {
+    writeCurrentConfig({
+      bundles: {
+        main: {
+          path: "/home/user/package",
+          writable: true,
+          components: { main: { root: "catalog", adapter: "akm" } },
+        },
+      },
+      defaultBundle: "main",
+    });
+    expect(primaryBundlePath(loadConfig())).toBe("/home/user/package/catalog");
   });
 
   test("primary stash is undefined by default", () => {

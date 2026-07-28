@@ -17,6 +17,7 @@ import path from "node:path";
 import { akmSearch } from "../../src/commands/read/search";
 import { resetConfigCache, saveConfig } from "../../src/core/config/config";
 import { getDbPath } from "../../src/core/paths";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { buildSearchText } from "../../src/indexer/search/search-fields";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
@@ -161,7 +162,12 @@ function buildFixture(): void {
     for (const e of entries) {
       const entryKey = `${stashDir}:${e.entry.type}:${e.entry.name}`;
       const searchText = buildSearchText(e.entry);
-      upsertEntry(db, entryKey, e.dirPath, e.filePath, stashDir, e.entry, searchText);
+      const provenance = deriveEntryProvenance(
+        { bundleId: "stash", componentId: "stash", adapterId: "akm" },
+        e.entry.type,
+        e.entry.name,
+      );
+      upsertEntry(db, entryKey, e.dirPath, e.filePath, stashDir, e.entry, searchText, provenance);
     }
     rebuildFts(db);
     setMeta(db, "stashDir", stashDir);

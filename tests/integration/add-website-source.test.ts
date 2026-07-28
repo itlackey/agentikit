@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createMigrationBackup } from "../../src/core/migration-backup";
+import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
 import { withEnvSync } from "../_helpers/sandbox";
 
 const CLI = path.join(__dirname, "..", "..", "src", "cli.ts");
@@ -136,12 +136,21 @@ describe("akm add website", () => {
 
       const configPath = path.join(xdgConfig, "akm", "config.json");
       const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
-        sources?: Array<{ type?: string; url?: string; name?: string }>;
+        bundles?: Record<
+          string,
+          {
+            website?: { url?: string };
+            components?: { main?: { root?: string; adapter?: string; writable?: boolean } };
+          }
+        >;
       };
       // #37: the add flow persists a bundles entry keyed by --name.
-      expect(
-        (config as { bundles?: Record<string, { website?: { url?: string } }> }).bundles?.["docs-site"]?.website?.url,
-      ).toBe(normalizedWebsiteUrl);
+      expect(config.bundles?.["docs-site"]?.website?.url).toBe(normalizedWebsiteUrl);
+      expect(config.bundles?.["docs-site"]?.components?.main).toEqual({
+        root: ".",
+        adapter: "website-snapshot",
+        writable: false,
+      });
 
       expect(parsed.sourceAdded?.stashRoot).toBeDefined();
       const knowledgeFiles = fs.readdirSync(path.join(parsed.sourceAdded?.stashRoot as string, "knowledge")).sort();

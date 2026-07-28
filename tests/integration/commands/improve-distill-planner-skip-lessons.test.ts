@@ -30,16 +30,16 @@ import path from "node:path";
 
 import {
   type AkmDistillOptions,
-  type AkmDistillResult,
   akmDistill,
   DISTILL_REFUSED_INPUT_TYPES,
   isDistillRefusedInputType,
 } from "../../../src/commands/improve/distill";
 import { akmImprove } from "../../../src/commands/improve/improve";
-import type { AkmReflectOptions, AkmReflectResult } from "../../../src/commands/improve/reflect";
+import type { AkmReflectOptions } from "../../../src/commands/improve/reflect";
 import { stashDirFor } from "../../../src/core/asset/asset-placement";
 import { saveConfig } from "../../../src/core/config/config";
 import { appendEvent } from "../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../src/core/improve-types";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { withTestImproveLlm } from "../../_helpers/improve-config";
 
@@ -75,7 +75,7 @@ function makeFixtureStash(): string {
         `description: Lesson ${name}`,
         `when_to_use: When the ${name} signal appears`,
         "sources:",
-        "  - skill:deploy",
+        "  - skills/deploy",
         "---",
         "",
         `Recorded insight for ${name}.`,
@@ -91,7 +91,7 @@ function makeFixtureStash(): string {
     [
       "---",
       "description: Deployment requires VPN access",
-      "source: skill:deploy",
+      "source: skills/deploy",
       "observed_at: 2026-04-20",
       "confidence: 0.92",
       "quality: curated",
@@ -114,8 +114,19 @@ function makeFixtureStash(): string {
 
 async function indexStash(stashDir: string): Promise<void> {
   process.env.AKM_STASH_DIR = stashDir;
-  saveConfig(withTestImproveLlm({ semanticSearchMode: "off" }));
+  saveConfig(
+    withTestImproveLlm({
+      semanticSearchMode: "off",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+    }),
+  );
   await akmIndex({ stashDir, full: true });
+}
+
+function durableRef(ref: string): string {
+  return `stash//${ref}`;
 }
 
 beforeEach(() => {
@@ -146,7 +157,7 @@ afterEach(() => {
 });
 
 describe("improve planner: skip distill-refused input types", () => {
-  test("no lesson:* ref enters the distill-mode action queue", async () => {
+  test("no lessons/* ref enters the distill-mode action queue", async () => {
     const stash = makeFixtureStash();
     await indexStash(stash);
 
@@ -154,7 +165,7 @@ describe("improve planner: skip distill-refused input types", () => {
     // considers them eligible (otherwise the signal/retrieval gate at
     // improve.ts:1553 drops zero-signal refs and the test plan is empty).
     for (const ref of ["lessons/alpha-lesson", "lessons/beta-lesson", "lessons/gamma-lesson", "memories/deploy-fact"]) {
-      appendEvent({ eventType: "feedback", ref, metadata: { signal: "positive", note: "fixture" } });
+      appendEvent({ eventType: "feedback", ref: durableRef(ref), metadata: { signal: "positive", note: "fixture" } });
     }
 
     const distillCalls: AkmDistillOptions[] = [];
@@ -176,12 +187,12 @@ describe("improve planner: skip distill-refused input types", () => {
         return {
           schemaVersion: 2,
           ok: true,
-          ref: options.ref ?? "lesson:alpha-lesson",
+          ref: options.ref ?? "lessons/alpha-lesson",
           engine: "fake-agent",
           durationMs: 1,
           proposal: {
             id: `reflect-${reflectCalls.length}`,
-            ref: options.ref ?? "lesson:alpha-lesson",
+            ref: options.ref ?? "lessons/alpha-lesson",
             status: "pending",
             source: "reflect",
             createdAt: "2026-05-21T00:00:00.000Z",
@@ -198,7 +209,7 @@ describe("improve planner: skip distill-refused input types", () => {
           ok: true,
           outcome: "queued",
           inputRef: options.ref,
-          lessonRef: `lesson:${options.ref.replace(/[:/]/g, "-")}-lesson`,
+          proposalRef: `lessons/${options.ref.replace(/[:/]/g, "-")}-lesson`,
         } satisfies AkmDistillResult;
       },
     });

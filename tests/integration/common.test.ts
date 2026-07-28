@@ -70,7 +70,7 @@ describe("resolveStashDir", () => {
 
   test("refuses an unmigrated stashDir-only config with the migrate hint", () => {
     // 0.9.0 cutover: a retired top-level `stashDir` (no bundles) is no longer
-    // silently honoured — resolveStashDir refuses it with the same `akm migrate
+    // silently honoured — resolveStashDir refuses it with the same `akm-migrate
     // apply` hint the schema hard-reject uses, instead of split-brain success.
     delete process.env.AKM_STASH_DIR;
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-stash-"));

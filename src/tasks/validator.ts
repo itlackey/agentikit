@@ -11,13 +11,14 @@
  *   • the asset/file source exists (prompt targets)
  *   • the selected engine resolves (prompt targets)
  *
- * Validation is deliberately split from parsing: callers that only want to
- * read frontmatter (e.g. `akm show`) can skip these checks, while
+ * Validation is deliberately split from parsing: callers that only inspect
+ * task metadata (e.g. `akm show`) can skip these checks, while
  * `tasks add` and `tasks run` should always run them.
  */
 
 import fs from "node:fs";
 import path from "node:path";
+import { placementSpecFor } from "../core/asset/asset-placement";
 import { parseRefInput } from "../core/asset/resolve-ref";
 import { loadConfig } from "../core/config/config";
 import { NotFoundError } from "../core/errors";
@@ -74,6 +75,18 @@ export async function validateTaskDocument(task: TaskDocument, options: Validate
   if (src.kind === "asset") {
     const stashDir = options.stashDir;
     const ref = parseRefInput(src.ref);
+    // D11 — `parseRefInput` now also accepts an opaque adapter conceptId (a
+    // ref whose leading segment is not an AKM placement dir), but
+    // `resolveAssetPath` (src/sources/resolve.ts) is placement-dir-only: it
+    // has no stash-subdir to route an opaque type through. Surface a clean
+    // domain error here rather than let that helper crash on a missing
+    // directory mapping.
+    if (placementSpecFor(ref.type) === undefined) {
+      throw new NotFoundError(
+        `Task "${task.id}" prompt asset ref "${src.ref}" is not an AKM-placed asset — adapter-owned (opaque) prompt sources are not resolvable as task inputs yet.`,
+        "ASSET_NOT_FOUND",
+      );
+    }
     await resolveAssetPath(stashDir, ref.type, ref.name);
   } else if (src.kind === "file") {
     const taskDir = path.dirname(task.source.path);

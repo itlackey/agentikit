@@ -107,6 +107,53 @@ export function readLockfile(): LockfileEntry[] {
 }
 
 /**
+ * Like {@link readLockfile}, but THROWS instead of silently degrading to `[]`
+ * when the on-disk lockfile exists yet is not parseable JSON or not a JSON
+ * array (R-012).
+ *
+ * `readLockfile`'s fail-open contract is intentional for READ paths — a
+ * corrupt lock degrades a managed bundle to "unmanaged" rather than erroring
+ * every read-only command (`list`, `installed-stashes`, …). But
+ * {@link upsertLockEntry} and {@link removeLockEntry} read the current
+ * entries and then WRITE `[...entries, change]` back out; if that read
+ * silently returned `[]` for a corrupt file, the write would silently
+ * replace the corrupt file with one containing only the single new/changed
+ * entry — permanently destroying every other surviving lock record. Write
+ * paths use this strict variant so a corrupt lockfile fails the operation
+ * loudly (matching the guard `mergeLockEntriesSync` already applies) instead
+ * of quietly deleting user state. A missing file is NOT corruption — there
+ * is nothing to preserve, so that case still returns `[]`. Entries that fail
+ * per-entry validation are still tolerated (filtered out), matching
+ * `readLockfile`'s existing shape-tolerant behavior.
+ */
+function readLockfileOrThrow(): LockfileEntry[] {
+  const lockfilePath = getLockfilePath();
+  let raw: string;
+  try {
+    raw = fs.readFileSync(lockfilePath, "utf8");
+  } catch (err) {
+    rethrowIfTestIsolationError(err);
+    return []; // File does not exist (or is otherwise unreadable) — nothing to preserve.
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new ConfigError(
+      `Refusing to modify lockfile ${lockfilePath}: existing content is not valid JSON (${error instanceof Error ? error.message : String(error)}). Fix or remove the file by hand before retrying — every existing lock entry would otherwise be lost.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new ConfigError(
+      `Refusing to modify lockfile ${lockfilePath}: existing content is not a JSON array. Fix or remove the file by hand before retrying — every existing lock entry would otherwise be lost.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  return parsed.filter(isValidLockfileEntry);
+}
+
+/**
  * The materialized content root recorded in the lock for a managed (git/npm)
  * bundle — spec §10.2 desired/resolved split, where the desired config carries
  * only the source LOCATOR and the resolved `localRoot` lives here.
@@ -149,7 +196,10 @@ export async function writeLockfile(entries: LockfileEntry[]): Promise<void> {
 export async function upsertLockEntry(entry: LockfileEntry): Promise<void> {
   const release = await acquireLockSentinel();
   try {
-    const entries = readLockfile();
+    // R-012: readLockfileOrThrow (not readLockfile) — a corrupt/malformed
+    // lockfile must abort the upsert loudly rather than read as `[]` and get
+    // silently overwritten with just this one entry.
+    const entries = readLockfileOrThrow();
     const withoutExisting = entries.filter((e) => e.id !== entry.id);
     writeLockfileUnlocked([...withoutExisting, entry]);
   } finally {
@@ -185,15 +235,29 @@ export function mergeLockEntriesSync(entries: LockfileEntry[]): void {
     }
     existing = raw;
   }
-  const incoming = new Set(entries.map((e) => e.id));
-  writeLockfileUnlocked([...existing.filter((e) => !incoming.has(e.id)), ...entries]);
+  // MERGE per id, never replace: the migrator's entries are sparse (id/source/
+  // ref/localRoot), while an existing row may carry `resolvedVersion`,
+  // `resolvedRevision`, `integrity`, `installedAt`, … from a real install.
+  // Replacing the whole row discarded the user's recorded resolution/pin and
+  // left later update reporting comparing against an unknown prior version.
+  // Incoming DEFINED fields win; existing fields absent from the incoming
+  // entry are preserved.
+  const byId = new Map(existing.map((e) => [e.id, e]));
+  const merged = entries.map((incoming) => {
+    const prior = byId.get(incoming.id);
+    return prior ? { ...prior, ...incoming } : incoming;
+  });
+  const incomingIds = new Set(entries.map((e) => e.id));
+  writeLockfileUnlocked([...existing.filter((e) => !incomingIds.has(e.id)), ...merged]);
 }
 
 export async function removeLockEntry(id: string): Promise<void> {
   if (!fs.existsSync(getDataDir())) return;
   const release = await acquireLockSentinel();
   try {
-    const entries = readLockfile();
+    // R-012: see upsertLockEntry — same destructive-overwrite risk on a
+    // corrupt lockfile, so the same strict reader is used here.
+    const entries = readLockfileOrThrow();
     writeLockfileUnlocked(entries.filter((e) => e.id !== id));
   } finally {
     release();

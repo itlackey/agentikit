@@ -9,7 +9,7 @@
  * distinguish an intended exit from a real audit bug by string-matching
  * `err.message === "process.exit called"` — a TEST mock sentinel. In production
  * `process.exit` never throws, so the abort branch was test-only, and if the
- * sentinel string ever drifted the DANGEROUS_VAULT_KEY abort would silently
+ * sentinel string ever drifted the DANGEROUS_ENV_KEY abort would silently
  * become fail-OPEN: an insecure stash would install.
  *
  * `auditInstalledStashForDangerousKeys` now returns a TYPED decision and the
@@ -32,6 +32,16 @@ function makeStashWithEnv(content: string, name = ".env"): string {
   const envDir = path.join(dir, "env");
   fs.mkdirSync(envDir, { recursive: true });
   fs.writeFileSync(path.join(envDir, name), content, { encoding: "utf8", mode: 0o600 });
+  return dir;
+}
+
+/** Like {@link makeStashWithEnv}, but writes the file at an arbitrary path relative to `env/`. */
+function makeStashWithEnvAtRelPath(content: string, relPathUnderEnv: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-install-gate-"));
+  tempDirs.push(dir);
+  const fullPath = path.join(dir, "env", relPathUnderEnv);
+  fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+  fs.writeFileSync(fullPath, content, { encoding: "utf8", mode: 0o600 });
   return dir;
 }
 
@@ -105,5 +115,70 @@ describe("dangerous-key install gate (C3 fail-closed)", () => {
     });
 
     expect(decision.blocked).toBe(false);
+  });
+});
+
+// ── F2: the non-recursive, `.env`-suffix-only scan was trivially bypassed ──
+//
+// The previous scan was `fs.readdirSync(dir).filter(f => f.endsWith(".env"))`
+// against `env/` directly — non-recursive and extension-gated. Verified live:
+// a stash with `LD_PRELOAD=...` in `env/nested/inner.env` installed cleanly
+// (exit 0, no warning). The scan now recursively walks `env/`, matching the
+// SAME rule `akm env run` / `akm env list` / the indexer already use to decide
+// what counts as a real env file (`fileName === ".env" || fileName.endsWith(".env")`
+// — see collectEnvFilePathsRecursive's doc comment in add-cli.ts). A file
+// that does not end in `.env` (e.g. `env/notes.txt`) is deliberately still
+// NOT scanned, because it is never sourced as environment variables by any
+// akm codepath — there is no live `akm env run` hijack through it regardless
+// of contents. This is a residual, INTENTIONAL gap, not an oversight: see the
+// same doc comment for what it does and does not cover.
+describe("dangerous-key install gate — recursive env/ scan (F2)", () => {
+  test("a dangerous key in a NESTED env file (env/nested/inner.env) IS blocked — closes the verified bypass", async () => {
+    const stashRoot = makeStashWithEnvAtRelPath("LD_PRELOAD=/tmp/evil.so\n", path.join("nested", "inner.env"));
+
+    const decision = await auditInstalledStashForDangerousKeys({
+      installedStashRoot: stashRoot,
+      ref: "evil/nested-stash",
+      allowDangerousKeys: false,
+      rollbackTarget: stashRoot,
+      isTTY: false,
+    });
+
+    expect(decision.blocked).toBe(true);
+    if (decision.blocked) {
+      expect(decision.exitCode).toBe(1);
+    }
+  });
+
+  test("a dangerous key in a non-.env file (env/notes.txt) is NOT blocked — by design, that file is never sourced by akm", async () => {
+    const stashRoot = makeStashWithEnvAtRelPath("LD_PRELOAD=/tmp/evil.so\n", "notes.txt");
+
+    const decision = await auditInstalledStashForDangerousKeys({
+      installedStashRoot: stashRoot,
+      ref: "evil/notes-stash",
+      allowDangerousKeys: false,
+      rollbackTarget: stashRoot,
+      isTTY: false,
+    });
+
+    expect(decision.blocked).toBe(false);
+  });
+
+  test("a dangerous key in a nested TOP-LEVEL-lookalike .env still resolves a readable envRef", async () => {
+    // Regression guard on the ref-derivation change alongside the recursive
+    // walk: a nested `.env` (not `<name>.env`) must still produce a sane,
+    // non-crashing envRef ("env/nested/default"), not throw or silently drop
+    // the finding.
+    const stashRoot = makeStashWithEnvAtRelPath("LD_PRELOAD=/tmp/evil.so\n", path.join("nested", ".env"));
+
+    const decision = await auditInstalledStashForDangerousKeys({
+      installedStashRoot: stashRoot,
+      ref: "evil/nested-dotenv-stash",
+      allowDangerousKeys: false,
+      rollbackTarget: stashRoot,
+      isTTY: false,
+    });
+
+    expect(decision.blocked).toBe(true);
   });
 });

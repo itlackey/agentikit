@@ -211,6 +211,15 @@ describe("downstream value attribution", () => {
     expect(graph.downstreamAttribution?.graphExtraction?.boost).toBeCloseTo(0.465, 6);
   });
 
+  // C9 (env-var hygiene): this still drives ablation via AKM_ABLATE_CONTRIBUTORS
+  // rather than a DI option. `applyRankingRules` (src/indexer/search/ranking.ts)
+  // now accepts `ablateContributors` directly on `RankEntriesOptions` and
+  // prefers it over the env var, but nothing threads it through the public
+  // `akmSearch()` -> `searchLocal()` (src/indexer/search/db-search.ts) path
+  // yet — both `src/commands/read/search.ts` and db-search.ts were outside
+  // this change's edit boundary (owned by other in-flight work). The env
+  // fallback in ranking.ts is intentionally kept until that threading lands;
+  // see the `ablateContributors` doc comment on RankEntriesOptions.
   test("graph contributor ablation emits control metadata and no graph reason", async () => {
     const result = await withEnv({ AKM_ABLATE_CONTRIBUTORS: "graph-ranking" }, () =>
       akmSearch({ query: "graphneedle", limit: 10 }),

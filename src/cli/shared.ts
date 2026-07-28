@@ -14,7 +14,9 @@ import { stringify as yamlStringify } from "yaml";
 import { assertNever } from "../core/assert";
 import { AkmError, UsageError } from "../core/errors";
 import { getOutputMode, type OutputMode } from "../output/context";
+import { renderGenericHtml, renderGenericMarkdown, renderGenericText } from "../output/generic-render";
 import { deliverRendered } from "../output/html-render";
+import { getHtmlRendererHandler, getMdRendererHandler } from "../output/render-registry";
 import { shapeForCommand } from "../output/shapes";
 import { formatPlain, outputJsonl } from "../output/text";
 import { parseAllFlagValues } from "./invocation";
@@ -80,10 +82,28 @@ function extractHint(error: unknown): string | undefined {
 }
 
 /**
- * Serialize an error to the standard JSON envelope and exit.
- * Used in both the startup try/catch and `runWithJsonErrors`.
+ * Serialize an error to the standard JSON envelope and record the mapped
+ * exit code. Used in both the startup try/catch and `runWithJsonErrors`.
+ *
+ * R-067: this used to call `process.exit(exitCode)` directly, which
+ * terminates the process synchronously and skips every pending `finally`
+ * block up the call stack — including `src/cli.ts`'s own
+ * `disposeDispatchResources()` cleanup and citty's per-command `cleanup`
+ * hooks. `process.exitCode = exitCode; return;` is equivalent for every
+ * caller here: Node/Bun exits with that code once the event loop drains
+ * naturally, but cleanup on the way there still runs.
+ * `src/commands/improve/extract-cli.ts` already uses this exact pattern for
+ * its own non-throw failure signal.
+ *
+ * Because this no longer throws or exits, it no longer terminates control
+ * flow on its own — every call site MUST treat it like a normal return and
+ * stop doing further work itself (an explicit `return;` right after the
+ * call, same as any other caller of a fallible function). `runWithJsonErrors`
+ * below satisfies this for free (this call is its catch block's last
+ * statement); `src/cli.ts`'s three direct call sites add the `return;`
+ * explicitly.
  */
-export function emitJsonError(error: unknown): never {
+export function emitJsonError(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   const hint = extractHint(error);
   const exitCode = classifyExitCode(error);
@@ -91,7 +111,7 @@ export function emitJsonError(error: unknown): never {
   // internal errors have none.
   const code = error instanceof AkmError ? error.code : undefined;
   console.error(JSON.stringify({ ok: false, error: message, ...(code ? { code } : {}), hint }, null, 2));
-  process.exit(exitCode);
+  process.exitCode = exitCode;
 }
 
 /**
@@ -118,19 +138,105 @@ export type JsonCommandDef<T extends ArgsDef = ArgsDef> = Omit<CommandDef<T>, "r
 };
 
 /**
+ * The global output flags, redeclared on every leaf command.
+ *
+ * citty parses each command level against only that command's own args, so a
+ * flag declared on the root command is UNKNOWN at the leaf — and an unknown
+ * flag does not consume its space-separated value, which then falls through as
+ * a positional. `akm sync --format json` once synced a bundle named "json",
+ * and `akm env unset env:x KEY --format json` once tried to unset a key named
+ * "json"; both grew bespoke argv-inspection workarounds. Declaring the flags
+ * at the leaf lets the parser consume the value, which is the root-cause fix.
+ *
+ * These declarations exist for PARSING only. The output mode is still read
+ * exactly once, from the invocation singleton at startup — no command body may
+ * read these args (that is the same one-parse rule `cli/invocation.ts`
+ * documents).
+ */
+export const GLOBAL_OUTPUT_ARGS = {
+  format: { type: "string", description: "Output format: json|jsonl|yaml|text|md|html (global flag)" },
+  // R-050(b): `--detail` genuinely changes the payload on most commands
+  // (e.g. `show` has three distinct brief/normal/full payloads), but is a
+  // verified no-op — byte-identical output at every level — on `info`,
+  // `list`, and `remember` specifically. Naming that here rather than
+  // implying uniform effect everywhere.
+  detail: {
+    type: "string",
+    description:
+      "Output detail: brief|normal|full (global flag). No effect on `info`, `list`, or `remember` — " +
+      "their payload is identical at every level.",
+  },
+  // R-050(c): mirrors the root command's own `--shape` help
+  // (`main.args.shape` in src/cli.ts) so the caveat is visible from every
+  // leaf's own `--help`, not only the top-level one. `summary` outside
+  // `show` is a hard usage error (exit 2, INVALID_SHAPE_VALUE), enforced at
+  // startup in src/cli.ts before any command body runs.
+  shape: {
+    type: "string",
+    description:
+      "Output projection: human|agent|summary (global flag). 'summary' is only valid on 'akm show' " +
+      "(a usage error, exit 2, everywhere else).",
+  },
+  output: { type: "string", description: "Write rendered output to a file instead of stdout (global flag)" },
+} as const satisfies ArgsDef;
+
+/**
  * Define a citty command whose `run` body is automatically wrapped in
  * `runWithJsonErrors`, so the handler emits a byte-identical JSON error
  * envelope (stdout/stderr/exit-code) on throw without the boilerplate. A
  * command without a `run` (a pure subcommand group) is passed through
  * unchanged.
+ *
+ * Every command defined here also accepts the {@link GLOBAL_OUTPUT_ARGS} so
+ * their values are parsed rather than mis-captured as positionals; a command
+ * declaring its own arg of the same name wins (e.g. `hints` has its own
+ * `detail`).
  */
 export function defineJsonCommand<const T extends ArgsDef = ArgsDef>(def: JsonCommandDef<T>): CommandDef<T> {
   const { run, ...rest } = def;
-  if (!run) return defineCommand({ ...rest } as CommandDef<T>);
+  const withGlobals = { ...rest, args: { ...GLOBAL_OUTPUT_ARGS, ...rest.args } };
+  if (!run) return defineCommand(withGlobals as CommandDef<T>);
   return defineCommand({
-    ...rest,
+    ...withGlobals,
     run: (context: CommandContext<T>) => runWithJsonErrors(() => run(context)),
   } as CommandDef<T>);
+}
+
+/**
+ * Canonical bare-group behavior (0.9.0 breaking change, owner ruling 12).
+ *
+ * Before 0.9.0 the twelve `akm <group>` command groups did three different
+ * things when invoked with no subcommand: some printed help and exited 1,
+ * some ran an implicit default action and exited 0 (e.g. bare `akm graph`
+ * silently rendering `graph summary`), and one already raised a structured
+ * usage error and exited 2. None of that is discoverable from the exit code
+ * alone, and a script that greps stdout for a specific default action broke
+ * silently the moment someone reordered subcommands.
+ *
+ * The canonical choice, applied uniformly: a bare group invocation is a
+ * USAGE ERROR — exit 2, the same structured JSON envelope every other usage
+ * mistake in this CLI produces (not citty's raw help banner, and not a
+ * silent default action). This matches STABILITY.md's documented exit-code
+ * table (2 = usage) and the exit code the CLI already used for "unknown
+ * command" / "missing required argument" as of the companion 0.9.0 fix.
+ *
+ * `defaultRun` is now OPTIONAL for exactly this reason: omitting it opts a
+ * group into the shared, canonical error below. Passing an explicit
+ * `defaultRun` is a deliberate opt-out and should not be added to new groups
+ * without a documented reason — see CHANGELOG for the migration note.
+ */
+function bareGroupUsageError<T extends ArgsDef>(meta: CommandDef<T>["meta"], subcommandSet: Set<string>): never {
+  const name =
+    typeof meta === "object" && meta !== null && "name" in meta && typeof (meta as { name?: unknown }).name === "string"
+      ? (meta as { name: string }).name
+      : undefined;
+  const usage = name ? `\`akm ${name}\`` : "This command";
+  const subcommands = [...subcommandSet].sort().join(", ");
+  throw new UsageError(
+    `${usage} requires a subcommand. Available: ${subcommands}.`,
+    "MISSING_REQUIRED_ARGUMENT",
+    `Run \`akm ${name ?? "<command>"} --help\` to see usage for each subcommand.`,
+  );
 }
 
 /**
@@ -156,9 +262,11 @@ export function defineGroupCommand<const T extends ArgsDef = ArgsDef>(def: {
   // reject every concrete subcommand. Same precedent as `src/commands/completions.ts`.
   // biome-ignore lint/suspicious/noExplicitAny: citty command tree uses dynamic shapes
   subCommands: Record<string, CommandDef<any>>;
-  defaultRun: (context: CommandContext<T>) => void | Promise<void>;
+  /** Omit for the canonical bare-group behavior (see {@link bareGroupUsageError}). */
+  defaultRun?: (context: CommandContext<T>) => void | Promise<void>;
 }): CommandDef<T> {
   const subcommandSet = new Set(Object.keys(def.subCommands));
+  const defaultRun = def.defaultRun ?? (() => bareGroupUsageError<T>(def.meta, subcommandSet));
   return defineCommand({
     meta: def.meta,
     ...(def.args ? { args: def.args } : {}),
@@ -166,7 +274,7 @@ export function defineGroupCommand<const T extends ArgsDef = ArgsDef>(def: {
     run: (context: CommandContext<T>) =>
       runWithJsonErrors(() => {
         if (hasSubcommand(context.args, subcommandSet)) return;
-        return def.defaultRun(context);
+        return defaultRun(context);
       }),
   } as CommandDef<T>);
 }
@@ -194,25 +302,35 @@ export function output(command: string, result: unknown): void {
       deliverRendered(yamlStringify(shaped), mode.outputPath);
       return;
     case "text": {
+      // D7 — registry first, generic rendering of the shaped envelope second.
+      // Mirrors the md/html fallback immediately below: a command with no
+      // registered text formatter used to fall through to
+      // `JSON.stringify(shaped, null, 2)`, i.e. silently hand back JSON while
+      // claiming `--format text` — the same "wrong format wearing the right
+      // flag" bug D7 already closed for md/html. `renderGenericText` (a
+      // DISTINCT function from `renderGenericMarkdown` — see its doc comment
+      // in src/output/generic-render.ts for why reusing the md renderer here
+      // was itself a version of the same bug) renders flat `key=value` text
+      // matching the house style already established by registered text
+      // formatters like `config list`.
       const plain = formatPlain(command, shaped, mode.detail);
-      deliverRendered(plain ?? JSON.stringify(shaped, null, 2), mode.outputPath);
+      deliverRendered(plain ?? renderGenericText(command, shaped), mode.outputPath);
       return;
     }
-    case "md":
-      // `--format md` is currently only consumed by `akm health` for the
-      // per-run / window-compare table renderings. Commands that don't
-      // implement an md renderer fall back to the JSON envelope so
-      // pipelines never get an empty stdout.
-      deliverRendered(JSON.stringify(shaped, null, 2), mode.outputPath);
+    case "md": {
+      // D7 — registry first, generic rendering of the shaped envelope second.
+      // No command emits JSON under `--format md` any more: silently handing
+      // back the wrong format was the worst of the three behaviours this
+      // replaced.
+      const rendered = getMdRendererHandler(command)?.(shaped, mode.detail);
+      deliverRendered(rendered ?? renderGenericMarkdown(command, shaped), mode.outputPath);
       return;
-    case "html":
-      // `akm health` intercepts `mode.format === "html"` before reaching
-      // output() (cli.ts, same as the `md` intercept) and renders its own
-      // bespoke template. Every other command has no HTML surface — the
-      // generic JSON-in-<pre> fallback template was removed (chunk-9 WI-9.4c
-      // / Decision 4); `html` stays a valid --format value (OUTPUT_FORMATS),
-      // it just only resolves for health.
-      throw new UsageError("html output is only available for `akm health`", "INVALID_FLAG_VALUE");
+    }
+    case "html": {
+      const rendered = getHtmlRendererHandler(command)?.(shaped, mode.detail);
+      deliverRendered(rendered ?? renderGenericHtml(command, shaped), mode.outputPath);
+      return;
+    }
   }
 }
 

@@ -4,7 +4,7 @@
 [![CI](https://github.com/itlackey/akm/actions/workflows/ci.yml/badge.svg)](https://github.com/itlackey/akm/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/akm-cli)](LICENSE)
 
-**A package manager for AI agent capabilities** — scripts, skills, commands, agents, knowledge, memories, workflows, wikis, env files, secrets, lessons, and scheduled tasks — that works with any AI coding assistant that can run shell commands.
+**A knowledge toolkit for AI agents** — capture, curate, search, and share scripts, skills, commands, agents, knowledge, memories, workflows, wikis, env files, secrets, lessons, and scheduled tasks — working with any AI coding assistant that can run shell commands.
 
 akm gives agents a curated, searchable library built from local directories, GitHub repos, npm packages, and websites. Instead of front-loading a giant prompt, agents pull exactly what they need, when they need it, and feed results back so the library improves over time.
 

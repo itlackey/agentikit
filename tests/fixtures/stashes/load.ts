@@ -123,6 +123,15 @@ export function loadFixtureStash(name: string, options: LoadFixtureStashOptions 
     // Use isolated XDG dirs for the index invocation so the helper never
     // touches the operator's real ~/.cache/akm or pulls in their configured
     // registries / sources. The shipped fixture is the only thing indexed.
+    // Semantic search is pinned off: with the default ("auto") the local
+    // embedder fetches its model over the network during `akm index`, which
+    // hangs or times out on slow/blocked CI runners. Every caller of this
+    // helper wants deterministic FTS-only ranking anyway.
+    fs.mkdirSync(path.join(configHome, "akm"), { recursive: true });
+    fs.writeFileSync(
+      path.join(configHome, "akm", "config.json"),
+      '{"configVersion":"0.9.0","semanticSearchMode":"off"}\n',
+    );
     const result = Bun.spawnSync({
       cmd: ["bun", "run", CLI_ENTRY, "index"],
       cwd: stashDir,

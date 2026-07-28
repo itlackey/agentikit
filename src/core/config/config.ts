@@ -105,7 +105,7 @@ export function resolveBatchSize(configured: number | undefined, contextLength?:
 
 export const DEFAULT_CONFIG: AkmConfig = {
   configVersion: "0.9.0",
-  semanticSearchMode: "auto",
+  semanticSearchMode: "off",
   registries: [
     { url: "https://raw.githubusercontent.com/itlackey/akm-registry/main/index.json", name: "akm-registry" },
     { url: "https://skills.sh", name: "skills.sh", provider: "skills-sh", enabled: false },
@@ -117,8 +117,6 @@ export const DEFAULT_CONFIG: AkmConfig = {
 };
 
 // ── Load / Save / Update ────────────────────────────────────────────────────
-
-const PROJECT_CONFIG_RELATIVE_PATH = path.join(".akm", "config.json");
 
 let cachedConfig: { config: AkmConfig; path: string; mtime: number; size: number } | undefined;
 
@@ -192,9 +190,8 @@ export function loadUserConfig(): AkmConfig {
  * Parse raw config text and validate via Zod.
  * ({@link AkmConfigSchema}). Returns the merged-with-defaults AkmConfig.
  *
- * The migration handles all one-time 0.7→0.8 transforms (legacy keys,
- * boolean→string coercions, openviking rename); the schema then validates
- * the canonical shape and throws on anything it doesn't recognise.
+ * The schema accepts only the current config version and validates the
+ * canonical shape before defaults are merged.
  */
 export function parseAndValidateConfigText(text: string, sourcePath?: string): AkmConfig {
   const raw = parseConfigText(text, sourcePath);
@@ -257,10 +254,6 @@ export function getImproveProcessConfig(
 }
 
 export function loadConfig(): AkmConfig {
-  // Single-layer load: only the user-level config file is read. Project-level
-  // .akm/config.json files discovered under cwd-ancestors emit a one-time
-  // deprecation warning (#457) but are NOT merged.
-  warnIfProjectConfigPresent(process.cwd());
   return loadUserConfig();
 }
 
@@ -364,7 +357,7 @@ export async function mutateConfigWithPrecommit<T>(
 /**
  * Strip literal apiKey fields before writing config to disk.
  * API keys are expected to come from environment variables
- * (AKM_EMBED_API_KEY, AKM_LLM_API_KEY, AKM_PROFILE_<NAME>_API_KEY).
+ * (AKM_EMBED_API_KEY, AKM_LLM_API_KEY, AKM_ENGINE_<NAME>_API_KEY).
  *
  * `${VAR}` / `$VAR` references are preserved — they are not secrets, they
  * are deferred lookups resolved at consumption by `resolveSecret`. Dropping
@@ -453,15 +446,14 @@ export function resolveSecret(value: string | undefined): string | undefined {
 /**
  * Read a per-pass {@link IndexPassConfig} entry from {@link IndexConfig},
  * filtering out the reserved feature-section keys so callers don't mistake
- * `metadataEnhance` / `stalenessDetection` for a pass.
+ * `metadataEnhance` for a pass.
  */
 /**
  * Reserved well-known keys on IndexConfig that are NOT per-pass entries.
- * `stalenessDetection` is retired (10-Q3) but stays reserved so a leftover
- * config section is never misread as a pass entry. `indexBodyOpening`
- * (stash-conventions SPEC-8) is a boolean feature flag, not a pass section.
+ * `indexBodyOpening` (stash-conventions SPEC-8) is a boolean feature flag, not
+ * a pass section.
  */
-const INDEX_RESERVED_KEYS = new Set(["metadataEnhance", "stalenessDetection", "indexBodyOpening"]);
+const INDEX_RESERVED_KEYS = new Set(["metadataEnhance", "indexBodyOpening"]);
 
 export function getIndexPassConfig(config: IndexConfig | undefined, passName: string): IndexPassConfig | undefined {
   if (!config) return undefined;
@@ -473,6 +465,7 @@ export function getIndexPassConfig(config: IndexConfig | undefined, passName: st
 
 // Re-export source runtime helpers — implementation lives in config-sources.ts.
 export {
+  bundleComponentConfig,
   bundleEntryToSourceEntry,
   bundlesToSourceEntries,
   installedSourceDescriptor,
@@ -487,37 +480,3 @@ export {
  * (current config + partial patch). Sub-objects with named records (profiles,
  * defaults, etc.) shallow-merge; arrays override wholesale.
  */
-
-/**
- * Walk cwd-ancestors looking for `.akm/config.json`. If one is found, emit a
- * one-time deprecation warning per path. The file's contents are NOT read —
- * multi-layer project config was removed in this release; the warning stays
- * for one cycle so users notice they have a now-dead file on disk and can
- * migrate its settings to the user-level config.
- */
-const PROJECT_CONFIG_DEPRECATION_WARNED = new Set<string>();
-function warnIfProjectConfigPresent(startDir: string): void {
-  let currentDir = path.resolve(startDir);
-  while (true) {
-    const configPath = path.join(currentDir, PROJECT_CONFIG_RELATIVE_PATH);
-    if (isFile(configPath) && !PROJECT_CONFIG_DEPRECATION_WARNED.has(configPath)) {
-      PROJECT_CONFIG_DEPRECATION_WARNED.add(configPath);
-      warn(
-        `[akm] DEPRECATED: project-level config file found at ${configPath}. ` +
-          "Project-level config files are no longer merged (removed after 0.8.x deprecation). " +
-          "Move any needed settings to ~/.config/akm/config.json; this file is ignored.",
-      );
-    }
-    const parentDir = path.dirname(currentDir);
-    if (parentDir === currentDir) break;
-    currentDir = parentDir;
-  }
-}
-
-function isFile(filePath: string): boolean {
-  try {
-    return fs.statSync(filePath).isFile();
-  } catch {
-    return false;
-  }
-}

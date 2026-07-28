@@ -20,13 +20,12 @@ import {
   prepareImproveLoopEnv,
   processImproveLoopRef,
 } from "../../../src/commands/improve/loop-stages";
-import type { AkmReflectResult } from "../../../src/commands/improve/reflect";
 import { createRunContext } from "../../../src/commands/improve/run-context";
 import type { Proposal } from "../../../src/commands/proposal/repository";
 import type { AkmConfig } from "../../../src/core/config/config";
 import { UsageError } from "../../../src/core/errors";
-import type { EventEnvelope } from "../../../src/core/events";
-import type { ImproveEligibleRef } from "../../../src/core/improve-types";
+import type { EventEnvelope } from "../../../src/core/events-types";
+import type { AkmReflectResult, ImproveEligibleRef } from "../../../src/core/improve-types";
 import { makeStashDir, type SandboxedDir, sandboxXdgDataHome } from "../../_helpers/sandbox";
 
 const disposers: Array<{ cleanup: () => void }> = [];
@@ -68,7 +67,7 @@ function distillQueued(ref: string, proposalKind: "lesson" | "knowledge") {
     ok: true,
     outcome: "queued" as const,
     inputRef: ref,
-    lessonRef: deriveLessonRef(ref),
+    proposalRef: deriveLessonRef(ref),
     proposalKind,
     proposal: { id: "dp-1", confidence: 0.8 } as unknown as Proposal,
   };

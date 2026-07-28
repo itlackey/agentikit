@@ -21,10 +21,6 @@ import type {
   ResolvedRegistryArtifact,
 } from "./types";
 
-// The semver engine lives in ./semver (WI-9.3 verbatim move); `maxSatisfying`
-// stays re-exported here so this module's public surface is unchanged.
-export { maxSatisfying } from "./semver";
-
 /**
  * Validate that a URL is safe to pass to git.
  * Allowlists https:, http:, ssh:, git: schemes and git@ SSH shorthand.
@@ -299,6 +295,15 @@ function isPathLikeRef(ref: string): boolean {
   if (ref.startsWith("./") || ref.startsWith("../") || ref.startsWith(".\\") || ref.startsWith("..\\")) {
     return true;
   }
+  // R-007: a bare `owner/repo` (or `owner/repo#ref`) shorthand is ambiguous
+  // with a relative directory of the same shape, and is never an EXPLICIT
+  // local path the way `./owner/repo` is. Treating it as non-path here means
+  // `tryParseLocalRef` silently returns `undefined` (rather than throwing
+  // NotFoundError) when no such directory exists on disk, letting
+  // `parseRegistryRef`'s GitHub-shorthand fallback run instead. A directory
+  // that DOES exist with this shape is unaffected — `tryParseLocalRef`
+  // resolves it before the missing-path distinction ever matters.
+  if (looksLikeGithubOwnerRepo(ref)) return false;
   return ref.includes("/") || ref.includes("\\");
 }
 
@@ -374,9 +379,37 @@ export function validateNpmTarballUrl(tarballUrl: string, packageRef: string): v
   }
 }
 
+/**
+ * Resolve the npm registry base URL used to fetch package METADATA.
+ *
+ * R-035: `AKM_NPM_REGISTRY` previously only widened the trusted-tarball-host
+ * allowlist (see {@link trustedNpmTarballHosts}) while the metadata endpoint
+ * stayed hardcoded to the public registry — so an operator-configured mirror
+ * was never actually consulted, making the `UntrustedNpmTarballError.hint()`
+ * text below false. Honoring the override here for metadata too makes the
+ * hint true: installs really do resolve entirely against the configured
+ * mirror when it is set, mirroring how a private npm registry replaces the
+ * default wholesale (like npm's own `--registry` flag) rather than being
+ * merged with it.
+ */
+function npmMetadataRegistryBase(): string {
+  const override = process.env.AKM_NPM_REGISTRY?.trim();
+  if (override) {
+    try {
+      const url = new URL(override);
+      const base = `${url.origin}${url.pathname === "/" ? "" : url.pathname}`;
+      return base.replace(/\/+$/, "");
+    } catch {
+      // Ignore unparseable overrides; fall back to the public registry.
+    }
+  }
+  return `https://${DEFAULT_NPM_REGISTRY_HOST}`;
+}
+
 async function resolveNpmArtifact(parsed: ParsedNpmRef): Promise<ResolvedRegistryArtifact> {
   const encodedName = encodeURIComponent(parsed.packageName);
-  const metadata = await fetchJson<Record<string, unknown>>(`https://registry.npmjs.org/${encodedName}`);
+  const registryBase = npmMetadataRegistryBase();
+  const metadata = await fetchJson<Record<string, unknown>>(`${registryBase}/${encodedName}`);
 
   const versions = asRecord(metadata.versions);
   const distTags = asRecord(metadata["dist-tags"]);

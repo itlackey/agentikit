@@ -152,13 +152,18 @@ describe("resolveSourceEntries", () => {
     }
   });
 
-  test("skips non-existent stash paths", () => {
+  test("keeps non-existent configured paths so indexing can preserve their last-known-good rows", () => {
     saveConfig({
       semanticSearchMode: "off",
       bundles: { missing: { path: "/nonexistent/path/should/not/exist" } },
     });
     const sources = resolveSourceEntries();
-    expect(sources.length).toBe(1);
+    expect(sources).toHaveLength(2);
+    expect(sources[1]).toMatchObject({
+      path: "/nonexistent/path/should/not/exist",
+      registryId: "missing",
+      type: "filesystem",
+    });
   });
 
   test("includes registry-managed bundles resolved from the lock localRoot", () => {
@@ -217,6 +222,71 @@ describe("resolveSourceEntries", () => {
       expect(sources[0]!.path).toBe(overrideDir);
     } finally {
       fs.rmSync(overrideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps AKM_STASH_DIR ahead of a configured default bundle", () => {
+    const configuredDefault = fs.mkdtempSync(path.join(os.tmpdir(), "akm-configured-default-"));
+    try {
+      saveConfig({
+        semanticSearchMode: "off",
+        defaultBundle: "configured",
+        bundles: { configured: { path: configuredDefault } },
+      });
+
+      const sources = resolveSourceEntries();
+      expect(sources.map((source) => source.path)).toEqual([stashDir, configuredDefault]);
+      expect(sources[0]?.registryId).toBeUndefined();
+      expect(sources[1]?.registryId).toBe("configured");
+    } finally {
+      fs.rmSync(configuredDefault, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps an explicit stash override ahead of env and default bundle", () => {
+    const configuredDefault = fs.mkdtempSync(path.join(os.tmpdir(), "akm-configured-default-"));
+    const overrideDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-explicit-override-"));
+    try {
+      saveConfig({
+        semanticSearchMode: "off",
+        defaultBundle: "configured",
+        bundles: { configured: { path: configuredDefault } },
+      });
+
+      const sources = resolveSourceEntries(overrideDir);
+      expect(sources.map((source) => source.path)).toEqual([overrideDir, configuredDefault]);
+    } finally {
+      fs.rmSync(configuredDefault, { recursive: true, force: true });
+      fs.rmSync(overrideDir, { recursive: true, force: true });
+    }
+  });
+
+  test("represents an escaping default component as unresolved without inserting the escaped root", () => {
+    const bundleRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-escaping-default-"));
+    try {
+      saveConfig({
+        semanticSearchMode: "off",
+        defaultBundle: "escaping",
+        bundles: {
+          escaping: { path: bundleRoot, components: { main: { root: "..", adapter: "akm" } } },
+        },
+      });
+
+      const sources = resolveSourceEntries();
+      const unresolved = sources.find((source) => source.registryId === "escaping");
+      expect(sources[0]?.path).toBe(stashDir);
+      expect(unresolved).toMatchObject({ unresolved: true, registryId: "escaping" });
+      expect(unresolved?.path.startsWith(`${bundleRoot}${path.sep}`)).toBe(true);
+      expect(sources.some((source) => source.path === path.dirname(bundleRoot))).toBe(false);
+      if (!unresolved) throw new Error("expected unresolved source");
+      fs.mkdirSync(unresolved.path, { recursive: true });
+      expect(resolveSourceEntries(unresolved.path)[0]).toMatchObject({
+        path: unresolved.path,
+        registryId: "escaping",
+        unresolved: true,
+      });
+    } finally {
+      fs.rmSync(bundleRoot, { recursive: true, force: true });
     }
   });
 
@@ -349,6 +419,8 @@ describe("isEditable", () => {
       entry: { type: "knowledge", name: "guide", description: "Guide" },
       path: filePath,
       itemRef: "stash//knowledge/guide",
+      bundleId: "stash",
+      conceptId: "knowledge/guide",
       score: 1,
       query: "guide",
       rankingMode: "fts",
@@ -441,6 +513,8 @@ describe("isEditable", () => {
         entry: { type: "knowledge", name: "guide", description: "Guide" },
         path: filePath,
         itemRef: "team//knowledge/guide",
+        bundleId: "team",
+        conceptId: "knowledge/guide",
         score: 1,
         query: "guide",
         rankingMode: "fts",
@@ -475,6 +549,8 @@ describe("isEditable", () => {
             entry: { type: "knowledge", name: "shared" },
             path: path.join(root, "knowledge", "shared.md"),
             itemRef: `bundle-${index + 1}//knowledge/shared`,
+            bundleId: `bundle-${index + 1}`,
+            conceptId: "knowledge/shared",
             score: 1,
             query: "shared",
             rankingMode: "fts",
@@ -530,12 +606,35 @@ describe("ensureSourceCaches", () => {
 
   test("reads from sources[] not stashes[] — website entries in sources[] are processed", async () => {
     // A config where sources[] has a website entry and stashes is undefined.
-    // The mirror will fail (unreachable host) but the function warns, not throws.
+    // Mock the mirror (no network) and verify it's actually invoked for a
+    // sources[]-only config, matching the neighbouring tests in this describe.
+    //
+    // RUNTIME-05: the URL must NOT be under the `.invalid` TLD. `.invalid` is
+    // rejected synchronously by assertWebsiteRequestUrl
+    // (src/sources/snapshot-fetchers/website-ingest.ts:677-679) inside the
+    // website provider FACTORY (src/sources/providers/website.ts:16-18) — i.e.
+    // before `sync()`/`ensureWebsiteMirror` is ever reached. With the old
+    // `example.invalid` URL, `ensureSourceCaches` caught that construction
+    // error and warned+continued (src/indexer/search/search-source.ts:362-371),
+    // so the mocked mirror below would never actually be called — this test
+    // would silently stop proving "website entries are processed" at all.
+    // `.test` (used by the neighbouring tests in this describe) is not
+    // special-cased there, so the mocked path is genuinely exercised.
+    const websiteSpy = spyOn(websiteIngest, "ensureWebsiteMirror").mockResolvedValue({
+      rootDir: "/tmp/root",
+      stashDir: "/tmp/stash",
+      manifestPath: "/tmp/manifest.json",
+    });
     const config: AkmConfig = {
       semanticSearchMode: "off",
-      bundles: { "test-website": { website: { url: "https://example.invalid/docs" } } },
+      bundles: { "test-website": { website: { url: "https://example.test/docs" } } },
     };
-    await expect(ensureSourceCaches(config)).resolves.toBeUndefined();
+    try {
+      await expect(ensureSourceCaches(config)).resolves.toBeUndefined();
+      expect(websiteSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      websiteSpy.mockRestore();
+    }
   });
 
   // R2 bug fix: npm sources are cache-backed too, but the old type-gated loops

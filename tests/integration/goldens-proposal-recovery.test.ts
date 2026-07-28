@@ -66,7 +66,12 @@ const children: ChildProcess[] = [];
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
   markers = makeSandboxDir("akm-goldens-proposal-crash");
-  writeSandboxConfig({ semanticSearchMode: "off" });
+  writeSandboxConfig({
+    semanticSearchMode: "off",
+    bundles: { stash: { path: storage.stashDir, writable: true } },
+    defaultBundle: "stash",
+    defaultWriteTarget: "stash",
+  });
 });
 
 afterEach(() => {
@@ -125,7 +130,7 @@ function seedProposal(name: string): { id: string; assetPath: string; original: 
     payload: { content },
   });
   if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
-  return { id: proposal.id, assetPath, original, content };
+  return { id: proposal.id, assetPath, original, content: proposal.payload.content };
 }
 
 /** Count of events matching {type, ref}, plus the distinct-idempotency-key shape (brief §3.2). */
@@ -157,7 +162,7 @@ describe("goldens: proposal accept crash recovery (WI-03, R3, integration)", () 
       const proposal = getProposal(storage.stashDir, seeded.id);
       expect(proposal.status).toBe("accepted");
       expect(proposal.backupContent).toBe(seeded.original);
-      expect(proposal.acceptedContentHash).toBeDefined();
+      expect(proposal.acceptedTarget?.contentHash).toBeDefined();
       const promoted = eventOutcome("promoted", lessonDurableRef(name));
       expect(promoted.matchingCount).toBe(1);
       expect(promoted.distinctIdempotencyKeyCount).toBe(1);
@@ -242,7 +247,7 @@ describe("golden fixture: serialize proposal crash recovery outcomes (WI-03, R3)
         ok: result.ok,
         status: proposal.status,
         backupContentMatchesOriginal: proposal.backupContent === seeded.original,
-        acceptedContentHashPresent: proposal.acceptedContentHash !== undefined,
+        acceptedTargetHashPresent: proposal.acceptedTarget?.contentHash !== undefined,
         assetContentMatchesProposal: fs.readFileSync(seeded.assetPath, "utf8") === seeded.content,
         promotedEvent: eventOutcome("promoted", lessonDurableRef(name)),
         journalPhasesObserved: [phase],

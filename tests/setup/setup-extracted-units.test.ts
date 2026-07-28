@@ -27,15 +27,15 @@ import { PROVIDER_DEFAULTS } from "../../src/setup/providers";
 
 describe("deepMergeConfig", () => {
   test("merges nested plain objects key-by-key, preserving sibling subkeys", () => {
-    const base = { output: { format: "json", detail: "brief" }, stashDir: "/a" };
+    const base = { output: { format: "json", detail: "brief" }, bundles: { local: { path: "/a" } } };
     const merged = deepMergeConfig(base, { output: { format: "text" } });
-    expect(merged).toEqual({ output: { format: "text", detail: "brief" }, stashDir: "/a" });
+    expect(merged).toEqual({ output: { format: "text", detail: "brief" }, bundles: { local: { path: "/a" } } });
   });
 
   test("arrays replace wholesale (no element merge)", () => {
-    const base = { sources: [{ url: "a" }, { url: "b" }] };
-    const merged = deepMergeConfig(base, { sources: [{ url: "c" }] });
-    expect(merged).toEqual({ sources: [{ url: "c" }] });
+    const base = { registries: [{ url: "https://a.test" }, { url: "https://b.test" }] };
+    const merged = deepMergeConfig(base, { registries: [{ url: "https://c.test" }] });
+    expect(merged).toEqual({ registries: [{ url: "https://c.test" }] });
   });
 
   test("scalars replace and undefined values are skipped", () => {

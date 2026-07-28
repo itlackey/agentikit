@@ -22,6 +22,7 @@ import { _setAkmInitForTests } from "../../../src/commands/sources/init";
 import { resetConfigCache } from "../../../src/core/config/config";
 import { getConfigLockPath } from "../../../src/core/config/config-io";
 import { getConfigPath } from "../../../src/core/paths";
+import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { rebaseSetupChanges, runSetupFromConfig, runSetupWithDefaults } from "../../../src/setup/setup";
 import {
   type Cleanup,
@@ -33,6 +34,7 @@ import {
   withMockedFetch,
   writeSandboxConfig,
 } from "../../_helpers/sandbox";
+import { overrideSeam } from "../../_helpers/seams";
 
 let cleanup: Cleanup | undefined;
 
@@ -206,6 +208,61 @@ describe("runSetupFromConfig — deep merge", () => {
   });
 });
 
+describe("runSetupFromConfig — top-level key allowlist (R-017)", () => {
+  function captureWarnings(): string[] {
+    const warnCalls: string[] = [];
+    overrideSeam(_setWarnSinkForTests, (level, args) => {
+      if (level !== "warn") return;
+      warnCalls.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+    });
+    return warnCalls;
+  }
+
+  test("accepts every schema-valid top-level key instead of silently dropping it", async () => {
+    seedFullConfig();
+    const warnCalls = captureWarnings();
+
+    // These six sections are all valid `AkmConfigShape` keys that a
+    // hand-maintained `ALLOWED_KEYS` copy had fallen out of sync with (R-017):
+    // each was silently stripped with only a warning, while the command still
+    // exited 0.
+    await runSetupFromConfig({
+      configJson: JSON.stringify({
+        index: { indexBodyOpening: true },
+        search: { minScore: 0.5 },
+        feedback: { requireReason: true },
+        archiveRetentionDays: 30,
+        workflow: { maxConcurrency: 4 },
+        experimental: { improveAutonomy: true },
+      }),
+      noInit: true,
+    });
+
+    const written = readWrittenConfig();
+    expect(written.index).toEqual({ indexBodyOpening: true });
+    expect(written.search).toEqual({ minScore: 0.5 });
+    expect(written.feedback).toEqual({ requireReason: true });
+    expect(written.archiveRetentionDays).toBe(30);
+    expect(written.workflow).toEqual({ maxConcurrency: 4 });
+    expect(written.experimental).toEqual({ improveAutonomy: true });
+    expect(warnCalls.some((m) => m.includes("Ignoring unknown or restricted config key"))).toBe(false);
+  });
+
+  test("still drops a genuinely retired top-level key with a warning", async () => {
+    seedFullConfig();
+    const warnCalls = captureWarnings();
+
+    await runSetupFromConfig({
+      configJson: JSON.stringify({ profiles: { legacy: {} } }),
+      noInit: true,
+    });
+
+    const written = readWrittenConfig();
+    expect(written.profiles).toBeUndefined();
+    expect(warnCalls.some((m) => m.includes('Ignoring unknown or restricted config key: "profiles"'))).toBe(true);
+  });
+});
+
 describe("runSetupFromConfig — backup guarantees", () => {
   test("creates a real timestamped backup when a config already exists", async () => {
     seedFullConfig();
@@ -355,7 +412,8 @@ describe("runSetupWithDefaults — idempotency", () => {
         try {
           await expect(
             runSetupFromConfig({
-              configJson: JSON.stringify({ stashDir, semanticSearchMode: "off" }),
+              configJson: JSON.stringify({ semanticSearchMode: "off" }),
+              dir: stashDir,
               noInit: false,
             }),
           ).rejects.toThrow(/Timed out waiting for config lock/);

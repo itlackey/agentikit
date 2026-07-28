@@ -9,10 +9,9 @@
  *   - the single batch-at-boundary commit (issue #507) produces exactly one
  *     complete commit + clean tree, pushes per the writable+remote+push gate,
  *     and is a no-op for filesystem targets
- *   - deprecated `pushOnCommit` is now fully ignored (warn-and-ignore, Decision 6)
  *   - rejection of `writable: true` on website / npm at config load
  *   - rejection of unsupported `kind` reaching the helper
- *   - resolveWriteTarget precedence (explicit → defaultWriteTarget → stashDir)
+ *   - resolveWriteTarget precedence (explicit → defaultWriteTarget → defaultBundle)
  *   - commit-message sanitization (issue #270) via the boundary commit
  */
 
@@ -22,8 +21,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { SourceConfigEntry } from "../../src/core/config/config";
 import { ConfigError, UsageError } from "../../src/core/errors";
+import { sanitizeCommitMessage } from "../../src/core/git-message";
 import {
   assertWritableAllowedForKind,
   commitWriteTargetBoundary,
@@ -32,7 +33,6 @@ import {
   type ResolvedWriteTarget,
   resolveWritable,
   resolveWriteTarget,
-  sanitizeCommitMessage,
   type WriteTargetSource,
   writeAssetToSource,
 } from "../../src/core/write-source";
@@ -140,7 +140,9 @@ describe("writeAssetToSource — filesystem", () => {
 
     expect(result.path).toBe(path.join(dir, "memories", "alpha.md"));
     expect(result.ref).toBe("memories/alpha");
-    expect(fs.readFileSync(result.path, "utf8")).toBe("hello world\n");
+    const written = parseFrontmatter(fs.readFileSync(result.path, "utf8"));
+    expect(written.data.type).toBe("memory");
+    expect(written.content).toBe("hello world\n");
   });
 
   test("creates intermediate directories", async () => {
@@ -159,7 +161,9 @@ describe("writeAssetToSource — filesystem", () => {
     const config: SourceConfigEntry = { type: "filesystem", writable: true };
 
     const result = await writeAssetToSource(source, config, { type: "memory", name: "a" }, "no-newline");
-    expect(fs.readFileSync(result.path, "utf8")).toBe("no-newline\n");
+    const written = parseFrontmatter(fs.readFileSync(result.path, "utf8"));
+    expect(written.data.type).toBe("memory");
+    expect(written.content).toBe("no-newline\n");
   });
 
   test("preserves an existing trailing newline (no double newline)", async () => {
@@ -168,7 +172,9 @@ describe("writeAssetToSource — filesystem", () => {
     const config: SourceConfigEntry = { type: "filesystem", writable: true };
 
     const result = await writeAssetToSource(source, config, { type: "memory", name: "a" }, "with-newline\n");
-    expect(fs.readFileSync(result.path, "utf8")).toBe("with-newline\n");
+    const written = parseFrontmatter(fs.readFileSync(result.path, "utf8"));
+    expect(written.data.type).toBe("memory");
+    expect(written.content).toBe("with-newline\n");
   });
 
   test("refuses to write when source is not writable", async () => {
@@ -211,12 +217,11 @@ describe("writeAssetToSource — filesystem", () => {
 
 // ── writeAssetToSource — git (0.9.0 batch-at-boundary, issue #507) ───────────
 
-function gitTarget(workDir: string, opts?: { writable?: boolean; pushOnCommit?: boolean }): ResolvedWriteTarget {
+function gitTarget(workDir: string, opts?: { writable?: boolean }): ResolvedWriteTarget {
   const config: SourceConfigEntry = {
     type: "git",
     name: "team",
     writable: opts?.writable ?? true,
-    ...(opts?.pushOnCommit !== undefined ? { options: { pushOnCommit: opts.pushOnCommit } } : {}),
   };
   return { source: { kind: "git", name: "team", path: workDir }, config };
 }
@@ -301,25 +306,6 @@ describe("writeAssetToSource — git (no per-write commit)", () => {
       encoding: "utf8",
     });
     expect(remoteLog.stdout.trim()).toBe("seed");
-  });
-
-  test("deprecated pushOnCommit is ignored — writable+remote pushes anyway via the batch default", async () => {
-    // pushOnCommit no longer maps onto the push gate in any way (Decision 6,
-    // WI-9.6b): this still pushes, but because the target is writable with a
-    // remote and no explicit `push` override was given — NOT because of
-    // pushOnCommit. See the "content-layout sync" test in
-    // improve-sync.test.ts for a case where the old mapping's absence is
-    // actually observable (pushOnCommit: false no longer suppresses push).
-    const { remoteDir, workDir } = initBareGitRepo();
-    const target = gitTarget(workDir, { writable: true, pushOnCommit: true });
-
-    await writeAssetToSource(target.source, target.config, { type: "memory", name: "legacy" }, "body");
-    commitWriteTargetBoundary(target, "Update memory:legacy");
-
-    const remoteLog = spawnSync("git", ["--git-dir", remoteDir, "log", "--format=%s", "-1", "main"], {
-      encoding: "utf8",
-    });
-    expect(remoteLog.stdout.trim()).toBe("Update memory:legacy");
   });
 
   test("commitWriteTargetBoundary is a no-op for filesystem targets", async () => {
@@ -551,14 +537,8 @@ describe("resolveWriteTarget", () => {
     expect(result.source.name).toBe("default-one");
   });
 
-  test("falls back to working stashDir when no explicit target / defaultWriteTarget", () => {
-    const stashDir = makeTempDir("akm-target-stash-");
-    process.env.AKM_STASH_DIR = stashDir;
-    const result = resolveWriteTarget({ semanticSearchMode: "off" });
-    expect(result.selector).toBeUndefined();
-    expect(result.source.name).toBe("stash");
-    expect(result.source.kind).toBe("filesystem");
-    expect(result.source.path).toBe(stashDir);
+  test("requires a default bundle when no explicit target or defaultWriteTarget exists", () => {
+    expect(() => resolveWriteTarget({ semanticSearchMode: "off" })).toThrow(ConfigError);
   });
 
   test("preserves the default bundle identity for the configured working stash", () => {
@@ -682,6 +662,8 @@ describe("commit message sanitization (issue #270, via boundary commit)", () => 
 
     const log = spawnSync("git", ["-C", workDir, "log", "--format=%s", "-1"], { encoding: "utf8" });
     expect(log.stdout.includes("\x00")).toBe(false);
-    expect(log.stdout.trim()).toBe("Update teamhidden//memory:beta");
+    // 0.9.0 (Q-02): formatRefForMessage emits the slash conceptId grammar
+    // (`memories/beta`), not the retired `memory:beta` colon form.
+    expect(log.stdout.trim()).toBe("Update teamhidden//memories/beta");
   });
 });

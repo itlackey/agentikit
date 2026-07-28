@@ -8,9 +8,11 @@
  * per-run degradation metrics.
  */
 
-import { appendEvent, readEvents } from "../../core/events";
+import { rethrowIfTestIsolationError } from "../../core/errors";
 import { decodeImproveResult } from "../../core/improve-result";
+import { withStateDb } from "../../core/state-db";
 import type { Database } from "../../storage/database";
+import { insertEvent } from "../../storage/repositories/events-repository";
 import { queryImproveRuns } from "../../storage/repositories/improve-runs-repository";
 import { listStateProposals } from "../../storage/repositories/proposals-repository";
 import { roundRate, toFiniteNumber } from "./improve-metrics";
@@ -25,26 +27,62 @@ import {
 /** Event type appended + read back by the state.db round-trip probe. */
 const HEALTH_PROBE_EVENT = "health_probe";
 
+/** Synthetic sentinel ref (ref-grammar decision D-R3): a colon-free
+ * `<subsystem>/_<marker>` label. `health` has no asset stash-subdir, so
+ * `health/_probe` names the subsystem. */
+const HEALTH_PROBE_REF = "health/_probe";
+
+/**
+ * Verify state.db can accept a write and read it back — WITHOUT leaving any
+ * permanent trace (R-030). Earlier versions appended a `health_probe` event
+ * on every `akm health` invocation and never removed it: a read-only health
+ * check ran on a cron would grow state.db without bound (the only purge is
+ * `improve`'s retention pass, which a health-only user never runs). The probe
+ * row inserted here is deleted again inside the SAME connection once the
+ * round trip is confirmed, so the net effect on the `events` table is always
+ * zero rows — the round trip still genuinely exercises append + read against
+ * the real table, it just doesn't accumulate.
+ */
 export function probeStateDbRoundTrip(stateDbPath: string): { ok: boolean; durationMs: number | null; error?: string } {
-  const before = readEvents({}, { dbPath: stateDbPath }).nextOffset;
   const started = Date.now();
-  // Synthetic sentinel ref (ref-grammar decision D-R3): a colon-free
-  // `<subsystem>/_<marker>` label. `health` has no asset stash-subdir, so
-  // `health/_probe` names the subsystem. Written and read back in lockstep here;
-  // the round-trip matches on `eventType` + this exact ref, so both must agree.
-  appendEvent(
-    { eventType: HEALTH_PROBE_EVENT, ref: "health/_probe", metadata: { source: "akm health" } },
-    { dbPath: stateDbPath },
-  );
-  const after = readEvents(
-    { sinceOffset: before, type: HEALTH_PROBE_EVENT, ref: "health/_probe" },
-    { dbPath: stateDbPath },
-  );
-  const durationMs = Date.now() - started;
-  if (after.events.length === 0 || after.nextOffset <= before) {
-    return { ok: false, durationMs, error: "probe event was not readable after append" };
+  try {
+    return withStateDb(
+      (db) => {
+        const ts = new Date().toISOString();
+        const insertedId = insertEvent(db, {
+          eventType: HEALTH_PROBE_EVENT,
+          ts,
+          ref: HEALTH_PROBE_REF,
+          metadata: { source: "akm health" },
+        });
+        const durationMs = Date.now() - started;
+        if (insertedId === undefined) {
+          return { ok: false, durationMs, error: "probe event insert did not return a row id" };
+        }
+        // The round-trip matches on the exact (id, eventType, ref) triple
+        // written above, then removes the row regardless of outcome — a
+        // failed round trip must not leak a row any more than a successful
+        // one should.
+        let roundTripOk = false;
+        try {
+          const row = db
+            .prepare("SELECT 1 AS present FROM events WHERE id = ? AND event_type = ? AND ref = ?")
+            .get(insertedId, HEALTH_PROBE_EVENT, HEALTH_PROBE_REF) as { present: number } | undefined;
+          roundTripOk = row !== undefined;
+        } finally {
+          db.prepare("DELETE FROM events WHERE id = ?").run(insertedId);
+        }
+        if (!roundTripOk) {
+          return { ok: false, durationMs, error: "probe event was not readable after append" };
+        }
+        return { ok: true, durationMs };
+      },
+      { path: stateDbPath },
+    );
+  } catch (err) {
+    rethrowIfTestIsolationError(err);
+    return { ok: false, durationMs: Date.now() - started, error: err instanceof Error ? err.message : String(err) };
   }
-  return { ok: true, durationMs };
 }
 
 // ── WS-5 Observability helpers ───────────────────────────────────────────────

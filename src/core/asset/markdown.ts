@@ -17,6 +17,35 @@ export interface KnowledgeToc {
   totalLines: number;
 }
 
+/** Stable GitHub-style selector for a Markdown heading. */
+export function markdownHeadingSlug(heading: string): string {
+  return heading
+    .trim()
+    .toLowerCase()
+    .replace(/<[^>]*>/g, "")
+    .replace(/[^\p{L}\p{N}\s_-]+/gu, "-")
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+export function markdownFragmentSlugs(content: string): string[] {
+  return uniqueHeadingSlugs(parseMarkdownToc(content).headings).filter(Boolean);
+}
+
+function uniqueHeadingSlugs(headings: TocHeading[]): string[] {
+  const used = new Set<string>();
+  return headings.map((heading) => {
+    const base = markdownHeadingSlug(heading.text);
+    if (!base) return "";
+    let slug = base;
+    let suffix = 0;
+    while (used.has(slug)) slug = `${base}-${++suffix}`;
+    used.add(slug);
+    return slug;
+  });
+}
+
 // ── Parsing ─────────────────────────────────────────────────────────────────
 
 export function parseMarkdownToc(content: string): KnowledgeToc {
@@ -55,66 +84,22 @@ export function extractSection(
   heading: string,
 ): { content: string; startLine: number; endLine: number } | null {
   const lines = content.split(/\r?\n/);
-  const target = heading.toLowerCase();
+  const headings = parseMarkdownToc(content).headings;
+  const fragment = heading.trim();
+  const slugIndex = uniqueHeadingSlugs(headings).indexOf(fragment);
+  const exact =
+    slugIndex < 0 ? headings.find((candidate) => candidate.text.toLowerCase() === fragment.toLowerCase()) : undefined;
+  const selected = slugIndex >= 0 ? headings[slugIndex] : exact;
+  if (!selected) return null;
 
-  let startIdx = -1;
-  let startLevel = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const match = lines[i]!.match(/^(#{1,6})\s+(.+)$/);
-    if (!match) continue;
-    const text = match[2]!.replace(/\s+#+\s*$/, "").trim();
-    if (text.toLowerCase() === target && startIdx === -1) {
-      startIdx = i;
-      startLevel = match[1]!.length;
-    } else if (startIdx !== -1 && match[1]!.length <= startLevel) {
-      return {
-        content: lines.slice(startIdx, i).join("\n"),
-        startLine: startIdx + 1,
-        endLine: i,
-      };
-    }
-  }
-
-  if (startIdx === -1) return null;
-
+  const next = headings.find((candidate) => candidate.line > selected.line && candidate.level <= selected.level);
+  const startIdx = selected.line - 1;
+  const endIdx = next ? next.line - 1 : lines.length;
   return {
-    content: lines.slice(startIdx).join("\n"),
-    startLine: startIdx + 1,
-    endLine: lines.length,
+    content: lines.slice(startIdx, endIdx).join("\n"),
+    startLine: selected.line,
+    endLine: endIdx,
   };
-}
-
-export function extractLineRange(content: string, start: number, end: number): string {
-  const lines = content.split(/\r?\n/);
-  if (end < start) return "";
-  const s = Math.max(1, Math.min(start, lines.length));
-  const e = Math.min(end, lines.length);
-  return lines.slice(s - 1, e).join("\n");
-}
-
-export function extractFrontmatterOnly(content: string): string | null {
-  const parsed = parseFrontmatter(content);
-  return parsed.frontmatter;
-}
-
-// ── Formatting ──────────────────────────────────────────────────────────────
-
-export function formatToc(toc: KnowledgeToc): string {
-  if (toc.headings.length === 0) {
-    return `(no headings found — ${toc.totalLines} lines total)`;
-  }
-
-  const lineWidth = String(toc.totalLines).length;
-  const parts = toc.headings.map((h) => {
-    const lineNum = `L${String(h.line).padStart(lineWidth)}`;
-    const indent = "  ".repeat(h.level - 1);
-    const prefix = "#".repeat(h.level);
-    return `${lineNum}  ${indent}${prefix} ${h.text}`;
-  });
-
-  parts.push(`\n${toc.totalLines} lines total`);
-  return parts.join("\n");
 }
 
 // ── Fence stripping ──────────────────────────────────────────────────────────

@@ -3,6 +3,16 @@
  *
  * Validates that loadFixtureStash, fixtureContentHash, and listFixtures
  * behave as advertised in docs/technical/benchmark.md §5.5.
+ *
+ * ISOLATION-06 / RUNTIME-04: `loadFixtureStash`'s DEFAULT behaviour (no
+ * `{ skipIndex: true }`) shells out to a real `akm index` CLI subprocess
+ * (load.ts:135-148, `Bun.spawnSync`). That is exactly the "genuinely needs a
+ * real subprocess" case Rule 5's own docstring says belongs in
+ * tests/integration/, not here — this file's unit-scope shard must never
+ * spawn. The one test that exercised that default path has moved to
+ * tests/integration/fixtures/stashes/load.test.ts; every test remaining here
+ * calls `loadFixtureStash(…, { skipIndex: true })` (no spawn) or touches
+ * neither the CLI nor process.env at all.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -11,46 +21,6 @@ import path from "node:path";
 import { computeFixtureContentHash, fixtureContentHash, listFixtures, loadFixtureStash } from "./load";
 
 describe("loadFixtureStash", () => {
-  test("materialises the minimal fixture and cleanup removes it", () => {
-    const priorAkmStashDir = process.env.AKM_STASH_DIR;
-    const sentinel = "/tmp/some-prior-value";
-    process.env.AKM_STASH_DIR = sentinel;
-
-    const { stashDir, cleanup, contentHash } = loadFixtureStash("minimal");
-
-    try {
-      expect(fs.existsSync(stashDir)).toBe(true);
-      expect(fs.statSync(stashDir).isDirectory()).toBe(true);
-
-      // All five core asset directories from the minimal fixture.
-      for (const sub of ["skills", "commands", "agents", "knowledge", "scripts"]) {
-        expect(fs.existsSync(path.join(stashDir, sub))).toBe(true);
-      }
-
-      // Content hash is non-empty hex.
-      expect(contentHash).toMatch(/^[0-9a-f]{64}$/);
-
-      // The helper set AKM_STASH_DIR to the materialised path.
-      expect(process.env.AKM_STASH_DIR).toBe(stashDir);
-
-      // Default behaviour runs `akm index`, which writes the SQLite DB into
-      // the helper's isolated XDG_DATA_HOME (sibling of stashDir).
-      const tmpRoot = path.dirname(stashDir);
-      const dbPath = path.join(tmpRoot, "data", "akm", "index.db");
-      expect(fs.existsSync(dbPath)).toBe(true);
-    } finally {
-      cleanup();
-    }
-
-    // After cleanup, the tmp tree is gone and AKM_STASH_DIR is restored.
-    expect(fs.existsSync(stashDir)).toBe(false);
-    expect(process.env.AKM_STASH_DIR).toBe(sentinel);
-
-    // Restore the test's own prior value rather than the synthetic sentinel.
-    if (priorAkmStashDir === undefined) delete process.env.AKM_STASH_DIR;
-    else process.env.AKM_STASH_DIR = priorAkmStashDir;
-  });
-
   test("with { skipIndex: true } does not invoke akm index", () => {
     const priorAkmStashDir = process.env.AKM_STASH_DIR;
 
@@ -66,12 +36,16 @@ describe("loadFixtureStash", () => {
       const tmpRoot = path.dirname(stashDir);
       const dbPath = path.join(tmpRoot, "cache", "akm", "index.db");
       expect(fs.existsSync(dbPath)).toBe(false);
+
+      // cleanup() (exercised below) is solely responsible for restoring
+      // AKM_STASH_DIR — asserted here rather than via a second manual
+      // restore in this test body, which would re-trip the isolation lint's
+      // unguarded-env rule for no behavioural benefit.
     } finally {
       cleanup();
     }
 
-    if (priorAkmStashDir === undefined) delete process.env.AKM_STASH_DIR;
-    else process.env.AKM_STASH_DIR = priorAkmStashDir;
+    expect(process.env.AKM_STASH_DIR).toBe(priorAkmStashDir);
   });
 });
 
@@ -95,6 +69,6 @@ describe("fixtureContentHash", () => {
 describe("listFixtures", () => {
   test("returns all shipped fixtures, sorted", () => {
     const names = listFixtures();
-    expect(names).toEqual(["all-types", "minimal", "ranking-baseline", "search-filter"]);
+    expect(names).toEqual(["all-types", "curate-golden", "minimal", "ranking-baseline", "search-filter"]);
   });
 });

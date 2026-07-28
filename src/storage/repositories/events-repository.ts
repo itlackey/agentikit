@@ -138,14 +138,38 @@ export interface ReadStateEventsOptions {
   type?: string;
   /** Filter to a single asset ref. */
   ref?: string;
+  /**
+   * D-38 (`akm log list --limit`): cap the number of rows returned to the
+   * MOST RECENT `limit` matching the SQL-level filter above (id/ts/type/ref).
+   *
+   * Implemented as `ORDER BY id DESC LIMIT ?` — a real SQL LIMIT, not a
+   * fetch-everything-then-slice — so a large event history is not read into
+   * memory just to keep the last few rows. The DESC-ordered page is then
+   * reversed before returning so the function's own ascending-id contract
+   * (documented below) holds regardless of whether `limit` was supplied.
+   *
+   * Callers that also need to filter on event `metadata.tags` (not a SQL
+   * column — see `readEvents` in `src/core/events.ts`) must NOT pass `limit`
+   * here: a SQL-level LIMIT is applied BEFORE any JS-side post-filter, so
+   * rows a tag filter would later drop still count against the cap, silently
+   * returning fewer than `limit` (or the wrong — oldest-in-the-SQL-window —
+   * ones). `readEvents` handles that by leaving this unset and applying
+   * `limit` itself, AFTER its tag/type-alias post-filter.
+   */
+  limit?: number;
 }
 
 /**
  * Read events from the database matching the filter. Returns events in
- * ascending id order so consumers can process them in emission order.
+ * ascending id order so consumers can process them in emission order —
+ * true even when `options.limit` selects the most-recent page (see
+ * {@link ReadStateEventsOptions.limit}).
  *
  * The returned `nextId` is the maximum id seen (or `sinceId` when no rows
- * match), suitable as the next `sinceId` cursor value.
+ * match), suitable as the next `sinceId` cursor value. This is unaffected by
+ * `limit`: it is always the id of the last row actually returned, which —
+ * because a `limit` page is the MOST RECENT matching rows — is the same
+ * value an unbounded read of the same filter would have produced.
  */
 export function readStateEvents(
   db: Database,
@@ -172,11 +196,16 @@ export function readStateEvents(
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const hasLimit = options.limit !== undefined && options.limit > 0;
+  const orderAndLimit = hasLimit ? "ORDER BY id DESC LIMIT ?" : "ORDER BY id ASC";
+  const queryParams = hasLimit ? [...params, options.limit] : params;
   const rows = db
-    .prepare(`SELECT id, event_type, ts, ref, metadata_json FROM events ${where} ORDER BY id ASC`)
-    .all(...(params as SqlValue[])) as EventRow[];
+    .prepare(`SELECT id, event_type, ts, ref, metadata_json FROM events ${where} ${orderAndLimit}`)
+    .all(...(queryParams as SqlValue[])) as EventRow[];
 
-  const events = rows.map(eventRowToEnvelope);
+  // A DESC-ordered LIMIT page comes back newest-first; reverse it so the
+  // returned array is always ascending by id, matching the unbounded path.
+  const events = (hasLimit ? rows.slice().reverse() : rows).map(eventRowToEnvelope);
   const nextId = events.length > 0 ? events[events.length - 1]!.id : (options.sinceId ?? 0);
   return { events, nextId };
 }

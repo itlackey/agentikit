@@ -88,7 +88,12 @@ const children: ChildProcess[] = [];
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
   markers = makeSandboxDir("akm-goldens-mv-crash");
-  writeSandboxConfig({ semanticSearchMode: "off" });
+  writeSandboxConfig({
+    semanticSearchMode: "off",
+    bundles: { stash: { path: storage.stashDir, writable: true } },
+    defaultBundle: "stash",
+    defaultWriteTarget: "stash",
+  });
 });
 
 afterEach(() => {

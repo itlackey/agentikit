@@ -2,11 +2,11 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { RegistryIndex } from "../../src/commands/read/registry-search";
 import { resolveRegistries, searchRegistry } from "../../src/commands/read/registry-search";
 import type { RegistryConfigEntry } from "../../src/core/config/config";
 import { loadConfig, resetConfigCache, saveConfig } from "../../src/core/config/config";
 import { getConfigPath } from "../../src/core/paths";
+import type { RegistryIndex } from "../../src/registry/providers/static-index";
 import { runCliCapture } from "../_helpers/cli";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -393,5 +393,128 @@ describe("config roundtrip", () => {
     });
 
     expect(() => loadConfig()).toThrow();
+  });
+});
+
+// ── `akm registry search` via the real CLI (R-008) ──────────────────────────
+//
+// Regression for R-008: `registry-cli.ts`'s `search` subcommand used to call
+// `searchRegistry(query, { limit, includeAssets })` — omitting `registries`
+// entirely — so it always fell through to `resolveRegistries()`'s no-arg
+// default (DEFAULT_CONFIG), never the on-disk config a user builds with
+// `akm registry add`. These drive the actual `registryCommand` handler
+// (not `searchRegistry` directly) so a regression in the CLI wiring itself
+// is caught, not just in the underlying library function.
+
+describe("registry search via CLI consults configured registries (R-008)", () => {
+  test("a registry added to config is searched by `akm registry search`", async () => {
+    const index: RegistryIndex = {
+      version: 3,
+      updatedAt: "2026-01-01T00:00:00Z",
+      stashes: [
+        {
+          id: "npm:cli-configured-only",
+          name: "cli-configured-only",
+          description: "only discoverable through the configured registry",
+          ref: "cli-configured-only",
+          source: "npm",
+          tags: ["widget"],
+        },
+      ],
+    };
+    const srv = serveIndex(index);
+    try {
+      const config = loadConfig();
+      saveConfig({ ...config, registries: [{ url: srv.url, name: "cli-test-registry" }] });
+      resetConfigCache();
+
+      const result = await runCliCapture(["registry", "search", "widget", "--format=json"]);
+      expect(result.code).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      const installRefs = (parsed.hits ?? []).map((h: { installRef: string }) => h.installRef);
+      expect(installRefs).toContain("npm:cli-configured-only");
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("a registry NOT in config is never consulted (disabled entries stay excluded)", async () => {
+    const enabledIndex: RegistryIndex = {
+      version: 3,
+      updatedAt: "2026-01-01T00:00:00Z",
+      stashes: [
+        {
+          id: "npm:enabled-widget",
+          name: "enabled-widget",
+          ref: "enabled-widget",
+          source: "npm",
+          tags: ["widget"],
+        },
+      ],
+    };
+    const disabledIndex: RegistryIndex = {
+      version: 3,
+      updatedAt: "2026-01-01T00:00:00Z",
+      stashes: [
+        {
+          id: "npm:disabled-widget",
+          name: "disabled-widget",
+          ref: "disabled-widget",
+          source: "npm",
+          tags: ["widget"],
+        },
+      ],
+    };
+    const enabledSrv = serveIndex(enabledIndex);
+    const disabledSrv = serveIndex(disabledIndex);
+    try {
+      const config = loadConfig();
+      saveConfig({
+        ...config,
+        registries: [
+          { url: enabledSrv.url, name: "enabled-reg" },
+          { url: disabledSrv.url, name: "disabled-reg", enabled: false },
+        ],
+      });
+      resetConfigCache();
+
+      const result = await runCliCapture(["registry", "search", "widget", "--format=json"]);
+      expect(result.code).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      const installRefs = (parsed.hits ?? []).map((h: { installRef: string }) => h.installRef);
+      expect(installRefs).toContain("npm:enabled-widget");
+      expect(installRefs).not.toContain("npm:disabled-widget");
+    } finally {
+      enabledSrv.close();
+      disabledSrv.close();
+    }
+  });
+});
+
+// ── `akm registry list` via the real CLI (R-066 #5) ─────────────────────────
+//
+// `list` used to inline `config.registries ?? DEFAULT_CONFIG.registries`
+// instead of calling the existing `getEffectiveRegistries()` helper. Pinning
+// both the configured-registries case and the default-fallback case here
+// guards the DRY-up against a behavioral regression.
+
+describe("registry list via CLI (R-066 #5)", () => {
+  test("lists configured registries when present", async () => {
+    const config = loadConfig();
+    saveConfig({ ...config, registries: [{ url: "https://custom.example/index.json", name: "custom" }] });
+    resetConfigCache();
+
+    const result = await runCliCapture(["registry", "list", "--format=json"]);
+    expect(result.code).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.registries).toEqual([{ url: "https://custom.example/index.json", name: "custom" }]);
+  });
+
+  test("falls back to default registries when none configured", async () => {
+    const result = await runCliCapture(["registry", "list", "--format=json"]);
+    expect(result.code).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.registries.length).toBeGreaterThan(0);
+    expect(parsed.registries[0].name).toBe("akm-registry");
   });
 });

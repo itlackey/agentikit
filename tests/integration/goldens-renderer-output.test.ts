@@ -20,10 +20,8 @@
  *
  * For every file: `buildFileContext(STASH_ROOT, absPath)` ->
  * `runMatchers(ctx)` -> `match.meta = { ...match.meta, name: <canonical
- * name> }` (mirroring `show.ts:439`'s `match.meta = { ...match.meta, name:
- * parsed.name, view: input.view }`; `view` is left `undefined` so every
- * markdown-view-capable renderer exercises its "full" default branch) ->
- * `getRenderer(match.renderer)` -> `buildRenderContext(ctx, match,
+ * name> }` (mirroring `show.ts`'s `match.meta = { ...match.meta, name:
+ * displayName }`) -> `getRenderer(match.renderer)` -> `buildRenderContext(ctx, match,
  * [STASH_ROOT], undefined)` -> `renderer.buildShowResponse(renderCtx)`. The
  * capture stops at the renderer's own output — it does NOT go through
  * `showLocal`'s post-processing (`related`, `editable`, `editHint`,
@@ -190,8 +188,7 @@ describe("golden fixture: renderer output parity (WI-0b.4a)", () => {
           "Keyed by stash-relative POSIX relPath (never an absolute path) -- the same 15-key set as " +
             "tests/fixtures/goldens/recognition/all-types.json. match.meta.name is injected per-file using the SAME " +
             "canonical name tests/fixtures/goldens/placement/all-types.json's byType round-trip uses, mirroring " +
-            "show.ts:439's `match.meta = { ...match.meta, name: parsed.name, view: input.view }` (view left " +
-            'undefined, so knowledge/wiki exercise their default "full" view branch). The capture stops at the ' +
+            "show.ts's `match.meta = { ...match.meta, name: displayName }`. The capture stops at the " +
             "renderer's own buildShowResponse output -- it does not include showLocal's post-processing " +
             "(related/editable/editHint/activeRun/toolPolicy ceiling), which is CLI composition, not renderer " +
             "behavior, and depends on index/db state this suite does not stand up.",

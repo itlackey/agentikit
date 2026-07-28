@@ -149,7 +149,7 @@ export const DEFAULT_ENCODING_SALIENCE = 0.5;
 // ── Input shape ───────────────────────────────────────────────────────────────
 
 export interface SalienceInputs {
-  /** Asset ref (`type:name`). */
+  /** Asset ref. */
   ref: string;
   /** Asset type string (parsed from ref). Empty string falls back to default weight. */
   type: string;
@@ -387,8 +387,7 @@ export interface AssetSalienceRow {
   updated_at: number;
   /**
    * Provenance of `encoding_salience` (#644). `"content"` = real content-derived
-   * score; `"type-stub"` = type-weight fallback; `null` = legacy row (pre-#644
-   * migration 015) of unknown provenance. See {@link isContentEncodingRow}.
+   * score; `"type-stub"` = type-weight fallback; `null` = unknown provenance.
    */
   encoding_source: EncodingSource | null;
 }
@@ -396,22 +395,10 @@ export interface AssetSalienceRow {
 /**
  * Does this row carry a genuine content-derived `encoding_salience` (#644)?
  *
- * Returns true when the provenance flag is `"content"`. For legacy rows
- * (`encoding_source === null`, written before migration 015) we apply a
- * conservative heuristic: treat the stored value as content-derived only when it
- * does NOT equal the pure type-weight stub for the asset's type — because before
- * the #644 fix every run overwrote real scores with the stub, a value that still
- * differs from the stub must have been content-written and never re-clobbered.
- * When the type cannot be determined (no `type` given) a null-provenance row is
- * treated as a stub (the safe default).
+ * Unknown provenance is not treated as content-derived.
  */
-export function isContentEncodingRow(row: AssetSalienceRow, type?: string): boolean {
-  if (row.encoding_source === "content") return true;
-  if (row.encoding_source === "type-stub") return false;
-  // Legacy NULL provenance: differ-from-stub heuristic.
-  if (!type) return false;
-  const stub = DEFAULT_TYPE_ENCODING_WEIGHTS[type] ?? DEFAULT_ENCODING_SALIENCE;
-  return Math.abs(row.encoding_salience - stub) > 1e-9;
+export function isContentEncodingRow(row: AssetSalienceRow): boolean {
+  return row.encoding_source === "content";
 }
 
 /**

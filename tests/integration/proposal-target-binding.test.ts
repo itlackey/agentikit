@@ -9,8 +9,8 @@ import {
   listProposals,
   resolveProposalId,
 } from "../../src/commands/proposal/repository";
-import type { AkmConfig } from "../../src/core/config/config";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { type AkmConfig, resetConfigCache } from "../../src/core/config/config";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 const VALID_LESSON = `---\ndescription: Proposal with a stable bound destination\nwhen_to_use: Testing proposal destinations\n---\n\nBound content.\n`;
 const tempDirs: string[] = [];
@@ -19,6 +19,14 @@ let storage: IsolatedAkmStorage;
 function stash(prefix: string): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   tempDirs.push(root);
+  fs.mkdirSync(path.join(root, "lessons"), { recursive: true });
+  return root;
+}
+
+function namedStash(name: string): string {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "akm-proposal-named-"));
+  tempDirs.push(parent);
+  const root = path.join(parent, name);
   fs.mkdirSync(path.join(root, "lessons"), { recursive: true });
   return root;
 }
@@ -65,15 +73,8 @@ describe("proposal queue target binding", () => {
     expect(fs.existsSync(path.join(primary, "lessons", "bound-secondary.md"))).toBe(false);
   });
 
-  test("an unbound secondary-queue proposal does not fall through to a Git default bundle", async () => {
+  test("a secondary-queue proposal records its configured bundle instead of the default", async () => {
     const team = stash("akm-proposal-git-default-secondary-");
-    const created = createProposal(team, {
-      ref: "lessons/git-default-fallback",
-      source: "propose",
-      force: true,
-      payload: { content: VALID_LESSON },
-    });
-    if (isProposalSkipped(created)) throw new Error("unexpected skip");
     const cfg = {
       bundles: {
         remote: { git: "https://example.com/default.git", writable: true },
@@ -81,10 +82,39 @@ describe("proposal queue target binding", () => {
       } as AkmConfig["bundles"],
       defaultBundle: "remote",
     } as AkmConfig;
+    writeSandboxConfig(cfg);
+    resetConfigCache();
+    const created = createProposal(team, {
+      ref: "lessons/git-default-fallback",
+      source: "propose",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+    expect(created.proposedTarget).toEqual({ source: "team", root: path.resolve(team) });
 
     const accepted = await akmProposalAccept({ queue: "team", id: created.id, config: cfg });
     expect(accepted.assetPath).toBe(path.join(team, "lessons", "git-default-fallback.md"));
     expect(fs.existsSync(accepted.assetPath)).toBe(true);
+  });
+
+  test("a qualified proposal cannot use an unconfigured queue bundle", () => {
+    const team = stash("akm-proposal-implicit-default-team-");
+    const cfg = {
+      bundles: { team: { path: team, writable: true } } as AkmConfig["bundles"],
+      defaultWriteTarget: "team",
+    } as AkmConfig;
+    writeSandboxConfig(cfg);
+
+    expect(() =>
+      createProposal(storage.stashDir, {
+        ref: "stash//lessons/implicit-bound",
+        source: "propose",
+        force: true,
+        payload: { content: VALID_LESSON },
+      }),
+    ).toThrow(/configured bundle|bundle "stash" is not configured/i);
+    expect(fs.existsSync(path.join(team, "lessons", "implicit-bound.md"))).toBe(false);
   });
 
   test("a conflicting explicit target is rejected before a bound proposal writes", async () => {
@@ -108,6 +138,24 @@ describe("proposal queue target binding", () => {
     expect(fs.existsSync(path.join(other, "lessons", "target-conflict.md"))).toBe(false);
   });
 
+  test("a qualified proposal cannot bind its bundle identity to another queue root", () => {
+    const primary = stash("akm-proposal-qualified-primary-");
+    const team = stash("akm-proposal-qualified-team-");
+    const cfg = config(primary, team);
+
+    expect(() =>
+      akmProposalCreate({
+        queue: "primary",
+        config: cfg,
+        ref: "team//lessons/wrong-root",
+        source: "propose",
+        payload: { content: VALID_LESSON },
+      }),
+    ).toThrow(/conflicts with queue target/i);
+    expect(fs.existsSync(path.join(primary, "lessons", "wrong-root.md"))).toBe(false);
+    expect(fs.existsSync(path.join(team, "lessons", "wrong-root.md"))).toBe(false);
+  });
+
   test("qualified filters preserve bundle identity while a short ref scopes to all duplicates in the queue", () => {
     const queue = stash("akm-proposal-duplicate-queue-");
     const team = createProposal(queue, {
@@ -129,5 +177,100 @@ describe("proposal queue target binding", () => {
     expect(listProposals(queue, { ref: "lessons/shared" }).map((proposal) => proposal.id)).toEqual([team.id, other.id]);
     expect(listProposals(queue, { ref: "team//lessons/shared" }).map((proposal) => proposal.id)).toEqual([team.id]);
     expect(resolveProposalId(queue, "other//lessons/shared").id).toBe(other.id);
+  });
+
+  test("a path-derived qualifier is not rewritten to the configured owner", () => {
+    const primary = namedStash("physical");
+    const team = stash("akm-proposal-alias-team-");
+    const cfg = config(primary, team);
+    writeSandboxConfig(cfg);
+    resetConfigCache();
+
+    expect(() =>
+      createProposal(primary, {
+        ref: "physical//lessons/configured-owner",
+        source: "propose",
+        force: true,
+        payload: { content: VALID_LESSON },
+      }),
+    ).toThrow(/bundle "physical" is not configured/i);
+
+    const unqualified = createProposal(primary, {
+      ref: "lessons/configured-default",
+      source: "propose",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(unqualified)) throw new Error("unexpected skip");
+    expect(unqualified.ref).toBe("primary//lessons/configured-default");
+    expect(unqualified.proposedTarget).toEqual({ source: "primary", root: path.resolve(primary) });
+  });
+
+  test("a configured bundle name wins even when it matches another queue's directory name", () => {
+    const primary = namedStash("collision");
+    const collisionTarget = stash("akm-proposal-collision-target-");
+    const cfg = {
+      bundles: {
+        primary: { path: primary, writable: true },
+        collision: { path: collisionTarget, writable: true },
+      } as AkmConfig["bundles"],
+      defaultBundle: "primary",
+      defaultWriteTarget: "primary",
+    } as AkmConfig;
+    writeSandboxConfig(cfg);
+    resetConfigCache();
+
+    const created = createProposal(primary, {
+      ref: "collision//lessons/no-redirect",
+      source: "propose",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+    expect(created.ref).toBe("collision//lessons/no-redirect");
+    expect(created.proposedTarget).toEqual({ source: "collision", root: path.resolve(collisionTarget) });
+  });
+
+  test("accept rejects a target changed after the proposal captured its before hash", async () => {
+    const primary = stash("akm-proposal-stale-primary-");
+    const team = stash("akm-proposal-stale-team-");
+    const cfg = config(primary, team);
+    const assetPath = path.join(team, "lessons", "stale-target.md");
+    fs.writeFileSync(assetPath, VALID_LESSON.replace("Bound content.", "Original content."), "utf8");
+    const created = createProposal(team, {
+      ref: "team//lessons/stale-target",
+      source: "propose",
+      force: true,
+      target: { source: "team", root: team },
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+    fs.writeFileSync(assetPath, VALID_LESSON.replace("Bound content.", "Newer user content."), "utf8");
+
+    await expect(akmProposalAccept({ queue: "team", id: created.id, config: cfg })).rejects.toThrow(
+      /changed after proposal/i,
+    );
+    expect(fs.readFileSync(assetPath, "utf8")).toContain("Newer user content.");
+  });
+
+  test("accept rejects a file created after a bound create proposal", async () => {
+    const primary = stash("akm-proposal-created-primary-");
+    const team = stash("akm-proposal-created-team-");
+    const cfg = config(primary, team);
+    const assetPath = path.join(team, "lessons", "created-later.md");
+    const created = createProposal(team, {
+      ref: "team//lessons/created-later",
+      source: "propose",
+      force: true,
+      target: { source: "team", root: team },
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+    fs.writeFileSync(assetPath, VALID_LESSON.replace("Bound content.", "User-created content."), "utf8");
+
+    await expect(akmProposalAccept({ queue: "team", id: created.id, config: cfg })).rejects.toThrow(
+      /created after proposal/i,
+    );
+    expect(fs.readFileSync(assetPath, "utf8")).toContain("User-created content.");
   });
 });

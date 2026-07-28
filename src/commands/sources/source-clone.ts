@@ -6,15 +6,22 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { stashDirFor } from "../../core/asset/asset-placement";
+import { isBundleSlug } from "../../core/asset/asset-ref";
 import { displayRef, parseQualifiedRefInput } from "../../core/asset/resolve-ref";
 import { loadConfig } from "../../core/config/config";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
+import { defaultBundleForTarget } from "../../core/mutation-target";
 import { warn } from "../../core/warn";
-import { commitWriteTargetBoundary, prepareWriteTargetForMutation, resolveWriteTarget } from "../../core/write-source";
+import {
+  commitWriteTargetBoundary,
+  prepareWriteTargetForMutation,
+  type ResolvedWriteTarget,
+  resolveWriteTarget,
+} from "../../core/write-source";
 import { withAssetMutationLease } from "../../indexer/index-writer-lock";
 import { indexWrittenAssets } from "../../indexer/index-written-assets";
 import { findSourceForPath, resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
-import { isRemoteOrigin, resolveSourcesForOrigin } from "../../registry/origin-resolve";
+import { isRemoteOrigin, resolveSourcesForLocator, resolveSourcesForOrigin } from "../../registry/origin-resolve";
 import { syncFromRef } from "../../sources/providers/sync-from-ref";
 import { resolveAssetPath } from "../../sources/resolve";
 
@@ -38,10 +45,20 @@ export interface CloneResponse {
   };
   destination: {
     path: string;
-    ref: string;
+    ref?: string;
   };
   overwritten: boolean;
   remoteFetched?: { origin: string; stashRoot: string; cacheDir: string };
+}
+
+function destinationRef(
+  config: ReturnType<typeof loadConfig> | undefined,
+  target: ResolvedWriteTarget | undefined,
+  type: string,
+  name: string,
+): string | undefined {
+  if (!config || !target) return undefined;
+  return displayRef({ type, name, bundleId: target.source.name }, defaultBundleForTarget(config));
 }
 
 export async function akmClone(options: CloneOptions): Promise<CloneResponse> {
@@ -60,7 +77,8 @@ export async function akmClone(options: CloneOptions): Promise<CloneResponse> {
   // are not bundle slugs).
   const parsed = parseQualifiedRefInput(options.sourceRef);
   const config = hasUnmanagedDest ? undefined : loadConfig();
-  const writeTarget = config ? prepareWriteTargetForMutation(resolveWriteTarget(config, options.target)) : undefined;
+  const resolvedWriteTarget = config ? resolveWriteTarget(config, options.target) : undefined;
+  const writeTarget = resolvedWriteTarget ? prepareWriteTargetForMutation(resolvedWriteTarget) : undefined;
 
   // An unmanaged --dest does not require any configured write target.
   let allSources: SearchSource[];
@@ -83,7 +101,10 @@ export async function akmClone(options: CloneOptions): Promise<CloneResponse> {
     );
   }
 
-  let searchSources = resolveSourcesForOrigin(parsed.origin, allSources);
+  let searchSources =
+    parsed.origin && !isBundleSlug(parsed.origin)
+      ? resolveSourcesForLocator(parsed.origin, allSources)
+      : resolveSourcesForOrigin(parsed.origin, allSources);
 
   // Remote fetch fallback: if no local source matched and origin looks remote, fetch it
   let remoteFetched: CloneResponse["remoteFetched"] | undefined;
@@ -237,10 +258,7 @@ export async function akmClone(options: CloneOptions): Promise<CloneResponse> {
       operationPaths = [destPath];
     }
 
-    const ref = displayRef(
-      { type: parsed.type, name: destName, bundleId: writeTarget?.source.name ?? "local" },
-      config?.defaultBundle,
-    );
+    const ref = destinationRef(config, writeTarget, parsed.type, destName);
 
     if (writeTarget) {
       const commitRoot = writeTarget.source.repoPath ?? writeTarget.source.path;
@@ -255,7 +273,7 @@ export async function akmClone(options: CloneOptions): Promise<CloneResponse> {
 
     return {
       source: { path: sourcePath, registryId: sourceSource?.registryId },
-      destination: { path: destPath, ref },
+      destination: { path: destPath, ...(ref ? { ref } : {}) },
       overwritten,
       ...(remoteFetched ? { remoteFetched } : {}),
     };

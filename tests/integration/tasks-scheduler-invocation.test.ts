@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   buildScheduledTaskInvocation,
   loadSchedulerContextDescriptor,
+  parseScheduledTaskArgv,
   resolveScheduledTaskContext,
   SCHEDULED_TASK_CONTEXT_KEYS,
   schedulerContextDescriptor,
@@ -58,6 +59,21 @@ describe("scheduled task invocation", () => {
       "work",
       "--scheduled",
     ]);
+  });
+
+  test("recognizes only the current descriptor-bearing invocation shape", () => {
+    expect(parseScheduledTaskArgv(["/opt/akm", "tasks", "run", "ping", "--scheduled"])).toBeUndefined();
+    expect(
+      parseScheduledTaskArgv([
+        "/opt/akm",
+        "--scheduler-context",
+        "/data/context.json",
+        "tasks",
+        "run",
+        "ping",
+        "--scheduled",
+      ]),
+    ).toEqual({ binding: ["/opt/akm"], contextPath: "/data/context.json" });
   });
 
   test("writes an immutable restrictive descriptor containing only directories and PATH", () => {

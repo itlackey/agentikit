@@ -36,14 +36,14 @@
  */
 
 import { NotFoundError, UsageError } from "../errors";
-import { stashDirFor, typeForStashDir } from "./asset-placement";
+import { placementSpecFor, stashDirFor, typeForStashDir } from "./asset-placement";
 import { type BundleRef, isBundleSlug, parseBundleRef } from "./asset-ref";
 
 // ── Parsed-ref value object (the `type`/`name`/`origin` decomposition) ────────
 
 /**
  * The decomposed form of a parsed ref — the return shape of {@link parseRefInput}
- * / {@link parseQualifiedRefInput}. `type`/`name` are the legacy asset-type token
+ * / {@link parseQualifiedRefInput}. `type`/`name` are the asset-type projection
  * and canonical name (D-R2 reverse of the conceptId); `origin` is the bundle
  * slug (or non-slug source origin) when the ref was qualified, else undefined.
  * (The frozen migrator keeps its own private copy of this shape.)
@@ -150,14 +150,13 @@ function notFound(conceptId: string, triedForms: string[], ctx: RefContext): Not
  * hit, show/curate response, workflow status, improve REPORT envelope, …).
  */
 export interface DisplayRefItem {
-  /** Legacy asset type — supplies the conceptId stash-subdir when `conceptId` is absent. */
+  /** Asset type used to derive the conceptId stash-subdir when needed. */
   type: string;
   /** Bare canonical name — the conceptId tail when `conceptId` is absent. */
   name: string;
   /**
    * The row's stored conceptId (`concept_id` / the `item_ref` tail). Derived
-   * from `type`/`name` (D-R2 `stashDirFor(type)/name`) when absent — the
-   * NULL-`item_ref` write-back-row fallback.
+   * from `type`/`name` (D-R2 `stashDirFor(type)/name`) when absent.
    */
   conceptId?: string;
   /**
@@ -169,10 +168,10 @@ export interface DisplayRefItem {
 }
 
 /**
- * D-R2 conceptId derivation from a legacy `type`/`name` pair
+ * D-R2 conceptId derivation from an asset `type`/`name` pair
  * (`stashDirFor(type)/name`; bare name for a foreign type with no placement
  * stash-subdir). Kept self-contained so {@link displayRef} — a PERMANENT display
- * rule — does not depend on the transient legacy shims.
+ * rule remains independent of input parsing.
  *
  * Exported (Chunk-8 WI-8.5c) as the ONE conceptId derivation the improve
  * correlation sites (`eligibility.ts` candidate refs, `salience.ts`
@@ -206,38 +205,81 @@ export function conceptIdFromTypeName(type: string, name: string): string {
 export function displayRef(item: DisplayRefItem, defaultBundleId?: string): string {
   const conceptId = item.conceptId ?? conceptIdFromTypeName(item.type, item.name);
   const { bundleId } = item;
-  // Default/primary bundle → SHORT conceptId (the flip). `"local"`/`"stash"` are
-  // the primary-stash origin sentinels (never real bundle slugs — they name the
-  // workspace's own stash, exactly where the pre-0.9.0 output was un-qualified),
-  // so they display short too.
-  if (bundleId === undefined || bundleId === defaultBundleId || bundleId === "local" || bundleId === "stash")
-    return conceptId;
+  // Default/primary bundle → SHORT conceptId (the flip).
+  if (bundleId === undefined || bundleId === defaultBundleId) return conceptId;
   // Non-default bundle → the new fully-qualified `bundle//conceptId` grammar.
   return `${bundleId}//${conceptId}`;
 }
 
 // ── D-R2 reverse table + input-boundary parser (new grammar only) ────────────
 
-/** The legacy `type`/`name` a qualified conceptId maps back to, or `undefined`. */
-export interface LegacyRefParts {
+/** The asset `type`/`name` a qualified conceptId maps to, or `undefined`. */
+export interface AssetRefParts {
   type: string;
   name: string;
 }
 
 /**
- * Split a qualified conceptId (`<stash-subdir>/<name>`) back to its legacy
+ * Split a qualified conceptId (`<stash-subdir>/<name>`) into its asset
  * `type`/`name`, or `undefined` when the leading segment is not a known stash
  * subdir (a bare-name conceptId from a foreign type — no legacy predicate
  * applies). The PERMANENT D-R2 reverse table: the input boundary uses it to map
  * a new-grammar conceptId onto today's {@link AssetRef} shape. (The migrate home
  * keeps a private transient copy for stored-ref parsing.)
  */
-export function typeNameFromConceptId(conceptId: string): LegacyRefParts | undefined {
+export function typeNameFromConceptId(conceptId: string): AssetRefParts | undefined {
   const slash = conceptId.indexOf("/");
   if (slash <= 0) return undefined;
   const type = typeForStashDir(conceptId.slice(0, slash));
   if (type === undefined) return undefined;
   return { type, name: conceptId.slice(slash + 1) };
+}
+
+/**
+ * D11 — the opaque-adapter-conceptId fallback. `typeNameFromConceptId` only
+ * ever answers for the PLACEMENT_SPECS stash-resident subset (D-R2); a
+ * conceptId whose leading segment is NOT a registered placement stashDir is
+ * still perfectly legal DATA per D11 — an OKF item (`tables/customers`), a
+ * website page, a wiki pageKind, an adapter `instruction` doc, … — and the
+ * ref-consuming commands must accept it rather than treat "not an AKM
+ * placement dir" as "malformed ref". This function draws the line: it accepts
+ * any well-formed `<segment>/<rest>` conceptId (so the shape is still
+ * anchored — a bare no-slash name stays the caller's job to pre-qualify with a
+ * default type, the existing env/secret/`akm mv` "bare name" convenience), and
+ * REJECTS anything shaped like the retired `type:name` colon grammar (Q-02):
+ * a `:` in the leading segment is that grammar smuggled through a conceptId
+ * string (e.g. `script:db/migrate/run.sh`, `workflow:release/train`), not a
+ * real adapter directory name, so it is refused rather than silently
+ * reinterpreted as opaque data.
+ *
+ * `name` deliberately carries the FULL original conceptId, not just the tail.
+ * This is what makes the pair round-trip through the UNCHANGED
+ * {@link conceptIdFromTypeName} (`stashDirFor(type)/name`, bare `name` when
+ * `type` has no placement stashDir): since an opaque `type` never owns a
+ * placement stashDir, `conceptIdFromTypeName(type, name)` falls to its bare-
+ * `name` branch and returns `name` verbatim — the original conceptId,
+ * unchanged — instead of losing the leading segment. `type` itself carries
+ * the leading segment (informational/behavioral use: `.type === "lesson"`
+ * checks correctly miss for opaque data) UNLESS that segment happens to
+ * collide with a real PLACEMENT_SPECS type key that merely uses a different
+ * stashDir spelling (e.g. a foreign top-level dir literally named "skill",
+ * singular) — that pathological case would make `stashDirFor` succeed on the
+ * "type" and corrupt the round-trip, so it falls back to the full conceptId as
+ * `type` too (never a placement key, since a placement key never contains
+ * `/`).
+ *
+ * This intentionally does NOT collapse the KNOWN_TYPES/PLACEMENT_SPECS split:
+ * `typeNameFromConceptId` (PLACEMENT_SPECS only) is untouched, and an opaque
+ * `type` returned here is never a {@link KnownType} — it is a passthrough
+ * label, not a claim that AKM recognizes or owns the concept.
+ */
+function opaqueRefParts(conceptId: string): AssetRefParts | undefined {
+  const slash = conceptId.indexOf("/");
+  if (slash <= 0) return undefined;
+  const segment = conceptId.slice(0, slash);
+  if (segment.includes(":")) return undefined; // retired `type:name` grammar, not opaque data (Q-02).
+  const type = placementSpecFor(segment) === undefined ? segment : conceptId;
+  return { type, name: conceptId };
 }
 
 /**
@@ -250,9 +292,14 @@ export function typeNameFromConceptId(conceptId: string): LegacyRefParts | undef
  *
  * Mapping (new grammar → {@link AssetRef}):
  *   - `conceptId` → `type`/`name` via {@link typeNameFromConceptId} (the D-R2
- *     static stash-subdir table). A conceptId whose leading segment is not a
- *     known stash subdir has no legacy `type` predicate — the same outcome an
- *     unknown asset type produces today (a not-found).
+ *     static stash-subdir table) when the leading segment is a known AKM
+ *     placement stashDir, else via {@link opaqueRefParts} (D11 — the ref-parser
+ *     seam accepts opaque adapter conceptIds, e.g. OKF items, website pages,
+ *     wiki pageKinds, adapter `instruction` docs) when it is merely a well-
+ *     formed but foreign `<segment>/<rest>` shape. A conceptId that is neither
+ *     — no slash at all, or a retired colon-grammar shape smuggled through —
+ *     has no type predicate: the same not-found outcome a genuine typo
+ *     produces today.
  *   - `bundle`    → `origin`. A new-grammar bundle slug is a registryId-shaped
  *     id by construction, so it flows straight into the legacy origin channel
  *     that `resolveSourcesForOrigin` matches on `registryId`. The SHORT form (no
@@ -267,14 +314,14 @@ export function parseRefInput(raw: string): AssetRef {
       "INVALID_FLAG_VALUE",
     );
   }
-  const legacy = typeNameFromConceptId(ref.conceptId);
-  if (legacy === undefined) {
+  const parts = typeNameFromConceptId(ref.conceptId) ?? opaqueRefParts(ref.conceptId);
+  if (parts === undefined) {
     throw new NotFoundError(
       `Unrecognized asset ref "${raw.trim()}": conceptId "${ref.conceptId}" has no known asset-type prefix.`,
       "ASSET_NOT_FOUND",
     );
   }
-  return { type: legacy.type, name: legacy.name, origin: ref.bundle };
+  return { type: parts.type, name: parts.name, origin: ref.bundle };
 }
 
 /**

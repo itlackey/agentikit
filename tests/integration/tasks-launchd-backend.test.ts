@@ -491,6 +491,18 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
 });
 
 describe("LAUNCHD_BACKEND drift signatures", () => {
+  test("rejects an installed plist without the current context descriptor", () => {
+    const { backend, fs } = makeBackend();
+    backend.install(makeTask("0 9 * * *"));
+    const file = "/tmp/agents/com.akm.task.ping.plist";
+    fs.written.set(
+      file,
+      fs.readFile(file).replace(/\s*<string>--scheduler-context<\/string>\s*<string>[^<]+<\/string>/, ""),
+    );
+
+    expect(() => backend.list()).toThrow("does not contain a current AKM scheduler invocation");
+  });
+
   test("no-op comparison reads a stable signature from the actual launchd enabled state", () => {
     const { backend, exec } = makeBackend();
     const task = makeTask("0 9 * * *");

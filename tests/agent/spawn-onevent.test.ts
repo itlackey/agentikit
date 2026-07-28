@@ -15,8 +15,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { SpawnedSubprocess, SpawnFn } from "../../src/core/subprocess";
 import type { AgentProfile } from "../../src/integrations/agent/profiles";
-import type { SpawnedSubprocess, SpawnFn } from "../../src/integrations/agent/spawn";
 import { runAgent } from "../../src/integrations/agent/spawn";
 
 type SpawnEvent = { type: string; data?: Record<string, unknown> };

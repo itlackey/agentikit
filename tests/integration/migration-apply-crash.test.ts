@@ -6,19 +6,19 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { canonicalStateGenerationSha256 } from "../../src/cli/config-migrate";
+import { canonicalStateGenerationSha256 } from "../../scripts/akm-migrate/config-migrate";
+import { getLegacyWorkflowDbPath } from "../../scripts/akm-migrate/migrate/legacy/legacy-paths";
+import {
+  FROZEN_WORKFLOW_BASE_SCHEMA_DDL,
+  FROZEN_WORKFLOW_MIGRATIONS,
+} from "../../scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies";
 import {
   fingerprintMigrationGeneration,
   getMigrationApplyJournalPath,
   inspectMigrationState,
-} from "../../src/core/migration-backup";
+} from "../../scripts/akm-migrate/migration-backup";
 import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
-import { getLegacyWorkflowDbPath } from "../../src/migrate/legacy/legacy-paths";
-import {
-  FROZEN_WORKFLOW_BASE_SCHEMA_DDL,
-  FROZEN_WORKFLOW_MIGRATIONS,
-} from "../../src/migrate/legacy/workflow-migrations-bodies";
 import { type Database as AkmDatabase, openDatabaseFinalizing } from "../../src/storage/database";
 import { runMigrations as runSqliteMigrations } from "../../src/storage/engines/sqlite-migrations";
 import { runCliCapture } from "../_helpers/cli";

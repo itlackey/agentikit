@@ -18,8 +18,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { buildActionFromContributors, defaultActionContributors } from "../../core/action-contributors";
-import { placementTypes } from "../../core/asset/asset-placement";
-import { parseBundleRef } from "../../core/asset/asset-ref";
+import { stashDirFor } from "../../core/asset/asset-placement";
 import { displayRef } from "../../core/asset/resolve-ref";
 import type { AkmConfig, ImproveConfig } from "../../core/config/config";
 import { getDbPath } from "../../core/paths";
@@ -43,7 +42,7 @@ import { ensureIndex } from "../ensure-index";
 import { collectGraphRelatedHit, type GraphBoostContext, loadGraphBoostContext } from "../graph/graph-boost";
 import { type IndexDocument, isProposedQuality, type StashEntryScope } from "../passes/metadata";
 import { resolveProjectContext } from "../walk/project-context";
-import { parseRefPrefixQuery, sanitizeFtsQuery } from "./fts-query";
+import { parseRefPrefixQuery, parseRetiredTypePrefixQuery, sanitizeFtsQuery } from "./fts-query";
 import { applyRankingRules, combineSearchScores, normalizeFtsScores } from "./ranking";
 import type { RankedEntryInput } from "./ranking-types";
 import { attachSearchHitAttribution, copySearchHitAttribution, getSearchHitAttribution } from "./search-attribution";
@@ -65,6 +64,14 @@ import {
  */
 const STALE_INDEX_HINT_MS = 7 * 24 * 60 * 60 * 1000;
 
+type IndexedProvenance = { itemRef: string; bundleId: string; conceptId: string };
+
+function hasIndexedProvenance<
+  T extends { itemRef?: string | null; bundleId?: string | null; conceptId?: string | null },
+>(entry: T): entry is T & IndexedProvenance {
+  return Boolean(entry.itemRef && entry.bundleId && entry.conceptId);
+}
+
 function buildStaleIndexHint(db: Database): string | undefined {
   try {
     const builtAt = getMeta(db, "builtAt");
@@ -78,7 +85,9 @@ function buildStaleIndexHint(db: Database): string | undefined {
   }
 }
 
-function indexedProvenance(entry: RankedEntryInput): Pick<RankedEntryInput, "itemRef" | "bundleId" | "conceptId"> {
+function indexedProvenance(
+  entry: RankedEntryInput & IndexedProvenance,
+): Pick<IndexedProvenance, "itemRef" | "bundleId" | "conceptId"> {
   return { itemRef: entry.itemRef, bundleId: entry.bundleId, conceptId: entry.conceptId };
 }
 
@@ -90,20 +99,13 @@ export function buildLocalAction(
   return buildActionFromContributors({ type, ref }, defaultActionContributors(registry)) ?? `akm show ${ref}`;
 }
 
-function resolveSearchHitRef(
-  entry: IndexDocument,
-  refName: string,
-  source?: SearchSource,
-  provenance?: { itemRef?: string | null; bundleId?: string | null; conceptId?: string | null },
-  defaultBundleId?: string,
-): string {
-  const indexedRef = provenance?.itemRef ? parseBundleRef(provenance.itemRef) : undefined;
+function resolveSearchHitRef(entry: IndexDocument, provenance: IndexedProvenance, defaultBundleId?: string): string {
   return displayRef(
     {
       type: entry.type,
-      name: refName,
-      conceptId: provenance?.conceptId ?? indexedRef?.conceptId ?? entry.conceptId,
-      bundleId: provenance?.bundleId ?? indexedRef?.bundle ?? source?.registryId ?? undefined,
+      name: entry.name,
+      conceptId: provenance.conceptId,
+      bundleId: provenance.bundleId,
     },
     defaultBundleId,
   );
@@ -220,9 +222,29 @@ export async function searchLocal(input: {
     }
   }
   if (config.semanticSearchMode === "auto" && semanticStatus === "blocked") {
-    warnings.push(
-      "Semantic search is currently blocked. Using keyword search until the semantic backend is healthy again.",
-    );
+    if (!config.embedding?.endpoint || !config.embedding?.model) {
+      // F7/A2: same predicate as the `pending` branch above (#480) — a
+      // `blocked` status can outlive the provider config that produced it
+      // (e.g. the embedding config was later unset). This is not a fault;
+      // there is simply nothing configured to use.
+      warnings.push(
+        "Semantic search is enabled (semanticSearchMode='auto') but no embedding provider is configured. " +
+          'Either: (a) `akm config set embedding \'{"endpoint":"...","model":"..."}\'`, or ' +
+          "(b) `akm config set semanticSearchMode off` to use keyword-only search.",
+      );
+    } else {
+      // F7/A2: surface the ACTUAL diagnostic instead of one fixed generic
+      // string. `rawStatus.reason`/`rawStatus.message` record why the
+      // semantic backend failed (auth, network, a stuck local-model
+      // download, …) — read at `readSemanticStatus()` above and, before
+      // this fix, discarded here in favor of a message that never varied.
+      const detail = rawStatus?.message ?? (rawStatus?.reason ? `reason: ${rawStatus.reason}` : undefined);
+      warnings.push(
+        `Semantic search is blocked${detail ? ` (${detail})` : ""}. Using keyword search until the semantic ` +
+          "backend is healthy again. Run 'akm index --full' to retry, or " +
+          "`akm config set semanticSearchMode off` to silence this warning.",
+      );
+    }
   }
 
   // Bootstrap-only: builds the index inline when it cannot serve this stash.
@@ -275,10 +297,7 @@ export async function searchLocal(input: {
     );
     return {
       hits,
-      tip:
-        hits.length === 0
-          ? "No matching stash assets were found. Try a different query or run 'akm index' to rebuild."
-          : undefined,
+      tip: hits.length === 0 ? emptyResultTip(query) : undefined,
       warnings: warnings.length > 0 ? warnings : undefined,
       embedMs,
       rankMs,
@@ -326,14 +345,15 @@ async function searchDatabase(
   const defaultExcludes =
     searchType === "any" && !includeExcludedTypes ? (config.search?.defaultExcludeTypes ?? ["session"]) : [];
 
-  // SPEC-4 — ref-prefix queries (`<type>:` / `<type>:<prefix>/`) translate to
-  // a typed enumeration narrowed by name prefix, instead of degenerating into
-  // the AND-token FTS query their sanitized form would produce ("memory
-  // projecta" — noise). The branch fires only on the untyped path: an explicit
-  // `--type` flag expresses stronger intent and wins. The PARSED type is
-  // itself explicit intent, so `defaultExcludeTypes` does not apply — a bare
-  // `session:` enumerates sessions exactly like `--type session` does.
-  const refPrefix = searchType === "any" ? parseRefPrefixQuery(query, placementTypes()) : null;
+  // D4 — conceptId-prefix queries (`memories/projecta/`, `bundle//`,
+  // `bundle//skills/`) translate to a deterministic enumeration narrowed by
+  // conceptId, instead of degenerating into the AND-token FTS query their
+  // sanitized form would produce ("memories projecta" — noise). The branch
+  // fires only on the untyped path: an explicit `--type` flag expresses
+  // stronger intent and wins. The PREFIX is itself explicit intent, so
+  // `defaultExcludeTypes` does not apply — `sessions/` enumerates sessions
+  // exactly like `--type session` does, and `bundle//` means the whole bundle.
+  const refPrefix = searchType === "any" ? parseRefPrefixQuery(query) : null;
   // Shared args for the two browse paths below; browse never runs semantic
   // ranking, so both return usedSemantic: false.
   const browseArgs = {
@@ -351,13 +371,13 @@ async function searchDatabase(
     restrictToSources,
   };
   if (refPrefix) {
-    // Browse path (ref-prefix enumeration).
+    // Browse path (conceptId-prefix enumeration).
     return {
       ...(await enumerateEntries({
         ...browseArgs,
-        typeFilter: refPrefix.type,
         excludeTypes: [],
-        namePrefix: refPrefix.namePrefix,
+        conceptIdPrefix: refPrefix.conceptIdPrefix,
+        ...(refPrefix.bundle !== undefined ? { bundle: refPrefix.bundle } : {}),
       })),
       usedSemantic: false,
     };
@@ -419,7 +439,7 @@ async function searchDatabase(
     // not leak into default ('any') results. defaultExcludes is already []
     // unless this is the untyped path without includeExcludedTypes.
     excludeTypes: defaultExcludes,
-  });
+  }).filter(hasIndexedProvenance);
 
   // ── Scoring Phase ──────────────────────────────────────────────────────
   // Apply boosts as multiplicative factors (all boosts in a single phase
@@ -446,7 +466,7 @@ async function searchDatabase(
 
   // Resolve project-context tokens from the current working directory once
   // per search invocation. Returns null when running from home dir / /tmp,
-  // or when the caller has set AKM_DISABLE_PROJECT_CONTEXT=1.
+  // or when the caller passed `--no-project-context` (disableProjectContext).
   const projectContext = disableProjectContext ? null : resolveProjectContext(process.cwd());
 
   // Phase 2A / Rec 5: resolve forgetting-curve config and skip the feedback
@@ -466,7 +486,8 @@ async function searchDatabase(
     : undefined;
 
   // Resolve per-project scope key for scoped utility scoring.
-  // AKM_DISABLE_SCOPED_UTILITY=1 opts out (e.g. for registry searches or tests).
+  // `disableScopedUtility` (wired from `akm search --no-project-context`)
+  // opts out (e.g. for registry searches or tests).
   let scopeKey: string | undefined;
   try {
     scopeKey = disableScopedUtility ? undefined : getCurrentWorkflowScopeKey();
@@ -520,9 +541,6 @@ async function searchDatabase(
   preFilter.sort((a, b) => displayScore(b.score) - displayScore(a.score) || a.entry.name.localeCompare(b.entry.name));
 
   // Deduplicate by file path — keep only the highest-scored entry per file.
-  // Multiple legacy-sidecar entries can map to the same file (e.g. entries without
-  // a filename field all collapse to files[0]). Showing the same path/ref
-  // multiple times clutters results.
   const deduped = deduplicateByPath(preFilter);
 
   // Source → scope → proposed-quality → derived-twin belief inheritance →
@@ -575,12 +593,26 @@ async function searchDatabase(
   return { embedMs, rankMs, hits, usedSemantic };
 }
 
+/**
+ * The no-hits tip. A query in the retired `<type>:` / `<type>:<prefix>/` browse
+ * grammar gets the conceptId spelling that replaces it: without this it comes
+ * back empty and silent, which is the failure D4 removed the grammar to avoid.
+ */
+function emptyResultTip(query: string): string {
+  const generic = "No matching stash assets were found. Try a different query or run 'akm index' to rebuild.";
+  const retired = parseRetiredTypePrefixQuery(query);
+  if (!retired) return generic;
+  const root = stashDirFor(retired.type);
+  if (!root) return generic;
+  return `No matching stash assets were found. The '<type>:' browse grammar was removed in 0.9.0 — use the conceptId spelling: 'akm search "${root}/${retired.rest}"'.`;
+}
+
 // ── Enumeration (browse) path ────────────────────────────────────────────────
 
 /**
  * Enumerate index entries without FTS scoring — the browse path shared by
- * empty/unsearchable queries and SPEC-4 ref-prefix queries (`<type>:` /
- * `<type>:<prefix>/`). Applies the same post-ranking filters as the scored
+ * empty/unsearchable queries and D4 conceptId-prefix queries (`memories/`,
+ * `bundle//`, `bundle//skills/`). Applies the same post-ranking filters as the scored
  * path (source narrowing, scope, proposed-quality, belief) before the limit
  * slice. Hits carry the fixed browse score 1 in type-then-name order — this is
  * a deterministic listing, not a relevance ranking.
@@ -593,13 +625,18 @@ async function enumerateEntries(opts: {
   /** Types hidden from untyped enumeration (config `defaultExcludeTypes`). */
   excludeTypes: string[];
   /**
-   * SPEC-4 name-prefix narrowing (e.g. `"projecta/"`, trailing slash retained
-   * for exact `/`-boundary subtree semantics). Compared case-insensitively:
-   * the command layer lowercases queries while on-disk directory names — and
-   * therefore entry names — may carry mixed case. Empty/undefined keeps every
-   * entry of the type.
+   * D4 conceptId-prefix narrowing (e.g. `"memories/projecta/"`, trailing slash
+   * retained for exact `/`-boundary subtree semantics). Compared
+   * case-insensitively: the command layer lowercases queries while on-disk
+   * directory names — and therefore conceptIds — may carry mixed case.
+   * Empty/undefined keeps every entry.
    */
-  namePrefix?: string;
+  conceptIdPrefix?: string;
+  /**
+   * D4 bundle narrowing (the `bundle//` half). Undefined spans every bundle;
+   * an unknown slug matches nothing rather than widening.
+   */
+  bundle?: string;
   limit: number;
   stashDir: string;
   allSourceDirs: string[];
@@ -612,7 +649,7 @@ async function enumerateEntries(opts: {
   restrictToSources: boolean;
 }): Promise<{ hits: SourceSearchHit[] }> {
   const { db, query, sources, config, rendererRegistry, filters, beliefFilter } = opts;
-  const allEntries = getAllEntries(db, opts.typeFilter, opts.excludeTypes);
+  const allEntries = getAllEntries(db, opts.typeFilter, opts.excludeTypes).filter(hasIndexedProvenance);
   // Explicit listing order: type, then name, then filePath. The underlying
   // SELECT carries no ORDER BY, so its row order tracks the query plan and the
   // index-insertion (file-walk) order — both machine-dependent. A browse
@@ -623,12 +660,19 @@ async function enumerateEntries(opts: {
       a.entry.name.localeCompare(b.entry.name) ||
       a.filePath.localeCompare(b.filePath),
   );
-  // SPEC-4: narrow to the requested subtree. `startsWith` on the full
-  // slash-retaining prefix is exact — "projecta/" cannot match a sibling
-  // "projectalpha/…" scope.
-  const namePrefix = opts.namePrefix?.toLowerCase() ?? "";
+  // D4: narrow to the requested bundle and subtree. Matching is against the
+  // conceptId — the spelling every emitted `ref` carries — so a ref copied out
+  // of search output round-trips back in. `startsWith` on the full
+  // slash-retaining prefix is exact: "memories/projecta/" cannot match a
+  // sibling "memories/projectalpha/…" scope.
+  const bundle = opts.bundle?.toLowerCase();
+  const bundleFiltered =
+    bundle === undefined ? allEntries : allEntries.filter((ie) => ie.bundleId.toLowerCase() === bundle);
+  const conceptIdPrefix = opts.conceptIdPrefix?.toLowerCase() ?? "";
   const prefixFiltered =
-    namePrefix.length > 0 ? allEntries.filter((ie) => ie.entry.name.toLowerCase().startsWith(namePrefix)) : allEntries;
+    conceptIdPrefix.length > 0
+      ? bundleFiltered.filter((ie) => ie.conceptId.toLowerCase().startsWith(conceptIdPrefix))
+      : bundleFiltered;
   // Deduplicate by file path — multiple entries can share the same file
   const seenFilePaths = new Set<string>();
   const uniqueEntries = prefixFiltered.filter((ie) => {
@@ -824,9 +868,9 @@ async function tryVecScores(
 export async function buildDbHit(input: {
   entry: IndexDocument;
   path: string;
-  itemRef?: string | null;
-  bundleId?: string | null;
-  conceptId?: string | null;
+  itemRef: string;
+  bundleId: string;
+  conceptId: string;
   score: number;
   query: string;
   rankingMode: "hybrid" | "semantic" | "fts";
@@ -883,7 +927,7 @@ export async function buildDbHit(input: {
     (source && path.resolve(source.path) === path.resolve(input.defaultStashDir)
       ? (input.bundleId ?? undefined)
       : undefined);
-  const ref = resolveSearchHitRef(input.entry, input.entry.name, source, input, defaultBundleId);
+  const ref = resolveSearchHitRef(input.entry, input, defaultBundleId);
 
   const editable = isEditable(absolutePath, input.config, input.sources);
   const estimatedTokens = typeof input.entry.fileSize === "number" ? Math.round(input.entry.fileSize / 4) : undefined;
@@ -1014,7 +1058,7 @@ function deduplicateByPath<T extends { filePath: string; score?: number }>(items
 }
 
 /**
- * Exact-match scope filter check. Legacy entries without a `scope` object only
+ * Exact-match scope filter check. Entries without a `scope` object only
  * match when no filter is supplied — which is what the caller guards on
  * before invoking this helper.
  */

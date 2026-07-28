@@ -36,8 +36,10 @@
  * adapter contract. The session id feeds `--resume <id>` opportunistically;
  * `workflow_run_units` remains the durable source of truth.
  *
- * NOT registered anywhere: attaching this as `AkmHarness.resultExtractor` on
- * a gemini registry entry is the follow-up integration task.
+ * Registered: `geminiResultExtractor` is `GeminiHarness.resultExtractor`
+ * (`./index.ts`); the engine resolves it via `getHarness()` in
+ * `workflows/exec/native-executor.ts` to normalize agent-unit stdout before
+ * schema validation.
  */
 
 import type { AgentResultExtraction, AgentResultExtractor } from "../../agent/builder-shared";

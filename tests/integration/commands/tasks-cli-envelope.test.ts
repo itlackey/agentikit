@@ -17,7 +17,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { buildScheduledTaskInvocation } from "../../../src/tasks/scheduler-invocation";
+import {
+  buildScheduledTaskInvocation,
+  consumeSchedulerContextArg,
+  schedulerContextDescriptor,
+  writeSchedulerContextDescriptor,
+} from "../../../src/tasks/scheduler-invocation";
 import { runCliCapture } from "../../_helpers/cli";
 import { makeSandboxDir, type SandboxedDir, withEnv } from "../../_helpers/sandbox";
 
@@ -53,13 +58,18 @@ async function runCli(args: string[], stashDir: string): Promise<{ stdout: strin
 }
 
 describe("akm tasks — JSON envelope snapshot (WS6)", () => {
-  test("bare `akm tasks` → doctor diagnostics envelope (group defaultRun)", async () => {
+  // Owner ruling 12, canonical bare-group behavior: bare `akm tasks` used to
+  // run doctor implicitly. It is now a usage error naming the subcommands —
+  // the next test covers the explicit `akm tasks doctor` this replaces.
+  test("bare `akm tasks` → usage-error envelope, exit 2", async () => {
     const stash = makeStashDir();
-    const { stdout, status } = await runCli(["--json", "tasks"], stash);
-    expect(status).toBe(0);
-    const env = JSON.parse(stdout);
-    expect(env.shape).toBe("tasks-doctor");
-    expect(typeof env.backend).toBe("string");
+    const { stderr, status } = await runCli(["--json", "tasks"], stash);
+    expect(status).toBe(2);
+    const env = JSON.parse(stderr.trim());
+    expect(env.ok).toBe(false);
+    expect(env.code).toBe("MISSING_REQUIRED_ARGUMENT");
+    expect(env.error).toContain("`akm tasks` requires a subcommand");
+    expect(env.error).toContain("doctor");
   });
 
   test("tasks doctor: success envelope reports the active scheduler backend", async () => {
@@ -70,50 +80,6 @@ describe("akm tasks — JSON envelope snapshot (WS6)", () => {
     expect(env.shape).toBe("tasks-doctor");
     expect(typeof env.backend).toBe("string");
     expect(Array.isArray(env.warnings)).toBe(true);
-  });
-
-  // A v2 default-task file carrying a deprecated `--auto-accept safe` default-
-  // task command. Parser normalization only rewrites `--profile`→`--strategy`
-  // for legacy v1 files, so a stored v2 file keeps whichever spelling it was
-  // minted with — the doctor's upgrade map must match both.
-  function writeGeneratedCommandTask(stashDir: string, id: string, command: string): void {
-    fs.writeFileSync(
-      path.join(stashDir, "tasks", `${id}.yml`),
-      ["version: 2", 'schedule: "@daily"', "enabled: true", `command: ${command}`, ""].join("\n"),
-    );
-  }
-
-  test("tasks doctor flags the migrated `--strategy X --auto-accept safe` spelling with the flag-dropped replacement", async () => {
-    const stash = makeStashDir();
-    // What the 0.8→0.9 migration writes for the default improve tasks. Before
-    // the upgrade map learned this spelling it matched no key and warned on
-    // every run until 0.10 (chunk-6 ledger residue).
-    writeGeneratedCommandTask(stash, "akm-improve-frequent", "akm improve --strategy frequent --auto-accept safe");
-
-    const { stdout, status } = await runCli(["--json", "tasks", "doctor"], stash);
-    expect(status).toBe(0);
-    const env = JSON.parse(stdout);
-    expect(env.staleGeneratedCommands).toContainEqual({
-      id: "akm-improve-frequent",
-      replacement: "akm improve --strategy frequent",
-    });
-  });
-
-  test("tasks doctor still flags the original `--profile X --auto-accept safe` spelling", async () => {
-    const stash = makeStashDir();
-    writeGeneratedCommandTask(
-      stash,
-      "akm-graph-refresh-weekly",
-      "akm improve --profile graph-refresh --auto-accept safe",
-    );
-
-    const { stdout, status } = await runCli(["--json", "tasks", "doctor"], stash);
-    expect(status).toBe(0);
-    const env = JSON.parse(stdout);
-    expect(env.staleGeneratedCommands).toContainEqual({
-      id: "akm-graph-refresh-weekly",
-      replacement: "akm improve --strategy graph-refresh",
-    });
   });
 
   test("tasks run: unknown id → {ok:false} not-found envelope on stderr", async () => {
@@ -139,14 +105,17 @@ describe("akm tasks — JSON envelope snapshot (WS6)", () => {
     const capturedStash = makeStashDir();
     const ambientStash = makeStashDir();
     writeDisabledCommandTask(capturedStash);
-    const generated = buildScheduledTaskInvocation(["akm"], "disabled-command", undefined);
-    const ambientEnv: NodeJS.ProcessEnv = { AKM_STASH_DIR: ambientStash };
+    const generated = await withEnv({ AKM_STASH_DIR: capturedStash }, () => {
+      const contextPath = writeSchedulerContextDescriptor(schedulerContextDescriptor());
+      return buildScheduledTaskInvocation(["akm"], "disabled-command", contextPath);
+    });
 
-    const { code, stdout } = await withEnv({ ...ambientEnv, AKM_STASH_DIR: capturedStash }, () =>
-      runCliCapture(["--json", ...generated.argv.slice(1)]),
-    );
+    const { code, stdout, stderr } = await withEnv({ AKM_STASH_DIR: ambientStash }, () => {
+      const consumed = consumeSchedulerContextArg(generated.argv);
+      return runCliCapture(["--json", ...consumed.slice(1)]);
+    });
 
-    expect(code).toBe(0);
+    expect(code, stderr).toBe(0);
     expect(JSON.parse(stdout).result.status).toBe("disabled");
   });
 });

@@ -24,17 +24,19 @@ Built-in asset types are:
 - `fact`
 - `env`
 - `secret`
-- `wiki`
 - `task`
 - `session`
 
 The deprecated `vault` type was removed in 0.9.0 and replaced by `env` (whole
-`.env` files) and `secret` (single-value secret files).
+`.env` files) and `secret` (single-value secret files). `wiki` is not an item
+type: multi-page wikis are a bundle *format* owned by the `llm-wiki` adapter,
+not a per-file type stamped by the classifier (see
+[Classification](internals/classification.md)).
 
-Each type maps to a canonical source directory through `src/core/asset/asset-spec.ts`
-(`skills/`, `commands/`, `agents/`, `knowledge/`, `workflows/`, `scripts/`,
-`memories/`, `lessons/`, `facts/`, `env/`, `secrets/`, `wikis/`, `tasks/`,
-`sessions/`).
+Each type maps to a canonical source directory through
+`src/core/asset/asset-placement.ts`'s `PLACEMENT_SPECS` map (`skills/`,
+`commands/`, `agents/`, `knowledge/`, `workflows/`, `scripts/`, `memories/`,
+`lessons/`, `facts/`, `env/`, `secrets/`, `tasks/`, `sessions/`).
 
 ---
 
@@ -63,6 +65,14 @@ interface SourceProvider {
 Providers do **not** implement `search`, `show`, `canShow`, or any read method.
 The indexer walks `path()`, classifies files, and answers all queries from the
 local FTS5 index.
+
+File semantics are owned by the selected bundle adapter. OKF is the first-class
+least-common-denominator for Markdown path identity, open types, content, links,
+and heading fragments. The `akm` format is an OKF-compatible Markdown superset:
+its adapter progressively adds native command, script, workflow, task,
+environment, secret, memory, and lesson behavior. Non-Markdown formats retain
+their native serialization and every adapter retains its own capability,
+validation, redaction, and placement rules.
 
 The legacy `LiveStashProvider` / `SyncableStashProvider` split is gone, as is
 any "remote-only" provider tier. API-backed sources (mem0, Notion, etc.) are
@@ -93,12 +103,24 @@ User-facing item refs are path-identified:
 - optional `bundle//` narrows input lookup to a configured bundle
 - refs are parsed by `parseBundleRef` in `src/core/asset/asset-ref.ts`
 - markdown-backed items strip `.md` from canonical names
+- `#fragment` is input-only and never stored: on markdown-document items the
+  core resolves it as a section selector (`knowledge/api-guide#authentication`);
+  elsewhere it is an adapter-owned selector opaque to the core
+- refs embedded in prose must be fully qualified (`bundle//conceptId`) or a
+  native adapter link form — a bare conceptId in prose is ordinary text, and no
+  tool rewrites it
+- a rename is delete plus create: the new path is a new identity and learned
+  state does not follow it
+
+See [`specs/ref.md`](./specs/ref.md) for the normative grammar and
+[`specs/0.9.0-decisions.md`](./specs/0.9.0-decisions.md) for the rationale
+behind the 0.9.0 changes.
 
 Each indexed entry stores that identity as `item_ref`, with `bundle_id` and
 `concept_id` provenance, and stores its absolute materialized local file as
 `file_path`. Search and show return these index-backed refs and paths, so two
-bundles containing the same concept remain distinguishable. Nullable
-pre-cutover rows retain a path/type lookup fallback until they are reindexed.
+bundles containing the same concept remain distinguishable. Rows without the
+current identity columns are ignored until they are reindexed.
 
 Examples:
 
@@ -156,7 +178,8 @@ Local show flow (`src/commands/read/show.ts`):
 3. return the indexed canonical ref and read `file_path` from disk
 4. fall back to on-disk type-dir traversal only when the index has no row
    (covers the "indexed yet?" gap before `akm index` runs)
-5. classify the file and render a response
+5. apply generic Markdown content/fragment presentation for OKF, or the owning
+   adapter's progressively enhanced native presentation
 
 There is **no remote provider fallback**. The fallback is local disk traversal,
 not a provider read.
@@ -179,7 +202,17 @@ in the index, and fails closed when no configured source owns the path.
 ## Writing to Sources
 
 Writes go through one helper: `src/core/write-source.ts`. This is the only
-place in the codebase that branches on `source.kind`.
+place in the codebase that branches on `source.kind`, and that is **enforced**
+by `scripts/lint-write-source-chokepoint.ts` in the `lint` chain — it was
+prose-only until 0.9.0, and drifted.
+
+Command layers therefore never hold provider knowledge. Where a step is
+meaningful only for a publication-backed target, `write-source.ts` exposes a
+kind-neutral wrapper that absorbs the guard and no-ops otherwise:
+`commitWriteTargetBoundary`, `captureGitPublication`,
+`captureWriteTargetPathSnapshot`, and `publishWriteTargetTransaction`.
+Recording or comparing a kind for transaction *identity* (`targetKind:
+target.source.kind`) is not branching and stays in the command layer.
 
 ```ts
 writeAssetToSource(source, config, ref, content)
@@ -199,8 +232,9 @@ boundary, which stages and commits only those files (so unrelated staged work,
 including work under the same asset directory, is not included). Improve
 auto-sync similarly subtracts the Git dirty-path baseline captured at invocation
 start. Push remains gated on `writable && hasRemote && push !== false`. The old
-per-asset commit/push path (`options.pushOnCommit`) is deprecated and no longer
-commits per asset.
+per-asset commit/push path (`options.pushOnCommit`) is **hard-rejected** at
+config load — not merely deprecated — by a `superRefine` on the bundle/source
+schema (`src/core/config/schema/sources-bundles.ts`).
 
 `writable` is a config flag, not an interface concern. Defaults: `true` for
 `filesystem`, `false` for everything else. `writable: true` on `website` or
@@ -258,19 +292,19 @@ lives in `src/registry/providers/types.ts`:
 ```ts
 interface RegistryProvider {
   readonly type: string;            // "static-index" | "skills-sh"
-  search(options): Promise<RegistryProviderResult>;
-  searchKits(q): Promise<KitResult[]>;
-  searchAssets?(q): Promise<AssetPreview[]>;
-  getKit(id): Promise<KitManifest | null>;
-  canHandle(ref: ParsedRegistryRef): boolean;
+  search(options: RegistryProviderSearchOptions): Promise<RegistryProviderResult>;
 }
 ```
+
+The contract is a single `search()` method — the orchestrator's only entry
+point. Implementations must never throw; errors are returned as
+`warnings[]` on the result.
 
 Built-in registries:
 
 | Kind | Role |
 | --- | --- |
-| `static-index` | Reads the v2 JSON index schema (official akm registry, team mirrors). |
+| `static-index` | Reads the v2 or v3 JSON index schema, same `stashes[]` wire format (official akm registry, team mirrors). `akm registry build-index` emits v3; the live official registry currently publishes v2. |
 | `skills-sh` | Wraps the skills.sh REST API. |
 
 Context Hub is **not** a registry provider type. It is just a recommended git
@@ -425,25 +459,25 @@ async execution context; unrelated work and child processes remain excluded.
 
 | Module | Responsibility |
 | --- | --- |
-| `src/cli.ts` | composition root (~620 LOC); per-family parsing lives in `commands/<family>/*-cli.ts` |
+| `src/cli.ts` | composition root; per-family parsing lives in `commands/<family>/*-cli.ts` |
 | `src/cli/` | citty composition helpers |
-| `src/core/asset/asset-spec.ts` | asset type registry and canonical source directories (re-export shim at `src/core/asset-spec.ts`) |
-| `src/core/asset/asset-ref.ts` | asset ref parsing and normalization (re-export shim at `src/core/asset-ref.ts`) |
-| `src/core/config/config.ts` | config loading, validation, env resolution (re-export shim at `src/core/config.ts`) |
+| `src/core/asset/asset-placement.ts` | asset type registry and canonical source directories (`PLACEMENT_SPECS`) |
+| `src/core/asset/asset-ref.ts` | asset ref parsing and normalization (`parseBundleRef`) |
+| `src/core/config/config.ts` | config loading, validation, env resolution |
 | `src/core/errors.ts` | error classes with stable codes and hints |
 | `src/core/parse.ts` | shared JSON parsing: think/fence stripping, balanced-brace extraction |
 | `src/core/concurrent.ts` | bounded concurrency pool (`concurrentMap`, default 1 worker) |
 | `src/core/write-source.ts` | the single write helper (branches on `source.kind`) |
 | `src/sources/provider.ts` | minimal `SourceProvider` interface |
 | `src/sources/providers/` | filesystem / git / website / npm implementations |
-| `src/sources/source-resolve.ts` | filesystem path resolution for refs |
+| `src/sources/resolve.ts` | filesystem path resolution for refs |
 | `src/indexer/indexer.ts` | walking, metadata generation, index rebuilds, embeddings, utility recompute |
 | `src/indexer/walk/` | walker, matchers, path/file/index/project context — the walk phase |
 | `src/indexer/db/` | `db`, `db-backup`, `graph-db`, `llm-cache` — the persistence phase |
 | `src/indexer/graph/` | graph boost/dedup/extraction — the graph phase |
 | `src/indexer/search/` | `db-search`, ranking, search-fields, search-source, enrichers — the search phase |
 | `src/indexer/passes/` | memory-inference, staleness-detect, metadata — LLM/metadata passes |
-| `src/indexer/usage/` | usage-events, unmigrated-vaults-guard |
+| `src/indexer/usage/` | usage-events |
 | `src/commands/read/search.ts` | `akm search` orchestration |
 | `src/commands/read/show.ts` | `akm show` orchestration |
 | `src/commands/improve/` | knowledge-evolution slice (improve/consolidate/distill/extract/reflect + `memory/`) |
@@ -454,7 +488,7 @@ async execution context; unrelated work and child processes remain excluded.
 | `src/commands/tasks/` | scheduled-task command surface |
 | `src/commands/agent/` | contribute/agent command surface |
 | `src/registry/providers/` | registry provider implementations (static-index, skills-sh) |
-| `src/output/shapes/`, `src/output/text/` | JSON-envelope and text-output registries per command (#490; replaces the old `renderers.ts`) |
+| `src/output/shapes/`, `src/output/text/` | JSON-envelope and text-output registries per command (#490) — a parallel concern to `src/output/renderers.ts`'s per-asset-type `show` renderers, which is still live and self-registering, not replaced |
 | `src/workflows/authoring/` | workflow authoring + scope-key helpers |
 | `src/workflows/runtime/runs.ts` | workflow run persistence (raw SQL lives in `src/storage/repositories/workflow-runs-repository.ts`) |
 | `src/workflows/runtime/` | run lifecycle: runs, checkin, document-cache, agent-identity |

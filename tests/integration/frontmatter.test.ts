@@ -138,11 +138,11 @@ describe("parseFrontmatter", () => {
     expect(result.data.description).toBe("test");
   });
 
-  test("empty value with no continuation becomes empty string (backward compat)", () => {
+  test("empty value with no continuation remains null", () => {
     const raw = "---\ntitle: Hello\nempty:\ndescription: test\n---\n";
     const result = parseFrontmatter(raw);
     expect(result.data.title).toBe("Hello");
-    expect(result.data.empty).toBe("");
+    expect(result.data.empty).toBeNull();
     expect(result.data.description).toBe("test");
   });
 

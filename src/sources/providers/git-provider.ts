@@ -14,7 +14,7 @@ import { validateGitUrl } from "../../registry/resolve";
 import { withFreshnessCache } from "../freshness";
 import type { SourceProvider } from "../provider";
 import { registerSourceProvider } from "../provider-factory";
-import { cloneRepo, runGit, syncRegistryGitRef } from "./git-install";
+import { assertNoIgnoredPathOverwrite, cloneRepo, inspectGitUpstream, runGit } from "./git-install";
 import type { SourceLockData, SyncOptions } from "./install-types";
 import { sanitizeString } from "./provider-utils";
 
@@ -32,12 +32,11 @@ export interface ParsedRepoUrl {
 
 /**
  * Git source provider — clones (and re-pulls) a remote repo into a local
- * cache directory. Implements the v1 {@link SourceProvider} interface (spec
- * §2.1, §2.5): `{ name, kind, init, path, sync }`.
+ * cache directory. Implements the {@link SourceProvider} interface.
  *
  * Reading is the indexer's job — this class doesn't implement `search` or
- * `show`. The install-time helpers `syncRegistryGitRef` / `syncMirroredRepo`
- * live below as standalone functions used by `akm add` / `akm update`.
+ * `show`. Install refs are materialized by `syncFromRef`; this provider only
+ * refreshes configured Git sources.
  */
 export class GitSourceProvider implements SourceProvider {
   readonly kind = "git" as const;
@@ -52,24 +51,12 @@ export class GitSourceProvider implements SourceProvider {
 
   path(): string {
     if (this.#path == null) {
-      // Lazy resolution: providers are sometimes constructed without an
-      // explicit init() call (e.g. by legacy callers that just want the
-      // path). Resolve on demand and cache.
       this.#path = resolveGitContentDir(this.#config);
     }
     return this.#path;
   }
 
   async sync(options?: { force?: boolean }): Promise<void> {
-    // Two execution modes:
-    //   1. Long-lived configured source (config.url) — mirror into the
-    //      registry-index cache and serve as a read-only working tree.
-    //   2. One-shot install ref (options.ref like "git:..." / "github:...") —
-    //      delegate to the install-time pipeline.
-    if (typeof this.#config.options?.ref === "string" && this.#config.options.ref) {
-      await syncRegistryGitRef(String(this.#config.options.ref), { force: options?.force });
-      return;
-    }
     await syncMirroredRepo(this.#config, { force: options?.force });
   }
 }
@@ -119,6 +106,7 @@ export async function ensureGitMirror(
     ttlMs: CACHE_TTL_MS,
     staleMs: CACHE_STALE_MS,
     force: options?.force === true,
+    allowStaleOnRefreshFailure: !(options?.force === true && writable),
     isUsable: () => !requireRepoDir || hasExtractedRepo(cachePaths.repoDir),
     refresh: async () => {
       fs.mkdirSync(cachePaths.rootDir, { recursive: true });
@@ -167,12 +155,28 @@ export async function syncMirroredRepo(config: SourceConfigEntry, options?: Sync
 }
 
 function pullRepo(repoDir: string): void {
-  const result = runGit(["-C", repoDir, "pull", "--ff-only"], {
-    timeout: 120_000,
-  });
-  if (result.status !== 0) {
-    const err = result.stderr?.trim() || result.error?.message || "unknown error";
-    throw new Error(`Failed to pull ${repoDir}: ${err}`);
+  const status = runGit(["-C", repoDir, "status", "--porcelain"]);
+  if (status.status !== 0 || status.stdout.trim()) {
+    throw new UsageError(`Writable Git source at ${repoDir} has uncommitted changes; refusing to update it.`);
+  }
+  const relation = inspectGitUpstream(repoDir);
+  if (relation.ahead > 0) {
+    throw new UsageError(`Writable Git source at ${repoDir} has unpushed commits; refusing to update it.`);
+  }
+  if (relation.behind > 0 && relation.upstream) {
+    const statusBeforeMerge = runGit(["-C", repoDir, "status", "--porcelain"]);
+    if (statusBeforeMerge.status !== 0 || statusBeforeMerge.stdout.trim()) {
+      throw new UsageError(
+        `Writable Git source at ${repoDir} changed while its update was prepared; refusing to merge.`,
+      );
+    }
+    assertNoIgnoredPathOverwrite(repoDir, relation.upstream);
+    const merge = runGit(["-C", repoDir, "merge", "--ff-only", "--no-overwrite-ignore", relation.upstream], {
+      timeout: 120_000,
+    });
+    if (merge.status !== 0) {
+      throw new Error(`Failed to fast-forward ${repoDir}: ${merge.stderr?.trim() || "unknown error"}`);
+    }
   }
 }
 

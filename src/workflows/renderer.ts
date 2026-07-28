@@ -9,13 +9,11 @@
  *
  *   - `workflow-md` — reads the classic linear markdown via `parseWorkflow`
  *     and projects the validated `WorkflowDocument` down to the public
- *     `ShowResponse` shape (which still uses the flat
- *     `WorkflowStepDefinition` type for backwards compatibility) and into
- *     search hints for the indexer.
+ *     `ShowResponse` shape and into search hints for the indexer.
  *   - `workflow-program-yaml` — reads a YAML workflow *program* (redesign
  *     addendum, R1) via `parseWorkflowProgram` and projects it through
  *     `program/project.ts`, including a compact orchestration summary per
- *     step (runner/model, `fanOut.over` expression, route table).
+ *     step (engine/model, `fanOut.over` expression, route table).
  */
 
 import { displayRef } from "../core/asset/resolve-ref";
@@ -68,7 +66,7 @@ export const workflowMdRenderer: AssetRenderer = {
     // primary/default-bundle workflow renders the SHORT conceptId
     // (`workflows/<name>`); a named source qualifies it as
     // (`<bundle>//workflows/<name>`).
-    const ref = displayRef({ type: "workflow", name, bundleId: ctx.origin });
+    const ref = displayRef({ type: "workflow", name, bundleId: ctx.origin }, ctx.defaultBundle);
     return {
       type: "workflow",
       name,
@@ -106,7 +104,7 @@ export const workflowProgramRenderer: AssetRenderer = {
     // WI-8.5b (display flip): the `akm workflow next <ref>` action is DISPLAY
     // output — its spelling follows the D-R5 display rule (`displayRef`), mirroring
     // workflowMdRenderer above.
-    const ref = displayRef({ type: "workflow", name, bundleId: ctx.origin });
+    const ref = displayRef({ type: "workflow", name, bundleId: ctx.origin }, ctx.defaultBundle);
     const parameters = projectProgramParameters(program);
     return {
       type: "workflow",

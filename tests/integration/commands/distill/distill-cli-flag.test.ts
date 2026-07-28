@@ -28,7 +28,8 @@ afterAll(() => {
  * Drive the CLI in-process with fresh sandboxed HOME/XDG dirs (and
  * AKM_STASH_DIR cleared), mirroring the env the old subprocess runner set.
  *
- * Exit-code note: the real entry point exits 1 on citty's "Unknown command",
+ * Exit-code note: the real entry point exits 2 on citty's "Unknown command"
+ * (R-032, commit 96ff2fe; pinned at tests/integration/cli-errors.test.ts:383-389),
  * but in the in-process harness the escaped error is classified via
  * classifyExitCode → 70 (internal). The tests therefore assert only that the
  * exit code is non-zero; the "Unknown command" message lands on captured

@@ -30,9 +30,7 @@ function renderTable(headers: string[], rows: string[][]): string {
 
 /**
  * Render `--detail per-run` rows as a TSV-ish aligned table. The column
- * shape was originally inherited from the retired
- * `scripts/improve-stats/runs-detail` bash helper; keep the same shape
- * so operator muscle memory carries over.
+ * shape is stable so repeated operator reports remain easy to compare.
  *
  * Columns: ts | ok | actions | refl_ok/fail/cd/skip |
  *   distill_q/llm-fail/qrej/cfg/skip | cons_proc/promo/merge/del |
@@ -43,10 +41,9 @@ export function renderRunsDetailMd(runs: ImproveRunSummary[]): string {
     "ts",
     "ok",
     "strategy",
-    "legacy_profile",
     "actions",
     "refl_ok/fail/cd/skip",
-    "distill_q/llm-fail/qrej/cfg/skip",
+    "distill_q/llm-fail/judge/validator/cfg/skip",
     "cons_proc/promo/merge/del",
     "mem_cons/written/skip",
     "graph_f/e/r",
@@ -62,7 +59,8 @@ export function renderRunsDetailMd(runs: ImproveRunSummary[]): string {
       r.actions.reflect.skipped +
       r.actions.distill.queued +
       r.actions.distill.llmFailed +
-      r.actions.distill.qualityRejected +
+      r.actions.distill.judgeRejected +
+      r.actions.distill.validatorRejected +
       r.actions.distill.configDisabled +
       r.actions.distill.skipped +
       r.actions.memoryPrune +
@@ -73,10 +71,9 @@ export function renderRunsDetailMd(runs: ImproveRunSummary[]): string {
       r.startedAt,
       String(r.ok),
       r.strategy ?? "",
-      r.legacyProfile ?? "",
       String(totalActions),
       `${r.actions.reflect.ok}/${r.actions.reflect.failed}/${r.actions.reflect.cooldown}/${r.actions.reflect.skipped}`,
-      `${r.actions.distill.queued}/${r.actions.distill.llmFailed}/${r.actions.distill.qualityRejected}/${r.actions.distill.configDisabled}/${r.actions.distill.skipped}`,
+      `${r.actions.distill.queued}/${r.actions.distill.llmFailed}/${r.actions.distill.judgeRejected}/${r.actions.distill.validatorRejected}/${r.actions.distill.configDisabled}/${r.actions.distill.skipped}`,
       `${r.consolidation.processed}/${r.consolidation.promoted}/${r.consolidation.merged}/${r.consolidation.deleted}`,
       `${r.memoryInference.considered}/${r.memoryInference.written}/${r.memoryInference.skippedNoFacts}`,
       `${r.graphExtraction.extractedFiles}/${r.graphExtraction.entities}/${r.graphExtraction.relations}`,
@@ -109,7 +106,6 @@ export function renderWindowCompareMd(windows: WindowResult[], deltas: Record<st
   const paths = [
     "runs",
     "improve.resultRows.included",
-    "improve.resultRows.normalized",
     "improve.resultRows.skipped.invalid",
     ...INTERESTING_DELTA_PATHS,
   ];

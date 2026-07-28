@@ -85,9 +85,10 @@ akm setup --dir ~/custom-stash
 ```
 
 This creates `~/akm` with subdirectories for each asset type: `scripts/`,
-`skills/`, `commands/`, `agents/`, `knowledge/`, `workflows/`, `memories/`,
-`env/`, `secrets/`, `wikis/`, and `lessons/`. See
-[technical/filesystem.md](../architecture/internals/storage-locations.md) for platform-specific paths and environment
+`skills/`, `commands/`, `agents/`, `knowledge/`, `instructions/`,
+`workflows/`, `memories/`, `env/`, `secrets/`, `facts/`, `lessons/`,
+`tasks/`, and `sessions/`. See
+[Filesystem Layout](../architecture/internals/storage-locations.md) for platform-specific paths and environment
 variable overrides.
 
 `akm setup --yes`, config-file setup, and CI runs do not activate schedules.
@@ -196,8 +197,8 @@ akm show scripts/hello.sh
 
 The output is structured JSON containing everything an agent needs to use
 the asset. For scripts, this includes a `run` command plus optional `cwd`
-and `setup`. For agents, a `prompt` payload. For knowledge, navigable
-`content` with view modes.
+and `setup`. For agents, a `prompt` payload. For knowledge, the document
+`content` — append `#<heading-slug>` to the ref for one section.
 
 See [cli.md](../reference/cli.md#show) for the full per-type field reference.
 

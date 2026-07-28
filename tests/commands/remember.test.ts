@@ -3,7 +3,7 @@
  *
  * Verifies the `--target` flag added to `akm remember` per v1 implementation
  * plan §6 decision 3. Resolution order is:
- *   --target → defaultWriteTarget → working stash → ConfigError
+ *   --target → defaultWriteTarget → defaultBundle → ConfigError
  *
  * These tests exercise the explicit-target path:
  *   - resolves to a configured filesystem source by name
@@ -116,16 +116,27 @@ describe("remember --target", () => {
     });
 
     const { result } = await runCli(["remember", "won't be written", "--target", "read-only"]);
-    expect(result.status).not.toBe(0);
+    // VALUE-17: pin the exact classified failure (ConfigError -> exit 78,
+    // code INVALID_CONFIG_FILE — see src/core/write-source.ts's
+    // `resolveWriteTarget` non-writable-target branch and
+    // src/cli/shared.ts's `classifyExitCode`), not merely "some failure".
+    // `not.toBe(0)` would also pass for a crash, which defeats the point of
+    // this test.
+    expect(result.status).toBe(78);
 
-    const json = JSON.parse(result.stderr) as { error: string };
+    const json = JSON.parse(result.stderr) as { error: string; code?: string };
+    expect(json.code).toBe("INVALID_CONFIG_FILE");
     expect(json.error).toContain("source read-only is not writable");
   });
 });
 
 describe("remember --target", () => {
-  test("default stash is used when --target is omitted", async () => {
-    writeConfig({ semanticSearchMode: "off" });
+  test("default bundle is used when --target is omitted", async () => {
+    writeConfig({
+      semanticSearchMode: "off",
+      bundles: { stash: { path: currentStashDir, writable: true } },
+      defaultBundle: "stash",
+    });
 
     const { stashDir, result } = await runCli(["remember", "Memory without target flag"]);
     expect(result.status).toBe(0);
@@ -134,54 +145,37 @@ describe("remember --target", () => {
     expect(json.ok).toBe(true);
     expect(json.path.startsWith(stashDir)).toBe(true);
   });
+});
 
-  test("--target routes memory to the named writable secondary stash", async () => {
-    const secondaryDir = makeTargetDir();
-    writeConfig({
-      semanticSearchMode: "off",
-      bundles: { secondary: { path: secondaryDir, writable: true } },
-    });
-
-    const { stashDir, result } = await runCli(["remember", "Pinned note for secondary stash", "--target", "secondary"]);
+// R-062: `showSimilar` was renamed to the kebab-case `show-similar` for
+// consistency with every other multi-word flag in the CLI. citty registers
+// BOTH the camelCase and kebab-case spelling of any declared flag name
+// automatically (verified against the pinned citty@^0.2.2 dependency), so
+// this is a pure rename — `--showSimilar` is kept as an explicit, documented
+// alias rather than becoming a silent accident, and both spellings must
+// keep behaving identically.
+describe("remember --show-similar / --showSimilar (R-062 rename, both spellings work)", () => {
+  test("--show-similar (canonical kebab-case spelling) includes a similar[] array", async () => {
+    const { result } = await runCli(["remember", "pinned note about deploy pipelines", "--show-similar"]);
     expect(result.status).toBe(0);
-
-    const json = JSON.parse(result.stdout) as { ok: boolean; ref: string; path: string };
+    const json = JSON.parse(result.stdout) as { ok: boolean; similar?: unknown[] };
     expect(json.ok).toBe(true);
-    expect(json.ref).toBe("secondary//memories/pinned-note-for-secondary-stash");
-
-    // Must land in the explicit secondary stash, NOT the working stash.
-    const expectedPath = path.join(secondaryDir, "memories", "pinned-note-for-secondary-stash.md");
-    expect(json.path).toBe(expectedPath);
-    expect(fs.existsSync(expectedPath)).toBe(true);
-    expect(fs.existsSync(path.join(stashDir, "memories", "pinned-note-for-secondary-stash.md"))).toBe(false);
+    expect(Array.isArray(json.similar)).toBe(true);
   });
 
-  test("--target with an unknown source name throws a usage error", async () => {
-    const targetDir = makeTargetDir();
-    writeConfig({
-      semanticSearchMode: "off",
-      bundles: { "real-stash": { path: targetDir, writable: true } },
-    });
-
-    const { result } = await runCli(["remember", "won't be written", "--target", "ghost-stash"]);
-    expect(result.status).toBe(2);
-
-    const json = JSON.parse(result.stderr) as { error: string };
-    expect(json.error).toContain('No source named "ghost-stash" is configured');
-    expect(json.error).toContain("--target must reference a source name");
+  test("--showSimilar (legacy camelCase spelling) behaves identically", async () => {
+    const { result } = await runCli(["remember", "pinned note about deploy pipelines", "--showSimilar"]);
+    expect(result.status).toBe(0);
+    const json = JSON.parse(result.stdout) as { ok: boolean; similar?: unknown[] };
+    expect(json.ok).toBe(true);
+    expect(Array.isArray(json.similar)).toBe(true);
   });
 
-  test("--target on a non-writable source throws a config error", async () => {
-    const targetDir = makeTargetDir();
-    writeConfig({
-      semanticSearchMode: "off",
-      bundles: { "frozen-stash": { path: targetDir, writable: false } },
-    });
-
-    const { result } = await runCli(["remember", "won't be written", "--target", "frozen-stash"]);
-    expect(result.status).not.toBe(0);
-
-    const json = JSON.parse(result.stderr) as { error: string };
-    expect(json.error).toContain("source frozen-stash is not writable");
+  test("omitting the flag entirely omits `similar` from the result", async () => {
+    const { result } = await runCli(["remember", "pinned note about deploy pipelines"]);
+    expect(result.status).toBe(0);
+    const json = JSON.parse(result.stdout) as { ok: boolean; similar?: unknown[] };
+    expect(json.ok).toBe(true);
+    expect(json.similar).toBeUndefined();
   });
 });

@@ -19,7 +19,7 @@ import path from "node:path";
 import { akmReflect } from "../../../../src/commands/improve/reflect";
 import { listProposals } from "../../../../src/commands/proposal/repository";
 import { readEvents } from "../../../../src/core/events";
-import type { SpawnedSubprocess, SpawnFn } from "../../../../src/integrations/agent/spawn";
+import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess";
 import { quietQualityGateConfig } from "../../../_helpers/factories";
 
 const tempDirs: string[] = [];

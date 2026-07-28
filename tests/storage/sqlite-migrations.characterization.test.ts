@@ -7,9 +7,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runMigrations as runStateMigrations } from "../../src/core/state/migrations";
+import { FROZEN_WORKFLOW_MIGRATIONS } from "../../scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies";
+import { runMigrations as runStateMigrations, STATE_MIGRATIONS } from "../../src/core/state/migrations";
 import { openStateDatabase } from "../../src/core/state-db";
-import { FROZEN_WORKFLOW_MIGRATIONS } from "../../src/migrate/legacy/workflow-migrations-bodies";
 import type { Database as AkmDatabase } from "../../src/storage/database";
 import { migrationChecksum, runMigrations as runSqliteMigrations } from "../../src/storage/engines/sqlite-migrations";
 import { openLegacyWorkflowDb } from "../_helpers/legacy-workflow-db";
@@ -19,7 +19,7 @@ import { openLegacyWorkflowDb } from "../_helpers/legacy-workflow-db";
  * pre-cutover workflow.db chain).
  *
  * WI-8.3: `src/workflows/db.ts` is deleted; the workflow-runner half now targets
- * the FROZEN migration bodies (`src/migrate/legacy/workflow-migrations-bodies.ts`)
+ * the FROZEN migration bodies (`scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts`)
  * driven through the shared engine (`openLegacyWorkflowDb` = base schema +
  * `runSqliteMigrations(FROZEN_WORKFLOW_MIGRATIONS)`) — the exact path
  * `config-migrate.ts#runFrozenWorkflowRoll` uses at cutover time. Because the
@@ -65,6 +65,12 @@ describe("SQLite migration runner characterization", () => {
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("state.db: released initial migration body remains checksum-sealed", () => {
+    const initial = STATE_MIGRATIONS[0];
+    if (!initial) throw new Error("Initial state migration is missing");
+    expect(migrationChecksum(initial)).toBe("670c210dabf8c12022678aac76b90531321b33f7a328b99c52f38bda224be6c3");
   });
 
   test("state.db: fresh-DB migration replay produces a stable schema + ledger", () => {

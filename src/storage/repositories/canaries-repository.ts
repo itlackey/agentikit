@@ -49,6 +49,12 @@ export interface CycleMetricsRow {
   distinct_content_ratio: number;
   mean_bigram_diversity: number;
   over_generation_count: number;
+  /**
+   * Always 0 — the CHURN alert class it fed was removed for never having been
+   * able to fire. The column stays because it lives in a RELEASED migration
+   * body (`016`) that must not be edited: 0.8 ships `state.db`, so a deployed
+   * ledger can already have sealed that body's checksum.
+   */
   accepted_actions: number;
   merge_floor_violations: number;
   /** JSON array of fired alert kinds for this cycle. */

@@ -16,7 +16,19 @@ import { isRelevantAssetFile } from "../../core/asset/asset-placement";
 import { spawnSync } from "../../runtime";
 import { buildFileContext, type FileContext } from "./file-context";
 
-const SKIP_DIRS = new Set([".git", "node_modules", "bin", ".cache"]);
+const ALWAYS_SKIP_DIRS = new Set([".git"]);
+const AKM_SKIP_DIRS = new Set(["node_modules", "bin", ".cache"]);
+
+export interface WalkStashFlatOptions {
+  /** Let the owning adapter see every directory except VCS internals. */
+  includeAllDirectories?: boolean;
+}
+
+export interface WalkStashFlatResult {
+  files: FileContext[];
+  /** False when any directory or candidate file could not be inspected. */
+  complete: boolean;
+}
 
 export interface DirectoryGroup {
   dirPath: string;
@@ -70,22 +82,26 @@ export function walkStash(typeRoot: string, assetType: string): DirectoryGroup[]
  * Otherwise falls back to a manual walk that skips .git, node_modules, bin,
  * .cache, dot-directories, and the legacy metadata sidecar.
  */
-export function walkStashFlat(stashRoot: string): FileContext[] {
-  if (!fs.existsSync(stashRoot)) return [];
+export function walkStashFlat(stashRoot: string, options: WalkStashFlatOptions = {}): FileContext[] {
+  return walkStashFlatWithStatus(stashRoot, options).files;
+}
+
+export function walkStashFlatWithStatus(stashRoot: string, options: WalkStashFlatOptions = {}): WalkStashFlatResult {
+  if (!fs.existsSync(stashRoot)) return { files: [], complete: false };
 
   // Try git-based walk first (respects .gitignore)
-  const gitResult = walkStashGit(stashRoot);
+  const gitResult = walkStashGit(stashRoot, options);
   if (gitResult) return gitResult;
 
   // Fallback: manual walk
-  return walkStashManual(stashRoot);
+  return walkStashManual(stashRoot, options);
 }
 
 /**
  * Walk using `git ls-files` to respect .gitignore.
  * Returns null if the directory is not a git repo or git fails.
  */
-function walkStashGit(stashRoot: string): FileContext[] | null {
+function walkStashGit(stashRoot: string, options: WalkStashFlatOptions): WalkStashFlatResult | null {
   // Quick check: is this a git repo? Look for .git in this dir or parents.
   if (!isInsideGitRepo(stashRoot)) return null;
 
@@ -110,11 +126,16 @@ function walkStashGit(stashRoot: string): FileContext[] | null {
         .dirname(f)
         .split(/[\\/]+/)
         .filter(Boolean);
-      return !dirParts.some((part) => SKIP_DIRS.has(part) || part.startsWith("."));
+      return !dirParts.some(
+        (part) =>
+          ALWAYS_SKIP_DIRS.has(part) ||
+          (!options.includeAllDirectories && (AKM_SKIP_DIRS.has(part) || part.startsWith("."))),
+      );
     })
     .filter((f) => !SKIP_FILES.has(path.basename(f)));
 
   const results: FileContext[] = [];
+  let complete = true;
   for (const relFile of files) {
     const absPath = path.join(stashRoot, relFile);
     try {
@@ -123,10 +144,11 @@ function walkStashGit(stashRoot: string): FileContext[] | null {
       }
     } catch {
       // File may have been deleted since git ls-files ran
+      complete = false;
     }
   }
 
-  return results;
+  return { files: results, complete };
 }
 
 /**
@@ -185,14 +207,21 @@ export function* walkMarkdownFiles(root: string): Generator<string> {
 }
 
 /** Manual walk for non-git directories. */
-function walkStashManual(stashRoot: string): FileContext[] {
+function walkStashManual(stashRoot: string, options: WalkStashFlatOptions): WalkStashFlatResult {
   const results: FileContext[] = [];
+  let complete = true;
 
   const stack = [stashRoot];
   while (stack.length > 0) {
     const current = stack.pop();
     if (!current) continue;
-    const entries = fs.readdirSync(current, { withFileTypes: true });
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      complete = false;
+      continue;
+    }
     for (const entry of entries) {
       if (entry.name === ".stash.json") continue;
       const fullPath = path.join(current, entry.name);
@@ -201,7 +230,11 @@ function walkStashManual(stashRoot: string): FileContext[] {
         continue;
       }
       if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
+        if (
+          ALWAYS_SKIP_DIRS.has(entry.name) ||
+          (!options.includeAllDirectories && (AKM_SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")))
+        )
+          continue;
         stack.push(fullPath);
       } else if (entry.isFile()) {
         results.push(buildFileContext(stashRoot, fullPath));
@@ -209,5 +242,5 @@ function walkStashManual(stashRoot: string): FileContext[] {
     }
   }
 
-  return results;
+  return { files: results, complete };
 }

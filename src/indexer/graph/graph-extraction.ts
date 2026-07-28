@@ -9,7 +9,7 @@
  * configured LLM to extract entities and relations from each one, and
  * persists the result to stash-local SQLite graph tables keyed by stash root.
  * The artifact is consumed by the search
- * pipeline (see `src/indexer/graph-boost.ts`) as a single boost component
+ * pipeline (see `src/indexer/graph/graph-boost.ts`) as a single boost component
  * inside the existing FTS5+boosts loop — there is NO second SearchHit
  * scorer and no parallel ranking track.
  *
@@ -32,8 +32,11 @@
  *   - LLM access is exclusively via `resolveIndexPassLLM("graph", config)`.
  *   - The graph rows are an indexer artifact, NOT a user-visible
  *     asset. It does not have an asset ref, does not appear in search
- *     hits, and is not addressable via `akm show`. Direct `fs.writeFile`
- *     is therefore the correct primitive — `writeAssetToSource` is
+ *     hits, and is not addressable via `akm show`. The persisted artifact
+ *     lives in indexer-owned SQLite tables (`replaceStoredGraph` /
+ *     `loadStoredGraphSnapshot` in `../db/graph-db.ts`), NOT as a file on
+ *     disk (R-065 #3 — this comment previously described a retired
+ *     `fs.writeFile`-based storage layout) — `writeAssetToSource` is
  *     reserved for asset writes (CLAUDE.md / spec §10 step 5).
  */
 
@@ -63,13 +66,6 @@ import type { EnrichmentPassContext } from "../passes/pass-context";
 import { walkMarkdownFiles } from "../walk/walker";
 import { deduplicateGraph } from "./graph-dedup";
 import type { GraphExtractionTelemetry, GraphFile, GraphFileNode, GraphQualityTelemetry } from "./graph-types";
-
-// Re-exported so existing `import type { GraphFileNode, ... } from
-// "./indexer/graph/graph-extraction"` sites (graph-boost.ts, commands/graph/
-// graph.ts) are unaffected by the KILL 5 sever (types moved to graph-types.ts
-// to break the graph-db.ts ↔ graph-extraction.ts import cycle — the store
-// must not import from the orchestrator).
-export type { GraphExtractionTelemetry, GraphFile, GraphFileNode, GraphQualityTelemetry };
 
 /** Schema version for the persisted artifact — bumps trigger a full rebuild. */
 export const GRAPH_FILE_SCHEMA_VERSION = GRAPH_SCHEMA_VERSION;
@@ -609,8 +605,8 @@ export async function runGraphExtractionPass(ctx: GraphExtractionPassContext): P
         reportProgress(candidate.absPath, result);
         return result;
       },
-      // Default concurrency of 4 for cloud APIs. Set `llm.concurrency: 1`
-      // in config.json for local model servers (LM Studio, Ollama).
+      // Caller-set connection concurrency or 1: `resolveLlmEngineUse` does
+      // not forward `engines.<name>.concurrency`, so config cannot raise this.
       llmConfig.concurrency ?? 1,
     );
   } else {

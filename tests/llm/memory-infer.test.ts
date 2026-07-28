@@ -44,9 +44,7 @@ let chatCalls = 0;
 // calls so the exact log lines can be asserted.
 let warnCalls: string[] = [];
 
-// Import the implementation file directly so this characterization test keeps
-// exercising the real logic even when sibling files stub `../src/llm/memory-infer`.
-const { compressMemoryToDerivedMemory } = await import("../../src/llm/memory-infer-impl");
+const { compressMemoryToDerivedMemory } = await import("../../src/llm/memory-infer");
 const { _setChatCompletionForTests, isContextSizeError, LlmCallError } = await import("../../src/llm/client");
 const { _setWarnSinkForTests } = await import("../../src/core/warn");
 const { overrideSeam } = await import("../_helpers/seams");

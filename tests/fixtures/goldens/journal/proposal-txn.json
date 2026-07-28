@@ -5,15 +5,15 @@
         "distinctIdempotencyKeyCount": 1,
         "matchingCount": 1
       },
-      "sameAcceptedContentHash": true,
+      "sameAcceptedTargetHash": true,
       "sameAssetPath": true,
       "treeUnchanged": true
     },
     "newAsset": {
-      "acceptedContentHashPresent": true,
+      "acceptedTargetHashPresent": true,
       "backupContentPresent": false,
       "fileTree": {
-        "lessons/jnl-accept-new-asset.md": "a935fa98f1abfe9bd34aa107386c4ddf721d8111d4f1cebb0f0c9d86169c8df9"
+        "lessons/jnl-accept-new-asset.md": "25d2271375bd6e413048a4b690e3ca832cac889cac762d80f4fb5631ada6a986"
       },
       "journalDirCleaned": true,
       "promotedEvent": {
@@ -23,10 +23,10 @@
       "status": "accepted"
     },
     "overwrite": {
-      "acceptedContentHashPresent": true,
+      "acceptedTargetHashPresent": true,
       "backupContentPresent": true,
       "fileTree": {
-        "lessons/jnl-accept-overwrite.md": "2877d24b4a724704d1671df30364b41b8111f5eafdf442066014b80380e3dc1f"
+        "lessons/jnl-accept-overwrite.md": "6457ef98697be8d7e763c65fe0b9c29a944e6157528a3d102efbcaeb8f646847"
       },
       "status": "accepted"
     },

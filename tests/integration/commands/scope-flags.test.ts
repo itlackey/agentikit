@@ -5,7 +5,7 @@
  *   - `akm remember --user --agent --run --channel` writes the canonical
  *     `scope_*` top-level frontmatter keys.
  *   - `akm search --filter k=v` narrows results without changing ranking.
- *   - `akm show --scope k=v` resolves to scoped assets and rejects
+ *   - `akm show --filter k=v` resolves to scoped assets and rejects
  *     out-of-scope ones with NotFoundError.
  *   - Legacy memories without scope keys still match unfiltered queries.
  */
@@ -224,7 +224,7 @@ describe("akm search --filter narrows by scope", () => {
   });
 });
 
-describe("akm show --scope narrows resolution", () => {
+describe("akm show --filter narrows resolution", () => {
   test("returns the asset when scope matches", async () => {
     const stashDir = tmpStash();
     saveConfig({ semanticSearchMode: "off" });
@@ -284,6 +284,29 @@ describe("akm show --scope narrows resolution", () => {
     await expect(akmShowUnified({ ref: "memories/legacy", scope: { user: "alice" } })).rejects.toBeInstanceOf(
       NotFoundError,
     );
+  });
+
+  test("the CLI spelling is --filter, and the removed --scope fails loudly", async () => {
+    const stashDir = tmpStash();
+    saveConfig({ semanticSearchMode: "off" });
+    writeFile(
+      path.join(stashDir, "memories", "cli-scoped.md"),
+      "---\ntags: [cli]\nscope_user: alice\n---\nCli scoped body\n",
+    );
+    await akmIndex({ stashDir, full: true });
+
+    const filtered = await runCliCapture(["show", "memories/cli-scoped", "--filter", "user=alice", "--format", "json"]);
+    expect(filtered.code).toBe(0);
+
+    const mismatch = await runCliCapture(["show", "memories/cli-scoped", "--filter", "user=bob", "--format", "json"]);
+    expect(mismatch.code).toBe(1);
+
+    // `--scope` was removed with no alias (R-047 ruling). citty treats the
+    // unknown flag as a boolean, its value lands in the positional slot, and
+    // the extra-positional guard rejects it — a loud usage error, not a silent
+    // un-narrowed resolution.
+    const removed = await runCliCapture(["show", "memories/cli-scoped", "--scope", "user=alice", "--format", "json"]);
+    expect(removed.code).toBe(2);
   });
 });
 

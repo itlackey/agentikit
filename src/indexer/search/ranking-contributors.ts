@@ -176,7 +176,7 @@ function beliefStateBoost(item: RankedEntryInput): number {
  * a ceilinged one; demoted entries still list (belief FILTERING stays a
  * separate opt-in axis, `--belief`), and scores already below a ceiling keep
  * their relative ordering. Ceiling order mirrors the additive-penalty
- * severity order pinned in tests/belief-state-phase1a.test.ts:
+ * severity order pinned in tests/integration/belief-state-phase1a.test.ts:
  * deprecated (mildest) > superseded > contradicted > archived.
  */
 const BELIEF_STATE_SCORE_CEILINGS: Record<string, number> = {
@@ -360,7 +360,7 @@ const graphRankingContributor: RankingContributor = {
  *
  * Memories captured via the hot path (`akm remember`) get a modest additive
  * boost so they outrank otherwise-equal background-derived memories. Memories
- * without `captureMode` (legacy) return 0 and rank exactly as before.
+ * without `captureMode` return 0.
  */
 const captureModeRankingContributor: RankingContributor = {
   name: "capture-mode-ranking",
@@ -487,7 +487,7 @@ const utilityRankingContributor: UtilityRankingContributor = {
  *
  * Skipped entirely when `projectContext` is absent or has no tokens (e.g.
  * when running from home dir, /tmp, or when disabled via
- * `--no-project-context` / `AKM_DISABLE_PROJECT_CONTEXT=1`).
+ * `--no-project-context`).
  */
 const projectContextRankingContributor: RankingContributor = {
   name: "project-context-ranking",

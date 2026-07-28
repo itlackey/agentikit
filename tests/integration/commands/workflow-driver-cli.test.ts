@@ -28,7 +28,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { EventEnvelope } from "../../../src/core/events";
+import type { EventEnvelope } from "../../../src/core/events-types";
 import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { completeWorkflowStep, startWorkflowRun } from "../../../src/workflows/runtime/runs";
@@ -46,6 +46,13 @@ let storage: IsolatedAkmStorage;
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
   writeWorkflowTestConfig();
+  // Q-05: `brief`/`report`/`run`/`watch` are gated behind
+  // `experimental.workflowEngine` (off by default). This file's tests exist
+  // to pin the driver-protocol/watch CLI envelope contracts, not the gate
+  // itself (that is `tests/integration/commands/workflow-engine-gate.test.ts`),
+  // so opt in here to keep exercising the same behavior these tests always
+  // have.
+  writeSandboxConfig({ experimental: { workflowEngine: true } });
 });
 
 afterEach(() => storage.cleanup());
@@ -224,7 +231,7 @@ describe("akm workflow validate — origin-qualified refs resolve through the so
     return dir;
   }
 
-  test("validate <origin>//workflows/<name> validates the file that ref would start", async () => {
+  test("validate <bundle>//workflows/<name> validates the file that ref would start", async () => {
     const extraStash = makeExtraStash();
     writeSingleStepWorkflow(extraStash, "shared-flow");
     writeSandboxConfig({
@@ -241,7 +248,7 @@ describe("akm workflow validate — origin-qualified refs resolve through the so
     expect(env.title).toBe("shared-flow");
   });
 
-  test("a bare workflow:<name> ref in the primary stash also validates", async () => {
+  test("a short workflows/<name> ref in the primary stash also validates", async () => {
     writeSingleStepWorkflow(storage.stashDir, "primary-flow");
     const { code, stdout } = await runCliCapture(["--json", "workflow", "validate", "workflows/primary-flow"]);
     expect(code).toBe(0);
@@ -250,13 +257,40 @@ describe("akm workflow validate — origin-qualified refs resolve through the so
     expect(env.stepCount).toBe(1);
   });
 
-  test("an unknown origin-qualified ref is a clean UsageError, not a crash", async () => {
+  test("an unknown bundle-qualified ref is a clean UsageError, not a crash", async () => {
     writeSandboxConfig({ semanticSearchMode: "off" });
     const { code, stderr } = await runCliCapture(["--json", "workflow", "validate", "nowhere//workflows/missing-flow"]);
     expect(code).toBe(2);
     const env = JSON.parse(stderr) as { ok: boolean; error: string };
     expect(env.ok).toBe(false);
     expect(env.error).toMatch(/not found|No sources|origin/i);
+  });
+
+  test("a repeated-separator filesystem path is validated as a path, not a bundle ref", async () => {
+    const extraStash = makeExtraStash();
+    writeSingleStepWorkflow(extraStash, "repeated-separator");
+    const repeatedPath = `${extraStash}${path.sep}${path.sep}workflows${path.sep}repeated-separator.md`;
+
+    const { code, stdout } = await runCliCapture(["--json", "workflow", "validate", repeatedPath]);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({ ok: true, stepCount: 1 });
+  });
+});
+
+describe("akm workflow refs — unknown bundles fail consistently", () => {
+  test("start, next, list, status, and brief return the usage envelope", async () => {
+    const commands = [
+      ["workflow", "start", "ghost//missing"],
+      ["workflow", "next", "ghost//missing"],
+      ["workflow", "list", "--ref", "ghost//missing"],
+      ["workflow", "status", "ghost//missing"],
+      ["workflow", "brief", "ghost//missing"],
+    ];
+    for (const command of commands) {
+      const result = await runCliCapture(["--json", ...command]);
+      expect(result.code, `${command.join(" ")}: ${result.stderr}`).toBe(2);
+      expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
+    }
   });
 });
 

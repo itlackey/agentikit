@@ -33,7 +33,12 @@ export function withPrimaryBundle(config: AkmConfig, stashDir: string): AkmConfi
   if (!key || !(key in bundles) || typeof bundles[key]?.path !== "string") {
     key = deriveBundleId(undefined, stashDir, new Set(Object.keys(bundles)));
   }
-  bundles[key] = { ...bundles[key], path: stashDir, writable: true };
+  bundles[key] = {
+    ...bundles[key],
+    path: stashDir,
+    writable: true,
+    components: { main: { root: ".", adapter: "akm", writable: true } },
+  };
   return { ...config, bundles, defaultBundle: key };
 }
 

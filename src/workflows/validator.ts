@@ -10,13 +10,23 @@
  * step-id format, and the frontmatter key whitelist.
  */
 
-import { isBundleSlug } from "../core/asset/asset-ref";
-import { conceptIdFromTypeName, parseRefInput } from "../core/asset/resolve-ref";
+import { bundleRefToString, parseBundleRef } from "../core/asset/asset-ref";
 import { utf8Bytes, WORKFLOW_MAX_INSTRUCTION_BYTES, WORKFLOW_MAX_PARAMS, WORKFLOW_MAX_STEPS } from "./resource-limits";
 import type { WorkflowDocument, WorkflowError } from "./schema";
 
 const STEP_ID_REGEX = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const ALLOWED_FRONTMATTER_KEYS = new Set(["description", "tags", "params", "name", "updated", "when_to_use", "xrefs"]);
+const ALLOWED_FRONTMATTER_KEYS = new Set([
+  "type",
+  "title",
+  "description",
+  "tags",
+  "params",
+  "name",
+  "timestamp",
+  "updated",
+  "when_to_use",
+  "xrefs",
+]);
 
 export function runSemanticChecks(
   draft: WorkflowDocument,
@@ -40,21 +50,8 @@ function checkXrefs(value: unknown, line: number, errors: WorkflowError[]): void
   for (const ref of value) {
     try {
       if (typeof ref !== "string") throw new Error("non-canonical ref");
-      // Canonicity accepts BOTH grammars during the transition (WI-8.5a flipped
-      // the content writers to the new grammar; existing content still carries
-      // legacy xrefs — the dual-reader arm stays alive until WI-8.5b): the new
-      // bare `conceptId` (or slug-clean `bundle//conceptId`) that lint/mv now
-      // recognize, OR the legacy `[origin//]type:name` round-trip.
-      const p = parseRefInput(ref);
-      const conceptId = conceptIdFromTypeName(p.type, p.name);
-      const newCanonical =
-        p.origin !== undefined && p.origin !== "local" && p.origin !== "stash"
-          ? isBundleSlug(p.origin)
-            ? `${p.origin}//${conceptId}`
-            : `${p.origin}//${p.type}:${p.name}`
-          : conceptId;
-      const legacyCanonical = p.origin ? `${p.origin}//${p.type}:${p.name}` : `${p.type}:${p.name}`;
-      if (ref !== newCanonical && ref !== legacyCanonical) throw new Error("non-canonical ref");
+      const parsed = parseBundleRef(ref);
+      if (parsed.conceptId.includes(":") || ref !== bundleRefToString(parsed)) throw new Error("non-canonical ref");
     } catch {
       errors.push({
         line,
@@ -86,7 +83,7 @@ function checkFrontmatterKeys(data: Record<string, unknown>, fmEndLine: number, 
     if (ALLOWED_FRONTMATTER_KEYS.has(key)) continue;
     errors.push({
       line: fmEndLine,
-      message: `Workflow frontmatter "${key}" is not supported. Use only: description, tags, params, name, updated, when_to_use, xrefs.`,
+      message: `Workflow frontmatter "${key}" is not supported. Use only: type, title, description, tags, params, name, timestamp, updated, when_to_use, xrefs.`,
     });
   }
 }

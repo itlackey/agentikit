@@ -37,7 +37,7 @@ import { DB_VERSION, GRAPH_SCHEMA_VERSION } from "../../src/storage/repositories
 const hasGraphData = (graphDb as { hasGraphData?: (db: Database, stashRoot: string, filePath: string) => boolean })
   .hasGraphData as (db: Database, stashRoot: string, filePath: string) => boolean;
 
-import type { GraphFile, GraphFileNode } from "../../src/indexer/graph/graph-extraction";
+import type { GraphFile, GraphFileNode } from "../../src/indexer/graph/graph-types";
 import { buildSearchText } from "../../src/indexer/search/search-fields";
 import type { Database } from "../../src/storage/database";
 import { makeSandboxDir, withIsolatedAkmStorage } from "../_helpers/sandbox";

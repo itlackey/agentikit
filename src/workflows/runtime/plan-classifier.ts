@@ -7,13 +7,13 @@ import type { WorkflowRunRow, WorkflowRunStepRow } from "../../storage/repositor
 import { decodeCanonicalPlan } from "../ir/plan-hash";
 import { WORKFLOW_IR_VERSION, type WorkflowPlanGraph } from "../ir/schema";
 
-export type WorkflowExecutionSupport = "supported" | "unsupported-version" | "missing-plan" | "corrupt-plan";
+export type WorkflowExecutionSupport = "supported" | "corrupt-plan";
 
 export type ClassifiedWorkflowPlan =
-  | { support: "supported"; plan: WorkflowPlanGraph; irVersion: 3 }
-  | { support: Exclude<WorkflowExecutionSupport, "supported">; irVersion: number | null; error: string };
+  | { support: "supported"; plan: WorkflowPlanGraph; irVersion: typeof WORKFLOW_IR_VERSION }
+  | { support: "corrupt-plan"; irVersion: number | null; error: string };
 
-/** One policy authority for executable versus inspection-only historical runs. */
+/** Validate that a live run carries exactly the current frozen-plan format. */
 export function classifyWorkflowRunPlan(row: {
   plan_json: string | null;
   plan_hash: string | null;
@@ -22,83 +22,17 @@ export function classifyWorkflowRunPlan(row: {
 }): ClassifiedWorkflowPlan {
   const runId = row.id ?? "(unknown)";
   if (!row.plan_json) {
-    if (row.plan_ir_version === WORKFLOW_IR_VERSION) {
-      return {
-        support: "corrupt-plan",
-        irVersion: row.plan_ir_version,
-        error: `Workflow run ${runId} declares workflow IR version ${row.plan_ir_version} but has no frozen plan.`,
-      };
-    }
-    return {
-      support:
-        row.plan_ir_version === null || row.plan_ir_version === undefined ? "missing-plan" : "unsupported-version",
-      irVersion: row.plan_ir_version ?? null,
-      error:
-        row.plan_ir_version === null || row.plan_ir_version === undefined
-          ? `Workflow run ${runId} has no executable workflow IR plan.`
-          : `Workflow run ${runId} uses unsupported workflow IR version ${String(row.plan_ir_version)} and has no frozen plan.`,
-    };
-  }
-  let raw: unknown;
-  try {
-    raw = JSON.parse(row.plan_json);
-  } catch {
-    if (row.plan_ir_version !== WORKFLOW_IR_VERSION) {
-      return {
-        support:
-          row.plan_ir_version === null || row.plan_ir_version === undefined ? "missing-plan" : "unsupported-version",
-        irVersion: row.plan_ir_version ?? null,
-        error: `Workflow run ${runId} has malformed historical frozen plan JSON that cannot be executed.`,
-      };
-    }
     return {
       support: "corrupt-plan",
       irVersion: row.plan_ir_version ?? null,
-      error: `Workflow run ${runId} has corrupt frozen plan JSON.`,
-    };
-  }
-  const decodedVersion = typeof raw === "object" && raw !== null ? (raw as { irVersion?: unknown }).irVersion : null;
-  if (!Number.isSafeInteger(decodedVersion) || (decodedVersion as number) < 1) {
-    if (row.plan_ir_version !== WORKFLOW_IR_VERSION) {
-      return {
-        support:
-          row.plan_ir_version === null || row.plan_ir_version === undefined ? "missing-plan" : "unsupported-version",
-        irVersion: row.plan_ir_version ?? null,
-        error: `Workflow run ${runId} has historical frozen plan data with no supported IR version.`,
-      };
-    }
-    return {
-      support: "corrupt-plan",
-      irVersion: row.plan_ir_version ?? null,
-      error: `Workflow run ${runId} has a missing or invalid frozen plan IR version.`,
-    };
-  }
-  if (row.plan_ir_version !== null && row.plan_ir_version !== undefined && row.plan_ir_version !== decodedVersion) {
-    if (row.plan_ir_version !== WORKFLOW_IR_VERSION && decodedVersion !== WORKFLOW_IR_VERSION) {
-      return {
-        support: "unsupported-version",
-        irVersion: decodedVersion as number,
-        error: `Workflow run ${runId} uses unsupported workflow IR version ${String(decodedVersion)} with mismatched historical metadata.`,
-      };
-    }
-    return {
-      support: "corrupt-plan",
-      irVersion: decodedVersion as number,
-      error: `Workflow run ${runId} has mismatched stored plan IR version (${String(row.plan_ir_version)} != ${String(decodedVersion)}).`,
-    };
-  }
-  if (decodedVersion !== WORKFLOW_IR_VERSION) {
-    return {
-      support: "unsupported-version",
-      irVersion: decodedVersion as number,
-      error: `Workflow run ${runId} uses unsupported workflow IR version ${String(decodedVersion)}.`,
+      error: `Workflow run ${runId} has no frozen workflow plan.`,
     };
   }
   if (row.plan_ir_version !== WORKFLOW_IR_VERSION) {
     return {
       support: "corrupt-plan",
       irVersion: row.plan_ir_version ?? null,
-      error: `Workflow run ${runId} has no stored plan IR version.`,
+      error: `Workflow run ${runId} does not declare workflow IR version ${WORKFLOW_IR_VERSION}.`,
     };
   }
   try {
@@ -108,27 +42,19 @@ export function classifyWorkflowRunPlan(row: {
       plan: decodeCanonicalPlan(runId, row.plan_json, row.plan_hash),
     };
   } catch (cause) {
-    return { support: "corrupt-plan", irVersion: 3, error: cause instanceof Error ? cause.message : String(cause) };
+    return {
+      support: "corrupt-plan",
+      irVersion: WORKFLOW_IR_VERSION,
+      error: cause instanceof Error ? cause.message : String(cause),
+    };
   }
 }
 
-/** Reject an execution mutation while preserving inspection and abandon access. */
+/** Reject any operation that requires a valid current frozen plan. */
 export function requireExecutableWorkflowPlan(row: Parameters<typeof classifyWorkflowRunPlan>[0]): WorkflowPlanGraph {
   const classified = classifyWorkflowRunPlan(row);
   if (classified.support === "supported") return classified.plan;
-  if (classified.support === "missing-plan" || classified.support === "unsupported-version") {
-    throw new UsageError(
-      `${classified.error} This historical run is inspection-only; abandon it with \`akm workflow abandon ${row.id ?? "<run>"}\` and start a new run.`,
-      "WORKFLOW_IR_VERSION_UNSUPPORTED",
-    );
-  }
   throw new UsageError(classified.error, "INVALID_JSON_ARGUMENT");
-}
-
-/** Abandon is the sole mutation allowed for a historical run; corrupt v3 data is never mutated. */
-export function requireAbandonableWorkflowPlan(row: Parameters<typeof classifyWorkflowRunPlan>[0]): void {
-  const classified = classifyWorkflowRunPlan(row);
-  if (classified.support === "corrupt-plan") throw new UsageError(classified.error, "INVALID_JSON_ARGUMENT");
 }
 
 export interface FrozenStepRowDefinition {

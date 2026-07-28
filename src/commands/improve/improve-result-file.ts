@@ -10,8 +10,7 @@
  *     `improve_runs` table of `state.db` (migration 003). Stdout is empty.
  *     The existing `[improve] ...` progress log lines on stderr remain the
  *     canonical console UX.
- *   - `--json-to-stdout` restores the prior behaviour: full JSON to stdout,
- *     nothing written to state.db.
+ *   - `--json-to-stdout` additionally emits the persisted result as JSON.
  *
  * v0.8.0 storage change (this module): the previous on-disk artifact at
  * `<stash>/.akm/runs/<runId>/improve-result.json` is no longer written. The
@@ -28,7 +27,6 @@
  */
 
 import crypto from "node:crypto";
-import path from "node:path";
 import { decodeImproveResult } from "../../core/improve-result";
 import { redactSensitiveValue } from "../../core/redaction";
 import { withStateDb } from "../../core/state-db";
@@ -51,31 +49,7 @@ export function buildImproveRunId(now: Date = new Date()): string {
 }
 
 /**
- * Return a stable, human-recognisable reference for a given improve run.
- *
- * Historical compatibility shim: callers used to receive a stash-relative
- * file path like `.akm/runs/<runId>/improve-result.json`. With the state.db
- * migration, no such file exists, but several callers still log "wrote to
- * <path>" style messages. Returning a `state.db//improve_runs/<runId>`
- * locator preserves the "the result is at <thing>" signature so existing
- * log lines and error messages continue to make sense without rewriting
- * every call site.
- */
-export function improveRunLocator(runId: string): string {
-  return path.join("state.db", "improve_runs", runId);
-}
-
-/**
  * Persist the full improve result into the `improve_runs` table of state.db.
- *
- * Backwards-compatible signature: the argument list and return type match the
- * pre-0.8.0 file-writing helper (the 0.9.0 rename from `writeImproveResultFile`
- * corrects the name, which had lied about writing a file). The returned
- * string is the `state.db//improve_runs/<runId>` locator (see
- * {@link improveRunLocator}), which is intended for log messages
- * only — no caller should treat it as a filesystem path. Zero current
- * readers existed for the previous file path, so this is a pure storage
- * swap.
  *
  * The state.db row carries the scope and dry-run flag from `result.scope`
  * and `result.dryRun`, plus the full result JSON for full fidelity. The
@@ -90,7 +64,7 @@ export function recordImproveRunResult(
   result: AkmImproveResult,
   startedAt?: string,
   sensitiveValues: readonly string[] = [],
-): string {
+): void {
   const decoded = decodeImproveResult(result);
   const persistedResult = redactSensitiveValue(result, sensitiveValues);
   withStateDb((db) => {
@@ -107,7 +81,6 @@ export function recordImproveRunResult(
       completedAt,
       stashDir,
       dryRun: Boolean(result.dryRun),
-      legacyProfile: redactSensitiveValue(decoded.legacyProfile, sensitiveValues),
       strategy: redactSensitiveValue(decoded.strategy, sensitiveValues),
       scopeMode: result.scope?.mode ?? "all",
       scopeValue: persistedResult.scope?.value ?? null,
@@ -116,7 +89,6 @@ export function recordImproveRunResult(
       result: persistedResult,
     });
   });
-  return improveRunLocator(runId);
 }
 
 /**

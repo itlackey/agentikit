@@ -6,9 +6,8 @@
  * `index.db` meta + per-directory index-state repository.
  *
  * Owns the raw SQL for `index_meta` (the key/value stamp table) and
- * `index_dir_state` (incremental-index bookkeeping). Extracted verbatim from
- * `src/indexer/db/db.ts` (WI-5a) so the storage layer, not the indexer god-file,
- * owns these primitives.
+ * `index_dir_state` (incremental-index bookkeeping). Lives in the storage
+ * layer, not the indexer, so the storage layer owns these primitives.
  */
 
 import path from "node:path";

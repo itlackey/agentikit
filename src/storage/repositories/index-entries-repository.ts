@@ -6,9 +6,8 @@
  * `index.db` entries repository — CRUD, lookup, re-key, delete-cascade, and the
  * usage-event relink + workflow-document + tag-set reads that key on `entries`.
  *
- * Owns ALL raw SQL against the `entries` table (WS5). Extracted verbatim from
- * `src/indexer/db/db.ts` (WI-5a); the shared row/option shapes now come from the
- * leaf types + mapper modules rather than from the old `db.ts` hub.
+ * Owns ALL raw SQL against the `entries` table. The shared row/option shapes
+ * come from the leaf types + mapper modules.
  */
 
 import fs from "node:fs";
@@ -30,7 +29,7 @@ import type {
   RelinkUsageEventsOptions,
 } from "./index-entry-types";
 import { SQLITE_CHUNK_SIZE } from "./index-sql";
-import { isVecAvailable } from "./index-vec-repository";
+import { deleteEntryVectors, isVecAvailable } from "./index-vec-repository";
 
 // ── Entry operations ────────────────────────────────────────────────────────
 
@@ -52,11 +51,13 @@ export function upsertEntry(
   provenance?: EntryProvenance,
   contentHash?: string,
 ): number {
-  // Hot path during indexing — cache the two prepared statements per
-  // database connection so we don't pay the SQL parse/compile cost on
-  // every call. The dirty-mark INSERT and the upsert-with-RETURNING
-  // share the same WeakMap so they live and die with the connection.
+  // Hot path during indexing — cache prepared statements per database
+  // connection so we don't pay the SQL parse/compile cost on every call.
   const stmts = getUpsertStmts(db);
+  const previous =
+    (provenance?.itemRef
+      ? (stmts.findByItemRef.get(provenance.itemRef) as ExistingUpsertRow | undefined)
+      : undefined) ?? (stmts.findByEntryKey.get(entryKey) as ExistingUpsertRow | undefined);
   // Phase 5A / Advantage D5: surface derived memory parent ref into the
   // dedicated `derived_from` column so retrieval-time lookup (parent→child)
   // does not have to scan + JSON-decode every memory row.
@@ -69,45 +70,59 @@ export function upsertEntry(
   // by the next full index). `content_hash` (F4a M-core-2) is `doc.hash` from
   // the diff-persist writer; a NULL passed here PRESERVES any existing hash (the
   // ON CONFLICT COALESCE below) so the LLM-enrichment re-upsert cannot wipe it.
-  const result = stmts.upsert.get(
-    entryKey,
-    dirPath,
-    filePath,
-    stashDir,
-    JSON.stringify(entry),
-    searchText,
-    entry.type,
-    derivedFrom,
-    provenance?.itemRef ?? null,
-    provenance?.bundleId ?? null,
-    provenance?.componentId ?? null,
-    provenance?.conceptId ?? null,
-    provenance?.adapterId ?? null,
-    entry.type,
-    contentHash ?? null,
-  ) as { id: number } | undefined;
-  if (!result) throw new Error("upsertEntry: entry_key not found after upsert");
+  const apply = (): number => {
+    const result = stmts.upsert.get(
+      entryKey,
+      dirPath,
+      filePath,
+      stashDir,
+      JSON.stringify(entry),
+      searchText,
+      entry.type,
+      derivedFrom,
+      provenance?.itemRef ?? null,
+      provenance?.bundleId ?? null,
+      provenance?.componentId ?? null,
+      provenance?.conceptId ?? null,
+      provenance?.adapterId ?? null,
+      entry.type,
+      contentHash ?? null,
+    ) as { id: number } | undefined;
+    if (!result) throw new Error("upsertEntry: entry_key not found after upsert");
 
-  // Mark this entry as FTS-dirty so `rebuildFts({ incremental: true })`
-  // only revisits entries that actually changed. INSERT OR IGNORE is
-  // idempotent across multiple upserts of the same row.
-  stmts.markDirty.run(result.id);
-  return result.id;
+    if (previous?.id === result.id && previous.search_text !== searchText) deleteEntryVectors(db, result.id);
+
+    // Mark this entry as FTS-dirty so `rebuildFts({ incremental: true })`
+    // only revisits entries that actually changed. INSERT OR IGNORE is
+    // idempotent across multiple upserts of the same row.
+    stmts.markDirty.run(result.id);
+    return result.id;
+  };
+  return previous && previous.search_text !== searchText ? db.transaction(apply)() : apply();
 }
 
 interface UpsertStmts {
   upsert: ReturnType<Database["prepare"]>;
   markDirty: ReturnType<Database["prepare"]>;
+  findByItemRef: ReturnType<Database["prepare"]>;
+  findByEntryKey: ReturnType<Database["prepare"]>;
+}
+
+interface ExistingUpsertRow {
+  id: number;
+  search_text: string;
 }
 
 const upsertStmtsByDb = new WeakMap<Database, UpsertStmts>();
 
 // The ON CONFLICT DO UPDATE column assignments — factored out so the two
-// conflict targets below stay byte-identical. `entry_key` is deliberately NOT
-// updated (it is an identity column; renames go through `rekeyEntryInPlace`).
+// conflict targets below stay byte-identical. `item_ref` is durable identity;
+// update `entry_key` when adapter ownership changes its
+// spelling so directory pruning retains the upserted row.
 // `content_hash` COALESCEs so a NULL passed by the LLM-enhance re-upsert cannot
 // wipe a previously-persisted hash.
 const UPSERT_SET_CLAUSE = `SET
+        entry_key = excluded.entry_key,
         dir_path = excluded.dir_path,
         file_path = excluded.file_path,
         stash_dir = excluded.stash_dir,
@@ -123,52 +138,13 @@ const UPSERT_SET_CLAUSE = `SET
         type = excluded.type,
         content_hash = COALESCE(excluded.content_hash, content_hash)`;
 
-/**
- * Whether `entries.item_ref` currently carries its UNIQUE index (the v19
- * `idx_entries_item_ref`, built by `ensureUniqueItemRefIndex`). On a
- * partially-migrated DB with a duplicate non-NULL item_ref, that build falls
- * back to a NON-unique index — and `ON CONFLICT(item_ref)` is only a legal
- * conflict target when a UNIQUE index/constraint backs the column (otherwise
- * the upsert throws AT PREPARE TIME). This gate lets {@link getUpsertStmts}
- * degrade to the always-present `entry_key` target until a rebuild restores
- * uniqueness. Best-effort: any probe failure treats item_ref as non-unique.
- */
-function itemRefHasUniqueIndex(db: Database): boolean {
-  try {
-    const indexes = db.prepare("PRAGMA index_list(entries)").all() as Array<{ name: string; unique: number | bigint }>;
-    return indexes.some((idx) => idx.name === "idx_entries_item_ref" && Number(idx.unique) === 1);
-  } catch {
-    return false;
-  }
-}
-
 function getUpsertStmts(db: Database): UpsertStmts {
   const existing = upsertStmtsByDb.get(db);
   if (existing) return existing;
-  // Conflict target (spec §3.3): the UNIQUE `item_ref` is THE intended clean
-  // dedupe key, so it is the PRIMARY target — a row carrying its durable
-  // identity dedupes on `item_ref`. `entry_key` is retained as a SECOND,
-  // NULL-safe fallback target because a legacy write path can still upsert an
-  // EXISTING row with a NULL `item_ref` (SQLite treats NULLs as distinct in a
-  // UNIQUE index, so an item_ref-only target would miss the row, fall through
-  // to a plain INSERT, and ABORT on the `entry_key NOT NULL UNIQUE` constraint).
-  // Concretely, the out-of-scope LLM metadata-enhance re-upsert (indexer.ts
-  // `enhanceDirsWithLlm`) re-writes already-indexed rows without provenance →
-  // NULL item_ref; the `entry_key` arm keeps that re-upsert an UPDATE, not a
-  // crash. Both arms run the IDENTICAL assignment block, so the outcome is the
-  // same regardless of which constraint matches. The `entry_key` fallback is
-  // deletable once every write path sets `item_ref`.
-  //
-  // When item_ref lacks its UNIQUE index (the ensureUniqueItemRefIndex fallback
-  // on a partially-migrated DB), `ON CONFLICT(item_ref)` is not a legal target
-  // and would fail at prepare time — so we degrade to the entry_key-only upsert
-  // (behaviour-identical to the pre-repoint key) until the next rebuild restores
-  // uniqueness; without this the very rebuild meant to heal the duplicate could
-  // not run.
-  const conflictClause = itemRefHasUniqueIndex(db)
-    ? `ON CONFLICT(item_ref) DO UPDATE ${UPSERT_SET_CLAUSE}
-      ON CONFLICT(entry_key) DO UPDATE ${UPSERT_SET_CLAUSE}`
-    : `ON CONFLICT(entry_key) DO UPDATE ${UPSERT_SET_CLAUSE}`;
+  // Durable identity is the primary conflict target. `entry_key` remains the
+  // internal conflict key for low-level entries without provenance.
+  const conflictClause = `ON CONFLICT(item_ref) DO UPDATE ${UPSERT_SET_CLAUSE}
+      ON CONFLICT(entry_key) DO UPDATE ${UPSERT_SET_CLAUSE}`;
   const stmts: UpsertStmts = {
     // RETURNING id handles ON CONFLICT DO UPDATE correctly — no second
     // SELECT round-trip needed (last_insert_rowid() is unreliable for
@@ -183,6 +159,8 @@ function getUpsertStmts(db: Database): UpsertStmts {
       RETURNING id
     `),
     markDirty: db.prepare("INSERT OR IGNORE INTO entries_fts_dirty (entry_id) VALUES (?)"),
+    findByItemRef: db.prepare("SELECT id, search_text FROM entries WHERE item_ref = ? ORDER BY id ASC LIMIT 1"),
+    findByEntryKey: db.prepare("SELECT id, search_text FROM entries WHERE entry_key = ? LIMIT 1"),
   };
   upsertStmtsByDb.set(db, stmts);
   return stmts;
@@ -200,25 +178,19 @@ function getUpsertStmts(db: Database): UpsertStmts {
  */
 export function getDerivedForParent(db: Database, parentRef: string, stashDir?: string): DbIndexedEntry | null {
   if (!parentRef) return null;
-  try {
-    const sourceScope = stashDir ? "AND stash_dir = ?" : "";
-    const row = db
-      .prepare(
-        `SELECT ${ENTRY_COLUMNS}
+  const sourceScope = stashDir ? "AND stash_dir = ?" : "";
+  const row = db
+    .prepare(
+      `SELECT ${ENTRY_COLUMNS}
          FROM entries
          WHERE derived_from = ?
          ${sourceScope}
          ORDER BY id DESC
          LIMIT 1`,
-      )
-      .get(parentRef, ...(stashDir ? [stashDir] : [])) as EntryRow | undefined;
-    if (!row) return null;
-    return rowToIndexedEntry(row, "getDerivedForParent");
-  } catch {
-    /* `derived_from` column may not exist on legacy DBs that haven't been
-       rebuilt; treat as "no derived child". */
-    return null;
-  }
+    )
+    .get(parentRef, ...(stashDir ? [stashDir] : [])) as EntryRow | undefined;
+  if (!row) return null;
+  return rowToIndexedEntry(row, "getDerivedForParent");
 }
 
 /**
@@ -245,34 +217,22 @@ export function getBaseBeliefStatesForDerivedTwins(db: Database, twinIds: number
     const chunk = twinIds.slice(i, i + SQLITE_CHUNK_SIZE);
     const placeholders = chunk.map(() => "?").join(",");
     bestEffort(() => {
-      // Chunk-5 flip F1: a twin's identity suffix is `.derived` on BOTH the
-      // legacy `entry_key` (`<stash>:memory:<name>.derived`) and the new
-      // `item_ref` (`<bundle>//memories/<name>.derived`). Join the base by
-      // stripping that suffix on EITHER column so both fully-migrated rows
-      // (item_ref path) and NULL-`item_ref` rows (legacy path) inherit. On a
-      // consistent index both predicates select the SAME base row, so the OR
-      // never double-counts; `substr(NULL, …)` is NULL and matches nothing, so
-      // a NULL `item_ref` simply falls through to the entry_key predicate.
-      // F5: the `entry_key` arm is the deletable legacy shim.
       const rows = db
         .prepare(
           `SELECT twin.id AS twin_id, json_extract(base.entry_json, '$.beliefState') AS belief
            FROM entries twin
            JOIN entries base
              ON base.entry_type = 'memory'
-            AND (
-                 base.entry_key = substr(twin.entry_key, 1, length(twin.entry_key) - length('.derived'))
-              OR base.item_ref = substr(twin.item_ref, 1, length(twin.item_ref) - length('.derived'))
-            )
+             AND base.item_ref = substr(twin.item_ref, 1, length(twin.item_ref) - length('.derived'))
            WHERE twin.id IN (${placeholders})
-             AND (twin.entry_key LIKE '%.derived' OR twin.item_ref LIKE '%.derived')
+             AND twin.item_ref LIKE '%.derived'
              AND json_extract(base.entry_json, '$.beliefState') IS NOT NULL`,
         )
         .all(...chunk) as { twin_id: number; belief: string | null }[];
       for (const r of rows) {
         if (typeof r.belief === "string" && r.belief.trim().length > 0) out.set(r.twin_id, r.belief.trim());
       }
-    }, "legacy DB / entry_json without beliefState — treat as no twin inheritance");
+    }, "belief-state inheritance is best-effort");
   }
   return out;
 }
@@ -291,10 +251,8 @@ export function getBaseBeliefStatesForDerivedTwins(db: Database, twinIds: number
  * name; the row is marked FTS-dirty for the caller's
  * `rebuildFts({incremental: true})`.
  *
- * `usage_events.entry_ref` rows for the old ref are rewritten to the new ref
- * in the same transaction — both the bare `type:name` spelling and the
- * origin-qualified `origin//type:name` spelling (search/show writers persist
- * either, see {@link getRetrievalCounts}). Without this, events keep the old
+ * Bundle-qualified `usage_events.entry_ref` rows for the old conceptId are
+ * rewritten to the new item ref. Without this, events keep the old
  * ref, `relinkUsageEvents` finds no matching entry after the next full
  * rebuild, and the utility history the re-key exists to preserve silently
  * resets. DETACHED orphan events already sitting at the new ref (entry_id
@@ -315,23 +273,21 @@ export function getBaseBeliefStatesForDerivedTwins(db: Database, twinIds: number
  * full `akm index` picks the file up as a fresh entry).
  */
 export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number | null {
-  // Chunk-8: the row is located by its legacy `entry_key`; the caller (mv)
-  // always has it and it is the UNIQUE identity column until the re-key.
+  const oldItemRef = `${opts.sourceName}//${opts.oldRef}`;
   const row = db
-    .prepare("SELECT id, stash_dir, entry_json, search_text, entry_type, item_ref FROM entries WHERE entry_key = ?")
-    .get(opts.oldEntryKey) as
+    .prepare("SELECT id, stash_dir, entry_json, search_text, entry_type FROM entries WHERE item_ref = ?")
+    .get(oldItemRef) as
     | {
         id: number;
         stash_dir: string;
         entry_json: string;
         search_text: string;
         entry_type: string;
-        item_ref: string | null;
       }
     | undefined
     | null;
   if (!row) return null;
-  if (opts.sourceRoot && path.resolve(row.stash_dir) !== path.resolve(opts.sourceRoot)) {
+  if (path.resolve(row.stash_dir) !== path.resolve(opts.sourceRoot)) {
     throw new Error(`Refusing to re-key entry ${opts.oldEntryKey}: source root does not match.`);
   }
 
@@ -350,19 +306,11 @@ export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number
     /* corrupt entry_json — key/path-only re-key */
   }
 
-  // Chunk-5 flip F1: keep `item_ref`/`concept_id` consistent with the rename so
-  // a post-mv new-grammar lookup finds the moved row by its NEW conceptId. The
-  // bundle prefix is carried over from the existing item_ref unchanged (mv never
-  // crosses bundles); a NULL item_ref (write-back row) stays NULL and is healed
-  // on the next full index, exactly like the legacy columns before the flip.
-  let newItemRef: string | null = null;
-  let newConceptId: string | null = null;
-  if (row.item_ref) {
-    const boundary = row.item_ref.indexOf("//");
-    const bundle = boundary >= 0 ? row.item_ref.slice(0, boundary) : undefined;
-    newConceptId = conceptIdFromTypeName(row.entry_type, opts.newName);
-    newItemRef = bundle !== undefined ? `${bundle}//${newConceptId}` : newConceptId;
+  const expectedNewRef = conceptIdFromTypeName(row.entry_type, opts.newName);
+  if (opts.newRef !== expectedNewRef) {
+    throw new Error(`Refusing to re-key entry ${opts.oldEntryKey}: target ref does not match the entry type and name.`);
   }
+  const newItemRef = `${opts.sourceName}//${opts.newRef}`;
 
   db.transaction(() => {
     const stale = db.prepare("SELECT id FROM entries WHERE entry_key = ?").get(opts.newEntryKey) as
@@ -379,13 +327,19 @@ export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number
       db.prepare("DELETE FROM entries WHERE id = ?").run(stale.id);
     }
     db.prepare(
-      "UPDATE entries SET entry_key = ?, dir_path = ?, file_path = ?, entry_json = ?, search_text = ? WHERE id = ?",
-    ).run(opts.newEntryKey, path.dirname(opts.newFilePath), opts.newFilePath, entryJson, searchText, row.id);
+      "UPDATE entries SET entry_key = ?, dir_path = ?, file_path = ?, entry_json = ?, search_text = ?, item_ref = ?, concept_id = ? WHERE id = ?",
+    ).run(
+      opts.newEntryKey,
+      path.dirname(opts.newFilePath),
+      opts.newFilePath,
+      entryJson,
+      searchText,
+      newItemRef,
+      opts.newRef,
+      row.id,
+    );
     if (opts.newDerivedFrom !== undefined) {
       db.prepare("UPDATE entries SET derived_from = ? WHERE id = ?").run(opts.newDerivedFrom, row.id);
-    }
-    if (newItemRef !== null) {
-      db.prepare("UPDATE entries SET item_ref = ?, concept_id = ? WHERE id = ?").run(newItemRef, newConceptId, row.id);
     }
     db.prepare("INSERT OR IGNORE INTO entries_fts_dirty (entry_id) VALUES (?)").run(row.id);
   })();
@@ -402,27 +356,14 @@ export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number
 
 /**
  * Rewrite `usage_events.entry_ref` from `opts.oldRef` to `opts.newRef` in
- * state.db (both the bare `type:name` and the origin-qualified `origin//type:name`
- * spellings). DETACHED orphan events (entry_id NULL) already sitting AT the new
+ * state.db. DETACHED orphan events (entry_id NULL) already sitting AT the new
  * ref are evicted first so the moved asset never adopts a deleted stranger's
- * history (live-asset-wins). Best-effort + guarded on state.db's existence; a
- * legacy state.db predating usage_events is tolerated.
+ * history (live-asset-wins). Best-effort + guarded on state.db's existence.
  */
-/** The conceptId for a legacy `type:name` ref (`memory:foo` → `memories/foo`), or undefined. */
-function conceptIdFromTypeNameRef(ref: string): string | undefined {
-  const colon = ref.indexOf(":");
-  if (colon <= 0) return undefined;
-  return conceptIdFromTypeName(ref.slice(0, colon), ref.slice(colon + 1));
-}
-
 function rewriteUsageEventRefForMove(opts: RekeyEntryOptions): void {
   if (!fs.existsSync(getStateDbPath())) return;
-  // Post-cutover, `usage_events.entry_ref` is the fully-qualified item_ref
-  // (`<bundle>//<conceptId>`); the pre-flip legacy `type:name` spellings survive
-  // only on rows written before the cutover. Rewrite BOTH: `opts.oldRef`/`newRef`
-  // are the legacy `type:name` forms, so the conceptId siblings are derived here.
-  const oldConcept = conceptIdFromTypeNameRef(opts.oldRef);
-  const newConcept = conceptIdFromTypeNameRef(opts.newRef);
+  // `usage_events.entry_ref` is the fully-qualified item_ref
+  // (`<bundle>//<conceptId>`).
   const rename = (stateDb: Database, oldR: string, newR: string): void => {
     stateDb.prepare("DELETE FROM usage_events WHERE entry_id IS NULL AND entry_ref = ?").run(newR);
     stateDb.prepare("UPDATE usage_events SET entry_ref = ? WHERE entry_ref = ?").run(newR, oldR);
@@ -430,30 +371,12 @@ function rewriteUsageEventRefForMove(opts: RekeyEntryOptions): void {
   try {
     withStateDb((stateDb) => {
       stateDb.transaction(() => {
-        if (opts.sourceName) {
-          const origins = new Set([opts.sourceName]);
-          if (opts.sourceName === "stash" && opts.includeLegacyBare) origins.add("local");
-          for (const origin of origins) {
-            rename(stateDb, `${origin}//${opts.oldRef}`, `${origin}//${opts.newRef}`);
-            // The item_ref spelling (`<bundle>//<conceptId>`) — the durable
-            // post-cutover key. Origins double as the bundle id for the stash.
-            if (oldConcept !== undefined && newConcept !== undefined)
-              rename(stateDb, `${origin}//${oldConcept}`, `${origin}//${newConcept}`);
-          }
-        }
-        if (opts.includeLegacyBare || !opts.sourceName) {
-          rename(stateDb, opts.oldRef, opts.newRef);
-          if (oldConcept !== undefined && newConcept !== undefined) rename(stateDb, oldConcept, newConcept);
-        }
+        rename(stateDb, `${opts.sourceName}//${opts.oldRef}`, `${opts.sourceName}//${opts.newRef}`);
       })();
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const missingLegacyUsageSchema =
-      /no such table:\s*(?:main\.)?usage_events\b/i.test(message) ||
-      /no such column:\s*(?:usage_events\.)?(?:entry_id|entry_ref)\b/i.test(message) ||
-      /table\s+usage_events\s+has no column named\s+(?:entry_id|entry_ref)\b/i.test(message);
-    if (!missingLegacyUsageSchema) throw error;
+    throw new Error(`Failed to rewrite usage events for move: ${message}`, { cause: error });
   }
 }
 
@@ -499,7 +422,7 @@ export function getPositiveFeedbackCountsByIds(ids: number[]): Map<number, numbe
         }
       }
     });
-  }, "usage_events table may be missing on legacy state.db — treat as zero counts");
+  }, "positive feedback counts are best-effort");
   return result;
 }
 
@@ -513,6 +436,24 @@ function deleteEntriesWhere(db: Database, column: "dir_path" | "stash_dir", valu
 
 export function deleteEntriesByDir(db: Database, dirPath: string): void {
   deleteEntriesWhere(db, "dir_path", dirPath);
+}
+
+export function deleteEntriesByDirAndStash(
+  db: Database,
+  dirPath: string,
+  stashDir: string,
+  options: { cleanupUsageEvents?: boolean } = {},
+): number[] {
+  return db.transaction(() => {
+    const ids = db
+      .prepare("SELECT id FROM entries WHERE dir_path = ? AND stash_dir = ?")
+      .all(dirPath, stashDir) as Array<{
+      id: number;
+    }>;
+    deleteRelatedRows(db, ids, options);
+    db.prepare("DELETE FROM entries WHERE dir_path = ? AND stash_dir = ?").run(dirPath, stashDir);
+    return ids.map((row) => row.id);
+  })();
 }
 
 /**
@@ -539,31 +480,41 @@ export function deleteEntriesByStashDir(db: Database, stashDir: string): void {
  * to prune only the DEPARTED rows. The net row-state of `dir_path` is identical
  * to delete-then-reinsert; the win is that unchanged rows keep their id.
  *
- * Keyed on `entry_key` rather than `item_ref`: the diff must be exact regardless
- * of whether a row's `item_ref` is populated (legacy rows and NULL-provenance
- * write-back rows exist), and `entry_key` is never NULL and mirrors the upsert
- * conflict target precisely. Dir-scoped (not stash-dir-scoped) so it is safe
- * under the per-dir incremental freshness gate — untouched (skipped) sibling
- * directories are never in scope.
+ * Keyed on `entry_key` because it mirrors the directory upsert key precisely.
+ * Both directory- and source-scoped so overlapping source roots cannot prune
+ * one another's rows.
  */
-export function deleteEntriesByDirExceptKeys(db: Database, dirPath: string, keepKeys: ReadonlySet<string>): void {
-  db.transaction(() => {
-    const rows = db.prepare("SELECT id, entry_key FROM entries WHERE dir_path = ?").all(dirPath) as Array<{
+export function deleteEntriesByDirExceptKeys(
+  db: Database,
+  dirPath: string,
+  stashDir: string,
+  keepKeys: ReadonlySet<string>,
+  options: { cleanupUsageEvents?: boolean } = {},
+): number[] {
+  return db.transaction(() => {
+    const rows = db
+      .prepare("SELECT id, entry_key FROM entries WHERE dir_path = ? AND stash_dir = ?")
+      .all(dirPath, stashDir) as Array<{
       id: number;
       entry_key: string;
     }>;
     const doomed = rows.filter((r) => !keepKeys.has(r.entry_key));
-    if (doomed.length === 0) return;
-    deleteRelatedRows(db, doomed);
+    if (doomed.length === 0) return [];
+    deleteRelatedRows(db, doomed, options);
     for (let i = 0; i < doomed.length; i += SQLITE_CHUNK_SIZE) {
       const chunk = doomed.slice(i, i + SQLITE_CHUNK_SIZE);
       const placeholders = chunk.map(() => "?").join(",");
       db.prepare(`DELETE FROM entries WHERE id IN (${placeholders})`).run(...chunk.map((r) => r.id));
     }
+    return doomed.map((row) => row.id);
   })();
 }
 
-function deleteRelatedRows(db: Database, ids: Array<{ id: number }>): void {
+function deleteRelatedRows(
+  db: Database,
+  ids: Array<{ id: number }>,
+  options: { cleanupUsageEvents?: boolean } = {},
+): void {
   if (ids.length === 0) return;
   const numericIds = ids.map((r) => r.id);
   const vecAvail = isVecAvailable(db);
@@ -609,22 +560,10 @@ function deleteRelatedRows(db: Database, ids: Array<{ id: number }>): void {
     );
   }
 
-  // Clean up usage events for the deleted entries. Chunk-8 WI-8.3: usage_events
-  // lives in state.db now, so this is a SEPARATE cross-DB delete (guarded on
-  // state.db's existence; only runs when there ARE deletions, so the extra open
-  // is bounded). Live-asset-wins collision eviction (the moved asset must not
-  // adopt a deleted stranger's id-linked history) depends on this delete.
-  if (fs.existsSync(getStateDbPath())) {
-    bestEffort(() => {
-      withStateDb((stateDb) => {
-        for (let i = 0; i < numericIds.length; i += SQLITE_CHUNK_SIZE) {
-          const chunk = numericIds.slice(i, i + SQLITE_CHUNK_SIZE);
-          const placeholders = chunk.map(() => "?").join(",");
-          stateDb.prepare(`DELETE FROM usage_events WHERE entry_id IN (${placeholders})`).run(...chunk);
-        }
-      });
-    }, "delete usage_events (state.db) for entries");
-  }
+  // usage_events lives in state.db, outside this transaction. Index persistence
+  // disables this cleanup and runs it only after its index.db transaction
+  // commits; standalone delete callers retain the immediate behavior.
+  if (options.cleanupUsageEvents !== false) deleteUsageEventsByEntryIds(numericIds);
 
   // #624-P1: graph_files is NO LONGER keyed on entries.id, so deleting an
   // entries row must NOT wipe the extracted graph (that is the whole point —
@@ -663,6 +602,19 @@ function deleteRelatedRows(db: Database, ids: Array<{ id: number }>): void {
       "sync graph_meta counts after entries delete",
     );
   }
+}
+
+export function deleteUsageEventsByEntryIds(entryIds: number[]): void {
+  if (entryIds.length === 0 || !fs.existsSync(getStateDbPath())) return;
+  bestEffort(() => {
+    withStateDb((stateDb) => {
+      for (let i = 0; i < entryIds.length; i += SQLITE_CHUNK_SIZE) {
+        const chunk = entryIds.slice(i, i + SQLITE_CHUNK_SIZE);
+        const placeholders = chunk.map(() => "?").join(",");
+        stateDb.prepare(`DELETE FROM usage_events WHERE entry_id IN (${placeholders})`).run(...chunk);
+      }
+    });
+  }, "delete usage_events (state.db) for entries");
 }
 
 /**
@@ -722,7 +674,7 @@ export function getAllEntries(db: Database, entryType?: string, excludeTypes?: s
 /**
  * Resolve a single `entries.id` from a new-grammar `[bundle//]conceptId` ref,
  * keying on the canonical stored `item_ref` (ref-grammar decision D-R1/D-R4).
- * All refs are the new grammar post-Chunk-8. The optional `stashDir` scopes the
+ * The optional `stashDir` scopes the
  * match to one source root.
  */
 export function findEntryIdByRef(db: Database, ref: string, stashDir?: string): number | undefined {
@@ -735,9 +687,8 @@ function withMdVariants(name: string): string[] {
 }
 
 /**
- * New-grammar (`[bundle//]conceptId`) id lookup: match `item_ref` first (exact
- * when bundle-qualified, `//conceptId`-suffix when short), then fall back to the
- * legacy `entry_key` predicate for NULL-`item_ref` rows.
+ * Current (`[bundle//]conceptId`) id lookup: match `item_ref` exactly when
+ * bundle-qualified or by `//conceptId` suffix when short.
  */
 function findEntryIdByBundleRef(db: Database, ref: string, stashDir?: string): number | undefined {
   const parsed = parseBundleRef(ref);
@@ -773,9 +724,7 @@ function findEntryIdByBundleRef(db: Database, ref: string, stashDir?: string): n
  * precedence-ordered scan would pick — while staying a pure config-free leaf
  * (true installation-priority resolution against an injected bundle list is
  * `resolveRef`'s job; this DB helper takes no config handle). The exact-bundle
- * arm is single-row under the UNIQUE `item_ref` index; `ORDER BY id ASC` there
- * keeps it deterministic on a partially-migrated DB whose fallback index is
- * non-unique.
+ * arm is single-row under the UNIQUE `item_ref` index.
  */
 function matchIdByItemRef(
   db: Database,
@@ -808,6 +757,23 @@ function matchIdByItemRef(
 export function getEntryCount(db: Database): number {
   const row = db.prepare("SELECT COUNT(*) AS cnt FROM entries").get() as { cnt: number };
   return row.cnt;
+}
+
+/**
+ * Per-asset-type entry counts (keyed by `entry_type`, e.g. "skill",
+ * "knowledge", "memory"). Used by `akm info` to break down the aggregate
+ * `indexStats.entryCount` (R-057). Rows with a null/empty `entry_type` are
+ * omitted rather than surfaced under a synthetic key.
+ */
+export function getEntryCountByType(db: Database): Record<string, number> {
+  const rows = db
+    .prepare("SELECT entry_type AS type, COUNT(*) AS cnt FROM entries WHERE entry_type IS NOT NULL GROUP BY entry_type")
+    .all() as Array<{ type: string; cnt: number }>;
+  const out: Record<string, number> = {};
+  for (const row of rows) {
+    out[row.type] = row.cnt;
+  }
+  return out;
 }
 
 export function getEmbeddableEntryCount(db: Database): number {
@@ -863,6 +829,21 @@ export function getEntriesByDir(db: Database, dirPath: string): DbIndexedEntry[]
     Record<string, unknown>
   >;
   return parseEntryRows(rows, "getEntriesByDir");
+}
+
+export function getIndexedDirPathsWithDifferentAdapter(db: Database, stashDir: string, adapterId: string): string[] {
+  const rows = db
+    .prepare("SELECT DISTINCT dir_path FROM entries WHERE stash_dir = ? AND COALESCE(adapter_id, '') <> ?")
+    .all(stashDir, adapterId) as Array<{ dir_path: string }>;
+  return rows.map((row) => row.dir_path);
+}
+
+/** Return every persisted source owner for one physical directory. */
+export function getIndexedStashDirsByDir(db: Database, dirPath: string): string[] {
+  const rows = db.prepare("SELECT DISTINCT stash_dir FROM entries WHERE dir_path = ?").all(dirPath) as Array<{
+    stash_dir: string;
+  }>;
+  return rows.map((row) => row.stash_dir);
 }
 
 /**
@@ -1018,14 +999,14 @@ export function getItemRefById(db: Database, id: number): string | null {
 }
 
 /**
- * Resolve a `usage_events.entry_ref` to its live `entries.id`. Post-Chunk-8 every
- * `entry_ref` is the fully-qualified `bundle//conceptId` `item_ref` spelling
- * (the one-time state.db cutover re-keyed the historical legacy rows), so this
- * keys directly on the globally-unique `item_ref` — no origin→root scoping. A
- * short conceptId (no bundle) falls back to the default-stash scope.
+ * Resolve a `usage_events.entry_ref` to its live `entries.id`. `entry_ref` is
+ * the fully-qualified `bundle//conceptId` `item_ref` spelling, so this keys
+ * directly on the globally-unique `item_ref`. Bare durable refs are invalid and
+ * remain detached.
  */
-function resolveUsageEventEntryId(db: Database, ref: string, options: RelinkUsageEventsOptions): number | undefined {
-  return findEntryIdByRef(db, ref, parseBundleRef(ref).bundle ? undefined : options.defaultStashDir);
+function resolveUsageEventEntryId(db: Database, ref: string): number | undefined {
+  if (parseBundleRef(ref).bundle === undefined) return undefined;
+  return findEntryIdByRef(db, ref);
 }
 
 /**
@@ -1040,7 +1021,7 @@ function resolveUsageEventEntryId(db: Database, ref: string, options: RelinkUsag
  * distinct linked entry_ids in usage_events is small — and the re-resolution
  * reads `entries` from `indexDb`.
  */
-export function relinkUsageEvents(indexDb: Database, stateDb: Database, options: RelinkUsageEventsOptions = {}): void {
+export function relinkUsageEvents(indexDb: Database, stateDb: Database, _options: RelinkUsageEventsOptions = {}): void {
   bestEffort(() => {
     // Step 1: null out stale entry_ids (entry was deleted, re-keyed, etc).
     // Leaving them in place would let `recomputeUtilityScores` aggregate by an
@@ -1063,10 +1044,8 @@ export function relinkUsageEvents(indexDb: Database, stateDb: Database, options:
       nullTx();
     }
 
-    // Step 2: re-resolve each distinct ref inside its source boundary. Qualified
-    // refs require an origin→root mapping; bare legacy refs require the explicit
-    // historical/default root. This keeps duplicate refs from adopting whichever
-    // entries row SQLite happens to return first while retaining indexed lookups.
+    // Step 2: re-resolve each fully-qualified ref. Bare rows are not current
+    // durable identities and remain detached.
     const refs = stateDb
       .prepare("SELECT DISTINCT entry_ref AS ref FROM usage_events WHERE entry_id IS NULL AND entry_ref IS NOT NULL")
       .all() as { ref: string }[];
@@ -1076,7 +1055,7 @@ export function relinkUsageEvents(indexDb: Database, stateDb: Database, options:
       for (const { ref } of refs) {
         let id: number | undefined;
         try {
-          id = resolveUsageEventEntryId(indexDb, ref, options);
+          id = resolveUsageEventEntryId(indexDb, ref);
         } catch (err) {
           if (err instanceof Error && err.name === "UsageError") continue;
           throw err;

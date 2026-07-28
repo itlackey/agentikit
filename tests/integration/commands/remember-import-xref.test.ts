@@ -17,11 +17,12 @@
  *     verified end-to-end through the write-path indexer).
  *   - Merging into MALFORMED frontmatter fails loudly (exit 2, nothing
  *     written) instead of silently flattening list/nested values through the
- *     lenient parser fallback; without --xref the same doc imports verbatim.
+ *     lenient parser fallback; the AKM write boundary rejects the same malformed
+ *     document without `--xref` because it cannot safely add required `type` metadata.
  *   - Type-root writes into a stash with convention facts emit the additive
  *     `hint` output key (spec test-plan item 6); nested/--path writes and
  *     convention-less stashes do not, and the canonical
- *     `fact:conventions/organization` pointer only appears when that fact
+ *     `facts/conventions/organization` pointer only appears when that fact
  *     actually exists.
  *   - The flag is declared in each command's help meta (citty args def →
  *     rendered usage).
@@ -37,9 +38,11 @@ import { renderUsage } from "citty";
 import { mergeXrefsIntoContent } from "../../../src/commands/read/knowledge";
 import { rememberCommand } from "../../../src/commands/read/remember-cli";
 import { importKnowledgeCommand } from "../../../src/commands/sources/stash-cli";
+import { parseBundleRef } from "../../../src/core/asset/asset-ref";
 import { parseFrontmatter } from "../../../src/core/asset/frontmatter";
 import { UsageError } from "../../../src/core/errors";
 import { runCliCapture } from "../../_helpers/cli";
+import { durableItemRef } from "../../_helpers/durable-ref";
 import {
   type Cleanup,
   makeSandboxDir,
@@ -93,11 +96,20 @@ function listDirRecursive(dir: string): string[] {
   return fs.readdirSync(dir, { recursive: true }).map(String);
 }
 
+function stashRef(type: string, name: string): string {
+  return durableItemRef(stashDir, type, name);
+}
+
+function conceptId(ref: string): string {
+  return parseBundleRef(ref).conceptId;
+}
+
 // ── remember --xref ──────────────────────────────────────────────────────────
 
 describe("remember --xref", () => {
   test("single resolvable --xref lands in the written frontmatter xrefs list", async () => {
     seedAsset(stashDir, "knowledge/auth-flow.md");
+    const authFlowRef = stashRef("knowledge", "auth-flow");
 
     // No --tag: --xref counts as structured metadata but must NOT trigger the
     // tags-required check (spec: provenance without tags is a valid write).
@@ -105,7 +117,7 @@ describe("remember --xref", () => {
       "remember",
       "Derived note about the auth flow",
       "--xref",
-      "knowledge/auth-flow",
+      authFlowRef,
     ]);
     expect(code).toBe(0);
 
@@ -113,7 +125,7 @@ describe("remember --xref", () => {
     expect(json.ok).toBe(true);
 
     const parsed = parseFrontmatter(fs.readFileSync(json.path, "utf8"));
-    expect(parsed.data.xrefs).toEqual(["knowledge/auth-flow"]);
+    expect(parsed.data.xrefs).toEqual([authFlowRef]);
     // The hot-path markers still ride along in the SAME frontmatter block —
     // xrefs merge into the generated frontmatter, they don't replace it.
     expect(parsed.data.captureMode).toBe("hot");
@@ -124,24 +136,27 @@ describe("remember --xref", () => {
   test("--xref is repeatable and preserves argv order", async () => {
     seedAsset(stashDir, "knowledge/auth-flow.md");
     seedAsset(stashDir, "memories/vpn-note.md", "VPN is required for staging.\n");
+    const authFlowRef = stashRef("knowledge", "auth-flow");
+    const vpnNoteRef = stashRef("memory", "vpn-note");
 
     const { code, stdout } = await runCliCapture([
       "remember",
       "Synthesis of auth flow and VPN notes",
       "--xref",
-      "knowledge/auth-flow",
+      authFlowRef,
       "--xref",
-      "memories/vpn-note",
+      vpnNoteRef,
     ]);
     expect(code).toBe(0);
 
     const json = JSON.parse(stdout) as { path: string };
     const parsed = parseFrontmatter(fs.readFileSync(json.path, "utf8"));
-    expect(parsed.data.xrefs).toEqual(["knowledge/auth-flow", "memories/vpn-note"]);
+    expect(parsed.data.xrefs).toEqual([authFlowRef, vpnNoteRef]);
   });
 
   test("--xref composes with --tag in one frontmatter block", async () => {
     seedAsset(stashDir, "knowledge/auth-flow.md");
+    const authFlowRef = stashRef("knowledge", "auth-flow");
 
     const { code, stdout } = await runCliCapture([
       "remember",
@@ -149,7 +164,7 @@ describe("remember --xref", () => {
       "--tag",
       "ops",
       "--xref",
-      "knowledge/auth-flow",
+      authFlowRef,
     ]);
     expect(code).toBe(0);
 
@@ -157,23 +172,19 @@ describe("remember --xref", () => {
     const raw = fs.readFileSync(json.path, "utf8");
     const parsed = parseFrontmatter(raw);
     expect(parsed.data.tags).toEqual(["ops"]);
-    expect(parsed.data.xrefs).toEqual(["knowledge/auth-flow"]);
+    expect(parsed.data.xrefs).toEqual([authFlowRef]);
     // Exactly one frontmatter block: opening + closing fence only.
     expect(raw.match(/^---\s*$/gm)?.length).toBe(2);
   });
 
   test("unresolvable --xref fails with exit 2 usage envelope and writes nothing", async () => {
-    const { code, stderr } = await runCliCapture([
-      "remember",
-      "This must not be written",
-      "--xref",
-      "knowledge/does-not-exist",
-    ]);
+    const missingRef = stashRef("knowledge", "does-not-exist");
+    const { code, stderr } = await runCliCapture(["remember", "This must not be written", "--xref", missingRef]);
     expect(code).toBe(2);
 
     const json = JSON.parse(stderr) as { ok: boolean; error: string; code?: string };
     expect(json.ok).toBe(false);
-    expect(json.error).toContain("knowledge/does-not-exist");
+    expect(json.error).toContain(missingRef);
     expect(typeof json.code).toBe("string");
 
     // Validation happens BEFORE any write: the stash stays empty.
@@ -182,6 +193,8 @@ describe("remember --xref", () => {
 
   test("one bad ref among resolvable ones still fails and writes nothing", async () => {
     seedAsset(stashDir, "knowledge/auth-flow.md");
+    const authFlowRef = stashRef("knowledge", "auth-flow");
+    const missingRef = stashRef("memory", "ghost-note");
 
     const { code, stderr } = await runCliCapture([
       "remember",
@@ -189,16 +202,16 @@ describe("remember --xref", () => {
       "--tag",
       "ops",
       "--xref",
-      "knowledge/auth-flow",
+      authFlowRef,
       "--xref",
-      "memories/ghost-note",
+      missingRef,
     ]);
     expect(code).toBe(2);
 
     const json = JSON.parse(stderr) as { ok: boolean; error: string };
     expect(json.ok).toBe(false);
     // The error names the ref(s) that failed to resolve.
-    expect(json.error).toContain("memories/ghost-note");
+    expect(json.error).toContain(missingRef);
 
     expect(listDirRecursive(path.join(stashDir, "memories"))).toEqual([]);
   });
@@ -215,7 +228,7 @@ describe("remember --xref", () => {
       "remember",
       "Derived from the shared cross-stash doc",
       "--xref",
-      "knowledge/shared-doc",
+      "extra-stash//knowledge/shared-doc",
     ]);
     expect(code).toBe(0);
 
@@ -224,16 +237,18 @@ describe("remember --xref", () => {
     // Written to the PRIMARY stash while citing the extra-stash asset.
     expect(json.path.startsWith(stashDir)).toBe(true);
     const parsed = parseFrontmatter(fs.readFileSync(json.path, "utf8"));
-    expect(parsed.data.xrefs).toEqual(["knowledge/shared-doc"]);
+    expect(parsed.data.xrefs).toEqual(["extra-stash//knowledge/shared-doc"]);
   });
 
   test("more than 5 xrefs warns on stderr but still writes (soft cap)", async () => {
+    const refs: string[] = [];
     for (let i = 1; i <= 6; i++) {
       seedAsset(stashDir, `knowledge/doc-${i}.md`);
+      refs.push(stashRef("knowledge", `doc-${i}`));
     }
     const args = ["remember", "Heavily cited note"];
-    for (let i = 1; i <= 6; i++) {
-      args.push("--xref", `knowledge/doc-${i}`);
+    for (const ref of refs) {
+      args.push("--xref", ref);
     }
 
     const { code, stdout, stderr } = await runCliCapture(args);
@@ -242,27 +257,16 @@ describe("remember --xref", () => {
     const json = JSON.parse(stdout) as { ok: boolean; path: string };
     expect(json.ok).toBe(true);
     const parsed = parseFrontmatter(fs.readFileSync(json.path, "utf8"));
-    expect(parsed.data.xrefs).toEqual([
-      "knowledge/doc-1",
-      "knowledge/doc-2",
-      "knowledge/doc-3",
-      "knowledge/doc-4",
-      "knowledge/doc-5",
-      "knowledge/doc-6",
-    ]);
+    expect(parsed.data.xrefs).toEqual(refs);
     // Soft cap: a warning is emitted, not an error.
     expect(stderr.toLowerCase()).toContain("xref");
   });
 
   test("written xrefs fold into FTS hints: the memory is findable by its cited ref slug", async () => {
     seedAsset(stashDir, "knowledge/oauth-refresh-dance.md");
+    const citedRef = stashRef("knowledge", "oauth-refresh-dance");
 
-    const remember = await runCliCapture([
-      "remember",
-      "Token rotation gotcha worth keeping",
-      "--xref",
-      "knowledge/oauth-refresh-dance",
-    ]);
+    const remember = await runCliCapture(["remember", "Token rotation gotcha worth keeping", "--xref", citedRef]);
     expect(remember.code).toBe(0);
     const written = JSON.parse(remember.stdout) as { ref: string };
 
@@ -272,7 +276,7 @@ describe("remember --xref", () => {
     const search = await runCliCapture(["search", "oauth-refresh-dance", "--type", "memory"]);
     expect(search.code).toBe(0);
     const hits = (JSON.parse(search.stdout).hits ?? []) as Array<{ ref: string }>;
-    expect(hits.map((h) => h.ref)).toContain(written.ref);
+    expect(hits.map((h) => conceptId(h.ref))).toContain(conceptId(written.ref));
   });
 });
 
@@ -285,6 +289,7 @@ describe("--xref root set and resolver parity", () => {
     // include the working stash (--supersedes already did; --xref did not).
     const teamDir = makeDir("akm-xref-team-target");
     seedAsset(stashDir, "memories/local-note.md", "Working-stash note.\n");
+    const localNoteRef = stashRef("memory", "local-note");
     writeSandboxConfig({
       semanticSearchMode: "off",
       defaultWriteTarget: "team",
@@ -295,7 +300,7 @@ describe("--xref root set and resolver parity", () => {
       "remember",
       "Note derived from the working-stash one",
       "--xref",
-      "memories/local-note",
+      localNoteRef,
     ]);
     expect(code).toBe(0);
 
@@ -303,41 +308,42 @@ describe("--xref root set and resolver parity", () => {
     // Written to the named target while citing the working-stash asset.
     expect(json.path.startsWith(teamDir)).toBe(true);
     const parsed = parseFrontmatter(fs.readFileSync(json.path, "utf8"));
-    expect(parsed.data.xrefs).toEqual(["memories/local-note"]);
+    expect(parsed.data.xrefs).toEqual([localNoteRef]);
   });
 
-  test("script: refs are accepted without existence validation (fail-open, mirrors lint)", async () => {
-    // script: is contract-pinned unresolvable by the slug resolver
-    // (refToRelPath returns null); lint fails OPEN on it, and the PR's own
-    // convention docs instruct agents to write `--xref script:build/release`.
+  test("script refs resolve exact files and reject missing targets", async () => {
     seedAsset(stashDir, "scripts/build/release.sh", "#!/bin/sh\necho release\n");
+    const releaseRef = stashRef("script", "build/release.sh");
 
-    const seeded = await runCliCapture(["remember", "Release script tip", "--xref", "scripts/build/release.sh"]);
+    const seeded = await runCliCapture(["remember", "Release script tip", "--xref", releaseRef]);
     expect(seeded.code).toBe(0);
     const seededParsed = parseFrontmatter(
       fs.readFileSync((JSON.parse(seeded.stdout) as { path: string }).path, "utf8"),
     );
-    expect(seededParsed.data.xrefs).toEqual(["scripts/build/release.sh"]);
+    expect(seededParsed.data.xrefs).toEqual([releaseRef]);
 
-    // Fail-open means no existence check at all — same as lint's body scan.
-    const ghost = await runCliCapture(["remember", "Ghost script tip", "--xref", "scripts/no-such-script.sh"]);
-    expect(ghost.code).toBe(0);
+    const missingRef = stashRef("script", "no-such-script.sh");
+    const ghost = await runCliCapture(["remember", "Ghost script tip", "--xref", missingRef]);
+    expect(ghost.code).toBe(2);
+    expect((JSON.parse(ghost.stderr) as { error: string }).error).toContain(missingRef);
   });
 
-  test("workflow: refs resolve YAML workflow programs against the stash roots, not the cwd", async () => {
+  test("workflow refs resolve YAML workflow programs against the stash roots, not the cwd", async () => {
     // The cwd here is the repo root, NOT the stash root — the old cwd-relative
     // `workflowSpec.toAssetPath` probe made this exit 2 from any other cwd.
     seedAsset(stashDir, "workflows/deploy.yaml", "steps:\n  - run: echo hi\n");
+    const deployRef = stashRef("workflow", "deploy");
 
-    const { code, stdout } = await runCliCapture(["remember", "Deploy workflow tip", "--xref", "workflows/deploy"]);
+    const { code, stdout } = await runCliCapture(["remember", "Deploy workflow tip", "--xref", deployRef]);
     expect(code).toBe(0);
     const parsed = parseFrontmatter(fs.readFileSync((JSON.parse(stdout) as { path: string }).path, "utf8"));
-    expect(parsed.data.xrefs).toEqual(["workflows/deploy"]);
+    expect(parsed.data.xrefs).toEqual([deployRef]);
 
-    // workflow: does NOT blanket fail-open: a ref resolving nowhere still fails.
-    const ghost = await runCliCapture(["remember", "Ghost workflow tip", "--xref", "workflows/ghost-flow"]);
+    // Workflow refs do NOT blanket fail-open: a ref resolving nowhere still fails.
+    const missingRef = stashRef("workflow", "ghost-flow");
+    const ghost = await runCliCapture(["remember", "Ghost workflow tip", "--xref", missingRef]);
     expect(ghost.code).toBe(2);
-    expect((JSON.parse(ghost.stderr) as { error: string }).error).toContain("workflows/ghost-flow");
+    expect((JSON.parse(ghost.stderr) as { error: string }).error).toContain(missingRef);
   });
 
   test("origin-prefixed and malformed refs get a structured parse error, not 'did not resolve'", async () => {
@@ -365,21 +371,16 @@ describe("--xref root set and resolver parity", () => {
     expect(deniedType.code).toBe(2);
     expect((JSON.parse(deniedType.stderr) as { code?: string }).code).toBe("INVALID_FLAG_VALUE");
 
-    // local// names the same local resolution this validator performs —
-    // accepted, and persisted in the canonical bare form (the prefix is
-    // stripped, mirroring lint's local// strip) so later ref scanners see
-    // the same spelling the resolver validated.
+    // A qualified bundle is literal. An absent `local` bundle must not silently
+    // retarget to the primary stash.
     const local = await runCliCapture(["remember", "Locally cited note", "--xref", "local//knowledge/auth-flow"]);
-    expect(local.code).toBe(0);
-    const localParsed = parseFrontmatter(fs.readFileSync((JSON.parse(local.stdout) as { path: string }).path, "utf8"));
-    expect(localParsed.data.xrefs).toEqual(["knowledge/auth-flow"]);
+    expect(local.code).toBe(2);
+    expect((JSON.parse(local.stderr) as { error: string }).error).toContain("did not resolve");
   });
 
-  test("canonical conceptId xrefs persist as-is; spellings of one asset dedupe to one ref", async () => {
-    // Chunk-8: the legacy type-alias machinery (`environment:` -> `env:`)
-    // died with the old grammar — the conceptId spelling IS the canonical
-    // form, persisted verbatim.
+  test("short xrefs resolve to durable refs; spellings of one asset dedupe to one ref", async () => {
     seedAsset(stashDir, "env/prod.env", "API_URL=https://example.test\n");
+    const prodRef = stashRef("env", "prod");
 
     const { code, stdout } = await runCliCapture([
       "remember",
@@ -389,21 +390,22 @@ describe("--xref root set and resolver parity", () => {
     ]);
     expect(code).toBe(0);
     const parsed = parseFrontmatter(fs.readFileSync((JSON.parse(stdout) as { path: string }).path, "utf8"));
-    expect(parsed.data.xrefs).toEqual(["env/prod"]);
+    expect(parsed.data.xrefs).toEqual([prodRef]);
 
-    // Two spellings of the SAME asset dedupe into one canonical entry.
+    // Short and fully-qualified spellings resolve to one durable entry.
     seedAsset(stashDir, "knowledge/auth-flow.md");
+    const authFlowRef = stashRef("knowledge", "auth-flow");
     const dupe = await runCliCapture([
       "remember",
       "Note citing one asset twice",
       "--xref",
-      "local//knowledge/auth-flow",
+      authFlowRef,
       "--xref",
       "knowledge/auth-flow",
     ]);
     expect(dupe.code).toBe(0);
     const dupeParsed = parseFrontmatter(fs.readFileSync((JSON.parse(dupe.stdout) as { path: string }).path, "utf8"));
-    expect(dupeParsed.data.xrefs).toEqual(["knowledge/auth-flow"]);
+    expect(dupeParsed.data.xrefs).toEqual([authFlowRef]);
   });
 });
 
@@ -412,19 +414,20 @@ describe("--xref root set and resolver parity", () => {
 describe("--xref/--supersedes do not change the inferred slug", () => {
   test("remember: the same content produces the same slug with and without --xref", async () => {
     seedAsset(stashDir, "knowledge/auth-flow.md");
+    const authFlowRef = stashRef("knowledge", "auth-flow");
     const content = "the deploy process now uses blue-green rollout";
 
     const plain = await runCliCapture(["remember", content]);
     expect(plain.code).toBe(0);
     const plainRef = (JSON.parse(plain.stdout) as { ref: string }).ref;
-    expect(plainRef).toBe("memories/the-deploy-process-now-uses-blue-green-rollout");
+    expect(conceptId(plainRef)).toBe("memories/the-deploy-process-now-uses-blue-green-rollout");
 
     // The structured path (forced by --xref) must derive the identical slug
     // from the body — not a random memory-<epoch>-<rand> fallback taken from
     // the generated frontmatter fence. --force proves the name collides.
-    const structured = await runCliCapture(["remember", content, "--force", "--xref", "knowledge/auth-flow"]);
+    const structured = await runCliCapture(["remember", content, "--force", "--xref", authFlowRef]);
     expect(structured.code).toBe(0);
-    expect((JSON.parse(structured.stdout) as { ref: string }).ref).toBe(plainRef);
+    expect(conceptId((JSON.parse(structured.stdout) as { ref: string }).ref)).toBe(conceptId(plainRef));
   });
 
   // The stdin variant (`akm import -`) needs a REAL subprocess (stdin cannot
@@ -437,9 +440,10 @@ describe("--xref/--supersedes do not change the inferred slug", () => {
 describe("import --xref", () => {
   test("--xref adds a frontmatter block to a frontmatter-less document", async () => {
     seedAsset(stashDir, "knowledge/auth-flow.md");
+    const authFlowRef = stashRef("knowledge", "auth-flow");
     const sourcePath = makeSourceFile("auth-notes.md", "# Auth notes\n\nOAuth details worth keeping.\n");
 
-    const { code, stdout } = await runCliCapture(["import", sourcePath, "--xref", "knowledge/auth-flow"]);
+    const { code, stdout } = await runCliCapture(["import", sourcePath, "--xref", authFlowRef]);
     expect(code).toBe(0);
 
     const json = JSON.parse(stdout) as { ok: boolean; ref: string; path: string };
@@ -448,7 +452,7 @@ describe("import --xref", () => {
     const raw = fs.readFileSync(json.path, "utf8");
     expect(raw.startsWith("---")).toBe(true);
     const parsed = parseFrontmatter(raw);
-    expect(parsed.data.xrefs).toEqual(["knowledge/auth-flow"]);
+    expect(parsed.data.xrefs).toEqual([authFlowRef]);
     // Body intact and no frontmatter leaked into it.
     expect(parsed.content).toContain("# Auth notes");
     expect(parsed.content).toContain("OAuth details worth keeping.");
@@ -458,6 +462,7 @@ describe("import --xref", () => {
 
   test("--xref merges into existing frontmatter without nesting a second block", async () => {
     seedAsset(stashDir, "knowledge/auth-flow.md");
+    const authFlowRef = stashRef("knowledge", "auth-flow");
     const sourcePath = makeSourceFile(
       "existing-fm.md",
       [
@@ -474,7 +479,7 @@ describe("import --xref", () => {
       ].join("\n"),
     );
 
-    const { code, stdout } = await runCliCapture(["import", sourcePath, "--xref", "knowledge/auth-flow"]);
+    const { code, stdout } = await runCliCapture(["import", sourcePath, "--xref", authFlowRef]);
     expect(code).toBe(0);
 
     const json = JSON.parse(stdout) as { path: string };
@@ -484,7 +489,7 @@ describe("import --xref", () => {
     // Existing keys preserved, xrefs appended — one merged block.
     expect(parsed.data.description).toBe("Existing description");
     expect(parsed.data.tags).toEqual(["auth"]);
-    expect(parsed.data.xrefs).toEqual(["knowledge/auth-flow"]);
+    expect(parsed.data.xrefs).toEqual([authFlowRef]);
 
     // No nested-frontmatter corruption: the body carries no fence or key
     // leftovers from a second block.
@@ -498,39 +503,32 @@ describe("import --xref", () => {
   test("--xref dedupe-appends into a document that already lists xrefs", async () => {
     seedAsset(stashDir, "knowledge/auth-flow.md");
     seedAsset(stashDir, "memories/vpn-note.md", "VPN is required for staging.\n");
+    const authFlowRef = stashRef("knowledge", "auth-flow");
+    const vpnNoteRef = stashRef("memory", "vpn-note");
     const sourcePath = makeSourceFile(
       "already-cited.md",
-      // WI-8.5a: --xref now writes the bare conceptId; a doc already carrying the
-      // new-grammar spelling dedupes against it (cross-grammar dedup of legacy
-      // existing xrefs is WI-8.5b content-migration territory).
-      ["---", "xrefs:", "  - knowledge/auth-flow", "---", "", "Body citing prior work.", ""].join("\n"),
+      ["---", "xrefs:", `  - ${authFlowRef}`, "---", "", "Body citing prior work.", ""].join("\n"),
     );
 
-    const { code, stdout } = await runCliCapture([
-      "import",
-      sourcePath,
-      "--xref",
-      "knowledge/auth-flow",
-      "--xref",
-      "memories/vpn-note",
-    ]);
+    const { code, stdout } = await runCliCapture(["import", sourcePath, "--xref", authFlowRef, "--xref", vpnNoteRef]);
     expect(code).toBe(0);
 
     const json = JSON.parse(stdout) as { path: string };
     const parsed = parseFrontmatter(fs.readFileSync(json.path, "utf8"));
     // The duplicate ref appears once; the new ref is appended.
-    expect(parsed.data.xrefs).toEqual(["knowledge/auth-flow", "memories/vpn-note"]);
+    expect(parsed.data.xrefs).toEqual([authFlowRef, vpnNoteRef]);
   });
 
   test("unresolvable --xref fails with exit 2 usage envelope and writes nothing", async () => {
     const sourcePath = makeSourceFile("doomed.md", "# Doomed\n\nMust not land in the stash.\n");
+    const missingRef = stashRef("knowledge", "ghost-doc");
 
-    const { code, stderr } = await runCliCapture(["import", sourcePath, "--xref", "knowledge/ghost-doc"]);
+    const { code, stderr } = await runCliCapture(["import", sourcePath, "--xref", missingRef]);
     expect(code).toBe(2);
 
     const json = JSON.parse(stderr) as { ok: boolean; error: string; code?: string };
     expect(json.ok).toBe(false);
-    expect(json.error).toContain("knowledge/ghost-doc");
+    expect(json.error).toContain(missingRef);
     expect(typeof json.code).toBe("string");
 
     expect(listDirRecursive(path.join(stashDir, "knowledge"))).toEqual([]);
@@ -538,6 +536,7 @@ describe("import --xref", () => {
 
   test("--xref onto malformed frontmatter fails loudly instead of silently flattening values", async () => {
     seedAsset(stashDir, "knowledge/auth-flow.md");
+    const authFlowRef = stashRef("knowledge", "auth-flow");
     const malformed = [
       "---",
       'description: "unterminated quote',
@@ -554,7 +553,7 @@ describe("import --xref", () => {
     // With --xref: merging would round-trip the block through the lenient
     // scalar-only fallback and rewrite `tags: [auth, oauth]` as `tags: ""` —
     // fail (exit 2) BEFORE any write instead of corrupting the copy.
-    const { code, stderr } = await runCliCapture(["import", sourcePath, "--xref", "knowledge/auth-flow"]);
+    const { code, stderr } = await runCliCapture(["import", sourcePath, "--xref", authFlowRef]);
     expect(code).toBe(2);
     const json = JSON.parse(stderr) as { ok: boolean; error: string; code?: string };
     expect(json.ok).toBe(false);
@@ -562,12 +561,15 @@ describe("import --xref", () => {
     expect(typeof json.code).toBe("string");
     expect(listDirRecursive(path.join(stashDir, "knowledge"))).toEqual(["auth-flow.md"]);
 
-    // WITHOUT --xref the same document imports verbatim — malformed
-    // frontmatter is preserved byte-for-byte for a human to repair.
+    // Without --xref the AKM write boundary still rejects malformed frontmatter
+    // because it cannot safely add the required matching type metadata.
     const plain = await runCliCapture(["import", sourcePath]);
-    expect(plain.code).toBe(0);
-    const plainJson = JSON.parse(plain.stdout) as { path: string };
-    expect(fs.readFileSync(plainJson.path, "utf8")).toBe(malformed);
+    expect(plain.code).toBe(2);
+    const plainJson = JSON.parse(plain.stderr) as { ok: boolean; error: string; code?: string };
+    expect(plainJson.ok).toBe(false);
+    expect(plainJson.error).toContain("malformed YAML frontmatter");
+    expect(plainJson.code).toBe("INVALID_FLAG_VALUE");
+    expect(listDirRecursive(path.join(stashDir, "knowledge"))).toEqual(["auth-flow.md"]);
   });
 });
 
@@ -576,12 +578,12 @@ describe("import --xref", () => {
 describe("mergeXrefsIntoContent refuses non-mergeable frontmatter", () => {
   test("malformed YAML (lenient-fallback territory) throws UsageError", () => {
     const doc = ["---", 'description: "unterminated', "tags:", "  - auth", "---", "", "Body.", ""].join("\n");
-    expect(() => mergeXrefsIntoContent(doc, ["knowledge:auth-flow"])).toThrow(UsageError);
+    expect(() => mergeXrefsIntoContent(doc, ["stash//knowledge/auth-flow"])).toThrow(UsageError);
   });
 
   test("a non-mapping frontmatter block (comments only) throws instead of being dropped", () => {
     const doc = ["---", "# a comment-only block parses to null", "---", "", "Body.", ""].join("\n");
-    expect(() => mergeXrefsIntoContent(doc, ["knowledge:auth-flow"])).toThrow(UsageError);
+    expect(() => mergeXrefsIntoContent(doc, ["stash//knowledge/auth-flow"])).toThrow(UsageError);
   });
 
   test("empty xrefs list returns the content untouched, malformed or not", () => {
@@ -606,7 +608,7 @@ describe("type-root placement hint", () => {
     const json = JSON.parse(stdout) as { ok: boolean; hint?: string };
     expect(json.ok).toBe(true);
     expect(json.hint ?? "").toContain("placement conventions");
-    expect(json.hint ?? "").toContain("fact:conventions/organization");
+    expect(json.hint ?? "").toContain("facts/conventions/organization");
   });
 
   test("convention facts WITHOUT the organization fact fall back to generic wording (no dead ref)", async () => {
@@ -618,7 +620,7 @@ describe("type-root placement hint", () => {
     expect(json.hint ?? "").toContain("placement conventions");
     // The canonical fact does not exist in this stash — the hint must not
     // point `akm show` at a ref that would return not-found.
-    expect(json.hint ?? "").not.toContain("fact:conventions/organization");
+    expect(json.hint ?? "").not.toContain("facts/conventions/organization");
   });
 
   test("a --path (non-root) write emits no hint", async () => {

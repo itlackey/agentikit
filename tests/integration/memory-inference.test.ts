@@ -120,7 +120,7 @@ describe("isPendingMemory", () => {
   });
 
   test("inferred children are not pending", () => {
-    expect(isPendingMemory({ inferred: true, source: "memory:parent" })).toBe(false);
+    expect(isPendingMemory({ inferred: true, source: "memories/parent" })).toBe(false);
   });
 
   test("memory already marked processed is not pending", () => {
@@ -163,7 +163,7 @@ describe("collectPendingMemories", () => {
 
   test("walks markdown files and filters by predicate", () => {
     writeMemory("plain", {}, "Plain body, needs splitting.");
-    writeMemory("already-inferred", { inferred: true, source: "memory:plain" }, "Atomic.");
+    writeMemory("already-inferred", { inferred: true, source: "memories/plain" }, "Atomic.");
     writeMemory("already-processed", { inferenceProcessed: true }, "Already split.");
     writeMemory("nested/sub", {}, "Nested memory body.");
     // A non-markdown file under memories/ must be ignored.
@@ -171,7 +171,7 @@ describe("collectPendingMemories", () => {
 
     const pending = collectPendingMemories(tmpStash);
     const names = pending.map((p) => p.ref).sort();
-    expect(names).toEqual(["memory:nested/sub", "memory:plain"]);
+    expect(names).toEqual(["memories/nested/sub", "memories/plain"]);
   });
 });
 
@@ -315,13 +315,34 @@ describe("runMemoryInferencePass — progress", () => {
     expect(events[0]).toEqual({ processed: 0, total: 2, currentRef: undefined });
     expect(events.some((event) => event.processed === 1 && event.total === 2)).toBe(true);
     expect(events.some((event) => event.processed === 2 && event.total === 2)).toBe(true);
-    expect(events.some((event) => event.currentRef === "memory:one" || event.currentRef === "memory:two")).toBe(true);
+    expect(events.some((event) => event.currentRef === "memories/one" || event.currentRef === "memories/two")).toBe(
+      true,
+    );
   });
 });
 
 // ── runMemoryInferencePass — enabled path ───────────────────────────────────
 
 describe("runMemoryInferencePass — enabled", () => {
+  test("does not infer or mutate memories owned by a non-AKM adapter", async () => {
+    const parentPath = writeMemory("vendor", { description: "Vendor memory" }, "Do not rewrite this body.");
+    let calls = 0;
+    compressor = () => {
+      calls++;
+      return sampleDraft();
+    };
+
+    const result = await runMemoryInferencePass({
+      config: configWithLlm(),
+      sources: [{ path: tmpStash, adapterId: "okf" }],
+    });
+
+    expect(result.considered).toBe(0);
+    expect(calls).toBe(0);
+    expect(fs.existsSync(path.join(tmpStash, "memories", "vendor.derived.md"))).toBe(false);
+    expect(parseFrontmatter(fs.readFileSync(parentPath, "utf8")).data.inferenceProcessed).toBeUndefined();
+  });
+
   test("writes one derived memory with rich metadata, `inferred: true`, and `source:` backref", async () => {
     writeMemory("parent", { description: "before" }, "Two facts in one body.");
     compressor = () => ({

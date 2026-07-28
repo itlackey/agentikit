@@ -18,26 +18,35 @@
  */
 
 import fs from "node:fs";
-import { type CittyArgsDefinitionForScan, findCittyTopLevelCommandIndex } from "../../cli/parse-args";
+import path from "node:path";
 import { recognizeMatch } from "../../core/adapter/recognize-match";
+import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
-import { displayRef, parseQualifiedRefInput } from "../../core/asset/resolve-ref";
+import { extractSection, markdownFragmentSlugs } from "../../core/asset/markdown";
+import { displayRef, typeNameFromConceptId } from "../../core/asset/resolve-ref";
 import { META_DIR, type MetaRef, parseMetaRef, resolveMetaFilePath } from "../../core/asset/stash-meta";
 import { asNonEmptyString } from "../../core/common";
 import { getIndexPassConfig, loadConfig } from "../../core/config/config";
 import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
 import { appendEvent, readEvents } from "../../core/events";
 import { withStateDbTelemetry } from "../../core/state-db";
+import { presentationFor } from "../../core/type-presentation";
 import { hasGraphData } from "../../indexer/db/graph-db";
 import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
 import { extractGraphForSingleFile } from "../../indexer/graph/graph-extraction";
-import { lookup } from "../../indexer/indexer";
+import { lookupBundleRef } from "../../indexer/indexer";
 import type { StashEntryScope } from "../../indexer/passes/metadata";
 import { ensurePrimaryIndexForRead, resolveReadSources } from "../../indexer/read-preflight";
 import { usageEventAttributionMetadata } from "../../indexer/search/search-attribution";
 import { buildEditHint, findSourceForPath, isEditable, resolveSourceEntries } from "../../indexer/search/search-source";
 import { insertUsageEvent, type UsageEventSource } from "../../indexer/usage/usage-events";
-import { buildFileContext, buildRenderContext, getRenderer } from "../../indexer/walk/file-context";
+import {
+  buildFileContext,
+  buildRenderContext,
+  type FileContext,
+  getRenderer,
+  type MatchResult,
+} from "../../indexer/walk/file-context";
 import { resolveAssetPath } from "../../indexer/walk/path-resolver";
 import { resolveIndexPassLLM } from "../../llm/index-passes";
 import { resolveSourcesForOrigin } from "../../registry/origin-resolve";
@@ -53,8 +62,9 @@ import {
 import { computeBodyHash } from "../../storage/repositories/index-llm-cache-repository";
 // Eagerly import source providers to trigger self-registration.
 import "../../sources/providers/index";
-import type { KnowledgeView, ShowDetailLevel, ShowResponse } from "../../sources/types";
+import type { ShowDetailLevel, ShowResponse } from "../../sources/types";
 import { getCurrentWorkflowScopeKey } from "../../workflows/authoring/scope-key";
+import { buildWorkflowAction, WORKFLOW_PROGRAM_RENDERER_NAME } from "../../workflows/renderer";
 import { getActiveWorkflowRun } from "../../workflows/runtime/runs";
 
 /**
@@ -67,7 +77,6 @@ import { getActiveWorkflowRun } from "../../workflows/runtime/runs";
  */
 export async function akmShowUnified(input: {
   ref: string;
-  view?: KnowledgeView;
   detail?: ShowDetailLevel;
   /**
    * Optional scope filter. When supplied, the resolved asset's frontmatter
@@ -91,8 +100,7 @@ export async function akmShowUnified(input: {
   // 0a. Stash `.meta/` convention: `[origin//]meta[:name]` direct-reads a
   //     human-authored orientation doc from the stash's `.meta/` directory.
   //     These files are not indexed (the walker skips dot-dirs), so they are
-  //     resolved here before the index lookup and the `type:name` parser,
-  //     which would otherwise reject the non-asset-type `meta`.
+  //     resolved here before the index lookup; meta docs are not asset refs.
   {
     const metaRef = parseMetaRef(ref);
     if (metaRef) return showStashMeta(metaRef);
@@ -104,17 +112,18 @@ export async function akmShowUnified(input: {
 
   // Try local filesystem (FTS5 index lookup)
   const result = await showLocal(input);
-  // Scope filter narrows resolution: if --scope was supplied, the asset's
-  // frontmatter scope must satisfy every supplied key. We re-read the file
-  // (cheap — already on the show hot path) so we don't have to thread scope
-  // through the renderer chain just for one verification step.
+  // Scope filter narrows resolution: if a scope filter was supplied, the
+  // asset's frontmatter scope must satisfy every supplied key. We re-read the
+  // file (cheap — already on the show hot path) so we don't have to thread
+  // scope through the renderer chain just for one verification step.
   if (input.scope && hasAnyScopeKey(input.scope) && result.path) {
     enforceScopeOrThrow(result.path, ref, input.scope);
   }
   // Count prior shows of this ref before logging the current one.
   if (!input.skipLogging) {
-    const priorShowCount = recentShowCount(ref);
-    logShowEvent(ref, input.eventSource, result.path, result.origin);
+    const consumedRef = result.ref ?? makeBundleRef(undefined, parseBundleRef(ref).conceptId);
+    const priorShowCount = recentShowCount(consumedRef);
+    logShowEvent(consumedRef, result.type, result.name, input.eventSource, result.path);
     if (priorShowCount >= 2) {
       // Agent has shown this same asset 3+ times — inject a loop-break hint.
       (result as unknown as Record<string, unknown>).showLoopWarning = priorShowCount + 1;
@@ -223,17 +232,15 @@ function recentShowCount(ref: string): number {
 
 function logShowEvent(
   ref: string,
+  type: string,
+  name: string,
   eventSource: UsageEventSource = "user",
   filePath?: string,
-  origin?: string | null,
 ): void {
   // Emit a structured event to events.jsonl so workflow-trace consumers
   // detect akm show invocations without relying on stdout scraping.
-  const parsed = parseQualifiedRefInput(ref);
-  // New-grammar display ref: also the lookup key below, which `findEntryIdByRef`
-  // resolves against `item_ref`.
-  const eventRef = displayRef({ type: parsed.type, name: parsed.name, bundleId: parsed.origin ?? origin ?? undefined });
-  appendEvent({ eventType: "show", ref: eventRef, metadata: { type: parsed.type, name: parsed.name } });
+  const eventRef = makeBundleRef(parseBundleRef(ref).bundle, parseBundleRef(ref).conceptId);
+  appendEvent({ eventType: "show", ref: eventRef, metadata: { type, name } });
 
   // Detect if this show is a selection from a recent search result.
   try {
@@ -267,12 +274,13 @@ function logShowEvent(
     withIndexDb(
       (db) => {
         const entryId = filePath ? getEntryIdByFilePath(db, filePath) : findEntryIdByRef(db, eventRef);
-        // The DURABLE usage-event key is the resolved entry's fully-qualified
-        // `item_ref`; the new-grammar `eventRef` is the fallback for an
-        // unresolved / not-yet-indexed show. entry_id/item_ref resolve from
-        // index.db (`db`); the usage_events write lands in state.db (WI-8.3).
-        const entryRef = (entryId !== undefined ? getItemRefById(db, entryId) : null) ?? eventRef;
-        const entry = entryId !== undefined ? getEntryById(db, entryId) : undefined;
+        if (entryId === undefined) return;
+        // Usage events carry only the resolved row's fully-qualified item_ref.
+        // A disk-only show has no durable indexed identity yet, so it does not
+        // create a per-entry usage row.
+        const entryRef = getItemRefById(db, entryId);
+        if (!entryRef) return;
+        const entry = getEntryById(db, entryId);
         withStateDbTelemetry((stateDb) => {
           insertUsageEvent(stateDb, {
             event_type: "show",
@@ -297,44 +305,50 @@ function logShowEvent(
 /** @internal Use akmShowUnified() for all external callers. */
 export async function showLocal(input: {
   ref: string;
-  view?: KnowledgeView;
   detail?: ShowDetailLevel;
   stashDir?: string;
 }): Promise<ShowResponse> {
-  const parsed = parseQualifiedRefInput(input.ref);
-  const displayType = parsed.type;
+  const parsed = parseBundleRef(input.ref);
+  const assetParts = typeNameFromConceptId(parsed.conceptId);
   const config = loadConfig();
   const allSources = resolveSourceEntries(input.stashDir);
-  const searchSources = resolveSourcesForOrigin(parsed.origin, allSources);
+  const searchSources = resolveSourcesForOrigin(parsed.bundle, allSources);
 
   const allSourceDirs = searchSources.map((s) => s.path);
 
-  let indexedEntry: Awaited<ReturnType<typeof lookup>> = null;
+  let indexedEntry: Awaited<ReturnType<typeof lookupBundleRef>> = null;
   try {
-    indexedEntry = await lookup(parsed);
+    indexedEntry = await lookupBundleRef(parsed);
   } catch (err) {
     rethrowIfTestIsolationError(err);
     indexedEntry = null;
   }
   const resolvedAssetPath =
     indexedEntry?.filePath ??
-    (await resolveAssetPath(parsed, {
-      stashDir: input.stashDir,
-      mode: "disk-only",
-    }));
+    (assetParts
+      ? await resolveAssetPath(
+          { type: assetParts.type, name: assetParts.name, origin: parsed.bundle },
+          {
+            stashDir: input.stashDir,
+            mode: "disk-only",
+          },
+        )
+      : null);
   const assetPath = resolvedAssetPath ?? undefined;
+  const displayType = indexedEntry?.type ?? assetParts?.type ?? "asset";
+  const displayName = indexedEntry?.name ?? assetParts?.name ?? parsed.conceptId;
 
-  if (!assetPath && parsed.origin && searchSources.length === 0) {
-    const installCmd = `akm add ${parsed.origin}`;
+  if (!assetPath && parsed.bundle && searchSources.length === 0) {
+    const installCmd = `akm add ${parsed.bundle}`;
     throw new NotFoundError(
-      `Stash asset not found for ref: ${displayType}:${parsed.name}. ` +
-        `Stash "${parsed.origin}" is not installed. Run: ${installCmd}`,
+      `Stash asset not found for ref: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
+        `Stash "${parsed.bundle}" is not installed. Run: ${installCmd}`,
     );
   }
 
   if (!assetPath) {
     throw new NotFoundError(
-      `Stash asset not found for ref: ${displayType}:${parsed.name}. ` +
+      `Stash asset not found for ref: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
         "Check the name with `akm search` or verify the asset exists in your stash.",
     );
   }
@@ -344,37 +358,65 @@ export async function showLocal(input: {
 
   if (!sourceStashDir) {
     throw new UsageError(
-      `Could not determine stash root for asset: ${displayType}:${parsed.name}. ` +
-        "Run `akm init` to create the stash directory, or check `akm stash list` for configured paths.",
+      `Could not determine stash root for asset: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
+        "Run `akm init` to create the stash directory, or check `akm list` for configured paths.",
     );
   }
 
   const fileCtx = buildFileContext(sourceStashDir, assetPath);
-  const match = recognizeMatch(fileCtx);
-  if (!match) {
-    throw new UsageError(
-      `Could not display asset "${displayType}:${parsed.name}" — unsupported file type or unrecognized layout`,
-    );
-  }
+  const indexedRenderer = indexedEntry ? rendererForIndexedEntry(indexedEntry, fileCtx) : undefined;
+  let response: ShowResponse;
+  if (indexedEntry && indexedRenderer === null) {
+    response = buildIndexedProjectionResponse(indexedEntry, assetPath, parsed.fragment);
+  } else {
+    const match =
+      indexedEntry && typeof indexedRenderer === "string"
+        ? indexedMatch(indexedEntry, indexedRenderer)
+        : recognizeMatch(fileCtx);
+    if (!match) {
+      throw new UsageError(
+        `Could not display asset "${makeBundleRef(parsed.bundle, parsed.conceptId)}" — unsupported file type or unrecognized layout`,
+      );
+    }
 
-  match.meta = { ...match.meta, name: parsed.name, view: input.view };
-  const renderer = await getRenderer(match.renderer);
-  if (!renderer) {
-    throw new UsageError(`Renderer "${match.renderer}" not found for asset: ${displayType}:${parsed.name}`);
-  }
+    match.meta = { ...match.meta, name: displayName };
+    const renderer = await getRenderer(match.renderer);
+    if (!renderer) {
+      throw new UsageError(
+        `Renderer "${match.renderer}" not found for asset: ${makeBundleRef(parsed.bundle, parsed.conceptId)}`,
+      );
+    }
 
-  const renderCtx = buildRenderContext(fileCtx, match, allSourceDirs, source?.registryId);
-  const response = renderer.buildShowResponse(renderCtx);
+    const renderBundle = indexedEntry ? indexedEntry.bundleId : source?.registryId;
+    const renderDefaultBundle =
+      config.defaultBundle ?? (source?.path === allSources[0]?.path ? renderBundle : undefined);
+    const renderCtx = buildRenderContext(fileCtx, match, allSourceDirs, renderBundle, renderDefaultBundle);
+    response = renderer.buildShowResponse(renderCtx);
+    if (parsed.fragment !== undefined) {
+      if (!match.renderer.endsWith("-md")) {
+        throw new UsageError(
+          `Fragments are not supported for ${makeBundleRef(parsed.bundle, parsed.conceptId)}. Only Markdown documents support heading fragments.`,
+          "INVALID_FLAG_VALUE",
+        );
+      }
+      applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, displayName);
+    }
+  }
+  if (indexedEntry) {
+    response.type = indexedEntry.type;
+    response.name = indexedEntry.name;
+  }
   const isPrimaryStash = source !== undefined && source.path === allSources[0]?.path;
   const canonicalRef = displayRef(
     {
-      type: parsed.type,
-      name: parsed.name,
+      type: displayType,
+      name: displayName,
       conceptId: indexedEntry?.conceptId,
-      bundleId: indexedEntry?.bundleId ?? source?.registryId,
+      bundleId: indexedEntry ? indexedEntry.bundleId : source?.registryId,
     },
     config.defaultBundle ?? (isPrimaryStash ? indexedEntry?.bundleId : undefined),
   );
+  if (response.type === "workflow") response.action = buildWorkflowAction(canonicalRef);
   // 07 P1-D: provenance-aware toolPolicy CEILING. An agent's self-declared
   // `tools` frontmatter is honoured ONLY for the operator's own PRIMARY stash —
   // the assets they authored. Every other source is content pulled from
@@ -498,13 +540,89 @@ async function maybeExtractGraphInline(
  * renderer graph. Spec §6.2's literal flow.
  */
 export async function showByRef(ref: string): Promise<{ filePath: string; body: string }> {
-  const parsed = parseQualifiedRefInput(ref);
-  const entry = await lookup(parsed);
+  const parsed = parseBundleRef(ref);
+  if (parsed.fragment !== undefined) {
+    throw new UsageError(`Fragments are not accepted by raw show: ${ref}`, "INVALID_FLAG_VALUE");
+  }
+  const entry = await lookupBundleRef(parsed);
   if (!entry) {
-    throw new NotFoundError(`Asset not found for ref: ${parsed.type}:${parsed.name}`);
+    throw new NotFoundError(`Asset not found for ref: ${makeBundleRef(parsed.bundle, parsed.conceptId)}`);
   }
   const body = await fs.promises.readFile(entry.filePath, "utf8");
   return { filePath: entry.filePath, body };
+}
+
+type IndexedEntry = NonNullable<Awaited<ReturnType<typeof lookupBundleRef>>>;
+
+/** `null` selects adapter-owned projection; a string selects a core renderer. */
+function rendererForIndexedEntry(entry: IndexedEntry, file: FileContext): string | null | undefined {
+  if (entry.document?.ownsPresentation === true) return null;
+  switch (entry.adapterId) {
+    case null:
+    case undefined:
+    case "akm":
+      return undefined;
+    case "akm-workflow":
+      return file.ext === ".yaml" || file.ext === ".yml" ? WORKFLOW_PROGRAM_RENDERER_NAME : "workflow-md";
+    default:
+      return presentationFor(entry.type).renderer;
+  }
+}
+
+function indexedMatch(entry: IndexedEntry, renderer: string): MatchResult {
+  return { type: entry.type, specificity: Number.MAX_SAFE_INTEGER, renderer, meta: { name: entry.name } };
+}
+
+function buildIndexedProjectionResponse(
+  entry: IndexedEntry,
+  assetPath: string,
+  fragment: string | undefined,
+): ShowResponse {
+  if (fragment !== undefined && path.extname(assetPath).toLowerCase() !== ".md") {
+    throw new UsageError(
+      `Fragments are not supported for ${entry.conceptId}. Only Markdown documents support heading fragments.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  const raw = fs.readFileSync(assetPath, "utf8");
+  const parsed = parseFrontmatter(raw);
+  const content = fragment ? requireMarkdownSection(parsed.content, fragment, entry.name).content : parsed.content;
+  const description = entry.document?.description ?? asNonEmptyString(parsed.data.description);
+  const tags =
+    entry.document?.tags ??
+    (Array.isArray(parsed.data.tags)
+      ? parsed.data.tags.filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0)
+      : undefined);
+  return {
+    type: entry.type,
+    name: entry.name,
+    path: assetPath,
+    action: "Read the content below.",
+    content,
+    ...(description ? { description } : {}),
+    ...(tags && tags.length > 0 ? { tags } : {}),
+  };
+}
+
+function applyMarkdownFragment(response: ShowResponse, raw: string, fragment: string, name: string): void {
+  const section = requireMarkdownSection(parseFrontmatter(raw).content, fragment, name).content;
+  if (response.template !== undefined) response.template = section;
+  else if (response.prompt !== undefined) response.prompt = section;
+  else response.content = section;
+}
+
+function requireMarkdownSection(
+  content: string,
+  fragment: string,
+  name: string,
+): NonNullable<ReturnType<typeof extractSection>> {
+  const section = extractSection(content, fragment);
+  if (section) return section;
+  const available = markdownFragmentSlugs(content);
+  throw new NotFoundError(
+    `Fragment "#${fragment}" not found in ${name}.` +
+      (available.length > 0 ? ` Available fragments: ${available.map((slug) => `#${slug}`).join(", ")}.` : ""),
+  );
 }
 
 /**
@@ -566,102 +684,4 @@ function buildSummaryResponse(full: ShowResponse, assetPath?: string): ShowRespo
   };
 
   return summary;
-}
-
-// ── argv normalisation ───────────────────────────────────────────────────────
-
-const SHOW_VIEW_MODES = new Set(["toc", "frontmatter", "full", "section", "lines"]);
-
-const SHOW_ARGV_TOP_LEVEL_ARGS = {
-  format: { type: "string" },
-  output: { type: "string" },
-  detail: { type: "string" },
-  shape: { type: "string" },
-  quiet: { type: "boolean", alias: "q" },
-  verbose: { type: "boolean" },
-} satisfies CittyArgsDefinitionForScan;
-
-/**
- * Normalize argv so positional view-mode arguments after the asset ref
- * are rewritten into internal flags that citty can parse.
- *
- * Converts:
- *   akm show knowledge:guide.md toc          → akm show knowledge:guide.md --akmView toc
- *   akm show knowledge:guide.md section Auth → akm show knowledge:guide.md --akmView section --akmHeading Auth
- *   akm show knowledge:guide.md lines 1 50   → akm show knowledge:guide.md --akmView lines --akmStart 1 --akmEnd 50
- *
- * Legacy `--view` is intentionally unsupported.
- * Returns a new array; the input is never modified.
- */
-export function normalizeShowArgv(argv: string[]): string[] {
-  const rawArgs = argv.slice(2);
-  const commandIndex = findCittyTopLevelCommandIndex(rawArgs, SHOW_ARGV_TOP_LEVEL_ARGS);
-  if (commandIndex < 0 || rawArgs[commandIndex] !== "show") return argv;
-
-  const commandArgs = rawArgs.slice(commandIndex + 1);
-  if (
-    commandArgs.includes("--view") ||
-    commandArgs.includes("--heading") ||
-    commandArgs.includes("--start") ||
-    commandArgs.includes("--end")
-  ) {
-    throw new UsageError(
-      'Legacy show flags are no longer supported. Use positional syntax like `akm show knowledge:guide toc` or `akm show knowledge:guide section "Auth"`.',
-    );
-  }
-
-  // Separate global flags from positional/show-specific args
-  const prefix = [...argv.slice(0, 2), ...rawArgs.slice(0, commandIndex + 1)];
-  const rest = commandArgs;
-
-  const globalFlags: string[] = [];
-  const showArgs: string[] = [];
-
-  for (let i = 0; i < rest.length; i++) {
-    const arg = rest[i]!;
-    if (arg === "--quiet" || arg === "-q" || arg === "--verbose") {
-      globalFlags.push(arg);
-      continue;
-    }
-    if (arg.startsWith("--format=") || arg.startsWith("--detail=") || arg.startsWith("--shape=")) {
-      globalFlags.push(arg);
-      continue;
-    }
-    if (arg === "--format" || arg === "--detail" || arg === "--shape") {
-      globalFlags.push(arg);
-      const nextArg = rest[i + 1];
-      if (nextArg !== undefined) {
-        globalFlags.push(nextArg);
-        i++;
-      }
-      continue;
-    }
-    showArgs.push(arg);
-  }
-
-  // showArgs[0] = ref, showArgs[1] = potential view mode, showArgs[2..] = view params
-  const ref = showArgs[0];
-  const viewMode = showArgs[1];
-
-  if (!ref || !viewMode || !SHOW_VIEW_MODES.has(viewMode)) {
-    return argv;
-  }
-
-  const result = [...prefix, ref, "--akmView", viewMode];
-
-  if (viewMode === "section") {
-    // Next arg is the heading name; pass empty string when missing so the
-    // show handler can produce a clear "section not found" error.
-    const heading = showArgs[2] ?? "";
-    result.push("--akmHeading", heading);
-  } else if (viewMode === "lines") {
-    // Next two args are start and end
-    const start = showArgs[2];
-    const end = showArgs[3];
-    if (start) result.push("--akmStart", start);
-    if (end) result.push("--akmEnd", end);
-  }
-
-  result.push(...globalFlags);
-  return result;
 }

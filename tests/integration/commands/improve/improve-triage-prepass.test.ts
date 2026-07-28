@@ -397,7 +397,7 @@ describe("akm improve — triage pre-pass", () => {
     "lock-leak guard (FIX 2): a throw from the end-of-run sync region does not leak the lock",
     async () => {
       // FIX-2 regression: the lock is now held by a single try/finally that spans
-      // the budget-timer setup, openStateDatabase(), the profileFilteredRefs
+      // the budget-timer setup, openStateDatabase(), the strategyFilteredRefs
       // audit loop, AND the main run through the end-of-run sync. The finally
       // releases `improve.lock` exactly once. The end-of-run sync swallows its own
       // failures (non-fatal), so this run still resolves ok — but the key

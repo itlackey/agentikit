@@ -32,7 +32,7 @@ export type ConfigErrorCode =
   | "UNSUPPORTED_CONFIG_VERSION"
   // Defense-in-depth sentinel raised by `akm init` under `bun test` to
   // refuse persisting a temp-dir stashDir to the user's real config.
-  // See src/commands/init.ts.
+  // See src/commands/sources/init.ts.
   | "INIT_TMP_STASH_REFUSED"
   | "SETUP_TMP_STASH_REFUSED"
   | "UNKNOWN_IMPROVE_STRATEGY"
@@ -52,7 +52,11 @@ export type ConfigErrorCode =
   // `akm upgrade` refused: the environment blocks the upgrade (version
   // contract, filesystem permissions, or leftover upgrade state). The error
   // message carries the specific remediation.
-  | "UPGRADE_BLOCKED";
+  | "UPGRADE_BLOCKED"
+  // Q-05: `akm workflow run`/`brief`/`report`/`watch`, and creating a YAML
+  // workflow program, refuse outright until `experimental.workflowEngine` is
+  // set — see src/workflows/exec/workflow-engine-gate.ts.
+  | "WORKFLOW_ENGINE_NOT_ENABLED";
 
 /** Stable, machine-readable codes for UsageError. */
 export type UsageErrorCode =
@@ -87,10 +91,10 @@ export type NotFoundErrorCode =
  * imperative. Returning undefined means "no canned hint".
  */
 const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
-  STASH_DIR_NOT_FOUND: "Run `akm setup` to create and configure your stash, or set stashDir in your config.",
+  STASH_DIR_NOT_FOUND: "Run `akm setup` to create and configure your stash, or configure a defaultBundle path.",
   STASH_DIR_NOT_A_DIRECTORY:
-    "The configured stashDir exists but isn't a directory. Update stashDir to point at a folder.",
-  STASH_DIR_UNREADABLE: "Check the path exists and your user has read permission, or update stashDir.",
+    "The configured default bundle path exists but isn't a directory. Update it to point at a folder.",
+  STASH_DIR_UNREADABLE: "Check the path exists and your user has read permission, or update the default bundle path.",
   EMBEDDING_NOT_CONFIGURED: 'Run `akm config set embedding \'{"endpoint":"...","model":"..."}\'` to enable embeddings.',
   LLM_NOT_CONFIGURED:
     'Run `akm setup` or configure an `engines` entry with `kind: "llm"`, then select it with `defaults.llmEngine`.',
@@ -102,13 +106,14 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
     "Choose a path inside your home directory (e.g. ~/akm) or another empty workspace. The stash directory cannot be the filesystem root, your home directory itself, or a sensitive system path like /etc, /var, ~/.config, or ~/.ssh.",
   UNKNOWN_IMPROVE_STRATEGY:
     "Pass one of the listed strategy names to `--strategy`, or define it under `improve.strategies`. Names are case-sensitive.",
+  WORKFLOW_ENGINE_NOT_ENABLED: "Run `akm config set experimental.workflowEngine true` to enable it.",
 };
 
 /** Default hint for each UsageError code. */
 const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   INVALID_FLAG_VALUE: "Run `akm <command> --help` to see accepted values.",
   INVALID_SOURCE_VALUE: "Pick one of: stash, registry, both.",
-  INVALID_FORMAT_VALUE: "Pick one of: json, jsonl, text, yaml.",
+  INVALID_FORMAT_VALUE: "Pick one of: json, jsonl, yaml, text, md, html.",
   INVALID_DETAIL_VALUE: "Pick one of: brief, normal, full. For agent/summary projections use --shape.",
   INVALID_SHAPE_VALUE: "Pick one of: human, agent, summary (summary is only valid on `akm show`).",
   INVALID_JSON_CONFIG_VALUE:

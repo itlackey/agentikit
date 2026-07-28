@@ -16,19 +16,16 @@
  *
  * All other writing/reading concerns live outside this interface:
  *   - Writes:    src/core/write-source.ts
- *   - Reads:     src/indexer.ts
+ *   - Reads:     src/indexer/indexer.ts
  *   - Install:   src/sources/providers/sync-from-ref.ts
- *
- * (An earlier `init(ctx)` + `ProviderContext` member was implemented by every
- * provider but never invoked by any caller; both were removed.)
  */
 
 import type { SourceConfigEntry } from "../core/config/config";
+import type { SourceKind } from "./types";
 
 export interface SourceProvider {
   readonly name: string;
-  /** Discriminator string. Supports "filesystem" | "git" | "website" | "npm". */
-  readonly kind: string;
+  readonly kind: SourceKind;
 
   /**
    * The directory the indexer walks. Must return the same path for the

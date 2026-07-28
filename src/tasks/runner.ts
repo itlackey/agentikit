@@ -32,6 +32,7 @@ import os from "node:os";
 import path from "node:path";
 import { shouldSkipUnactivatedTask } from "../core/activation-policy";
 import { assertNever } from "../core/assert";
+import { placementSpecFor } from "../core/asset/asset-placement";
 import { parseRefInput } from "../core/asset/resolve-ref";
 import { loadConfig } from "../core/config/config";
 import { AkmError, NotFoundError, rethrowIfTestIsolationError } from "../core/errors";
@@ -89,7 +90,7 @@ export interface TaskRunResult {
   log: string;
   target:
     | { kind: "workflow"; ref: string }
-    | { kind: "prompt"; engine: string | null; legacyProfile?: string }
+    | { kind: "prompt"; engine: string | null }
     | { kind: "command"; cmd?: string[] }
     | { kind: "unknown" };
   /** Workflow run id (for workflow targets) or agent reason/error (for prompt targets). */
@@ -576,6 +577,15 @@ async function resolvePromptText(task: TaskDocument, stashDir: string): Promise<
   }
   // asset
   const ref = parseRefInput(src.ref);
+  // D11 — see the matching guard in validator.ts: `resolveAssetPath`
+  // (src/sources/resolve.ts) is placement-dir-only and cannot route an
+  // opaque adapter conceptId, which `parseRefInput` now otherwise accepts.
+  if (placementSpecFor(ref.type) === undefined) {
+    throw new NotFoundError(
+      `Task "${task.id}" prompt asset ref "${src.ref}" is not an AKM-placed asset — adapter-owned (opaque) prompt sources are not resolvable as task inputs yet.`,
+      "ASSET_NOT_FOUND",
+    );
+  }
   const assetPath = await resolveAssetPath(stashDir, ref.type, ref.name);
   return fs.readFileSync(assetPath, "utf8");
 }
@@ -862,9 +872,7 @@ function taskHistoryRowToResult(
       : row.target_kind === "command"
         ? { kind: "command" }
         : row.target_kind === "prompt"
-          ? meta.metadataVersion === 2
-            ? { kind: "prompt", engine: meta.engine ?? null }
-            : { kind: "prompt", engine: null, ...(meta.legacyProfile ? { legacyProfile: meta.legacyProfile } : {}) }
+          ? { kind: "prompt", engine: meta.engine ?? null }
           : { kind: "unknown" };
 
   return {
@@ -872,10 +880,10 @@ function taskHistoryRowToResult(
     status: row.status as TaskRunStatus,
     startedAt: row.started_at,
     finishedAt: row.completed_at ?? row.failed_at ?? row.started_at,
-    durationMs: meta.durationMs ?? 0,
+    durationMs: meta.durationMs,
     log: row.log_path ?? "",
     target,
-    ...(meta.detail !== undefined && meta.detail !== null ? { detail: meta.detail } : {}),
+    ...(meta.detail ? { detail: meta.detail } : {}),
   };
 }
 

@@ -4,7 +4,7 @@
 
 /**
  * 08 "surfaces" advisory group for `akm health` (secret-file-perms,
- * binary-config-skew, orphan-stores, egress-endpoints). Every collector is
+ * binary-config-skew, egress-endpoints). Every collector is
  * silent (`undefined`) when there is nothing to report, mirroring the shipped
  * `stash-git-exposure` advisory; only `egress-endpoints` emits a pass-status
  * informational entry whenever any remote endpoint is configured.
@@ -17,7 +17,6 @@ import path from "node:path";
 import {
   collectConfigSkewAdvisory,
   collectEgressAdvisory,
-  collectOrphanStoresAdvisory,
   collectSecretPermsAdvisory,
 } from "../../../../src/commands/health/surfaces";
 
@@ -96,34 +95,6 @@ describe("collectConfigSkewAdvisory (08-F3)", () => {
     const bad = path.join(dir, "bad.json");
     fs.writeFileSync(bad, "{nope");
     expect(collectConfigSkewAdvisory(bad)).toBeUndefined();
-  });
-});
-
-describe("collectOrphanStoresAdvisory (08-F4/F7)", () => {
-  test("warns on legacy config-backups dirs and a 0-byte stash state.db decoy", () => {
-    const dataDir = makeTempDir("akm-surfaces-data-");
-    const configDir = makeTempDir("akm-surfaces-config-");
-    const stashDir = makeTempDir("akm-surfaces-stash-");
-    fs.mkdirSync(path.join(dataDir, "config-backups"));
-    fs.mkdirSync(path.join(configDir, "config-backups"));
-    fs.mkdirSync(path.join(stashDir, ".akm"));
-    fs.writeFileSync(path.join(stashDir, ".akm", "state.db"), "");
-
-    const adv = collectOrphanStoresAdvisory({ dataDir, configDir, stashDir });
-    expect(adv?.name).toBe("orphan-stores");
-    expect(adv?.status).toBe("warn");
-    const orphans = adv?.evidence?.orphans as string[];
-    expect(orphans).toHaveLength(3);
-  });
-
-  test("silent when no orphan stores exist (non-empty stash state.db is not a decoy)", () => {
-    const dataDir = makeTempDir("akm-surfaces-data-");
-    const configDir = makeTempDir("akm-surfaces-config-");
-    const stashDir = makeTempDir("akm-surfaces-stash-");
-    fs.mkdirSync(path.join(stashDir, ".akm"));
-    fs.writeFileSync(path.join(stashDir, ".akm", "state.db"), "not-empty");
-
-    expect(collectOrphanStoresAdvisory({ dataDir, configDir, stashDir })).toBeUndefined();
   });
 });
 

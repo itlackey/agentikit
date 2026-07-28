@@ -5,12 +5,8 @@
 /**
  * akm 0.9.0 Chunk-5 flip, F4c M1 — REF_RE dual-recognition.
  *
- * The linter's missing-ref scan and `akm mv`'s inbound-xref rewrite must
- * recognize BOTH the legacy `type:name` grammar (`// F5: delete`) AND the 0.9.0
- * `[bundle//]conceptId` grammar the output emitter now writes into frontmatter
- * (ref-grammar decision D-R3). The specific gap this closes: a flipped
- * short-conceptId `supersededBy` value (e.g. `memories/foo`) was invisible to
- * the old `type:name`-only scan.
+ * The linter's missing-ref scan and `akm mv`'s inbound-xref rewrite recognize
+ * `[bundle//]conceptId` refs. Retired `type:name` text is inert.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -20,7 +16,7 @@ import path from "node:path";
 import { akmLint } from "../../src/commands/lint/index";
 import { runCliCapture } from "../_helpers/cli";
 import { makeConfig } from "../_helpers/factories";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 const tempDirs: string[] = [];
 
@@ -95,16 +91,21 @@ describe("F4c M1 — linter missing-ref dual grammar", () => {
   });
 });
 
-describe("F4c M1 — akm mv rewrites both grammars", () => {
+describe("F4c M1 — akm mv rewrites current refs only", () => {
   let storage: IsolatedAkmStorage;
 
   afterEach(() => {
     storage?.cleanup();
   });
 
-  test("a conceptId-spelled xref AND a legacy xref both re-point after a rename", async () => {
+  test("a conceptId xref re-points while type:name text remains inert", async () => {
     storage = withIsolatedAkmStorage();
     const stashDir = storage.stashDir;
+    writeSandboxConfig({
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+    });
     fs.mkdirSync(path.join(stashDir, "memories"), { recursive: true });
     // The asset being moved.
     fs.writeFileSync(path.join(stashDir, "memories", "old-note.md"), "# old note\n", "utf8");
@@ -125,9 +126,56 @@ describe("F4c M1 — akm mv rewrites both grammars", () => {
     expect(res.code).toBe(0);
 
     const citer = fs.readFileSync(path.join(stashDir, "memories", "citer.md"), "utf8");
-    // Both grammars re-pointed onto the new name, each preserving its grammar.
     expect(citer).toContain("memories/new-note");
-    expect(citer).toContain("memory:new-note");
-    expect(citer).not.toContain("old-note");
+    expect(citer).toContain("memory:old-note");
+    expect(citer).not.toContain("memory:new-note");
+  });
+
+  test("a qualified local bundle is rejected instead of moving the primary copy", async () => {
+    storage = withIsolatedAkmStorage();
+    const localDir = path.join(storage.root, "local-bundle");
+    fs.mkdirSync(path.join(storage.stashDir, "memories"), { recursive: true });
+    fs.mkdirSync(path.join(localDir, "memories"), { recursive: true });
+    const primary = path.join(storage.stashDir, "memories", "old-note.md");
+    const local = path.join(localDir, "memories", "old-note.md");
+    fs.writeFileSync(primary, "Primary copy.\n", "utf8");
+    fs.writeFileSync(local, "Local bundle copy.\n", "utf8");
+    writeSandboxConfig({
+      bundles: {
+        stash: { path: storage.stashDir, writable: true },
+        local: { path: localDir, writable: true },
+      },
+      defaultBundle: "stash",
+    });
+
+    const result = await runCliCapture(["mv", "local//memories/old-note", "new-note"]);
+
+    expect(result.code).toBe(2);
+    expect(fs.readFileSync(primary, "utf8")).toBe("Primary copy.\n");
+    expect(fs.readFileSync(local, "utf8")).toBe("Local bundle copy.\n");
+    expect(fs.existsSync(path.join(storage.stashDir, "memories", "new-note.md"))).toBe(false);
+    expect(fs.existsSync(path.join(localDir, "memories", "new-note.md"))).toBe(false);
+  });
+
+  test("a read-only default bundle is refused instead of renamed", async () => {
+    // `assertAkmAssetWrite` checks adapter compatibility, not writability, so
+    // `mv` used to rename files inside a bundle the user explicitly protected
+    // with `writable: false` — while every other write command refused it.
+    storage = withIsolatedAkmStorage();
+    fs.mkdirSync(path.join(storage.stashDir, "memories"), { recursive: true });
+    const asset = path.join(storage.stashDir, "memories", "protected-note.md");
+    fs.writeFileSync(asset, "Protected content.\n", "utf8");
+    writeSandboxConfig({
+      bundles: { stash: { path: storage.stashDir, writable: false } },
+      defaultBundle: "stash",
+    });
+
+    const result = await runCliCapture(["mv", "memories/protected-note", "renamed-note"]);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("not writable");
+    // Nothing moved: the original is intact and no destination was created.
+    expect(fs.readFileSync(asset, "utf8")).toBe("Protected content.\n");
+    expect(fs.existsSync(path.join(storage.stashDir, "memories", "renamed-note.md"))).toBe(false);
   });
 });

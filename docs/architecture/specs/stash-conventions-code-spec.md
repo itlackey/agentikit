@@ -1,13 +1,37 @@
 # Spec: code changes for the stash organization & back-linking conventions
 
-Status: implemented (SPEC-1..8 landed 2026-07-11/12; SPEC-6 shipped capture-only — the rank-time demotion was dropped after the spec's own prescribed curate-golden measurement showed no crowding, with tests/search-convention-fact-demotion.test.ts pinning that invariant; see CHANGELOG.md for per-spec outcomes)
+Status: implemented (SPEC-1..8 landed 2026-07-11/12; SPEC-6 shipped capture-only — the rank-time demotion was dropped after the spec's own prescribed curate-golden measurement showed no crowding, with tests/integration/search-convention-fact-demotion.test.ts pinning that invariant; see CHANGELOG.md for per-spec outcomes)
+
+> **Partially superseded by the 0.9.0 surface decisions.** This document is a
+> historical implementation record; two of its specs no longer describe the
+> intended surface:
+> - **SPEC-4** (`akm search "<type>:<prefix>/"`) — superseded by conceptId-prefix
+>   enumeration (`akm search "memories/projecta/"`, `"bundle//skills/"`). See
+>   [0.9.0-decisions.md D4](./0.9.0-decisions.md#d4--browse-uses-conceptid-prefixes-not-type).
+> - **SPEC-7** (`akm mv`) — the command ships, but as an **Experimental**
+>   surface only; the recommended rename is delete plus create. See
+>   [0.9.0-decisions.md D3](./0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-ships-experimental).
+>
+> The normative surface lives in [`ref.md`](./ref.md) and
+> [`../../../STABILITY.md`](../../../STABILITY.md).
 Author: akm
 Date: 2026-07-11
 Companion: [stash-organization-conventions.md](stash-organization-conventions.md)
 
 ## Overview
 
-Implementation specs for the code changes the finalized stash-organization/back-linking conventions imply. All file paths, functions, and line anchors below were verified against the working tree at /home/user/akm (branch claude/akm-stash-conventions-69633n). Key grounding corrections discovered during the survey: (1) `akm lint` ALREADY runs a deterministic broken-ref check (`missing-ref`, src/commands/lint/base-linter.ts:593-620) over BODY text and `refs:` frontmatter arrays for memories/knowledge/lessons/facts/agents/commands/skills/workflows — the conventions' "non-wiki xrefs have no broken-link lint" claim is precisely true only for the `xrefs:`/`supersededBy:`/`contradictedBy:` FRONTMATTER channel, which is exactly the channel the conventions mandate; so candidate #1 shrinks to a small, surgical extension of the existing check rather than a new lint system. (2) `akm remember` cannot express xrefs at all today — it always wraps content in its own generated frontmatter (buildMemoryFrontmatter, src/commands/remember.ts:87-117), so an agent following the mandatory-provenance rule through the CLI would produce nested frontmatter blocks; candidate #3 is therefore load-bearing, not sugar. (3) The path-tag suppression guard (metadata.ts:1113-1115) behaves differently on the two indexing paths: the flat walk passes `path.dirname(file)` as the tag root (metadata.ts:1194,1202), so even the empty-tags fallback sees NO directory segments there — the fix should derive scope/domain tokens from `canonicalName` (the ref subpath), which is uniform across both paths. (4) Embeddings are only generated for entries lacking one (db.ts:1561-1568); changing indexed text does NOT re-embed, which constrains specs 2 and 8. Argued down (with reasons in the relevant specs): non-wiki orphan lint (orphanhood is the legitimate normal state under the finalized conventions — associative xrefs discretionary, hubs optional, bidirectionality best-effort; a per-asset orphan flag would mark most of a healthy stash); non-wiki uncited-source lint (provenance is conditional per the finalized backlinks rule "an original observation with no source carries none — never invent provenance"; a deterministic checker cannot distinguish original from derived and would incentivize fabricated provenance, the exact failure mode the review killed); xrefs feeding the entity graph (the finalized text now teaches xrefs NEVER feed the graph and body prose is the channel; deterministic ref-token edges would pollute canonical entity names and re-open the rejected typed-provenance debate); typed `sources:` channel for all types (explicitly rejected by the judge as convention-ahead-of-mechanics — stays a design-doc open question); new consolidation/promotion code (none needed — resolveStashStandards already injects the amended convention facts into consolidate.ts:1510, extract.ts:1060, distill.ts:910, recombine.ts:676, procedural.ts:371, reflect via resolveStandardsContext, propose.ts:180, schema-repair.ts:181; correction demotion is covered by SPEC-5); and surfacing lint findings in `akm health` (health checks are runtime/state-db probes — lint already has its CI gate via --fail-on-flagged).
+Implementation specs for the code changes the finalized stash-organization/back-linking conventions imply. All file paths, functions, and line anchors below were verified against the working tree at /home/user/akm (branch claude/akm-stash-conventions-69633n).
+
+> **Path note (added later):** `src/indexer/db/db.ts`, cited throughout this
+> document (e.g. "embeddings are only generated for entries lacking one"),
+> was split into `src/storage/repositories/*.ts` during a later refactor and
+> no longer exists as a single file. The behaviors this document cites it for
+> still hold — e.g. the "embed only unembedded entries" claim is now
+> `generateEmbeddingsForDb` in `src/indexer/indexer.ts` — but the specific
+> `db.ts:LINE` anchors below are stale pointers into a file that is gone, not
+> into the current repository code.
+
+Key grounding corrections discovered during the survey: (1) `akm lint` ALREADY runs a deterministic broken-ref check (`missing-ref`, src/commands/lint/base-linter.ts:593-620) over BODY text and `refs:` frontmatter arrays for memories/knowledge/lessons/facts/agents/commands/skills/workflows — the conventions' "non-wiki xrefs have no broken-link lint" claim is precisely true only for the `xrefs:`/`supersededBy:`/`contradictedBy:` FRONTMATTER channel, which is exactly the channel the conventions mandate; so candidate #1 shrinks to a small, surgical extension of the existing check rather than a new lint system. (2) `akm remember` cannot express xrefs at all today — it always wraps content in its own generated frontmatter (buildMemoryFrontmatter, src/commands/remember.ts:87-117), so an agent following the mandatory-provenance rule through the CLI would produce nested frontmatter blocks; candidate #3 is therefore load-bearing, not sugar. (3) The path-tag suppression guard (metadata.ts:1113-1115) behaves differently on the two indexing paths: the flat walk passes `path.dirname(file)` as the tag root (metadata.ts:1194,1202), so even the empty-tags fallback sees NO directory segments there — the fix should derive scope/domain tokens from `canonicalName` (the ref subpath), which is uniform across both paths. (4) Embeddings are only generated for entries lacking one (db.ts:1561-1568); changing indexed text does NOT re-embed, which constrains specs 2 and 8. Argued down (with reasons in the relevant specs): non-wiki orphan lint (orphanhood is the legitimate normal state under the finalized conventions — associative xrefs discretionary, hubs optional, bidirectionality best-effort; a per-asset orphan flag would mark most of a healthy stash); non-wiki uncited-source lint (provenance is conditional per the finalized backlinks rule "an original observation with no source carries none — never invent provenance"; a deterministic checker cannot distinguish original from derived and would incentivize fabricated provenance, the exact failure mode the review killed); xrefs feeding the entity graph (the finalized text now teaches xrefs NEVER feed the graph and body prose is the channel; deterministic ref-token edges would pollute canonical entity names and re-open the rejected typed-provenance debate); typed `sources:` channel for all types (explicitly rejected by the judge as convention-ahead-of-mechanics — stays a design-doc open question); new consolidation/promotion code (none needed — resolveStashStandards already injects the amended convention facts into consolidate.ts:1510, extract.ts:1060, distill.ts:910, recombine.ts:676, procedural.ts:371, reflect via resolveStandardsContext, propose.ts:180, schema-repair.ts:181; correction demotion is covered by SPEC-5); and surfacing lint findings in `akm health` (health checks are runtime/state-db probes — lint already has its CI gate via --fail-on-flagged).
 
 ## Specs
 
@@ -26,7 +50,7 @@ Implementation specs for the code changes the finalized stash-organization/back-
 
 **Priority:** P0 · **Sizing:** S — ~40 lines in one function plus tests; all helpers exist.
 
-**Problem.** The conventions route provenance and correction links through `xrefs:`/`supersededBy:` frontmatter, and warn that renames dangle non-wiki xrefs silently. Verified gap: BaseLinter.runBaseChecks scans only ctx.body (or the `refs:` frontmatter array when present) via checkMissingRefs (base-linter.ts:243-308, invoked at :608-620); the `xrefs:`, `supersededBy:`, and `contradictedBy:` keys are never validated for ANY asset type. Wikis get broken-xref lint (src/wiki/wiki.ts lintWiki, :919-1000) but only for intra-wiki refs. So the single channel the conventions mandate is the single channel with zero checking. Orphan and uncited-source checks for non-wiki assets are ARGUED DOWN: orphanhood is the sanctioned normal state (discretionary associative links, best-effort bidirectionality), and uncited-source is undecidable without knowing whether an asset is derived — flagging it would push agents toward fabricated provenance.
+**Problem.** The conventions route provenance and correction links through `xrefs:`/`supersededBy:` frontmatter, and warn that renames dangle non-wiki xrefs silently. Verified gap: BaseLinter.runBaseChecks scans only ctx.body (or the `refs:` frontmatter array when present) via checkMissingRefs (base-linter.ts:243-308, invoked at :608-620); the `xrefs:`, `supersededBy:`, and `contradictedBy:` keys are never validated for ANY asset type. Wikis get broken-xref lint (the ported `lintWiki` checks, now in `src/core/adapter/adapters/llm-wiki-adapter.ts` — `src/wiki/wiki.ts` no longer exists, the wiki system moved to the `llm-wiki` adapter) but only for intra-wiki refs. So the single channel the conventions mandate is the single channel with zero checking. Orphan and uncited-source checks for non-wiki assets are ARGUED DOWN: orphanhood is the sanctioned normal state (discretionary associative links, best-effort bidirectionality), and uncited-source is undecidable without knowing whether an asset is derived — flagging it would push agents toward fabricated provenance.
 
 **Convention rule served.** backlinks.md 'One xref is mandatory when the asset derives from another' + corrections/beliefState rules; organization.md 'Non-wiki inbound xrefs have no broken-link lint, so a rename dangles them silently'. Surface decision per mandate: akm lint (already the deterministic offline checker with missing-ref, CI-gated via --fail-on-flagged; health is runtime probes; the indexer must stay fail-open and non-judgmental).
 
@@ -34,11 +58,11 @@ Implementation specs for the code changes the finalized stash-organization/back-
 
 **Files.**
 - `src/commands/lint/base-linter.ts`
-- `tests/lint.test.ts`
+- `tests/core/adapter/shared-base-checks-refs.test.ts` (landed home of the old `tests/lint.test.ts` "missing-ref check" block)
 
-**Contracts & stability.** ref-resolver contract (tests/contracts/ref-resolver-contract.test.ts + akm-plugins sister copy) untouched — no resolver behavior change. LintIssueType union unchanged (reuse missing-ref; consumers keyed on issue type see no new variant). AkmLintResult shape unchanged; `ok:true` semantics preserved (findings are flagged, never errors). akm lint is not in STABILITY.md's Stable list — additive detail-string change is safe.
+**Contracts & stability.** ref-resolver contract (tests/integration/contracts/ref-resolver-contract.test.ts + akm-plugins sister copy) untouched — no resolver behavior change. LintIssueType union unchanged (reuse missing-ref; consumers keyed on issue type see no new variant). AkmLintResult shape unchanged; `ok:true` semantics preserved (findings are flagged, never errors). akm lint is not in STABILITY.md's Stable list — additive detail-string change is safe.
 
-**Test plan.** tests/lint.test.ts, extending the existing 'missing-ref check' describe block (:476): (1) memory with `xrefs: [knowledge:auth/nonexistent]` → flagged, detail contains 'frontmatter xrefs'; (2) resolvable xref → clean; (3) `refs: []` (authoritative-empty) does NOT suppress the xrefs scan; (4) dangling `supersededBy:` → flagged; (5) URL and `<placeholder>` values in xrefs skipped; (6) `lint_skip: [missing-ref]` suppresses both body and frontmatter passes; (7) xref resolvable only in an extraStashRoot → clean. Run `bun test tests/lint.test.ts` + `bun test tests/contracts/ref-resolver-contract.test.ts`.
+**Test plan.** tests/core/adapter/shared-base-checks-refs.test.ts (landed home of the old tests/lint.test.ts 'missing-ref check' describe block): (1) memory with `xrefs: [knowledge:auth/nonexistent]` → flagged, detail contains 'frontmatter xrefs'; (2) resolvable xref → clean; (3) `refs: []` (authoritative-empty) does NOT suppress the xrefs scan; (4) dangling `supersededBy:` → flagged; (5) URL and `<placeholder>` values in xrefs skipped; (6) `lint_skip: [missing-ref]` suppresses both body and frontmatter passes; (7) xref resolvable only in an extraStashRoot → clean. Run `bun test tests/core/adapter/shared-base-checks-refs.test.ts` + `bun test tests/integration/contracts/ref-resolver-contract.test.ts`.
 
 **Risks.** Existing stashes with already-dangling xrefs get newly flagged — intended, but note in CHANGELOG so --fail-on-flagged CI users aren't surprised. `sources:` deliberately excluded (non-wiki sources: was rejected by the judge; wiki sources: are checked by lintWiki's broken-source). `source_refs:`/`evidenceSources:` excluded — they legitimately point at merged-away/pruned assets (historical provenance) and would be noise.
 
@@ -54,14 +78,14 @@ Implementation specs for the code changes the finalized stash-organization/back-
 
 **Files.**
 - `src/indexer/passes/metadata.ts`
-- `tests/metadata.test.ts`
-- `tests/ranking-regression.test.ts (assert/adjust)`
+- `tests/integration/metadata.test.ts`
+- `tests/integration/ranking-regression.test.ts (assert/adjust)`
 - `src/assets/stash-skeleton/facts/conventions/organization.md (follow-up: soften footgun bullet AFTER task #5 lands)`
 - `docs/architecture/specs/stash-organization-conventions.md (strike the intake item)`
 
 **Contracts & stability.** No DB schema change (tags live in entry_json + FTS). R5 canary coordination REQUIRED: search-fields.ts:27-32 NOTE — changing tag content shifts collapse-detector recall baselines for existing canary sets; CHANGELOG must tell operators to re-mint via `akm improve canary --refresh`. Embeddings do NOT auto-regenerate on search_text change (db.ts:1561-1568 embeds only entries lacking a row) — drift is small here (duplicated name tokens) but note it.
 
-**Test plan.** tests/metadata.test.ts: (1) nested asset memories/projectA/auth-tip.md with explicit `tags: [auth]` → tags contain both 'auth' and 'projecta'; (2) root-level asset with explicit tags unchanged (pins the existing package.json-keywords assertion at :262-270, ['git','diff'] stays exact); (3) empty-tags nested asset unchanged vs today on the generateMetadata path; (4) flat-walk (generateMetadataFlat) nested asset now carries dir tokens; (5) author restating the token → deduped once. Ranking: extend tests/ranking-regression.test.ts or tests/ranking-contributor-ablation.test.ts with a scoped-memory-with-explicit-tags case asserting the tag boost fires for the path token.
+**Test plan.** tests/integration/metadata.test.ts: (1) nested asset memories/projectA/auth-tip.md with explicit `tags: [auth]` → tags contain both 'auth' and 'projecta'; (2) root-level asset with explicit tags unchanged (pins the existing package.json-keywords assertion, ['git','diff'] stays exact); (3) empty-tags nested asset unchanged vs today on the generateMetadata path; (4) flat-walk (generateMetadataFlat) nested asset now carries dir tokens; (5) author restating the token → deduped once. Ranking: extend tests/integration/ranking-regression.test.ts or tests/integration/ranking-contributor-ablation.test.ts with a scoped-memory-with-explicit-tags case asserting the tag boost fires for the path token.
 
 **Risks.** One-time index churn for every nested asset with explicit tags; canary re-mint burden on existing installs; the just-finalized convention text documents the OLD behavior ('you lose the tag-match ranking boost') — the follow-up doc edit must land in the same release or the injected fact teaches a stale model; multi-word dir segments (client-x) become two tags ('client','x'→'client' only, x dropped) — acceptable, matches existing tokenization.
 
@@ -73,26 +97,32 @@ Implementation specs for the code changes the finalized stash-organization/back-
 
 **Convention rule served.** backlinks.md provenance rule ('cite the source ref... it also makes this asset findable from searches for its source') and the ~5 cap heuristic; mechanics: xrefs frontmatter folds into FTS hints for all md types via applyWikiFrontmatter (metadata.ts:609-626, called for all non-secret .md at :1064) — verified, so no indexer change is needed.
 
-**Design.** remember: add repeatable `--xref <ref>` collected via parseAllFlagValues("--xref") (existing pattern at remember-cli.ts:130). Extend MemoryFrontmatterFields and buildMemoryFrontmatter (src/commands/remember.ts:34-117) with `xrefs?: string[]` serialized as a YAML list (serializeFrontmatter already handles arrays). Validation before any write: for each xref, split type:name, resolve via refToRelPath + refExistsInAnyStash imported from ../lint/base-linter (cross-command import precedent: improve/preparation.ts:23, contribute-cli.ts:33) against [writeTarget.source.path, ...resolveSourceEntries(stashRoot, cfg) roots] (mirror lint/index.ts:106-109); any unresolvable ref → UsageError (exit 2, {ok:false,error,code} envelope) listing the bad refs with hint 'akm search "<slug>" --type <type>'. More than 5 xrefs → stderr warn only (SOFT cap stays soft). --xref counts as structured metadata (hasStructuredArgs) but does NOT trigger the tags-required check. import: same flag on importKnowledgeCommand (src/commands/sources/stash-cli.ts:169); since imported docs may carry their own frontmatter, merge BEFORE writeMarkdownAsset: parseFrontmatter(content) → dedupe-append xrefs → assembleAsset(data, body) (src/core/asset/asset-serialize.ts:62), so write-path indexing (knowledge.ts:192 indexWrittenAssets) sees final content. Placement hint (surfaces the conventions to CLI writers, who never receive resolveStashStandards injection): when the asset lands at the type root (no --path and the final name has no '/') and resolveStashStandards(source.path) returns non-empty, add additive JSON output key `hint: "Wrote to the <type> root. This stash has placement conventions — see akm show fact:conventions/organization"` (parallel to search's existing `tip` key). No write-target branching added anywhere — frontmatter assembly happens before writeAssetToSource, honoring the src/core/write-source.ts boundary.
+**Design.** remember: add repeatable `--xref <ref>` collected via parseAllFlagValues("--xref") (existing pattern at remember-cli.ts:130). Extend MemoryFrontmatterFields and buildMemoryFrontmatter (src/commands/remember.ts:34-117) with `xrefs?: string[]` serialized as a YAML list (serializeFrontmatter already handles arrays). Validation before any write: for each xref, parse the slash conceptId (not `type:name` — that grammar is retired), resolve against [writeTarget.source.path, ...resolveSourceEntries(stashRoot, cfg) roots] (mirror lint/index.ts:106-109; landed as `parseWriteRefs`/`resolveXrefsForWrite` in `src/commands/read/knowledge.ts`, shared by remember and import rather than importing `refToRelPath`/`refExistsInAnyStash` directly into each command); any unresolvable ref → UsageError (exit 2, {ok:false,error,code} envelope) listing the bad refs with hint 'akm search "<slug>" --type <type>'. More than 5 xrefs → stderr warn only (SOFT cap stays soft). --xref counts as structured metadata (hasStructuredArgs) but does NOT trigger the tags-required check. import: same flag on importKnowledgeCommand (src/commands/sources/stash-cli.ts:169); since imported docs may carry their own frontmatter, merge BEFORE writeMarkdownAsset: parseFrontmatter(content) → dedupe-append xrefs → assembleAsset(data, body) (src/core/asset/asset-serialize.ts:62), so write-path indexing (knowledge.ts:192 indexWrittenAssets) sees final content. Placement hint (surfaces the conventions to CLI writers, who never receive resolveStashStandards injection): when the asset lands at the type root (no --path and the final name has no '/') and resolveStashStandards(source.path) returns non-empty, add additive JSON output key `hint: "Wrote to the <type> root. This stash has placement conventions — see \`akm show facts/conventions/organization\`."` (parallel to search's existing `tip` key). *(Landed spelling — `knowledge.ts` — uses the slash conceptId form, not the retired `type:name` colon grammar this paragraph's draft text used.)* No write-target branching added anywhere — frontmatter assembly happens before writeAssetToSource, honoring the src/core/write-source.ts boundary.
 
 **Files.**
 - `src/commands/read/remember-cli.ts`
 - `src/commands/remember.ts`
 - `src/commands/sources/stash-cli.ts`
 - `src/commands/read/knowledge.ts (only if the hint is computed inside writeMarkdownAsset; otherwise untouched)`
-- `tests/remember-frontmatter.test.ts`
+- `tests/integration/remember-frontmatter.test.ts`
 - `tests/remember-unit.test.ts`
 - `tests/commands/remember.test.ts`
-- `tests/commands/import.test.ts`
+- `tests/integration/commands/import.test.ts`
 - `docs/reference/cli.md`
 
-**Contracts & stability.** remember/import are Stable write commands (STABILITY.md) — new flags and a new top-level output key are additive; failure path uses the standard UsageError → exit 2 envelope. CLI-surface contract test (tests/contracts/v1-spec-section-9-4-cli-surface.test.ts) pins command NAMES only — unaffected. docs/reference/cli.md needs the flag rows.
+**Contracts & stability.** remember/import are Stable write commands (STABILITY.md) — new flags and a new top-level output key are additive; failure path uses the standard UsageError → exit 2 envelope. CLI-surface contract test (tests/contracts/v1-spec-section-9-4-cli-surface.test.ts, planned at design time) pins command NAMES only — unaffected; this contract test and the `v1-architecture-spec.md` §9.4 doc it enforced no longer exist in the current tree (see SPEC-7's Files list below). docs/reference/cli.md needs the flag rows.
 
 **Test plan.** (1) remember --xref with resolvable ref → frontmatter contains xrefs list; subsequent `akm search <source-slug>` returns the new memory (hints fold verified end-to-end); (2) unresolvable --xref → exit 2, {ok:false,error,code}, nothing written; (3) six xrefs → warn on stderr, still writes; (4) import --xref onto a doc WITH existing frontmatter → merged, no duplicate keys, body intact; (5) import --xref onto frontmatter-less doc → block added; (6) type-root write with convention facts present → hint key emitted; with --path → no hint; on a skeleton-less stash → no hint; (7) envelope tests via tests/commands/*-envelope patterns.
 
 **Risks.** Hard-fail validation on a SOFT-convention channel: justified as input validation of an explicitly passed flag (precedent: --target rejects unknown source names), not convention enforcement — an agent that wants an unchecked ref can put it in the body. The commands/read → commands/lint import is established but slightly smelly; do NOT relocate refToRelPath/refExistsInAnyStash now (the contract test and akm-plugins sister pin the base-linter path); a later core/ extraction must move both contract tests in lockstep. Hint key adds minor output noise for scripted consumers — additive key, documented.
 
 ### SPEC-4 — Real ref-prefix filter: akm search "<type>:<prefix>/" translates to typed enumeration with name-prefix narrowing
+
+> **SUPERSEDED (0.9.0).** The `<type>:` spelling is retired. Enumeration is now
+> a conceptId prefix (`akm search "memories/projecta/"`, `"bundle//skills/"`),
+> which covers every adapter's items and matches the grammar refs are emitted
+> in. See [0.9.0-decisions.md D4](./0.9.0-decisions.md#d4--browse-uses-conceptid-prefixes-not-type).
+> The text below is retained as the historical record of the original design.
 
 **Priority:** P1 · **Sizing:** M — parser is trivial; the enumerate-path refactor plus doc/consistency coordination is the bulk.
 
@@ -133,8 +163,8 @@ Implementation specs for the code changes the finalized stash-organization/back-
 - `src/commands/improve/memory/memory-belief.ts`
 - `src/commands/read/knowledge.ts (only for commit-boundary ordering if the mutation is done inside the write path)`
 - `tests/commands/remember.test.ts`
-- `tests/commands/import.test.ts`
-- `tests/belief-state-phase1a.test.ts (assert no regression)`
+- `tests/integration/commands/import.test.ts`
+- `tests/integration/belief-state-phase1a.test.ts (assert no regression)`
 
 **Contracts & stability.** Stable write commands — additive flags; new optional `superseded` JSON output key is additive. Does not touch the Experimental 'memory belief-state transitions' algorithm surface (it reuses the existing states verbatim). No write-target branching added — mutateFrontmatter edits a file in place under an already-resolved writable source.
 
@@ -155,17 +185,27 @@ Implementation specs for the code changes the finalized stash-organization/back-
 **Files.**
 - `src/indexer/passes/metadata.ts`
 - `src/indexer/search/ranking-contributors.ts`
-- `tests/ranking-contributor-ablation.test.ts`
-- `tests/fact-asset.test.ts`
-- `tests/metadata.test.ts`
+- `tests/integration/ranking-contributor-ablation.test.ts`
+- `tests/integration/search-convention-fact-demotion.test.ts` (crowding-measurement + fact `category:` index-capture test, per its own file header — a separate SPEC-6 test, not a successor to the entry above)
+- `tests/integration/metadata.test.ts`
+- `tests/fact-asset.test.ts`, named in an earlier draft of this list, no longer exists anywhere in the tree; it has no direct successor
 
 **Contracts & stability.** Search Stable surface: ordering shift only for convention facts on untyped queries — CHANGELOG note. Requires a reindex to take effect (entry_json) — note in CHANGELOG. No output-shape change. Collapse-detector canaries unaffected (FTS text unchanged — this is rank-time only).
 
 **Test plan.** (1) metadata: fact with category: convention → entry.category captured; roundtrip through coerceEntry; (2) ablation test: untyped 'auth' query over a fixture with knowledge:auth/x and fact:conventions/backlinks → knowledge ranks first; contributor absent → previous order (pins the delta); (3) exact-name query 'backlinks' still surfaces the fact top-3; (4) --type fact ordering among facts unchanged relative to each other except convention-vs-meta.
 
-**Risks.** Demotes user-authored convention facts they might genuinely search for — mitigated by exact-name and typed search; magnitude (-0.25) is a guess pending measurement — land AFTER a curate-golden measurement run (curate-golden-eval.test.ts) confirms crowding is real; if it isn't, drop this spec entirely (it is the most speculative of the intake items).
+**Risks.** Demotes user-authored convention facts they might genuinely search for — mitigated by exact-name and typed search; magnitude (-0.25) is a guess pending measurement — land AFTER a curate-golden measurement run (tests/integration/curate-golden-eval.test.ts) confirms crowding is real; if it isn't, drop this spec entirely (it is the most speculative of the intake items).
 
 ### SPEC-7 — akm mv: rename with inbound-xref rewrite and utility-history preservation
+
+> **AMENDED (0.9.0) — the command ships, classified Experimental.** Its
+> inbound-ref rewriting is implemented inverted relative to the body-ref grammar
+> (it rewrites bare conceptIds, which are not refs, and matches no `bundle//`
+> form at all), and the utility-history preservation it buys is preservation of
+> a regenerable cache whose embedding goes stale anyway. The recommended rename
+> is therefore delete plus create, and nothing on the contract depends on `mv`.
+> See [0.9.0-decisions.md D3](./0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-ships-experimental).
+> The text below is retained as the record of the original design.
 
 **Priority:** P2 · **Sizing:** L — new verb, FS+DB coordination, contract/spec/doc updates, wide test matrix.
 
@@ -175,20 +215,20 @@ Implementation specs for the code changes the finalized stash-organization/back-
 
 **Design.** New top-level verb `akm mv <ref> <new-name>` (new src/commands/mv-cli.ts registered in src/cli.ts subCommands :540-579). Scope v1 to md asset types resolvable by refToRelPath, primary writable stash only (improve/lint constraint); wiki refs rejected (wiki has its own xref+lint system); memory refs move the `.derived.md` twin together (twin coupling pinned at db.ts:384-409 — entry_key suffix relation must survive). Steps: (1) resolve old ref → absolute path (refToRelPath + existence, base-linter helpers); (2) compute new path via resolveAssetPathFromName, guard isWithin(typeRoot) + target-not-exists; (3) fs.rename (and twin); (4) inbound rewrite across the writable stash's md files (reuse collectMarkdownFiles pattern from lint/index.ts:65): replace old-ref occurrences in body AND frontmatter ref-list keys (xrefs/refs/supersededBy/contradictedBy/source_refs/currentBeliefRefs) using REF_RE-style boundary matching; rewrite inside fenced blocks too (a rename must not leave stale examples); read-only sources are scanned but NOT written — their citing files are reported as manual follow-ups; (5) index re-key in place: UPDATE entries SET entry_key/file_path/dir_path/entry_json(name)/search_text WHERE id = <old id> — preserving id keeps utility_scores, utility_scores_scoped, embeddings, and asset_salience attached; mark FTS-dirty for the row; then indexWrittenAssets for every rewritten citer; (6) JSON report {ok, from, to, rewrote:[{file,count}], readOnlyCiters:[], utilityPreserved:true}; standard error envelope + exit codes on failure; appendEvent eventType 'mv'.
 
-**Files.**
-- `src/commands/mv-cli.ts (new)`
+**Files (landed; `mv` shipped Experimental — see the amendment box above).**
+- `src/commands/mv-cli.ts`
 - `src/cli.ts`
-- `src/indexer/db/db.ts (re-key helper)`
+- `rekeyEntryInPlace` in `src/storage/repositories/index-entries-repository.ts` (re-key helper; landed here rather than in `src/indexer/db/db.ts`, which no longer exists — the DB layer moved to `src/storage/repositories/`)
 - `src/commands/lint/base-linter.ts (import-only reuse)`
-- `tests/commands/mv.test.ts (new)`
-- `docs/technical/v1-architecture-spec.md (§9.4)`
-- `tests/contracts/v1-spec-section-9-4-cli-surface.test.ts (additive command entry)`
+- `tests/commands/goldens-mv-txn.test.ts` (landed home of the e2e move/citer/twin tests this document planned as `tests/commands/mv.test.ts`; crash-recovery coverage lives alongside it in `tests/integration/mv-durable-recovery.test.ts` and `tests/integration/goldens-mv-recovery.test.ts`)
+- `docs/technical/v1-architecture-spec.md (§9.4)` — this document and its "exhaustive command surface" declaration no longer exist; `STABILITY.md` is the current authority on the command surface (see the amendment box above)
+- `tests/contracts/v1-spec-section-9-4-cli-surface.test.ts` — no longer exists; no replacement command-surface-exhaustiveness contract test was found
 - `docs/reference/cli.md`
 - `STABILITY.md (list as Experimental)`
 
-**Contracts & stability.** HEAVIEST contract footprint of the set: §9.4 declares the command surface exhaustive, so adding `mv` requires the spec doc §9.4 edit + the contract test's command list (additive — the test only asserts presence, but the doc freeze is the governance step). Ship as Experimental in STABILITY.md. ref-resolver contract untouched (read-only reuse).
+**Contracts & stability.** Historical: at design time this was expected to be the HEAVIEST contract footprint of the set, requiring a §9.4 spec-doc edit plus a contract test's command list. That governance mechanism (`docs/technical/v1-architecture-spec.md` §9.4 and its CLI-surface contract test) no longer exists in the tree; `mv` instead landed and stays classified Experimental directly in `STABILITY.md`. ref-resolver contract untouched (read-only reuse).
 
-**Test plan.** (1) e2e: move memory:projectA/old-name → memory:projectA/new-name with two citers (one body ref, one xrefs entry) → both rewritten; `akm lint` reports zero missing-ref afterward (SPEC-1 synergy); (2) utility preservation: record usage events pre-move (bumpUtilityScoresBatch path), assert post-move search still applies the utility boost to the moved asset (patterns in tests/coverage-hardening/db-utility-usage.test.ts); (3) .derived twin moves and stays belief-linked; (4) target-exists → exit 2, nothing moved; (5) read-only citer reported, not mutated; (6) fenced-block occurrence rewritten.
+**Test plan.** (1) e2e: move memory:projectA/old-name → memory:projectA/new-name with two citers (one body ref, one xrefs entry) → both rewritten; `akm lint` reports zero missing-ref afterward (SPEC-1 synergy); (2) utility preservation: record usage events pre-move (bumpUtilityScoresBatch path), assert post-move search still applies the utility boost to the moved asset (patterns in tests/integration/utility-scoring.test.ts and tests/integration/scoped-utility.test.ts — `tests/coverage-hardening/db-utility-usage.test.ts` does not exist); (3) .derived twin moves and stays belief-linked; (4) target-exists → exit 2, nothing moved; (5) read-only citer reported, not mutated; (6) fenced-block occurrence rewritten.
 
 **Risks.** Partial-failure atomicity (rename applied, rewrite interrupted) — mitigate by ordering: compute full rewrite plan first, apply file edits, rename last, re-key index last; still not transactional across FS+DB — document and make re-runnable. Graph tables key extractions by file path (graph_files) — stale until next graph pass; acceptable (graph is a derived cache). Highest-effort, lowest-frequency operation of the set — hence P2 despite high per-use value; sequence last.
 
@@ -205,10 +245,10 @@ Implementation specs for the code changes the finalized stash-organization/back-
 **Files.**
 - `src/indexer/passes/metadata.ts`
 - `src/indexer/search/search-fields.ts`
-- `src/core/config/config.ts (config key + schema)`
-- `schemas/ (config schema, via tests/contracts/config-schema-drift.test.ts expectations)`
-- `tests/metadata.test.ts`
-- `tests/fts-field-weighting.test.ts`
+- `indexBodyOpening` — schema in `src/core/config/schema/index-config.ts`, reserved-key note in `src/core/config/config.ts`
+- `schemas/ (config schema, via tests/integration/contracts/config-schema-drift.test.ts expectations)`
+- `tests/integration/metadata.test.ts`
+- `tests/integration/fts-field-weighting.test.ts`
 
 **Contracts & stability.** config-schema-drift contract test must be updated with the new key (it pins the schema). Search Stable surface: results change only when the flag is on. Canary + embedding coordination as described — the CHANGELOG entry is part of the deliverable.
 

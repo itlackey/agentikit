@@ -48,9 +48,9 @@ Multiple proposals for the same ref coexist without filesystem collisions. Auto-
 These three commands are the primary way to generate proposals.
 
 ```sh
-akm reflect [ref] [--task ...]        # reflect on an asset and propose improvements
+akm reflect [ref] [--task ...]        # reflect on an asset and propose improvements — doclint:ignore (historical — akm 0.7.0 release announcement; folded into `akm improve` later)
 akm propose <type> <name> --task "…"  # generate a new asset as a proposal
-akm distill <ref>                     # synthesize a lesson from an asset
+akm distill <ref>                     # synthesize a lesson from an asset — doclint:ignore (historical — akm 0.7.0 release announcement; folded into `akm improve` later)
 ```
 
 `reflect` and `propose` shell out to your configured agent CLI and write only to the proposal queue — they never mutate live stash content. `distill` is a bounded in-tree LLM call, gated behind `llm.features.feedback_distillation`, that produces a `lesson`-type proposal from an existing asset.
@@ -104,7 +104,7 @@ akm-bench compare results/noakm results/akm
 akm-bench attribute results/akm
 ```
 
-The technical reference is at [`docs/technical/benchmark.md`](../technical/benchmark.md).
+The technical reference for `akm-bench` now lives in the standalone [itlackey/akm-bench](https://github.com/itlackey/akm-bench) repo.
 
 ## Security hardening (PR #275)
 
@@ -144,13 +144,13 @@ akm proposal list          # queue starts empty — that's expected
 ```sh
 akm setup                                            # detects installed agent CLIs
 akm config set llm.features.feedback_distillation true
-akm distill memory:my-debugging-notes               # produces a lesson proposal
+akm distill memory:my-debugging-notes               # produces a lesson proposal — doclint:ignore (historical — akm 0.7.0 release announcement; `distill` command + ref grammar both retired later)
 akm proposal list
 akm proposal accept <id>
 ```
 
 No manual migration is required for users on 0.6.x with no `agent` or `llm.features` blocks configured. Everything new is opt-in.
 
-Full historical details are in the [pre-1.0 migration plan](../archive/pre-1.0-migration.md) and the [0.7.0 release notes](../migration/release-notes/0.7.0.md).
+Full historical details are in the [pre-1.0 migration plan](https://github.com/itlackey/akm/blob/b507e3d29b173b7e5d3a70cfa06265436cd94e50/docs/archive/pre-1.0-migration.md) (pinned to its last commit before the doc was retired) and the [0.7.0 release notes](https://github.com/itlackey/akm/blob/main/docs/migration/release-notes/0.7.0.md).
 
 Full changelog at [CHANGELOG.md](https://github.com/itlackey/akm/blob/main/.github/CHANGELOG.md).

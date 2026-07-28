@@ -190,6 +190,25 @@ describe("env run", () => {
     expect(status).toBe(0);
     expect(stdout.trim()).toBe("foo|sentinel");
   });
+
+  // R-067 regression: `runEnvInjected` (src/commands/env/env-cli.ts) used to
+  // `process.exit(result.status ?? 0)` unconditionally after the child ran —
+  // including on success — which skips the `finally { await
+  // disposeDispatchResources(); }` cleanup in src/cli.ts's `runCommand`. The
+  // fix (`process.exitCode = result.status ?? 0; return;`) must still
+  // propagate the child's exact exit status, non-zero included. Assert that
+  // invariant end-to-end through a real subprocess.
+  test("propagates a non-zero child exit code", () => {
+    const stashDir = makeStash();
+    fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
+    fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "FOO=foo\n", "utf8");
+
+    const { status } = spawnCli(["env", "run", "env/prod", "--", "/bin/sh", "-c", "exit 3"], {
+      AKM_STASH_DIR: stashDir,
+    });
+
+    expect(status).toBe(3);
+  });
 });
 
 describe("secret run", () => {
@@ -215,5 +234,22 @@ describe("secret run", () => {
 
     expect(status).toBe(0);
     expect(stdout.trim()).toBe("sekret|");
+  });
+
+  // R-067 regression: `secretRunCommand`'s `run` (src/commands/env/secret-cli.ts)
+  // used to `process.exit(result.status ?? 0)` unconditionally, skipping
+  // src/cli.ts's `finally { await disposeDispatchResources(); }`. The fix
+  // (`process.exitCode = result.status ?? 0; return;`) must still propagate
+  // the child's exact exit status, non-zero included.
+  test("propagates a non-zero child exit code", () => {
+    const stashDir = makeStash();
+    fs.mkdirSync(path.join(stashDir, "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(stashDir, "secrets", "token"), "sekret", "utf8");
+
+    const { status } = spawnCli(["secret", "run", "secrets/token", "API_TOKEN", "--", "/bin/sh", "-c", "exit 3"], {
+      AKM_STASH_DIR: stashDir,
+    });
+
+    expect(status).toBe(3);
   });
 });

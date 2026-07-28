@@ -30,13 +30,14 @@ import path from "node:path";
 import { defineCommand } from "citty";
 import * as p from "../../cli/clack";
 import { getParsedInvocation } from "../../cli/invocation";
-import { defineJsonCommand, output, parseAllFlagValues, runWithJsonErrors } from "../../cli/shared";
+import { defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, parseAllFlagValues, runWithJsonErrors } from "../../cli/shared";
 import { assertFlatAssetName } from "../../core/asset/asset-create";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { isHttpUrl, resolveStashDir } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
+import { resolveBundleWriteTarget } from "../../core/mutation-target";
 import { getCacheDir } from "../../core/paths";
 import { clearLogFile, info, isVerbose, setLogFile } from "../../core/warn";
 import { resolveWriteTarget } from "../../core/write-source";
@@ -57,24 +58,20 @@ import { akmInit } from "./init";
 export const initCommand = defineJsonCommand({
   meta: {
     name: "init",
-    description: "Initialize akm's working stash directory and persist stashDir in config",
+    description: "Initialize akm's working stash directory and persist its bundle in config",
   },
   args: {
     dir: { type: "string", description: "Custom stash directory path (default: ~/akm)" },
     "set-default": {
       type: "boolean",
       description:
-        "Make --dir the default stash (write stashDir to config.json). Without this, `akm init --dir X` scaffolds X but leaves your existing default stash unchanged.",
+        "Make --dir the default bundle. Without this, `akm init --dir X` scaffolds X but leaves your existing default bundle unchanged.",
       default: false,
     },
   },
   async run({ args }) {
-    // Accept both historical spellings for backwards compatibility with
-    // older docs/scripts that used `--stashDir`.
-    const invocation = getParsedInvocation();
-    const legacyDir = invocation.getFlagValue("--stashDir") ?? invocation.getFlagValue("--stash-dir");
     const result = await akmInit({
-      dir: args.dir ?? legacyDir,
+      dir: args.dir,
       setDefault: args["set-default"],
     });
     output("init", result);
@@ -84,6 +81,12 @@ export const initCommand = defineJsonCommand({
 export const indexCommand = defineCommand({
   meta: { name: "index", description: "Build search index (incremental by default; --full forces full reindex)" },
   args: {
+    // R-051: `index` is a raw `defineCommand` (not `defineJsonCommand`), so it
+    // does not get `GLOBAL_OUTPUT_ARGS` for free. `--format`/`--detail`/
+    // `--shape`/`--output` already parsed correctly here (this command has no
+    // extra positional for a stray value to fall into), so this is purely a
+    // `--help` visibility / consistency fix, not a behavior change.
+    ...GLOBAL_OUTPUT_ARGS,
     full: { type: "boolean", description: "Force full reindex", default: false },
     clean: {
       type: "boolean",
@@ -97,7 +100,17 @@ export const indexCommand = defineCommand({
     },
     background: {
       type: "boolean",
-      description: "Run as a background process (suppresses interactive output, manages PID file).",
+      // R-023: the previous wording ("Run as a background process ... manages
+      // PID file") described a feature that was never implemented — this flag
+      // does not fork, detach, or return control to the shell early, and there
+      // is no PID file anywhere in its code path. It runs in the FOREGROUND
+      // exactly like a plain `akm index` and only changes two things: no
+      // spinner, and (unlike the global `--quiet`) the final JSON result is
+      // suppressed too. Kept as a headless/cron-invocation quiet mode.
+      description:
+        "Quiet mode for headless/unattended invocation (e.g. cron): suppresses the progress spinner and " +
+        "the final result output. Still runs in the foreground and blocks until indexing finishes — it does " +
+        "NOT fork a detached background process and does NOT manage a PID file.",
       default: false,
     },
   },
@@ -113,6 +126,10 @@ export const indexCommand = defineCommand({
           "`akm index --re-enrich` has been removed. Re-enrichment of index-time LLM passes is not exposed in this slice.",
         );
       }
+      // Quiet mode only (see the flag's description above) — NOT a real
+      // background/detached process. Named `isBackground` to match the
+      // `--background` flag it reads; do not read the name as a promise of
+      // actual backgrounding.
       const isBackground = args.background === true;
       const outputMode = getOutputMode();
       const controller = new AbortController();
@@ -216,12 +233,12 @@ export const importKnowledgeCommand = defineJsonCommand({
     xref: {
       type: "string",
       description:
-        "Cross-reference ref merged into the document's `xrefs:` frontmatter (repeatable: --xref knowledge:auth-flow). Existing frontmatter is preserved (dedupe-append, never a nested block); a document whose frontmatter is not parseable YAML aborts the import rather than being rewritten lossily. Each ref must resolve in the write target or a configured source; an unresolvable ref aborts the import.",
+        "Cross-reference ref merged into the document's `xrefs:` frontmatter (repeatable: --xref knowledge/auth-flow). Existing frontmatter is preserved (dedupe-append, never a nested block); a document whose frontmatter is not parseable YAML aborts the import rather than being rewritten lossily. Each ref must resolve in the write target or a configured source; an unresolvable ref aborts the import.",
     },
     supersedes: {
       type: "string",
       description:
-        "Ref of an existing asset this document corrects (repeatable: --supersedes knowledge:legacy-guide). Imports the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the import; a ref outside the write target and working stash still imports the correction but skips the demotion (reported as applied: false).",
+        "Ref of an existing asset this document corrects (repeatable: --supersedes knowledge/legacy-guide). Imports the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the import; a ref outside the write target and working stash still imports the correction but skips the demotion (reported as applied: false).",
     },
   },
   async run({ args }) {
@@ -243,7 +260,19 @@ export const importKnowledgeCommand = defineJsonCommand({
     for (const s of supersedes) {
       if (!xrefs.includes(s.ref)) xrefs.push(s.ref);
     }
-    const stashDir = resolveWriteTarget(loadConfig(), writeTarget).source.path;
+    const config = loadConfig();
+    const stashDir = (() => {
+      try {
+        return resolveWriteTarget(config, writeTarget).source.path;
+      } catch (error) {
+        if (!writeTarget) throw error;
+        try {
+          return resolveBundleWriteTarget(config, writeTarget).source.path;
+        } catch {
+          throw error;
+        }
+      }
+    })();
     const { content, preferredName } = await readKnowledgeInput(args.source, { stashDir });
     // Imported docs may carry their own frontmatter: merge (dedupe-append)
     // BEFORE the write so write-path indexing sees the final content and no

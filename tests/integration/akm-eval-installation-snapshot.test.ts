@@ -749,17 +749,35 @@ describePosix("akm-eval installation snapshots", () => {
     const fixture = createFixture(sandbox.dir);
     const target = path.join(fixture.bundleRoots.personal ?? "", "memories", "preference.md");
     const destination = path.join(sandbox.dir, "snapshot");
+    // The mutator writes until it is killed in `finally`, rather than for a
+    // fixed 1000ms window. With a fixed window plus a fixed 20ms head start,
+    // a loaded runner could spawn the process too slowly for any write to
+    // land before `capture()` (no mutation to detect → no throw → spurious
+    // failure), or slowly enough that the window had already closed. Running
+    // until killed removes the second race; polling for the first observed
+    // write below removes the first.
     const mutator = Bun.spawn({
       cmd: [
         process.execPath,
         "-e",
-        `import fs from "node:fs"; const target=${JSON.stringify(target)}; const end=Date.now()+1000; let i=0; while(Date.now()<end){ fs.writeFileSync(target, String(i++)); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1); }`,
+        `import fs from "node:fs"; const target=${JSON.stringify(target)}; let i=0; while(true){ fs.writeFileSync(target, String(i++)); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1); }`,
       ],
       stdout: "ignore",
       stderr: "ignore",
     });
     try {
-      await Bun.sleep(20);
+      // Wait for proof the mutator is actually writing before capturing, so
+      // the assertion tests mutation detection rather than spawn latency.
+      const deadline = Date.now() + 10_000;
+      let mutatorLive = false;
+      while (Date.now() < deadline) {
+        if (/^\d+$/.test(fs.readFileSync(target, "utf8").trim())) {
+          mutatorLive = true;
+          break;
+        }
+        await Bun.sleep(5);
+      }
+      expect(mutatorLive).toBe(true);
       expect(() => capture(fixture, destination)).toThrow(/source file changed|bundle source file changed/);
       expect(fs.existsSync(destination)).toBe(false);
     } finally {

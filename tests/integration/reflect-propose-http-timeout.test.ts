@@ -49,6 +49,7 @@ test("reflect forwards a 1ms normalized timeout to the direct HTTP transport", a
     connection: { endpoint: `http://localhost:${server.port}`, model: "test-model" },
     timeoutMs: 1,
     iteration: 0,
+    outputMode: "json_schema",
   });
 
   expect(result.ok).toBe(false);
@@ -56,16 +57,25 @@ test("reflect forwards a 1ms normalized timeout to the direct HTTP transport", a
 });
 
 test("reflect explicit null disables the direct HTTP timer", async () => {
-  const server = delayedServer("delayed-reflect", 20);
+  const server = delayedServer(
+    JSON.stringify({
+      ref: "lessons/delayed-reflect",
+      content: "Delayed reflect content.",
+      confidence: 0.9,
+      frontmatterPatch: { description: null, when_to_use: null },
+    }),
+    20,
+  );
   const result = await runReflectViaLlm({
     prompt: "reflect",
     connection: { endpoint: `http://localhost:${server.port}`, model: "test-model", timeoutMs: 1 },
     timeoutMs: null,
     iteration: 0,
+    outputMode: "json_schema",
   });
 
   expect(result.ok).toBe(true);
-  expect(result.stdout).toBe("delayed-reflect");
+  expect(JSON.parse(result.stdout).ref).toBe("lessons/delayed-reflect");
 });
 
 test("propose forwards a 1ms call override instead of the engine timeout", async () => {

@@ -47,6 +47,7 @@ import { z } from "zod";
 import { BUILTIN_IMPROVE_STRATEGY_NAMES, IMPROVE_PROCESS_ENGINE_CAPABILITIES } from "./engine-semantics";
 import { EmbeddingConnectionConfigSchema } from "./schema/embedding";
 import { EnginesSchema } from "./schema/engines";
+import { ExperimentalConfigSchema } from "./schema/experimental";
 import { FeedbackConfigSchema } from "./schema/feedback";
 import { ImproveConfigSchema } from "./schema/improve";
 import { IndexConfigSchema } from "./schema/index-config";
@@ -67,6 +68,7 @@ import { WorkflowConfigSchema } from "./schema/workflow";
 
 export { EmbeddingConnectionConfigSchema } from "./schema/embedding";
 export { EngineConfigSchema, EnginesSchema, LlmConnectionConfigSchema, LlmProfileConfigSchema } from "./schema/engines";
+export { ExperimentalConfigSchema } from "./schema/experimental";
 export { FEEDBACK_FAILURE_MODES, FeedbackConfigSchema, type FeedbackFailureMode } from "./schema/feedback";
 export { ImproveConfigSchema } from "./schema/improve";
 export {
@@ -86,11 +88,10 @@ export { IndexConfigSchema, IndexPassConfigSchema } from "./schema/index-config"
 export { OutputConfigSchema } from "./schema/output";
 export { CURRENT_CONFIG_VERSION, LlmInvocationOverridesSchema } from "./schema/primitives";
 export { SearchConfigSchema } from "./schema/search";
-export { SetupConfigSchema, SetupTaskSchedulesSchema } from "./schema/setup";
+export { SetupConfigSchema } from "./schema/setup";
 export {
   BundleConfigEntrySchema,
   BundlesConfigSchema,
-  InstalledStashEntrySchema,
   RegistryConfigEntrySchema,
   SourceConfigEntrySchema,
 } from "./schema/sources-bundles";
@@ -131,7 +132,7 @@ export const AkmConfigShape = {
   // custom profile's name for the default builder) — unknown keys are inert.
   // Precedence: profile modelAliases > this table > built-in aliases.
   modelAliases: GlobalModelAliasesSchema.optional(),
-  semanticSearchMode: z.enum(["off", "auto"]).default("auto"),
+  semanticSearchMode: z.enum(["off", "auto"]).default("off"),
   embedding: EmbeddingConnectionConfigSchema.optional(),
   index: IndexConfigSchema.optional(),
   registries: z.array(RegistryConfigEntrySchema).optional(),
@@ -140,13 +141,10 @@ export const AkmConfigShape = {
   // trio is hard-rejected at load (see the top-level superRefine). The migrator
   // ({@link migrateConfigSourcesToBundles}) converts a pre-cutover config to this
   // shape before validation. `defaultBundle` names the primary bundle (spec
-  // §11.1 short-ref resolution / D-R4). `SourceConfigEntrySchema` /
-  // `InstalledStashEntrySchema` remain EXPORTED (the migrator + transitional
-  // readers consume them) but are no longer top-level config fields.
+  // §11.1 short-ref resolution / D-R4).
   bundles: BundlesConfigSchema.optional(),
   defaultBundle: nonEmptyString.optional(),
   output: OutputConfigSchema.optional(),
-  writable: z.boolean().optional(),
   defaultWriteTarget: nonEmptyString.optional(),
   search: SearchConfigSchema.optional(),
   feedback: FeedbackConfigSchema.optional(),
@@ -154,6 +152,9 @@ export const AkmConfigShape = {
   improve: ImproveConfigSchema.optional(),
   workflow: WorkflowConfigSchema.optional(),
   setup: SetupConfigSchema.optional(),
+  // D8 — explicit opt-ins for behaviour outside the stability contract. Every
+  // key defaults to OFF; see `src/core/config/experimental.ts` for the readers.
+  experimental: ExperimentalConfigSchema.optional(),
 } as const;
 
 export const AkmConfigBaseSchema = z.object(AkmConfigShape).passthrough();
@@ -190,9 +191,16 @@ export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => 
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: [key],
-        message: `${key} is the retired pre-cutover source shape; run \`akm migrate apply\` to convert it to bundles`,
+        message: `${key} is the retired pre-cutover source shape; run \`akm-migrate apply\` to convert it to bundles`,
       });
     }
+  }
+  if ("writable" in raw) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["writable"],
+      message: "top-level writable is not supported; configure bundles.<id>.writable instead",
+    });
   }
   // `defaultBundle`, when present, must name a configured bundle.
   if (config.defaultBundle !== undefined) {

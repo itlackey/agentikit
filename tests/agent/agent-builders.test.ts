@@ -7,7 +7,7 @@
  * Coverage follows v1 spec §12.2 and §12.3.
  */
 import { describe, expect, test } from "bun:test";
-import type { AgentCommandBuilder, AgentDispatchRequest } from "../../src/integrations/agent/builders";
+import type { AgentCommandBuilder, AgentDispatchRequest } from "../../src/integrations/agent/builder-shared";
 import type { AgentProfile } from "../../src/integrations/agent/profiles";
 
 // NOTE: this file previously carried a full 13-export mock.module fake of
@@ -377,10 +377,9 @@ describe("builders — argument injection guards", () => {
     expect(argv[sepIdx + 1]).toBe("do work");
   });
 
-  test("unknown platforms cannot synthesize a generic argv", async () => {
-    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
-    expect(() => getCommandBuilder("unknown-platform")).toThrow(/no registered command builder/);
-  });
+  // "unknown platforms cannot synthesize a generic argv" (D10) removed:
+  // identical call and assertion as the "getCommandBuilder — platform
+  // routing" describe block's `getCommandBuilder("unknown")` test at :284-287.
 
   test("opencodeBuilder: throws UsageError when model starts with '--'", async () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
@@ -416,10 +415,10 @@ describe("builders — argument injection guards", () => {
     );
   });
 
-  test("unknown platforms fail before accepting model flags", async () => {
-    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
-    expect(() => getCommandBuilder("unknown-platform")).toThrow(/no registered command builder/);
-  });
+  // "unknown platforms fail before accepting model flags" (D10) removed:
+  // identical call and assertion as :284-287, and mis-titled — neither this
+  // nor the removed :380-383 test asserted anything about argv or model
+  // flags despite their names.
 
   test("valid model and systemPrompt values do not throw", async () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");

@@ -136,7 +136,7 @@ describe("akmTasksSync — schedule drift", () => {
     expect(exec.current()).toContain("tasks run alpha");
   });
 
-  test("installs an unchanged 0.8 task definition after upgrade", async () => {
+  test("skips an unversioned task without installing it", async () => {
     const exec = memoryExec();
     const backend = backendFor(exec);
     fs.writeFileSync(
@@ -146,13 +146,13 @@ describe("akmTasksSync — schedule drift", () => {
     );
 
     const result = await akmTasksSync({ backend });
-    expect(result.skipped).toEqual([]);
-    expect(result.installed).toEqual(["legacy"]);
-    expect(exec.current()).toContain("/usr/local/bin/akm --scheduler-context");
-    expect(exec.current()).toContain("tasks run legacy");
+    expect(result.installed).toEqual([]);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]?.reason).toContain("TASK_SCHEMA_VERSION_UNSUPPORTED");
+    expect(exec.current()).toBe("");
   });
 
-  test("preserves a persisted legacy invocation until explicit rebind", async () => {
+  test("rejects a persisted scheduler invocation without a context descriptor", async () => {
     const exec = memoryExec(
       [
         "# akm:task alpha BEGIN",
@@ -164,10 +164,7 @@ describe("akmTasksSync — schedule drift", () => {
     const backend = backendFor(exec);
     writeTask("alpha", "*/15 * * * *", false);
 
-    const result = await akmTasksSync({ backend });
-
-    expect(result.updated).toEqual([]);
-    expect(result.skipped[0]?.reason).toContain("tasks sync --rebind");
+    await expect(akmTasksSync({ backend })).rejects.toThrow("does not contain a current AKM scheduler invocation");
     expect(exec.current()).toContain("/usr/local/bin/akm tasks run alpha");
   });
 

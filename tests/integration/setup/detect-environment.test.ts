@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-
+import { createMigrationBackup } from "../../../scripts/akm-migrate/migration-backup";
 import { resetGraphBoostCache } from "../../../src/indexer/graph/graph-boost";
 import { clearEmbeddingCache, resetLocalEmbedder } from "../../../src/llm/embedder";
 import {
@@ -341,7 +341,11 @@ describe("akm setup --reset-recommended", () => {
       GROQ_API_KEY: undefined,
       AKM_LLM_API_KEY: undefined,
     };
-    expect((await runCli(["backup", "create", "--for", "0.9.0", "--format", "json"], setupEnv)).status).toBe(0);
+    // `akm backup` was removed in 0.9.0 (R-029); create the recovery bundle
+    // via the akm-migrate library entry under the same env.
+    await withEnv(setupEnv, async () => {
+      expect(createMigrationBackup().path).toBeTruthy();
+    });
     // Seed a config with a custom registry entry that must survive the merge.
     fs.writeFileSync(
       configPath,
@@ -424,7 +428,11 @@ describe("akm setup --reset-recommended", () => {
       GROQ_API_KEY: undefined,
       AKM_LLM_API_KEY: undefined,
     };
-    expect((await runCli(["backup", "create", "--for", "0.9.0", "--format", "json"], setupEnv)).status).toBe(0);
+    // `akm backup` was removed in 0.9.0 (R-029); create the recovery bundle
+    // via the akm-migrate library entry under the same env.
+    await withEnv(setupEnv, async () => {
+      expect(createMigrationBackup().path).toBeTruthy();
+    });
     fs.writeFileSync(
       configPath,
       JSON.stringify(

@@ -1,15 +1,22 @@
 /**
- * `akm env path` / `env export` / `env run` CLI behavior — in-process only.
+ * `akm env path` / `env export` / `env run` CLI behavior — in-process only,
+ * with ONE exception.
  *
- * All tests here run through the in-process `runCliCapture` harness: pure
+ * Most tests here run through the in-process `runCliCapture` harness: pure
  * path/export resolution plus `env run` error paths that fail BEFORE any
  * child process is spawned. The `env run` / `secret run` happy paths that
  * actually spawn a target command (whose fd-inherited stdout is the
  * contract) live in tests/integration/env-run.test.ts — only a real process
  * boundary can observe the child's output.
+ *
+ * Exception: the "format-exempt" warning test below needs a real subprocess.
+ * That warning is emitted by `src/cli.ts`'s startup block (`isFormatExemptCommand`),
+ * which `runCliCapture` (tests/_helpers/cli.ts) deliberately does not
+ * replicate — see that harness's own module doc.
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resetGraphBoostCache } from "../../src/indexer/graph/graph-boost";
@@ -87,6 +94,37 @@ describe("env path", () => {
     // The path is on stdout uncontaminated; the warning steers to `env run`.
     expect(stderr).toContain("akm env run");
   });
+
+  // B3/B4 (W1-F): a first attempt at this fix routed `env path` through
+  // `output()` so `--format` "worked" — but the CLI's default format is
+  // `json`, so a bare `akm env path <ref>` (exactly how `$(akm env path
+  // foo)` is always written) started emitting `{"path":"..."}` instead of
+  // the raw path, silently breaking every existing shell substitution. The
+  // correct fix is declaring `env path` format-exempt
+  // (src/output/format-exempt.ts) like `env run`/`secret run`/`hints`: the
+  // bare path IS the payload, so `--format` cannot do anything useful to it.
+  // This pins the exempt contract from STABILITY.md: passing `--format`
+  // warns on stderr, but stdout — the thing a script actually captures via
+  // `$(...)` — is untouched. NOTE: `runCliCapture` (tests/_helpers/cli.ts)
+  // does not run `src/cli.ts`'s startup block, where the exempt-format
+  // warning is emitted (`isFormatExemptCommand`) — so this needs a real
+  // subprocess, unlike the rest of this file.
+  test("--format json warns on stderr but stdout stays the bare path (format-exempt)", () => {
+    const stashDir = makeStash();
+    fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
+    const envPath = path.join(stashDir, "env", "myenv.env");
+    fs.writeFileSync(envPath, "FOO=bar\n", "utf8");
+
+    const result = spawnSync(
+      "bun",
+      [path.join(import.meta.dir, "..", "..", "src", "cli.ts"), "env", "path", "env/myenv", "--format", "json"],
+      { encoding: "utf8", env: { ...process.env, AKM_STASH_DIR: stashDir, AKM_CONFIG_DIR: undefined } },
+    );
+
+    expect(result.status).toBe(0);
+    expect((result.stdout ?? "").trim()).toBe(envPath);
+    expect(result.stderr ?? "").toContain("'--format' has no effect on 'akm env'");
+  });
 });
 
 describe("env export", () => {
@@ -156,23 +194,5 @@ describe("env run", () => {
 
     expect(status).toBe(2);
     expect(stderr).toContain("only one of --only or --except");
-  });
-});
-
-describe("vault run (removed in 0.9.0)", () => {
-  test("the `akm vault` verb no longer exists", async () => {
-    const stashDir = makeStash();
-    fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
-    fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "FOO=bar\nBAR=baz\n", "utf8");
-
-    const { status } = await runCli(
-      ["vault", "run", "vault:prod", "--", "bash", "-lc", 'printf \'%s %s\' "$FOO" "$BAR"'],
-      {
-        AKM_STASH_DIR: stashDir,
-      },
-    );
-
-    // citty exits non-zero for an unknown top-level command.
-    expect(status).not.toBe(0);
   });
 });

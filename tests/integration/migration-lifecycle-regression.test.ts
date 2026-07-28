@@ -7,15 +7,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { main, shouldBypassConfigStartup } from "../../src/cli";
 import {
   _setApplyPreflightHookForTests,
   _setMigrationSnapshotHookForTests,
+  inspectMigrationPlan,
   type MigrationPlan,
-} from "../../src/cli/config-migrate";
-import { MAX_CONFIG_FILE_BYTES } from "../../src/core/common";
-import { loadUserConfig, mutateConfig, saveConfig } from "../../src/core/config/config";
-import { acquireMaintenanceActivity } from "../../src/core/maintenance-barrier";
+  runMigrationApply,
+} from "../../scripts/akm-migrate/config-migrate";
+import { getLegacyWorkflowDbPath } from "../../scripts/akm-migrate/migrate/legacy/legacy-paths";
+import { FROZEN_WORKFLOW_MIGRATIONS } from "../../scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies";
 import {
   _setRestoreRollbackBoundaryHookForTests,
   createMigrationBackup,
@@ -26,13 +26,15 @@ import {
   inspectMigrationState,
   restoreMigrationBackup,
   verifyMigrationBackup,
-} from "../../src/core/migration-backup";
+} from "../../scripts/akm-migrate/migration-backup";
+import { main, shouldBypassConfigStartup } from "../../src/cli";
+import { MAX_CONFIG_FILE_BYTES } from "../../src/core/common";
+import { loadUserConfig, mutateConfig, saveConfig } from "../../src/core/config/config";
+import { acquireMaintenanceActivity } from "../../src/core/maintenance-barrier";
 import { _setAfterPendingOperationCheckHookForTests } from "../../src/core/migration-operation";
 import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { runMigrations as runStateMigrations, STATE_MIGRATIONS } from "../../src/core/state/migrations";
 import { openStateDatabase } from "../../src/core/state-db";
-import { getLegacyWorkflowDbPath } from "../../src/migrate/legacy/legacy-paths";
-import { FROZEN_WORKFLOW_MIGRATIONS } from "../../src/migrate/legacy/workflow-migrations-bodies";
 import { openDatabaseFinalizing } from "../../src/storage/database";
 import { runMigrations as runSqliteMigrations } from "../../src/storage/engines/sqlite-migrations";
 import { runCliCapture } from "../_helpers/cli";
@@ -302,7 +304,7 @@ function writeApplyJournalForTest(
   fs.writeFileSync(
     journalPath,
     `${JSON.stringify({
-      formatVersion: 2,
+      formatVersion: 4,
       version: "0.9.0",
       operationId: "apply-test-operation",
       installationId: path.basename(getMigrationBackupRoot()),
@@ -310,6 +312,8 @@ function writeApplyJournalForTest(
       backupPath: backup.path,
       phase: "prepared",
       targetConfig: { configVersion: "0.9.0", semanticSearchMode: "off" },
+      migrationLockEntries: [],
+      pathResolutionBase: path.resolve(process.cwd()),
       generation: fingerprintMigrationGeneration(),
       ...overrides,
     })}\n`,
@@ -318,7 +322,7 @@ function writeApplyJournalForTest(
   return journalPath;
 }
 
-function seedOlderRcApplyJournal(
+function seedInterruptedApplyJournal(
   phase: "state-applied" | "workflow-applied",
   options?: { failingCutover?: boolean },
 ): {
@@ -326,7 +330,7 @@ function seedOlderRcApplyJournal(
   operationId: string;
 } {
   writeConfig("0.8.0");
-  seedPreCutoverState("older-rc-state");
+  seedPreCutoverState("interrupted-state");
   seedPreCutoverWorkflow();
   const backup = createMigrationBackup();
 
@@ -358,7 +362,7 @@ function seedOlderRcApplyJournal(
   // before deciding whether that generation can be rewound safely.
   fs.rmSync(`${getStateDbPathInDataDir()}-wal`, { force: true });
   fs.rmSync(`${getStateDbPathInDataDir()}-shm`, { force: true });
-  const operationId = `older-rc-${phase}`;
+  const operationId = `interrupted-${phase}`;
   const journalPath = writeApplyJournalForTest(backup, {
     operationId,
     phase,
@@ -368,7 +372,7 @@ function seedOlderRcApplyJournal(
   return { journalPath, operationId };
 }
 
-const OLDER_RC_FORWARD_PHASES = [
+const INTERRUPTED_FORWARD_PHASES = [
   "cutover-applied",
   "config-applied",
   "tasks-prepared",
@@ -378,17 +382,17 @@ const OLDER_RC_FORWARD_PHASES = [
   "committed",
 ] as const;
 
-type OlderRcForwardPhase = (typeof OLDER_RC_FORWARD_PHASES)[number];
+type InterruptedForwardPhase = (typeof INTERRUPTED_FORWARD_PHASES)[number];
 
-function seedOlderRcForwardJournal(
-  phase: OlderRcForwardPhase,
+function seedInterruptedForwardJournal(
+  phase: InterruptedForwardPhase,
   nonexact: boolean,
 ): { backupPath: string; guard: Database; journalPath: string; operationId: string } {
   writeConfig("0.8.0");
-  seedPreCutoverState("older-rc-forward");
+  seedPreCutoverState("interrupted-forward");
   seedPreCutoverWorkflow();
   const backup = createMigrationBackup();
-  const operationId = `older-rc-${phase}-${nonexact ? "nonexact" : "exact"}`;
+  const operationId = `interrupted-${phase}-${nonexact ? "nonexact" : "exact"}`;
   const statePath = getStateDbPathInDataDir();
   const state = openDatabaseFinalizing(statePath);
   runStateMigrations(state);
@@ -865,7 +869,7 @@ describe("migration lifecycle regressions", () => {
 
   for (const phase of ["state-applied", "workflow-applied"] as const) {
     test(`${phase} apply preflight preserves committed workflow WAL without a source SHM`, async () => {
-      const { journalPath } = seedOlderRcApplyJournal(phase);
+      const { journalPath } = seedInterruptedApplyJournal(phase);
       if (phase === "state-applied") {
         const workflow = openDatabaseFinalizing(getLegacyWorkflowDbPath());
         try {
@@ -916,7 +920,7 @@ describe("migration lifecycle regressions", () => {
     }, 20_000);
 
     test(`${phase} apply preflight fails closed on a generation changed after journal authentication`, async () => {
-      const { journalPath } = seedOlderRcApplyJournal(phase);
+      const { journalPath } = seedInterruptedApplyJournal(phase);
       const changedPath = phase === "state-applied" ? getLegacyWorkflowDbPath() : getStateDbPathInDataDir();
       let hookCalls = 0;
       overrideSeam(_setApplyPreflightHookForTests, (actualPhase) => {
@@ -932,9 +936,14 @@ describe("migration lifecycle regressions", () => {
         }
       });
 
-      const resumed = await runCliCapture(["migrate", "apply"]);
-      expect(resumed.code).not.toBe(0);
-      expect(resumed.stderr).toMatch(/forward recovery.*changed before its next mutation/i);
+      let error: unknown;
+      try {
+        await runMigrationApply();
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeDefined();
+      expect(String(error)).toMatch(/forward recovery.*changed before its next mutation/i);
       expect(hookCalls).toBe(1);
       expect(fs.existsSync(journalPath)).toBe(true);
       const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as {
@@ -959,7 +968,7 @@ describe("migration lifecycle regressions", () => {
 
   for (const phase of ["state-applied", "workflow-applied"] as const) {
     test(`${phase} apply preserves a source changed during snapshot construction`, async () => {
-      const { journalPath } = seedOlderRcApplyJournal(phase);
+      const { journalPath } = seedInterruptedApplyJournal(phase);
       const changedPath = phase === "state-applied" ? getLegacyWorkflowDbPath() : getStateDbPathInDataDir();
       let hookCalls = 0;
       overrideSeam(_setMigrationSnapshotHookForTests, ({ sourcePath, applyPhase }) => {
@@ -975,10 +984,15 @@ describe("migration lifecycle regressions", () => {
         }
       });
 
-      const resumed = await runCliCapture(["migrate", "apply"]);
-      expect(resumed.code).not.toBe(0);
-      expect(resumed.stderr).toMatch(/forward recovery.*changed while creating a private status snapshot/i);
-      expect(resumed.stderr).not.toMatch(/restored from|rollback/i);
+      let error: unknown;
+      try {
+        await runMigrationApply();
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeDefined();
+      expect(String(error)).toMatch(/forward recovery.*changed while creating a private status snapshot/i);
+      expect(String(error)).not.toMatch(/restored from|rollback/i);
       expect(hookCalls).toBe(1);
       expect(fs.existsSync(journalPath)).toBe(true);
       const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as {
@@ -1002,7 +1016,7 @@ describe("migration lifecycle regressions", () => {
   }
 
   test("migrate status reports a source changed during snapshot construction", async () => {
-    const { journalPath } = seedOlderRcApplyJournal("state-applied");
+    const { journalPath } = seedInterruptedApplyJournal("state-applied");
     const changedPath = getLegacyWorkflowDbPath();
     const journalBefore = JSON.parse(fs.readFileSync(journalPath, "utf8")) as { backupPath: string };
     let hookCalls = 0;
@@ -1019,9 +1033,9 @@ describe("migration lifecycle regressions", () => {
       }
     });
 
-    const status = await runCliCapture(["migrate", "status"]);
-    expect(status.code).not.toBe(0);
-    expect(status.stdout).toMatch(/changed while creating a private status snapshot/i);
+    const status = inspectMigrationPlan();
+    expect(status.status).toBe("blocked");
+    expect(status.blockers.join("\n")).toMatch(/changed while creating a private status snapshot/i);
     expect(hookCalls).toBe(1);
     expect(fs.existsSync(journalPath)).toBe(true);
     expect(fs.existsSync(journalBefore.backupPath)).toBe(true);
@@ -1034,8 +1048,8 @@ describe("migration lifecycle regressions", () => {
   });
 
   for (const phase of ["state-applied", "workflow-applied"] as const) {
-    test(`resumes an exact older-RC ${phase} journal through durable state conversion`, async () => {
-      const { journalPath, operationId } = seedOlderRcApplyJournal(phase);
+    test(`resumes an exact interrupted ${phase} journal through durable state conversion`, async () => {
+      const { journalPath, operationId } = seedInterruptedApplyJournal(phase);
       const generationBeforeStatus = fingerprintMigrationGeneration();
       const journalBeforeStatus = fs.readFileSync(journalPath);
 
@@ -1072,8 +1086,8 @@ describe("migration lifecycle regressions", () => {
       }
     });
 
-    test(`fails closed on a nonexact older-RC ${phase} journal before opening WAL state`, async () => {
-      const { journalPath } = seedOlderRcApplyJournal(phase);
+    test(`fails closed on a nonexact interrupted ${phase} journal before opening WAL state`, async () => {
+      const { journalPath } = seedInterruptedApplyJournal(phase);
       const statePath = getStateDbPathInDataDir();
       const shmPath = `${statePath}-shm`;
       const tripwire = Buffer.from("nonexact generation: SQLite inspection must not touch this SHM path\n");
@@ -1096,10 +1110,10 @@ describe("migration lifecycle regressions", () => {
     });
   }
 
-  for (const phase of OLDER_RC_FORWARD_PHASES) {
+  for (const phase of INTERRUPTED_FORWARD_PHASES) {
     for (const nonexact of [false, true]) {
-      test(`resumes an ${nonexact ? "nonexact" : "exact"} older-RC WAL journal from ${phase} without a conversion marker`, async () => {
-        const { backupPath, guard, journalPath, operationId } = seedOlderRcForwardJournal(phase, nonexact);
+      test(`resumes an ${nonexact ? "nonexact" : "exact"} interrupted WAL journal from ${phase} without a conversion marker`, async () => {
+        const { backupPath, guard, journalPath, operationId } = seedInterruptedForwardJournal(phase, nonexact);
         const journalBeforeStatus = fs.readFileSync(journalPath);
 
         const status = await runCliCapture(["migrate", "status"]);
@@ -1134,8 +1148,8 @@ describe("migration lifecycle regressions", () => {
     }
   }
 
-  test("rejects an older-RC cutover-applied journal with another operation's cutover marker", async () => {
-    const seeded = seedOlderRcForwardJournal("cutover-applied", false);
+  test("rejects an interrupted cutover-applied journal with another operation's cutover marker", async () => {
+    const seeded = seedInterruptedForwardJournal("cutover-applied", false);
     const journalBefore = fs.readFileSync(seeded.journalPath);
     seeded.guard.close();
     const state = new Database(getStateDbPathInDataDir());
@@ -1149,8 +1163,8 @@ describe("migration lifecycle regressions", () => {
     expect(fs.existsSync(seeded.backupPath)).toBe(true);
   });
 
-  test("a rewound older-RC workflow journal retains rollback authority when cutover fails", async () => {
-    const { journalPath } = seedOlderRcApplyJournal("workflow-applied", { failingCutover: true });
+  test("a rewound interrupted workflow journal retains rollback authority when cutover fails", async () => {
+    const { journalPath } = seedInterruptedApplyJournal("workflow-applied", { failingCutover: true });
 
     const resumed = await runCliCapture(["migrate", "apply"]);
     expect(resumed.code).not.toBe(0);
@@ -1206,8 +1220,7 @@ describe("migration lifecycle regressions", () => {
     // workflow.db's is classified by the migrator (above), not a runtime opener.
     expect(() => openStateDatabase()).toThrow(/migration|required|checksum|current/i);
 
-    const applied = await runCliCapture(["migrate", "apply"]);
-    expect(applied.code, applied.stderr).toBe(0);
+    await runMigrationApply();
     expect(inspectMigrationState()).toMatchObject({ state: { status: "current" }, workflow: { status: "missing" } });
     // state.db seals its whole ledger (incl. the cutover migration 020); the
     // three-DB cutover then DELETES workflow.db (its rows merged into state.db),
@@ -1249,6 +1262,41 @@ describe("migration lifecycle regressions", () => {
       expect(output).toContain('"newer"');
       expect(output).toContain('"blocked"');
     }
+    expect(fs.readFileSync(getConfigPath())).toEqual(configBefore);
+    expect(fs.readFileSync(getStateDbPathInDataDir())).toEqual(stateBefore);
+    expect(fs.existsSync(getMigrationBackupRoot())).toBe(false);
+  });
+
+  // R-062: `dryRun` was renamed to the kebab-case `dry-run` for consistency
+  // with every other multi-word flag in the CLI. citty registers BOTH the
+  // camelCase and kebab-case spelling of any declared flag name
+  // automatically (verified against the pinned citty@^0.2.2 dependency), so
+  // this is a pure rename — `--dryRun` is kept as an explicit, documented
+  // alias rather than becoming a silent accident, and both spellings must
+  // keep behaving identically. Reuses the exact fixture above (a blocked
+  // eligibility check) rather than a byte-for-byte comparison, since the
+  // envelope may carry a volatile timestamp.
+  test("apply --dryRun (legacy camelCase spelling) behaves identically to --dry-run (R-062)", async () => {
+    writeConfig("0.9.0");
+    fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
+    const future = new Database(getStateDbPathInDataDir());
+    seedLedger(future, [STATE_PRE_CUTOVER_IDS[0], "999-future"]);
+    future.close();
+    const prepared = path.join(path.dirname(getConfigPath()), "prepared-0.9.json");
+    fs.writeFileSync(prepared, '{"configVersion":"0.9.0"}\n');
+    const configBefore = fs.readFileSync(getConfigPath());
+    const stateBefore = fs.readFileSync(getStateDbPathInDataDir());
+
+    const kebab = await runCliCapture(["migrate", "apply", "--config", prepared, "--dry-run"]);
+    const camel = await runCliCapture(["migrate", "apply", "--config", prepared, "--dryRun"]);
+    expect(camel.code).toBe(kebab.code);
+    for (const output of [kebab.stdout, camel.stdout]) {
+      expect(output).toContain('"config"');
+      expect(output).toContain('"targetConfig"');
+      expect(output).toContain('"newer"');
+      expect(output).toContain('"blocked"');
+    }
+    // Neither spelling mutates anything (both are the dry-run path).
     expect(fs.readFileSync(getConfigPath())).toEqual(configBefore);
     expect(fs.readFileSync(getStateDbPathInDataDir())).toEqual(stateBefore);
     expect(fs.existsSync(getMigrationBackupRoot())).toBe(false);
@@ -1674,7 +1722,10 @@ describe("migration lifecycle regressions", () => {
   });
 
   test("backup and restore implementation does not whole-file read database artifacts", () => {
-    const source = fs.readFileSync(path.resolve(import.meta.dir, "../../src/core/migration-backup.ts"), "utf8");
+    const source = fs.readFileSync(
+      path.resolve(import.meta.dir, "../../scripts/akm-migrate/migration-backup.ts"),
+      "utf8",
+    );
     expect(source).not.toMatch(/readFileSync\((?:filePath|source)\)/);
     expect(source).not.toMatch(/writeFileAtomic\([^\n]+fs\.readFileSync/);
   });

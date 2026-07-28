@@ -11,6 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { akmLint } from "../../src/commands/lint/index";
 import { akmInit } from "../../src/commands/sources/init";
 import { loadUserConfig, primaryBundlePath, saveConfig } from "../../src/core/config/config";
 import { resolveTypeConventions } from "../../src/core/standards/resolve-type-conventions";
@@ -172,6 +173,20 @@ describe("akm init", () => {
     // The nested asset landed at its mirrored subpath, not flattened to root.
     expect(fs.existsSync(conventionPath(stashDir, "skill"))).toBe(true);
     expect(fs.existsSync(path.join(stashDir, "skill.md"))).toBe(false);
+  });
+
+  test("a freshly scaffolded stash passes its own `akm lint` with nothing flagged", async () => {
+    // The 12 shipped convention templates each carry frontmatter, so any of
+    // them missing an `updated` field makes a brand-new stash fail the very
+    // first `akm lint` a user runs. Guard the whole skeleton, not just that
+    // one field: a fresh stash must be clean on every lint rule.
+    const stashDir = makeTempDir("akm-init-selflint-");
+    fs.rmSync(stashDir, { recursive: true, force: true });
+    await akmInit({ dir: stashDir });
+
+    const result = akmLint({ dir: stashDir });
+    expect(result.flagged).toEqual([]);
+    expect(result.summary.flagged).toBe(0);
   });
 
   // ── Default-stash persist decision matrix (#footgun: --dir must not clobber) ──

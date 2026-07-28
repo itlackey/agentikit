@@ -12,6 +12,7 @@
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "..", "..");
@@ -36,11 +37,30 @@ function bunAvailable(): boolean {
   return r.status === 0;
 }
 
+/**
+ * Remove BUILD_DIR safely: node:fs instead of spawning a shell `rm -rf` (no
+ * PATH/shell dependency), guarded to only ever touch the exact in-repo
+ * `tests/docker/.build` path — never anything a miscomputed PROJECT_ROOT
+ * could point at — and only when it actually exists.
+ */
+function cleanBuildDir(): void {
+  if (!BUILD_DIR.startsWith(`${DOCKER_DIR}${path.sep}`)) return;
+  if (!fs.existsSync(BUILD_DIR)) return;
+  fs.rmSync(BUILD_DIR, { recursive: true, force: true });
+}
+
 function buildBinary(): boolean {
   spawnSync("mkdir", ["-p", BUILD_DIR]);
   const r = spawnSync(
     "bun",
-    ["build", "./src/cli.ts", "--compile", "--target=bun-linux-x64", "--outfile", path.join(BUILD_DIR, "akm")],
+    [
+      "build",
+      "./scripts/akm-standalone.ts",
+      "--compile",
+      "--target=bun-linux-x64",
+      "--outfile",
+      path.join(BUILD_DIR, "akm"),
+    ],
     {
       cwd: PROJECT_ROOT,
       encoding: "utf8",
@@ -84,8 +104,20 @@ function dockerRun(variant: string): { ok: boolean; output: string } {
   };
 }
 
-const HAS_DOCKER = dockerAvailable();
-const HAS_BUN = bunAvailable();
+// Docker install tests are heavyweight (build images + download deps per container).
+// They only run when explicitly requested via AKM_DOCKER_TESTS=1 to avoid
+// hammering the network on every `bun test` invocation. Strict "1" match — not
+// `!!process.env...` — matches the `=== "1"` convention used by every other
+// opt-in gate in this repo (e.g. AKM_RUN_SLOW_TESTS, AKM_SEMANTIC_TESTS-style
+// gates); a loose truthy check would treat `AKM_DOCKER_TESTS=0` as enabled.
+const DOCKER_TESTS_ENABLED = process.env.AKM_DOCKER_TESTS === "1";
+
+// dockerAvailable()/bunAvailable() each spawn a subprocess (docker info has a
+// 10s timeout) — only pay that cost when the gate above is actually on. Every
+// `bun test` run of this file previously paid it unconditionally, even when
+// Docker tests were never going to run.
+const HAS_DOCKER = DOCKER_TESTS_ENABLED && dockerAvailable();
+const HAS_BUN = DOCKER_TESTS_ENABLED && bunAvailable();
 
 const bunVariants = ["ubuntu-bun", "debian-bun", "alpine-bun", "fedora-bun"] as const;
 
@@ -93,13 +125,8 @@ const binaryVariants = ["ubuntu-binary", "debian-binary", "fedora-binary"] as co
 
 // Cleanup build artifacts after all tests
 afterAll(() => {
-  spawnSync("rm", ["-rf", BUILD_DIR]);
+  cleanBuildDir();
 });
-
-// Docker install tests are heavyweight (build images + download deps per container).
-// They only run when explicitly requested via AKM_DOCKER_TESTS=1 to avoid
-// hammering the network on every `bun test` invocation.
-const DOCKER_TESTS_ENABLED = !!process.env.AKM_DOCKER_TESTS;
 
 describe.skipIf(!HAS_DOCKER || !HAS_BUN || !DOCKER_TESTS_ENABLED)("Docker install tests", () => {
   describe("bun install method", () => {

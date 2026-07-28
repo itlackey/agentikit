@@ -72,15 +72,11 @@ export function parseFrontmatter(raw: string): {
 }
 
 /**
- * Normalize YAML-parsed values to match expected AKM frontmatter types.
+ * Normalize YAML dates to match expected AKM frontmatter types.
  *
- * Two conversions:
- * 1. `Date` → YYYY-MM-DD string: the yaml "core" schema parses bare date
+ * `Date` → YYYY-MM-DD string: the yaml "core" schema parses bare date
  *    scalars like `2026-06-18` as JS Date instances. AKM frontmatter treats
  *    `updated:` and similar fields as plain strings.
- * 2. `null` → `""`: the yaml library parses empty-value keys (`key:` with no
- *    value) as `null`, but AKM callers historically received `""` from the
- *    hand-rolled parser. Convert to preserve backward compatibility.
  */
 function normalizeYamlValues(value: unknown): unknown {
   if (value instanceof Date) {
@@ -89,9 +85,8 @@ function normalizeYamlValues(value: unknown): unknown {
     const d = String(value.getUTCDate()).padStart(2, "0");
     return `${y}-${m}-${d}`;
   }
-  if (value === null) return "";
   if (Array.isArray(value)) return value.map(normalizeYamlValues);
-  if (typeof value === "object") {
+  if (value !== null && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, normalizeYamlValues(v)]),
     );

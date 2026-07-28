@@ -11,6 +11,7 @@ import {
   isRelevantAssetFile,
   stashDirFor,
 } from "../core/asset/asset-placement";
+import { conceptIdFromTypeName } from "../core/asset/resolve-ref";
 import { hasErrnoCode, isWithin } from "../core/common";
 import { NotFoundError, UsageError } from "../core/errors";
 import { walkStashFlat } from "../indexer/walk/walker";
@@ -43,7 +44,7 @@ function resolveInTypeDir(stashDir: string, typeDir: string, type: string, name:
     throw new UsageError("Ref resolves outside the stash root.", "PATH_ESCAPE_VIOLATION");
   }
   if (!fs.existsSync(resolvedTarget) || !fs.statSync(resolvedTarget).isFile()) {
-    throw new NotFoundError(`Stash asset not found for ref: ${type}:${name}`, "ASSET_NOT_FOUND");
+    throw new NotFoundError(`Stash asset not found for ref: ${conceptIdFromTypeName(type, name)}`, "ASSET_NOT_FOUND");
   }
   const realTarget = fs.realpathSync(resolvedTarget);
   if (!isWithin(realTarget, resolvedRoot)) {
@@ -55,7 +56,7 @@ function resolveInTypeDir(stashDir: string, typeDir: string, type: string, name:
         "Script ref must resolve to a file with a supported script extension. Refer to the akm documentation for the complete list of supported script extensions.",
       );
     }
-    throw new NotFoundError(`Stash asset not found for ref: ${type}:${name}`, "ASSET_NOT_FOUND");
+    throw new NotFoundError(`Stash asset not found for ref: ${conceptIdFromTypeName(type, name)}`, "ASSET_NOT_FOUND");
   }
   return realTarget;
 }
@@ -64,7 +65,7 @@ function resolveAndValidateTypeRoot(root: string, type: string, name: string): s
   const rootStat = readTypeRootStat(root, type, name);
   if (!rootStat.isDirectory()) {
     throw new NotFoundError(
-      `Asset directory for ${type} assets is not accessible — got a file where a directory was expected for ref: ${type}:${name}. ` +
+      `Asset directory for ${type} assets is not accessible — got a file where a directory was expected for ref: ${conceptIdFromTypeName(type, name)}. ` +
         "Run `akm index` to rebuild the index, or check your source configuration.",
       "ASSET_NOT_FOUND",
       "Run `akm list` to see your configured sources and verify the source path exists.",
@@ -79,7 +80,7 @@ function readTypeRootStat(root: string, type: string, name: string): fs.Stats {
   } catch (error: unknown) {
     if (hasErrnoCode(error, "ENOENT")) {
       throw new NotFoundError(
-        `Asset not found for ref: ${type}:${name}. No ${type} assets are present in the configured source.`,
+        `Asset not found for ref: ${conceptIdFromTypeName(type, name)}. No ${type} assets are present in the configured source.`,
         "ASSET_NOT_FOUND",
         "Run `akm list` to see your configured sources, or `akm index` to rebuild the search index.",
       );

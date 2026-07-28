@@ -479,12 +479,10 @@ describe("workflow brief — completed run", () => {
   });
 });
 
-describe("workflow brief — legacy run (NULL plan_json)", () => {
-  test("errors clearly, pointing at engine-driven mode", async () => {
+describe("workflow brief — invalid run without a frozen plan", () => {
+  test("rejects the run under the current-plan contract", async () => {
     seedRun({ plan: null, params: { target: "x" }, steps: [{ id: "build" }, { id: "wrap" }] });
-    await expect(buildWorkflowBrief(RUN_ID)).rejects.toThrow(
-      /no executable workflow IR plan.*inspection-only.*workflow abandon/s,
-    );
+    await expect(buildWorkflowBrief(RUN_ID)).rejects.toThrow(/has no frozen workflow plan/);
   });
 });
 

@@ -23,7 +23,7 @@ import { upsertProposal } from "../../src/storage/repositories/proposals-reposit
 import { type Cleanup, type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 function fixtureResult(partial: Record<string, unknown>): AkmImproveResult {
-  return partial as unknown as AkmImproveResult;
+  return { ...partial, schemaVersion: 2, strategy: partial.strategy ?? "default" } as unknown as AkmImproveResult;
 }
 
 /** Build a minimal accepted proposal for seeding state.db. */
@@ -31,7 +31,7 @@ function makeAcceptedProposal(id: string, ref: string): Proposal {
   const now = new Date().toISOString();
   return {
     id,
-    ref,
+    ref: `stash//${ref}`,
     status: "accepted",
     source: "consolidate",
     createdAt: now,
@@ -40,6 +40,7 @@ function makeAcceptedProposal(id: string, ref: string): Proposal {
       content: `Content for ${ref}`,
     },
     changes: [{ path: "", after: `Content for ${ref}`, op: "update" }],
+    proposedTarget: { source: "stash", root: "/tmp/stash" },
   };
 }
 
@@ -71,13 +72,14 @@ describe("WS-5 perfTelemetry aggregation", () => {
         completedAt: endA,
         stashDir: "/tmp/stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
         ok: true,
         result: fixtureResult({
-          schemaVersion: 1,
+          schemaVersion: 2,
+          strategy: "default",
           ok: true,
           scope: { mode: "all" },
           dryRun: false,
@@ -139,13 +141,14 @@ describe("WS-5 perfTelemetry aggregation", () => {
         completedAt: end,
         stashDir: "/tmp/stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
         ok: true,
         result: fixtureResult({
-          schemaVersion: 1,
+          schemaVersion: 2,
+          strategy: "default",
           ok: true,
           scope: { mode: "all" },
           dryRun: false,
@@ -202,13 +205,14 @@ describe("WS-5 perfTelemetry aggregation", () => {
           completedAt: end,
           stashDir: "/tmp/stash",
           dryRun: false,
-          legacyProfile: null,
+          strategy: "default",
           scopeMode: "all",
           scopeValue: null,
           guidance: null,
           ok: true,
           result: fixtureResult({
-            schemaVersion: 1,
+            schemaVersion: 2,
+            strategy: "default",
             ok: true,
             scope: { mode: "all" },
             dryRun: false,
@@ -256,7 +260,7 @@ describe("WS-5 perfTelemetry aggregation", () => {
     expect(perf.overBudgetRuns).toBe(0);
   });
 
-  test("handles runs without perfTelemetry gracefully (pre-WS-5 envelopes)", () => {
+  test("handles runs without perfTelemetry gracefully", () => {
     const db = openStateDatabase();
     try {
       const now = new Date();
@@ -264,18 +268,19 @@ describe("WS-5 perfTelemetry aggregation", () => {
       const end = now.toISOString();
 
       recordImproveRun(db, {
-        id: "run-legacy",
+        id: "run-without-telemetry",
         startedAt: start,
         completedAt: end,
         stashDir: "/tmp/stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
         ok: true,
         result: fixtureResult({
-          schemaVersion: 1,
+          schemaVersion: 2,
+          strategy: "default",
           ok: true,
           scope: { mode: "all" },
           dryRun: false,
@@ -296,7 +301,7 @@ describe("WS-5 perfTelemetry aggregation", () => {
             contradicted: 0,
             warnings: [],
             durationMs: 100,
-            // No perfTelemetry — legacy envelope.
+            // No perfTelemetry.
           },
         }),
       });
@@ -329,13 +334,14 @@ describe("WS-5 denominator-fixed coverage", () => {
         completedAt: end,
         stashDir: "/tmp/stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
         ok: true,
         result: fixtureResult({
-          schemaVersion: 1,
+          schemaVersion: 2,
+          strategy: "default",
           ok: true,
           scope: { mode: "all" },
           dryRun: false,
@@ -388,13 +394,14 @@ describe("WS-5 denominator-fixed coverage", () => {
         completedAt: end,
         stashDir: "/tmp/stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
         ok: true,
         result: fixtureResult({
-          schemaVersion: 1,
+          schemaVersion: 2,
+          strategy: "default",
           ok: true,
           scope: { mode: "all" },
           dryRun: false,
@@ -437,13 +444,14 @@ describe("WS-5 denominator-fixed coverage", () => {
         completedAt: end,
         stashDir: "/tmp/stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
         ok: true,
         result: fixtureResult({
-          schemaVersion: 1,
+          schemaVersion: 2,
+          strategy: "default",
           ok: true,
           scope: { mode: "all" },
           dryRun: false,
@@ -492,13 +500,14 @@ describe("WS-5 degradation metrics", () => {
         completedAt: end,
         stashDir: "/tmp/stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
         ok: true,
         result: fixtureResult({
-          schemaVersion: 1,
+          schemaVersion: 2,
+          strategy: "default",
           ok: true,
           scope: { mode: "all" },
           dryRun: false,
@@ -550,13 +559,14 @@ describe("WS-5 degradation metrics", () => {
         completedAt: end,
         stashDir: "/tmp/stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
         ok: true,
         result: fixtureResult({
-          schemaVersion: 1,
+          schemaVersion: 2,
+          strategy: "default",
           ok: true,
           scope: { mode: "all" },
           dryRun: false,
@@ -602,13 +612,14 @@ describe("WS-5 degradation metrics", () => {
         completedAt: end,
         stashDir: "/tmp/stash",
         dryRun: false,
-        legacyProfile: null,
+        strategy: "default",
         scopeMode: "all",
         scopeValue: null,
         guidance: null,
         ok: true,
         result: fixtureResult({
-          schemaVersion: 1,
+          schemaVersion: 2,
+          strategy: "default",
           ok: true,
           scope: { mode: "all" },
           dryRun: false,

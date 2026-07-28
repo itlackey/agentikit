@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { _setDetectForTests } from "../../src/setup/detect";
 import { type Cleanup, sandboxHome } from "../_helpers/sandbox";
+import { overrideSeam } from "../_helpers/seams";
 
 // ── detect.ts tests ─────────────────────────────────────────────────────────
 
@@ -95,24 +97,40 @@ describe("detectAgentPlatforms", () => {
     expect(claude).toBeUndefined();
   });
 
+  // ISOLATION-01/02: USERPROFILE is not one of the AKM_*/XDG_*/HOME vars
+  // tests/_preload.ts owns (HARNESSED + the leak tripwire only cover those
+  // prefixes), so mutating it here relies entirely on this file restoring it
+  // itself — including on assertion failure, where a bare `delete` at the end
+  // of the test body would never run. Snapshot + restore in try/finally.
   test("returns empty when HOME and USERPROFILE are both unset", async () => {
+    const originalUserProfile = process.env.USERPROFILE;
     delete process.env.HOME;
     delete process.env.USERPROFILE;
-    const { detectAgentPlatforms } = await import("../../src/setup/detect");
-    const result = detectAgentPlatforms();
-    expect(result).toEqual([]);
+    try {
+      const { detectAgentPlatforms } = await import("../../src/setup/detect");
+      const result = detectAgentPlatforms();
+      expect(result).toEqual([]);
+    } finally {
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+    }
   });
 
   test("falls back to USERPROFILE when HOME is unset (Windows)", async () => {
+    const originalUserProfile = process.env.USERPROFILE;
     delete process.env.HOME;
     process.env.USERPROFILE = testHome;
-    fs.mkdirSync(path.join(testHome, ".claude"), { recursive: true });
-    const { detectAgentPlatforms } = await import("../../src/setup/detect");
-    const result = detectAgentPlatforms();
-    const claude = result.find((p) => p.name === "Claude Code");
-    expect(claude).toBeDefined();
-    expect(claude?.path).toBe(path.join(testHome, ".claude"));
-    delete process.env.USERPROFILE;
+    try {
+      fs.mkdirSync(path.join(testHome, ".claude"), { recursive: true });
+      const { detectAgentPlatforms } = await import("../../src/setup/detect");
+      const result = detectAgentPlatforms();
+      const claude = result.find((p) => p.name === "Claude Code");
+      expect(claude).toBeDefined();
+      expect(claude?.path).toBe(path.join(testHome, ".claude"));
+    } finally {
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = originalUserProfile;
+    }
   });
 });
 
@@ -166,17 +184,30 @@ describe("detectOllama", () => {
     expect(result.models).not.toContain("llama3.2:latest");
   });
 
-  test("returns available=false when fetch fails", async () => {
-    globalThis.fetch = (async () => {
-      throw new Error("Connection refused");
-    }) as unknown as typeof fetch;
-
+  // VALUE-05 + RUNTIME-06: this used to make `globalThis.fetch` throw, which
+  // drives detectOllama's REAL implementation into its CLI fallback (`ollama
+  // list` via a subprocess with a 10s timeout, src/setup/detect.ts:84-104) —
+  // a genuine host/process dependency with no injectable seam at that layer
+  // (`runManagedSubprocess` accepts a `spawnFn` override, but detectOllama
+  // never threads one through, and that file is outside this package). Worse,
+  // the old assertion (`typeof result.available === "boolean"`) couldn't have
+  // caught a regression either way. On a host with no `ollama` binary this
+  // silently degrades to a fast ENOENT-driven false; on a host that DOES have
+  // `ollama` installed (increasingly common on dev machines) it can block for
+  // up to 10s and its outcome depends on that host's local Ollama state —
+  // exactly the kind of ambient host dependency this package removes.
+  //
+  // Fixed by driving detectOllama through the test seam it exposes for
+  // exactly this purpose (src/setup/detect.ts:38-48,61 — `_setDetectForTests`,
+  // the same seam tests/integration/setup-run.test.ts:199 uses), and by
+  // asserting the concrete injected result instead of just its type. This
+  // never touches the network or spawns a subprocess.
+  test("resolves to the injected detection result via the test seam (no network, no subprocess)", async () => {
+    const injected = { available: false, models: [] as string[], endpoint: "http://localhost:11434" };
+    overrideSeam(_setDetectForTests, { detectOllama: async () => injected });
     const { detectOllama } = await import("../../src/setup/detect");
     const result = await detectOllama();
-    // May still be available=true if `ollama list` CLI works, or false if both fail
-    // Just verify it doesn't throw
-    expect(typeof result.available).toBe("boolean");
-    expect(Array.isArray(result.models)).toBe(true);
+    expect(result).toEqual(injected);
   });
 
   test("returns sorted model names", async () => {

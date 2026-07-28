@@ -62,8 +62,7 @@ export async function akmSearch(input: {
   /**
    * Optional scope filter. Each present field narrows local hits to entries
    * whose `entry.scope.<key>` exactly equals the supplied value. Unfiltered
-   * queries (no `filters` argument or all keys absent) preserve the legacy
-   * behavior — entries without any scope keys still match.
+   * queries match entries with or without scope metadata.
    *
    * Filtering narrows the result set; ranking is unchanged. There is still
    * one scoring pipeline.
@@ -209,12 +208,7 @@ export async function akmSearch(input: {
   }
 
   const registryHits = (registryResult?.hits ?? []).map((hit): RegistrySearchResultHit => {
-    // Use the provider-supplied installRef when available (already correctly
-    // prefixed), otherwise derive it from source + ref for backward compat.
-    const installRef =
-      hit.installRef ??
-      (hit.source === "npm" ? `npm:${hit.ref}` : hit.source === "git" ? `git+${hit.ref}` : `github:${hit.ref}`);
-    // The legacy registry boolean `curated` was removed in v1 (spec §4.2).
+    const installRef = hit.installRef;
     // Hit-level `warnings` are forwarded when the provider surfaced any.
     return {
       type: "registry",
@@ -492,11 +486,12 @@ function normalizeScopeFilters(raw: StashEntryScope | undefined): StashEntryScop
 }
 
 /**
- * Parse repeated `--filter k=v` / `--scope k=v` argv tokens into a
+ * Parse repeated `--filter k=v` argv tokens into a
  * `StashEntryScope`. Throws a {@link UsageError} for malformed tokens
  * (missing `=`, unknown key) so callers don't see ambiguous misses.
  *
- * Used by both `akm search --filter` and `akm show --scope`.
+ * Used by both `akm search --filter` and `akm show --filter` — the two
+ * commands share one spelling for the scope-narrowing axis.
  */
 export function parseScopeFilterFlags(values: string[], flagName = "--filter"): StashEntryScope | undefined {
   if (values.length === 0) return undefined;
@@ -521,11 +516,11 @@ export function parseScopeFilterFlags(values: string[], flagName = "--filter"): 
 
 /**
  * Returns true iff `entry.scope` (when present) satisfies every key in
- * `filters`. A missing `entry.scope` (legacy memories) only matches when
- * `filters` is empty / undefined.
+ * `filters`. A missing `entry.scope` only matches when `filters` is empty or
+ * undefined.
  *
  * Filter semantics:
- *   - No filter passed → all entries match (legacy behavior preserved).
+ *   - No filter passed → all entries match.
  *   - `filters.user = "alice"` → entry must have `scope.user === "alice"`.
  *   - Multiple keys → AND-joined; every supplied key must match.
  */

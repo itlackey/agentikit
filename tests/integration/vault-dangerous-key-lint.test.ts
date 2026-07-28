@@ -14,10 +14,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  checkVaultForDangerousKeys,
-  DANGEROUS_VAULT_KEY_PATTERNS,
-  DANGEROUS_VAULT_KEYS,
-  isDangerousVaultKey,
+  checkEnvForDangerousKeys as checkVaultForDangerousKeys,
+  DANGEROUS_ENV_KEY_PATTERNS as DANGEROUS_VAULT_KEY_PATTERNS,
+  DANGEROUS_ENV_KEYS as DANGEROUS_VAULT_KEYS,
+  isDangerousEnvKey as isDangerousVaultKey,
 } from "../../src/commands/lint/env-key-rules";
 import { akmLint } from "../../src/commands/lint/index";
 
@@ -157,7 +157,7 @@ describe("checkVaultForDangerousKeys", () => {
     const findings = checkVaultForDangerousKeys(vaultPath, "vaults/.env", "vault:default");
 
     expect(findings).toHaveLength(1);
-    expect(findings[0]!.issue).toBe("dangerous-vault-key");
+    expect(findings[0]!.issue).toBe("dangerous-env-key");
     expect(findings[0]!.file).toBe("vaults/.env");
     expect(findings[0]!.detail).toContain("LD_PRELOAD");
     expect(findings[0]!.detail).toContain("akm env run");
@@ -284,7 +284,7 @@ describe("akmLint dangerous-vault-key integration", () => {
 
     const result = akmLint({ dir: stashDir });
 
-    const dangerous = result.flagged.filter((i) => i.issue === "dangerous-vault-key");
+    const dangerous = result.flagged.filter((i) => i.issue === "dangerous-env-key");
     expect(dangerous).toHaveLength(1);
     expect(dangerous[0]!.detail).toContain("LD_PRELOAD");
     expect(dangerous[0]!.file).toContain(".env");
@@ -305,7 +305,7 @@ describe("akmLint dangerous-vault-key integration", () => {
 
     const result = akmLint({ dir: stashDir });
 
-    const dangerous = result.flagged.filter((i) => i.issue === "dangerous-vault-key");
+    const dangerous = result.flagged.filter((i) => i.issue === "dangerous-env-key");
     expect(dangerous).toHaveLength(2);
   });
 
@@ -315,7 +315,7 @@ describe("akmLint dangerous-vault-key integration", () => {
 
     const result = akmLint({ dir: stashDir });
 
-    const dangerous = result.flagged.filter((i) => i.issue === "dangerous-vault-key");
+    const dangerous = result.flagged.filter((i) => i.issue === "dangerous-env-key");
     expect(dangerous).toHaveLength(0);
   });
 
@@ -327,7 +327,7 @@ describe("akmLint dangerous-vault-key integration", () => {
 
     const result = akmLint({ dir: stashDir });
 
-    const dangerous = result.flagged.filter((i) => i.issue === "dangerous-vault-key");
+    const dangerous = result.flagged.filter((i) => i.issue === "dangerous-env-key");
     // One finding from prod.env (LD_PRELOAD) + one from staging.env (PATH)
     expect(dangerous).toHaveLength(2);
   });
@@ -338,7 +338,7 @@ describe("akmLint dangerous-vault-key integration", () => {
 
     const result = akmLint({ dir: stashDir });
 
-    const dangerous = result.flagged.filter((i) => i.issue === "dangerous-vault-key");
+    const dangerous = result.flagged.filter((i) => i.issue === "dangerous-env-key");
     expect(dangerous).toHaveLength(0);
   });
 });

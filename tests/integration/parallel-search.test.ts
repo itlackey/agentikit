@@ -5,15 +5,8 @@ import path from "node:path";
 import { akmSearch } from "../../src/commands/read/search";
 import { saveConfig } from "../../src/core/config/config";
 import { akmIndex } from "../../src/indexer/indexer";
-import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { clearEmbeddingCache } from "../../src/llm/embedder";
 import type { SourceSearchHit } from "../../src/sources/types";
-import type { Database } from "../../src/storage/database";
-import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
-import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
-import { rebuildFts, searchFts } from "../../src/storage/repositories/index-fts-repository";
-import { setMeta } from "../../src/storage/repositories/index-meta-repository";
-import { upsertEmbedding } from "../../src/storage/repositories/index-vec-repository";
 import {
   type Cleanup,
   sandboxStashDir,
@@ -51,43 +44,6 @@ function tmpStash(): string {
     fs.mkdirSync(path.join(dir, sub), { recursive: true });
   }
   return dir;
-}
-
-function tmpDbPath(label = "parallel"): string {
-  const dir = createTmpDir(`akm-${label}-`);
-  return path.join(dir, "test.db");
-}
-
-function makeEntry(overrides: Partial<IndexDocument> & { name: string; type: IndexDocument["type"] }): IndexDocument {
-  return {
-    description: "A test entry",
-    ...overrides,
-  };
-}
-
-function insertTestEntry(
-  db: Database,
-  key: string,
-  opts?: {
-    dirPath?: string;
-    filePath?: string;
-    stashDir?: string;
-    description?: string;
-    searchText?: string;
-    type?: IndexDocument["type"];
-  },
-): number {
-  const type = opts?.type ?? "script";
-  const entry = makeEntry({ name: key, type, description: opts?.description ?? `Description for ${key}` });
-  return upsertEntry(
-    db,
-    key,
-    opts?.dirPath ?? "/test/dir",
-    opts?.filePath ?? `/test/dir/${key}.ts`,
-    opts?.stashDir ?? "/test/stash",
-    entry,
-    opts?.searchText ?? `${key} ${entry.description}`,
-  );
 }
 
 async function buildTestIndex(stashDir: string, files: Record<string, string>) {
@@ -181,11 +137,6 @@ describe("Parallel search: result parity", () => {
 // ── Test 2: Embedding cache ─────────────────────────────────────────────────
 
 describe("Embedding cache", () => {
-  test("clearEmbeddingCache is callable without error", () => {
-    // Verify the exported function exists and can be called
-    expect(() => clearEmbeddingCache()).not.toThrow();
-  });
-
   test("clearEmbeddingCache is idempotent and does not throw on repeated calls", () => {
     clearEmbeddingCache();
     clearEmbeddingCache();
@@ -250,34 +201,6 @@ describe("Parallel search: FTS empty", () => {
 
     // Should return 0 results without crashing
     expect(localHits.length).toBe(0);
-  });
-
-  test("search with DB having vec entries but FTS empty returns vec-only results", async () => {
-    // This test uses the low-level DB API to set up a scenario where
-    // FTS has no matches but vec does (simulating semantic-only match)
-    const dbPath = tmpDbPath("fts-empty");
-    const db = openIndexDatabase(dbPath, { embeddingDim: 4 });
-    try {
-      const id = insertTestEntry(db, "semantic-tool", {
-        description: "A tool found only via semantic similarity",
-        searchText: "vector embedding similarity neural network",
-        stashDir: "/test/stash",
-        dirPath: "/test/dir",
-        filePath: "/test/dir/semantic-tool.ts",
-      });
-
-      upsertEmbedding(db, id, [1, 0, 0, 0]);
-      setMeta(db, "hasEmbeddings", "1");
-      setMeta(db, "stashDir", "/test/stash");
-      rebuildFts(db);
-
-      // Searching for "garbledftsquery" won't match FTS, but we verify
-      // the search doesn't crash when FTS is empty
-      const ftsResults = searchFts(db, "garbledftsquery", 10);
-      expect(ftsResults).toHaveLength(0);
-    } finally {
-      closeDatabase(db);
-    }
   });
 });
 

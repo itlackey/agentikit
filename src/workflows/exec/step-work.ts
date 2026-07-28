@@ -46,7 +46,7 @@ import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
 import { type WorkflowRunUnitRow, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
-import { canonicalJson as canonicalJsonString, decodeCanonicalPlan } from "../ir/plan-hash";
+import { canonicalJson as canonicalJsonString } from "../ir/plan-hash";
 import type {
   FrozenEngineSnapshot,
   IrInvocation,
@@ -539,11 +539,7 @@ function unitOutputValue(unit: UnitOutcome): unknown {
   return unit.text ?? null;
 }
 
-export function buildEvidence(
-  units: UnitOutcome[],
-  reducer: "collect" | "vote" | "best-of-n",
-  isFanOut: boolean,
-): Record<string, unknown> {
+export function buildEvidence(units: UnitOutcome[], reducer: IrMapReducer, isFanOut: boolean): Record<string, unknown> {
   // Per-unit evidence is the DURABLE, surface-independent projection the two
   // driver surfaces (engine + brief/report) must agree on byte-for-byte (R4
   // conformance, "identical unit graph"). It therefore carries ONLY fields both
@@ -635,7 +631,7 @@ export interface ExecutedStepOutcome {
  */
 export function reduceStepOutcomes(
   plan: IrStepPlan,
-  reducer: "collect" | "vote" | "best-of-n",
+  reducer: IrMapReducer,
   isFanOut: boolean,
   onError: IrOnError,
   units: UnitOutcome[],
@@ -684,7 +680,7 @@ export function reduceStepOutcomes(
  * an empty step has no successful results to count, and a vote-tie "failure"
  * would diverge from the engine's long-standing empty-list semantics.
  */
-export function reduceEmptyStep(plan: IrStepPlan, reducer: "collect" | "vote" | "best-of-n"): ExecutedStepOutcome {
+export function reduceEmptyStep(plan: IrStepPlan, reducer: IrMapReducer): ExecutedStepOutcome {
   const evidence: Record<string, unknown> = { units: [], itemCount: 0, output: reducer === "collect" ? [] : null };
   const schemaFailure = validateStepArtifact(plan, evidence);
   return {
@@ -1522,28 +1518,6 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
     kind: "gate-exhausted",
     gateRejection: { stepId, missing: rejection.missing, feedback: rejection.feedback },
   };
-}
-
-// ── Frozen plan parse + integrity check (shared) ─────────────────────────────
-
-/**
- * Parse and integrity-check a run's frozen plan JSON (migration 006). Shared by
- * the engine loop's plan loader (`run-workflow.ts`) and the R3 brief/report
- * surfaces so all three apply the SAME corruption + hash checks — the frozen
- * plan the engine executes is the exact plan brief describes and report
- * validates against. A NULL `plan_json` is the CALLER's decision (the engine
- * warns and compiles from the asset; brief/report error), so this helper only
- * handles a PRESENT plan string.
- */
-export function parseFrozenPlan(runId: string, planJson: string, planHash: string | null): WorkflowPlanGraph {
-  try {
-    return decodeCanonicalPlan(runId, planJson, planHash);
-  } catch (cause) {
-    throw new UsageError(
-      `Workflow run ${runId} has a corrupt frozen plan: ${cause instanceof Error ? cause.message : String(cause)}. ` +
-        `The journaled plan cannot be executed — abandon it and start a new run.`,
-    );
-  }
 }
 
 // ── Small helpers ────────────────────────────────────────────────────────────

@@ -107,9 +107,10 @@ Fixture refs worth using throughout this doc:
 
 ## 4. First-Run Surface
 
-- [ ] `akm info` returns JSON with `schemaVersion`, `version`, `assetTypes`,
-      `searchModes`, `semanticSearch`, `registries`, `sourceProviders`, and
-      `indexStats`.
+- [ ] `akm info` returns JSON with `schemaVersion`, `version`, `stashDir`,
+      `defaultBundle`, `assetTypes`, `searchModes`, `semanticSearch`,
+      `registries`, `sourceProviders`, and `indexStats` (incl. `byType`, a
+      per-asset-type breakdown of `entryCount`).
 - [ ] `akm config list` emits `sources`, not legacy `stashes`, for current
       persisted config.
 - [ ] `akm config path --all` returns sandbox-local paths only.
@@ -118,12 +119,13 @@ Fixture refs worth using throughout this doc:
 - [ ] `akm --help` lists the current command surface:
       `setup`, `init`, `index`, `health`, `info`, `graph`, `add`, `list`,
       `remove`, `update`, `upgrade`, `search`, `curate`, `show`, `workflow`,
-      `remember`, `import`, `sync`, `clone`, `registry`, `config`, `feedback`,
-      `history`, `log`, `agent`, `lessons`, `lint`, `improve`, `extract`,
-      `propose`, `proposal`, `help`, `hints`, `completions`, `env`, `secret`,
-      `wiki`, `tasks`.
-- [ ] `akm config enable --help` and `akm config disable --help` mention `skills.sh`
-      only.
+      `remember`, `import`, `sync`, `clone`, `mv`, `registry`, `migrate`,
+      `config`, `feedback`, `history`, `log`, `agent`, `lessons`, `lint`,
+      `improve`, `extract`, `propose`, `proposal`, `help`, `hints`,
+      `completions`, `env`, `secret`, `tasks`. There is no `wiki` command
+      (removed in 0.9.0 in favor of the `llm-wiki` bundle format).
+- [ ] `akm config enable` and `akm config disable` fail as unknown subcommands
+      (removed in 0.9.0 — use `akm registry add|remove`).
 - [ ] `akm upgrade --check` returns structured version/install-method info and
       does not modify the sandbox or the host install.
 - [ ] `akm completions` prints a bash completion script to stdout.
@@ -187,24 +189,23 @@ Fixture refs worth using throughout this doc:
       shape.
 - [ ] `akm show skills/k8s-deploy --shape agent` returns the action-oriented
       shape.
-- [ ] `akm show knowledge/incident-response-runbook toc` prints the table of
-      contents only.
-- [ ] `akm show knowledge/incident-response-runbook section "Severity Levels"`
-      narrows to that section.
-- [ ] `akm show knowledge/incident-response-runbook lines 1 20` returns the
-      requested range.
-- [ ] `akm show knowledge/incident-response-runbook frontmatter` returns only
-      frontmatter.
-- [ ] `akm show knowledge/incident-response-runbook full` returns the raw file.
-- [ ] `akm show knowledge/incident-response-runbook section "Not Real"` returns
-      a friendly section-not-found message that points at `toc`.
+- [ ] `akm show knowledge/incident-response-runbook` returns the whole
+      document.
+- [ ] `akm show knowledge/incident-response-runbook#severity-levels` narrows to
+      that section.
+- [ ] `akm show knowledge/incident-response-runbook#not-real` fails with
+      `ASSET_NOT_FOUND` and lists the available fragment slugs.
+- [ ] `akm show knowledge/incident-response-runbook toc` fails with a usage
+      error that points at `#fragment`.
 - [ ] `akm show skills/does-not-exist` fails with `ASSET_NOT_FOUND`, includes a
       structured JSON envelope on stderr, and exits non-zero.
 
 ### 6.1 Scoped show
 
-- [ ] `akm show memories/scoped-note --scope user=alice` resolves the memory.
-- [ ] `akm show memories/scoped-note --scope user=bob` fails to resolve it.
+- [ ] `akm show memories/scoped-note --filter user=alice` resolves the memory.
+- [ ] `akm show memories/scoped-note --filter user=bob` fails to resolve it.
+- [ ] `akm show memories/scoped-note --scope user=alice` fails loudly (exit 2 —
+      `--scope` was removed in 0.9.0, not aliased).
 
 ---
 
@@ -399,34 +400,34 @@ Workflows now include authoring, validation, execution, and recovery flows.
 
 ---
 
-## 12. Wiki
+## 12. LLM Wiki (bundle format, no dedicated command family)
 
-- [ ] `akm wiki list` is empty initially.
-- [ ] `akm wiki create my-wiki` scaffolds the wiki.
-- [ ] `akm wiki list` shows `my-wiki` with counts.
-- [ ] `akm wiki show my-wiki` returns path, counts, and recent log entries.
-- [ ] Add one markdown page under the wiki dir and confirm `akm wiki pages my-wiki`
-      lists it.
-- [ ] `akm wiki search my-wiki <term-from-page>` returns only page hits from
-      that wiki.
-- [ ] `echo "# Raw source" | akm wiki stash my-wiki - --as raw-source` creates a
-      raw source file.
-- [ ] `akm wiki stash my-wiki http://127.0.0.1:<port>/paper` fetches one URL and
-      writes converted markdown into `wikis/my-wiki/raw/` without crawling.
-- [ ] Re-running the same explicit slug with `--as raw-source` fails rather than
-      overwriting.
-- [ ] `akm wiki ingest my-wiki` dispatches the configured agent engine (from
-      `defaults.engine` or `--engine`) to execute the ingest workflow. Without
-      an accessible engine it fails with a clear `UsageError` pointing at
-      `engines`.
-- [ ] `akm wiki lint my-wiki` returns deterministic findings or a clean pass;
-      findings may exit non-zero but should still be structured and not crash.
-- [ ] `akm show my-wiki//pages/<page-slug>` renders a wiki page with the
-      standard `akm show` machinery (toc / section / lines / frontmatter views).
-- [ ] `akm wiki remove my-wiki -y` removes the wiki.
+**[0.9.0 change]** The `akm wiki` command family (`list`/`create`/`show`/
+`pages`/`search`/`stash`/`lint`/`ingest`/`remove`) was removed in the
+0.9.0 bundle-adapter cutover. A wiki is now a plain bundle recognized
+deterministically at install/index time by the `llm-wiki` adapter — a bundle
+component whose root holds `schema.md` plus a `pages/` directory. There is
+no `akm wiki` subcommand to test; verify the adapter surface instead:
 
-`wiki register` should only be tested against disposable paths or repos. Do not
-register a real long-lived knowledge repo unless you intend to exercise it.
+- [ ] A directory with `schema.md` + `pages/<page>.md` + `raw/<source>.md`,
+      registered as a `bundles` entry (or installed via `akm add`), is
+      recognized as an `llm-wiki` component on `akm index --full` — no
+      manual registration step beyond the normal bundle config/install.
+- [ ] `akm search <term-from-a-page>` returns the page as a hit (its `type`
+      is the page's `pageKind`, default `note`, not `wiki`).
+- [ ] `akm search <term-from-a-raw-source>` also returns a hit — `raw/**.md`
+      files are indexed as first-class `wiki-source` documents, not just
+      structural inputs.
+- [ ] `akm show <bundle>//pages/<page-slug>` renders the page with the
+      standard `akm show` machinery (`#fragment` section addressing, not the
+      removed `toc`/`section`/`lines`/`frontmatter` view-mode grammar).
+- [ ] `akm show <bundle>//raw/<slug>` renders the raw source directly.
+- [ ] Page writes (create/append/xref/log) use the agent's native file-write
+      tools, not an akm command — akm's role here is recognition and
+      discovery only. No LLM calls or network access happen anywhere in this
+      surface.
+
+See [Wikis](../../guides/wikis.md) for the full page/raw/schema model.
 
 ---
 
@@ -448,12 +449,13 @@ Confirm that guarantee carefully.
 - [ ] `printf '%s' "token-value" | akm secret set secrets/test-token` succeeds.
 - [ ] `akm secret list --format json` contains `secrets/test-token` with only path
       output.
-- [ ] `akm secret path secrets/test-token` prints the absolute secret file path and
-      no secret value.
 - [ ] `akm secret run secrets/test-token CI_TOKEN -- bash -lc 'test "$CI_TOKEN" = "token-value"'`
       injects only that variable.
+- [ ] `akm secret path secrets/test-token` and `akm secret remove secrets/test-token`
+      both exit 2 with `Unknown command` (removed in 0.9.0).
 - [ ] `akm env unset env/test-env API_KEY` removes the key.
-- [ ] `akm secret remove secrets/test-token -y` removes the secret.
+- [ ] `rm "$AKM_STASH_DIR/secrets/test-token"` removes the secret (there is no
+      `akm secret remove`).
 
 ---
 
@@ -644,15 +646,6 @@ checklist did not exercise.
 - [ ] `akm env set env/prod KEY=value` (positional value or KEY=VALUE
       form) is rejected with `UsageError`.
 
-#### `--auto-accept=false` regression check
-
-- [ ] `akm improve <ref>` (no flag) auto-accepts at threshold 90 (does not
-      prompt on the HTTP path).
-- [ ] `akm improve <ref> --auto-accept=false` restores the interactive
-      prompt on the HTTP consolidation path.
-- [ ] `akm improve <ref> --auto-accept=safe` is accepted as a permanent alias
-      for `--auto-accept=90`.
-
 #### Proposal resolution by ref or UUID prefix
 
 - [ ] `akm proposal accept <full-uuid>` works (regression check).
@@ -664,8 +657,6 @@ checklist did not exercise.
 
 - [ ] `akm remember "note" --target <stash>` writes to the named target.
 - [ ] `akm import ./file.md --target <stash>` writes to the named target.
-- [ ] `akm wiki stash <wiki> ./page.md --target <stash>` writes to the named
-      target.
 - [ ] Legacy `--stash` on any of the above is rejected with a structured
       usage error.
 

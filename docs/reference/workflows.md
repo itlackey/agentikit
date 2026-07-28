@@ -6,6 +6,17 @@ steps one at a time — resuming after interruptions, blocking on human review
 gates, and tracking completion criteria per step. The agent follows steps; the
 human approves gates.
 
+> **The native orchestration engine requires an opt-in.** `start` / `next` /
+> `complete` / `status` / `list` / `create` (markdown, the default) /
+> `template` / `validate` / `resume` / `abandon` — everything through
+> [Writing a workflow](#writing-a-workflow) below — work with no config
+> changes. But `akm workflow run`, `akm workflow brief`, `akm workflow
+> report`, `akm workflow watch`, and authoring a YAML program with `akm
+> workflow create <name>.yaml` all refuse outright until
+> `experimental.workflowEngine` is set — see [Enabling the workflow
+> engine](#enabling-the-workflow-engine-opt-in-in-090) before trying any of
+> those five.
+
 ## akm workflow start
 
 `akm workflow start` creates a new persisted run for a workflow asset. Run
@@ -158,6 +169,51 @@ akm workflow start workflows/print-book-review --params '{"draft":"v3.pdf"}'
 akm workflow next workflows/print-book-review
 # agent reads instructions → runs checks → completes each step in sequence
 ```
+
+## Enabling the workflow engine (opt-in in 0.9.0)
+
+Everything above this line — `start`, `next`, `complete`, `status`, `list`,
+`create` for a markdown workflow, `template`, `validate`, `resume`, and
+`abandon` — ships unconditionally and needs no config change.
+
+The rest of this section, through "Orchestrated steps: YAML workflow
+programs," describes the **native orchestration engine**: YAML (`version: 2`)
+workflow programs and the commands that execute them. Those commands are
+gated behind an explicit opt-in and refuse outright — a classified
+`ConfigError` (`WORKFLOW_ENGINE_NOT_ENABLED`, exit code 78) — until you set:
+
+```sh
+akm config set experimental.workflowEngine true
+```
+
+| Surface | What it does when enabled |
+| --- | --- |
+| `akm workflow run` | Executes a run's steps with the native engine, dispatching each step's units to the configured runner |
+| `akm workflow brief` | Read-only half of the harness-neutral driver protocol |
+| `akm workflow report` | Mutating half of the harness-neutral driver protocol |
+| `akm workflow watch` | Streams a run's `workflow_*` events |
+| `akm workflow create <name>.yaml` (or `.yml`) | Authors a YAML workflow *program* — the format the engine executes. `akm workflow create <name>` with no `.yaml`/`.yml` suffix is unaffected — it still writes a markdown workflow |
+
+The refusal names the exact surface and config key, e.g.:
+
+```jsonc
+{
+  "ok": false,
+  "error": "`akm workflow run` is EXPERIMENTAL and refuses to run until `experimental.workflowEngine` is set. Run `akm config set experimental.workflowEngine true` to enable it.",
+  "code": "WORKFLOW_ENGINE_NOT_ENABLED"
+}
+```
+
+`akm workflow validate` is **not** gated even against a `.yaml` program
+file — it only type-checks the program without executing anything. `akm
+tasks doctor` reports the gate's live state under `workflowEngine.enabled`
+and `workflowEngine.configKey`, so you can confirm whether it is on without
+tripping a refusal. The engine is never enabled by inference: an absent
+`experimental` section, an absent `workflowEngine` key, and an explicit
+`false` all read as off — only `true` turns it on.
+
+See [STABILITY.md](../../STABILITY.md) for the full stability classification
+of these surfaces.
 
 ## Orchestrated steps: YAML workflow programs (experimental)
 

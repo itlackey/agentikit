@@ -92,7 +92,7 @@ export function installLlmUsagePersistence(ctx?: EventsContextSource): () => voi
 
 /**
  * Like {@link installLlmUsagePersistence}, but a no-op when a sink is already
- * installed — used by standalone entry points (`akm consolidate`, `akm drain`)
+ * installed — used by standalone entry points (`akm proposal drain`)
  * that may also run as a sub-step of `akm improve`. When invoked inside an
  * enclosing run the existing per-run sink keeps ownership; the returned
  * disposer then does nothing, so the enclosing run's `finally` still clears it.

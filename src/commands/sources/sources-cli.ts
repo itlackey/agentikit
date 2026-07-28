@@ -8,8 +8,7 @@
  * Extracted verbatim from src/cli.ts (WS6). Each `main.subCommands.<key>`
  * registration line stays byte-identical; the args/output shape of every
  * subcommand is unchanged. The `--kind` filter helper (`parseKindFilter` +
- * `VALID_SOURCE_KINDS`), the `runSyncBody` git-commit/push body, and the
- * `wasFormatValueConsumedAsName` citty-mis-parse workaround are used ONLY by
+ * `VALID_SOURCE_KINDS`) and the `runSyncBody` git-commit/push body are used ONLY by
  * this cluster, so they move with it.
  *
  * Leaf handlers whose body is a plain `runWithJsonErrors(async () => { … })`
@@ -19,8 +18,7 @@
  * `runWithJsonErrors` wrapper) rather than wrapping inline.
  */
 import { defineCommand } from "citty";
-import { getParsedInvocation } from "../../cli/invocation";
-import { defineJsonCommand, output, runWithJsonErrors } from "../../cli/shared";
+import { defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
@@ -33,23 +31,26 @@ import { akmListSources, akmRemove, akmUpdate } from "./installed-stashes";
 import { checkForUpdate, performUpgrade } from "./self-update";
 import { akmClone } from "./source-clone";
 
-const VALID_SOURCE_KINDS = new Set<SourceKind>(["local", "managed", "remote"]);
+const VALID_SOURCE_KINDS = new Set<SourceKind>(["filesystem", "git", "npm", "website"]);
 
 function parseKindFilter(raw: string | undefined): SourceKind[] | undefined {
   if (!raw) return undefined;
   const kinds = raw.split(",").map((s) => s.trim()) as SourceKind[];
   for (const k of kinds) {
     if (!VALID_SOURCE_KINDS.has(k)) {
-      throw new UsageError(`Invalid --kind value: "${k}". Expected one of: local, managed, remote`);
+      throw new UsageError(`Invalid --kind value: "${k}". Expected one of: filesystem, git, npm, website`);
     }
   }
   return kinds;
 }
 
 export const listCommand = defineJsonCommand({
-  meta: { name: "list", description: "List all sources (local directories, managed packages, remote providers)" },
+  meta: { name: "list", description: "List configured bundles and their resolved source state" },
   args: {
-    kind: { type: "string", description: "Filter by source kind (local, managed, remote). Comma-separated." },
+    kind: {
+      type: "string",
+      description: "Filter by source provider (filesystem, git, npm, website). Comma-separated.",
+    },
   },
   async run({ args }) {
     const kind = parseKindFilter(args.kind);
@@ -92,9 +93,20 @@ export const updateCommand = defineJsonCommand({
     target: { type: "positional", description: "Source to update (id or ref)", required: false },
     all: { type: "boolean", description: "Update all installed entries", default: false },
     force: { type: "boolean", description: "Force fresh download even if version is unchanged", default: false },
+    // F1/R-058: gates ONLY the rare branch where the resolved content
+    // directory moves and the previous `localRoot` is deleted — a normal
+    // refresh (the overwhelming majority of updates) deletes nothing and
+    // never consults this flag. Mirrors `remove`'s `-y/--yes`.
+    yes: {
+      type: "boolean",
+      alias: "y",
+      description:
+        "Skip the confirmation prompt when an update needs to delete a previous install directory (because the resolved content location moved). No effect on a normal refresh, which deletes nothing.",
+      default: false,
+    },
   },
   async run({ args }) {
-    const result = await akmUpdate({ target: args.target, all: args.all, force: args.force });
+    const result = await akmUpdate({ target: args.target, all: args.all, force: args.force, yes: args.yes });
     appendEvent({
       eventType: "update",
       metadata: {
@@ -115,11 +127,6 @@ export const upgradeCommand = defineJsonCommand({
   args: {
     check: { type: "boolean", description: "Check for updates without installing", default: false },
     force: { type: "boolean", description: "Force upgrade even if on latest", default: false },
-    "skip-checksum": {
-      type: "boolean",
-      description: "Skip checksum verification (not recommended)",
-      default: false,
-    },
     "skip-post-upgrade": {
       type: "boolean",
       description: "Skip the post-upgrade index rebuild (migration preflight and apply still run)",
@@ -136,50 +143,45 @@ export const upgradeCommand = defineJsonCommand({
       output("upgrade", check);
       return;
     }
-    const skipChecksum = args["skip-checksum"];
     const skipPostUpgrade = args["skip-post-upgrade"];
     const migrationConfig = args["migration-config"];
-    const result = await performUpgrade(check, { force: args.force, skipChecksum, skipPostUpgrade, migrationConfig });
+    const result = await performUpgrade(check, { force: args.force, skipPostUpgrade, migrationConfig });
     output("upgrade", result);
   },
 });
 
-// `sync` body. Kept as a standalone function so the git-commit/push logic and
-// the `--format`-as-name workaround stay in one place.
-async function runSyncBody(args: { name?: string; message?: string; push?: boolean }, verb: "sync"): Promise<void> {
+// `sync` body, standalone so the git-commit/push logic stays in one place.
+async function runSyncBody(args: { name?: string; message?: string; push?: boolean }): Promise<void> {
   await runWithJsonErrors(async () => {
-    // Fix: citty can consume `--format json` (space-separated) as the
-    // positional `name` argument (e.g. `akm sync --format json` parses
-    // name="json"). Detect the mis-parse by checking argv order — only
-    // treat the positional as consumed by --format when --format appears
-    // before any standalone occurrence of the same value in the sync
-    // subcommand's argv slice. This preserves legitimate invocations
-    // like `akm sync json --format json`.
-    const parsedFormat = getParsedInvocation().getFlagValue("--format");
-    const effectiveName =
-      args.name !== undefined &&
-      parsedFormat !== undefined &&
-      args.name === parsedFormat &&
-      wasFormatValueConsumedAsName(args.name, parsedFormat, verb)
-        ? undefined
-        : args.name;
+    // The optional `name` positional is safe to trust: the global output flags
+    // are declared on the command (GLOBAL_OUTPUT_ARGS), so `akm sync --format
+    // json` parses `json` as the flag's value, never as a stash name.
+    const effectiveName = args.name;
 
     let writable: boolean | undefined;
     if (effectiveName === undefined) {
-      // Primary stash — honour the root-level writable flag from config.
+      // Primary stash — honour the configured default bundle's writable flag.
       writable = resolveWritableOverride(loadConfig());
     }
 
     const result = saveGitStash(effectiveName, args.message, writable, { push: args.push !== false });
+    // 0.9.0 breaking change: both "save" holdovers from the command's
+    // pre-rename name are now "sync" — the persisted eventType below and the
+    // envelope shape emitted at the end of this function. Historical state.db
+    // rows still carry "save" — `readEvents`/`tailEvents` (src/core/events.ts)
+    // treat "save" and "sync" as synonyms on READ so `akm log --type save`
+    // keeps returning both old and new rows. Only the WRITE side changes here.
+    // The envelope shape needs no such synonym: it is per-invocation, never
+    // persisted, so nothing can be holding an old value.
     appendEvent({
-      eventType: "save",
+      eventType: "sync",
       metadata: {
         name: effectiveName ?? null,
         message: args.message ?? null,
         ok: (result as { ok?: boolean }).ok !== false,
       },
     });
-    output("save", result);
+    output("sync", result);
   });
 }
 
@@ -189,7 +191,11 @@ export const syncCommand = defineCommand({
     description:
       "Sync changes in a git-backed stash: commits (and pushes when writable + remote is configured). No-op for non-git stashes.",
   },
+  // Raw defineCommand (not defineJsonCommand), so the global output flags are
+  // spread in explicitly — without them the optional `name` positional would
+  // swallow a space-separated global flag's value.
   args: {
+    ...GLOBAL_OUTPUT_ARGS,
     name: {
       type: "positional",
       description: "Name of the git stash to sync (default: primary stash directory)",
@@ -207,53 +213,9 @@ export const syncCommand = defineCommand({
     },
   },
   async run({ args }) {
-    await runSyncBody(args, "sync");
+    await runSyncBody(args);
   },
 });
-
-/**
- * Detect whether `--format <value>` was consumed by citty as the optional
- * `name` positional of `akm sync`. Returns true only when `--format` appears
- * in the sync subcommand's argv slice AND the candidate name does NOT
- * appear as a standalone positional elsewhere (before or after the flag).
- *
- * This keeps `akm sync json --format json` routing `json` as the stash name,
- * while `akm sync --format json` (no separate positional) is treated as a
- * primary-stash sync. `verb` is the subcommand token to anchor on.
- */
-function wasFormatValueConsumedAsName(name: string, formatValue: string, verb: "sync"): boolean {
-  const argv = getParsedInvocation().userArgs;
-  const verbIndex = argv.indexOf(verb);
-  const tokens = verbIndex >= 0 ? argv.slice(verbIndex + 1) : argv;
-
-  let formatIndex = -1;
-  let formatConsumesNextToken = false;
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    if (token === "--format") {
-      formatIndex = i;
-      formatConsumesNextToken = true;
-      break;
-    }
-    if (token === `--format=${formatValue}`) {
-      formatIndex = i;
-      break;
-    }
-  }
-
-  if (formatIndex === -1) return false;
-
-  // If the name appears as a standalone token before --format, it's the
-  // real positional and --format did not consume it.
-  if (tokens.slice(0, formatIndex).includes(name)) return false;
-
-  // If --format has a space-separated value, skip past the value token
-  // when scanning after the flag; otherwise start right after the flag.
-  const firstTokenAfterFormat = formatIndex + (formatConsumesNextToken ? 2 : 1);
-  if (tokens.slice(firstTokenAfterFormat).includes(name)) return false;
-
-  return true;
-}
 
 export const cloneCommand = defineJsonCommand({
   meta: {
@@ -261,7 +223,7 @@ export const cloneCommand = defineJsonCommand({
     description: "Clone an asset from any source into a managed bundle or an unmanaged custom destination",
   },
   args: {
-    ref: { type: "positional", description: "Asset ref (e.g. npm:@scope/pkg//script:deploy.sh)", required: true },
+    ref: { type: "positional", description: "Asset ref (e.g. npm:@scope/pkg//scripts/deploy.sh)", required: true },
     name: { type: "string", description: "New name for the cloned asset" },
     force: { type: "boolean", description: "Overwrite if the asset already exists at the destination", default: false },
     target: {
@@ -291,7 +253,7 @@ export const historyCommand = defineJsonCommand({
       "Event sources:\n" +
       "  usage_events (default): search, show, and feedback events from the local index.\n" +
       "  state.db events (--include-proposals): proposal lifecycle events (promoted, rejected)\n" +
-      "    emitted by `akm accept` / `akm reject`.\n\n" +
+      "    emitted by `akm proposal accept` / `akm proposal reject`.\n\n" +
       "Results from all active sources are merged and sorted chronologically.",
   },
   args: {
@@ -315,7 +277,6 @@ export const historyCommand = defineJsonCommand({
         "Useful for measuring which generators (reflect, distill, …) produce the most accepted proposals.",
       default: false,
     },
-    format: { type: "string", description: "Output format (json|jsonl|text|yaml)" },
   },
   async run({ args }) {
     const generatorFlag = args.generator as "user" | "improve" | "task" | "audit" | "unknown" | undefined;

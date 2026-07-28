@@ -36,8 +36,14 @@
  *     direct callers such as `enhanceMetadata`).
  */
 
-import type { AkmConfig, LlmProfileConfig } from "../core/config/config";
-import { type ChatMessage, chatCompletion, isContextSizeError, LlmCallError } from "./client";
+import type { AkmConfig } from "../core/config/config";
+import {
+  type ChatCompletionConfig,
+  type ChatMessage,
+  chatCompletion,
+  isContextSizeError,
+  LlmCallError,
+} from "./client";
 import { type LlmFeatureKey, type TryLlmFeatureFallbackEvent, tryLlmFeature } from "./feature-gate";
 
 /**
@@ -87,7 +93,7 @@ export interface CallStructuredRequest {
    * so no real request is made; production callers leave it unset.
    */
   chat?: (
-    config: LlmProfileConfig,
+    config: ChatCompletionConfig,
     messages: ChatMessage[],
     options?: {
       temperature?: number;
@@ -118,8 +124,8 @@ export interface CallStructuredOptions<T> {
    * omitting it hard-disables the feature. Ignored on the ungated path.
    */
   enabled?: boolean;
-  /** LLM connection/profile config forwarded to `chatCompletion`. */
-  config: LlmProfileConfig;
+  /** LLM connection config forwarded to `chatCompletion`. */
+  config: ChatCompletionConfig;
   /** The chat messages to send. */
   messages: ChatMessage[];
   /** Per-call request options (temperature/timeout/signal/schema/retry/chat). */

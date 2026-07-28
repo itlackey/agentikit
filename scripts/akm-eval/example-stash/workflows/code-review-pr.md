@@ -35,11 +35,12 @@ A review starts with context the author already had, not a blank slate.
    ```
 
    Cache the JSON in `{{ workspace_dir }}/pr-meta.json`.
-2. Discover project conventions relevant to the changed surfaces:
+2. Discover project conventions relevant to the changed surfaces. Wiki pages
+   are indexed like any other asset, so a plain stash search covers both
+   (there is no `akm wiki search`):
 
    ```sh
    akm search "{{ conventions_query }}"
-   akm wiki search {{ knowledge_wiki }} "{{ conventions_query }}"
    ```
 
    Record the top 5 hits in `{{ workspace_dir }}/conventions.md` with a
@@ -158,11 +159,15 @@ Step ID: capture-heuristics
 
 ### Instructions
 A review that taught you something should leave a trace beyond the PR
-thread.
+thread. A wiki is a plain directory (`schema.md` + `pages/`) that the agent
+edits directly with its normal file tools — there is no `akm wiki` write
+command. Find the wiki's filesystem path with `akm list --format json` (the
+matching source's `path` field) if you do not already have it.
 
 1. If a recurring pattern surfaced (good or bad) that future reviews
-   should look for, add or update a page under `wiki:{{ knowledge_wiki }}`
-   describing it. One page per pattern, not one mega-page.
+   should look for, write or update a page under `pages/` in the
+   `{{ knowledge_wiki }}` wiki describing it. One page per pattern, not one
+   mega-page.
 2. Save personal review heuristics with `akm remember`:
 
    ```sh
@@ -185,7 +190,6 @@ thread.
 4. Re-index so future reviews find the new material:
 
    ```sh
-   akm wiki ingest {{ knowledge_wiki }}
    akm index
    ```
 
@@ -193,4 +197,4 @@ thread.
 - At least one of: a wiki page added/updated, a memory recorded, or an
   explicit note that this PR carried no durable lesson.
 - If `reviewer_persona` was used, a feedback signal is recorded.
-- `akm index` and `akm wiki ingest` complete cleanly.
+- `akm index` completes cleanly.

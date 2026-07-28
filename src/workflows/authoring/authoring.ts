@@ -5,10 +5,22 @@
 import fs from "node:fs";
 import path from "node:path";
 import workflowTemplate from "../../assets/workflows/workflow-template.md" with { type: "text" };
-import { isWithin, resolveStashDir } from "../../core/common";
+import { adapterForId } from "../../core/adapter/registry";
+import type { BundleComponent } from "../../core/adapter/types";
+import { ensureAkmMarkdownType } from "../../core/asset/akm-markdown";
+import { makeBundleRef } from "../../core/asset/asset-ref";
+import { isWithin } from "../../core/common";
+import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
+import { defaultBundleForTarget } from "../../core/mutation-target";
 import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../../core/recognition-util";
 import { warn } from "../../core/warn";
+import {
+  commitWriteTargetBoundary,
+  prepareWriteTargetForMutation,
+  recordWriteTargetPath,
+  resolveWriteTarget,
+} from "../../core/write-source";
 import { compileWorkflowProgram } from "../ir/compile";
 import { parseWorkflow } from "../parser";
 import { parseWorkflowProgram } from "../program/parser";
@@ -30,7 +42,13 @@ export function getWorkflowTemplate(): string {
  * Minimal valid YAML workflow *program* (redesign addendum, R1), printed by
  * `akm workflow template --yaml`. Kept as an external asset file per the repo
  * convention (see `workflow-program-template.yaml` next to this module);
- * `tests/workflows/program-assets.test.ts` pins that it parses AND compiles.
+ * `tests/workflows/authoring-template.test.ts` pins that it parses AND
+ * compiles (in-process, runs unconditionally in `bun run check`/CI).
+ * `tests/integration/node-compat.test.ts` ("workflow template --yaml
+ * round-trips through validate on Node") additionally round-trips it through
+ * the real CLI on the Node runtime, but that one is gated behind
+ * `AKM_NODE_COMPAT_TESTS=1` and does not run by default — it is a bonus
+ * cross-runtime check, not the thing pinning correctness.
  */
 export function getWorkflowProgramTemplate(): string {
   return workflowProgramTemplate;
@@ -85,9 +103,12 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
   path: string;
   stashDir: string;
 } {
-  const stashDir = resolveStashDir();
-  const typeRoot = path.join(stashDir, "workflows");
-  fs.mkdirSync(typeRoot, { recursive: true });
+  const config = loadConfig();
+  const resolvedTarget = resolveWriteTarget(config);
+  const target = prepareWriteTargetForMutation(resolvedTarget, { allowedAdapters: ["akm", "akm-workflow"] });
+  const stashDir = target.source.path;
+  const standaloneWorkflowBundle = target.source.adapterId === "akm-workflow";
+  const typeRoot = standaloneWorkflowBundle ? stashDir : path.join(stashDir, "workflows");
 
   // A `.yaml`/`.yml` name selects the YAML *program* format (redesign
   // addendum, R1); capture the exact suffix the user typed so the written file
@@ -97,6 +118,7 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
   const isProgram = programSuffix !== undefined;
 
   const normalizedName = normalizeWorkflowName(input.name);
+  const conceptId = standaloneWorkflowBundle ? normalizedName : `workflows/${normalizedName}`;
   // The write target is DEFINITIVE — the canonical name plus the chosen format's
   // extension (`.yaml`/`.yml` for a program, `.md` for markdown). We deliberately
   // do NOT go through `assetPathForName`, which PROBES existing files and
@@ -105,7 +127,16 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
   // create always write `.md`, so the finding-C cross-extension check below sees
   // the real collision instead of a self-match.
   const targetSuffix = isProgram ? (programSuffix as string) : ".md";
-  const assetPath = path.join(typeRoot, `${normalizedName}${targetSuffix}`);
+  const component: BundleComponent = {
+    id: target.source.name,
+    adapter: target.source.adapterId ?? "akm",
+    root: stashDir,
+    writable: true,
+  };
+  const assetPath = standaloneWorkflowBundle
+    ? (adapterForId("akm-workflow")?.placeNew?.(component, `${normalizedName}${targetSuffix}`) ??
+      path.join(typeRoot, `${normalizedName}${targetSuffix}`))
+    : path.join(typeRoot, `${normalizedName}${targetSuffix}`);
   if (!isWithin(assetPath, typeRoot)) {
     throw new UsageError(`Resolved workflow path escapes the stash: "${normalizedName}"`, "PATH_ESCAPE_VIOLATION");
   }
@@ -118,14 +149,12 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
   // (the target path itself exists) keeps the classic `--force` overwrite escape;
   // a DIFFERENT-extension collision cannot be force-overwritten (writing a new
   // file would leave the old one shadowing it) — remove the existing file first.
-  const existingPaths = WORKFLOW_EXTENSIONS.map((ext) => path.join(typeRoot, `${normalizedName}${ext}`)).filter(
-    (candidate) => fs.existsSync(candidate),
-  );
+  const existingPaths = findExistingWorkflowPaths(typeRoot, normalizedName);
   const conflicting = existingPaths.find((p) => p !== assetPath);
   if (conflicting !== undefined) {
     throw new UsageError(
       `Workflow "${normalizedName}" already exists as ${path.relative(stashDir, conflicting)} — the ` +
-        `\`workflows/${normalizedName}\` ref resolves to that file, so creating this one would shadow it. ` +
+        `\`${conceptId}\` ref resolves to that file, so creating this one would shadow it. ` +
         `Remove or rename the existing file first, or create the workflow under a different name.`,
       "RESOURCE_ALREADY_EXISTS",
     );
@@ -163,14 +192,41 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
     }
   }
 
+  const authoredContent = isProgram ? content : ensureAkmMarkdownType(content, "workflow");
   fs.mkdirSync(path.dirname(assetPath), { recursive: true });
-  fs.writeFileSync(assetPath, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+  fs.writeFileSync(assetPath, authoredContent.endsWith("\n") ? authoredContent : `${authoredContent}\n`, "utf8");
+  recordWriteTargetPath(target.source, assetPath);
+
+  const defaultBundle = defaultBundleForTarget(config);
+  const ref = makeBundleRef(target.source.name === defaultBundle ? undefined : target.source.name, conceptId);
+  commitWriteTargetBoundary(target, `Create ${ref}`);
 
   return {
-    ref: `workflows/${normalizedName}`,
+    ref,
     path: assetPath,
     stashDir,
   };
+}
+
+function findExistingWorkflowPaths(typeRoot: string, normalizedName: string): string[] {
+  const parent = path.join(typeRoot, path.dirname(normalizedName));
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(parent, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const basename = path.basename(normalizedName);
+  return WORKFLOW_EXTENSIONS.flatMap((extension) =>
+    entries
+      .filter((entry) => {
+        if (!entry.isFile() && !entry.isSymbolicLink()) return false;
+        const entryExtension = path.extname(entry.name);
+        return entryExtension.toLowerCase() === extension && entry.name.slice(0, -entryExtension.length) === basename;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((entry) => path.join(parent, entry.name)),
+  );
 }
 
 function readWorkflowSource(source: string, stashDir: string): string {

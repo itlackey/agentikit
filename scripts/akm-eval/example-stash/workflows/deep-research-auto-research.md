@@ -337,16 +337,34 @@ Step ID: write-and-ingest-wiki
 
 ### Instructions
 Turn the validated research into reusable wiki pages so future runs can start
-from accumulated knowledge instead of the open web alone.
+from accumulated knowledge instead of the open web alone. A wiki is a plain
+directory (`schema.md` + `pages/` + `raw/`) recognized by the `llm-wiki`
+adapter on `akm index` — there is no `akm wiki` command family (`create`,
+`ingest`, `lint`, `stash`, `search` are all unknown commands, exit 2); every
+write below uses the agent's normal file tools.
 
 Resolve the target wiki:
 
 - If `wiki_name` is provided, use it.
 - Otherwise default to `research`.
-- If the wiki does not exist, create it with `akm wiki create {{ wiki_name }}`.
+- If the wiki does not exist yet, create it by hand at
+  `wikis/{{ wiki_name }}/`: a `schema.md` rulebook plus empty `pages/` and
+  `raw/` directories is enough, then register it as its own bundle:
 
-Before editing pages, run `akm wiki ingest {{ wiki_name }}` and follow the
-printed ingest recipe for that wiki.
+  ```sh
+  akm add wikis/{{ wiki_name }} --name {{ wiki_name }}
+  ```
+
+  Point `akm add` at the wiki's own directory, not a path nested inside the
+  primary AKM stash — a nested path gets claimed by the primary stash's own
+  adapter instead of `llm-wiki` and loses wiki recognition.
+- If it already exists, find its registered path with
+  `akm list --format json` (the matching source's `path` field) if you do
+  not already have it.
+
+There is no ingest command — copy or write the raw material straight into
+the wiki's `raw/` directory yourself, one immutable file per source,
+following whatever conventions `schema.md` sets.
 
 Write at least these wiki pages:
 
@@ -365,9 +383,9 @@ Each wiki page should:
 - link to related pages in both directions where appropriate
 - cite the relevant raw sources or research artifacts
 
-Stash the durable research artifacts under the wiki's `raw/` directory using
-`akm wiki stash {{ wiki_name }} <source>` for materials worth preserving, such
-as:
+Stash the durable research artifacts under the wiki's `raw/` directory —
+copy or write the file there directly (there is no `akm wiki stash`
+command) — for materials worth preserving, such as:
 
 - the final report
 - the source map
@@ -377,18 +395,24 @@ as:
 Then:
 
 - update `log.md` with the ingest summary, source slugs, and touched pages
-- run `akm index` so `index.md` is regenerated
-- run `akm wiki lint {{ wiki_name }}` and fix any findings
-- run `akm wiki search {{ wiki_name }} "<core terms>"` to confirm the pages are
-  searchable
+- update `index.md` yourself if it needs a fresh catalog — akm never writes
+  it, `index.md` is reserved (never indexed as a concept) but otherwise
+  agent-maintained
+- run `akm index` so the new/updated pages are searchable
+- there is no `akm wiki lint`, and `akm lint` does not currently reach
+  bundle-adapter content such as wiki pages (verified: `akm lint --dir
+  <wiki-root>` returns zero findings even against a deliberately broken
+  xref) — check `xrefs:`/`sources:` by hand against `schema.md` before
+  treating a page as done
+- run `akm search "<core terms>"` to confirm the pages are searchable
 
 ### Completion Criteria
 - The target wiki exists and has the new or updated pages.
 - Relevant raw artifacts have been stashed under `wikis/{{ wiki_name }}/raw/`.
-- New pages include required frontmatter, xrefs, and sources.
-- `akm index` and `akm wiki lint {{ wiki_name }}` complete without unresolved
-  findings.
-- The research is now discoverable through wiki search, not only the run
+- New pages include required frontmatter, xrefs, and sources, checked by
+  hand against `schema.md`.
+- `akm index` completes cleanly.
+- The research is now discoverable through `akm search`, not only the run
   workspace.
 
 ## Step: Audit and package the run

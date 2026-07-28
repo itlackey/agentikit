@@ -42,8 +42,10 @@
  *      passed through. akm never depends on it (plan §"Session, MCP, and
  *      identity across harnesses").
  *
- * NOT registered anywhere: attaching this as `AkmHarness.resultExtractor` on
- * an amazonq registry entry is the follow-up integration task.
+ * Registered: `amazonqResultExtractor` is `AmazonqHarness.resultExtractor`
+ * (`./index.ts`); the engine resolves it via `getHarness()` in
+ * `workflows/exec/native-executor.ts` to normalize agent-unit stdout before
+ * schema validation.
  */
 
 import type { AgentResultExtraction, AgentResultExtractor } from "../../agent/builder-shared";

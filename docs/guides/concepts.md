@@ -1,8 +1,9 @@
 # Concepts
 
-`akm` is a package manager for AI agent capabilities. It organizes scripts,
-skills, commands, agents, knowledge documents, env files, secrets, workflows,
-wikis, and memories into a searchable library that any AI coding assistant can use.
+`akm` is a knowledge toolkit for AI agents. It organizes scripts, skills,
+commands, agents, knowledge documents, env files, secrets, workflows, and
+memories into a searchable library that any AI coding assistant can use, and
+gives you the verbs to capture, curate, and share what accumulates there.
 
 ## Mental Model
 
@@ -34,7 +35,7 @@ The user never picks the kind. `akm add` infers it from the input shape.
    registries with `akm registry add`.
 3. **Assets** are the individual capabilities an agent discovers and uses:
    scripts, skills, commands, agents, knowledge documents, env files,
-   secrets, workflows, wikis, and memories.
+   secrets, workflows, and memories.
 
 Your **working stash** (`~/akm`) is created by `akm setup` — it's the
 primary directory for your personal, editable assets, and is registered as
@@ -79,11 +80,17 @@ my-stash/
   env/            # Environment files (.env) — groups of related config, loaded whole
   secrets/        # Secrets — one sensitive value per file (auth tokens, keys, certs)
   workflows/      # Workflow documents (.md) and YAML v2 programs (.yaml/.yml)
-  wikis/          # LLM Wiki bundles, recognized by the llm-wiki adapter (see docs/guides/wikis.md)
   lessons/        # Distilled lessons (.md, see akm improve / proposals)
   memories/       # Recalled context fragments (.md)
+  facts/          # Durable stash-level facts (.md, see "Asset Types" below)
+  tasks/          # Scheduled or on-demand automation tasks (.yml)
+  sessions/       # Machine-placed indexed session summaries (.md)
   .meta/          # Optional stash orientation, not indexed (see "Metadata" below)
 ```
+
+LLM Wikis are a related but separate concept: a wiki is its own installable
+bundle (`akm add github:team/research-wiki`), not a type-subdirectory inside a
+regular stash. See [Wikis](wikis.md) for how akm recognizes and indexes them.
 
 ## Asset Types
 
@@ -97,7 +104,7 @@ There are thirteen asset types:
 | **agent** | An agent definition | A system prompt, model hint, and tool policy |
 | **knowledge** | A reference document | Navigable content with TOC and section views |
 | **env** | A `.env` file of related **configuration** for an app/service | Key names and comments, never values. Holds a group of related settings (URLs, flags, and any credentials it needs); values may or may not be sensitive but are always protected. Key names are intentionally discoverable — they appear in `env list`, search results, and agent context by design. Inject via `akm env run <ref> -- <cmd>`; prefer `--clean` in agent contexts so the child starts from a minimal inherited environment. |
-| **secret** | A single sensitive value for **authentication** (token, key, cert) | Name only — the entire file is the value and never appears in output. Use for one credential used on its own; for a group of related config use `env`. Access via `akm secret path` / `akm secret run` |
+| **secret** | A single sensitive value for **authentication** (token, key, cert) | Name only — the entire file is the value and never appears in output. Use for one credential used on its own; for a group of related config use `env`. Access via `akm secret run` |
 | **workflow** | A structured multi-step procedure | Parsed steps, completion criteria, and resumable run state |
 | **lesson** | A distilled feedback lesson | `when_to_use` guidance plus the lesson body (see [`akm improve`](../reference/cli.md#improve)) |
 | **memory** | Context from external systems | Background information the agent should consider |
@@ -164,9 +171,11 @@ them in search. The supported values, from strongest to weakest authority:
 | `archived` | Soft-deleted; retained for audit | strongest penalty |
 
 `akm search` filters via `--belief current|historical|all`:
-- `current` (default for memory search) → `active` + `asserted`
+- `current` → `active` + `asserted`
 - `historical` → `deprecated` + `superseded` + `contradicted` + `archived`
-- `all` → no filter
+- `all` (default — no filter) → every belief state, including `archived` and
+  `contradicted` memories, is eligible to surface. Pass `--belief current`
+  explicitly to keep only active/asserted memories.
 
 ### Derived memories as retrieval shortcuts
 
@@ -230,23 +239,49 @@ knowledge/clientX/api-guide.md   →  knowledge/clientX/api-guide
 This works for **any** asset type. The subpath segments become part of the
 conceptId, so `akm search "projectA" --type memory` narrows results to
 that subtree, and `akm show memories/projectA/auth-tip` resolves the full ref.
-There is also a **ref-prefix query syntax**: `akm search "memory:projectA/"`
-enumerates exactly that subtree (recursive, `/`-boundary exact — a
-sibling `projectAlpha/` scope does not leak), and a bare `akm search
-"memory:"` lists every memory. Ref-prefix hits are a deterministic listing
-with the fixed browse score `1`, not a relevance ranking. A full ref
-(`memories/projectA/auth-tip`) stays an ordinary keyword search — resolving a
-single ref is `akm show`'s job — and an explicit `--type` flag always wins
-over the type parsed from the query. See [cli.md](../reference/cli.md#search) for the
-full ref-prefix query rules.
+
+There is also a **ref-prefix query syntax** — a query that is a conceptId
+prefix ending in `/` enumerates that subtree instead of keyword-matching:
+
+```sh
+akm search "memories/"                  # every memory
+akm search "memories/projectA/"         # exactly that subtree
+akm search "team-catalog//"             # every item in one bundle
+akm search "team-catalog//skills/"      # one subtree of one bundle
+```
+
+Enumeration is `/`-boundary exact — a sibling `projectAlpha/` scope does not
+leak — and hits are a deterministic listing with the fixed browse score `1`,
+not a relevance ranking. Because it matches conceptIds, it works for items
+from every adapter, and you can copy a ref prefix straight out of search
+output and paste it back as a query. A complete ref
+(`memories/projectA/auth-tip`, no trailing `/`) stays an ordinary keyword
+search — resolving a single ref is `akm show`'s job.
+
+(Before 0.9.0 this syntax was spelled `memory:projectA/`, using the retired
+singular type token. That spelling is gone; use the conceptId prefix.)
 
 **Recommendation:** use physical subdirectories now to organize multi-project
 or multi-team stashes. They sort cleanly on disk and require no configuration.
-Treat the resulting ref as permanent — a raw file rename breaks inbound refs
-and resets the asset's usage-ranking history. When a rename is unavoidable,
-use `akm mv <ref> <new-name>` (Experimental): it rewrites inbound refs across
-the writable stash and re-keys the index row in place so the learned ranking
-history survives. See [cli.md](../reference/cli.md#mv-experimental).
+
+**Treat a ref as permanent.** A rename is **delete plus create**: the new path
+is a new identity, so the destination starts with fresh learned state
+(utility, salience, usage history) and any inbound refs to the old path
+dangle. When you must rename:
+
+```sh
+mv ~/akm/memories/old-note.md ~/akm/memories/new-note.md
+# update any intentional refs (they are fully qualified: bundle//memories/old-note)
+akm index
+akm lint          # confirms nothing dangles
+```
+
+Moving an item between bundles is copy/import followed by deletion from the
+source — both the bundle and the concept identity change. (The `akm mv` command
+promises identity-preserving renames, but it implements prose-ref rewriting
+inverted, so 0.9.0 classifies it **Experimental** and outside the stability
+contract; the procedure above is the recommended one. See
+[the decision record](../architecture/specs/0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-ships-experimental).)
 
 **Which subdirectory?** Choose the partition axis by asset **type**:
 scope-born types (`memory`, `lesson`, `task`, `env`, `secret`) take the current
@@ -262,7 +297,7 @@ time.
 Future iterations (no committed dates):
 
 - A `--namespace <ns>` flag will provide a thin name-prefix normalizer on
-  `search`, `remember`, `improve`, `distill`, and `feedback` so the same
+  `search`, `remember`, `improve`, and `feedback` so the same
   prefix doesn't have to be typed every time.
 - A `::` delimiter (for example `projectA::memories/auth-tip`) will provide
   strict isolation so refs from different namespaces never collide in
@@ -289,7 +324,7 @@ sidecar: frontmatter for markdown assets, and structured comments for
 scripts. The indexer derives metadata from filenames, code comments,
 frontmatter, and package.json.
 
-See [technical/filesystem.md](../architecture/internals/storage-locations.md) for the full field reference.
+See [Filesystem Layout](../architecture/internals/storage-locations.md) for the full field reference.
 
 ### Stash orientation: the `.meta/` convention
 
@@ -314,14 +349,22 @@ demand**:
 ```sh
 akm show meta                       # working stash's .meta/index.md
 akm show meta:about                 # working stash's .meta/about.md
-akm show local//meta                # the primary stash explicitly
-akm show github:owner/repo//meta    # an installed stash's .meta/index.md
+akm show akm//meta                  # the primary stash explicitly
 ```
 
 `akm show <origin>//meta:<name>` resolves `<name>.md` first, then an
 extensionless `<name>`. The convention is open-ended: stash owners add new docs
 by dropping files into `.meta/` — no configuration or code changes required.
 `akm init` scaffolds a starter `.meta/index.md`.
+
+**Known gap (Q-19):** an install-ref origin (`akm show github:owner/repo//meta`)
+does not currently resolve even for an installed stash — `resolveSourcesForOrigin`
+(`src/registry/origin-resolve.ts`) matches only derived installation ids, not
+raw install refs, and this is pinned by a test
+(`tests/integration/origin-resolve.test.ts`: "does not parse a full install
+locator as an asset bundle"). Use `akm//meta` for the primary stash, or the
+bundle key you gave it in `bundles` (`config.json`), not the original install
+ref.
 
 ## Script Execution (ExecHints)
 

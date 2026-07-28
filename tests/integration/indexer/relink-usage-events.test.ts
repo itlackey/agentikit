@@ -15,8 +15,7 @@ import { relinkUsageEvents } from "../../../src/storage/repositories/index-entri
  * `bundle//conceptId` item_ref spelling (the one-time legacy→item_ref re-key is
  * owned by the migration cutover). The relink re-resolves detached rows through
  * the canonical `findEntryIdByRef` resolver, which keys on the durable
- * `entries.item_ref`. A short conceptId (no bundle) resolves within the default
- * stash root.
+ * `entries.item_ref`. Bare durable refs are ignored.
  */
 describe("relinkUsageEvents", () => {
   // Chunk-8 WI-8.3: usage_events lives in state.db; `entries` in index.db. The
@@ -70,13 +69,13 @@ describe("relinkUsageEvents", () => {
     ensureUsageEventsSchema(stateDb);
   });
 
-  test("relinks a short conceptId ref within the default root after entry ids change", () => {
-    const id = seedEntry("stash", "skills/deploy", "/home/u/akm");
+  test("leaves a bare conceptId ref detached", () => {
+    seedEntry("stash", "skills/deploy", "/home/u/akm");
     insertEvent("skills/deploy", null); // detached (e.g. after a full rebuild)
 
     relinkUsageEvents(indexDb, stateDb, { defaultStashDir: "/home/u/akm" });
 
-    expect(entryIdFor("skills/deploy")).toBe(id);
+    expect(entryIdFor("skills/deploy")).toBeNull();
   });
 
   test("relinks a fully-qualified bundle//conceptId ref by its globally-unique item_ref", () => {
@@ -92,7 +91,7 @@ describe("relinkUsageEvents", () => {
     expect(entryIdFor("getsentry-skills//knowledge/skills/skill-writer/references/workflow-routing")).toBe(id);
   });
 
-  test("relinks duplicate conceptId refs by bundle and routes a short ref to the default root", () => {
+  test("relinks duplicate conceptId refs by bundle without adopting a bare ref", () => {
     const stashRoot = "/home/u/akm";
     const teamRoot = "/home/u/team";
     const stashId = seedEntry("stash", "memories/duplicate", stashRoot);
@@ -111,7 +110,7 @@ describe("relinkUsageEvents", () => {
 
     expect(entryIdFor("stash//memories/duplicate")).toBe(stashId);
     expect(entryIdFor("team//memories/duplicate")).toBe(teamId);
-    expect(entryIdFor("memories/duplicate")).toBe(stashId);
+    expect(entryIdFor("memories/duplicate")).toBeNull();
   });
 
   test("leaves a genuinely-orphaned ref null (no matching entry)", () => {
@@ -127,19 +126,19 @@ describe("relinkUsageEvents", () => {
     const id = seedEntry("stash", "skills/deploy", "/home/u/akm");
     // Event points at a stale id (99) that no longer exists, but carries a
     // resolvable ref.
-    insertEvent("skills/deploy", 99);
+    insertEvent("stash//skills/deploy", 99);
 
     relinkUsageEvents(indexDb, stateDb, { defaultStashDir: "/home/u/akm" });
 
-    expect(entryIdFor("skills/deploy")).toBe(id);
+    expect(entryIdFor("stash//skills/deploy")).toBe(id);
   });
 
   test("does not clobber already-correct links", () => {
     const id = seedEntry("stash", "skills/deploy", "/home/u/akm");
-    insertEvent("skills/deploy", id);
+    insertEvent("stash//skills/deploy", id);
 
     relinkUsageEvents(indexDb, stateDb);
 
-    expect(entryIdFor("skills/deploy")).toBe(id);
+    expect(entryIdFor("stash//skills/deploy")).toBe(id);
   });
 });

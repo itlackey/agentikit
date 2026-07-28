@@ -94,7 +94,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
         task,
         [...(opts?.binding ?? akmArgv)],
         logDir,
-        opts?.contextPath === null ? undefined : (opts?.contextPath ?? defaultContextPath),
+        opts?.contextPath ?? defaultContextPath,
         opts?.target,
       );
       assertPortableCronLine(cronLine);
@@ -118,12 +118,29 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
       const existing = readCrontab(exec);
       return listBlocks(existing).map(({ id, body }) => {
         const installed = extractCronInvocation(body);
+        if (!installed) {
+          throw new ConfigError(
+            `Crontab task "${id}" does not contain a current AKM scheduler invocation.`,
+            "INVALID_CONFIG_FILE",
+          );
+        }
         return {
           id,
           signature: normalizeSignature(body),
           ...(installed?.target !== undefined ? { target: installed.target } : {}),
-          ...(installed?.binding !== undefined ? { binding: installed.binding } : {}),
-          ...(installed?.contextPath !== undefined ? { contextPath: installed.contextPath } : {}),
+          binding: installed.binding,
+          contextPath: installed.contextPath,
+        };
+      });
+    },
+    listForRebind() {
+      const existing = readCrontab(exec);
+      return listBlocks(existing).map(({ id, body }) => {
+        const installed = extractCronInvocation(body);
+        return {
+          id,
+          signature: normalizeSignature(body),
+          ...(installed?.target !== undefined ? { target: installed.target } : {}),
         };
       });
     },
@@ -132,7 +149,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
         task,
         [...(opts?.binding ?? akmArgv)],
         logDir,
-        opts?.contextPath === null ? undefined : (opts?.contextPath ?? defaultContextPath),
+        opts?.contextPath ?? defaultContextPath,
         opts?.target,
       );
       assertPortableCronLine(cronLine);
@@ -147,7 +164,7 @@ export function buildCronLine(
   task: TaskDocument,
   akmArgv: string[],
   logDir: string,
-  contextPath: string | undefined,
+  contextPath: string,
   target?: string,
 ): string {
   const spec = parseSchedule(task.schedule, "cron");
@@ -239,7 +256,9 @@ export function extractCronInvocation(body: string): ReturnType<typeof parseSche
   if (fields.length < 6) return undefined;
   let commandStart = 5;
   while (commandStart < fields.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(fields[commandStart]!)) commandStart += 1;
-  return parseScheduledTaskArgv(fields.slice(commandStart));
+  const redirectIndex = fields.indexOf(">>", commandStart);
+  if (redirectIndex === -1) return undefined;
+  return parseScheduledTaskArgv(fields.slice(commandStart, redirectIndex));
 }
 
 /** Reverse {@link quoteForCron} for a single whitespace-free token. */

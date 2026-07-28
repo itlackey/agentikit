@@ -143,6 +143,9 @@ describe("improve engine-plan boundaries", () => {
       const config: AkmConfig = {
         configVersion: "0.9.0",
         semanticSearchMode: "off",
+        // D8 — contradiction detection is a gated lane; this test is about the
+        // strategy/connection it receives, not about the gate.
+        experimental: { improveAutonomy: true },
         bundles: { stash: { path: stash.dir, writable: true } },
         defaultBundle: "stash",
         engines: { consolidate: llm("contradiction-model") },
@@ -257,7 +260,7 @@ describe("improve engine-plan boundaries", () => {
             ok: true,
             outcome: "skipped",
             inputRef: options.ref,
-            lessonRef: "lessons/source-lesson",
+            proposalRef: "lessons/source-lesson",
           };
         },
         loopRefs: [{ ref: "memories/source", reason: "scope-ref" }],

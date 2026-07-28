@@ -1,6 +1,6 @@
 import path from "node:path";
 import { deleteStoredGraph, loadStoredGraphSnapshot, replaceStoredGraph } from "../../src/indexer/db/graph-db";
-import type { GraphFile } from "../../src/indexer/graph/graph-extraction";
+import type { GraphFile } from "../../src/indexer/graph/graph-types";
 import { deriveEntryProvenance } from "../../src/indexer/installations";
 import { buildSearchText } from "../../src/indexer/search/search-fields";
 import type { Database } from "../../src/storage/database";

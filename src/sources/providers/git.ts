@@ -10,7 +10,14 @@
 // Re-exported here so every consumer (and every `spyOn(gitProvider, …)` test)
 // keeps importing from a single module namespace.
 
-export { classifyCloneFailure, cloneRepo, runGit, syncRegistryGitRef } from "./git-install";
+export {
+  classifyCloneFailure,
+  cloneRepo,
+  type GitUpstreamState,
+  inspectGitUpstream,
+  runGit,
+  syncExistingWritableCheckout,
+} from "./git-install";
 export {
   ensureGitMirror,
   GitSourceProvider,

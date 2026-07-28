@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { runCliCapture } from "../_helpers/cli";
+import { durableItemRef } from "../_helpers/durable-ref";
 import { seedStoredGraph } from "../_helpers/graph-store";
 import { withEnv } from "../_helpers/sandbox";
 
@@ -94,13 +95,13 @@ afterEach(() => {
 });
 
 describe("capture commands", () => {
-  async function expectInitFlagUsesCustomDir(flag: "--dir" | "--stashDir") {
+  async function expectInitUsesCustomDir() {
     const parentDir = makeTempDir("akm-init-parent-");
     const customDir = path.join(parentDir, "custom-stash");
     const homeDir = makeTempDir("akm-init-home-");
     // Init's sandbox guard (item 6) refuses explicit --dir /tmp/... under a
     // test runner; this test legitimately exercises that flag, so opt out.
-    const { result } = await runCli(["init", flag, customDir], {
+    const { result } = await runCli(["init", "--dir", customDir], {
       env: { HOME: homeDir, AKM_FORCE_INIT_TMP_STASH: "1" },
     });
     expect(result.status).toBe(0);
@@ -123,11 +124,7 @@ describe("capture commands", () => {
   }
 
   test("init honors --dir for a custom stash path", async () => {
-    await expectInitFlagUsesCustomDir("--dir");
-  });
-
-  test("init honors legacy --stashDir as an alias for --dir", async () => {
-    await expectInitFlagUsesCustomDir("--stashDir");
+    await expectInitUsesCustomDir();
   });
 
   test("remember stores a memory in the stash and returns its ref", async () => {
@@ -136,7 +133,7 @@ describe("capture commands", () => {
 
     const json = JSON.parse(result.stdout) as { ok: boolean; ref: string; path: string };
     expect(json.ok).toBe(true);
-    expect(json.ref).toBe("memories/deployment-needs-vpn-access");
+    expect(json.ref).toBe(durableItemRef(stashDir, "memory", "deployment-needs-vpn-access"));
     expect(fs.existsSync(path.join(stashDir, "memories", "deployment-needs-vpn-access.md"))).toBe(true);
 
     const show = (await runCli(["show", json.ref], { stashDir })).result;
@@ -179,7 +176,7 @@ describe("capture commands", () => {
 
     const json = JSON.parse(result.stdout) as { ok: boolean; ref: string; path: string };
     expect(json.ok).toBe(true);
-    expect(json.ref).toBe("knowledge/release-notes");
+    expect(json.ref).toBe(durableItemRef(stashDir, "knowledge", "release-notes"));
     expect(fs.existsSync(path.join(stashDir, "knowledge", "release-notes.md"))).toBe(true);
 
     const show = (await runCli(["show", json.ref], { stashDir })).result;
@@ -196,7 +193,7 @@ describe("capture commands", () => {
     expect(result.status).toBe(0);
 
     const json = JSON.parse(result.stdout) as { ref: string };
-    expect(json.ref).toBe("knowledge/scratch-notes");
+    expect(json.ref).toBe(durableItemRef(stashDir, "knowledge", "scratch-notes"));
     expect(fs.existsSync(path.join(stashDir, "knowledge", "scratch-notes.md"))).toBe(true);
   });
 

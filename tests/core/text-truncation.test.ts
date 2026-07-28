@@ -41,6 +41,11 @@ describe("detectTruncatedDescription — shared truncation heuristic", () => {
     expect(detectTruncatedDescription("Before deleting any legacy CSS rule, verify shared.css has")).not.toBeNull();
     // case-insensitive lookup
     expect(detectTruncatedDescription("Closes with The")).not.toBeNull();
+    // Folded from tests/integration/commands/consolidate/consolidate-pipeline-fixes.test.ts (D3):
+    // a real truncation observed in consolidate proposal output, ending on "be".
+    expect(
+      detectTruncatedDescription("Eval tasks must create a genuine knowledge gap — the skill must be"),
+    ).not.toBeNull();
   });
 
   it("includes both distill-only and consolidate-only legacy words in the union", () => {

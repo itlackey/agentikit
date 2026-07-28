@@ -24,13 +24,22 @@ import path from "node:path";
 import { createWorkflowAsset, validateWorkflowProgramSource } from "../../../src/workflows/authoring/authoring";
 import { getWorkflowStatus, listWorkflowRuns, startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { loadWorkflowAsset } from "../../../src/workflows/runtime/workflow-asset-loader";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
+import {
+  type IsolatedAkmStorage,
+  withIsolatedAkmStorage,
+  writeSandboxConfig,
+  writeWorkflowTestConfig,
+} from "../../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
 
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
   writeWorkflowTestConfig();
+  writeSandboxConfig({
+    bundles: { stash: { path: storage.stashDir, writable: true } },
+    defaultBundle: "stash",
+  });
 });
 
 afterEach(() => storage.cleanup());

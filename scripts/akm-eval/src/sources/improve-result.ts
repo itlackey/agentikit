@@ -2,9 +2,7 @@
  * Loader for improve run envelopes.
  *
  * Source of truth: the `improve_runs` table in `state.db` (added in 0.8.0).
- * Each row holds the full result envelope as `result_json`. The legacy
- * filesystem layout (`<stash>/.akm/runs/<id>/improve-result.json`) was
- * archived during the 0.8.0 migration and is no longer read.
+ * Each row holds the full result envelope as `result_json`.
  *
  * Phase 6 record/replay: `loadImproveResult` honors an optional `recorder`
  * (captures the resolved row for later replay) or `player` (returns
@@ -22,14 +20,12 @@ export type { ImproveResultEnvelope } from "../../../../src/core/improve-result"
 
 interface ImproveRunRow {
   id: string;
-  legacy_profile: string | null;
-  strategy: string | null;
   result_json: string;
 }
 
 const scopedDataDir = new AsyncLocalStorage<string>();
 
-/** Scope legacy improve-result calls to the current EvalContext data directory. */
+/** Scope improve-result calls to the current EvalContext data directory. */
 export function withImproveResultDataDir<T>(dataDir: string, fn: () => T): T {
   return scopedDataDir.run(dataDir, fn);
 }
@@ -116,7 +112,7 @@ export interface LoadImproveResultOptions {
  * Returns:
  *   - runId: the resolved row id
  *   - source: a symbolic locator `state.db//improve_runs/<id>` — preserved
- *     in the legacy `dir` field name expected by callers (collect.ts uses
+ *     in the `dir` field expected by callers (collect.ts uses
  *     it for log/report lines only; nothing reads it as a filesystem path).
  *   - envelope: the parsed AkmImproveResult JSON
  */
@@ -128,8 +124,7 @@ export function loadImproveResult(
   runId: string;
   dir: string;
   envelope: ImproveResultEnvelope;
-  strategy: string | null;
-  legacyProfile: string | null;
+  strategy: string;
 } {
   if (opts.recorder && opts.player) {
     throw new Error("loadImproveResult: cannot record and play back simultaneously");
@@ -138,20 +133,16 @@ export function loadImproveResult(
   const runId = resolveImproveRunId(stashRoot, ref, opts.dataDir);
   const locator = `state.db//improve_runs/${runId}`;
   let raw: string;
-  let storedStrategy: string | null | undefined;
-  let storedLegacyProfile: string | null | undefined;
   if (opts.player) {
     raw = opts.player.nextImproveResult(locator);
   } else {
     const db = new Database(dbPath, { readonly: true });
     try {
       const row = db
-        .prepare("SELECT profile AS legacy_profile, strategy, result_json FROM improve_runs WHERE id = ?")
+        .prepare("SELECT result_json FROM improve_runs WHERE id = ?")
         .get(runId) as ImproveRunRow | undefined;
       if (!row) throw new Error(`improve_runs result_json missing for ${runId}`);
       raw = row.result_json;
-      storedStrategy = row.strategy;
-      storedLegacyProfile = row.legacy_profile;
     } finally {
       db.close();
     }
@@ -162,7 +153,6 @@ export function loadImproveResult(
     runId,
     dir: locator,
     envelope: decoded.envelope,
-    strategy: storedStrategy === undefined ? decoded.strategy : storedStrategy,
-    legacyProfile: storedLegacyProfile === undefined ? decoded.legacyProfile : storedLegacyProfile,
+    strategy: decoded.strategy,
   };
 }

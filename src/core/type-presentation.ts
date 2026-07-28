@@ -97,7 +97,7 @@ export const TYPE_PRESENTATION: Record<KnownType, Presentation> = {
     label: "Secret",
     renderer: "secret-file",
     action: (ref) =>
-      `akm show ${ref} -> name only (value never shown); akm secret path ${ref} -> file path; akm secret run ${ref} <VAR> -- <command> -> run with value injected into $VAR`,
+      `akm show ${ref} -> name only (value never shown); akm secret run ${ref} <VAR> -- <command> -> run with value injected into $VAR`,
   },
   lesson: {
     label: "Lesson",

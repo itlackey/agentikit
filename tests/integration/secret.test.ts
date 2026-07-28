@@ -14,7 +14,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { listNames, readValue, removeSecret, setSecret } from "../../src/commands/env/secret";
+import { readValue, setSecret } from "../../src/commands/env/secret";
 import { resetGraphBoostCache } from "../../src/indexer/graph/graph-boost";
 import { clearEmbeddingCache, resetLocalEmbedder } from "../../src/llm/embedder";
 import { runCliCapture } from "../_helpers/cli";
@@ -94,34 +94,6 @@ describe("secret core module", () => {
     expect(readValue(bp).equals(binary)).toBe(true);
   });
 
-  test("listNames returns names and excludes lock/sensitive sidecars", () => {
-    const root = tmpDir();
-    const secretsDir = path.join(root, "secrets");
-    setSecret(path.join(secretsDir, "alpha"), Buffer.from("a"));
-    setSecret(path.join(secretsDir, "team", "deploy.key"), Buffer.from("b"));
-    // sidecars that must never be listed as secrets
-    fs.writeFileSync(path.join(secretsDir, "alpha.sensitive"), "");
-    fs.writeFileSync(path.join(secretsDir, "stale.lock"), "1");
-
-    const names = listNames(secretsDir);
-    expect(names).toContain("team/deploy.key");
-    expect(names).not.toContain("alpha.sensitive");
-    expect(names).not.toContain("stale.lock");
-    // alpha has a sibling .sensitive marker → suppressed from listing
-    expect(names).not.toContain("alpha");
-  });
-
-  test("removeSecret deletes the secret and its .sensitive marker", () => {
-    const root = tmpDir();
-    const fp = path.join(root, "secrets", "gone");
-    setSecret(fp, Buffer.from("x"));
-    fs.writeFileSync(`${fp}.sensitive`, "");
-    expect(removeSecret(fp)).toBe(true);
-    expect(fs.existsSync(fp)).toBe(false);
-    expect(fs.existsSync(`${fp}.sensitive`)).toBe(false);
-    expect(removeSecret(fp)).toBe(false);
-  });
-
   test("setSecret recovers from a stale lock left by a dead PID", () => {
     const root = tmpDir();
     const fp = path.join(root, "secrets", "locked");
@@ -186,14 +158,75 @@ describe("secret list", () => {
   });
 });
 
-describe("secret remove", () => {
-  test("removes a secret with --yes", async () => {
+// `akm secret remove` was REMOVED from the CLI in 0.9.0 (R-027 / D-49): an
+// audit found it resolved a ref through a DIFFERENT stash-selection path than
+// `secret path` (also removed), so a lookup and a deletion could silently
+// target different files. The owner's ruling was to drop both subcommands
+// rather than reconcile the resolvers. The regression coverage proving the
+// removed spellings fail loudly (real-subprocess exit code, since citty's own
+// "Unknown command" CLIError is only reclassified to exit 2 in the real entry
+// point — the in-process harness used throughout this file maps it to a
+// different code) lives in tests/integration/secret-path-run.test.ts.
+
+describe("colon ref spelling removed (Q-08)", () => {
+  // Exercised via `secret run` (still a live subcommand) rather than the now-
+  // removed `secret path` — both routed the ref through the same
+  // parseSecretRef/assertNotColonRef check (src/core/env-secret-ref.ts), so
+  // the rejection behaviour under test is unchanged by the D-49 removal.
+  test("`secret:<name>` fails loudly naming the slash replacement, instead of a confusing not-found", async () => {
     const stashDir = makeStash();
-    const fp = path.join(stashDir, "secrets", "demo");
+    setSecret(path.join(stashDir, "secrets", "deploy-key"), Buffer.from("the-actual-secret-value"));
+
+    const { status, stderr, stdout } = await runCli(["secret", "run", "secret:deploy-key", "TOKEN", "--", "true"], {
+      AKM_STASH_DIR: stashDir,
+    });
+
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
+    expect(parsed.error).toContain("secret:");
+    expect(parsed.error).toContain("was removed");
+    expect(parsed.error).toContain("secrets/deploy-key");
+    // Never silently resolves to nothing: no value leaked, nothing spawned.
+    expect(stdout.trim()).toBe("");
+    expect(stderr).not.toContain("the-actual-secret-value");
+  });
+
+  test("`secrets:<name>` (plural colon variant) is rejected the same way", async () => {
+    const stashDir = makeStash();
+    setSecret(path.join(stashDir, "secrets", "deploy-key"), Buffer.from("v"));
+
+    const { status, stderr } = await runCli(["secret", "run", "secrets:deploy-key", "TOKEN", "--", "true"], {
+      AKM_STASH_DIR: stashDir,
+    });
+
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
+    expect(parsed.error).toContain("secrets/deploy-key");
+  });
+
+  test("the slash form `secrets/<name>` still resolves normally", async () => {
+    // Uses `secret set` (not `secret run`) for this positive-resolution check:
+    // `secret run`'s success path ends in an unconditional `process.exit`,
+    // which the in-process test harness's exit shim converts into a thrown
+    // "error" that `runWithJsonErrors` re-wraps as a JSON envelope — a
+    // pre-existing harness limitation unrelated to ref resolution (see
+    // tests/integration/secret-run.test.ts's docstring on why its happy path
+    // requires a real subprocess). `secret set` exercises the identical
+    // parseSecretRef resolution without that exit call.
+    const stashDir = makeStash();
+    const fp = path.join(stashDir, "secrets", "deploy-key");
     setSecret(fp, Buffer.from("v"));
 
-    const { status } = await runCli(["secret", "remove", "secrets/demo", "--yes"], { AKM_STASH_DIR: stashDir });
+    const { status } = await runCli(["secret", "set", "secrets/deploy-key", "--from-env", "AKM_VALUE"], {
+      AKM_STASH_DIR: stashDir,
+      AKM_VALUE: "updated-value",
+    });
+
     expect(status).toBe(0);
-    expect(fs.existsSync(fp)).toBe(false);
+    expect(fs.readFileSync(fp, "utf8")).toBe("updated-value");
   });
 });

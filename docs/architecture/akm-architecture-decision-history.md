@@ -48,13 +48,13 @@ Workspace
 
 The major decisions are:
 
-1. **OKF is a flagship adapter and preferred interchange format, not AKM's internal schema and not an asset type.**
-2. **The closed asset-type system is removed.** Native formats and adapters own file semantics.
+1. **OKF is the first-class Markdown baseline.** AKM Markdown is a progressively enhanced OKF-compatible superset; non-Markdown formats remain native.
+2. **The closed asset-type system is removed.** Types are open descriptive data, and adapters decide which types receive specialized behavior.
 3. **A bundle may contain multiple components**, each governed by one adapter.
 4. **Conventions and authoring rules move into adapters.** They are not deleted.
 5. **Sources materialize bytes; adapters interpret files; runtime handlers execute approved capabilities.** These are separate responsibilities.
 6. **Installation is not activation.** Installing and indexing a bundle never grants execution, secret, tool, or scheduling authority.
-7. **The normalized core content model stops at a narrow search document.** There is no semantic-view registry.
+7. **The normalized core projection is additive.** It guarantees generic identity/search/read behavior and permits adapter-owned enhancements; there is no semantic-view registry.
 8. **Search remains one local index.** Search never calls adapters, registries, materializers, or the network at query time.
 9. **Ordinary reads use the absolute path already stored in the index.** There is no adapter read facade for deterministic file reads.
 10. **Website remains a supported refreshable source**, and website snapshots may also be exported into writable native bundles.
@@ -118,7 +118,8 @@ asset type
 
 This would make OKF a bolt-on and leave both `wiki` and `okf` as overlapping generic knowledge abstractions.
 
-**First correction:** remove `wiki` as a core asset type and use OKF compatibility as a foundation rather than a sibling type.
+**First correction:** remove `wiki` as a core asset type and support OKF through
+a dedicated adapter rather than a sibling asset type.
 
 ### 4.2 OKF-native direction
 
@@ -414,10 +415,10 @@ Examples:
 ```text
 personal//engineering/http-caching
 release-automation//workflows/release
-project-claude//.claude/skills/pdf-processing
+project-claude//skills/pdf-processing
 ```
 
-Component is a derived provenance column (longest-prefix match of the concept-id against configured component roots), not a ref segment. Identity excludes:
+Component is provenance from the bundle's single configured component, not a ref segment. The adapter derives concept IDs relative to that component root. Identity excludes:
 
 - source provider;
 - cache path;
@@ -466,21 +467,21 @@ interface IndexDocument {
 
 **Consequence:** OKF, LLM Wiki, Claude, OpenCode, Agent Skills, website snapshots, workflows, tasks, environments, and future standards are integrated through adapters and runtime codecs.
 
-### D2. OKF is a flagship adapter, not the kernel schema
+### D2. OKF is the first-class Markdown baseline
 
-**Decision:** AKM provides excellent OKF production, consumption, validation, search, conversion, and improvement support without forcing other formats through OKF.
+**Decision:** AKM guarantees conformant OKF consumption, indexing, search, and generic content/fragment reads. AKM-authored Markdown is an OKF-compatible superset, and adapters add native behavior progressively. The `okf` adapter remains consumer-only until it owns a complete authoring path.
 
-**Why:** OKF deliberately defines a minimal interoperable representation. Treating it as AKM's hidden object model would create translation loss for native skills, agent configuration, workflow programs, tasks, scripts, and product-specific instruction systems.
+**Why:** OKF deliberately defines the useful minimum for portable Markdown. Using that minimum as the read baseline avoids a closed type gate; keeping capabilities adapter-owned avoids translation loss for native skills, agent configuration, workflow programs, tasks, scripts, sensitive files, and product-specific instruction systems.
 
-**Consequence:** Plain OKF bundles remain independently valid and portable. AKM does not inject automation policy or identity UUIDs into them.
+**Consequence:** Plain OKF bundles remain independently valid and portable. Unknown types receive generic behavior, while the AKM adapter enhances recognized native types without injecting automation policy or identity UUIDs into plain OKF bundles.
 
-### D3. A bundle may contain several components
+### D3. A bundle has one adapter-owned component
 
-**Decision:** The adapter boundary is a component root, not necessarily the whole distributed package.
+**Decision:** One bundle maps to one component root and one adapter. The adapter owns file processing throughout that root and may recognize multiple native types.
 
-**Why:** Real reusable packages may contain knowledge, workflows, tasks, environment templates, scripts, and Agent Skills together. Requiring one adapter per package would either split coherent releases or force a meta-adapter to understand several unrelated formats.
+**Why:** Nested adapter mounts created ambiguous file ownership and required subtraction, collision, and manifest machinery that AKM does not need. Native heterogeneous layouts such as an AKM stash or `.claude` directory already have one format-family owner.
 
-**Consequence:** The bundle is the distribution/versioning unit; components are the format-governed roots.
+**Consequence:** Separately governed roots are registered as separate bundles. There is no package manifest, nested-root subtraction, or cross-component collision machinery.
 
 ### D4. Conventions and authoring rules belong to adapters
 
@@ -758,14 +759,14 @@ A bundle installation records:
 stable workspace bundle name
 materialized root
 source revision/integrity
-one or more component roots
-adapter ID per component
+one component root
+one adapter ID
 writability and trust state
 ```
 
 The bundle name is a workspace identity, not necessarily the upstream package name. Two installations of the same package may use different names when intentionally mounted twice.
 
-Components may not overlap unless the specification and implementation explicitly support deterministic ownership. The default must reject overlapping roots because two adapters claiming the same physical file creates ambiguous identity and mutation ownership.
+Each bundle's selected adapter owns its entire component root. Separately registered bundles may point into the same package, but each has an independent identity and no file is dispatched between nested adapters within one bundle.
 
 ### 8.2 Materializers
 
@@ -1907,9 +1908,9 @@ The adapter refactor is unsuccessful if it only adds a new layer while leaving a
 
 The final architecture is clear, but several implementation choices should remain evidence-driven.
 
-### 14.1 Exact bundle manifest filename and schema
+### 14.1 Single-component config representation
 
-A multi-component manifest is useful, but AKM should avoid making it mandatory for simple single-component installations. The final filename, discovery rules, and package metadata contract require implementation testing.
+0.9.0 retains a single-entry `components` map in workspace config while the runtime enforces one bundle = one component = one adapter. A later config revision may flatten that map; the one-component cardinality and absence of an in-bundle manifest are settled.
 
 ### 14.2 Third-party adapter ABI
 

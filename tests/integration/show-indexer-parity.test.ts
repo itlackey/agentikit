@@ -1,13 +1,13 @@
 /**
  * Parity regression for Phase 4 (spec §10 step 4 / §6.2).
  *
- * `akm show` now consults `indexer.lookup(ref)` first, then reads the file
+ * `akm show` consults `indexer.lookupBundleRef(ref)` first, then reads the file
  * from disk. The risk called out in the v1 implementation plan is that
- * origin-prefixed refs (e.g. `local//skill:foo`) silently regress when the
+ * bundle-qualified refs silently regress when the
  * indexer is consulted instead of the directory walker.
  *
  * This test pins both forms — bare ref and origin-prefixed ref — and asserts
- * that `indexer.lookup` returns the same on-disk path that `akmShowUnified`
+ * that `indexer.lookupBundleRef` returns the same on-disk path that `akmShowUnified`
  * resolves to. If a future refactor changes how the indexer keys assets, this
  * test fails fast instead of silently breaking show for installed sources.
  */
@@ -16,10 +16,12 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { akmSearch } from "../../src/commands/read/search";
 import { akmShowUnified } from "../../src/commands/read/show";
+import { parseBundleRef } from "../../src/core/asset/asset-ref";
 import { resetConfigCache, saveConfig } from "../../src/core/config/config";
-import { akmIndex, lookup } from "../../src/indexer/indexer";
-import { parseAssetRef } from "../../src/migrate/legacy-ref-grammar";
+import { akmIndex, lookupBundleRef } from "../../src/indexer/indexer";
+import type { SourceSearchHit } from "../../src/sources/types";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { getMeta } from "../../src/storage/repositories/index-meta-repository";
 import { searchVec } from "../../src/storage/repositories/index-vec-repository";
@@ -33,6 +35,12 @@ import {
 } from "../_helpers/sandbox";
 
 const createdTmpDirs: string[] = [];
+const WEBSITE_ROOT = path.resolve(__dirname, "../fixtures/bundles/website-snapshot");
+const GENERIC_ROOT = path.resolve(__dirname, "../fixtures/bundles/generic-files");
+const TASK_ROOT = path.resolve(__dirname, "../fixtures/bundles/akm-task");
+const OPENCODE_ROOT = path.resolve(__dirname, "../fixtures/bundles/opencode");
+const LLM_WIKI_ROOT = path.resolve(__dirname, "../fixtures/bundles/llm-wiki");
+const WORKFLOW_ROOT = path.resolve(__dirname, "../fixtures/bundles/akm-workflow");
 
 function _createTmpDir(prefix = "akm-parity-"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -40,9 +48,57 @@ function _createTmpDir(prefix = "akm-parity-"): string {
   return dir;
 }
 
+function copyFixtureToTmp(sourceRoot: string): string {
+  const parent = _createTmpDir("akm-parity-fixture-");
+  const root = path.join(parent, path.basename(sourceRoot));
+  fs.cpSync(sourceRoot, root, { recursive: true });
+  return root;
+}
+
 function writeFile(filePath: string, content: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content, "utf8");
+}
+
+async function indexAdapterBundle(
+  bundleId: string,
+  root: string,
+  adapter: "website-snapshot" | "generic-files" | "akm-task" | "opencode" | "llm-wiki" | "akm-workflow",
+  writable: boolean,
+): Promise<void> {
+  saveConfig({
+    semanticSearchMode: "off",
+    defaultBundle: "local",
+    bundles: {
+      local: {
+        path: stashDir,
+        writable: true,
+        components: { main: { root: ".", adapter: "akm", writable: true } },
+      },
+      [bundleId]: {
+        path: root,
+        writable,
+        components: { main: { root: ".", adapter, writable } },
+      },
+    },
+  });
+  resetConfigCache();
+  await akmIndex({ stashDir, full: true });
+}
+
+async function onlyHit(bundleId: string, query: string): Promise<SourceSearchHit> {
+  const result = await akmSearch({
+    query,
+    source: bundleId,
+    skipLogging: true,
+    disableProjectContext: true,
+    disableScopedUtility: true,
+  });
+  const hits = result.hits.filter((hit): hit is SourceSearchHit => "path" in hit);
+  expect(hits).toHaveLength(1);
+  const hit = hits[0];
+  if (!hit) throw new Error(`expected one search hit for ${bundleId}:${query}`);
+  return hit;
 }
 
 function createMockEmbeddingServer(embedding: number[] = [1, 0, 0, 0]): {
@@ -88,8 +144,8 @@ afterAll(() => {
   }
 });
 
-describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
-  test("indexed asset: lookup() returns the same file akmShow renders", async () => {
+describe("Phase 4 parity: indexer.lookupBundleRef ↔ akmShowUnified", () => {
+  test("indexed asset lookup returns the same file akmShow renders", async () => {
     const skillBody = [
       "---",
       "name: parity-skill",
@@ -104,9 +160,7 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
 
     await akmIndex({ stashDir, full: true });
 
-    const ref = "skill:parity-skill";
-    const parsed = parseAssetRef(ref);
-    const indexed = await lookup(parsed);
+    const indexed = await lookupBundleRef(parseBundleRef("skills/parity-skill"));
     expect(indexed).not.toBeNull();
     if (!indexed) return;
 
@@ -118,34 +172,30 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
     const fileBody = fs.readFileSync(indexed.filePath, "utf8");
     expect(fileBody).toBe(skillBody);
 
-    // akmShow returns the same path in its rendered response (new-grammar input;
-    // the legacy `ref` above feeds the parseAssetRef lookup arm of the parity).
+    // akmShow returns the same path in its rendered response.
     const shown = await akmShowUnified({ ref: "skills/parity-skill" });
     expect(shown.path).toBe(indexed.filePath);
     expect(indexed.itemRef).toMatch(/\/\/skills\/parity-skill$/);
     expect(shown.ref).toBe("skills/parity-skill");
   });
 
-  test("origin-prefixed ref: local//skill:foo resolves to primary stash path", async () => {
+  test("a missing qualified bundle does not retarget to the primary stash", async () => {
     const body = ["---", "name: origin-skill", "description: Test", "---", "# origin"].join("\n");
     writeFile(path.join(stashDir, "skills", "origin-skill", "SKILL.md"), body);
 
     await akmIndex({ stashDir, full: true });
 
-    const bare = await lookup(parseAssetRef("skill:origin-skill"));
-    const local = await lookup(parseAssetRef("local//skill:origin-skill"));
+    const bare = await lookupBundleRef(parseBundleRef("skills/origin-skill"));
+    const local = await lookupBundleRef(parseBundleRef("local//skills/origin-skill"));
     expect(bare).not.toBeNull();
-    expect(local).not.toBeNull();
-    expect(local?.filePath).toBe(bare?.filePath);
+    expect(local).toBeNull();
 
-    // Show parity for both ref forms.
     const shownBare = await akmShowUnified({ ref: "skills/origin-skill" });
-    const shownLocal = await akmShowUnified({ ref: "local//skills/origin-skill" });
-    expect(shownBare.path).toBe(shownLocal.path);
+    await expect(akmShowUnified({ ref: "local//skills/origin-skill" })).rejects.toThrow();
     expect(shownBare.path).toBe(bare?.filePath as string);
   });
 
-  test("lookup retains the entry-key fallback only for nullable pre-flip provenance", async () => {
+  test("lookup does not fall back to entry_key for an incomplete provenance row", async () => {
     writeFile(path.join(stashDir, "knowledge", "legacy.md"), "# Legacy\n");
     await akmIndex({ stashDir, full: true });
 
@@ -159,9 +209,8 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
       closeDatabase(db);
     }
 
-    const indexed = await lookup(parseAssetRef("knowledge:legacy"));
-    expect(indexed?.filePath).toBe(path.join(stashDir, "knowledge", "legacy.md"));
-    expect(indexed?.itemRef).toBeUndefined();
+    const indexed = await lookupBundleRef(parseBundleRef("knowledge/legacy"));
+    expect(indexed).toBeNull();
   });
 
   test("lookup and show do not downgrade embedding dimension metadata", async () => {
@@ -182,7 +231,7 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
 
     try {
       await akmIndex({ stashDir, full: true });
-      await lookup(parseAssetRef("skill:embed-skill"));
+      await lookupBundleRef(parseBundleRef("skills/embed-skill"));
       await akmShowUnified({ ref: "skills/embed-skill" });
 
       const db = openIndexDatabase(path.join(process.env.XDG_DATA_HOME as string, "akm", "index.db"), {
@@ -200,9 +249,143 @@ describe("Phase 4 parity: indexer.lookup ↔ akmShowUnified", () => {
     }
   });
 
-  test("missing asset: lookup returns null", async () => {
+  test("missing asset lookup returns null", async () => {
     await akmIndex({ stashDir, full: true });
-    const result = await lookup(parseAssetRef("skill:does-not-exist"));
+    const result = await lookupBundleRef(parseBundleRef("skills/does-not-exist"));
     expect(result).toBeNull();
+  });
+
+  test("website search results retain their indexed projection through show", async () => {
+    await indexAdapterBundle("website-fixture", WEBSITE_ROOT, "website-snapshot", false);
+
+    const hit = await onlyHit("website-fixture", "second crawled");
+    const indexed = await lookupBundleRef(parseBundleRef(hit.ref));
+    const shown = await akmShowUnified({ ref: hit.ref, skipLogging: true });
+
+    expect(hit).toMatchObject({
+      type: "website",
+      name: "About Example",
+      ref: "website-fixture//example-com/about",
+      description: "Snapshot of https://example.com/about",
+    });
+    expect(indexed).toMatchObject({
+      adapterId: "website-snapshot",
+      type: "website",
+      document: { ownsPresentation: true },
+    });
+    expect(shown).toMatchObject({
+      type: hit.type,
+      name: hit.name,
+      ref: hit.ref,
+      path: hit.path,
+      description: hit.description,
+      content: indexed?.document?.content,
+    });
+  });
+
+  test("generic Markdown search results retain their indexed document type through show", async () => {
+    await indexAdapterBundle("generic-fixture", copyFixtureToTmp(GENERIC_ROOT), "generic-files", true);
+
+    const hit = await onlyHit("generic-fixture", "special structure");
+    const indexed = await lookupBundleRef(parseBundleRef(hit.ref));
+    const shown = await akmShowUnified({ ref: hit.ref, skipLogging: true });
+
+    expect(hit).toMatchObject({ type: "document", name: "notes", ref: "generic-fixture//notes" });
+    expect(indexed).toMatchObject({
+      adapterId: "generic-files",
+      type: "document",
+      document: { ownsPresentation: true },
+    });
+    expect(shown).toMatchObject({
+      type: hit.type,
+      name: hit.name,
+      ref: hit.ref,
+      path: hit.path,
+      content: indexed?.document?.content,
+    });
+  });
+
+  test("generic non-Markdown search results can be shown from their indexed projection", async () => {
+    await indexAdapterBundle("generic-fixture", copyFixtureToTmp(GENERIC_ROOT), "generic-files", true);
+
+    const hit = await onlyHit("generic-fixture", "alpha");
+    const indexed = await lookupBundleRef(parseBundleRef(hit.ref));
+    const shown = await akmShowUnified({ ref: hit.ref, skipLogging: true });
+
+    expect(hit).toMatchObject({ type: "file", name: "data.csv", ref: "generic-fixture//data.csv" });
+    expect(indexed).toMatchObject({ adapterId: "generic-files", type: "file" });
+    expect(shown).toMatchObject({
+      type: hit.type,
+      name: hit.name,
+      ref: hit.ref,
+      path: hit.path,
+      content: indexed?.document?.content,
+    });
+  });
+
+  test("standalone task bundles use the indexed task renderer outside a tasks directory", async () => {
+    await indexAdapterBundle("task-fixture", copyFixtureToTmp(TASK_ROOT), "akm-task", true);
+
+    const shown = await akmShowUnified({ ref: "task-fixture//nightly-index", skipLogging: true });
+
+    expect(shown).toMatchObject({
+      type: "task",
+      name: "nightly-index",
+      ref: "task-fixture//nightly-index",
+    });
+    expect(shown.content).toContain('schedule: "@daily"');
+  });
+
+  test("OpenCode singular command and instruction paths keep their indexed native types", async () => {
+    await indexAdapterBundle("opencode-fixture", copyFixtureToTmp(OPENCODE_ROOT), "opencode", true);
+
+    const command = await akmShowUnified({ ref: "opencode-fixture//command/legacy", skipLogging: true });
+    const indexedInstruction = await lookupBundleRef(parseBundleRef("opencode-fixture//AGENTS"));
+    const instruction = await akmShowUnified({ ref: "opencode-fixture//AGENTS", skipLogging: true });
+
+    expect(command).toMatchObject({ type: "command", name: "legacy", ref: "opencode-fixture//command/legacy" });
+    expect(command.template).toContain("Run the legacy migration");
+    expect(indexedInstruction?.document?.ownsPresentation).toBe(true);
+    expect(instruction).toMatchObject({ type: "instruction", name: "AGENTS", ref: "opencode-fixture//AGENTS" });
+    expect(instruction.content).toContain("# Sample AGENTS.md");
+  });
+
+  test("open llm-wiki page kinds cannot opt into an AKM agent renderer", async () => {
+    const root = copyFixtureToTmp(LLM_WIKI_ROOT);
+    const pagePath = path.join(root, "pages", "http-caching.md");
+    fs.writeFileSync(
+      pagePath,
+      fs
+        .readFileSync(pagePath, "utf8")
+        .replace("pageKind: concept", "pageKind: agent\nmodel: attacker/model\ntools: [write]"),
+      "utf8",
+    );
+    await indexAdapterBundle("wiki-fixture", root, "llm-wiki", false);
+
+    const shown = await akmShowUnified({ ref: "wiki-fixture//pages/http-caching", skipLogging: true });
+
+    expect(shown.type).toBe("agent");
+    expect(shown.content).toContain("# HTTP caching");
+    expect(shown.prompt).toBeUndefined();
+    expect(shown.modelHint).toBeUndefined();
+    expect(shown.toolPolicy).toBeUndefined();
+  });
+
+  test("standalone workflow actions use the adapter-owned canonical ref", async () => {
+    await indexAdapterBundle("workflow-fixture", copyFixtureToTmp(WORKFLOW_ROOT), "akm-workflow", true);
+
+    const shown = await akmShowUnified({ ref: "workflow-fixture//release", skipLogging: true });
+
+    expect(shown.type).toBe("workflow");
+    expect(shown.action).toContain("'workflow-fixture//release'");
+    expect(shown.action).not.toContain("workflow-fixture//workflows/release");
+  });
+
+  test("non-Markdown indexed files reject Markdown heading fragments", async () => {
+    await indexAdapterBundle("generic-fixture", copyFixtureToTmp(GENERIC_ROOT), "generic-files", true);
+
+    await expect(akmShowUnified({ ref: "generic-fixture//data.csv#alpha", skipLogging: true })).rejects.toThrow(
+      "Fragments are not supported",
+    );
   });
 });

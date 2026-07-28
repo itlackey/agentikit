@@ -10,6 +10,7 @@
 import * as p from "../../cli/clack";
 import type { AkmConfig, EmbeddingConnectionConfig, LlmConnectionConfig } from "../../core/config/config";
 import { detectAgentCliProfiles, pickDefaultAgentProfile } from "../../integrations/agent";
+import type { HarnessLLMConfig } from "../../integrations/harnesses/shared";
 import { detectLMStudio, detectOllama, type LMStudioDetectionResult } from "../detect";
 import { verifyOpenAiCompatibleEndpoint } from "../detected-engines";
 import {
@@ -18,7 +19,6 @@ import {
   readAgentEngineSelection,
   readCurrentLlmEngine,
 } from "../engine-config";
-import type { HarnessLLMConfig } from "../harness-config-import";
 import { prompt } from "../prompt";
 import {
   keepCurrentOption,
@@ -360,7 +360,7 @@ export async function stepSmallModelConnection(current: AkmConfig): Promise<Smal
     [
       "This connection is used for background processing:",
       "  • akm index           (metadata enhancement)",
-      "  • akm distill         (lesson distillation)",
+      "  • akm improve         (lesson distillation)",
       "  • akm remember --enrich (memory compression)",
       "  • akm curate --rerank   (search reranking)",
     ].join("\n"),
@@ -419,7 +419,7 @@ export async function stepSmallModelConnection(current: AkmConfig): Promise<Smal
       [
         "Enrichment features disabled:",
         "  • akm index           — metadata enhancement disabled",
-        "  • akm distill         — lesson generation",
+        "  • akm improve         — lesson generation",
         "  • akm remember --enrich",
         "  • akm curate --rerank",
         "",

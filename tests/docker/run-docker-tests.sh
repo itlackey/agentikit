@@ -68,7 +68,7 @@ if [ "$NEED_BINARY" = true ]; then
 		exit 1
 	fi
 
-	bun build ./src/cli.ts --compile --target=bun-linux-x64 --outfile "$SCRIPT_DIR/.build/akm"
+	bun build ./scripts/akm-standalone.ts --compile --target=bun-linux-x64 --outfile "$SCRIPT_DIR/.build/akm"
 	echo "Binary built: $SCRIPT_DIR/.build/akm"
 	echo ""
 fi
@@ -76,12 +76,16 @@ fi
 # Run tests
 PASSED=0
 FAILED=0
+SKIPPED=0
 FAILURES=""
+SKIPS=""
 
 for variant in "${VARIANTS[@]}"; do
 	dockerfile="$SCRIPT_DIR/Dockerfile.${variant}"
 	if [ ! -f "$dockerfile" ]; then
 		echo "Warning: Dockerfile not found for variant '$variant', skipping."
+		((++SKIPPED))
+		SKIPS+="  $variant (no Dockerfile.${variant})\n"
 		continue
 	fi
 
@@ -122,6 +126,25 @@ echo "  Docker Install Test Results"
 echo "========================================"
 echo "  Passed: $PASSED / $((PASSED + FAILED))"
 echo "  Failed: $FAILED / $((PASSED + FAILED))"
+if [ "$SKIPPED" -gt 0 ]; then
+	echo "  Skipped: $SKIPPED (requested variant(s) with no matching Dockerfile)"
+	echo -e "$SKIPS"
+fi
+
+# A gate that never ran a variant must not report success: a typo'd variant
+# name, an empty VARIANTS list, or every requested Dockerfile being missing
+# would otherwise leave PASSED=0 and FAILED=0, falling through to "All tests
+# passed" without having verified anything.
+if [ "$((PASSED + FAILED))" -eq 0 ]; then
+	echo ""
+	echo "  ERROR: 0 of ${#VARIANTS[@]} requested variant(s) actually ran."
+	if [ "$SKIPPED" -gt 0 ]; then
+		echo "  All requested variants were skipped (missing Dockerfile) — see above."
+	else
+		echo "  No variants were requested. Nothing was verified."
+	fi
+	exit 1
+fi
 
 if [ "$FAILED" -gt 0 ]; then
 	echo ""

@@ -1,9 +1,10 @@
 # OKF v0.1 Conformance Re-Evaluation Runbook
 
 Use this runbook after changing AKM's adapters, indexing, refs, writes, or lint
-behavior. It repeats the evaluation recorded in
-[the OKF v0.1 conformance audit](okf-v0.1-conformance-audit.md) without reading
-or modifying the host's AKM installation, stash, configuration, cache, or index.
+behavior. It is the acceptance procedure for
+[first-class OKF format support](../specs/okf-support.md). It runs without
+reading or modifying the host's AKM installation, stash, configuration, cache,
+or index.
 
 The runbook deliberately tests observable behavior in addition to unit tests.
 Passing adapter-local tests is not enough: the original failures happened
@@ -118,6 +119,8 @@ Run the current adapter, registry, type, dispatch, and reserved-name tests:
 
 ```bash
 docker exec "$AKM_OKF_CONTAINER" bun test \
+  tests/integration/okf-conformance.test.ts \
+  tests/core/akm-markdown.test.ts \
   tests/core/adapter/okf-adapter.test.ts \
   tests/core/adapter/conformance.test.ts \
   tests/core/adapter/registry.test.ts \
@@ -267,6 +270,8 @@ vendor_meta:
   revision: 7
 ---
 
+# Overview
+
 Marker: vendor-body-only.
 
 [Root](/target.md)
@@ -410,9 +415,9 @@ sqlite3 -header -column "$db" "SELECT bundle_id,item_ref,entry_type,adapter_id,f
 '
 ```
 
-These assertions intentionally fail on the audited baseline for the no-index
-source, duplicate title pair, hidden directory, and `bin` directory. A fix is
-not complete until each conformant path-defined concept survives independently.
+These assertions are permanent gates for the no-index source, duplicate title
+pair, hidden directory, and `bin` directory. A change is not complete until
+each conformant path-defined concept survives independently.
 The plain and missing-type rows are printed for observation but are not gates:
 those files are nonconformant producers, and OKF does not require a consumer to
 accept a concept whose required `type` is absent.
@@ -425,6 +430,8 @@ docker exec "$AKM_OKF_CONTAINER" akm search Vendor \
   --format json --detail full --limit 100 --no-project-context
 docker exec "$AKM_OKF_CONTAINER" akm show \
   adversarial//unknown --format json --detail full
+docker exec "$AKM_OKF_CONTAINER" akm show \
+  'adversarial//unknown#overview' --format json --detail full
 docker exec "$AKM_OKF_CONTAINER" akm show \
   noindex//vendor --format json --detail full
 ```
@@ -474,7 +481,8 @@ relations as OKF concept links.
 
 ## 10. Evaluate Writable OKF Targets And Round-Trip Behavior
 
-AKM has two acceptable policies for an OKF source:
+AKM has two conformant policies for an OKF source. The 0.9.0 `okf` adapter uses
+the consumer-only policy:
 
 | Policy | Required behavior |
 |---|---|
@@ -571,12 +579,10 @@ docker exec "$AKM_OKF_CONTAINER" akm lint \
   --fail-on-flagged
 ```
 
-Pass condition: both commands exit zero. Lint may report the dangling target as
-an informational or non-blocking warning, but `--fail-on-flagged` must not turn
-that spec-tolerated link into CI failure.
-
-If lint remains AKM-directory-only and reports nothing, record that as a lint
-coverage limitation rather than evidence that adapter validation passed.
+Pass condition: both commands exit zero. The adapter-aware OKF lint walk checks
+all concept paths, including ordinary dot directories and `bin/`. It may report
+the dangling target as informational or non-blocking, but
+`--fail-on-flagged` must not turn that spec-tolerated link into CI failure.
 
 ## 12. Optional Producer Validation
 

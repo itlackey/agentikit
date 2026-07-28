@@ -5,7 +5,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { getMigrationApplyJournalPath, inspectMigrationState } from "../../src/core/migration-backup";
+import { planTaskTargetRefMigration } from "../../scripts/akm-migrate/migrate/legacy/task-target-ref-migration";
+import { getMigrationApplyJournalPath, inspectMigrationState } from "../../scripts/akm-migrate/migration-backup";
+import type { AkmConfig } from "../../src/core/config/config";
 import { getConfigPath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
 import { openStateDbAtCeiling, PRE_CUTOVER_STATE_CEILING } from "../_fixtures/migration/seed-rows";
@@ -53,7 +55,7 @@ function seedMigration(workflowRef: string, createWorkflow = true): { prepared: 
   return { prepared, taskPath };
 }
 
-test("migrate apply rewrites a persisted 0.8 workflow target and leaves current task bytes unchanged", async () => {
+test("migrate apply emits strict v2 for a persisted 0.8 task and leaves current task bytes unchanged", async () => {
   const { prepared, taskPath } = seedMigration("workflow:upgrade-noop");
   const currentTaskPath = path.join(storage.stashDir, "tasks", "manual-current.yml");
   const currentTask = 'version: 2\nschedule: "@daily"\nworkflow: workflows/upgrade-noop\nenabled: true\n';
@@ -62,6 +64,7 @@ test("migrate apply rewrites a persisted 0.8 workflow target and leaves current 
   const applied = await runCliCapture(["migrate", "apply", "--config", prepared]);
   expect(applied.code, applied.stderr).toBe(0);
   expect(fs.readFileSync(taskPath, "utf8")).toContain("workflow: workflows/upgrade-noop");
+  expect(fs.readFileSync(taskPath, "utf8")).toContain("version: 2");
   expect(fs.readFileSync(taskPath, "utf8")).not.toContain("workflow: workflow:upgrade-noop");
   expect(fs.readFileSync(currentTaskPath, "utf8")).toBe(currentTask);
 });
@@ -74,6 +77,29 @@ test("a stale persisted workflow target is rewritten without blocking core migra
   expect(fs.readFileSync(taskPath, "utf8")).toContain("workflow: workflows/missing");
   expect(inspectMigrationState().state.status).toBe("current");
   expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+});
+
+test("task planning uses the migration journal's managed-bundle root", () => {
+  const managedRoot = path.join(storage.root, "journal-managed-root");
+  fs.mkdirSync(path.join(managedRoot, "tasks"), { recursive: true });
+  fs.mkdirSync(path.join(managedRoot, "workflows"), { recursive: true });
+  fs.writeFileSync(path.join(managedRoot, "workflows", "managed.md"), "# Managed\n");
+  const taskPath = path.join(managedRoot, "tasks", "managed.yml");
+  fs.writeFileSync(taskPath, `schedule: "@daily"\nworkflow: ${["workflow", "managed"].join(":")}\n`);
+  const config = {
+    semanticSearchMode: "off",
+    bundles: { managed: { git: "https://example.test/managed.git", writable: true } },
+    defaultBundle: "managed",
+    defaultWriteTarget: "managed",
+  } as AkmConfig;
+
+  const plan = planTaskTargetRefMigration(config, storage.root, [
+    { id: "managed", source: "git", ref: "https://example.test/managed.git", localRoot: managedRoot },
+  ]);
+
+  expect(plan.rewrites).toHaveLength(1);
+  expect(plan.rewrites[0]?.filePath).toBe(taskPath);
+  expect(plan.rewrites[0]?.to).toBe("workflows/managed");
 });
 
 test("a crash after task mutation resumes the journaled forward phase idempotently", async () => {
@@ -128,4 +154,51 @@ test("migrate status and apply repair a legacy task after core artifacts are alr
     state: { status: "current" },
     workflow: { status: "missing" },
   });
+});
+
+test("a v1 task in a READ-ONLY bundle is surfaced in the plan, instead of being silently skipped", () => {
+  // The 0.9 runtime removed the v1 task parser, so a skipped v1 task in a
+  // writable:false bundle would start failing after an upgrade that reported
+  // current. The migration never rewrites a read-only bundle (pinned by
+  // "resolves targets from a lock-materialized read-only bundle..." in
+  // tests/migrate/legacy/task-target-ref-migration.test.ts), so the preflight
+  // surfaces the stranded files per bundle rather than blocking or omitting.
+  const readOnlyRoot = path.join(storage.root, "readonly-bundle-root");
+  fs.mkdirSync(path.join(readOnlyRoot, "tasks"), { recursive: true });
+  const v1Task = path.join(readOnlyRoot, "tasks", "legacy.yml");
+  fs.writeFileSync(v1Task, `schedule: "@daily"\nworkflow: ${["workflow", "legacy"].join(":")}\n`);
+  const config = {
+    semanticSearchMode: "off",
+    bundles: {
+      stash: { path: storage.stashDir, writable: true },
+      frozen: { path: readOnlyRoot, writable: false },
+    },
+    defaultBundle: "stash",
+  } as AkmConfig;
+
+  const plan = planTaskTargetRefMigration(config, storage.root);
+  expect(plan.readOnlyLegacyTasks).toEqual([{ bundleId: "frozen", files: ["legacy.yml"] }]);
+  // The read-only bundle is still never rewritten.
+  expect(plan.rewrites).toEqual([]);
+});
+
+test("a read-only bundle with only v2 tasks (or none) does not block planning", () => {
+  const readOnlyRoot = path.join(storage.root, "readonly-v2-root");
+  fs.mkdirSync(path.join(readOnlyRoot, "tasks"), { recursive: true });
+  fs.writeFileSync(
+    path.join(readOnlyRoot, "tasks", "current.yml"),
+    'version: 2\nschedule: "@daily"\nworkflow: workflows/anything\nenabled: true\n',
+  );
+  const config = {
+    semanticSearchMode: "off",
+    bundles: {
+      stash: { path: storage.stashDir, writable: true },
+      frozen: { path: readOnlyRoot, writable: false },
+    },
+    defaultBundle: "stash",
+  } as AkmConfig;
+
+  const plan = planTaskTargetRefMigration(config, storage.root);
+  expect(plan.rewrites).toEqual([]);
+  expect(plan.readOnlyLegacyTasks).toEqual([]);
 });

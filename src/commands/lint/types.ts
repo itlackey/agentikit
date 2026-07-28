@@ -8,11 +8,12 @@ export type LintIssueType =
   | "orphaned-stub"
   | "placeholder-stub"
   | "missing-name-or-type"
+  | "missing-type"
   | "stale-path"
   | "missing-skill-md"
   | "invalid-task-yaml"
   | "missing-ref"
-  | "dangerous-vault-key"
+  | "dangerous-env-key"
   | "invalid-workflow-structure"
   | "missing-category";
 

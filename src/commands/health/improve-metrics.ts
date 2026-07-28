@@ -23,16 +23,12 @@ export function parseTaskMetadata(row: TaskHistoryRow): {
   durationMs?: number;
   detail?: Record<string, unknown>;
   engine?: string | null;
-  legacyProfile?: string;
 } {
   const metadata = decodeTaskHistoryMetadata(row.metadata_json);
   return {
     ...(metadata.durationMs !== undefined ? { durationMs: metadata.durationMs } : {}),
     ...(metadata.detail ? { detail: metadata.detail } : {}),
-    ...(metadata.metadataVersion === 2 && metadata.engine !== undefined ? { engine: metadata.engine } : {}),
-    ...(metadata.metadataVersion === 1 && metadata.legacyProfile !== undefined
-      ? { legacyProfile: metadata.legacyProfile }
-      : {}),
+    ...(metadata.engine !== undefined ? { engine: metadata.engine } : {}),
   };
 }
 
@@ -42,7 +38,7 @@ function createUnknownImproveMetrics(): ImproveHealthMetrics {
     completed: 0,
     skipped: 0,
     skipReasons: {},
-    resultRows: { total: 0, included: 0, normalized: 0, skipped: { invalid: 0 } },
+    resultRows: { total: 0, included: 0, skipped: { invalid: 0 } },
     plannedRefs: 0,
     strategyFilteredRefs: 0,
     actions: {
@@ -50,7 +46,6 @@ function createUnknownImproveMetrics(): ImproveHealthMetrics {
       distill: {
         queued: 0,
         llmFailed: 0,
-        qualityRejected: 0,
         judgeRejected: 0,
         validatorRejected: 0,
         configDisabled: 0,
@@ -106,12 +101,8 @@ function createUnknownImproveMetrics(): ImproveHealthMetrics {
       skippedAborted: 0,
       unaccounted: 0,
       htmlErrorCount: 0,
-      yieldEligibleRuns: 0,
-      yieldEligibleConsidered: 0,
-      yieldEligibleWritten: 0,
       yieldRate: 0,
       durationMs: 0,
-      writes: 0,
     },
     graphExtraction: {
       ran: false,
@@ -193,22 +184,11 @@ export function summarizeImproveCompleted(events: ReturnType<typeof readEvents>[
 }
 
 /**
- * Bucket a distill `outcome: "skipped"` result into a low-cardinality reason.
- * Prefers an explicit `skipReason`; otherwise sniffs the message. The WI-6.4
- * fingerprint/backoff vocabulary is checked before the legacy patterns, which
- * stay for historical improve_runs rows.
+ * Read the machine-readable reason from a distill `outcome: "skipped"` result.
  */
 function classifyDistillSkipReason(r: Record<string, unknown> | undefined): string {
   const explicitReason = typeof r?.skipReason === "string" ? r.skipReason : undefined;
-  if (explicitReason) return explicitReason;
-  const msg = typeof r?.message === "string" ? r.message : "";
-  if (/lesson inputs/i.test(msg)) return "recursive_lesson_input";
-  if (/NOOP/.test(msg)) return "conflict_noop";
-  if (/fingerprint/i.test(msg)) return "fingerprint_match";
-  if (/rejection backoff/i.test(msg)) return "rejection_backoff";
-  if (/cooldown/i.test(msg)) return "proposal_cooldown";
-  if (/content[_ ]?hash/i.test(msg)) return "content_hash_match";
-  return "unknown";
+  return explicitReason || "unknown";
 }
 
 // ── projectRunMetrics phase helpers (chunk-9 WI-9.5c; file-level decompose of
@@ -225,9 +205,7 @@ function applyPlannedRefs(metrics: ImproveHealthMetrics, result: Record<string, 
   // strategyFilteredRefs (array of {ref, reason}) — 2026-05-27: pre-filter
   // bucket from `collectEligibleRefs` so the metric reflects work the
   // planner dropped before signal-delta / per-pass dispatch.
-  // Health v3 reports strategy metrics only. Historical v1 profile filtering
-  // remains legacy data and must not be silently relabelled as a strategy metric.
-  const strategyFilteredRefs = result.schemaVersion === 2 ? result.strategyFilteredRefs : undefined;
+  const strategyFilteredRefs = result.strategyFilteredRefs;
   if (Array.isArray(strategyFilteredRefs)) metrics.strategyFilteredRefs += strategyFilteredRefs.length;
 }
 
@@ -266,11 +244,9 @@ function applyAction(metrics: ImproveHealthMetrics, action: Record<string, unkno
           break;
         case "quality_rejected":
         case "review_needed":
-          metrics.actions.distill.qualityRejected += 1;
           metrics.actions.distill.judgeRejected += 1;
           break;
         case "validation_failed":
-          metrics.actions.distill.qualityRejected += 1;
           metrics.actions.distill.validatorRejected += 1;
           break;
         case "config_disabled":
@@ -294,13 +270,6 @@ function applyAction(metrics: ImproveHealthMetrics, action: Record<string, unkno
         default:
           break;
       }
-      break;
-    }
-    case "distill-skipped": {
-      metrics.actions.distill.skipped += 1;
-      const r = action.result as Record<string, unknown> | undefined;
-      const reason = typeof r?.reason === "string" && r.reason.trim() ? r.reason : "unknown";
-      metrics.actions.distill.skippedByReason[reason] = (metrics.actions.distill.skippedByReason[reason] ?? 0) + 1;
       break;
     }
     case "memory-prune":
@@ -328,12 +297,8 @@ function applyActionsList(metrics: ImproveHealthMetrics, result: Record<string, 
 }
 
 /**
- * C1 (13-bus-factor): new runs persist the bounded `distillSkipped` aggregate
- * instead of per-ref `distill-skipped` rows. Read the total + per-reason
- * histogram from it into the SAME `distill.skipped` / `skippedByReason`
- * metric the per-ref loop above populated. Legacy rows carry the per-ref rows
- * and NO aggregate (counted above); new rows carry the aggregate and NO
- * per-ref rows (counted here) — so a run is never double-counted.
+ * Read the bounded `distillSkipped` aggregate into the corresponding total and
+ * per-reason health metrics.
  */
 function applyDistillSkippedAggregate(metrics: ImproveHealthMetrics, result: Record<string, unknown>): void {
   const distillSkipped = result.distillSkipped as { total?: unknown; byReason?: Record<string, unknown> } | undefined;
@@ -443,18 +408,6 @@ function applyMemoryInference(metrics: ImproveHealthMetrics, result: Record<stri
     metrics.memoryInference.skippedAborted += toFiniteNumber(memoryInference.skippedAborted);
     metrics.memoryInference.unaccounted += toFiniteNumber(memoryInference.unaccounted);
     metrics.memoryInference.htmlErrorCount += toFiniteNumber(memoryInference.htmlErrorCount);
-    // Yield-rate gating: pre-cache-feature envelopes lack the `cacheHits`
-    // field entirely. Treating their `considered` as freshAttempts (since
-    // cacheHits=0) is mathematically tempting but operationally wrong —
-    // historical runs with the legacy schema have no cache instrumentation
-    // and the SUM dragged the reported rate to ~14% in local data. Only
-    // contribute to the yield aggregate when the envelope actually carries
-    // the field. See investigation 2026-05-26.
-    if (Object.hasOwn(memoryInference, "cacheHits")) {
-      metrics.memoryInference.yieldEligibleRuns += 1;
-      metrics.memoryInference.yieldEligibleConsidered += considered;
-      metrics.memoryInference.yieldEligibleWritten += writtenFacts;
-    }
   }
   metrics.memoryInference.durationMs += toFiniteNumber(result.memoryInferenceDurationMs);
 }
@@ -536,22 +489,14 @@ function finalizeImproveMetrics(metrics: ImproveHealthMetrics): void {
     metrics.memoryInference.considered > 0 ||
     metrics.memoryInference.written > 0 ||
     metrics.memoryInference.durationMs > 0;
-  metrics.memoryInference.writes = metrics.memoryInference.written;
-  // Yield denominator excludes cache hits AND legacy (pre-cacheHits-field)
-  // envelopes. Only runs whose envelope carries a `cacheHits` field
-  // contribute to freshAttempts/yieldRate; legacy rows remain in
-  // `considered`/`written` for totals but are excluded from the rate so
-  // they cannot drag it down. See ImproveHealthMetrics.memoryInference
-  // jsdoc for the rationale.
+  // Yield denominator excludes cache hits and aborted records.
   metrics.memoryInference.freshAttempts = Math.max(
     0,
-    metrics.memoryInference.yieldEligibleConsidered -
-      metrics.memoryInference.cacheHits -
-      metrics.memoryInference.skippedAborted,
+    metrics.memoryInference.considered - metrics.memoryInference.cacheHits - metrics.memoryInference.skippedAborted,
   );
   metrics.memoryInference.yieldRate =
     metrics.memoryInference.freshAttempts > 0
-      ? roundRate(metrics.memoryInference.yieldEligibleWritten / metrics.memoryInference.freshAttempts)
+      ? roundRate(metrics.memoryInference.written / metrics.memoryInference.freshAttempts)
       : 0;
   metrics.graphExtraction.ran =
     metrics.graphExtraction.extractedFiles > 0 ||
@@ -585,7 +530,6 @@ function mergeImproveMetrics(dst: ImproveHealthMetrics, src: ImproveHealthMetric
   }
   dst.actions.distill.queued += src.actions.distill.queued;
   dst.actions.distill.llmFailed += src.actions.distill.llmFailed;
-  dst.actions.distill.qualityRejected += src.actions.distill.qualityRejected;
   dst.actions.distill.judgeRejected += src.actions.distill.judgeRejected;
   dst.actions.distill.validatorRejected += src.actions.distill.validatorRejected;
   dst.actions.distill.configDisabled += src.actions.distill.configDisabled;
@@ -640,9 +584,6 @@ function mergeImproveMetrics(dst: ImproveHealthMetrics, src: ImproveHealthMetric
   dst.memoryInference.skippedAborted += src.memoryInference.skippedAborted;
   dst.memoryInference.unaccounted += src.memoryInference.unaccounted;
   dst.memoryInference.htmlErrorCount += src.memoryInference.htmlErrorCount;
-  dst.memoryInference.yieldEligibleRuns += src.memoryInference.yieldEligibleRuns;
-  dst.memoryInference.yieldEligibleConsidered += src.memoryInference.yieldEligibleConsidered;
-  dst.memoryInference.yieldEligibleWritten += src.memoryInference.yieldEligibleWritten;
   dst.memoryInference.durationMs += src.memoryInference.durationMs;
   dst.graphExtraction.extractedFiles += src.graphExtraction.extractedFiles;
   dst.graphExtraction.entities += src.graphExtraction.entities;
@@ -673,14 +614,13 @@ function mergeImproveMetrics(dst: ImproveHealthMetrics, src: ImproveHealthMetric
   dst.coverage.acceptedProposals += src.coverage.acceptedProposals;
 }
 
-// The improve_runs read lives in the owner module (core/state-db.ts) so this
-// command file holds no raw SQL. `ImproveRunRow` aliases the owner's row shape.
+// The improve_runs read lives in its repository so this command holds no raw SQL.
 type ImproveRunRow = ImproveRunSummaryRow;
 
 function compareImproveRunRecency(a: ImproveRunRow, b: ImproveRunRow): number {
   const started = a.started_at.localeCompare(b.started_at);
   if (started !== 0) return started;
-  const completed = (a.completed_at ?? "").localeCompare(b.completed_at ?? "");
+  const completed = a.completed_at.localeCompare(b.completed_at);
   if (completed !== 0) return completed;
   return a.id.localeCompare(b.id);
 }
@@ -720,14 +660,12 @@ export function summarizeImproveRuns(
       continue;
     }
     accum.resultRows.included += 1;
-    if (decoded.normalizedLegacyPartial) accum.resultRows.normalized += 1;
     const result = decoded.envelope as unknown as Record<string, unknown>;
     const perRow = projectRunMetrics(result);
     mergeImproveMetrics(accum, perRow);
 
     const startMs = new Date(row.started_at).getTime();
     if (
-      !decoded.normalizedLegacyPartial &&
       result.terminated === undefined &&
       Number.isFinite(startMs) &&
       (latestCompleteRow === undefined || compareImproveRunRecency(row, latestCompleteRow) > 0)
@@ -795,7 +733,7 @@ export function projectImproveRunSummary(row: ImproveRunRow, wallTimeMs: number,
   try {
     const decoded = decodeImproveResult(row.result_json);
     result = decoded.envelope as unknown as Record<string, unknown>;
-    resultStatus = decoded.normalizedLegacyPartial ? "normalized" : "valid";
+    resultStatus = "valid";
   } catch {
     // Keep the persisted row visible in per-run output, but do not project its
     // unknown payload or admit its duration to result-derived denominators.
@@ -818,7 +756,6 @@ export function projectImproveRunSummary(row: ImproveRunRow, wallTimeMs: number,
     resultStatus,
     resultComplete: resultStatus === "valid" && result.terminated === undefined,
     strategy: row.strategy,
-    legacyProfile: row.legacyProfile,
     scope: {
       mode: row.scope_mode,
       ...(row.scope_value ? { value: row.scope_value } : {}),

@@ -15,12 +15,16 @@
  *
  * Invariant: a secret's bytes must never be written to stdout, returned
  * through the indexer / `akm show` renderer, or any structured output channel.
- * The supported value-use paths are:
+ * The supported value-use path is:
  *
  *   - `akm secret run <ref> <VAR> -- <cmd>` — value injected into the child
  *     process env as `VAR=<value>` (see `readValue`).
- *   - `akm secret path <ref>` — print the file path so a command can read it
- *     itself (Docker `/run/secrets` + `_FILE` convention).
+ *
+ * `akm secret path <ref>` (print the file path for the Docker `/run/secrets` +
+ * `_FILE` convention) was removed in 0.9.0 alongside `akm secret remove` — an
+ * audit found the two resolved a ref through different stash-selection logic
+ * and could silently target different files. A ref's file still lives at
+ * `<stash>/secrets/<name>`; locate or delete it there directly.
  *
  * Values are stored as raw bytes (no quoting, multi-line allowed) so they
  * round-trip byte-exact, unlike env values which forbid literal newlines.
@@ -88,35 +92,8 @@ function ensureParentDir(filePath: string): void {
 // ── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Walk a `secrets/` directory and return the POSIX-relative names of every
- * secret file. Lock files (`*.lock`), sensitive markers (`*.sensitive`), and
- * secrets with a sibling `<name>.sensitive` marker are excluded. The file
- * bodies are NEVER read.
- */
-export function listNames(secretsRoot: string): string[] {
-  if (!fs.existsSync(secretsRoot)) return [];
-  const names: string[] = [];
-  const walk = (dir: string): void => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      if (entry.name.endsWith(".lock") || entry.name.endsWith(".sensitive")) continue;
-      // A sibling `<name>.sensitive` marker suppresses listing.
-      if (fs.existsSync(`${full}.sensitive`)) continue;
-      names.push(path.relative(secretsRoot, full).split(path.sep).join("/"));
-    }
-  };
-  walk(secretsRoot);
-  return names.sort();
-}
-
-/**
- * Read a secret's raw bytes. Internal use only (for `secret run` / `secret
- * path`). Callers MUST NOT write the returned value to stdout or any log.
+ * Read a secret's raw bytes. Internal use only (for `secret run`). Callers
+ * MUST NOT write the returned value to stdout or any log.
  */
 export function readValue(secretPath: string): Buffer {
   return fs.readFileSync(secretPath);
@@ -131,19 +108,5 @@ export function setSecret(secretPath: string, value: Buffer): void {
   withSecretLock(secretPath, () => {
     // Mode 0600: secrets must never be world-readable, even transiently.
     writeFileAtomic(secretPath, value, 0o600);
-  });
-}
-
-/**
- * Remove a secret file (and its `.sensitive` marker, if present). Returns true
- * if the secret existed.
- */
-export function removeSecret(secretPath: string): boolean {
-  return withSecretLock(secretPath, () => {
-    if (!fs.existsSync(secretPath)) return false;
-    fs.rmSync(secretPath);
-    const marker = `${secretPath}.sensitive`;
-    if (fs.existsSync(marker)) fs.rmSync(marker);
-    return true;
   });
 }

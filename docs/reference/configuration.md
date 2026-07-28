@@ -152,6 +152,148 @@ toggling it so all entries and embeddings are rebuilt consistently. If the
 setting differs from the state used to build the current index, AKM warns until
 that full rebuild completes.
 
+## Semantic search
+
+`semanticSearchMode` (top-level, `"off" | "auto"`, default `"off"`) gates
+embedding-based search. `"auto"` lets AKM set up embeddings (which downloads
+a local model unless you point `embedding` at a remote provider) and falls
+back to keyword-only FTS if the embedding runtime is unavailable; `"off"`
+disables semantic search outright and search is always keyword-only FTS.
+The default is `"off"` so a bare or headless install (`akm init`, `--yes`,
+`--config`) never silently downloads the local embedding model on first
+index.
+The interactive `akm setup` wizard pre-selects semantic search **on**
+regardless of this default, and warns that choosing it downloads the model
+unless a remote `embedding` config is provided.
+
+```jsonc
+{ "semanticSearchMode": "off" }
+```
+
+`embedding` configures the connection used for semantic search and
+`akm improve`'s memory-inference/consolidate passes when they call an
+embedding model: `provider`, `endpoint`, `model`, `apiKey` (symbolic
+reference, same rules as engine `apiKey`), `dimension`, `localModel`,
+`maxTokens`, `batchSize`, `chunkSize`, `contextLength`, and
+`ollamaOptions.num_ctx`.
+
+## Search tuning
+
+`search` tunes ranking, not behavior an ordinary user needs to touch:
+
+| Key | Purpose |
+| --- | --- |
+| `search.minScore` | Drop results below this score |
+| `search.defaultExcludeTypes` | Asset types excluded from results by default |
+
+### Graph boost search tuning
+
+| Key | Purpose |
+| --- | --- |
+| `search.graphBoost.*` | Entity-graph relevance boost: `directBoostPerEntity`/`directBoostCap` (directly related entities), `hopBoostPerEntity`/`hopBoostCap` (multi-hop, capped at `maxHops` ≤ 3), `confidenceMode` (`off`\|`blend`\|`multiply`, default `blend`), `confidenceWeight` (0–1, default `0.2`) |
+
+## Feedback
+
+`feedback` shapes the `akm feedback` taxonomy:
+
+| Key | Purpose |
+| --- | --- |
+| `feedback.requireReason` | Whether `akm feedback --negative` without `--reason`/`--failure-mode` is a hard error. **Defaults to `true`** when unset — set `false` to downgrade the check to a warning instead |
+| `feedback.allowedFailureModes` | Restrict `--failure-mode` values accepted by `akm feedback`. Curated set (also the default when unset): `incorrect`, `outdated`, `dangerous`, `incomplete`, `redundant` |
+
+## Bundles and write target
+
+`bundles` (replacing the retired `stashDir`/`sources[]`/`installed[]` trio)
+and `defaultBundle` are the 0.9 source configuration shape — see
+[Concepts](../guides/concepts.md) and the [CLI reference](cli.md) for the
+full bundle model (`path`, `git`, `website`, `npm`, `writable`, `registryId`,
+`components`). `defaultBundle` must name a key in `bundles` when set.
+
+### defaultWriteTarget
+
+`defaultWriteTarget` names the bundle that write commands (`akm remember`,
+`akm env`/`secret create`, `akm improve`, etc.) fall back to when no
+explicit `--target` is given and the command isn't already scoped to a
+specific source. It must name a configured bundle; setting it with no
+`bundles` configured, or naming an unconfigured bundle, is rejected at
+`config set`/`config validate` time. The full write-target resolution order
+is `--target` -> `defaultWriteTarget` -> working stash (`defaultBundle`) ->
+`ConfigError`.
+
+### Memory scope
+
+`akm remember`'s scope flags (`--user`, `--agent`, `--run`, `--channel`)
+write four canonical top-level frontmatter keys on the memory file:
+`scope_user`, `scope_agent`, `scope_run`, `scope_channel` (one key per
+non-empty scope value; string values). This is not a config-file setting —
+it is documented here because it is the multi-tenant/multi-agent contract
+that `akm search --filter` and `akm show --filter` read back:
+`--filter user=<id>` / `--filter agent=<id>` / `--filter run=<id>` /
+`--filter channel=<name>` (repeatable) narrow results/resolution to assets
+whose frontmatter scope matches, without changing ranking. A memory with
+only scope flags and no tags is valid — the tag-required check is
+independent of scope. `--scope` was removed in 0.9.0 with no alias; use
+`--filter`.
+
+`archiveRetentionDays` (default `90` when unset) controls how long a pending
+proposal is kept before `akm improve`'s maintenance pass archives it (status
+`rejected`, reason `"expired: no action within retention window"`) — `akm
+proposal` itself has no archive/expire verb. Setting it to `0` or less
+disables expiry entirely.
+
+## Registries
+
+`registries` (top-level array, distinct from `bundles`) lists remote package
+registries `akm registry`/`akm add --registry` can search and install from.
+Each entry is `{ url, name?, enabled?, provider?, options? }`; `provider`
+defaults to `"static-index"`. See [Registries](registry.md) for the full
+field reference and provider list.
+
+## Output defaults
+
+`output.format` (one of `json`\|`yaml`\|`text`\|`jsonl`\|`md`\|`html`,
+default `json`) and `output.detail` (`brief`\|`normal`\|`full`, default
+`brief`) set the CLI's default `--format`/`--detail` when the flags are
+omitted. Per-command flags always override these.
+
+## Setup-derived recommendations
+
+`setup` is reserved for configuration derived by `akm setup`. It currently
+holds no keys — the `setup.taskSchedules` sub-key was removed in 0.9.0 after
+nothing in the setup flow or the tasks subsystem was found to read or write
+it. Scheduling lives in the tasks subsystem (`akm tasks`).
+
+## Experimental opt-ins
+
+`experimental` holds explicit opt-ins for behavior outside the 0.9
+stability contract (see [STABILITY.md](../../STABILITY.md) for full
+classification). Every key defaults to **off**; an absent `experimental`
+section, an absent key, and an explicit `false` all read identically as off.
+
+```jsonc
+{
+  "experimental": {
+    "improveAutonomy": false,
+    "workflowEngine": false
+  }
+}
+```
+
+- **`experimental.improveAutonomy`** — allows `akm improve` to mutate assets
+  without review: consolidate's merge/delete/contradict actions, the
+  memory-cleanup and contradiction passes, memory-inference writes, and
+  triage `applyMode: "promote"`. `akm improve` itself always runs; this only
+  gates the lanes that act without a human in the loop. `sync.push` is
+  deliberately **not** gated by this key.
+- **`experimental.workflowEngine`** — allows the native `akm workflow`
+  orchestration engine to run: `akm workflow run`/`brief`/`report`/`watch`,
+  and authoring a YAML (`version: 2`) workflow program via `akm workflow
+  create <name>.yaml`. Classic linear markdown workflows
+  (`start`/`next`/`complete`/`status`/`list`/`create` for markdown/`template`/
+  `validate`/`resume`/`abandon`) are unaffected either way. See
+  [Workflows](workflows.md#enabling-the-workflow-engine-opt-in-in-090) for
+  the full gate behavior and error shape.
+
 ## Managing Config
 
 ```sh
@@ -176,12 +318,18 @@ generic walker.
 
 | Variable | Purpose |
 | --- | --- |
-| `AKM_CONFIG_DIR` | Override the user config directory |
+| `AKM_CONFIG_DIR` | Override the user config directory (or set `XDG_CONFIG_HOME`) |
 | `AKM_ENGINE_<NAME>_API_KEY` | Fallback credential for LLM engine `<name>` |
 | `AKM_LLM_API_KEY` | Fallback only for the selected `defaults.llmEngine` |
 | `AKM_EMBED_API_KEY` | Embedding credential |
 | `AKM_STASH_DIR` | Override the stash directory |
+| `AKM_DATA_DIR` | Override the data directory — durable `index.db`/`workflow.db`/`state.db`, `akm.lock`, config backups (or set `XDG_DATA_HOME`) |
+| `AKM_CACHE_DIR` | Override the cache directory — regenerable caches (or set `XDG_CACHE_HOME`) |
+| `AKM_STATE_DIR` | Override the state directory — task-scheduler invocation state (or set `XDG_STATE_HOME`) |
 | `AKM_SQLITE_JOURNAL_MODE` | SQLite journal mode: `WAL` (default), `DELETE`, or `TRUNCATE` |
+| `AKM_VERBOSE` | Truthy value enables the same diagnostics as `--verbose` |
+| `AKM_DEBUG` | `1` prints a stack trace on unexpected internal errors |
+| `AKM_DISABLE_PROJECT_CONTEXT` | Referenced in help text and comments as a way to disable the project-context ranking boost, but **not currently read anywhere in `src/`** — use `search --no-project-context` instead, which does work |
 
 For an engine named `fast`, its fallback variable is
 `AKM_ENGINE_FAST_API_KEY`. An explicit `apiKey` symbolic reference is

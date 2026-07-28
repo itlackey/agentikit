@@ -8,7 +8,7 @@ import { akmIndex } from "../../src/indexer/indexer";
 import { resolveSourceEntries } from "../../src/indexer/search/search-source";
 import type { SourceSearchHit } from "../../src/sources/types";
 import { runCliCapture } from "../_helpers/cli";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 // Migrated from spawnSync("bun", [CLI, ...]) to the shared in-process harness
 // (tests/_helpers/cli.ts). beforeEach already sandboxes AKM_STASH_DIR and the
@@ -55,7 +55,12 @@ afterEach(() => {
 });
 
 async function buildIndex(): Promise<void> {
-  saveConfig({ semanticSearchMode: "off" });
+  saveConfig({
+    semanticSearchMode: "off",
+    bundles: { stash: { path: stashDir, writable: true } },
+    defaultBundle: "stash",
+    defaultWriteTarget: "stash",
+  });
   await akmIndex({ stashDir, full: true });
 }
 
@@ -128,13 +133,58 @@ describe("akm feedback", () => {
       "--format=json",
     ]);
     expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
 
     // appendLessonStrength must have LOCATED the lesson in the index (the D-R3
     // lookup uses the new grammar) and appended the feedback ref.
     const { parseFrontmatter } = await import("../../src/core/asset/frontmatter");
     const raw = fs.readFileSync(path.join(stashDir, "lessons", "deploy-lesson.md"), "utf8");
     const strength = parseFrontmatter(raw).data.lessonStrength;
-    expect(Array.isArray(strength) ? strength : []).toContain("memories/deploy-note");
+    expect(Array.isArray(strength) ? strength : []).toContain("stash//memories/deploy-note");
+  });
+
+  test("--applied-to preserves a qualified lesson bundle and never falls back", async () => {
+    const teamDir = path.join(storage.root, "team-stash");
+    const primaryLesson = path.join(stashDir, "lessons", "shared.md");
+    const teamLesson = path.join(teamDir, "lessons", "shared.md");
+    writeFile(path.join(stashDir, "memories", "note.md"), "---\ndescription: note\n---\nPrimary note.\n");
+    writeFile(primaryLesson, "---\ndescription: primary lesson\n---\nPrimary.\n");
+    writeFile(teamLesson, "---\ndescription: team lesson\n---\nTeam.\n");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        stash: { path: stashDir, writable: true },
+        team: { path: teamDir, writable: true },
+      },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+    });
+    await akmIndex({ stashDir, full: true });
+
+    const qualified = await runCli([
+      "feedback",
+      "stash//memories/note",
+      "--positive",
+      "--applied-to",
+      "team//lessons/shared",
+      "--format=json",
+    ]);
+    expect(qualified.status).toBe(0);
+
+    const { parseFrontmatter } = await import("../../src/core/asset/frontmatter");
+    expect(parseFrontmatter(fs.readFileSync(primaryLesson, "utf8")).data.lessonStrength).toBeUndefined();
+    expect(parseFrontmatter(fs.readFileSync(teamLesson, "utf8")).data.lessonStrength).toEqual(["stash//memories/note"]);
+
+    const absent = await runCli([
+      "feedback",
+      "stash//memories/note",
+      "--positive",
+      "--applied-to",
+      "local//lessons/shared",
+      "--format=json",
+    ]);
+    expect(absent.status).toBe(0);
+    expect(parseFrontmatter(fs.readFileSync(primaryLesson, "utf8")).data.lessonStrength).toBeUndefined();
   });
 
   test("accepts markdown command refs without requiring the .md suffix", async () => {
@@ -281,5 +331,114 @@ describe("akm feedback", () => {
     const parsed = parseJsonOutput(result);
     expect(parsed.ok).toBe(false);
     expect(parsed.error ?? parsed.message ?? "").toMatch(/not in the index/i);
+  });
+
+  // ── R-033a: the `--` separator must end flag parsing for repeatable flags ──
+  test("--tag values placed AFTER a `--` separator are NOT collected (R-033a)", async () => {
+    writeFile(
+      path.join(stashDir, "memories", "deployment-notes.md"),
+      "---\ndescription: deployment memory\n---\nRemember the VPN before deploy.\n",
+    );
+    await buildIndex();
+
+    // Everything after `--` is passthrough/positional, never a flag akm should
+    // interpret. Before the fix, `parseAllFlagValues`/`getAllFlagValues` scanned
+    // straight through a literal `--` and still picked up `--tag leaked:yes`.
+    const result = await runCli([
+      "feedback",
+      "memories/deployment-notes",
+      "--positive",
+      "--",
+      "--tag",
+      "leaked:yes",
+      "--format=json",
+    ]);
+    expect(result.status).toBe(0);
+    const parsed = parseJsonOutput(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.tags).toEqual([]);
+  });
+
+  test("--tag values BEFORE `--` are still collected normally (R-033a control)", async () => {
+    writeFile(
+      path.join(stashDir, "memories", "deployment-notes.md"),
+      "---\ndescription: deployment memory\n---\nRemember the VPN before deploy.\n",
+    );
+    await buildIndex();
+
+    const result = await runCli([
+      "feedback",
+      "memories/deployment-notes",
+      "--positive",
+      "--tag",
+      "slice:train",
+      "--format=json",
+    ]);
+    expect(result.status).toBe(0);
+    const parsed = parseJsonOutput(result);
+    expect(parsed.tags).toEqual(["slice:train"]);
+  });
+
+  // ── R-033b: --applied-to on a non-lesson target must warn loudly, not
+  // silently no-op ────────────────────────────────────────────────────────────
+  test("--applied-to on a non-lesson ref warns loudly instead of silently no-opping (R-033b)", async () => {
+    writeFile(
+      path.join(stashDir, "memories", "deploy-note.md"),
+      "---\ndescription: deployment memory\n---\nRemember the VPN before deploy.\n",
+    );
+    await buildIndex();
+
+    const result = await runCli([
+      "feedback",
+      "memories/deploy-note",
+      "--positive",
+      "--applied-to",
+      "memories/deploy-note",
+      "--format=json",
+    ]);
+    expect(result.status).toBe(0);
+    const parsed = parseJsonOutput(result);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.appliedTo).toBeUndefined();
+    expect(result.stderr).toMatch(/--applied-to memories\/deploy-note was ignored/);
+    expect(result.stderr).toMatch(/not a lesson/);
+  });
+
+  // ── R-034: the response envelope must state whether the ranking update was
+  // applied, and why not when it was skipped ─────────────────────────────────
+  test("rankingUpdate.applied is true for default (user) feedback source (R-034)", async () => {
+    writeFile(
+      path.join(stashDir, "memories", "deployment-notes.md"),
+      "---\ndescription: deployment memory\n---\nRemember the VPN before deploy.\n",
+    );
+    await buildIndex();
+
+    const result = await runCli(["feedback", "memories/deployment-notes", "--positive", "--format=json"]);
+    expect(result.status).toBe(0);
+    const parsed = parseJsonOutput(result);
+    expect(parsed.rankingUpdate).toEqual({ applied: true });
+  });
+
+  test("rankingUpdate.applied is false with a reason for a non-user event source (R-034)", async () => {
+    writeFile(
+      path.join(stashDir, "memories", "deployment-notes.md"),
+      "---\ndescription: deployment memory\n---\nRemember the VPN before deploy.\n",
+    );
+    await buildIndex();
+
+    // AKM_EVENT_SOURCE=agent is not a recognized UsageEventSource, so
+    // resolveUsageEventSource() coerces it to "unknown" — still a non-"user"
+    // source, so the anti-self-reinforcement guard must skip the ranking
+    // update. Before the fix this was indistinguishable from the "applied"
+    // case: both envelopes were byte-identical.
+    const result = await withEnv({ AKM_EVENT_SOURCE: "agent" }, () =>
+      runCli(["feedback", "memories/deployment-notes", "--positive", "--format=json"]),
+    );
+    expect(result.status).toBe(0);
+    const parsed = parseJsonOutput(result);
+    expect(parsed.rankingUpdate).toMatchObject({ applied: false });
+    const rankingUpdate = parsed.rankingUpdate as { applied: boolean; reason: string };
+    expect(rankingUpdate.reason).toMatch(/not "user"/);
+    expect(rankingUpdate.reason).toMatch(/anti-self-reinforcement/);
   });
 });

@@ -6,7 +6,7 @@
  * `index.db` FTS5 search + rebuild repository.
  *
  * Owns the `entries_fts` full-text query path and the incremental/full FTS
- * rebuild. Extracted verbatim from `src/indexer/db/db.ts` (WI-5a).
+ * rebuild.
  */
 
 import { warn } from "../../core/warn";
@@ -72,7 +72,7 @@ function runFtsQuery(
 
   const sql = `
     SELECT e.id, e.file_path AS filePath, e.entry_json, e.search_text AS searchText,
-           e.item_ref AS itemRef, e.bundle_id AS bundleId, e.concept_id AS conceptId,
+           e.item_ref AS itemRef, e.bundle_id AS bundleId, e.concept_id AS conceptId, e.adapter_id AS adapterId,
            bm25(entries_fts, 0, 10.0, 5.0, 3.0, 2.0, 1.0) AS bm25Score
     FROM entries_fts f
     JOIN entries e ON e.id = f.entry_id
@@ -91,6 +91,7 @@ function runFtsQuery(
       itemRef: string | null;
       bundleId: string | null;
       conceptId: string | null;
+      adapterId: string | null;
       bm25Score: number;
     }>;
 
@@ -113,6 +114,7 @@ function runFtsQuery(
         itemRef: row.itemRef,
         bundleId: row.bundleId,
         conceptId: row.conceptId,
+        adapterId: row.adapterId,
       });
     }
     return results;

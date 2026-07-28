@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { chmodSync, statSync } from "node:fs";
+import { chmodSync } from "node:fs";
 // Build-time asset step:
 //   1. Mirror src/assets/ → dist/assets/ after tsc.
 //      All runtime assets (profiles, task templates, backend templates,
@@ -12,8 +12,8 @@ import { chmodSync, statSync } from "node:fs";
 //      modules, so this keeps runtime-compatible paths intact.
 //   3. Copy schema artifacts (`schemas/**`) so published packages expose
 //      contract artifacts in `dist/schemas` for source-less deploys.
-//   4. Bundle scripts/migrate-storage.ts into dist/scripts/ so
-//      globally-installed users (npm / prebuilt binary) can run it without
+//   4. Bundle the standalone migration tool into dist/scripts/ so
+//      globally-installed npm users can run it without
 //      `../src/...` import paths breaking (#469).
 import { mkdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
@@ -45,15 +45,13 @@ for await (const src of schemaGlob.scan(".")) {
   await Bun.write(dest, Bun.file(src));
 }
 
-// 5. Copy the published launchers plus the Node-runtime entry wrapper and
-//    text-import loader hook into dist/. The shell launchers keep the npm/bun
-//    global-install contract runtime-agnostic: prefer Bun when present, fall
-//    back to Node wrappers otherwise.
+// 5. Copy the published launchers plus the core CLI's Node-runtime entry
+//    wrapper and text-import loader hook into dist/. The akm launcher can fall
+//    back to Node; the standalone migration launcher requires Bun.
 const runtimeFiles = [
   "scripts/node-runtime/akm",
-  "scripts/node-runtime/akm-migrate-storage",
+  "scripts/node-runtime/akm-migrate",
   "scripts/node-runtime/cli-node.mjs",
-  "scripts/node-runtime/migrate-storage-node.mjs",
   "scripts/node-runtime/text-import-hook.mjs",
 ];
 for (const src of runtimeFiles) {
@@ -63,19 +61,14 @@ for (const src of runtimeFiles) {
   chmodSync(dest, 0o755);
 }
 
-const migrationEntrypoints = ["scripts/migrate-storage.ts"];
+const migrationEntrypoints = ["scripts/akm-migrate.ts"];
 
 for (const entry of migrationEntrypoints) {
-  try {
-    statSync(entry);
-  } catch {
-    continue;
-  }
   const outfile = entry.replace(/\.ts$/, ".js").replace(/^scripts\//, "dist/scripts/");
   await mkdir(dirname(outfile), { recursive: true });
   const result = await Bun.build({
     entrypoints: [entry],
-    target: "node",
+    target: "bun",
     outdir: dirname(outfile),
     naming: basename(outfile),
     minify: false,

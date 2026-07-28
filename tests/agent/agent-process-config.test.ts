@@ -17,12 +17,9 @@ function makeConfig(strategy: ImproveProfileConfig): AkmConfig {
 }
 
 describe("resolveImproveProcessRunner (0.9.0 engines)", () => {
-  test("uses defaults.llmEngine when the process has no engine", () => {
-    const strategy: ImproveProfileConfig = { processes: { reflect: {} } };
-    const runner = resolveImproveProcessRunner(strategy, "reflect", makeConfig(strategy));
-    expect(runner?.engine).toBe("default");
-    expect(runner?.connection.model).toBe("default-model");
-  });
+  // "uses defaults.llmEngine when the process has no engine" (D15) removed:
+  // identical seam to tests/agent/runner.test.ts:70-75
+  // ("inherits defaults.llmEngine when the process has no engine").
 
   test("process engine overrides defaults.llmEngine", () => {
     const strategy: ImproveProfileConfig = { processes: { reflect: { engine: "judge" } } };
@@ -41,10 +38,8 @@ describe("resolveImproveProcessRunner (0.9.0 engines)", () => {
     expect(resolveImproveProcessRunner(strategy, "reflect", makeConfig(strategy))?.timeoutMs).toBe(5_000);
   });
 
-  test("an explicit agent engine is rejected instead of falling back to the LLM default", () => {
-    const strategy: ImproveProfileConfig = { processes: { reflect: { engine: "reviewer" } } };
-    expect(() => resolveImproveProcessRunner(strategy, "reflect", makeConfig(strategy))).toThrow(
-      'Engine "reviewer" is not an LLM engine.',
-    );
-  });
+  // "an explicit agent engine is rejected instead of falling back to the LLM
+  // default" (D15) removed: identical seam and error string to
+  // tests/agent/runner.test.ts:94-99 ("rejects an explicit non-LLM process
+  // engine instead of falling back").
 });

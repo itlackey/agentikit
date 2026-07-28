@@ -8,14 +8,7 @@ import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { resolveUsageEventSource, type UsageEventSource } from "../../indexer/usage/usage-events";
 import type { SourceSearchHit } from "../../sources/types";
-import {
-  buildMemoryFrontmatter,
-  parseDuration,
-  readMemoryContent,
-  resolveRememberContentArg,
-  runAutoHeuristics,
-  runLlmEnrich,
-} from "../remember";
+import { buildMemoryFrontmatter, parseDuration, readMemoryContent, runAutoHeuristics, runLlmEnrich } from "../remember";
 import {
   assertFlatAssetName,
   inferAssetName,
@@ -100,12 +93,12 @@ export const rememberCommand = defineJsonCommand({
     xref: {
       type: "string",
       description:
-        "Cross-reference ref recorded in the memory's `xrefs:` frontmatter (repeatable: --xref knowledge:auth-flow --xref memory:vpn-note). Each ref must resolve in the write target or a configured source; an unresolvable ref aborts the write.",
+        "Cross-reference ref recorded in the memory's `xrefs:` frontmatter (repeatable: --xref knowledge/auth-flow --xref memories/vpn-note). Each ref must resolve in the write target or a configured source; an unresolvable ref aborts the write.",
     },
     supersedes: {
       type: "string",
       description:
-        "Ref of an existing asset this memory corrects (repeatable: --supersedes memory:projectA/old-note). Writes the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the write; a ref outside the write target and working stash still writes the correction but skips the demotion (reported as applied: false).",
+        "Ref of an existing asset this memory corrects (repeatable: --supersedes memories/projectA/old-note). Writes the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the write; a ref outside the write target and working stash still writes the correction but skips the demotion (reported as applied: false).",
     },
     auto: {
       type: "boolean",
@@ -138,13 +131,22 @@ export const rememberCommand = defineJsonCommand({
       type: "string",
       description: "Scope this memory to a channel name (persisted as `scope_channel` frontmatter)",
     },
-    showSimilar: {
+    "show-similar": {
       type: "boolean",
-      description: "Return top-3 similar existing memories in output (opt-in)",
+      // R-062: canonical spelling is kebab-case, matching every other
+      // multi-word flag in the CLI (--fail-on-flagged, --auto-fix, …).
+      // `--showSimilar` (the pre-rename spelling) is kept as an explicit,
+      // documented alias rather than a silent citty auto-alias — citty
+      // registers BOTH the camelCase and kebab-case spelling of any
+      // declared flag name automatically, so this is a rename, not a
+      // breaking change: both spellings already worked, and both keep
+      // working.
+      alias: "showSimilar",
+      description: "Return top-3 similar existing memories in output (opt-in). Alias: --showSimilar.",
     },
   },
   async run({ args }) {
-    const body = readMemoryContent(resolveRememberContentArg(args.content));
+    const body = readMemoryContent(args.content);
     const eventSource = resolveUsageEventSource();
 
     // `--name` is a flat name; subdirectory placement is `--path`'s job.

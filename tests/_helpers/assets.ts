@@ -65,11 +65,11 @@ export function writeLesson(stashDir: string, name: string, description: string,
 }
 
 /**
- * Write `skills/<name>.md` with a `name` + `description` frontmatter and the
+ * Write `skills/<name>/SKILL.md` with a `name` + `description` frontmatter and the
  * given body.
  */
 export function writeSkill(stashDir: string, name: string, body: string): void {
-  const filePath = path.join(stashDir, "skills", `${name}.md`);
+  const filePath = path.join(stashDir, "skills", name, "SKILL.md");
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `---\nname: ${name}\ndescription: ${name}\n---\n\n${body}\n`, "utf8");
 }

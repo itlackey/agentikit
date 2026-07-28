@@ -122,7 +122,7 @@ export interface StashEntryScope {
   channel?: string;
 }
 
-/** Allowed keys in `--filter k=v` and `--scope k=v` flags. */
+/** Allowed keys in the `--filter k=v` flag (used by `akm search` and `akm show`). */
 export type ScopeKey = keyof StashEntryScope;
 
 // ── §3 — IndexDocument (Chunk 5 F4a M-core-1: IS IndexDocument + provenance) ─────
@@ -143,7 +143,7 @@ export interface IndexDocument {
   /** Fully-qualified "<bundle>//<concept-id>" (canonical stored spelling, §1.3). */
   ref?: ItemRef;
   bundle?: BundleId;
-  /** PROVENANCE (derived: longest-prefix match of the concept-id against component roots), not a ref segment. */
+  /** PROVENANCE from the bundle's single configured component, not a ref segment. */
   component?: ComponentId;
   /** OKF concept ID = path within bundle − ext; opaque to the core. */
   conceptId?: string;
@@ -151,6 +151,12 @@ export interface IndexDocument {
   path?: string;
   hash?: string;
   adapterId?: string;
+  /**
+   * The owning adapter provides the complete generic presentation projection.
+   * When true, `show` must not reinterpret the open `type` through AKM's native
+   * renderer table. Omitted means the core may apply its type renderer.
+   */
+  ownsPresentation?: boolean;
 
   // ── Identity + FTS surface ──
   /** = OKF `type`; open; frontmatter (native) or adapter-derived (foreign). Presents/ranks/filters; NEVER executes or identifies. Required — the durable IndexDocument contract. */
@@ -199,7 +205,7 @@ export interface IndexDocument {
   /**
    * Multi-tenant / multi-agent scope. Populated from the canonical
    * `scope_user`, `scope_agent`, `scope_run`, `scope_channel`
-   * frontmatter keys. Used by `akm search --filter` and `akm show --scope`.
+   * frontmatter keys. Used by `akm search --filter` and `akm show --filter`.
    */
   scope?: StashEntryScope;
   /**
@@ -214,7 +220,7 @@ export interface IndexDocument {
    * `note`, `decision-record`). Wiki conventions live in `schema.md`.
    */
   pageKind?: string;
-  /** Cross-references to other knowledge entries by ref (e.g. "knowledge:auth-design"). */
+  /** Cross-references to other knowledge entries by ref (e.g. "knowledge/auth-design"). */
   xrefs?: string[];
   /** Source identifiers this page was distilled from (typically `raw/<slug>` files). */
   sources?: string[];
@@ -235,17 +241,11 @@ export interface IndexDocument {
    * consolidate's injectGenerationFrontmatter. Absent = original asset.
    */
   generation?: number;
-  /**
-   * R5 — provenance pointers (frontmatter `source_refs`): the refs this asset
-   * was merged/distilled from. Lets the collapse detector's canary scoring
-   * follow a legitimately-merged anchor instead of reading it as collapse.
-   */
-  sourceRefs?: string[];
   currentBeliefRefs?: string[];
   /**
    * How the memory was captured. `hot` indicates a user-driven write
    * (the `akm remember` CLI path); `background` indicates an
-   * agent/derived write (e.g. memory-inference). Absent on legacy memories.
+   * agent/derived write (e.g. memory-inference). Optional when capture mode is unknown.
    * Surfaced from the `captureMode:` frontmatter key.
    */
   captureMode?: "hot" | "background";
@@ -269,7 +269,7 @@ export interface IndexDocument {
   /**
    * For derived memories (Phase 5A / Advantage D5), the parent ref that this
    * entry was distilled from. Surfaced from the `source:` frontmatter key
-   * (form: `"memory:<parent-name>"`) when the entry is recognized as a
+   * (form: `"memories/<parent-name>"`) when the entry is recognized as a
    * derived child. The indexer mirrors this value into the dedicated
    * `entries.derived_from` column so `getDerivedForParent()` can resolve the
    * child by parent ref without a full table scan.

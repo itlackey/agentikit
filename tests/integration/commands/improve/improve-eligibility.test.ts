@@ -16,14 +16,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AkmDistillResult } from "../../../../src/commands/improve/distill";
 import {
   buildLatestFeedbackTsMap,
   buildLatestProposalTsMap,
   collectEligibleRefs,
 } from "../../../../src/commands/improve/eligibility";
 import { akmImprove } from "../../../../src/commands/improve/improve";
-import type { AkmReflectResult } from "../../../../src/commands/improve/reflect";
 import type { AssetSalienceRow } from "../../../../src/commands/improve/salience";
 import {
   DEFAULT_ENCODING_SALIENCE,
@@ -31,13 +29,14 @@ import {
   isContentEncodingRow,
   upsertAssetSalience,
 } from "../../../../src/commands/improve/salience";
-import { shouldReadLegacyBareImproveState } from "../../../../src/commands/improve/source-identity";
+import { improveStateReadRefs } from "../../../../src/commands/improve/source-identity";
 import { saveConfig } from "../../../../src/core/config/config";
 import { appendEvent, readEvents } from "../../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/improve-types";
 import { openStateDatabase } from "../../../../src/core/state-db";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { closeDatabase, openExistingDatabase } from "../../../../src/storage/repositories/index-connection";
-import { withTestImproveLlm } from "../../../_helpers/improve-config";
+import { withImproveAutonomy, withTestImproveLlm } from "../../../_helpers/improve-config";
 
 // Deterministic, strictly-ordered timestamps for signal-delta ordering.
 // These replace `await sleep(10)` between two appendEvent() calls: instead of
@@ -76,8 +75,21 @@ function writeMemory(stashDir: string, name: string, body: string, mtime?: Date)
 
 async function buildIndex(stashDir: string): Promise<void> {
   process.env.AKM_STASH_DIR = stashDir;
-  saveConfig(withTestImproveLlm({ semanticSearchMode: "off" }));
+  saveConfig(
+    withImproveAutonomy(
+      withTestImproveLlm({
+        semanticSearchMode: "off",
+        bundles: { stash: { path: stashDir, writable: true } },
+        defaultBundle: "stash",
+        defaultWriteTarget: "stash",
+      }),
+    ),
+  );
   await akmIndex({ stashDir, full: true });
+}
+
+function durableRef(ref: string): string {
+  return `stash//${ref}`;
 }
 
 // #553: these pool-delta / #551-gate tests use single-memory sandboxed pools.
@@ -92,14 +104,16 @@ async function buildIndex(stashDir: string): Promise<void> {
 // behaviour is covered by proactive-maintenance-flow.test.ts; leaving it on here
 // would mask the gate each test is asserting.
 function configWithoutPoolGuard(): import("../../../../src/core/config/config").AkmConfig {
-  return withTestImproveLlm({
-    semanticSearchMode: "off",
-    improve: {
-      strategies: {
-        default: { processes: { consolidate: { minPoolSize: 0 }, proactiveMaintenance: { enabled: false } } },
+  return withImproveAutonomy(
+    withTestImproveLlm({
+      semanticSearchMode: "off",
+      improve: {
+        strategies: {
+          default: { processes: { consolidate: { minPoolSize: 0 }, proactiveMaintenance: { enabled: false } } },
+        },
       },
-    },
-  } as import("../../../../src/core/config/config").AkmConfig);
+    } as import("../../../../src/core/config/config").AkmConfig),
+  );
 }
 
 const okReflect = (ref: string): AkmReflectResult => ({
@@ -125,7 +139,7 @@ const okDistill = (ref: string): AkmDistillResult => ({
   ok: true,
   outcome: "queued",
   inputRef: ref,
-  lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+  proposalRef: `lessons/${ref.replaceAll("/", "-")}-lesson`,
 });
 
 beforeEach(() => {
@@ -155,6 +169,7 @@ test("skips a malformed indexed ref without discarding valid candidates", async 
 
   expect(result.plannedRefs.map((entry) => entry.ref)).toEqual(["memories/valid"]);
   expect(result.plannedRefs[0]?.filePath).toBe(path.join(stash, "memories", "valid.md"));
+  expect(result.plannedRefs[0]?.itemRef).toBe("stash//memories/valid");
   expect(result.memorySummary).toEqual({ eligible: 1, derived: 0 });
   expect(result.strategyFilteredRefs).toEqual([]);
 });
@@ -177,34 +192,14 @@ test("treats an index without an entries table as an empty candidate plan", asyn
 
 // ── Reflect signal-delta ────────────────────────────────────────────────────
 
-describe("source-qualified durable eligibility keys", () => {
-  test("the primary (defaultBundle) stash retains legacy state while other sources remain isolated", () => {
-    // Decision C: the historical bare improve state belongs only to the primary
-    // bundle (defaultBundle); a source at any other root never inherits it.
-    expect(
-      shouldReadLegacyBareImproveState("stash", "/tmp/historical", {
-        semanticSearchMode: "off",
-        bundles: { stash: { path: "/tmp/historical", writable: true } },
-        defaultBundle: "stash",
-      }),
-    ).toBe(true);
-    expect(
-      shouldReadLegacyBareImproveState("team", "/tmp/team", {
-        semanticSearchMode: "off",
-        bundles: {
-          stash: { path: "/tmp/historical", writable: true },
-          team: { path: "/tmp/team", writable: true },
-        },
-        defaultBundle: "stash",
-      }),
-    ).toBe(false);
+describe("durable eligibility keys", () => {
+  test("uses exactly one durable key", () => {
+    expect(improveStateReadRefs("memories/auth-tips", "team//memories/auth-tips")).toEqual([
+      "team//memories/auth-tips",
+    ]);
+    expect(improveStateReadRefs("memories/auth-tips")).toEqual(["memories/auth-tips"]);
   });
 
-  // WI-8.5c: the source-qualified / legacy-bare durable-key READS are retired —
-  // the improve state key-set collapsed to the single `[item_ref ?? conceptId]`.
-  // A durable event now correlates on the conceptId directly, so the former
-  // per-source-scoped reverse-map tests (source-qualified duplicate refs;
-  // legacy-bare local fallback) no longer describe a live code path.
   test("a durable feedback/proposal event correlates on the conceptId key", () => {
     appendEvent(
       { eventType: "feedback", ref: "memories/auth-tips", metadata: { signal: "positive" } },
@@ -228,12 +223,12 @@ describe("reflect signal-delta eligibility", () => {
     await buildIndex(stash);
 
     // Older reflect proposal recorded as reflect_invoked event.
-    appendEvent({ eventType: "reflect_invoked", ref: "memories/auth-tips" }, { now: () => OLDER_MS });
+    appendEvent({ eventType: "reflect_invoked", ref: durableRef("memories/auth-tips") }, { now: () => OLDER_MS });
     // Newer feedback event arrived after the reflect (injected ts strictly > reflect).
     appendEvent(
       {
         eventType: "feedback",
-        ref: "memories/auth-tips",
+        ref: durableRef("memories/auth-tips"),
         metadata: { signal: "negative" },
       },
       { now: () => NEWER_MS },
@@ -264,12 +259,12 @@ describe("reflect signal-delta eligibility", () => {
     appendEvent(
       {
         eventType: "feedback",
-        ref: "memories/stale",
+        ref: durableRef("memories/stale"),
         metadata: { signal: "negative" },
       },
       { now: () => OLDER_MS },
     );
-    appendEvent({ eventType: "reflect_invoked", ref: "memories/stale" }, { now: () => NEWER_MS });
+    appendEvent({ eventType: "reflect_invoked", ref: durableRef("memories/stale") }, { now: () => NEWER_MS });
 
     const reflected: string[] = [];
     await akmImprove({
@@ -293,7 +288,7 @@ describe("reflect signal-delta eligibility", () => {
     await buildIndex(stash);
     appendEvent({
       eventType: "feedback",
-      ref: "memories/fresh",
+      ref: durableRef("memories/fresh"),
       metadata: { signal: "positive" },
     });
 
@@ -347,7 +342,7 @@ describe("distill signal-delta eligibility", () => {
     appendEvent(
       {
         eventType: "distill_invoked",
-        ref: "memories/auth-tips",
+        ref: durableRef("memories/auth-tips"),
         metadata: { outcome: "queued" },
       },
       { now: () => OLDER_MS },
@@ -355,7 +350,7 @@ describe("distill signal-delta eligibility", () => {
     appendEvent(
       {
         eventType: "feedback",
-        ref: "memories/auth-tips",
+        ref: durableRef("memories/auth-tips"),
         metadata: { signal: "negative" },
       },
       { now: () => NEWER_MS },
@@ -385,7 +380,7 @@ describe("distill signal-delta eligibility", () => {
     appendEvent(
       {
         eventType: "feedback",
-        ref: "memories/old-memory",
+        ref: durableRef("memories/old-memory"),
         metadata: { signal: "negative" },
       },
       { now: () => OLDER_MS },
@@ -393,7 +388,7 @@ describe("distill signal-delta eligibility", () => {
     appendEvent(
       {
         eventType: "distill_invoked",
-        ref: "memories/old-memory",
+        ref: durableRef("memories/old-memory"),
         metadata: { outcome: "queued" },
       },
       { now: () => NEWER_MS },
@@ -421,7 +416,7 @@ describe("distill signal-delta eligibility", () => {
     await buildIndex(stash);
     appendEvent({
       eventType: "feedback",
-      ref: "memories/new-tip",
+      ref: durableRef("memories/new-tip"),
       metadata: { signal: "positive" },
     });
 
@@ -598,7 +593,7 @@ describe("#551 consolidation reorder + adjacent-run promotion gate", () => {
     const assetPath = path.join(stash, "memories", "just-promoted.md");
     appendEvent({
       eventType: "promoted",
-      ref: "memory:just-promoted",
+      ref: durableRef("memories/just-promoted"),
       metadata: { assetPath, source: "extract", autoAccept: true },
     });
 
@@ -661,9 +656,7 @@ describe("high-salience admission gate (#608)", () => {
     const db = openStateDatabase();
     try {
       if (encodingSource === null) {
-        // Legacy NULL-provenance row (pre-#644 migration 015). Write the raw
-        // value with a NULL encoding_source so `isContentEncodingRow`'s
-        // differs-from-stub heuristic governs admission.
+        // Rows without explicit content provenance must never enter the lane.
         db.prepare(
           `INSERT INTO asset_salience
              (asset_ref, encoding_salience, outcome_salience, retrieval_salience, rank_score, consecutive_no_ops, updated_at, encoding_source)
@@ -694,7 +687,7 @@ describe("high-salience admission gate (#608)", () => {
     // High CONTENT-derived encoding_salience, no retrieval, no feedback — only the
     // high-salience lane can rescue it (memory type-weight fallback is 0.5, below
     // threshold). This is #608's real target: a distilled, content-scored asset.
-    seedSalience("memories/salient", 0.9, "content");
+    seedSalience(durableRef("memories/salient"), 0.9, "content");
 
     const reflected: string[] = [];
     await akmImprove({
@@ -716,12 +709,12 @@ describe("high-salience admission gate (#608)", () => {
     const stash = makeTempDir("akm-hs-once-");
     writeMemory(stash, "salient", "High salience but already reflected once.");
     await buildIndex(stash);
-    seedSalience("memories/salient", 0.9, "content");
+    seedSalience(durableRef("memories/salient"), 0.9, "content");
     // A reflect proposal already exists for this ref. Without the cooldown guard
     // the high-salience lane re-selected it every run (auto-accept emits a
     // `promoted` event, not `feedback`, so it never leaves noFeedbackCandidates),
     // burning LLM calls and churning the asset. The guard must block re-rescue.
-    appendEvent({ eventType: "reflect_invoked", ref: "memories/salient" });
+    appendEvent({ eventType: "reflect_invoked", ref: durableRef("memories/salient") });
 
     const reflected: string[] = [];
     await akmImprove({
@@ -748,8 +741,8 @@ describe("high-salience admission gate (#608)", () => {
     writeMemory(stash, "aaa", "Scan-order-first, lower salience.");
     writeMemory(stash, "zzz", "Scan-order-last, higher salience.");
     await buildIndex(stash);
-    seedSalience("memories/aaa", 0.8, "content");
-    seedSalience("memories/zzz", 0.95, "content");
+    seedSalience(durableRef("memories/aaa"), 0.8, "content");
+    seedSalience(durableRef("memories/zzz"), 0.95, "content");
 
     const reflected: string[] = [];
     await akmImprove({
@@ -782,7 +775,7 @@ describe("high-salience admission gate (#608)", () => {
     await buildIndex(stash);
     // Explicit type-stub provenance: isContentEncodingRow returns false outright,
     // regardless of the value differing from the (memory) stub.
-    seedSalience("memories/stub", 0.9, "type-stub");
+    seedSalience(durableRef("memories/stub"), 0.9, "type-stub");
 
     const reflected: string[] = [];
     await akmImprove({
@@ -801,15 +794,11 @@ describe("high-salience admission gate (#608)", () => {
     expect(reflected).not.toContain("memories/stub");
   });
 
-  // Legacy NULL-provenance row (pre-#644 migration 015). isContentEncodingRow
-  // applies the differs-from-stub heuristic: a NULL row whose value still differs
-  // from the per-type stub must have been content-written and never re-clobbered,
-  // so it is treated as content and IS admitted. Memory stub is 0.5; 0.9 ≠ 0.5.
-  test("legacy NULL-provenance row that DIFFERS from the type stub IS admitted (differs-from-stub heuristic)", async () => {
+  test("NULL-provenance rows are not admitted", async () => {
     const stash = makeTempDir("akm-hs-null-diff-");
     writeMemory(stash, "legacy", "Legacy row, value differs from stub.");
     await buildIndex(stash);
-    seedSalience("memories/legacy", 0.9, null);
+    seedSalience(durableRef("memories/legacy"), 0.9, null);
 
     const reflected: string[] = [];
     await akmImprove({
@@ -824,16 +813,10 @@ describe("high-salience admission gate (#608)", () => {
       distillFn: async ({ ref }) => okDistill(ref ?? ""),
     });
 
-    expect(reflected).toContain("memories/legacy");
+    expect(reflected).not.toContain("memories/legacy");
   });
 
-  // Legacy NULL-provenance row whose value EQUALS the per-type stub. The
-  // heuristic treats it as a stub (the safe default) → NOT admitted. Asserted at
-  // the helper level (a non-indexed lesson ref would never be a run candidate, so
-  // routing it through akmImprove would be vacuous): the gate calls
-  // `isContentEncodingRow(row, parseAssetRef(ref).type)` and admits only when it
-  // returns true. lesson stub = 0.75; a NULL row at exactly 0.75 returns false.
-  test("legacy NULL-provenance row that EQUALS the type stub is treated as a stub (isContentEncodingRow=false)", () => {
+  test("NULL provenance is never content regardless of score", () => {
     const equalsStub: AssetSalienceRow = {
       asset_ref: "lessons/atstub",
       encoding_salience: DEFAULT_TYPE_ENCODING_WEIGHTS.lesson ?? DEFAULT_ENCODING_SALIENCE,
@@ -844,10 +827,8 @@ describe("high-salience admission gate (#608)", () => {
       updated_at: Date.now(),
       encoding_source: null,
     };
-    // EQUALS stub → not content → excluded from the lane.
-    expect(isContentEncodingRow(equalsStub, "lesson")).toBe(false);
-    // DIFFERS from stub → content (never re-clobbered) → admitted by the lane.
-    expect(isContentEncodingRow({ ...equalsStub, encoding_salience: 0.9 }, "lesson")).toBe(true);
+    expect(isContentEncodingRow(equalsStub)).toBe(false);
+    expect(isContentEncodingRow({ ...equalsStub, encoding_salience: 0.9 })).toBe(false);
   });
 });
 
@@ -863,7 +844,7 @@ describe("aggregated no_new_signal skip event", () => {
     await buildIndex(stash);
 
     for (const name of ["stale-a", "stale-b"]) {
-      const ref = `memories/${name}`;
+      const ref = durableRef(`memories/${name}`);
       appendEvent({ eventType: "feedback", ref, metadata: { signal: "negative" } }, { now: () => OLDER_MS });
       appendEvent({ eventType: "reflect_invoked", ref }, { now: () => NEWER_MS });
       appendEvent({ eventType: "distill_invoked", ref, metadata: { outcome: "queued" } }, { now: () => NEWER_MS });
@@ -902,9 +883,9 @@ describe("attribution: eligibilitySource lane tagging", () => {
     const stash = makeTempDir("akm-attr-signal-");
     writeMemory(stash, "rated", "Has fresh feedback.");
     await buildIndex(stash);
-    appendEvent({ eventType: "reflect_invoked", ref: "memories/rated" }, { now: () => OLDER_MS });
+    appendEvent({ eventType: "reflect_invoked", ref: durableRef("memories/rated") }, { now: () => OLDER_MS });
     appendEvent(
-      { eventType: "feedback", ref: "memories/rated", metadata: { signal: "negative" } },
+      { eventType: "feedback", ref: durableRef("memories/rated"), metadata: { signal: "negative" } },
       { now: () => NEWER_MS },
     );
 

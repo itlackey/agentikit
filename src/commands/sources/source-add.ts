@@ -4,9 +4,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { isBundleSlug } from "../../core/asset/asset-ref";
 import { isHttpUrl, resolveStashDir } from "../../core/common";
-import type { AkmConfig, BundleConfigEntry, SourceConfigEntry, SourceSpec } from "../../core/config/config";
+import type { AkmConfig, BundleConfigEntry, SourceConfigEntry } from "../../core/config/config";
 import {
   bundleEntryToSourceEntry,
   getSources,
@@ -78,13 +79,23 @@ async function addLocalSource(
   mutateConfig((config) => {
     const existing = bundleKeyForPath(config, resolvedPath);
     if (existing) {
-      // Already configured — the bundle key is the stable identity; leave it.
       bundleKey = existing;
-      return config;
+      const current = config.bundles?.[existing];
+      if (current?.components) return config;
+      const bundles = { ...(config.bundles ?? {}) };
+      bundles[existing] = {
+        ...current,
+        path: resolvedPath,
+        components: { main: { root: ".", adapter: detectAdapterId(resolvedPath) } },
+      };
+      return { ...config, bundles };
     }
     const bundles: Record<string, BundleConfigEntry> = { ...(config.bundles ?? {}) };
     bundleKey = nextBundleKey(bundles, explicitName, resolvedPath);
-    bundles[bundleKey] = { path: resolvedPath };
+    bundles[bundleKey] = {
+      path: resolvedPath,
+      components: { main: { root: ".", adapter: detectAdapterId(resolvedPath) } },
+    };
     return { ...config, bundles };
   });
 
@@ -103,7 +114,6 @@ async function addLocalSource(
     },
     config: {
       sourceCount: getSources(updatedConfig).length,
-      installedKitCount: readLockfile().length,
     },
     index: {
       mode: index.mode,
@@ -130,7 +140,11 @@ async function addWebsiteSource(
     const existingKey = bundleKeyForUrl(config, normalizedUrl);
     const key = existingKey ?? nextBundleKey(bundles, name ?? toWebsiteName(normalizedUrl), normalizedUrl);
     const website = { url: normalizedUrl, ...(maxPages !== undefined ? { maxPages } : {}) };
-    const nextBundle: BundleConfigEntry = { ...(existingKey ? bundles[key] : {}), website };
+    const nextBundle: BundleConfigEntry = {
+      ...(existingKey ? bundles[key] : {}),
+      website,
+      components: { main: { root: ".", adapter: "website-snapshot", writable: false } },
+    };
     if (JSON.stringify(bundles[key]) === JSON.stringify(nextBundle)) {
       entry = bundleEntryToSourceEntry(key, bundles[key]!) as SourceConfigEntry;
       return config;
@@ -159,7 +173,6 @@ async function addWebsiteSource(
     },
     config: {
       sourceCount: getSources(updatedConfig).length,
-      installedKitCount: readLockfile().length,
     },
     index: {
       mode: index.mode,
@@ -177,11 +190,27 @@ async function addWebsiteSource(
  */
 async function addRegistryStash(ref: string, stashDir: string, writable?: boolean): Promise<AddResponse> {
   const parsedRef = parseRegistryRef(ref);
-  if (writable === true && parsedRef.source !== "git") {
+  if (writable === true && parsedRef.source !== "git" && parsedRef.source !== "github") {
     throw new ConfigError("writable: true is only supported on filesystem and git sources", "INVALID_CONFIG_FILE");
   }
 
-  const synced = await syncFromRef(ref, { writable });
+  const currentConfig = loadConfig();
+  const existingBundleKey = findInstalledBundleKey(currentConfig.bundles ?? {}, parsedRef.id);
+  const existingBundle = existingBundleKey ? currentConfig.bundles?.[existingBundleKey] : undefined;
+  const priorLock = existingBundleKey ? readLockfile().find((entry) => entry.id === existingBundleKey) : undefined;
+  const existingWritable =
+    Object.values(existingBundle?.components ?? {})[0]?.writable ?? existingBundle?.writable === true;
+  const effectiveWritable = writable === true || existingWritable;
+  const requiredRoots = priorLock?.localRoot
+    ? Object.values(existingBundle?.components ?? {}).map((component) =>
+        path.resolve(priorLock.localRoot as string, component.root ?? "."),
+      )
+    : [];
+  const synced = await syncFromRef(ref, {
+    writable: effectiveWritable,
+    ...(effectiveWritable && priorLock?.localRoot ? { writableRoot: priorLock.localRoot } : {}),
+    ...(requiredRoots.length > 0 ? { writableRequiredRoots: requiredRoots } : {}),
+  });
 
   const { config: updatedConfig, bundleId } = upsertInstalledRegistryEntry({
     id: synced.id,
@@ -198,7 +227,7 @@ async function addRegistryStash(ref: string, stashDir: string, writable?: boolea
 
   // The prior materialized root (if this is a re-install) — read BEFORE the lock
   // upsert overwrites it, so a moved cache root can be cleaned afterwards.
-  const priorLocalRoot = readLockfile().find((e) => e.id === bundleId)?.localRoot;
+  const priorLocalRoot = priorLock?.localRoot;
 
   await upsertLockEntry({
     id: bundleId,
@@ -213,7 +242,7 @@ async function addRegistryStash(ref: string, stashDir: string, writable?: boolea
   });
 
   // Clean up the old materialized root on re-install (moved cache).
-  if (priorLocalRoot && path.resolve(priorLocalRoot) !== path.resolve(synced.contentDir)) {
+  if (!effectiveWritable && priorLocalRoot && path.resolve(priorLocalRoot) !== path.resolve(synced.contentDir)) {
     try {
       fs.rmSync(priorLocalRoot, { recursive: true, force: true });
     } catch {
@@ -241,7 +270,6 @@ async function addRegistryStash(ref: string, stashDir: string, writable?: boolea
     },
     config: {
       sourceCount: getSources(updatedConfig).length,
-      installedKitCount: readLockfile().length,
     },
     index: {
       mode: index.mode,
@@ -266,11 +294,27 @@ export function upsertInstalledRegistryEntry(entry: InstalledBundle): { config: 
   const config = mutateConfig((current) => {
     const bundles: Record<string, BundleConfigEntry> = { ...(current.bundles ?? {}) };
     bundleId = resolveInstalledBundleKey(bundles, entry.id, entry.stashRoot);
+    const existingComponents = bundles[bundleId]?.components;
+    const components = existingComponents
+      ? Object.fromEntries(
+          Object.entries(existingComponents).map(([id, component]) => [
+            id,
+            { ...component, writable: entry.writable === true },
+          ]),
+        )
+      : {
+          main: {
+            root: ".",
+            adapter: detectAdapterId(path.resolve(entry.stashRoot)),
+            writable: entry.writable === true,
+          },
+        };
     const descriptor = installedSourceDescriptor(entry.source, entry.ref, path.resolve(entry.stashRoot));
     bundles[bundleId] = {
       ...descriptor,
       ...(entry.writable === true ? { writable: true } : {}),
       ...(entry.id !== bundleId ? { registryId: entry.id } : {}),
+      components: components satisfies NonNullable<BundleConfigEntry["components"]>,
     };
     return { ...current, bundles };
   }).config;
@@ -358,8 +402,3 @@ function toWebsiteName(siteUrl: string): string {
     return siteUrl;
   }
 }
-
-// Re-export SourceSpec (the discriminated union from #123) so existing
-// importers of `upsertInstalledRegistryEntry` (formerly from registry-install)
-// resolve the same nominal type.
-export type { SourceSpec };

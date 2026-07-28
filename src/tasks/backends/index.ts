@@ -20,12 +20,6 @@ import { LAUNCHD_BACKEND, type LaunchdBackendOptions } from "./launchd";
 import { SCHTASKS_BACKEND, type SchtasksBackendOptions } from "./schtasks";
 import type { InstalledTaskRef, TaskBackend } from "./types";
 
-// Re-exported so existing `import { type InstalledTaskRef, type TaskBackend }
-// from "./tasks/backends"` sites are unaffected by the KILL 7 sever (types
-// moved to types.ts to break the index.ts ↔ {cron,launchd,schtasks}.ts import
-// cycle).
-export type { InstalledTaskRef, TaskBackend };
-
 export interface SelectBackendOptions {
   platform?: NodeJS.Platform;
   cron?: CronBackendOptions;

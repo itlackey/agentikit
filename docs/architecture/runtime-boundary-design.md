@@ -1,5 +1,18 @@
 # Runtime Boundary Design — AKM 0.9.0
 
+> **Implementation note (added later):** both target files below now exist —
+> `src/storage/database.ts` and `src/runtime.ts` — so this design has landed.
+> The "3 hard-import files" named in the original checklist (`src/indexer/db.ts`,
+> `src/core/state-db.ts`, `src/workflows/db.ts`) no longer describes the current
+> tree: `src/indexer/db.ts` was later split into `src/storage/repositories/index-*.ts`
+> (its `Database` opener lives in `src/storage/repositories/index-connection.ts`,
+> which imports `openDatabase`/`Database` from `src/storage/database.ts` as this
+> design specifies). `src/workflows/db.ts` did exist historically but has since
+> been removed — workflow run persistence now lives in
+> `src/storage/repositories/workflow-runs-repository.ts`.
+> `src/core/state-db.ts` still exists and also imports from `src/storage/database.ts`.
+> The checklist items below are kept as the historical design record.
+
 ## Problem
 
 Runtime-specific dependencies (`bun:sqlite`, `Bun.*` APIs) leak directly into 33+ source files.

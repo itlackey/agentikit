@@ -10,7 +10,7 @@ import { daysToMs } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import { ConfigError, rethrowIfTestIsolationError } from "../../core/errors";
 import { appendEvent, type EventsContext, readEvents } from "../../core/events";
-import type { EligibilitySource, ImproveActionResult, ImproveEligibleRef } from "../../core/improve-types";
+import type { ConsolidateResult, ImproveActionResult, ImproveEligibleRef } from "../../core/improve-types";
 import { openStateDatabase, withStateDb } from "../../core/state-db";
 import { info, warn } from "../../core/warn";
 import { countUsageEventsByType } from "../../indexer/usage/usage-events";
@@ -22,8 +22,9 @@ import { getZeroResultSearches } from "../../storage/repositories/index-entries-
 import { getRetrievalCounts } from "../../storage/repositories/index-utility-repository";
 import { listStateProposals } from "../../storage/repositories/proposals-repository";
 import { akmLint } from "../lint/index";
+import type { EligibilitySource } from "../proposal/proposal-types";
 import { runSchemaRepairPass } from "../sources/schema-repair";
-import { akmConsolidate, type ConsolidateResult } from "./consolidate";
+import { akmConsolidate } from "./consolidate";
 // Eligibility / candidate-selection predicates live in ./eligibility.
 import {
   buildLatestFeedbackTsMap,
@@ -70,13 +71,9 @@ import { bareImproveRef, improveStateReadRefs } from "./source-identity";
 function readAssetSalienceForImproveRef(
   db: Parameters<typeof getAssetSalience>[0],
   ref: string,
-  sourceName?: string,
-  includeLegacyBare = false,
   itemRef?: string,
 ): ReturnType<typeof getAssetSalience> {
-  // Chunk-5 flip F5e — probe [itemRef, durable, bare] so a row written under
-  // EITHER grammar is found during the transition window (source-identity.ts).
-  for (const key of improveStateReadRefs(ref, sourceName, includeLegacyBare, itemRef)) {
+  for (const key of improveStateReadRefs(ref, itemRef)) {
     const row = getAssetSalience(db, key);
     if (row) return row;
   }
@@ -86,28 +83,20 @@ function readAssetSalienceForImproveRef(
 function readConsecutiveNoOpsForImproveRef(
   db: Parameters<typeof getAssetSalience>[0],
   ref: string,
-  sourceName?: string,
-  includeLegacyBare = false,
   itemRef?: string,
 ): number {
-  return readAssetSalienceForImproveRef(db, ref, sourceName, includeLegacyBare, itemRef)?.consecutive_no_ops ?? 0;
+  return readAssetSalienceForImproveRef(db, ref, itemRef)?.consecutive_no_ops ?? 0;
 }
 
-// ── Durable-state write keys (Chunk-8 WI-8.5c: collapsed onto the item_ref) ────
+// ── Durable-state write keys ──────────────────────────────────────────────────
 //
 // The durable improve-state writers (salience + outcome) key by the resolved
-// index entry's `item_ref` (`<bundle>//<conceptId>`, D-R3) WHEN the planner
-// resolved one (`ImproveEligibleRef.itemRef`). The pre-flip source-qualified /
-// bare fallbacks were retired here: both writers now share ONE key expression,
+// index entry's `item_ref` (`<bundle>//<conceptId>`) when the planner resolved
+// one (`ImproveEligibleRef.itemRef`). Both writers share one key expression,
 // `itemRefByRef.get(ref) ?? ref`.
 //
-// THE ONE SURVIVING FALLBACK (`?? ref`): a `--scope <ref>` candidate is targeted
-// directly by the user and never flows through `collectEligibleRefsFromIndex`,
-// so the planner never resolves an `item_ref` for it. Its `ref` (the caller's
-// scope string) IS the write key. Every planner-resolved candidate carries its
-// item_ref (or, for a provenance-NULL / write-back index row, the SHORT
-// conceptId `ref` the WI-8.5c flip now assigns) — both are final new-grammar
-// spellings the one-time state.db re-key leaves untouched.
+// A direct `--scope <ref>` candidate does not flow through
+// `collectEligibleRefsFromIndex`, so its conceptId `ref` is the write key.
 //
 // itemRefByRef is `ref → item_ref | undefined`, built once per pass from the
 // candidate set.
@@ -129,16 +118,9 @@ function outcomeWriteKey(ref: string, itemRefByRef: Map<string, string | undefin
   return itemRefByRef.get(ref) ?? ref;
 }
 
-/**
- * Recover the legacy asset type from a ref in EITHER grammar (Chunk-5 flip F5e):
- * the `type:` prefix of a bare/source-qualified `type:name`, or the D-R2
- * stash-subdir of a `[bundle//]conceptId`. "" when neither applies (a foreign
- * bare-name conceptId). Byte-identical to the prior `ref.slice(0, indexOf(":"))`
- * guard for the bare `type:name` refs the salience vector actually iterates.
- */
-function legacyTypeOf(ref: string): string {
+/** Resolve an AKM asset type from a short or bundle-qualified conceptId. */
+function assetTypeOf(ref: string): string {
   const tail = ref.includes("//") ? ref.slice(ref.indexOf("//") + 2) : ref;
-  if (tail.includes(":")) return tail.slice(0, tail.indexOf(":"));
   return typeNameFromConceptId(tail)?.type ?? "";
 }
 
@@ -1077,30 +1059,11 @@ export function buildSnapshotManifest(args: {
   // Per-ref queries would be N+1 and the planner is already the hottest path
   // in `akm improve`.
   const candidateRefs = postCleanupRefs.filter((r) => !validationFailureRefs.has(r.ref)).map((r) => r.ref);
-  // Chunk-5 flip F5e — carry each candidate's item_ref so the feedback/proposal
-  // ts readers dual-arm their reverse maps on [item_ref, durable, bare].
+  // Carry each candidate's item_ref into the feedback/proposal timestamp reads.
   const itemRefByRef = buildItemRefByRef(postCleanupRefs);
-  const latestFeedbackTs = buildLatestFeedbackTsMap(
-    candidateRefs,
-    feedbackSinceCutoff,
-    options.sourceName,
-    options.legacyBareState,
-    itemRefByRef,
-  );
-  const lastReflectProposalTs = buildLatestProposalTsMap(
-    candidateRefs,
-    "reflect",
-    options.sourceName,
-    options.legacyBareState,
-    itemRefByRef,
-  );
-  const lastDistillProposalTs = buildLatestProposalTsMap(
-    candidateRefs,
-    "distill",
-    options.sourceName,
-    options.legacyBareState,
-    itemRefByRef,
-  );
+  const latestFeedbackTs = buildLatestFeedbackTsMap(candidateRefs, feedbackSinceCutoff, itemRefByRef);
+  const lastReflectProposalTs = buildLatestProposalTsMap(candidateRefs, "reflect", itemRefByRef);
+  const lastDistillProposalTs = buildLatestProposalTsMap(candidateRefs, "distill", itemRefByRef);
   return { feedbackSinceCutoff, latestFeedbackTs, lastReflectProposalTs, lastDistillProposalTs };
 }
 
@@ -1480,13 +1443,9 @@ function buildFeedbackSummaryMap(args: {
   {
     const feedbackCandidates = [...processableRefs, ...noFeedbackPool];
     const feedbackCandidateSet = new Set(feedbackCandidates.map((r) => r.ref));
-    // Chunk-5 flip F5e — dual-arm the reverse map on [item_ref, durable, bare]
-    // so an item_ref-keyed feedback event resolves back to its candidate ref
-    // once the writers emit item_ref. // Chunk-8: collapse to [item_ref].
+    // Map each candidate's single durable event key back to its display ref.
     const feedbackRefByDurableKey = new Map(
-      feedbackCandidates.flatMap((r) =>
-        improveStateReadRefs(r.ref, options.sourceName, options.legacyBareState, r.itemRef).map((key) => [key, r.ref]),
-      ),
+      feedbackCandidates.flatMap((r) => improveStateReadRefs(r.ref, r.itemRef).map((key) => [key, r.ref])),
     );
     if (feedbackCandidateSet.size > 0) {
       // Fetch ALL feedback events in one query (no ref filter, no since filter =
@@ -1560,7 +1519,6 @@ function fetchRetrievalSignals(args: {
       retrievalCounts = getRetrievalCounts(dbForRetrievalIndex, stateDb, allCandidateRefs, {
         sourceName: options.sourceName,
         stashDir: primaryStashDir,
-        includeLegacyBare: options.legacyBareState,
       });
     });
     lastUseMsForProactive = getLastUseMsByRef(
@@ -1736,16 +1694,10 @@ function selectHighSalienceLane(args: {
         // found later in the scan lost its slot to an earlier lower-scoring one.
         const qualifying: Array<{ ref: ImproveEligibleRef; score: number }> = [];
         for (const r of candidates) {
-          const row = readAssetSalienceForImproveRef(
-            dbForHighSalience,
-            r.ref,
-            options.sourceName,
-            options.legacyBareState,
-            r.itemRef,
-          );
+          const row = readAssetSalienceForImproveRef(dbForHighSalience, r.ref, r.itemRef);
           if (
             row &&
-            isContentEncodingRow(row, legacyTypeOf(r.ref)) &&
+            isContentEncodingRow(row) &&
             row.encoding_salience >= salienceThreshold &&
             !lastReflectProposalTs.has(r.ref)
           ) {
@@ -1820,27 +1772,16 @@ function scoreSalience(args: {
 
   // WS-1 — Unified salience vector (S1 seam).
   //
-  // The legacy sort combined three independent formulas (utility EMA, negative-only
-  // ratio / symmetric-valence magnitude, and the proactive-maintenance priority
-  // formula). WS-1 converges them into one `computeSalience()` call per ref, with
+  // WS-1 converges utility, valence, and proactive-maintenance signals into one
+  // `computeSalience()` call per ref, with
   // three independently-stored sub-scores and one documented rankScore projection.
   //
-  // Migration note: if a profile still has `symmetricValence` set, emit a one-time
-  // warning — its behaviour (symmetric |valence| attention) is now always-on as
-  // part of the salience vector, so the knob is a no-op and will be removed in 0.10.
-  if (improveProfile.symmetricValence === true) {
-    warn(
-      "[improve] Profile option 'symmetricValence' is deprecated (WS-1 salience vector). " +
-        "Symmetric valence is now always active; remove the option from your improve profile.",
-    );
-  }
-
   // Fetch last-use timestamps from the index DB for the full merged set so the
   // recency term in retrievalSalience is genuinely decayable (plan §WS-1 step 2).
   // This reuses the index DB opened earlier for retrieval counts; a separate
   // lightweight open is used here to avoid holding the connection longer than needed.
   let lastUseMsByRef = new Map<string, number>();
-  // utilityMap is kept for backward-compatible observability (health report reads it).
+  // Health and outcome reporting consume the utility projection.
   const utilityMap = buildUtilityMap(mergedRefs);
   let dbForSalience: import("../../storage/database").Database | undefined;
   try {
@@ -1965,9 +1906,8 @@ function updateOutcomeScores(args: {
           const valenceResult = computeValenceScore(fb);
           try {
             const result = updateAssetOutcome(outcomeDb, {
-              // Chunk-5 flip F5e — key by item_ref when resolved, else the bare
-              // pre-flip outcome spelling. rawOutcomeScores stays keyed by the
-              // bare `r.ref` (its in-memory identity for the salience vector).
+              // Key by item_ref when resolved, else by the conceptId. Keep
+              // rawOutcomeScores keyed by r.ref, its in-memory identity.
               ref: outcomeWriteKey(r.ref, itemRefByRef),
               currentRetrievalCount: retrievalCounts.get(r.ref) ?? 0,
               lastRetrievedAt: lastUseMsByRef.get(r.ref) ?? 0,
@@ -1992,10 +1932,7 @@ function updateOutcomeScores(args: {
           for (const row of allOutcomes) {
             if (row.outcome_score > maxOutcomeScore) maxOutcomeScore = row.outcome_score;
           }
-          // Read-clip: legacy rows written before the OUTCOME_SCORE_MAX write-clip
-          // existed can sit above the ceiling (live max was 3.13). Without this
-          // clip they inflate the normalisation denominator and floor everyone
-          // else's outcomeSalience (#691 follow-up).
+          // Keep the normalization denominator within the writer's score bounds.
           maxOutcomeScore = Math.min(maxOutcomeScore, OUTCOME_SCORE_MAX);
 
           // Proxy-adequacy tripwire (two-tailed): inverted (corr < −0.3) and
@@ -2112,15 +2049,9 @@ function computeSalienceVectors(args: {
     withStateDb(
       (dbForStoredEncoding) => {
         for (const r of mergedRefs) {
-          const type = legacyTypeOf(r.ref);
-          const row = readAssetSalienceForImproveRef(
-            dbForStoredEncoding,
-            r.ref,
-            options.sourceName,
-            options.legacyBareState,
-            itemRefByRef.get(r.ref),
-          );
-          if (row && isContentEncodingRow(row, type)) {
+          const type = assetTypeOf(r.ref);
+          const row = readAssetSalienceForImproveRef(dbForStoredEncoding, r.ref, itemRefByRef.get(r.ref));
+          if (row && isContentEncodingRow(row)) {
             storedEncodingByRef.set(r.ref, row.encoding_salience);
           }
         }
@@ -2133,7 +2064,7 @@ function computeSalienceVectors(args: {
   }
 
   for (const r of mergedRefs) {
-    const type = legacyTypeOf(r.ref);
+    const type = assetTypeOf(r.ref);
     const sizeBytes = (() => {
       const fp = r.filePath;
       if (!fp) return undefined;
@@ -2173,15 +2104,12 @@ function toRankPositions(scores: Map<string, number>): Map<string, number> {
 
 /**
  * Chunk-5 flip F5e — the durable salience write-key maps for one improve pass.
- * `wk(ref)` is a pool asset's write key (item_ref, else source-qualified);
- * `normalizeStoredKey` folds every stored spelling ([item_ref, durable, bare])
- * of an in-pool asset onto its write key (no stashSize double-count); and
+ * `wk(ref)` is a pool asset's write key (item_ref, else conceptId);
+ * `normalizeStoredKey` maps each in-pool asset's durable spelling to its write
+ * key (no stashSize double-count); and
  * `refByWriteKey` reverses a write key back to its filesystem-facing bare ref.
  */
-function buildSalienceWriteKeyMaps(
-  itemRefByRef: Map<string, string | undefined>,
-  sourceName?: string,
-): {
+function buildSalienceWriteKeyMaps(itemRefByRef: Map<string, string | undefined>): {
   wk: (ref: string) => string;
   normalizeStoredKey: Map<string, string>;
   refByWriteKey: Map<string, string>;
@@ -2192,7 +2120,7 @@ function buildSalienceWriteKeyMaps(
   for (const [ref, itemRef] of itemRefByRef) {
     const writeKey = wk(ref);
     refByWriteKey.set(writeKey, ref);
-    for (const spelling of improveStateReadRefs(ref, sourceName, true, itemRef)) {
+    for (const spelling of improveStateReadRefs(ref, itemRef)) {
       normalizeStoredKey.set(spelling, writeKey);
     }
   }
@@ -2211,11 +2139,9 @@ function persistSalienceAndReportRanks(args: {
 }): string[] {
   const { salienceMap, itemRefByRef, utilityMap, feedbackSummary, options, eventsCtx, nowForSalience } = args;
   // Chunk-5 flip F5e — the WRITE-key space. salienceMap stays keyed by each
-  // candidate's own bare `r.ref`; the state.db boundary keys by the durable
-  // salience write key (item_ref, else source-qualified `type:name`), and every
-  // stored spelling of one asset folds onto that key so a seeded-legacy row and
-  // a fresh item_ref write can never double-count in the rank report.
-  const { wk, normalizeStoredKey, refByWriteKey } = buildSalienceWriteKeyMaps(itemRefByRef, options.sourceName);
+  // candidate's own short `r.ref`; the state.db boundary keys by item_ref when
+  // available and otherwise by conceptId.
+  const { wk, normalizeStoredKey, refByWriteKey } = buildSalienceWriteKeyMaps(itemRefByRef);
   // Persist salience vectors to state.db (best-effort, non-blocking).
   // The canonical store enables WS-3 homeostatic demotion and WS-2 outcome reads.
   //
@@ -2269,9 +2195,8 @@ function persistSalienceAndReportRanks(args: {
         // Step 7: stash-wide rank-change report BEFORE overwriting the table.
         //
         // Load ALL existing rows so rank positions are stash-relative, not pool-relative.
-        // Chunk-5 flip F5e — source-scope by PREFIX (`<bundle|source>//…`, works
-        // for BOTH grammars — no legacy-parser throw on an item_ref row) and
-        // fold each in-pool asset's stored spelling onto its single write key so
+        // Source-scope by the `<bundle>//` prefix and fold each in-pool asset's
+        // stored spelling onto its single write key so
         // the merge below never double-counts one asset across two spellings.
         const allStoredScores = getAllRankScores(stateDb);
         const existingAllScores = new Map<string, number>();
@@ -2279,7 +2204,7 @@ function persistSalienceAndReportRanks(args: {
           if (options.sourceName) {
             const boundary = ref.indexOf("//");
             const prefix = boundary >= 0 ? ref.slice(0, boundary) : undefined;
-            const belongs = prefix === options.sourceName || (options.legacyBareState && prefix === undefined);
+            const belongs = prefix === options.sourceName;
             if (!belongs) continue;
           }
           existingAllScores.set(normalizeStoredKey.get(ref) ?? ref, score);
@@ -2392,8 +2317,7 @@ function persistSalienceAndReportRanks(args: {
         }
 
         for (const [ref, vector] of salienceMap) {
-          // Chunk-5 flip F5e — persist salience under the durable WRITE key
-          // (item_ref when resolved, else source-qualified `type:name`).
+          // Persist salience under item_ref when resolved, else the conceptId.
           upsertAssetSalience(stateDb, wk(ref), vector, nowForSalience);
         }
       },
@@ -2534,10 +2458,7 @@ async function filterEligibility(args: {
       const ownsNoOpDb = !eventsCtx?.db;
       try {
         for (const r of mergedRefs) {
-          noOpMap.set(
-            r.ref,
-            readConsecutiveNoOpsForImproveRef(noOpDb, r.ref, options.sourceName, options.legacyBareState, r.itemRef),
-          );
+          noOpMap.set(r.ref, readConsecutiveNoOpsForImproveRef(noOpDb, r.ref, r.itemRef));
         }
       } finally {
         if (ownsNoOpDb) noOpDb.close();
@@ -2563,9 +2484,8 @@ async function filterEligibility(args: {
   // suppresses repeated LLM attempts on those same assets without touching their
   // persisted rank_score (so they remain fully retrievable).
   //
-  // This is the ONLY ranking path — negativeOnlyRatio and the legacy
-  // symmetricValence branch are replaced. The eligibilitySource lanes
-  // (signal-delta / proactive / high-salience) survive as labels (set above).
+  // This is the only ranking path. The eligibilitySource lanes (signal-delta /
+  // proactive / high-salience) survive as labels set above.
 
   const effectiveScore = (ref: string): number => {
     const rankScore = salienceMap.get(ref)?.rankScore ?? 0;
@@ -2704,14 +2624,13 @@ function applyReplaySelection(args: {
           for (const [bareRef, itemRef] of itemRefByPlanned) if (itemRef) bareRefByItemRef.set(itemRef, bareRef);
           const allRankScores = options.sourceName
             ? (() => {
-                // Source-scope by PREFIX (both grammars — no legacy-parser throw
-                // on an item_ref row), then re-key onto the bare ref: item_ref rows
-                // via the planned reverse map, legacy rows inline via bareImproveRef.
+                // Source-scope by the bundle prefix, then re-key item_ref rows
+                // onto the short conceptId used by the planned-ref pool.
                 const m = new Map<string, number>();
                 for (const [ref, score] of storedRankScores) {
                   const boundary = ref.indexOf("//");
                   const prefix = boundary >= 0 ? ref.slice(0, boundary) : undefined;
-                  const belongs = prefix === options.sourceName || (options.legacyBareState && prefix === undefined);
+                  const belongs = prefix === options.sourceName;
                   if (!belongs) continue;
                   m.set(bareRefByItemRef.get(ref) ?? bareImproveRef(ref), score);
                 }
@@ -2726,13 +2645,7 @@ function applyReplaySelection(args: {
           const candidates: Array<{ ref: string; rankScore: number }> = [];
           for (const [ref, rankScore] of allRankScores) {
             if (alreadyInPool.has(ref)) continue;
-            const noOps = readConsecutiveNoOpsForImproveRef(
-              replayDb,
-              ref,
-              options.sourceName,
-              options.legacyBareState,
-              itemRefByPlanned.get(ref),
-            );
+            const noOps = readConsecutiveNoOpsForImproveRef(replayDb, ref, itemRefByPlanned.get(ref));
             if (noOps >= SALIENCE_NO_OP_DAMPEN_THRESHOLD) {
               convergedSkipped++;
               continue;

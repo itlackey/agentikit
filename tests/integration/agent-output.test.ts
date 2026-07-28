@@ -228,55 +228,12 @@ describe("--shape agent field projection", () => {
   }, 30_000);
 });
 
-// ── WS2: --shape agent is the canonical spelling ─────────────────────────────
-describe("--shape agent output mode", () => {
-  function makeStash(): string {
-    const stashDir = makeTempDir("akm-shape-stash-");
-    writeFile(
-      path.join(stashDir, "agents", "architect.md"),
-      "---\ndescription: System architecture agent\ntags: [arch, design]\n---\nYou are an architect.\n",
-    );
-    writeFile(
-      path.join(stashDir, "commands", "release.md"),
-      "---\ndescription: Release process\n---\nRun release {{version}}\n",
-    );
-    return stashDir;
-  }
-
-  test("--shape agent search output projects to the agent-essential fields", async () => {
-    const stashDir = makeStash();
-    const output = await runCli(stashDir, ["search", "architect", "--format=json", "--shape=agent"]);
-    const json = JSON.parse(output) as { hits: Array<Record<string, unknown>> };
-    expect(json.hits.length).toBeGreaterThan(0);
-    const allowedKeys = new Set([
-      "name",
-      "ref",
-      "type",
-      "path",
-      "editable",
-      "editHint",
-      "description",
-      "action",
-      "score",
-      "estimatedTokens",
-    ]);
-    for (const key of Object.keys(json.hits[0]!)) {
-      expect(allowedKeys.has(key)).toBe(true);
-    }
-  });
-
-  test("--shape agent show output includes local access fields", async () => {
-    const stashDir = makeStash();
-    const output = await runCli(stashDir, ["show", "commands/release.md", "--format=json", "--shape=agent"]);
-    const json = JSON.parse(output) as Record<string, unknown>;
-    expect(json).toHaveProperty("ref");
-    expect(json).toHaveProperty("path");
-    expect(json).toHaveProperty("editable", true);
-    expect(json).not.toHaveProperty("origin");
-    // commands carry their body in `template`; the agent shape keeps it.
-    expect(json).toHaveProperty("template");
-  });
-});
+// WS2 ("--shape agent is the canonical spelling") removed (D1): it was a
+// strict subset of the "--shape agent field projection" describe block above
+// (:78-113 covers the same allowedKeys set plus essential-field checks;
+// :135-152 and :154-168 cover show fields + `template`). Its private
+// makeStash helper was local to the deleted describe block and needed no
+// separate removal.
 
 describe("--format jsonl", () => {
   function makeStash(): string {

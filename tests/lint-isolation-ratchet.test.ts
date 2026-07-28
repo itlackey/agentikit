@@ -13,11 +13,33 @@
  * grows past the recorded baseline — forcing the baseline to be lowered (never
  * raised) in any change that touches the lists. It also asserts the linter
  * itself is clean, so the ratchet and the rules are exercised together.
+ *
+ * ISOLATION-07: the size check alone is blind to entries that point at files
+ * no longer in the tree — a stale path still counts toward the (correct)
+ * total, so nothing here caught `tests/integration/ripgrep.test.ts` and
+ * `tests/integration/tasks-legacy-md-warning.test.ts` sitting in
+ * `ALLOWED_FILES` for an unknown period after both files were deleted. A
+ * future accidental re-creation at either path would have silently inherited
+ * the stale exemption. The path-existence test below closes that gap by
+ * resolving every allowlisted entry against the repo root and asserting it
+ * exists — this is the check that would have failed the moment those two
+ * files were removed.
  */
 
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
 
-import { ALLOWLIST_RATCHET_BASELINE, combinedAllowlistSize, lintAllTestFiles } from "../scripts/lint-tests-isolation";
+import {
+  ALLOWED_FILES,
+  ALLOWLIST_RATCHET_BASELINE,
+  combinedAllowlistSize,
+  ENV_ASSIGN_ALLOWED,
+  lintAllTestFiles,
+  SPAWN_ALLOWED,
+} from "../scripts/lint-tests-isolation";
+
+const repoRoot = path.resolve(__dirname, "..");
 
 describe("lint-tests-isolation allowlist ratchet", () => {
   test("the recorded baseline tracks the live size exactly (shrink-only, no stale slack)", () => {
@@ -25,6 +47,14 @@ describe("lint-tests-isolation allowlist ratchet", () => {
     // removed the baseline is lowered in the same change, and any growth
     // fails immediately.
     expect(ALLOWLIST_RATCHET_BASELINE).toBe(combinedAllowlistSize());
+  });
+
+  test("every allowlisted path resolves to a file that actually exists (ISOLATION-07)", () => {
+    const allPaths = [...ALLOWED_FILES, ...ENV_ASSIGN_ALLOWED, ...SPAWN_ALLOWED];
+    const missing = allPaths.filter((rel) => !fs.existsSync(path.join(repoRoot, rel)));
+    expect(missing, `stale allowlist entries pointing at files no longer in the tree:\n${missing.join("\n")}`).toEqual(
+      [],
+    );
   });
 
   test("the test suite currently has zero isolation/determinism violations", () => {

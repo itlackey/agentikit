@@ -1,7 +1,9 @@
 ---
+type: fact
 category: convention
 description: Soft authoring conventions for agent assets using scoped role, tool, and maintenance rules.
 when_to_use: Surfaced to authoring agents when they write or revise an agent asset.
+updated: 2026-07-28
 ---
 
 <!--

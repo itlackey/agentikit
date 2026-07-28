@@ -17,11 +17,10 @@ export interface ImproveRunSummary {
   wallTimeMs: number;
   ok: boolean;
   /** Decoder disposition for this persisted result row. */
-  resultStatus?: "valid" | "normalized" | "invalid";
-  /** True when the decoded envelope is complete rather than terminated/normalized/invalid. */
+  resultStatus?: "valid" | "invalid";
+  /** True when the decoded envelope is complete rather than terminated/invalid. */
   resultComplete?: boolean;
   strategy: string | null;
-  legacyProfile: string | null;
   scope: { mode: string; value?: string };
   /**
    * The scheduled task that launched this improve run (e.g.

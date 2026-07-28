@@ -40,9 +40,11 @@
  *   programmatic mode Copilot then denies unapproved tool calls, which is the
  *   conservative failure mode.
  *
- * NOT registered anywhere: `builders.ts` / `harnesses/index.ts` wiring is a
- * follow-up integration task. Exported standalone so that task only adds a
- * registry entry.
+ * Registered: `copilotBuilder` is `CopilotHarness.agentBuilder`
+ * (`./index.ts`), one of the ten harnesses `HARNESS_REGISTRY` constructs
+ * (`harnesses/index.ts`); `agent/builders.ts` derives `BUILTIN_BUILDERS` from
+ * that registry, so this builder is reachable under the `"copilot"` platform
+ * name without any further wiring.
  */
 
 import {

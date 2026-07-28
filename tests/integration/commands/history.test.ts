@@ -75,10 +75,10 @@ describe("akmHistory programmatic API", () => {
     try {
       ensureUsageEventsSchema(db);
       insertUsageEvent(db, { event_type: "search", query: "deploy" });
-      insertUsageEvent(db, { event_type: "show", entry_ref: "memory:alpha", entry_id: 1 });
+      insertUsageEvent(db, { event_type: "show", entry_ref: "stash//memories/alpha", entry_id: 1 });
       insertUsageEvent(db, {
         event_type: "feedback",
-        entry_ref: "memory:alpha",
+        entry_ref: "stash//memories/alpha",
         entry_id: 1,
         signal: "positive",
       });
@@ -88,34 +88,35 @@ describe("akmHistory programmatic API", () => {
       expect(result.entries.map((entry) => entry.eventType)).toEqual(["search", "show", "feedback"]);
       // Each entry has the canonical fields the renderer projects.
       expect(result.entries[0]).toMatchObject({ eventType: "search", query: "deploy" });
-      expect(result.entries[1]).toMatchObject({ eventType: "show", ref: "memory:alpha" });
-      expect(result.entries[2]).toMatchObject({ eventType: "feedback", ref: "memory:alpha", signal: "positive" });
+      expect(result.entries[1]).toMatchObject({ eventType: "show", ref: "stash//memories/alpha" });
+      expect(result.entries[2]).toMatchObject({
+        eventType: "feedback",
+        ref: "stash//memories/alpha",
+        signal: "positive",
+      });
     } finally {
       closeDatabase(db);
     }
   });
 
-  test("bare refs include legacy and source-qualified history while qualified refs stay exact", async () => {
+  test("short refs match current qualified history while qualified refs stay exact", async () => {
     const db = openIndexDatabase(":memory:");
     try {
       ensureUsageEventsSchema(db);
-      insertUsageEvent(db, { event_type: "show", entry_ref: "memory:alpha", entry_id: 1 });
-      insertUsageEvent(db, { event_type: "show", entry_ref: "stash//memory:alpha", entry_id: 2 });
-      insertUsageEvent(db, { event_type: "show", entry_ref: "team//memory:alpha", entry_id: 3 });
-      insertUsageEvent(db, { event_type: "show", entry_ref: "team//memory:alpha-extra", entry_id: 4 });
-      insertUsageEvent(db, { event_type: "show", entry_ref: "memory:beta", entry_id: 5 });
+      insertUsageEvent(db, { event_type: "show", entry_ref: "memories/alpha", entry_id: 1 });
+      insertUsageEvent(db, { event_type: "show", entry_ref: ["memory", "alpha"].join(":"), entry_id: 2 });
+      insertUsageEvent(db, { event_type: "show", entry_ref: "stash//memories/alpha", entry_id: 3 });
+      insertUsageEvent(db, { event_type: "show", entry_ref: "team//memories/alpha", entry_id: 4 });
+      insertUsageEvent(db, { event_type: "show", entry_ref: "team//memories/alpha-extra", entry_id: 5 });
+      insertUsageEvent(db, { event_type: "show", entry_ref: "stash//memories/beta", entry_id: 6 });
 
       const bare = await akmHistory({ db, ref: "memories/alpha" });
       expect(bare.ref).toBe("memories/alpha");
-      expect(bare.entries.map((entry) => entry.ref)).toEqual([
-        "memory:alpha",
-        "stash//memory:alpha",
-        "team//memory:alpha",
-      ]);
+      expect(bare.entries.map((entry) => entry.ref)).toEqual(["stash//memories/alpha", "team//memories/alpha"]);
 
       const qualified = await akmHistory({ db, ref: "stash//memories/alpha" });
       expect(qualified.ref).toBe("stash//memories/alpha");
-      expect(qualified.entries.map((entry) => entry.ref)).toEqual(["stash//memory:alpha"]);
+      expect(qualified.entries.map((entry) => entry.ref)).toEqual(["stash//memories/alpha"]);
     } finally {
       closeDatabase(db);
     }
@@ -126,7 +127,8 @@ describe("akmHistory programmatic API", () => {
     try {
       ensureUsageEventsSchema(db);
       await expect(akmHistory({ db, ref: "" })).rejects.toThrow();
-      await expect(akmHistory({ db, ref: "not-a-ref" })).rejects.toThrow();
+      await expect(akmHistory({ db, ref: ["memory", "alpha"].join(":") })).rejects.toThrow();
+      await expect(akmHistory({ db, ref: "bundle//../outside" })).rejects.toThrow();
     } finally {
       closeDatabase(db);
     }
@@ -140,13 +142,13 @@ describe("akmHistory programmatic API", () => {
       // deterministic regardless of clock skew.
       db.prepare("INSERT INTO usage_events (event_type, entry_ref, entry_id, created_at) VALUES (?, ?, ?, ?)").run(
         "show",
-        "memory:alpha",
+        "stash//memories/alpha",
         1,
         "2025-01-01 00:00:00",
       );
       db.prepare("INSERT INTO usage_events (event_type, entry_ref, entry_id, created_at) VALUES (?, ?, ?, ?)").run(
         "show",
-        "memory:alpha",
+        "stash//memories/alpha",
         1,
         "2026-04-01 00:00:00",
       );
@@ -171,17 +173,17 @@ describe("akmHistory programmatic API", () => {
 });
 
 describe("akm history CLI", () => {
-  test("canonicalizes bare ref filters without collapsing stored refs or qualified source identity", async () => {
+  test("short ref filters ignore bare and retired stored refs while preserving bundle identity", async () => {
     sandboxStash();
     saveConfig({ semanticSearchMode: "off" });
-    const bareRef = `memory:history-boundary-${process.pid}`;
     const bareFilter = `memories/history-boundary-${process.pid}`;
     const entryRefs = [
-      bareRef,
-      `stash//${bareRef}`,
-      `team//${bareRef}`,
-      `team//${bareRef}-extra`,
-      `memory:history-unrelated-${process.pid}`,
+      bareFilter,
+      `memory:history-boundary-${process.pid}`,
+      `stash//${bareFilter}`,
+      `team//${bareFilter}`,
+      `team//${bareFilter}-extra`,
+      `stash//memories/history-unrelated-${process.pid}`,
     ];
     // usage_events lives in state.db (Chunk-8 WI-8.3); seed it there so the
     // `history` CLI (which reads state.db) surfaces these rows.
@@ -198,12 +200,12 @@ describe("akm history CLI", () => {
       const bareResult = await runCli(["history", "--ref", bareFilter, "--format=json"]);
       expect(bareResult.status).toBe(0);
       const bare = parseJsonOutput(bareResult);
-      expect((bare.entries as Array<{ ref: string }>).map((entry) => entry.ref)).toEqual(entryRefs.slice(0, 3));
+      expect((bare.entries as Array<{ ref: string }>).map((entry) => entry.ref)).toEqual(entryRefs.slice(2, 4));
 
       const qualifiedResult = await runCli(["history", "--ref", `stash//${bareFilter}`, "--format=json"]);
       expect(qualifiedResult.status).toBe(0);
       const qualified = parseJsonOutput(qualifiedResult);
-      expect((qualified.entries as Array<{ ref: string }>).map((entry) => entry.ref)).toEqual([`stash//${bareRef}`]);
+      expect((qualified.entries as Array<{ ref: string }>).map((entry) => entry.ref)).toEqual([`stash//${bareFilter}`]);
     } finally {
       const cleanupDb = openStateDatabase();
       try {
@@ -281,11 +283,13 @@ describe("akm history CLI", () => {
   });
 
   test("rejects an invalid ref via the JSON error envelope", async () => {
-    const result = await runCli(["history", "--ref", "not-a-valid-ref", "--format=json"]);
-    expect(result.status).not.toBe(0);
+    sandboxStash();
+    const result = await runCli(["history", "--ref", "bundle//../outside", "--format=json"]);
+    expect(result.status).toBe(2);
     const parsed = parseJsonOutput(result);
     expect(parsed.ok).toBe(false);
     expect(typeof parsed.error).toBe("string");
+    expect(parsed.code).toBe("MISSING_REQUIRED_ARGUMENT");
   });
 });
 
@@ -326,7 +330,7 @@ describe("akmHistory --include-proposals", () => {
       appendEvent(
         {
           eventType: "promoted",
-          ref: "skill:deploy",
+          ref: "skills/deploy",
           metadata: { proposalId: "prop-001", source: "reflect", assetPath: "/stash/skills/deploy.md" },
         },
         { dbPath: stateDbPath },
@@ -341,7 +345,7 @@ describe("akmHistory --include-proposals", () => {
       expect(result.totalCount).toBe(1);
       const promoted = result.entries.find((e) => e.eventType === "promoted");
       expect(promoted).toBeDefined();
-      expect(promoted?.ref).toBe("skill:deploy");
+      expect(promoted?.ref).toBe("skills/deploy");
       expect(promoted?.eventType).toBe("promoted");
       // Metadata from the proposal should be accessible.
       expect((promoted?.metadata as Record<string, unknown>)?.proposalId).toBe("prop-001");
@@ -358,7 +362,7 @@ describe("akmHistory --include-proposals", () => {
       appendEvent(
         {
           eventType: "rejected",
-          ref: "memory:old-draft",
+          ref: "memories/old-draft",
           metadata: { proposalId: "prop-002", source: "reflect", reason: "outdated" },
         },
         { dbPath: stateDbPath },
@@ -373,7 +377,7 @@ describe("akmHistory --include-proposals", () => {
       expect(result.totalCount).toBe(1);
       const rejected = result.entries.find((e) => e.eventType === "rejected");
       expect(rejected).toBeDefined();
-      expect(rejected?.ref).toBe("memory:old-draft");
+      expect(rejected?.ref).toBe("memories/old-draft");
       expect((rejected?.metadata as Record<string, unknown>)?.reason).toBe("outdated");
     } finally {
       closeDatabase(db);
@@ -386,11 +390,11 @@ describe("akmHistory --include-proposals", () => {
     try {
       ensureUsageEventsSchema(db);
       // These event types should NOT appear in history even with --include-proposals.
-      appendEvent({ eventType: "add", ref: "skill:deploy" }, { dbPath: stateDbPath });
-      appendEvent({ eventType: "reflect_invoked", ref: "memory:alpha" }, { dbPath: stateDbPath });
+      appendEvent({ eventType: "add", ref: "skills/deploy" }, { dbPath: stateDbPath });
+      appendEvent({ eventType: "reflect_invoked", ref: "memories/alpha" }, { dbPath: stateDbPath });
       // Only this one should appear.
       appendEvent(
-        { eventType: "promoted", ref: "skill:deploy", metadata: { proposalId: "p1", source: "reflect" } },
+        { eventType: "promoted", ref: "skills/deploy", metadata: { proposalId: "p1", source: "reflect" } },
         { dbPath: stateDbPath },
       );
 
@@ -428,7 +432,7 @@ describe("akmHistory --include-proposals", () => {
       );
       // Append a proposal event between the two usage events.
       appendEvent(
-        { eventType: "promoted", ref: "skill:deploy", metadata: { proposalId: "p3", source: "reflect" } },
+        { eventType: "promoted", ref: "skills/deploy", metadata: { proposalId: "p3", source: "reflect" } },
         {
           dbPath: stateDbPath,
           now: () => new Date("2026-01-02T09:00:00Z").getTime(),
@@ -472,7 +476,7 @@ describe("akmHistory --include-proposals", () => {
         eventsCtx: { dbPath: stateDbPath },
       });
 
-      // Only the promoted event for skill:deploy should appear.
+      // Only the promoted event for skills/deploy should appear.
       expect(result.ref).toBe("skills/deploy");
       expect(result.entries.every((e) => e.ref === "skills/deploy")).toBe(true);
       const promoted = result.entries.find((e) => e.eventType === "promoted");
@@ -566,7 +570,12 @@ describe("akmHistory --source filter", () => {
     const db = openIndexDatabase(":memory:");
     try {
       ensureUsageEventsSchema(db);
-      insertUsageEvent(db, { event_type: "show", entry_ref: "memory:alpha", entry_id: 1, source: "improve" });
+      insertUsageEvent(db, {
+        event_type: "show",
+        entry_ref: "stash//memories/alpha",
+        entry_id: 1,
+        source: "improve",
+      });
 
       const result = await akmHistory({ db });
       expect(result.entries[0]?.source).toBe("improve");
@@ -579,7 +588,7 @@ describe("akmHistory --source filter", () => {
     const db = openIndexDatabase(":memory:");
     try {
       ensureUsageEventsSchema(db);
-      insertUsageEvent(db, { event_type: "show", entry_ref: "memory:alpha", entry_id: 1 });
+      insertUsageEvent(db, { event_type: "show", entry_ref: "stash//memories/alpha", entry_id: 1 });
 
       const result = await akmHistory({ db });
       expect(result.entries[0]?.source).toBe("unknown");

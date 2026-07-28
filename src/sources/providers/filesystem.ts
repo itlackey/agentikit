@@ -9,9 +9,8 @@ import { registerSourceProvider } from "../provider-factory";
 /**
  * Filesystem source — points at a directory the user already manages.
  *
- * Implements the v1 {@link SourceProvider} interface (spec §2.1, §2.4):
- * just `{ name, kind, init, path }`. No `sync()` — content is the user's
- * own directory, never refreshed by akm.
+ * Implements {@link SourceProvider} with `{ name, kind, path }`. No `sync()`:
+ * content is the user's own directory, never refreshed by akm.
  */
 registerSourceProvider("filesystem", (entry) => {
   if (entry.type !== "filesystem") {

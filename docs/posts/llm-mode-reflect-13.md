@@ -63,10 +63,10 @@ LLM mode requires Config v2 (`configVersion: "0.8.0"`). If you have not migrated
 
 ```sh
 # Preview the transformation
-akm config migrate --dry-run
+akm config migrate --dry-run  # doclint:ignore (0.7.x→0.8.0 config-schema migration command, not present in 0.9.0)
 
 # Apply (writes a timestamped backup first)
-akm config migrate
+akm config migrate  # doclint:ignore (0.7.x→0.8.0 config-schema migration command, not present in 0.9.0)
 ```
 
 With v2 in place, add a named LLM profile and point the reflect process at it:
@@ -147,7 +147,7 @@ The change is a config update:
 
 ```sh
 # Migrate config if still on v1
-akm config migrate
+akm config migrate  # doclint:ignore (0.7.x→0.8.0 config-schema migration command, not present in 0.9.0)
 
 # Then add the llm profile + reflect process entry (see snippet above)
 # Preview what the next run would process without writing anything

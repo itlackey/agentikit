@@ -9,12 +9,16 @@
  * `memory-contradiction-detect.ts` (producer) now resolve a derived memory's
  * parent through this one impl, so they cannot disagree (plan §6). The suite
  * also pins the INTENDED producer-side widening — `derivedFrom`-keyed families
- * and normalised (whitespace/origin) `source:` values now resolve a parent that
- * the old producer copy silently dropped.
+ * and current bundle-qualified `source:` values resolve consistently.
  */
 
 import { describe, expect, test } from "bun:test";
-import { isDerivedMemory, parseMemoryRef, resolveParentRef } from "../../../src/commands/improve/memory/derived-ref";
+import {
+  isDerivedMemory,
+  parseMemoryName,
+  parseMemoryRef,
+  resolveParentRef,
+} from "../../../src/commands/improve/memory/derived-ref";
 import { DERIVED_SUFFIX } from "../../../src/core/recognition-util";
 
 describe("isDerivedMemory", () => {
@@ -32,20 +36,13 @@ describe("isDerivedMemory", () => {
 });
 
 describe("resolveParentRef — precedence source → derivedFrom → suffix", () => {
-  // Group-C item 2: the NORMALISED output is the 0.9.0 `memories/<name>`
-  // conceptId, while READ tolerance stays dual-grammar — a legacy
-  // `source: memory:<name>` on un-migrated disk still resolves.
-  test("(i) source: normalises whitespace and origin, output is the conceptId", () => {
-    // Legacy `memory:<name>` input → flipped `memories/<name>` output.
-    expect(resolveParentRef("child.derived", { source: "memory:parent" })).toBe("memories/parent");
-    // Leading/trailing whitespace — the old producer's raw startsWith() dropped this.
-    expect(resolveParentRef("child.derived", { source: "  memory:parent  " })).toBe("memories/parent");
-    // Origin prefix — normalised away to the canonical conceptId.
-    expect(resolveParentRef("child.derived", { source: "team//memory:parent" })).toBe("memories/parent");
-    // New-grammar `memories/<name>` input is tolerated too (post-migration disk).
+  test("(i) source: parses current refs and returns the conceptId", () => {
     expect(resolveParentRef("child.derived", { source: "memories/parent" })).toBe("memories/parent");
+    expect(resolveParentRef("child.derived", { source: "  team//memories/parent  " })).toBe("memories/parent");
+    // Retired and non-memory refs are ignored, falling through to the suffix.
+    expect(resolveParentRef("child.derived", { source: "memory:parent" })).toBe("memories/child");
     // Non-memory source is ignored, falling through to the next rule.
-    expect(resolveParentRef("child.derived", { source: "knowledge:doc.md" })).toBe("memories/child");
+    expect(resolveParentRef("child.derived", { source: "knowledge/doc.md" })).toBe("memories/child");
   });
 
   test("(ii) derivedFrom: resolves the parent even without a suffix (producer widening)", () => {
@@ -73,15 +70,40 @@ describe("resolveParentRef — precedence source → derivedFrom → suffix", ()
 });
 
 describe("parseMemoryRef", () => {
-  test("normalises to the memories/ conceptId, tolerant of both grammars, rejects non-memory/empty", () => {
-    // Legacy input → flipped conceptId output (Group-C item 2).
-    expect(parseMemoryRef("memory:x")).toBe("memories/x");
-    expect(parseMemoryRef("  team//memory:x ")).toBe("memories/x");
-    // New-grammar input is accepted and returned canonicalised.
+  test("accepts current memory refs and rejects retired, non-memory, or empty values", () => {
     expect(parseMemoryRef("memories/x")).toBe("memories/x");
-    expect(parseMemoryRef("knowledge:x")).toBeUndefined();
+    expect(parseMemoryRef(" team//memories/x ")).toBe("memories/x");
+    expect(parseMemoryRef("memory:x")).toBeUndefined();
+    expect(parseMemoryRef("team//memory:x")).toBeUndefined();
+    expect(parseMemoryRef("knowledge/x")).toBeUndefined();
     expect(parseMemoryRef(undefined)).toBeUndefined();
     expect(parseMemoryRef("")).toBeUndefined();
+  });
+});
+
+describe("parseMemoryName", () => {
+  test("accepts the conceptId spelling the current writers actually persist", () => {
+    // `akm remember --supersedes` / `akm import --supersedes` call
+    // writeSupersededEdge with the write result's `ref`, which is a
+    // fully-qualified conceptId. Accepting only `memory:<name>` silently
+    // reduced every such edge to nothing, so a superseded memory read back as
+    // active during belief analysis.
+    expect(parseMemoryName("stash//memories/corrected-note")).toBe("corrected-note");
+    expect(parseMemoryName("memories/corrected-note")).toBe("corrected-note");
+    expect(parseMemoryName("memories/sub/dir-note")).toBe("sub/dir-note");
+  });
+
+  test("still accepts the internal identity spelling written before 0.9.0", () => {
+    expect(parseMemoryName("memory:corrected-note")).toBe("corrected-note");
+    expect(parseMemoryName("  memory:spaced  ")).toBe("spaced");
+  });
+
+  test("rejects non-memory, empty, and unparseable values", () => {
+    expect(parseMemoryName("knowledge/x")).toBeUndefined();
+    expect(parseMemoryName("memory:")).toBeUndefined();
+    expect(parseMemoryName("not a ref at all!!")).toBeUndefined();
+    expect(parseMemoryName(undefined)).toBeUndefined();
+    expect(parseMemoryName("")).toBeUndefined();
   });
 });
 

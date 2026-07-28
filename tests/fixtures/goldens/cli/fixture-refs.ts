@@ -63,6 +63,15 @@ export function lessonRef(name: string = A_LESSON_NAME): string {
   return `lessons/${name}`;
 }
 
+// ── Family D — argv handling ─────────────────────────────────────────────
+
+/** `knowledge:` asset used for the `show <ref>#<slug>` fragment text-output case. */
+export const D_FRAGMENT_NAME = "cli-d-fragment.md";
+
+export function fragmentRef(name: string = D_FRAGMENT_NAME): string {
+  return `knowledge/${name}`;
+}
+
 // ── Family B — health ────────────────────────────────────────────────────
 
 export const HEALTH_TASK_ID = "cli-b-task";

@@ -1,9 +1,9 @@
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { walkStash, walkStashFlat } from "../../src/indexer/walk/walker";
+import { walkStash, walkStashFlat, walkStashFlatWithStatus } from "../../src/indexer/walk/walker";
 
 const createdTmpDirs: string[] = [];
 
@@ -131,6 +131,10 @@ describe("walkStash", () => {
 });
 
 describe("walkStashFlat", () => {
+  test("marks a missing root as an incomplete snapshot", () => {
+    expect(walkStashFlatWithStatus("/nonexistent/path")).toEqual({ files: [], complete: false });
+  });
+
   test("returns FileContext objects (not plain paths)", () => {
     const root = tmpDir();
     writeFile(path.join(root, "scripts", "build.sh"), "echo build\n");
@@ -215,6 +219,26 @@ describe("walkStashFlat", () => {
     expect(results).toHaveLength(1);
     expect(results[0]?.relPath).toBe("scripts/build.sh");
     expect(results[0]?.absPath.startsWith(stashRoot)).toBe(true);
+  });
+
+  test("marks a Git snapshot incomplete when a listed file cannot be inspected", () => {
+    const root = tmpDir();
+    const blocked = path.join(root, "knowledge", "blocked.md");
+    writeFile(blocked, "# Blocked\n");
+    expect(spawnSync("git", ["init"], { cwd: root }).status).toBe(0);
+
+    const originalStatSync = fs.statSync;
+    const statSpy = spyOn(fs, "statSync").mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+      if (path.resolve(String(target)) === path.resolve(blocked)) throw new Error("simulated stat failure");
+      return originalStatSync(target, options as never);
+    }) as typeof fs.statSync);
+    try {
+      const result = walkStashFlatWithStatus(root);
+      expect(result.complete).toBe(false);
+      expect(result.files).toEqual([]);
+    } finally {
+      statSpy.mockRestore();
+    }
   });
 });
 

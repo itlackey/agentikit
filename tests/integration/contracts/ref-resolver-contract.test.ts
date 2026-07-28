@@ -40,6 +40,7 @@ function buildFixtureStash(root: string): void {
   touch(path.join(root, "knowledge", "release-notes.md"));
   touch(path.join(root, "lessons", "no-fine-tuning.md"));
   touch(path.join(root, "tasks", "ship-0.8.0.yml"));
+  touch(path.join(root, "scripts", "deploy.sh"));
   touch(path.join(root, "agents", "release-captain.md"));
   touch(path.join(root, "commands", "akm-sync.md"));
   touch(path.join(root, "lessons", "ship-small.md"));
@@ -47,7 +48,7 @@ function buildFixtureStash(root: string): void {
   // Skill multi-file layout.
   touch(path.join(root, "skills", "rollout", "SKILL.md"));
 
-  // Memory `.derived.md` sibling (no plain .md, only the derived file).
+  // Derived memory has its own explicit concept identity.
   touch(path.join(root, "memories", "session-derived.derived.md"));
 
   // Knowledge subdirectory layout (knowledge/<category>/<slug>.md).
@@ -91,17 +92,12 @@ const CONTRACT_CASES: ContractCase[] = [
   { description: "existing command (2)", type: "command", slug: "akm-sync", reachable: true },
   { description: "existing lesson (2)", type: "lesson", slug: "ship-small", reachable: true },
   { description: "skill multi-file layout (SKILL.md inside dir)", type: "skill", slug: "rollout", reachable: true },
+  { description: "explicit derived memory", type: "memory", slug: "session-derived.derived", reachable: true },
   {
-    description: "memory backed only by .derived.md sibling",
-    type: "memory",
-    slug: "session-derived",
-    reachable: true,
-  },
-  {
-    description: "knowledge under subdirectory (knowledge/<cat>/<slug>.md)",
+    description: "flattened knowledge alias does not resolve",
     type: "knowledge",
     slug: "akm-release",
-    reachable: true,
+    reachable: false,
   },
   {
     description: "namespaced knowledge slug (slug contains '/')",
@@ -130,10 +126,7 @@ const CONTRACT_CASES: ContractCase[] = [
     slug: "no-such-skill",
     reachable: false,
   },
-  // `script` is intentionally unresolvable by the contract — the type is
-  // skipped in `refToRelPath`. Both implementations must agree it never
-  // resolves regardless of layout.
-  { description: "script type is always unresolvable", type: "script", slug: "any-script", reachable: false },
+  { description: "script with explicit extension", type: "script", slug: "deploy.sh", reachable: true },
 ];
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -193,16 +186,12 @@ describe("ref-resolver contract", () => {
     expect(CONTRACT_CASES.length).toBeGreaterThanOrEqual(20);
   });
 
-  test("script type is always unresolvable regardless of layout", () => {
-    // The contract pins this explicitly: `script` lives in nested dirs and
-    // is never resolvable by the slug-based walker. Both implementations
-    // return `null` from refToRelPath (-> false from the composed resolver).
+  test("script refs require their explicit file extension", () => {
     const stash = makeStash();
     buildFixtureStash(stash);
-    // Even if a file named "any-script.md" exists somewhere, the type maps
-    // to null and the resolver returns false.
     touch(path.join(stash, "scripts", "any-script.md"));
     expect(resolveRef("script", "any-script", [stash])).toBe(false);
+    expect(resolveRef("script", "any-script.md", [stash])).toBe(true);
   });
 
   test("unknown asset type is unresolvable", () => {

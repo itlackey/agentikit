@@ -10,11 +10,11 @@
  * CLI entry point stays focused on argument parsing + output routing.
  */
 
-import { getParsedInvocation } from "../cli/invocation";
 import { serializeFrontmatter } from "../core/asset/asset-serialize";
 import { toErrorMessage, tryReadStdinText } from "../core/common";
 import { loadConfig } from "../core/config/config";
 import { UsageError } from "../core/errors";
+import { parseEmbeddedJsonResponse } from "../core/parse";
 import { DURATION_UNITS, parseDuration as parseDurationSpec } from "../core/time";
 import { warn } from "../core/warn";
 import type { StashEntryScope } from "../indexer/passes/metadata";
@@ -30,14 +30,14 @@ import { getDefaultLlmConfig } from "../integrations/agent/engine-resolution";
  * The `scope` shape is the wire-level contract — it is persisted as the
  * canonical top-level frontmatter keys `scope_user`, `scope_agent`,
  * `scope_run`, `scope_channel` (one key per non-empty scope value).
- * Legacy memories without scope continue to load and parse cleanly.
+ * Memories without scope continue to load and parse cleanly.
  */
 export interface MemoryFrontmatterFields {
   description?: string;
   tags?: string[];
   source?: string;
   /**
-   * Cross-reference refs (`type:name`) collected via `--xref` (repeatable).
+   * Cross-reference refs (`[bundle//]conceptId`) collected via `--xref` (repeatable).
    * Persisted as the `xrefs:` frontmatter list — the channel the stash
    * back-linking conventions mandate for provenance/associative links; the
    * indexer folds these into the asset's search hints. An empty array is
@@ -231,7 +231,7 @@ export async function runLlmEnrich(body: string): Promise<EnrichmentResult> {
     warn("Warning: --enrich requires an LLM to be configured. Run `akm setup` to configure one.");
     return { tags: [] };
   }
-  const { chatCompletion, parseEmbeddedJsonResponse: parseJsonResponse } = await import("../llm/client");
+  const { chatCompletion } = await import("../llm/client");
   // #576: attribute this entry point's LLM call to the `remember` stage. The
   // wrapper is ambient — if a usage sink is active it tags the record; if not,
   // it is a no-op.
@@ -274,7 +274,7 @@ Return ONLY the JSON object, no prose, no markdown fences.`;
       }
     })();
 
-    const parsed = parseJsonResponse<Record<string, unknown>>(result);
+    const parsed = parseEmbeddedJsonResponse<Record<string, unknown>>(result);
     if (!parsed) {
       warn("Warning: --enrich received invalid JSON from the LLM. Writing memory without enrichment.");
       return { tags: [] };
@@ -299,71 +299,14 @@ Return ONLY the JSON object, no prose, no markdown fences.`;
   }
 }
 
-// ── Content-arg disambiguation ───────────────────────────────────────────────
-
-/**
- * Guard against citty consuming a global flag value as the `content` positional.
- *
- * When the user runs `akm remember --format json` without a content argument,
- * citty may assign `"json"` to the `content` positional because of how it
- * handles flag order. This helper detects that case and returns `undefined`
- * so `readMemoryContent` falls through to stdin.
- */
-export function resolveRememberContentArg(content: string | undefined): string | undefined {
-  if (content === undefined) return undefined;
-
-  const invocation = getParsedInvocation();
-
-  const parsedFormat = invocation.getFlagValue("--format");
-  if (
-    parsedFormat !== undefined &&
-    content === parsedFormat &&
-    wasRememberFlagValueConsumedAsContent(content, parsedFormat, "--format")
-  ) {
-    return undefined;
-  }
-
-  const parsedDetail = invocation.getFlagValue("--detail");
-  if (
-    parsedDetail !== undefined &&
-    content === parsedDetail &&
-    wasRememberFlagValueConsumedAsContent(content, parsedDetail, "--detail")
-  ) {
-    return undefined;
-  }
-
-  return content;
-}
-
-function wasRememberFlagValueConsumedAsContent(
-  content: string,
-  flagValue: string,
-  flagName: "--format" | "--detail",
-): boolean {
-  const argv = getParsedInvocation().userArgs;
-  const rememberIndex = argv.indexOf("remember");
-  const tokens = rememberIndex >= 0 ? argv.slice(rememberIndex + 1) : argv;
-
-  let flagIndex = -1;
-  let flagConsumesNextToken = false;
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    if (token === flagName) {
-      flagIndex = i;
-      flagConsumesNextToken = true;
-      break;
-    }
-    if (token === `${flagName}=${flagValue}`) {
-      flagIndex = i;
-      break;
-    }
-  }
-
-  if (flagIndex === -1) return false;
-  if (tokens.slice(0, flagIndex).includes(content)) return false;
-
-  const firstTokenAfterFlag = flagIndex + (flagConsumesNextToken ? 2 : 1);
-  if (tokens.slice(firstTokenAfterFlag).includes(content)) return false;
-
-  return true;
-}
+// R-061(c): `resolveRememberContentArg` / `wasRememberFlagValueConsumedAsContent`
+// used to live here — a heuristic guarding against citty consuming a global
+// flag's value (`--format`/`--detail`) as the `content` positional. That guard
+// predated `rememberCommand` declaring `GLOBAL_OUTPUT_ARGS` (via
+// `defineJsonCommand`): once the leaf command itself declares `format`/
+// `detail` args, citty's parser consumes their space-separated values as the
+// flag's own value and never assigns them to `content` in the first place, so
+// the heuristic no longer has anything to guard against. Verified: `akm
+// remember "yaml" --format yaml` and `akm remember "brief" --detail brief`
+// both write the literal content unchanged. Deleted rather than kept as
+// defense-in-depth per the cleanup program's dead-code policy.

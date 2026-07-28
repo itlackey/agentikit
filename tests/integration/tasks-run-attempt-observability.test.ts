@@ -5,10 +5,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
 import { shouldBypassConfigStartup } from "../../src/cli";
 import { akmTasksRun } from "../../src/commands/tasks/tasks";
 import { buildTaskRunId, openLogsDatabase, queryTaskLogs } from "../../src/core/logs-db";
-import { createMigrationBackup } from "../../src/core/migration-backup";
 import { openStateDatabase } from "../../src/core/state-db";
 import {
   decodeTaskHistoryMetadata,
@@ -132,6 +132,7 @@ describe("tasks run attempt observability", () => {
     expect(
       shouldBypassConfigStartup(["bun", "cli.ts", "--format", "json", "task", "run", "nightly", "--scheduled"]),
     ).toBe(true);
+    expect(shouldBypassConfigStartup(["bun", "cli.ts", "tasks", "run", "--format", "md", "nightly"])).toBe(true);
 
     expect(shouldBypassConfigStartup(["bun", "cli.ts", "tasks", "run"])).toBe(false);
     expect(shouldBypassConfigStartup(["bun", "cli.ts", "tasks", "list"])).toBe(false);
@@ -206,7 +207,7 @@ describe("tasks run attempt observability", () => {
     });
   });
 
-  test("records a config-dependent command failure and preserves its config exit", async () => {
+  test("routes a bare command through the current installation and preserves config classification", async () => {
     writeRawConfig('{"configVersion":"0.8.0"}');
     writeTask("config-command", 'version: 2\nschedule: "@daily"\ncommand: akm health\n');
 

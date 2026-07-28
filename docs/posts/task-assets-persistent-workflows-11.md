@@ -27,7 +27,7 @@ Task assets live at `<stash>/tasks/<id>.yml`. The filename is the task ID. A min
 
 ```yaml
 schedule: 0 * * * *
-command: akm improve --auto-accept 90
+command: akm improve --auto-accept 90  # doclint:ignore (historical — akm 0.8.0-era task assets post; `--auto-accept` removed in 0.9.0)
 enabled: true
 ```
 
@@ -35,7 +35,7 @@ That's enough to install a cron entry and run `akm improve` at the top of every 
 
 ```yaml
 schedule: "7,37 * * * *"
-command: akm improve --auto-accept 90 --timeout-ms 1620000
+command: akm improve --auto-accept 90 --timeout-ms 1620000  # doclint:ignore (historical — akm 0.8.0-era task assets post; `--auto-accept` removed in 0.9.0)
 enabled: true
 timeoutMs: 1800000
 name: akm-improve
@@ -63,7 +63,7 @@ The distinction between `command` and `prompt` reflects two different execution 
 A `command` task is a shell invocation. `akm tasks run` executes the string directly in a child process. There is no agent involved. The command can call `akm`, run a shell script, invoke any binary. The exit code is what gets logged.
 
 ```yaml
-command: akm improve --auto-accept 90
+command: akm improve --auto-accept 90  # doclint:ignore (historical — akm 0.8.0-era task assets post; `--auto-accept` removed in 0.9.0)
 ```
 
 A `prompt` task dispatches to the agent configured in your default agent profile (or the profile specified in `--profile`). The value of `prompt` becomes the task instruction. The agent runs autonomously, can use `akm` commands, write files, and call tools according to its allowed tool set. The result is determined by whether the agent exits cleanly.

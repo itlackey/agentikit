@@ -69,23 +69,74 @@ let sandboxCounter = 0;
  * files so the test-isolation lint stays satisfied: tests mutate env only
  * through this restoring wrapper. Used by the in-process CLI harness call sites
  * that need a per-call env override (e.g. a populated `AKM_STASH_DIR`).
+ *
+ * `timeoutMs` is an optional safety net for callers whose `fn()` can hang —
+ * e.g. it shells out to a subprocess or makes a network call with no bound
+ * of its own. JS has no true promise cancellation: if `fn()` never settles,
+ * the `finally` above never runs either, so the override stays applied to
+ * `process.env` indefinitely — including past the point where the *caller's*
+ * own test-runner timeout gives up on the test and moves on. That silently
+ * corrupts every later test's sandbox (see tests/_preload.ts's leak
+ * tripwire, and the CI incident this parameter was added for: a single hung
+ * `history` call in tests/integration/node-compat.test.ts left
+ * `AKM_FORCE_INIT_TMP_STASH`/`AKM_OUTPUT` applied to `process.env` for the
+ * rest of the run, cascading into 19 unrelated failures). When `timeoutMs`
+ * is set, `fn()` races against it; losing the race still restores env on
+ * schedule while `fn()` keeps running harmlessly in the background (its
+ * eventual settlement is swallowed so it can't surface as an unhandled
+ * rejection later). Omit it to keep the exact prior (unbounded) behavior.
  */
-export async function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => Promise<T> | T): Promise<T> {
+export async function withEnv<T>(
+  overrides: Record<string, string | undefined>,
+  fn: () => Promise<T> | T,
+  timeoutMs?: number,
+): Promise<T> {
   const keys = Object.keys(overrides);
   const prev: Record<string, string | undefined> = {};
   for (const key of keys) prev[key] = process.env[key];
-  try {
-    for (const key of keys) {
-      const value = overrides[key];
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-    return await fn();
-  } finally {
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
     for (const key of keys) {
       if (prev[key] === undefined) delete process.env[key];
       else process.env[key] = prev[key];
     }
+  };
+  for (const key of keys) {
+    const value = overrides[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+
+  if (timeoutMs === undefined) {
+    try {
+      return await fn();
+    } finally {
+      restore();
+    }
+  }
+
+  const fnPromise = (async () => fn())();
+  fnPromise.catch(() => {
+    // A late settlement after the timeout below already won the race —
+    // swallow it so it can't surface as an unhandled rejection.
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new Error(
+          `withEnv: fn() did not settle within ${timeoutMs}ms — env restored anyway; the underlying call may still be running in the background.`,
+        ),
+      );
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([fnPromise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    restore();
   }
 }
 

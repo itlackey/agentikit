@@ -94,24 +94,24 @@ afterEach(() => {
   cleanup();
 });
 
-describe("dual-keyed ref lookup (Chunk-5 flip F1)", () => {
-  test("new-grammar bundle//conceptId finds the same row as legacy type:name", () => {
+describe("current ref lookup", () => {
+  test("bundle//conceptId finds the same row as the short conceptId", () => {
     const db = openDb();
     try {
       const bundle = slugForPath(stashDir);
-      for (const [legacy, conceptId] of [
+      for (const [shortRef, conceptId] of [
         ["memories/first", "memories/first"],
         ["memories/second", "memories/second"],
         ["skills/deploy", "skills/deploy"],
         ["knowledge/guide", "knowledge/guide"],
       ] as const) {
-        const legacyId = findEntryIdByRef(db, legacy);
-        expect(legacyId, `legacy lookup ${legacy}`).toBeDefined();
+        const shortId = findEntryIdByRef(db, shortRef);
+        expect(shortId, `short lookup ${shortRef}`).toBeDefined();
 
         // Fully-qualified new ref → item_ref exact match.
-        expect(findEntryIdByRef(db, `${bundle}//${conceptId}`), `qualified ${conceptId}`).toBe(legacyId);
+        expect(findEntryIdByRef(db, `${bundle}//${conceptId}`), `qualified ${conceptId}`).toBe(shortId);
         // Short conceptId → item_ref //conceptId suffix match.
-        expect(findEntryIdByRef(db, conceptId), `short ${conceptId}`).toBe(legacyId);
+        expect(findEntryIdByRef(db, conceptId), `short ${conceptId}`).toBe(shortId);
       }
     } finally {
       db.close();
@@ -122,7 +122,7 @@ describe("dual-keyed ref lookup (Chunk-5 flip F1)", () => {
     const db = openDb();
     try {
       const bundle = slugForPath(stashDir);
-      const legacyId = findEntryIdByRef(db, "skills/deploy");
+      const targetId = findEntryIdByRef(db, "skills/deploy");
 
       const ctx = refContextFromDb(db, bundle);
       const resolved = resolveRef("skills/deploy", ctx);
@@ -131,22 +131,21 @@ describe("dual-keyed ref lookup (Chunk-5 flip F1)", () => {
       // Serialize the ResolvedRef and re-lookup — round-trips to the same row.
       const qualified = bundleRefToString(resolved);
       expect(qualified).toBe(`${bundle}//skills/deploy`);
-      expect(findEntryIdByRef(db, qualified)).toBe(legacyId);
+      expect(findEntryIdByRef(db, qualified)).toBe(targetId);
     } finally {
       db.close();
     }
   });
 
-  test("markdown ext-variant parity across both grammars", () => {
+  test("markdown extension aliases preserve short and qualified identity", () => {
     const db = openDb();
     try {
       const bundle = slugForPath(stashDir);
-      const legacyId = findEntryIdByRef(db, "knowledge/guide");
-      expect(legacyId).toBeDefined();
+      const targetId = findEntryIdByRef(db, "knowledge/guide");
+      expect(targetId).toBeDefined();
       // .md-suffixed spellings resolve to the same ext-stripped canonical row.
-      expect(findEntryIdByRef(db, "knowledge/guide.md")).toBe(legacyId);
-      expect(findEntryIdByRef(db, `${bundle}//knowledge/guide.md`)).toBe(legacyId);
-      expect(findEntryIdByRef(db, "knowledge/guide.md")).toBe(legacyId);
+      expect(findEntryIdByRef(db, "knowledge/guide.md")).toBe(targetId);
+      expect(findEntryIdByRef(db, `${bundle}//knowledge/guide.md`)).toBe(targetId);
     } finally {
       db.close();
     }

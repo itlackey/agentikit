@@ -92,31 +92,57 @@ validate_workflow_syntax() {
 	"$CANDIDATE_DIR/actionlint/actionlint" "$PROJECT_ROOT"/.github/workflows/*.yml
 }
 
+# Timeout policy: every `bun test` invocation below uses --timeout=120000,
+# the same policy scripts/test-unit.sh and scripts/test-integration.sh use for
+# their shards (see those scripts' headers for why: heavy tests can
+# legitimately run 3-4x their solo duration under process contention, and the
+# timeout exists to catch hangs, not to police performance). This used to
+# diverge (no --timeout on most steps, --timeout=30000 on the old "Full Test
+# Suite" step) which meant the same test could be given three different
+# deadlines depending on which entry point ran it.
 run_step "Workflow Syntax" validate_workflow_syntax
-run_step "Workflow Release Contract" bun test tests/integration/workflow-release.test.ts
-run_step "Lint" bunx biome check --write src/ tests/
+run_step "Workflow Release Contract" bun test --timeout=120000 tests/integration/workflow-release.test.ts
+# Verify-only: must match what CI runs via `bun run lint`, not a write pass.
+# `bun run lint` is `bunx biome check src/ tests/ scripts/` (no --write) plus
+# 10 custom lint scripts (isolation, license headers, runtime boundary, write-
+# source chokepoint, process.argv, repository SQL, goldens presence, test-ref
+# literals, shipped assets, and the config-schema --check). A bare
+# `bunx biome check --write src/ tests/` step here (a) mutated files during a
+# pass that is supposed to only verify, and (b) skipped scripts/ plus all 10
+# custom scripts, so it could pass while `bun run lint` — the thing CI
+# actually gates on — would fail.
+run_step "Lint" bun run lint
 run_step "Type Check" bunx tsc --noEmit
 run_step "Build Package" bun run build
 run_step \
 	"Verify npm bin target" \
-	node -e 'const fs = require("node:fs"); const pkg = require("./package.json"); const bins = [["akm", "dist/akm", "cli.js", "cli-node.mjs"], ["akm-migrate-storage", "dist/akm-migrate-storage", "scripts/migrate-storage.js", "migrate-storage-node.mjs"]]; for (const [name, expected, bunEntry, nodeEntry] of bins) { const actual = pkg.bin?.[name]; if (actual !== expected) { console.error(`npm bin ${name} must point at ${expected}, got ${actual ?? "<undefined>"}`); process.exit(1); } if (!fs.existsSync(actual)) { console.error(`Missing npm bin target: ${actual}`); process.exit(1); } const entry = fs.readFileSync(actual, "utf8"); if (!entry.startsWith("#!/usr/bin/env node")) { console.error(`npm bin ${name} must expose Node to npm platform shims`); process.exit(1); } if (!entry.includes(`new URL("./${bunEntry}", import.meta.url)`) || !entry.includes(`await import("./${nodeEntry}")`)) { console.error(`npm bin ${name} must select the Bun entry with a Node-wrapper fallback`); process.exit(1); } } for (const nodeWrapper of ["dist/cli-node.mjs", "dist/migrate-storage-node.mjs"]) { if (!fs.existsSync(nodeWrapper)) { console.error(`Missing Node wrapper: ${nodeWrapper}`); process.exit(1); } const entry = fs.readFileSync(nodeWrapper, "utf8"); if (!entry.startsWith("#!/usr/bin/env node")) { console.error(`Node wrapper ${nodeWrapper} must keep the node shebang`); process.exit(1); } } if (pkg.engines?.node !== ">=22") { console.error(`package engines.node must be >=22, got ${pkg.engines?.node ?? "<undefined>"}`); process.exit(1); } if (fs.existsSync("dist/tests")) { console.error("Publish build should not emit dist/tests"); process.exit(1); }'
+	node -e 'const fs = require("node:fs"); const pkg = require("./package.json"); const bins = [["akm", "dist/akm", "cli.js", "cli-node.mjs"], ["akm-migrate", "dist/akm-migrate", "scripts/akm-migrate.js"]]; for (const [name, expected, bunEntry, nodeEntry] of bins) { const actual = pkg.bin?.[name]; if (actual !== expected) { console.error(`npm bin ${name} must point at ${expected}, got ${actual ?? "<undefined>"}`); process.exit(1); } if (!fs.existsSync(actual)) { console.error(`Missing npm bin target: ${actual}`); process.exit(1); } if (!fs.existsSync(`dist/${bunEntry}`)) { console.error(`Missing bundled entry: dist/${bunEntry}`); process.exit(1); } const entry = fs.readFileSync(actual, "utf8"); if (!entry.startsWith("#!/usr/bin/env node")) { console.error(`npm bin ${name} must expose Node to npm platform shims`); process.exit(1); } if (!entry.includes(`new URL("./${bunEntry}", import.meta.url)`)) { console.error(`npm bin ${name} must select its Bun entry`); process.exit(1); } if (nodeEntry && !entry.includes(`await import("./${nodeEntry}")`)) { console.error(`npm bin ${name} must retain its Node fallback`); process.exit(1); } if (!nodeEntry && entry.includes("migrate-storage-node.mjs")) { console.error(`npm bin ${name} must not retain the removed Node fallback`); process.exit(1); } } if (!fs.existsSync("dist/cli-node.mjs")) { console.error("Missing Node wrapper: dist/cli-node.mjs"); process.exit(1); } if (pkg.bin?.["akm-migrate-storage"] !== undefined) { console.error("Removed akm-migrate-storage bin is still declared"); process.exit(1); } for (const removed of ["dist/akm-migrate-storage", "dist/migrate-storage-node.mjs", "dist/scripts/migrate-storage.js"]) { if (fs.existsSync(removed)) { console.error(`Removed migration artifact still exists: ${removed}`); process.exit(1); } } if (pkg.engines?.node !== ">=22") { console.error(`package engines.node must be >=22, got ${pkg.engines?.node ?? "<undefined>"}`); process.exit(1); } if (fs.existsSync("dist/tests")) { console.error("Publish build should not emit dist/tests"); process.exit(1); }'
+run_step \
+	"Verify migration bundle" \
+	node -e 'const { spawnSync } = require("node:child_process"); const os = require("node:os"); const path = require("node:path"); const root = path.join(os.tmpdir(), `akm-migrate-release-${process.pid}`); const result = spawnSync("./dist/akm-migrate", ["storage", "--list"], { encoding: "utf8", env: { ...process.env, AKM_CONFIG_DIR: path.join(root, "config"), AKM_CACHE_DIR: path.join(root, "cache"), AKM_DATA_DIR: path.join(root, "data"), AKM_STATE_DIR: path.join(root, "state") } }); if (result.error || result.status !== 0) { console.error(result.error?.message ?? result.stderr); process.exit(1); } const occurrences = result.stdout.split("akm storage migrations (in execution order):").length - 1; if (occurrences !== 1) { console.error(`Expected one storage migration listing, got ${occurrences}`); process.exit(1); }'
 run_step "Package Acceptance" bun scripts/package-install.ts test-package --skip-build
 run_step "Pack Package Candidate" pack_package_candidate
 run_step \
   "Install and Setup Regression Suite" \
-  bun test tests/setup/ ./tests/integration/setup-run.test.ts tests/integration/install-script.test.ts tests/setup-wizard.test.ts tests/setup-scheduled-tasks.test.ts
+  bun test --timeout=120000 tests/setup/ ./tests/integration/setup-run.test.ts tests/integration/install-script.test.ts tests/setup-wizard.test.ts tests/setup-scheduled-tasks.test.ts
 run_step \
   "Published 0.8 Task Upgrade" \
-  env AKM_PUBLISHED_UPGRADE_TESTS=1 AKM_PUBLISHED_UPGRADE_TARBALL="$PACKAGE_CANDIDATE" AKM_CANDIDATE_VERSION="$(node -p "require('./package.json').version")" bun test tests/integration/published-task-upgrade.test.ts
+  env AKM_PUBLISHED_UPGRADE_TESTS=1 AKM_PUBLISHED_UPGRADE_TARBALL="$PACKAGE_CANDIDATE" AKM_CANDIDATE_VERSION="$(node -p "require('./package.json').version")" bun test --timeout=120000 tests/integration/published-task-upgrade.test.ts
 if [ "$(uname -s)" = "Linux" ]; then
 	run_step \
 		"Build Linux Standalone Scheduler Artifact" \
-		bun build ./src/cli.ts --compile --external @huggingface/transformers --outfile "$CANDIDATE_DIR/akm-linux-x64" --define "AKM_VERSION='$(node -p "require('./package.json').version")'"
+		bun build ./scripts/akm-standalone.ts --compile --external @huggingface/transformers --outfile "$CANDIDATE_DIR/akm-linux-x64" --define "AKM_VERSION='$(node -p "require('./package.json').version")'"
 	run_step \
 		"Linux Standalone Outside PATH" \
-		env AKM_STANDALONE_SCHEDULER_TESTS=1 AKM_STANDALONE_TEST_BIN="$CANDIDATE_DIR/akm-linux-x64" AKM_CANDIDATE_ARCH="$(node -p 'process.arch')" AKM_CANDIDATE_VERSION="$(node -p "require('./package.json').version")" bun test tests/integration/linux-standalone-scheduler.test.ts
+		env AKM_STANDALONE_SCHEDULER_TESTS=1 AKM_STANDALONE_TEST_BIN="$CANDIDATE_DIR/akm-linux-x64" AKM_CANDIDATE_ARCH="$(node -p 'process.arch')" AKM_CANDIDATE_VERSION="$(node -p "require('./package.json').version")" bun test --timeout=120000 tests/integration/linux-standalone-scheduler.test.ts
 fi
-run_step "Full Test Suite" bun test --timeout=30000
+# Run the same two sharded, timeout-unified targets everything else in the
+# repo (AGENTS.md, docs/architecture/testing/testing-workflow.md, CI) uses —
+# not a bare, unsharded, whole-tree `bun test`. The old bare invocation ran
+# every *.test.ts in the repo (unit AND integration) in a single process with
+# a --timeout=30000 that matched neither runner's --timeout=120000 policy.
+run_step "Full Test Suite (unit)" bash scripts/test-unit.sh
+run_step "Full Test Suite (integration)" bash scripts/test-integration.sh
 
 if [ "$SKIP_DOCKER" = false ]; then
 	run_step "Docker Install Matrix" "$SCRIPT_DIR/docker/run-docker-tests.sh"

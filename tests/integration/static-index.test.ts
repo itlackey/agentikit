@@ -1,18 +1,13 @@
 /**
- * Phase 6 (v1 architecture refactor) — coverage for the `static-index`
- * registry provider exercised through the full `RegistryProvider` interface
- * (`search`, `searchKits`, `searchAssets`, `getKit`, `canHandle`).
- *
- * These tests are intentionally siloed from the orchestrator-level tests in
- * `tests/registry-search.test.ts`: they hit the provider directly to make sure
- * the v1-spec §3.1 surface contracts hold for the default provider.
+ * Coverage for the `static-index` registry provider exercised through the
+ * `RegistryProvider.search` contract.
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveProviderFactory } from "../../src/registry/factory";
+import { resolveRegistryProviderFactory } from "../../src/registry/factory";
 import type { RegistryProvider } from "../../src/registry/providers/types";
 import { type Cleanup, sandboxXdgCacheHome } from "../_helpers/sandbox";
 
@@ -80,7 +75,7 @@ function serveJson(body: unknown): { url: string; close: () => void } {
 }
 
 function makeProvider(url: string, name = "official"): RegistryProvider {
-  const factory = resolveProviderFactory("static-index");
+  const factory = resolveRegistryProviderFactory("static-index");
   if (!factory) throw new Error("static-index provider not registered");
   return factory({ url, name });
 }
@@ -115,11 +110,11 @@ afterAll(() => {
 
 describe("StaticIndexProvider", () => {
   test("factory is registered", () => {
-    expect(resolveProviderFactory("static-index")).not.toBeNull();
+    expect(resolveRegistryProviderFactory("static-index")).not.toBeNull();
   });
 
-  describe("backwards-compat search", () => {
-    test("legacy search() still returns RegistrySearchHit shape", async () => {
+  describe("search contract", () => {
+    test("search() returns RegistrySearchHit shape", async () => {
       const srv = serveJson(FIXTURE_INDEX);
       const provider = makeProvider(srv.url);
       const result = await provider.search({ query: "agent", limit: 10 });
@@ -147,7 +142,7 @@ describe("StaticIndexProvider", () => {
       expect(result.hits.length).toBeGreaterThan(0);
     });
 
-    test("version 2 index returns correct kit hits", async () => {
+    test("version 2 index returns correct bundle hits", async () => {
       const v2Index = { ...FIXTURE_INDEX, version: 2 };
       const srv = serveJson(v2Index);
       const provider = makeProvider(srv.url);

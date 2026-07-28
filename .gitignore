@@ -29,3 +29,4 @@ scripts/akm-eval/cases/real-query.manifest.json
 # security-sensitive facts — they are local-only and must never be committed.
 # The prompts + README + runner (the reusable kit) ARE meant to be tracked.
 docs/reviews/akm-meta-review/findings/
+.akm/

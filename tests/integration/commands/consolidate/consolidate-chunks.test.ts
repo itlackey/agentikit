@@ -18,9 +18,9 @@ import {
   buildChunkPrompt,
   computeSafeChunkSize,
   DEFAULT_CONTEXT_LENGTH_TOKENS,
-  isConsolidationEligibleMemoryName,
-  type MemoryEntry,
-} from "../../../../src/commands/improve/consolidate";
+} from "../../../../src/commands/improve/consolidate/chunking";
+import { isConsolidationEligibleMemoryName } from "../../../../src/commands/improve/consolidate/eligibility";
+import type { MemoryEntry } from "../../../../src/commands/improve/consolidate/types";
 import { writeContradictEdge } from "../../../../src/commands/improve/memory/memory-belief";
 import { parseFrontmatter } from "../../../../src/core/asset/frontmatter";
 

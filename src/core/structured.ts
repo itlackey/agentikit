@@ -16,7 +16,7 @@
  *
  * Layering: this file lives in `core/` — NOT `llm/` — because the agent path
  * must be able to reach it and `agent/ ⇏ llm/` is an enforced invariant
- * (`tests/architecture/agent-no-llm-sdk-guard.test.ts`). The transport is
+ * (`tests/integration/architecture/agent-no-llm-sdk-guard.test.ts`). The transport is
  * always injected; this module never performs IO of its own.
  *
  * Retry semantics: only parse/validation misses are retried (with corrective

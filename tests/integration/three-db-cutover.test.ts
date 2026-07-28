@@ -19,23 +19,30 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { createProposal } from "../../src/commands/proposal/repository";
-import { parseFrontmatter } from "../../src/core/asset/frontmatter";
-import { getMigrationApplyJournalPath } from "../../src/core/migration-backup";
-import { getMigrationOperationRoot } from "../../src/core/migration-operation";
-import { getConfigPath, getDataDir, getDbPath, getLockfilePath, getStateDbPathInDataDir } from "../../src/core/paths";
-import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
-import type { StashFile } from "../../src/indexer/passes/metadata";
-import { type ContentMigrationReport, runContentMigration } from "../../src/migrate/legacy/content-migration";
-import { getLegacyWorkflowDbPath } from "../../src/migrate/legacy/legacy-paths";
-import { writeLegacyStashFile } from "../../src/migrate/legacy/legacy-stash-json";
-import { importLegacyProposalsIntoState } from "../../src/migrate/legacy/proposal-fs-import";
+import { cutoverStashRootsFromConfig } from "../../scripts/akm-migrate/config-migrate";
+import { deriveLegacyBundleIds } from "../../scripts/akm-migrate/migrate/legacy/bundle-id";
+import {
+  type ContentMigrationReport,
+  runContentMigration,
+} from "../../scripts/akm-migrate/migrate/legacy/content-migration";
+import { getLegacyWorkflowDbPath } from "../../scripts/akm-migrate/migrate/legacy/legacy-paths";
+import { writeLegacyStashFile } from "../../scripts/akm-migrate/migrate/legacy/legacy-stash-json";
+import { importLegacyProposalsIntoState } from "../../scripts/akm-migrate/migrate/legacy/proposal-fs-import";
 import {
   buildCutoverRefMap,
   deleteWorkflowDb,
   migratePilotTreatmentFiles,
   quarantineIndexDb,
-} from "../../src/migrate/legacy/three-db-cutover";
+} from "../../scripts/akm-migrate/migrate/legacy/three-db-cutover";
+import { getMigrationApplyJournalPath } from "../../scripts/akm-migrate/migration-backup";
+import { createProposal } from "../../src/commands/proposal/repository";
+import { parseFrontmatter } from "../../src/core/asset/frontmatter";
+import { deriveBundleIds } from "../../src/core/bundle-id";
+import type { AkmConfig } from "../../src/core/config/config";
+import { getMigrationOperationRoot } from "../../src/core/migration-operation";
+import { getConfigPath, getDataDir, getDbPath, getLockfilePath, getStateDbPathInDataDir } from "../../src/core/paths";
+import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
+import type { StashFile } from "../../src/indexer/passes/metadata";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
 import {
   buildOrphanBearingStateDb,
@@ -48,7 +55,11 @@ import {
   RC_TRAIN_LIVE_REFS,
   rcTrainFromStatePaths,
 } from "../_fixtures/migration/rc-train-state";
-import { openStateDbAtCeiling, PRE_CUTOVER_STATE_CEILING } from "../_fixtures/migration/seed-rows";
+import {
+  insertAssetSalienceRow,
+  openStateDbAtCeiling,
+  PRE_CUTOVER_STATE_CEILING,
+} from "../_fixtures/migration/seed-rows";
 import { runCliCapture } from "../_helpers/cli";
 import {
   type Cleanup,
@@ -187,6 +198,107 @@ test("cutover ref map tolerates a pre-provenance index without item_ref", () => 
   expect(fs.existsSync(mapPath)).toBe(true);
 });
 
+test("cutover ref map rekeys pre-reservation bundle ids to their configured owners", () => {
+  const primaryRoot = path.join(getDataDir(), "stash");
+  const secondaryRoot = path.join(getDataDir(), "team");
+  fs.mkdirSync(path.join(primaryRoot, "knowledge"), { recursive: true });
+  fs.mkdirSync(path.join(secondaryRoot, "knowledge"), { recursive: true });
+  fs.writeFileSync(path.join(primaryRoot, "knowledge", "primary.md"), "# Primary\n");
+  fs.writeFileSync(path.join(secondaryRoot, "knowledge", "secondary.md"), "# Secondary\n");
+
+  const sources = [{ path: primaryRoot }, { path: secondaryRoot, registryId: "stash" }];
+  const legacyIds = deriveLegacyBundleIds(sources);
+  const configuredIds = deriveBundleIds(sources);
+  expect(legacyIds[0]).toBe("stash");
+  expect(configuredIds[1]).toBe("stash");
+
+  const oldIndexPath = path.join(getDataDir(), "collision-index.db");
+  const index = new Database(oldIndexPath);
+  index.exec("CREATE TABLE entries (entry_key TEXT NOT NULL, item_ref TEXT, entry_type TEXT, stash_dir TEXT NOT NULL)");
+  const insert = index.prepare("INSERT INTO entries (entry_key, item_ref, entry_type, stash_dir) VALUES (?, ?, ?, ?)");
+  const oldPrimaryRef = `${legacyIds[0]}//knowledge/primary`;
+  const oldSecondaryRef = `${legacyIds[1]}//knowledge/secondary`;
+  const newPrimaryRef = `${configuredIds[0]}//knowledge/primary`;
+  const newSecondaryRef = `${configuredIds[1]}//knowledge/secondary`;
+  insert.run(["knowledge", "primary"].join(":"), oldPrimaryRef, "knowledge", primaryRoot);
+  insert.run(`${legacyIds[1]}//${["knowledge", "secondary"].join(":")}`, oldSecondaryRef, "knowledge", secondaryRoot);
+  index.close();
+
+  const roots = [
+    {
+      path: primaryRoot,
+      bundleId: configuredIds[0],
+      legacyBundleId: legacyIds[0],
+      registryId: configuredIds[0],
+      primary: true,
+    },
+    {
+      path: secondaryRoot,
+      bundleId: configuredIds[1],
+      legacyBundleId: legacyIds[1],
+      registryId: configuredIds[1],
+    },
+  ];
+  const indexedMap = buildCutoverRefMap({
+    oldIndexDbPath: oldIndexPath,
+    stashRoots: roots,
+    mapOutputPath: path.join(getDataDir(), "collision-ref-map.json"),
+  });
+  expect(indexedMap.get(oldPrimaryRef)).toBe(newPrimaryRef);
+  expect(indexedMap.get(oldSecondaryRef)).toBe(newSecondaryRef);
+
+  const walkedMap = buildCutoverRefMap({
+    oldIndexDbPath: path.join(getDataDir(), "missing-collision-index.db"),
+    stashRoots: roots,
+    mapOutputPath: path.join(getDataDir(), "collision-walk-ref-map.json"),
+  });
+  expect(walkedMap.get(oldPrimaryRef)).toBe(newPrimaryRef);
+  expect(walkedMap.get(oldSecondaryRef)).toBe(newSecondaryRef);
+});
+
+test("cutover legacy-id inference reserves non-materialized configured bundles", () => {
+  const primaryRoot = path.join(getDataDir(), "stash");
+  const websitePath = path.join(getDataDir(), "website-cache-placeholder");
+  fs.mkdirSync(primaryRoot, { recursive: true });
+  const legacySources = [{ path: primaryRoot }, { path: websitePath, registryId: "stash" }];
+  const [primaryId] = deriveBundleIds(legacySources);
+  const config = {
+    bundles: {
+      [primaryId as string]: { path: primaryRoot, writable: true },
+      stash: { website: "https://example.test/non-materialized" },
+    },
+    defaultBundle: primaryId,
+  } as unknown as AkmConfig;
+
+  expect(cutoverStashRootsFromConfig(config, [], legacySources)).toContainEqual(
+    expect.objectContaining({ path: primaryRoot, bundleId: primaryId, legacyBundleId: "stash" }),
+  );
+});
+
+test("cutover uses the old provider path when a non-materialized source consumed an id first", () => {
+  const websitePath = path.join(getDataDir(), "provider", "stash");
+  const teamRoot = path.join(getDataDir(), "team");
+  fs.mkdirSync(teamRoot, { recursive: true });
+  const legacySources = [{ path: websitePath }, { path: teamRoot, registryId: "stash" }];
+  const currentIds = deriveBundleIds(legacySources);
+  const legacyIds = deriveLegacyBundleIds(legacySources);
+  const config = {
+    bundles: {
+      [currentIds[0] as string]: { website: "https://example.test/stash" },
+      [currentIds[1] as string]: { path: teamRoot, writable: true },
+    },
+    defaultBundle: currentIds[1],
+  } as unknown as AkmConfig;
+
+  expect(cutoverStashRootsFromConfig(config, [], legacySources)).toContainEqual(
+    expect.objectContaining({
+      path: teamRoot,
+      bundleId: currentIds[1],
+      legacyBundleId: legacyIds[1],
+    }),
+  );
+});
+
 function seedInstalledBundleMigration(): { prepared: string; installedRoot: string; oldRef: string; itemRef: string } {
   const installedRoot = path.join(getDataDir(), "installed-owner-repo");
   fs.mkdirSync(path.join(installedRoot, "skills", "deploy"), { recursive: true });
@@ -221,7 +333,7 @@ function seedInstalledBundleMigration(): { prepared: string; installedRoot: stri
   return { prepared, installedRoot, oldRef, itemRef };
 }
 
-test("a real v17 index and v2 resume preserve installed-bundle durable state", async () => {
+test("a real v17 index and a crash-resume preserve installed-bundle durable state", async () => {
   const { prepared, installedRoot, oldRef, itemRef } = seedInstalledBundleMigration();
   const primaryRoot = path.join(getDataDir(), "primary-with-same-ref");
   fs.mkdirSync(path.join(primaryRoot, "skills", "deploy"), { recursive: true });
@@ -268,10 +380,12 @@ test("a real v17 index and v2 resume preserve installed-bundle durable state", a
   });
   await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
   const journal = JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8"));
-  expect(journal.migrationLockEntries).toHaveLength(1);
-  journal.formatVersion = 2;
-  delete journal.migrationLockEntries;
-  fs.writeFileSync(getMigrationApplyJournalPath(), `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
+  // The journal captures the resolved installed-bundle lock entry once, at
+  // creation time; a crash mid-flight and a plain resume must reuse that
+  // recorded entry as-is rather than re-deriving it from the live lockfile.
+  expect(journal.migrationLockEntries).toEqual([
+    { id: "installed-owner-repo", source: "github", ref: "owner/repo", localRoot: installedRoot },
+  ]);
 
   const applied = await runCliCapture(["migrate", "apply"]);
   expect(applied.code, applied.stderr).toBe(0);
@@ -288,30 +402,6 @@ test("a real v17 index and v2 resume preserve installed-bundle durable state", a
   expect(JSON.parse(fs.readFileSync(getLockfilePath(), "utf8"))).toEqual([
     { id: "installed-owner-repo", source: "github", ref: "owner/repo", localRoot: installedRoot },
   ]);
-}, 30_000);
-
-test("a v2 journal fails closed when its prepared installed root cannot be recovered", async () => {
-  const { prepared } = seedInstalledBundleMigration();
-  fs.writeFileSync(getConfigPath(), '{"configVersion":"0.8.0"}\n', { mode: 0o600 });
-  openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
-  const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "apply", "--config", prepared], {
-    cwd: path.resolve(import.meta.dir, "../.."),
-    env: { ...process.env, AKM_TEST_MIGRATION_CRASH_AFTER: "workflow" },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-
-  const journal = JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8"));
-  journal.formatVersion = 2;
-  delete journal.migrationLockEntries;
-  fs.writeFileSync(getMigrationApplyJournalPath(), `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
-  const before = fs.readFileSync(getMigrationApplyJournalPath());
-
-  const resumed = await runCliCapture(["migrate", "apply"]);
-  expect(resumed.code).not.toBe(0);
-  expect(resumed.stderr).toMatch(/cannot recover materialized roots.*installed-owner-repo/i);
-  expect(fs.readFileSync(getMigrationApplyJournalPath())).toEqual(before);
 }, 30_000);
 
 test("a required installed-bundle lock write keeps forward recovery pending", async () => {
@@ -337,6 +427,92 @@ test("a required installed-bundle lock write keeps forward recovery pending", as
     { id: "installed-owner-repo", source: "github", ref: "owner/repo", localRoot: installedRoot },
   ]);
   expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+}, 30_000);
+
+test("relative pre-cutover roots resume against the journaled cwd", async () => {
+  const initialCwd = path.join(getDataDir(), "migration-initial", "working");
+  const resumeCwd = path.join(getDataDir(), "migration-resume", "deeper", "working");
+  const relativeStash = path.join("..", "relative-stash");
+  const stashRoot = path.resolve(initialCwd, relativeStash);
+  const memoriesDir = path.join(stashRoot, "memories");
+  const tasksDir = path.join(stashRoot, "tasks");
+  const workflowsDir = path.join(stashRoot, "workflows");
+  fs.mkdirSync(initialCwd, { recursive: true });
+  fs.mkdirSync(memoriesDir, { recursive: true });
+  fs.mkdirSync(tasksDir, { recursive: true });
+  fs.mkdirSync(workflowsDir, { recursive: true });
+  fs.mkdirSync(resumeCwd, { recursive: true });
+  fs.writeFileSync(path.join(memoriesDir, "note.md"), "---\ndescription: Generated\n---\n\nBody.\n");
+  writeLegacyStashFile(memoriesDir, {
+    entries: [
+      {
+        name: "note",
+        type: "memory",
+        filename: "note.md",
+        description: "Resolved from the original migration cwd",
+      },
+    ],
+  });
+  fs.writeFileSync(path.join(workflowsDir, "relative.md"), "# Relative workflow\n");
+  const taskPath = path.join(tasksDir, "relative.yml");
+  fs.writeFileSync(taskPath, `schedule: "@daily"\nworkflow: ${["workflow", "relative"].join(":")}\n`);
+
+  fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
+  fs.writeFileSync(getConfigPath(), `${JSON.stringify({ configVersion: "0.8.0", stashDir: relativeStash })}\n`, {
+    mode: 0o600,
+  });
+  const prepared = path.join(path.dirname(getConfigPath()), "prepared-relative-0.9.json");
+  fs.writeFileSync(
+    prepared,
+    `${JSON.stringify({ configVersion: "0.9.0", semanticSearchMode: "off", stashDir: relativeStash })}\n`,
+    { mode: 0o600 },
+  );
+  openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+
+  const cliPath = path.resolve(import.meta.dir, "../..", "src", "cli.ts");
+  const crashed = Bun.spawn([process.execPath, cliPath, "migrate", "apply", "--config", prepared], {
+    cwd: initialCwd,
+    env: { ...process.env, AKM_TEST_MIGRATION_CRASH_AFTER: "workflow" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [crashCode] = await Promise.all([
+    crashed.exited,
+    new Response(crashed.stdout).text(),
+    new Response(crashed.stderr).text(),
+  ]);
+  expect(crashCode).not.toBe(0);
+  const journal = JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8"));
+  expect(journal).toMatchObject({
+    formatVersion: 4,
+    pathResolutionBase: initialCwd,
+    phase: "workflow-applied",
+  });
+
+  expect(fs.existsSync(path.join(memoriesDir, ".stash.json"))).toBe(true);
+  expect(fs.readFileSync(taskPath, "utf8")).toContain(["workflow", "relative"].join(":"));
+
+  // Resume from a DIFFERENT cwd than the crashed process used: relative
+  // source paths must still resolve correctly via the journal's own
+  // recorded pathResolutionBase, not the resuming process's cwd.
+  const resumed = Bun.spawn([process.execPath, cliPath, "migrate", "apply"], {
+    cwd: resumeCwd,
+    env: { ...process.env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [resumeCode, , resumeStderr] = await Promise.all([
+    resumed.exited,
+    new Response(resumed.stdout).text(),
+    new Response(resumed.stderr).text(),
+  ]);
+  expect(resumeCode, resumeStderr).toBe(0);
+  expect(fs.existsSync(path.join(memoriesDir, ".stash.json"))).toBe(false);
+  expect(parseFrontmatter(fs.readFileSync(path.join(memoriesDir, "note.md"), "utf8")).data.description).toBe(
+    "Resolved from the original migration cwd",
+  );
+  expect(fs.readFileSync(taskPath, "utf8")).toContain("workflow: workflows/relative");
+  expect(fs.existsSync(path.join(resumeCwd, relativeStash))).toBe(false);
 }, 30_000);
 
 test("workflow deletion failures propagate so the boundary can be retried", () => {
@@ -524,6 +700,14 @@ describe("WI-8.2 (b) — orphan-bearing state completes with quarantine", () => 
             .get(surface, orphan) as { row_count: number; reason: string } | undefined;
           expect(row?.row_count).toBe(1);
           expect(row?.reason).toBe("orphan");
+
+          // ...and the COMPLETE row is retained, not just its count. The guide
+          // promises unresolvable refs are quarantined, not dropped.
+          const retained = db
+            .query("SELECT row_json FROM legacy_state_rows WHERE surface = ? AND old_ref = ?")
+            .all(surface, orphan) as Array<{ row_json: string }>;
+          expect(retained).toHaveLength(1);
+          expect(JSON.parse(retained[0]!.row_json)).toMatchObject({ asset_ref: orphan });
         }
       }
     } finally {
@@ -552,6 +736,16 @@ describe("WI-8.2 (b) — orphan-bearing state completes with quarantine", () => 
           .query("SELECT row_count, reason FROM legacy_state WHERE surface = 'events' AND old_ref = 'vault:default'")
           .get(),
       ).toEqual({ row_count: 2, reason: "orphan" });
+
+      // Both event rows survive in full — timestamps and event_type included —
+      // so a quarantined history stays recoverable rather than becoming a count.
+      const retained = migrated
+        .query("SELECT row_json FROM legacy_state_rows WHERE surface = 'events' AND old_ref = 'vault:default'")
+        .all() as Array<{ row_json: string }>;
+      expect(retained).toHaveLength(2);
+      const parsed = retained.map((r) => JSON.parse(r.row_json) as Record<string, unknown>);
+      expect(parsed.map((r) => r.ts).sort()).toEqual(["2026-01-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z"]);
+      expect(parsed.every((r) => r.event_type === "show" && r.ref === "vault:default")).toBe(true);
     } finally {
       migrated.close();
     }
@@ -899,7 +1093,21 @@ function readContentReport(): ContentMigrationReport {
 
 describe("WI-8.5d (f) — content migration folds .stash.json + D-R6 renames mis-named reserved files", () => {
   test("overrides fold into frontmatter, sidecar deleted, index.md renamed + reported, second apply idempotent", async () => {
-    openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+    const preState = openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING);
+    // Durable state keyed to the MIS-NAMED concept: the D-R6 rename changes the
+    // asset's identity, so this row must be re-keyed with it, not stranded.
+    insertAssetSalienceRow(preState, {
+      assetRef: "knowledge/index",
+      encodingSalience: 0.5,
+      outcomeSalience: 0.5,
+      retrievalSalience: 0.5,
+      rankScore: 0.5,
+      consecutiveNoOps: 0,
+      updatedAt: 1_700_000_000,
+      homeostaticDemotedAt: null,
+      encodingSource: null,
+    });
+    preState.close();
     seedContentStash();
     const prepared = writeConfigs();
 
@@ -936,6 +1144,21 @@ describe("WI-8.5d (f) — content migration folds .stash.json + D-R6 renames mis
     expect(report.reservedRenames).toHaveLength(1);
     expect(report.reservedRenames[0]).toEqual({ from: misnamedIndex, to: renamedIndex });
 
+    // (3a) The rename re-keys durable state to the NEW identity: the salience
+    // row seeded against the mis-named concept follows the file instead of
+    // dangling on a ref no asset can ever mint again.
+    const state = readState();
+    try {
+      const salRefs = state
+        .query(
+          "SELECT asset_ref FROM asset_salience WHERE asset_ref LIKE 'knowledge/%' OR asset_ref LIKE '%//knowledge/%'",
+        )
+        .all() as Array<{ asset_ref: string }>;
+      expect(salRefs.map((r) => r.asset_ref)).toEqual(["knowledge/index-content"]);
+    } finally {
+      state.close();
+    }
+
     // (3b) Group-C item 2: the derived memory's legacy `source: memory:<parent>`
     // backref is rewritten forward to the 0.9.0 conceptId and counted.
     expect(report.sourceBackrefsRewritten).toBe(1);
@@ -969,7 +1192,7 @@ describe("WI-8.5d (f) — content migration folds .stash.json + D-R6 renames mis
 // ─────────────────────────────────────────────────────────────────────────────
 // (g) Pre-0.9 filesystem-proposal import — folded out of the live per-op path
 //     (was `withProposalsDb` → `importLegacyProposalFiles`) INTO this one-time
-//     migrator step (`src/migrate/legacy/proposal-fs-import.ts`).
+//     migrator step (`scripts/akm-migrate/migrate/legacy/proposal-fs-import.ts`).
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Write one pre-0.9.0 `<stash>/.akm/proposals[/archive]/<id>/proposal.json`. */
@@ -1063,7 +1286,7 @@ describe("(g) migrate apply imports pre-0.9 filesystem proposals into state.db",
 
     // (6) Re-running the import step itself over the still-on-disk legacy files
     // re-imports nothing (INSERT OR IGNORE on the UUID) — idempotent.
-    expect(importLegacyProposalsIntoState(getStateDbPathInDataDir(), [stash])).toBe(0);
+    expect(importLegacyProposalsIntoState(getStateDbPathInDataDir(), [{ path: stash, bundleId: "stash" }])).toBe(0);
     expect(readProposalRows(stash).map((r) => r.id)).toEqual([pendingId, acceptedId]);
   }, 30_000);
 });

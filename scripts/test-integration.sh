@@ -84,11 +84,12 @@ for t in "${tmps[@]}"; do
     echo "── shard log tail (last 80 lines) ──"
     tail -80 "$t"
   fi
-  rm -f "$t"
 done
 
 echo "── integration: ${pass} pass / ${fail} fail across ${N} process-shards (${filecount}/${total} files)"
 if [ "$rc" -ne 0 ] || [ "$fail" -ne 0 ] || [ "$filecount" -ne "$total" ]; then
+  echo "── integration: shard logs kept for diagnosis: ${logdir}"
   exit 1
 fi
+rm -rf "$logdir"
 exit 0

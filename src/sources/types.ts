@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { InstalledBundle, InstallKind, KitSource } from "../registry/types";
+import type { InstalledBundle, InstallKind } from "../registry/types";
 
 export type AkmSearchType = string;
 export type SearchSource = "stash" | "registry" | "both";
@@ -202,7 +202,6 @@ export interface AddResponse {
       };
   config: {
     sourceCount: number;
-    installedKitCount: number;
   };
   index: {
     mode: "full" | "incremental";
@@ -217,27 +216,56 @@ export interface SourceInstallStatus extends InstalledBundle {
   extractedDir: string;
 }
 
-/**
- * Canonical source kind values (v1 spec §2.1 + list-only "managed" for installed entries).
- * The four provider kinds must match the `SourceProvider.kind` discriminators exactly.
- * @deprecated "local" and "remote" were pre-v1 names; use "filesystem" and "website".
- */
-export type SourceKind = "filesystem" | "git" | "npm" | "website" | "managed" | "local" | "remote";
+/** Canonical source provider kinds. */
+export type SourceKind = "filesystem" | "git" | "npm" | "website";
+
+export interface SourceDescriptor {
+  kind: "path" | "git" | "npm" | "website";
+  locator: string;
+  maxPages?: number;
+}
+
+export interface SourceLock {
+  source: InstallKind;
+  ref: string;
+  resolvedVersion?: string;
+  resolvedRevision?: string;
+  integrity?: string;
+  localRoot?: string;
+  manifestDigest?: string;
+  adapterIds?: string[];
+  installedAt?: string;
+}
+
+export interface SourceComponent {
+  name: string;
+  root?: string;
+  adapter?: string;
+  writable?: boolean;
+}
 
 export interface SourceEntry {
   name: string;
   kind: SourceKind;
+  default: boolean;
+  source: SourceDescriptor;
   path?: string;
   ref?: string;
   provider?: string;
   version?: string;
   writable: boolean;
+  registryId?: string;
+  components: SourceComponent[];
+  lock: SourceLock | null;
+  itemCount: number;
+  byType: Record<string, number>;
   status: { exists: boolean };
 }
 
 export interface SourceListResponse {
   schemaVersion: number;
   stashDir: string;
+  defaultBundle: string | null;
   sources: SourceEntry[];
   totalSources: number;
 }
@@ -248,14 +276,13 @@ export interface RemoveResponse {
   target: string;
   removed: {
     id: string;
-    source: KitSource | string;
+    source: string;
     ref: string;
     cacheDir: string;
     stashRoot: string;
   };
   config: {
     sourceCount: number;
-    installedKitCount: number;
   };
   index: {
     mode: "full" | "incremental";
@@ -282,15 +309,47 @@ export interface UpdateResultItem {
   };
 }
 
+/**
+ * A plain (non-registry-managed, i.e. lockless) git/website bundle that this
+ * update call freshly synced. Unlike an npm source — which requires a lock to
+ * have a resolvable content path, so it is promoted to a registry-managed
+ * install on first sync and reported via `processed` like any other managed
+ * install — a git/website bundle's content path is deterministic from its
+ * locator alone and never needs a lock, so it stays a plain source forever
+ * and is reported here instead (R-015 adjacent: previously this success was
+ * reported nowhere, rendering as the misleading "nothing to update").
+ */
+export interface UpdatePlainSyncedItem {
+  id: string;
+  kind: "git" | "website";
+  ref: string;
+}
+
+/**
+ * A configured source this update call did NOT process, with a human-
+ * readable reason. Exists so `akm update --all` accounts for every configured
+ * source instead of silently omitting the ones it cannot or does not sync
+ * (R-015) — e.g. website sources (`--all` re-crawl not yet implemented) and
+ * filesystem sources (no remote to sync).
+ */
+export interface UpdateSkippedItem {
+  id: string;
+  kind: SourceKind;
+  reason: string;
+}
+
 export interface UpdateResponse {
   schemaVersion: number;
   stashDir: string;
   target?: string;
   all: boolean;
   processed: UpdateResultItem[];
+  /** Plain git/npm sources freshly synced by this call (R-015/R-adjacent). Omitted when empty. */
+  plainSynced?: UpdatePlainSyncedItem[];
+  /** Configured sources this call did not process, with why (R-015). Omitted when empty. */
+  skipped?: UpdateSkippedItem[];
   config: {
     sourceCount: number;
-    installedKitCount: number;
   };
   index: {
     mode: "full" | "incremental";
@@ -363,13 +422,6 @@ export interface ShowResponse {
   };
 }
 
-export type KnowledgeView =
-  | { mode: "full" }
-  | { mode: "toc" }
-  | { mode: "frontmatter" }
-  | { mode: "section"; heading: string }
-  | { mode: "lines"; start: number; end: number };
-
 // ── Manifest types ──────────────────────────────────────────────────────────
 
 /** Compact entry returned by `akm manifest` for cheap capability discovery. */
@@ -416,6 +468,10 @@ export interface UpgradeResponse {
 export interface InfoResponse {
   schemaVersion: number;
   version: string;
+  /** Primary stash directory (spec §10.1), same resolution `akm sources list` uses (R-057). */
+  stashDir: string;
+  /** Name of the primary bundle from config, or `null` when none is configured (R-057). */
+  defaultBundle: string | null;
   assetTypes: string[];
   searchModes: string[];
   semanticSearch: {
@@ -428,6 +484,8 @@ export interface InfoResponse {
   sourceProviders: Array<{ type: string; name?: string; path?: string; url?: string; enabled?: boolean }>;
   indexStats: {
     entryCount: number;
+    /** Per-asset-type breakdown of `entryCount`, keyed by asset type (e.g. "skill", "knowledge") (R-057). */
+    byType: Record<string, number>;
     lastBuiltAt: string | null;
     hasEmbeddings: boolean;
     vecAvailable: boolean;

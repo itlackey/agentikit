@@ -10,11 +10,12 @@ import { getRegistryIndexCache, upsertRegistryIndexCache } from "./registry-inde
 /**
  * Storage seam for the `registry_index_cache` table in `index.db`.
  *
- * Registry providers (`src/registry/providers/*`) must NOT reach into
- * `src/indexer/db/db.ts` directly — that is a layering inversion (a feature
- * module depending on a lower storage module's raw helpers). This repository
- * owns the open/close lifecycle and the cached-JSON fetch skeleton so the
- * providers depend only on `src/storage/...`.
+ * Registry providers (`src/registry/providers/*`) must NOT reach into the
+ * `index.db` storage repositories' raw connection/SQL helpers directly — that
+ * is a layering inversion (a feature module depending on a lower storage
+ * module's raw helpers). This repository owns the open/close lifecycle and
+ * the cached-JSON fetch skeleton so the providers depend only on
+ * `src/storage/...`.
  *
  * NOTE: this seam intentionally uses {@link openIndexDatabase} (which creates
  * the data dir + ensures schema and tolerates a failed open) rather than the

@@ -258,10 +258,10 @@ To migrate an existing config:
 
 ```sh
 # Preview the transformation
-akm config migrate --dry-run
+akm config migrate --dry-run  # doclint:ignore (historical — akm 0.8.0 release announcement; config-schema migration command not present in 0.9.0)
 
 # Apply (writes a timestamped backup first)
-akm config migrate
+akm config migrate  # doclint:ignore (historical — akm 0.8.0 release announcement; config-schema migration command not present in 0.9.0)
 ```
 
 Full reference: [docs/configuration.md](https://github.com/itlackey/akm/blob/main/docs/configuration.md).
@@ -309,7 +309,7 @@ akm proposal accept <id>
 akm tasks run daily-code-review
 
 # Run improve with a specific profile (reflect mode comes from the profile)
-akm improve memory:my-note --profile fast-llm
+akm improve memory:my-note --profile fast-llm  # doclint:ignore (historical — akm 0.8.0 release announcement; `--profile` renamed `--strategy` in 0.9.0)
 ```
 
 ## Verification
@@ -319,7 +319,7 @@ After upgrading:
 akm info --format text     # version 0.8.x
 akm health --since 24h     # runtime + improve telemetry checks
 akm proposal list         # queue starts empty — that's expected
-akm task list              # shows your defined tasks
+akm task list              # shows your defined tasks — doclint:ignore (historical — akm 0.8.0 release announcement; `tasks list` inspection moved to `akm search`/`akm show` by 0.9.0)
 akm config get configVersion  # "0.8.0" after akm config migrate
 ```
 

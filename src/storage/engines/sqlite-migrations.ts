@@ -8,13 +8,11 @@
  * state.db (`src/core/state-db.ts`) evolves its schema through this idempotent,
  * transaction-per-migration runner backed by a `schema_migrations` ledger. The
  * migrator's frozen pre-cutover workflow-schema roll
- * (`src/migrate/legacy/workflow-migrations-bodies.ts`, driven by
- * `config-migrate.ts`) reuses the SAME runner. The `bootstrap` hook — a one-line
- * pre-versioning back-fill — is now unused by live callers (the pre-cutover
- * workflow.db that once needed it fails closed at migrate time).
+ * (`scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts`, driven by
+ * `scripts/akm-migrate/config-migrate.ts`) reuses the SAME runner.
  *
  * This module factors that runner out once. Each caller supplies only its own
- * `MIGRATIONS` array (plus, historically, an optional `bootstrap` hook).
+ * `MIGRATIONS` array.
  *
  * Migration-safety contract:
  *   - `id` is permanent and must never be reused.
@@ -40,22 +38,9 @@ export interface Migration {
 }
 
 /**
- * Optional hook invoked AFTER `ensureMigrationsTable` but BEFORE the migration
- * list is evaluated. Used by workflow.db to back-fill `schema_migrations` rows
- * for schema state that existed before the database gained migration tracking,
- * so those migrations are not re-applied.
- */
-export type MigrationBootstrap = (db: Database) => void;
-
-/**
  * Options for {@link runMigrations}.
  */
 export interface RunMigrationsOptions {
-  /**
-   * Back-fill hook for pre-versioning databases. Invoked once, after the
-   * migrations table is ensured and before the migration list is applied.
-   */
-  bootstrap?: MigrationBootstrap;
   /** Called immediately before each pending migration and before its transaction. */
   beforeMigration?: (migration: Migration) => void;
   /** Validate the ledger but leave known pending migrations unapplied. */
@@ -78,8 +63,9 @@ export interface MigrationLedgerState {
  * the pre-computed {@link migrationChecksum}. This is what a ledger inspection
  * actually needs — the `up` body is only used to derive the checksum. A frozen
  * copy of a since-deleted migration array (e.g. the pre-cutover workflow.db
- * ledger, `src/migrate/legacy/workflow-migrations-frozen.ts`) is expressed as
- * `SealedMigration[]` so backups stay verifiable without the live bodies.
+ * ledger, `scripts/akm-migrate/migrate/legacy/workflow-migrations-frozen.ts`)
+ * is expressed as `SealedMigration[]` so backups stay verifiable without the
+ * live bodies.
  */
 export interface SealedMigration {
   id: string;
@@ -234,7 +220,7 @@ export function ensureMigrationsTable(db: Database): void {
  *
  * @param db          The open SQLite database.
  * @param migrations  The module's ordered, append-only migration list.
- * @param opts        Optional `bootstrap` hook (see {@link RunMigrationsOptions}).
+ * @param opts        Migration execution options.
  */
 export function runMigrations(db: Database, migrations: readonly Migration[], opts?: RunMigrationsOptions): void {
   if (opts?.applyPending === false) {
@@ -243,7 +229,6 @@ export function runMigrations(db: Database, migrations: readonly Migration[], op
   }
   if (migrationsTableExists(db)) assertMigrationLedger(db, migrations);
   ensureMigrationsTable(db);
-  opts?.bootstrap?.(db);
 
   const ledger = assertMigrationLedger(db, migrations);
   db.transaction(() => {

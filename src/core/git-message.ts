@@ -11,8 +11,8 @@
  * barrel, by value) does not need to import back into `write-source.ts` just
  * for this helper — that back-edge was a 3-file static-graph cycle
  * (write-source.ts → git.ts → git-stash.ts → write-source.ts; chunk 9 WI-9.8
- * KILL 6 sever). `write-source.ts` re-exports `sanitizeCommitMessage` so
- * existing import sites are unaffected.
+ * KILL 6 sever). Callers import `sanitizeCommitMessage` directly so
+ * the dependency graph stays acyclic.
  */
 
 /**

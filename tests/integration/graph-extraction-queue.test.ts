@@ -7,17 +7,19 @@
 // for ESM-safety.
 //
 // P3 is OPT-IN / DEFAULT-PRESERVING: nothing here exercises a real
-// LLM/spawn/serve and no test exceeds a few ms, so this is a UNIT test and
-// lives in tests/ (not tests/integration/). Uses sandbox helpers; never touches
-// host state. Run this file individually before any full-suite gate.
+// LLM/spawn/serve and no test exceeds a few ms. It DOES open a real SQLite
+// database (openIndexDatabase) and read/write real files in a sandboxed temp
+// dir (makeStashDir), so — unlike a pure in-memory unit test — it correctly
+// lives here in tests/integration/, not tests/. Uses sandbox helpers; never
+// touches host state. Run this file individually before any full-suite gate.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import * as graphDb from "../../src/indexer/db/graph-db";
 import { loadGraphFilesOnly, replaceStoredGraph } from "../../src/indexer/db/graph-db";
-import type { GraphFile } from "../../src/indexer/graph/graph-extraction";
 import * as graphExtraction from "../../src/indexer/graph/graph-extraction";
+import type { GraphFile } from "../../src/indexer/graph/graph-types";
 import type { Database } from "../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";

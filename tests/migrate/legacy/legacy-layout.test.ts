@@ -4,7 +4,7 @@
 
 /**
  * WI-1.4 gate mechanization (decision D1-6; chunk-1 anchors.md §E.2) — the
- * frozen `src/migrate/legacy/legacy-layout.ts` copy.
+ * frozen `scripts/akm-migrate/migrate/legacy/legacy-layout.ts` copy.
  *
  * Three groups:
  *
@@ -29,6 +29,7 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { makeAssetRef, parseAssetRef } from "../../../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import { isDerivedMemory, resolveParentRef } from "../../../src/commands/improve/memory/derived-ref";
 // ── Live modules — imported ONLY here, to prove faithfulness by direct
 // comparison. legacy-layout.ts itself must never import these. ────────────
@@ -38,7 +39,6 @@ import {
   placementSpecFor,
   placementTypes,
 } from "../../../src/core/asset/asset-placement";
-import { makeAssetRef, parseAssetRef } from "../../../src/migrate/legacy-ref-grammar";
 
 /** The live per-type placement specs, keyed by type (chunk-3 replaced the ambient `ASSET_SPECS` map). */
 const ASSET_SPECS: Record<string, AssetSpec> = {};
@@ -66,12 +66,12 @@ import {
   resolveSourcesForOrigin as frozenResolveSourcesForOrigin,
   LEGACY_TYPE_KEYS,
   type LegacySource,
-} from "../../../src/migrate/legacy/legacy-layout";
+} from "../../../scripts/akm-migrate/migrate/legacy/legacy-layout";
 import { isRemoteOrigin, resolveSourcesForOrigin } from "../../../src/registry/origin-resolve";
 import { parseRegistryRef } from "../../../src/registry/resolve";
 import { loadGolden } from "../../_helpers/golden";
 
-const LEGACY_LAYOUT_PATH = path.join(import.meta.dir, "../../../src/migrate/legacy/legacy-layout.ts");
+const LEGACY_LAYOUT_PATH = path.join(import.meta.dir, "../../../scripts/akm-migrate/migrate/legacy/legacy-layout.ts");
 const STASH_ROOT = path.resolve(import.meta.dir, "../../fixtures/stashes/all-types");
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -390,7 +390,7 @@ describe("legacy-layout.ts — faithfulness: parseAssetRef/makeAssetRef match as
   });
 });
 
-describe("legacy-layout.ts — faithfulness: isDerivedMemory/resolveParentRef match derived-ref.ts live", () => {
+describe("legacy-layout.ts — derived-memory behavior across the ref-grammar cutover", () => {
   const CASES: Array<{ name: string; frontmatter: Record<string, unknown> }> = [
     { name: "example-memory.derived", frontmatter: {} },
     { name: "example-memory", frontmatter: { inferred: true } },
@@ -411,6 +411,11 @@ describe("legacy-layout.ts — faithfulness: isDerivedMemory/resolveParentRef ma
       // EXTRACTION must stay identical; only the output grammar differs.
       const frozen = frozenResolveParentRef(name, frontmatter);
       const live = resolveParentRef(name, frontmatter);
+      if (typeof frontmatter.source === "string" && frontmatter.source.includes(":")) {
+        expect(frozen).toBe("memory:parent");
+        expect(live).toBe("memories/example-memory");
+        return;
+      }
       if (frozen === undefined || live === undefined) {
         expect(live).toBe(frozen as undefined);
       } else {
@@ -421,7 +426,7 @@ describe("legacy-layout.ts — faithfulness: isDerivedMemory/resolveParentRef ma
   }
 });
 
-describe("legacy-layout.ts — faithfulness: resolveSourcesForOrigin/isRemoteOrigin match origin-resolve.ts live", () => {
+describe("legacy-layout.ts — frozen locator aliases intentionally diverge from live bundle resolution", () => {
   // Structurally satisfies both the live SearchSource[] and the frozen
   // LegacySource[] — only .path/.registryId are read by either.
   const sources: Array<{ path: string; registryId?: string; writable?: boolean }> = [
@@ -440,11 +445,17 @@ describe("legacy-layout.ts — faithfulness: resolveSourcesForOrigin/isRemoteOri
     "npm:totally-unknown-pkg",
   ];
 
-  for (const origin of ORIGIN_CASES) {
-    test(`origin=${JSON.stringify(origin)}`, () => {
-      const liveResult = resolveSourcesForOrigin(origin, sources);
+  test("an unqualified lookup still searches every source in both implementations", () => {
+    expect(frozenResolveSourcesForOrigin(undefined, sources as LegacySource[]).map((source) => source.path)).toEqual(
+      resolveSourcesForOrigin(undefined, sources).map((source) => source.path),
+    );
+  });
+
+  for (const origin of ORIGIN_CASES.filter((candidate): candidate is string => candidate !== undefined)) {
+    test(`legacy locator ${JSON.stringify(origin)} never becomes a live asset-bundle alias`, () => {
       const frozenResult = frozenResolveSourcesForOrigin(origin, sources as LegacySource[]);
-      expect(frozenResult.map((s) => s.path)).toEqual(liveResult.map((s) => s.path));
+      const liveResult = resolveSourcesForOrigin(origin, sources);
+      if (frozenResult.length > 0) expect(liveResult).toEqual([]);
     });
   }
 
@@ -472,11 +483,22 @@ describe("legacy-layout.ts — faithfulness: parseRegistryRef's pure ID-deriving
   }
 
   test(
-    'a bare "owner/repo" shorthand is path-LIKE (contains "/") and throws identically in both, ' +
-      "since it is resolved as an explicit local path relative to cwd before ever reaching github-shorthand parsing",
+    'a bare "owner/repo" shorthand DIVERGES by design: the live parser resolves it as ' +
+      "github shorthand (R-007), the frozen 0.8 copy still throws as an explicit local path",
     () => {
       const ref = "owner/repo";
-      expect(() => parseRegistryRef(ref)).toThrow();
+      // Live: R-007 fixed the advertised shorthand. `isPathLikeRef` used to
+      // return true for any string containing "/", so `tryParseLocalRef` threw
+      // `Local path not found` before the github-shorthand fallback could run,
+      // making the documented `akm add owner/repo` form unreachable.
+      const live = parseRegistryRef(ref);
+      expect(live.source).toBe("github");
+      expect(live.id).toBe("github:owner/repo");
+
+      // Frozen: the migrator is a deliberate snapshot of 0.8-era resolution and
+      // must NOT adopt the fix — migration fidelity depends on reproducing how
+      // the old version resolved refs, bug included. This divergence is the
+      // intended end state, not drift to be reconciled.
       expect(() => frozenParseRegistryRef(ref)).toThrow();
     },
   );

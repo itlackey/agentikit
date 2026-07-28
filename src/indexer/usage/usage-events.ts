@@ -10,7 +10,8 @@
  */
 
 import { stashDirFor } from "../../core/asset/asset-placement";
-import { typeNameFromConceptId } from "../../core/asset/resolve-ref";
+import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
+import { UsageError } from "../../core/errors";
 import type { Database, SqlValue } from "../../storage/database";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -115,31 +116,6 @@ export function insertUsageEvent(db: Database, event: UsageEvent): void {
   }
 }
 
-/**
- * Bare-form candidates a bare `entry_ref` filter matches a stored row under.
- * The durable `usage_events.entry_ref` column straddles the F5 ref-grammar flip:
- * F4c-indexed rows carry the new-grammar conceptId (`memories/alpha`) while
- * transitional / not-yet-re-keyed rows still carry the legacy `type:name`
- * (`memory:alpha`). Both name the SAME asset, so a bare filter in EITHER grammar
- * must bridge to the other spelling — otherwise a history/telemetry query misses
- * half the asset's own events across the flip boundary. (Fully-qualified filters
- * apply this bridge under a fixed origin — see getUsageEvents.)
- */
-function usageEventBareCandidates(ref: string): string[] {
-  const trimmed = ref.trim();
-  const out = new Set<string>([trimmed]);
-  // New-grammar conceptId (`memories/alpha`) → its legacy `type:name` sibling.
-  const legacy = typeNameFromConceptId(trimmed);
-  if (legacy) out.add(`${legacy.type}:${legacy.name}`);
-  // Legacy `type:name` (`memory:alpha`) → its new-grammar `stashDir/name` sibling.
-  const colon = trimmed.indexOf(":");
-  if (colon > 0) {
-    const dir = stashDirFor(trimmed.slice(0, colon));
-    if (dir) out.add(`${dir}/${trimmed.slice(colon + 1)}`);
-  }
-  return [...out];
-}
-
 // ── Query ────────────────────────────────────────────────────────────────────
 
 /**
@@ -154,29 +130,21 @@ export function getUsageEvents(db: Database, filters?: UsageEventFilters): Usage
     params.push(filters.event_type);
   }
   if (filters?.entry_ref) {
-    if (filters.entry_ref.includes("//")) {
-      // Fully-qualified filter (`bundle//conceptId` or legacy `origin//type:name`)
-      // — the user named a specific bundle/origin, so match that origin exactly,
-      // but bridge the bare tail across the F5 grammar flip (see
-      // usageEventBareCandidates) so a `stash//memories/alpha` filter also matches
-      // an un-re-keyed `stash//memory:alpha` row (and vice versa).
-      const boundary = filters.entry_ref.indexOf("//");
-      const origin = filters.entry_ref.slice(0, boundary);
-      const bareTail = filters.entry_ref.slice(boundary + 2);
-      const quals = usageEventBareCandidates(bareTail).map((bare) => `${origin}//${bare}`);
-      conditions.push(`entry_ref IN (${quals.map(() => "?").join(", ")})`);
-      params.push(...quals);
-    } else {
-      // Bare filter — match the stored bare form (everything after the first
-      // `//`, or the whole value when un-qualified) against the conceptId the
-      // filter normalizes to.
-      const candidates = usageEventBareCandidates(filters.entry_ref);
-      const placeholders = candidates.map(() => "?").join(", ");
-      conditions.push(
-        `(CASE WHEN instr(entry_ref, '//') > 0 THEN substr(entry_ref, instr(entry_ref, '//') + 2) ELSE entry_ref END) ` +
-          `IN (${placeholders})`,
+    const parsed = parseBundleRef(filters.entry_ref);
+    const colon = parsed.conceptId.indexOf(":");
+    if (colon > 0 && !parsed.conceptId.slice(0, colon).includes("/") && stashDirFor(parsed.conceptId.slice(0, colon))) {
+      throw new UsageError(
+        `Invalid asset ref "${filters.entry_ref}". Use [bundle//]conceptId, for example memories/note.`,
+        "INVALID_FLAG_VALUE",
       );
-      params.push(...candidates);
+    }
+    const entryRef = makeBundleRef(parsed.bundle, parsed.conceptId);
+    if (parsed.bundle !== undefined) {
+      conditions.push("entry_ref = ?");
+      params.push(entryRef);
+    } else {
+      conditions.push("instr(entry_ref, '//') > 0 AND substr(entry_ref, instr(entry_ref, '//') + 2) = ?");
+      params.push(parsed.conceptId);
     }
   }
   if (filters?.source) {

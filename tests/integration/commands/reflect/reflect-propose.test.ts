@@ -20,8 +20,8 @@ import { akmReflect } from "../../../../src/commands/improve/reflect";
 import { akmPropose } from "../../../../src/commands/proposal/propose";
 import { listProposals } from "../../../../src/commands/proposal/repository";
 import { appendEvent, readEvents } from "../../../../src/core/events";
+import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess";
 import { akmIndex } from "../../../../src/indexer/indexer";
-import type { SpawnedSubprocess, SpawnFn } from "../../../../src/integrations/agent/spawn";
 import { durableItemRef } from "../../../_helpers/durable-ref";
 import { quietQualityGateConfig } from "../../../_helpers/factories";
 import {
@@ -163,7 +163,6 @@ describe("akm reflect", () => {
 
     const result = await akmReflect({
       ref: "lessons/rg-over-grep",
-      sourceName: "team",
       stashDir: selected,
       config: quietQualityGateConfig(),
       runAgentOptions: {
@@ -176,6 +175,33 @@ describe("akm reflect", () => {
     expect(result.ok).toBe(true);
     expect(prompt).toContain("SELECTED SOURCE BODY");
     expect(prompt).not.toContain("OTHER SOURCE BODY");
+  });
+
+  test("reads feedback using item_ref when planning supplied one", async () => {
+    const stash = makeStashDir();
+    const itemRef = durableItemRef(stash, "lesson", "rg-over-grep");
+    appendEvent({
+      eventType: "feedback",
+      ref: itemRef,
+      metadata: { signal: "negative", note: "qualified feedback" },
+    });
+    let prompt = "";
+
+    const result = await akmReflect({
+      ref: "lessons/rg-over-grep",
+      itemRef,
+      assetContent: "---\ndescription: Search guidance\nwhen_to_use: Searching repositories\n---\n\nUse grep.\n",
+      stashDir: stash,
+      config: quietQualityGateConfig(),
+      runAgentOptions: {
+        spawn: fakeSpawnWithCapture("not json", "", 0, (cmd) => {
+          prompt = cmd.at(-1) ?? "";
+        }),
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(prompt).toContain("[negative] qualified feedback");
   });
 
   test("redacts an echoed engine environment credential before proposal persistence", async () => {
@@ -309,7 +335,7 @@ describe("akm reflect", () => {
     expect(listProposals(stash).length).toBe(0);
   });
 
-  test("raw markdown output for an existing ref falls back to proposal content", async () => {
+  test("raw markdown output is rejected when it ignores the proposal contract", async () => {
     const stash = makeStashDir();
     const result = await akmReflect({
       ref: "lessons/any",
@@ -323,10 +349,10 @@ describe("akm reflect", () => {
         ),
       },
     });
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("expected success");
-    expect(result.proposal.payload.content).toContain("# Title");
-    expect(listProposals(stash).length).toBe(1);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.reason).toBe("parse_error");
+    expect(listProposals(stash).length).toBe(0);
   });
 
   test("timeout → no proposal, reason=timeout", async () => {

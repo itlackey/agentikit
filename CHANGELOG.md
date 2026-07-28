@@ -6,7 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **`akm update` no longer deletes a previous install directory without
+  confirmation.** When a managed source's resolved content location moves,
+  `update` removed the old directory outright, while `akm remove` had always
+  required `--yes` in non-interactive mode. Only that destructive branch is
+  gated — a normal refresh, where the location does not move, still needs no
+  prompt and no flag, so existing CI invocations are unaffected. Pass
+  `-y`/`--yes` to allow the deletion non-interactively. A cleanup that fails
+  now warns instead of failing silently.
+
+- **The dangerous-env-key install gate now scans `env/` recursively.** It
+  previously read only the top level, so a stash carrying `LD_PRELOAD` in
+  `env/nested/inner.env` installed cleanly with no warning. Files without a
+  `.env` suffix are still not scanned — no akm code path loads them as
+  environment variables.
+
 ### Added
+
+- **`akm log list --limit <n>`** returns the most recent N events. The flag was
+  documented but silently ignored, and there was no limiting mechanism at all
+  in the read path — the command returned the entire events table regardless of
+  history size. The default remains unlimited.
+
+- **`--track-usage` (default on) on `akm search`, `akm curate`, and `akm show`.**
+  Pass `--no-track-usage` for a read-only lookup that does not feed usage
+  telemetry or the utility-score ranking signal. Previously a bare `akm search`
+  silently wrote a `utility_scores` row that influenced future ranking, with no
+  disclosure and no way to opt out.
+
+- **`akm show` returns the canonical `ref` in every shape.** It was present only
+  under `--shape agent`, so a `--shape summary` consumer had to make a second
+  call at a different shape just to learn which asset it was looking at.
+
+- **`akm info` gained `stashDir`, `defaultBundle`, and `indexStats.byType`.**
+  Answering "which stash is primary" previously required a separate
+  `akm sources list`.
+
+- **`instruction` is a stash-resident asset type.** It was already in
+  `KNOWN_TYPES` and had a presentation entry, but had no placement spec — so
+  there was nowhere to put one and the indexer never recognized one. `akm init`
+  now creates an `instructions/` directory, `.md` files under it index as
+  `instruction`, and `--type instruction` is accepted and tab-completable
+  everywhere `--type` is. A compile-time assertion now pins
+  `placementTypes() ⊆ KnownType`, so the half-registered state this fixes
+  cannot recur silently.
 
 - **Schedule tasks from any configured bundle via `--target <bundle>`** (#711).
   `akm tasks add`, `enable`, `disable`, `run`, and `sync` (plus `history` /
@@ -22,6 +67,279 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **akm is described as a knowledge toolkit, not a package manager** (R-048).
+  The npm one-liner, the README lede, and the `concepts.md` opener all led with
+  "a package manager for AI agent capabilities", which misstates the product to
+  its distribution channel and sets package-manager expectations for verbs
+  (`update` / `upgrade` / `sync`) that don't mean what a package manager's do.
+
+- **BREAKING: a command group invoked with no subcommand is now always a usage
+  error, exit 2** (owner ruling 12). The eleven `akm <group>` groups did three
+  different things when invoked bare: `graph`, `config`, `env`, `secret`,
+  `tasks`, `workflow`, and `proposal` ran an implicit default action and exited
+  0 (bare `akm graph` silently rendered `graph summary`); `registry`, `log`, and
+  `lessons` printed citty's human usage banner to stdout; only `migrate` raised
+  a structured error. All eleven now emit the same
+  `MISSING_REQUIRED_ARGUMENT` envelope on stderr, naming the available
+  subcommands, and exit 2 — matching STABILITY.md's exit-code table (2 =
+  usage) and the exit code already used for unknown commands. Matching exit
+  codes alone was not enough: a script could not parse the failure uniformly
+  while three groups answered on stdout in prose.
+
+  Migration: name the subcommand. `akm graph` → `akm graph summary`,
+  `akm config` → `akm config list`, `akm env` → `akm env list`, `akm secret` →
+  `akm secret list`, `akm tasks` → `akm tasks doctor`, `akm workflow` →
+  `akm workflow list --active`, `akm proposal` → `akm proposal list` (which
+  takes the same `--status`/`--queue`/`--ref`/`--type` flags the bare form did).
+
+- **BREAKING: `akm sync` persists `eventType: "sync"`, not the legacy
+  `"save"`.** The event name now matches the command name. Historical
+  `state.db` rows are left as-is — `akm log` and `akm log tail` treat `"save"`
+  and `"sync"` as synonyms on **read**, so `akm log --type save` keeps
+  returning both old and new rows. Only newly written events use `"sync"`.
+
+  Migration: none for `akm log --type save`. A script matching raw event rows
+  by `eventType === "save"` — reading state.db directly, bypassing `akm log` —
+  should also match `"sync"` to see new syncs.
+
+- **BREAKING: dropped the dead `installedKitCount` field from the `add`,
+  `remove`, and `update` JSON envelopes.** It was a raw lockfile-entry count
+  that nothing — internal code or test — ever read.
+
+  Migration: a script parsing `.config.installedKitCount` should stop; the
+  field is gone, not renamed. `config.sourceCount` remains and is unaffected.
+
+- **BREAKING: dropped the dead `graphPath` field from every `akm graph *` JSON
+  envelope** (`summary`, `entities`, `relations`, `export`, `related`, `entity`,
+  `orphans`). It always resolved to the shared state.db path, never a
+  per-graph artifact, and carried nothing `stashPath` did not already provide.
+
+  Migration: a script reading `.graphPath` from any `akm graph` subcommand
+  should stop; `stashPath` remains.
+
+- **BREAKING: `semanticSearchMode` now defaults to `"off"`.** A bare or
+  headless install (`akm init`, `akm setup --yes`, `akm setup --config`) was
+  silently downloading the ~130 MB local embedding model on its first `akm
+  index`, because the fallback used when the key is absent was `"auto"`. The
+  interactive `akm setup` wizard still pre-selects semantic search **on** — a
+  human is present to decide — and now shows the asset/download warning
+  *before* the prompt rather than after, so the pre-checked box is an informed
+  choice. When a remote `embedding.endpoint` is configured, enabling semantic
+  search downloads nothing.
+
+  Migration: existing saved configs are unaffected — the flip only changes the
+  fallback used when the key is absent. To keep semantic search on for a
+  headless or CI install, set `semanticSearchMode: "auto"` explicitly, or point
+  `embedding.endpoint` at a remote embedder.
+
+- **BREAKING: `akm workflow run|watch|brief|report|create <name>.yaml` refuse to
+  run until `experimental.workflowEngine` is set** (0.9.0 decision Q-05). The
+  native workflow executor — the fan-out scheduler, worktree isolation, and the
+  YAML v2 program format — is experimental, and shipping it enabled by default
+  would have made an unreviewed execution engine reachable from a plain `akm
+  workflow run`. The gated surfaces now exit `78` with a `ConfigError` naming
+  the exact key, and `akm tasks doctor` reports the gate's state. Every other
+  `akm workflow` subcommand (the document-oriented ones) is unaffected.
+
+  Migration: `akm config set experimental.workflowEngine true`.
+
+- **BREAKING: the `env:<name>` / `secret:<name>` colon ref spelling is
+  rejected** (0.9.0 decision Q-08). Refs are slash conceptIds only — `env/foo`,
+  `secrets/deploy-key`. The colon form previously resolved as an undocumented
+  alias in some places and fell through as a literal filename in others. It now
+  fails with a usage error naming the slash replacement, rather than silently
+  doing the wrong thing.
+
+  Migration: rewrite `env:<name>` as `env/<name>` and `secret:<name>` as
+  `secrets/<name>`. The error message prints the exact replacement.
+
+- **`akm improve` is review-first by default; autonomy is opt-in** (0.9.0
+  decision D8). The command stays ON — schedules, reflect/distill proposals, and
+  graph extraction are unchanged — but the lanes that mutate assets *without*
+  review now require `akm config set experimental.improveAutonomy true`:
+  consolidate's merge/delete, memory-inference writes, the memory-cleanup pass,
+  the contradiction pass, and triage `applyMode: "promote"` (which downgrades to
+  `queue` rather than disabling triage). Previously none of these were gated, and
+  two of them — memory cleanup and contradiction detection — had **no strategy
+  flag at all** and ran on any improve run covering memories.
+
+  A gated lane is never a silent no-op: it warns on stderr naming the lane and
+  the key, appends an `improve_skipped` event with `reason: "autonomy_gated"`,
+  and is counted in `akm health`'s improve skip-reason summary.
+
+  Migration: set `experimental.improveAutonomy: true` to restore the previous
+  behavior. `sync.push` is **not** affected — it keeps its `true` default and its
+  own `sync.push: false` / `--no-push` controls. Two other direct writes stay
+  ungated by design: `extract`'s additive session indexing and distill's
+  encoding-salience frontmatter stamp. Because the gate is applied before the LLM
+  preflight, a review-first workspace may now need fewer engines configured than
+  before.
+
+  Also: `akm improve` no longer rejects the global `--format`. It emits an
+  envelope through `output()` (always under `--dry-run`, otherwise under
+  `--json-to-stdout`), so `--format` applies to that envelope; progress output
+  stays on stderr. Previously it exited 2 with `INVALID_FLAG_VALUE`, which made
+  it the one command that rejected a valid global flag.
+
+- **`akm health --report` replaces the html-only full report** (D7
+  follow-through). The full health report — per-run rows, trend deltas vs the
+  prior window, and the pending proposal queue — is now a **data** flag, not a
+  side effect of asking for html: `akm health --report --format html` renders
+  the rich report, and the identical dataset comes back under `--format json`
+  (previously that data was reachable only as html). The registered md/html
+  renderers fire on the shape of the result, and `akm health` no longer reads
+  `--format` at all.
+
+  Migration: `akm health --format html` → `akm health --report --format html`
+  (the bare form now renders the plain check generically); the html-only
+  `--compare` flag is removed — use `--window-compare`, which with `--report`
+  defaults to the `--since` window so trend deltas stay like-for-like.
+
+- **Global output flags parse correctly next to positionals.** citty parses
+  each command level against only its own declared args, so a root-declared
+  global flag was unknown at the leaf and its space-separated value fell
+  through as a positional — `akm sync --format json` synced a bundle named
+  "json", and `akm env unset env:x KEY --format json` tried to unset a key
+  named "json". The global output flags (`--format`, `--detail`, `--shape`,
+  `--output`) are now declared on every leaf command so their values are
+  consumed by the parser; the two bespoke argv-inspection workarounds this
+  replaces are deleted. Three more non-exempt commands (`akm health`, `akm
+  index`, `akm lint`) now declare these flags too, purely for `--help`
+  visibility — all three already parsed `--format`/`--detail`/`--shape`/
+  `--output` correctly, since none of them has a positional a stray value
+  could fall into.
+
+- **BREAKING: unknown commands and missing required arguments now exit `2`
+  (usage), not `1`.** citty's own command-dispatch wrapper unconditionally
+  called `process.exit(1)` for any error it raised before a command's own
+  body ever ran — `akm totally-bogus` (unknown command), bare `akm log` /
+  `akm lessons` (a subcommand group invoked with no subcommand), and a
+  command missing a required positional (e.g. bare `akm import`) all exited
+  `1`, contradicting the documented exit-code table (`1` = general error /
+  not found, `2` = usage / bad input). The CLI now drives command dispatch
+  directly instead of going through that wrapper, so it can reclassify this
+  one error family as `2` while leaving `--help`, `--version`, and every
+  other exit code unchanged.
+
+  Migration: a script that treated exit `1` as "something went wrong" for a
+  mistyped command or missing argument should check for `2` instead (or
+  keep treating any non-zero exit as failure, which was already correct).
+
+- **BREAKING: `akm completions --shell <unsupported>` now exits `2` with the
+  standard JSON error envelope, not `1` with a raw stack trace.**
+  `completions` stays format-exempt (its own output is shell-script source,
+  not a result envelope — see STABILITY.md), but its body is now wrapped in
+  the same error-classification path every other command uses.
+
+  Migration: a script parsing this failure should now expect
+  `{"ok":false,"error":"...","code":"INVALID_FLAG_VALUE","hint":...}` on
+  stderr and exit code `2` in place of a stack trace and exit code `1`.
+
+- **BREAKING: `akm index --dry-run` without `--clean` now exits `2` instead
+  of running a real index.** The flag only ever gated the `--clean`
+  stale-entry removal pass — every other phase (walk, LLM enrichment,
+  embeddings, FTS, the adapter-detection config write) ran for real
+  regardless, so `akm index --dry-run` alone silently performed a full index
+  despite its name. The combination is now rejected with the standard usage
+  envelope instead of quietly doing something other than what "dry run"
+  promised.
+
+  Migration: a script or cron invoking bare `akm index --dry-run` was
+  already getting a real index, so nothing there needs to change in effect —
+  but it will now fail loudly instead. Pass `akm index --clean --dry-run` to
+  preview the stale-entry removal pass, or `akm index --clean` to apply it;
+  drop `--dry-run` entirely to keep running a plain real index.
+
+- **BREAKING: a corrupt or unparseable `akm.lock` now makes lockfile WRITES
+  throw, instead of silently destroying every entry.** The previous lenient
+  reader returned `[]` on unparseable JSON; a write path that upserted a
+  single entry onto that `[]` then overwrote the file, permanently deleting
+  every other tracked bundle's lock entry. Install/update/remove write paths
+  now use a strict reader that throws on the same corruption instead of
+  reaching the destructive overwrite.
+
+  Migration: if a write now fails with a lockfile-parse error, `akm.lock` is
+  genuinely corrupt — inspect and repair it by hand, or restore it from a
+  backup (e.g. git history), before retrying the write. Reads elsewhere are
+  unaffected; the lenient read contract is unchanged.
+
+- **BREAKING: `AKM_NPM_REGISTRY` now redirects npm package METADATA lookups,
+  not just the trusted-tarball allowlist.** Previously the override only
+  widened which tarball hosts were trusted for download while metadata
+  queries stayed hardcoded to `registry.npmjs.org`, so a configured private
+  mirror was never actually consulted for package info — the error hint that
+  points users at this variable was false. The override now also replaces
+  the metadata registry base, matching how a private npm registry is meant
+  to work (like npm's own `--registry` flag: wholesale replacement, not a
+  merge with the public registry).
+
+  Migration: an operator who set `AKM_NPM_REGISTRY` expecting only tarball
+  downloads to be redirected, with metadata still served from the public
+  registry, should confirm the mirror actually serves equivalent package
+  metadata — `akm add`/`akm update` for npm-sourced bundles now resolve
+  entirely against the configured mirror when it is set.
+
+- **`akm remember --show-similar` and `akm migrate apply --dry-run` are the
+  documented, canonical spellings** (previously `--showSimilar` /
+  `--dryRun`), matching every other multi-word flag in the CLI. Not a
+  breaking change: citty registers both the camelCase and kebab-case
+  spelling of any declared flag name automatically, so `--showSimilar` /
+  `--dryRun` keep working — they're now explicit, documented aliases instead
+  of an undocumented accident.
+
+- **`--detail` and `--shape` help text is scoped honestly.** The per-command
+  `--detail` description now names `info`, `list`, and `remember` as the
+  commands where it has no effect (verified byte-identical output at every
+  level — `akm show` is not one of these; it has three distinct
+  brief/normal/full payloads). `--shape`'s per-command help now repeats the
+  "`summary` is only valid on `akm show`" caveat the root help already
+  documented.
+
+- **All six `--format` values work on every command** (0.9.0 decision D7).
+  `json|jsonl|yaml|text|md|html` are now universal. Previously there were three
+  inconsistent behaviours: `md` silently emitted the JSON envelope everywhere
+  except `akm health`, `html` was rejected with exit 2 everywhere except
+  `akm health`, and `akm health` reached neither because it intercepted the
+  format itself. Rendering is now registry-driven — a command may register a
+  renderer for a document format, and anything unregistered falls back to a real
+  rendering of its own envelope (headings, tables for arrays of uniform objects,
+  lists otherwise). `akm health` keeps its per-run/window-compare tables and its
+  full HTML report by registering them; the output is unchanged.
+
+  Migration: none required for `json|jsonl|yaml|text`. `--format md` on a
+  non-health command previously returned JSON and now returns Markdown; a script
+  that parsed that JSON should ask for `--format json` explicitly. `--format
+  html` previously exited 2 on non-health commands and now succeeds.
+
+  Also: `akm graph export --format` is **removed** — it declared `--format`
+  locally as well as globally (one token, two parsers). The artifact payload
+  now follows the `--out` extension (`--out g.jsonl` writes JSONL, anything
+  else JSON); the global flag only renders the command's own envelope. A dead
+  local `--format` declaration on `akm history` was removed too (it was never
+  read). Commands
+  whose output is not an envelope (`completions`, `setup`, `env run`,
+  `secret run`, `agent`, `workflow template`, `help migrate`) are declared
+  format-exempt in `src/output/format-exempt.ts` and now warn when given
+  `--format` instead of ignoring it silently. `output.format` in config accepts
+  all six values.
+
+- **Subtree browse is a conceptId prefix, not `<type>:`** (0.9.0 decision D4).
+  `akm search` enumerates on `memories/`, `memories/projecta/`, `bundle//`, and
+  `bundle//skills/`; a trailing `/` is still required. The prefix now matches the
+  **conceptId** rather than the item name, so a ref copied out of search output
+  can be truncated to a prefix and pasted straight back in — previously that
+  round-trip degraded silently into a keyword search. Enumeration no longer
+  validates against the `akm` adapter's placement types, so items from every
+  adapter browse the same way, and `bundle//` lists a whole bundle (the
+  replacement for the removed `akm bundle items`).
+
+  Migration: `akm search "memory:"` → `akm search "memories/"`;
+  `akm search "memory:projectA/"` → `akm search "memories/projectA/"`;
+  `akm search "session:"` → `akm search "sessions/"`. The retired spelling is
+  now an ordinary keyword search; when it returns nothing, the tip names the
+  conceptId spelling that replaces it. `scripts/lint-shipped-assets.ts` no
+  longer exempts the old spelling, so it is an offense in agent-facing assets.
+
 - **`akm tasks sync [--target <bundle>]` reconciles a single bundle.** Sync now
   attributes each installed scheduler entry to its bundle (parsed from the
   `--target` token; absent ⇒ primary) and reconciles only the entries for the
@@ -32,14 +350,304 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   installed scheduler entries are byte-identical to before, so upgrading shows no
   spurious drift.
 
+### Fixed
+
+- **The compiled standalone binary can run `akm migrate`.** Release binaries
+  compiled only `src/cli.ts`, and the migrator was resolved as a sibling file
+  and spawned — neither candidate exists inside a compiled executable, so the
+  documented `./akm-0.9 migrate status/apply` upgrade path always failed with
+  `FILE_NOT_FOUND`. Standalone builds now compile `scripts/akm-standalone.ts`,
+  a wrapper that embeds both the CLI and the migrator (src never imports
+  scripts/ — the dist build's tsc forbids it); `akm migrate` re-execs the
+  binary with an `AKM_MIGRATE_ENTRY` marker the wrapper dispatches on. The
+  repo and npm layouts keep the subprocess path.
+
+- **Quarantined migration rows are retained in full, not reduced to a count.**
+  When the 0.8→0.9 cutover met a durable ref it could not map, it recorded
+  surface/ref/count in `legacy_state` and then deleted the rows — destroying
+  proposal payloads, event and task history, fingerprints, and canary anchors,
+  contrary to the migration guide's "quarantined, not dropped". Complete rows
+  are now preserved as JSON in `legacy_state_rows` before leaving the live
+  tables.
+
+- **A failed content migration fails the apply instead of reporting success.**
+  Root discovery, sidecar folding, or the legacy-proposal import throwing was
+  swallowed and logged; the apply then advanced and cleared its journal, and —
+  because 0.9 removed the live `.stash.json` and filesystem-proposal readers —
+  the affected metadata and pending proposals became permanently inaccessible
+  behind an apparently successful upgrade. The step now fails the apply with
+  the journal intact; the committed cutover is untouched and the next apply
+  retries.
+
+- **Sidecar provenance survives the fold.** Folding a `.stash.json` into
+  frontmatter dropped `xrefs` and `sources` entirely and mapped legacy
+  `sourceRefs` to a `source_refs` key that could never fire (the validator
+  stopped copying the field) and that 0.9 never reads — then deleted the only
+  copy. `xrefs`/`sources` now fold through, and legacy `sourceRefs` merge into
+  `xrefs`.
+
+- **A reserved-filename rename re-keys durable state.** The D-R6 rename of a
+  mis-named `index.md`/`log.md` concept ran after the cutover had keyed usage,
+  salience, and proposal rows to the old conceptId, stranding that learned
+  state. The rename now feeds the same re-key engine the cutover uses, with
+  the pairs persisted before re-keying so a crash between the two stays
+  retryable.
+
+- **v1 tasks in a read-only bundle are surfaced with a remedy instead of being
+  silently skipped.** The 0.9 runtime removed the v1 task parser, so silently
+  skipping a `writable: false` bundle left tasks that would start failing after
+  an upgrade that reported current. The preflight now warns per bundle and
+  lists the stranded files in the plan (`readOnlyLegacyTasks`). It does not
+  block the apply: the migration deliberately never rewrites a read-only
+  bundle, and the fix for a lock-materialized git/npm bundle belongs upstream.
+
+- **Lock resolution metadata survives migration.** Merging the migrator's
+  sparse lock entries replaced whole rows by id, discarding
+  `resolvedVersion`/`resolvedRevision`/`integrity`/`installedAt` recorded by a
+  real install. Merge now preserves existing fields the incoming entry does
+  not define.
+
+- **Migrating a pre-0.9 config no longer silently changes source policy.**
+  Three settings were dropped by the config-shape migration: an explicit
+  `writable: false` (an omitted filesystem `writable` reads as `true` in the
+  new shape, so a source the user deliberately protected became writable), an
+  explicit `enabled: false` (resuming refreshes and indexing for content the
+  operator had turned off), and a website source's `maxDepth` (silently
+  resetting crawl depth). All three now round-trip to the runtime source entry;
+  `bundles.<id>.enabled` is a supported key.
+
+- **`akm mv` refuses a bundle marked `writable: false`.** It renamed the file
+  and rewrote citers anyway, because its preflight checked adapter
+  compatibility rather than writability — every other write command already
+  refused.
+
+- **Memory belief edges written by `--supersedes` are no longer ignored.**
+  `writeSupersededEdge` persists a fully-qualified conceptId, but the belief
+  analyzer accepted only the internal `memory:<name>` spelling, so every edge
+  from `akm remember --supersedes` / `akm import --supersedes` was dropped and
+  a superseded memory read back as active.
+
+- **`akm env run <ref> -- <cmd> --help` runs the command.** The builtin
+  help-flag scan read the child tail after `--` and printed akm's own usage
+  instead.
+
+- **`akm mv` works under an `AKM_STASH_DIR` override again.** A valid override
+  not owned by a configured bundle failed with `No configured bundle owns move
+  source`.
+
+- **An unexpected internal error exits 70 with the JSON failure envelope.** The
+  residual dispatch boundary exited 1 with an unstructured message, so
+  automation could not tell an internal defect from an ordinary failure.
+
+- **Concurrent `akm config set` processes no longer give up prematurely.** The
+  contended-lock wait budget was 500ms total, so several concurrent writers on
+  a loaded machine could exhaust it and fail with "Timed out waiting for config
+  lock" against a healthy but busy lock. Abandoned locks are still reclaimed by
+  the stale probe, which this budget does not gate.
+
+- **Config keys named in indexer output and comments now exist.** Four sites
+  pointed at a top-level `llm.*` namespace that the config schema has no such
+  key for — including the user-facing "Increase llm.timeoutMs" warning on an
+  exceeded enrichment budget. The enrichment budget lives at
+  `index.enrichment.timeoutMs` (or `index.defaults.timeoutMs`). Indexing
+  concurrency is auto-derived (2 remote / 1 local) and currently has no config
+  override on that path: `engines.<name>.concurrency` is a valid schema field
+  but the engine resolver does not forward it (documented in
+  `docs/architecture/internals/indexing.md`).
+
+- **The bundle-identity-drift warning stops naming a command that doesn't
+  exist.** It told users to "rekey it atomically via the bundle-rename
+  command"; 0.9.0 ships no such command. It now gives the two remedies that
+  work: restore the previous bundle id in `config.json`, or keep the new id and
+  `akm index --full` to re-mint, accepting the loss of learned state keyed to
+  the old id.
+
+- **The scaffolded `organization.md` convention no longer contradicts `akm
+  mv`.** It told authoring agents "there is no command that preserves an
+  asset's identity or learned state" across a rename and showed a raw `mv`.
+  `akm mv` does exactly that — it rewrites inbound refs and re-keys the index
+  row, usage history, and state.db salience/outcome rows. The convention now
+  points at it, flagged Experimental.
+
+- **`setup.taskSchedules` is no longer documented.** The key was removed from
+  the schema in 0.9.0 (nothing ever read or wrote it), but
+  `docs/reference/configuration.md` still described its two sub-keys.
+
+- **A freshly scaffolded stash passes its own `akm lint`.** All 12 shipped
+  `facts/conventions/**` convention templates carry frontmatter but none
+  carried an `updated` field, so the first `akm lint` after `akm init` flagged
+  12 `missing-updated` issues on files the user never wrote. The templates now
+  ship the field, and a regression test lints a freshly scaffolded stash and
+  requires nothing flagged.
+
+- **`akm show akm//meta` is the documented spelling for the primary stash.**
+  `docs/reference/cli.md` and `docs/guides/concepts.md` showed
+  `akm show local//meta`, which errors with `ASSET_NOT_FOUND` — `local//` is no
+  longer a scoping prefix, so it reads as a bundle named `local`.
+
+- **`akm sync` emits `shape: "sync"`.** The envelope kept the `"save"` shape
+  from the command's pre-rename name even after the persisted `eventType` was
+  renamed. Unlike the event log, the shape is per-invocation and never
+  persisted, so it needs no read-side synonym.
+
+- **`akm add <pkg> --provider npm` adds an npm source instead of a broken
+  filesystem bundle.** `--provider` was only read inside the remote-URL branch,
+  so any non-URL target fell through to the filesystem path with the flag
+  ignored, producing a bundle pointed at `<cwd>/<pkg>`. A URL target with
+  `--provider npm` is now rejected at add time rather than storing the URL as a
+  package spec and failing much later at first sync.
+
+- **`akm add --provider` no longer prints `Installed undefined`.** Two
+  incompatible result shapes reached one text formatter; each is now rendered
+  honestly, including whether a follow-up `akm update` or `akm index` is needed.
+
+- **`akm update --all` accounts for every configured source.** It previously
+  considered only registry-managed installs and reported `nothing to update`
+  for a stash full of plain sources — nothing was updated because nothing was
+  looked at. Plain git and npm sources are now synced (npm is promoted to a
+  lock-backed install on first sync) and website/filesystem sources are
+  reported through a new `skipped` field with the reason. A successful update of
+  a plain source no longer renders as `nothing to update` either.
+
+- **`akm search` with no query browses**, as `--help` has always documented,
+  instead of exiting 2.
+
+- **`akm curate --type <t>` curates within the type instead of bypassing
+  curation.** The filter skipped ranking, intent nudges, the score floor, and
+  family collapse entirely — and could return a hit of the *wrong* type while
+  dropping a higher-scoring correct one.
+
+- **`akm curate` respects `--limit` for registry hits**, which were capped at a
+  hard-coded 2 regardless.
+
+- **`akm search --no-project-context` works.** citty strips a leading `--no-`
+  before consulting declared args, so a flag *declared* as `no-project-context`
+  could never be set — the ranking boost was identical with and without it. The
+  flag users type is unchanged.
+
+- **`akm env run`, `akm secret run`, `akm migrate`, `akm agent`, `akm propose`,
+  `akm tasks run`, and `akm improve` no longer skip cleanup on exit.** They
+  called `process.exit()` directly — in two cases even on success — bypassing
+  teardown of spawned subprocesses. Exit codes, including forwarded non-zero
+  child codes, are unchanged.
+
+- **The `blocked` semantic-search warning names the cause.** It emitted one
+  fixed string for every failure and discarded the status ledger's reason, so
+  "no embedding provider configured" and "the configured endpoint is failing"
+  read identically.
+
+- **Shell completion for `--source` no longer suggests `stash|registry|both`
+  on commands where that enum doesn't apply.** `--source` means a closed
+  `stash|registry|both` enum on `akm search`/`akm curate`, but a free-form
+  stash name/path on every `akm graph` subcommand and a free-form URL/ref/
+  path on `akm remember`. The generated completion script keyed its value
+  list by flag name only, so the search/curate enum leaked onto `akm graph
+  --source <TAB>` and `akm remember --source <TAB>`. Value completion is now
+  scoped per command path; commands without a fixed value set get no
+  suggestion instead of the wrong one.
+
+- **`akm setup --config <file>` / `--from <file>` no longer silently drops
+  six valid config keys** (`index`, `search`, `feedback`,
+  `archiveRetentionDays`, `workflow`, `experimental`). The allowlist was a
+  hand-copied set that had drifted out of sync with the config schema; a
+  user handing setup a config containing any of these keys got a different,
+  silently truncated config written back, with only a warning and exit `0`.
+  The allowlist is now derived from the schema's own key list so it cannot
+  drift again. Keys that remain genuinely retired (`profiles`, `llm`,
+  `agent`, `features`, `stashes`, `bindings`, `writable`) still warn-and-drop
+  as before.
+
+  Note: a config that previously relied on one of these six keys being
+  ignored (because the drop was silent) will now have it applied — re-check
+  `--config`/`--from` inputs if you were unknowingly depending on that gap.
+
+- **`akm index` no longer persists adapter auto-detection to `config.json`
+  with zero disclosure.** Detecting and writing a bundle component's adapter
+  (`bundles.<id>.components.<component>.adapter`) previously happened
+  silently on every index run. It is now reported in the result envelope as
+  an additive `configUpdated.detectedAdapters` map and on stderr, and only
+  when a write actually happened.
+
+- **`akm add owner/repo` now resolves as GitHub shorthand instead of failing
+  with "Local path not found".** Any ref containing a `/` was treated as an
+  explicit local path, so the local-ref resolver threw before the
+  GitHub-shorthand fallback ever ran, making the advertised `owner/repo` form
+  unreachable. A bare two-segment `owner/repo` (or `owner/repo#ref`) now
+  falls through to the registry resolver when no such directory exists on
+  disk; `./`, `../`, absolute, and three-or-more-segment paths still resolve
+  as explicit local paths exactly as before.
+
+- **Internal output-shape command keys renamed `events-list`/`events-tail` →
+  `log-list`/`log-tail`**, matching the `akm log` command they back (the
+  command group used to be `akm events`, removed in 0.9.0). Internal-only:
+  the shape name is a registry lookup key that never reaches the wire (no
+  output field, no schema change), so this is not a user-visible behavior
+  change and carries no `schemaVersion` bump. The documented `[events-tail]`
+  stderr trailer text is deliberately left as-is pending a separate ruling.
+
 ### Removed
+
+- **BREAKING: `akm upgrade --skip-checksum` is removed.** STABILITY.md has
+  always said checksum verification is not optional and that the recovery hatch
+  is an environment variable — but the flag shipped anyway, tab-completable,
+  while the documented variable existed nowhere in the source. The code now
+  matches the spec: set `AKM_UPGRADE_SKIP_CHECKSUM=1` if you must bypass a
+  genuinely broken `checksums.txt`. It is deliberately undiscoverable.
+
+- **BREAKING: `akm config enable|disable` is removed.** It was a hard-coded
+  toggle for one target, the skills.sh registry, and the bare `akm enable` /
+  `akm disable` aliases were already removed in 0.9.0. Use
+  `akm registry add|remove`.
+
+- **The CHURN alert class is removed from the collapse detector.** Its input was
+  a hard-coded `0` from the 0.9.0 confidence-gate deletion onward, so the alert
+  could never fire. The other three alert classes are unaffected. The
+  `improve_cycle_metrics.accepted_actions` column stays and is written as `0`:
+  it lives in a released migration body, and 0.8 ships `state.db`, so a deployed
+  ledger can already have sealed that body's checksum.
+
+- **`IndexResponse.graphQuality` is removed** from the `akm index` envelope — it
+  was declared but never assigned in any code path, so it was always absent.
+
+- **`akm secret path` and `akm secret remove` are removed.** The two resolved a
+  secret ref through *different* stash-selection logic — `path` through the
+  read-side, all-sources resolver and `remove` through the write-target
+  resolver — so for a ref present in more than one stash they could name
+  different files: you could inspect one secret and delete another. Rather than
+  reconcile the resolvers, both subcommands are gone; `akm secret` now exposes
+  only `list`, `run`, and `set`. Both spellings exit 2 with `Unknown command`.
+
+  Migration: a ref's file lives at `<stash>/secrets/<name>` (run `akm sources
+  list` for stash roots) — locate or delete it directly, or use `akm secret run
+  <ref> <VAR> -- <command>` to consume the value without it touching disk. `akm
+  env path` and `akm env remove` are unaffected.
+
+- Removed the dead `"backup"` output-shape registration left over from the
+  removed `akm backup` command (superseded by `akm-migrate backup`). Already
+  unreachable; no user-visible effect.
 
 - **`akm tasks list`, `akm tasks show`, and `akm tasks remove` are removed** as
   redundant with the generic asset commands. List and inspect tasks with `akm
   search` / `akm show <bundle//tasks/id>` (both already cross-bundle); to remove a
   scheduled task, delete its file in the owning bundle and run `akm tasks sync`
-  (sync uninstalls the orphaned scheduler entry). Bare `akm tasks` now reports
-  scheduler diagnostics (equivalent to `akm tasks doctor`).
+  (sync uninstalls the orphaned scheduler entry). Run `akm tasks doctor` for
+  scheduler diagnostics — bare `akm tasks` is a usage error, see the canonical
+  bare-group change above.
+
+- **The `akm show <ref> toc|section|lines|frontmatter|full` view-mode grammar is
+  removed** (0.9.0 decision D2). `#fragment` is now the only section selector,
+  and a positional after the ref is a usage error that names it. Migration:
+
+  | Old | New |
+  | --- | --- |
+  | `akm show knowledge/guide section "Auth"` | `akm show knowledge/guide#auth` |
+  | `akm show knowledge/guide full` | `akm show knowledge/guide` |
+  | `akm show knowledge/guide toc` | `akm show knowledge/guide#<unmatched>` — the error lists the available fragment slugs |
+  | `akm show knowledge/guide lines 10 30` | no replacement — every response carries `path`, so slice the file yourself |
+  | `akm show knowledge/guide frontmatter` | no replacement — if a raw-YAML projection proves necessary it returns as a `--shape` value |
+
+  The undocumented `--akmView` / `--akmHeading` / `--akmStart` / `--akmEnd`
+  flags the grammar injected into argv are gone with it.
 
 ## [0.9.0] - 2026-07-20
 
@@ -65,8 +673,8 @@ earlier `0.9.0-rc.1` / `0.9.0-beta.*` development entries below.
   fully-qualified `bundle//conceptId`; the short bundle-omitted form is accepted
   input only (resolved against `defaultBundle`, then installation-priority
   order). The pre-0.9.0 `[origin//]type:name` grammar is removed — there is no
-  compatibility parser; the frozen migrator in `src/migrate/legacy/` is the only
-  place it survives.
+  compatibility parser; the frozen migrator in `scripts/akm-migrate/migrate/`
+  is the only place it survives.
 - **Explicit, journaled, crash-resumable cutover (`akm migrate apply`).** The
   migrator re-keys all durable state to the new spelling, folds the former
   `workflow.db` into `state.db` (four databases down to three: `state.db` /
@@ -89,7 +697,7 @@ earlier `0.9.0-rc.1` / `0.9.0-beta.*` development entries below.
   index (and renamed by the content migration when they hold a real concept).
 - **`vault` asset type removed.** Use `env` (a whole `.env` group; key names
   surfaced, values never) and `secret` (a single sensitive value), addressed as
-  `env/<name>` and `secrets/<name>`. `akm-migrate-storage` still performs the
+  `env/<name>` and `secrets/<name>`. `akm-migrate storage` performs the
   non-destructive `vaults/` → `env/` copy for older stashes.
 - **0.8-era CLI aliases removed.** The flat proposal verbs (`akm proposals`,
   `akm accept`, `akm reject`, `akm diff`, `akm revert`, `akm show proposal`),

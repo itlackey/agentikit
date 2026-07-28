@@ -312,16 +312,33 @@ Step ID: publish-into-wiki
 
 ### Instructions
 Write the selected topic and its supporting concepts into the target wiki so the
-swarm and deep-research outputs become reusable knowledge.
+swarm and deep-research outputs become reusable knowledge. A wiki is a plain
+directory (`schema.md` + `pages/` + `raw/`) recognized by the `llm-wiki`
+adapter on `akm index` — there is no `akm wiki` command family (`create`,
+`ingest`, `lint`, `search` are all unknown commands, exit 2); every write
+below uses the agent's normal file tools.
 
 Resolve the target wiki:
 
 - If `wiki_name` is provided, use it.
 - Otherwise default to `research`.
-- If the wiki does not exist, create it with `akm wiki create {{ wiki_name }}`.
+- If the wiki does not exist yet, create it by hand at
+  `wikis/{{ wiki_name }}/`: a `schema.md` rulebook plus empty `pages/` and
+  `raw/` directories is enough, then register it as its own bundle:
 
-Before editing pages, run `akm wiki ingest {{ wiki_name }}` and follow the
-printed ingest recipe.
+  ```sh
+  akm add wikis/{{ wiki_name }} --name {{ wiki_name }}
+  ```
+
+  Point `akm add` at the wiki's own directory, not a path nested inside the
+  primary AKM stash — a nested path gets claimed by the primary stash's own
+  adapter instead of `llm-wiki` and loses wiki recognition.
+- If it already exists, find its registered path with
+  `akm list --format json` (the matching source's `path` field) if you do
+  not already have it.
+
+There is no ingest command — copy or write the raw material straight into
+the wiki's `raw/` directory yourself.
 
 Write at least:
 
@@ -341,15 +358,18 @@ Then:
 
 - update `log.md`
 - run `akm index`
-- run `akm wiki lint {{ wiki_name }}` and fix findings
-- run `akm wiki search {{ wiki_name }} "<selected topic>"` to confirm retrieval
+- there is no `akm wiki lint`, and `akm lint` does not currently reach
+  bundle-adapter content such as wiki pages (verified: `akm lint --dir
+  <wiki-root>` returns zero findings even against a deliberately broken
+  xref) — check `xrefs:`/`sources:` by hand against `schema.md`
+- run `akm search "<selected topic>"` to confirm retrieval
 
 ### Completion Criteria
 - The wiki contains the new or updated pages.
 - Relevant raw artifacts are stashed under `raw/`.
-- `akm index` and `akm wiki lint {{ wiki_name }}` complete without unresolved
-  findings.
-- The selected topic research is now reusable through wiki search.
+- `akm index` completes cleanly; new pages were checked by hand against
+  `schema.md` since there is no automated wiki lint yet.
+- The selected topic research is now reusable through `akm search`.
 
 ## Step: Audit the combined run
 Step ID: audit-combined-run

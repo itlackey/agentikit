@@ -6,7 +6,7 @@ import { akmProposalAccept, akmProposalReject, akmProposalRevert } from "../../s
 import { createProposal, getProposal, isProposalSkipped } from "../../src/commands/proposal/repository";
 import type { AkmConfig } from "../../src/core/config/config";
 import { readEvents } from "../../src/core/events";
-import { openStateDatabase } from "../../src/core/state-db";
+import { txnNamespaceDir } from "../../src/core/fs-txn";
 import {
   type IsolatedAkmStorage,
   makeSandboxDir,
@@ -24,7 +24,12 @@ const children: ChildProcess[] = [];
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
   markers = makeSandboxDir("akm-proposal-crash");
-  writeSandboxConfig({ semanticSearchMode: "off" });
+  writeSandboxConfig({
+    semanticSearchMode: "off",
+    bundles: { stash: { path: storage.stashDir, writable: true } },
+    defaultBundle: "stash",
+    defaultWriteTarget: "stash",
+  });
 });
 
 afterEach(() => {
@@ -63,7 +68,7 @@ async function crashProposalAt(
   await new Promise<void>((resolve) => child.once("exit", () => resolve()));
 }
 
-function seedProposal(name: string): { id: string; assetPath: string; original: string } {
+function seedProposal(name: string): { id: string; assetPath: string; original: string; content: string } {
   const assetPath = path.join(storage.stashDir, "lessons", `${name}.md`);
   const original =
     "---\ndescription: Original durable content\nwhen_to_use: Testing proposal crash recovery\n---\n\nORIGINAL.\n";
@@ -75,7 +80,7 @@ function seedProposal(name: string): { id: string; assetPath: string; original: 
     payload: { content: CONTENT },
   });
   if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
-  return { id: proposal.id, assetPath, original };
+  return { id: proposal.id, assetPath, original, content: proposal.payload.content };
 }
 
 describe("proposal accept durable crash recovery", () => {
@@ -92,11 +97,11 @@ describe("proposal accept durable crash recovery", () => {
 
       const result = await akmProposalAccept({ stashDir: storage.stashDir, id: seeded.id });
       expect(result.ok).toBe(true);
-      expect(fs.readFileSync(seeded.assetPath, "utf8")).toBe(CONTENT);
+      expect(fs.readFileSync(seeded.assetPath, "utf8")).toBe(seeded.content);
       const proposal = getProposal(storage.stashDir, seeded.id);
       expect(proposal.status).toBe("accepted");
       expect(proposal.backupContent).toBe(seeded.original);
-      expect(proposal.acceptedContentHash).toBeDefined();
+      expect(proposal.acceptedTarget?.contentHash).toBeDefined();
       const events = readEvents({ type: "promoted", ref: proposal.ref }).events.filter(
         (event) => event.metadata?.proposalId === seeded.id,
       );
@@ -119,16 +124,36 @@ describe("proposal accept durable crash recovery", () => {
         ref: "lessons/cross-device-accept",
         source: "distill",
         force: true,
+        target: { source: "shm", root: stashDir },
         payload: { content: CONTENT },
       });
       if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
 
       const result = await akmProposalAccept({ stashDir, id: proposal.id, config });
       expect(result.ok).toBe(true);
-      expect(fs.readFileSync(path.join(stashDir, "lessons", "cross-device-accept.md"), "utf8")).toBe(CONTENT);
+      expect(fs.readFileSync(path.join(stashDir, "lessons", "cross-device-accept.md"), "utf8")).toBe(
+        proposal.payload.content,
+      );
     } finally {
       fs.rmSync(stashDir, { recursive: true, force: true });
     }
+  });
+
+  test("rejects a transaction journal missing current target identity", async () => {
+    const seeded = seedProposal("missing-journal-target-kind");
+    await crashProposalAt("index-finalized", seeded.id);
+    const namespace = txnNamespaceDir(storage.stashDir);
+    const transactionDir = fs.readdirSync(namespace)[0] as string;
+    const journalPath = path.join(namespace, transactionDir, "journal.json");
+    const journal = JSON.parse(fs.readFileSync(journalPath, "utf8")) as {
+      payload: Record<string, unknown>;
+    };
+    delete journal.payload.targetKind;
+    fs.writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`, "utf8");
+    await expect(akmProposalAccept({ stashDir: storage.stashDir, id: seeded.id })).rejects.toThrow(
+      /unsafe proposal transaction|different target|target identity/i,
+    );
+    expect(fs.existsSync(journalPath)).toBe(true);
   });
 
   for (const phase of [
@@ -162,7 +187,7 @@ describe("proposal accept durable crash recovery", () => {
       akmProposalReject({ stashDir: storage.stashDir, id: seeded.id, reason: "must not reject committed accept" }),
     ).rejects.toThrow(/not pending/i);
     expect(getProposal(storage.stashDir, seeded.id).status).toBe("accepted");
-    expect(fs.readFileSync(seeded.assetPath, "utf8")).toBe(CONTENT);
+    expect(fs.readFileSync(seeded.assetPath, "utf8")).toBe(seeded.content);
   });
 
   test("target-B retry globally recovers a target-A accept and fails closed", async () => {
@@ -180,6 +205,7 @@ describe("proposal accept durable crash recovery", () => {
       ref: "lessons/multi-target-crash",
       source: "distill",
       force: true,
+      target: { source: "a", root: targetA },
       payload: { content: CONTENT },
     });
     if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
@@ -188,7 +214,9 @@ describe("proposal accept durable crash recovery", () => {
     await expect(akmProposalAccept({ stashDir: storage.stashDir, id: proposal.id, target: "b" })).rejects.toThrow(
       /bound|different|target/i,
     );
-    expect(fs.readFileSync(path.join(targetA, "lessons", "multi-target-crash.md"), "utf8")).toBe(CONTENT);
+    expect(fs.readFileSync(path.join(targetA, "lessons", "multi-target-crash.md"), "utf8")).toBe(
+      proposal.payload.content,
+    );
     expect(fs.existsSync(path.join(targetB, "lessons", "multi-target-crash.md"))).toBe(false);
     const accepted = getProposal(storage.stashDir, proposal.id);
     expect(accepted.status).toBe("accepted");
@@ -217,6 +245,7 @@ describe("proposal accept durable crash recovery", () => {
       ref: "lessons/multi-target-revert",
       source: "distill",
       force: true,
+      target: { source: "a", root: targetA },
       payload: { content: CONTENT },
     });
     if (isProposalSkipped(proposal)) throw new Error("unexpected skip");
@@ -254,35 +283,4 @@ describe("proposal accept durable crash recovery", () => {
       expect(events).toHaveLength(1);
     });
   }
-
-  test("legacy missing-file revert survives SIGKILL after target derivation and before journal creation", async () => {
-    const seeded = seedProposal("legacy-derived-restart");
-    await akmProposalAccept({ stashDir: storage.stashDir, id: seeded.id });
-    const db = openStateDatabase();
-    const row = db.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(seeded.id) as {
-      metadata_json: string;
-    };
-    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-    delete metadata.acceptedContentHash;
-    delete metadata.acceptedTarget;
-    db.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), seeded.id);
-    db.close();
-    fs.unlinkSync(seeded.assetPath);
-
-    await crashProposalAt("legacy-target-derived", seeded.id, "revert");
-
-    const persistedDb = openStateDatabase();
-    const persistedRow = persistedDb.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(seeded.id) as {
-      metadata_json: string;
-    };
-    const persisted = JSON.parse(persistedRow.metadata_json) as Record<string, unknown>;
-    persistedDb.close();
-    expect(persisted.legacyAcceptedTargetDerived).toBe(true);
-    expect(persisted.legacyAcceptedAssetWasAbsent).toBe(true);
-    expect(persisted.acceptedTarget).toBeDefined();
-
-    const result = await akmProposalRevert({ stashDir: storage.stashDir, id: seeded.id });
-    expect(result.proposal.status).toBe("reverted");
-    expect(fs.readFileSync(seeded.assetPath, "utf8")).toBe(seeded.original);
-  });
 });

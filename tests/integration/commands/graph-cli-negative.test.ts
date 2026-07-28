@@ -42,14 +42,18 @@ afterEach(() => {
 });
 
 describe("graph CLI negative paths", () => {
-  test("export rejects invalid --format value", async () => {
+  // D7 removed `graph export`'s local `--format`, so `yaml` is no longer an
+  // invalid value here — it is a valid global format that renders the envelope
+  // while the artifact stays JSON. An unrecognized value is still rejected, now
+  // by the global parser (`INVALID_FORMAT_VALUE`) rather than a per-command one.
+  test("export rejects an unrecognized --format value", async () => {
     const stash = makeStashDir();
     const outPath = path.join(stash, "graph-export.json");
-    const result = await runCli(["graph", "export", "--out", outPath, "--format", "yaml"], stash);
+    const result = await runCli(["graph", "export", "--out", outPath, "--format", "nonsense"], stash);
     expect(result.status).toBe(2);
     const parsed = JSON.parse(result.stderr) as { ok: boolean; error: string; code?: string };
     expect(parsed.ok).toBe(false);
-    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
+    expect(parsed.code).toBe("INVALID_FORMAT_VALUE");
     expect(parsed.error).toContain("--format");
   });
 

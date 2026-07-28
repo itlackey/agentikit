@@ -14,7 +14,8 @@ import {
   taskDiagnostics,
   workflowStructureDiagnostics,
 } from "../../core/adapter/adapters/akm-lint";
-import { parseFrontmatter } from "../../core/asset/frontmatter";
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
+import { parseFrontmatter, parseFrontmatterBlock } from "../../core/asset/frontmatter";
 import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
 import { loadConfig, primaryBundlePath } from "../../core/config/config";
@@ -71,18 +72,52 @@ function collectYamlFiles(dir: string): string[] {
   return results;
 }
 
-function collectMarkdownFiles(dir: string): string[] {
+function collectMarkdownFiles(dir: string, caseInsensitive = false): string[] {
   if (!fs.existsSync(dir)) return [];
   const results: string[] = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === ".git" || entry.isSymbolicLink()) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      results.push(...collectMarkdownFiles(full));
-    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      results.push(...collectMarkdownFiles(full, caseInsensitive));
+    } else if (entry.isFile() && (caseInsensitive ? entry.name.toLowerCase() : entry.name).endsWith(".md")) {
       results.push(full);
     }
   }
   return results;
+}
+
+function lintOkfBundle(stashRoot: string): AkmLintResult {
+  const flagged: LintIssue[] = [];
+  for (const filePath of collectMarkdownFiles(stashRoot, true)) {
+    const basename = path.basename(filePath).toLowerCase();
+    if (basename === "index.md" || basename === "log.md") continue;
+    const relPath = path.relative(stashRoot, filePath);
+    let validMappingWithType = false;
+    try {
+      const block = parseFrontmatterBlock(fs.readFileSync(filePath, "utf8"));
+      if (block) {
+        const data = parseYaml(block.frontmatter) as unknown;
+        validMappingWithType =
+          typeof data === "object" &&
+          data !== null &&
+          !Array.isArray(data) &&
+          typeof (data as Record<string, unknown>).type === "string" &&
+          ((data as Record<string, unknown>).type as string).trim().length > 0;
+      }
+    } catch {
+      validMappingWithType = false;
+    }
+    if (!validMappingWithType) {
+      flagged.push({
+        file: relPath,
+        issue: "missing-type",
+        detail: "OKF concepts require parseable mapping frontmatter with a non-empty type.",
+        fixed: false,
+      });
+    }
+  }
+  return { ok: true, fixed: [], flagged, summary: { fixed: 0, flagged: flagged.length } };
 }
 
 function collectEnvFiles(dir: string): string[] {
@@ -129,7 +164,7 @@ export function lintSkillDirectory(subdirPath: string, stashRoot: string): LintI
 /** MemoryLinter's `orphaned-stub` check WITH its `--fix` delete (memory-linter.ts:19-65). */
 function appendMemoryStubIssue(ctx: LintContext, issues: LintIssue[]): void {
   if (!memoryOrphanStubApplies(ctx.data, ctx.body)) return;
-  const derivedPath = `${ctx.filePath.replace(/\.md$/, "")}.derived.md`;
+  const derivedPath = `${ctx.filePath.replace(/\.md$/i, "")}.derived.md`;
   if (fs.existsSync(derivedPath)) return;
   if (ctx.fix) {
     try {
@@ -225,11 +260,13 @@ export function akmLint(options: AkmLintOptions = {}): AkmLintResult {
   const cfg = options.config ?? loadConfig();
   // 0.9.0 (spec §10.1): the primary stash is the defaultBundle's path.
   const stashRoot = options.dir ?? primaryBundlePath(cfg) ?? resolveStashDir();
-  const extraStashRoots = resolveSourceEntries(stashRoot, cfg)
-    .map((s) => s.path)
-    .filter((p) => p !== stashRoot && fs.existsSync(p));
+  const sources = resolveSourceEntries(stashRoot, cfg);
+  const configuredAdapter = sources.find((source) => path.resolve(source.path) === path.resolve(stashRoot))?.adapterId;
+  const adapterId = configuredAdapter ?? detectAdapterId(stashRoot);
+  if (adapterId === "okf") return lintOkfBundle(stashRoot);
+  const extraStashRoots = sources.map((s) => s.path).filter((p) => p !== stashRoot && fs.existsSync(p));
 
-  const fix = options.fix ?? false;
+  const fix = adapterId === "akm" && options.fix === true;
   const fixed: LintIssue[] = [];
   const flagged: LintIssue[] = [];
 
@@ -238,7 +275,7 @@ export function akmLint(options: AkmLintOptions = {}): AkmLintResult {
   for (const subdir of dirsToScan) {
     const dirPath = path.join(stashRoot, subdir);
     // Tasks are .yml files; everything else is .md
-    const files = subdir === "tasks" ? collectYamlFiles(dirPath) : collectMarkdownFiles(dirPath);
+    const files = subdir === "tasks" ? collectYamlFiles(dirPath) : collectMarkdownFiles(dirPath, true);
 
     // Directory-level check: skills require a SKILL.md entry point (was
     // SkillLinter.lintDirectory). Run once per direct subdirectory before the

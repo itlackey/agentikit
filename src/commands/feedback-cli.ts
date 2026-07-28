@@ -4,23 +4,26 @@
 
 import fs from "node:fs";
 import { defineJsonCommand, output, parseAllFlagValues } from "../cli/shared";
+import { makeBundleRef, parseBundleRef } from "../core/asset/asset-ref";
 import { assembleAsset } from "../core/asset/asset-serialize";
 import { parseFrontmatter, parseFrontmatterBlock } from "../core/asset/frontmatter";
-import { conceptIdFromTypeName, displayRef, parseRefInput } from "../core/asset/resolve-ref";
-import { writeFileAtomic } from "../core/common";
+import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../core/asset/resolve-ref";
+import { isWithin, writeFileAtomic } from "../core/common";
 import { FEEDBACK_FAILURE_MODES, loadConfig } from "../core/config/config";
 import { UsageError } from "../core/errors";
 import { appendEvent } from "../core/events";
+import { resolveMutationTarget } from "../core/mutation-target";
 import { getDbPath } from "../core/paths";
 import { withStateDb } from "../core/state-db";
 import { warn } from "../core/warn";
+import { commitWriteTargetBoundary, recordWriteTargetPath } from "../core/write-source";
 import { resolveSourceEntries } from "../indexer/search/search-source";
 import { countFeedbackSignals, insertUsageEvent, resolveUsageEventSource } from "../indexer/usage/usage-events";
+import { resolveSourcesForOrigin } from "../registry/origin-resolve";
 import type { Database } from "../storage/database";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import {
   findEntryIdByRef,
-  getEntryById,
   getEntryFilePathById,
   getItemRefById,
 } from "../storage/repositories/index-entries-repository";
@@ -73,32 +76,35 @@ function validateFeedbackTags(raw: string[]): string[] {
  * an existing asset — the same pattern memory-inference uses for
  * `inferenceProcessed`.
  */
-function appendLessonStrength(type: string, name: string, feedbackRef: string): { strength: number } | null {
-  // Canonical 0.9.0 conceptId (`lessons/<name>`, D-R3) — `findEntryIdByRef`
-  // keys on the stored `item_ref` and parses its argument as the new grammar,
-  // so a `type:name` lookup here would never match.
-  const ref = conceptIdFromTypeName(type, name);
+function appendLessonStrength(refInput: AssetRef, feedbackRef: string): { ref: string; strength: number } | null {
+  // Canonical conceptId (`lessons/<name>`, D-R3): `findEntryIdByRef` keys on
+  // the stored `item_ref`.
+  const conceptId = conceptIdFromTypeName(refInput.type, refInput.name);
+  const config = loadConfig();
   let filePath: string | undefined;
+  let bundleId: string | undefined;
   const db = openExistingDatabase();
   try {
-    const entryId = findEntryIdByRef(db, ref);
-    if (entryId === undefined) {
-      warn(`[feedback] --applied-to: lesson ${ref} is not in the index.`);
-      return null;
+    const entryId = findEntryIdByRef(db, makeBundleRef(refInput.origin, conceptId));
+    if (entryId !== undefined) {
+      const itemRef = getItemRefById(db, entryId);
+      const parsedItemRef = itemRef ? parseBundleRef(itemRef) : undefined;
+      filePath = getEntryFilePathById(db, entryId) ?? undefined;
+      bundleId = parsedItemRef?.bundle;
     }
-    const resolvedPath = getEntryFilePathById(db, entryId);
-    if (!resolvedPath) {
-      warn(`[feedback] --applied-to: cannot resolve file path for ${ref}.`);
-      return null;
-    }
-    filePath = resolvedPath;
   } finally {
     closeDatabase(db);
   }
 
-  if (!filePath || !fs.existsSync(filePath)) {
-    warn(`[feedback] --applied-to: lesson file missing on disk for ${ref}.`);
+  const requestedRef = makeBundleRef(refInput.origin, conceptId);
+  if (!filePath || !bundleId || !fs.existsSync(filePath)) {
+    warn(`[feedback] --applied-to: lesson ${requestedRef} is not in the index or is missing on disk.`);
     return null;
+  }
+
+  const resolved = resolveMutationTarget(config, { ...refInput, origin: bundleId });
+  if (!isWithin(filePath, resolved.target.source.path)) {
+    throw new UsageError(`Resolved lesson ${requestedRef} is outside bundle "${bundleId}".`);
   }
 
   const raw = fs.readFileSync(filePath, "utf8");
@@ -112,7 +118,7 @@ function appendLessonStrength(type: string, name: string, feedbackRef: string): 
       : [];
   if (strengthList.includes(feedbackRef)) {
     // Already credited — idempotent no-op.
-    return { strength: strengthList.length };
+    return { ref: makeBundleRef(bundleId, conceptId), strength: strengthList.length };
   }
   strengthList.push(feedbackRef);
   data.lessonStrength = strengthList;
@@ -125,30 +131,55 @@ function appendLessonStrength(type: string, name: string, feedbackRef: string): 
     // typically 0o644); writeFileAtomic defaults to 0o600 otherwise.
     const mode = fs.statSync(filePath).mode & 0o777;
     writeFileAtomic(filePath, next, mode);
+    recordWriteTargetPath(resolved.target.source, filePath);
+    commitWriteTargetBoundary(resolved.target, `Update ${makeBundleRef(bundleId, conceptId)}`);
   } catch (err) {
     warn(`[feedback] --applied-to: failed to write ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
-  return { strength: strengthList.length };
+  return { ref: makeBundleRef(bundleId, conceptId), strength: strengthList.length };
+}
+
+/**
+ * Result of {@link recordFeedbackUsage}: the raw utility-policy result (when
+ * the update ran) plus whether the ranking update was actually applied, and
+ * why not when it wasn't. R-034: the caller could not previously distinguish
+ * "no update needed" from "update was skipped" — this makes that explicit so
+ * `akm feedback`'s response envelope can report it instead of staying silent.
+ */
+interface RecordFeedbackUsageResult {
+  utilityResult: ReturnType<typeof applyFeedbackToUtilityScore> | undefined;
+  rankingUpdateApplied: boolean;
+  /** Set whenever `rankingUpdateApplied` is false; explains why. */
+  rankingUpdateSkippedReason: string | undefined;
 }
 
 /**
  * Persist the feedback usage-event (state.db) and immediately fold it into the
  * entry's MemRL utility score (index.db). Chunk-8 WI-8.3: usage_events lives in
- * state.db; entries + utility_scores stay in `indexDb`. Positive signals raise
- * search ranking on the next read without a full reindex; negatives are durable
- * but take effect at the next `akm index`. Uses the bounded-step EMA policy
- * (F-5 / #386, arXiv:2601.03192). Best-effort: a utility-update failure never
- * fails the feedback record.
+ * state.db; entries + utility_scores stay in `indexDb`. BOTH positive and
+ * negative signals apply the EMA utility update unconditionally and
+ * immediately when the source is user-attributed — no `akm index` run is
+ * required for either signal to affect search ranking. Uses the bounded-step
+ * EMA policy (F-5 / #386, arXiv:2601.03192).
+ *
+ * The update is intentionally SKIPPED for non-`user` event sources (`improve`,
+ * `task`, `audit`, `unknown`) — an anti-self-reinforcement guard that stops an
+ * agent or automated pipeline from boosting its own picks. This is by design
+ * and must not be removed; R-034 only asks that the skip be surfaced to the
+ * caller rather than passing silently. Best-effort: a utility-update failure
+ * never fails the feedback record.
  */
 function recordFeedbackUsage(
   indexDb: Database,
   entryId: number,
-  durableEntryRef: string | undefined,
+  durableEntryRef: string,
   signal: "positive" | "negative",
   metadataStr: string | undefined,
-): ReturnType<typeof applyFeedbackToUtilityScore> | undefined {
+): RecordFeedbackUsageResult {
   let utilityResult: ReturnType<typeof applyFeedbackToUtilityScore> | undefined;
+  let rankingUpdateApplied = false;
+  let rankingUpdateSkippedReason: string | undefined;
   const eventSource = resolveUsageEventSource();
   withStateDb((stateDb) => {
     insertUsageEvent(stateDb, {
@@ -159,15 +190,22 @@ function recordFeedbackUsage(
       metadata: metadataStr,
       source: eventSource,
     });
-    if (eventSource !== "user") return;
+    if (eventSource !== "user") {
+      rankingUpdateSkippedReason =
+        `feedback source is "${eventSource}", not "user" — ranking updates only apply to user-attributed ` +
+        "feedback (anti-self-reinforcement guard; set AKM_EVENT_SOURCE=user to record as user demand).";
+      return;
+    }
     try {
       const { pos, neg } = countFeedbackSignals(stateDb, entryId);
       utilityResult = applyFeedbackToUtilityScore(indexDb, entryId, pos, neg);
-    } catch {
+      rankingUpdateApplied = true;
+    } catch (err) {
       // best-effort — feedback recording succeeds even if utility update fails
+      rankingUpdateSkippedReason = `utility update failed: ${err instanceof Error ? err.message : String(err)}`;
     }
   });
-  return utilityResult;
+  return { utilityResult, rankingUpdateApplied, rankingUpdateSkippedReason };
 }
 
 // ── Command definition ────────────────────────────────────────────────────────
@@ -177,12 +215,10 @@ export const feedbackCommand = defineJsonCommand({
     name: "feedback",
     description:
       "Record positive or negative feedback for any indexed stash asset.\n\n" +
-      "Positive feedback boosts an asset's EMA utility score, making it rank higher\n" +
-      "in future searches without requiring a full reindex.\n\n" +
-      "Negative feedback records a negative signal in usage_events and state.db events.\n" +
-      "It does NOT immediately lower the asset's ranking — the EMA utility score is\n" +
-      "updated the next time `akm index` runs (incremental or full). Run `akm index`\n" +
-      "after recording negative feedback to have it reflected in search results.",
+      "Both signals update the asset's EMA utility score immediately, in the same\n" +
+      "process: positive feedback raises it, negative feedback lowers it. Neither\n" +
+      "signal requires a full reindex — the new score affects ranking starting with\n" +
+      "the very next `akm search`.",
   },
   args: {
     // Optional in citty so run() is invoked even when omitted; we re-validate
@@ -192,9 +228,7 @@ export const feedbackCommand = defineJsonCommand({
     positive: { type: "boolean", description: "Record positive feedback (boosts ranking immediately)", default: false },
     negative: {
       type: "boolean",
-      description:
-        "Record negative feedback (suppresses ranking after next `akm index`). " +
-        "Reindexing is required for the signal to affect search results.",
+      description: "Record negative feedback (lowers ranking immediately, no reindex needed).",
       default: false,
     },
     reason: {
@@ -204,7 +238,7 @@ export const feedbackCommand = defineJsonCommand({
     "failure-mode": {
       type: "string",
       description:
-        `Structured failure-mode taxonomy for negative feedback (F-3 / #384). ` +
+        "Structured failure-mode taxonomy for negative feedback. " +
         `Accepted values: ${FEEDBACK_FAILURE_MODES.join(", ")}. ` +
         "Stored alongside --reason in event metadata for aggregation by the distill pipeline.",
     },
@@ -217,7 +251,8 @@ export const feedbackCommand = defineJsonCommand({
       description:
         "Credit a lesson that helped resolve this task. Accepts a `lessons/<name>` ref. " +
         "When combined with --positive, appends this feedback ref to the target lesson's " +
-        "`lessonStrength[]` frontmatter array (dedup, idempotent). Ignored on non-lesson targets.",
+        "`lessonStrength[]` frontmatter array (dedup, idempotent). A non-lesson target or a " +
+        "missing --positive produces a warning rather than silently doing nothing.",
     },
   },
   async run({ args }) {
@@ -229,7 +264,7 @@ export const feedbackCommand = defineJsonCommand({
         "Pass a ref like `skills/deploy` and either --positive or --negative.",
       );
     }
-    const parsedRef = parseRefInput(ref);
+    const parsedRef = parseBundleRef(ref);
     if (args.positive && args.negative) {
       throw new UsageError("Specify either --positive or --negative, not both.");
     }
@@ -308,45 +343,40 @@ export const feedbackCommand = defineJsonCommand({
     // background reindex it spawned — now that ensureIndex is removed, holding
     // the lock only causes feedback to block for the full improve run duration.
     let utilityResult: ReturnType<typeof applyFeedbackToUtilityScore> | undefined;
+    let rankingUpdateApplied = false;
+    let rankingUpdateSkippedReason: string | undefined;
     let durableRef = ref;
     const db = openExistingDatabase();
     try {
       const config = loadConfig();
       const sources = resolveSourceEntries(undefined, config);
-      const requestedSource = parsedRef.origin
-        ? sources.find(
-            (source) =>
-              source.registryId === parsedRef.origin ||
-              ((parsedRef.origin === "local" || parsedRef.origin === "stash") && source === sources[0]),
-          )
-        : undefined;
-      if (parsedRef.origin && !requestedSource) {
-        throw new UsageError(`Source "${parsedRef.origin}" is not configured.`, "INVALID_FLAG_VALUE");
+      const requestedSource = parsedRef.bundle ? resolveSourcesForOrigin(parsedRef.bundle, sources)[0] : undefined;
+      if (parsedRef.bundle && !requestedSource) {
+        throw new UsageError(`Source "${parsedRef.bundle}" is not configured.`, "INVALID_FLAG_VALUE");
       }
-      const entryId = findEntryIdByRef(db, ref, requestedSource?.path);
+      const lookupRef = makeBundleRef(parsedRef.bundle, parsedRef.conceptId);
+      const entryId = findEntryIdByRef(db, lookupRef, requestedSource?.path);
       if (entryId === undefined) {
         throw new UsageError(
           `Ref "${ref}" is not in the index. ` +
             "Run 'akm search' to verify the asset exists, then 'akm index' if it was recently added.",
         );
       }
-      // Persist the feedback signal into usage_events. For positive signals,
-      // the EMA utility score is updated immediately on the next read path.
-      // For negative signals, the score is adjusted the next time `akm index`
-      // runs — the signal is durable in the DB but does NOT suppress ranking
-      // in search results until after reindexing.
-      const indexedEntry = getEntryById(db, entryId);
-      const source = sources.find((candidate) => candidate.path === indexedEntry?.stashDir);
-      const durableOrigin = parsedRef.origin ?? source?.registryId ?? "stash";
+      // Persist the feedback signal into usage_events. Both positive and
+      // negative signals apply the EMA utility update immediately — no
+      // `akm index` run is required for either signal to affect ranking in
+      // search results (see recordFeedbackUsage / applyFeedbackToUtilityScore).
       // WI-8.5b: the `feedback` / `improve_review_needed` events key on the
       // resolved entry's fully-qualified item_ref — the SAME durable key the
       // usage_events row carries and the SAME spelling the signal-delta
       // correlation reads (buildLatestFeedbackTsMap, collapsed to [item_ref]).
-      // The D-R5 display spelling is the fallback only for a NULL-provenance
-      // (pre-cutover) row that the one-time re-key has not yet finalized.
-      const itemRef = getItemRefById(db, entryId) ?? undefined;
-      durableRef = itemRef ?? displayRef({ type: parsedRef.type, name: parsedRef.name, bundleId: durableOrigin });
-      utilityResult = recordFeedbackUsage(db, entryId, itemRef, signal, metadataStr);
+      const itemRef = getItemRefById(db, entryId);
+      if (!itemRef) throw new UsageError(`Indexed ref "${ref}" has no durable item ref.`, "INVALID_PROPOSAL");
+      durableRef = itemRef;
+      const recordResult = recordFeedbackUsage(db, entryId, itemRef, signal, metadataStr);
+      utilityResult = recordResult.utilityResult;
+      rankingUpdateApplied = recordResult.rankingUpdateApplied;
+      rankingUpdateSkippedReason = recordResult.rankingUpdateSkippedReason;
     } finally {
       closeDatabase(db);
     }
@@ -363,8 +393,8 @@ export const feedbackCommand = defineJsonCommand({
     // the improve loop. Best-effort — failure is logged but does not fail the
     // feedback command.
     // Emit a structured event rather than a proposal so the review-needed
-    // signal is queryable via `akm events list --type improve_review_needed`
-    // without risking accidental asset overwrite if the proposal is accepted.
+    // signal doesn't risk an accidental asset overwrite if the proposal is
+    // accepted.
     if (utilityResult?.crossedReviewThreshold) {
       try {
         appendEvent({
@@ -387,19 +417,25 @@ export const feedbackCommand = defineJsonCommand({
     // Phase 7A / Advantage D4b: --applied-to credits a lesson. When the
     // target is a `lessons/<name>` ref and the signal is positive, append
     // the feedback ref to the target lesson's `lessonStrength[]`
-    // frontmatter array (dedup, idempotent). Non-lesson targets are
-    // ignored. Failures here are warnings — feedback recording is the
-    // primary contract and must not regress on lesson-write errors.
+    // frontmatter array (dedup, idempotent). Non-lesson targets are REJECTED
+    // with a loud warning (R-033b) rather than silently doing nothing.
+    // Failures here are warnings — feedback recording is the primary
+    // contract and must not regress on lesson-write errors.
     const appliedToRaw = (args["applied-to"] as string | undefined)?.trim();
     let appliedToResult: { lessonRef: string; strength: number } | null = null;
     if (appliedToRaw && signal === "positive") {
       try {
         const parsedApplied = parseRefInput(appliedToRaw);
         if (parsedApplied.type === "lesson") {
-          const updated = appendLessonStrength(parsedApplied.type, parsedApplied.name, ref);
+          const updated = appendLessonStrength(parsedApplied, durableRef);
           if (updated) {
-            appliedToResult = { lessonRef: appliedToRaw, strength: updated.strength };
+            appliedToResult = { lessonRef: updated.ref, strength: updated.strength };
           }
+        } else {
+          warn(
+            `[feedback] --applied-to ${appliedToRaw} was ignored: it resolves to a "${parsedApplied.type}" asset, ` +
+              "not a lesson. Only `lessons/<name>` refs can be credited via --applied-to.",
+          );
         }
       } catch (err) {
         warn(`[feedback] --applied-to failed for ${appliedToRaw}: ${err instanceof Error ? err.message : String(err)}`);
@@ -417,6 +453,9 @@ export const feedbackCommand = defineJsonCommand({
       reason: reason?.trim() ?? null,
       failureMode: failureMode ?? null,
       tags: validatedTags,
+      rankingUpdate: rankingUpdateApplied
+        ? { applied: true }
+        : { applied: false, reason: rankingUpdateSkippedReason ?? "unknown" },
       ...(appliedToResult
         ? { appliedTo: { ref: appliedToResult.lessonRef, lessonStrength: appliedToResult.strength } }
         : {}),

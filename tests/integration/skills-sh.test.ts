@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveProviderFactory } from "../../src/registry/factory";
+import { resolveRegistryProviderFactory } from "../../src/registry/factory";
 import type { RegistryProvider } from "../../src/registry/providers/types";
 import { type Cleanup, sandboxXdgCacheHome } from "../_helpers/sandbox";
 
@@ -82,7 +82,7 @@ function serveText(text: string): { url: string; close: () => void } {
 }
 
 function makeProvider(url: string, name = "skills.sh"): RegistryProvider {
-  const factory = resolveProviderFactory("skills-sh");
+  const factory = resolveRegistryProviderFactory("skills-sh");
   if (!factory) throw new Error("skills-sh provider not registered");
   return factory({ url, name });
 }
@@ -117,7 +117,7 @@ afterAll(() => {
 
 describe("SkillsShProvider", () => {
   test("factory is registered", () => {
-    const factory = resolveProviderFactory("skills-sh");
+    const factory = resolveRegistryProviderFactory("skills-sh");
     expect(factory).not.toBeNull();
   });
 
@@ -182,7 +182,7 @@ describe("SkillsShProvider", () => {
 
     test("registryName defaults to skills.sh when config has no name", async () => {
       const srv = serveJson(FIXTURE_RESPONSE);
-      const factory = resolveProviderFactory("skills-sh");
+      const factory = resolveRegistryProviderFactory("skills-sh");
       expect(factory).not.toBeNull();
       const provider = factory?.({ url: srv.url });
       const result = await provider?.search({ query: "react", limit: 10 });

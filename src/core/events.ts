@@ -19,26 +19,17 @@
  *     "eventType": "<verb>", "ref"?: "<asset-ref>", ... }
  *
  * - `id` is a monotonic SQLite AUTOINCREMENT rowid. Callers can persist it
- *   as a durable cursor for `--since` resumption (replaces the old byte-offset
- *   cursor). The public API still surfaces this as `nextOffset` (an opaque
- *   number) for backward compatibility with callers that stored byte-offset
- *   cursors.
+ *   as a durable cursor for `--since` resumption. The public API surfaces this
+ *   as the opaque `nextOffset` number.
  * - `ts` is ISO-8601 (UTC, millisecond precision).
  */
 
-import path from "node:path";
 import type { Database } from "../storage/database";
 import { insertEvent, readStateEvents } from "../storage/repositories/events-repository";
 import { rethrowIfTestIsolationError } from "./errors";
 import type { EventEnvelope } from "./events-types";
-import { getDataDir } from "./paths";
-import { openStateDatabase, withStateDb } from "./state-db";
+import { getStateDbPath, openStateDatabase, withStateDb } from "./state-db";
 import { error } from "./warn";
-
-// Re-exported so existing `import type { EventEnvelope } from "./core/events"`
-// sites are unaffected by the KILL 1 sever (type moved to events-types.ts to
-// break the events.ts ↔ events-repository.ts import cycle).
-export type { EventEnvelope };
 
 /**
  * Stable, machine-readable event types. New types may be added freely.
@@ -62,6 +53,15 @@ export type EventType =
    * nothing.
    */
   | "mv"
+  /**
+   * Emitted by `akm sync` (git-backed stash commit/push). Renamed from the
+   * legacy "save" spelling in 0.9.0 to match the command name — see
+   * CHANGELOG. `readEvents`/`tailEvents` below still accept "save" as a
+   * read-only synonym so historical rows and `akm log --type save` keep
+   * working; only writes moved to "sync".
+   */
+  | "sync"
+  /** @deprecated 0.9.0 — legacy spelling of {@link "sync"}. No longer written; still readable (see SAVE_SYNC_EVENT_TYPE_ALIASES). */
   | "save"
   | "feedback"
   // Proposal substrate (#225). `promoted` and `rejected` are emitted by the
@@ -192,22 +192,13 @@ export interface EventsContext {
 }
 
 /**
- * Legacy events.jsonl path — used only by the migration script
- * (`scripts/migrate-storage.ts`) to import existing event history into
- * state.db. No events are written here by akm v0.9+.
- */
-export function getEventsPath(): string {
-  return path.join(getDataDir(), "events.jsonl");
-}
-
-/**
  * Resolve the state.db path from context:
  *   1. `ctx.dbPath` — explicit override (test seam)
- *   2. default      — `<dataDir>/state.db`
+ *   2. default      — the canonical state.db path
  */
 function resolveDbPath(ctx?: EventsContext): string {
   if (ctx?.dbPath) return ctx.dbPath;
-  return path.join(getDataDir(), "state.db");
+  return getStateDbPath();
 }
 
 function resolveNow(ctx?: EventsContext): () => number {
@@ -276,8 +267,7 @@ export interface ReadEventsOptions {
    * Monotonic id lower bound — durable cursor.
    *
    * The SQLite AUTOINCREMENT rowid of the last seen event. Treat as an opaque
-   * non-negative integer. Callers migrating from the old JSONL implementation
-   * should reset any persisted byte-offset cursor to 0.
+   * non-negative integer.
    */
   sinceOffset?: number;
   /** Filter to a single event type. */
@@ -288,6 +278,14 @@ export interface ReadEventsOptions {
   excludeTags?: string[];
   /** Only include events whose metadata.tags contain ALL of these tags. */
   includeTags?: string[];
+  /**
+   * D-38 (`akm log list --limit`): cap the result to the MOST RECENT `limit`
+   * events matching every other filter (since/type/ref AND the tag
+   * post-filter below). Undefined means unlimited — the historical default,
+   * left unchanged so existing scripts that read the whole stream keep
+   * working.
+   */
+  limit?: number;
 }
 
 export interface ReadEventsResult {
@@ -300,6 +298,18 @@ export interface ReadEventsResult {
    */
   nextOffset: number;
 }
+
+/**
+ * 0.9.0 breaking change (owner ruling 12): `akm sync` used to persist
+ * `eventType: "save"`; it now writes `"sync"` instead (matching the command
+ * name). Existing `state.db` rows — and any user script running
+ * `akm log --type save` — still carry the old spelling. Rather than
+ * rewriting historical rows (a migration users never asked for, on data we
+ * don't get to touch at rest), reads treat the two names as synonyms: asking
+ * for either "save" or "sync" returns rows written under both names. Only
+ * the WRITE path (sources-cli.ts's `runSyncBody`) changed.
+ */
+const SAVE_SYNC_EVENT_TYPE_ALIASES = new Set(["save", "sync"]);
 
 /**
  * Read all events matching the filter. Returns a `nextOffset` that callers
@@ -319,20 +329,44 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
   }
 
   try {
+    // A "save"/"sync" query can't be expressed as a single SQL `event_type =
+    // ?` match (see SAVE_SYNC_EVENT_TYPE_ALIASES above), so widen the SQL
+    // filter to "no type filter" for that one case and apply the alias match
+    // client-side alongside the existing tag post-filter below.
+    const typeIsAliased = options.type !== undefined && SAVE_SYNC_EVENT_TYPE_ALIASES.has(options.type);
+    // D-38: a JS-side post-filter (the type alias above, or the tag filters
+    // below) runs AFTER the SQL read, so a SQL-level LIMIT applied before it
+    // could drop rows the post-filter would have kept out anyway, silently
+    // returning fewer than `limit` (or the wrong — oldest-in-the-SQL-window —
+    // events). Only push `limit` into SQL (readStateEvents) when nothing
+    // downstream can shrink the result further; otherwise read unbounded (the
+    // pre-existing behavior) and apply `limit` ourselves, below, AFTER the
+    // post-filter runs.
+    const needsPostFilter =
+      typeIsAliased || (options.excludeTags?.length ?? 0) > 0 || (options.includeTags?.length ?? 0) > 0;
+    const pushLimitToSql = options.limit !== undefined && !needsPostFilter;
     const { events: rawEvents, nextId } = readStateEvents(db, {
       sinceId: options.sinceOffset,
       since: options.since,
-      type: options.type,
+      type: typeIsAliased ? undefined : options.type,
       ref: options.ref,
+      ...(pushLimitToSql ? { limit: options.limit } : {}),
     });
 
-    // Apply tag filters in application code (same as the old JSONL implementation).
-    const events = rawEvents.filter((envelope) => {
+    const filtered = rawEvents.filter((envelope) => {
+      if (typeIsAliased && !SAVE_SYNC_EVENT_TYPE_ALIASES.has(envelope.eventType)) return false;
+      // Apply tag filters after the indexed state.db read.
       const tags = (envelope.metadata?.tags as string[] | undefined) ?? [];
       if (options.excludeTags?.some((t) => tags.includes(t))) return false;
       if (options.includeTags && !options.includeTags.every((t) => tags.includes(t))) return false;
       return true;
     });
+    // `filtered` is ascending by id; slicing off the end keeps the MOST
+    // RECENT `limit` events post-filter, matching the SQL-pushdown path's
+    // semantics exactly. `nextOffset` intentionally stays `nextId` — the
+    // durable resume cursor tracks the underlying SQL read, not this
+    // display-only truncation.
+    const events = options.limit !== undefined && !pushLimitToSql ? filtered.slice(-options.limit) : filtered;
 
     return { events, nextOffset: nextId };
   } finally {

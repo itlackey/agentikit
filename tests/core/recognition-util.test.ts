@@ -18,9 +18,12 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { placementTypes } from "../../src/core/asset/asset-placement";
 import {
   canonicalizeWorkflowName,
   DERIVED_SUFFIX,
+  isKnownType,
+  KNOWN_TYPES,
   SCRIPT_EXTENSIONS,
   WORKFLOW_EXTENSIONS,
 } from "../../src/core/recognition-util";
@@ -88,5 +91,25 @@ describe("recognition-util — D1-5 cycle-safety invariant (import-free)", () =>
     const sourceFile = text;
     const hasAnyFromImport = /^\s*(import|export)\b.*\bfrom\s+["'][^"']+["']/m.test(sourceFile);
     expect(hasAnyFromImport).toBe(false);
+  });
+});
+
+// Owner ruling 11 (R-045 / Q-18 second half): `asset-placement.ts`'s
+// PLACEMENT_SPECS registry and this file's KNOWN_TYPES tuple are two
+// independently maintained registries. `asset-placement.ts` also enforces
+// this at COMPILE time (`_BuiltinPlacementKeysAreKnownTypes`), but that check
+// only covers the static built-in table; this runtime test is the executable
+// contract the guardrail asked for and pins `instruction`'s placement
+// (the type this ruling registers) specifically.
+describe("placementTypes() ⊆ KNOWN_TYPES (owner ruling 11 — registries must never drift apart)", () => {
+  test("every placement type key is a recognized KnownType", () => {
+    for (const type of placementTypes()) {
+      expect(isKnownType(type), `placement type "${type}" is missing from KNOWN_TYPES`).toBe(true);
+    }
+  });
+
+  test("'instruction' is registered as a stash-resident placement type (ruling 11 EXECUTE NOW)", () => {
+    expect(placementTypes()).toContain("instruction");
+    expect(KNOWN_TYPES).toContain("instruction");
   });
 });

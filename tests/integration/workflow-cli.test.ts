@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
 import { resetConfigCache } from "../../src/core/config/config";
-import { createMigrationBackup } from "../../src/core/migration-backup";
 import { resetGraphBoostCache } from "../../src/indexer/graph/graph-boost";
 import { clearEmbeddingCache, resetLocalEmbedder } from "../../src/llm/embedder";
 import { parseWorkflow } from "../../src/workflows/parser";
@@ -15,14 +15,12 @@ const tempDirs: string[] = [];
 
 test("workflow runtime accepts only canonical conceptId refs", () => {
   expect(parseWorkflowRefInput("workflows/release")).toEqual({
-    type: "workflow",
-    name: "release",
-    origin: undefined,
+    conceptId: "workflows/release",
+    bundle: undefined,
   });
   expect(parseWorkflowRefInput("team//workflows/release")).toEqual({
-    type: "workflow",
-    name: "release",
-    origin: "team",
+    conceptId: "workflows/release",
+    bundle: "team",
   });
   expect(() => parseWorkflowRefInput("workflow:release")).toThrow();
   expect(() => parseWorkflowRefInput("team//workflow:release")).toThrow();
@@ -48,7 +46,11 @@ function createWorkflowEnv(): NodeJS.ProcessEnv {
     XDG_DATA_HOME: xdgData,
     XDG_STATE_HOME: xdgState,
   };
-  writeConfig(env, { semanticSearchMode: "off" });
+  writeConfig(env, {
+    semanticSearchMode: "off",
+    bundles: { stash: { path: stashDir, writable: true } },
+    defaultBundle: "stash",
+  });
   return env;
 }
 
@@ -1001,7 +1003,7 @@ describe("workflow next --params", async () => {
 });
 
 describe("workflow CLI — status create", async () => {
-  test("status workflow:<name> resolves to the most-recently-updated run", async () => {
+  test("status workflows/<name> resolves to the most-recently-updated run", async () => {
     const env = createWorkflowEnv();
     await setupWorkflow(env);
 
@@ -1016,7 +1018,7 @@ describe("workflow CLI — status create", async () => {
     expect(statusJson.run.status).toBe("active");
   });
 
-  test("status workflow:<name> returns NotFoundError when no runs exist", async () => {
+  test("status workflows/<name> returns NotFoundError when no runs exist", async () => {
     const env = createWorkflowEnv();
     await setupWorkflow(env);
 
@@ -1027,7 +1029,7 @@ describe("workflow CLI — status create", async () => {
     expect(err.error).toContain("No workflow runs found");
   });
 
-  test("status workflow:<name> resolves within the current working-directory scope", async () => {
+  test("status workflows/<name> resolves within the current working-directory scope", async () => {
     const env = createWorkflowEnv();
     const workA = makeTempDir("akm-wfqa-scope-a-");
     const workB = makeTempDir("akm-wfqa-scope-b-");

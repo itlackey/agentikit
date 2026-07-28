@@ -3,29 +3,31 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * SPEC-4 (docs/architecture/specs/stash-conventions-code-spec.md) — real ref-prefix filter.
+ * D4 (docs/architecture/specs/0.9.0-decisions.md) — conceptId-prefix browse.
  *
- * `akm search "<type>:<prefix>/"` must translate into a typed enumeration of
- * the index narrowed to entry names under `<prefix>/`, instead of degenerating
- * into the AND-token FTS query it is today (`"memory:projecta/"` sanitizes to
- * "memory projecta", which matches nothing because `entry_type` is not an FTS
- * column). These tests drive the `akm search` command layer (akmSearch) over a
- * real indexed stash and pin:
+ * Subtree enumeration is spelled in the grammar refs are actually emitted in:
+ * `akm search "memories/projecta/"`, not the retired `"memory:projecta/"`.
+ * These tests drive the `akm search` command layer (akmSearch) over a real
+ * indexed stash and pin:
  *
- *   - `memory:<scope>/` returns exactly that subtree (recursive, type-scoped,
+ *   - `<conceptId prefix>/` returns exactly that subtree (recursive,
  *     `/`-boundary exact — a sibling `projectalpha/` scope must not leak);
- *   - bare `memory:` equals the existing empty-query `--type memory` enumeration;
- *   - an explicit `--type` flag wins over the parsed type (branch fires only on
- *     the untyped path);
+ *   - the prefix matches conceptIds, so a ref copied out of search output and
+ *     truncated to a prefix enumerates its own subtree (the round-trip that
+ *     the retired name-matching grammar broke silently);
+ *   - `bundle//` and `bundle//<prefix>/` scope enumeration to one bundle,
+ *     replacing the removed `akm bundle items` (D5);
+ *   - the retired `<type>:` spelling no longer enumerates, and says so;
+ *   - an explicit `--type` flag wins (branch fires only on the untyped path);
  *   - ordinary keyword queries and bare refs (no trailing slash) are unaffected;
- *   - belief / named-source filters and `limit` compose with the enumeration;
- *   - the parsed type expresses explicit intent, so the default `session`
- *     type-exclusion does not apply to `session:`.
+ *   - belief / named-source / scope filters and `limit` compose with it;
+ *   - a parsed prefix is explicit intent, so the default `session`
+ *     type-exclusion does not apply to `sessions/`.
  *
- * Fixture discipline: no fixture puts the token "memory" (or any "memor…"
- * prefix) into an indexed field, so the legacy AND/prefix FTS fallback can
- * never accidentally satisfy a `memory:…` query — a hit can only come from the
- * new enumeration branch.
+ * Fixture discipline: no fixture puts the token "memory"/"memories" (or any
+ * "memor…" prefix) into an indexed field, so the AND/prefix FTS fallback can
+ * never accidentally satisfy a `memories/…` query — a hit can only come from
+ * the enumeration branch.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -111,7 +113,7 @@ beforeEach(async () => {
     "Keep the pool under twenty connections in staging.",
   );
   // Sibling scope sharing "projecta" as a STRING prefix — pins the `/`
-  // boundary: `memory:projecta/` must not leak `projectalpha/…`.
+  // boundary: `memories/projecta/` must not leak `projectalpha/…`.
   writeMd(
     stashDir,
     "memories/projectalpha/stray-note.md",
@@ -130,8 +132,9 @@ beforeEach(async () => {
     { description: "Mixed case scope observation" },
     "Scope directories can carry mixed case on disk.",
   );
-  // Same subpath under a DIFFERENT type — pins that `memory:projecta/` is a
-  // typed enumeration, not a path-only one.
+  // Same trailing subpath under a DIFFERENT conceptId root — pins that the
+  // prefix is matched against the whole conceptId, so `memories/projecta/`
+  // cannot reach `knowledge/projecta/…`.
   writeMd(
     stashDir,
     "knowledge/projecta/setup-guide.md",
@@ -155,9 +158,9 @@ afterEach(() => {
   stashDir = "";
 });
 
-describe("akm search ref-prefix enumeration (SPEC-4)", () => {
-  test('"memory:projecta/" enumerates exactly that subtree, typed and recursive', async () => {
-    const hits = await search({ query: "memory:projecta/", source: "local" });
+describe("akm search conceptId-prefix enumeration (D4)", () => {
+  test('"memories/projecta/" enumerates exactly that subtree, recursive', async () => {
+    const hits = await search({ query: "memories/projecta/", source: "local" });
     const names = hits.map((h) => h.name).sort();
 
     expect(names).toEqual([...PROJECTA_MEMORIES].sort());
@@ -174,33 +177,33 @@ describe("akm search ref-prefix enumeration (SPEC-4)", () => {
     }
   });
 
-  test('bare "memory:" equals the empty-query --type memory enumeration', async () => {
+  test('bare "memories/" equals the empty-query --type memory enumeration', async () => {
     const enumHits = await search({ query: "", type: "memory", source: "local" });
     // Fixture sanity (existing behavior): the empty-query typed enumeration
     // sees every memory fixture. If THIS line fails the fixtures are broken,
     // not the feature.
     expect(enumHits.map((h) => h.name).sort()).toEqual(ALL_MEMORIES);
 
-    const prefixHits = await search({ query: "memory:", source: "local" });
+    const prefixHits = await search({ query: "memories/", source: "local" });
     expect(prefixHits.map((h) => h.name).sort()).toEqual(ALL_MEMORIES);
   });
 
   test("limit caps ref-prefix enumeration", async () => {
-    const hits = await search({ query: "memory:projecta/", source: "local", limit: 2 });
+    const hits = await search({ query: "memories/projecta/", source: "local", limit: 2 });
     expect(hits).toHaveLength(2);
     for (const hit of hits) {
       expect(hit.name.startsWith("projecta/")).toBe(true);
     }
   });
 
-  test("an explicit --type wins over the parsed ref-prefix type", async () => {
+  test("an explicit --type wins over a conceptId-prefix query", async () => {
     // Discriminating fixtures: if the branch fired with the PARSED type the
     // three projecta memories would come back; if it fired with the EXPLICIT
     // type, knowledge:projecta/setup-guide would come back (score 1). The
     // specified behavior — branch fires only on the untyped path — leaves an
     // ordinary FTS query ("memory projecta") against knowledge entries, none
     // of which carries a "memory" token: zero hits.
-    const hits = await search({ query: "memory:projecta/", type: "knowledge", source: "local" });
+    const hits = await search({ query: "memories/projecta/", type: "knowledge", source: "local" });
     expect(hits).toHaveLength(0);
   });
 
@@ -214,7 +217,7 @@ describe("akm search ref-prefix enumeration (SPEC-4)", () => {
   test("a bare ref without the trailing slash does NOT enumerate the subtree", async () => {
     // `memory:projecta/auth-tip` is `akm show` territory — it must stay an
     // ordinary keyword search and never fan out into the subtree listing.
-    const hits = await search({ query: "memory:projecta/auth-tip", source: "local" });
+    const hits = await search({ query: "memories/projecta/auth-tip", source: "local" });
     const names = hits.map((h) => h.name);
     expect(names).not.toContain("projecta/deploy-note");
     expect(names).not.toContain("projecta/nested/db-tip");
@@ -225,7 +228,7 @@ describe("akm search ref-prefix enumeration (SPEC-4)", () => {
     // the subtree match must not be defeated by on-disk mixed case — this is
     // the exact spelling an agent copies out of a ref like
     // `memory:ProjCase/case-note`.
-    const hits = await search({ query: "memory:ProjCase/", source: "local" });
+    const hits = await search({ query: "memories/ProjCase/", source: "local" });
     expect(hits.map((h) => h.name)).toEqual(["ProjCase/case-note"]);
   });
 
@@ -243,10 +246,10 @@ describe("akm search ref-prefix enumeration (SPEC-4)", () => {
     const sanity = await search({ query: "", type: "memory", belief: "current", source: "local" });
     expect(sanity.map((h) => h.name)).not.toContain("projecta/deploy-note");
 
-    const current = await search({ query: "memory:projecta/", belief: "current", source: "local" });
+    const current = await search({ query: "memories/projecta/", belief: "current", source: "local" });
     expect(current.map((h) => h.name).sort()).toEqual(["projecta/auth-tip", "projecta/nested/db-tip"]);
 
-    const historical = await search({ query: "memory:projecta/", belief: "historical", source: "local" });
+    const historical = await search({ query: "memories/projecta/", belief: "historical", source: "local" });
     expect(historical.map((h) => h.name)).toEqual(["projecta/deploy-note"]);
   });
 
@@ -271,11 +274,11 @@ describe("akm search ref-prefix enumeration (SPEC-4)", () => {
       expect(sanity.map((h) => h.name)).toEqual(["projecta/extra-note"]);
 
       // Ref-prefix enumeration must honor the same narrowing…
-      const narrowed = await search({ query: "memory:projecta/", source: "extra" });
+      const narrowed = await search({ query: "memories/projecta/", source: "extra" });
       expect(narrowed.map((h) => h.name)).toEqual(["projecta/extra-note"]);
 
       // …while the unnarrowed search spans both sources.
-      const all = await search({ query: "memory:projecta/", source: "local" });
+      const all = await search({ query: "memories/projecta/", source: "local" });
       const allNames = all.map((h) => h.name);
       expect(allNames).toContain("projecta/auth-tip");
       expect(allNames).toContain("projecta/extra-note");
@@ -309,7 +312,7 @@ describe("akm search ref-prefix enumeration (SPEC-4)", () => {
     // enumerateEntries call site — a regression that special-cases that one
     // invocation (dropping the filters field) would return every projecta/
     // entry here instead of just the alice-scoped one.
-    const hits = await search({ query: "memory:projecta/", filters: { user: "alice" }, source: "local" });
+    const hits = await search({ query: "memories/projecta/", filters: { user: "alice" }, source: "local" });
     expect(hits.map((h) => h.name)).toEqual(["projecta/alice-context"]);
   });
 
@@ -329,15 +332,15 @@ describe("akm search ref-prefix enumeration (SPEC-4)", () => {
     expect(sanity.map((h) => h.name)).not.toContain("projecta/draft-note");
 
     // Default-off on the ref-prefix branch too…
-    const defaults = await search({ query: "memory:projecta/", source: "local" });
+    const defaults = await search({ query: "memories/projecta/", source: "local" });
     expect(defaults.map((h) => h.name).sort()).toEqual([...PROJECTA_MEMORIES].sort());
 
     // …and `--include-proposed` restores it through the same branch.
-    const opted = await search({ query: "memory:projecta/", source: "local", includeProposed: true });
+    const opted = await search({ query: "memories/projecta/", source: "local", includeProposed: true });
     expect(opted.map((h) => h.name).sort()).toEqual([...PROJECTA_MEMORIES, "projecta/draft-note"].sort());
   });
 
-  test('"session:" typed enumeration bypasses the default session exclusion', async () => {
+  test('"sessions/" enumeration bypasses the default session exclusion', async () => {
     // Fixture sanity (existing behavior): --type session already bypasses the
     // default exclusion, so the fixture is reachable via typed enumeration.
     const sanity = await search({ query: "", type: "session", source: "local" });
@@ -345,13 +348,13 @@ describe("akm search ref-prefix enumeration (SPEC-4)", () => {
 
     // The parsed type is explicit intent, exactly like --type session — the
     // untyped-path defaultExcludeTypes policy must not hide the result.
-    const hits = await search({ query: "session:", source: "local" });
+    const hits = await search({ query: "sessions/", source: "local" });
     expect(hits.map((h) => h.name)).toEqual(["claude/fixture-session"]);
   });
 
   test("an empty subtree returns no hits with the standard tip", async () => {
     const result = await akmSearch({
-      query: "memory:doesnotexist/",
+      query: "memories/doesnotexist/",
       source: "local",
       skipLogging: true,
       disableProjectContext: true,
@@ -360,5 +363,80 @@ describe("akm search ref-prefix enumeration (SPEC-4)", () => {
     const hits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
     expect(hits).toHaveLength(0);
     expect(result.tip ?? "").toContain("No matching stash assets");
+  });
+
+  // The defect D4 exists to fix: the retired grammar matched `namePrefix`
+  // against entry NAMES while every emitted ref is a conceptId, so taking a
+  // ref out of search output and pasting a prefix of it back in silently
+  // degraded to a keyword search. Nothing here hardcodes a spelling — the
+  // prefix is derived from what the previous search actually printed.
+  test("a ref emitted by search round-trips back in as a prefix query", async () => {
+    const seed = await search({ query: "oauth", source: "local" });
+    const ref = seed[0]?.ref ?? "";
+    expect(ref).toBe("memories/projecta/auth-tip");
+
+    const prefix = ref.slice(0, ref.lastIndexOf("/") + 1);
+    expect(prefix).toBe("memories/projecta/");
+
+    const hits = await search({ query: prefix, source: "local" });
+    expect(hits.map((h) => h.name).sort()).toEqual([...PROJECTA_MEMORIES].sort());
+  });
+
+  // Enumeration is prefix-matching over conceptIds, so it is not bound to the
+  // `akm` adapter's placement types — any conceptId root browses the same way.
+  test("a non-memory conceptId root enumerates through the same branch", async () => {
+    const hits = await search({ query: "knowledge/projecta/", source: "local" });
+    expect(hits.map((h) => h.ref)).toEqual(["knowledge/projecta/setup-guide"]);
+    expect(hits[0]?.score).toBe(1);
+  });
+
+  test("the retired `<type>:` spelling no longer enumerates, and the tip says so", async () => {
+    const result = await akmSearch({
+      query: "memory:projecta/",
+      source: "local",
+      skipLogging: true,
+      disableProjectContext: true,
+      disableScopedUtility: true,
+    });
+    const hits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+
+    // No fixture carries a "memor…" token in an indexed field, so the retired
+    // spelling can only come back empty — the failure mode is that it does so
+    // SILENTLY, which is what the tip fixes.
+    expect(hits).toHaveLength(0);
+    expect(result.tip ?? "").toContain("memories/projecta/");
+  });
+});
+
+describe("akm search bundle-qualified enumeration (D4)", () => {
+  beforeEach(async () => {
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: { main: { path: stashDir } },
+      defaultBundle: "main",
+    });
+    await reindex();
+  });
+
+  test('"main//" enumerates every item in the bundle, across conceptId roots', async () => {
+    const hits = await search({ query: "main//", source: "local" });
+    const refs = hits.map((h) => h.ref).sort();
+
+    expect(refs).toContain("memories/root-note");
+    expect(refs).toContain("knowledge/projecta/setup-guide");
+    // A bundle-wide browse is explicit intent, so the default `session`
+    // type-exclusion does not hide the session fixture.
+    expect(refs).toContain("sessions/claude/fixture-session");
+    for (const hit of hits) expect(hit.score).toBe(1);
+  });
+
+  test('"main//memories/projecta/" narrows to one subtree of one bundle', async () => {
+    const hits = await search({ query: "main//memories/projecta/", source: "local" });
+    expect(hits.map((h) => h.name).sort()).toEqual([...PROJECTA_MEMORIES].sort());
+  });
+
+  test("an unknown bundle enumerates nothing rather than falling back to keywords", async () => {
+    const hits = await search({ query: "nosuchbundle//memories/", source: "local" });
+    expect(hits).toHaveLength(0);
   });
 });

@@ -43,7 +43,8 @@ import {
   loadGraphBoostContext,
   resetGraphBoostCache,
 } from "../../src/indexer/graph/graph-boost";
-import { GRAPH_FILE_SCHEMA_VERSION, type GraphFile } from "../../src/indexer/graph/graph-extraction";
+import { GRAPH_FILE_SCHEMA_VERSION } from "../../src/indexer/graph/graph-extraction";
+import type { GraphFile } from "../../src/indexer/graph/graph-types";
 import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { buildSearchText } from "../../src/indexer/search/search-fields";

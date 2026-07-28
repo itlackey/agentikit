@@ -56,8 +56,12 @@ time**: a bundle component whose root holds a `schema.md` plus a
   `bundle//conceptId`, where the conceptId is the root-relative path
   minus `.md` (a page at `pages/attention.md` in bundle `research-wiki`
   is `research-wiki//pages/attention`).
-- `raw/`, `schema.md`, `index.md`, and `log.md` are structural — they
-  are never indexed as pages.
+- `raw/**.md` **are** indexed — as first-class, addressable, searchable
+  `wiki-source` documents (not `page`-type items; a ref looks like
+  `bundle//raw/<slug>`), so citations resolve and raw content is
+  discoverable by search too.
+- `schema.md`, `index.md`, and `log.md` are structural and are never
+  indexed as a concept.
 - `xrefs:` frontmatter becomes cross-reference edges; `sources:`
   frontmatter becomes citation edges back to raw files.
 
@@ -67,7 +71,7 @@ time**: a bundle component whose root holds a `schema.md` plus a
 akm add github:team/research-wiki        # install a wiki bundle (or point at a local dir)
 akm search "attention"                   # pages rank alongside all other indexed content
 akm show research-wiki//pages/attention  # read a page by ref
-akm show research-wiki//pages/attention section "History"
+akm show research-wiki//pages/attention#history
 ```
 
 To build a new wiki, create the directory shape above by hand (or have

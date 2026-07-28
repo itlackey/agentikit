@@ -191,9 +191,8 @@ export async function stepAddSources(
   current: AkmConfig,
   options?: { promptForAdditional?: boolean },
 ): Promise<SourceConfigEntry[]> {
-  // 0.9.0 (spec §10.1): existing sources come from the `bundles` map. The
-  // wizard toggles the PLAIN additional sources (not the primary, not the
-  // lock-backed registry installs, which are preserved untouched).
+  // The wizard toggles plain additional bundles, not the default bundle or
+  // lock-backed registry installs, which are preserved untouched.
   const lockIds = new Set(readLockfile().map((entry) => entry.id));
   const allSources = getSources(current);
   const existingSources: SourceConfigEntry[] = allSources.filter(

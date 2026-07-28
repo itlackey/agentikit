@@ -20,23 +20,16 @@
 
 import type { AkmConfig, SourceConfigEntry } from "../core/config/config";
 import { deepMergeConfig } from "../core/config/deep-merge";
-import type { InstalledBundle } from "../registry/types";
 
 /**
  * The setup wizard's in-progress config accumulator.
  *
- * 0.9.0 (spec §10.1): the persisted config shape has NO `stashDir`/`sources[]`/
- * `installed[]` — every source is a `bundles.<slug>` entry. But the wizard's
- * steps still work naturally with the flat "primary path + source list"
- * scratch model, so the accumulator carries those retired keys as transient
- * scratch fields; `setup.ts`'s `finalizeSetupDraft` folds them into `bundles` +
- * `defaultBundle` (via the shared migrator mapping — Decision E) at the single
- * persist boundary, so nothing half-migrated is ever validated or written.
+ * The wizard uses a private primary-path + source-list draft and converts it to
+ * the current `bundles` shape at the single persist boundary.
  */
 export type SetupDraftConfig = AkmConfig & {
-  stashDir?: string;
-  sources?: SourceConfigEntry[];
-  installed?: InstalledBundle[];
+  primaryPath?: string;
+  additionalSources?: SourceConfigEntry[];
 };
 
 /**

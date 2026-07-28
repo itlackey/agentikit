@@ -7,7 +7,6 @@
  *
  * Owns the raw SQL for `llm_enrichment_cache` — the body-hash-keyed cache that
  * lets `akm index --enrich` skip the LLM call when a file's body is unchanged.
- * Extracted verbatim from `src/indexer/db/db.ts` (WI-5a).
  */
 
 import { bestEffort } from "../../core/best-effort";

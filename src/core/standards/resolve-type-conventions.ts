@@ -32,9 +32,9 @@ import { parseFrontmatter } from "../asset/frontmatter";
 /** Sub-path (under the stash root) for per-type SOFT convention facts. */
 export const TYPE_CONVENTIONS_SUBDIR = path.join("facts", "conventions", "assets");
 
-/** The `fact:` ref prefix for a per-type convention, e.g. `fact:conventions/assets/skill`. */
+/** The slash conceptId for a per-type convention, e.g. `facts/conventions/assets/skill`. */
 export function typeConventionRef(type: string): string {
-  return `fact:conventions/assets/${type}`;
+  return `facts/conventions/assets/${type}`;
 }
 
 /**

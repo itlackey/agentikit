@@ -21,12 +21,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-
-import type { AkmDistillResult } from "../../../../src/commands/improve/distill";
 import { akmImprove } from "../../../../src/commands/improve/improve";
-import type { AkmReflectResult } from "../../../../src/commands/improve/reflect";
 import { saveConfig } from "../../../../src/core/config/config";
 import { appendEvent } from "../../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/improve-types";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { withTestImproveLlm } from "../../../_helpers/improve-config";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
@@ -51,8 +49,19 @@ function writeLesson(stashDir: string, name: string): string {
 }
 
 async function indexStash(stashDir: string): Promise<void> {
-  saveConfig(withTestImproveLlm({ semanticSearchMode: "off" }));
+  saveConfig(
+    withTestImproveLlm({
+      semanticSearchMode: "off",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+    }),
+  );
   await akmIndex({ stashDir, full: true });
+}
+
+function durableRef(ref: string): string {
+  return `stash//${ref}`;
 }
 
 const stubReflect = (ref: string): AkmReflectResult => ({
@@ -78,7 +87,7 @@ const stubDistill = (ref: string): AkmDistillResult => ({
   ok: true,
   outcome: "queued",
   inputRef: ref,
-  lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+  proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
 });
 
 describe("#591: planned refs carry a pre-resolved filePath", () => {
@@ -120,8 +129,16 @@ describe("#591: planned refs carry a pre-resolved filePath", () => {
     await indexStash(stash);
     // Fresh feedback keeps both refs past the signal-delta gate so they reach
     // the validation pass and the final disk-existence guard.
-    appendEvent({ eventType: "feedback", ref: "lessons/kept", metadata: { signal: "positive", note: "fixture" } });
-    appendEvent({ eventType: "feedback", ref: "lessons/gone", metadata: { signal: "positive", note: "fixture" } });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("lessons/kept"),
+      metadata: { signal: "positive", note: "fixture" },
+    });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("lessons/gone"),
+      metadata: { signal: "positive", note: "fixture" },
+    });
     // Delete one asset AFTER indexing: its pre-resolved filePath is now stale,
     // so the disk-existence guard must drop it via the fallback lookup while
     // the intact ref flows through on the fast path.

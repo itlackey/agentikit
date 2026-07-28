@@ -9,11 +9,12 @@ import { type AssetRef, parseRefInput } from "../../core/asset/resolve-ref";
 import { daysToMs } from "../../core/common";
 import { type AkmConfig, bundlesToSourceEntries, loadConfig } from "../../core/config/config";
 import { ConfigError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
-import { appendEvent, type EventEnvelope, type EventsContext, readEvents } from "../../core/events";
+import { appendEvent, type EventsContext, readEvents } from "../../core/events";
+import type { EventEnvelope } from "../../core/events-types";
 import type { LockOwnership } from "../../core/file-lock";
 import type {
   AkmImproveResult,
-  EligibilitySource,
+  ConsolidateResult,
   ImproveActionResult,
   ImproveEligibleRef,
   ImproveMemoryCleanupResult,
@@ -42,7 +43,13 @@ import { closeDatabase, openExistingDatabase } from "../../storage/repositories/
 import { getEntryCount } from "../../storage/repositories/index-entries-repository";
 import { type DrainResult, drainProposals } from "../proposal/drain";
 import { resolveDrainPolicy } from "../proposal/drain-policies";
-import type { ConsolidateResult } from "./consolidate";
+import type { EligibilitySource } from "../proposal/proposal-types";
+import {
+  type AutonomyLane,
+  configuredDirectAutonomyLanes,
+  describeGatedLanes,
+  isAutonomyLaneAllowed,
+} from "./autonomy-gate";
 import { akmDistill } from "./distill";
 // Eligibility / candidate-selection predicates live in ./eligibility.
 import {
@@ -75,7 +82,6 @@ import { DEFAULT_DUE_DAYS, filterProactiveDue } from "./proactive-maintenance";
 import { akmReflect } from "./reflect";
 import { createRunContext, type RunContext } from "./run-context";
 import { errMessage } from "./shared";
-import { shouldReadLegacyBareImproveState } from "./source-identity";
 
 export type {
   AkmImproveOptions,
@@ -185,6 +191,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
   let memorySummary: Awaited<ReturnType<typeof collectEligibleRefs>>["memorySummary"] = { eligible: 0, derived: 0 };
   let strategyFilteredRefs: Awaited<ReturnType<typeof collectEligibleRefs>>["strategyFilteredRefs"] = [];
   let memoryCleanupPlan: ReturnType<typeof analyzeMemoryCleanup> | undefined;
+  let autonomyGatedDirectLanes: AutonomyLane[] = [];
   let guidance: string | undefined;
   let triageDrain: DrainResult | undefined;
 
@@ -250,6 +257,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
     memorySummary = collected.memorySummary;
     strategyFilteredRefs = collected.strategyFilteredRefs;
     memoryCleanupPlan = collected.memoryCleanupPlan;
+    autonomyGatedDirectLanes = collected.autonomyGatedDirectLanes;
     guidance = collected.guidance;
     preEnsureCleanupWarnings.push(...collected.warnings);
 
@@ -292,7 +300,10 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
       run: setup,
       strategyFilteredRefs,
       plannedRefs,
-      memoryCleanupPlan,
+      // The preview stays on the result envelope below; the stage sequence is
+      // what APPLIES the plan, so a gated run must not receive it.
+      memoryCleanupPlan: autonomyGatedDirectLanes.includes("memoryCleanup") ? undefined : memoryCleanupPlan,
+      autonomyGatedDirectLanes,
       memorySummary,
       preEnsureCleanupWarnings,
       eventsCtx,
@@ -499,9 +510,6 @@ function resolveImproveRunSetup(options: AkmImproveOptions) {
       target: selectedSelector,
       ...(writeTarget ? { writeTarget } : {}),
     },
-    legacyBareState:
-      options.legacyBareState ??
-      shouldReadLegacyBareImproveState(selectedSource.name, selectedSource.path, _earlyConfig),
     // Profile-level limit, then process-level reflect.limit as fallback.
     // CLI --limit takes precedence over both.
     limit: options.limit ?? improveProfile?.processes?.reflect?.limit ?? improveProfile.limit,
@@ -633,6 +641,12 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
   memorySummary: Awaited<ReturnType<typeof collectEligibleRefs>>["memorySummary"];
   strategyFilteredRefs: NonNullable<Awaited<ReturnType<typeof collectEligibleRefs>>["strategyFilteredRefs"]>;
   memoryCleanupPlan?: ReturnType<typeof analyzeMemoryCleanup>;
+  /**
+   * Direct lanes that were eligible to run but denied by the autonomy gate.
+   * Empty when autonomy is on OR when the lanes were not eligible anyway — the
+   * caller turns these into the operator warning and `improve_skipped` event.
+   */
+  autonomyGatedDirectLanes: AutonomyLane[];
   guidance?: string;
   warnings: string[];
 }> {
@@ -714,13 +728,28 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
   } = await collectEligibleRefsImpl(scope, options.stashDir, improveProfile));
   const cleanupParentRef = memoryCleanupParentRef(scope, options.stashDir);
 
+  // D8 — the two direct lanes share one eligibility predicate, which reads scope
+  // and eligible-memory count and no strategy flag at all. Compute it once: it
+  // decides whether each lane would have run, which is also what decides whether
+  // a gated lane is worth REPORTING. A lane that was never eligible was not
+  // suppressed by the gate, so claiming it was would be noise.
+  const cleanupEligible = shouldAnalyzeMemoryCleanup(scope, memorySummary.eligible, primaryStashDir);
+  const autonomyAllowsDirectLanes = isAutonomyLaneAllowed("memoryCleanup", _earlyConfig);
+  const configuredDirectLanes = configuredDirectAutonomyLanes(improveProfile);
+  const autonomyGatedDirectLanes: AutonomyLane[] =
+    cleanupEligible && !autonomyAllowsDirectLanes ? configuredDirectLanes : [];
+
   // M-1 (#367): Run contradiction-detection BEFORE analyzeMemoryCleanup so
   // the SCC resolver in resolveFamilyContradictions has edges to work on.
   // Best-effort: failures are warnings, never fatal.
+  // It writes contradiction edges and belief-state transitions, so it needs the
+  // opt-in.
   if (
     !options.dryRun &&
     primaryStashDir &&
-    shouldAnalyzeMemoryCleanup(scope, memorySummary.eligible, primaryStashDir)
+    autonomyAllowsDirectLanes &&
+    cleanupEligible &&
+    configuredDirectLanes.includes("contradiction")
   ) {
     try {
       // Reuse the config resolved at the top of the run instead of a second load.
@@ -746,9 +775,14 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
     }
   }
 
-  const memoryCleanupPlan = shouldAnalyzeMemoryCleanup(scope, memorySummary.eligible, primaryStashDir)
-    ? analyzeMemoryCleanup(primaryStashDir as string, cleanupParentRef ? { parentRef: cleanupParentRef } : undefined)
-    : undefined;
+  // `analyzeMemoryCleanup` is READ-ONLY, so a dry run may compute the preview
+  // even when autonomy is off. A live gated run has no preview contract and
+  // skips the stash-wide analysis as well as application; autonomy-on live runs
+  // compute the plan that `applyMemoryCleanup` will consume downstream.
+  const memoryCleanupPlan =
+    cleanupEligible && (options.dryRun || autonomyAllowsDirectLanes)
+      ? analyzeMemoryCleanup(primaryStashDir as string, cleanupParentRef ? { parentRef: cleanupParentRef } : undefined)
+      : undefined;
   const guidance =
     memorySummary.eligible > 0
       ? "Improve folds memory cleanup into the same proposal queue: speculative promotions still go through reflect/distill proposals, while high-confidence redundant derived memories are moved into a recoverable cleanup archive instead of being left active in the stash."
@@ -758,6 +792,7 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
     memorySummary,
     strategyFilteredRefs: strategyFilteredRefs ?? [],
     memoryCleanupPlan,
+    autonomyGatedDirectLanes,
     guidance,
     warnings,
   };
@@ -860,8 +895,6 @@ function makeCommitStashBatch(deps: {
     }
     const saveGitStashFn = options.saveGitStashFn ?? saveGitStash;
     const writableOverride = writeTarget ? resolveWritable(writeTarget.config) : resolveWritableOverride(_earlyConfig);
-    // pushOnCommit is deprecated and fully ignored (Decision 6, WI-9.6b) — it no
-    // longer participates in this fallback chain.
     const push = options.sync?.push ?? improveProfile.sync?.push ?? true;
     const message = renderSyncCommitMessage(
       effectiveSync.message ?? "akm improve auto-sync",
@@ -946,22 +979,10 @@ export function refilterProactiveLoopRefs(
   let postLockLoopRefs = loopRefs;
   if (proactiveLoopRefs.length > 0) {
     const proactiveRefStrs = proactiveLoopRefs.map((r) => r.ref);
-    // Chunk-5 flip F5e — dual-arm the proposal reverse map on item_ref too.
+    // Correlate proposal timestamps on each candidate's durable key.
     const proactiveItemRefByRef = new Map(proactiveLoopRefs.map((r) => [r.ref, r.itemRef] as const));
-    const freshReflectTs = buildLatestProposalTsMap(
-      proactiveRefStrs,
-      "reflect",
-      options.sourceName,
-      options.legacyBareState,
-      proactiveItemRefByRef,
-    );
-    const freshDistillTs = buildLatestProposalTsMap(
-      proactiveRefStrs,
-      "distill",
-      options.sourceName,
-      options.legacyBareState,
-      proactiveItemRefByRef,
-    );
+    const freshReflectTs = buildLatestProposalTsMap(proactiveRefStrs, "reflect", proactiveItemRefByRef);
+    const freshDistillTs = buildLatestProposalTsMap(proactiveRefStrs, "distill", proactiveItemRefByRef);
     const pmDueDays = improveProfile.processes?.proactiveMaintenance?.dueDays ?? DEFAULT_DUE_DAYS;
     const stillDue = new Set(
       filterProactiveDue(proactiveLoopRefs, freshReflectTs, freshDistillTs, pmDueDays, Date.now()).map((r) => r.ref),
@@ -1035,11 +1056,9 @@ async function runPostLoopStageOrSkip(args: {
     improveProfile,
     resolvedPlan,
     consolidationRan: preparation.consolidationRan,
-    // R5: floor violations from this run's consolidate pass, plus the accepted
-    // volume — hardcoded 0 since the 0.9.0 confidence-gate deletion — for churn
-    // detection.
+    // R5: floor violations from this run's consolidate pass, for the collapse
+    // detector's merge-floor advisory.
     consolidationMergeFloorViolations: preparation.consolidation.mergeFloorViolations ?? 0,
-    acceptedActions: 0,
   });
 }
 
@@ -1053,6 +1072,8 @@ async function runImproveStageSequence(args: {
   strategyFilteredRefs: NonNullable<Awaited<ReturnType<typeof collectEligibleRefs>>["strategyFilteredRefs"]>;
   plannedRefs: Awaited<ReturnType<typeof collectEligibleRefs>>["plannedRefs"];
   memoryCleanupPlan?: ReturnType<typeof analyzeMemoryCleanup>;
+  /** Direct lanes the autonomy gate denied on this run (see indexAndCollect). */
+  autonomyGatedDirectLanes: AutonomyLane[];
   memorySummary: { eligible: number; derived: number };
   preEnsureCleanupWarnings: string[];
   eventsCtx: EventsContext;
@@ -1097,6 +1118,28 @@ async function runImproveStageSequence(args: {
           strategy: selectedStrategy.name,
           reason: "strategy_filtered_all_passes",
           count: strategyFilteredRefs.length,
+        },
+      },
+      eventsCtx,
+    );
+  }
+
+  // D8 — one event per lane the autonomy gate downgraded, naming the lane AND
+  // the config key that would enable it. This is the difference between a gate
+  // and a silent no-op: whatever the user would have seen happen, they now see
+  // explained. `health` already aggregates `improve_skipped` by reason
+  // (buildImproveSkipSummary), so these surface there without new machinery.
+  for (const lane of [...args.run.resolvedPlan.autonomyGated, ...describeGatedLanes(args.autonomyGatedDirectLanes)]) {
+    warn(`[improve] ${lane.lane} skipped — it ${lane.reason}. Set \`${lane.configKey}: true\` to enable it.`);
+    appendEvent(
+      {
+        eventType: "improve_skipped",
+        ref: undefined,
+        metadata: {
+          strategy: selectedStrategy.name,
+          reason: "autonomy_gated",
+          lane: lane.lane,
+          configKey: lane.configKey,
         },
       },
       eventsCtx,

@@ -14,7 +14,7 @@ import {
 import {
   AUTOMATED_PROPOSAL_SOURCES,
   archiveProposal,
-  createProposal,
+  createProposal as createProposalImpl,
   diffProposal,
   expireStaleProposals,
   getProposal,
@@ -33,7 +33,6 @@ import { getDbPath, getIndexWriterLockPath } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
 import { indexWrittenAssets } from "../../src/indexer/index-written-assets";
 import { akmIndex } from "../../src/indexer/indexer";
-import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
 import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
 import { makeConfig } from "../_helpers/factories";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
@@ -60,13 +59,20 @@ function makeStashDir(): string {
 
 /**
  * The durable `proposals.ref` spelling WI-8.5a stores: the fully-qualified
- * `<bundle>//<conceptId>` item_ref, where the bundle is the stash's installation
- * id (`deriveInstallations`) — the same derivation `createProposal` uses.
+ * `<bundle>//<conceptId>` item_ref bound by this suite's proposal helper.
  */
 function durableRef(stashDir: string, type: string, name: string): string {
-  const bundleId = deriveInstallations([{ path: stashDir, writable: true }])[0]?.id ?? slugForPath(stashDir);
-  return deriveEntryProvenance({ bundleId, componentId: bundleId, adapterId: "akm" }, type, name).itemRef;
+  void stashDir;
+  const directories: Record<string, string> = { lesson: "lessons", skill: "skills", memory: "memories" };
+  return `stash//${directories[type] ?? type}/${name}`;
 }
+
+const createProposal: typeof createProposalImpl = (stashDir, input, ctx) =>
+  createProposalImpl(
+    stashDir,
+    { ...input, target: input.target ?? { source: "stash", root: path.resolve(stashDir) } },
+    ctx,
+  );
 
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
@@ -943,6 +949,23 @@ describe("Phase 6B: expireStaleProposals archives proposals past retention", () 
 // ── Phase 6C — Proposal reversion (Advantage D6c) ───────────────────────────
 
 describe("Phase 6C: promoteProposal captures backup; revertProposal restores it", () => {
+  // RUNTIME-07(e): the three "waits for the shared asset-mutation lease"
+  // tests below used to burn a real `Bun.sleep(150)` between starting the
+  // mutation and asserting it hasn't completed yet. That sleep was not
+  // needed for correctness and was a source of narrow-margin timing risk on
+  // a loaded runner. `withAssetMutationLease` (src/indexer/index-writer-lock.ts,
+  // `acquireIndexWriterLease`) makes its FIRST lock-acquisition attempt
+  // (`tryAcquireMaintenanceBarrier` + `tryAcquireLockSync` + `probeLock`,
+  // src/core/file-lock.ts) entirely synchronously — none of those calls
+  // `await` anything. Per JS async-function semantics, that means by the
+  // time `akmProposalAccept`/`akmProposalReject`/`akmProposalRevert` returns
+  // a pending promise to the caller, the first attempt has ALREADY run
+  // synchronously and failed against the lockPath we wrote (since it exists
+  // on disk before the call), and the loop is already parked on a real
+  // `await delay(100)`. So the "not done yet" assertion is true the instant
+  // the call returns — no sleep, real or fake, is required to observe it,
+  // and none of these three tests carry any margin-based flake risk (unlike
+  // the elapsed-vs-timeout percentage check in llm-client.test.ts).
   test("accept waits for the shared asset-mutation lease", async () => {
     const stash = makeStashDir();
     const config = makeConfig(stash);
@@ -959,7 +982,6 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     fs.writeFileSync(lockPath, JSON.stringify({ pid: process.ppid, startedAt: new Date().toISOString() }), "utf8");
 
     const accepting = akmProposalAccept({ stashDir: stash, id: created.id, config });
-    await Bun.sleep(150);
     expect(fs.existsSync(assetPath)).toBe(false);
     fs.rmSync(lockPath, { force: true });
     await accepting;
@@ -982,7 +1004,6 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     const rejecting = Promise.resolve(
       akmProposalReject({ stashDir: stash, id: created.id, reason: "serialized rejection" }),
     );
-    await Bun.sleep(150);
     expect(getProposal(stash, created.id).status).toBe("pending");
     fs.rmSync(lockPath, { force: true });
     await rejecting;
@@ -1038,7 +1059,6 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     fs.writeFileSync(lockPath, JSON.stringify({ pid: process.ppid, startedAt: new Date().toISOString() }), "utf8");
 
     const reverting = akmProposalRevert({ stashDir: stash, id: created.id, config });
-    await Bun.sleep(150);
     expect(fs.readFileSync(assetPath, "utf8")).toContain("Prefer rg over grep");
     fs.rmSync(lockPath, { force: true });
     await reverting;
@@ -1224,7 +1244,7 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     });
     if (isProposalSkipped(proposalA)) throw new Error("unexpected skip");
     await akmProposalAccept({ stashDir: stash, id: proposalA.id, config });
-    expect(getProposal(stash, proposalA.id).acceptedContentHash).toBeDefined();
+    expect(getProposal(stash, proposalA.id).acceptedTarget?.contentHash).toBeDefined();
 
     const proposalB = createProposal(stash, {
       ref: "lessons/stacked-proposals",
@@ -1238,202 +1258,40 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     await expect(akmProposalRevert({ stashDir: stash, id: proposalA.id, config })).rejects.toThrow(
       /changed|hash|content/i,
     );
-    expect(fs.readFileSync(assetPath, "utf8")).toBe(bContent);
+    expect(fs.readFileSync(assetPath, "utf8")).toBe(proposalB.payload.content);
     expect(getProposal(stash, proposalA.id).status).toBe("accepted");
   });
 
-  test("legacy accepted proposal with backup derives ownership conservatively and can revert", async () => {
-    const stash = makeStashDir();
-    const other = makeStashDir();
-    const config = {
-      bundles: {
-        primary: { path: stash, writable: true },
-        other: { path: other, writable: true },
-      } as AkmConfig["bundles"],
-      defaultBundle: "primary",
-      defaultWriteTarget: "primary",
-    } as AkmConfig;
-    const assetPath = path.join(stash, "lessons", "legacy-safe-revert.md");
-    const otherPath = path.join(other, "lessons", "legacy-safe-revert.md");
-    const original =
-      "---\ndescription: Legacy original content\nwhen_to_use: Testing legacy revert ownership\n---\n\nORIGINAL.\n";
-    fs.writeFileSync(assetPath, original, "utf8");
-    const created = createProposal(stash, {
-      ref: "lessons/legacy-safe-revert",
-      source: "distill",
-      force: true,
-      payload: { content: VALID_LESSON },
-    });
-    if (isProposalSkipped(created)) throw new Error("unexpected skip");
-    await akmProposalAccept({ stashDir: stash, id: created.id, config });
-    const state = openStateDatabase();
-    const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
-      metadata_json: string;
-    };
-    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-    delete metadata.acceptedContentHash;
-    delete metadata.acceptedTarget;
-    state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
-    state.close();
-
-    fs.writeFileSync(otherPath, "Unrelated wrong-target content.\n", "utf8");
-    await akmProposalRevert({ stashDir: stash, id: created.id, config, target: "other" });
-    expect(fs.readFileSync(assetPath, "utf8")).toBe(original);
-    expect(fs.readFileSync(otherPath, "utf8")).toBe("Unrelated wrong-target content.\n");
-    const reverted = getProposal(stash, created.id);
-    expect(reverted.acceptedTarget?.source).toBe("primary");
-    expect(reverted.acceptedTarget?.path).toBe(assetPath);
-    expect(reverted.acceptedContentHash).toBeDefined();
-  });
-
-  test("legacy revert rejects identical accepted-content copies across writable roots as ambiguous", async () => {
-    const stash = makeStashDir();
-    const other = makeStashDir();
-    const config = {
-      bundles: {
-        primary: { path: stash, writable: true },
-        other: { path: other, writable: true },
-      } as AkmConfig["bundles"],
-      defaultBundle: "primary",
-      defaultWriteTarget: "primary",
-    } as AkmConfig;
-    const assetPath = path.join(stash, "lessons", "legacy-ambiguous-revert.md");
-    const otherPath = path.join(other, "lessons", "legacy-ambiguous-revert.md");
-    const original =
-      "---\ndescription: Legacy ambiguity original\nwhen_to_use: Testing cross-target ownership attacks\n---\n\nORIGINAL.\n";
-    fs.writeFileSync(assetPath, original, "utf8");
-    const created = createProposal(stash, {
-      ref: "lessons/legacy-ambiguous-revert",
-      source: "distill",
-      force: true,
-      payload: { content: VALID_LESSON },
-    });
-    if (isProposalSkipped(created)) throw new Error("unexpected skip");
-    await akmProposalAccept({ stashDir: stash, id: created.id, config, target: "primary" });
-    fs.writeFileSync(otherPath, fs.readFileSync(assetPath));
-    const state = openStateDatabase();
-    const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
-      metadata_json: string;
-    };
-    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-    delete metadata.acceptedContentHash;
-    delete metadata.acceptedTarget;
-    state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
-    state.close();
-
-    await expect(akmProposalRevert({ stashDir: stash, id: created.id, config, target: "other" })).rejects.toThrow(
-      /ambiguous|multiple|more than one/i,
-    );
-    expect(fs.readFileSync(assetPath, "utf8")).toBe(VALID_LESSON);
-    expect(fs.readFileSync(otherPath, "utf8")).toBe(VALID_LESSON);
-    expect(getProposal(stash, created.id).status).toBe("accepted");
-  });
-
-  test("legacy revert restores an absent accepted asset only when one writable root can own the ref", async () => {
+  test("an accepted proposal without acceptedTarget is not derived or backfilled", async () => {
     const stash = makeStashDir();
     const config = makeConfig(stash);
-    const assetPath = path.join(stash, "lessons", "legacy-absent-revert.md");
+    const assetPath = path.join(stash, "lessons", "missing-accepted-target.md");
     const original =
-      "---\ndescription: Legacy absent original\nwhen_to_use: Testing deterministic absent restoration\n---\n\nORIGINAL.\n";
+      "---\ndescription: Original current content\nwhen_to_use: Testing required accepted targets\n---\n\nORIGINAL.\n";
     fs.writeFileSync(assetPath, original, "utf8");
     const created = createProposal(stash, {
-      ref: "lessons/legacy-absent-revert",
+      ref: "lessons/missing-accepted-target",
       source: "distill",
       force: true,
       payload: { content: VALID_LESSON },
     });
     if (isProposalSkipped(created)) throw new Error("unexpected skip");
     await akmProposalAccept({ stashDir: stash, id: created.id, config });
+
     const state = openStateDatabase();
     const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
       metadata_json: string;
     };
     const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-    delete metadata.acceptedContentHash;
     delete metadata.acceptedTarget;
     state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
     state.close();
-    fs.unlinkSync(assetPath);
-
-    await akmProposalRevert({ stashDir: stash, id: created.id, config });
-    expect(fs.readFileSync(assetPath, "utf8")).toBe(original);
-    expect(getProposal(stash, created.id).acceptedTarget?.path).toBe(assetPath);
-  });
-
-  test("legacy revert rejects an absent accepted asset when multiple writable roots can own the ref", async () => {
-    const stash = makeStashDir();
-    const other = makeStashDir();
-    const config = {
-      bundles: {
-        primary: { path: stash, writable: true },
-        other: { path: other, writable: true },
-      } as AkmConfig["bundles"],
-      defaultBundle: "primary",
-      defaultWriteTarget: "primary",
-    } as AkmConfig;
-    const assetPath = path.join(stash, "lessons", "legacy-absent-ambiguous.md");
-    fs.writeFileSync(
-      assetPath,
-      "---\ndescription: Legacy absent ambiguous original\nwhen_to_use: Testing absent ambiguity\n---\n\nORIGINAL.\n",
-      "utf8",
-    );
-    const created = createProposal(stash, {
-      ref: "lessons/legacy-absent-ambiguous",
-      source: "distill",
-      force: true,
-      payload: { content: VALID_LESSON },
-    });
-    if (isProposalSkipped(created)) throw new Error("unexpected skip");
-    await akmProposalAccept({ stashDir: stash, id: created.id, config, target: "primary" });
-    const state = openStateDatabase();
-    const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
-      metadata_json: string;
-    };
-    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-    delete metadata.acceptedContentHash;
-    delete metadata.acceptedTarget;
-    state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
-    state.close();
-    fs.unlinkSync(assetPath);
 
     await expect(akmProposalRevert({ stashDir: stash, id: created.id, config })).rejects.toThrow(
-      /ambiguous|multiple|writable target/i,
+      /has no recorded target/i,
     );
-    expect(fs.existsSync(assetPath)).toBe(false);
-    expect(fs.existsSync(path.join(other, "lessons", "legacy-absent-ambiguous.md"))).toBe(false);
-    expect(getProposal(stash, created.id).status).toBe("accepted");
-  });
-
-  test("legacy accepted proposal refuses revert when current content differs from accepted payload", async () => {
-    const stash = makeStashDir();
-    const config = makeConfig(stash);
-    const assetPath = path.join(stash, "lessons", "legacy-diverged-revert.md");
-    fs.writeFileSync(
-      assetPath,
-      "---\ndescription: Legacy original content\nwhen_to_use: Testing legacy divergence\n---\n\nORIGINAL.\n",
-      "utf8",
-    );
-    const created = createProposal(stash, {
-      ref: "lessons/legacy-diverged-revert",
-      source: "distill",
-      force: true,
-      payload: { content: VALID_LESSON },
-    });
-    if (isProposalSkipped(created)) throw new Error("unexpected skip");
-    await akmProposalAccept({ stashDir: stash, id: created.id, config });
-    const state = openStateDatabase();
-    const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
-      metadata_json: string;
-    };
-    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-    delete metadata.acceptedContentHash;
-    delete metadata.acceptedTarget;
-    state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
-    state.close();
-    fs.writeFileSync(assetPath, `${VALID_LESSON}\nNEWER EDIT\n`, "utf8");
-
-    await expect(akmProposalRevert({ stashDir: stash, id: created.id, config })).rejects.toThrow(/changed|content/i);
-    expect(fs.readFileSync(assetPath, "utf8")).toContain("NEWER EDIT");
+    expect(fs.readFileSync(assetPath, "utf8")).toBe(created.payload.content);
+    expect(getProposal(stash, created.id).acceptedTarget).toBeUndefined();
   });
 
   test("revert is bound to the source/root/path used by accept", async () => {
@@ -1454,6 +1312,7 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
       ref: "lessons/bound-revert",
       source: "distill",
       force: true,
+      target: { source: "primary", root: stash },
       payload: { content: VALID_LESSON },
     });
     if (isProposalSkipped(created)) throw new Error("unexpected skip");
@@ -1553,7 +1412,7 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     expect(created.changes).toHaveLength(1);
     const change = created.changes[0];
     expect(change?.op).toBe("create");
-    expect(change?.after).toBe(VALID_LESSON);
+    expect(change?.after).toBe(created.payload.content);
     // Mint-time before-state is summarised by beforeHash only — the change
     // body's `before` is a transaction-time capture and must stay unset.
     expect(change?.before).toBeUndefined();
@@ -1618,7 +1477,7 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     expect(meta.changes?.[0]?.after).toBeUndefined();
   });
 
-  test("legacy row (no persisted envelope) synthesizes one update change with the path sentinel", () => {
+  test("a row without persisted changes is rejected", () => {
     const stash = makeStashDir();
     const created = createProposal(stash, {
       ref: "lessons/envelope-legacy",
@@ -1628,7 +1487,7 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
       payload: { content: VALID_LESSON },
     });
     if (isProposalSkipped(created)) throw new Error("unexpected skip");
-    // Strip the persisted envelope, simulating a pre-0.9.0 row.
+    // Strip the required current envelope.
     const state = openStateDatabase();
     const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
       metadata_json: string;
@@ -1639,8 +1498,45 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
     state.close();
 
-    const reread = getProposal(stash, created.id);
-    expect(reread.changes).toEqual([{ path: "", after: VALID_LESSON, op: "update" }]);
-    expect(reread.beforeHash).toBeUndefined();
+    expect(() => getProposal(stash, created.id)).toThrow(/missing changes/i);
+  });
+
+  test("a row without a current proposedTarget is rejected", () => {
+    const stash = makeStashDir();
+    const created = createProposal(stash, {
+      ref: "lessons/missing-target",
+      source: "reflect",
+      sourceRun: "run-envelope",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+    const state = openStateDatabase();
+    const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
+      metadata_json: string;
+    };
+    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
+    delete metadata.proposedTarget;
+    state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
+    state.close();
+
+    expect(() => getProposal(stash, created.id)).toThrow(/missing proposedTarget/i);
+  });
+
+  test("a row with a retired ref grammar is rejected", () => {
+    const stash = makeStashDir();
+    const created = createProposal(stash, {
+      ref: "lessons/current-ref",
+      source: "reflect",
+      sourceRun: "run-envelope",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+    const state = openStateDatabase();
+    state.prepare("UPDATE proposals SET ref = ? WHERE id = ?").run("stash//lesson:retired", created.id);
+    state.close();
+
+    expect(() => getProposal(stash, created.id)).toThrow(/invalid current ref/i);
   });
 });

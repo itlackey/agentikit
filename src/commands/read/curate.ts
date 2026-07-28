@@ -31,7 +31,7 @@ import {
 } from "../../indexer/search/search-attribution";
 import { findSourceForPath, resolveSourceEntries } from "../../indexer/search/search-source";
 import { insertUsageEvent, type UsageEventSource } from "../../indexer/usage/usage-events";
-import { truncateDescription } from "../../output/shapes";
+import { truncateDescription } from "../../output/shapes/helpers";
 import type { RegistrySearchResultHit, SearchResponse, ShowResponse, SourceSearchHit } from "../../sources/types";
 import { TELEMETRY_BUSY_TIMEOUT_MS, withIndexDb } from "../../storage/repositories/index-db";
 import { findEntryIdByRef, getItemRefById } from "../../storage/repositories/index-entries-repository";
@@ -103,6 +103,16 @@ export interface CurateOptions {
   eventSource?: UsageEventSource;
   /** Internal projection used only to decide whether derived surface content was emitted. */
   attributionProjection?: AttributionProjection;
+  /**
+   * When true, skip logging usage events for this curate call (F2/R-055):
+   * neither the top-level curate event nor the underlying search/show reads
+   * feed usage-events telemetry or ranking signals. Wired to `akm curate
+   * --no-track-usage`. Internal callers already pass `skipLogging: true` on
+   * their own nested `akmSearch`/`akmShowUnified` calls unconditionally
+   * (searchForCuration, enrichCuratedStashHit) — this flag additionally
+   * silences curate's OWN top-level event.
+   */
+  skipLogging?: boolean;
 }
 
 const CURATE_FALLBACK_FILTER_WORDS = new Set([
@@ -181,12 +191,11 @@ function logCurateEvent(
         // state.db (Chunk-8 WI-8.3).
         const perItem = result.items
           .filter((item): item is typeof item & { ref: string } => "ref" in item && typeof item.ref === "string")
-          .map((item) => {
+          .flatMap((item) => {
             const entryId = findEntryIdByRef(db, item.ref);
-            const itemRef = entryId !== undefined ? getItemRefById(db, entryId) : null;
-            // Post-flip the resolved row carries `item_ref`; fall back to the
-            // item's own (new-grammar) ref for an unresolved straggler.
-            return { entryRef: itemRef ?? item.ref, entryId, item };
+            if (entryId === undefined) return [];
+            const itemRef = getItemRefById(db, entryId);
+            return itemRef ? [{ entryRef: itemRef, entryId, item }] : [];
           });
         withStateDbTelemetry((stateDb) => {
           insertUsageEvent(stateDb, {
@@ -237,7 +246,9 @@ export async function akmCurate(options: CurateOptions): Promise<CurateResponse>
       source,
     }));
   const result = await curateSearchResults(options.query, searchResponse, limit, options.type, options.eventSource);
-  logCurateEvent(options.query, result, options.eventSource, options.attributionProjection);
+  if (!options.skipLogging) {
+    logCurateEvent(options.query, result, options.eventSource, options.attributionProjection);
+  }
   return result;
 }
 
@@ -248,22 +259,29 @@ export async function curateSearchResults(
   selectedType?: string,
   eventSource?: UsageEventSource,
 ): Promise<CurateResponse> {
-  const stashHits = result.hits.filter((hit): hit is SourceSearchHit => hit.type !== "registry");
+  const allStashHits = result.hits.filter((hit): hit is SourceSearchHit => hit.type !== "registry");
   const registryHits = result.registryHits ?? [];
 
-  let selectedStashHits: SourceSearchHit[];
-  let supportRefsByRef = new Map<string, CurateSupportRef[]>();
-  if (selectedType && selectedType !== "any") {
-    selectedStashHits = stashHits.slice(0, limit);
-  } else {
-    const selected = selectCuratedStashHits(query, stashHits, limit);
-    const preferred = preferBroadRootRepresentative(query, selected.selected, stashHits, selected.supportRefsByRef);
-    selectedStashHits = preferred.selected;
-    supportRefsByRef = preferred.supportRefsByRef;
-  }
+  // F3/R-018: `--type` must NARROW the candidate pool, not bypass curation.
+  // Previously a set `selectedType` skipped `selectCuratedStashHits` (ranking,
+  // intent nudges, score floor) entirely, taking the raw top-N of whatever
+  // order the hits arrived in. Filtering the pool down to the requested type up front and
+  // then running the SAME pipeline over it gives `--type` its intended
+  // "narrow, don't disable" semantics — and matters even when the caller's
+  // search already applied a type filter at the DB layer, because
+  // `curateSearchResults` is also driven directly (tests, `searchResponse`
+  // fixtures) with a `SearchResponse` that was never type-filtered.
+  const stashHits =
+    selectedType && selectedType !== "any" ? allStashHits.filter((hit) => hit.type === selectedType) : allStashHits;
 
+  const selected = selectCuratedStashHits(query, stashHits, limit);
+  const selectedStashHits = selected.selected;
+  const supportRefsByRef = selected.supportRefsByRef;
+
+  // F4/R-019: respect `--limit` for registry fill instead of hard-capping it
+  // at a bare literal 2 — the remaining slots after stash hits ARE the cap.
   const selectedRegistryHits =
-    selectedStashHits.length >= limit ? [] : registryHits.slice(0, Math.min(2, limit - selectedStashHits.length));
+    selectedStashHits.length >= limit ? [] : registryHits.slice(0, limit - selectedStashHits.length);
   const selectedRefs = new Set(selectedStashHits.map((hit) => hit.ref));
 
   const items = [
@@ -756,43 +774,6 @@ function collapseCurateFamilies(
     hits: [...passthrough, ...collapsedFamilies].sort((a, b) => a.originalIndex - b.originalIndex),
     supportRefsByRef,
   };
-}
-
-function preferBroadRootRepresentative(
-  query: string,
-  selected: SourceSearchHit[],
-  allHits: SourceSearchHit[],
-  supportRefsByRef: Map<string, CurateSupportRef[]>,
-): { selected: SourceSearchHit[]; supportRefsByRef: Map<string, CurateSupportRef[]> } {
-  const first = selected[0];
-  if (!first) return { selected, supportRefsByRef };
-
-  const match = /^knowledge:skills\/(.+?)\/references\/(.+)$/.exec(first.ref);
-  if (!match) return { selected, supportRefsByRef };
-
-  const lower = query.toLowerCase();
-  const topicTokens = match[2]!.split(/[^a-z0-9]+/i).filter(Boolean);
-  const wantsReference =
-    CURATE_REFERENCE_QUERY_RE.test(lower) ||
-    topicTokens.some((token) => token.length >= 3 && lower.includes(token.toLowerCase()));
-  if (wantsReference) return { selected, supportRefsByRef };
-
-  const rootRef = `skill:${match[1]}`;
-  const rootHit = allHits.find((hit) => hit.ref === rootRef);
-  if (!rootHit) return { selected, supportRefsByRef };
-
-  const next = [rootHit, ...selected.filter((hit) => hit.ref !== first.ref && hit.ref !== rootRef)];
-  const merged = new Map(supportRefsByRef);
-  const priorSupport = merged.get(first.ref) ?? [];
-  for (const entry of priorSupport) appendCurateSupportRef(merged, rootRef, entry);
-  appendCurateSupportRef(merged, rootRef, {
-    ref: first.ref,
-    type: first.type,
-    reason: "Related family asset to inspect next.",
-  });
-  merged.delete(first.ref);
-
-  return { selected: next, supportRefsByRef: merged };
 }
 
 function mergeCurateSupportRefs(

@@ -34,11 +34,27 @@ import {
 let stashDir = "";
 let cleanup: Cleanup = () => {};
 let llmCallCount = 0;
+let llmSucceeds = false;
 
 const llmServer = Bun.serve({
   port: 0,
   fetch() {
     llmCallCount++;
+    if (llmSucceeds) {
+      return Response.json({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                description: "Enriched thing",
+                searchHints: ["find the enriched thing"],
+                tags: ["enriched"],
+              }),
+            },
+          },
+        ],
+      });
+    }
     return new Response("Internal Server Error", { status: 500, headers: { Connection: "close" } });
   },
 });
@@ -52,6 +68,7 @@ beforeEach(() => {
   chain = sandboxEnvDir("akm-enrich-fail-state", "AKM_STATE_DIR", chain).cleanup;
   cleanup = chain;
   llmCallCount = 0;
+  llmSucceeds = false;
 });
 
 afterEach(() => {
@@ -105,6 +122,52 @@ test("failed enrichment does not mark the entry enriched or poison the cache", a
     // would make every later run skip re-enrichment.
     const cacheCount = (db.prepare("SELECT COUNT(*) AS cnt FROM llm_enrichment_cache").get() as { cnt: number }).cnt;
     expect(cacheCount).toBe(0);
+  } finally {
+    closeDatabase(db);
+  }
+});
+
+test("successful enrichment preserves the entry's indexed provenance", async () => {
+  llmSucceeds = true;
+  const knowledgeDir = path.join(stashDir, "knowledge");
+  fs.mkdirSync(knowledgeDir, { recursive: true });
+  fs.writeFileSync(path.join(knowledgeDir, "thing.md"), "# Thing\n\nSome body prose about a thing.\n");
+
+  saveConfig({
+    semanticSearchMode: "off",
+    engines: {
+      index: {
+        kind: "llm",
+        endpoint: `http://localhost:${llmServer.port}/v1/chat/completions`,
+        model: "test-model",
+      },
+    },
+    index: {
+      defaults: { engine: "index" },
+      metadataEnhance: { enabled: true },
+    },
+  });
+
+  await akmIndex({ stashDir, full: true });
+
+  const db = openIndexDatabase(getDbPath());
+  try {
+    const row = db
+      .prepare(
+        "SELECT item_ref AS itemRef, bundle_id AS bundleId, component_id AS componentId, " +
+          "concept_id AS conceptId, adapter_id AS adapterId FROM entries WHERE file_path = ?",
+      )
+      .get(path.join(knowledgeDir, "thing.md")) as {
+      itemRef: string;
+      bundleId: string;
+      componentId: string;
+      conceptId: string;
+      adapterId: string;
+    };
+    expect(row.itemRef).toBe(`${row.bundleId}//knowledge/thing`);
+    expect(row.componentId).toBe(row.bundleId);
+    expect(row.conceptId).toBe("knowledge/thing");
+    expect(row.adapterId).toBe("akm");
   } finally {
     closeDatabase(db);
   }

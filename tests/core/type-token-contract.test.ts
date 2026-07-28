@@ -14,20 +14,20 @@
  *   (b) `KNOWN_TYPES` exhaustiveness — `TYPE_BOOST` and `TYPE_PRESENTATION`
  *       compile-cover all 14 known types;
  *   (c) `presentationFor` returns the generic fallback for an unknown type;
- *   (d) the `DEPRECATED_REJECTED_TYPES` deny-list still rejects `tool`/
- *       `vault` with their original messages, across all three gates
- *       (`parseAssetRef`, `validateStashEntry`, and the `akm` adapter's `recognize`).
+ *   (d) retired AKM types remain rejected by AKM's legacy ref parser, but the
+ *       format-neutral index projection accepts them when another adapter owns
+ *       those open type values.
  *
  * Replaces (not just deletes) the taxonomy-pin tests identified in
  * `docs/design/execution/chunk-1.5/anchors.md` §D.1.
  */
 
 import { describe, expect, test } from "bun:test";
+import { parseAssetRef, parseStoredRef } from "../../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import { DEPRECATED_REJECTED_TYPES, isKnownType, KNOWN_TYPES, type KnownType } from "../../src/core/recognition-util";
 import { presentationFor, TYPE_PRESENTATION } from "../../src/core/type-presentation";
 import { validateStashEntry } from "../../src/indexer/passes/metadata";
 import { TYPE_BOOST, typeBoostFor } from "../../src/indexer/search/ranking-contributors";
-import { parseAssetRef, parseStoredRef } from "../../src/migrate/legacy-ref-grammar";
 
 // ── (a) open-token acceptance as DATA ───────────────────────────────────────
 
@@ -144,7 +144,7 @@ describe("presentationFor — open-string fallback (§2.3)", () => {
 
 // ── (d) deny-list still rejects tool/vault (D1.5-6) ─────────────────────────
 
-describe("DEPRECATED_REJECTED_TYPES deny-list — tool/vault stay rejected", () => {
+describe("DEPRECATED_REJECTED_TYPES deny-list — scoped to AKM's legacy grammar", () => {
   test("the deny-list is exactly {tool, vault}", () => {
     expect([...DEPRECATED_REJECTED_TYPES].sort()).toEqual(["tool", "vault"]);
   });
@@ -167,9 +167,9 @@ describe("DEPRECATED_REJECTED_TYPES deny-list — tool/vault stay rejected", () 
     expect(() => parseStoredRef(":bad")).toThrow();
   });
 
-  test("validateStashEntry rejects tool/vault even though they are otherwise well-formed entries", () => {
-    expect(validateStashEntry({ name: "x", type: "tool" })).toBeNull();
-    expect(validateStashEntry({ name: "x", type: "vault" })).toBeNull();
+  test("the format-neutral index projection accepts retired AKM names as adapter-owned types", () => {
+    expect(validateStashEntry({ name: "x", type: "tool" })?.type).toBe("tool");
+    expect(validateStashEntry({ name: "x", type: "vault" })?.type).toBe("vault");
   });
 
   test("a non-deny-listed foreign type is NOT rejected by the same check", () => {

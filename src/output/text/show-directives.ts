@@ -13,6 +13,8 @@
  * only the seam moved.
  */
 
+import { conceptIdFromTypeName } from "../../core/asset/resolve-ref";
+
 /**
  * Append the type-specific agent directive block to an in-progress
  * `formatShowPlain` render. Mutates `lines` in place (matches the original
@@ -23,7 +25,17 @@ export function appendShowDirectives(lines: string[], r: Record<string, unknown>
   // REC-01 / REC-09: Append a type-specific directive so agents apply the
   // content rather than substituting training-data approximations.
   const assetType = typeof r.type === "string" ? r.type : null;
-  const assetRef = typeof r.name === "string" && assetType ? `${assetType}:${r.name}` : null;
+  // 0.9.0 (Q-02 / R-002): the retired `type:name` colon grammar is gone —
+  // build the slash conceptId the same way the workflow branch below does
+  // (`workflows/${name}`), via the entry's own already-computed `ref` when
+  // present (it carries correct bundle-qualification), falling back to a
+  // type-derived conceptId for callers that don't set `ref`.
+  const assetRef =
+    typeof r.ref === "string"
+      ? r.ref
+      : typeof r.name === "string" && assetType
+        ? conceptIdFromTypeName(assetType, r.name)
+        : null;
 
   // Show-loop detection: if the agent has shown this asset 3+ times without
   // writing anything, surface a warning so it stops cycling and acts.

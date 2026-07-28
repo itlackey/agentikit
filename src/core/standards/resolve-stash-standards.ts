@@ -58,14 +58,14 @@ function collectMarkdownFiles(dir: string): string[] {
 }
 
 /**
- * Derive a fact ref (`fact:conventions/naming`) from an absolute markdown path
+ * Derive a fact ref (`facts/conventions/naming`) from an absolute markdown path
  * relative to the facts root. Mirrors the canonical-name derivation in
  * `asset-spec.ts` (POSIX separators, `.md` stripped).
  */
 function toFactRef(factsRoot: string, absPath: string): string {
   const rel = path.relative(factsRoot, absPath).split(path.sep).join("/");
   const name = rel.endsWith(".md") ? rel.slice(0, -3) : rel;
-  return `fact:${name}`;
+  return `${FACTS_SUBDIR}/${name}`;
 }
 
 export function resolveStashStandards(stashRoot: string): string {

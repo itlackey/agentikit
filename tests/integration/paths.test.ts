@@ -402,7 +402,7 @@ describe("getDbPath", () => {
 
 // getWorkflowDbPath removed in Chunk-8 WI-8.3 (workflow.db folded into state.db;
 // the physical path literal survives only in the migrator home,
-// src/migrate/legacy/legacy-paths.ts).
+// scripts/akm-migrate/migrate/legacy/legacy-paths.ts).
 
 // ── getLockfilePath / getLockfileLockPath ───────────────────────────────────
 

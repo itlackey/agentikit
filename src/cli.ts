@@ -71,19 +71,18 @@ process.on("uncaughtException", (err) => {
 });
 
 import fs from "node:fs";
-import path from "node:path";
-import { type ArgsDef, defineCommand, runMain } from "citty";
+import { type ArgsDef, type CommandDef, defineCommand, parseArgs, runCommand, showUsage } from "citty";
 import {
+  type CittyArgsDefinitionForScan,
   findCittyTopLevelCommand,
   findCittyTopLevelCommandIndex,
+  getParsedInvocation,
   parseAllFlagValues,
   resolveHelpMigrateVersionArg,
   setParsedInvocation,
 } from "./cli/invocation";
-import { EXIT_CODES, emitJsonError, output, runWithJsonErrors } from "./cli/shared";
+import { EXIT_CODES, emitJsonError, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "./cli/shared";
 import { agentCommand, lintCommand, proposeCommand } from "./commands/agent/contribute-cli";
-import { backupCommand } from "./commands/backup-cli";
-import { bundleCommand } from "./commands/bundle/bundle-cli";
 import { generateBashCompletions, installBashCompletions } from "./commands/completions";
 import { configCommand } from "./commands/config-cli";
 import { envCommand } from "./commands/env/env-cli";
@@ -91,7 +90,7 @@ import { secretCommand } from "./commands/env/secret-cli";
 import { feedbackCommand } from "./commands/feedback-cli";
 import { graphCommand } from "./commands/graph/graph-cli";
 import { akmHealth } from "./commands/health";
-import { renderRunsDetailMd, renderWindowCompareMd } from "./commands/health/md-report";
+import "./commands/health/renderers";
 import type { WindowSpec } from "./commands/health/types";
 import { parseWindowSpec } from "./commands/health/windows";
 import { extractCommand } from "./commands/improve/extract-cli";
@@ -102,7 +101,6 @@ import { hintsCommand, lessonsCommand, logCommand } from "./commands/observabili
 import { proposalCommand } from "./commands/proposal/proposal-cli";
 import { rememberCommand } from "./commands/read/remember-cli";
 import { curateCommand, searchCommand, showCommand } from "./commands/read/search-cli";
-import { normalizeShowArgv } from "./commands/read/show";
 import { registryCommand } from "./commands/registry-cli";
 import { addCommand } from "./commands/sources/add-cli";
 import { renderMigrationHelp } from "./commands/sources/migration-help";
@@ -118,16 +116,16 @@ import {
 import { importKnowledgeCommand, indexCommand, infoCommand, initCommand } from "./commands/sources/stash-cli";
 import { tasksCommand } from "./commands/tasks/tasks-cli";
 import { workflowCommand } from "./commands/workflow-cli";
-import { bestEffort } from "./core/best-effort";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config/config";
 import { UsageError } from "./core/errors";
 import { assertNoPendingMigrationOperation } from "./core/migration-operation";
-import { getCacheDir, getConfigPath, getDbPath } from "./core/paths";
+import { getConfigPath } from "./core/paths";
+import { DURATION_UNITS, parseDuration } from "./core/time";
 import { plainize } from "./core/tty";
 import { info, isQuiet, setQuiet, setVerbose, warn } from "./core/warn";
 import { disposeDispatchResources } from "./integrations/agent/runner-dispatch";
-import { getHyphenatedBoolean, getOutputMode, initOutputMode } from "./output/context";
-import { deliverRendered, renderHtml, resolveTemplatePath } from "./output/html-render";
+import { getOutputMode, initOutputMode } from "./output/context";
+import { isFormatExemptCommand } from "./output/format-exempt";
 import { consumeSchedulerContextArg } from "./tasks/scheduler-invocation";
 import { pkgVersion } from "./version";
 
@@ -201,10 +199,17 @@ const setupCommand = defineCommand({
       type: "string",
       description: "Stash directory path (overrides stashDir in config or --config JSON)",
     },
-    "no-init": {
+    // Declared as the POSITIVE name with `default: true` so citty's native
+    // `--no-<name>` negation (it strips a leading `--no-` from ANY token and
+    // negates the remainder BEFORE consulting the declared-args table) does
+    // the work, matching the `sync --push/--no-push` pattern. A flag
+    // DECLARED as `no-init` can never be negated: `--no-init` parses as
+    // "negate `init`", a name nothing declared, leaving the real key at its
+    // default forever — see `search --no-project-context`'s identical fix.
+    init: {
       type: "boolean",
-      default: false,
-      description: "Write configuration without scaffolding the stash directory",
+      default: true,
+      description: "Scaffold the stash directory. Use --no-init to write configuration without scaffolding it.",
     },
     probe: {
       type: "boolean",
@@ -226,9 +231,7 @@ const setupCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
-      // citty treats a leading `no-` as boolean negation on some parse paths,
-      // so retain the raw argv spelling as the authoritative compatibility form.
-      const noInit = getHyphenatedBoolean(args, "no-init") || process.argv.includes("--no-init");
+      const noInit = !args.init;
       const detectOnly = args["detect-only"];
       const resetRecommended = args["reset-recommended"];
       if (detectOnly) {
@@ -301,6 +304,12 @@ const setupCommand = defineCommand({
 const healthCommand = defineCommand({
   meta: { name: "health", description: "Check akm runtime health, artifacts, and improve metrics" },
   args: {
+    // R-051: `health` is a raw `defineCommand` (not `defineJsonCommand`), so
+    // it does not get `GLOBAL_OUTPUT_ARGS` for free. `--format`/`--detail`/
+    // `--shape`/`--output` already parsed correctly here (this command has
+    // no positional for a stray value to fall into), so this is purely a
+    // `--help` visibility / consistency fix, not a behavior change.
+    ...GLOBAL_OUTPUT_ARGS,
     since: {
       type: "string",
       description: "Rolling window start (ISO timestamp, date, epoch ms, or shorthand like 24h / 7d)",
@@ -318,13 +327,16 @@ const healthCommand = defineCommand({
       description:
         "Explicit comparison window 'name=...,since=ISO,until=ISO' (repeatable, up to 4; mutually exclusive with --window-compare)",
     },
-    compare: {
-      type: "string",
-      description: "Comparison window for the --format html report's trend deltas (default: 24h)",
+    report: {
+      type: "boolean",
+      description:
+        "Fetch the full report dataset: per-run rows, trend deltas vs the prior window, and the pending proposal queue. Renders as the rich report under --format md/html and as complete data under any other format.",
+      default: false,
     },
   },
   async run({ args }) {
     let resultStatus: "pass" | "warn" | "fail" | undefined;
+    const exitCodeBeforeRun = process.exitCode;
     await runWithJsonErrors(async () => {
       // citty only surfaces the last value of a repeated flag, so read --windows
       // directly from argv to support multi-window comparison.
@@ -332,63 +344,73 @@ const healthCommand = defineCommand({
       const windows: WindowSpec[] | undefined =
         rawWindows.length > 0 ? rawWindows.map((raw) => parseWindowSpec(raw)) : undefined;
       const groupBy = args["group-by"];
-      const windowCompareRaw = args["window-compare"];
-      const mode = getOutputMode();
+      const report = args.report === true;
 
-      // `--format html` is health-specific: render the full HTML health
-      // report (charts, KPI cards, advisories) from the bespoke template.
-      // Mirrors the `md` intercept below. Two reads, exactly like the
-      // retired akm-health-report skill: the canonical per-run window plus a
-      // window-compare read for the trend deltas (defaults to 24h,
-      // overridable via --compare).
-      if (mode.format === "html") {
-        // Default the compare window to the report's own `--since` window so the
-        // trend deltas are like-for-like (e.g. last 7d vs the prior 7d). A fixed
-        // 24h default made a `--since 7d` report compare its 7-day totals against
-        // a 24-hour prior window, producing meaningless deltas.
-        const compare = args.compare ?? windowCompareRaw ?? args.since ?? "24h";
-        const result = akmHealth({ since: args.since, groupBy: "run", windowCompare: compare });
-        resultStatus = result.status;
-        const deltas = result.deltas;
-        const { buildHealthHtmlReplacements } = await import("./commands/health/html-report");
-        const { listPendingProposals } = await import("./commands/proposal/proposal");
-        const replacements = buildHealthHtmlReplacements(result, {
-          window: args.since ?? "24h",
-          compare,
-          proposals: listPendingProposals(),
-          deltas,
-        });
-        deliverRendered(renderHtml(resolveTemplatePath("health"), replacements), mode.outputPath);
-        return;
-      }
-
-      const result = akmHealth({
+      // `--report` is a DATA flag: it selects the richer read (per-run rows +
+      // window-compare deltas + the proposal queue) and nothing about the read
+      // depends on --format. The registered md/html renderers are pure
+      // functions of the result — a report-shaped result renders as the rich
+      // report, any other shape falls through to the generic rendering.
+      //
+      // The compare window defaults to the report's own `--since` window so the
+      // deltas are like-for-like (e.g. last 7d vs the prior 7d). A fixed 24h
+      // default made a `--since 7d` report compare its 7-day totals against a
+      // 24-hour prior window, producing meaningless deltas.
+      // Comparison-window precedence. An explicit `--window-compare` always
+      // wins. Otherwise `--report` seeds a like-for-like comparison from
+      // `--since`, but only when `--since` is a DURATION: `resolveWindowCompare`
+      // parses durations only, so feeding it an absolute date, ISO timestamp, or
+      // epoch value throws. And explicit `--windows` gets no implicit value at
+      // all — the two are mutually exclusive, so synthesizing one turned a valid
+      // invocation into a usage error.
+      const explicitWindows = windows !== undefined && windows.length > 0;
+      const sinceIsDuration = args.since !== undefined && parseDuration(args.since, DURATION_UNITS) !== null;
+      const implicitCompare = explicitWindows ? undefined : ((sinceIsDuration ? args.since : undefined) ?? "24h");
+      const windowCompare = report ? (args["window-compare"] ?? implicitCompare) : args["window-compare"];
+      const base = akmHealth({
         since: args.since,
-        groupBy: groupBy as "run" | undefined,
-        windowCompare: windowCompareRaw,
+        groupBy: report ? "run" : (groupBy as "run" | undefined),
+        windowCompare,
         windows,
       });
-      resultStatus = result.status;
-      // `--format md` is health-specific: render a TSV-shaped per-run or
-      // window-compare table to stdout instead of going through the JSON
-      // envelope. Other modes fall through to the standard output() path.
-      if (mode.format === "md") {
-        if (result.windows && result.windows.length > 0) {
-          deliverRendered(renderWindowCompareMd(result.windows, result.deltas), mode.outputPath);
-        } else if (result.runs) {
-          deliverRendered(renderRunsDetailMd(result.runs), mode.outputPath);
-        } else {
-          output("health", result);
-        }
-      } else {
-        output("health", result);
+      const reportCompare =
+        windowCompare ??
+        (explicitWindows
+          ? [...(base.windows ?? [])]
+              .sort((a, b) => new Date(a.since).getTime() - new Date(b.since).getTime())
+              .map((window) => window.name)
+              .join(" → ")
+          : undefined) ??
+        "24h";
+      resultStatus = base.status;
+      if (report) {
+        const { listPendingProposals } = await import("./commands/proposal/proposal");
+        output("health", {
+          ...base,
+          report: {
+            window: args.since ?? "24h",
+            compare: reportCompare,
+            comparisonMode: explicitWindows ? "custom" : "duration",
+            pendingProposals: listPendingProposals().map(({ ref, source, createdAt }) => ({ ref, source, createdAt })),
+          },
+        });
+        return;
       }
+      output("health", base);
     });
+    // R-067: `emitJsonError` (src/cli/shared.ts) no longer force-exits on the
+    // error path — it sets `process.exitCode` and returns, so a `--report`
+    // failure thrown AFTER `resultStatus` was already assigned (e.g. the
+    // proposal-queue read above) would otherwise leave `resultStatus`
+    // populated here too. Skip the status-derived exit entirely once
+    // `runWithJsonErrors` has already recorded a classified failure, so it is
+    // never clobbered by a mismatched health status.
+    if (process.exitCode !== exitCodeBeforeRun) return;
     if (resultStatus === "fail") {
-      process.exit(EXIT_GENERAL);
+      process.exitCode = EXIT_GENERAL;
     }
     if (resultStatus === "warn") {
-      process.exit(EXIT_HEALTH_WARN);
+      process.exitCode = EXIT_HEALTH_WARN;
     }
   },
 });
@@ -450,17 +472,27 @@ const completionsCommand = defineCommand({
     },
   },
   run({ args }) {
-    if (args.shell !== "bash") {
-      throw new UsageError(`Unsupported shell: ${args.shell}. Only bash is supported.`);
-    }
-    const script = generateBashCompletions(main);
-    if (args.install) {
-      const dest = installBashCompletions(script);
-      info(`Completions installed to ${dest}`);
-      info(`Restart your shell or run:  source ${dest}`);
-    } else {
-      process.stdout.write(script);
-    }
+    // R-052(b): this was a bare `run()` throwing directly, so an unsupported
+    // `--shell` value escaped straight to citty's top-level error handling
+    // instead of the standard JSON envelope — exit 1 with a raw stack trace
+    // instead of the classified exit-2 usage error every other command
+    // produces (`completions` is format-exempt, so it stays a raw
+    // `defineCommand` rather than `defineJsonCommand`, but still needs the
+    // same error-classification wrapper other bare `defineCommand`s in this
+    // file use, e.g. `help migrate` below).
+    return runWithJsonErrors(() => {
+      if (args.shell !== "bash") {
+        throw new UsageError(`Unsupported shell: ${args.shell}. Only bash is supported.`);
+      }
+      const script = generateBashCompletions(main);
+      if (args.install) {
+        const dest = installBashCompletions(script);
+        info(`Completions installed to ${dest}`);
+        info(`Restart your shell or run:  source ${dest}`);
+      } else {
+        process.stdout.write(script);
+      }
+    });
   },
 });
 
@@ -516,7 +548,6 @@ export const main = defineCommand({
     health: healthCommand,
     info: infoCommand,
     graph: graphCommand,
-    bundle: bundleCommand,
     add: addCommand,
     list: listCommand,
     remove: removeCommand,
@@ -533,7 +564,6 @@ export const main = defineCommand({
     mv: mvCommand,
     registry: registryCommand,
     migrate: migrateCommand,
-    backup: backupCommand,
     config: configCommand,
     feedback: feedbackCommand,
     history: historyCommand,
@@ -562,7 +592,15 @@ function isTaskRunWithId(argv: readonly string[]): boolean {
   const command = commandIndex >= 0 ? args[commandIndex] : undefined;
   if (command !== "tasks" && command !== "task") return false;
   const taskArgs = args.slice(commandIndex + 1);
-  return taskArgs[0] === "run" && typeof taskArgs[1] === "string" && !taskArgs[1].startsWith("-");
+  if (taskArgs[0] !== "run") return false;
+  const runCommand = (tasksCommand.subCommands as unknown as Record<string, { args?: ArgsDef }> | undefined)?.run;
+  if (!runCommand?.args) return false;
+  try {
+    const parsed = parseArgs(taskArgs.slice(1), runCommand.args) as Record<string, unknown>;
+    return typeof parsed.id === "string" && parsed.id.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /** Recovery/setup surfaces must remain reachable when config.json is invalid. */
@@ -571,12 +609,12 @@ export function shouldBypassConfigStartup(argv: readonly string[]): boolean {
   if (args.includes("--help") || args.includes("-h") || args.includes("--version") || args.includes("-v")) return true;
   const commandIndex = findCittyTopLevelCommandIndex(args, MAIN_TOP_LEVEL_ARGS);
   const command = commandIndex >= 0 ? args[commandIndex] : undefined;
-  if (command === "setup" || command === "backup" || command === "migrate") return true;
+  if (command === "setup" || command === "migrate") return true;
   if (isTaskRunWithId(argv)) return true;
   if (command !== "config") return false;
   const configIndex = args.indexOf("config");
   const subcommand = args.slice(configIndex + 1).find((arg) => !arg.startsWith("-"));
-  return subcommand === "path" || subcommand === "validate" || subcommand === "migrate";
+  return subcommand === "path" || subcommand === "validate";
 }
 
 // ── Exit codes ──────────────────────────────────────────────────────────────
@@ -587,26 +625,99 @@ export function shouldBypassConfigStartup(argv: readonly string[]): boolean {
 const EXIT_GENERAL = EXIT_CODES.GENERAL;
 const EXIT_HEALTH_WARN = EXIT_CODES.HEALTH_WARN;
 
-// Only run the CLI when this module is the direct entry point. When it is
-// imported (e.g. by the in-process test harness in tests/_helpers/cli.ts),
-// `import.meta.main` is false and we skip all startup side effects (argv
-// mutation, output-mode init, index cleanup, banner, runMain) so importers
-// can drive the `main` command themselves without the process exiting.
+// ── Top-level driver (replaces citty's `runMain`) ───────────────────────────
 //
-// Node path: this module carries a `#!/usr/bin/env bun` shebang and is launched
-// under Node via the `dist/cli-node.mjs` wrapper, which `import()`s this file
-// (so `import.meta.main` is false here even though the CLI is the real entry).
-// The wrapper sets `AKM_NODE_ENTRY=1` to opt into the startup block. The test
-// harness never sets it, so importing cli.ts under Bun stays inert as before.
-if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
+// R-032: citty's own `runMain` catches EVERY error escaping `runCommand` —
+// including its unexported `CLIError`, thrown for "Unknown command …", "No
+// command specified.", "Missing required argument/positional …", and invalid
+// enum values — and unconditionally calls `process.exit(1)`, regardless of
+// error kind (node_modules/citty/dist/index.mjs). That collapsed usage
+// mistakes (`akm totally-bogus`, `akm wiki list`, bare `akm log`) onto exit
+// code 1 instead of the documented usage-error code 2 (STABILITY.md's
+// exit-code table), and there is no way to override it from outside
+// `runMain`'s own call frame: once it calls `process.exit`, nothing run
+// afterward — including a `finally` further up the stack — gets a chance to
+// execute. So the CLI drives citty's exported `runCommand` directly instead
+// of `runMain`, replicating `runMain`'s `--help` / `--version`
+// short-circuits and its CLIError → usage-banner rendering, but classifying
+// a CLIError as USAGE (2) instead of GENERAL (1). Every other error escaping
+// this boundary keeps the previous GENERAL (1) mapping — this only
+// reclassifies the one error family citty itself throws before any of our
+// own command bodies (and their `runWithJsonErrors` / `emitJsonError`
+// classification) ever run.
+
+const HELP_FLAGS = ["--help", "-h"];
+const VERSION_FLAGS = ["--version", "-v"];
+
+// biome-ignore lint/suspicious/noExplicitAny: citty command tree uses dynamic shapes (same precedent as src/commands/completions.ts and defineGroupCommand in src/cli/shared.ts)
+type AnyCittyCommand = CommandDef<any>;
+
+/**
+ * Duck-types citty's internal, unexported `CLIError`
+ * (node_modules/citty/dist/index.mjs) — the class `runCommand` throws for
+ * "Unknown command …", "No command specified.", "Missing required
+ * argument/positional …", and invalid enum values. citty does not export
+ * this class, so `instanceof` isn't available; `name` is set in its
+ * constructor (`this.name = "CLIError"`) and is stable across the pinned
+ * `citty@^0.2.2` dependency.
+ */
+function isCittyCliError(error: unknown): error is Error {
+  return error instanceof Error && error.name === "CLIError";
+}
+
+function findCittySubCommandByName(
+  subCommands: Record<string, AnyCittyCommand>,
+  name: string,
+): AnyCittyCommand | undefined {
+  if (name in subCommands) return subCommands[name];
+  for (const sub of Object.values(subCommands)) {
+    const alias = (sub.meta as { alias?: string | string[] } | undefined)?.alias;
+    const aliases = Array.isArray(alias) ? alias : alias ? [alias] : [];
+    if (aliases.includes(name)) return sub;
+  }
+  return undefined;
+}
+
+/**
+ * Re-implementation of citty's own (unexported) `resolveSubCommand`: walks
+ * `rawArgs` down the subcommand tree the same way its private
+ * `findSubCommandIndex` / `_findSubCommand` do, so the usage banner rendered
+ * on a CLIError names the deepest command the user was actually invoking —
+ * matching what citty's own `runMain` would have shown, byte-for-byte.
+ */
+function resolveDeepestCittyCommand(
+  cmd: AnyCittyCommand,
+  rawArgs: readonly string[],
+  parent?: AnyCittyCommand,
+): [AnyCittyCommand, AnyCittyCommand | undefined] {
+  const subCommands = cmd.subCommands as Record<string, AnyCittyCommand> | undefined;
+  if (subCommands && Object.keys(subCommands).length > 0) {
+    const idx = findCittyTopLevelCommandIndex(rawArgs, (cmd.args ?? {}) as CittyArgsDefinitionForScan);
+    const name = idx >= 0 ? rawArgs[idx] : undefined;
+    if (name !== undefined) {
+      const sub = findCittySubCommandByName(subCommands, name);
+      if (sub) return resolveDeepestCittyCommand(sub, rawArgs.slice(idx + 1), cmd);
+    }
+  }
+  return [cmd, parent];
+}
+
+/**
+ * The CLI's real startup sequence, extracted into a function so error paths
+ * can `return` early — top-level `return` is a syntax error in an ES module,
+ * and this used to rely on `emitJsonError`'s `never` return type (a
+ * synchronous `process.exit`) to stop execution instead. Now that
+ * `emitJsonError` (src/cli/shared.ts, R-067) only records `process.exitCode`
+ * and returns, every direct call site here needs its own explicit `return;`
+ * to stop the rest of startup from running after a fatal early error.
+ */
+async function runCli(): Promise<void> {
   try {
     process.argv = consumeSchedulerContextArg(process.argv);
   } catch (error: unknown) {
     emitJsonError(error);
+    return;
   }
-  // citty reads process.argv directly and does not accept a custom argv array,
-  // so we must replace process.argv with the normalized version before runMain.
-  process.argv = normalizeShowArgv(process.argv);
   // Mint the ParsedInvocation singleton from the (normalized) argv — the ONE
   // place argv is parsed for the whole process (plan §10.7 / chunk-9 WI-9.9).
   // Every out-of-cli.ts command module reads argv state through
@@ -624,6 +735,7 @@ if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
     initOutputMode(process.argv, bypassConfig ? (DEFAULT_CONFIG.output ?? {}) : (loadConfig().output ?? {}));
   } catch (error: unknown) {
     emitJsonError(error);
+    return;
   }
 
   // `--shape summary` is only meaningful on `akm show`. Reject it up front for
@@ -635,22 +747,21 @@ if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
   const topLevelCommand = findCittyTopLevelCommand(process.argv.slice(2), MAIN_TOP_LEVEL_ARGS);
   if (getOutputMode().shape === "summary" && topLevelCommand !== "show") {
     emitJsonError(new UsageError("'--shape summary' is only valid on 'akm show'.", "INVALID_SHAPE_VALUE"));
+    return;
   }
 
-  // One-time cleanup of stale 0.7.x index file at the old cache location.
-  // 0.8.0 moved the index to $XDG_DATA_HOME/akm/index.db (getDataDir()).
-  // If the old file exists at $XDG_CACHE_HOME/akm/index.db, remove it so the
-  // user isn't confused by a phantom DB. Best-effort; never fatal.
-  if (!shouldBypassConfigStartup(process.argv)) {
-    bestEffort(() => {
-      const oldIndexPath = path.join(getCacheDir(), "index.db");
-      if (fs.existsSync(oldIndexPath)) {
-        fs.rmSync(oldIndexPath, { force: true });
-        fs.rmSync(`${oldIndexPath}-shm`, { force: true });
-        fs.rmSync(`${oldIndexPath}-wal`, { force: true });
-        warn(`Cleaned up stale 0.7.x index from ${oldIndexPath}. Canonical path is now ${getDbPath()}.`);
-      }
-    }, "stale 0.7.x index cleanup is non-fatal");
+  // D7 — every command that renders through output() honours all six --format
+  // values. The declared exempt set (src/output/format-exempt.ts) does not
+  // render an envelope at all, so warn rather than pretend: silently ignoring
+  // the flag is what made the old md/html behaviour so hard to discover. A
+  // warning, not an error, because the flag is harmless here and scripts that
+  // pass --format globally to a mixed batch of commands should still work.
+  const invocation = getParsedInvocation();
+  if (
+    (invocation.hasFlag("--format") || invocation.getFlagValue("--format") !== undefined) &&
+    isFormatExemptCommand(topLevelCommand, invocation.userArgs[1])
+  ) {
+    warn(`[output] '--format' has no effect on 'akm ${topLevelCommand}' — its output is not a result envelope.`);
   }
 
   // First-time-user breadcrumb: when run with no subcommand AND no config
@@ -678,9 +789,71 @@ if (import.meta.main || process.env.AKM_NODE_ENTRY === "1") {
     );
   })();
 
+  const rawArgs = process.argv.slice(2);
   try {
-    await runMain(main);
+    // Mirrors citty's own builtin-flag short-circuit in `runMain` (main's own
+    // args never declare `help`/`h`/`version`/`v`, so both stay the fixed
+    // defaults citty would have computed too).
+    //
+    // Scan only akm's OWN arguments: everything after a literal `--` belongs to
+    // the child process (`akm env run <ref> -- tool --help`, `akm secret run
+    // <ref> -- tool -h`). Scanning the tail printed akm's usage and returned
+    // without ever launching the requested command.
+    const passthroughAt = rawArgs.indexOf("--");
+    const ownArgs = passthroughAt === -1 ? rawArgs : rawArgs.slice(0, passthroughAt);
+    if (HELP_FLAGS.some((flag) => ownArgs.includes(flag))) {
+      const [resolved, parent] = resolveDeepestCittyCommand(main, rawArgs);
+      await showUsage(resolved as CommandDef, parent as CommandDef | undefined);
+      return;
+    }
+    if (rawArgs.length === 1 && VERSION_FLAGS.includes(rawArgs[0] as string)) {
+      console.log(pkgVersion);
+      return;
+    }
+    await runCommand(main, { rawArgs });
+  } catch (error) {
+    if (isCittyCliError(error)) {
+      // R-032: reclassify citty's own "unknown command" / "no command
+      // specified" / "missing required argument" family as USAGE (2) —
+      // citty's `runMain` would have printed this same usage banner +
+      // message, then unconditionally called `process.exit(1)`.
+      const [resolved, parent] = resolveDeepestCittyCommand(main, rawArgs);
+      await showUsage(resolved as CommandDef, parent as CommandDef | undefined);
+      console.error(error.message);
+      process.exitCode = EXIT_CODES.USAGE;
+      return;
+    }
+    // Anything else escaping here is a genuinely unexpected failure outside
+    // any command's own error handling — every command wraps its body in
+    // `runWithJsonErrors`, `defineJsonCommand`, or `defineGroupCommand`, all
+    // three of which route thrown errors through `emitJsonError` before they
+    // could ever reach this boundary. Route it the same way rather than
+    // hard-coding GENERAL(1): the CLI contract reserves 1 for general/not-found
+    // and requires a non-`AkmError` throw to render the JSON failure envelope
+    // with INTERNAL(70) (AGENTS.md "CLI Contract"), which is what lets
+    // automation tell an internal defect apart from an ordinary failure.
+    // `emitJsonError` classifies and sets `process.exitCode` itself.
+    emitJsonError(error);
   } finally {
     await disposeDispatchResources();
   }
+}
+
+// Only run the CLI when this module is the direct entry point. When it is
+// imported (e.g. by the in-process test harness in tests/_helpers/cli.ts),
+// `import.meta.main` is false and we skip all startup side effects (argv
+// mutation, output-mode init, index cleanup, banner, command dispatch) so
+// importers can drive the `main` command themselves without the process
+// exiting.
+//
+// Node path: this module carries a `#!/usr/bin/env bun` shebang and is launched
+// under Node via the `dist/cli-node.mjs` wrapper, which `import()`s this file
+// (so `import.meta.main` is false here even though the CLI is the real entry).
+// The wrapper sets `AKM_NODE_ENTRY=1` to opt into the startup block. Compiled
+// standalone binaries are the same shape: their entry is
+// `scripts/akm-standalone.ts` (which also embeds the akm-migrate tool), and it
+// sets `AKM_STANDALONE_ENTRY=1` before importing this file. The test harness
+// sets neither, so importing cli.ts under Bun stays inert as before.
+if (import.meta.main || process.env.AKM_NODE_ENTRY === "1" || process.env.AKM_STANDALONE_ENTRY === "1") {
+  await runCli();
 }

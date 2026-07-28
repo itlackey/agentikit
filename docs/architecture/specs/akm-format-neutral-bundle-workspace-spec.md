@@ -52,7 +52,13 @@ Workspace
 └── proposals and verified file changes
 ```
 
-OKF is a flagship built-in adapter and preferred neutral interchange format. It is not AKM's internal schema and is not an AKM asset type.
+OKF is the first-class least-common-denominator for Markdown concepts through
+the built-in `okf` adapter. AKM-authored Markdown is an OKF-compatible superset,
+while non-Markdown serialization and all specialized capabilities remain
+adapter-owned. The shared `IndexDocument` is an additive cross-format
+projection whose basic Markdown fields align with OKF; it is not the database's
+on-disk document format. See
+[okf-support.md](okf-support.md).
 
 ---
 
@@ -169,7 +175,7 @@ A workspace is not a content bundle and is not a directory that must contain all
 
 ### 7.2 Bundle package
 
-A distribution and versioning unit that contains one or more native component roots. A package may be a Git repository, archive, npm package, filesystem directory, website snapshot, or subdirectory of a larger repository.
+A distribution and versioning unit registered with one native component root. A package may be a Git repository, archive, npm package, filesystem directory, website snapshot, or subdirectory of a larger repository; separately governed roots are registered as separate bundles.
 
 ### 7.3 Bundle installation
 
@@ -177,9 +183,9 @@ A local materialized revision of a bundle package, registered under a stable wor
 
 ### 7.4 Component
 
-A subtree within a bundle installation interpreted by exactly one adapter.
+A bundle installation's configured root, interpreted by exactly one adapter.
 
-Examples:
+Examples of separate bundle component roots:
 
 ```text
 knowledge/  -> OKF adapter
@@ -191,7 +197,7 @@ env/        -> environment adapter
 skills/     -> Agent Skills adapter
 ```
 
-A bundle may have one component or many components.
+Every bundle has exactly one component in 0.9.0.
 
 ### 7.5 Materializer
 
@@ -214,7 +220,7 @@ The workspace-unique, path-like identity of an indexed item (reconciled grammar,
 ```text
 ref        := [ bundle "//" ] conceptId [ "#" fragment ]
 bundle     := slug            # workspace bundle name; no "/", ":", ".", or "#"
-conceptId  := path within the bundle with the adapter-recognized extension removed;
+conceptId  := adapter-canonical path within the bundle;
               MAY contain "/"; MUST NOT contain "#"; opaque to the core below the "//"
 ```
 
@@ -223,11 +229,11 @@ Example:
 ```text
 team-catalog//tables/orders
 release-automation//workflows/release
-project-claude//.claude/skills/pdf-processing
+project-claude//skills/pdf-processing
 knowledge/http-caching            # short form; CLI input sugar only (§11.1)
 ```
 
-The **component** is not a ref segment. It is a provenance column derived at index time by longest-prefix matching the conceptId's leading path segments against the bundle's configured component roots. Reclassifying a component or re-mounting a root never changes a ref; only moving the file does (§11.2).
+The **component** is not a ref segment. It is provenance supplied by the bundle's single configured component; the adapter derives each conceptId relative to that component root. Reclassifying the component does not change a ref; moving or renaming the native item does (§11.2).
 
 ### 7.9 Export
 
@@ -429,11 +435,11 @@ The bundle slug MUST NOT contain `/`, `:`, `.`, or `#` (this keeps `bundle//` le
 
 **Short-ref resolution (amended per ref-grammar decision D-R4).** A short ref from CLI/API input resolves to the **defaultBundle** if the conceptId exists there, otherwise to the first bundle containing the conceptId in **installation priority order** (the config/`deriveInstallations` order — the same order origin-less lookups walk today). First match wins, deterministically; no match is a not-found error naming the forms tried. Short refs inside bundle *content* resolve to the **containing** bundle, never defaultBundle. Scoped lookup (the old `local//`) is an explicit resolver option (`{ only: bundleId }`), not a ref spelling.
 
-**Short refs in portable content.** A short ref appearing inside a file that ships in a bundle resolves to the **containing** bundle, never the installer's default bundle, so intra-bundle references stay portable by construction. Native bundle-relative links (OKF links, §26.3) are the preferred intra-bundle reference form.
+**Short refs in portable content.** A short ref appearing inside a file that ships in a bundle resolves to the **containing** bundle, never the installer's default bundle, so intra-bundle references stay portable by construction. Each adapter's native link form is preferred inside its format; for an OKF bundle that is the OKF bundle-relative link syntax (§26.3).
 
 **Canonicalization.** conceptIds are normalized at index/parse time: path separators normalized to `/`; Unicode normalized to NFC; identity is byte-wise case-sensitive. Indexing MUST emit a `case-collision` diagnostic when two files in one component differ only under case folding or NFC/NFD normalization (they cannot round-trip through case-insensitive checkouts). The traversal, null-byte, and drive-letter guards of the current `validateName` are normative MUSTs for conceptId validation, together with a `#` rejection.
 
-**Body-ref grammar.** Refs embedded in prose MUST use the fully-qualified `bundle//conceptId` form (the bundle-slug charset above makes it lexically anchored), or a native link form owned by the adapter. Lint's missing-ref scan and `akm mv`'s inbound-xref rewriting operate only on these anchored forms; bare short refs in prose are not recognized as refs.
+**Body-ref grammar.** Refs embedded in prose MUST use the fully-qualified `bundle//conceptId` form (the bundle-slug charset above makes it lexically anchored), or a native link form owned by the adapter. Lint's missing-ref scan operates only on these anchored forms; bare short refs in prose are not recognized as refs and MUST NOT be rewritten by any tool. (0.9.0: the other consumer of this rule, `akm mv`'s inbound-xref rewriting, does not honour it — it implements the rule inverted, rewriting bare conceptIds while matching no `bundle//` form at all, which is why the command ships Experimental and outside the stability contract.)
 
 ### 11.2 Ref invariants
 
@@ -441,8 +447,8 @@ The bundle slug MUST NOT contain `/`, `:`, `.`, or `#` (this keeps `bundle//` le
 - Native semantic `type` MUST NOT appear in refs unless it is naturally part of the conceptId path.
 - Changing a Git remote, cache path, or materializer MUST NOT change item refs.
 - Reclassifying a native item (changing its `type`, re-validating under another adapter, re-mounting a root) without moving it MUST NOT change its ref.
-- Moving or renaming a native item changes path-based identity and MUST use an explicit state-rekey transaction.
-- The core resolves conceptId → path **only via the index**. Adapters own both stripping directions (`recognize` strips the extension; `placeNew` re-adds it, longest-match against the adapter's declared extension set so `foo.yaml.md` has one defined answer). The core MAY treat a conceptId as a `/`-segmented string for prefix matching (component derivation, ref-prefix search, derived-twin keys) but MUST NOT reconstruct filesystem paths from it.
+- Moving or renaming a native item changes path-based identity, and the new path is a NEW identity: the move is delete plus create. Learned state (utility, salience, outcomes, usage history) stays with the old identity and ages out; the destination starts fresh. Cross-bundle movement is copy/import plus delete — there is no identity-preserving cross-bundle move. (0.9.0 amendment: this replaces "MUST use an explicit state-rekey transaction", which was a product choice taken during this refactor rather than a constraint the architecture imposes. `akm mv`, which implements the superseded rule, still ships but is Experimental and outside the stability contract, so nothing normative may depend on it. A narrow same-bundle `rename` that preserves learned state MAY return if usage shows it is materially valuable; it would resolve through the index, use adapter-owned placement, accept only qualified refs, and rebuild derived index data rather than preserve row IDs.)
+- The core resolves conceptId → path **only via the index**. Adapters own canonicalization in both directions: `recognize` decides whether an extension is retained or stripped, and `placeNew` maps the conceptId back to native placement. The core MAY treat a conceptId as a `/`-segmented string for prefix matching (component derivation, ref-prefix search, derived-twin keys) but MUST NOT reconstruct filesystem paths from it.
 - Clarifying note (ref-grammar decision D-R2, no rule change): "path within the bundle" means the item's path **as the adapter defines it** — a directory-item's path is its directory (a skill's id is `skills/<dir>`, not `skills/<dir>/SKILL`).
 
 ### 11.3 Export refs
@@ -662,7 +668,10 @@ Workspace policy MUST NOT silently rewrite native format semantics.
 
 ### 14.1 Normalized projection
 
-The common content model ends at `IndexDocument`:
+The additive common projection ends at `IndexDocument`. Its basic Markdown
+surface aligns with OKF so any adapter can supply path identity, an open type,
+content, and links; native adapters may add fields and capabilities without
+narrowing that baseline:
 
 ```ts
 interface IndexDocument {
@@ -673,7 +682,7 @@ interface IndexDocument {
   path: string;             // absolute local path (the read path)
   hash: string;
   adapterId: string;
-  type?: string;            // open; frontmatter (native) or adapter-derived (foreign)
+  type?: string;            // open descriptive label supplied by the adapter
 
   // FTS columns (weights pinned, §14.4)
   name: string;             // 10
@@ -706,7 +715,13 @@ interface IndexDocument {
 }
 ```
 
-`type` is an open descriptive label (the OKF field, DEV-1). It MAY drive presentation, ranking, and filtering. It MUST NOT authorize execution, be part of identity, or select the core storage/write path. Sensitivity suppression (env/secret redaction — existing behavior, ported) is keyed on the **adapter**, never on `type`, so frontmatter cannot opt out of it.
+`type` is an open descriptive label supplied by the selected adapter. The OKF
+adapter reads OKF's frontmatter `type`; other adapters derive it from their own
+native semantics. It MAY drive presentation, ranking, and filtering. It MUST
+NOT authorize execution, be part of identity, or select the core storage/write
+path. Sensitivity suppression (env/secret redaction — existing behavior,
+ported) is keyed on the **adapter**, never on `type`, so content metadata cannot
+opt out of it.
 
 The folding rules that map richer native metadata (examples, usage, intent, xrefs, when-to-use, outline, parameters, body opening) into the FTS `hints`/`content` columns are a **core-shared helper that adapters call** — one fold, not one per adapter — because the embedding-input hashes and frozen retrieval canaries are pinned to that exact surface.
 
@@ -896,9 +911,7 @@ website snapshot
 Example:
 
 ```text
-akm ingest typescript-docs/pages \
-  --to personal/knowledge \
-  --adapter okf
+akm ingest typescript-docs/pages --to personal/knowledge --adapter okf   // doclint:ignore — not yet implemented, target surface
 ```
 
 The live website installation remains refreshable and read-only. The exported destination is separately editable, versioned, and eligible for ordinary improvement.
@@ -1687,16 +1700,16 @@ akm init
 akm info
 akm health
 
-akm bundle create|install|list|show|items|update|remove|sync|export
+akm bundle create|install|list|show|items|update|remove|sync|export  // doclint:ignore — not yet implemented, target surface
 akm registry search|show
 
 akm search
 akm show
 akm lint
 akm import
-akm ingest
+akm ingest                      // doclint:ignore — not yet implemented, target surface
 
-akm bind|unbind|bindings        # Tier B — deferred with the Binding record (§18 staging note)
+akm bind|unbind|bindings        // Tier B — deferred with the Binding record (§18 staging note); doclint:ignore — not yet implemented
 
 akm proposal list|show|diff|accept|reject|revert
 akm improve

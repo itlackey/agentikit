@@ -25,7 +25,7 @@ export interface TaskWorkflowTarget {
 
 export type TaskPromptSource =
   | { kind: "inline"; text: string }
-  /** A stash asset ref like `agent:my-agent` or `command:foo`. */
+  /** A stash asset ref like `agents/my-agent` or `commands/foo`. */
   | { kind: "asset"; ref: string }
   /** A path resolved relative to the task file's directory. */
   | { kind: "file"; path: string };
@@ -56,7 +56,7 @@ export interface TaskCommandTarget {
 export type TaskTarget = TaskWorkflowTarget | TaskPromptTarget | TaskCommandTarget;
 
 export interface TaskDocument {
-  /** Runtime schema version. Valid 0.8 task YAML is normalized to this shape while reading. */
+  /** Runtime and on-disk schema version. */
   version: typeof TASK_SCHEMA_VERSION;
   schemaVersion: typeof TASK_SCHEMA_VERSION;
   /** Filesystem-derived id (basename without `.yml`). */

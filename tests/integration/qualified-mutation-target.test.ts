@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
+import { getDbPath } from "../../src/core/paths";
+import { akmIndex } from "../../src/indexer/indexer";
+import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
 import { runCliCapture } from "../_helpers/cli";
 import {
   type IsolatedAkmStorage,
@@ -117,6 +120,23 @@ describe("qualified mutation targets", () => {
     expect(fs.existsSync(path.join(team, "env", "prod.env"))).toBe(true);
   });
 
+  test("a derived implicit qualifier bypasses a different defaultWriteTarget", async () => {
+    const team = sandbox("akm-qualified-implicit-default");
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      bundles: { team: { path: team, writable: true } },
+      defaultWriteTarget: "team",
+    });
+    const value = seed(storage.root, "implicit-value.txt", "secret-value");
+
+    const result = await runCliCapture(["env", "set", "stash//env/implicit", "API_TOKEN", "--from-file", value]);
+
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).ref).toBe("stash//env/implicit");
+    expect(fs.existsSync(path.join(storage.stashDir, "env", "implicit.env"))).toBe(true);
+    expect(fs.existsSync(path.join(team, "env", "implicit.env"))).toBe(false);
+  });
+
   test("the configured default bundle keeps the short display spelling", async () => {
     const team = sandbox("akm-qualified-default-display");
     writeSandboxConfig({
@@ -162,6 +182,34 @@ describe("qualified mutation targets", () => {
     const imported = await runCliCapture(["import", source, "--target", "team"]);
     expect(imported.code).toBe(0);
     expect(JSON.parse(imported.stdout).ref).toBe("team//knowledge/guide");
+  });
+
+  test("targeted write indexing retains the configured bundle identity", async () => {
+    const team = sandbox("akm-qualified-targeted-index");
+    configure(team);
+    seed(storage.stashDir, "memories/seed.md", "---\ndescription: seed\n---\nSeed.\n");
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const remembered = await runCliCapture([
+      "remember",
+      "Indexed team note",
+      "--name",
+      "indexed-team-note",
+      "--target",
+      "team",
+    ]);
+    expect(remembered.code).toBe(0);
+
+    const db = openExistingDatabase(getDbPath());
+    try {
+      expect(
+        db
+          .prepare("SELECT item_ref AS itemRef FROM entries WHERE file_path = ?")
+          .get(JSON.parse(remembered.stdout).path),
+      ).toEqual({ itemRef: "team//memories/indexed-team-note" });
+    } finally {
+      closeDatabase(db);
+    }
   });
 
   test("qualified xref and supersedes refs disambiguate duplicate names", async () => {

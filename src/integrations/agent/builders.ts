@@ -18,20 +18,9 @@ import { ConfigError } from "../../core/errors";
 import { HARNESS_REGISTRY } from "../harnesses";
 // Types + shared validation helpers live in the leaf module `builder-shared.ts`
 // so per-harness builders (harnesses/claude/agent-builder.ts) can depend on them
-// without importing this file back — avoiding an init-order cycle through
-// BUILTIN_BUILDERS (#563). Re-exported here so existing `agent/builders` import
-// sites keep working.
+// without importing this file back, avoiding an init-order cycle through
+// BUILTIN_BUILDERS (#563).
 import type { AgentCommandBuilder } from "./builder-shared";
-
-export type { AgentCommandBuilder, AgentDispatchRequest, BuiltCommand } from "./builder-shared";
-export { assertNotFlag, normalizeTools } from "./builder-shared";
-
-// ── Platform builders ─────────────────────────────────────────────────────────
-
-// The OpenCode builder was migrated to its harness directory in #564
-// (`harnesses/opencode/agent-builder.ts`) and the Claude Code builder in #563
-// (`harnesses/claude/agent-builder.ts`). Both are imported back into
-// BUILTIN_BUILDERS below so platform routing is unchanged.
 
 // ── Registry ──────────────────────────────────────────────────────────────────
 

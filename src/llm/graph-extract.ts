@@ -8,7 +8,7 @@
  * Given a single asset body (typically a `memory:` or `knowledge:` file),
  * asks the configured LLM to surface the entities mentioned in it and the
  * relations between them. The pass itself
- * (`src/indexer/graph-extraction.ts`) is responsible for deciding which
+ * (`src/indexer/graph/graph-extraction.ts`) is responsible for deciding which
  * files to extract, persisting the resulting nodes/edges to the index DB,
  * and feeding the graph data into the FTS5+boosts
  * search pipeline as a single boost component.
@@ -16,18 +16,17 @@
  * This module is intentionally tiny and stateless so tests can stub it via
  * `mock.module("../src/llm/graph-extract", ...)` without hitting a network.
  *
- * Locked v1 contract (#208): the LLM connection always comes from the
- * selected named LLM engine. Callers obtain
- * the connection via `resolveIndexPassLLM("graph", config)` and pass it
- * straight through.
+ * The LLM connection comes from the selected named engine. Callers obtain it
+ * via `resolveIndexPassLLM("graph", config)` and pass it straight through.
  */
 
 import systemPromptTemplate from "../assets/prompts/graph-extract-system.md" with { type: "text" };
 import userPromptTemplate from "../assets/prompts/graph-extract-user-prompt.md" with { type: "text" };
 import { toErrorMessage } from "../core/common";
 import type { AkmConfig, LlmConnectionConfig } from "../core/config/config";
+import { parseEmbeddedJsonResponse } from "../core/parse";
 import { warn, warnVerbose } from "../core/warn";
-import { chatCompletion, isContextSizeError, parseEmbeddedJsonResponse } from "./client";
+import { chatCompletion, isContextSizeError } from "./client";
 import { type TryLlmFeatureFallbackEvent, tryLlmFeature } from "./feature-gate";
 import { callStructured } from "./structured-call";
 
@@ -59,12 +58,6 @@ const SYSTEM_PROMPT = systemPromptTemplate;
 const USER_PROMPT_PREFIX = userPromptTemplate
   .replace("{{MAX_ENTITIES}}", String(MAX_ENTITIES_PER_ASSET))
   .replace("{{MAX_RELATIONS}}", String(MAX_RELATIONS_PER_ASSET));
-
-// `isContextSizeError` is defined in `./client` and re-exported here so the
-// graph extractor and the retry classifier (`isRetryable`) share one
-// definition (#496). Re-exported (not just imported) to preserve existing
-// importers of this module — including its unit test.
-export { isContextSizeError } from "./client";
 
 /** Single edge. `type` is optional — callers tolerate undefined and use "" for grouping. */
 export interface GraphRelation {

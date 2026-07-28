@@ -10,9 +10,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { parseConfigValue } from "../../../src/commands/config-cli";
+import { parseAssetRef } from "../../../scripts/akm-migrate/migrate/legacy-ref-grammar";
+import { setConfigValue } from "../../../src/commands/config-cli";
+import type { AkmConfig } from "../../../src/core/config/config";
 import { ConfigError, NotFoundError, UsageError } from "../../../src/core/errors";
-import { parseAssetRef } from "../../../src/migrate/legacy-ref-grammar";
 
 // ── #15: parseAssetRef — MISSING_REQUIRED_ARGUMENT code ────────────────────
 
@@ -74,37 +75,14 @@ describe("parseAssetRef error codes (#15)", () => {
   });
 });
 
-// ── #13: exit code classification ────────────────────────────────────────────
-
-describe("error class exit-code classification (#13)", () => {
-  test("UsageError should be classified as exit 2", () => {
-    const err = new UsageError("bad input");
-    // Verify the code exists so callers can distinguish
-    expect(err.name).toBe("UsageError");
-    expect(err instanceof UsageError).toBe(true);
-  });
-
-  test("ConfigError should be classified as exit 78", () => {
-    const err = new ConfigError("config bad");
-    expect(err.name).toBe("ConfigError");
-    expect(err instanceof ConfigError).toBe(true);
-  });
-
-  test("NotFoundError should be classified as exit 1 (GENERAL)", () => {
-    const err = new NotFoundError("not found");
-    expect(err.name).toBe("NotFoundError");
-    expect(err instanceof NotFoundError).toBe(true);
-  });
-
-  test("UsageError and ConfigError are distinguishable via instanceof", () => {
-    const usage = new UsageError("bad");
-    const config = new ConfigError("bad");
-    expect(usage instanceof UsageError).toBe(true);
-    expect(usage instanceof ConfigError).toBe(false);
-    expect(config instanceof ConfigError).toBe(true);
-    expect(config instanceof UsageError).toBe(false);
-  });
-});
+// #13's "error class exit-code classification" describe block was DELETED
+// here (D2, Phase 2 triage): all 4 tests asserted only `err.name` and
+// `instanceof` — tautologies over JS class semantics ("a UsageError is an
+// instanceof UsageError") that can never fail regardless of what exit code
+// the CLI actually emits. Real coverage of the exit-code mapping lives in
+// tests/cli/exit-code-classification.test.ts:60-99, which drives the actual
+// `emitJsonError` seam and asserts the real process.exitCode values (2 / 78 /
+// 1 / 70).
 
 // ── #8: hint field rendered ───────────────────────────────────────────────────
 
@@ -139,11 +117,18 @@ describe("error hint rendering (#8)", () => {
 });
 
 // ── #16: config set sources error message says "sources" ─────────────────────
+//
+// R-063 #5: previously exercised via `parseConfigValue`, a compatibility
+// shim removed as dead code (zero production callers) — see the note in
+// tests/config-cli.test.ts. `setConfigValue` is the live implementation
+// backing `akm config set`.
 
-describe("config-cli parseConfigValue sources error message (#16)", () => {
+describe("config-cli setConfigValue sources error message (#16)", () => {
+  const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
+
   test("invalid sources value shows 'sources' not 'stashes' in error", () => {
     try {
-      parseConfigValue("sources", "not-json");
+      setConfigValue(base, "sources", "not-json");
       throw new Error("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(UsageError);
@@ -155,7 +140,7 @@ describe("config-cli parseConfigValue sources error message (#16)", () => {
 
   test("retired stashes path is rejected without aliasing to sources", () => {
     try {
-      parseConfigValue("stashes", "not-json");
+      setConfigValue(base, "stashes", "not-json");
       throw new Error("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(UsageError);
@@ -170,7 +155,7 @@ describe("config-cli parseConfigValue sources error message (#16)", () => {
     // used `sources`, which the 0.9.0 bundles cutover retired outright; the
     // surviving `registries` array key exercises the same error-path shape.
     try {
-      parseConfigValue("registries", "[{}]");
+      setConfigValue(base, "registries", "[{}]");
       throw new Error("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(UsageError);

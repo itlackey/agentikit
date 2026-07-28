@@ -179,14 +179,24 @@ describe("tryLlmFeature", () => {
   });
 
   test("returns the fallback on hard timeout", async () => {
+    // RUNTIME-08: `runWithTimeout` (src/llm/feature-gate.ts:188-199) has no
+    // cancellation path, so the `fn` below keeps running in the background
+    // after the 25ms gate timeout wins the race — its own 200ms `setTimeout`
+    // fires for real, orphaned, well after this test's assertions are done.
+    // Production has no seam to cancel it (adding one is out of scope here),
+    // but since the test itself owns the `fn` closure, it can clear that
+    // real timer directly the instant the gate settles, with no change to
+    // production behaviour and no fake-timer choreography needed.
     const events: { reason: string; error?: Error }[] = [];
+    let lateTimer: ReturnType<typeof setTimeout> | undefined;
     const result = await tryLlmFeature(
       "memory_inference",
       configWith({ memory_inference: true }),
-      () => new Promise<string>((resolve) => setTimeout(() => resolve("late"), 200)),
+      () => new Promise<string>((resolve) => (lateTimer = setTimeout(() => resolve("late"), 200))),
       "fallback",
       { timeoutMs: 25, onFallback: (e) => events.push({ reason: e.reason, error: e.error }) },
     );
+    clearTimeout(lateTimer);
     expect(result).toBe("fallback");
     expect(events).toHaveLength(1);
     expect(events[0]!.reason).toBe("timeout");
@@ -213,17 +223,22 @@ describe("tryLlmFeature", () => {
 test("timeoutMs in opts overrides DEFAULT_TIMEOUT_MS (25 ms gate, 200 ms fn)", async () => {
   // When timeoutMs is smaller than the fn's delay, the wrapper must time out
   // and return the fallback — proving the per-call override works.
+  // RUNTIME-08: see the sibling test above — clear the test-owned `fn`
+  // timer immediately after the gate settles so the real 200ms timeout
+  // isn't left running in the background with nothing to cancel it.
   const events: { reason: string; error?: Error }[] = [];
+  let lateTimer: ReturnType<typeof setTimeout> | undefined;
   const result = await tryLlmFeature(
     "memory_inference",
     configWith({ memory_inference: true }),
-    () => new Promise<string>((resolve) => setTimeout(() => resolve("late"), 200)),
+    () => new Promise<string>((resolve) => (lateTimer = setTimeout(() => resolve("late"), 200))),
     "fallback-from-gate-timeout",
     {
       timeoutMs: 25,
       onFallback: (e) => events.push({ reason: e.reason, error: e.error }),
     },
   );
+  clearTimeout(lateTimer);
   expect(result).toBe("fallback-from-gate-timeout");
   expect(events).toHaveLength(1);
   expect(events[0]!.reason).toBe("timeout");

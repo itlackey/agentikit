@@ -37,7 +37,7 @@ import { buildChildEnv } from "./child-env";
 /**
  * Walk each stash's env files and return one entry per `.env` file, using the
  * env asset spec's canonical-name logic (e.g. `env/team/prod.env` →
- * `env:team/prod`, `env/team/.env` → `env:team/default`).
+ * `env/team/prod`, `env/team/.env` → `env/team/default`).
  */
 function listEnvsRecursive(
   listKeysFn: (envPath: string) => { keys: string[] },
@@ -186,6 +186,22 @@ const envPathCommand = defineJsonCommand({
           `         To inject values run: akm env run ${args.ref} -- <command>\n`,
       );
     }
+    // F3/B3: this stdout write IS the payload — a bare absolute path for
+    // shell substitution (`$(akm env path <ref>)`, Docker `_FILE` /
+    // `--env-file`) — not a field inside a result envelope. `env path` is
+    // now declared format-exempt (src/output/format-exempt.ts, same
+    // classification as `env run`/`secret run`/`hints`), so `--format`
+    // WARNS rather than doing anything to this write (src/cli.ts's startup
+    // `isFormatExemptCommand` check). An earlier version of this fix routed
+    // this through `output()` with a `{ path }` envelope so `--format`
+    // "worked" — but the CLI's process-wide default format is `json`, so a
+    // bare `akm env path <ref>` (exactly how `$(akm env path foo)` is
+    // written, with no explicit `--format`) started emitting
+    // `{"path":"..."}` instead of the raw path, breaking every existing
+    // shell substitution silently. Declaring the exemption is the correct
+    // fix: it keeps this byte-identical to history and makes the
+    // already-broken combination (`--format` + this command) loud instead
+    // of silent, per STABILITY.md's promise for exempt commands.
     process.stdout.write(`${absPath}\n`);
   },
 });
@@ -251,7 +267,7 @@ async function runEnvInjected(
         if (baseExists) {
           throw new UsageError(
             `'akm env run' injects the whole file; the single-key '<ref>/${maybeKey}' form was removed.\n` +
-              `       For one value use a secret: \`akm secret run secret:${maybeKey} ${maybeKey} -- <command>\`.`,
+              `       For one value use a secret: \`akm secret run secrets/${maybeKey} ${maybeKey} -- <command>\`.`,
             "INVALID_FLAG_VALUE",
           );
         }
@@ -302,7 +318,15 @@ async function runEnvInjected(
     }
     throw err;
   }
-  process.exit(result.status ?? 0);
+  // R-067: was `process.exit(result.status ?? 0)`, which terminates the
+  // process synchronously and skips the `finally { await
+  // disposeDispatchResources(); }` block in src/cli.ts's `runCommand` — even
+  // on the success path, since this call was unconditional. Setting
+  // `process.exitCode` and returning lets cleanup run while still exiting
+  // with the child's exact status once the event loop drains, matching the
+  // pattern `emitJsonError` (src/cli/shared.ts) already established.
+  process.exitCode = result.status ?? 0;
+  return;
 }
 
 /** Parse a comma/space-separated key list flag into a trimmed, non-empty array. */
@@ -320,7 +344,7 @@ const envRunCommand = defineJsonCommand({
     name: "run",
     description:
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal `${secret:NAME}` token syntax documented for users, not interpolation
-      "Run a command with the env file injected into its environment: `akm env run <ref> -- <command>`. Use `-- $SHELL` for an interactive session. Restrict which variables are injected with --only / --except. Values may embed `${secret:NAME}` tokens, replaced at run time with the sibling `secret:NAME` value from the same stash. Pass --clean to start the child with a minimal inherited environment instead of the full parent environment.",
+      "Run a command with the env file injected into its environment: `akm env run <ref> -- <command>`. Use `-- $SHELL` for an interactive session. Restrict which variables are injected with --only / --except. Values may embed `${secret:NAME}` tokens, replaced at run time with the sibling `${secret:NAME}` value from the same stash. Pass --clean to start the child with a minimal inherited environment instead of the full parent environment.",
   },
   args: {
     target: { type: "positional", description: "Env ref", required: true },
@@ -389,7 +413,7 @@ const envSetCommand = defineJsonCommand({
       "Set (create or update) a single KEY in an env file: `akm env set <ref> <KEY>`. The value is read from stdin by default (never via argv); use --from-env <VAR> or --from-file <path>. Preserves existing comments and key order; the value is never printed. Creates the env file if it does not exist.",
   },
   args: {
-    ref: { type: "positional", description: "Env ref (e.g. env:prod or just prod)", required: true },
+    ref: { type: "positional", description: "Env ref (e.g. env/prod or just prod)", required: true },
     key: { type: "positional", description: "Key name to set (e.g. API_URL)", required: true },
     "from-env": { type: "string", description: "Read the value from the named environment variable" },
     "from-file": { type: "string", description: "Read the value from this file" },
@@ -452,7 +476,7 @@ const envUnsetCommand = defineJsonCommand({
       "Remove one or more KEYs from an env file: `akm env unset <ref> <KEY...>`. Preserves other keys and comments. To remove the whole file, use `akm env remove`.",
   },
   args: {
-    ref: { type: "positional", description: "Env ref (e.g. env:prod or just prod)", required: true },
+    ref: { type: "positional", description: "Env ref (e.g. env/prod or just prod)", required: true },
     // `key` is read from the raw positionals (one or more) in run(); declared
     // non-required so citty doesn't block before we emit a structured error.
     key: { type: "positional", description: "Key name(s) to remove (one or more)", required: false },
@@ -468,18 +492,10 @@ const envUnsetCommand = defineJsonCommand({
       throw new NotFoundError(`Env not found: ${ref}`);
     }
     // citty puts every positional in `args._` (incl. the ref at [0]); the keys
-    // are the remaining positionals. citty also mis-captures the space-separated
-    // value of a global flag (`--format json`) as a positional, so drop any
-    // token that is actually a global flag's value (cli.ts:1335 documents this).
-    const invocation = getParsedInvocation();
-    const globalFlagValues = new Set(
-      ["--format", "--shape", "--detail", "--scope", "--filter", "--target"]
-        .map((flag) => invocation.getFlagValue(flag))
-        .filter((v): v is string => typeof v === "string"),
-    );
-    const keys = (Array.isArray(args._) ? (args._ as unknown[]).map(String) : [])
-      .slice(1)
-      .filter((k) => !globalFlagValues.has(k));
+    // are the remaining positionals. The global output flags are declared on
+    // every defineJsonCommand (GLOBAL_OUTPUT_ARGS), so their space-separated
+    // values are consumed by the parser and never land here.
+    const keys = (Array.isArray(args._) ? (args._ as unknown[]).map(String) : []).slice(1);
     if (keys.length === 0) {
       throw new UsageError("Usage: akm env unset <ref> <KEY...> (one or more keys).", "MISSING_REQUIRED_ARGUMENT");
     }
@@ -510,8 +526,7 @@ export const envCommand = defineGroupCommand({
     unset: envUnsetCommand,
     remove: envRemoveCommand,
   },
-  async defaultRun() {
-    const { listKeys } = await import("./env.js");
-    output("env-list", { envs: listEnvsRecursive(listKeys) });
-  },
+  // No `defaultRun`: bare `akm env` is a usage error (exit 2), the canonical
+  // bare-group behavior — owner ruling 12. Run `akm env list` for what the
+  // bare form used to print.
 });

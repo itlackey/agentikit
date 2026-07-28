@@ -16,7 +16,7 @@ import path from "node:path";
 
 import { akmReflect } from "../../../../src/commands/improve/reflect";
 import type { AkmConfig, LlmConnectionConfig } from "../../../../src/core/config/config";
-import type { SpawnedSubprocess, SpawnFn } from "../../../../src/integrations/agent/spawn";
+import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;

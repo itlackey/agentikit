@@ -1,11 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  extractFrontmatterOnly,
-  extractLineRange,
-  extractSection,
-  formatToc,
-  parseMarkdownToc,
-} from "../src/core/asset/markdown";
+import { extractSection, markdownFragmentSlugs, parseMarkdownToc } from "../src/core/asset/markdown";
 
 const SAMPLE_DOC = `---
 title: Guide
@@ -106,47 +100,31 @@ test("extractSection handles last section (no following heading)", () => {
   expect(result?.content).toContain("List of endpoints");
 });
 
-test("extractLineRange returns correct lines (1-based inclusive)", () => {
-  const content = "line1\nline2\nline3\nline4\nline5";
-  expect(extractLineRange(content, 2, 4)).toBe("line2\nline3\nline4");
+test("extractSection prefers an exact heading when normalized slugs collide", () => {
+  const content = "# C++\n\nPlus.\n\n# C#\n\nSharp.\n";
+  expect(extractSection(content, "C#")?.content).toContain("Sharp.");
+  expect(extractSection(content, "C#")?.content).not.toContain("Plus.");
 });
 
-test("extractLineRange clamps to valid range", () => {
-  const content = "line1\nline2\nline3";
-  expect(extractLineRange(content, 0, 100)).toBe("line1\nline2\nline3");
-  expect(extractLineRange(content, 2, 2)).toBe("line2");
+test("markdown fragments suffix duplicate and colliding heading slugs", () => {
+  const content = "# C++\n\nPlus.\n\n# C#\n\nSharp.\n\n# C++\n\nPlus again.\n";
+  expect(markdownFragmentSlugs(content)).toEqual(["c", "c-1", "c-2"]);
+  expect(extractSection(content, "c-1")?.content).toContain("Sharp.");
+  expect(extractSection(content, "c-2")?.content).toContain("Plus again.");
 });
 
-test("extractLineRange returns empty when end is before start", () => {
-  const content = "line1\nline2\nline3\nline4\nline5";
-  expect(extractLineRange(content, 5, 2)).toBe("");
+test("markdown fragments stay globally unique when a natural slug uses a generated suffix", () => {
+  const content = "# Foo\n\nFirst.\n\n# Foo\n\nSecond.\n\n# Foo-1\n\nLiteral suffix.\n";
+  expect(markdownFragmentSlugs(content)).toEqual(["foo", "foo-1", "foo-1-1"]);
+  expect(extractSection(content, "foo-1")?.content).toContain("Second.");
+  expect(extractSection(content, "foo-1")?.content).not.toContain("Literal suffix.");
+  expect(extractSection(content, "foo-1-1")?.content).toContain("Literal suffix.");
 });
 
-test("extractFrontmatterOnly returns YAML block", () => {
-  const fm = extractFrontmatterOnly(SAMPLE_DOC);
-  expect(fm).not.toBeNull();
-  expect(fm).toContain("title: Guide");
-  expect(fm).toContain('description: "A test guide"');
-});
-
-test("extractFrontmatterOnly returns null when no frontmatter", () => {
-  expect(extractFrontmatterOnly("# Just a heading\n")).toBeNull();
-});
-
-test("formatToc produces readable output with line numbers", () => {
-  const toc = parseMarkdownToc(SAMPLE_DOC);
-  const output = formatToc(toc);
-  expect(output).toContain("# Getting Started");
-  expect(output).toContain("## Installation");
-  expect(output).toContain("### Advanced Config");
-  expect(output).toContain("lines total");
-  expect(output).toMatch(/L\s*\d+/);
-});
-
-test("formatToc handles empty headings", () => {
-  const output = formatToc({ headings: [], totalLines: 5 });
-  expect(output).toContain("no headings found");
-  expect(output).toContain("5 lines total");
+test("markdown fragments replace punctuation runs with separators", () => {
+  const content = "# Foo.Bar\n\nDot body.\n";
+  expect(markdownFragmentSlugs(content)).toEqual(["foo-bar"]);
+  expect(extractSection(content, "foo-bar")?.content).toContain("Dot body.");
 });
 
 test("parseMarkdownToc skips headings inside fenced code blocks", () => {

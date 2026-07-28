@@ -18,16 +18,6 @@ import type { MemoryInferenceResult } from "../indexer/passes/memory-inference";
 import type { AgentFailureReason } from "../integrations/agent/spawn";
 import { assertNever } from "./assert";
 
-// EligibilitySource moved to commands/proposal/proposal-types.ts (WI-9.8 KILL
-// 1): it is a zero-dependency string union that commands/proposal/repository.ts's
-// `Proposal.eligibilitySource` field also needs, and repository.ts importing
-// it FROM this file (which itself imports UP from commands/improve/* above —
-// the §10.7 layering inversion KILL 2 fixes) dragged the whole
-// repository↔validators knot back into the still-cyclic improve-types SCC.
-// Re-exported here so every existing `from "core/improve-types"` import site
-// (ImproveEligibleRef below + the improve/* consumers) is unchanged.
-export type { EligibilitySource } from "../commands/proposal/proposal-types";
-
 export interface ImproveEligibleRef {
   ref: string;
   reason: "scope-ref" | "scope-type" | "memory-cleanup" | "strategy_filtered_all_passes";
@@ -39,13 +29,10 @@ export interface ImproveEligibleRef {
    */
   filePath?: string;
   /**
-   * Chunk-5 flip F5d (Step 4): the durable fully-qualified `<bundle>//<concept-id>`
-   * stored spelling (`entries.item_ref`), DERIVED FROM THE RESOLVED INDEX ENTRY at
-   * planning time (D-R3 — "derived from a resolved entry, never from raw input").
-   * The durable-state writers (salience/outcome) key by this when present and fall
-   * back to the pre-flip `type:name` grammar for NULL-`item_ref` (pre-flip /
-   * write-back) rows. Unset when the planner could not resolve provenance for the
-   * ref (e.g. an unindexed scope-ref target).
+   * Durable fully-qualified `<bundle>//<concept-id>` spelling from
+   * `entries.item_ref`, derived from the resolved index entry at planning time.
+   * Unset when the planner could not resolve provenance for the ref (for example,
+   * an unindexed scope-ref target), in which case the conceptId `ref` is used.
    */
   itemRef?: string;
   /**
@@ -137,9 +124,8 @@ export function classifyImproveAction(mode: ImproveActionMode): ImproveActionCla
 // depended on the very command modules that depend on it, and each verb
 // module's own (heavy) transitive imports could route back here, gluing the
 // whole improve command family into one import-cycle SCC. Moving the result
-// shapes down here (verbatim) fixes the direction; each verb module now
-// imports its own result type FROM here and re-exports it so existing import
-// sites (`from "./consolidate"`, `from "./distill"`, etc.) are unchanged.
+// shapes down here fixes the dependency direction; verb modules import their
+// result types directly from this leaf.
 
 /** Op-kind discriminator used in {@link ConsolidateResult.skipReasons}. */
 export type ConsolidateOpKind = "merge" | "delete" | "promote" | "contradict";
@@ -306,19 +292,16 @@ export interface AkmDistillResult {
   outcome: DistillOutcome;
   /** Original input ref (verbatim). */
   inputRef: string;
-  /**
-   * Historical field name kept for compatibility. Carries the queued proposal
-   * ref, which may now be a `knowledge:` ref when memory promotion fires.
-   */
-  lessonRef: string;
-  /** Explicit queued proposal ref. Mirrors `lessonRef`. */
-  proposalRef?: string;
+  /** Target or queued proposal ref. */
+  proposalRef: string;
   /** Type of proposal the invocation targeted or queued. */
   proposalKind?: "lesson" | "knowledge";
   /** Proposal id when `outcome === "queued"`. */
   proposalId?: string;
   /** Human-readable hint surfaced when the call was skipped. */
   message?: string;
+  /** Machine-readable reason when `outcome === "skipped"`. */
+  skipReason?: string;
   /** Validation findings when `outcome === "validation_failed"`. */
   findings?: { kind: string; field: string; message: string }[];
   /** The full proposal object when `outcome === "queued"`. */
@@ -570,7 +553,7 @@ export interface AkmImproveResult {
   schemaRepairs?: Array<{
     ref: string;
     reason: string;
-    outcome: "queued" | "written" | "skipped" | "error";
+    outcome: "queued" | "skipped" | "error";
     proposalId?: string;
     error?: string;
   }>;
@@ -673,10 +656,3 @@ export interface AkmImproveResult {
   /** Present only when a started run was persisted after abnormal termination. */
   terminated?: { reason: string; at: string; errorMessage?: string };
 }
-
-/** Historical improve-result envelope written before the 0.9 strategy cutover. */
-export type LegacyAkmImproveResult = Omit<AkmImproveResult, "schemaVersion" | "strategy" | "strategyFilteredRefs"> & {
-  schemaVersion: 1;
-  profile?: string;
-  profileFilteredRefs?: ImproveEligibleRef[];
-};

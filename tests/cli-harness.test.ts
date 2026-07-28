@@ -56,7 +56,7 @@ describe("in-process CLI harness", () => {
     expect(code).not.toBe(0);
     const parsed = JSON.parse(stderr.trim());
     expect(parsed.ok).toBe(false);
-    expect(parsed.code).toBe("ASSET_NOT_FOUND");
+    expect(parsed.code).toBe("STASH_DIR_NOT_FOUND");
   });
 
   test("maps a UsageError to exit code 2", async () => {

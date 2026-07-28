@@ -25,7 +25,7 @@ export function resolveWorkflowScopeAnchor(startDir: string): string {
   if (gitRoot) return gitRoot;
 
   try {
-    const stashDir = safeRealpath(resolveStashDir({ readOnly: true }));
+    const stashDir = safeRealpath(resolveStashDir());
     if (isWithin(cwd, stashDir)) return stashDir;
   } catch {
     // Ignore stash resolution failures and fall back to cwd.

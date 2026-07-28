@@ -8,11 +8,10 @@
  * Before this module, ~46 `process.argv` read sites were scattered across
  * `src/**` (32 outside `src/cli.ts`), each re-scanning the raw argv array for
  * repeated flags (`parseAllFlagValues`), `--`-passthrough tails (`env run`,
- * `secret run`), or first-occurrence flag values (`parseFlagValue`) — plus a
- * startup MUTATION of the global `process.argv` at `cli.ts:644`. This module
- * normalizes argv into one typed {@link ParsedInvocation} object, minted ONCE
- * by `src/cli.ts` right after its `normalizeShowArgv` rewrite, so every
- * downstream reader shares one parse instead of re-scanning the raw array.
+ * `secret run`), or first-occurrence flag values (`parseFlagValue`). This
+ * module normalizes argv into one typed {@link ParsedInvocation} object,
+ * minted ONCE by `src/cli.ts` at startup, so every downstream reader shares
+ * one parse instead of re-scanning the raw array.
  *
  * Deliberately import-free: this module must never join an import cycle
  * (cycle ratchet, plan §10.7 / chunk-9 D.3), so it depends on nothing but
@@ -21,11 +20,15 @@
  * of the same algorithms `output/context.ts`'s `parseFlagValue`/
  * `hasBooleanFlag` and (the now-retired) `cli/shared.ts` `parseAllFlagValues`
  * used, kept byte-identical so every converted call site is behavior-
- * preserving.
+ * preserving — with ONE deliberate exception (R-033a): `getAllFlagValuesFrom`
+ * now stops at a literal `--` separator instead of scanning past it, fixing a
+ * bug where a repeatable flag's value placed after `--` (meant to end flag
+ * parsing) was still read as a real flag occurrence. See that function's
+ * docstring.
  *
  * Singleton + fallback semantics (the design decision this module encodes):
- *  - `setParsedInvocation(argv)` is called exactly once, by `src/cli.ts`,
- *    immediately after `process.argv = normalizeShowArgv(process.argv)`. It
+ *  - `setParsedInvocation(argv)` is called exactly once, by `src/cli.ts`, in
+ *    its startup block before any command handler can run. It
  *    snapshots that argv into an immutable {@link ParsedInvocation} that
  *    every subsequent `getParsedInvocation()` call returns unchanged for the
  *    rest of the process lifetime — "normalize argv exactly once at entry".
@@ -59,8 +62,7 @@
  *    search-cli, stash-cli, cli.ts) is unaffected.
  *  - `findCittyTopLevelCommand`/`findCittyTopLevelCommandIndex` (moved from
  *    `cli/parse-args.ts`, which had zero internal imports for this cluster) —
- *    re-exported from `cli/parse-args.ts` for `tests/tasks-embedded.test.ts`
- *    and `commands/read/show.ts`.
+ *    re-exported from `cli/parse-args.ts` for `tests/tasks-embedded.test.ts`.
  *  - `resolveHelpMigrateVersionArg` (moved from `cli.ts`, where it was
  *    private) — the `akm help migrate <version>` positional/flag
  *    disambiguation guard.
@@ -82,10 +84,23 @@ function hasFlagIn(argv: readonly string[], flag: string): boolean {
   return argv.some((arg) => arg === flag || arg === `${flag}=true`);
 }
 
+/**
+ * Collect every `--flag value` / `--flag=value` occurrence, stopping at a
+ * literal `--` separator (R-033a). `--` conventionally ends flag parsing —
+ * everything after it is positional/passthrough, never a flag akm should
+ * interpret. Before this fix, a token like `--tag leaked:yes` placed AFTER
+ * `--` (e.g. `akm feedback <ref> --positive -- --tag leaked:yes`) was still
+ * picked up as a real `--tag` value, letting argv content past the boundary
+ * leak into structured output. This is a deliberate BEHAVIOR CHANGE from the
+ * pre-WI-9.9 per-site implementation this module otherwise keeps
+ * byte-identical (see the module docstring) — every caller of
+ * `parseAllFlagValues`/`getAllFlagValues` inherits the fix for free.
+ */
 function getAllFlagValuesFrom(argv: readonly string[], flag: string): string[] {
   const values: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
+    if (arg === "--") break;
     if (arg === flag && i + 1 < argv.length) {
       values.push(argv[i + 1] as string);
       // BUG-M4: skip the value index so `--tag --tag` (literal `--tag` value)
@@ -144,8 +159,8 @@ let _invocation: ParsedInvocation | undefined;
 
 /**
  * Mint the process-wide {@link ParsedInvocation} singleton. Called exactly
- * once, by `src/cli.ts`, right after `normalizeShowArgv` — "normalize argv
- * exactly once at entry" (plan §10.7).
+ * once, by `src/cli.ts`, at startup — "normalize argv exactly once at entry"
+ * (plan §10.7).
  */
 export function setParsedInvocation(argv: readonly string[]): ParsedInvocation {
   _invocation = createParsedInvocation(argv);

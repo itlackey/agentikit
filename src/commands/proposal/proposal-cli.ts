@@ -95,7 +95,7 @@ const proposalAcceptCommand = defineJsonCommand({
     id: {
       type: "positional",
       description:
-        "Proposal id (uuid / prefix) or asset ref (e.g. skill:akm-dream). Optional when --generator is provided.",
+        "Proposal id (uuid / prefix) or asset ref (e.g. skills/akm-dream). Optional when --generator is provided.",
       required: false,
     },
     queue: { type: "string", description: "Select the proposal queue by source name" },
@@ -104,21 +104,21 @@ const proposalAcceptCommand = defineJsonCommand({
     generator: {
       type: "string",
       description:
-        "F-6: Bulk-accept all pending proposals from this generator (e.g. reflect, distill). Requires no positional id.",
+        "Bulk-accept all pending proposals from this generator (e.g. reflect, distill). Requires no positional id.",
     },
     "max-diff-lines": {
       type: "string",
       description:
-        "F-6: When bulk-accepting, only accept proposals whose content is <= this many lines. Skips larger proposals.",
+        "When bulk-accepting, only accept proposals whose content is <= this many lines. Skips larger proposals.",
     },
     "older-than": {
       type: "string",
       description:
-        "F-6: When bulk-accepting, only accept proposals created more than this many days ago (e.g. '7' for 7 days).",
+        "When bulk-accepting, only accept proposals created more than this many days ago (e.g. '7' for 7 days).",
     },
     "dry-run": {
       type: "boolean",
-      description: "F-6: List proposals that would be bulk-accepted without accepting them.",
+      description: "List proposals that would be bulk-accepted without accepting them.",
       default: false,
     },
     yes: {
@@ -175,7 +175,7 @@ const proposalRejectCommand = defineJsonCommand({
     id: {
       type: "positional",
       description:
-        "Proposal id (uuid / prefix) or asset ref (e.g. skill:akm-dream). Optional when --generator is provided.",
+        "Proposal id (uuid / prefix) or asset ref (e.g. skills/akm-dream). Optional when --generator is provided.",
       required: false,
     },
     reason: { type: "string", description: "Reason for rejection (required)" },
@@ -184,21 +184,21 @@ const proposalRejectCommand = defineJsonCommand({
     generator: {
       type: "string",
       description:
-        "F-6: Bulk-reject all pending proposals from this generator (e.g. reflect, distill). Requires no positional id.",
+        "Bulk-reject all pending proposals from this generator (e.g. reflect, distill). Requires no positional id.",
     },
     "max-diff-lines": {
       type: "string",
       description:
-        "F-6: When bulk-rejecting, only reject proposals whose content is <= this many lines. Skips larger proposals.",
+        "When bulk-rejecting, only reject proposals whose content is <= this many lines. Skips larger proposals.",
     },
     "older-than": {
       type: "string",
       description:
-        "F-6: When bulk-rejecting, only reject proposals created more than this many days ago (e.g. '7' for 7 days).",
+        "When bulk-rejecting, only reject proposals created more than this many days ago (e.g. '7' for 7 days).",
     },
     "dry-run": {
       type: "boolean",
-      description: "F-6: List proposals that would be bulk-rejected without rejecting them.",
+      description: "List proposals that would be bulk-rejected without rejecting them.",
       default: false,
     },
     yes: {
@@ -268,7 +268,7 @@ const proposalDiffCommand = defineJsonCommand({
   args: {
     id: {
       type: "positional",
-      description: "Proposal id (uuid / prefix) or asset ref (e.g. skill:akm-dream)",
+      description: "Proposal id (uuid / prefix) or asset ref (e.g. skills/akm-dream)",
       required: true,
     },
     queue: { type: "string", description: "Select the proposal queue by source name" },
@@ -301,7 +301,7 @@ const proposalRevertCommand = defineJsonCommand({
     id: {
       type: "positional",
       description:
-        "Proposal id (full uuid) or asset ref (e.g. skill:akm-dream). UUID prefixes are not supported for archived proposals — use the full UUID.",
+        "Proposal id (full uuid) or asset ref (e.g. skills/akm-dream). UUID prefixes are not supported for archived proposals — use the full UUID.",
       required: true,
     },
     queue: { type: "string", description: "Select the proposal queue by source name" },
@@ -318,14 +318,12 @@ const proposalRevertCommand = defineJsonCommand({
 });
 
 // `proposal show` (#225): show a single proposal with its validation findings.
-// `akmProposalShow` already backs `akm show proposal <id>` (now deprecated); this
-// is the canonical noun-group entry point.
 const proposalShowCommand = defineJsonCommand({
   meta: { name: "show", description: "Show a single proposal and its validation findings" },
   args: {
     id: {
       type: "positional",
-      description: "Proposal id (uuid / prefix) or asset ref (e.g. skill:akm-dream)",
+      description: "Proposal id (uuid / prefix) or asset ref (e.g. skills/akm-dream)",
       required: true,
     },
     queue: { type: "string", description: "Select the proposal queue by source name" },
@@ -498,24 +496,15 @@ const proposalDrainCommand = defineJsonCommand({
   },
 });
 
-// ── proposal noun group (#225 / 0.8 CLI stabilization) ────────────────────────
-//
-// `akm proposal <verb>` is the canonical grammar in 0.8. The flat verbs
-// (`proposals`/`accept`/`reject`/`diff`/`revert`) remain as deprecated aliases
-// that warn to stderr and delegate to the same command bodies; they are removed
-// in 0.9.0. Bare `akm proposal` behaves as `proposal list` (mirrors `akm env`).
+// ── proposal noun group ───────────────────────────────────────────────────────
 
 export const proposalCommand = defineGroupCommand({
   meta: { name: "proposal", description: "Manage the proposal queue: list, show, diff, accept, reject, revert" },
-  args: {
-    queue: { type: "string", description: "Select the proposal queue by source name" },
-    status: {
-      type: "string",
-      description: "Filter by status (pending|accepted|rejected|reverted)",
-    },
-    ref: { type: "string", description: "Filter by asset ref ([bundle//]conceptId, e.g. knowledge/guide.md)" },
-    type: { type: "string", description: "Filter by asset type" },
-  },
+  // The group declared `--queue`/`--status`/`--ref`/`--type` only so the bare
+  // form could act as `proposal list`. That form is gone (see below), and
+  // `proposalListCommand` declares the identical set, so keeping them here
+  // would just advertise flags in `akm proposal --help` that no group-level
+  // body reads.
   subCommands: {
     list: proposalListCommand,
     show: proposalShowCommand,
@@ -525,16 +514,7 @@ export const proposalCommand = defineGroupCommand({
     revert: proposalRevertCommand,
     drain: proposalDrainCommand,
   },
-  // Default body fires only for bare `akm proposal [--status …]`.
-  defaultRun({ args }) {
-    const status = parseProposalStatus(args.status);
-    const result = akmProposalList({
-      queue: args.queue,
-      status,
-      ref: args.ref,
-      type: args.type,
-      includeArchive: status === "accepted" || status === "rejected" || status === "reverted",
-    });
-    output("proposal-list", result);
-  },
+  // No `defaultRun`: bare `akm proposal [--status …]` is a usage error (exit 2),
+  // the canonical bare-group behavior — owner ruling 12. `akm proposal list`
+  // takes the same flags and produces what the bare form used to.
 });

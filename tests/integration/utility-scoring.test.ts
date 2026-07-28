@@ -608,7 +608,10 @@ describe("Production path end-to-end", () => {
   // DOES have an FK), tripping "FOREIGN KEY constraint failed" and rolling back
   // the entire index finalize transaction.
   test("recomputeUtilityScores ignores stale usage_events entry_ids (no FK rollback)", async () => {
-    writeFile(path.join(currentStashDir, "skills", "real-skill.md"), "---\nname: real-skill\n---\n\nA real skill.");
+    writeFile(
+      path.join(currentStashDir, "skills", "real-skill", "SKILL.md"),
+      "---\nname: real-skill\ndescription: A real skill\n---\n\nA real skill.",
+    );
     await buildTestIndex(currentStashDir, {});
 
     const dbPath = getDbPath();

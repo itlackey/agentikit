@@ -44,18 +44,17 @@ export interface DbIndexedEntry {
   stashDir: string;
   entry: IndexDocument;
   searchText: string;
-  /** Canonical durable ref from `entries.item_ref`; absent on nullable pre-flip rows. */
-  itemRef?: string;
+  /** Canonical durable ref from `entries.item_ref`. */
+  itemRef: string;
   /**
    * Chunk-5 flip (Checkpoint A): the durable `concept_id`/`bundle_id` provenance
-   * columns, surfaced from the `entries` row so the state.db salience/outcome
-   * dual-read arms can reconstruct the fully-qualified `<bundle>//<concept-id>`
-   * new-grammar key with no extra query. `undefined` for a NULL-provenance
-   * (pre-flip / write-back) row — the reader then falls through to its inline
-   * legacy `type:name` arm.
+   * columns, surfaced from the `entries` row so state.db readers can reconstruct
+   * the fully-qualified `<bundle>//<concept-id>` key with no extra query.
+   * Undefined provenance marks an invalid indexed row.
    */
-  conceptId?: string;
-  bundleId?: string;
+  conceptId: string;
+  bundleId: string;
+  adapterId: string;
 }
 
 /** One FTS5 search hit joined back to its `entries` row. */
@@ -68,14 +67,14 @@ export interface DbSearchResult {
   /**
    * Chunk-5 flip F5d (Step 2): the durable fully-qualified `<bundle>//<concept-id>`
    * stored spelling from the `entries.item_ref` column, surfaced onto the search
-   * read path so the salience dual-read arm keys on the new grammar first.
-   * `undefined`/`null` for a NULL-provenance (pre-flip / write-back) row — the
-   * reader then falls through to its inline legacy `type:name` arm.
+   * read path so salience keys on durable identity. Null provenance marks an
+   * invalid indexed row.
    */
   itemRef?: string | null;
   /** Indexed provenance used when `item_ref` is temporarily NULL. */
   bundleId?: string | null;
   conceptId?: string | null;
+  adapterId?: string | null;
 }
 
 /** One nearest-neighbour hit from the vector index (id + L2 distance). */
@@ -110,25 +109,23 @@ export interface RekeyEntryOptions {
   /** Absolute path of the renamed file (feeds `file_path` / `dir_path`). */
   newFilePath: string;
   /**
-   * Old canonical bare ref (`type:oldName` legacy form). Together
-   * with {@link newRef} this drives the `usage_events.entry_ref` rewrite —
+   * Old canonical conceptId. Together with {@link newRef} this drives the
+   * `usage_events.entry_ref` rewrite —
    * `entry_ref` (not `entry_id`) is the STABLE column `relinkUsageEvents`
    * uses to re-attach events after a full rebuild re-mints every entry id,
    * so leaving old-ref events behind would reset the asset's usage/utility
    * history at the first `akm index --full`.
    */
   oldRef: string;
-  /** New canonical bare ref (`type:newName` legacy form). */
+  /** New canonical conceptId. */
   newRef: string;
   /** Configured source identity owning the moved entry. */
-  sourceName?: string;
+  sourceName: string;
   /** Absolute source root owning the moved entry. */
-  sourceRoot?: string;
-  /** Whether pre-source-qualification bare usage refs belong to this source. */
-  includeLegacyBare?: boolean;
+  sourceRoot: string;
   /**
-   * For memory `.derived` twins: the base memory's NEW ref (e.g.
-   * `memory:projectA/new-name`), written into the `derived_from` column and
+   * For memory `.derived` twins: the base memory's new conceptId, written into
+   * the `derived_from` column and
    * `entry_json.derivedFrom`. Omit to leave both untouched.
    */
   newDerivedFrom?: string;
@@ -140,8 +137,6 @@ export interface RetrievalCountOptions {
   sourceName?: string;
   /** Selected source root used to validate usage-event entry IDs. */
   stashDir?: string;
-  /** Accept detached pre-cutover bare events only for the historical local source. */
-  includeLegacyBare?: boolean;
 }
 
 /** Aggregated per-entry utility metrics. */
@@ -187,8 +182,8 @@ export interface UsageEventRelinkSource {
 }
 
 export interface RelinkUsageEventsOptions {
-  /** Ordered sources from the active index run; the first source owns `local//`. */
+  /** Ordered sources from the active index run. */
   sources?: readonly UsageEventRelinkSource[];
-  /** Explicit historical/default root allowed to adopt legacy bare refs. */
+  /** Default root from the active index run. Bare durable refs are not relinked. */
   defaultStashDir?: string;
 }

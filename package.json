@@ -2,7 +2,7 @@
   "name": "akm-cli",
   "version": "0.9.0-rc.10",
   "type": "module",
-  "description": "akm (Agent Knowledge Management) — A package manager for AI agent skills, commands, tools, and knowledge. Works with Claude Code, OpenCode, Cursor, and any AI coding assistant.",
+  "description": "akm (Agent Knowledge Management) — A knowledge toolkit for AI agents: capture, curate, search, and share skills, commands, tools, and knowledge. Works with Claude Code, OpenCode, Cursor, and any AI coding assistant.",
   "keywords": [
     "akm",
     "agent-knowledge-management",
@@ -49,10 +49,10 @@
   ],
   "bin": {
     "akm": "dist/akm",
-    "akm-migrate-storage": "dist/akm-migrate-storage"
+    "akm-migrate": "dist/akm-migrate"
   },
   "scripts": {
-    "preinstall": "node -e \"var v=(process.versions.node||'0').split('.').map(function(n){return parseInt(n,10)||0});var ok=v[0]>=22;if(ok){process.exit(0)}console.error('\\n  ERROR: the akm-cli npm package requires Node.js >= 22.\\n  A working Bun >= 1.0 on PATH is optional and preferred for execution.\\n  Upgrade Node.js (https://nodejs.org), or install the runtime-free standalone binary:\\n    curl -fsSL https://github.com/itlackey/akm/releases/latest/download/install.sh | bash\\n');process.exit(1)\"",
+    "preinstall": "node -e \"var v=(process.versions.node||'0').split('.').map(function(n){return parseInt(n,10)||0});var ok=v[0]>=22;if(ok){process.exit(0)}console.error('\\n  ERROR: the akm-cli npm package requires Node.js >= 22.\\n  A working Bun >= 1.0 on PATH is optional for akm and required for akm-migrate.\\n  Upgrade Node.js (https://nodejs.org), or install the runtime-free standalone binary:\\n    curl -fsSL https://github.com/itlackey/akm/releases/latest/download/install.sh | bash\\n');process.exit(1)\"",
     "build": "rm -rf dist && bun scripts/gen-config-schema.ts &&bun run tsc --project ./tsconfig.build.json && bun scripts/copy-assets.ts && bun scripts/fix-esm-extensions.ts",
     "check": "bun run lint && bunx tsc --noEmit && bun run test:unit && bun run test:integration",
     "check:fast": "bun run lint && bunx tsc --noEmit && bun run test:unit",
@@ -65,11 +65,12 @@
     "test:node-compat": "AKM_NODE_COMPAT_TESTS=1 bun test --timeout=120000 tests/integration/node-compat.test.ts",
     "test:time": "bun scripts/test-timing-report.ts",
     "lint:isolation": "bun scripts/lint-tests-isolation.ts",
+    "lint:doc-examples": "bun scripts/lint-doc-examples.ts",
     "lint:devto-posts": "bun scripts/lint-devto-posts.ts",
     "lint:devto-posts:fix": "bun scripts/lint-devto-posts.ts --fix",
     "publish:devto": "npx -y @sinedied/devto-cli push \"docs/posts/**/*.md\" --token \"$DEVTO_TOKEN\" --repo \"$GITHUB_REPOSITORY\" --branch \"${GITHUB_REF_NAME:-main}\" --reconcile",
     "release:check": "./tests/release-check.sh",
-    "lint": "bunx biome check src/ tests/ scripts/ && bun scripts/lint-tests-isolation.ts && bun scripts/lint-license-headers.ts && bun scripts/lint-runtime-boundary.ts && bun scripts/lint-process-argv.ts && bun scripts/lint-repository-sql.ts && bun scripts/lint-goldens-presence.ts && bun scripts/lint-test-ref-literals.ts && bun scripts/lint-shipped-assets.ts && bun scripts/gen-config-schema.ts --check",
+    "lint": "bunx biome check src/ tests/ scripts/ && bun scripts/lint-tests-isolation.ts && bun scripts/lint-license-headers.ts && bun scripts/lint-runtime-boundary.ts && bun scripts/lint-write-source-chokepoint.ts && bun scripts/lint-process-argv.ts && bun scripts/lint-repository-sql.ts && bun scripts/lint-goldens-presence.ts && bun scripts/lint-test-ref-literals.ts && bun scripts/lint-shipped-assets.ts && bun scripts/lint-doc-examples.ts && bun scripts/gen-config-schema.ts --check",
     "lint:runtime-boundary": "bun scripts/lint-runtime-boundary.ts",
     "lint:tests-isolation": "bun scripts/lint-tests-isolation.ts",
     "lint:fix": "bunx biome check --write src/ tests/ scripts/",

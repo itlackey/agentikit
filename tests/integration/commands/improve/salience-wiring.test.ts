@@ -18,12 +18,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import type { AkmDistillResult } from "../../../../src/commands/improve/distill";
 import { akmImprove } from "../../../../src/commands/improve/improve";
-import type { AkmReflectOptions, AkmReflectResult } from "../../../../src/commands/improve/reflect";
+import type { AkmReflectOptions } from "../../../../src/commands/improve/reflect";
 import { getAssetSalience, getConsecutiveNoOps, upsertAssetSalience } from "../../../../src/commands/improve/salience";
 import { saveConfig } from "../../../../src/core/config/config";
 import { appendEvent, readEvents } from "../../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/improve-types";
 import { openStateDatabase } from "../../../../src/core/state-db";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { writeSkill } from "../../../_helpers/assets";
@@ -44,9 +44,21 @@ afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
 });
 
-async function buildIndex(stashDir: string): Promise<void> {
-  saveConfig(withTestImproveLlm({ semanticSearchMode: "off" }));
+async function buildIndex(stashDir: string, bundle = "stash"): Promise<void> {
+  saveConfig(
+    withTestImproveLlm({
+      semanticSearchMode: "off",
+      bundles: { [bundle]: { path: stashDir, writable: true } },
+      defaultBundle: bundle,
+      defaultWriteTarget: bundle,
+      index: { enrichment: { enabled: false } },
+    }),
+  );
   await akmIndex({ stashDir, full: true });
+}
+
+function durableRef(ref: string, bundle = "stash"): string {
+  return `${bundle}//${ref}`;
 }
 
 const noopIndexFns = {
@@ -89,7 +101,7 @@ const queuedDistill = (ref: string): AkmDistillResult => ({
   ok: true,
   outcome: "queued",
   inputRef: ref,
-  lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+  proposalRef: `lessons/${ref.replaceAll("/", "-")}-lesson`,
 });
 
 /** Distill stub that returns quality_rejected. */
@@ -98,7 +110,7 @@ const qualityRejectedDistill = (ref: string): AkmDistillResult => ({
   ok: true,
   outcome: "quality_rejected",
   inputRef: ref,
-  lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+  proposalRef: `lessons/${ref.replaceAll("/", "-")}-lesson`,
   reason: "below quality threshold",
 });
 
@@ -126,13 +138,9 @@ const minimalConfig = () =>
   } as import("../../../../src/core/config/config").AkmConfig);
 
 /**
- * Declare the working stash as the primary `defaultBundle` on a config (#37:
- * the 0.9.0 config shape). The improve loop's legacy-bare improve-state gate
- * (`shouldReadLegacyBareImproveState`) resolves the historical local stash via
- * `primaryBundlePath(config)` — the `defaultBundle`'s filesystem `path`. Tests
- * that pre-#37 relied on the implicit `stashDir`→primary synthesis must now
- * declare that primary bundle so the seeded bare-ref salience/no-op state is
- * still recognized as belonging to the primary stash.
+ * Declare the working stash as the primary `defaultBundle`. Tests that supply
+ * their own config must identify the bundle whose indexed item refs and durable
+ * improve state belong to the test stash.
  */
 function withPrimaryStashBundle(
   config: import("../../../../src/core/config/config").AkmConfig,
@@ -193,7 +201,7 @@ describe("WS-1 wiring — first run (empty table)", () => {
 
     const db = openStateDatabase();
     try {
-      const row = getAssetSalience(db, "skills/beta");
+      const row = getAssetSalience(db, durableRef("skills/beta"));
       expect(row).toBeDefined();
       expect(row?.rank_score).toBeGreaterThan(0);
     } finally {
@@ -204,7 +212,7 @@ describe("WS-1 wiring — first run (empty table)", () => {
   test("salience and plasticity counters are keyed by the selected source", async () => {
     const stash = isolatedStash();
     writeSkill(stash, "shared", "Shared source-local content.");
-    await buildIndex(stash);
+    await buildIndex(stash, "team");
     const config = {
       ...minimalConfig(),
       bundles: { team: { path: stash, writable: true } },
@@ -223,11 +231,9 @@ describe("WS-1 wiring — first run (empty table)", () => {
 
     const db = openStateDatabase();
     try {
-      // WI-8.5c: durable improve state is now keyed by the item_ref/conceptId
-      // (`skills/shared`), never the legacy `type:name` spelling.
-      expect(getAssetSalience(db, "skills/shared")).toBeDefined();
-      expect(getAssetSalience(db, "skill:shared")).toBeUndefined();
-      expect(getConsecutiveNoOps(db, "skills/shared")).toBeGreaterThan(0);
+      expect(getAssetSalience(db, durableRef("skills/shared", "team"))).toBeDefined();
+      expect(getAssetSalience(db, "skills/shared")).toBeUndefined();
+      expect(getConsecutiveNoOps(db, durableRef("skills/shared", "team"))).toBeGreaterThan(0);
     } finally {
       db.close();
     }
@@ -320,7 +326,7 @@ describe("WS-1 wiring — subsequent run (table has rows)", () => {
   test("uses a non-stash defaultBundle as the existing salience scope", async () => {
     const stash = isolatedStash();
     writeSkill(stash, "named-primary", "Named primary content.");
-    await buildIndex(stash);
+    await buildIndex(stash, "akm");
 
     const runOpts = {
       scope: "skill" as const,
@@ -355,7 +361,12 @@ describe("WS-1 wiring — no-op tracking via consecutive_no_ops", () => {
     // Pre-seed the salience row so consecutive_no_ops starts at 0.
     const dbSetup = openStateDatabase();
     try {
-      upsertAssetSalience(dbSetup, "skills/delta", { encoding: 0.7, outcome: 0, retrieval: 0, rankScore: 0.2 });
+      upsertAssetSalience(dbSetup, durableRef("skills/delta"), {
+        encoding: 0.7,
+        outcome: 0,
+        retrieval: 0,
+        rankScore: 0.2,
+      });
     } finally {
       dbSetup.close();
     }
@@ -373,7 +384,7 @@ describe("WS-1 wiring — no-op tracking via consecutive_no_ops", () => {
     const db = openStateDatabase();
     try {
       // no_change reflect → recordNoOp → consecutive_no_ops = 1
-      const noOps = getConsecutiveNoOps(db, "skills/delta");
+      const noOps = getConsecutiveNoOps(db, durableRef("skills/delta"));
       expect(noOps).toBeGreaterThanOrEqual(1);
     } finally {
       db.close();
@@ -388,12 +399,17 @@ describe("WS-1 wiring — no-op tracking via consecutive_no_ops", () => {
     // Pre-seed with a high no-op count.
     const dbSetup = openStateDatabase();
     try {
-      upsertAssetSalience(dbSetup, "skills/epsilon", { encoding: 0.7, outcome: 0, retrieval: 0, rankScore: 0.2 });
+      upsertAssetSalience(dbSetup, durableRef("skills/epsilon"), {
+        encoding: 0.7,
+        outcome: 0,
+        retrieval: 0,
+        rankScore: 0.2,
+      });
       // manually set consecutive_no_ops to 5 by calling recordNoOp
       for (let i = 0; i < 5; i++) {
         dbSetup
           .prepare(`UPDATE asset_salience SET consecutive_no_ops = consecutive_no_ops + 1 WHERE asset_ref = ?`)
-          .run("skills/epsilon");
+          .run(durableRef("skills/epsilon"));
       }
     } finally {
       dbSetup.close();
@@ -402,7 +418,7 @@ describe("WS-1 wiring — no-op tracking via consecutive_no_ops", () => {
     // Verify the seed worked.
     const dbCheck = openStateDatabase();
     try {
-      expect(getConsecutiveNoOps(dbCheck, "skills/epsilon")).toBe(5);
+      expect(getConsecutiveNoOps(dbCheck, durableRef("skills/epsilon"))).toBe(5);
     } finally {
       dbCheck.close();
     }
@@ -420,7 +436,7 @@ describe("WS-1 wiring — no-op tracking via consecutive_no_ops", () => {
     const db = openStateDatabase();
     try {
       // queued distill → resetConsecutiveNoOps → 0
-      const noOps = getConsecutiveNoOps(db, "skills/epsilon");
+      const noOps = getConsecutiveNoOps(db, durableRef("skills/epsilon"));
       expect(noOps).toBe(0);
     } finally {
       db.close();
@@ -463,13 +479,13 @@ describe("WS-1 wiring — dampener consumption (consecutive_no_ops >= threshold 
     const dbSetup = openStateDatabase();
     const IDENTICAL_RANK_SCORE = 0.6;
     try {
-      upsertAssetSalience(dbSetup, "skills/alpha-stable", {
+      upsertAssetSalience(dbSetup, durableRef("skills/alpha-stable"), {
         encoding: 0.9,
         outcome: 0,
         retrieval: 0.5,
         rankScore: IDENTICAL_RANK_SCORE,
       });
-      upsertAssetSalience(dbSetup, "skills/beta-fresh", {
+      upsertAssetSalience(dbSetup, durableRef("skills/beta-fresh"), {
         encoding: 0.9,
         outcome: 0,
         retrieval: 0.5,
@@ -479,7 +495,7 @@ describe("WS-1 wiring — dampener consumption (consecutive_no_ops >= threshold 
       // Manually set alpha-stable to the dampen threshold.
       dbSetup
         .prepare(`UPDATE asset_salience SET consecutive_no_ops = ? WHERE asset_ref = ?`)
-        .run(3 /* SALIENCE_NO_OP_DAMPEN_THRESHOLD */, "skills/alpha-stable");
+        .run(3 /* SALIENCE_NO_OP_DAMPEN_THRESHOLD */, durableRef("skills/alpha-stable"));
     } finally {
       dbSetup.close();
     }
@@ -519,10 +535,10 @@ describe("WS-1 wiring — dampener consumption (consecutive_no_ops >= threshold 
     try {
       const alphaRow = dbCheck
         .prepare(`SELECT rank_score, consecutive_no_ops FROM asset_salience WHERE asset_ref = ?`)
-        .get("skills/alpha-stable") as { rank_score: number; consecutive_no_ops: number } | undefined;
+        .get(durableRef("skills/alpha-stable")) as { rank_score: number; consecutive_no_ops: number } | undefined;
       const betaRow = dbCheck
         .prepare(`SELECT rank_score FROM asset_salience WHERE asset_ref = ?`)
-        .get("skills/beta-fresh") as { rank_score: number } | undefined;
+        .get(durableRef("skills/beta-fresh")) as { rank_score: number } | undefined;
 
       expect(alphaRow).toBeDefined();
       expect(betaRow).toBeDefined();
@@ -568,7 +584,12 @@ describe("WS-1 wiring — rank positions are stash-wide, not pool-relative", () 
     const dbInject = openStateDatabase();
     try {
       for (const extraRef of ["knowledge/extra1", "knowledge/extra2", "knowledge/extra3"]) {
-        upsertAssetSalience(dbInject, extraRef, { encoding: 0.7, outcome: 0, retrieval: 0.5, rankScore: 0.35 });
+        upsertAssetSalience(dbInject, durableRef(extraRef), {
+          encoding: 0.7,
+          outcome: 0,
+          retrieval: 0.5,
+          rankScore: 0.35,
+        });
       }
     } finally {
       dbInject.close();
@@ -641,7 +662,7 @@ describe("WS-1 step 7 — protective consolidation pass (forgetting-safety lane)
     const dbSetup = openStateDatabase();
     try {
       // Upsert with a very high rank_score to ensure rank-1 position.
-      upsertAssetSalience(dbSetup, "skills/victim", {
+      upsertAssetSalience(dbSetup, durableRef("skills/victim"), {
         encoding: 0.99,
         outcome: 0.99,
         retrieval: 0.99,
@@ -651,7 +672,7 @@ describe("WS-1 step 7 — protective consolidation pass (forgetting-safety lane)
       // Inject 501 fake refs with rank_score=0.8 so the victim (at ~0 new
       // score after the second run) falls to position 502 in newRanks.
       for (let i = 1; i <= 501; i++) {
-        upsertAssetSalience(dbSetup, `knowledge:rank-filler-${String(i).padStart(4, "0")}`, {
+        upsertAssetSalience(dbSetup, durableRef(`knowledge/rank-filler-${String(i).padStart(4, "0")}`), {
           encoding: 0.5,
           outcome: 0,
           retrieval: 0.5,
@@ -703,21 +724,19 @@ describe("WS-1 step 7 — protective consolidation pass (forgetting-safety lane)
 //      via 'high-salience' (score < 1.0).
 
 describe("#608 high-salience admission gate", () => {
-  // WI-8.5c: durable improve state is keyed by the conceptId (`item_ref`), so a
-  // source no longer inherits another source's state by identity — a concept is
-  // distinct by construction. The legacy source-qualified/bare read arms are
-  // retired; a run only reads salience seeded under its OWN candidate conceptId.
-  test("conceptId-keyed salience drives the high-salience lane per concept, not cross-source", async () => {
+  // Durable improve state is keyed by item_ref, so sources do not share state
+  // merely because they contain the same conceptId.
+  test("itemRef-keyed salience drives the high-salience lane per concept, not cross-source", async () => {
     const localStash = isolatedStash();
     const teamStash = fs.mkdtempSync(path.join(path.dirname(localStash), "akm-team-source-"));
     cleanups.push(() => fs.rmSync(teamStash, { recursive: true, force: true }));
     writeSkill(localStash, "legacy-local", "Legacy local salience should survive the cutover.");
     writeSkill(teamStash, "legacy-team", "Another source must not inherit local salience.");
-    await buildIndex(localStash);
+    await buildIndex(localStash, "local");
     const stateDb = openStateDatabase();
     try {
       // Seed ONLY the local concept; the team concept is deliberately unseeded.
-      upsertAssetSalience(stateDb, "skills/legacy-local", {
+      upsertAssetSalience(stateDb, durableRef("skills/legacy-local", "local"), {
         encoding: 0.82,
         outcome: 0,
         retrieval: 0,
@@ -735,7 +754,7 @@ describe("#608 high-salience admission gate", () => {
     const localLanes = await runAndCaptureLanes({ stash: localStash, config: localConfig, target: "local" });
     expect(localLanes.get("skills/legacy-local")).toBe("high-salience");
 
-    await buildIndex(teamStash);
+    await buildIndex(teamStash, "team");
     const teamConfig = configWithSalience({ salienceThreshold: 0.75 });
     // The historical local stash stays the primary bundle; "team" is a distinct
     // named source at another root that must NOT inherit local's bare salience.
@@ -761,7 +780,7 @@ describe("#608 high-salience admission gate", () => {
     // target.
     const dbSetup = openStateDatabase();
     try {
-      upsertAssetSalience(dbSetup, "skills/novel-skill", {
+      upsertAssetSalience(dbSetup, durableRef("skills/novel-skill"), {
         encoding: 0.82,
         outcome: 0,
         retrieval: 0,
@@ -818,7 +837,7 @@ describe("#608 high-salience admission gate", () => {
       // Content-provenance so the ONLY thing keeping this ref out of the lane is
       // the threshold (1.0 > 0.82), not the #655 content gate — this test pins
       // the threshold knob specifically.
-      upsertAssetSalience(dbSetup, "skills/gated-skill", {
+      upsertAssetSalience(dbSetup, durableRef("skills/gated-skill"), {
         encoding: 0.82,
         outcome: 0,
         retrieval: 0,
@@ -913,12 +932,13 @@ function configWithSalience(
 }
 
 /** Seed a zero-feedback salience row with an explicit rank_score + consecutive_no_ops. */
-function seedSalience(ref: string, rankScore: number, noOps: number): void {
+function seedSalience(ref: string, rankScore: number, noOps: number, bundle = "stash"): void {
   const db = openStateDatabase();
+  const stateRef = durableRef(ref, bundle);
   try {
-    upsertAssetSalience(db, ref, { encoding: 0.5, outcome: 0, retrieval: 0, rankScore });
+    upsertAssetSalience(db, stateRef, { encoding: 0.5, outcome: 0, retrieval: 0, rankScore });
     if (noOps > 0) {
-      db.prepare(`UPDATE asset_salience SET consecutive_no_ops = ? WHERE asset_ref = ?`).run(noOps, ref);
+      db.prepare(`UPDATE asset_salience SET consecutive_no_ops = ? WHERE asset_ref = ?`).run(noOps, stateRef);
     }
   } finally {
     db.close();
@@ -968,7 +988,7 @@ async function runAndCaptureLanes(opts: {
  * event within the window carries a string `signal` (or `note`) in its metadata.
  */
 function recordFreshFeedback(ref: string): void {
-  appendEvent({ eventType: "feedback", ref, metadata: { signal: "negative", note: "test feedback" } });
+  appendEvent({ eventType: "feedback", ref: durableRef(ref), metadata: { signal: "negative", note: "test feedback" } });
 }
 
 describe("#610 bounded replay budget", () => {
@@ -1002,7 +1022,7 @@ describe("#610 bounded replay budget", () => {
     // feedback means signal-delta partitioning would route it to the no-op pool.
     appendEvent({
       eventType: "reflect_invoked",
-      ref: "skills/cooldown-target",
+      ref: durableRef("skills/cooldown-target"),
       metadata: { source: "test", eligibilitySource: "proactive" },
     });
 
@@ -1129,11 +1149,11 @@ describe("#610 bounded replay budget", () => {
     expect(replay.length).toBe(1); // budget=2, but only 1 non-converged candidate
   });
 
-  test("conceptId-keyed convergence state suppresses replay under the selected source", async () => {
+  test("itemRef-keyed convergence state suppresses replay under the selected source", async () => {
     const stash = isolatedStash();
     writeSkill(stash, "qualified-converged", "Converged in the team source.");
-    await buildIndex(stash);
-    seedSalience("skills/qualified-converged", 0.9, 3);
+    await buildIndex(stash, "team");
+    seedSalience("skills/qualified-converged", 0.9, 3, "team");
     const config = configWithSalience({ replayBudget: 1 });
     config.bundles = { team: { path: stash, writable: true } };
     config.defaultBundle = "team";
@@ -1144,13 +1164,13 @@ describe("#610 bounded replay budget", () => {
     expect(lanes.has("skills/qualified-converged")).toBe(false);
   });
 
-  test("conceptId-keyed convergence remains effective for a named historical local stash", async () => {
+  test("itemRef-keyed convergence remains effective for a named local bundle", async () => {
     const stash = isolatedStash();
     writeSkill(stash, "legacy-active", "Legacy local replay candidate.");
     writeSkill(stash, "legacy-converged", "Legacy local converged candidate.");
-    await buildIndex(stash);
-    seedSalience("skills/legacy-active", 0.9, 0);
-    seedSalience("skills/legacy-converged", 0.95, 3);
+    await buildIndex(stash, "local");
+    seedSalience("skills/legacy-active", 0.9, 0, "local");
+    seedSalience("skills/legacy-converged", 0.95, 3, "local");
     const config = configWithSalience({ replayBudget: 2, salienceThreshold: 1 });
     config.bundles = { local: { path: stash, writable: true } };
     config.defaultBundle = "local";

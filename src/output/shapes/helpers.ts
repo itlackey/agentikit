@@ -29,7 +29,7 @@ export function shapeProposalProducerOutput(
     };
     if (detail === "full") {
       return {
-        schemaVersion: result.schemaVersion ?? 1,
+        schemaVersion: result.schemaVersion,
         ...base,
         ...(result.stdout !== undefined ? { stdout: result.stdout } : {}),
         ...(result.stderr !== undefined ? { stderr: result.stderr } : {}),
@@ -37,16 +37,16 @@ export function shapeProposalProducerOutput(
     }
     return base;
   }
-  const proposal = (result.proposal as Record<string, unknown>) ?? {};
+  const proposal = result.proposal as Record<string, unknown>;
   const base: Record<string, unknown> = {
-    ok: true,
+    ok: result.ok,
     ref: result.ref,
     ...(result.engine !== undefined ? { engine: result.engine } : {}),
     ...(typeof result.durationMs === "number" ? { durationMs: result.durationMs } : {}),
     proposal: shapeProposalEntry(proposal, detail === "brief" ? "normal" : detail),
   };
   if (detail === "full") {
-    return { schemaVersion: result.schemaVersion ?? 1, ...base };
+    return { schemaVersion: result.schemaVersion, ...base };
   }
   return base;
 }
@@ -57,8 +57,7 @@ export function shapeProposalEntry(entry: Record<string, unknown>, detail: Detai
   }
   if (detail === "normal") {
     // `confidence` and `gateDecision` (#577) explain why a proposal is pending,
-    // so they are projected at `normal` for `akm proposal list/show` — both are
-    // optional and absent on legacy proposals.
+    // so they are projected at `normal` for `akm proposal list/show` when present.
     return pickFields(entry, [
       "id",
       "ref",
@@ -89,27 +88,27 @@ export function shapeProposalEntry(entry: Record<string, unknown>, detail: Detai
 }
 
 export function shapeProposalListOutput(result: Record<string, unknown>, detail: DetailLevel): Record<string, unknown> {
-  const proposals = Array.isArray(result.proposals) ? (result.proposals as Record<string, unknown>[]) : [];
+  const proposals = result.proposals as Record<string, unknown>[];
   const shaped = proposals.map((p) => shapeProposalEntry(p, detail));
   const base: Record<string, unknown> = {
-    totalCount: result.totalCount ?? shaped.length,
+    totalCount: result.totalCount,
     proposals: shaped,
   };
   if (detail === "full") {
-    return { schemaVersion: result.schemaVersion ?? 1, ...base };
+    return { schemaVersion: result.schemaVersion, ...base };
   }
   return base;
 }
 
 export function shapeProposalShowOutput(result: Record<string, unknown>, detail: DetailLevel): Record<string, unknown> {
-  const proposal = (result.proposal as Record<string, unknown>) ?? {};
+  const proposal = result.proposal as Record<string, unknown>;
   const validation = result.validation as Record<string, unknown> | undefined;
   const base: Record<string, unknown> = {
     proposal: shapeProposalEntry(proposal, detail === "brief" ? "normal" : detail),
     ...(validation ? { validation } : {}),
   };
   if (detail === "full") {
-    return { schemaVersion: result.schemaVersion ?? 1, ...base };
+    return { schemaVersion: result.schemaVersion, ...base };
   }
   return base;
 }
@@ -118,16 +117,16 @@ export function shapeProposalAcceptOutput(
   result: Record<string, unknown>,
   detail: DetailLevel,
 ): Record<string, unknown> {
-  const proposal = (result.proposal as Record<string, unknown>) ?? {};
+  const proposal = result.proposal as Record<string, unknown>;
   const base: Record<string, unknown> = {
-    ok: result.ok ?? true,
+    ok: result.ok,
     id: result.id,
     ref: result.ref,
     assetPath: result.assetPath,
     proposal: shapeProposalEntry(proposal, detail === "brief" ? "normal" : detail),
   };
   if (detail === "full") {
-    return { schemaVersion: result.schemaVersion ?? 1, ...base };
+    return { schemaVersion: result.schemaVersion, ...base };
   }
   return base;
 }
@@ -136,37 +135,16 @@ export function shapeProposalRejectOutput(
   result: Record<string, unknown>,
   detail: DetailLevel,
 ): Record<string, unknown> {
-  const proposal = (result.proposal as Record<string, unknown>) ?? {};
+  const proposal = result.proposal as Record<string, unknown>;
   const base: Record<string, unknown> = {
-    ok: result.ok ?? true,
+    ok: result.ok,
     id: result.id,
     ref: result.ref,
     ...(result.reason !== undefined ? { reason: result.reason } : {}),
     proposal: shapeProposalEntry(proposal, detail === "brief" ? "normal" : detail),
   };
   if (detail === "full") {
-    return { schemaVersion: result.schemaVersion ?? 1, ...base };
-  }
-  return base;
-}
-
-export function shapeDistillOutput(result: Record<string, unknown>, detail: DetailLevel): Record<string, unknown> {
-  const proposal = result.proposal as Record<string, unknown> | undefined;
-  if (detail === "brief") {
-    return pickFields(result, ["ok", "outcome", "inputRef", "lessonRef", "proposalId", "message"]);
-  }
-  const base: Record<string, unknown> = {
-    ok: result.ok ?? true,
-    outcome: result.outcome,
-    inputRef: result.inputRef,
-    lessonRef: result.lessonRef,
-    ...(result.proposalId !== undefined ? { proposalId: result.proposalId } : {}),
-    ...(result.message !== undefined ? { message: result.message } : {}),
-    ...(Array.isArray(result.findings) && result.findings.length > 0 ? { findings: result.findings } : {}),
-    ...(proposal ? { proposal: shapeProposalEntry(proposal, detail) } : {}),
-  };
-  if (detail === "full") {
-    return { schemaVersion: result.schemaVersion ?? 1, ...base };
+    return { schemaVersion: result.schemaVersion, ...base };
   }
   return base;
 }
@@ -180,7 +158,7 @@ export function shapeProposalDiffOutput(result: Record<string, unknown>, detail:
     ...(result.targetPath !== undefined ? { targetPath: result.targetPath } : {}),
   };
   if (detail === "full") {
-    return { schemaVersion: result.schemaVersion ?? 1, ...base };
+    return { schemaVersion: result.schemaVersion, ...base };
   }
   return base;
 }
@@ -193,6 +171,11 @@ export function shapeEventsOutput(result: Record<string, unknown>, detail: Detai
     ...(result.type !== undefined ? { type: result.type } : {}),
     ...(result.since !== undefined ? { since: result.since } : {}),
     ...(typeof result.sinceOffset === "number" ? { sinceOffset: result.sinceOffset } : {}),
+    // D-38: echo `--limit` through the shaped envelope too — `akmEventsList`
+    // already conditionally includes it in its raw result (see
+    // src/commands/events.ts) only when the caller passed it, so this mirrors
+    // that same "present only if requested" convention.
+    ...(typeof result.limit === "number" ? { limit: result.limit } : {}),
     totalCount: result.totalCount ?? shapedEvents.length,
     events: shapedEvents,
   };
@@ -229,9 +212,7 @@ export function shapeHistoryOutput(result: Record<string, unknown>, detail: Deta
       ...(result.since !== undefined ? { since: result.since } : {}),
       totalCount: result.totalCount ?? shapedEntries.length,
       entries: shapedEntries,
-      // `sources` lists the event sources included in this response.
-      // Always contains "usage_events"; also "events.jsonl" when
-      // --include-proposals was specified.
+      // `sources` lists the state.db event sources included in this response.
       ...(Array.isArray(result.sources) ? { sources: result.sources } : {}),
       ...(Array.isArray(result.warnings) && result.warnings.length > 0 ? { warnings: result.warnings } : {}),
     };
@@ -290,7 +271,6 @@ export function shapeSearchOutput(
       source: result.source,
       hits: shapedHits,
       ...(shapedRegistryHits.length > 0 ? { registryHits: shapedRegistryHits } : {}),
-      ...(result.semanticSearch ? { semanticSearch: result.semanticSearch } : {}),
       ...(result.tip ? { tip: result.tip } : {}),
       ...(result.warnings ? { warnings: result.warnings } : {}),
       ...(result.timing ? { timing: result.timing } : {}),
@@ -457,6 +437,10 @@ export function shapeShowOutput(
     return pickFields(result, [
       "type",
       "name",
+      // ref is present on every show shape (human/summary/agent) — it is the
+      // canonical identity of the asset, not an agent-only convenience field
+      // (R-020).
+      "ref",
       "description",
       "tags",
       "parameters",
@@ -472,6 +456,8 @@ export function shapeShowOutput(
   const base = pickFields(result, [
     "type",
     "name",
+    // ref is always projected, same as path/editable below (R-020).
+    "ref",
     "origin",
     "action",
     "description",
@@ -492,8 +478,9 @@ export function shapeShowOutput(
     "activeRun",
     "keys",
     "related",
-    // path and editable are always projected so JSON consumers can locate and
-    // edit the asset without needing --detail full (QA #7).
+    // ref, path, and editable are always projected — at every --detail level,
+    // not just --detail full — so JSON consumers can locate and edit the
+    // asset without needing --detail full (QA #7 / D-14).
     "path",
     "editable",
   ]);

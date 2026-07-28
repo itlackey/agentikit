@@ -11,13 +11,12 @@ import { resolveModel } from "../../integrations/agent/model-aliases";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { resolveImprovePlan } from "../improve/improve-strategies";
 import {
+  ACTIVE_RUN_WARN_MS,
   type HealthCheckResult,
   type ImproveHealthMetrics,
   type SessionLogAdvisory,
   TASK_FAIL_RATE_WARN,
 } from "./types";
-
-const ACTIVE_RUN_WARN_MS = 15 * 60 * 1000;
 
 /**
  * Pre-computed inputs shared by the health-check registry. `akmHealth` runs the
@@ -442,7 +441,7 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
         blocked && remoteReason && ctx.embeddingEndpoint
           ? `Configured embedding endpoint ${ctx.embeddingEndpoint} is failing ` +
             `(${ctx.semanticStatus?.reason}${ctx.semanticStatus?.message ? `: ${ctx.semanticStatus.message}` : ""}) ` +
-            `while semanticSearchMode is "${ctx.semanticSearchMode ?? "auto"}". Searches fall back to keyword-only. ` +
+            `while semanticSearchMode is "${ctx.semanticSearchMode ?? "off"}". Searches fall back to keyword-only. ` +
             `Restore the endpoint, or set semanticSearchMode to "off" (or remove embedding.endpoint to use the local model).`
           : undefined;
       return {

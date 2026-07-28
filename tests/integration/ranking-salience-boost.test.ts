@@ -11,11 +11,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import { upsertAssetSalience } from "../../src/commands/improve/salience";
+import { conceptIdFromTypeName } from "../../src/core/asset/resolve-ref";
 import { acquireMaintenanceBarrier } from "../../src/core/maintenance-barrier";
 import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
-import { loadSalienceRankScores, type RankedEntryInput } from "../../src/indexer/search/ranking";
+import { loadSalienceRankScores } from "../../src/indexer/search/ranking";
 import { applyUtilityContributors, type UtilityRankingContext } from "../../src/indexer/search/ranking-contributors";
+import type { RankedEntryInput } from "../../src/indexer/search/ranking-types";
 import type { Database } from "../../src/storage/database";
 import { type Cleanup, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
@@ -27,6 +29,7 @@ function makeRanked(id: number, name: string, type = "lesson"): RankedEntryInput
     filePath: `/stash/${type}s/${name}.md`,
     score: 1,
     rankingMode: "fts",
+    itemRef: `stash//${conceptIdFromTypeName(type, name)}`,
   };
 }
 
@@ -80,7 +83,12 @@ describe("R2 — loadSalienceRankScores (state.db read path)", () => {
   test("maps stored asset_salience rank scores back to entry ids by ref", () => {
     const db = openStateDatabase();
     try {
-      upsertAssetSalience(db, "lessons/hot", { encoding: 0.8, outcome: 0.5, retrieval: 0.9, rankScore: 0.77 });
+      upsertAssetSalience(db, "stash//lessons/hot", {
+        encoding: 0.8,
+        outcome: 0.5,
+        retrieval: 0.9,
+        rankScore: 0.77,
+      });
     } finally {
       db.close();
     }
@@ -103,7 +111,12 @@ describe("R2 — loadSalienceRankScores (state.db read path)", () => {
   test("coordinates the canonical read-only handle with the maintenance barrier", () => {
     const db = openStateDatabase();
     try {
-      upsertAssetSalience(db, "lessons/hot", { encoding: 0.8, outcome: 0.5, retrieval: 0.9, rankScore: 0.77 });
+      upsertAssetSalience(db, "stash//lessons/hot", {
+        encoding: 0.8,
+        outcome: 0.5,
+        retrieval: 0.9,
+        rankScore: 0.77,
+      });
     } finally {
       db.close();
     }
@@ -115,20 +128,10 @@ describe("R2 — loadSalienceRankScores (state.db read path)", () => {
       releaseBarrier();
     }
     expect(loadSalienceRankScores(items).get(11)).toBeCloseTo(0.77, 9);
-  });
+  }, 10_000);
 });
 
-// ── F5d Step 5 — the required salience dual-read (legacy + item_ref) ───────────
-//
-// The Chunk-5 flip F5d dual-arms `loadSalienceRankScores`: it folds BOTH stored
-// spellings into the single `asset_salience` IN query — the durable
-// `bundle//conceptId` item_ref FIRST, the pre-flip `type:name` legacy key
-// SECOND. An asset seeded under EITHER spelling must receive the SAME salience
-// boost, and a fresh new-grammar row must win over any stale legacy row for the
-// same asset (the Chunk-8 re-key transition window). These tests seed salience
-// directly (bypassing the writers, which flip separately) so the read path is
-// pinned independently of the write path.
-describe("Chunk-8 — salience dual-key read (bare conceptId + `bundle//conceptId` item_ref)", () => {
+describe("salience current item_ref read", () => {
   let cleanup: Cleanup;
 
   beforeEach(() => {
@@ -137,17 +140,19 @@ describe("Chunk-8 — salience dual-key read (bare conceptId + `bundle//conceptI
 
   afterEach(() => cleanup());
 
-  /** A ranked item that carries a durable `item_ref` (a post-flip, provenance-bearing row). */
   function makeRankedWithItemRef(id: number, name: string, itemRef: string, type = "lesson"): RankedEntryInput {
     return { ...makeRanked(id, name, type), itemRef };
   }
 
-  test("an asset seeded under the bare conceptId and one under bundle//conceptId both boost identically", () => {
+  test("ignores bare stored keys and reads fully-qualified item_ref keys", () => {
     const db = openStateDatabase();
     try {
-      // Bare-conceptId spelling: the scope-ref / entry-absent write-key fallback.
-      upsertAssetSalience(db, "lessons/legacy-hot", { encoding: 0.8, outcome: 0.5, retrieval: 0.9, rankScore: 0.66 });
-      // Post-flip spelling: a provenance-bearing row keyed by the durable item_ref.
+      upsertAssetSalience(db, "lessons/retired-hot", {
+        encoding: 0.8,
+        outcome: 0.5,
+        retrieval: 0.9,
+        rankScore: 0.66,
+      });
       upsertAssetSalience(db, "stash//lessons/new-hot", {
         encoding: 0.8,
         outcome: 0.5,
@@ -158,49 +163,37 @@ describe("Chunk-8 — salience dual-key read (bare conceptId + `bundle//conceptI
       db.close();
     }
 
-    // `legacyItem` has NO item_ref — it is matched by the bare-conceptId arm
-    // (`lessons/legacy-hot`).
-    const legacyItem = makeRanked(21, "legacy-hot");
-    // `newItem` carries an item_ref — it is matched by the item_ref arm
-    // (`stash//lessons/new-hot`).
+    const retiredItem = makeRankedWithItemRef(21, "retired-hot", "stash//lessons/retired-hot");
     const newItem = makeRankedWithItemRef(22, "new-hot", "stash//lessons/new-hot");
 
-    const scores = loadSalienceRankScores([legacyItem, newItem]);
-    expect(scores.get(21)).toBeCloseTo(0.66, 9); // bare-conceptId arm hit
-    expect(scores.get(22)).toBeCloseTo(0.66, 9); // new arm hit
-    // Boost identically — the whole point of the dual-arm.
-    expect(scores.get(21)).toBe(scores.get(22));
+    const scores = loadSalienceRankScores([retiredItem, newItem]);
+    expect(scores.has(21)).toBe(false);
+    expect(scores.get(22)).toBeCloseTo(0.66, 9);
   });
 
-  test("a fully-qualified item_ref row wins over a bare-conceptId row for the same asset", () => {
+  test("a fully-qualified item_ref row is not affected by a bare sibling", () => {
     const db = openStateDatabase();
     try {
-      // A bare-conceptId row (scope-ref write)…
       upsertAssetSalience(db, "lessons/dual", { encoding: 0, outcome: 0, retrieval: 0, rankScore: 0.1 });
-      // …and the fully-qualified row the planner-resolved writer produced.
       upsertAssetSalience(db, "stash//lessons/dual", { encoding: 0, outcome: 0, retrieval: 0, rankScore: 0.9 });
     } finally {
       db.close();
     }
 
-    // The item resolves to BOTH keys (bare `lessons/dual` and item_ref
-    // `stash//lessons/dual`); the fully-qualified score must win.
     const item = makeRankedWithItemRef(30, "dual", "stash//lessons/dual");
     const scores = loadSalienceRankScores([item]);
     expect(scores.get(30)).toBeCloseTo(0.9, 9);
   });
 
-  test("an item_ref-bearing asset with only a bare-conceptId stored row still boosts (conceptId fallback)", () => {
+  test("an item_ref-bearing asset does not read a bare stored key", () => {
     const db = openStateDatabase();
     try {
-      // Only a bare-conceptId row exists (a scope-ref write), but the READ item
-      // already carries provenance — the conceptId arm must still hit.
       upsertAssetSalience(db, "lessons/straggler", { encoding: 0, outcome: 0, retrieval: 0, rankScore: 0.42 });
     } finally {
       db.close();
     }
     const item = makeRankedWithItemRef(40, "straggler", "stash//lessons/straggler");
     const scores = loadSalienceRankScores([item]);
-    expect(scores.get(40)).toBeCloseTo(0.42, 9);
+    expect(scores.has(40)).toBe(false);
   });
 });

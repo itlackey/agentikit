@@ -111,7 +111,11 @@ afterEach(() => {
 
 describe("bundle-targeted tasks via --target", () => {
   test("enable/disable/run a task in a NON-default bundle carries --target through cron", async () => {
-    writeTaskFile(work.dir, "foo", ['schedule: "@daily"', 'command: "true"', "enabled: false", ""].join("\n"));
+    writeTaskFile(
+      work.dir,
+      "foo",
+      ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: false", ""].join("\n"),
+    );
 
     // enable --target work → installs, cron line embeds `--target work`.
     const enabled = await akmTasksSetEnabled("foo", true, { backend: cron() }, "work");
@@ -136,7 +140,11 @@ describe("bundle-targeted tasks via --target", () => {
   });
 
   test("--target on a NON-writable bundle fails with a writable-enforcement error", async () => {
-    writeTaskFile(work.dir, "foo", ['schedule: "@daily"', 'command: "true"', "enabled: false", ""].join("\n"));
+    writeTaskFile(
+      work.dir,
+      "foo",
+      ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: false", ""].join("\n"),
+    );
     await expect(akmTasksSetEnabled("foo", true, { backend: cron() }, "readonly")).rejects.toThrow(/not writable/i);
     // add --target readonly is likewise refused before writing anything.
     await expect(
@@ -145,7 +153,11 @@ describe("bundle-targeted tasks via --target", () => {
   });
 
   test("an id already scheduled from another bundle is a hard collision error", async () => {
-    writeTaskFile(work.dir, "foo", ['schedule: "@daily"', 'command: "true"', "enabled: true", ""].join("\n"));
+    writeTaskFile(
+      work.dir,
+      "foo",
+      ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: true", ""].join("\n"),
+    );
     await akmTasksSetEnabled("foo", true, { backend: cron() }, "work");
 
     // Adding the same id to the primary bundle collides with work's entry.
@@ -160,7 +172,11 @@ describe("bundle-targeted tasks via --target", () => {
   test("plain sync never removes a --target entry; sync --target reconciles only that bundle", async () => {
     // A primary task and a work-bundle task, both scheduled.
     await akmTasksAdd({ id: "bar", schedule: "@daily", command: "true" }, { backend: cron() });
-    writeTaskFile(work.dir, "foo", ['schedule: "@daily"', 'command: "true"', "enabled: true", ""].join("\n"));
+    writeTaskFile(
+      work.dir,
+      "foo",
+      ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: true", ""].join("\n"),
+    );
     await akmTasksSetEnabled("foo", true, { backend: cron() }, "work");
 
     // Plain (primary) sync: reconciles only `bar`; `foo` (target work) is untouched.

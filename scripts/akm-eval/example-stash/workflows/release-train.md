@@ -257,7 +257,8 @@ than burying the retro inside the orchestrator.
    - extract patterns: which steps blocked, which `Anomalies` recurred
      across releases, which nested workflows themselves need updates
    - publish a retrospective page under
-     `wiki:{{ knowledge_wiki }}/releases/{{ release_version }}.md`
+     `pages/releases/{{ release_version }}.md` in the `{{ knowledge_wiki }}`
+     wiki
    - file follow-up issues for each actionable lesson
 3. When the retro finishes, link its wiki page from `release-book.md`
    under `Artefacts`.
@@ -270,9 +271,8 @@ ad-hoc notes here.
 
 ### Completion Criteria
 - A nested retro run is started, completed, and its run ID is recorded.
-- A retrospective wiki page exists at
-  `wiki:{{ knowledge_wiki }}/releases/{{ release_version }}.md` and is
-  linked from `release-book.md`.
+- A retrospective wiki page exists at `pages/releases/{{ release_version }}.md`
+  in the `{{ knowledge_wiki }}` wiki and is linked from `release-book.md`.
 - Every actionable lesson is filed as a tracked issue, not left as a
   bullet in the wiki page.
 
@@ -294,16 +294,17 @@ Make the orchestrator's audit trail self-contained.
    dependency audit produced 2 follow-up issues."
    ```
 
-3. Refresh the wiki and stash indexes:
+3. Refresh the stash index so the retrospective's wiki page (written by the
+   nested run in the previous step) is searchable — wiki pages are plain
+   files edited directly with file tools, and there is no `akm wiki`
+   command family to ingest or lint them:
 
    ```sh
-   akm wiki ingest {{ knowledge_wiki }}
    akm index
-   akm wiki lint {{ knowledge_wiki }}
    ```
 
 ### Completion Criteria
 - `release-book.md` has no empty sections.
 - A memory linking this orchestrator run to its release version is
   stored.
-- `akm index` and `akm wiki lint {{ knowledge_wiki }}` complete cleanly.
+- `akm index` completes cleanly.

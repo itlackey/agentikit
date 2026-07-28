@@ -54,106 +54,41 @@
  * the loose `akm` stash-shape probe.
  *
  * When NO adapter's probe fires (an empty or not-yet-materialized root), the
- * fallback is **`akm`** (see {@link FALLBACK_ADAPTER_ID}) — a RECORDED DEVIATION
- * from spec §1.2(3), which specifies an `okf` fallback. See that constant's
- * comment for the rationale (workspace-root discipline in the pre-config-adapter
- * transitional model).
+ * fallback is **`akm`** (see {@link FALLBACK_ADAPTER_ID}), preserving workspace
+ * root behavior. Explicit configured ownership always wins over probing.
  */
 
-import crypto from "node:crypto";
-import path from "node:path";
 import { isSourceWriteActivated } from "../core/activation-policy";
-import { getAdapters } from "../core/adapter/registry";
+import { detectAdapterId } from "../core/adapter/detect-adapter";
 import type { BundleInstallation } from "../core/adapter/types";
 import { stashDirFor } from "../core/asset/asset-placement";
-import { isBundleSlug } from "../core/asset/asset-ref";
+import { deriveBundleId, deriveBundleIds, slugForPath } from "../core/bundle-id";
 import type { EntryProvenance } from "../storage/repositories/index-entry-types";
 import type { SearchSource } from "./search/search-source";
+
+export { deriveBundleId, deriveBundleIds, slugForPath };
 
 /**
  * The no-probe-match fallback adapter id.
  *
- * RECORDED DEVIATION from spec §1.2(3) (which specifies an `okf` fallback),
- * kept as the status-quo-preserving choice pending 0.9.1:
+ * The status-quo-preserving default from spec §1.2(3):
  *
  *  - Behavior discipline (spec line 267): the AKM workspace root's own indexing
  *    MUST stay classified `akm`. In this transitional model there is no
- *    config-driven adapter plumbing yet (§1.4) — `deriveInstallations` derives
- *    the adapter SOLELY from this probe, so the workspace-root classification
- *    depends on either `akm.looksLikeRoot` firing (type dirs / `.stash` present)
- *    OR this fallback. A genuinely empty / not-yet-materialized workspace root
- *    (no type dirs) fires no probe; an `okf` fallback would misclassify it as
- *    `okf`, violating that discipline. `akm` keeps it correct.
+ *    depends on either explicit adapter configuration, `akm.looksLikeRoot`
+ *    firing (type dirs / `.stash` present), or this fallback. A genuinely empty
+ *    root fires no probe; `akm` keeps the implicit workspace root correct.
  *  - Status quo: before the registry was wired, `getAdapters()` was empty in
  *    production so EVERY source fell back here — this preserves that exact
  *    fallback value while the probe now genuinely classifies the non-akm shapes.
- *
- * 0.9.1 should flip this to `okf` once the config-default adapter for the
- * workspace root is plumbed from config (§1.4 / spec line 267), which frees this
- * fallback to be the spec §1.2(3) `okf`.
  */
 const FALLBACK_ADAPTER_ID = "akm";
-
-/**
- * Deterministic, filesystem-safe bundle slug from a source path. Sanitizes the
- * path's basename to the ref bundle-slug charset (spec §1.3: no `/`, `:`, `.`,
- * `#`); an empty result (e.g. a root path) falls back to a short path hash.
- * Pure function of the resolved path — the same path always slugs the same.
- */
-export function slugForPath(sourcePath: string): string {
-  const resolved = path.resolve(sourcePath);
-  const base = path
-    .basename(resolved)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  if (base.length > 0) return base;
-  return `bundle-${shortHash(resolved)}`;
-}
-
-/** First 8 hex chars of the sha256 of the input — a stable disambiguator. */
-function shortHash(input: string): string {
-  return crypto.createHash("sha256").update(input).digest("hex").slice(0, 8);
-}
-
-/**
- * Derive the batch-unique bundle id for a source (D-R5, ref-grammar decision):
- *
- *   1. `registryId` — WHEN it is a legal bundle slug (spec §11.1 charset). A
- *      non-slug-legal registry id (`github:owner/repo`, `npm:@scope/pkg` — they
- *      carry `:` / `/`) CANNOT be a bundle prefix (it would break the
- *      `bundle//conceptId` grammar), so it falls through to (2).
- *   2. `slugForPath(sourcePath)` — the basename slug fallback.
- *
- * The result is made unique WITHIN a derivation batch by `ensureUniqueId`, and
- * the chosen id is added to `usedIds`. This is the ONE derivation the Chunk-8
- * config migrator ({@link import("../migrate/legacy/config-source-migration")})
- * and {@link deriveInstallations} share, so a migrated `bundles` key equals the
- * runtime installation id by construction (D-R5 no-identity-shift proof).
- */
-export function deriveBundleId(registryId: string | undefined, sourcePath: string, usedIds: Set<string>): string {
-  const preferred =
-    registryId && registryId.length > 0 && isBundleSlug(registryId) ? registryId : slugForPath(sourcePath);
-  const id = ensureUniqueId(preferred, sourcePath, usedIds);
-  usedIds.add(id);
-  return id;
-}
 
 /**
  * Resolve the adapter id for a component root via the ordered `looksLikeRoot`
  * probe (spec §1.2), first match wins; falls back to `akm` when no probe fires.
  */
-function detectAdapterId(root: string): string {
-  for (const adapter of getAdapters()) {
-    try {
-      if (adapter.looksLikeRoot?.(root) === true) return adapter.id;
-    } catch {
-      // A probe that throws (unreadable root, race) does not claim the root —
-      // fall through to the next adapter, ultimately to the akm fallback.
-    }
-  }
-  return FALLBACK_ADAPTER_ID;
-}
+export { detectAdapterId } from "../core/adapter/detect-adapter";
 
 /**
  * Derive the durable `BundleInstallation[]` from the transitional
@@ -161,17 +96,17 @@ function detectAdapterId(root: string): string {
  * priority). Bundle ids are unique within the returned batch.
  */
 export function deriveInstallations(sources: SearchSource[]): BundleInstallation[] {
-  const usedIds = new Set<string>();
+  const ids = deriveBundleIds(sources);
   const installations: BundleInstallation[] = [];
 
-  for (const source of sources) {
+  for (const [index, source] of sources.entries()) {
     // D-R5 rule 1: when the source carries its config bundle key (a slug-legal
     // registryId), that key IS the installation id — equal by construction to
     // this derivation. A non-slug-legal registryId slugs from the path instead.
-    const id = deriveBundleId(source.registryId, source.path, usedIds);
+    const id = ids[index] as string;
 
     const writable = isSourceWriteActivated(source);
-    const adapter = detectAdapterId(source.path);
+    const adapter = source.adapterId ?? detectAdapterId(source.path, FALLBACK_ADAPTER_ID);
 
     installations.push({
       id,
@@ -222,19 +157,4 @@ export function deriveEntryProvenance(
     conceptId,
     adapterId: bundle.adapterId,
   };
-}
-
-/**
- * Guarantee a batch-unique id. The preferred id (registryId or path slug) is
- * used as-is when free; on collision a short path-hash suffix disambiguates
- * (deterministic in the resolved path), and the unlikely second-order collision
- * appends a numeric counter.
- */
-function ensureUniqueId(preferred: string, sourcePath: string, used: Set<string>): string {
-  if (!used.has(preferred)) return preferred;
-  const suffixed = `${preferred}-${shortHash(path.resolve(sourcePath))}`;
-  if (!used.has(suffixed)) return suffixed;
-  let n = 2;
-  while (used.has(`${suffixed}-${n}`)) n++;
-  return `${suffixed}-${n}`;
 }

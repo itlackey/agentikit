@@ -7,9 +7,15 @@
 //
 // `classifyExitCode` is internal to src/cli/shared.ts; we exercise it through
 // the public `emitJsonError`, which is the single seam that maps a thrown value
-// to (a) the JSON error envelope on stderr and (b) the process exit code. We
-// stub `process.exit` and `console.error` to capture both without terminating
-// the test runner.
+// to (a) the JSON error envelope on stderr and (b) the process exit code.
+//
+// R-067 (PKG-8): `emitJsonError` no longer calls `process.exit()` — it sets
+// `process.exitCode` and returns, so a caller's pending `finally` blocks
+// (cleanup, e.g. `disposeDispatchResources()` in src/cli.ts) actually run
+// instead of being skipped by a synchronous process-terminating call. This
+// helper now reads `process.exitCode` after the (non-throwing) call instead
+// of stubbing `process.exit` to catch a sentinel throw — `emitJsonError`
+// doesn't throw or exit at all anymore, so there is nothing to catch.
 //
 // INTENTIONAL behaviour change asserted here: a genuinely-unexpected error
 // (anything that is NOT an `AkmError` — e.g. a bare `Error`/`TypeError`) now
@@ -28,29 +34,24 @@ interface Captured {
 }
 
 /**
- * Invoke `emitJsonError` with `process.exit` / `console.error` stubbed, and
- * return the captured exit code plus the parsed JSON envelope. `emitJsonError`
- * is typed `never` (it normally calls `process.exit`); the stub throws a
- * sentinel so control returns here rather than tearing down the runner.
+ * Invoke `emitJsonError` with `console.error` stubbed and `process.exitCode`
+ * saved/restored, and return the captured exit code plus the parsed JSON
+ * envelope.
  */
 function runEmit(error: unknown): Captured {
-  const realExit = process.exit;
   const realError = console.error;
-  let exitCode = -1;
+  const realExitCode = process.exitCode;
   let stderr = "";
-  process.exit = ((code?: number): never => {
-    exitCode = code ?? 0;
-    throw new Error("__emit_exit__");
-  }) as unknown as typeof process.exit;
+  process.exitCode = undefined;
   console.error = (msg?: unknown) => {
     stderr += typeof msg === "string" ? msg : String(msg);
   };
+  let exitCode: number;
   try {
     emitJsonError(error);
-  } catch (err) {
-    if (!(err instanceof Error) || err.message !== "__emit_exit__") throw err;
+    exitCode = typeof process.exitCode === "number" ? process.exitCode : -1;
   } finally {
-    process.exit = realExit;
+    process.exitCode = realExitCode;
     console.error = realError;
   }
   return { exitCode, envelope: JSON.parse(stderr) as Record<string, unknown> };

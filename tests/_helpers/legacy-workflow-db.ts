@@ -9,7 +9,7 @@
  * Chunk-8 WI-8.3 deleted `src/workflows/db.ts` (`openWorkflowDatabase` / the live
  * `WORKFLOW_MIGRATIONS`). Migration/backup/cutover suites that still need a
  * faithful pre-cutover workflow.db source it here from the FROZEN migration
- * bodies (`src/migrate/legacy/workflow-migrations-bodies.ts`) through the shared
+ * bodies (`scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts`) through the shared
  * engine — exactly as `config-migrate.ts#runFrozenWorkflowRoll` does at
  * migrate-apply time. This keeps pre-cutover coverage alive (§15.3: extend, do
  * not rewrite) without resurrecting the deleted module.
@@ -19,7 +19,7 @@ import path from "node:path";
 import {
   FROZEN_WORKFLOW_BASE_SCHEMA_DDL,
   FROZEN_WORKFLOW_MIGRATIONS,
-} from "../../src/migrate/legacy/workflow-migrations-bodies";
+} from "../../scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies";
 import { type Database, openDatabase } from "../../src/storage/database";
 import { runMigrations as runSqliteMigrations } from "../../src/storage/engines/sqlite-migrations";
 import { applyStandardPragmas } from "../../src/storage/sqlite-pragmas";

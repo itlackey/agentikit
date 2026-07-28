@@ -35,6 +35,7 @@ import type { StashFile } from "./metadata";
 export type DirStaleReason = {
   kind:
     | "unchanged"
+    | "index-context-changed"
     | "no-previous-rows"
     | "cached-zero-row-state"
     | "mtime-changed"
@@ -49,15 +50,27 @@ export interface DirIndexState {
   persistedRowCount: number;
 }
 
-export function getDirIndexState(db: Database, dirPath: string, files: string[], builtAtMs: number): DirIndexState {
+export function getDirIndexState(
+  db: Database,
+  dirPath: string,
+  files: string[],
+  builtAtMs: number,
+  indexVariant = "",
+): DirIndexState {
   const prevEntries = getEntriesByDir(db, dirPath);
-  const fingerprint = computeDirFingerprint(dirPath, files);
+  const fingerprint = computeDirFingerprint(dirPath, files, indexVariant);
   if (prevEntries.length > 0) {
     const staleReason = getDirStaleReason(dirPath, files, prevEntries, builtAtMs);
-    if (!staleReason) {
-      return { stale: false, reason: { kind: "unchanged" }, persistedRowCount: prevEntries.length };
+    if (staleReason) return { stale: true, reason: staleReason, persistedRowCount: prevEntries.length };
+    const cachedState = getIndexDirState(db, dirPath);
+    if (!cachedState || cachedState.fileSetHash !== fingerprint.fileSetHash) {
+      return {
+        stale: true,
+        reason: { kind: "index-context-changed", detail: indexVariant },
+        persistedRowCount: prevEntries.length,
+      };
     }
-    return { stale: true, reason: staleReason, persistedRowCount: prevEntries.length };
+    return { stale: false, reason: { kind: "unchanged" }, persistedRowCount: prevEntries.length };
   }
 
   const cachedState = getIndexDirState(db, dirPath);
@@ -86,8 +99,9 @@ export function getCachedZeroRowDirState(
   files: string[],
   builtAtMs: number,
   priorDirsChanged: boolean,
+  indexVariant = "",
 ): DirIndexState | undefined {
-  const state = getDirIndexState(db, dirPath, files, builtAtMs);
+  const state = getDirIndexState(db, dirPath, files, builtAtMs, indexVariant);
   if (state.stale || state.reason.kind !== "cached-zero-row-state") return undefined;
   if (!canUseIncrementalSkip(state, priorDirsChanged)) return undefined;
   return state;
@@ -104,6 +118,7 @@ export function canUseIncrementalSkip(state: DirIndexState, priorDirsChanged: bo
 export function computeDirFingerprint(
   _dirPath: string,
   files: string[],
+  indexVariant = "",
 ): { fileSetHash: string; fileMtimeMaxMs: number } {
   const normalizedFiles = [...new Set(files.map((file) => path.basename(file)))].sort();
   let fileMtimeMaxMs = 0;
@@ -116,7 +131,7 @@ export function computeDirFingerprint(
     }
   }
   return {
-    fileSetHash: normalizedFiles.join("\0"),
+    fileSetHash: [indexVariant, ...normalizedFiles].join("\0"),
     fileMtimeMaxMs,
   };
 }

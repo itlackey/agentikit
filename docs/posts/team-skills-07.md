@@ -12,7 +12,7 @@ published: true
 id: 3426246
 ---
 
-This is part seven in a series about managing the growing pile of skills, scripts, and context that AI coding agents depend on. [Part one](https://dev.to/itlackey/your-ai-agents-skill-list-is-getting-out-of-hand-32ck) introduced progressive disclosure. [Part two](https://dev.to/itlackey/you-already-have-dozens-of-agent-skills-you-just-cant-find-them-bpo) unified your local assets across platforms. [Part three](https://dev.to/itlackey/your-agents-memory-shouldnt-disappear-when-the-session-ends) added remote context via OpenViking. *(note: OpenViking is not supported in akm v1 — see [intro-part-03](intro-part-03.md) for details)* [Part four](https://dev.to/itlackey/your-agent-doesnt-know-what-the-community-already-figured-out) connected community knowledge through Context Hub.
+This is part seven in a series about managing the growing pile of skills, scripts, and context that AI coding agents depend on. [Part one](https://dev.to/itlackey/your-ai-agents-skill-list-is-getting-out-of-hand-32ck) introduced progressive disclosure. [Part two](https://dev.to/itlackey/you-already-have-dozens-of-agent-skills-you-just-cant-find-them-bpo) unified your local assets across platforms. [Part three](https://dev.to/itlackey/your-agents-memory-shouldnt-disappear-when-the-session-ends) added remote context via OpenViking. *(note: OpenViking is not supported in akm v1 — see Part three's deprecation notice for details)* [Part four](https://dev.to/itlackey/your-agent-doesnt-know-what-the-community-already-figured-out) connected community knowledge through Context Hub.
 
 Everything up to now has been about *you*. Your skills. Your stash. Your agent. That's fine when you're working solo, but most of us aren't.
 
@@ -90,11 +90,15 @@ A new developer runs `akm add`, and they've got the entire team's skill library 
 For larger teams or organizations that want discoverability without mandating specific skills, `akm` supports private registries. Think npm for agent skills, but hosted internally.
 
 ```sh
-# Search the team registry
-akm search "deploy" --registry https://registry.internal.company.com
+# Configure the team registry once (applies to all subsequent searches)
+akm registry add https://registry.internal.company.com --name team
 
-# Install a specific skill from the registry
-akm add registry:deploy-to-k8s
+# Search — registries you've added are searched automatically
+akm search "deploy" --source registry
+
+# Install a specific skill from the registry (each hit's `action` field
+# prints the exact `akm add <installRef>` to run)
+akm add https://registry.internal.company.com/skills/deploy-to-k8s
 ```
 
 This makes more sense when your organization has dozens of teams, each with their own skills, and you want cross-team discovery without requiring everyone to index everything. Also handy when you need access control — some skills are sensitive.

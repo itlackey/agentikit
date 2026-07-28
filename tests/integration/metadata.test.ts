@@ -2,6 +2,12 @@ import { afterAll, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+// The legacy `.stash.json` sidecar reader/writer moved to the migrator home
+// (Chunk-5 flip scope-B); alias to the old local names to keep the bodies intact.
+import {
+  readLegacyStashOverrides as loadStashFile,
+  writeLegacyStashFile as writeStashFile,
+} from "../../scripts/akm-migrate/migrate/legacy/legacy-stash-json";
 import { resetConfigCache } from "../../src/core/config/config";
 import {
   applyCuratedFrontmatter,
@@ -18,12 +24,6 @@ import {
 } from "../../src/indexer/passes/metadata";
 import { recognizeStashEntries } from "../../src/indexer/scan/drain-dir";
 import { buildSearchFields, buildSearchText } from "../../src/indexer/search/search-fields";
-// The legacy `.stash.json` sidecar reader/writer moved to the migrator home
-// (Chunk-5 flip scope-B); alias to the old local names to keep the bodies intact.
-import {
-  readLegacyStashOverrides as loadStashFile,
-  writeLegacyStashFile as writeStashFile,
-} from "../../src/migrate/legacy/legacy-stash-json";
 import { sandboxXdgConfigHome, writeSandboxConfig } from "../_helpers/sandbox";
 
 // Renderers auto-register via ensureBuiltinsRegistered in file-context.ts
@@ -142,9 +142,9 @@ test("validateStashEntry rejects an empty type", () => {
   expect(validateStashEntry({ name: "x", type: "" })).toBeNull();
 });
 
-test("validateStashEntry still rejects the deny-listed tool/vault types (D1.5-6)", () => {
-  expect(validateStashEntry({ name: "x", type: "tool" })).toBeNull();
-  expect(validateStashEntry({ name: "x", type: "vault" })).toBeNull();
+test("validateStashEntry accepts adapter-owned tool/vault types as open tokens", () => {
+  expect(validateStashEntry({ name: "x", type: "tool" })).toMatchObject({ name: "x", type: "tool" });
+  expect(validateStashEntry({ name: "x", type: "vault" })).toMatchObject({ name: "x", type: "vault" });
 });
 
 test("validateStashEntry accepts minimal valid entry", () => {
@@ -651,6 +651,16 @@ test("applyCuratedFrontmatter extracts evidenceSources as a string list", () => 
   expect(entry.evidenceSources).toEqual(["memories/a", "memories/b"]);
 });
 
+test("applyCuratedFrontmatter indexes only current derived-memory backrefs", () => {
+  const current: IndexDocument = { name: "child.derived", type: "memory" };
+  applyCuratedFrontmatter(current, { inferred: true, source: "team//memories/parent" });
+  expect(current.derivedFrom).toBe("memories/parent");
+
+  const retired: IndexDocument = { name: "old-child.derived", type: "memory" };
+  applyCuratedFrontmatter(retired, { inferred: true, source: ["memory", "parent"].join(":") });
+  expect(retired.derivedFrom).toBeUndefined();
+});
+
 test("validateStashEntry preserves captureMode, whenToUse, lessonStrength, evidenceSources", () => {
   const result = validateStashEntry({
     name: "m",
@@ -674,7 +684,7 @@ test("validateStashEntry preserves captureMode, whenToUse, lessonStrength, evide
 // onto IndexDocument — so no rank-time or filter policy can see it. SPEC-6 step 1
 // (docs/architecture/specs/stash-conventions-code-spec.md) captures it in
 // applyCuratedFrontmatter (alongside beliefState) and whitelists it through
-// validateStashEntry so it survives the .stash.json / entry_json round-trip.
+// validateStashEntry so it survives the entry_json projection.
 
 /**
  * SPEC-6 adds `category?: string` to IndexDocument. Read it through a typed

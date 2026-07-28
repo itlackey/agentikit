@@ -137,7 +137,7 @@ function distinctTokens(text: string): Set<string> {
 export function checkMergeInformationFloor(
   mergedBody: string,
   mergedSourceRefs: string[],
-  participants: Array<{ ref: string; body: string; sourceRefs: string[] }>,
+  participants: Array<{ ref: string; body: string; xrefs: string[] }>,
   config: AntiCollapseConfig,
 ): MergeInformationFloorResult {
   if (config.enabled === false || config.mergeInformationFloor === false || participants.length === 0) {
@@ -148,7 +148,7 @@ export function checkMergeInformationFloor(
   const required = new Set<string>();
   for (const p of participants) {
     required.add(p.ref);
-    for (const sr of p.sourceRefs) required.add(sr);
+    for (const xref of p.xrefs) required.add(xref);
   }
   const after = new Set(mergedSourceRefs);
   const missing = [...required].filter((r) => !after.has(r));

@@ -54,7 +54,5 @@ export function validateTaskId(id: string): string {
 }
 
 export function normaliseTaskId(raw: string): string {
-  // Keep accepting old task-file suffixes at the CLI boundary, but never
-  // normalize filesystem-derived ids into a different filename.
-  return validateTaskId(raw.trim().replace(/\.(yml|md)$/, ""));
+  return validateTaskId(raw.trim());
 }

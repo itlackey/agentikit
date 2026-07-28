@@ -1,7 +1,9 @@
 ---
+type: fact
 category: convention
 description: How to cross-link assets so retrieval compounds — a provenance xref when derived, sparse real associative xrefs, corrections as new assets, and canonical entity naming.
 when_to_use: Surfaced to authoring agents when they create or revise any asset that derives from, corrects, or relates to another asset.
+updated: 2026-07-28
 ---
 
 <!--

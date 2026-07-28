@@ -141,7 +141,7 @@ export interface IrBudget {
 }
 
 export interface WorkflowPlanGraph {
-  irVersion: number;
+  irVersion: typeof WORKFLOW_IR_VERSION;
   title: string;
   params?: string[];
   paramSchemas?: Record<string, Record<string, unknown>>;

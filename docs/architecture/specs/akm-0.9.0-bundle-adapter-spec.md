@@ -4,8 +4,8 @@
 
 **Reconciliation decisions applied (maintainer, 2026-07-13)** — resolving the plan/spec deviations:
 
-1. **OKF = HYBRID (DEV-1).** The kernel stays **format-neutral** (History D2): OKF is the **preferred interchange format and the reference/default adapter**, not a mandatory internal schema; Claude/OpenCode/Agent-Skills/workflow/task/env formats are native and are **not** forced through OKF. AKM adopts OKF's **field names** (`type`/`title`/`description`/`tags`/`timestamp`) and OKF's **path-based concept identity** as the shared vocabulary, so AKM is OKF-compatible by default. The field is **`type`** (open), which **MAY** drive presentation/ranking/filtering but **MUST NOT** authorize execution, grant runtime authority, be part of identity, or select the core storage/write path.
-2. **Ref = OKF concept ID + optional `bundle//` prefix (DEV-2).** Identity is the OKF concept ID (path within the bundle, minus `.md`); the workspace-qualified ref prepends an optional `<bundle>//`. Component is **absorbed into the path**, not a separate ref segment.
+1. **OKF is the first-class Markdown baseline (DEV-1).** Every applicable conformance case passes. The built-in `okf` adapter provides generic path identity, open type, content, links, and heading fragments. AKM-authored Markdown is an OKF-compatible superset; native adapters progressively add behavior. Non-Markdown Claude/OpenCode/Agent-Skills/workflow/task/env formats retain native serialization. The normalized `type` field is open and **MAY** drive adapter-owned presentation/ranking/filtering but **MUST NOT** authorize execution, grant runtime authority, be part of identity, or select the core storage/write path.
+2. **Ref = adapter-owned concept ID + optional `bundle//` prefix (DEV-2).** Identity is the concept ID produced by the selected adapter; the workspace-qualified ref prepends an optional `<bundle>//`. Component is **absorbed into the path**, not a separate ref segment.
 3. **Final scope (2026-07-14 refinements, deviation §4.3a–3c — supersede the earlier "DEV-3/4/5 restore full"):** the third `consolidate` verb is IN SCOPE as vocabulary (DEV-5); **bindings ship at Tier A only** (consolidation of existing install≠activation enforcement into one activation-policy point; the persisted `Binding` record, digests, rebind, and bind CLI are Tier B, deferred indefinitely); **the memory lifecycle is deferred entirely** (0.9.0 = consolidate decomposition with behavior preserved); **no new trust/approval machinery ships**. Retained simplifications: renderer/action as a **data table** typed over `KNOWN_TYPES`, and adapter facets expressed as **optional methods** on one interface (History §8.3), not a rigid `extends` hierarchy.
 4. **LLM Wiki adapter restored (DEV-7).** The `wiki` *asset type* dies; the **LLM Wiki adapter** is a first-class built-in owning `schema.md`/`index.md`/`log.md`/raw/pages/citations/xrefs/ingest.
 
@@ -13,25 +13,25 @@
 
 ---
 
-## 0. OKF: preferred interchange + reference adapter (hybrid, format-neutral kernel)
+## 0. OKF: first-class format support in a format-neutral kernel
 
-OKF v0.1 (Google Cloud, June 2026 — [SPEC](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)) defines a bundle as a directory tree of markdown "concept" files (`--- frontmatter ---` + body) where **the file path is the concept's identity** and the only required field is an open **`type`**. AKM adopts OKF as its preferred interchange format and reference adapter, and reuses OKF's identity + field vocabulary so an AKM knowledge bundle *is* a valid OKF bundle and any OKF bundle indexes with no translation. **AKM does not make OKF its kernel object model** (History D2): native Claude/OpenCode/skill/workflow/task/env formats keep their own semantics behind their own adapters.
+OKF v0.1 (Google Cloud, June 2026 — [SPEC](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)) defines a bundle as a directory tree of markdown "concept" files (`--- frontmatter ---` + body) where **the file path is the concept's identity** and the only required field is an open **`type`**. AKM supports that format directly through the built-in `okf` adapter. An OKF bundle indexes without conversion. OKF is the generic Markdown behavior floor, not AKM's database representation or a serialization imposed on non-Markdown formats.
 
-### 0.1 OKF ⇄ AKM: shared vocabulary (no translation for OKF; adapters translate the rest)
+### 0.1 OKF support mapping
 
 | OKF v0.1 | AKM | Note |
 |---|---|---|
-| Bundle = directory tree of markdown concepts | AKM **bundle**; `okf` is the **reference/default** adapter (§5) | AKM knowledge component == an OKF bundle on disk |
-| **Concept ID** = file path − `.md` (`tables/users.md` → `tables/users`) | AKM **identity** = the same path within the bundle; the ref adds an optional `<bundle>//` prefix (§1.3) | path is identity (drop-ref == OKF-alignment) |
-| Required **`type`** (open string) | AKM **`type`** — same field/name; open; **from frontmatter** (OKF-native) or **adapter-derived** (foreign). Presents/ranks/filters; **never** authorizes execution or identity | not a kernel switch; not `kind` |
+| Bundle = directory tree of markdown concepts | AKM bundle selected with `adapter: okf` (§5) | Other AKM bundles retain their native formats |
+| **Concept ID** = file path − `.md` (`tables/users.md` → `tables/users`) | The `okf` adapter emits that concept ID; the ref adds an optional `<bundle>//` prefix (§1.3) | Other adapters define their own concept IDs |
+| Required **`type`** (open string) | The `okf` adapter maps it to AKM's open indexed `type` field | Other adapters derive `type` from native semantics |
 | **`title`** | `name` (FTS 10) — read `title` first; write `title` | OKF-compat output |
 | **`description`** | `description` (FTS 5) | direct |
 | **`tags`** | `tags` (FTS 3) | direct |
-| **`timestamp`** | `updated`; base-linter `missing-updated`→`timestamp` | OKF-compat freshness |
+| Optional **`timestamp`** | `updated` when present | absence is not an AKM freshness error |
 | **`resource`** (URI) | provenance (`sourceRef`) | carried |
 | Reserved **`index.md`**/**`log.md`** | reserved, not indexed as concepts (§5) | |
 | bundle-relative links = relationship | deterministic native link graph (§9) | replaces LLM graph extraction for OKF content |
-| **`okf_version`** | bundle manifest version | AKM emits on bundles it creates |
+| **`okf_version`** | OKF bundle version | The OKF adapter may emit it for OKF bundles it creates |
 | consumers MUST tolerate unknown fields + broken links | `okf` adapter `validate` is **lenient** (§5) | interop guarantee |
 
 ### 0.2 The clean taxonomy — identity / type / adapter / component
@@ -40,14 +40,14 @@ The old `AkmAssetType` conflated five roles (source selection, classification, n
 
 | Concept | Is | Source | Role | NOT |
 |---|---|---|---|---|
-| **identity** | the one name of an item | OKF concept ID = path within bundle − `.md`; ref `[<bundle>//]<concept-id>` (§1.3) | refs, addressing, links, state keys | not type/adapter/component |
-| **`type`** (OKF) | open descriptive label | frontmatter (OKF-native) or adapter-derived (foreign) | presentation, ranking, filtering | not identity; not an adapter; **never execution authority**; not a core storage switch |
-| **adapter** | format-family owner / OKF translator | static id, one per component root | recognize / place / validate; optional authoring/export/memory methods | not a type; never competes per-file |
-| **component** | a materialized root under one adapter | the leading path segment(s) of the concept ID, matched to a configured root | provenance, write policy, adapter selection, git pathspecs | not a distinct ref segment; not identity; not type |
+| **identity** | the one name of an item | adapter-owned concept ID; ref `[<bundle>//]<concept-id>` (§1.3) | refs, addressing, links, state keys | not type/adapter/component |
+| **`type`** | open descriptive label | supplied by the selected adapter | presentation, ranking, filtering | not identity; not an adapter; **never execution authority**; not a core storage switch |
+| **adapter** | native format-family owner | static id, one per component root | recognize / place / validate; optional authoring/export/memory methods | not a type; never competes per-file |
+| **component** | a materialized root under one adapter | the bundle's single configured component | provenance, write policy, adapter selection, git pathspecs | not a distinct ref segment; not identity; not type |
 
-**Orthogonality:** (1) `type` ≠ adapter, many-to-many. (2) presentation/ranking key on `type`; validation keys on `(adapter, type)` via shared functions. (3) a "tool directory" (`.claude`) is a component; provenance, never identity/type. (4) identity is path-only (OKF); changing `type`, re-validating under another adapter, or re-mounting a root never renames an item — only moving the file does (an explicit rekey, normative §11.4). (5) `type` **presents but never executes** — runtime authority comes only from a binding or explicit one-shot approval (normative §18, §28; History D8).
+**Orthogonality:** (1) `type` ≠ adapter, many-to-many. (2) presentation/ranking key on `type`; validation keys on `(adapter, type)` via shared functions. (3) a "tool directory" (`.claude`) is a component; provenance, never identity/type. (4) identity is the adapter-owned concept ID; changing indexed metadata without moving or renaming the native item does not change it. (5) `type` **presents but never executes** — runtime authority comes only from a binding or explicit one-shot approval (normative §18, §28; History D8).
 
-**OKF floor vs AKM value-add.** OKF gives path identity + open `type` + `title`/`description`/`tags`/`timestamp` + links. AKM adds, format-neutrally: the reference OKF adapter + translators for foreign formats; presentation/ranking for known `type`s; type-specific validation; bindings/activation; three-verb evidence-driven improve; the bounded memory lifecycle; search/transaction. Markdown types are OKF concepts; executable/sensitive types (workflow/task/env/secret) and foreign formats (Claude/OpenCode/wiki) are handled by their adapters, not by OKF.
+**OKF baseline vs AKM capabilities.** For an OKF bundle, the `okf` adapter preserves path identity, open `type`, `title`/`description`/`tags`/`timestamp`, content, links, and heading fragments. AKM Markdown emits conformant OKF frontmatter and its adapter adds native behavior based on the recognized AKM asset kind. Executable, sensitive, YAML, and tool-native formats remain adapter-native rather than being translated through Markdown.
 
 ---
 
@@ -64,7 +64,7 @@ export interface BundleInstallation {
   id: BundleId;
   revision?: string;                 // resolved git sha / npm version+integrity / snapshot digest
   source?: string;                   // transport locator, kept OUT of identity (normative §11.2)
-  components: BundleComponent[];
+  components: BundleComponent[];     // exactly one entry in 0.9.0
   trusted: boolean;                  // explicit trust; installation grants nothing (History D8)
 }
 
@@ -83,31 +83,31 @@ export interface BundleComponent {
 *(Amended v0.4, 2026-07-21 — owner ruling: the `akm.bundle.yaml` manifest step and the sub-mount proposal step are removed; a bundle maps to exactly one component/adapter.)*
 
 1. **Workspace config `bundles` map** (normative §10.1).
-2. **Deterministic install-time probe** (no config): `looksLikeRoot` probes run in a fixed, most-specific-first order — `okf` (root `index.md`; `okf_version` strengthens the match but is NOT required — even the OKF reference bundles omit it) → `llm-wiki` (`schema.md` + `pages/`) → `claude` (the root IS `.claude`) → `opencode` → `agent-skills` (root `SKILL.md`) → fallback **`okf`**. First match wins; probes MUST be pure (stat/read only); the result is persisted per normative §9.4 and never re-guessed. `generic-files` is **never auto-selected** — explicit configuration only.
-3. **Single-component default** — nothing else matched ⇒ one component `{ id:"main", root:".", adapter:"okf" }`.
+2. **Deterministic install-time probe** (no config): `looksLikeRoot` probes run in a fixed, most-specific-first order. Specific native formats, LLM Wiki, and strong AKM layout evidence run before the broad OKF probe. A root OKF `index.md` or an index-less conformant typed Markdown tree selects `okf` when no stronger format claims it. First match wins; probes MUST be pure (stat/read only), and the result is persisted per normative §9.4 and never re-guessed. `generic-files` is **never auto-selected** — explicit configuration only.
+3. **Single-component default** — nothing else matched ⇒ one component using the `akm` adapter. OKF is selected by explicit configuration or its own deterministic probe, never merely as the generic fallback.
 
-**One bundle = one component = one adapter** (owner ruling 2026-07-21). The component's adapter processes the files and subdirectories of its bundle as it sees fit: the core provides the walk (universal hygiene only — `.git`/dot-dirs/etc.) and the persistence, and the adapter's `recognize` decides which walked files it claims and which it abstains on, regardless of the core's default behavior. There is no `akm.bundle.yaml` manifest and no sub-mount registration — heterogeneous tool subtrees are handled by the one adapter's own `recognize`, not by splitting the bundle into multiple components. Intra-component conceptId collisions (two files reducing to the same conceptId) are `duplicate-concept-id` diagnostics with a deterministic extension-priority winner.
+**One bundle = one component = one adapter** (owner ruling 2026-07-21). The component's adapter processes the files and subdirectories of its bundle as it sees fit: the core provides symlink-safe traversal and persistence, while adapter-specific walk policy determines whether ordinary dot/cache directories participate. The adapter's `recognize` decides which walked files it claims and which it abstains on. There is no `akm.bundle.yaml` manifest and no sub-mount registration. Intra-component conceptId collisions are `duplicate-concept-id` diagnostics with a deterministic extension-priority winner.
 
-### 1.3 Ref grammar — OKF concept ID + optional `bundle//` prefix
+### 1.3 Ref grammar — adapter-owned concept ID + optional `bundle//` prefix
 
-**Identity = the OKF concept ID** = path within the bundle with the recognized extension removed. The workspace-qualified ref prepends an optional `<bundle>//` (the `//` echoes the old `origin//`, and disambiguates the bundle prefix from the `/`-separated path):
+**Identity = the adapter-owned concept ID.** For OKF this is the Markdown path minus `.md`; other adapters define the corresponding path for their native item. The workspace-qualified ref prepends an optional `<bundle>//` (the `//` echoes the old `origin//`, and disambiguates the bundle prefix from the `/`-separated path):
 
 ```
 ref        := [ bundle "//" ] conceptId [ "#" fragment ]
 bundle     := slug                      # no "/", ":", ".", "#" ; workspace bundle name (not the upstream package name)
-conceptId  := path-within-bundle − ext  # OKF concept ID; MAY contain "/" ; MUST NOT contain "#" ; opaque to the core below the first "//"
+conceptId  := adapter-owned path within bundle  # MAY contain "/"; MUST NOT contain "#"; opaque to the core below the first "//"
 ```
 
-Normative §11.1 rules apply verbatim: **all durable state keys store the fully-qualified `bundle//conceptId` form** (the short form is CLI sugar only); **short refs inside bundle content resolve to the containing bundle**; conceptIds are NFC-normalized, `/`-separated, byte-wise case-sensitive, with `case-collision` diagnostics; body refs in prose use only the fully-qualified anchored form. `akm bundle rename` is a first-class rekey transaction (normative §11.5).
+Normative §11.1 rules apply verbatim: **all durable state keys store the fully-qualified `bundle//conceptId` form** (the short form is CLI sugar only); **short refs inside bundle content resolve to the containing bundle**; conceptIds are NFC-normalized, `/`-separated, byte-wise case-sensitive, with `case-collision` diagnostics; body refs in prose use only the fully-qualified anchored form. `akm bundle rename` was specced as a first-class rekey transaction (normative §11.5), but the `bundle` command group itself was removed (D5, `0.9.0-decisions.md`) — no `akm bundle` subcommand exists in the shipped CLI. The startup guard that references it (`src/indexer/bundle-identity-guard.ts`) still points at a command that does not exist; see the drift register.
 
 ```
-personal//knowledge/http-caching     # bundle-qualified; component "knowledge" is the leading path segment
+personal//knowledge/http-caching     # bundle-qualified; "knowledge" is part of the AKM concept path
 team-catalog//workflows/release      # component "workflows"
-project-claude//.claude/commands/test# component ".claude"; type=command (derived), NOT in the id
+project-claude//commands/test        # component root is .claude; type=command (derived), NOT in the id
 knowledge/http-caching               # default-bundle implied (bundle omitted)
 ```
 
-**Component is absorbed into the path**, not a separate segment: the leading path segment(s) of the concept ID match the bundle's configured component roots, so multi-component bundles namespace naturally (`knowledge/…` vs `workflows/…`) without a distinct `<component>` field in the ref. Component is recorded as a **provenance column** (derived at index time), used for filtering/write-policy/adapter-selection, never for identity.
+**Component is not a ref segment.** Each bundle has one configured component root, and its adapter derives concept IDs relative to that root. Component is recorded as a **provenance column**, used for filtering/write-policy/adapter-selection, never for identity.
 
 **Invariants (normative §11.2):** provider details never appear in refs; `type` never appears in the ref; changing a Git remote/cache/materializer never changes a ref; reclassifying `type` without moving the file never changes the ref; moving/renaming is an explicit state-rekey. The core MUST NOT parse a file path *out of* a concept ID — it stores the ref and looks the path up in the index. `asset-ref.ts` survives as a **pure parser** (bundle-prefix split on `//`, `validateName` traversal/null-byte/drive-letter guards `:121-136`); the closed union `isAssetType` `:109`, `TYPE_ALIASES` `:25`, `type:name` parsing are deleted.
 
@@ -116,7 +116,7 @@ knowledge/http-caching               # default-bundle implied (bundle omitted)
 ```jsonc
 { "defaultBundle": "personal",
   "bundles": {
-    "personal": { "path": "~/knowledge", "components": { "main": { "root": ".", "adapter": "okf", "writable": true } } },
+    "personal": { "path": "~/akm", "components": { "main": { "root": ".", "adapter": "akm", "writable": true } } },
     "team-catalog": { "git": "https://github.com/acme/team-catalog.git", "components": { "main": { "root": ".", "adapter": "okf" } } }
   },
   // "bindings": { ... }  — Tier-B target shape; NOT emitted or read in 0.9.0 (normative §18 staging note)
@@ -143,8 +143,8 @@ export interface BundleAdapter {
 
   // OPTIONAL — full-component scan for non-per-file layouts (website snapshots,
   // llm-wiki multi-file semantics). When absent, the CORE scans:
-  //   scanComponent(c, adapter) = core walk (git-aware, symlink-safe, skip-dirs,
-  //   nested-root subtraction §1.2) × adapter.recognize per file.
+  //   scanComponent(c, adapter) = core walk (git-aware, symlink-safe,
+  //   adapter-specific directory policy) × adapter.recognize per file.
   // The core walk is ONE implementation carrying the security policy; adapters never
   // reimplement it. An adapter overriding index() MUST keep recognize() coherent
   // (conformance: index() == fold of recognize() over the walk) or declare
@@ -181,6 +181,18 @@ export interface BundleAdapter {
 }
 ```
 
+**Status (verified against `src/core/adapter/bundle-adapter.ts`): the 7
+OPTIONAL authoring/export/memory facet methods above (`getAuthoringContext`,
+`create`, `listExports`, `planBinding`, `listMemories`, `renderMemoryPlan`,
+`validateMemoryPlan`) are not declared on the shipped `BundleAdapter`
+interface.** They are deliberately deferred Tier-B — the referenced types
+(`AuthoringContext`, `CreateRequest`, `BundleExport`, `BindingRequest`,
+`BindingPlan`, `MemoryRecord`, `MemorySemanticPlan`) are shapeless in every
+spec doc, and the code leaves an explicit "FLAGGED for maintainer" note
+rather than committing placeholder `Record<string, unknown>` types. The
+`recognize`/`index?`/`affectedItems?`/`validate`/`placeNew?`/`directoryList?`/
+`looksLikeRoot?` methods above are shipped as declared.
+
 **Renderer/action = data table keyed on the open `type`, pointing at a named-function core module** (plan §2.3; normative §15.4). The *mapping* is data; the renderer *implementations* (env-keys-only, secret-name-only, script-exec-hints, markdown view modes, generic) remain a small static core module — env/secret redaction is existing behavior ported as code, keyed on the **adapter**, never on `type`. The table is **typed over the `KNOWN_TYPES` const tuple** so the compiler enforces an entry for every type AKM itself knows (restoring the closed union's exhaustiveness for our own tables), while lookup stays open-string with a generic fallback:
 
 ```ts
@@ -201,22 +213,22 @@ The nine index-time metadata contributors currently registered by `output/render
 
 ---
 
-## 3. IndexDocument + the OKF projection
+## 3. IndexDocument normalized projection
 
 ```ts
 export interface IndexDocument {
   ref: ItemRef;             // fully-qualified "<bundle>//<concept-id>" (canonical stored spelling, §1.3)
   bundle: BundleId;
-  component: ComponentId;   // PROVENANCE (derived: longest-prefix match of the concept-id against component roots), not a ref segment
-  conceptId: string;        // OKF concept ID = path within bundle − ext; opaque to the core
+  component: ComponentId;   // PROVENANCE from the bundle's single configured component, not a ref segment
+  conceptId: string;        // adapter-owned path identity; opaque to the core
   path: string;             // absolute local path (the read path)
   hash: string;
   adapterId: string;
-  type?: string;            // = OKF `type`; open; frontmatter (native) or adapter-derived (foreign). Presents/ranks/filters; NEVER executes or identifies
+  type?: string;            // open adapter-supplied label; presents/ranks/filters; NEVER executes or identifies
 
-  name: string;             // FTS 10 ← OKF `title` (fallback filename)
-  description?: string;     // FTS 5  ← OKF `description`
-  tags?: string[];          // FTS 3  ← OKF `tags`
+  name: string;             // FTS 10; OKF adapter maps `title`
+  description?: string;     // FTS 5
+  tags?: string[];          // FTS 3
   hints?: string[];         // FTS 2
   content?: string;         // FTS 1 (bounded)
 
@@ -236,9 +248,9 @@ export interface IndexDocument {
   pinned?: boolean;
   fileSize?: number;        // hit size + estimatedTokens
   derivedFrom?: string;     // derived-twin belief inheritance
-  updated?: string;         // ← OKF `timestamp`
+  updated?: string;         // OKF adapter maps `timestamp`
   links?: string[];         // resolved native links = relationships (§9); navigation/lint, NOT graph boost
-  documentJson?: unknown;   // opaque adapter extras ONLY (arbitrary OKF frontmatter keys); not FTS, never parsed by core
+  documentJson?: unknown;   // opaque adapter extras ONLY; not FTS, never parsed by core
 }
 ```
 
@@ -266,20 +278,20 @@ Adapters/materializers/registry/network **never run at query time** (normative �
 
 **Incrementality is ITEM-scoped, not file-scoped**: the mount manifest is `{ scanGeneration, adapterVersion, items: {conceptId → {files: {path → hash,mtimeMs}}} }`. A changed path maps to affected item(s) via `affectedItems` (default: identity); every file of an affected item re-recognizes together, so directory-scoped items (skill = the dir; llm-wiki pages under `schema.md`) stay coherent — a sibling edit updates the item, deleting the primary file deletes the item, deleting a sibling does not. Adapters MAY declare coupling files (wiki `schema.md`) whose change escalates to a component rescan. The FTS dirty-queue (schema.ts:352) and zero-row dir-state classification (dir-staleness.ts) carry forward into this manifest.
 
-Registry is a **static frozen `BUILTIN_ADAPTERS`** map (normative §12.6): `okf`, **`akm`**, `llm-wiki`, `claude`, `opencode`, `agent-skills`, `akm-workflow`, `akm-task`, `dotenv`, `website-snapshot`, `generic-files`. (**`akm`** — the AKM workspace's own adapter, **§5.1** — is a first-class built-in; it is the config-default for the AKM workspace root and is NOT part of the §1.2 auto-probe order. It was omitted from an earlier draft of this list; that omission is corrected here.) One adapter per component root, selected once via the **ordered probe list of §1.2** (deterministic winner, persisted; `generic-files` config-only, never probed). Unknown `type` ⇒ searchable + generic renderer; unknown adapter id ⇒ component skipped with a warning. Conformance: each adapter's `looksLikeRoot` fires on its own golden root and on **no** sibling adapter's golden root.
+Registry is a **static frozen `BUILTIN_ADAPTERS`** map (normative §12.6): `website-snapshot`, `agent-skills`, `claude`, `opencode`, `dotenv`, `akm-workflow`, `akm-task`, `llm-wiki`, **`akm`**, `okf`, `generic-files`. One adapter per component root is selected once via the **ordered probe list of §1.2** (deterministic winner, persisted; explicit config wins; `generic-files` is config-only). Probe overlap is intentional for supersets: OKF can recognize conformant AKM Markdown, while the earlier strong AKM probe selects the native adapter. Unknown `type` remains searchable and receives generic behavior; an unknown adapter id skips the component with a warning.
 
 ---
 
-## 5. The reference `okf` adapter (default)
+## 5. The first-class `okf` adapter
 
 Pure OKF: **`type` from frontmatter, identity from path, no directory routing.**
-- **recognize:** any `.md` not named `index.md`/`log.md` → one concept; `type` = frontmatter `type` (default `knowledge` + a `missing-type` info hint if absent). No directory gate (OKF §1). Files under a sibling nested component root are excluded by the core subtraction rule (§1.2), not by the adapter.
-- **links:** BOTH legal OKF link forms resolve — `/`-rooted bundle-relative (recommended by OKF §5.1) *and* standard relative paths (OKF §5.2). Links resolve against the **component root**, then re-prefix with the component root to form the stored bundle-relative conceptId in `links` (so okf mounted at `root: knowledge` produces correct targets). OKF round-trip fidelity ("an AKM knowledge bundle *is* an OKF bundle") holds exactly when the okf component root is `.`.
+- **recognize:** any `.md` not named `index.md`/`log.md` → one concept; `type` = frontmatter `type` (default `knowledge` + a `missing-type` info hint if absent). No directory gate (OKF §1).
+- **links:** BOTH legal OKF link forms resolve — `/`-rooted bundle-relative (recommended by OKF §5.1) *and* standard relative paths (OKF §5.2). Links resolve against the component root to form the stored bundle-relative conceptId in `links`.
 - **conceptId:** path within the bundle − `.md` (markdownSpec.toCanonicalName, asset-spec.ts:91-95).
-- **placeNew:** `<conceptId>.md`; new files carry OKF frontmatter (`type`,`title`,`description`,`tags`,`timestamp`).
+- **authoring:** consumer-only in 0.9.0. AKM-specific write commands fail before touching an OKF target.
 - **directoryList:** the component root (OKF concepts live anywhere).
-- **renderer/action:** `TYPE_PRESENTATION` keyed on the file's `type` (default `knowledge-md`).
-- **validate (LENIENT):** base checks only; unknown frontmatter never fails; `missing-ref` on OKF links is a **warning** (consumers MUST tolerate broken links); `missing-type` is info.
+- **renderer/action:** generic Markdown content plus heading-fragment selection for every type.
+- **validate (LENIENT):** unknown frontmatter and absent optional timestamp never fail; `missing-ref` on OKF links is a **warning** (consumers MUST tolerate broken links); `missing-type` is info.
 - **Reserved:** `index.md`/`log.md` recognized, not indexed as concepts; root `index.md` may carry `okf_version`; `akm index` never regenerates `index.md` (normative §14.6, D14).
 
 ---
@@ -294,11 +306,10 @@ per-`type` adapters. Any future proposal to do so is a **spec change**, not an
 implementation detail, and requires amending this section first.
 
 - **`okf` — `type` from frontmatter (OKF §1.2), NO directory gate.** The
-  reference/default adapter (§5). `recognize` reads the OKF `type` field from
+  first-class OKF adapter (§5). `recognize` reads the OKF `type` field from
   each concept's YAML frontmatter; the directory a file lives in **never**
   determines its `type`. `type` absent ⇒ `knowledge` (+ `missing-type` info).
-  Used for OKF bundles, third-party OKF trees, and any content already authored
-  with `type:` frontmatter.
+  Used for configured or detected OKF bundles and third-party OKF trees.
 
 - **`akm` — CURRENT FUNCTIONALITY PRESERVED (the existing matcher stack); a
   behavior-preserving port.** The AKM workspace's own adapter. Its
@@ -311,6 +322,9 @@ implementation detail, and requires amending this section first.
   byte-for-byte recognition / placement / renderer / lint goldens (Chunk 0b) are
   its conformance gate. The `akm` adapter:
   - is **NOT** re-derived to a frontmatter-`type` model;
+  - emits matching `type` frontmatter on newly authored Markdown so the same
+    files remain conformant when consumed through the OKF baseline; the native
+    matcher remains authoritative and legacy files without `type` stay readable;
   - is **NOT** split into one-adapter-per-`type` — per §6 / §0.2 the 14 AKM
     formats are `type` **values** the single `akm` adapter emits, never adapters
     (per-`type` renderer/validator/placement differences are data/functions keyed
@@ -322,44 +336,34 @@ implementation detail, and requires amending this section first.
     `akm-0.9.0-ref-grammar-decision.md`): conceptId = the placement stash-subdir
     followed by the per-type canonical name — `knowledge/http-caching`,
     `skills/code-review`, `scripts/db/migrate/run.sh` — the same spelling
-    `placeNew` consumes and this spec's §1.3 examples show. For markdown types
-    this IS the OKF concept ID (path − `.md`); directory-items (skill) and
-    non-markdown extensions follow the adapter's own path definition
-    (normative §11.2 note). `entry.name`/FTS keep the bare canonical name —
-    identity ≠ search text.
+    `placeNew` consumes and this spec's §1.3 examples show. Markdown files strip
+    `.md`; directory-items (skill) and non-markdown extensions follow the
+    adapter's own path definition (normative §11.2 note). `entry.name`/FTS keep
+    the bare canonical name — identity ≠ search text.
 
-**OKF reserved filenames (BINDING — decision D-R6).** Upstream OKF v0.1 §3.1
+**Reserved filenames (BINDING — decision D-R6).** Upstream OKF v0.1 §3.1
 reserves `index.md` (directory listing, §6) and `log.md` (update history, §7) at
-**every** level of a bundle: they "MUST NOT be used for concept documents." No
-adapter may emit an `IndexDocument` for a reserved filename, and item write
-paths (`placeNew`, `akm mv`, write transactions) MUST refuse a reserved-filename
-target — these files are bundle *structure*, maintained by bundle-level
-operations, never items. `okf` and `llm-wiki` already comply; the `akm`
-adapter's recognition exclusion is a behavior change that lands with the
-Chunk-5 flip (F4) / Chunk-8 producer-conformance migration, which also excludes
-or renames any existing stash file with a reserved name.
+every level of an OKF bundle. The `okf` adapter must not emit concepts or accept
+concept writes at those paths. The `akm` and `llm-wiki` adapters independently
+reserve the same names as part of their own format contracts. Other adapters
+own their reserved-name policy; OKF does not impose it on foreign formats.
 
-**Why the two differ — the transitional reason (recorded so it is never
-re-litigated).** AKM-native content does **not** carry a frontmatter `type`
-field today: only `command`/`agent` files do; `knowledge`/`memory`/`lesson`/
-`fact`/`session`/`skill`/`workflow`/`task`/`env`/`secret`/`script`/`wiki` are
-classified by directory, filename, or content-probe via the matchers. The
-migration that stamps `type:` frontmatter onto AKM-native content lands in
-**Chunk 8** (migration cutover) — AFTER Chunk 2 mints the adapters. The `akm`
-adapter therefore MUST keep classifying via the existing matchers so behavior is
-preserved across the cutover; `okf` is the clean frontmatter path for content
-that already conforms. Convergence — AKM content authored with `type:`
-frontmatter, indexable by either adapter — is a migration **outcome**, not a
-Chunk-2 rewrite. **Chunk 2 preserves current AKM recognition AND adds the OKF
-frontmatter path; it does not replace one with the other.**
+**Why the two differ.** AKM classification is derived from directory, filename,
+extension, or content probes, not trusted from frontmatter. AKM-authored
+Markdown nevertheless carries the matching `type` field for OKF portability.
+The field makes the Markdown concept interoperable; it does not change the
+bundle's selected adapter or bypass AKM's stronger native behavior.
 
 ---
 
-## 6. The `type` values AKM recognizes (its OKF-type profile)
+## 6. The `type` values AKM recognizes
 
-These are **`type` values, not adapters**. For AKM-native content they are **authored in frontmatter** (read by `okf`/`akm`); for foreign layouts they are **derived** by translators (`claude`/`opencode`/`agent-skills`/`website-snapshot`). Table = a `type` reference (validator applied as a shared function; foreign-derivation convention for translators only). Presentation is keyed on `type` via `TYPE_PRESENTATION`.
+These are **`type` values, not adapters**. The `okf` adapter reads them from
+OKF frontmatter; the `akm` and other native adapters derive them according to
+their own format rules. Presentation is keyed on `type` via
+`TYPE_PRESENTATION`.
 
-| `type` | native OKF? | foreign-derivation convention | type-specific validation |
+| `type` | OKF representation | native-derivation convention | type-specific validation |
 |---|---|---|---|
 | knowledge | yes | default when `type` absent | base only |
 | command | yes | `.md` under `commands/` + `$ARGUMENTS`/`agent`-fm probe | `missing-name-or-type`; type∈{command} |
@@ -381,12 +385,16 @@ These are **`type` values, not adapters**. For AKM-native content they are **aut
 
 ## 7. The adapter set (format families)
 
-An **adapter is a format family**, one per component root, emitting one or more open `type`s. Markdown types are OKF concepts; foreign formats are translated. A **"tool directory"** (`.claude`/`.opencode`) is a component whose adapter translates a tool's layout; no adapter competes per-file.
+An **adapter is a format family**, one per component root, emitting one or more
+open `type`s. Markdown belongs to OKF only when the selected adapter is `okf`;
+other Markdown formats retain their native semantics. A **"tool directory"**
+(`.claude`/`.opencode`) is interpreted by its own adapter; no adapter competes
+per-file.
 
 | adapter | format / root | types | writable | notes |
 |---|---|---|---|---|
-| **okf** (§5) | OKF markdown; `type` from frontmatter | any OKF type | yes | **reference/default**; consumes third-party OKF |
-| **akm** (**§5.1**, BINDING) | AKM workspace — **maintains current recognition/placement/lint/render functionality via the existing matcher stack** (behavior-preserving port; **NOT** frontmatter-`type`, **NOT** per-`type` adapters). OKF markdown + AKM extensions (workflow/task/env/secret/script) under AKM subdirs | full §6 profile | yes (markdown/workflow/task); env/secret metadata-only | AKM's own workspace bundle; recognition contract fixed in **§5.1** |
+| **okf** (§5) | OKF markdown; `type` from frontmatter | any OKF type | yes | first-class support for third-party OKF bundles |
+| **akm** (**§5.1**, BINDING) | AKM workspace — **maintains current recognition/placement/lint/render functionality via the existing matcher stack** (behavior-preserving port; **NOT** frontmatter-`type`, **NOT** per-`type` adapters). AKM Markdown + AKM extensions (workflow/task/env/secret/script) under AKM subdirs | full §6 profile | yes (markdown/workflow/task); env/secret metadata-only | AKM's own workspace bundle; recognition contract fixed in **§5.1** |
 | **llm-wiki** (**restored, DEV-7**) | LLM Wiki: `schema.md`, `index.md`, `log.md`, `raw/`, `pages/`, xrefs, citations, native ingest | wiki page kinds (adapter-owned) | yes | owns its native multi-file semantics + authoring/validation; `wiki` asset-*type* is gone but the **adapter** is first-class (normative §13.3) |
 | **claude** | `.claude` tool dir — translator; derives `type` from dir | command, agent, skill, instruction | yes | AKM workspace layout **is** `.claude` minus the prefix |
 | **opencode** | `.opencode` tool dir — translator (NEW) | command, agent, **skill**, instruction | yes | `AGENTS.md`=instruction; `config.json` not indexed; OpenCode has first-class skills (`.opencode/skills/<name>/SKILL.md`) and reads `.claude/skills/` — plural `commands/`/`agents/` dirs |
@@ -399,20 +407,18 @@ Instruction files (`CLAUDE.md`/`AGENTS.md`) are NEW; tool config files are runti
 
 ---
 
-## 8. Multi-component resolution
+## 8. Single-component ownership
 
-**One adapter per component root, emitting the `type`s that root natively contains.** The `claude` adapter emits command/agent/skill/instruction from one `.claude` component — not three sub-components. The multi-component invariant is about **heterogeneous roots** (an `okf` knowledge root *and* a `workflows/` root *and* a `.claude/` root), not splitting one tool dir. The one real cross-format overlap (`.claude/skills/<n>/SKILL.md` == a standalone Agent Skill) is resolved by factoring the SKILL.md contract into **shared functions** imported by both `claude` and `agent-skills` (not nested adapters).
+*(Retired by the v0.4 owner ruling.)* A bundle has one component root and one adapter. That adapter may emit every native `type` its format contains: for example, the `claude` adapter emits command/agent/skill/instruction from one `.claude` root rather than creating sub-components. If a package needs separately governed OKF, workflow, wiki, or tool roots, each root is registered as its own bundle.
 
 ```
-bundle "team-catalog" (OKF)
-├── index.md  (okf_version: "0.1")     ← reserved, not a concept
-├── component { root: ".",         adapter: "okf" }         → type from frontmatter → refs: team-catalog//<concept>
-├── component { root: "workflows", adapter: "akm-workflow" } → type=workflow       → team-catalog//workflows/<id>
-├── component { root: "wiki",      adapter: "llm-wiki" }     → wiki page kinds      → team-catalog//wiki/<page>
-└── component { root: ".claude",   adapter: "claude" }       → command|agent|skill  → team-catalog//.claude/<...>
+bundle "team-catalog"       { root: ".",         adapter: "okf" }
+bundle "release-automation" { root: "workflows", adapter: "akm-workflow" }
+bundle "team-wiki"          { root: "wiki",      adapter: "llm-wiki" }
+bundle "project-claude"     { root: ".claude",   adapter: "claude" }
 ```
 
-**Nested-root subtraction applies (§1.2 / normative §9.3):** the okf component at `root: "."` owns its tree **minus** `workflows/`, `wiki/`, and `.claude/` — so `workflows/release.md` is indexed once, by `akm-workflow`, never twice under one ref. This subtraction is computed by the core at mount registration; adapters never see files outside their effective set.
+There is no nested-root subtraction or cross-component collision machinery. The selected adapter owns traversal policy and claims or abstains on files throughout its one component root. Shared native contracts such as `SKILL.md` are implemented by shared functions used by the relevant adapters, not nested adapter dispatch.
 
 ---
 
@@ -456,10 +462,10 @@ The lifecycle state model — operational states, water-marks/backpressure, clai
 
 | New | Replaces | file:line |
 |---|---|---|
-| OKF bundle + `okf`/`llm-wiki`/… adapters | `AssetSpec` + `stashDir` + wiki-as-type | asset-spec.ts; config-types.ts:99 |
+| native bundle adapters, including `okf` and `llm-wiki` | `AssetSpec` + `stashDir` + wiki-as-type | asset-spec.ts; config-types.ts:99 |
 | ref `[<bundle>//]<concept-id>` (path identity) | `AssetRef{type,name,origin}` | asset-ref.ts:11-116 |
-| open OKF `type` (frontmatter) | closed `AkmAssetType` + `entry_type` | common.ts:29-88; asset-ref.ts:109 |
-| `IndexDocument` (OKF projection) | `StashEntry` | metadata.ts:60-189 |
+| open adapter-supplied `type` | closed `AkmAssetType` + `entry_type` | common.ts:29-88; asset-ref.ts:109 |
+| normalized `IndexDocument` projection | `StashEntry` | metadata.ts:60-189 |
 | adapter `recognize`/`index` + optional methods | `runMatchers`/`classifyBy*`/walker | file-context.ts:242-265; matchers.ts:151-305; walker.ts:73 |
 | `placeNew`/`directoryList` | `TYPE_DIRS`/`resolveAssetPathFromName` | asset-spec.ts:140-226; path-resolver.ts:27-38 |
 | `TYPE_PRESENTATION` (open `type`) | `TYPE_TO_RENDERER`/`ACTION_BUILDERS` + spec split-brain | asset-registry.ts:21-58 |

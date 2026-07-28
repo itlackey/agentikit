@@ -1,6 +1,6 @@
 # akm CLI — Full Reference
 
-You have access to a searchable library of scripts, skills, commands, agents, knowledge documents, workflows, and memories via `akm`. Search your sources first before writing something from scratch.
+You have access to a searchable library of scripts, skills, commands, agents, knowledge documents, workflows, env files, secrets, lessons, and memories via `akm`. Search your sources first before writing something from scratch.
 
 ## Search
 
@@ -12,24 +12,26 @@ akm search "<query>" --source both            # Also search registries
 akm search "<query>" --source registry        # Search registries only
 akm search "<query>" --limit 10               # Limit results
 akm search "<query>" --detail full            # Include scores, paths, timing
-akm search "memory:projectA/"                 # Enumerate a typed subtree (ref-prefix; trailing slash required)
-akm search "knowledge:"                       # List every asset of a type
+akm search "memories/projectA/"               # Enumerate a subtree (conceptId prefix; trailing slash required)
+akm search "knowledge/"                       # List every knowledge item
+akm search "team-catalog//"                   # List every item in one bundle
 ```
 
 | Flag | Values | Default |
 | --- | --- | --- |
-| `--type` | `skill`, `command`, `agent`, `knowledge`, `workflow`, `script`, `memory`, `env`, `secret`, `any` | `any` |
-| `--source` | `stash`, `registry`, `both` | `stash` |
+| `--type` | free-form. Built-ins: `skill`, `command`, `agent`, `knowledge`, `workflow`, `script`, `memory`, `lesson`, `task`, `session`, `fact`, `env`, `secret`, `instruction` — plus any adapter-defined type (`website`, `wiki-source`, a wiki `pageKind`). Exact match; an unknown type returns no hits. | `any` |
+| `--source` | `stash`, `registry`, `both`, or a configured bundle name | `stash` |
 | `--limit` | number | `20` |
-| `--format` | `json`, `jsonl`, `text`, `yaml` | `json` |
+| `--format` | `json`, `jsonl`, `text`, `yaml`, `md`, `html` | `json` |
 | `--detail` | `brief`, `normal`, `full` | `brief` |
 | `--shape` | `human`, `agent`, `summary` (`summary` only on `show`) | `human` |
 
-Ref-prefix queries (`"<type>:<prefix>/"` or a bare `"<type>:"`) return a
-deterministic listing, not a relevance ranking. Drop the trailing slash and the
-same text becomes an ordinary keyword search — resolving a single asset by its
-`<subdir>/<name>` id is `akm show`'s job — and an explicit `--type` flag wins
-over the type parsed from the query.
+Ref-prefix queries (a conceptId prefix ending in `/`, optionally bundle-qualified)
+return a deterministic listing, not a relevance ranking. Drop the trailing slash
+and the same text becomes an ordinary keyword search — resolving a single asset
+by its `<subdir>/<name>` id is `akm show`'s job. Because prefixes match
+conceptIds, you can paste a ref prefix straight from search output back into a
+query.
 
 ## Curate
 
@@ -43,7 +45,7 @@ akm curate "review architecture" --type workflow # Restrict to one asset type
 
 ## Show
 
-Display an asset by ref. Knowledge assets support view modes as positional arguments.
+Display an asset by ref. On a markdown document `#fragment` selects one section by heading slug.
 
 ```sh
 akm show scripts/deploy.sh                    # Show script (returns run command)
@@ -51,9 +53,9 @@ akm show skills/code-review                   # Show skill (returns full content
 akm show commands/release                     # Show command (returns template)
 akm show agents/architect                     # Show agent (returns system prompt)
 akm show workflows/ship-release               # Show parsed workflow steps
-akm show knowledge/guide toc                  # Table of contents
-akm show knowledge/guide section "Auth"       # Specific section
-akm show knowledge/guide lines 10 30          # Line range
+akm show knowledge/guide                      # Whole document
+akm show knowledge/guide#auth                 # Just the "Auth" section
+akm show knowledge/guide#nope                 # Lists the available fragment slugs
 akm show knowledge/my-doc                     # Show content (local or remote)
 ```
 
@@ -63,11 +65,12 @@ akm show knowledge/my-doc                     # Show content (local or remote)
 | skill | `content` (full SKILL.md) |
 | command | `template`, `description`, `parameters` |
 | agent | `prompt`, `description`, `modelHint`, `toolPolicy` |
-| knowledge | `content` (with view modes: `full`, `toc`, `frontmatter`, `section`, `lines`) |
+| knowledge | `content` (whole document, or one section via `#fragment`) |
 | workflow | `workflowTitle`, `workflowParameters`, `steps` |
 | memory | `content` (recalled context) |
 | env | `keys` (key names only — values and comment text never returned) |
 | secret | `name` only (the whole file is the value — never returned) |
+| lesson | `content` plus `action` (rendered from the `when_to_use` frontmatter) — read both before applying the lesson |
 
 ## Capture Knowledge While You Work
 
@@ -147,9 +150,7 @@ the value; only the name is ever surfaced.
 ```sh
 printf '%s' "$TOKEN" | akm secret set secrets/deploy-token  # Store a single value
 akm secret list                                             # List secrets (names only)
-akm secret path secrets/deploy-token                        # Print the file path (Docker `_FILE`)
 akm secret run secrets/deploy-token GITHUB_TOKEN -- gh release create v1.0.0  # Inject into one env var
-akm secret remove secrets/deploy-token                      # Delete the secret
 ```
 
 ## Workflows
@@ -185,27 +186,30 @@ akm clone "npm:@scope/pkg//scripts/deploy.sh" # Clone from remote package
 
 When `--dest` is provided, `akm init` is not required first.
 
-## Move / Rename (Experimental)
+## Move / Rename
 
-Rename an asset within its type directory in the primary writable stash. Prefer
-NOT renaming (a ref is chosen once); when a rename is forced, `akm mv` does the
-whole convention pass: it moves the file (a memory's `.derived.md` twin moves
-together), rewrites inbound refs across the writable stash — body prose,
-frontmatter ref lists (`xrefs:`/`refs:`/`supersededBy:`), and fenced examples —
-and re-keys the index row in place so the asset's learned ranking history
-survives.
+**A rename is delete plus create**: the new path is a new identity, so the
+destination starts with fresh learned state (utility, salience, usage history)
+and inbound refs to the old path dangle. Prefer NOT renaming — a ref is chosen
+once. When a rename is unavoidable:
 
 ```sh
-akm mv memories/projectA/old-note projectA/new-note  # Rename; subdirectories allowed in the new name
-akm mv memories/solo memories/renamed-solo           # Same-type ref-shaped target also accepted
+mv ~/akm/memories/projectA/old-note.md ~/akm/memories/projectA/new-note.md
+# update any intentional refs (fully qualified: bundle//memories/projectA/old-note)
+akm index
+akm lint                                             # confirms nothing dangles
 ```
 
-Cross-type targets, existing targets, `../` escapes, non-canonical
-source spellings (the error names the canonical ref), `.derived` twin sources
-(rename the base — the twin follows), and `.derived`-suffixed target names are
-rejected (exit 2, nothing moved). Read-only sources are scanned but never
-written — their citing files come back in `readOnlyCiters` as manual
-follow-ups. Verify with `akm lint` (missing-ref) afterwards.
+A memory's `.derived.md` twin must move with its base. Moving an item between
+bundles is `akm clone` (or a copy) followed by deleting the source — both the
+bundle and the concept identity change.
+
+(`akm mv` ships, but it is **Experimental**: its ref rewrite is a
+boundary-delimited text match, not ref-aware. It rewrites both the bare
+conceptId and its `bundle//`-qualified form wherever either appears — but it
+cannot tell a real ref from a coincidental mention of the same words in
+ordinary prose, so it can rewrite text that was never meant as a ref. Use the
+procedure above if you need finer control.)
 
 ## Sync
 
@@ -253,8 +257,8 @@ akm add @scope/stash                            # From npm (managed)
 akm add owner/repo                            # From GitHub (managed)
 akm add ./path/to/local/stash                   # Local directory
 akm add git@github.com:org/repo.git --provider git --name my-skills --writable
-akm config enable skills.sh                   # Enable the skills.sh registry
-akm config disable skills.sh                  # Disable the skills.sh registry
+akm registry add https://skills.sh --name skills.sh --provider skills-sh  # Add the skills.sh registry
+akm registry remove skills.sh                 # Remove the skills.sh registry
 akm list                                      # List all sources
 akm list --kind managed                       # List managed sources only
 akm remove <target>                           # Remove by id, ref, path, or name
@@ -289,10 +293,16 @@ akm config path --all                         # Show all config paths
 ## Other Commands
 
 ```sh
-akm init                                      # Initialize working stash
+akm init                                      # Initialize working stash (scaffold only)
+akm setup                                     # Interactive wizard: stash + LLM/embedding + agent + registry config
+akm setup --dir ~/custom-stash                # Run the wizard against a custom stash path
+akm setup --yes                               # Non-interactive, accepts all defaults
 akm index                                     # Rebuild search index (metadata enrichment when configured)
 akm index --full                              # Full reindex (metadata enrichment when configured)
 akm list                                      # List all sources
+akm lint                                      # Structural lint over the stash; exits 0 regardless of findings
+akm lint --fix                                # Auto-fix Tier 1 issues
+akm lint --fail-on-flagged                    # Exit non-zero when summary.flagged > 0 (CI-friendly)
 akm upgrade                                   # Upgrade akm using its install method
 akm upgrade --check                           # Check for updates
 akm help migrate 0.6.0                        # Print migration notes for a release (or: latest)
@@ -300,6 +310,11 @@ akm hints                                     # Print this reference
 akm completions                               # Print bash completion script
 akm completions --install                     # Install completions
 ```
+
+`akm init` only scaffolds the stash directory and registers it in config;
+`akm setup` additionally walks through embedding/LLM connections, agent
+profiles, sources, and registries. Use `setup` for first-time onboarding,
+`init` when you just need a bare stash.
 
 ## Proposals & Improvement (0.8.0+)
 
@@ -320,9 +335,10 @@ The flat verbs `akm proposals` / `akm show proposal` / `akm accept` /
 `akm reject` / `akm diff` / `akm revert` were removed in 0.9.0 — use the
 `akm proposal <verb>` forms above.
 
-Per-task `timeoutMs`: task markdown frontmatter may set `timeoutMs: null` to
-disable the agent kill timer for long-running local-model tasks, or a number
-(milliseconds) to override `config.agent.timeoutMs` for that task only.
+Per-task `timeoutMs`: a task's `<stash>/tasks/<id>.yml` file (pure YAML) may
+set `timeoutMs: null` to disable the agent kill timer for long-running
+local-model tasks, or a number (milliseconds) to override
+`config.agent.timeoutMs` for that task only.
 
 ## Output Control
 
@@ -332,6 +348,8 @@ All commands accept `--format`, `--detail`, and `--shape` flags:
 - `--format jsonl` — one JSON object per line (streaming-friendly)
 - `--format text` — human-readable plain text
 - `--format yaml` — YAML output
+- `--format md` — Markdown output
+- `--format html` — HTML output
 - `--detail brief` (default) — compact output
 - `--detail normal` — adds tags, refs, origins
 - `--detail full` — includes scores, paths, timing, debug info
@@ -340,3 +358,51 @@ All commands accept `--format`, `--detail`, and `--shape` flags:
 - `--shape summary` — metadata only (no content/template/prompt), under 200 tokens; only valid on `akm show`
 
 Run `akm -h` or `akm <command> -h` for per-command help.
+
+### Piping JSON to jq
+
+For any akm command emitting more than ~64KB of JSON, prefer
+`akm <cmd> | cat | jq …` over the direct pipe. A known Bun stdout chunking
+interaction with `jq 1.6` can truncate the stream mid-document on direct
+pipes; `cat` re-buffers and presents a clean pipe to jq. `jq 1.7+` tolerates
+the chunked writes without the workaround.
+
+## Error Shapes and Exit Codes
+
+Every command returns JSON by default. On success, the shape is command-specific.
+On failure, every command emits:
+
+```json
+{"ok": false, "error": "<message>", "hint": "<optional remediation hint>"}
+```
+
+The `hint` field is present only when there is an actionable next step (a
+suggested flag or alternate command).
+
+Exit codes:
+
+| Code | Meaning | Error class |
+| --- | --- | --- |
+| 0 | Success | — |
+| 1 | Not found or general error | `NotFoundError`, other |
+| 2 | Usage / bad input | `UsageError` |
+| 78 | Configuration error | `ConfigError` |
+
+To detect failure reliably, check either:
+
+- `ok === false` in the parsed JSON response, or
+- a non-zero exit code (`$?` in shell, process exit code in SDK calls)
+
+Both signals are always set consistently. The JSON envelope is the preferred
+signal for agents parsing output programmatically; the exit code is the
+preferred signal for shell scripts.
+
+`akm lint` is the one command that does not follow the exit-code table above:
+it exits **0 on every successful run regardless of findings**. Read
+`summary.flagged` to detect issues, or pass `--fail-on-flagged` to opt into
+the CI-friendly "exit 1 when findings exist" behavior:
+
+```sh
+akm lint | jq '.summary.flagged'              # always exit 0; read the count
+akm lint --fail-on-flagged && deploy          # exit 1 if any flagged issues
+```

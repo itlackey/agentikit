@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `akm events list` and `akm events tail` (#204).
+ * Programmatic event listing and tailing behind `akm log` (#204).
  *
  * Programmatic surface — the CLI dispatcher in `src/cli.ts` registers two
  * verbs that delegate here. Both return JSON envelopes shaped by
@@ -12,9 +12,10 @@
  * `JSON.stringify` fallback).
  */
 
-import { parseRefInput } from "../core/asset/resolve-ref";
+import { makeBundleRef, parseBundleRef } from "../core/asset/asset-ref";
 import { UsageError } from "../core/errors";
-import { type EventEnvelope, type EventsContext, readEvents, type TailOptions, tailEvents } from "../core/events";
+import { type EventsContext, readEvents, type TailOptions, tailEvents } from "../core/events";
+import type { EventEnvelope } from "../core/events-types";
 import { parseSinceToIso } from "../core/time";
 
 export interface EventsListOptions {
@@ -23,13 +24,15 @@ export interface EventsListOptions {
   ref?: string;
   excludeTags?: string[];
   includeTags?: string[];
-  /** Test seam — overrides events.jsonl path / clock. */
+  /** D-38: cap the result to the most recent `limit` matching events. Undefined is unlimited. */
+  limit?: number;
+  /** Test seam — overrides the state database / clock. */
   ctx?: EventsContext;
 }
 
 /**
- * Parse `--since` accepting either a byte-offset cursor (`@offset:<int>`) for
- * cross-process resumption, or a timestamp / epoch-ms (the existing form).
+ * Parse `--since` accepting either an opaque row cursor (`@offset:<int>`) for
+ * cross-process resumption, or a timestamp / epoch-ms.
  * Returns one of `{ sinceOffset }` or `{ since }`.
  */
 function parseSinceFlag(since: string | undefined): {
@@ -46,7 +49,7 @@ function parseSinceFlag(since: string | undefined): {
     const value = Number.parseInt(raw, 10);
     if (Number.isNaN(value) || value < 0) {
       throw new UsageError(
-        `Invalid --since byte offset: "${since}". Expected @offset:<non-negative integer>.`,
+        `Invalid --since offset: "${since}". Expected @offset:<non-negative integer>.`,
         "INVALID_FLAG_VALUE",
       );
     }
@@ -63,6 +66,8 @@ export interface EventsListResult {
   since?: string;
   /** Echoed when --since @offset:N was used. */
   sinceOffset?: number;
+  /** Echoed when --limit was passed. */
+  limit?: number;
   nextOffset: number;
   events: EventEnvelope[];
 }
@@ -73,8 +78,8 @@ function validateRef(ref: string | undefined): string | undefined {
   if (!trimmed) {
     throw new UsageError("--ref cannot be empty.", "INVALID_FLAG_VALUE");
   }
-  parseRefInput(trimmed);
-  return trimmed;
+  const parsed = parseBundleRef(trimmed);
+  return makeBundleRef(parsed.bundle, parsed.conceptId);
 }
 
 export function akmEventsList(options: EventsListOptions = {}): EventsListResult {
@@ -88,6 +93,7 @@ export function akmEventsList(options: EventsListOptions = {}): EventsListResult
       ref,
       excludeTags: options.excludeTags,
       includeTags: options.includeTags,
+      limit: options.limit,
     },
     options.ctx,
   );
@@ -98,6 +104,7 @@ export function akmEventsList(options: EventsListOptions = {}): EventsListResult
     ...(options.type !== undefined ? { type: options.type } : {}),
     ...(parsed.since !== undefined ? { since: parsed.since } : {}),
     ...(parsed.sinceOffset !== undefined ? { sinceOffset: parsed.sinceOffset } : {}),
+    ...(options.limit !== undefined ? { limit: options.limit } : {}),
     nextOffset: result.nextOffset,
     events: result.events,
   };

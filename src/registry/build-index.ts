@@ -3,12 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Build the v2 JSON registry index consumed by the `static-index` registry
- * provider. This module emits artifacts that conform to the v2 schema; the
- * schema itself is the input contract owned by `src/registry/providers/static-index.ts`
- * (see v1 architecture spec §3.3 — "the v2 JSON index schema belongs to
- * static-index"). When the schema changes, the parser in `static-index.ts`
- * must be updated together with this builder.
+ * Build the JSON registry index consumed by the `static-index` provider. The
+ * schema is the input contract owned by
+ * `src/registry/providers/static-index.ts`. When the schema changes, the
+ * parser and builder must be updated together.
  */
 
 import fs from "node:fs";
@@ -101,13 +99,13 @@ export async function buildRegistryIndex(options?: BuildRegistryIndexOptions): P
   const npmRegistryBase = trimTrailingSlash(options?.npmRegistryBase ?? DEFAULT_NPM_REGISTRY_BASE);
   const githubApiBase = trimTrailingSlash(options?.githubApiBase ?? GITHUB_API_BASE);
 
-  const [manualKits, npmKits, githubKits] = await Promise.all([
+  const [manualBundles, npmBundles, githubBundles] = await Promise.all([
     loadManualEntries(manualEntriesPath),
     scanNpm(npmRegistryBase),
     scanGithub(githubApiBase),
   ]);
 
-  const stashes = deduplicateStashes([...manualKits, ...npmKits, ...githubKits]).sort((a, b) =>
+  const stashes = deduplicateStashes([...manualBundles, ...npmBundles, ...githubBundles]).sort((a, b) =>
     a.name.localeCompare(b.name),
   );
   const index: RegistryIndex = {
@@ -119,9 +117,9 @@ export async function buildRegistryIndex(options?: BuildRegistryIndexOptions): P
   return {
     index,
     counts: {
-      manual: manualKits.length,
-      npm: npmKits.length,
-      github: githubKits.length,
+      manual: manualBundles.length,
+      npm: npmBundles.length,
+      github: githubBundles.length,
       total: stashes.length,
     },
     paths: {
@@ -392,11 +390,10 @@ function applyIncludeConfigForInspection(stashRoot: string, tempDir: string, sea
 async function loadManualEntries(manualEntriesPath: string): Promise<RegistryBundleEntry[]> {
   try {
     const raw = JSON.parse(fs.readFileSync(manualEntriesPath, "utf8"));
-    const candidateKits = Array.isArray(raw) ? raw : asRecord(raw).stashes;
-    const parsed = parseRegistryIndex({ version: 3, updatedAt: new Date().toISOString(), stashes: candidateKits });
+    const candidateBundles = Array.isArray(raw) ? raw : asRecord(raw).stashes;
+    const parsed = parseRegistryIndex({ version: 3, updatedAt: new Date().toISOString(), stashes: candidateBundles });
     if (!parsed) return [];
-    // Legacy `curated` flag on input entries is ignored (v1 spec §4.2). The
-    // builder no longer emits it on the resulting index.
+    // Some published entries include `curated`; the builder does not emit it.
     return parsed.stashes.map((stash) => normalizeStash(stash));
   } catch {
     return [];

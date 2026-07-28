@@ -99,20 +99,6 @@ export const IndexPassConfigSchema = z.preprocess(
 
 const MetadataEnhanceSchema = z.object({ enabled: z.boolean().optional() }).passthrough();
 
-/**
- * RETIRED (meta-review 10-Q3): the staleness-detect pass was deleted; nothing
- * reads this section anymore. The key stays TOLERATED here so configs that
- * still carry `index.stalenessDetection` (written by 0.8.x migrations) do not
- * fail validation — deleting the key would route it into the per-pass
- * catchall, which rejects its `enabled`/`thresholdDays` fields.
- */
-const StalenessDetectionSchema = z
-  .object({
-    enabled: z.boolean().optional(),
-    thresholdDays: positiveInt.optional(),
-  })
-  .passthrough();
-
 const IndexDefaultsSchema = z
   .object({
     engine: engineName.optional(),
@@ -126,7 +112,6 @@ type IndexConfigOutput = {
   [key: string]: unknown;
   defaults?: z.infer<typeof IndexDefaultsSchema>;
   metadataEnhance?: z.infer<typeof MetadataEnhanceSchema>;
-  stalenessDetection?: z.infer<typeof StalenessDetectionSchema>;
   graph?: z.infer<typeof IndexPassConfigSchema>;
   memory?: z.infer<typeof IndexPassConfigSchema>;
   enrichment?: z.infer<typeof IndexPassConfigSchema>;
@@ -167,6 +152,13 @@ const IndexConfigRuntimeSchema = z.preprocess(
     }
     if (typeof raw !== "object") return raw;
     for (const [passName, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (passName === "stalenessDetection") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Invalid `index.stalenessDetection`: the removed pass is not supported.",
+        });
+        return raw;
+      }
       if (passName === "indexBodyOpening") {
         if (typeof value !== "boolean") {
           ctx.addIssue({
@@ -193,7 +185,6 @@ const IndexConfigRuntimeSchema = z.preprocess(
     .object({
       defaults: IndexDefaultsSchema.optional(),
       metadataEnhance: MetadataEnhanceSchema.optional(),
-      stalenessDetection: StalenessDetectionSchema.optional(),
       indexBodyOpening: z
         .boolean()
         .optional()

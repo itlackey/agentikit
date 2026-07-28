@@ -16,7 +16,8 @@ import type { HarnessId } from "../core/config/config";
 import { runManagedSubprocess } from "../core/subprocess";
 import { defaultWhich, type WhichFn } from "../integrations/agent/detect";
 import { SESSION_LOG_HARNESSES } from "../integrations/harnesses";
-import { detectHarnessConfigs, type HarnessLLMConfig } from "./harness-config-import";
+import type { HarnessLLMConfig } from "../integrations/harnesses/shared";
+import { detectHarnessConfigs } from "./harness-config-import";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 

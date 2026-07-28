@@ -10,8 +10,8 @@
  * The types mirror the YAML surface pinned by the addendum and the published
  * JSON Schema (`schemas/akm-workflow.json`); the compiler lowers this shape
  * into the plan-graph IR. Enum vocabularies here are the single TypeScript
- * source of truth — `tests/workflows/program-parser.test.ts` pins the JSON
- * Schema's enums against these constants so the two cannot drift.
+ * source of truth — `tests/integration/workflows/program-parser.test.ts` pins
+ * the JSON Schema's enums against these constants so the two cannot drift.
  *
  * Naming: YAML keys are snake_case (`on_error`, `max_loops`); the parsed
  * document uses the repo's camelCase convention (`onError`, `maxLoops`).
@@ -37,9 +37,6 @@ type LlmInvocationOverrides = import("../../integrations/agent/engine-resolution
 type AgentFailureReason = import("../../integrations/agent/spawn").AgentFailureReason;
 
 export const WORKFLOW_PROGRAM_VERSION = 2;
-/** @deprecated source v2 rejects runner; retained for TypeScript migration only. */
-export const PROGRAM_RUNNER_KINDS = ["llm", "agent", "sdk", "inherit"] as const;
-export type ProgramRunnerKind = (typeof PROGRAM_RUNNER_KINDS)[number];
 
 /** How a map step folds its per-item unit results into the step artifact. */
 export const PROGRAM_REDUCERS = ["collect", "vote"] as const;
@@ -109,10 +106,6 @@ export interface ProgramRetry {
 export interface ProgramUnit {
   /** Named engine override. Absent = workflow then config default. */
   engine?: string;
-  /** @deprecated v1 source compatibility type only. */
-  runner?: ProgramRunnerKind;
-  /** @deprecated v1 source compatibility type only. */
-  profile?: string;
   /** Model alias (tier) or exact id; resolved per-harness at dispatch. */
   model?: string;
   /** LLM-only invocation settings; validated after the engine is selected. */
@@ -127,7 +120,12 @@ export interface ProgramUnit {
   output?: Record<string, unknown>;
   /** Env asset refs injected into the dispatched unit env. */
   env?: string[];
-  /** TODO(R2): carried through the IR; enforcement lands with the engine rework. */
+  /**
+   * Worktree isolation (addendum R2). Carried through the IR here; the
+   * native executor (`src/workflows/exec/native-executor.ts`) runs each
+   * journaled attempt of an isolated agent/sdk unit in a fresh detached git
+   * worktree and rejects the pairing outright for llm units.
+   */
   isolation?: ProgramIsolation;
   source: SourceRef;
 }
@@ -157,8 +155,11 @@ export interface ProgramRoute {
 }
 
 /**
- * Completion gate criteria. TODO(R2): artifact-judging gates and `max_loops`
- * execution land with the engine rework; the parser carries them through.
+ * Completion gate criteria (addendum R2). Artifact-judging gates and
+ * `max_loops` execution are implemented by the native executor
+ * (`src/workflows/exec/native-executor.ts`'s bounded gate loop, `report.ts`'s
+ * / `run-workflow.ts`'s `frozenSummaryJudge`); the parser here only parses
+ * and carries the declaration through to the frozen plan.
  */
 export interface ProgramGate {
   criteria: string[];
@@ -179,8 +180,10 @@ export interface ProgramStep {
   map?: ProgramMap;
   route?: ProgramRoute;
   /**
-   * Step artifact schema (JSON Schema). TODO(R2): validation of the reducer
-   * result against this schema is engine-rework scope; carried through now.
+   * Step artifact schema (JSON Schema, addendum R2). Validation of the
+   * reducer result against this schema is implemented by the native executor
+   * (`src/workflows/exec/native-executor.ts`, `artifactSchemaFailure`); the
+   * parser here only carries the declaration through.
    */
   output?: Record<string, unknown>;
   gate?: ProgramGate;
@@ -202,8 +205,6 @@ export interface ProgramBudget {
 /** Run-level defaults, overridable per unit. */
 export interface ProgramDefaults {
   engine?: string;
-  /** @deprecated v1 source compatibility type only. */
-  runner?: ProgramRunnerKind;
   model?: string;
   llm?: LlmInvocationOverrides;
   /** Parsed default timeout in ms; `null` = explicitly "none". */
@@ -212,7 +213,7 @@ export interface ProgramDefaults {
 }
 
 export interface WorkflowProgram {
-  version: number;
+  version: typeof WORKFLOW_PROGRAM_VERSION;
   name: string;
   description?: string;
   /** Param name → JSON-Schema-ish declaration (validated as a schema in R1 compile). */

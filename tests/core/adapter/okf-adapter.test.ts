@@ -196,11 +196,11 @@ describe("okf adapter — OKF link resolution, both forms (§9)", () => {
   });
 });
 
-// ── placeNew / directoryList / looksLikeRoot ─────────────────────────────────
+// ── authoring / directoryList / looksLikeRoot ────────────────────────────────
 
 describe("okf adapter — placement / probe", () => {
-  test("placeNew => <root>/<conceptId>.md", () => {
-    expect(okfAdapter.placeNew?.(component(), "tables/new-thing")).toBe(path.join(FIXTURE_ROOT, "tables/new-thing.md"));
+  test("is consumer-only (no adapter-owned placement/authoring)", () => {
+    expect(okfAdapter.placeNew).toBeUndefined();
   });
 
   test("directoryList => ['.']", () => {
@@ -217,6 +217,16 @@ describe("okf adapter — placement / probe", () => {
       expect(okfAdapter.looksLikeRoot?.(empty)).toBe(false);
     } finally {
       fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  test("looksLikeRoot recognizes a conformant index-less OKF bundle", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-okf-noindex-"));
+    try {
+      fs.writeFileSync(path.join(root, "vendor.md"), "---\ntype: Vendor Type\n---\n\nBody.\n");
+      expect(okfAdapter.looksLikeRoot?.(root)).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });
@@ -287,13 +297,13 @@ describe("okf adapter — validate is LENIENT (§5)", () => {
     expect(diags.some((d) => d.issue === "missing-updated")).toBe(false);
   });
 
-  test("frontmatter present but no timestamp AND no updated => base `missing-updated` still fires", async () => {
+  test("missing optional timestamp never produces AKM's `missing-updated` diagnostic", async () => {
     const diags = await okfAdapter.validate(
       component(),
       [change("notes/stale.md", "---\ntype: knowledge\ntitle: Stale\n---\n\nbody\n")],
       makeValidateContext({ resolveRef: async () => ({ exists: true }) }),
     );
-    expect(diags.some((d) => d.issue === "missing-updated")).toBe(true);
+    expect(diags.some((d) => d.issue === "missing-updated")).toBe(false);
   });
 
   test("unknown frontmatter keys never fail; delete changes are skipped; validate does not throw", async () => {

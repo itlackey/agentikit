@@ -9,8 +9,8 @@
 
 import { describe, expect, test } from "bun:test";
 import type { IndexDocument } from "../src/indexer/passes/metadata";
-import type { RankedEntryInput } from "../src/indexer/search/ranking";
 import { applyScoreContributors } from "../src/indexer/search/ranking-contributors";
+import type { RankedEntryInput } from "../src/indexer/search/ranking-types";
 import type { Database } from "../src/storage/database";
 
 function makeLesson(name: string, lessonStrength?: number): RankedEntryInput {

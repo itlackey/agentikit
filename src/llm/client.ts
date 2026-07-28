@@ -5,17 +5,14 @@
 /**
  * Low-level OpenAI-compatible chat completions client and capability probing.
  *
- * Split out of `llm.ts` to keep the transport-layer concerns (HTTP request,
- * response parsing, JSON-fence stripping, capability probe, availability
- * check) separate from higher-level metadata-enhancement workflows.
- *
- * `llm.ts` re-exports everything from this module for backward compatibility.
+ * Keeps transport-layer concerns (HTTP request, response parsing, capability
+ * probing, and availability checks) separate from higher-level workflows.
  */
 
 import { fetchWithTimeout } from "../core/common";
-import { type LlmConnectionConfig, type LlmProfileConfig, resolveSecret } from "../core/config/config";
+import { type LlmConnectionConfig, resolveSecret } from "../core/config/config";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
-import { escapeJsonStringControls, parseJsonResponse, stripCodeFences, stripThinkBlocks } from "../core/parse";
+import { parseJsonResponse } from "../core/parse";
 import { redactSensitiveText } from "../core/redaction";
 import { warnVerbose } from "../core/warn";
 import { DEFAULT_LLM_TIMEOUT_MS } from "../integrations/agent/config";
@@ -26,16 +23,6 @@ import {
   type LlmUsageRecord,
   type RawUsage,
 } from "./usage-telemetry";
-
-// Re-export shared parse utilities so existing importers of `client.ts` continue
-// to resolve `parseJsonResponse` and `parseEmbeddedJsonResponse` from this module.
-export {
-  escapeJsonStringControls,
-  parseEmbeddedJsonResponse,
-  parseJsonResponse,
-  stripCodeFences,
-  stripThinkBlocks,
-} from "../core/parse";
 
 /** Maximum length of an LLM error response body included in thrown errors. */
 const ERROR_BODY_MAX_LEN = 200;
@@ -115,6 +102,9 @@ export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
 }
+
+/** Connection fields consumed by the chat transport. */
+export type ChatCompletionConfig = LlmConnectionConfig & { supportsJsonSchema?: boolean };
 
 interface ChatCompletionResponse {
   /** Model id echoed by the provider; may differ from the requested alias. */
@@ -276,7 +266,7 @@ export function _setChatCompletionForTests(fake?: typeof chatCompletionReal): vo
 }
 
 export async function chatCompletion(
-  config: LlmProfileConfig,
+  config: ChatCompletionConfig,
   messages: ChatMessage[],
   options?: ChatCompletionInternalOptions,
 ): Promise<string> {
@@ -285,7 +275,7 @@ export async function chatCompletion(
 }
 
 async function chatCompletionReal(
-  config: LlmProfileConfig,
+  config: ChatCompletionConfig,
   messages: ChatMessage[],
   options?: ChatCompletionInternalOptions,
 ): Promise<string> {
@@ -333,7 +323,7 @@ async function chatCompletionReal(
  * transient failures.
  */
 async function chatCompletionAttempt(
-  config: LlmProfileConfig,
+  config: ChatCompletionConfig,
   messages: ChatMessage[],
   options: ChatCompletionOptions | undefined,
   timeoutMs: number | null,
@@ -496,16 +486,6 @@ async function chatCompletionAttempt(
     });
     throw err;
   }
-}
-
-/**
- * Strip `<think>` blocks, code fences, and escape control characters in JSON
- * strings. Thin wrapper kept for backward compatibility with call sites that
- * import `stripJsonFences` from this module. New code should prefer the
- * granular helpers from `../core/parse`.
- */
-export function stripJsonFences(raw: string): string {
-  return escapeJsonStringControls(stripCodeFences(stripThinkBlocks(raw)));
 }
 
 // ── Availability check ──────────────────────────────────────────────────────

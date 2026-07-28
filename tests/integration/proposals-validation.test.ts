@@ -9,16 +9,28 @@ import os from "node:os";
 import path from "node:path";
 import {
   archiveProposal,
-  createProposal,
+  type CreateProposalInput,
+  createProposal as createProposalRaw,
   isProposalSkipped,
   listProposals,
   purgeOrphanProposals,
 } from "../../src/commands/proposal/repository";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
 
+function bundleIdFor(stashDir: string): string {
+  return deriveInstallations([{ path: stashDir, writable: true }])[0]?.id ?? slugForPath(stashDir);
+}
+
+function createProposal(stashDir: string, input: CreateProposalInput) {
+  return createProposalRaw(stashDir, {
+    ...input,
+    target: { source: bundleIdFor(stashDir), root: stashDir },
+  });
+}
+
 /** The durable `proposals.ref` item_ref (WI-8.5a): `<bundle>//<conceptId>`. */
 function durableRef(stashDir: string, type: string, name: string): string {
-  const bundleId = deriveInstallations([{ path: stashDir, writable: true }])[0]?.id ?? slugForPath(stashDir);
+  const bundleId = bundleIdFor(stashDir);
   return deriveEntryProvenance({ bundleId, componentId: bundleId, adapterId: "akm" }, type, name).itemRef;
 }
 

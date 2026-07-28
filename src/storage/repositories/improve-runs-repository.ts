@@ -31,7 +31,6 @@ export interface ImproveRunRow {
   completed_at: string | null;
   stash_dir: string;
   dry_run: number;
-  legacyProfile: string | null;
   strategy: string | null;
   scope_mode: string;
   scope_value: string | null;
@@ -108,9 +107,6 @@ export function computeImproveRunMetrics(result: ImproveResultEnvelope): Improve
       case "noop":
         break;
     }
-    // Legacy: pre-gate action results may carry autoAccepted: true (reflect path).
-    const r = action.result as Record<string, unknown> | undefined;
-    if (r && r.autoAccepted === true) autoAcceptedCount++;
   }
 
   // Add gate-promoted count from the unified PostPhaseAutoAcceptGate (all phases).
@@ -119,9 +115,7 @@ export function computeImproveRunMetrics(result: ImproveResultEnvelope): Improve
   // C1 (13-bus-factor): distill-skipped rows are folded into the bounded
   // `distillSkipped` aggregate and no longer live in `actions`. Add the
   // aggregate total to the skipped + total-actions counters so metrics_json
-  // reports the same numbers as before the fold. (Legacy rows that still carry
-  // per-ref distill-skipped in `actions` have no aggregate, so they are counted
-  // by the classify loop above — never double-counted.)
+  // keeps aggregate metrics aligned with the logical action count.
   const distillSkippedTotal = result.distillSkipped?.total ?? 0;
   skippedCount += distillSkippedTotal;
 
@@ -157,9 +151,7 @@ export function recordImproveRun(
     completedAt: string | null;
     stashDir: string;
     dryRun: boolean;
-    /** Historical v1 selector. Never inferred from or coalesced with strategy. */
-    legacyProfile?: string | null;
-    strategy?: string | null;
+    strategy: string;
     scopeMode: "all" | "type" | "ref";
     scopeValue: string | null;
     guidance: string | null;
@@ -172,17 +164,16 @@ export function recordImproveRun(
   const metricsObj = input.metrics ?? computeImproveRunMetrics(input.result);
   db.prepare(`
     INSERT INTO improve_runs
-       (id, started_at, completed_at, stash_dir, dry_run, profile, strategy,
+       (id, started_at, completed_at, stash_dir, dry_run, strategy,
        scope_mode, scope_value, guidance, ok, result_json, metrics_json, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     input.id,
     input.startedAt,
     input.completedAt,
     input.stashDir,
     input.dryRun ? 1 : 0,
-    input.legacyProfile ?? null,
-    input.strategy ?? null,
+    input.strategy,
     input.scopeMode,
     input.scopeValue,
     input.guidance,
@@ -205,7 +196,6 @@ export interface ImproveRunSummaryRow {
   ok: number;
   scope_mode: string;
   scope_value: string | null;
-  legacyProfile: string | null;
   strategy: string | null;
   result_json: string;
 }
@@ -226,8 +216,8 @@ export interface ImproveRunSummaryRow {
  */
 export function queryImproveRuns(db: Database, since: string, until?: string): ImproveRunSummaryRow[] {
   const sql = until
-    ? "SELECT id, started_at, completed_at, ok, scope_mode, scope_value, profile AS legacyProfile, strategy, result_json FROM improve_runs WHERE started_at >= ? AND started_at < ? AND dry_run = 0 ORDER BY started_at DESC"
-    : "SELECT id, started_at, completed_at, ok, scope_mode, scope_value, profile AS legacyProfile, strategy, result_json FROM improve_runs WHERE started_at >= ? AND dry_run = 0 ORDER BY started_at DESC";
+    ? "SELECT id, started_at, completed_at, ok, scope_mode, scope_value, strategy, result_json FROM improve_runs WHERE started_at >= ? AND started_at < ? AND dry_run = 0 ORDER BY started_at DESC"
+    : "SELECT id, started_at, completed_at, ok, scope_mode, scope_value, strategy, result_json FROM improve_runs WHERE started_at >= ? AND dry_run = 0 ORDER BY started_at DESC";
   return (until ? db.prepare(sql).all(since, until) : db.prepare(sql).all(since)) as ImproveRunSummaryRow[];
 }
 

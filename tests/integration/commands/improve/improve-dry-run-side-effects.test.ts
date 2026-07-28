@@ -260,11 +260,14 @@ describe("akm improve --dry-run writes no AKM artifacts", () => {
         }),
       (url) => {
         fetchCalls.push(url);
-        return new Response('{"choices":[{"message":{"content":"{\\"contradicts\\":true}"}}]}');
+        return new Response('{"choices":[{"message":{"content":"{\\"contradicts\\":true,\\"confidence\\":1}"}}]}');
       },
     );
 
     expect(result.dryRun).toBe(true);
+    expect(result.memoryCleanup).toBeDefined();
+    expect(result.memoryCleanup?.analyzedDerived).toBe(2);
+    expect(result.memoryCleanup?.archived).toBeUndefined();
     expect(ensureIndexFn).not.toHaveBeenCalled();
     expect(fetchCalls).toEqual([]);
     expectSandboxRootsUnchanged(before, stashDir);

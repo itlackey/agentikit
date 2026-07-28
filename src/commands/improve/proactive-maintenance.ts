@@ -45,8 +45,8 @@ export interface ProactiveSelectorParams {
   /**
    * Candidate population to consider. Every entry should already be confined to
    * the improve-eligible, writable, validated set (the planner passes the
-   * no-feedback / non-signal pool). Each ref is the canonical
-   * `[bundle//]<stash-subdir>/<name>` conceptId (D-R2/D-R3).
+   * no-feedback / non-signal pool). Each `ref` is a short conceptId; `itemRef`
+   * carries its fully-qualified durable identity when available.
    */
   candidates: ImproveEligibleRef[];
   /**
@@ -101,11 +101,8 @@ export interface ProactiveSelectionResult {
 
 /**
  * Derive the asset type from a candidate's canonical conceptId ref
- * (`[bundle//]<stash-subdir>/<name>`, ref-grammar decision D-R2/D-R3) via the
- * permanent reverse table. Returns "" when the leading segment is not a known
- * stash subdir. The candidate refs are the SHORT conceptId derived fresh from
- * the index each run (`eligibility.ts`), never a durable `type:name` row, so no
- * legacy colon arm is needed here.
+ * (`[bundle//]<stash-subdir>/<name>`) via the permanent reverse table. Returns
+ * "" when the leading segment is not a known stash subdir.
  */
 function refType(ref: string): string {
   const body = ref.includes("//") ? ref.slice(ref.indexOf("//") + 2) : ref;

@@ -102,7 +102,7 @@ describe("akmShow installed ref", () => {
 
     // Use an origin that is NOT installed so resolveSourcesForOrigin returns
     // empty, triggering the add-guidance error path.
-    await expect(akmShow({ ref: "npm:@other/missing-pkg//scripts/missing.sh" })).rejects.toThrow(/akm add/);
+    await expect(akmShow({ ref: "other-pkg//scripts/missing.sh" })).rejects.toThrow(/akm add/);
   });
 
   test("resolves installed-stash style nested agent refs", async () => {
@@ -161,6 +161,22 @@ describe("akmShow installed ref", () => {
     expect(result.origin).toBe("ai-tools");
     expect(result.path).toContain(path.join("tools", "skills", "svelte-code-writer", "SKILL.md"));
     expect(result.content).toContain("# Svelte writer");
+  });
+});
+
+describe("akmShow sensitive fragments", () => {
+  test("rejects secret fragments before reading the secret body", async () => {
+    saveConfig({ semanticSearchMode: "off" });
+    writeFile(path.join(stashDir, "secrets", "leak.md"), "# token\nDO_NOT_PRINT\n");
+
+    await expect(akmShow({ ref: "secrets/leak#token" })).rejects.toThrow(/Fragments are not supported/);
+  });
+
+  test("rejects env fragments before reading values or comments", async () => {
+    saveConfig({ semanticSearchMode: "off" });
+    writeFile(path.join(stashDir, "env", "prod.env"), "# token\nAPI_KEY=DO_NOT_PRINT\n");
+
+    await expect(akmShow({ ref: "env/prod#token" })).rejects.toThrow(/Fragments are not supported/);
   });
 });
 
@@ -513,23 +529,63 @@ describe("akmShow content-based classification", () => {
     expect(result.template).toBe("Build the project.");
     expect(result.agent).toBe("build");
   });
+});
 
-  test("knowledge view modes work through new renderer pipeline", async () => {
-    writeFile(
-      path.join(stashDir, "knowledge", "guide.md"),
-      ["# Intro", "Welcome.", "", "## Setup", "Install things.", "", "## Usage", "Use things."].join("\n"),
+// ── Markdown fragments (the only section selector — D2) ──────────────────────
+
+describe("akmShow markdown fragments", () => {
+  const GUIDE = ["# Intro", "Welcome.", "", "## Setup", "Install things.", "", "## Usage", "Use things."].join("\n");
+
+  beforeEach(() => {
+    writeFile(path.join(stashDir, "knowledge", "guide.md"), GUIDE);
+    saveConfig({ semanticSearchMode: "off" });
+  });
+
+  test("no fragment returns the whole item", async () => {
+    const result = await akmShow({ ref: "knowledge/guide.md" });
+    expect(result.content).toBe(GUIDE);
+  });
+
+  test("#slug returns just that section", async () => {
+    const result = await akmShow({ ref: "knowledge/guide.md#setup" });
+    expect(result.content).toBe("## Setup\nInstall things.\n");
+  });
+
+  test("an unmatched fragment lists the available slugs", async () => {
+    await expect(akmShow({ ref: "knowledge/guide.md#nope" })).rejects.toThrow(
+      /Available fragments: #intro, #setup, #usage/,
     );
+  });
 
+  test("the knowledge action points large documents at #fragment", async () => {
+    const result = await akmShow({ ref: "knowledge/guide.md" });
+    expect(result.action).toContain("#fragment");
+    expect(result.action).not.toContain("toc");
+  });
+});
+
+// F6/R-021: direct unit coverage for `input.detail === "brief"` /
+// `buildBriefResponse` on `akmShowUnified` itself — previously ZERO test in
+// the suite exercised this path (the CLI-layer resolution that feeds it is
+// covered separately in tests/integration/commands/show-argv.test.ts).
+describe("akmShow detail levels", () => {
+  test("detail: 'brief' strips content/template/prompt but keeps identity + edit fields", async () => {
+    writeFile(
+      path.join(stashDir, "commands", "release.md"),
+      "---\ndescription: Release\n---\nRun release {{version}}\n",
+    );
     saveConfig({ semanticSearchMode: "off" });
 
-    const tocResult = await akmShow({ ref: "knowledge/guide.md", view: { mode: "toc" } });
-    expect(tocResult.content).toContain("Intro");
-    expect(tocResult.content).toContain("Setup");
+    const full = await akmShow({ ref: "commands/release.md" });
+    expect(full.template).toBe("Run release {{version}}\n");
 
-    const sectionResult = await akmShow({
-      ref: "knowledge/guide.md",
-      view: { mode: "section", heading: "Setup" },
-    });
-    expect(sectionResult.content).toContain("Install things.");
+    const brief = await akmShow({ ref: "commands/release.md", detail: "brief" });
+    expect(brief.type).toBe("command");
+    expect(brief.name).toBe("release");
+    expect(brief.description).toBe("Release");
+    expect(brief.editable).toBe(true);
+    expect(brief).not.toHaveProperty("template");
+    expect(brief).not.toHaveProperty("content");
+    expect(brief).not.toHaveProperty("related");
   });
 });

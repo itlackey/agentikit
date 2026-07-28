@@ -125,7 +125,9 @@ describe("output baseline", () => {
     const output = await runCli(stashDir, ["show", "commands/release.md", "--format=json"]);
     const json = JSON.parse(output) as Record<string, unknown>;
 
-    // QA #7: path and editable are now always projected in JSON shape
+    // QA #7: path and editable are now always projected in JSON shape.
+    // R-020: canonical `ref` is now always projected too, not just under
+    // `--shape agent` — every show shape (human/summary/agent) carries it.
     expect(Object.keys(json).sort()).toEqual([
       "action",
       "description",
@@ -134,6 +136,7 @@ describe("output baseline", () => {
       "origin",
       "parameters",
       "path",
+      "ref",
       "related",
       "template",
       "type",
@@ -199,7 +202,7 @@ describe("output baseline", () => {
     const output = await runCli(stashDir, ["show", "commands/release.md", "--format=json", "--shape=summary"]);
     const json = JSON.parse(output) as Record<string, unknown>;
     expect(json.type).toBe("command");
-    expect(json.name).toBe("release.md");
+    expect(json.name).toBe("release");
     // summary omits the heavyweight template/content body.
     expect(json).not.toHaveProperty("template");
     expect(json).not.toHaveProperty("content");

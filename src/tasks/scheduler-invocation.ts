@@ -38,12 +38,11 @@ export function resolveScheduledTaskContext(
   platform: NodeJS.Platform = process.platform,
 ): ScheduledTaskContext {
   return canonicalContext({
-    AKM_STASH_DIR: path.resolve(resolveStashDir(undefined, env)),
+    AKM_STASH_DIR: path.resolve(resolveStashDir(env)),
     AKM_CONFIG_DIR: path.resolve(getConfigDir(env, platform)),
     AKM_DATA_DIR: path.resolve(getDataDir(env, platform)),
     AKM_CACHE_DIR: path.resolve(getCacheDir(env)),
-    // Retain the legacy state root for scheduled commands and upgrade tooling
-    // that still honor it even though current durable state lives under DATA.
+    // Capture the complete process directory context used by scheduled commands.
     AKM_STATE_DIR: path.resolve(resolveStateDir(env, platform)),
   });
 }
@@ -60,13 +59,21 @@ export function resolveScheduledTaskContext(
 export function buildScheduledTaskInvocation(
   akmArgv: readonly string[],
   id: string,
-  contextPath: string | undefined,
+  contextPath: string,
   target?: string,
 ): ScheduledTaskInvocation {
   const targetArgs = target !== undefined && target !== "" ? ["--target", target] : [];
-  const contextArgs = contextPath === undefined ? [] : [SCHEDULER_CONTEXT_ARG, assertAbsolutePath(contextPath)];
   return {
-    argv: [...akmArgv, ...contextArgs, "tasks", "run", id, ...targetArgs, "--scheduled"],
+    argv: [
+      ...akmArgv,
+      SCHEDULER_CONTEXT_ARG,
+      assertAbsolutePath(contextPath),
+      "tasks",
+      "run",
+      id,
+      ...targetArgs,
+      "--scheduled",
+    ],
   };
 }
 
@@ -190,25 +197,30 @@ export function consumeSchedulerContextArg(argv: string[], env: NodeJS.ProcessEn
 export function parseScheduledTaskArgv(argv: readonly string[]):
   | {
       binding: string[];
-      contextPath?: string;
+      contextPath: string;
       target?: string;
     }
   | undefined {
-  const tasksIndex = argv.findIndex((value, index) => value === "tasks" && argv[index + 1] === "run");
-  if (tasksIndex < 1) return undefined;
-  const prefix = [...argv.slice(0, tasksIndex)];
-  const contextIndex = prefix.indexOf(SCHEDULER_CONTEXT_ARG);
-  let contextPath: string | undefined;
-  if (contextIndex !== -1) {
-    contextPath = prefix[contextIndex + 1];
-    if (!contextPath) return undefined;
-    prefix.splice(contextIndex, 2);
+  const contextIndex = argv.indexOf(SCHEDULER_CONTEXT_ARG);
+  if (contextIndex < 1 || argv.indexOf(SCHEDULER_CONTEXT_ARG, contextIndex + 1) !== -1) return undefined;
+  const contextPath = argv[contextIndex + 1];
+  const tasksIndex = contextIndex + 2;
+  if (!contextPath || argv[tasksIndex] !== "tasks" || argv[tasksIndex + 1] !== "run" || !argv[tasksIndex + 2]) {
+    return undefined;
   }
-  const targetIndex = argv.indexOf("--target", tasksIndex + 2);
-  const target = targetIndex === -1 ? undefined : argv[targetIndex + 1];
+
+  let index = tasksIndex + 3;
+  let target: string | undefined;
+  if (argv[index] === "--target") {
+    target = argv[index + 1];
+    if (!target) return undefined;
+    index += 2;
+  }
+  if (argv[index] !== "--scheduled" || index !== argv.length - 1) return undefined;
+
   return {
-    binding: prefix,
-    ...(contextPath !== undefined ? { contextPath } : {}),
+    binding: [...argv.slice(0, contextIndex)],
+    contextPath: assertAbsolutePath(contextPath),
     ...(target !== undefined ? { target } : {}),
   };
 }

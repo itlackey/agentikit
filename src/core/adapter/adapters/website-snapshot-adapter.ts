@@ -113,6 +113,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
     path: file.absPath,
     hash: hashContent(raw),
     adapterId: "website-snapshot",
+    ownsPresentation: true,
     type: "website",
     name,
     content: body.length > MAX_CONTENT_CHARS ? body.slice(0, MAX_CONTENT_CHARS) : body,

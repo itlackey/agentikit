@@ -13,16 +13,7 @@ import { httpUrl, nonEmptyString, positiveInt } from "./primitives";
 
 // ── Sources / registries / installed ────────────────────────────────────────
 
-const SourceConfigEntryOptionsSchema = z
-  .object({
-    /**
-     * @deprecated 0.9.0 (issue #507). Retired per-asset push-on-commit. Kept so
-     * old configs still parse; its intent maps onto the batch push gate and
-     * encountering it emits a one-time deprecation warning.
-     */
-    pushOnCommit: z.boolean().optional(),
-  })
-  .passthrough();
+const SourceConfigEntryOptionsSchema = z.record(z.unknown());
 
 export const SourceConfigEntrySchema = z
   .object({
@@ -37,6 +28,13 @@ export const SourceConfigEntrySchema = z
   })
   .passthrough()
   .superRefine((entry, ctx) => {
+    if (entry.options && "pushOnCommit" in entry.options) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["options", "pushOnCommit"],
+        message: "options.pushOnCommit is not supported",
+      });
+    }
     if (!["filesystem", "git", "website", "npm"].includes(entry.type)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -64,31 +62,6 @@ export const RegistryConfigEntrySchema = z
     options: z.record(z.unknown()).optional(),
   })
   .passthrough();
-
-const KitSourceSchema = z.enum(["filesystem", "git", "npm", "github", "website", "local"]);
-
-export const InstalledStashEntrySchema = z
-  .object({
-    id: nonEmptyString,
-    source: KitSourceSchema,
-    ref: nonEmptyString,
-    artifactUrl: nonEmptyString,
-    stashRoot: nonEmptyString,
-    cacheDir: nonEmptyString,
-    installedAt: nonEmptyString,
-    writable: z.boolean().optional(),
-    resolvedVersion: z.string().min(1).optional(),
-    resolvedRevision: z.string().min(1).optional(),
-  })
-  .passthrough()
-  .superRefine((entry, ctx) => {
-    if (entry.writable === true && entry.source !== "git" && entry.source !== "filesystem") {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `writable: true is only supported on filesystem and git sources (got "${entry.source}" on installed entry "${entry.id}").`,
-      });
-    }
-  });
 
 // ── Bundles (0.9.0 config-shape cutover, spec §10.1 / D-R5) ─────────────────
 //
@@ -135,6 +108,12 @@ export const BundleConfigEntrySchema = z
     website: BundleWebsiteDescriptorSchema.optional(),
     npm: z.string().min(1).optional(),
     writable: z.boolean().optional(),
+    // Opt a bundle out of indexing, search, refresh, and write targeting
+    // without deleting it. Carried over from the pre-cutover `sources[].enabled`
+    // flag, which the runtime still honors on the derived source entry
+    // (`write-source.ts`, `search-source.ts`); without it here, migrating a
+    // disabled source would silently reactivate it.
+    enabled: z.boolean().optional(),
     // The original registry install id when the bundle KEY was slug-derived from
     // it (e.g. registryId `github:owner/repo` → key `repo`). Preserved so the
     // source locator survives the config-shape migration (D-R5). Absent when the
@@ -144,6 +123,14 @@ export const BundleConfigEntrySchema = z
   })
   .passthrough()
   .superRefine((entry, ctx) => {
+    const options = (entry as Record<string, unknown>).options;
+    if (options && typeof options === "object" && "pushOnCommit" in options) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["options", "pushOnCommit"],
+        message: "options.pushOnCommit is not supported",
+      });
+    }
     const descriptors = (["path", "git", "website", "npm"] as const).filter((k) => entry[k] !== undefined);
     if (descriptors.length === 0) {
       ctx.addIssue({
@@ -160,6 +147,22 @@ export const BundleConfigEntrySchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["writable"],
+        message: "writable: true is only supported on path and git bundle sources",
+      });
+    }
+    const componentEntries = entry.components ? Object.entries(entry.components) : [];
+    if (entry.components !== undefined && componentEntries.length !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["components"],
+        message: "a bundle components map must contain exactly one component",
+      });
+    }
+    const componentEntry = componentEntries[0];
+    if (componentEntry?.[1].writable === true && (entry.website !== undefined || entry.npm !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["components", componentEntry[0], "writable"],
         message: "writable: true is only supported on path and git bundle sources",
       });
     }

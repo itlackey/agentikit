@@ -105,10 +105,15 @@ test("a SIGTERM-ignoring serve child is handshaken, closed without waiting, and 
   expect(pidAlive(pid)).toBe(true);
 
   // closeServer must return immediately (synchronous SIGTERM + unref'ed
-  // escalation), never block on the stubborn child's death…
-  const before = Date.now();
+  // escalation), never block on the stubborn child's death: assert the
+  // observable result instead of a wall-clock bound (which would race the
+  // scheduler under CI load) — the child ignores SIGTERM and only dies via
+  // the ~2s SIGKILL escalation polled below, so if closeServer() were
+  // blocking on that death, control would not return to this line until
+  // the child was already gone. Finding it still alive right here proves
+  // the call returned without waiting.
   closeServer();
-  expect(Date.now() - before).toBeLessThan(500);
+  expect(pidAlive(pid)).toBe(true);
 
   // …and the child, which ignores SIGTERM, must die by SIGKILL within the
   // grace window (2s) plus slack.

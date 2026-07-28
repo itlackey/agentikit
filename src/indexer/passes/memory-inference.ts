@@ -38,6 +38,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { assembleAsset } from "../../core/asset/asset-serialize";
 import { parseFrontmatter, parseFrontmatterBlock } from "../../core/asset/frontmatter";
 import { conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
@@ -142,11 +143,7 @@ interface MemoryRecord {
   filePath: string;
   /** Source root the file lives under (the writable stash dir). */
   stashRoot: string;
-  /**
-   * Parent identity ref (`memory:<name>`) — internal candidate/progress key. The
-   * child's `source:` backref is derived from `name` as a `memories/<name>`
-   * conceptId (Group-C item 2), NOT from this legacy identity ref.
-   */
+  /** Parent conceptId used for candidate filtering and progress reporting. */
   ref: string;
   /** Existing frontmatter (parsed). */
   data: Record<string, unknown>;
@@ -210,7 +207,7 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
   // (git, npm, website) are deliberately untouched — writing inferred
   // children there would be clobbered by the next sync().
   const primary = sources[0];
-  if (!primary) return result;
+  if (!primary || (primary.adapterId ?? detectAdapterId(primary.path)) !== "akm") return result;
 
   const pending = collectPendingMemories(primary.path).filter(
     (record) => !options.candidateRefs || options.candidateRefs.has(record.ref),
@@ -358,8 +355,8 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
         precheck: false,
       } as const;
     },
-    // Default concurrency of 4 for cloud APIs. Set `llm.concurrency: 1`
-    // in config.json for local model servers (LM Studio, Ollama).
+    // Caller-set connection concurrency or 1: `resolveLlmEngineUse` does
+    // not forward `engines.<name>.concurrency`, so config cannot raise this.
     llmConfig.concurrency ?? 1,
   );
 
@@ -454,7 +451,7 @@ export function collectPendingMemories(stashRoot: string): MemoryRecord[] {
     out.push({
       filePath,
       stashRoot,
-      ref: `memory:${relName}`,
+      ref: conceptIdFromTypeName("memory", relName),
       data: parsed.data,
       body: parsed.content,
       name: relName,
@@ -530,6 +527,7 @@ async function writeDerivedMemory(parent: MemoryRecord, derived: DerivedMemoryDr
     kind: "filesystem",
     name: "stash",
     path: parent.stashRoot,
+    adapterId: "akm",
   };
   const writeConfig: SourceConfigEntry = {
     type: "filesystem",
@@ -567,10 +565,8 @@ function renderDerivedMemory(parent: MemoryRecord, derived: DerivedMemoryDraft):
   const fm: Record<string, unknown> = {
     [FM_INFERRED]: true,
     [FM_CAPTURE_MODE]: "background",
-    // Group-C item 2: the `source:` backref (the `derived_from` channel) is now
-    // written in the 0.9.0 `memories/<name>` conceptId grammar, not the legacy
-    // `memory:<name>`. `parent.ref` stays the legacy identity ref used internally
-    // for candidate/progress bookkeeping; only the on-disk backref is flipped.
+    // The `source:` backref and internal candidate identity use the same current
+    // `memories/<name>` conceptId spelling.
     [FM_SOURCE]: conceptIdFromTypeName("memory", parent.name),
     description: derived.description,
     tags: derived.tags,

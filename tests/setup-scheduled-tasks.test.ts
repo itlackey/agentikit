@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { _setClackForTests } from "../src/cli/clack";
+import { _setDefaultTasksForTests } from "../src/commands/tasks/default-tasks";
 import type { TasksSyncResult } from "../src/commands/tasks/tasks";
 import { deleteAssetFromSource, writeAssetToSource } from "../src/core/write-source";
 import { buildSetupSteps } from "../src/setup/setup";
@@ -45,6 +46,7 @@ function resetClack() {
   state.logs = [];
   state.events = [];
   state.onConfirm = undefined;
+  overrideSeam(_setDefaultTasksForTests, { isCiEnvironment: () => false });
   overrideSeam(_setClackForTests, {
     isCancel: () => false,
     cancel: () => {},
@@ -206,7 +208,7 @@ describe("stepScheduledTasks", () => {
       ...EMPTY_SYNC_RESULT,
       skipped: [
         { id: "improve", reason: "cannot resolve installed runtime" },
-        { id: "sync", reason: "legacy scheduler entry" },
+        { id: "sync", reason: "scheduler context descriptor is invalid" },
       ],
     });
     state.confirmReturn = true;
@@ -248,6 +250,18 @@ describe("stepScheduledTasks", () => {
     const { deps, calls } = makeDeps([]);
 
     await stepScheduledTasks(deps, { nonInteractive: true });
+
+    expect(calls.prepared).toHaveLength(0);
+    expect(calls.syncCalls).toBe(0);
+    expect(state.multiselectCalls).toBe(0);
+    expect(state.confirmCalls).toBe(0);
+  });
+
+  test("CI setup neither prepares definitions nor mutates the scheduler", async () => {
+    const { deps, calls } = makeDeps([]);
+    overrideSeam(_setDefaultTasksForTests, { isCiEnvironment: () => true });
+
+    await stepScheduledTasks(deps);
 
     expect(calls.prepared).toHaveLength(0);
     expect(calls.syncCalls).toBe(0);

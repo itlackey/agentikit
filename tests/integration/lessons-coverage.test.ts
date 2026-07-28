@@ -78,7 +78,7 @@ describe("akm lessons coverage (Phase 7A)", () => {
 
     // Non-lesson assets touch four tags: deploy, networking, auth, observability.
     writeFile(
-      path.join(stashDir, "skills", "deploy.md"),
+      path.join(stashDir, "skills", "deploy", "SKILL.md"),
       "---\ndescription: deploy skill\ntags: [deploy, networking]\n---\nDeploy steps.\n",
     );
     writeFile(
@@ -114,7 +114,7 @@ describe("akm lessons coverage (Phase 7A)", () => {
     const stashDir = makeTempDir("akm-lessons-allcov-");
 
     writeFile(
-      path.join(stashDir, "skills", "deploy.md"),
+      path.join(stashDir, "skills", "deploy", "SKILL.md"),
       "---\ndescription: deploy skill\ntags: [deploy]\n---\nBody.\n",
     );
     writeFile(

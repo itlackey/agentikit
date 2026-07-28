@@ -16,11 +16,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ConsolidateResult } from "../../../../src/commands/improve/consolidate";
-import type { AkmDistillResult } from "../../../../src/commands/improve/distill";
 import { akmImprove } from "../../../../src/commands/improve/improve";
-import type { AkmReflectResult } from "../../../../src/commands/improve/reflect";
 import { saveConfig } from "../../../../src/core/config/config";
+import type { AkmDistillResult, AkmReflectResult, ConsolidateResult } from "../../../../src/core/improve-types";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { withTestImproveLlm } from "../../../_helpers/improve-config";
 
@@ -83,7 +81,7 @@ const stubDistill = async ({ ref }: { ref?: string }): Promise<AkmDistillResult>
   ok: true,
   outcome: "queued",
   inputRef: ref ?? "stub",
-  lessonRef: `lessons/${(ref ?? "stub").replace(/[:/]/g, "-")}-lesson`,
+  proposalRef: `lessons/${(ref ?? "stub").replace(/[:/]/g, "-")}-lesson`,
 });
 
 /** A consolidation stub that resolves immediately (simulates fast/no-op consolidation). */

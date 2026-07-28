@@ -13,7 +13,14 @@
  * runtime gap.
  *
  * `formatPlain` dispatches to those formatters. Returning `null` means "no
- * plain rendering available — fall back to YAML".
+ * plain rendering available"; the caller (`output()` in `src/cli/shared.ts`)
+ * falls back to `renderGenericText`'s flat `key=value` rendering of the
+ * shaped envelope (`src/output/generic-render.ts` — NOT `renderGenericMarkdown`;
+ * markdown syntax is markup, not plain text, so `text` gets its own generic
+ * renderer rather than reusing `md`'s). NOT YAML either: this comment (and
+ * the one on `formatPlain` below) used to say the fallback was YAML, but it
+ * never was — the fallback was pretty-printed JSON until it became a generic
+ * renderer.
  *
  * Pure functions — no IO.
  */
@@ -24,7 +31,6 @@ import { addFormatters } from "./text/add";
 import { cloneFormatters } from "./text/clone";
 import { configFormatters } from "./text/config";
 import { curateFormatters } from "./text/curate";
-import { distillFormatters } from "./text/distill";
 import { enableDisableFormatters } from "./text/enable-disable";
 import { envFormatters } from "./text/env";
 import { eventsFormatters } from "./text/events";
@@ -41,59 +47,12 @@ import { getTextFormatterHandler, registerTextFormatters, type TextFormatterEntr
 import { registryCommandFormatters } from "./text/registry-commands";
 import { rememberFormatters } from "./text/remember";
 import { removeFormatters } from "./text/remove";
-import { saveFormatters } from "./text/save";
 import { searchFormatters } from "./text/search";
 import { showFormatters } from "./text/show";
+import { syncFormatters } from "./text/sync";
 import { updateFormatters } from "./text/update";
 import { upgradeFormatters } from "./text/upgrade";
 import { workflowFormatters } from "./text/workflow";
-
-// Re-export helpers so existing imports from `text.ts` keep working.
-export {
-  formatAddPlain,
-  formatClonePlain,
-  formatConfigPlain,
-  formatCuratePlain,
-  formatDistillPlain,
-  formatEventLine,
-  formatEventsPlain,
-  formatFeedbackPlain,
-  formatHistoryPlain,
-  formatImportPlain,
-  formatIndexPlain,
-  formatInfoPlain,
-  formatInitPlain,
-  formatListPlain,
-  formatProposalAcceptPlain,
-  formatProposalDiffPlain,
-  formatProposalListPlain,
-  formatProposalProducerPlain,
-  formatProposalRejectPlain,
-  formatProposalShowPlain,
-  formatRegistryAddPlain,
-  formatRegistryBuildIndexPlain,
-  formatRegistryListPlain,
-  formatRegistryRemovePlain,
-  formatRegistrySearchPlain,
-  formatRememberPlain,
-  formatRemovePlain,
-  formatSavePlain,
-  formatSearchPlain,
-  formatShowPlain,
-  formatToggleComponentPlain,
-  formatUpdatePlain,
-  formatUpgradePlain,
-  formatWorkflowCreatePlain,
-  formatWorkflowListPlain,
-  formatWorkflowNextPlain,
-  formatWorkflowResumePlain,
-  formatWorkflowStatusPlain,
-  formatWorkflowValidatePlain,
-} from "./text/helpers";
-export type { TextFormatterHandler } from "./text/registry";
-// Re-export registry API so callers can use this module as the single entry
-// point (backward compat).
-export { deregisterTextFormatter, registerTextFormatter } from "./text/registry";
 
 // ── Explicit built-in formatter assembly ──────────────────────────────────────
 // Each entry below is a pure exported `TextFormatterEntry[]` from a per-command
@@ -118,13 +77,12 @@ const BUILT_IN_TEXT_FORMATTERS: TextFormatterEntry[] = [
   ...eventsFormatters,
   ...proposalFormatters,
   ...proposalProducerFormatters,
-  ...distillFormatters,
   ...infoFormatters,
   ...configFormatters,
   ...feedbackFormatters,
   ...rememberFormatters,
   ...importFormatters,
-  ...saveFormatters,
+  ...syncFormatters,
   ...enableDisableFormatters,
   ...registryCommandFormatters,
   ...envFormatters,
@@ -155,12 +113,14 @@ export function outputJsonl(command: string, shaped: unknown): void {
 
 /**
  * Return a plain-text string for commands that are better as short messages,
- * or null to fall through to YAML output.
+ * or null to fall through to the generic text rendering of the shaped
+ * envelope (`renderGenericText`, applied in `output()` in
+ * `src/cli/shared.ts` — this module stays dependency-free of that renderer).
  */
 export function formatPlain(command: OutputCommandName, result: unknown, detail: DetailLevel): string | null {
   const handler = getTextFormatterHandler(command);
   if (handler) {
     return handler(result as Record<string, unknown>, detail);
   }
-  return null; // fall through to YAML
+  return null; // fall through to the generic text renderer, not YAML
 }

@@ -13,10 +13,6 @@
  * This module is a dependency-graph LEAF: it imports nothing from
  * `core/config`. `core/config/config-types.ts` derives `VALID_HARNESS_IDS`
  * from here, which keeps the import direction acyclic (config ← harnesses).
- *
- * Implementations (session-log readers, agent profiles) are migrated under each
- * harness in #563/#564; this step only owns ids + capability membership and
- * wires the existing call sites to consult it (behaviour-preserving).
  */
 import { AiderHarness } from "./aider";
 import { AmazonqHarness } from "./amazonq";
@@ -57,9 +53,9 @@ export { isSessionLogHarness } from "./types";
 // Order is significant: VALID_HARNESS_IDS derives from this array and feeds the
 // committed JSON-schema enum order. The original [opencode, claude,
 // opencode-sdk] prefix is preserved so the pre-unification portion of the
-// generated schema enum does not reorder (#562); the seven P2 harness adapters
-// (plan §"Capability matrix") are appended after it, which extends the enum
-// additively (schemas/akm-config.json is regenerated in lockstep).
+// generated schema enum does not reorder; the seven P2 harness adapters are
+// appended after it, which extends the enum additively (schemas/akm-config.json
+// is regenerated in lockstep).
 export const HARNESS_REGISTRY = Object.freeze([
   new OpencodeHarness(),
   new ClaudeHarness(),

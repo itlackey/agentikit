@@ -162,28 +162,28 @@ describe("akm adapter — validate fires each type's positive finding (§6)", ()
     expect(hit?.detail).toBe("missing required fields: schedule, enabled (must be a boolean)");
   });
 
-  test("dangerous-vault-key — a dangerous key name in an env file (env dangerous-key scan)", async () => {
+  test("dangerous-env-key — a dangerous key name in an env file (env dangerous-key scan)", async () => {
     const ctx = overlayCtx(ROOT, {});
     const diags = await akmAdapter.validate(
       component({ root: ROOT }),
       [change("env/danger.env", "LD_PRELOAD=libevil.so\nSAFE=1\n")],
       ctx,
     );
-    const hit = diags.find((d) => d.issue === "dangerous-vault-key");
+    const hit = diags.find((d) => d.issue === "dangerous-env-key");
     expect(hit).toBeDefined();
     expect(hit?.detail).toContain("LD_PRELOAD");
     expect(hit?.detail).toContain("Ref: env:danger");
     expect(hit?.fixed).toBe(false);
   });
 
-  test("dangerous-vault-key is suppressed by the inline comment (never widened)", async () => {
+  test("dangerous-env-key is suppressed by the inline comment (never widened)", async () => {
     const ctx = overlayCtx(ROOT, {});
     const diags = await akmAdapter.validate(
       component({ root: ROOT }),
-      [change("env/ok.env", "# akm-lint-ok: dangerous-vault-key\nLD_PRELOAD=x\n")],
+      [change("env/ok.env", "# akm-lint-ok: dangerous-env-key\nLD_PRELOAD=x\n")],
       ctx,
     );
-    expect(issues(diags)).not.toContain("dangerous-vault-key");
+    expect(issues(diags)).not.toContain("dangerous-env-key");
   });
 
   test("missing-name-or-type — a command with no name/type frontmatter (CommandLinter)", async () => {
@@ -258,7 +258,7 @@ describe("akm adapter — env/secret dangerous-key `.env`-suffix narrowness pres
       [change("secrets/mytoken", "LD_PRELOAD=x\n")],
       ctx,
     );
-    expect(diags.map((d) => d.issue)).not.toContain("dangerous-vault-key");
+    expect(diags.map((d) => d.issue)).not.toContain("dangerous-env-key");
   });
 
   test("a `.env`-suffixed secret file IS scanned, and reports the `secret:` ref prefix", async () => {
@@ -268,7 +268,7 @@ describe("akm adapter — env/secret dangerous-key `.env`-suffix narrowness pres
       [change("secrets/creds.env", "LD_PRELOAD=x\n")],
       ctx,
     );
-    const hit = diags.find((d) => d.issue === "dangerous-vault-key");
+    const hit = diags.find((d) => d.issue === "dangerous-env-key");
     expect(hit).toBeDefined();
     expect(hit?.detail).toContain("Ref: secret:creds");
   });

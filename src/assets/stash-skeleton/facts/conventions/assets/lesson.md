@@ -1,7 +1,9 @@
 ---
+type: fact
 category: convention
 description: Soft authoring conventions for lesson assets that capture compounding, hard-won judgment.
 when_to_use: Surfaced to authoring agents when they write or revise a lesson asset.
+updated: 2026-07-28
 ---
 
 <!--

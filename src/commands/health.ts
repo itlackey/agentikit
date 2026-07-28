@@ -9,7 +9,7 @@ import { loadConfig } from "../core/config/config";
 import { ConfigError, UsageError } from "../core/errors";
 import { readEvents } from "../core/events";
 import { openLogsDatabase } from "../core/logs-db";
-import { getCacheDir, getConfigDir, getConfigPath, getDataDir, getStateDbPathInDataDir } from "../core/paths";
+import { getCacheDir, getConfigPath, getStateDbPathInDataDir } from "../core/paths";
 import { listExistingTableNames, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
 import { readSemanticStatus } from "../indexer/search/semantic-status";
@@ -271,8 +271,8 @@ function gatherImproveSummaryPhase(
 /**
  * The three best-effort advisory groups beyond the health-check registry:
  * improve advisories, the `stash-git-exposure` probe, and the 08 surfaces
- * group (secret-file-perms, binary-config-skew, orphan-stores,
- * egress-endpoints). Order matches emission order in the returned array. A
+ * group (secret-file-perms, binary-config-skew, egress-endpoints). Order
+ * matches emission order in the returned array. A
  * probe/filesystem failure in either try/catch must not abort the health
  * report — each group degrades to "no advisory" independently.
  */
@@ -305,15 +305,13 @@ function gatherAncillaryAdvisories(
   }
 
   // 08 surfaces: the remaining read-only advisory group (secret-file-perms,
-  // binary-config-skew, orphan-stores, egress-endpoints). Best-effort — a
+  // binary-config-skew, egress-endpoints). Best-effort — a
   // filesystem probe failure must not abort the health report.
   try {
     advisories.push(
       ...collectSurfacesAdvisories({
         stashDir: options.stashDir ?? resolveStashDir(),
         cacheDir: getCacheDir(),
-        dataDir: getDataDir(),
-        configDir: getConfigDir(),
         configPath: getConfigPath(),
         config: egressConfigView,
       }),
@@ -347,16 +345,12 @@ function gatherSessionLogAdvisories(
 interface WindowComparePhaseResult {
   windowResults: WindowResult[] | undefined;
   deltas: Record<string, DeltaEntry> | undefined;
-  topLevelImprove: ImproveHealthMetrics;
-  topLevelMetrics: HealthMetrics;
-  topLevelSince: string;
 }
 
 /**
  * Phase 3 — window-compare mode. Resolves `--window-compare`/`--windows` into
- * per-window bundles, then folds window 0 back onto the top-level
- * improve/metrics/since fields (backward compat with the non-window-compare
- * shape) and computes deltas between the earliest and latest window.
+ * per-window bundles and computes deltas between the earliest and latest
+ * window. Top-level metrics retain the primary `--since` query.
  */
 function resolveWindowComparePhase(
   options: AkmHealthOptions,
@@ -364,10 +358,6 @@ function resolveWindowComparePhase(
   stateDbPath: string,
   now: () => number,
   logsDb: Database | undefined,
-  probe: TaskHistoryPhase["probe"],
-  improveSummary: ImproveHealthMetrics,
-  metrics: HealthMetrics,
-  since: string,
 ): WindowComparePhaseResult {
   let windowSpecs: WindowSpec[] | undefined;
   if (options.windowCompare) {
@@ -378,9 +368,6 @@ function resolveWindowComparePhase(
 
   let windowResults: WindowResult[] | undefined;
   let deltas: Record<string, DeltaEntry> | undefined;
-  let topLevelImprove = improveSummary;
-  let topLevelMetrics = metrics;
-  let topLevelSince = since;
 
   if (windowSpecs) {
     windowResults = windowSpecs.map((spec) => {
@@ -396,13 +383,6 @@ function resolveWindowComparePhase(
         metrics: bundle.metrics,
       };
     });
-    // Preserve backward compat: top-level improve/metrics reflect window 0.
-    if (windowResults.length > 0) {
-      const firstWindow = windowResults[0]!;
-      topLevelImprove = firstWindow.improve;
-      topLevelMetrics = { ...firstWindow.metrics, probeRoundTripMs: probe.durationMs };
-      topLevelSince = firstWindow.since;
-    }
     if (windowResults.length >= 2) {
       // Deltas always read chronologically: `from` = earliest window,
       // `to` = latest. Positive pctChange on a failure metric (e.g.
@@ -416,7 +396,7 @@ function resolveWindowComparePhase(
     }
   }
 
-  return { windowResults, deltas, topLevelImprove, topLevelMetrics, topLevelSince };
+  return { windowResults, deltas };
 }
 
 export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
@@ -505,17 +485,7 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
     const status: AkmHealthResult["status"] = hardFailure ? "fail" : deterministicWarnings ? "warn" : "pass";
 
     // ── Window-compare mode (Phase 3) ─────────────────────────────────────
-    const { windowResults, deltas, topLevelImprove, topLevelMetrics, topLevelSince } = resolveWindowComparePhase(
-      options,
-      db,
-      stateDbPath,
-      now,
-      logsDb,
-      probe,
-      improveSummary,
-      metrics,
-      since,
-    );
+    const { windowResults, deltas } = resolveWindowComparePhase(options, db, stateDbPath, now, logsDb);
 
     // ── Per-run mode (Phase 2) ────────────────────────────────────────────
     let runs: ImproveRunSummary[] | undefined;
@@ -527,11 +497,11 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
       schemaVersion: 3,
       ok: !hardFailure,
       status,
-      since: topLevelSince,
+      since,
       hardChecks,
       advisories,
-      metrics: topLevelMetrics,
-      improve: topLevelImprove,
+      metrics,
+      improve: improveSummary,
       sessionLogAdvisories: sessionLogEntries,
       ...(runs ? { runs } : {}),
       ...(windowResults ? { windows: windowResults } : {}),

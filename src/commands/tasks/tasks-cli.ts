@@ -9,14 +9,15 @@
  * `runWithJsonErrors(...) + output(...)` are migrated to `defineJsonCommand`,
  * which emits the same JSON envelope (stdout/stderr/exit-code) as the inline
  * form. `tasks run` keeps a plain `defineCommand` because it forwards the
- * task's own exit code via `process.exit`. The private helper
+ * task's own exit code via `process.exitCode` (F4: not `process.exit()` —
+ * that would skip pending cleanup). The private helper
  * `makeTasksToggleCommand` and the `TASKS_SUBCOMMAND_SET` routing constant move
  * with the family.
  */
 
 import { defineCommand } from "citty";
 import { parsePositiveIntFlag } from "../../cli/parse-args";
-import { defineGroupCommand, defineJsonCommand, output, runWithJsonErrors } from "../../cli/shared";
+import { defineGroupCommand, defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { detectServerDefault, registerDefaultTasks } from "./default-tasks";
 import {
   akmTasksAdd,
@@ -45,7 +46,7 @@ const tasksAddCommand = defineJsonCommand({
     workflow: { type: "string", description: "Workflow ref to invoke (e.g. workflows/my-flow)" },
     prompt: {
       type: "string",
-      description: "Prompt for the configured agent harness — inline text, an asset ref like agent:foo, or ./path.md",
+      description: "Prompt for the configured agent harness — inline text, an asset ref like agents/foo, or ./path.md",
     },
     command: {
       type: "string",
@@ -148,7 +149,10 @@ const tasksRunCommand = defineCommand({
     name: "run",
     description: "Execute a task now (this is what cron / launchd / schtasks invoke at the scheduled time)",
   },
+  // Raw defineCommand (it forwards the task's exit code), so the global output
+  // flags are declared here or `--format md nightly` loses the task id.
   args: {
+    ...GLOBAL_OUTPUT_ARGS,
     id: { type: "positional", description: "Task id", required: true },
     ...targetArg,
     scheduled: { type: "boolean", description: "Internal marker for scheduler-generated runs", default: false },
@@ -160,7 +164,12 @@ const tasksRunCommand = defineCommand({
         ...(args.target !== undefined ? { target: args.target } : {}),
       });
       output("tasks-run", envelope);
-      if (envelope.exitCode !== 0) process.exit(envelope.exitCode);
+      // F4: was `process.exit(envelope.exitCode)`, terminating synchronously
+      // and skipping any pending cleanup (this command forwards a run task's
+      // own exit code, so it can be any value, not just 0/1). output() has
+      // already run and this is the last statement, so process.exitCode +
+      // the implicit return is equivalent without the synchronous cutoff.
+      if (envelope.exitCode !== 0) process.exitCode = envelope.exitCode;
     });
   },
 });
@@ -229,8 +238,7 @@ export const tasksCommand = defineGroupCommand({
   },
   // Bare `akm tasks` reports scheduler diagnostics. Inspection of individual
   // tasks moved to the generic `akm search` / `akm show <bundle//tasks/id>`.
-  async defaultRun() {
-    const result = await akmTasksDoctor();
-    output("tasks-doctor", result);
-  },
+  // No `defaultRun`: bare `akm tasks` is a usage error (exit 2), the canonical
+  // bare-group behavior — owner ruling 12. Run `akm tasks doctor` for what the
+  // bare form used to run.
 });

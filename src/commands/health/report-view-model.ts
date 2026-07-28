@@ -41,8 +41,10 @@ export interface PendingProposalLike {
 export interface HealthHtmlReportOptions {
   /** Window label as the user typed it (`--since`), e.g. "24h". */
   window: string;
-  /** Comparison-window label (`--compare`), e.g. "24h". */
+  /** Duration label or chronological explicit-window names. */
   compare: string;
+  /** Whether the comparison is a generated duration pair or explicit named windows. */
+  comparisonMode?: "duration" | "custom";
   /** Pending proposal queue (from `listPendingProposals`). */
   proposals: PendingProposalLike[];
   /**
@@ -103,11 +105,10 @@ function coercePct(raw: number | string | undefined): number | undefined {
 
 export interface ReportRun {
   id: string;
-  resultStatus: "valid" | "normalized" | "invalid";
+  resultStatus: "valid" | "invalid";
   resultComplete: boolean;
   taskId: string;
   strategy: string | null;
-  legacyProfile: string | null;
   startedAt: string;
   completedAt: string;
   wallTimeMs: number;
@@ -163,7 +164,6 @@ function reshapeRun(r: ImproveRunSummary): ReportRun {
     resultComplete: r.resultComplete ?? (r.resultStatus === undefined || r.resultStatus === "valid"),
     taskId: r.taskId ?? "manual",
     strategy: r.strategy,
-    legacyProfile: r.legacyProfile,
     startedAt: r.startedAt,
     completedAt: r.completedAt,
     wallTimeMs: wall,
@@ -182,7 +182,7 @@ function reshapeRun(r: ImproveRunSummary): ReportRun {
     processed: cons.processed,
     failedChunks: cons.failedChunks,
     totalChunks: cons.totalChunks,
-    miWritten: mi.written || mi.writes || 0,
+    miWritten: mi.written,
     miConsidered: mi.considered,
     miYieldRate: mi.yieldRate,
     miCacheHits: mi.cacheHits,
@@ -321,6 +321,7 @@ export interface HealthReportViewModel {
   // Window / meta
   window: string;
   compare: string;
+  comparisonMode: "duration" | "custom";
   sinceIso: string;
   reportDate: string;
   reportTitle: string;
@@ -354,7 +355,6 @@ export interface HealthReportViewModel {
   llm: AkmHealthResult["metrics"]["llmUsage"];
   memorySummary: AkmHealthResult["improve"]["memorySummary"];
   includedResultRows: number;
-  normalizedResultRows: number;
   skippedInvalidResultRows: number;
   invoked: number;
   completed: number;
@@ -434,7 +434,6 @@ type AggregatesPhase = Pick<
   | "llm"
   | "memorySummary"
   | "includedResultRows"
-  | "normalizedResultRows"
   | "skippedInvalidResultRows"
   | "invoked"
   | "completed"
@@ -492,7 +491,7 @@ function buildAggregatesPhase(result: AkmHealthResult, runsPhase: RunsPhase): Ag
   const failedRuns = runs.filter((r) => !r.ok).length;
   const invoked = improve.invoked || totalRuns;
   const completed = improve.completed || totalRuns - failedRuns;
-  const miWritten = mi.written || mi.writes || 0;
+  const miWritten = mi.written;
 
   return {
     consolidation: cons,
@@ -506,7 +505,6 @@ function buildAggregatesPhase(result: AkmHealthResult, runsPhase: RunsPhase): Ag
     llm,
     memorySummary: improve.memorySummary,
     includedResultRows: improve.resultRows?.included ?? totalRuns,
-    normalizedResultRows: improve.resultRows?.normalized ?? 0,
     skippedInvalidResultRows: improve.resultRows?.skipped.invalid ?? invalidRuns.length,
     invoked,
     completed,
@@ -791,6 +789,7 @@ export function buildHealthReportViewModel(
   return {
     window: opts.window,
     compare: opts.compare,
+    comparisonMode: opts.comparisonMode ?? "duration",
     ...meta,
 
     runs: runsPhase.runs,

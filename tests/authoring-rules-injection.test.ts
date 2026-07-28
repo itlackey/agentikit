@@ -29,7 +29,7 @@ const HARD_RULE_WHEN_TO_USE = "when_to_use` is REQUIRED";
 describe("authoring-rules injection", () => {
   describe("buildReflectPrompt (lesson type, type provided directly)", () => {
     const rendered = buildReflectPrompt({
-      ref: "lesson:foo-lesson",
+      ref: "lessons/foo-lesson",
       type: "lesson",
       name: "foo-lesson",
       assetContent: "Some lesson body content here.",
@@ -51,7 +51,7 @@ describe("authoring-rules injection", () => {
   describe("buildReflectPrompt (lesson type, type derived from ref prefix)", () => {
     // input.type is undefined — type must be derived from ref prefix "lesson"
     const rendered = buildReflectPrompt({
-      ref: "lesson:foo-lesson",
+      ref: "lessons/foo-lesson",
       // type intentionally omitted
       assetContent: "Some lesson body content here.",
     }).prompt;
@@ -87,7 +87,7 @@ describe("authoring-rules injection", () => {
 
   describe("buildSchemaRepairPrompt (lesson type)", () => {
     const rendered = buildSchemaRepairPrompt({
-      ref: "lesson:foo-lesson",
+      ref: "lessons/foo-lesson",
       type: "lesson",
       name: "foo-lesson",
       reason: "missing description",

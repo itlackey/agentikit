@@ -2,6 +2,7 @@
   "exitCode": 0,
   "stdoutKeys": [
     "assetTypes",
+    "defaultBundle",
     "indexStats",
     "registries",
     "schemaVersion",
@@ -9,6 +10,7 @@
     "semanticSearch",
     "shape",
     "sourceProviders",
+    "stashDir",
     "version"
   ]
 }

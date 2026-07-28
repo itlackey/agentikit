@@ -822,11 +822,12 @@ function resolveBeliefState(frontmatter: Record<string, unknown>): Exclude<Memor
 // Belief-edge refs (contradictedBy / supersededBy / currentBeliefRefs) are the
 // IDENTITY channel: they are compared against a derived memory's own
 // `memory:<name>` ref (resolveFamilyContradictions' familyRefSet,
-// firstExistingRef's byRef map), so they stay in `memory:<name>` grammar. This
-// is deliberately NOT the `memories/<name>` derived_from conceptId — Group-C
-// item 2 flipped only that channel. We parse the tolerant bare name and format
-// it back into identity grammar so both grammars on disk resolve to the ref
-// record.ref carries.
+// firstExistingRef's byRef map), so they are NORMALIZED to `memory:<name>` here.
+// On disk they arrive in either spelling — `memory:<name>` from pre-0.9.0
+// writes, or the `[<bundle>//]memories/<name>` conceptId that
+// `writeSupersededEdge`/`writeContradictEdge` persist today — and
+// `parseMemoryName` accepts both. Reading only the first spelling silently
+// dropped every edge the current write path produces.
 function refArray(value: unknown): string[] {
   if (typeof value === "string") {
     const name = parseMemoryName(value);

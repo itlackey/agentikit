@@ -5,9 +5,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isSourceWriteActivated } from "../../core/activation-policy";
-import { resolveStashDir } from "../../core/common";
+import { isWithin, resolveStashDir } from "../../core/common";
 import type { AkmConfig, SourceConfigEntry } from "../../core/config/config";
-import { bundlesToSourceEntries, getSources, loadConfig } from "../../core/config/config";
+import { bundleComponentConfig, bundlesToSourceEntries, getSources, loadConfig } from "../../core/config/config";
 import { resolveGitContentRoot, resolveWritable } from "../../core/write-source";
 import { lockContentRootFor } from "../../integrations/lockfile";
 import { resolveSourceProviderFactory } from "../../sources/provider-factory";
@@ -15,11 +15,6 @@ import { resolveSourceProviderFactory } from "../../sources/provider-factory";
 // before resolveEntryContentDir() runs.
 import "../../sources/providers/index";
 import { warn } from "../../core/warn";
-
-// Legacy "context-hub" / "github" type aliases are normalized to "git" at
-// config-load time (see src/config.ts), so this set only contains the canonical
-// type.
-const GIT_STASH_TYPES = new Set(["git"]);
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -31,6 +26,10 @@ export interface SearchSource {
   writable?: boolean;
   /** Configured provider kind when this source has a config owner. */
   type?: SourceConfigEntry["type"];
+  /** Adapter selected for this bundle component. Index preflight fills and persists missing ownership. */
+  adapterId?: string;
+  /** Configured source whose provider/path could not be resolved this run. */
+  unresolved?: boolean;
 }
 
 // ── Resolution ──────────────────────────────────────────────────────────────
@@ -39,31 +38,41 @@ export interface SearchSource {
  * Build the ordered list of stash sources, walking every configured stash
  * once. Iteration order:
  *
- *   1. The primary stash directory (the entry marked `primary: true`, or the
- *      legacy top-level `stashDir`). Always emitted, even when the directory
- *      does not yet exist on disk, so callers can use it as the clone target.
- *   2. Each entry in `config.sources[]` (in declared order), excluding the
- *      one already emitted as the primary.
- *   3. Each entry in `config.installed[]` (registry-managed stashes).
+ *   1. An explicit argument or `AKM_STASH_DIR`, when present.
+ *   2. The configured `defaultBundle`, after component-root validation.
+ *   3. Remaining configured bundles in installation-priority order.
  *
  * Replaces the previous four-pass loop that walked `stashes[]` separately
- * for each provider kind. Disabled entries (`enabled: false`) and entries
- * whose disk path doesn't exist are filtered after deduplication.
+ * for each provider kind. Disabled entries (`enabled: false`) are filtered
+ * after deduplication. Missing configured roots remain in the result so the
+ * indexer can classify their scan as incomplete instead of mistaking them for
+ * removed sources.
  */
 export function resolveSourceEntries(overrideStashDir?: string, existingConfig?: AkmConfig): SearchSource[] {
-  const stashDir = overrideStashDir ?? resolveStashDir();
   const config = existingConfig ?? loadConfig();
+  const configuredEntries = bundlesToSourceEntries(config) ?? [];
+  const envOverride = process.env.AKM_STASH_DIR?.trim();
+  const implicitStashDir =
+    overrideStashDir !== undefined
+      ? path.resolve(overrideStashDir)
+      : envOverride
+        ? resolveStashDir()
+        : config.defaultBundle
+          ? undefined
+          : resolveStashDir();
 
-  // The implicit working stash is writable unless a configured source below
-  // claims the same root and supplies its canonical policy.
-  const sources: SearchSource[] = [{ path: path.resolve(stashDir), writable: true }];
-  const seen = new Set<string>([path.resolve(stashDir)]);
+  // Explicit and environment overrides stay first. Without either override,
+  // the configured default enters through the validated loop below.
+  const sources: SearchSource[] = implicitStashDir ? [{ path: implicitStashDir, writable: true }] : [];
+  const seen = new Set<string>(implicitStashDir ? [implicitStashDir] : []);
 
   const addSource = (
     dir: string,
     registryId: string | undefined,
     writable: boolean,
     type: SourceConfigEntry["type"],
+    adapterId?: string,
+    unresolved = false,
   ) => {
     const resolved = path.resolve(dir);
     if (seen.has(resolved)) {
@@ -78,34 +87,65 @@ export function resolveSourceEntries(overrideStashDir?: string, existingConfig?:
         if (registryId) existing.registryId = registryId;
         existing.type = type;
         existing.writable = writable;
+        existing.adapterId = adapterId;
       }
+      if (existing && unresolved) existing.unresolved = true;
       return;
     }
     seen.add(resolved);
     if (isSuspiciousStashRoot(dir)) {
       warn(`Warning: stash root "${dir}" appears to be a system directory. This may be unintentional.`);
     }
-    if (isValidDirectory(dir)) {
-      sources.push({
-        path: resolved,
-        ...(registryId ? { registryId } : {}),
-        writable,
-        type,
-      });
-    }
+    sources.push({
+      path: resolved,
+      ...(registryId ? { registryId } : {}),
+      writable,
+      type,
+      ...(adapterId ? { adapterId } : {}),
+      ...(unresolved ? { unresolved: true } : {}),
+    });
   };
 
   // 0.9.0 shape (spec §10.1 / D-R5): resolve from `bundles` + `defaultBundle`.
-  // `bundlesToSourceEntries` returns the source list ordered defaultBundle-first
-  // (already injected as the primary via `resolveStashDir` above), then map
-  // insertion order — folding the retired sources[]/installed[] roles into one
-  // list. Each entry's `name` is its bundle key, so the addSource `registryId`
-  // == the bundle id. A config with no bundles yields just the primary stash.
-  for (const entry of bundlesToSourceEntries(config) ?? []) {
+  // `bundlesToSourceEntries` returns the configured default first, then map
+  // insertion order. Each entry is validated before insertion so a component
+  // root can never escape its provider's materialized content root.
+  for (const entry of configuredEntries) {
     if (entry.enabled === false) continue;
-    const dir = resolveEntryContentDir(entry);
-    if (dir == null) continue;
-    addSource(dir, entry.name, resolveWritable(entry), entry.type);
+    const component = bundleComponentConfig(config.bundles?.[entry.name ?? ""]);
+    const contentRoot = resolveEntryContentDir(entry);
+    if (contentRoot == null) {
+      const unresolvedPath = path.join(
+        implicitStashDir ?? process.cwd(),
+        ".akm",
+        "unresolved-sources",
+        entry.name ?? entry.type,
+      );
+      addSource(
+        unresolvedPath,
+        entry.name,
+        component?.writable ?? resolveWritable(entry),
+        entry.type,
+        component?.adapter,
+        true,
+      );
+      continue;
+    }
+    const dir = path.resolve(contentRoot, component?.root ?? ".");
+    if (!isWithin(dir, contentRoot)) {
+      warn(`Warning: component root "${component?.root}" escapes bundle "${entry.name}"; skipping source.`);
+      const unresolvedPath = path.join(contentRoot, ".akm", "unresolved-sources", entry.name ?? entry.type);
+      addSource(
+        unresolvedPath,
+        entry.name,
+        component?.writable ?? resolveWritable(entry),
+        entry.type,
+        component?.adapter,
+        true,
+      );
+      continue;
+    }
+    addSource(dir, entry.name, component?.writable ?? resolveWritable(entry), entry.type, component?.adapter);
   }
 
   return sources;
@@ -171,7 +211,7 @@ export function resolveEntryContentDir(entry: SourceConfigEntry): string | undef
   // layout puts indexable files under `<repo>/content/`, so the walker needs
   // that subdirectory. This is a content-layout convention, not a provider
   // capability — keep it here.
-  if (GIT_STASH_TYPES.has(entry.type)) {
+  if (entry.type === "git") {
     return resolveGitContentRoot(dir);
   }
   return dir;
@@ -263,16 +303,6 @@ function isSuspiciousStashRoot(dir: string): boolean {
   return false;
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-function isValidDirectory(dir: string): boolean {
-  try {
-    return fs.statSync(dir).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 // ── Stash cache integration ─────────────────────────────────────────────────
 
 /**
@@ -312,6 +342,19 @@ export async function ensureSourceCaches(
   // resolver that reads/writes use to agree on where content already IS.
   for (const entry of getSources(cfg)) {
     if (entry.enabled === false) continue;
+    const lockedRoot = lockContentRootFor(entry.name, entry.type);
+    if (lockedRoot) {
+      if (!isMaterializedDir(lockedRoot)) {
+        warn(
+          `Warning: managed source "${entry.name}" is missing its locked materialization at ${lockedRoot}; ` +
+            `run \`akm update ${entry.name}\` to restore it.`,
+        );
+      }
+      // Managed installs are refreshed only by add/update. Hydrating the URL-
+      // derived provider cache here would create a second checkout while reads
+      // and writes continue using the lock root.
+      continue;
+    }
     const factory = resolveSourceProviderFactory(entry.type);
     if (!factory) continue;
 
@@ -377,6 +420,6 @@ function warnIfSourceUnavailableForRead(entry: SourceConfigEntry, providerName: 
   if (dir && isMaterializedDir(dir)) return;
   warn(
     `Warning: source "${providerName}" is not materialized locally; skipping it for this read. ` +
-      "Run `akm index` (or `akm source update`) to fetch it.",
+      "Run `akm index` (or `akm update`) to fetch it.",
   );
 }

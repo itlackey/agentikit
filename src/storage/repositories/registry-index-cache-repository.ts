@@ -8,12 +8,10 @@ import type { Database } from "../database";
  * Storage repository owning the raw SQL for the `registry_index_cache` table
  * in `index.db`.
  *
- * These helpers previously lived in the indexer god-module
- * `src/indexer/db/db.ts`, which produced an inverted layering: the storage
- * seam (`registry-cache.ts`) had to import them *back out* of a higher-level
- * feature module. They now live here so the dependency arrow points
- * `indexer → storage` (db.ts thin-re-exports from this repository for
- * backwards-compatibility) rather than the reverse.
+ * These helpers live in the storage layer (not the indexer) so the
+ * dependency arrow points `indexer → storage` rather than the reverse;
+ * `registry-cache.ts` (the seam registry providers actually consume) imports
+ * them from here.
  */
 
 /** Shape of a cached registry row as returned by {@link getRegistryIndexCache}. */

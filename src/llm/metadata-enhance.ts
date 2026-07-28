@@ -5,15 +5,14 @@
 /**
  * LLM-driven metadata enhancement for stash entries.
  *
- * Split out of `llm.ts` so the higher-level workflow (prompting the LLM to
- * improve descriptions/tags/searchHints) lives separately from the low-level
- * transport client in `client.ts`.
+ * Keeps the higher-level workflow for improving descriptions, tags, and search
+ * hints separate from the low-level transport client.
  */
 
 import metadataEnhanceSystemPrompt from "../assets/prompts/metadata-enhance-system.md" with { type: "text" };
 import type { AkmConfig, LlmConnectionConfig } from "../core/config/config";
+import { parseJsonResponse } from "../core/parse";
 import type { IndexDocument } from "../indexer/passes/metadata";
-import { parseJsonResponse } from "./client";
 import { callStructured } from "./structured-call";
 
 const SYSTEM_PROMPT = metadataEnhanceSystemPrompt;
@@ -45,9 +44,8 @@ export type EnhanceMetadataOutcome =
  * `tryLlmFeature("metadata_enhance", ...)` so the feature gate is honoured: a
  * closed gate yields `{ status: "skipped" }` and a thrown/timed-out call yields
  * `{ status: "failed" }` — neither is reported as an enrichment. When
- * `akmConfig` is `undefined` the gate is bypassed entirely — the LLM call runs
- * unconditionally and errors propagate to the caller (pre-gate behaviour, used
- * by direct callers such as tests).
+ * `akmConfig` is `undefined` the gate is bypassed entirely: the LLM call runs
+ * unconditionally and errors propagate to direct callers such as tests.
  */
 export async function enhanceMetadata(
   config: LlmConnectionConfig,

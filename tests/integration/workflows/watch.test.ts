@@ -15,17 +15,18 @@
  *     draining events written before the status flip.
  *   - A run that is already terminal streams its backlog and exits without a
  *     single sleep.
- *   - The subcommand is registered (WORKFLOW_SUBCOMMANDS) and the
+ *   - The subcommand is registered in `workflowCommand.subCommands` and the
  *     `workflow-watch` passthrough output shape stamps the envelope.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { workflowCommand } from "../../../src/commands/workflow-cli";
 import { NotFoundError } from "../../../src/core/errors";
-import { appendEvent, type EventEnvelope } from "../../../src/core/events";
+import { appendEvent } from "../../../src/core/events";
+import type { EventEnvelope } from "../../../src/core/events-types";
 import { shapeForCommand } from "../../../src/output/shapes";
-import { WORKFLOW_SUBCOMMANDS } from "../../../src/workflows/cli";
 import { DEFAULT_WATCH_INTERVAL_MS, isWorkflowRunEvent, watchWorkflowRun } from "../../../src/workflows/exec/watch";
 import { completeWorkflowStep, startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
@@ -347,7 +348,12 @@ describe("workflow watch — exits on every terminal status (completed/failed/bl
 
 describe("workflow watch — registration + filter unit surface", () => {
   test("subcommand, passthrough shape, and default interval are registered", () => {
-    expect(WORKFLOW_SUBCOMMANDS.has("watch")).toBe(true);
+    // Asserted against the real citty command tree, not a hand-maintained
+    // mirror set. `WORKFLOW_SUBCOMMANDS` used to be that mirror — it was
+    // deleted when `workflow` moved onto `defineGroupCommand`, which derives
+    // its routing guard from `subCommands` directly, so the two can no longer
+    // drift apart.
+    expect(Object.keys(workflowCommand.subCommands ?? {})).toContain("watch");
     const stamped = shapeForCommand("workflow-watch", { ok: true }, "brief") as Record<string, unknown>;
     expect(stamped.shape).toBe("workflow-watch");
     expect(stamped.schemaVersion).toBe(1);

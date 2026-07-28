@@ -8,18 +8,13 @@
  * the repository boundary. Re-exported by core/state-db.ts so existing importers
  * resolve.
  *
- * The pre-0.9 `proposal_fs_imports` ledger's read/write helpers used to live here
- * too; they were dropped when the legacy filesystem-proposal import folded out of
- * the live path into the one-time migrator (`src/migrate/legacy/proposal-fs-import.ts`),
- * whose idempotency is now INSERT OR IGNORE on the proposal UUID
- * ({@link insertProposalIfAbsent}) plus migrate-apply's own journal. Migration 005
- * still creates the (now vestigial) table — the append-only ledger contract
- * forbids removing a released migration.
- *
  * @module proposals-repository
  */
 
+import path from "node:path";
 import type { Proposal } from "../../commands/proposal/proposal-types";
+import { isBundleSlug } from "../../core/asset/asset-ref";
+import { conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import type { FileChange } from "../../core/file-change";
 import type { Database, SqlValue } from "../database";
 
@@ -48,18 +43,44 @@ function changesToStored(changes: FileChange[]): StoredFileChange[] {
 
 /**
  * Reconstruct `Proposal.changes` from `metadata_json.changes` + the `content`
- * column. Legacy rows (persisted before the envelope existed) synthesize one
- * `update` entry with an empty `path` sentinel (resolve from the ref instead).
+ * column.
  */
 function storedToChanges(stored: unknown, content: string): FileChange[] {
   if (!Array.isArray(stored) || stored.length === 0) {
-    return [{ path: "", after: content, op: "update" }];
+    throw new Error("Proposal metadata is missing changes.");
   }
   return (stored as StoredFileChange[]).map((c, i) => ({
-    path: typeof c.path === "string" ? c.path : "",
-    op: c.op === "create" || c.op === "delete" ? c.op : "update",
+    path: c.path,
+    op: c.op,
     ...(i === 0 ? (c.op === "delete" ? {} : { after: content }) : c.after !== undefined ? { after: c.after } : {}),
   }));
+}
+
+function currentProposalRef(ref: string): string {
+  let parsed: ReturnType<typeof parseRefInput>;
+  try {
+    parsed = parseRefInput(ref);
+  } catch (error) {
+    throw new Error(`Proposal row has an invalid current ref: ${ref}`, { cause: error });
+  }
+  if (!parsed.origin) throw new Error(`Proposal row ref is not bundle-qualified: ${ref}`);
+  const canonical = `${parsed.origin}//${conceptIdFromTypeName(parsed.type, parsed.name)}`;
+  if (canonical !== ref) throw new Error(`Proposal row ref is not canonical: ${ref}`);
+  return canonical;
+}
+
+function currentProposalTarget(value: unknown): NonNullable<Proposal["proposedTarget"]> {
+  if (typeof value !== "object" || value === null) throw new Error("Proposal metadata is missing proposedTarget.");
+  const target = value as { source?: unknown; root?: unknown };
+  if (
+    typeof target.source !== "string" ||
+    !isBundleSlug(target.source) ||
+    typeof target.root !== "string" ||
+    !path.isAbsolute(target.root)
+  ) {
+    throw new Error("Proposal metadata has an invalid proposedTarget.");
+  }
+  return { source: target.source, root: path.resolve(target.root) };
 }
 
 /**
@@ -103,9 +124,10 @@ export function proposalRowToProposal(row: ProposalRow): Proposal {
     /* ignore */
   }
 
+  const proposedTarget = currentProposalTarget(meta.proposedTarget);
   return {
     id: row.id,
-    ref: row.ref,
+    ref: currentProposalRef(row.ref),
     status: row.status as Proposal["status"],
     source: row.source,
     ...(typeof meta.sourceRun === "string" ? { sourceRun: meta.sourceRun } : {}),
@@ -116,16 +138,13 @@ export function proposalRowToProposal(row: ProposalRow): Proposal {
       ...(frontmatter !== undefined ? { frontmatter } : {}),
     },
     changes: storedToChanges(meta.changes, row.content),
-    ...(meta.proposedTarget !== undefined ? { proposedTarget: meta.proposedTarget as Proposal["proposedTarget"] } : {}),
+    proposedTarget,
     ...(typeof meta.beforeHash === "string" ? { beforeHash: meta.beforeHash } : {}),
     ...(meta.review !== undefined ? { review: meta.review as Proposal["review"] } : {}),
     ...(typeof meta.confidence === "number" ? { confidence: meta.confidence } : {}),
     ...(meta.gateDecision !== undefined ? { gateDecision: meta.gateDecision as Proposal["gateDecision"] } : {}),
     ...(typeof meta.backupContent === "string" ? { backupContent: meta.backupContent } : {}),
-    ...(typeof meta.acceptedContentHash === "string" ? { acceptedContentHash: meta.acceptedContentHash } : {}),
     ...(meta.acceptedTarget !== undefined ? { acceptedTarget: meta.acceptedTarget as Proposal["acceptedTarget"] } : {}),
-    ...(meta.legacyAcceptedTargetDerived === true ? { legacyAcceptedTargetDerived: true } : {}),
-    ...(meta.legacyAcceptedAssetWasAbsent === true ? { legacyAcceptedAssetWasAbsent: true } : {}),
     ...(typeof meta.eligibilitySource === "string"
       ? { eligibilitySource: meta.eligibilitySource as Proposal["eligibilitySource"] }
       : {}),
@@ -139,38 +158,24 @@ export function proposalRowToProposal(row: ProposalRow): Proposal {
 export function proposalToRowValues(proposal: Proposal, stashDir: string): Omit<ProposalRow, "id"> & { id: string } {
   // Fields that have no dedicated column live in metadata_json.
   const metaObj: Record<string, unknown> = {};
-  // Legacy filesystem proposal.json objects (pre-envelope, imported by the
-  // migrator's proposal-fs-import.ts) reach this mapper without `changes` at
-  // runtime despite the type — or, if hand-edited, with a malformed value.
-  // Synthesize the same sentinel entry the read path uses rather than letting
-  // one corrupt legacy file abort a whole import batch.
-  const safeChanges = Array.isArray(proposal.changes)
-    ? proposal.changes.filter((c): c is FileChange => typeof c === "object" && c !== null)
-    : undefined;
-  metaObj.changes = changesToStored(
-    safeChanges && safeChanges.length > 0 ? safeChanges : [{ path: "", after: proposal.payload.content, op: "update" }],
-  );
-  if (proposal.proposedTarget !== undefined) metaObj.proposedTarget = proposal.proposedTarget;
+  if (!Array.isArray(proposal.changes) || proposal.changes.length === 0) {
+    throw new Error(`Proposal ${proposal.id} has no file changes.`);
+  }
+  metaObj.changes = changesToStored(proposal.changes);
+  metaObj.proposedTarget = currentProposalTarget(proposal.proposedTarget);
   if (proposal.beforeHash !== undefined) metaObj.beforeHash = proposal.beforeHash;
   if (proposal.sourceRun !== undefined) metaObj.sourceRun = proposal.sourceRun;
   if (proposal.review !== undefined) metaObj.review = proposal.review;
   if (proposal.confidence !== undefined) metaObj.confidence = proposal.confidence;
   if (proposal.gateDecision !== undefined) metaObj.gateDecision = proposal.gateDecision;
   if (proposal.backupContent !== undefined) metaObj.backupContent = proposal.backupContent;
-  if (proposal.acceptedContentHash !== undefined) metaObj.acceptedContentHash = proposal.acceptedContentHash;
   if (proposal.acceptedTarget !== undefined) metaObj.acceptedTarget = proposal.acceptedTarget;
-  if (proposal.legacyAcceptedTargetDerived !== undefined) {
-    metaObj.legacyAcceptedTargetDerived = proposal.legacyAcceptedTargetDerived;
-  }
-  if (proposal.legacyAcceptedAssetWasAbsent !== undefined) {
-    metaObj.legacyAcceptedAssetWasAbsent = proposal.legacyAcceptedAssetWasAbsent;
-  }
   if (proposal.eligibilitySource !== undefined) metaObj.eligibilitySource = proposal.eligibilitySource;
 
   return {
     id: proposal.id,
     stash_dir: stashDir,
-    ref: proposal.ref,
+    ref: currentProposalRef(proposal.ref),
     status: proposal.status,
     source: proposal.source,
     created_at: proposal.createdAt,
@@ -280,36 +285,4 @@ export function listStateProposalIdsByPrefix(db: Database, stashDir: string, idP
     )
     .all(stashDir, `${escaped}%`) as Array<{ id: string }>;
   return rows.map((r) => r.id);
-}
-
-/**
- * Insert a proposal row ONLY when the id is not already present (used by the
- * one-time legacy filesystem import in the migrator —
- * `src/migrate/legacy/proposal-fs-import.ts` — so a re-run never clobbers rows
- * that have since been mutated through the canonical store, and re-walking the
- * still-on-disk legacy files is idempotent). Returns true when a row was
- * inserted.
- */
-export function insertProposalIfAbsent(db: Database, proposal: Proposal, stashDir: string): boolean {
-  const v = proposalToRowValues(proposal, stashDir);
-  const result = db
-    .prepare(`
-      INSERT OR IGNORE INTO proposals
-        (id, stash_dir, ref, status, source, created_at, updated_at, content, frontmatter_json, metadata_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(
-      v.id,
-      v.stash_dir,
-      v.ref,
-      v.status,
-      v.source,
-      v.created_at,
-      v.updated_at,
-      v.content,
-      v.frontmatter_json,
-      v.metadata_json,
-    );
-  const changes = (result as { changes?: number | bigint }).changes ?? 0;
-  return Number(changes) > 0;
 }

@@ -31,9 +31,7 @@
  * invariant R4 asserts.
  */
 
-import { parseRefInput } from "../../core/asset/resolve-ref";
 import { NotFoundError, UsageError } from "../../core/errors";
-import { canonicalizeWorkflowName } from "../../core/recognition-util";
 import type { WorkflowRunUnitStatus } from "../../storage/repositories/workflow-runs-repository";
 import { type WorkflowRunUnitRow, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
 import { getCurrentWorkflowScopeKey } from "../authoring/scope-key";
@@ -44,7 +42,7 @@ import { frozenStepRows, requireExecutableWorkflowPlan } from "../runtime/plan-c
 import { snapshotRunForDriver } from "../runtime/runs";
 import { evaluateStaleUnits, type StaleUnit } from "../runtime/unit-checkin";
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
-import { canonicalWorkflowRunRef } from "../runtime/workflow-asset-loader";
+import { canonicalizeWorkflowRefInput } from "../runtime/workflow-asset-loader";
 import { detectSecretShapedParams } from "./param-secrets";
 import {
   activeGateLoop,
@@ -119,7 +117,7 @@ export interface WorkflowBriefUnit {
   unitId: string;
   nodeId: string;
   index: number;
-  /** Frozen engine name and lowering; never a legacy runner/profile selector. */
+  /** Frozen engine name and lowering. */
   engine: string;
   runtimeKind: IrRuntimeKind;
   platform: string | null;
@@ -369,9 +367,7 @@ export async function buildWorkflowBrief(target: string): Promise<WorkflowBrief>
     };
   }
 
-  // Load the FROZEN plan the engine executes (migration 006). A legacy run
-  // (NULL plan_json) has no plan for brief to read — point at engine-driven
-  // mode, which still handles pre-006 runs by compiling from the asset.
+  // Load the same frozen plan the engine executes.
   const plan = requireExecutableWorkflowPlan(runRow);
   // Reviewer #12: the journaled params row must still satisfy the frozen param
   // schemas — a violation is post-start corruption, loud on the brief surface
@@ -724,20 +720,23 @@ function buildMessage(
  * would mutate).
  */
 export async function resolveRunId(target: string): Promise<string> {
-  return withWorkflowRunsRepo((repo) => {
+  return withWorkflowRunsRepo(async (repo) => {
     const byId = repo.getRunById(target);
     if (byId) return byId.id;
 
-    // Run-id vs workflow-ref: a run id has no `/`; canonical workflow refs do.
-    if (!target.includes(":") && !target.includes("/")) {
-      throw new NotFoundError(`Workflow run "${target}" not found.`, "WORKFLOW_NOT_FOUND");
+    const scopeKey = getCurrentWorkflowScopeKey();
+    const exact = repo.getActiveRunRowForScope(target.trim(), scopeKey);
+    if (exact) return exact.id;
+    let ref: string;
+    try {
+      ref = await canonicalizeWorkflowRefInput(target);
+    } catch (error) {
+      if (error instanceof NotFoundError || (!target.includes(":") && !target.includes("/"))) {
+        throw new NotFoundError(`Workflow run or workflow "${target}" not found.`, "WORKFLOW_NOT_FOUND");
+      }
+      throw error;
     }
-    const parsed = parseRefInput(target);
-    if (parsed.type !== "workflow") {
-      throw new UsageError(`Expected a workflow run id or workflow ref (workflows/<name>), got "${target}".`);
-    }
-    const ref = canonicalWorkflowRunRef(parsed.origin, canonicalizeWorkflowName(parsed.name));
-    const active = repo.getActiveRunRowForScope(ref, getCurrentWorkflowScopeKey());
+    const active = repo.getActiveRunRowForScope(ref, scopeKey);
     if (!active) {
       throw new NotFoundError(
         `No active workflow run for ${ref} in this scope. \`akm workflow brief\` describes an existing run and never ` +

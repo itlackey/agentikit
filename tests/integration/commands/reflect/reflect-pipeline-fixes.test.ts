@@ -21,7 +21,7 @@ import path from "node:path";
 import { akmReflect } from "../../../../src/commands/improve/reflect";
 import { listProposals } from "../../../../src/commands/proposal/repository";
 import type { AkmConfig } from "../../../../src/core/config/config";
-import type { SpawnedSubprocess, SpawnFn } from "../../../../src/integrations/agent/spawn";
+import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess";
 import { durableItemRef } from "../../../_helpers/durable-ref";
 import { quietQualityGateConfig } from "../../../_helpers/factories";
 

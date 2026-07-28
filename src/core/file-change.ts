@@ -24,13 +24,13 @@ export type FileChangeOp = "create" | "update" | "delete";
  *
  * By construction `changes[0].after === payload.content`; consumers read
  * through this accessor so the single-content assumption lives in ONE place
- * once multi-file proposals (consolidate ops) ride the envelope. Falls back
- * to the payload for legacy in-memory objects that predate the envelope.
- * Typed structurally (not against `Proposal`) so this module stays
- * dependency-free.
+ * once multi-file proposals (consolidate ops) ride the envelope. Typed
+ * structurally (not against `Proposal`) so this module stays dependency-free.
  */
-export function proposalContent(p: { payload: { content: string }; changes?: FileChange[] }): string {
-  return p.changes?.[0]?.after ?? p.payload.content;
+export function proposalContent(p: { changes: FileChange[] }): string {
+  const content = p.changes[0]?.after;
+  if (content === undefined) throw new Error("Proposal primary change has no content.");
+  return content;
 }
 
 export interface FileChange {
@@ -40,8 +40,7 @@ export interface FileChange {
    * For proposal-minted changes this is the mint-time resolution against the
    * proposal's OWN stash and is informational — the accept path re-resolves
    * the write target from config at apply time (and records the result on
-   * `Proposal.acceptedTarget`). Legacy proposal rows (persisted before the
-   * envelope existed) carry the empty string; resolve from the ref instead.
+   * `Proposal.acceptedTarget`).
    */
   path: string;
   /**

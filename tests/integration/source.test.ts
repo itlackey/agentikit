@@ -238,38 +238,28 @@ describe("source commands and resolution", () => {
     const stashDir = createTmpDir("akm-stash-");
     try {
       process.env.AKM_STASH_DIR = stashDir;
-      // QA #27: error should not leak "Stash type root" wording; be user-facing
+      // QA #27: error should not leak "Stash type root" wording; be user-facing.
+      // 0.9.0 (Q-02): the retired `type:name` colon grammar is gone — the
+      // message now emits the slash conceptId (`agents/missing.md`).
       await expect(akmShow({ ref: "agents/missing.md" })).rejects.toThrow(
-        /Asset not found for ref: agent:missing\.md|not found for ref/i,
+        /Asset not found for ref: agents\/missing\.md|not found for ref/i,
       );
     } finally {
       fs.rmSync(stashDir, { recursive: true, force: true });
     }
   });
 
-  test("akmShow rejects a foreign/unknown conceptId leading segment (F5 new grammar closes the type token)", async () => {
+  test("akmShow accepts a foreign conceptId shape and reports a normal index miss", async () => {
     const stashDir = createTmpDir("akm-stash-");
     process.env.AKM_STASH_DIR = stashDir;
-    // The F5 new-grammar input parser (`parseRefInput`) is CLOSED at the type
-    // token: a conceptId whose leading segment is not a known stash subdir
-    // ("widget" is not) has no legacy type predicate and is rejected as an
-    // unrecognized ref — the same outcome an unknown asset type produced before,
-    // now surfaced at the input-parse boundary. (The pre-0.9.0 open-token /
-    // "Unknown asset type" phasing is retired with the legacy grammar.)
-    await expect(akmShow({ ref: "widget/foo" })).rejects.toThrow(/no known asset-type prefix|Unrecognized asset ref/i);
+    await expect(akmShow({ ref: "widget/foo" })).rejects.toThrow(/asset not found/i);
   });
 
-  test("akmShow rejects the retired tool/vault types as unrecognized new-grammar refs", async () => {
+  test("akmShow does not reserve adapter-owned tool/vault concept paths", async () => {
     const stashDir = createTmpDir("akm-stash-");
     process.env.AKM_STASH_DIR = stashDir;
-    // `tool`/`vault` are not stash subdirs, so the new-grammar input parser
-    // rejects them as unrecognized refs. (The vault-removal migration hint lives
-    // in the STORED-ref parser `parseStoredRef` for durable data, not the CLI
-    // input path, which never durably re-key round-trips a `vault` ref.)
-    await expect(akmShow({ ref: "tool/deploy.sh" })).rejects.toThrow(
-      /no known asset-type prefix|Unrecognized asset ref/i,
-    );
-    await expect(akmShow({ ref: "vault/prod" })).rejects.toThrow(/no known asset-type prefix|Unrecognized asset ref/i);
+    await expect(akmShow({ ref: "tool/deploy.sh" })).rejects.toThrow(/asset not found/i);
+    await expect(akmShow({ ref: "vault/prod" })).rejects.toThrow(/asset not found/i);
   });
 
   test("akmShow rejects traversal and absolute path refs", async () => {
@@ -352,82 +342,26 @@ Creates a user.
     expect(result.content).toContain("## Authentication");
   });
 
-  test("akmShow returns TOC for knowledge with view toc", async () => {
+  test("akmShow extracts a section for knowledge via #fragment", async () => {
     const stashDir = createTmpDir("akm-stash-");
     writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC);
 
     process.env.AKM_STASH_DIR = stashDir;
-    const result = await akmShow({ ref: "knowledge/api-guide.md", view: { mode: "toc" } });
-
-    expect(result.type).toBe("knowledge");
-    expect(result.content).toContain("# Overview");
-    expect(result.content).toContain("## Authentication");
-    expect(result.content).toContain("## Endpoints");
-    expect(result.content).toContain("lines total");
-  });
-
-  test("akmShow extracts section for knowledge", async () => {
-    const stashDir = createTmpDir("akm-stash-");
-    writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC);
-
-    process.env.AKM_STASH_DIR = stashDir;
-    const result = await akmShow({
-      ref: "knowledge/api-guide.md",
-      view: { mode: "section", heading: "Authentication" },
-    });
+    const result = await akmShow({ ref: "knowledge/api-guide.md#authentication" });
 
     expect(result.type).toBe("knowledge");
     expect(result.content).toContain("bearer tokens");
     expect(result.content).not.toContain("Endpoints");
   });
 
-  test("akmShow extracts line range for knowledge", async () => {
+  test("akmShow lists the available slugs when the fragment does not match", async () => {
     const stashDir = createTmpDir("akm-stash-");
     writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC);
 
     process.env.AKM_STASH_DIR = stashDir;
-    const result = await akmShow({ ref: "knowledge/api-guide.md", view: { mode: "lines", start: 5, end: 7 } });
-
-    expect(result.type).toBe("knowledge");
-    expect(result.content).toContain("# Overview");
-  });
-
-  test("akmShow extracts frontmatter for knowledge", async () => {
-    const stashDir = createTmpDir("akm-stash-");
-    writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC);
-
-    process.env.AKM_STASH_DIR = stashDir;
-    const result = await akmShow({ ref: "knowledge/api-guide.md", view: { mode: "frontmatter" } });
-
-    expect(result.type).toBe("knowledge");
-    expect(result.content).toContain("title: API Guide");
-    expect(result.content).not.toContain("# Overview");
-  });
-
-  test("akmShow returns no-frontmatter message when missing", async () => {
-    const stashDir = createTmpDir("akm-stash-");
-    writeFile(path.join(stashDir, "knowledge", "plain.md"), "# Just a heading\nSome text.\n");
-
-    process.env.AKM_STASH_DIR = stashDir;
-    const result = await akmShow({ ref: "knowledge/plain.md", view: { mode: "frontmatter" } });
-
-    expect(result.content).toBe("(no frontmatter)");
-  });
-
-  test("akmShow returns helpful message for missing section in knowledge", async () => {
-    const stashDir = createTmpDir("akm-stash-");
-    writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC);
-
-    process.env.AKM_STASH_DIR = stashDir;
-    const result = await akmShow({
-      ref: "knowledge/api-guide.md",
-      view: { mode: "section", heading: "Nonexistent" },
-    });
-    expect(result.type).toBe("knowledge");
-    expect(result.content).toContain('Section "Nonexistent" not found');
-    expect(result.content).toContain("akm show");
-    expect(result.content).toContain("toc");
-    expect(result.content).toContain("discover available headings");
+    await expect(akmShow({ ref: "knowledge/api-guide.md#nonexistent" })).rejects.toThrow(
+      /Available fragments: #overview, #authentication, #endpoints/,
+    );
   });
 
   test("akmShow for script type returns run", async () => {

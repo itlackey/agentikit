@@ -3,14 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * index.db schema, version stamps, and targeted migrations — relocated from
- * `src/indexer/db/schema.ts` (WI-5a) into the storage layer. This isolates the
- * one genuinely risky area (schema evolution) from the CRUD/FTS/vector queries.
+ * index.db schema, version stamps, and targeted migrations, kept in the
+ * storage layer. This isolates the one genuinely risky area (schema
+ * evolution) from the CRUD/FTS/vector queries.
  *
  * The meta accessors, embedding purge, and vec-availability probe that
- * `ensureSchema` leans on now live in the sibling `index-meta-repository` /
- * `index-vec-repository` modules; importing them from there (rather than from
- * the old `db.ts` hub) is what lets this module leave the import cycle.
+ * `ensureSchema` leans on live in the sibling `index-meta-repository` /
+ * `index-vec-repository` modules.
  */
 
 import { bestEffort } from "../../core/best-effort";
@@ -560,32 +559,13 @@ function ensureBundleRefColumns(db: Database): void {
  * durable identity — spec §11.4). A pre-v19 DB has a NON-unique
  * `idx_entries_item_ref`, so we DROP-then-CREATE (a `CREATE UNIQUE INDEX IF NOT
  * EXISTS` under the same name would no-op against the existing non-unique index).
- * SQLite treats NULLs as distinct in a UNIQUE index, so NULL-item_ref write-back
- * stragglers do not collide.
- *
- * A partially-migrated index could still hold two rows with the same non-NULL
- * item_ref; the UNIQUE build then throws. The index is a regenerable derived
- * cache, so we fall back to the plain lookup index (reads stay fast) and warn —
- * a full `akm index` rebuild repopulates one row per item_ref and the next open
- * upgrades cleanly.
+ * SQLite treats NULLs as distinct in a UNIQUE index. Duplicate durable identities
+ * are an invalid index and fail the schema open rather than enabling a dual-key
+ * fallback.
  */
 function ensureUniqueItemRefIndex(db: Database): void {
-  let uniqueOk = false;
-  bestEffort(() => {
-    db.exec("DROP INDEX IF EXISTS idx_entries_item_ref");
-    db.exec("CREATE UNIQUE INDEX idx_entries_item_ref ON entries(item_ref)");
-    uniqueOk = true;
-  }, "entries.item_ref UNIQUE index — column added by ensureBundleRefColumns above");
-  if (!uniqueOk) {
-    warn(
-      "[akm] entries.item_ref UNIQUE index could not be built (duplicate item_ref on a partially-migrated index) — " +
-        "keeping the plain lookup index; a full `akm index` rebuild restores uniqueness.",
-    );
-    bestEffort(
-      () => db.exec("CREATE INDEX IF NOT EXISTS idx_entries_item_ref ON entries(item_ref)"),
-      "entries.item_ref lookup index fallback",
-    );
-  }
+  db.exec("DROP INDEX IF EXISTS idx_entries_item_ref");
+  db.exec("CREATE UNIQUE INDEX idx_entries_item_ref ON entries(item_ref)");
 }
 
 /**

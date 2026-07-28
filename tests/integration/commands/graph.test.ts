@@ -206,10 +206,13 @@ afterEach(() => {
 
 describe("akm graph", () => {
   test("summary returns counts and quality telemetry", () => {
-    const graphPath = writeGraphArtifact();
+    writeGraphArtifact();
     const result = akmGraphSummary();
     expect(result.shape).toBe("graph-summary");
-    expect(result.graphPath).toBe(graphPath);
+    // graphPath was a dead envelope field (always the shared state.db path,
+    // never a real per-graph artifact path) and was dropped in 0.9.0 — see
+    // CHANGELOG. This test now pins its absence instead of its value.
+    expect(result).not.toHaveProperty("graphPath");
     expect(result.fileCount).toBe(2);
     expect(result.entityCount).toBe(3);
     expect(result.relationCount).toBe(2);
@@ -325,15 +328,59 @@ describe("akm graph", () => {
     expect(result.related[0]?.type).toBe("memory");
   });
 
-  test("export writes JSONL output", () => {
+  test("export writes JSONL output when --out ends in .jsonl", () => {
     writeGraphArtifact();
     const out = path.join(stashDir, "graph-export.jsonl");
-    const result = akmGraphExport({ out, format: "jsonl" });
+    const result = akmGraphExport({ out });
     expect(result.shape).toBe("graph-export");
+    expect(result.format).toBe("jsonl");
     expect(result.outPath).toBe(out);
     expect(result.bytes).toBeGreaterThan(0);
     const lines = fs.readFileSync(out, "utf8").trim().split("\n");
     expect(lines.length).toBe(6);
+  });
+
+  test("export writes a JSON artifact for any other extension", () => {
+    writeGraphArtifact();
+    const out = path.join(stashDir, "graph-export.json");
+    const result = akmGraphExport({ out });
+    expect(result.format).toBe("json");
+    expect(() => JSON.parse(fs.readFileSync(out, "utf8"))).not.toThrow();
+  });
+
+  // R-041 regression: the exported artifact used to be written with
+  // `fs.writeFileSync(outPath, payload, "utf8")` (no mode → default 0644) via
+  // `fs.mkdirSync(..., { recursive: true })` (no mode on any new parent dirs
+  // either). Graph exports can carry knowledge-derived content, so both the
+  // file and any NEW parent directories it creates must be owner-only.
+  test("export writes the artifact at mode 0600 and creates new parent dirs at mode 0700", () => {
+    writeGraphArtifact();
+    const out = path.join(stashDir, "fresh", "nested", "graph-export.json");
+    const result = akmGraphExport({ out });
+    expect(result.outPath).toBe(out);
+
+    const fileMode = fs.statSync(out).mode & 0o777;
+    expect(fileMode.toString(8)).toBe("600");
+
+    const parentMode = fs.statSync(path.dirname(out)).mode & 0o777;
+    expect(parentMode.toString(8)).toBe("700");
+    const grandparentMode = fs.statSync(path.join(stashDir, "fresh")).mode & 0o777;
+    expect(grandparentMode.toString(8)).toBe("700");
+  });
+
+  test("export --out may still target an arbitrary, previously-nonexistent nested path", () => {
+    writeGraphArtifact();
+    // No containment/sandbox check: an arbitrary destination outside the
+    // stash must still work — R-041's fix is permissions-only.
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-graph-export-outside-"));
+    try {
+      const out = path.join(outsideDir, "a", "b", "c", "graph-export.json");
+      const result = akmGraphExport({ out });
+      expect(result.outPath).toBe(out);
+      expect(fs.existsSync(out)).toBe(true);
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 
   test("related result populates canonical ref alongside legacy path", async () => {

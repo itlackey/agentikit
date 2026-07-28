@@ -9,7 +9,12 @@ import { daysToMs } from "../../core/common";
 import { type AkmConfig, DEFAULT_GRAPH_EXTRACTION_BATCH_SIZE, loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent, type EventsContext } from "../../core/events";
-import type { ImproveActionResult, ImproveEligibleRef } from "../../core/improve-types";
+import type {
+  AkmDistillResult,
+  AkmReflectResult,
+  ImproveActionResult,
+  ImproveEligibleRef,
+} from "../../core/improve-types";
 import { openLogsDatabase, purgeOldTaskLogs } from "../../core/logs-db";
 import { getDbPath } from "../../core/paths";
 import { withStateDb } from "../../core/state-db";
@@ -37,7 +42,7 @@ import { closeDatabase, openIndexDatabase } from "../../storage/repositories/ind
 import { expireStaleProposals, listProposals, purgeOrphanProposals } from "../proposal/repository";
 import { checkDeadUrls, type DeadUrl } from "../url-checker";
 import { DEFAULT_RETENTION_DAYS as CYCLE_METRICS_RETENTION_DAYS, runCollapseDetector } from "./collapse-detector";
-import { type AkmDistillResult, deriveLessonRef } from "./distill";
+import { deriveLessonRef } from "./distill";
 import { deriveKnowledgeRef } from "./distill-promotion-policy";
 // Eligibility / candidate-selection predicates live in ./eligibility.
 import { findAssetFilePath, isDistillCandidateRef } from "./eligibility";
@@ -52,7 +57,6 @@ import type {
 } from "./improve-run-types";
 import { type ResolvedImprovePlan, shouldSkipRef } from "./improve-strategies";
 import type { applyMemoryCleanup } from "./memory/memory-improve";
-import type { AkmReflectResult } from "./reflect";
 import { recordNoOp, resetConsecutiveNoOps } from "./salience";
 import { errMessage, refSlug } from "./shared";
 import { durableImproveRef } from "./source-identity";
@@ -292,17 +296,17 @@ async function runLoopReflectPass(
       const reflectProfileRunner = resolvedPlan.processes.reflect.runner;
       const reflectCallArgs = {
         ref: planned.ref,
-        ...(options.sourceName ? { sourceName: options.sourceName } : {}),
-        ...(options.legacyBareState ? { legacyBareState: true } : {}),
-        // Chunk-5 flip F5f — carry the resolved item_ref so reflect keys its
-        // reflect_invoked event + source/distill_invoked reads on it (dormant
-        // until item_ref populates through the improve path).
+        // Carry the resolved item_ref so reflect uses the same durable key for
+        // events and state reads.
         ...(planned.itemRef ? { itemRef: planned.itemRef } : {}),
         task: options.task,
         // Active strategy supplies non-engine process tuning.
         ...(improveProfile ? { improveProfile } : {}),
         config: options.config,
         ...(primaryStashDir ? { stashDir: primaryStashDir } : {}),
+        ...(options.sourceName && primaryStashDir
+          ? { target: { source: options.sourceName, root: primaryStashDir } }
+          : {}),
         ...(reflectErrors.length > 0 ? { avoidPatterns: [...reflectErrors] } : {}),
         eventSource: "improve" as const,
         // #639 — resolve the low-value filter from the ACTIVE improve profile
@@ -387,11 +391,8 @@ async function runLoopReflectPass(
       // A no_change reflect means the LLM was invoked but found nothing to
       // improve — the asset is stable. Track it. A successful reflect means
       // the asset changed; reset the counter so the dampener lifts.
-      // Chunk-5 flip F5e — key the plasticity counter by the SAME durable
-      // salience write key the preparation/distill salience writers use:
-      // item_ref when the planner resolved one, else the source-qualified
-      // `type:name`. A split key would strand consecutive_no_ops on a second row.
-      const plasticityKey = planned.itemRef ?? durableImproveRef(planned.ref, options.sourceName);
+      // Use the same item_ref-or-conceptId salience key as preparation/distill.
+      const plasticityKey = planned.itemRef ?? durableImproveRef(planned.ref);
       if (isNoChange && eventsCtx?.db) {
         try {
           recordNoOp(eventsCtx.db, plasticityKey);
@@ -577,11 +578,8 @@ async function invokeDistillAndRecord(
     () =>
       distillFn({
         ref: planned.ref,
-        // Chunk-5 flip F5e — the resolved item_ref so distill keys its salience
-        // write by it (matching preparation), when the planner supplied one.
+        // Carry the resolved item_ref so distill matches preparation's state key.
         ...(planned.itemRef ? { itemRef: planned.itemRef } : {}),
-        ...(options.sourceName ? { sourceName: options.sourceName } : {}),
-        ...(options.legacyBareState ? { legacyBareState: true } : {}),
         ...(parsedPlannedRef.type === "memory" ? { proposalKind: "auto" as const } : {}),
         ...(primaryStashDir ? { stashDir: primaryStashDir } : {}),
         // Active profile so distill's per-process reads honor `--profile`.
@@ -609,9 +607,8 @@ async function invokeDistillAndRecord(
   // quality gate — the asset is not yielding useful distill output.
   // queued: a proposal was produced; reset the no-op counter.
   if (eventsCtx?.db) {
-    // Chunk-5 flip F5e — same durable salience write key as the distill/
-    // preparation salience writers (item_ref, else source-qualified type:name).
-    const plasticityKey = planned.itemRef ?? durableImproveRef(planned.ref, options.sourceName);
+    // Use the same item_ref-or-conceptId key as the distill/preparation writers.
+    const plasticityKey = planned.itemRef ?? durableImproveRef(planned.ref);
     try {
       if (distillResult.outcome === "quality_rejected" || distillResult.outcome === "skipped") {
         recordNoOp(eventsCtx.db, plasticityKey);
@@ -745,12 +742,6 @@ export async function runImprovePostLoopStage(args: {
   consolidationRan: boolean;
   /** R5: this run's advisory merge-information-floor violation count (consolidate pass). */
   consolidationMergeFloorViolations?: number;
-  /**
-   * R5: accepted proposal count so far this run — the churn-volume signal.
-   * Always 0 since the 0.9.0 confidence-gate deletion; the field stays so the
-   * collapse detector's envelope shape is unchanged.
-   */
-  acceptedActions?: number;
 }): Promise<ImprovePostLoopResult> {
   const {
     scope,
@@ -831,7 +822,6 @@ export async function runImprovePostLoopStage(args: {
       runId: options.runId ?? "improve-adhoc",
       ...(improveProfile ? { improveProfile } : {}),
       pass: "consolidate",
-      acceptedActions: args.acceptedActions ?? 0,
       mergeFloorViolations: args.consolidationMergeFloorViolations ?? 0,
       config: options.config ?? loadConfig(),
       ...(eventsCtx ? { eventsCtx } : {}),
@@ -1061,7 +1051,7 @@ async function runMaintenancePassesUnderLease(
 
 /**
  * Memory inference candidate-discovery (post-Item 9 fix from
- * memory:akm-improve-critical-review-2026-05-20). Previously this pass
+ * memories/akm-improve-critical-review-2026-05-20). Previously this pass
  * was gated on memoryRefsForInference.size > 0 AND passed those refs as a
  * candidateRefs filter. But memoryRefsForInference is populated from refs
  * distilled THIS RUN — by the time that happens, those parents are

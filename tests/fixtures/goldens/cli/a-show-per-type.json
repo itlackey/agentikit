@@ -1,7 +1,18 @@
 {
   "perType": {
     "agents/cli-a-coach.md": {
-      "jsonKeys": ["action", "description", "editable", "name", "origin", "path", "prompt", "related", "type"],
+      "jsonKeys": [
+        "action",
+        "description",
+        "editable",
+        "name",
+        "origin",
+        "path",
+        "prompt",
+        "ref",
+        "related",
+        "type"
+      ],
       "textNonEmpty": true
     },
     "commands/cli-a-release.md": {
@@ -13,6 +24,7 @@
         "origin",
         "parameters",
         "path",
+        "ref",
         "related",
         "template",
         "type"
@@ -20,15 +32,45 @@
       "textNonEmpty": true
     },
     "knowledge/cli-a-guide.md": {
-      "jsonKeys": ["action", "content", "editable", "name", "origin", "path", "related", "type"],
+      "jsonKeys": [
+        "action",
+        "content",
+        "editable",
+        "name",
+        "origin",
+        "path",
+        "ref",
+        "related",
+        "type"
+      ],
       "textNonEmpty": true
     },
     "scripts/cli-a-deploy.sh": {
-      "jsonKeys": ["action", "editable", "name", "origin", "path", "related", "run", "type"],
+      "jsonKeys": [
+        "action",
+        "editable",
+        "name",
+        "origin",
+        "path",
+        "ref",
+        "related",
+        "run",
+        "type"
+      ],
       "textNonEmpty": true
     },
     "skills/cli-a-ops": {
-      "jsonKeys": ["action", "content", "editable", "name", "origin", "path", "related", "type"],
+      "jsonKeys": [
+        "action",
+        "content",
+        "editable",
+        "name",
+        "origin",
+        "path",
+        "ref",
+        "related",
+        "type"
+      ],
       "textNonEmpty": true
     }
   }

@@ -4,6 +4,7 @@
 
 import { defineGroupCommand, defineJsonCommand } from "../cli/shared";
 import { UsageError } from "../core/errors";
+import { runMigrationTool } from "./migration-tool";
 
 const configArg = {
   type: "string" as const,
@@ -16,24 +17,38 @@ export const migrateCommand = defineGroupCommand({
     status: defineJsonCommand({
       meta: { name: "status", description: "Read-only cross-artifact migration eligibility check" },
       args: { config: configArg },
-      async run({ args }) {
-        const { runMigrationStatus } = await import("../cli/config-migrate.js");
-        await runMigrationStatus({ preparedConfigPath: args.config });
+      run({ args }) {
+        return runMigrationTool(["status", ...(args.config ? ["--config", args.config] : [])]);
       },
     }),
     apply: defineJsonCommand({
       meta: { name: "apply", description: "Create a verified backup and atomically apply pending migrations" },
       args: {
         config: configArg,
-        dryRun: { type: "boolean", default: false, description: "Run the same eligibility checks without mutation" },
+        // R-062: canonical spelling is kebab-case, matching every other
+        // multi-word flag in the CLI. `--dryRun` (the pre-rename spelling)
+        // is kept as an explicit, documented alias — citty registers BOTH
+        // the camelCase and kebab-case spelling of any declared flag name
+        // automatically, so this is a rename, not a breaking change: both
+        // spellings already worked, and both keep working.
+        "dry-run": {
+          type: "boolean",
+          alias: "dryRun",
+          default: false,
+          description: "Run the same eligibility checks without mutation. Alias: --dryRun.",
+        },
       },
-      async run({ args }) {
-        const { runMigrationApply } = await import("../cli/config-migrate.js");
-        await runMigrationApply({ preparedConfigPath: args.config, dryRun: args.dryRun });
+      run({ args }) {
+        return runMigrationTool([
+          "apply",
+          ...(args.config ? ["--config", args.config] : []),
+          ...(args.dryRun ? ["--dry-run"] : []),
+        ]);
       },
     }),
   },
-  defaultRun() {
-    throw new UsageError("Choose `migrate status` or `migrate apply`.", "MISSING_REQUIRED_ARGUMENT");
-  },
+  // No `defaultRun`: bare `akm migrate` is a usage error (exit 2). This group
+  // already threw its own hand-rolled UsageError; it now shares the canonical
+  // one from `defineGroupCommand` so the message and hint match every other
+  // group — owner ruling 12.
 });

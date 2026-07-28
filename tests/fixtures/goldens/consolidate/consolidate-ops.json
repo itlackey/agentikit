@@ -40,9 +40,14 @@
         ]
       },
       "missingConfidenceDefaultsHigh": {
-        "beliefState": "contradicted",
-        "contradicted": 1,
-        "skips": []
+        "contradicted": 0,
+        "skips": [
+          {
+            "op": "contradict",
+            "reason": "contradict_low_confidence",
+            "ref": "memories/cop-contradict-missing-conf"
+          }
+        ]
       }
     },
     "delete": {
@@ -105,7 +110,7 @@
         ],
         "generateMergedContentCallCount": 1,
         "merged": 1,
-        "primaryRawBytes": "---\ndescription: Merged primary content\nupdated: <TS>\ngeneration: 2\nxrefs:\n  - memories/cop-merge11-primary\n  - memories/cop-merge11-secondary\n  - memories/merge11-existing\n---\n\nThis is a substantive memory body with enough distinct content to clear every merge/promote length floor used across these fixtures (the 100-char promote floor and the 0.3x-of-larger-source merge floor).\n",
+        "primaryRawBytes": "---\ntype: memory\ndescription: Merged primary content\nupdated: <TS>\ngeneration: 2\nxrefs:\n  - memories/cop-merge11-primary\n  - memories/cop-merge11-secondary\n  - memories/merge11-existing\n---\n\nThis is a substantive memory body with enough distinct content to clear every merge/promote length floor used across these fixtures (the 100-char promote floor and the 0.3x-of-larger-source merge floor).\n",
         "secondaryDeleted": true,
         "skips": []
       },

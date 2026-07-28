@@ -10,7 +10,9 @@
  * calls read from this in-memory singleton instead of re-scanning argv and
  * re-loading config on every call.
  *
- * Initialized from `cli.ts` before `runMain`.
+ * Initialized from `cli.ts` before `runCli` dispatches the command (`cli.ts`
+ * drives citty's `runCommand` directly rather than `runMain` — see the
+ * top-level driver comment there).
  */
 
 import { UsageError } from "../core/errors";
@@ -86,10 +88,15 @@ export function hasBooleanFlag(argv: string[], flag: string): boolean {
 /**
  * Read a hyphenated arg out of citty's parsed `args` object.
  *
- * citty does not auto-camelise hyphenated arg keys (see `--max-pages`,
- * `--with-sources` for the existing convention), so command handlers end up
- * casting `args` to a string-indexed record at every read site. This helper
- * encapsulates the cast.
+ * Verified live: citty DOES auto-camelise a DECLARED hyphenated arg — for
+ * `"max-pages": { type: "string" }` in a command's `args`, citty's parsed
+ * object answers both `args["max-pages"]` and `args.maxPages` (a `Proxy`
+ * falls back through `camelCase`/`kebabCase`, and `--no-<flag>` negation is
+ * handled the same way for booleans). What citty's own TS types do NOT give
+ * callers is a statically-typed handle on that mapping, and command handlers
+ * here type `args` as `unknown` at the boundary — so every read site still
+ * needs a cast. This helper encapsulates that cast; it exists for typing
+ * convenience, not to work around a citty parsing limitation.
  */
 export function getHyphenatedArg<T = string>(args: unknown, key: string): T | undefined {
   if (typeof args !== "object" || args === null) return undefined;

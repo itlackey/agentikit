@@ -65,7 +65,7 @@ afterEach(() => {
 });
 
 describe("remember stdin", () => {
-  test("stdin zero-flag path also writes captureMode: hot + beliefState: asserted", () => {
+  test("stdin zero-flag path also writes captureMode, beliefState, and type", () => {
     const { result } = spawnRunCli(["remember"], { input: "VPN needed for staging deploys" });
     expect(result.status).toBe(0);
     const json = JSON.parse(result.stdout) as { ref: string; path: string };
@@ -74,7 +74,8 @@ describe("remember stdin", () => {
     const parsed = parseFrontmatter(content);
     expect(parsed.data.captureMode).toBe("hot");
     expect(parsed.data.beliefState).toBe("asserted");
-    expect(Object.keys(parsed.data).sort()).toEqual(["beliefState", "captureMode"]);
+    expect(parsed.data.type).toBe("memory");
+    expect(Object.keys(parsed.data).sort()).toEqual(["beliefState", "captureMode", "type"]);
   });
 
   test("reads stdin when --format json is present", () => {

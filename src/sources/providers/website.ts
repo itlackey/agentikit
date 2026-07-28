@@ -21,7 +21,7 @@ registerSourceProvider("website", (config) => {
     kind: "website" as const,
     name,
     path() {
-      return getWebsiteCachePaths(url).stashDir;
+      return getWebsiteCachePaths(url).rootDir;
     },
     async sync(options?: { force?: boolean }) {
       await ensureWebsiteMirror(config, {

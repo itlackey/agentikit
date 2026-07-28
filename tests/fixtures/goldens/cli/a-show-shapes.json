@@ -1,4 +1,23 @@
 {
-  "agentKeys": ["action", "description", "editable", "name", "parameters", "path", "ref", "related", "template", "type"],
-  "summaryKeys": ["action", "description", "name", "origin", "parameters", "type"]
+  "agentKeys": [
+    "action",
+    "description",
+    "editable",
+    "name",
+    "parameters",
+    "path",
+    "ref",
+    "related",
+    "template",
+    "type"
+  ],
+  "summaryKeys": [
+    "action",
+    "description",
+    "name",
+    "origin",
+    "parameters",
+    "ref",
+    "type"
+  ]
 }

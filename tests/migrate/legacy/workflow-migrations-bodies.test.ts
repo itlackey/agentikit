@@ -4,7 +4,7 @@
 
 /**
  * Chunk-8 WI-8.3 — the frozen `{ id, up }` migration BODIES copy
- * (`src/migrate/legacy/workflow-migrations-bodies.ts`, plan §3.3 / §8.2).
+ * (`scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts`, plan §3.3 / §8.2).
  *
  * Two groups, mirroring `workflow-migrations-frozen.test.ts`:
  *
@@ -24,11 +24,14 @@ import path from "node:path";
 import {
   FROZEN_WORKFLOW_BASE_SCHEMA_DDL,
   FROZEN_WORKFLOW_MIGRATIONS,
-} from "../../../src/migrate/legacy/workflow-migrations-bodies";
-import { WORKFLOW_MIGRATIONS_CHECKSUMS } from "../../../src/migrate/legacy/workflow-migrations-frozen";
+} from "../../../scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies";
+import { WORKFLOW_MIGRATIONS_CHECKSUMS } from "../../../scripts/akm-migrate/migrate/legacy/workflow-migrations-frozen";
 import { migrationChecksum } from "../../../src/storage/engines/sqlite-migrations";
 
-const BODIES_PATH = path.resolve(__dirname, "../../../src/migrate/legacy/workflow-migrations-bodies.ts");
+const BODIES_PATH = path.resolve(
+  __dirname,
+  "../../../scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts",
+);
 
 describe("workflow-migrations-bodies — self-containment", () => {
   test("imports nothing from src/workflows/ and only the engine type from src/", () => {

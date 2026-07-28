@@ -6,8 +6,8 @@
  * The first-class `llm-wiki` adapter — akm 0.9.0 chunk-4 (DEV-7 restore).
  *
  * The `wiki` ASSET-TYPE dies in chunk 4 (plan §11 Chunk 4 / §7.4), but the LLM
- * Wiki structure stays first-class as its OWN adapter. This relocates the native
- * wiki semantics from `src/wiki/wiki.ts` + `src/wiki/wiki-templates.ts` into a
+ * Wiki structure stays first-class as its OWN adapter. This relocates the
+ * native wiki semantics from the retired `src/wiki/` module into a
  * `BundleAdapter` implementing `docs/architecture/specs/akm-0.9.0-bundle-adapter-spec.md` §7
  * (llm-wiki row), §6 (wiki-page row), §0.2 (the `wiki` asset-type is retired;
  * the adapter is first-class), §1.2 (probe = schema.md + pages/), §9 (links).
@@ -43,7 +43,8 @@
  *
  * ── validate (spec §6/§7, §9) — native wiki checks ONLY ──
  *
- * The native structural checks ported from `wiki.ts#lintWiki`: `broken-xref`
+ * The native structural checks ported from the retired `src/wiki/` module's
+ * `lintWiki`: `broken-xref`
  * (an xref target that does not resolve to an existing page), `uncited-raw`
  * (a `raw/` source not cited by any page's `sources:`), `missing-description`
  * (a page with no description), and `broken-source` (a page `sources:` entry
@@ -59,11 +60,15 @@
  *
  * ── Cycle-safety ──
  *
- * Imported ONLY by the test-only `adapters/index.ts` barrel (nothing in `src/`
- * imports that), so this leaf can never gain an inbound edge from a cycle
- * participant. It value-imports only pure leaves (`frontmatter`, `shared`) plus
- * Node builtins + `yaml` (already a runtime dep). Verified: `bun
- * scripts/lint-import-cycles.ts` stays within baseline (13) with this file present.
+ * Imported by the `adapters/index.ts` barrel, which is NOT test-only: `core/
+ * adapter/registry.ts:33` imports it in production for the frozen
+ * `BUILTIN_ADAPTERS` list (`installations.ts#detectAdapterId`,
+ * `provider-utils.ts#detectStashRoot`). This still can never gain an inbound
+ * edge from a cycle participant, since neither the barrel nor the registry
+ * import anything that imports back into this file. It value-imports only
+ * pure leaves (`frontmatter`, `shared`) plus Node builtins + `yaml` (already a
+ * runtime dep). Verified: `bun scripts/lint-import-cycles.ts` reports 0 cycle
+ * participants with this file present.
  */
 
 import fs from "node:fs";
@@ -288,6 +293,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
     path: file.absPath,
     hash: hashContent(raw),
     adapterId: "llm-wiki",
+    ownsPresentation: true,
     type: isRaw ? WIKI_SOURCE_TYPE : (fm.pageKind ?? DEFAULT_PAGE_KIND),
     name: lastSegment,
     content: body.length > MAX_CONTENT_CHARS ? body.slice(0, MAX_CONTENT_CHARS) : body,

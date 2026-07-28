@@ -3,12 +3,12 @@
   "entries": [
     {
       "path": "tests/fixtures/goldens/journal/proposal-txn.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
       "consumers": [
         "tests/commands/proposal/goldens-proposal-txn.test.ts"
       ],
       "notes": "WI-03, plan §11 Chunk 0a / R3 (engines 1+2 of 3: proposal accept/revert + reject). Preservation oracle through Chunk 6's collapse into one FileChange transaction. Pins accept (new-asset, overwrite-with-backup, idempotent re-accept short-circuit, target-mutated-during-displace abort), revert (success restore, refuse-clobber), reject (success, non-pending UsageError, concurrent-edit succeeds -- reject has NO before-hash), as file-tree/DB-status/exactly-once-event outcomes only -- no journal bytes or paths (brief §3.2 rule 4). Contains fixture-local names only (tests/fixtures/goldens/journal/fixture-refs.ts) — no production refs. Caveat: the `fileTree` object's keys are relative asset paths (e.g. `lessons/<fixture-local-name>.md`) that embed the same fixture-local name a ref would carry; if Chunk 5's §15.2 ref-grammar codemod changes how names map to on-disk paths, these path keys (not the outcome booleans/counts) would need re-baselining alongside that migration even though this asset is otherwise designated frozen. Also records a captured DEVIATION from the brief's testsFirst description for the target-mutated-during-displace scenario (see the suite's file-header comment): the real surfaced abort error is 'Cannot roll back proposal transaction: <path> diverged.', not 'Proposal target changed while its backup was being acquired.', and the target is left holding the mutator's content rather than being byte-identically restored. | Split 2026-07-16 (surface-owner rule, pre-WI-6.4): the createProposal dedup/cooldown/force skip-record shapes moved to tests/fixtures/goldens/journal/proposal-skip-shapes.json (re-baseline @6) because the §23.6 fingerprint scheme legitimately changes them; the accept/revert/reject outcome scenarios in THIS asset stay frozen through the engine swap. sha256 re-pinned over the trimmed bytes in the same reviewed change.",
-      "sha256": "9c06e4390024a90cb177eab75d3bd51aa423b1985e54a5f0c2a3c1567590b078"
+      "reBaselineChunk": "2"
     },
     {
       "path": "tests/fixtures/goldens/journal/proposal-skip-shapes.json",
@@ -25,8 +25,8 @@
       "consumers": [
         "tests/integration/goldens-proposal-recovery.test.ts"
       ],
-      "notes": "WI-03, plan §11 Chunk 0a / R3 (crash-recovery half of engines 1+2 of 3). Integration scope (brief §3.4) — parameterizes the existing, unmodified tests/integration/_helpers/proposal-crash-runner.ts subprocess harness. Pins SIGKILL recovery outcomes for accept (all 5 pre-commit phases: prepared rolls back, every later phase rolls forward), revert (exactly-once per phase), reject (exactly-one rejected event per phase incl. the prepared/state-persisted/event-finalized set), and the reject-recovers-a-pending-accept ordering (akmProposalReject recovers an interrupted accept transaction BEFORE evaluating its own pending-status guard). journalPhasesObserved is informational only (brief §3.2 rule 4) — the single phase name the runner was told to hold at, never journal bytes/paths. Same fileTree-key caveat as tests/fixtures/goldens/journal/proposal-txn.json does not apply here (this fixture serializes only booleans/status strings/event counts, no fileTree). | RE-CAPTURED at WI-6.5 (Chunk 6, its owning chunk — reviewed diff + ledger entry) after the proposal journals moved onto the unified FileChange transaction engine (src/core/fs-txn.ts): phase vocabulary and every recovery outcome came through the swap unchanged — the re-capture diff touched only capturedAtHead, the notes strings, and serializer whitespace. Designation returned to frozen-migration-input with a fresh sha256 in the same reviewed change.",
-      "sha256": "a37e51af31c0f00c9cfd3c2a6f3c18603f1e58df4c58cb5a4bd999973f173888"
+      "notes": "WI-03, plan §11 Chunk 0a / R3 (crash-recovery half of engines 1+2 of 3). Integration scope (brief §3.4) — parameterizes the existing, unmodified tests/integration/_helpers/proposal-crash-runner.ts subprocess harness. Pins SIGKILL recovery outcomes for accept (all 5 pre-commit phases: prepared rolls back, every later phase rolls forward), revert (exactly-once per phase), reject (exactly-one rejected event per phase incl. the prepared/state-persisted/event-finalized set), and the reject-recovers-a-pending-accept ordering (akmProposalReject recovers an interrupted accept transaction BEFORE evaluating its own pending-status guard). journalPhasesObserved is informational only (brief §3.2 rule 4) — the single phase name the runner was told to hold at, never journal bytes/paths. Same fileTree-key caveat as tests/fixtures/goldens/journal/proposal-txn.json does not apply here (this fixture serializes only booleans/status strings/event counts, no fileTree). | RE-CAPTURED at WI-6.5 (Chunk 6, its owning chunk — reviewed diff + ledger entry) after the proposal journals moved onto the unified FileChange transaction engine (src/core/fs-txn.ts): phase vocabulary and every recovery outcome came through the swap unchanged — the re-capture diff touched only capturedAtHead, the notes strings, and serializer whitespace. | RE-CAPTURED 2026-07-25 by the proposal surface owner after removing pre-binding target recovery; every captured journal now carries the strict current target identity.",
+      "sha256": "30cd1dce5f3d10b299e2f4017ed1939bb52d7895155d4f29ad8ebdd13658ed85"
     },
     {
       "path": "tests/fixtures/goldens/journal/move-txn.json",
@@ -48,12 +48,12 @@
     },
     {
       "path": "tests/fixtures/goldens/consolidate/consolidate-ops.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
       "consumers": [
         "tests/commands/consolidate/goldens-consolidate-ops.test.ts"
       ],
       "notes": "WI-05, plan §15.7 / R5. Chunk 7 DoD 5 oracle for the four consolidate op-handlers (handleMergeOp/handleDeleteOp/handlePromoteOp/handleContradictOp, consolidate.ts:2117/2416/2477/2693) extracted out of akmConsolidateInner's op-execution loop — must stay green through Chunk 7's decomposition of that loop. Pins merge (1+1 primary byte-for-byte after <TS> norm + secondary archived-with-superseded_by-then-deleted; 1+2 secondaries' deliberate one-generateMergedContent-call/all-archived asymmetry, captured via the REAL generateMergedContent with _setChatCompletionForTests stubbed since the asymmetry is a property of that function's secondaries[0]-only read; the refusal matrix for hot/unparseable participants and missing/truncated description and the anti-collapse generation guard), delete (normal/hot-refused/already-gone), promote (happy path + the six named gates in consolidate.ts:2477-2690 order), and contradict (>=0.92 byte-for-byte timestamp-free, idempotent re-run, archived state preserved, <0.92 skip, missing confidence defaults to 1.0). Contains fixture-local names only (tests/fixtures/goldens/consolidate/fixture-refs.ts) — no production refs. Archive filenames embed a timestampForFilename() token and are recorded as array VALUES (never object keys) so <TS> normalization applies. DEVIATION from the brief's step 2 prose (see the suite's file-header comment): most scenarios inject a generateMergedContentFn directly into ConsolidateOpContext and drive the handlers directly (mirroring tests/commands/consolidate/consolidate-op-handlers.test.ts) rather than stubbing chunk-plan selection via akmConsolidate + _setChatCompletionForTests — WI-05 scopes to op OUTCOMES, not op SELECTION (planConsolidation's concern, covered by consolidate-chunks.test.ts and WI-06). The 'hot memories via remember hot-capture path' step is satisfied by writing captureMode:hot/beliefState:asserted frontmatter directly (matching remember-cli.ts:188,288's own output shape) rather than invoking the rememberCommand CLI entry point, consistent with how all 13 existing consolidate suites mint hot fixtures. | RE-PINNED at WI-8.5b (Chunk 8, surface-owner rule — stays frozen-migration-input with a fresh sha256, reviewed diff, mirroring the WI-6.5 re-capture precedent): the consolidate provenance-xref WRITERS flip to the D-R5 new grammar — injectGenerationFrontmatter's merged-primary `xrefs` and handlePromoteOp's promoted-body `xrefs` both emit `displayRef`'s short conceptId now. The diff is PROVABLY spelling-only: the merge scenario's `primaryRawBytes` xrefs (memory:cop-merge11-primary/secondary, memory:merge11-existing) and the promote scenario's `bodyXrefs` (memory:cop-promote-happy, memory:promote-happy-existing) flip `memory:<n>` -> `memories/<n>`; every outcome boolean/count and the untouched `superseded_by`/`contradictedBy` frontmatter fields are byte-identical. Two lines change. | RE-PINNED at WI-8.5c (Chunk 8, surface-owner rule — stays frozen-migration-input with a fresh sha256, reviewed diff): the consolidate op refs + derived lesson/knowledge refs flip to the D-R5 conceptId grammar (the parseStoredRef retirement makes op parsing new-grammar-only). The diff is PROVABLY spelling-only — every op ref, xref, and derived ref flips `<type>:<name>` -> `<stash-subdir>/<name>`; all outcome booleans/counts and untouched frontmatter are byte-identical (longer conceptIds re-wrap some inline JSON arrays, no content change).",
-      "sha256": "d448fa3044b89ed6a3d6f19decb020c3be498a2033e94f5c2cf7a62238bc1679"
+      "reBaselineChunk": "2"
     },
     {
       "path": "tests/fixtures/goldens/consolidate/merge-plans.json",
@@ -71,7 +71,7 @@
         "tests/commands/consolidate/goldens-consolidate-journal.test.ts"
       ],
       "notes": "WI-06, plan §11 Chunk 0a / R5. Preservation oracle for the consolidate checklist journal's full-run write/complete/cleanup lifecycle and the all-hot chunk early-exit (zero LLM calls, every memory bucketed judgedNoAction). RE-CAPTURED at WI-6.3e (Chunk 6, its owning chunk — reviewed diff + ledger entry; designation finalized at WI-6.5): the checklist journal now rides the unified FileChange transaction engine (src/core/fs-txn.ts, kind `consolidate`, root = stash, backups under the transaction dir), observed via spyOn(fs.writeFileSync/copyFileSync) interception of the engine's durable journal.json.tmp writes around a REAL akmConsolidate run — same src/-change-free technique as WI-04's goldens-mv-txn.test.ts. Journal write shape/count is informational data only (brief §3.2 rule 4) — never asserted against raw journal bytes or directory layout, only observable outcomes (write count — 3 under the engine's begin/mark/commit, ledgered delta from the legacy 2 — parsed completed/operations arrays, end-state namespace cleanliness). Caveat (same class as the WI-03/04 fileTree-key caveats): fullRunLifecycle.firstJournalWrite/lastJournalWrite.operations[].ref embeds a fixture-local ref (tests/fixtures/goldens/consolidate/fixture-refs.ts) that would need re-keying alongside Chunk 5's §15.2 grammar codemod even though this asset is otherwise designated frozen; the outcome booleans/counts are not affected. No production refs anywhere in the fixture. | RE-PINNED at WI-8.5c (Chunk 8, surface-owner rule — stays frozen-migration-input with a fresh sha256, reviewed diff): the consolidate op refs + derived lesson/knowledge refs flip to the D-R5 conceptId grammar (the parseStoredRef retirement makes op parsing new-grammar-only). The diff is PROVABLY spelling-only — every op ref, xref, and derived ref flips `<type>:<name>` -> `<stash-subdir>/<name>`; all outcome booleans/counts and untouched frontmatter are byte-identical (longer conceptIds re-wrap some inline JSON arrays, no content change).",
-      "sha256": "f6b0f19c086ee75234e46cacb43d80a504f31bf5990321cecea016d437b4d1d9"
+      "sha256": "3f6576d8650ff64c1c13c8d9e8dca857b523aacb31e7eab524aaf9acdc1feb12"
     },
     {
       "path": "tests/fixtures/goldens/consolidate/journal-recovery.json",
@@ -80,7 +80,7 @@
         "tests/commands/consolidate/goldens-consolidate-journal.test.ts"
       ],
       "notes": "WI-06, plan §11 Chunk 0a / R5. Preservation oracle for consolidate's run-entry recovery decision. RE-CAPTURED at WI-6.3e (Chunk 6, its owning chunk — reviewed diff + ledger entry; designation finalized at WI-6.5) on the unified FileChange transaction engine: an incomplete journal + recoveryMode 'abort' (default) still refuses the run with ConfigError INVALID_CONFIG_FILE and the same guidance, removing nothing; an unreadable journal in the SHARED per-root namespace cannot be attributed to a kind, so it warns-and-skips under 'clean' and aborts with kind-agnostic guidance otherwise (adversarial-review fix, ledgered at 6.3e); recoveryMode 'clean' removes the stale transaction dir whole (journal + backups together — the legacy scheme's two backup-timestamp derivations died with the timestamped backup dirs); and a 'completed >= operations' leftover is swept whole at the run-entry check — the legacy CHARACTERIZATION WARNING (a completed journal's backup dir leaking as a permanent orphan) is FIXED by the per-transaction-dir scheme, and this fixture pins the fix. No ref literals appear in this fixture (booleans, counts, and the ConfigError code string only) — no ref-grammar re-baseline caveat applies.",
-      "sha256": "9579d0e093e9022d331705e82b2c2134e4be7f79efed5e52cae6df85d036ea64"
+      "sha256": "deac2d75896ba112a4477a6097cdc128b6f4308a762f363737505cfb63b2c5fd"
     },
     {
       "path": "tests/fixtures/goldens/consolidate/journal-guard-verdicts.json",
@@ -147,21 +147,21 @@
     },
     {
       "path": "tests/fixtures/goldens/cli/a-info.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
+      "reBaselineChunk": "9",
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `info` JSON envelope key-set. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "5f11bcd0fa30fe192291cdd25a5ada83b3ea44a7eb9feb18e4ed33fcfb9295ea"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `info` JSON envelope key-set. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals. | Re-baselined by the 0.9.0 backlog burn-down package W1-D (finding R-057(a)): `akm info` deliberately gained top-level `stashDir` and `defaultBundle` fields, so operators/agents can see which stash/bundle is primary without a separate `akm sources list` call. Surface-owner rule applied: designation moved from frozen-migration-input to re-baseline (same Chunk 9 cross-cutting-sweep bucket a-show-shapes.json already uses for this kind of additive CLI-output-surface change) and the sha256 pin was dropped since re-baseline assets are not integrity-pinned. Diff is additive-only — `stdoutKeys` gained exactly `defaultBundle` and `stashDir`; every previously-pinned key is unchanged."
     },
     {
       "path": "tests/fixtures/goldens/cli/a-list.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
+      "reBaselineChunk": "9",
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `list` (installed sources) JSON envelope key-set. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "9510134f31a327d9f0b4c3fd88bb2908a8ffcde3270195a18bcb5fc468aa17c1"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `list` (installed sources) JSON envelope key-set. Re-baselined by the current-config cleanup that retires `bundle list|show|items` and makes `akm list` own bundle inventory, including the top-level `defaultBundle`. Chunk 9 owns the CLI output surface under the surface-owner rule; key-set/count/boolean assertions only, no production ref literals."
     },
     {
       "path": "tests/fixtures/goldens/cli/a-proposal.json",
@@ -197,7 +197,7 @@
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `show --shape=agent` / `--shape=summary` JSON key-sets. Re-baselined by the multi-bundle agent-access change: agent show output now deliberately includes the indexed canonical ref, materialized path, current-policy editable flag, and conditional editHint while preserving show/run/use as the primary action. Chunk 9 owns the CLI output surface under the surface-owner rule; key-set/count/boolean assertions only, no production ref literals."
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `show --shape=agent` / `--shape=summary` JSON key-sets. Re-baselined by the multi-bundle agent-access change: agent show output now deliberately includes the indexed canonical ref, materialized path, current-policy editable flag, and conditional editHint while preserving show/run/use as the primary action. Chunk 9 owns the CLI output surface under the surface-owner rule; key-set/count/boolean assertions only, no production ref literals. | Re-baselined again by the 0.9.0 backlog burn-down package W1-D (finding R-020): `summaryKeys` gained `ref` — canonical ref is now present in every show shape (human/summary/agent), not just agent, so `--shape summary` consumers can identify the asset without a follow-up `--shape agent` call. `agentKeys` is unchanged."
     },
     {
       "path": "tests/fixtures/goldens/cli/b-health-fail-warn-exit.json",
@@ -237,12 +237,12 @@
     },
     {
       "path": "tests/fixtures/goldens/cli/c-tasks-family.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
+      "reBaselineChunk": "9",
       "consumers": [
         "tests/commands/goldens-cli-health-tasks.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Re-baselined by issue #711 (bundle-targeted tasks): the redundant `tasks list`/`tasks show` subcommands were retired (covered by `akm search` / `akm show`), so this oracle now pins the surviving Family C `tasks run|history|doctor` JSON envelope key-sets, driven against a command-type task running the `true` shell builtin. Re-baselined for scheduler binding/context diagnostics: doctor now reports `bindings`, `caller`, and `remediation`. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "2dd488749d6295b2b2154580fa8a5baabdc72fa40a6478a4c11bd140e9483d6e"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Re-baselined by issue #711 (bundle-targeted tasks): the redundant `tasks list`/`tasks show` subcommands were retired (covered by `akm search` / `akm show`), so this oracle now pins the surviving Family C `tasks run|history|doctor` JSON envelope key-sets, driven against a command-type task running the `true` shell builtin. Re-baselined for scheduler binding/context diagnostics: doctor now reports `bindings`, `caller`, and `remediation`. Re-baselined again for the current-only task surface: doctor no longer emits retired schema/generated-command compatibility diagnostics. Chunk 9 owns this CLI output surface under the surface-owner rule; key-set/count/boolean assertions only, no production ref literals."
     },
     {
       "path": "tests/fixtures/goldens/cli/c-tasks-run-config-bypass.json",
@@ -376,16 +376,16 @@
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `show` per-asset-type (script/command/skill/agent/knowledge) JSON key-sets, keyed by fixture-local ref string (object keys, not values). Ref-serializing text output — designated re-baseline @ Chunk 5's §15.2 grammar codemod per brief §3.3's CLI-output-baseline policy row.",
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `show` per-asset-type (script/command/skill/agent/knowledge) JSON key-sets, keyed by fixture-local ref string (object keys, not values). Ref-serializing text output — designated re-baseline @ Chunk 5's §15.2 grammar codemod per brief §3.3's CLI-output-baseline policy row. | Re-baselined again by the 0.9.0 backlog burn-down package W1-D (finding R-020): every type's `jsonKeys` gained `ref` — the default (human) show shape now always carries the canonical ref, matching `--shape agent` (it previously omitted it). No other key changed for any type.",
       "reBaselineChunk": "5"
     },
     {
-      "path": "tests/fixtures/goldens/cli/d-show-lines-view.json",
+      "path": "tests/fixtures/goldens/cli/d-show-fragment.json",
       "designation": "re-baseline",
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family D `show <ref> lines 1 2 --format=text` (normalizeShowArgv view-mode) scrubbed text output; embeds the fixture-local ref `knowledge:lines-fixture.md`. Ref-serializing text output — designated re-baseline @ Chunk 5's §15.2 grammar codemod per brief §3.3's CLI-output-baseline policy row.",
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family D `show <ref>#<slug> --format=text` scrubbed text output; embeds the fixture-local ref from fixture-refs.ts's `fragmentRef()`. Ref-serializing text output — designated re-baseline @ Chunk 5's §15.2 grammar codemod per brief §3.3's CLI-output-baseline policy row. | RE-BASELINED at D2 (0.9.0 decision record, surface-owner rule, reviewed diff): the `akm show <ref> lines A B` view-mode grammar this case used to cover was deleted, and `#fragment` is its only remaining section selector — the scenario, the fixture path (was `d-show-lines-view.json`), and the knowledge `action` string all move with it.",
       "reBaselineChunk": "5"
     },
     {
@@ -394,8 +394,8 @@
       "consumers": [
         "tests/commands/goldens-cli-health-tasks.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family B `akm health --group-by run --format=md` TSV-table scrubbed text output — no ref literals (per-run improve metrics only). Chunk 9 oracle; no production ref literals.",
-      "sha256": "fa5976265c7d294a08da90f96992d78995b5769ee830842aca6295a0d689937d"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family B `akm health --group-by run --format=md` TSV-table scrubbed text output — no ref literals (per-run improve metrics only). Chunk 9 oracle; no production ref literals. RE-CAPTURED 2026-07-26 by the health surface owner after replacing the compatibility qrej column with explicit judge and validator counts.",
+      "sha256": "15bc22c6e7b4cbe0dbae04a3a2a08168e141ec7a4892e4f1a9a6db8e430737df"
     },
     {
       "path": "tests/fixtures/goldens/cli/b-health-window-compare-md.json",
@@ -403,8 +403,8 @@
       "consumers": [
         "tests/commands/goldens-cli-health-tasks.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family B `akm health --window-compare 24h --format=md` window-compare TSV-table scrubbed text output — no ref literals. Chunk 9 oracle; no production ref literals.",
-      "sha256": "dbf56f312307962c324ec83a7bb6a050e2ca4f7999b0ab9c5bf1d974eb62cb6a"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family B `akm health --window-compare 24h --format=md` window-compare TSV-table scrubbed text output — no ref literals. Chunk 9 oracle; no production ref literals. RE-CAPTURED 2026-07-25 by the health surface owner after removing v1 profile and normalized-result columns.",
+      "sha256": "d55876022cb925694ac8d14b9ee463b4dbb23aa65a488c7fb4cdd68784ee81b7"
     },
     {
       "path": "tests/fixtures/goldens/cli/d-help-migrate.json",
@@ -485,7 +485,7 @@
       "consumers": [
         "tests/integration/goldens-renderer-output.test.ts"
       ],
-      "notes": "WI-0b.4a, chunk-0b brief / docs/design/execution/chunk-0b/anchors.md Section B.1 (the 14-format producer table's Renderer column). Chunk-0b BEHAVIOR-PARITY oracle (same D0b-1/D0b-3 designation-reuse rationale as this registry's WI-0b.3 entries -- a FROZEN preservation oracle, not a migration input in the Chunk 6/7/9 sense) for `AssetRenderer.buildShowResponse(renderCtx)`'s output across all 14 ASSET_SPECS_INTERNAL types plus the workflow-program-yaml renderer form, captured against the WI-0b.2 `tests/fixtures/stashes/all-types/` fixture stash via the same buildFileContext -> runMatchers -> getRenderer -> buildRenderContext call shape src/commands/read/show.ts's showLocal uses (match.meta.name injected per-file using the SAME canonical names this registry's placement/all-types.json entry pins). Keyed by stash-relative POSIX relPath (the same 15-key set as recognition/all-types.json). The only non-deterministic field any of the 14 renderers emit is `path` (= ctx.absPath, an absolute filesystem path) -- normalized via expectGolden's roots:{stash:STASH_ROOT} substitution to the placeholder \"<STASH>\" (tests/_helpers/golden.ts); every other field is derived purely from the fixture's committed bytes plus the injected canonical name. Pins two documented cross-renderer asymmetries byte-for-byte (not fixed, per capture-only scope): skill/command/agent/lesson/fact/session strip frontmatter from their content/template/prompt while memory-md and knowledge-md/wiki-md's default \"full\" view return raw content INCLUDING the frontmatter fence; and workflow-md derives a step's title from its parsed heading while workflow-program-yaml falls back to the step id when no `title` key is set. Chunk 2's format adapters must reproduce every renderer's output byte-for-byte. anchors.md Section B.3 confirms zero prior renderer golden coverage existed before this capture -- greenfield, not a re-baseline. | RE-BASELINED at WI-8.5b (Chunk 8, surface-owner rule — reBaselineChunk moved 4 -> 8, reviewed diff): the two workflow renderers' `action` field embeds the `akm workflow next <ref>` display ref, which flips from the legacy `[origin//]workflow:name` spelling to the D-R5 display grammar (`displayRef`) with the WI-8.5b display flip. On this fixture `origin` is undefined for every case, so the two changed keys (workflows/all-types-workflow-program, workflows/all-types-workflow) render the SHORT conceptId `workflows/<name>`; every other field across all 15 keys is byte-identical."
+      "notes": "WI-0b.4a, chunk-0b brief / docs/design/execution/chunk-0b/anchors.md Section B.1 (the 14-format producer table's Renderer column). Chunk-0b BEHAVIOR-PARITY oracle (same D0b-1/D0b-3 designation-reuse rationale as this registry's WI-0b.3 entries -- a FROZEN preservation oracle, not a migration input in the Chunk 6/7/9 sense) for `AssetRenderer.buildShowResponse(renderCtx)`'s output across all 14 ASSET_SPECS_INTERNAL types plus the workflow-program-yaml renderer form, captured against the WI-0b.2 `tests/fixtures/stashes/all-types/` fixture stash via the same buildFileContext -> runMatchers -> getRenderer -> buildRenderContext call shape src/commands/read/show.ts's showLocal uses (match.meta.name injected per-file using the SAME canonical names this registry's placement/all-types.json entry pins). Keyed by stash-relative POSIX relPath (the same 15-key set as recognition/all-types.json). The only non-deterministic field any of the 14 renderers emit is `path` (= ctx.absPath, an absolute filesystem path) -- normalized via expectGolden's roots:{stash:STASH_ROOT} substitution to the placeholder \"<STASH>\" (tests/_helpers/golden.ts); every other field is derived purely from the fixture's committed bytes plus the injected canonical name. Pins two documented cross-renderer asymmetries byte-for-byte (not fixed, per capture-only scope): skill/command/agent/lesson/fact/session strip frontmatter from their content/template/prompt while memory-md and knowledge-md return raw content INCLUDING the frontmatter fence; and workflow-md derives a step's title from its parsed heading while workflow-program-yaml falls back to the step id when no `title` key is set. Chunk 2's format adapters must reproduce every renderer's output byte-for-byte. anchors.md Section B.3 confirms zero prior renderer golden coverage existed before this capture -- greenfield, not a re-baseline. | RE-BASELINED at WI-8.5b (Chunk 8, surface-owner rule — reBaselineChunk moved 4 -> 8, reviewed diff): the two workflow renderers' `action` field embeds the `akm workflow next <ref>` display ref, which flips from the legacy `[origin//]workflow:name` spelling to the D-R5 display grammar (`displayRef`) with the WI-8.5b display flip. On this fixture `origin` is undefined for every case, so the two changed keys (workflows/all-types-workflow-program, workflows/all-types-workflow) render the SHORT conceptId `workflows/<name>`; every other field across all 15 keys is byte-identical. | RE-BASELINED at D2 (0.9.0 decision record, surface-owner rule, reviewed diff): the `akm show <ref> toc|section|lines|frontmatter|full` view grammar was deleted, so knowledge-md no longer branches on `match.meta.view` and its `action` string points at `#fragment` instead of the retired `toc` view. One changed key (knowledge/all-types-knowledge.md `action`); every other field across all 15 keys is byte-identical."
     },
     {
       "path": "tests/fixtures/goldens/lint/all-types.json",

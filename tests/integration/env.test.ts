@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildShellExportScript, createEnv, injectIntoEnv, listKeys, loadEnv } from "../../src/commands/env/env";
+import { buildShellExportScript, createEnv, listKeys, loadEnv } from "../../src/commands/env/env";
 import { getDbPath } from "../../src/core/paths";
 import { resetGraphBoostCache } from "../../src/indexer/graph/graph-boost";
 import { akmIndex } from "../../src/indexer/indexer";
@@ -157,28 +157,6 @@ describe("createEnv", () => {
     const fp = path.join(dir, "env", "secrets.env");
     createEnv(fp);
     expect(fs.statSync(fp).mode & 0o777).toBe(0o600);
-  });
-});
-
-// ── injectIntoEnv ───────────────────────────────────────────────────────────
-
-describe("injectIntoEnv", () => {
-  test("assigns values into the supplied target and returns the list of keys set", () => {
-    const dir = tmpDir();
-    const fp = path.join(dir, "v.env");
-    fs.writeFileSync(fp, "ALPHA=one\nBETA=two\n");
-    const target: Record<string, string | undefined> = { PRE_EXISTING: "kept" };
-    const keys = injectIntoEnv(fp, target);
-    expect(keys.sort()).toEqual(["ALPHA", "BETA"]);
-    expect(target.ALPHA).toBe("one");
-    expect(target.BETA).toBe("two");
-    expect(target.PRE_EXISTING).toBe("kept");
-  });
-
-  test("returns empty list when the file is missing", () => {
-    const target: Record<string, string | undefined> = {};
-    expect(injectIntoEnv(path.join(tmpDir(), "missing.env"), target)).toEqual([]);
-    expect(target).toEqual({});
   });
 });
 
@@ -582,7 +560,72 @@ describe("vault removed in 0.9.0", () => {
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("was removed");
-    expect(result.stderr).toContain("env:");
+    // Q-08: the vault-removal signpost points at the slash spelling, not the
+    // retired `env:`/`secret:` colon grammar.
+    expect(result.stderr).toContain("env/");
     expect(fs.existsSync(outFile)).toBe(false);
+  });
+});
+
+describe("colon ref spelling removed (Q-08)", () => {
+  test("`env:<name>` fails loudly naming the slash replacement, instead of a confusing not-found", async () => {
+    const stashDir = makeTempDir("akm-colon-removed-");
+    fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
+    fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "API_KEY=secret\n", "utf8");
+
+    const result = await runCli(["env", "path", "env:prod"], { AKM_STASH_DIR: stashDir });
+
+    expect(result.status).toBe(2);
+    const parsed = JSON.parse(result.stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
+    expect(parsed.error).toContain("env:");
+    expect(parsed.error).toContain("was removed");
+    expect(parsed.error).toContain("env/prod");
+    // Never silently resolves to nothing: no `env:prod`-named file was probed.
+    expect(fs.existsSync(path.join(stashDir, "env", "env:prod.env"))).toBe(false);
+  });
+
+  test("`environment:<name>` (the alias implied by stale docs) is rejected the same way", async () => {
+    const stashDir = makeTempDir("akm-colon-removed-");
+    fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
+
+    const result = await runCli(["env", "path", "environment:prod"], { AKM_STASH_DIR: stashDir });
+
+    expect(result.status).toBe(2);
+    const parsed = JSON.parse(result.stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
+    expect(parsed.error).toContain("env/prod");
+  });
+
+  test("the slash form `env/<name>` still resolves normally", async () => {
+    const stashDir = makeTempDir("akm-colon-removed-");
+    fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
+    const envPath = path.join(stashDir, "env", "prod.env");
+    fs.writeFileSync(envPath, "API_KEY=secret\n", "utf8");
+
+    const result = await runCli(["env", "path", "env/prod", "--quiet"], { AKM_STASH_DIR: stashDir });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(envPath);
+  });
+
+  test("`akm env run env:<name> -- <cmd>` (the register's verified-live 404 case) now fails loudly pre-spawn", async () => {
+    const stashDir = makeTempDir("akm-colon-removed-");
+    fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
+    fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "FOO=bar\n", "utf8");
+
+    const result = await runCli(["env", "run", "env:prod", "--", "echo", "should-not-run"], {
+      AKM_STASH_DIR: stashDir,
+    });
+
+    expect(result.status).toBe(2);
+    const parsed = JSON.parse(result.stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
+    expect(parsed.error).toContain("env/prod");
+    // The child command must never have been spawned.
+    expect(result.stdout).not.toContain("should-not-run");
   });
 });

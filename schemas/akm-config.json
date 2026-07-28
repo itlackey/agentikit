@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://itlackey.github.io/akm/schemas/akm-config.0.9.0.json",
   "title": "AKM Configuration",
-  "description": "Configuration file for the akm CLI (Agent Knowledge Management). Stored at ~/.config/akm/config.json (Linux/macOS) or %APPDATA%\\akm\\config.json (Windows). Supports JSONC (JavaScript-style comments). Auto-generated from src/core/config-schema.ts by scripts/gen-config-schema.ts — do NOT edit by hand.",
+  "description": "Configuration file for the akm CLI (Agent Knowledge Management). Stored at ~/.config/akm/config.json (Linux/macOS) or %APPDATA%\\akm\\config.json (Windows). Supports JSONC (JavaScript-style comments). Auto-generated from src/core/config/config-schema.ts by scripts/gen-config-schema.ts — do NOT edit by hand.",
   "type": "object",
   "properties": {
     "configVersion": {
@@ -201,7 +201,7 @@
         "off",
         "auto"
       ],
-      "default": "auto"
+      "default": "off"
     },
     "embedding": {
       "type": "object",
@@ -317,19 +317,6 @@
           "properties": {
             "enabled": {
               "type": "boolean"
-            }
-          },
-          "additionalProperties": true
-        },
-        "stalenessDetection": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "thresholdDays": {
-              "type": "integer",
-              "exclusiveMinimum": 0
             }
           },
           "additionalProperties": true
@@ -485,6 +472,9 @@
           "writable": {
             "type": "boolean"
           },
+          "enabled": {
+            "type": "boolean"
+          },
           "registryId": {
             "type": "string",
             "minLength": 1
@@ -528,7 +518,10 @@
           "enum": [
             "json",
             "yaml",
-            "text"
+            "text",
+            "jsonl",
+            "md",
+            "html"
           ]
         },
         "detail": {
@@ -541,9 +534,6 @@
         }
       },
       "additionalProperties": true
-    },
-    "writable": {
-      "type": "boolean"
     },
     "defaultWriteTarget": {
       "type": "string",
@@ -1507,9 +1497,6 @@
                 "type": "integer",
                 "exclusiveMinimum": 0
               },
-              "symmetricValence": {
-                "type": "boolean"
-              },
               "sync": {
                 "type": "object",
                 "properties": {
@@ -1601,10 +1588,6 @@
               "minimum": 0,
               "maximum": 1
             },
-            "churnMinAcceptedActions": {
-              "type": "integer",
-              "minimum": 1
-            },
             "retentionDays": {
               "type": "integer",
               "minimum": 1
@@ -1627,20 +1610,17 @@
     },
     "setup": {
       "type": "object",
+      "properties": {},
+      "additionalProperties": true
+    },
+    "experimental": {
+      "type": "object",
       "properties": {
-        "taskSchedules": {
-          "type": "object",
-          "properties": {
-            "improve": {
-              "type": "string",
-              "minLength": 1
-            },
-            "index": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "additionalProperties": true
+        "improveAutonomy": {
+          "type": "boolean"
+        },
+        "workflowEngine": {
+          "type": "boolean"
         }
       },
       "additionalProperties": true
@@ -1850,7 +1830,7 @@
             "off",
             "auto"
           ],
-          "default": "auto"
+          "default": "off"
         },
         "embedding": {
           "type": "object",
@@ -1966,19 +1946,6 @@
               "properties": {
                 "enabled": {
                   "type": "boolean"
-                }
-              },
-              "additionalProperties": true
-            },
-            "stalenessDetection": {
-              "type": "object",
-              "properties": {
-                "enabled": {
-                  "type": "boolean"
-                },
-                "thresholdDays": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0
                 }
               },
               "additionalProperties": true
@@ -2134,6 +2101,9 @@
               "writable": {
                 "type": "boolean"
               },
+              "enabled": {
+                "type": "boolean"
+              },
               "registryId": {
                 "type": "string",
                 "minLength": 1
@@ -2177,7 +2147,10 @@
               "enum": [
                 "json",
                 "yaml",
-                "text"
+                "text",
+                "jsonl",
+                "md",
+                "html"
               ]
             },
             "detail": {
@@ -2190,9 +2163,6 @@
             }
           },
           "additionalProperties": true
-        },
-        "writable": {
-          "type": "boolean"
         },
         "defaultWriteTarget": {
           "type": "string",
@@ -3156,9 +3126,6 @@
                     "type": "integer",
                     "exclusiveMinimum": 0
                   },
-                  "symmetricValence": {
-                    "type": "boolean"
-                  },
                   "sync": {
                     "type": "object",
                     "properties": {
@@ -3250,10 +3217,6 @@
                   "minimum": 0,
                   "maximum": 1
                 },
-                "churnMinAcceptedActions": {
-                  "type": "integer",
-                  "minimum": 1
-                },
                 "retentionDays": {
                   "type": "integer",
                   "minimum": 1
@@ -3276,20 +3239,17 @@
         },
         "setup": {
           "type": "object",
+          "properties": {},
+          "additionalProperties": true
+        },
+        "experimental": {
+          "type": "object",
           "properties": {
-            "taskSchedules": {
-              "type": "object",
-              "properties": {
-                "improve": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "index": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "additionalProperties": true
+            "improveAutonomy": {
+              "type": "boolean"
+            },
+            "workflowEngine": {
+              "type": "boolean"
             }
           },
           "additionalProperties": true
@@ -4608,9 +4568,6 @@
           "type": "integer",
           "exclusiveMinimum": 0
         },
-        "symmetricValence": {
-          "type": "boolean"
-        },
         "sync": {
           "type": "object",
           "properties": {
@@ -4654,49 +4611,6 @@
       },
       "required": [
         "url"
-      ],
-      "additionalProperties": true
-    },
-    "StashConfigEntry": {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "minLength": 1
-        },
-        "path": {
-          "type": "string",
-          "minLength": 1
-        },
-        "url": {
-          "type": "string",
-          "minLength": 1
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1
-        },
-        "enabled": {
-          "type": "boolean"
-        },
-        "writable": {
-          "type": "boolean"
-        },
-        "primary": {
-          "type": "boolean"
-        },
-        "options": {
-          "type": "object",
-          "properties": {
-            "pushOnCommit": {
-              "type": "boolean"
-            }
-          },
-          "additionalProperties": true
-        }
-      },
-      "required": [
-        "type"
       ],
       "additionalProperties": true
     }

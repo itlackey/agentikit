@@ -12,17 +12,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import {
-  akmDistill,
-  buildDistillPrompt,
-  deriveLessonRef,
-  detectDoubleFrontmatter,
-  isValidDescription,
-  isValidWhenToUse,
-} from "../../src/commands/improve/distill";
+import { akmDistill, buildDistillPrompt, deriveLessonRef } from "../../src/commands/improve/distill";
 import { assessMemoryKnowledgePromotionCandidate } from "../../src/commands/improve/distill-promotion-policy";
 import { getAssetSalience } from "../../src/commands/improve/salience";
 import { listProposals } from "../../src/commands/proposal/repository";
+import {
+  detectDoubleFrontmatter,
+  isValidDescription,
+  isValidWhenToUse,
+} from "../../src/commands/proposal/validators/proposal-quality-validators";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";
 import { readEvents } from "../../src/core/events";
@@ -194,8 +192,8 @@ describe("deriveLessonRef", () => {
   });
 });
 
-describe("akmDistill — source-qualified lookup", () => {
-  test("qualifies duplicate refs and never writes salience to another source", async () => {
+describe("akmDistill — selected-root lookup", () => {
+  test("never writes salience to another source", async () => {
     const selected = makeStashDir();
     const other = makeStashDir();
     const selectedFile = path.join(selected, "skills", "duplicate.md");
@@ -208,7 +206,6 @@ describe("akmDistill — source-qualified lookup", () => {
 
     await akmDistill({
       ref: "skills/duplicate",
-      sourceName: "team",
       stashDir: selected,
       config: configEnabled(selected),
       lookupFn: async (ref) => {
@@ -222,6 +219,33 @@ describe("akmDistill — source-qualified lookup", () => {
     expect(lookedUp[0]).toBe("skills/duplicate");
     expect(fs.readFileSync(selectedFile, "utf8")).toContain("salience:");
     expect(fs.readFileSync(otherFile, "utf8")).toBe(otherContent);
+  });
+
+  test("reads feedback using item_ref when planning supplied one", async () => {
+    const stash = makeStashDir();
+    const itemRef = "team//skills/deploy";
+    let queriedRef: string | undefined;
+    let receivedPrompt = "";
+
+    const result = await akmDistill({
+      ref: "skills/deploy",
+      itemRef,
+      stashDir: stash,
+      config: configEnabled(stash),
+      lookupFn: noopLookup,
+      readEventsFn: ((options: { ref?: string }) => {
+        queriedRef = options.ref;
+        return eventsFor(itemRef, ["positive"])(options);
+      }) as typeof readEvents,
+      chat: async (_config, messages) => {
+        receivedPrompt = messages.map((message) => message.content).join("\n");
+        return "";
+      },
+    });
+
+    expect(result.outcome).toBe("llm_failed");
+    expect(queriedRef).toBe(itemRef);
+    expect(receivedPrompt).toContain("## What worked");
   });
 });
 
@@ -636,7 +660,7 @@ describe("akmDistill — queued proposal", () => {
     });
 
     expect(result.outcome).toBe("queued");
-    expect(result.lessonRef).toBe("lessons/skill-deploy-lesson");
+    expect(result.proposalRef).toBe("lessons/skill-deploy-lesson");
     expect(typeof result.proposalId).toBe("string");
 
     const proposals = listProposals(stash);
@@ -790,7 +814,6 @@ describe("akmDistill — queued proposal", () => {
 
     expect(result.outcome).toBe("queued");
     expect(result.proposalKind).toBe("knowledge");
-    expect(result.lessonRef).toBe("knowledge/deploy-fact");
     expect(result.proposalRef).toBe("knowledge/deploy-fact");
 
     const proposals = listProposals(stash);
@@ -827,7 +850,7 @@ describe("akmDistill — queued proposal", () => {
 
     expect(result.outcome).toBe("queued");
     expect(result.proposalKind).toBe("knowledge");
-    expect(result.lessonRef).toBe("knowledge/deploy");
+    expect(result.proposalRef).toBe("knowledge/deploy");
     expect(receivedPrompt).toContain("produce a concise\n*knowledge* markdown document");
     expect(receivedPrompt).toContain("Produce the knowledge markdown file now.");
 
@@ -1016,7 +1039,6 @@ describe("akmDistill — queued proposal", () => {
 
     expect(result.outcome).toBe("queued");
     expect(result.proposalKind).toBe("lesson");
-    expect(result.lessonRef).toBe("lessons/memory-deploy-fact-lesson");
     expect(result.proposalRef).toBe("lessons/memory-deploy-fact-lesson");
 
     const proposals = listProposals(stash);
@@ -1269,13 +1291,13 @@ describe("akmDistill — success envelope shape contract (#284)", () => {
       readEventsFn: emptyEvents,
       sourceRun: "run-shape-contract",
     });
-    // Locked envelope keys (v1 §11/§14): ok, outcome, inputRef, lessonRef,
+    // Locked envelope keys (v1 §11/§14): ok, outcome, inputRef, proposalRef,
     // proposalId. Queued path additionally carries proposal stub fields via
     // `result.proposal` if present.
     expect(result.ok).toBe(true);
     expect(result.outcome).toBe("queued");
     expect(result.inputRef).toBe("skills/deploy");
-    expect(result.lessonRef).toBe("lessons/skill-deploy-lesson");
+    expect(result.proposalRef).toBe("lessons/skill-deploy-lesson");
     expect(typeof result.proposalId).toBe("string");
     // schemaVersion present at the top level (v1 spec lock)
     expect((result as unknown as { schemaVersion: number }).schemaVersion).toBe(1);
@@ -1398,7 +1420,7 @@ describe("D-1: fast path calls LLM merge when destination knowledge exists (#369
     expect(result.ok).toBe(true);
     expect(result.outcome).toBe("queued");
     const { listProposals } = await import("../../src/commands/proposal/repository");
-    // WI-8.5a: proposals.ref is now the durable item_ref; result.lessonRef is the
+    // WI-8.5a: proposals.ref is now the durable item_ref; result.proposalRef is the
     // legacy display spelling, so query the queue directly (one proposal here).
     const proposals = listProposals(stash);
     expect(proposals.length).toBeGreaterThan(0);
@@ -1576,14 +1598,14 @@ describe("akmDistill — pipeline-fix integration", () => {
 
     expect(result.ok).toBe(true);
     expect(result.outcome).toBe("skipped");
-    expect(result.lessonRef).toBe("lessons/skill-deploy-lesson");
+    expect(result.proposalRef).toBe("lessons/skill-deploy-lesson");
     expect(listProposals(stash)).toEqual([]);
 
     const { events } = readEvents({ type: "distill_invoked" });
     expect(events.at(-1)?.metadata?.skipReason).toBe("recursive_lesson_input");
     // CRITICAL: the proposed ref must NOT carry the recursive `lesson-…-lesson-lesson` shape.
-    expect(result.lessonRef).not.toMatch(/^lesson:lesson-/);
-    expect(result.lessonRef).not.toMatch(/-lesson-lesson$/);
+    expect(result.proposalRef).not.toMatch(/^lesson:lesson-/);
+    expect(result.proposalRef).not.toMatch(/-lesson-lesson$/);
   });
 
   test("refuses env/secret refs as input (08-F2: secret bytes never reach the LLM)", async () => {
@@ -1704,7 +1726,7 @@ describe("akmDistill — pipeline-fix integration", () => {
       readEventsFn: emptyEvents,
     });
     expect(result.outcome).toBe("queued");
-    expect(result.lessonRef).toBe("lessons/memory-deploy-tips-lesson");
+    expect(result.proposalRef).toBe("lessons/memory-deploy-tips-lesson");
     expect(listProposals(stash).length).toBe(1);
   });
 });
@@ -1741,7 +1763,7 @@ describe("akmDistill — R3 judge verdict routing + G4 output encoding salience"
     // only chance to escape the type-weight stub).
     const db = openStateDatabase();
     try {
-      const row = getAssetSalience(db, result.lessonRef as string);
+      const row = getAssetSalience(db, result.proposalRef);
       expect(row).toBeDefined();
       expect(row?.encoding_source).toBe("content");
       expect(row?.encoding_salience).toBeGreaterThan(0);

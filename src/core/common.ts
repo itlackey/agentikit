@@ -127,23 +127,19 @@ export function writeFileAtomic(target: string, content: string | Buffer, mode?:
 /**
  * Resolve the stash directory using a three-level fallback chain:
  *   1. AKM_STASH_DIR environment variable (override for CI/scripts)
- *   2. stashDir field in config.json
+ *   2. The configured default bundle path
  *   3. Platform default (~/akm or ~/Documents/akm on Windows)
- *
- * Pure read: never writes to disk. The legacy `readOnly` option is accepted
- * (and ignored) for one release cycle so older callers continue to compile;
- * it can be removed in the next minor bump.
  *
  * Throws if no valid stash directory is found.
  */
-export function resolveStashDir(_options?: { readOnly?: boolean }, env: NodeJS.ProcessEnv = process.env): string {
+export function resolveStashDir(env: NodeJS.ProcessEnv = process.env): string {
   // 1. Env var override (for CI, scripts, testing)
   const envDir = env.AKM_STASH_DIR?.trim();
   if (envDir) {
     return validateStashDir(envDir);
   }
 
-  // 2. Config file stashDir field
+  // 2. Configured default bundle path
   const configStashDir = readStashDirFromConfig();
   if (configStashDir) return validateStashDir(configStashDir);
 
@@ -187,7 +183,7 @@ function isValidDirectory(dir: string): boolean {
  *
  * Reads ONLY the 0.9.0 `bundles`/`defaultBundle` shape. A config still carrying
  * the retired `stashDir`/`sources`/`installed` keys (with no usable bundles
- * path) is an unmigrated config: this refuses it with the same `akm migrate
+ * path) is an unmigrated config: this refuses it with the same `akm-migrate
  * apply` hint the schema hard-reject uses (config-schema.ts), rather than
  * silently honouring the retired key — so every `resolveStashDir` caller gets
  * the coherent migrate posture instead of split-brain success.
@@ -213,7 +209,32 @@ function readStashDirFromConfig(): string | undefined {
       typeof bundles[defaultBundle].path === "string" &&
       bundles[defaultBundle].path.trim()
     ) {
-      return bundles[defaultBundle].path.trim();
+      const bundle = bundles[defaultBundle];
+      const bundlePath = bundle.path.trim();
+      if (bundle.components !== undefined) {
+        if (typeof bundle.components !== "object" || bundle.components === null) {
+          throw new ConfigError("A bundle components map must contain exactly one component.", "INVALID_CONFIG_FILE");
+        }
+        const components = Object.values(bundle.components);
+        if (components.length !== 1) {
+          throw new ConfigError("A bundle components map must contain exactly one component.", "INVALID_CONFIG_FILE");
+        }
+        const component = components[0];
+        if (typeof component === "object" && component !== null) {
+          const componentConfig = component as Record<string, unknown>;
+          if (typeof componentConfig.root !== "string") return bundlePath;
+          const bundleRoot = path.resolve(bundlePath);
+          const componentRoot = path.resolve(bundleRoot, componentConfig.root);
+          if (!isWithin(componentRoot, bundleRoot)) {
+            throw new ConfigError(
+              `Component root "${componentConfig.root}" escapes bundle "${defaultBundle}".`,
+              "INVALID_CONFIG_FILE",
+            );
+          }
+          return componentRoot;
+        }
+      }
+      return bundlePath;
     }
     // Retired pre-cutover shape with no usable bundles path: refuse with the
     // migrate hint (matches the schema's hard-reject, config-schema.ts) instead
@@ -221,7 +242,7 @@ function readStashDirFromConfig(): string | undefined {
     for (const key of ["stashDir", "sources", "installed"]) {
       if (key in raw && raw[key] !== undefined) {
         throw new ConfigError(
-          `${key} is the retired pre-cutover source shape; run \`akm migrate apply\` to convert it to bundles`,
+          `${key} is the retired pre-cutover source shape; run \`akm-migrate apply\` to convert it to bundles`,
           "INVALID_CONFIG_FILE",
         );
       }

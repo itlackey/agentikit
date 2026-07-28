@@ -7,8 +7,8 @@
  *
  * `sync()` resolves the npm package tarball, downloads it, verifies its
  * integrity, extracts it securely (via `extractTarGzSecure`), detects the
- * stash root inside the package, and applies any nested `.akm-include`
- * configuration. Cache hits short-circuit the fetch.
+ * stash root inside the package, and applies any nested `akm.include`
+ * (package.json) configuration. Cache hits short-circuit the fetch.
  */
 
 import fs from "node:fs";
@@ -33,11 +33,10 @@ import { extractTarGzSecure, verifyArchiveIntegrity } from "./tar-utils";
 
 /**
  * NPM source provider — fetches a tarball from the npm registry and extracts
- * it into a local cache. Implements the v1 {@link SourceProvider} interface
- * (spec §2.1): `{ name, kind, init, path, sync }`.
+ * it into a local cache. Implements the {@link SourceProvider} interface.
  *
  * The install-time pipeline (`syncNpmRef`) lives below as a standalone
- * function used by `akm add` / `akm update` — that path produces a
+ * function used by `akm add` / `akm update`; that path produces a
  * {@link SourceLockData} record for lockfile bookkeeping. The provider's own
  * `sync()` is a void refresh (delegates to the install pipeline but discards
  * the lock data, which is owned by `lockfile.ts`).
@@ -68,11 +67,9 @@ class NpmSourceProvider implements SourceProvider {
 registerSourceProvider("npm", (config) => new NpmSourceProvider(config));
 
 function npmRefFromConfig(config: SourceConfigEntry): string {
-  // Prefer an explicit ref-bearing field (set by akmAdd when persisting), else fall back
-  // to options or url so the provider stays usable from a hand-rolled config.
-  const candidate = config.options?.ref ?? config.url ?? config.options?.package ?? config.name;
+  const candidate = config.path;
   if (typeof candidate !== "string" || !candidate) {
-    throw new UsageError('npm stash entry must include an `options.ref` (e.g. "npm:my-pkg@1.2.3")');
+    throw new UsageError('npm source entry must include a package ref (e.g. "npm:my-pkg@1.2.3")');
   }
   return candidate.startsWith("npm:") ? candidate : `npm:${candidate}`;
 }
@@ -80,11 +77,11 @@ function npmRefFromConfig(config: SourceConfigEntry): string {
 /**
  * Fetch and extract an npm tarball, returning a populated `SourceLockData`.
  *
- * Mirrors the historical `installRegistryRef()` path for npm sources:
- *   - resolve artifact URL + integrity from the npm registry
+ * Materializes npm sources by:
+ *   - resolving the artifact URL and integrity from the npm registry
  *   - reuse cached extraction when present
  *   - download, verify, extract securely, then detect the stash root
- *   - honour `.akm-include` filters
+ *   - honour `akm.include` (package.json) filters
  */
 export async function syncNpmRef(ref: string, options?: SyncOptions): Promise<SourceLockData> {
   const parsed = parseRegistryRef(ref);
@@ -136,7 +133,7 @@ async function doSyncNpm(parsed: ParsedNpmRef, options?: SyncOptions): Promise<S
   fs.mkdirSync(cacheDir, { recursive: true });
 
   let integrity: string;
-  let provisionalKitRoot: string;
+  let provisionalBundleRoot: string;
   let installRoot: string;
   let stashRoot: string;
   try {
@@ -145,16 +142,16 @@ async function doSyncNpm(parsed: ParsedNpmRef, options?: SyncOptions): Promise<S
     integrity = await computeFileHash(archivePath);
     extractTarGzSecure(archivePath, extractedDir);
 
-    const detectedProvisionalKitRoot = detectStashRoot(extractedDir);
-    if (!detectedProvisionalKitRoot) {
+    const detectedProvisionalBundleRoot = detectStashRoot(extractedDir);
+    if (!detectedProvisionalBundleRoot) {
       throw new UsageError(`Unable to detect a stash root in extracted npm package: ${resolved.ref}`);
     }
-    provisionalKitRoot = detectedProvisionalKitRoot;
-    installRoot = applyAkmIncludeConfig(provisionalKitRoot, cacheDir, extractedDir) ?? provisionalKitRoot;
+    provisionalBundleRoot = detectedProvisionalBundleRoot;
+    installRoot = applyAkmIncludeConfig(provisionalBundleRoot, cacheDir, extractedDir) ?? provisionalBundleRoot;
     const detectedStashRoot = detectStashRoot(installRoot);
     if (!detectedStashRoot) {
       throw new UsageError(
-        `Unable to detect a stash root after applying .akm-include configuration for npm package: ${resolved.ref}`,
+        `Unable to detect a stash root after applying akm.include (package.json) configuration for npm package: ${resolved.ref}`,
       );
     }
     stashRoot = detectedStashRoot;

@@ -1,7 +1,9 @@
 ---
+type: fact
 category: convention
 description: Soft authoring conventions for knowledge assets as compiled, on-demand reference documents.
 when_to_use: Surfaced to authoring agents when they write or revise a knowledge asset.
+updated: 2026-07-28
 ---
 
 <!--

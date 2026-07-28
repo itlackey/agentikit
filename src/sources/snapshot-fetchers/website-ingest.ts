@@ -14,7 +14,8 @@ import { getRegistryIndexCacheDir } from "../../core/paths";
 import { warn } from "../../core/warn";
 import { withFreshnessCache } from "../freshness";
 import { sanitizeString } from "../providers/provider-utils";
-import { type FetcherContext, loadWikiSnapshotFetchers, type WikiSnapshotResult } from "./registry";
+import { loadWikiSnapshotFetchers } from "./registry";
+import type { FetcherContext, WikiSnapshotResult } from "./types";
 
 /** Refresh website snapshots every 12 hours to balance freshness with scraping load. */
 const CACHE_REFRESH_INTERVAL_MS = 12 * 60 * 60 * 1000;
@@ -101,7 +102,7 @@ export function shouldAllowPrivateWebsiteUrlForTests(rawUrl: string): boolean {
 function resolveFetcherStashDir(explicitStashDir?: string): string | null {
   if (explicitStashDir) return explicitStashDir;
   try {
-    return resolveStashDir({ readOnly: true });
+    return resolveStashDir();
   } catch {
     return null;
   }

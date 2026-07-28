@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { shapeProposalProducerOutput } from "../../src/output/shapes";
+import { shapeProposalProducerOutput } from "../../src/output/shapes/helpers";
 
 const proposal = {
   id: "uuid-1",

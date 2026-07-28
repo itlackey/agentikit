@@ -44,14 +44,13 @@ export {
   formatRegistrySearchPlain,
   formatRememberPlain,
   formatRemovePlain,
-  formatSavePlain,
   formatSearchPlain,
+  formatSyncPlain,
   formatToggleComponentPlain,
   formatUpdatePlain,
   formatUpgradePlain,
 } from "./command-format";
 export {
-  formatDistillPlain,
   formatGateDecisionSummary,
   formatProposalAcceptPlain,
   formatProposalDiffPlain,

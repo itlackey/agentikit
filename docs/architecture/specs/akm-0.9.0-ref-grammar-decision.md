@@ -19,7 +19,7 @@ short (bundle-omitted) form is a first-class *accepted input* at every boundary 
 lookups, and tests — resolved by a deterministic, behavior-preserving rule.** There is no second
 grammar: the short form is the same production with the optional prefix omitted, not a different
 format. `type:name` is not an accepted form anywhere after the flip (it survives only inside the
-frozen `src/migrate/legacy/` copy). This dissolves the codemod problem — the measured blocker was
+frozen `scripts/akm-migrate/migrate/legacy/` copy). This dissolves the codemod problem — the measured blocker was
 never the grammar, it was the assumption that tests must *spell the bundle*; they don't, because
 resolution supplies it, exactly the way origin-less `type:name` refs already work today.
 
@@ -237,35 +237,30 @@ F5 **inside the same chunk**, satisfying §11.4's no-permanent-dual-parser rule.
   ratchets (db trio leaves the baseline per DoD 11).
 - **F5 — Delete the old grammar.** `parseAssetRef`/`makeAssetRef`/`refToString`/`AssetRef`/
   `TYPE_ALIASES` deleted (~216 sites already repointed by F1/F4); the F1 old-grammar reader shim
-  deleted; frozen `src/migrate/legacy/legacy-layout.ts` untouched. Gate: grep `parseAssetRef` →
+  deleted; frozen `scripts/akm-migrate/migrate/legacy/legacy-layout.ts` untouched. Gate: grep `parseAssetRef` →
   0, `StashEntry` → 0 (declared scopes); tests type-prefix ratchet → 0 and flipped absolute.
 
 **Chunk 8 then consumes D-R5 as settled:** the config migrator emits `bundles` keys equal to the
 already-derived ids (no re-key), `defaultBundle`, the §11.5 startup guard, and the three-DB
 merge re-key runs over refs that are already in final spelling.
 
-### D-R6 — OKF reserved filenames: `index.md` / `log.md` are structure, never items (BINDING)
+### D-R6 — Adapter-owned reserved filenames (BINDING)
 
-Verified against upstream OKF v0.1 §3.1/§6/§7 (2026-07-19 audit): `index.md` (directory listing,
-progressive disclosure) and `log.md` (update history) are **reserved structural files at every
-level of a bundle** and "MUST NOT be used for concept documents." AKM's OKF-compliant behavior:
+Verified against upstream OKF v0.1 §3.1/§6/§7 (2026-07-19 audit): `index.md`
+(directory listing, progressive disclosure) and `log.md` (update history) are
+reserved structural files at every level of an **OKF bundle** and "MUST NOT be
+used for concept documents." This is an OKF adapter rule, not a cross-format
+rule derived from OKF.
 
-1. **Never indexed as items.** No adapter may emit an `IndexDocument` for a reserved filename.
-   The `okf` and `llm-wiki` adapters already comply (`okf-adapter.ts` `RESERVED_FILES`,
-   case-insensitive, any depth). The **`akm` adapter does not yet** — a `knowledge/index.md`
-   would today classify as a `knowledge` concept. Its recognition exclusion is a behavior
-   change and lands with the flip (F4) / Chunk-8 producer-conformance migration, which also
-   handles any existing stash file named `index.md`/`log.md` (exclude from the index; rename
-   if its content is a real concept).
-2. **Never touched as assets.** Reserved files are bundle structure, not items: `placeNew`,
-   `akm mv`, and item write-transactions MUST refuse a reserved-filename target (they have no
-   conceptId, so no ref can name them — the grammar enforces this passively; the write paths
-   enforce it actively). Regenerating an `index.md` listing or appending to `log.md` is a
-   *bundle-maintenance* operation owned by the bundle's adapter (e.g. llm-wiki's native log
-   semantics), never an item write.
-3. **Producer side (Chunk 8):** AKM-generated bundles emit `index.md`/`log.md` only in the §6/§7
-   listing/log shapes; the only frontmatter ever emitted in an `index.md` is the optional
-   bundle-root `okf_version` block (upstream §11).
+1. **OKF.** The `okf` adapter never indexes those paths as concepts and refuses
+   concept writes to them. Structural generation remains an OKF-specific
+   bundle-maintenance operation.
+2. **AKM and LLM Wiki.** These adapters independently reserve the same names
+   under their own format contracts. Their recognition and write paths enforce
+   those rules without treating the files as OKF.
+3. **Other adapters.** Each adapter declares its own structural and reserved
+   names. The ref grammar does not prohibit a concept ID solely because its
+   final segment is `index` or `log`.
 
 ## 5. Spec amendments (exhaustive)
 

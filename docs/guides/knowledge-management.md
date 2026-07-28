@@ -13,7 +13,7 @@ string for short notes, or pipe markdown via stdin for longer content.
 
 ```sh
 akm remember "Deployment needs VPN access"
-akm remember "Pair with ops before rotating prod secrets" --name ops/prod-secrets
+akm remember "Pair with ops before rotating prod secrets" --path ops --name prod-secrets
 
 # With structured metadata:
 akm remember "VPN required for staging deploys" \
@@ -102,7 +102,11 @@ no `akm vault` command — use `env`/`secret`.)
 akm env create prod                       # create an empty .env group
 akm env create prod --from-file ./.env    # or ingest an existing .env
 
-# akm does not edit entries — edit the file with your own editor:
+# Set/unset individual keys without exposing the value on argv or stdout:
+echo -n "$VALUE" | akm env set env/prod API_URL
+akm env unset env/prod API_URL
+
+# Or edit the whole file with your own editor:
 $EDITOR "$(akm env path env/prod --quiet)"
 
 akm env list
@@ -120,9 +124,10 @@ akm secret run secrets/deploy-token GITHUB_TOKEN -- gh release create v1.0.0
 akm secret set secrets/deploy-token --target team --from-file ./token
 ```
 
-`.env` and secret files are stored at mode 0600 under `env/` in your stash.
-Values **never cross argv** (no `/proc/cmdline` exposure) and never appear in
-akm's structured output — only key names are shown.
+`.env` files are stored at mode 0600 under `env/` in your stash; standalone
+secrets are stored at mode 0600 under `secrets/`. Values **never cross argv**
+(no `/proc/cmdline` exposure) and never appear in akm's structured output —
+only key names are shown.
 
 Env/secret **mutations** (`create`, `set`, `unset`, `remove`) choose their write
 destination like every other write command: `--target <source>` wins, else

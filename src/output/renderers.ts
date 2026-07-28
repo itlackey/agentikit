@@ -15,19 +15,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { listKeys as listVaultKeys } from "../commands/env/env";
 import { parseFrontmatter } from "../core/asset/frontmatter";
-import {
-  extractFrontmatterOnly,
-  extractLineRange,
-  extractSection,
-  formatToc,
-  parseMarkdownToc,
-} from "../core/asset/markdown";
 import { asNonEmptyString, hasErrnoCode } from "../core/common";
 import type { IndexDocument } from "../indexer/passes/metadata";
 import { extractCommentMetadata } from "../indexer/passes/metadata";
 import type { AssetRenderer, RenderContext } from "../indexer/walk/file-context";
 import { registerRenderer } from "../indexer/walk/file-context";
-import type { KnowledgeView, ShowResponse, SourceSearchHit } from "../sources/types";
+import type { ShowResponse, SourceSearchHit } from "../sources/types";
 import { buildWorkflowAction, workflowMdRenderer, workflowProgramRenderer } from "../workflows/renderer";
 
 // ── ExecHints types ──────────────────────────────────────────────────────────
@@ -271,42 +264,22 @@ const agentMdRenderer: AssetRenderer = {
 
 // ── 4. knowledge-md ──────────────────────────────────────────────────────────
 
-const KNOWLEDGE_ACTION = "Reference material - read the content below. Use 'toc' view for large documents.";
+const KNOWLEDGE_ACTION =
+  "Reference material - read the content below. For a large document, read one section with `akm show <ref>#fragment` " +
+  "(an unmatched #fragment lists the available slugs).";
 
 const knowledgeMdRenderer: AssetRenderer = {
   name: "knowledge-md",
 
   buildShowResponse(ctx: RenderContext): ShowResponse {
-    const type = "knowledge";
-    const name = deriveName(ctx);
-    const v = (ctx.matchResult.meta?.view as KnowledgeView) ?? { mode: "full" };
-    const content = ctx.content();
-    const action = KNOWLEDGE_ACTION;
-
-    switch (v.mode) {
-      case "toc": {
-        const toc = parseMarkdownToc(content);
-        return { type, name, path: ctx.absPath, action, content: formatToc(toc) };
-      }
-      case "frontmatter": {
-        const fm = extractFrontmatterOnly(content);
-        return { type, name, path: ctx.absPath, action, content: fm ?? "(no frontmatter)" };
-      }
-      case "section": {
-        const section = extractSection(content, v.heading);
-        if (!section) {
-          const notFoundMsg = `Section "${v.heading}" not found in ${name}. Try \`akm show <ref> toc\` to discover available headings.`;
-          return { type, name, path: ctx.absPath, action, content: notFoundMsg };
-        }
-        return { type, name, path: ctx.absPath, action, content: section.content };
-      }
-      case "lines": {
-        return { type, name, path: ctx.absPath, action, content: extractLineRange(content, v.start, v.end) };
-      }
-      default: {
-        return { type, name, path: ctx.absPath, action, content };
-      }
-    }
+    const instruction = ctx.matchResult.type === "instruction";
+    return {
+      type: instruction ? "instruction" : "knowledge",
+      name: deriveName(ctx),
+      path: ctx.absPath,
+      action: instruction ? "Project instructions — read and follow the content below." : KNOWLEDGE_ACTION,
+      content: ctx.content(),
+    };
   },
 };
 
@@ -459,7 +432,7 @@ const secretFileRenderer: AssetRenderer = {
       name,
       path: ctx.absPath,
       action:
-        "Secret — name only; the file contents are the value and are never written to akm's stdout. Use `akm secret path <ref>` for the file path, or `akm secret run <ref> <VAR> -- <command>` to run with the value injected into $VAR.",
+        "Secret — name only; the file contents are the value and are never written to akm's stdout. Use `akm secret run <ref> <VAR> -- <command>` to run with the value injected into $VAR.",
     };
   },
 };

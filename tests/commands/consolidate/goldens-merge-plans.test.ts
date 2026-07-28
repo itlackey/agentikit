@@ -38,14 +38,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import {
-  type ConsolidateContradictOp,
-  type ConsolidateDeleteOp,
-  type ConsolidateMergeOp,
-  type ConsolidateOperation,
-  type ConsolidatePromoteOp,
-  mergePlans,
-} from "../../../src/commands/improve/consolidate";
+import { mergePlans } from "../../../src/commands/improve/consolidate/merge";
+import type {
+  ConsolidateContradictOp,
+  ConsolidateDeleteOp,
+  ConsolidateMergeOp,
+  ConsolidateOperation,
+  ConsolidatePromoteOp,
+} from "../../../src/commands/improve/consolidate/types";
 import { expectGolden } from "../../_helpers/golden";
 import {
   MP_CONTRADICT_A,

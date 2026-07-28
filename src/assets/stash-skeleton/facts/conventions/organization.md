@@ -1,7 +1,9 @@
 ---
+type: fact
 category: convention
 description: Where to place an asset in the stash — the one path partition axis, chosen by asset type, so refs stay stable and slug search (akm search "<slug>" --type <type>) co-locates related assets.
 when_to_use: Surfaced to authoring agents when they create or move any asset and must decide its subdirectory/name.
+updated: 2026-07-28
 ---
 
 <!--
@@ -99,19 +101,30 @@ cross-project reuse.
 
 ## Renames and evolution
 
-- **A ref is chosen once. Default to not renaming.** A manual rename dangles
+- **A ref is chosen once. Default to not renaming.** A rename dangles
   inbound xrefs silently at write time — nothing catches the breakage until
   the next `akm lint` run flags the dead frontmatter refs (`missing-ref`) —
-  while the dead ref string keeps scoring in FTS, and a manually renamed file
+  while the dead ref string keeps scoring in FTS, and a renamed file
   is a new index entry, so the asset's accumulated usage-ranking history
   resets.
-- If a rename is truly unavoidable, prefer `akm mv <ref> <new-name>`
-  (Experimental): it moves the file, rewrites inbound references across the
-  writable stash in the same pass, and keeps the asset's usage-ranking
-  history. Citing files in read-only sources are reported for manual
-  follow-up. On an older CLI without `akm mv`, treat the rename as an
-  xref-fixing operation: grep the stash for the old ref string and fix every
-  inbound reference in the same pass.
+- **A plain `mv` is delete plus create.** Moving the file yourself strands
+  every inbound ref and resets the asset's usage-ranking history. If a rename
+  is truly unavoidable, use `akm mv`, which renames within the type directory
+  and does the rest in the same pass:
+
+  ```sh
+  akm mv memories/old-note new-note
+  akm lint          # confirms nothing dangles
+  ```
+
+  It rewrites inbound refs across the writable stash (body prose, frontmatter
+  ref lists, fenced examples, task and workflow files), re-keys the search-index
+  row in place along with its usage-event history and the state.db
+  salience/outcome rows, and moves a memory's `.derived.md` twin with its base.
+  `akm mv` is **Experimental** — outside the 0.9 stability contract. It operates
+  on the primary writable stash only; citing files in read-only sources cannot
+  be fixed and are reported as manual follow-ups. That last part is another
+  reason not to rename.
 - When a project-scoped note turns out to be domain-general, **append, don't
   promote**: write a new `knowledge/<domain>/…` asset that xrefs the originating
   memory. Never rename the memory up a rung — that breaks its ref. The atomic

@@ -61,42 +61,63 @@ export function buildPrefixQuery(ftsQuery: string): string | null {
 }
 
 /**
- * SPEC-4 — parse a ref-prefix query (`akm search "<type>:<prefix>/"`).
+ * D4 — parse a conceptId-prefix browse query.
  *
- * Decides whether a raw query is a typed subtree-enumeration request rather
- * than an ordinary keyword search. Matching is deliberately conservative: the
- * trimmed query must be EXACTLY
+ * Decides whether a raw query is a subtree-enumeration request rather than an
+ * ordinary keyword search. Matching is deliberately conservative: the trimmed
+ * query must be EXACTLY
  *
- *   - `<known-type>:`           → enumerate the whole type (namePrefix `""`), or
- *   - `<known-type>:<prefix>/`  → enumerate names under `<prefix>/`.
+ *   - `<conceptId prefix>/`           → that subtree in any bundle,
+ *   - `<bundle>//`                    → one bundle entirely,
+ *   - `<bundle>//<conceptId prefix>/` → that subtree of that bundle.
  *
- * The trailing slash is REQUIRED for a non-empty prefix — and is RETAINED in
- * the returned `namePrefix` — so that a plain `entry.name.startsWith(namePrefix)`
- * check gives exact `/`-boundary subtree semantics (`"projecta/"` cannot match
- * a sibling `projectalpha/…` scope). Bare refs like `memory:a/b` therefore
- * stay ordinary searches (resolving one ref is `akm show` territory), and any
- * interior whitespace disqualifies (prose mentioning a ref is still prose).
+ * The trailing slash is REQUIRED — and is RETAINED in `conceptIdPrefix` — so a
+ * plain `conceptId.startsWith(conceptIdPrefix)` check gives exact `/`-boundary
+ * subtree semantics (`"projecta/"` cannot match a sibling `projectalpha/…`
+ * scope). Bare refs like `memories/a/b` therefore stay ordinary searches
+ * (resolving one ref is `akm show` territory), and any interior whitespace
+ * disqualifies (prose mentioning a ref is still prose).
  *
- * `knownTypes` is passed in by the caller (e.g. `placementTypes()`) to keep
- * this module dependency-free.
+ * The prefix matches the conceptId — the same string every emitted `ref`
+ * carries — so a ref copied out of search output round-trips back in as a
+ * prefix. Nothing here consults a type list: enumeration covers every
+ * adapter's items uniformly, which the retired `<type>:` grammar could not do.
  *
- * Returns `null` when the query is not a ref-prefix request.
+ * Returns `null` when the query is not a browse request.
  */
-export function parseRefPrefixQuery(
-  query: string,
-  knownTypes: readonly string[],
-): { type: string; namePrefix: string } | null {
+export function parseRefPrefixQuery(query: string): { bundle?: string; conceptIdPrefix: string } | null {
   const trimmed = query.trim();
   if (trimmed.length === 0 || /\s/.test(trimmed)) return null;
+
+  const separator = trimmed.indexOf("//");
+  if (separator < 0) {
+    return trimmed.endsWith("/") ? { conceptIdPrefix: trimmed } : null;
+  }
+
+  const bundle = trimmed.slice(0, separator);
+  if (bundle.length === 0) return null;
+
+  const rest = trimmed.slice(separator + 2);
+  if (rest === "") return { bundle, conceptIdPrefix: "" };
+  if (rest.endsWith("/") && !rest.includes("//")) return { bundle, conceptIdPrefix: rest };
+  return null;
+}
+
+/**
+ * Recognize the retired `<type>:` / `<type>:<prefix>/` browse grammar so the
+ * caller can name the replacement spelling rather than letting the query
+ * degrade silently into a keyword search — the exact silent failure D4 removes.
+ * Shape recognition only; mapping the type to its conceptId root belongs to the
+ * caller, which keeps this module dependency-free.
+ */
+export function parseRetiredTypePrefixQuery(query: string): { type: string; rest: string } | null {
+  const trimmed = query.trim();
+  if (trimmed.length === 0 || /\s/.test(trimmed) || trimmed.includes("//")) return null;
 
   const colon = trimmed.indexOf(":");
   if (colon <= 0) return null;
 
-  const type = trimmed.slice(0, colon);
-  if (!knownTypes.includes(type)) return null;
-
   const rest = trimmed.slice(colon + 1);
-  if (rest === "") return { type, namePrefix: "" };
-  if (rest.endsWith("/")) return { type, namePrefix: rest };
-  return null;
+  if (rest !== "" && !rest.endsWith("/")) return null;
+  return { type: trimmed.slice(0, colon), rest };
 }

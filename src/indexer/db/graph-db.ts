@@ -337,14 +337,6 @@ export function drainExtractionQueue(
 }
 
 /**
- * Scoped loader — only the graph_meta row for a stash. Used by callers that
- * only need summary numbers (e.g. `akm graph summary`).
- */
-export function loadGraphMetaOnly(stashPath: string, db?: Database): StoredGraphMeta | null {
-  return loadStoredGraphMeta(stashPath, db);
-}
-
-/**
  * Scoped loader — graph_files rows without entities/relations. Used for
  * orphan detection and entity overview commands.
  */
@@ -392,25 +384,6 @@ export function loadGraphFilesOnly(
   } catch (err) {
     // Never mask the bun-test isolation guard as "no stored graph files".
     rethrowIfTestIsolationError(err);
-    return [];
-  }
-}
-
-/**
- * Scoped loader — entities for a single file, keyed on the #624-P1 composite
- * (stash_root, file_path, body_hash). Used by per-asset show/curate lookups.
- */
-export function loadGraphEntitiesByPath(db: Database, stashRoot: string, filePath: string, bodyHash: string): string[] {
-  try {
-    const rows = db
-      .prepare(
-        `SELECT entity FROM graph_file_entities
-          WHERE stash_root = ? AND file_path = ? AND body_hash = ?
-          ORDER BY entity_order`,
-      )
-      .all(stashRoot, filePath, bodyHash) as Array<{ entity: string }>;
-    return rows.map((r) => r.entity);
-  } catch {
     return [];
   }
 }

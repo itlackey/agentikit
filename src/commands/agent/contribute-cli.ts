@@ -9,24 +9,27 @@
  * `main.subCommands.{agent,lint,propose}` keys and every command's args /
  * output shape stay byte-identical.
  *
- * These three handlers each branch on the result and call `process.exit`
- * conditionally (exit 1 on a failed dispatch / proposal, or on
- * `--fail-on-flagged` lint findings), so they keep the inline
- * `runWithJsonErrors` form rather than migrating to `defineJsonCommand`
- * (which is reserved for plain runWithJsonErrors+output handlers).
+ * These three handlers each branch on the result and set a non-zero
+ * `process.exitCode` conditionally (exit 1 on a failed dispatch / proposal,
+ * or on `--fail-on-flagged` lint findings) rather than emitting through the
+ * thrown-error path, so they keep the inline `runWithJsonErrors` form rather
+ * than migrating to `defineJsonCommand` (which is reserved for plain
+ * runWithJsonErrors+output handlers). `process.exitCode` (not
+ * `process.exit()`) so the process still exits via natural event-loop drain
+ * rather than skipping pending cleanup — see R-067 / F4.
  *
  * NOTE on `propose` vs `proposal`: the proposal MANAGEMENT family
- * (list/show/accept/reject/…) lives in src/commands/proposal-cli.ts. The
- * `propose` (create) verb here is the asset-authoring entry point and shares
- * no private helper with that module — its path/name helpers come from the
- * shared src/core/asset-create.ts module, imported below.
+ * (list/show/accept/reject/…) lives in src/commands/proposal/proposal-cli.ts.
+ * The `propose` (create) verb here is the asset-authoring entry point and
+ * shares no private helper with that module — its path/name helpers come from
+ * the shared src/core/asset/asset-create.ts module, imported below.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { defineCommand } from "citty";
 import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
-import { EXIT_CODES, output, runWithJsonErrors } from "../../cli/shared";
+import { EXIT_CODES, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../../core/asset/asset-create";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
@@ -44,6 +47,7 @@ export const agentCommand = defineCommand({
       "Dispatch an agent CLI (opencode, claude, …) with an optional agent asset that provides the system prompt, model, and tool policy. Use <agent-ref> to embody a stash agent, --model to override the model, and --prompt/--command/--workflow to provide the task.",
   },
   args: {
+    ...GLOBAL_OUTPUT_ARGS,
     "agent-ref": {
       type: "positional",
       description:
@@ -125,7 +129,16 @@ export const agentCommand = defineCommand({
       output("agent-result", result);
 
       if (!result.ok) {
-        process.exit(EXIT_GENERAL);
+        // R-067-style fix: this used to call `process.exit(EXIT_GENERAL)`
+        // directly, which terminates synchronously and skips any pending
+        // `finally`/cleanup up the call stack (including the dispatched
+        // agent process' own bookkeeping). `output()` has already run above,
+        // so there is nothing left in this handler that depends on
+        // terminating immediately — `process.exitCode` + `return` (this is
+        // the last statement anyway) lets the process exit naturally once
+        // the event loop drains.
+        process.exitCode = EXIT_GENERAL;
+        return;
       }
     });
   },
@@ -138,6 +151,12 @@ export const lintCommand = defineCommand({
       "Scan stash .md files for structural issues (unquoted colons, missing updated field, orphaned stubs, placeholder stubs, missing name/type, stale paths, broken refs in body text and in refs/xrefs/supersededBy/contradictedBy frontmatter). Use --fix to auto-fix Tier 1 issues. Exits 0 on success regardless of findings; use --fail-on-flagged for CI fail-on-finding behavior.",
   },
   args: {
+    // R-051: `lint` is a raw `defineCommand` (not `defineJsonCommand`), so it
+    // does not get `GLOBAL_OUTPUT_ARGS` for free. `--format`/`--detail`/
+    // `--shape`/`--output` already parsed correctly here (this command has no
+    // positional for a stray value to fall into), so this is purely a
+    // `--help` visibility / consistency fix, not a behavior change.
+    ...GLOBAL_OUTPUT_ARGS,
     fix: {
       type: "boolean",
       alias: "auto-fix",
@@ -177,7 +196,10 @@ export const proposeCommand = defineCommand({
     name: "propose",
     description: "Ask the configured agent CLI to author a brand-new asset and queue it as a proposal",
   },
+  // Raw defineCommand: declare the global output flags so their space-separated
+  // values are consumed rather than shifting the `type` / `name` positionals.
   args: {
+    ...GLOBAL_OUTPUT_ARGS,
     // Optional in citty so run() is invoked when omitted; we re-validate
     // below to surface a structured UsageError (exit 2) instead of citty's
     // default help-banner exit-0.
@@ -228,7 +250,11 @@ export const proposeCommand = defineCommand({
       });
       output("propose", result);
       if (result.ok === false) {
-        process.exit(EXIT_GENERAL);
+        // Same reasoning as agentCommand above: output() already ran, this
+        // is the last statement in the handler, so process.exitCode + return
+        // is equivalent without skipping any pending cleanup.
+        process.exitCode = EXIT_GENERAL;
+        return;
       }
     });
   },

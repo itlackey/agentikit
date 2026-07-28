@@ -21,13 +21,12 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import type { AkmDistillResult } from "../../../../src/commands/improve/distill";
 import { akmImprove } from "../../../../src/commands/improve/improve";
 import { getAssetOutcome } from "../../../../src/commands/improve/outcome-loop";
-import type { AkmReflectResult } from "../../../../src/commands/improve/reflect";
 import { getAssetSalience } from "../../../../src/commands/improve/salience";
 import { saveConfig } from "../../../../src/core/config/config";
 import { readEvents } from "../../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/improve-types";
 import { openStateDatabase } from "../../../../src/core/state-db";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { writeSkill } from "../../../_helpers/assets";
@@ -37,6 +36,10 @@ import { withIsolatedAkmStorage } from "../../../_helpers/sandbox";
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const cleanups: Array<() => void> = [];
+
+function durableRef(ref: string): string {
+  return `stash//${ref}`;
+}
 
 function isolatedStash(): string {
   const iso = withIsolatedAkmStorage();
@@ -83,7 +86,7 @@ const noopDistill = (ref: string): AkmDistillResult => ({
   ok: true,
   outcome: "queued",
   inputRef: ref,
-  lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+  proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
 });
 
 /** Minimal config: disable all expensive processes; keep proactiveMaintenance on. */
@@ -126,8 +129,8 @@ describe("WS-2 wiring — asset_outcome rows written during improve preparation"
     const db = openStateDatabase();
     try {
       // Both refs must have an asset_outcome row — the wiring persisted them.
-      const rowAlpha = getAssetOutcome(db, "skills/ws2-alpha");
-      const rowBeta = getAssetOutcome(db, "skills/ws2-beta");
+      const rowAlpha = getAssetOutcome(db, durableRef("skills/ws2-alpha"));
+      const rowBeta = getAssetOutcome(db, durableRef("skills/ws2-beta"));
 
       expect(rowAlpha).toBeDefined();
       expect(rowBeta).toBeDefined();
@@ -162,7 +165,7 @@ describe("WS-2 wiring — outcomeSalience flows into persisted asset_salience", 
 
     const db = openStateDatabase();
     try {
-      const salience = getAssetSalience(db, "skills/ws2-gamma");
+      const salience = getAssetSalience(db, durableRef("skills/ws2-gamma"));
       expect(salience).toBeDefined();
 
       // WS-2 warm-start seeds outcome_salience to DIVERSITY_FLOOR_FRACTION (0.1)
@@ -201,7 +204,7 @@ describe("WS-2 wiring — outcomeSalience flows into persisted asset_salience", 
     const db1 = openStateDatabase();
     let firstOutcomeSalience: number | undefined;
     try {
-      firstOutcomeSalience = getAssetSalience(db1, "skills/ws2-delta")?.outcome_salience;
+      firstOutcomeSalience = getAssetSalience(db1, durableRef("skills/ws2-delta"))?.outcome_salience;
     } finally {
       db1.close();
     }
@@ -211,7 +214,7 @@ describe("WS-2 wiring — outcomeSalience flows into persisted asset_salience", 
 
     const db2 = openStateDatabase();
     try {
-      const secondSalience = getAssetSalience(db2, "skills/ws2-delta");
+      const secondSalience = getAssetSalience(db2, durableRef("skills/ws2-delta"));
       // The row must still exist and outcome_salience must be defined.
       expect(secondSalience).toBeDefined();
       expect(typeof secondSalience?.outcome_salience).toBe("number");

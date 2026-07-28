@@ -9,22 +9,18 @@
  * `runWithJsonErrors(...) + output(...)` are migrated to `defineJsonCommand`,
  * which emits the same JSON envelope (stdout/stderr/exit-code) as the inline
  * form. `workflow template` keeps a plain `defineCommand` because it writes the
- * template straight to stdout with no JSON envelope. The private helpers
- * `looksLikeWorkflowRunId` and `resolveWorkflowFilePath` move with the family.
+ * template straight to stdout with no JSON envelope.
  */
 
+import fs from "node:fs";
 import { defineCommand } from "citty";
 import { getParsedInvocation } from "../cli/invocation";
 import { getStringArg } from "../cli/parse-args";
-import { defineJsonCommand, output, runWithJsonErrors } from "../cli/shared";
+import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
-import { parseRefInput } from "../core/asset/resolve-ref";
 import { loadConfig } from "../core/config/config";
 import { NotFoundError, UsageError } from "../core/errors";
 import { akmIndex } from "../indexer/indexer";
-import { resolveSourceEntries } from "../indexer/search/search-source";
-import { resolveSourcesForOrigin } from "../registry/origin-resolve";
-import { resolveAssetPath } from "../sources/resolve";
 import {
   createWorkflowAsset,
   formatWorkflowErrors,
@@ -33,23 +29,20 @@ import {
   validateWorkflowProgramSource,
   validateWorkflowSource,
 } from "../workflows/authoring/authoring";
-import {
-  hasWorkflowSubcommand,
-  parseWorkflowJsonObject,
-  parseWorkflowStepState,
-  WORKFLOW_STEP_STATES,
-} from "../workflows/cli";
+import { parseWorkflowJsonObject, parseWorkflowStepState, WORKFLOW_STEP_STATES } from "../workflows/cli";
+import { requireWorkflowEngineEnabled } from "../workflows/exec/workflow-engine-gate";
 import { isWorkflowProgramPath } from "../workflows/program/project";
 import {
   abandonWorkflowRun,
   completeWorkflowStep,
   getNextWorkflowStep,
   getWorkflowStatus,
+  hasWorkflowRun,
   listWorkflowRuns,
   resumeWorkflowRun,
   startWorkflowRun,
 } from "../workflows/runtime/runs";
-import { canonicalWorkflowRunRef } from "../workflows/runtime/workflow-asset-loader";
+import { loadWorkflowAsset } from "../workflows/runtime/workflow-asset-loader";
 
 const workflowStartCommand = defineJsonCommand({
   meta: {
@@ -61,7 +54,7 @@ const workflowStartCommand = defineJsonCommand({
     params: { type: "string", description: "Workflow parameters as a JSON object" },
     force: {
       type: "boolean",
-      description: "Allow a parallel run when an active run already exists in this scope (#485)",
+      description: "Allow a parallel run when an active run already exists in this scope",
       default: false,
     },
   },
@@ -95,39 +88,10 @@ const workflowNextCommand = defineJsonCommand({
       );
     }
     const parsedParams = args.params ? parseWorkflowJsonObject(args.params, "--params") : undefined;
-    // If the target looks like a UUID-style run id (no `:` and matches the
-    // run-id shape), short-circuit with a structured WORKFLOW_NOT_FOUND
-    // error before the ref parser throws an unhelpful ref-parse error.
-    if (looksLikeWorkflowRunId(args.target)) {
-      const { hasWorkflowRun } = await import("../workflows/runtime/runs.js");
-      if (!(await hasWorkflowRun(args.target))) {
-        throw new NotFoundError(
-          `Workflow run "${args.target}" not found.`,
-          "WORKFLOW_NOT_FOUND",
-          "Run `akm workflow list --active` to see runs.",
-        );
-      }
-    }
     const result = await getNextWorkflowStep(args.target, parsedParams);
     output("workflow-next", result);
   },
 });
-
-/**
- * Heuristic: a workflow run id is a UUID-shaped or hex-id-shaped string with
- * no `/` separator (canonical refs contain `workflows/<name>`). When this
- * matches we can give a much better
- * error than the ref parser's "Invalid asset type" failure.
- */
-function looksLikeWorkflowRunId(target: string): boolean {
-  if (target.includes(":")) return false;
-  if (target.includes("/")) return false;
-  // UUID v4-ish: 8-4-4-4-12 hex digits separated by dashes.
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(target)) return true;
-  // Bare hex/alphanumeric run ids of >=8 chars (covers shortened ids).
-  if (/^[0-9a-z][0-9a-z_-]{7,}$/i.test(target) && /[0-9]/.test(target)) return true;
-  return false;
-}
 
 const workflowCompleteCommand = defineJsonCommand({
   meta: {
@@ -178,35 +142,31 @@ const workflowStatusCommand = defineJsonCommand({
       type: "boolean",
       description:
         "Also list per-unit rows from the run journal (unit id, status, failure_reason, and any result/error " +
-        "diagnostic text). Diagnostics only — step evidence stays deterministic and is unaffected (#22).",
+        "diagnostic text). Diagnostics only — step evidence stays deterministic and is unaffected.",
       default: false,
     },
   },
   async run({ args }) {
     const target = args.target;
     const includeUnits = args.units === true;
-    // Check if target looks like a workflow ref
-    const parsed = (() => {
-      try {
-        return parseRefInput(target);
-      } catch {
-        return null;
-      }
-    })();
-    if (parsed?.type === "workflow") {
-      const ref = canonicalWorkflowRunRef(parsed.origin, parsed.name);
-      const { runs } = await listWorkflowRuns({ workflowRef: ref });
-      if (runs.length === 0) {
-        throw new NotFoundError(`No workflow runs found for ${ref}`, "WORKFLOW_NOT_FOUND");
-      }
-      const mostRecent = runs[0];
-      if (!mostRecent) throw new NotFoundError(`No workflow runs found for ${ref}`, "WORKFLOW_NOT_FOUND");
-      const result = await getWorkflowStatus(mostRecent.id, { includeUnits });
-      output("workflow-status", result);
-    } else {
+    if (await hasWorkflowRun(target)) {
       const result = await getWorkflowStatus(target, { includeUnits });
       output("workflow-status", result);
+      return;
     }
+    let runs: Awaited<ReturnType<typeof listWorkflowRuns>>["runs"];
+    try {
+      ({ runs } = await listWorkflowRuns({ workflowRef: target }));
+    } catch (error) {
+      if (!target.includes(":") && !target.includes("/")) {
+        throw new NotFoundError(`Workflow run "${target}" not found.`, "WORKFLOW_NOT_FOUND");
+      }
+      throw error;
+    }
+    const mostRecent = runs[0];
+    if (!mostRecent) throw new NotFoundError(`No workflow runs found for ${target}`, "WORKFLOW_NOT_FOUND");
+    const result = await getWorkflowStatus(mostRecent.id, { includeUnits });
+    output("workflow-status", result);
   },
 });
 
@@ -272,6 +232,12 @@ const workflowCreateCommand = defineJsonCommand({
       throw new UsageError(
         "Refusing to overwrite with template: pass --from <file> to replace content, or --reset to explicitly replace with a fresh template.",
       );
+    }
+    // Q-05: a `.yaml`/`.yml` name authors a YAML *program* — the format the
+    // native engine executes — so it is gated the same as running one.
+    // Markdown workflows (the default) are unaffected.
+    if (isWorkflowProgramPath(effectiveName)) {
+      requireWorkflowEngineEnabled(loadConfig(), `create ${effectiveName}`);
     }
     const result = createWorkflowAsset({
       name: effectiveName,
@@ -353,25 +319,14 @@ const workflowValidateCommand = defineJsonCommand({
 });
 
 async function resolveWorkflowFilePath(target: string): Promise<string> {
-  // Canonical workflow refs resolve through the source search; anything else is
-  // treated as a filesystem path.
-  const looksLikeWorkflowRef = target.startsWith("workflows/") || target.includes("//workflows/");
-  if (!looksLikeWorkflowRef) return target;
-  const parsed = parseRefInput(target);
-  if (parsed.type !== "workflow") {
-    throw new UsageError(`Expected a workflow ref (workflows/<name>), got "${target}".`);
+  if (/[/\\]{2}/.test(target) && fs.existsSync(target)) return target;
+  try {
+    return (await loadWorkflowAsset(target)).path;
+  } catch (error) {
+    const looksLikeWorkflowRef = target.startsWith("workflows/") || target.includes("//");
+    if (looksLikeWorkflowRef) throw error;
+    return target;
   }
-  const config = loadConfig();
-  const allSources = resolveSourceEntries(undefined, config);
-  const searchSources = resolveSourcesForOrigin(parsed.origin, allSources);
-  for (const source of searchSources) {
-    try {
-      return await resolveAssetPath(source.path, "workflow", parsed.name);
-    } catch {
-      /* try next source */
-    }
-  }
-  throw new UsageError(`Workflow not found for ref: workflows/${parsed.name}`);
 }
 
 const workflowRunCommand = defineJsonCommand({
@@ -390,11 +345,12 @@ const workflowRunCommand = defineJsonCommand({
       description:
         "Treat every criteria-bearing completion gate as required: if no LLM judge is available, BLOCK the step " +
         "(for a human to resolve via `akm workflow resume`) instead of failing open. A per-step `gate.required: true` " +
-        "in the workflow does the same on every surface; this is the run-wide override (#18).",
+        "in the workflow does the same on every surface; this is the run-wide override.",
       default: false,
     },
   },
   async run({ args }) {
+    requireWorkflowEngineEnabled(loadConfig(), "run");
     const { runWorkflowSteps } = await import("../workflows/exec/run-workflow.js");
     const rawMaxSteps = getStringArg(args, "max-steps");
     let maxSteps: number | undefined;
@@ -430,6 +386,7 @@ const workflowBriefCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    requireWorkflowEngineEnabled(loadConfig(), "brief");
     const { buildWorkflowBrief } = await import("../workflows/exec/brief.js");
     const result = await buildWorkflowBrief(args.target);
     output("workflow-brief", result);
@@ -485,6 +442,7 @@ const workflowReportCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    requireWorkflowEngineEnabled(loadConfig(), "report");
     // --settle: the unit-less verb that advances a run parked on a
     // non-dispatching step. Mutually exclusive with the per-unit report flags.
     if (args.settle === true) {
@@ -594,6 +552,7 @@ const workflowWatchCommand = defineJsonCommand({
     "interval-ms": { type: "string", description: "Poll interval in milliseconds for --stream (default: 1000)" },
   },
   async run({ args }) {
+    requireWorkflowEngineEnabled(loadConfig(), "watch");
     const rawInterval = getStringArg(args, "interval-ms");
     let intervalMs: number | undefined;
     if (rawInterval !== undefined) {
@@ -642,7 +601,7 @@ const workflowResumeCommand = defineJsonCommand({
   },
 });
 
-export const workflowCommand = defineCommand({
+export const workflowCommand = defineGroupCommand({
   meta: {
     name: "workflow",
     description: "Author, inspect, and execute step-by-step workflow assets",
@@ -663,10 +622,10 @@ export const workflowCommand = defineCommand({
     report: workflowReportCommand,
     watch: workflowWatchCommand,
   },
-  run({ args }) {
-    return runWithJsonErrors(async () => {
-      if (hasWorkflowSubcommand(args)) return;
-      output("workflow-list", await listWorkflowRuns({ activeOnly: true }));
-    });
-  },
+  // No `defaultRun`: bare `akm workflow` is a usage error (exit 2), the
+  // canonical bare-group behavior — owner ruling 12. Run `akm workflow list
+  // --active` for what the bare form used to print. This group was previously
+  // hand-rolled on `defineCommand` with its own `hasWorkflowSubcommand` guard,
+  // which duplicated the subcommand names in a second hand-maintained set;
+  // `defineGroupCommand` derives the guard from `subCommands` directly.
 });

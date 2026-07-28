@@ -1,16 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { akmTasksSync } from "../src/commands/tasks/tasks";
-import type { InstalledTaskRef } from "../src/tasks/backends";
 import { decodeCommandOutput, escapeXml } from "../src/tasks/backends/exec-utils";
 import type { SchtasksExec, SchtasksFs } from "../src/tasks/backends/schtasks";
 import { buildSchtasksXml, extractSchtasksTarget, SCHTASKS_BACKEND } from "../src/tasks/backends/schtasks";
+import type { InstalledTaskRef } from "../src/tasks/backends/types";
 import {
   type ScheduledTaskContext,
   schedulerContextDescriptor,
   schedulerContextPath,
 } from "../src/tasks/scheduler-invocation";
 import type { TaskDocument } from "../src/tasks/schema";
-import { withIsolatedAkmStorage } from "./_helpers/sandbox";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
   AKM_STASH_DIR: "C:\\Users\\Akm User\\O'Brien & notes",
@@ -59,7 +57,7 @@ function sourceSignature(xml: string): string {
   return match[1]!;
 }
 
-function legacyTargetXml(): string {
+function descriptorlessTargetXml(): string {
   const task = makeTask("0 9 * * *");
   const binding = "C:\\Program Files\\O'Brien & Sons\\akm.exe";
   const powershellEnv = "$" + "env:";
@@ -153,7 +151,7 @@ describe("buildSchtasksXml", () => {
     ]);
   });
 
-  test("persisted hour range-step renders every selected daily boundary", () => {
+  test("hour range-step renders every selected daily boundary", () => {
     const xml = buildSchtasksXml(
       makeTask("0 2-22/4 * * *"),
       ["C:/akm.exe"],
@@ -312,40 +310,33 @@ describe("buildSchtasksXml", () => {
   });
 });
 
-describe("legacy schtasks bundle attribution", () => {
-  test("parses --target after environment values containing ampersands and apostrophes", () => {
-    expect(extractSchtasksTarget(legacyTargetXml())).toBe("work");
+describe("schtasks bundle attribution", () => {
+  test("parses --target from the current descriptor-bearing invocation", () => {
+    const xml = buildSchtasksXml(makeTask("0 9 * * *"), ["C:\\Program Files\\O'Brien & Sons\\akm.exe"], "C:/log", {
+      ...xmlOptions(),
+      target: "work",
+    });
+    expect(extractSchtasksTarget(xml)).toBe("work");
   });
 
-  test("primary sync cannot remove the foreign legacy entry", async () => {
-    const storage = withIsolatedAkmStorage();
-    try {
-      const xml = legacyTargetXml();
-      const calls: string[][] = [];
-      const backend = SCHTASKS_BACKEND({
-        exec: {
-          run(args) {
-            calls.push(args);
-            if (args.includes("/FO")) {
-              return { status: 0, stdout: '"\\akm\\ping","N/A","Ready"\r\n', stderr: "" };
-            }
-            if (args.includes("/XML")) return { status: 0, stdout: xml, stderr: "" };
-            return { status: 0, stdout: "", stderr: "" };
-          },
+  test("rejects a descriptor-less installed entry", () => {
+    const xml = descriptorlessTargetXml();
+    const backend = SCHTASKS_BACKEND({
+      exec: {
+        run(args) {
+          if (args.includes("/FO")) return { status: 0, stdout: '"\\akm\\ping","N/A","Ready"\r\n', stderr: "" };
+          if (args.includes("/XML")) return { status: 0, stdout: xml, stderr: "" };
+          return { status: 0, stdout: "", stderr: "" };
         },
-        akmArgv: ["C:/current/akm.exe"],
-        logDir: "C:/log",
-        scheduledContext: SCHEDULED_CONTEXT,
-        userSid: USER_SID,
-      });
+      },
+      akmArgv: ["C:/current/akm.exe"],
+      logDir: "C:/log",
+      scheduledContext: SCHEDULED_CONTEXT,
+      userSid: USER_SID,
+    });
 
-      const result = await akmTasksSync({ backend });
-
-      expect(result.removed).toEqual([]);
-      expect(calls.some((args) => args.includes("/Delete"))).toBe(false);
-    } finally {
-      storage.cleanup();
-    }
+    expect(extractSchtasksTarget(xml)).toBeUndefined();
+    expect(() => backend.list()).toThrow("does not contain a current AKM scheduler invocation");
   });
 });
 

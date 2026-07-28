@@ -58,7 +58,7 @@ describe("akmConsolidate — all-hot chunk early-exit", () => {
     writeMemory("hot-b", { hot: true });
     writeMemory("hot-c", { hot: true });
 
-    const result = await akmConsolidate({ stashDir, target: stashDir, config: CONFIG });
+    const result = await akmConsolidate({ stashDir, config: CONFIG });
 
     expect(result.ok).toBe(true);
     expect(result.processed).toBe(3);
@@ -84,7 +84,7 @@ describe("akmConsolidate — all-hot chunk early-exit", () => {
     writeMemory("hot-b", { hot: true });
     writeMemory("cold-c", { hot: false });
 
-    const result = await akmConsolidate({ stashDir, target: stashDir, config: CONFIG });
+    const result = await akmConsolidate({ stashDir, config: CONFIG });
 
     expect(result.ok).toBe(true);
     expect(result.processed).toBe(3);

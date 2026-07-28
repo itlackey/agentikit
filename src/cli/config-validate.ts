@@ -49,6 +49,6 @@ export async function runConfigValidate(): Promise<void> {
   throw new ConfigError(
     `Config at ${configPath} has ${result.errors.length} validation error${result.errors.length === 1 ? "" : "s"}:\n${lines}`,
     "INVALID_CONFIG_FILE",
-    "Fix the listed fields, or run `akm config migrate` if the errors look like legacy-shape leftovers.",
+    "Fix the listed fields, or run `akm-migrate apply` for an older config shape.",
   );
 }

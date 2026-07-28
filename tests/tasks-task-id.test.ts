@@ -72,11 +72,12 @@ describe("validateTaskId", () => {
 });
 
 describe("normaliseTaskId", () => {
-  test("keeps accepting a legacy task-file suffix at the CLI boundary", () => {
-    expect(normaliseTaskId(" daily.yml ")).toBe("daily");
+  test("trims a current bare task id", () => {
+    expect(normaliseTaskId(" daily ")).toBe("daily");
   });
 
-  test("still rejects a reserved device name after removing a legacy suffix", () => {
-    expect(() => normaliseTaskId("CON.yml")).toThrow("reserved Windows device name");
+  test("does not strip task-file suffixes", () => {
+    expect(() => normaliseTaskId("daily.yml")).toThrow("bare task id");
+    expect(normaliseTaskId("daily.md")).toBe("daily.md");
   });
 });

@@ -499,13 +499,14 @@ describe("akmExtract — candidate → proposal routing", () => {
   test("repairs a truncated description so the auto-accept validator passes (#556)", async () => {
     const stash = makeStashDir();
     const session = fakeSession("ses_trunc", Date.now() - 60_000);
+    const proposalRef = durableItemRef(stash, "lesson", "vpn-before-deploy");
 
     // The LLM produced a description sliced mid-clause (ends with "to"). On the
     // pre-#556 path this lands as-is and the description-quality validator
     // rejects it at accept time. The repair pass must complete it first.
     const truncatedDesc = "Always connect to the corporate VPN before running deploy.sh to";
     expect(detectTruncatedDescription(truncatedDesc)).not.toBeNull();
-    expect(isValidDescription(truncatedDesc, "lesson:vpn-before-deploy").ok).toBe(false);
+    expect(isValidDescription(truncatedDesc, proposalRef).ok).toBe(false);
 
     const result = await akmExtract({
       type: "claude-code",
@@ -533,14 +534,14 @@ describe("akmExtract — candidate → proposal routing", () => {
     expect(result.candidatesCreated).toBe(1);
 
     const pending = listProposals(stash, { status: "pending" }).filter((p) => p.source === "extract");
-    const prop = pending.find((p) => p.ref === durableItemRef(stash, "lesson", "vpn-before-deploy"));
+    const prop = pending.find((p) => p.ref === proposalRef);
     expect(prop).toBeDefined();
 
     // The persisted content's frontmatter description must now be valid.
     const fm = parseFrontmatter(prop?.payload.content ?? "").data as Record<string, unknown>;
     expect(typeof fm.description).toBe("string");
     expect(detectTruncatedDescription(fm.description as string)).toBeNull();
-    expect(isValidDescription(fm.description, "lesson:vpn-before-deploy").ok).toBe(true);
+    expect(isValidDescription(fm.description, proposalRef).ok).toBe(true);
 
     // The payload frontmatter mirror must carry the same repaired value.
     const payloadDesc = (prop?.payload.frontmatter as Record<string, unknown> | undefined)?.description;

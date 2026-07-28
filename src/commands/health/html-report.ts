@@ -25,9 +25,7 @@
  * `~1MB` `echarts.min.js` self-contained/"inline" mode was removed along with
  * the asset itself — `buildEchartsTag` always emits a `<script src>` tag
  * pointed at the jsDelivr CDN, so viewing the report now requires network
- * access. BEHAVIOR CHANGE (plan-accepted, ledgered): previously
- * `AKM_ECHARTS=cdn` opted IN to the CDN with "inline" as the default; there is
- * no more env var or option to opt back into an offline report.
+ * access. There is no env var or option to opt back into an offline report.
  */
 
 import { escapeHtml } from "../../output/html-render";
@@ -222,10 +220,9 @@ function renderExecSummary(vm: HealthReportViewModel): string {
 
   const windowRows = [
     li("Report window", esc(vm.window)),
-    li("Compare window", esc(vm.compare)),
+    li(vm.comparisonMode === "custom" ? "Comparison windows" : "Compare window", esc(vm.compare)),
     li("Runs", `${num(vm.totalRuns)} (${vm.failedRuns} failed)`),
     li("Included result rows", num(vm.includedResultRows)),
-    li("Normalized result rows", num(vm.normalizedResultRows)),
     li("Invalid result rows skipped", num(vm.skippedInvalidResultRows)),
     li(
       "Stash derived",
@@ -263,7 +260,7 @@ function renderExecSummary(vm: HealthReportViewModel): string {
         <ul>${quickNumbers}</ul>
       </div>
       <div>
-        <h4>Trend vs prior ${esc(vm.compare)}</h4>
+        <h4>${vm.comparisonMode === "custom" ? `Trend: ${esc(vm.compare)}` : `Trend vs prior ${esc(vm.compare)}`}</h4>
         <ul>${trendRows}</ul>
         <h4 style="margin-top:14px;">Period-over-period deltas</h4>
         <ul>${deltaRows}</ul>
@@ -278,7 +275,9 @@ function renderExecSummary(vm: HealthReportViewModel): string {
       </div>
     </div>
     <div class="overall">Overall trend: <b>${esc(vm.trend.overall)}</b> ${overallEmoji}
-      &nbsp;·&nbsp; based on decision quality, output volume, failures, and latency vs the prior window.</div>`.trim();
+      &nbsp;·&nbsp; based on decision quality, output volume, failures, and latency ${
+        vm.comparisonMode === "custom" ? "across the selected windows" : "vs the prior window"
+      }.</div>`.trim();
 }
 
 /**
@@ -489,7 +488,7 @@ function renderActionItems(vm: HealthReportViewModel): string {
       title: `${vm.perf.overBudgetRuns} consolidation run${vm.perf.overBudgetRuns === 1 ? "" : "s"} exceeded budget`,
       descHtml:
         "Consolidation phase wall time exceeded the total run budget on these runs. " +
-        "Consider increasing the timeout or reducing the consolidation pool via profile config.",
+        "Consider increasing the timeout or reducing the consolidation pool via strategy config.",
       remedy: "akm config show",
     });
   }

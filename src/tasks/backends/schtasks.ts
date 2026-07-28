@@ -101,7 +101,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
       const xml = normalizeXmlForUtf16File(
         buildSchtasksXml(task, akmArgv, logDir, {
           folderPrefix: folder,
-          contextPath: opts?.contextPath === null ? undefined : (opts?.contextPath ?? defaultContextPath),
+          contextPath: opts?.contextPath ?? defaultContextPath,
           userSid,
           binding: [...(opts?.binding ?? akmArgv)],
           ...(opts?.target !== undefined ? { target: opts.target } : {}),
@@ -212,20 +212,50 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
         });
         const signature = installedSignature(query.stdout);
         const installed = extractSchtasksInvocation(query.stdout);
+        if (!installed) {
+          throw new ConfigError(
+            `Task Scheduler task "${taskName(id)}" does not contain a current AKM scheduler invocation.`,
+            "INVALID_CONFIG_FILE",
+          );
+        }
         return {
           id,
           ...(signature !== undefined ? { signature } : {}),
-          ...(installed?.target !== undefined ? { target: installed.target } : {}),
-          ...(installed?.binding !== undefined ? { binding: installed.binding } : {}),
-          ...(installed?.contextPath !== undefined ? { contextPath: installed.contextPath } : {}),
+          ...(installed.target !== undefined ? { target: installed.target } : {}),
+          binding: installed.binding,
+          contextPath: installed.contextPath,
         };
       });
+    },
+    listForRebind() {
+      const r = runOrThrow(exec, ["schtasks", "/Query", "/FO", "CSV", "/NH"], {
+        message: (res) => `schtasks /Query failed (exit ${res.status}): ${res.stderr || res.stdout || "no output"}.`,
+      });
+      const refs: Array<{ id: string; signature?: string; target?: string }> = [];
+      for (const line of (r.stdout ?? "").split(/\r?\n/)) {
+        const match = line.match(/^"([^"]+)",/);
+        const name = match?.[1];
+        if (!name?.startsWith(folder)) continue;
+        const id = name.slice(folder.length);
+        const query = runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(id), "/XML"], {
+          message: (result) =>
+            `schtasks /Query /XML for "${taskName(id)}" failed (exit ${result.status}): ${result.stderr || result.stdout || "no output"}.`,
+        });
+        const signature = installedSignature(query.stdout);
+        const installed = extractSchtasksInvocation(query.stdout);
+        refs.push({
+          id,
+          ...(signature !== undefined ? { signature } : {}),
+          ...(installed?.target !== undefined ? { target: installed.target } : {}),
+        });
+      }
+      return refs;
     },
     expectedSignature(task: TaskDocument, opts?: TaskInstallOptions): string {
       const signature = taskXmlSignature(
         buildSchtasksXml(task, akmArgv, logDir, {
           folderPrefix: folder,
-          contextPath: opts?.contextPath === null ? undefined : (opts?.contextPath ?? defaultContextPath),
+          contextPath: opts?.contextPath ?? defaultContextPath,
           userSid,
           binding: [...(opts?.binding ?? akmArgv)],
           ...(opts?.target !== undefined ? { target: opts.target } : {}),
@@ -247,7 +277,7 @@ export function extractSchtasksTarget(xml: string): string | undefined {
 }
 
 export function extractSchtasksInvocation(xml: string): ReturnType<typeof parseScheduledTaskArgv> {
-  const argsElement = xml.match(/<Arguments>([\s\S]*?)<\/Arguments>/i);
+  const argsElement = xml.match(/<(?:[\w.-]+:)?Arguments>([\s\S]*?)<\/(?:[\w.-]+:)?Arguments>/i);
   if (!argsElement) return undefined;
   const commandLine = decodeXml(argsElement[1]!);
   const invocationStart = findPowerShellInvocationOperator(commandLine);
@@ -312,8 +342,8 @@ export interface BuildSchtasksXmlOptions {
   /** Override the clock used to find the next StartBoundary (tests). */
   now?: () => Date;
   /** Immutable runtime context descriptor loaded by the launcher. */
-  contextPath?: string;
-  /** Bootstrap argv. Defaults to the positional akmArgv for compatibility. */
+  contextPath: string;
+  /** Bootstrap argv. Defaults to the positional akmArgv. */
   binding?: string[];
   /** Current Windows user SID embedded in the principal. */
   userSid: string;
@@ -365,7 +395,7 @@ function buildSchtasksDefinition(
   akmArgv: string[],
   logDir: string,
   folder: string,
-  contextPath: string | undefined,
+  contextPath: string,
   userSid: string,
   target?: string,
 ): SchtasksDefinition {

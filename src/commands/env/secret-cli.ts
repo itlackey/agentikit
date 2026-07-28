@@ -12,9 +12,20 @@
  *
  * `akm secret` manages whole-file secrets under each stash's secrets/ directory.
  * Unlike env files (.env key/value), the ENTIRE file is the secret value. The bytes
- * are NEVER written to stdout or structured output. Values reach a command only
- * via `akm secret run` (injected into a child env var) or `akm secret path`
- * (the Docker /run/secrets + `_FILE` convention).
+ * are NEVER written to stdout or structured output. The only value-use path is
+ * `akm secret run` (injected into a child env var).
+ *
+ * `secret path` and `secret remove` were REMOVED in 0.9.0 (R-027 / D-49): an
+ * audit found `path` resolved the ref through the read-side, all-sources
+ * resolver while `remove` resolved it through the write-target resolver, so
+ * `akm secret path <ref>` and `akm secret remove <ref>` could silently name
+ * two DIFFERENT files when a ref existed in more than one stash — inspect one,
+ * delete the other. The owner's ruling was to drop both subcommands rather
+ * than reconcile the resolvers. A ref's file lives at `<stash>/secrets/<name>`
+ * (matching the ref exactly, e.g. `secrets/deploy-key` -> `secrets/deploy-key`
+ * under a stash root — `akm sources list` prints each configured stash's root
+ * path); locate or delete it directly, or consume its value without touching
+ * disk via `akm secret run <ref> <VAR> -- <command>`.
  */
 
 import { spawnSync } from "node:child_process";
@@ -92,7 +103,7 @@ const secretSetCommand = defineJsonCommand({
   args: {
     ref: {
       type: "positional",
-      description: "Secret ref (flat name, e.g. secret:deploy-key or just deploy-key; use --path for a subdirectory)",
+      description: "Secret ref (flat name, e.g. secrets/deploy-key or just deploy-key; use --path for a subdirectory)",
       required: true,
     },
     path: {
@@ -150,24 +161,6 @@ const secretSetCommand = defineJsonCommand({
     setSecret(absPath, value);
     commitEnvSecretWrite(target, { type: "secret", name }, "Update", [absPath]);
     output("secret-set", { ref });
-  },
-});
-
-const secretPathCommand = defineJsonCommand({
-  meta: {
-    name: "path",
-    description:
-      "Print the absolute secret file path for the Docker `_FILE` convention, e.g. `MY_SECRET_FILE=$(akm secret path secret:deploy-key)`.",
-  },
-  args: {
-    ref: { type: "positional", description: "Secret ref", required: true },
-  },
-  async run({ args }) {
-    const { name, absPath, source } = resolveSecretPath(args.ref);
-    if (!fs.existsSync(absPath)) {
-      throw new NotFoundError(`Secret not found: ${makeSecretRef(name, source)}`);
-    }
-    process.stdout.write(`${absPath}\n`);
   },
 });
 
@@ -254,38 +247,14 @@ const secretRunCommand = defineJsonCommand({
       }
       throw err;
     }
-    process.exit(result.status ?? 0);
-  },
-});
-
-const secretRemoveCommand = defineJsonCommand({
-  meta: { name: "remove", description: "Remove a secret (and its .sensitive marker, if any)" },
-  args: {
-    ref: { type: "positional", description: "Secret ref", required: true },
-    yes: { type: "boolean", alias: "y", description: "Skip confirmation prompt", default: false },
-    target: {
-      type: "string",
-      description:
-        "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working stash.",
-    },
-  },
-  async run({ args }) {
-    const { name, absPath, target, ref } = resolveSecretWriteTarget(args.ref, args.target);
-    const { confirmDestructive } = await import("../../cli/confirm.js");
-    const confirmed = await confirmDestructive(`Remove secret "${args.ref}"? This cannot be undone.`, {
-      yes: args.yes === true,
-    });
-    if (!confirmed) {
-      process.stderr.write("Aborted.\n");
-      return;
-    }
-    const { removeSecret } = await import("./secret.js");
-    if (!fs.existsSync(absPath)) {
-      throw new NotFoundError(`Secret not found: ${ref}`);
-    }
-    const removed = removeSecret(absPath);
-    commitEnvSecretWrite(target, { type: "secret", name }, "Remove", [absPath, `${absPath}.sensitive`]);
-    output("secret-remove", { ref, removed });
+    // R-067: was `process.exit(result.status ?? 0)`, unconditional even on
+    // the success path — it skipped the `finally { await
+    // disposeDispatchResources(); }` cleanup in src/cli.ts's `runCommand`.
+    // Setting `process.exitCode` and returning still exits with the child's
+    // exact status once the event loop drains, but lets cleanup run first —
+    // same pattern `emitJsonError` (src/cli/shared.ts) already established.
+    process.exitCode = result.status ?? 0;
+    return;
   },
 });
 
@@ -293,16 +262,14 @@ export const secretCommand = defineGroupCommand({
   meta: {
     name: "secret",
     description:
-      "Manage secrets — a single sensitive value used on its own for authentication (an API token, a PEM private key, a TLS cert), one value per file. Names are visible; the file contents are the value and never appear in structured output. For a group of related configuration loaded together, use `akm env`.",
+      "Manage secrets — a single sensitive value used on its own for authentication (an API token, a PEM private key, a TLS cert), one value per file. Names are visible; the file contents are the value and never appear in structured output. For a group of related configuration loaded together, use `akm env`. `secret path` and `secret remove` were removed in 0.9.0 (D-49: they resolved a ref through different stash-selection logic, so a lookup and a deletion could silently target different files) — a ref's file lives at `<stash>/secrets/<name>` (see `akm sources list` for stash roots); locate or delete it there directly, or consume its value without touching disk via `akm secret run <ref> <VAR> -- <command>`.",
   },
   subCommands: {
     list: secretListCommand,
-    path: secretPathCommand,
     run: secretRunCommand,
     set: secretSetCommand,
-    remove: secretRemoveCommand,
   },
-  defaultRun() {
-    output("secret-list", { secrets: listSecretsRecursive() });
-  },
+  // No `defaultRun`: bare `akm secret` is a usage error (exit 2), the canonical
+  // bare-group behavior — owner ruling 12. Run `akm secret list` for what the
+  // bare form used to print.
 });

@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { openStateDatabase } from "../../src/core/state-db";
 import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import type { Database } from "../../src/storage/database";
@@ -13,6 +14,8 @@ import {
 import {
   collectTagSetFromEntries,
   deleteEntriesByDir,
+  deleteEntriesByDirAndStash,
+  deleteUsageEventsByEntryIds,
   findEntryIdByRef,
   getAllEntries,
   getEmbeddableEntryCount,
@@ -38,7 +41,7 @@ import {
   getRegistryIndexCache,
   upsertRegistryIndexCache,
 } from "../../src/storage/repositories/registry-index-cache-repository";
-import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../_helpers/sandbox";
+import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 // ── Temp directory management ───────────────────────────────────────────────
 
@@ -99,6 +102,11 @@ function insertTestEntry(
 ): number {
   const type = opts?.type ?? "script";
   const entry = makeEntry({ name: key, type, description: opts?.description ?? `Description for ${key}` });
+  const provenance = deriveEntryProvenance(
+    { bundleId: "test-bundle", componentId: "test-bundle", adapterId: "akm" },
+    type,
+    key,
+  );
   return upsertEntry(
     db,
     key,
@@ -107,6 +115,7 @@ function insertTestEntry(
     opts?.stashDir ?? "/test/stash",
     entry,
     opts?.searchText ?? `${key} ${entry.description}`,
+    provenance,
   );
 }
 
@@ -229,7 +238,7 @@ describe("Entry CRUD", () => {
     try {
       const type = "script";
       const name = "my-tool";
-      const entryKey = `/s:${type}:${name}`; // legacy stashDir:type:name shape
+      const entryKey = `/s:${type}:${name}`;
       const prov = deriveEntryProvenance({ bundleId: "team-kb", componentId: "team-kb", adapterId: "akm" }, type, name);
       const entry = makeEntry({ name, type, description: "original" });
       upsertEntry(db, entryKey, "/s/dir", "/s/dir/my-tool.ts", "/s", entry, "my-tool original", prov);
@@ -244,48 +253,6 @@ describe("Entry CRUD", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]?.item_ref).toBe("team-kb//scripts/my-tool");
       expect(JSON.parse(rows[0]?.entry_json ?? "{}").description).toBe("updated");
-    } finally {
-      closeDatabase(db);
-    }
-  });
-
-  test("a NULL-item_ref re-upsert of an existing row UPDATES in place via the entry_key fallback (never crashes)", () => {
-    // Mirrors the out-of-scope LLM metadata-enhance re-upsert: an already-indexed
-    // row (non-NULL item_ref) is re-written WITHOUT provenance → NULL item_ref.
-    // Under an item_ref-ONLY conflict target this would miss the row and ABORT on
-    // the `entry_key NOT NULL UNIQUE` constraint; the retained entry_key fallback
-    // keeps it a safe in-place UPDATE.
-    const db = openIndexDatabase(tmpDbPath());
-    try {
-      const type = "script";
-      const name = "my-tool";
-      const entryKey = `/s:${type}:${name}`; // legacy stashDir:type:name shape
-      const prov = deriveEntryProvenance({ bundleId: "team-kb", componentId: "team-kb", adapterId: "akm" }, type, name);
-      const first = makeEntry({ name, type, description: "first pass" });
-      upsertEntry(db, entryKey, "/s/dir", "/s/dir/my-tool.ts", "/s", first, "first", prov);
-      expect(getEntryCount(db)).toBe(1);
-
-      // Re-upsert the SAME entry_key WITHOUT provenance (item_ref = NULL).
-      const enhanced = makeEntry({ name, type, description: "enhanced" });
-      expect(() => upsertEntry(db, entryKey, "/s/dir", "/s/dir/my-tool.ts", "/s", enhanced, "enhanced")).not.toThrow();
-      // One row, updated in place — not duplicated.
-      expect(getEntryCount(db)).toBe(1);
-      const entries = getAllEntries(db);
-      expect(entries).toHaveLength(1);
-      expect(entries[0]!.entry.description).toBe("enhanced");
-    } finally {
-      closeDatabase(db);
-    }
-  });
-
-  test("distinct NULL-item_ref rows coexist (NULLs are distinct under the UNIQUE index)", () => {
-    // The unmapped-bundle write path leaves item_ref NULL; two such rows with
-    // different entry_keys must NOT collapse into one under the item_ref UNIQUE.
-    const db = openIndexDatabase(tmpDbPath());
-    try {
-      insertTestEntry(db, "tool-a");
-      insertTestEntry(db, "tool-b");
-      expect(getEntryCount(db)).toBe(2);
     } finally {
       closeDatabase(db);
     }
@@ -436,6 +403,51 @@ describe("Entry CRUD", () => {
       expect(remaining[0]!.entryKey).toBe("keep-1");
     } finally {
       closeDatabase(db);
+    }
+  });
+
+  test("deferred usage cleanup does not escape a rolled-back index transaction", () => {
+    const storage = withIsolatedAkmStorage();
+    const db = openIndexDatabase(tmpDbPath());
+    try {
+      const entryId = insertTestEntry(db, "rollback-delete", {
+        dirPath: "/handoff",
+        stashDir: "/parent",
+      });
+      const stateDb = openStateDatabase();
+      stateDb
+        .prepare("INSERT INTO usage_events (event_type, entry_id, entry_ref) VALUES ('show', ?, ?)")
+        .run(entryId, "parent//memories/rollback-delete");
+      stateDb.close();
+
+      expect(() =>
+        db.transaction(() => {
+          deleteEntriesByDirAndStash(db, "/handoff", "/parent", { cleanupUsageEvents: false });
+          throw new Error("forced persistence failure");
+        })(),
+      ).toThrow("forced persistence failure");
+      expect(getEntryCount(db)).toBe(1);
+
+      const afterRollback = openStateDatabase();
+      expect(
+        afterRollback.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE entry_id = ?").get(entryId),
+      ).toEqual({
+        count: 1,
+      });
+      afterRollback.close();
+
+      const deletedIds = deleteEntriesByDirAndStash(db, "/handoff", "/parent", { cleanupUsageEvents: false });
+      deleteUsageEventsByEntryIds(deletedIds);
+      const afterCommit = openStateDatabase();
+      expect(afterCommit.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE entry_id = ?").get(entryId)).toEqual(
+        {
+          count: 0,
+        },
+      );
+      afterCommit.close();
+    } finally {
+      closeDatabase(db);
+      storage.cleanup();
     }
   });
 
@@ -736,6 +748,24 @@ describe("Vector / Embedding integration", () => {
       // Original direction should now be far
       results = searchVec(db, [1, 0, 0, 0], 10);
       expect(results[0]!.distance).toBeGreaterThan(1);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("upsertEntry invalidates vectors only when the embedding input changes", () => {
+    const db = openIndexDatabase(tmpDbPath(), { embeddingDim: 4 });
+    try {
+      const id = insertTestEntry(db, "vec-input", { searchText: "same projection" });
+      upsertEmbedding(db, id, [1, 0, 0, 0]);
+
+      expect(insertTestEntry(db, "vec-input", { searchText: "same projection" })).toBe(id);
+      expect(db.prepare("SELECT COUNT(*) AS count FROM embeddings WHERE id = ?").get(id)).toEqual({ count: 1 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM entries_vec WHERE id = ?").get(id)).toEqual({ count: 1 });
+
+      expect(insertTestEntry(db, "vec-input", { searchText: "changed projection" })).toBe(id);
+      expect(db.prepare("SELECT COUNT(*) AS count FROM embeddings WHERE id = ?").get(id)).toEqual({ count: 0 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM entries_vec WHERE id = ?").get(id)).toEqual({ count: 0 });
     } finally {
       closeDatabase(db);
     }

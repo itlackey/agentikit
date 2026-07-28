@@ -22,7 +22,6 @@
 import { UsageError } from "../core/errors";
 import type { DetailLevel, ShapeMode } from "./context";
 import { curateShapes } from "./shapes/curate";
-import { distillShapes } from "./shapes/distill";
 import { envListShapes } from "./shapes/env-list";
 import { eventsShapes } from "./shapes/events";
 import { historyShapes } from "./shapes/history";
@@ -38,36 +37,6 @@ import { registrySearchShapes } from "./shapes/registry-search";
 import { searchShapes } from "./shapes/search";
 import { secretListShapes } from "./shapes/secret-list";
 import { showShapes } from "./shapes/show";
-
-// Re-export helpers so existing imports from `shapes.ts` keep working.
-export {
-  capDescription,
-  NORMAL_DESCRIPTION_LIMIT,
-  pickFields,
-  shapeAssetHit,
-  shapeDistillOutput,
-  shapeEventEntry,
-  shapeEventsOutput,
-  shapeHistoryEntry,
-  shapeHistoryOutput,
-  shapeProposalAcceptOutput,
-  shapeProposalDiffOutput,
-  shapeProposalEntry,
-  shapeProposalListOutput,
-  shapeProposalProducerOutput,
-  shapeProposalRejectOutput,
-  shapeProposalShowOutput,
-  shapeRegistrySearchOutput,
-  shapeSearchHit,
-  shapeSearchHitForAgent,
-  shapeSearchOutput,
-  shapeShowOutput,
-  truncateDescription,
-} from "./shapes/helpers";
-export type { OutputShapeHandler } from "./shapes/registry";
-// Re-export registry API so callers can use this module as the single entry
-// point (backward compat).
-export { deregisterOutputShape, registerOutputShape } from "./shapes/registry";
 
 // ── Explicit built-in shape assembly ──────────────────────────────────────────
 // Each entry below is a pure exported `OutputShapeEntry[]` from a per-command
@@ -88,7 +57,6 @@ const BUILT_IN_OUTPUT_SHAPES: OutputShapeEntry[] = [
   ...proposalRejectShapes,
   ...proposalDiffShapes,
   ...proposalProducerShapes,
-  ...distillShapes,
   ...envListShapes,
   ...secretListShapes,
   // Passthrough commands are registered last so an explicit dedicated handler

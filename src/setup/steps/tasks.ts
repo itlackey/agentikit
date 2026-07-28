@@ -15,6 +15,7 @@ import { UsageError } from "../../core/errors";
 import {
   commitWriteTargetBoundary,
   deleteAssetFromSource,
+  prepareWriteTargetForMutation,
   resolveWriteTarget,
   writeAssetToSource,
 } from "../../core/write-source";
@@ -85,7 +86,9 @@ export async function prepareSetupTaskDefinitions(
   deps: PrepareSetupTaskDefinitionsDeps = {},
 ): Promise<number> {
   const config = loadConfig();
-  const target = resolveWriteTarget(config, config.defaultBundle, { requireWritable: true });
+  const target = prepareWriteTargetForMutation(
+    resolveWriteTarget(config, config.defaultBundle, { requireWritable: true }),
+  );
   const taskDir = path.join(target.source.path, "tasks");
   const writeAsset = deps.writeAsset ?? writeAssetToSource;
   const deleteAsset = deps.deleteAsset ?? deleteAssetFromSource;

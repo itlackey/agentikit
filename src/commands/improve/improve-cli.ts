@@ -5,8 +5,8 @@
 import path from "node:path";
 import { defineCommand } from "citty";
 import { getParsedInvocation } from "../../cli/invocation";
-import { getStringArg, parseAutoAcceptFlag, parsePositiveIntFlag } from "../../cli/parse-args";
-import { output, runWithJsonErrors } from "../../cli/shared";
+import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
+import { GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { isFullRefInput, parseRefInput } from "../../core/asset/resolve-ref";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
@@ -14,7 +14,7 @@ import { resolveMutationTarget } from "../../core/mutation-target";
 import { getCacheDir } from "../../core/paths";
 import { redactSensitiveText } from "../../core/redaction";
 import { withStateDb } from "../../core/state-db";
-import { clearLogFile, setLogFile } from "../../core/warn";
+import { clearLogFile, setLogFile, warn } from "../../core/warn";
 import { resolveWriteTarget } from "../../core/write-source";
 import { collectEngineCredentialValues } from "../../integrations/agent/engine-resolution";
 import { getActiveCanaries, queryRecentCycleMetrics } from "../../storage/repositories/canaries-repository";
@@ -23,7 +23,6 @@ import { refreshCanarySet } from "./collapse-detector";
 import { akmImprove } from "./improve";
 import {
   buildImproveRunId,
-  improveRunLocator,
   recordImproveRunResult,
   recordTerminatedImproveRun,
   type TerminationReason,
@@ -81,7 +80,6 @@ async function runCanaryInspection(refresh: boolean): Promise<void> {
         meanRecall: r.mean_recall,
         meanNdcg: r.mean_ndcg,
         distinctContentRatio: r.distinct_content_ratio,
-        acceptedActions: r.accepted_actions,
         mergeFloorViolations: r.merge_floor_violations,
         alerts: JSON.parse(r.alerts_json) as string[],
       })),
@@ -90,13 +88,44 @@ async function runCanaryInspection(refresh: boolean): Promise<void> {
   output("improve-canary", result);
 }
 
+/**
+ * Handle the `--auto-accept` flag retired in 0.9.0, returning the scope the run
+ * should actually use.
+ *
+ * citty is non-strict, so the removed flag is silently absorbed rather than
+ * rejected — which is the dangerous case. The SPACE-separated spelling
+ * (`--auto-accept 90`) leaves `90` sitting in the positional slot, where it is
+ * read as the asset-type scope: the run then matches nothing and exits 0, so a
+ * 0.8-era crontab goes dark with no error at all. Warn about the flag, and drop
+ * the poisoned positional so the run behaves as an unscoped improve instead.
+ */
+function resolveScopeAfterRetiredAutoAccept(scopeArg: string | undefined): string | undefined {
+  const invocation = getParsedInvocation();
+  const autoAcceptRaw = invocation.getFlagValue("--auto-accept");
+  if (autoAcceptRaw === undefined && !invocation.hasFlag("--auto-accept")) return scopeArg;
+  warn(
+    "[improve] --auto-accept was removed in 0.9 and is ignored; proposals always queue for review. " +
+      "Replacement: `akm improve && akm proposal drain --promote --yes`, or a `triage` block with " +
+      'applyMode: "promote" in your strategy. It becomes a hard error in 0.10.',
+  );
+  if (scopeArg !== undefined && scopeArg === autoAcceptRaw) {
+    warn(`[improve] ignoring "${scopeArg}" as a scope — it is the removed --auto-accept flag's value.`);
+    return undefined;
+  }
+  return scopeArg;
+}
+
 export const improveCommand = defineCommand({
   meta: {
     name: "improve",
     description:
       "Analyze existing AKM assets and generate improvement proposals; also consolidates memories when the selected strategy enables consolidate. `akm improve canary [--refresh]` inspects the collapse-detector canary set.",
   },
+  // Raw defineCommand, so the global output flags are declared here explicitly.
+  // Without them citty treats `--format` as a boolean and its space-separated
+  // value falls through to the `scope` positional.
   args: {
+    ...GLOBAL_OUTPUT_ARGS,
     scope: {
       type: "positional",
       description: "Optional asset type or asset ref to improve",
@@ -111,11 +140,6 @@ export const improveCommand = defineCommand({
     },
     "dry-run": { type: "boolean", description: "Show planned actions without writing", default: false },
     target: { type: "string", description: "Override the write target for accepted proposals" },
-    "auto-accept": {
-      type: "string",
-      description:
-        "DEPRECATED and ignored (the 0.9.0 confidence gate was removed; proposals queue for review via `akm proposal` / the drain engine). Accepted for one minor so existing crontabs keep working; removed in 0.10.",
-    },
     limit: { type: "string", description: "Maximum number of assets to process (highest utility first)" },
     "timeout-ms": {
       type: "string",
@@ -134,8 +158,7 @@ export const improveCommand = defineCommand({
     },
     "json-to-stdout": {
       type: "boolean",
-      description:
-        "Emit the full JSON result on stdout (legacy behaviour). (0.8.0+: full result is recorded in the improve_runs table of state.db and stdout is empty; use this flag for the prior behaviour, e.g. `akm improve --json-to-stdout | jq`.)",
+      description: "Also emit the full persisted run result on stdout as JSON.",
       default: false,
     },
     "skip-if-locked": {
@@ -161,25 +184,24 @@ export const improveCommand = defineCommand({
     },
   },
   async run({ args }) {
-    // "canary" is a reserved scope word (never a valid asset type, and refs
-    // contain ":"): dispatch to the detector inspection verb instead of an
-    // improve run.
+    // "canary" is a reserved scope word: no `canary` stash subdir exists, so
+    // it can never be a real asset type, and it can never parse as a full
+    // ref either (isFullRefInput requires a slash-qualified conceptId with a
+    // known type prefix). So intercepting it here can't collide with a
+    // legitimate --type/ref positional. Dispatch to the detector inspection
+    // verb instead of an improve run.
     if (args.scope === "canary") {
       await runWithJsonErrors(() => runCanaryInspection(args.refresh));
       return;
     }
     await runWithJsonErrors(async () => {
-      const formatFlagValue = getParsedInvocation().getFlagValue("--format");
-      if (formatFlagValue !== undefined) {
-        throw new UsageError(
-          `akm improve does not accept --format. That flag controls output formatting for other commands (search, show, etc.).\n` +
-            `Did you mean: akm improve (no --format flag)?`,
-          "INVALID_FLAG_VALUE",
-        );
-      }
+      // D7 — `--format` used to be rejected here outright. It is a global flag on
+      // a command that does emit an envelope through `output()` (always on
+      // `--dry-run`, otherwise with `--json-to-stdout`), so rejecting it made
+      // improve a fourth inconsistent format behaviour rather than a documented
+      // exemption. It now applies to that envelope; progress output stays on
+      // stderr regardless.
       const jsonToStdout = args["json-to-stdout"];
-      // Deprecated (0.9.0): warns when present, has no effect. Removed in 0.10.
-      parseAutoAcceptFlag(args["auto-accept"]);
       const targetArg = getStringArg(args, "target");
       const taskArg = getStringArg(args, "task");
       const dryRun = args["dry-run"];
@@ -200,7 +222,7 @@ export const improveCommand = defineCommand({
       const skipIfLocked = args["skip-if-locked"];
       const strategyArg = getStringArg(args, "strategy");
       const effectiveConfig = loadConfig();
-      const scopeArg = getStringArg(args, "scope");
+      const scopeArg = resolveScopeAfterRetiredAutoAccept(getStringArg(args, "scope"));
       const scopeRef = scopeArg && isFullRefInput(scopeArg) ? parseRefInput(scopeArg) : undefined;
       const writeTarget = dryRun
         ? undefined
@@ -323,13 +345,15 @@ export const improveCommand = defineCommand({
       } finally {
         clearLogFile();
       }
-      const durationMs = Date.now() - startedAtMs;
-
-      if (dryRun || jsonToStdout) {
+      if (dryRun) {
         // A dry-run never persists its result, so stdout is its only result
-        // channel. --json-to-stdout remains the live-run escape hatch.
+        // channel. F4: was `process.exit(0)`, which terminates synchronously
+        // and skips pending cleanup (e.g. the `finally { clearLogFile(); }`
+        // above already ran, but any citty/runWithJsonErrors-level cleanup
+        // on the way out would not). Exit code is 0 either way — `return`
+        // alone is sufficient since success is the default `process.exitCode`.
         output("improve", improveResult);
-        process.exit(0);
+        return;
       }
 
       // Default mode (0.8.0+): persist the full result as a row in the
@@ -346,7 +370,6 @@ export const improveCommand = defineCommand({
       //      ORDER BY started_at DESC LIMIT 10"
       // runId + primaryStashDir minted up-top so signal handlers can record
       // partial runs; reuse them here for the success path.
-      const resultRef = improveRunLocator(runId);
       runRecorded = true; // Suppress any late signal-handler write — the success path owns the row now.
       if (primaryStashDir) {
         try {
@@ -355,7 +378,7 @@ export const improveCommand = defineCommand({
           // Stderr warning on the failure path is preferable to crashing
           // the run after all the work has completed.
           process.stderr.write(
-            `warning: failed to record improve run ${resultRef}: ${err instanceof Error ? err.message : String(err)}\n`,
+            `warning: failed to record improve run ${runId}: ${err instanceof Error ? err.message : String(err)}\n`,
           );
         }
       } else {
@@ -364,9 +387,12 @@ export const improveCommand = defineCommand({
         );
       }
 
-      // durationMs reserved for future use (no console emission today).
-      void durationMs;
-      process.exit(0);
+      if (jsonToStdout) output("improve", improveResult);
+
+      // F4: was `process.exit(0)` — the run has already been fully recorded
+      // above (recordImproveRunResult / the warning path), so nothing here
+      // depends on an immediate synchronous exit. This is the last statement
+      // in the handler, so a plain fall-through is equivalent.
     });
   },
 });

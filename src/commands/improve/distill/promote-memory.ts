@@ -22,8 +22,10 @@ import fs from "node:fs";
 import { parseFrontmatter } from "../../../core/asset/frontmatter";
 import type { AkmConfig, ImproveProfileConfig, LlmConnectionConfig } from "../../../core/config/config";
 import { appendEvent, type EventsContext } from "../../../core/events";
-import type { AkmDistillResult, EligibilitySource } from "../../../core/improve-types";
-import { type ChatCompletionOptions, type ChatMessage, parseEmbeddedJsonResponse } from "../../../llm/client";
+import type { AkmDistillResult } from "../../../core/improve-types";
+import { parseEmbeddedJsonResponse } from "../../../core/parse";
+import type { ChatCompletionOptions, ChatMessage } from "../../../llm/client";
+import type { EligibilitySource } from "../../proposal/proposal-types";
 import { isProposalSkipped, type Proposal, type ProposalsContext } from "../../proposal/repository";
 import { assessMemoryKnowledgePromotionCandidate } from "../distill-promotion-policy";
 import { emitProposal } from "../proposal-envelope";
@@ -38,15 +40,13 @@ import { persistOutputEncodingSalience, runLessonQualityJudge, writeQualityRejec
 export interface PromoteMemoryContext {
   targetKind: "lesson" | "knowledge" | "auto";
   inputRef: string;
-  /** Source-qualified key for durable events/provenance. */
+  /** Source key for durable events/provenance. */
   durableInputRef?: string;
   /**
-   * Chunk-5 flip F5f — the resolved index entry's fully-qualified item_ref. When
-   * present, the promotion branch's `distill_invoked` events key on it, else the
-   * pre-flip `durableInputRef`. Dormant: item_ref NULL through improve today.
+   * The resolved index entry's fully-qualified item_ref. When absent, the
+   * promotion branch uses durableInputRef as its event key.
    */
   itemRef?: string;
-  sourceName?: string;
   assetContent: string | null;
   /** Filtered feedback events (only `.metadata` is read by the promotion policy). */
   filteredEvents: readonly { metadata?: Record<string, unknown> }[];
@@ -99,7 +99,7 @@ async function resolveKnowledgePromotionContent(
 ): Promise<KnowledgePromotionContent> {
   const durableInputRef = ctx.durableInputRef ?? ctx.inputRef;
   let resolvedPromotionContent = baseContent;
-  const existingKnowledgePath = await ctx.lookup(durableImproveRef(knowledgeRef, ctx.sourceName));
+  const existingKnowledgePath = await ctx.lookup(durableImproveRef(knowledgeRef));
   const existingKnowledgeContent =
     existingKnowledgePath && fs.existsSync(existingKnowledgePath)
       ? (() => {
@@ -149,11 +149,11 @@ async function resolveKnowledgePromotionContent(
         appendEvent(
           {
             eventType: "distill_invoked",
-            // Chunk-5 flip F5f — item_ref when resolved, else durable (dormant today).
+            // Use item_ref when resolved, otherwise the input conceptId.
             ref: ctx.itemRef ?? durableInputRef,
             metadata: {
               outcome: "skipped" as const,
-              lessonRef: knowledgeRef,
+              proposalRef: knowledgeRef,
               message: "D-1: LLM resolved destination conflict as NOOP — existing content kept",
               ...ctx.eligMeta,
             },
@@ -166,7 +166,8 @@ async function resolveKnowledgePromotionContent(
             ok: true,
             outcome: "skipped",
             inputRef: ctx.inputRef,
-            lessonRef: knowledgeRef,
+            proposalRef: knowledgeRef,
+            skipReason: "conflict_noop",
             message: "Existing knowledge content unchanged (contradiction resolution: NOOP)",
           },
         };
@@ -315,11 +316,11 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
     appendEvent(
       {
         eventType: "distill_invoked",
-        // Chunk-5 flip F5f — item_ref when resolved, else durable (dormant today).
+        // Use item_ref when resolved, otherwise the input conceptId.
         ref: ctx.itemRef ?? durableInputRef,
         metadata: {
           outcome: "skipped" as const,
-          lessonRef: promotion.knowledgeRef,
+          proposalRef: promotion.knowledgeRef,
           message: proposalResult.message,
           skipReason: proposalResult.reason,
           ...eligMeta,
@@ -332,7 +333,8 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
       ok: true,
       outcome: "skipped",
       inputRef,
-      lessonRef: promotion.knowledgeRef,
+      proposalRef: promotion.knowledgeRef,
+      skipReason: proposalResult.reason,
       message: proposalResult.message,
     };
   }
@@ -341,7 +343,7 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
   // G4: content-score the distilled OUTPUT so it carries a real encoding
   // salience (encoding_source='content') from creation.
   persistOutputEncodingSalience(
-    durableImproveRef(promotion.knowledgeRef, ctx.sourceName),
+    durableImproveRef(promotion.knowledgeRef),
     resolvedPromotionContent,
     existingRefVocabulary,
     outcomeWeightEnabled,
@@ -349,11 +351,10 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
   appendEvent(
     {
       eventType: "distill_invoked",
-      // Chunk-5 flip F5f — item_ref when resolved, else durable (dormant today).
+      // Use item_ref when resolved, otherwise the input conceptId.
       ref: ctx.itemRef ?? durableInputRef,
       metadata: {
         outcome: "queued" as const,
-        lessonRef: promotion.knowledgeRef,
         proposalRef: promotion.knowledgeRef,
         proposalKind: "knowledge" as const,
         proposalId: proposal.id,
@@ -373,7 +374,6 @@ export async function promoteMemoryToKnowledge(ctx: PromoteMemoryContext): Promi
     ok: true,
     outcome: "queued",
     inputRef,
-    lessonRef: promotion.knowledgeRef,
     proposalRef: promotion.knowledgeRef,
     proposalKind: "knowledge",
     proposalId: proposal.id,

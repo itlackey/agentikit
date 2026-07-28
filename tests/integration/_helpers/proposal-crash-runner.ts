@@ -18,7 +18,7 @@ fs.renameSync = ((oldPath: fs.PathLike, newPath: fs.PathLike) => {
   return result;
 }) as typeof fs.renameSync;
 
-if (phase === "event-persisted" || phase.startsWith("reject-") || phase === "legacy-target-derived") {
+if (phase === "event-persisted" || phase.startsWith("reject-")) {
   const repository = (await import("../../../src/commands/proposal/repository")) as Record<string, unknown>;
   const setHook = repository._setProposalMutationHookForTests as ((hook?: (point: string) => void) => void) | undefined;
   if (!setHook) {

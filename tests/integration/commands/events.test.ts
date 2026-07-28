@@ -5,9 +5,9 @@ import path from "node:path";
 import { akmEventsList, akmEventsTail } from "../../../src/commands/events";
 import { saveConfig } from "../../../src/core/config/config";
 import { appendEvent, readEvents, tailEvents } from "../../../src/core/events";
-import { getDbPath } from "../../../src/core/paths";
+import { getStateDbPath } from "../../../src/core/state-db";
 import { runCliCapture } from "../../_helpers/cli";
-import { type Cleanup, sandboxStashDir } from "../../_helpers/sandbox";
+import { type Cleanup, sandboxStashDir, sandboxXdgDataHome } from "../../_helpers/sandbox";
 
 // Migrated from per-test spawnSync("bun", [CLI, ...]) to the in-process harness
 // (tests/_helpers/cli.ts) where faithful. The pure appendEvent/readEvents/
@@ -33,6 +33,32 @@ function makeTempDir(prefix: string): string {
 function sandboxStash(): string {
   const stash = sandboxStashDir();
   stashCleanup = stash.cleanup;
+  saveConfig({
+    semanticSearchMode: "off",
+    bundles: { stash: { path: stash.dir, writable: true } },
+    defaultBundle: "stash",
+  });
+  return stash.dir;
+}
+
+/**
+ * Like {@link sandboxStash}, but also isolates `XDG_DATA_HOME` (and so
+ * `state.db`, per `src/core/paths.ts`'s `getDataDir`). `sandboxStash` alone
+ * only sandboxes `AKM_STASH_DIR`, so the tests above that use it tolerate
+ * events accumulating across tests in this file (they assert `.toContain(...)`
+ * / `>= 1`, never exact counts). The `--limit` tests below assert EXACT
+ * counts and exact "most recent N" contents, so they need a state.db that
+ * starts empty every time.
+ */
+function sandboxIsolatedStash(): string {
+  const stash = sandboxStashDir();
+  const data = sandboxXdgDataHome(stash.cleanup);
+  stashCleanup = data.cleanup;
+  saveConfig({
+    semanticSearchMode: "off",
+    bundles: { stash: { path: stash.dir, writable: true } },
+    defaultBundle: "stash",
+  });
   return stash.dir;
 }
 
@@ -90,7 +116,7 @@ describe("appendEvent / readEvents", () => {
     expect(result.nextOffset).toBeGreaterThanOrEqual(result.events[1]?.id ?? 0);
   });
 
-  test("--since (byte offset) is durable across processes", () => {
+  test("--since offset is durable across processes", () => {
     const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
     const ctx = { dbPath };
     appendEvent({ eventType: "remember", ref: "memory:a" }, ctx);
@@ -108,10 +134,10 @@ describe("appendEvent / readEvents", () => {
     expect(empty.nextOffset).toBe(next.nextOffset);
   });
 
-  test("`akm events list --since @offset:` rejects malformed byte cursors", () => {
+  test("`akm log list --since @offset:` rejects malformed cursors", () => {
     const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
     const ctx = { dbPath };
-    expect(() => akmEventsList({ since: "@offset:not-a-number", ctx })).toThrow(/Invalid --since byte offset/);
+    expect(() => akmEventsList({ since: "@offset:not-a-number", ctx })).toThrow(/Invalid --since offset/);
     expect(() => akmEventsList({ since: "@offset:-3", ctx })).toThrow(/Invalid --since/);
   });
 
@@ -140,6 +166,127 @@ describe("appendEvent / readEvents", () => {
     expect(filtered.totalCount).toBe(1);
     expect(filtered.events[0]?.eventType).toBe("feedback");
     expect(filtered.events[0]?.ref).toBe("memories/a");
+  });
+
+  test("--type 'save' and --type 'sync' are synonyms (0.9.0 save→sync rename)", () => {
+    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
+    const ctx = { dbPath };
+    // A row written before the 0.9.0 rename (legacy spelling)...
+    appendEvent({ eventType: "save", metadata: { name: null } }, ctx);
+    // ...and a row written by the renamed `akm sync` (current spelling).
+    appendEvent({ eventType: "sync", metadata: { name: null } }, ctx);
+    // An unrelated event type must not be swept in by the alias.
+    appendEvent({ eventType: "remember", ref: "memory:a" }, ctx);
+
+    const bySave = readEvents({ type: "save" }, ctx);
+    expect(bySave.events.map((e) => e.eventType).sort()).toEqual(["save", "sync"]);
+
+    const bySync = readEvents({ type: "sync" }, ctx);
+    expect(bySync.events.map((e) => e.eventType).sort()).toEqual(["save", "sync"]);
+
+    const byOther = readEvents({ type: "remember" }, ctx);
+    expect(byOther.events.map((e) => e.eventType)).toEqual(["remember"]);
+  });
+
+  // D-38: `akm log list --limit` was documented (docs/reference/data-and-telemetry.md)
+  // but silently ignored — citty swallows unrecognized flags, and there was no
+  // limiting mechanism anywhere in the read path (no `--limit` arg on the
+  // command, no `limit` field threaded through `akmEventsList`/`readEvents`,
+  // and `readStateEvents`'s SQL had no LIMIT clause at all). These tests pin
+  // the real fix at every layer that plumbs it: `readStateEvents` (SQL
+  // LIMIT), `readEvents` (the tag-post-filter interaction), and
+  // `akmEventsList` (the CLI-facing option). CLI-level coverage (the actual
+  // `akm log list --limit` invocation, and the stale doc-comment this closes)
+  // lives in the "log list --limit (D-38)" describe block below.
+  test("--limit returns the MOST RECENT N events, not the first N", () => {
+    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
+    const ctx = { dbPath };
+    for (let i = 0; i < 10; i += 1) {
+      appendEvent({ eventType: "remember", ref: `memory:${i}` }, ctx);
+    }
+
+    const result = readEvents({ limit: 3 }, ctx);
+    // Most recent 3 of 10, in ascending id order (the function's documented
+    // contract) — i.e. memory:7, memory:8, memory:9, NOT memory:0..2.
+    expect(result.events.map((e) => e.ref)).toEqual(["memory:7", "memory:8", "memory:9"]);
+    // nextOffset still reflects the true max id, unaffected by the display
+    // truncation — same value an unbounded read of the same filter would
+    // report, so a subsequent `--since @offset:<nextOffset>` resumes
+    // correctly instead of re-serving events this call already showed.
+    const unbounded = readEvents({}, ctx);
+    expect(result.nextOffset).toBe(unbounded.nextOffset);
+  });
+
+  test("--limit larger than the available count returns everything (no error)", () => {
+    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
+    const ctx = { dbPath };
+    appendEvent({ eventType: "remember", ref: "memory:a" }, ctx);
+    appendEvent({ eventType: "remember", ref: "memory:b" }, ctx);
+
+    const result = readEvents({ limit: 50 }, ctx);
+    expect(result.events.map((e) => e.ref)).toEqual(["memory:a", "memory:b"]);
+  });
+
+  test("no --limit is unchanged: unlimited, full history returned", () => {
+    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
+    const ctx = { dbPath };
+    for (let i = 0; i < 8; i += 1) {
+      appendEvent({ eventType: "remember", ref: `memory:${i}` }, ctx);
+    }
+
+    const result = readEvents({}, ctx);
+    expect(result.events).toHaveLength(8);
+  });
+
+  test("--limit combined with --include-tags returns N MATCHING events, not N pre-filter rows", () => {
+    // This is the exact hazard the fix has to avoid: a naive SQL `LIMIT 2`
+    // applied BEFORE the tag post-filter would grab the 2 most recent rows
+    // regardless of tags, then filter them — which could return 0 or 1
+    // tagged events even though 2+ tagged events exist further back. The fix
+    // must read enough to apply the tag filter first, THEN take the most
+    // recent 2 of the events that actually match.
+    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
+    const ctx = { dbPath };
+    appendEvent({ eventType: "remember", ref: "memory:tagged-1", metadata: { tags: ["keep"] } }, ctx);
+    appendEvent({ eventType: "remember", ref: "memory:untagged-1" }, ctx);
+    appendEvent({ eventType: "remember", ref: "memory:tagged-2", metadata: { tags: ["keep"] } }, ctx);
+    appendEvent({ eventType: "remember", ref: "memory:untagged-2" }, ctx);
+    appendEvent({ eventType: "remember", ref: "memory:untagged-3" }, ctx);
+
+    const result = readEvents({ includeTags: ["keep"], limit: 2 }, ctx);
+    expect(result.events.map((e) => e.ref)).toEqual(["memory:tagged-1", "memory:tagged-2"]);
+  });
+
+  test("--limit combined with the save/sync type alias post-filter still returns N matches", () => {
+    // Same hazard as the tag case above, but for the type-alias post-filter
+    // (SAVE_SYNC_EVENT_TYPE_ALIASES): a SQL-level LIMIT can't be expressed
+    // for "save" OR "sync" in one predicate, so it must not be pushed down
+    // here either.
+    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
+    const ctx = { dbPath };
+    appendEvent({ eventType: "save" }, ctx);
+    appendEvent({ eventType: "remember", ref: "memory:noise-1" }, ctx);
+    appendEvent({ eventType: "sync" }, ctx);
+    appendEvent({ eventType: "remember", ref: "memory:noise-2" }, ctx);
+
+    const result = readEvents({ type: "save", limit: 2 }, ctx);
+    expect(result.events.map((e) => e.eventType)).toEqual(["save", "sync"]);
+  });
+
+  test("akmEventsList echoes `limit` in the envelope only when it was passed", () => {
+    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
+    const ctx = { dbPath };
+    appendEvent({ eventType: "remember", ref: "memory:a" }, ctx);
+    appendEvent({ eventType: "remember", ref: "memory:b" }, ctx);
+
+    const limited = akmEventsList({ limit: 1, ctx });
+    expect(limited.limit).toBe(1);
+    expect(limited.totalCount).toBe(1);
+    expect(limited.events.map((e) => e.ref)).toEqual(["memory:b"]);
+
+    const unlimited = akmEventsList({ ctx });
+    expect(unlimited.limit).toBeUndefined();
+    expect(unlimited.totalCount).toBe(2);
   });
 
   test("all valid appends are readable (SQLite enforces schema integrity)", () => {
@@ -214,7 +361,6 @@ describe("tailEvents", () => {
 describe("akm CLI mutation events", () => {
   test("remember, feedback, and add each emit an event to state.db", async () => {
     sandboxStash();
-    saveConfig({ semanticSearchMode: "off" });
 
     // ─ remember ──────────────────────────────────────────────────────────
     const remember = await runCli(["remember", "first event captured", "--name", "alpha", "--format=json"]);
@@ -246,7 +392,6 @@ describe("akm CLI mutation events", () => {
 
   test("`akm log list` returns the captured events in JSON envelope shape", async () => {
     sandboxStash();
-    saveConfig({ semanticSearchMode: "off" });
 
     // Create a remember event via the CLI so state.db gets populated.
     const remember = await runCli(["remember", "another event captured", "--name", "beta", "--format=json"]);
@@ -263,7 +408,6 @@ describe("akm CLI mutation events", () => {
 
   test("`akm log` is the canonical command; `akm events` is no longer a command", async () => {
     sandboxStash();
-    saveConfig({ semanticSearchMode: "off" });
 
     const remember = await runCli(["remember", "log is canonical", "--name", "delta", "--format=json"]);
     expect(remember.status).toBe(0);
@@ -281,7 +425,6 @@ describe("akm CLI mutation events", () => {
 
   test("`akm log list --type feedback` filters by event type", async () => {
     sandboxStash();
-    saveConfig({ semanticSearchMode: "off" });
 
     const remember = await runCli(["remember", "filter test", "--name", "gamma", "--format=json"]);
     expect(remember.status).toBe(0);
@@ -294,6 +437,60 @@ describe("akm CLI mutation events", () => {
     const events = parsed.events as Array<Record<string, unknown>>;
     expect(events.length).toBeGreaterThanOrEqual(1);
     expect(events.every((e) => e.eventType === "feedback")).toBe(true);
+  });
+});
+
+describe("log list --limit (D-38)", () => {
+  // The verified-live repro this closes: 26 events seeded, `akm log list
+  // --limit 5 --format json` used to return all 26 — citty silently swallows
+  // an unrecognized flag, and there was no limiting mechanism in the read
+  // path at all (docs/reference/data-and-telemetry.md:267 documented
+  // `--limit` for years while the CLI ignored it).
+  test("`akm log list --limit 5` with 26 events returns exactly 5, the most recent", async () => {
+    sandboxIsolatedStash();
+    const dbPath = getStateDbPath();
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const ctx = { dbPath };
+    for (let i = 0; i < 26; i += 1) {
+      appendEvent({ eventType: "remember", ref: `memory:${i}` }, ctx);
+    }
+
+    const result = await runCli(["log", "list", "--limit", "5", "--format=json"]);
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout) as { events: Array<{ ref?: string }>; totalCount: number; limit: number };
+    expect(parsed.events).toHaveLength(5);
+    expect(parsed.totalCount).toBe(5);
+    expect(parsed.limit).toBe(5);
+    // The most recent 5 of 26 (memory:0..25) are memory:21..25.
+    expect(parsed.events.map((e) => e.ref)).toEqual(["memory:21", "memory:22", "memory:23", "memory:24", "memory:25"]);
+  });
+
+  test("without --limit, all 26 events are still returned (default stays unlimited)", async () => {
+    sandboxIsolatedStash();
+    const dbPath = getStateDbPath();
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const ctx = { dbPath };
+    for (let i = 0; i < 26; i += 1) {
+      appendEvent({ eventType: "remember", ref: `memory:${i}` }, ctx);
+    }
+
+    const result = await runCli(["log", "list", "--format=json"]);
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout) as { events: unknown[]; limit?: number };
+    expect(parsed.events).toHaveLength(26);
+    expect(parsed.limit).toBeUndefined();
+  });
+
+  test("`--limit 0` and `--limit -1` are rejected as usage errors, matching every other --limit flag", async () => {
+    sandboxStash();
+
+    const zero = await runCli(["log", "list", "--limit", "0", "--format=json"]);
+    expect(zero.status).toBe(2);
+    expect(JSON.parse(zero.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
+
+    const negative = await runCli(["log", "list", "--limit", "-1", "--format=json"]);
+    expect(negative.status).toBe(2);
+    expect(JSON.parse(negative.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
   });
 });
 
@@ -327,8 +524,8 @@ describe("akm log tail (streaming trailer)", () => {
 
   test("--format jsonl writes a discriminated trailer row to stdout", async () => {
     // Seed events into the same state.db the in-process CLI will read from
-    // (getDbPath() resolves to <sandboxed XDG_DATA_HOME>/akm/state.db).
-    const dbPath = getDbPath();
+    // (getStateDbPath() resolves to <sandboxed XDG_DATA_HOME>/akm/state.db).
+    const dbPath = getStateDbPath();
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     const ctx = { dbPath };
     appendEvent({ eventType: "remember", ref: "memory:t1" }, ctx);
@@ -358,7 +555,7 @@ describe("akm log tail (streaming trailer)", () => {
 
   test("--format text writes a trailer line to stderr (stdout stays pristine)", async () => {
     // Seed events into the same state.db the in-process CLI will read from.
-    const dbPath = getDbPath();
+    const dbPath = getStateDbPath();
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     const ctx = { dbPath };
     appendEvent({ eventType: "remember", ref: "memory:tx1" }, ctx);

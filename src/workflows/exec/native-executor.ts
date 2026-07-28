@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Native executor — executes ONE step's IR v2 subgraph (`IrStepPlan.root`) on
+ * Native executor — executes one frozen step subgraph (`IrStepPlan.root`) on
  * the local machine: fan-out through the scheduler, schema-validated
  * structured output through `runStructured` (core/structured.ts), per-unit
  * persistence through the serialized writer queue, and `workflow_unit_*`
@@ -75,9 +75,7 @@
  *     never a silent re-dispatch — under a frozen plan the same identity must
  *     reproduce the same inputs, so a mismatch means the journal (or params
  *     row) was tampered with. Failed/running/missing rows dispatch live.
- *   - Pre-release R1 journals used positional ids (`node.unit[3]`). There is
- *     no back-compat shim: those rows simply never match a content-derived id
- *     and are ignored (the step re-runs cleanly on top of them).
+ *   - Rows with unrelated ids never match a content-derived id and are ignored.
  *
  * Gate loops (addendum, R2 `gate.max_loops`): when the engine re-executes a
  * step subgraph after a gate rejection, it threads the judge's feedback in as
@@ -160,10 +158,6 @@ import {
 } from "./step-work";
 import { enqueueUnitWrite } from "./unit-writer";
 import { assertGitWorkTree, cleanupUnitWorktree, createUnitWorktree } from "./worktree";
-
-// Re-exported for existing consumers (run-workflow.ts, tests) that import these
-// from native-executor; they now live in the shared step-work module.
-export { buildArtifactSummary, DEFAULT_UNIT_TIMEOUT_MS, type GateFeedback, projectStepOutput, type UnitOutcome };
 
 /** Everything the dispatcher needs to run one unit, resolved by the executor. */
 export interface UnitDispatchRequest {
@@ -724,7 +718,7 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
     ...(input.signal ? { signal: input.signal } : {}),
   };
 
-  // Bounded retry (IR v2 failure policy): attempt 0 journals under the base
+  // Bounded retry: attempt 0 journals under the base
   // journal id (`<unitId>`, or `<unitId>~l<loop>` in a gate loop — computed by
   // the shared work-list), retry attempt N under `<baseId>~r<N>`. Every attempt
   // keeps its own row. Retries only fire when the failure reason is in

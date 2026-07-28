@@ -51,7 +51,7 @@ export function shouldWarnOnPlainHttp(ref: string): boolean {
 // exit from a real audit bug by string-matching `err.message === "process.exit
 // called"` — a TEST mock sentinel. In production `process.exit` never throws, so
 // that branch was test-only; worse, if the sentinel string ever drifted the
-// DANGEROUS_VAULT_KEY abort would silently become fail-OPEN and an insecure
+// DANGEROUS_ENV_KEY abort would silently become fail-OPEN and an insecure
 // stash would install, while the catch swallowed any genuine audit bug.
 //
 // This helper replaces that magic-string control flow with a typed decision.
@@ -66,36 +66,93 @@ export function shouldWarnOnPlainHttp(ref: string): boolean {
 export type DangerousKeyAuditDecision = { blocked: true; exitCode: number } | { blocked: false };
 
 interface DangerousKeyFinding {
-  vaultRef: string;
+  envRef: string;
   keyName: string;
   relPath: string;
 }
 
-/** Scan every env file in the freshly-installed stash for dangerous env keys. */
+/**
+ * Recursively enumerate every real env FILE under `rootDir` (a stash's
+ * `env/` directory). "Real env file" is the SAME test used everywhere else
+ * in akm decides what `akm env run` / `akm env list` / the indexer will
+ * actually load as environment variables — `fileName === ".env" ||
+ * fileName.endsWith(".env")` — see `src/indexer/walk/matchers.ts` and
+ * `listEnvsRecursive` in `src/commands/env/env-cli.ts`. Reusing that exact
+ * rule here (rather than inventing a second, possibly-divergent one) is what
+ * closes the nested-directory bypass: `env/nested/inner.env` IS loaded by
+ * `akm env run` today via that same recursive walk, so it must be scanned
+ * too (previously only a flat, non-recursive `env/*.env` listing was
+ * scanned).
+ *
+ * Deliberately excludes files that do NOT end in `.env` (e.g.
+ * `env/notes.txt`). Such a file is never sourced as environment variables by
+ * any akm codepath, so a dangerous key sitting in its contents cannot hijack
+ * process execution via `akm env run` — there is no live attack through this
+ * gate for it. Residual gap: this scanner does not protect against an
+ * operator later renaming/copying that file to a `*.env` name, or feeding it
+ * into `akm env run` through some other mechanism outside akm; closing that
+ * would mean content-sniffing every byte of every file in the stash (README,
+ * lockfiles, binaries, …) for a vector that requires a subsequent human
+ * action to become live, which is a materially different and much more
+ * expensive check than "is this a file `akm` will actually source".
+ */
+function collectEnvFilePathsRecursive(rootDir: string): string[] {
+  const results: string[] = [];
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (entry.name !== ".env" && !entry.name.endsWith(".env")) continue;
+      results.push(full);
+    }
+  };
+  walk(rootDir);
+  return results;
+}
+
+/** Scan every real env file (recursively, see {@link collectEnvFilePathsRecursive}) in the freshly-installed stash for dangerous env keys. */
 function collectDangerousKeyFindings(
   installedStashRoot: string,
   checkEnvForDangerousKeys: (
     envPath: string,
     relPath: string,
-    vaultRef: string,
+    envRef: string,
   ) => Array<{ detail: string; file: string }>,
 ): DangerousKeyFinding[] {
   const allFindings: DangerousKeyFinding[] = [];
   const subdir = "env";
   const prefix = "env";
   const dir = path.join(installedStashRoot, subdir);
-  const envFiles = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f: string) => f.endsWith(".env")) : [];
-  for (const envFile of envFiles) {
-    const envPath = path.join(dir, envFile);
-    const baseName = path.basename(envFile, ".env");
-    const vaultRef = baseName === "" ? `${prefix}:default` : `${prefix}:${baseName}`;
-    const relPath = path.join(subdir, envFile);
-    const findings = checkEnvForDangerousKeys(envPath, relPath, vaultRef);
+  if (!fs.existsSync(dir)) return allFindings;
+  for (const envPath of collectEnvFilePathsRecursive(dir)) {
+    const relToEnvDir = path.relative(dir, envPath);
+    // Only the LAST path segment carries the ".env" suffix / dotfile-default
+    // naming rule; intermediate directory segments pass through unchanged.
+    // e.g. "nested/inner.env" -> "nested/inner", "nested/.env" ->
+    // "nested/default" (not "nested/", which is what naively stripping the
+    // suffix from the whole relative path would produce).
+    const segments = relToEnvDir.split(path.sep);
+    const lastSegment = segments[segments.length - 1] ?? "";
+    const lastSegmentBase = lastSegment.endsWith(".env") ? lastSegment.slice(0, -".env".length) : lastSegment;
+    const refSegments = [...segments.slice(0, -1), lastSegmentBase === "" ? "default" : lastSegmentBase];
+    const envRef = `${prefix}/${refSegments.join("/")}`;
+    const relPath = path.join(subdir, relToEnvDir);
+    const findings = checkEnvForDangerousKeys(envPath, relPath, envRef);
     for (const finding of findings) {
       // Extract the key name from the detail string for the summary line.
       const keyMatch = finding.detail.match(/Env key `([^`]+)`/);
       const keyName = keyMatch ? keyMatch[1]! : finding.file;
-      allFindings.push({ vaultRef, keyName, relPath });
+      allFindings.push({ envRef, keyName, relPath });
     }
   }
   return allFindings;
@@ -140,7 +197,7 @@ export async function auditInstalledStashForDangerousKeys(opts: {
     // Operator has explicitly accepted the risk — warn and continue.
     for (const f of allFindings) {
       warn(
-        `[dangerous-vault-key] ${f.relPath}: key \`${f.keyName}\` in ${f.vaultRef} can hijack process execution via \`akm env run\`. Proceeding because --allow-insecure was set.`,
+        `[dangerous-env-key] ${f.relPath}: key \`${f.keyName}\` in ${f.envRef} can hijack process execution via \`akm env run\`. Proceeding because --allow-insecure was set.`,
       );
     }
     return { blocked: false };
@@ -166,14 +223,14 @@ export async function auditInstalledStashForDangerousKeys(opts: {
     // Guard on stdin (not stdout) because p.confirm() reads from stdin;
     // stdout may be a TTY while stdin is piped, which would cause a hang.
     const stashLabel = ref;
-    const groupedByVault = new Map<string, string[]>();
+    const groupedByEnv = new Map<string, string[]>();
     for (const f of allFindings) {
-      const existing = groupedByVault.get(f.vaultRef) ?? [];
+      const existing = groupedByEnv.get(f.envRef) ?? [];
       existing.push(f.keyName);
-      groupedByVault.set(f.vaultRef, existing);
+      groupedByEnv.set(f.envRef, existing);
     }
-    for (const [vaultRef, keys] of groupedByVault) {
-      warn(`[warn] Env "${vaultRef}" in stash "${stashLabel}" contains potentially dangerous keys:`);
+    for (const [envRef, keys] of groupedByEnv) {
+      warn(`[warn] Env "${envRef}" in stash "${stashLabel}" contains potentially dangerous keys:`);
       for (const key of keys) {
         warn(`  - ${key}: can hijack process execution via \`akm env run\``);
       }
@@ -190,7 +247,7 @@ export async function auditInstalledStashForDangerousKeys(opts: {
             ok: false,
             error:
               "Install aborted: stash contains dangerous env keys. Remove the keys or re-run with --allow-insecure to bypass.",
-            code: "DANGEROUS_VAULT_KEY",
+            code: "DANGEROUS_ENV_KEY",
             ...(rollbackWarning ? { rollbackWarning } : {}),
           },
           null,
@@ -205,13 +262,13 @@ export async function auditInstalledStashForDangerousKeys(opts: {
 
   // Non-interactive path without bypass flag: fail hard.
   const rollbackWarning = await rollback();
-  const keyList = allFindings.map((f) => `  - ${f.keyName} (${f.vaultRef})`).join("\n");
+  const keyList = allFindings.map((f) => `  - ${f.keyName} (${f.envRef})`).join("\n");
   console.error(
     JSON.stringify(
       {
         ok: false,
         error: `Install blocked: stash "${ref}" contains dangerous env keys that can hijack process execution via \`akm env run\`:\n${keyList}\nRe-run with --allow-insecure to bypass this check after reviewing the env file.`,
-        code: "DANGEROUS_VAULT_KEY",
+        code: "DANGEROUS_ENV_KEY",
         ...(rollbackWarning ? { rollbackWarning } : {}),
       },
       null,
@@ -256,7 +313,9 @@ export const addCommand = defineJsonCommand({
     const allowInsecure = args["allow-insecure"];
     const allowDangerousKeys = allowInsecure;
 
-    // URL with --provider → stash source (remote or git provider)
+    // --provider → declarative bundle source (URL for git/website; bare
+    // package spec for npm — R-013). Config-only write; content is not
+    // synced until a later `akm update`.
     if (args.provider) {
       if (shouldWarnOnPlainHttp(ref)) {
         if (!allowInsecure) {
@@ -342,8 +401,14 @@ export const addCommand = defineJsonCommand({
       // Use the canonical installed id (most reliably resolved by akmRemove) rather
       // than the raw user-supplied ref which may not match after URL normalisation.
       const rollbackTarget = result.installed?.id ?? result.sourceAdded?.stashRoot ?? ref;
-      // The audit RETURNS its decision; we decide `process.exit` here, OUTSIDE
-      // any catch, so the abort cannot be lost to a swallowed exception (C3).
+      // The audit RETURNS its decision; we decide the exit outcome here,
+      // OUTSIDE any catch, so the abort cannot be lost to a swallowed
+      // exception (C3). F4: `process.exitCode = …; return;` instead of
+      // `process.exit(...)` — the DANGEROUS_ENV_KEY error envelope has
+      // already been written to stderr by the audit itself (or is about to
+      // be), so an explicit `return` here (skipping the success `output("add",
+      // …)` below) is load-bearing, not merely cosmetic: it is what stops a
+      // blocked install from ALSO printing a success envelope.
       const decision = await auditInstalledStashForDangerousKeys({
         installedStashRoot,
         ref,
@@ -352,7 +417,8 @@ export const addCommand = defineJsonCommand({
         isTTY: process.stdin.isTTY === true,
       });
       if (decision.blocked) {
-        process.exit(decision.exitCode);
+        process.exitCode = decision.exitCode;
+        return;
       }
     }
 

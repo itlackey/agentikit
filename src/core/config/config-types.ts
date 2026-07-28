@@ -69,7 +69,7 @@ export type ImproveProcessConfig = z.infer<typeof import("./config-schema").Impr
 
 /**
  * A named improve strategy (`improve.strategies.<name>`). Holds the per-process
- * `processes` map plus profile-level knobs (`limit`, `symmetricValence`,
+ * `processes` map plus profile-level knobs (`limit`,
  * `sync`). See config-schema.ts for per-field docs.
  */
 export type ImproveProfileConfig = z.infer<typeof import("./config-schema").ImproveProfileConfigSchema>;
@@ -122,6 +122,10 @@ export interface ConfiguredSource {
   primary?: boolean;
   /** Pass-through provider-specific options. */
   options?: Record<string, unknown>;
+  /** Adapter selected for the bundle's sole component, when configured. */
+  adapterId?: string;
+  /** Component root relative to the provider's materialized content root. */
+  componentRoot?: string;
 }
 
 /**
@@ -142,7 +146,7 @@ export type IndexPassConfig = z.infer<typeof import("./config-schema").IndexPass
 
 /**
  * Index-time configuration. Combines well-known feature sections
- * (`metadataEnhance`; `stalenessDetection` is retired but tolerated) and the
+ * (`metadataEnhance`) and the
  * `indexBodyOpening` boolean feature flag (stash-conventions SPEC-8, default
  * false) with per-pass overrides keyed by pass name.
  */

@@ -66,8 +66,6 @@ export interface IndexRunContext {
   sourceDirs: string[];
   /** Whether to perform a full rebuild (true) or incremental update (false). */
   full: boolean;
-  /** Whether to re-enrich already-enriched entries. */
-  reEnrich: boolean;
   /** Primary stash directory. */
   stashDir: string;
   /** Progress emitter (always defined; may be a no-op). */
@@ -82,6 +80,10 @@ export interface IndexRunContext {
   builtAtMs: number;
   /** Whether sources were removed since the last run (triggers orphan cleanup). */
   hadRemovedSources: boolean;
+  /** Prior source roots to remove only after every current source scans completely. */
+  removedSourceDirs: string[];
+  /** Whether every configured component produced a trustworthy source snapshot. */
+  scanComplete: boolean;
 
   // ── Inter-phase result accumulation ─────────────────────────────────────────
   // These fields are written by phases and read by later phases or the

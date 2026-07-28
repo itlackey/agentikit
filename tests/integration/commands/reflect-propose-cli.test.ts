@@ -19,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { akmReflect } from "../../../src/commands/improve/reflect";
 import { akmPropose } from "../../../src/commands/proposal/propose";
-import type { SpawnedSubprocess, SpawnFn } from "../../../src/integrations/agent/spawn";
+import type { SpawnedSubprocess, SpawnFn } from "../../../src/core/subprocess";
 import { durableItemRef } from "../../_helpers/durable-ref";
 import { quietQualityGateConfig } from "../../_helpers/factories";
 import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../../_helpers/sandbox";

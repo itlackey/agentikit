@@ -35,25 +35,25 @@ The biggest addition in 0.5.0 is a proper wiki asset type. A wiki is a structure
 
 ```sh
 # Create a new wiki
-akm wiki create architecture
+akm wiki create architecture  # doclint:ignore (historical — akm 0.5.0 release announcement; `wiki` family removed in 0.9.0)
 
 # List all wikis
-akm wiki list
+akm wiki list  # doclint:ignore (historical — akm 0.5.0 release announcement; `wiki` family removed in 0.9.0)
 
 # See what pages a wiki has
-akm wiki pages architecture
+akm wiki pages architecture  # doclint:ignore (historical — akm 0.5.0 release announcement; `wiki` family removed in 0.9.0)
 
 # Search within a wiki
-akm wiki search architecture "deployment"
+akm wiki search architecture "deployment"  # doclint:ignore (historical — akm 0.5.0 release announcement; `wiki` family removed in 0.9.0)
 
 # Lint a wiki for structural problems
-akm wiki lint architecture
+akm wiki lint architecture  # doclint:ignore (historical — akm 0.5.0 release announcement; `wiki` family removed in 0.9.0)
 
 # Ingest raw content into raw/
-akm wiki stash architecture ./notes/adr-001.md
+akm wiki stash architecture ./notes/adr-001.md  # doclint:ignore (historical — akm 0.5.0 release announcement; `wiki` family removed in 0.9.0)
 
 # Print the ingest workflow for the wiki
-akm wiki ingest architecture
+akm wiki ingest architecture  # doclint:ignore (historical — akm 0.5.0 release announcement; `wiki` family removed in 0.9.0)
 ```
 
 Wiki pages are indexed by `akm index` and show up in stash-wide `akm search`, so you do not need to remember which wiki a page lives in. Raw sources under `raw/` plus the wiki root infrastructure files `schema.md`, `index.md`, and `log.md` are intentionally excluded from indexing and search results. Running `akm index` also regenerates each wiki's `index.md` as a side effect.
@@ -66,10 +66,10 @@ If you already have a wiki-shaped directory or repo you want to adopt without co
 
 ```sh
 # Register a local directory as a first-class wiki
-akm wiki register notes ~/team/notes
+akm wiki register notes ~/team/notes  # doclint:ignore (historical — akm 0.5.0 release announcement; `wiki` family removed in 0.9.0)
 
 # Or via the unified add command
-akm add --type wiki --name notes ~/team/notes
+akm add --type wiki --name notes ~/team/notes  # doclint:ignore (historical — akm 0.5.0 release announcement; `--type` removed from `add` in the 0.9.0 bundle-adapter refactor)
 
 # Registered external wikis show up in both `akm list` and `akm wiki list`
 ```
@@ -115,26 +115,26 @@ Vaults store secrets and environment configuration. Each vault is a `.env` file 
 
 ```sh
 # List vaults
-akm vault list
+akm vault list  # doclint:ignore (historical — akm 0.5.0 release announcement; `vault` type removed in 0.9.0, see `env`/`secret`)
 
 # Show keys in a vault (no values)
 akm show vault:prod-secrets
 
 # Create a new empty vault
-akm vault create prod-secrets
+akm vault create prod-secrets  # doclint:ignore (historical — akm 0.5.0 release announcement; `vault` type removed in 0.9.0, see `env`/`secret`)
 
 # Set a key (three-positional form or combined KEY=VALUE form)
-akm vault set vault:prod-secrets API_KEY abc123
-akm vault set vault:prod-secrets API_KEY=abc123 --comment "Rotate every 90 days"
+akm vault set vault:prod-secrets API_KEY abc123  # doclint:ignore (historical — akm 0.5.0 release announcement; `vault` type removed in 0.9.0, see `env`/`secret`)
+akm vault set vault:prod-secrets API_KEY=abc123 --comment "Rotate every 90 days"  # doclint:ignore (historical — akm 0.5.0 release announcement; `vault` type removed in 0.9.0, see `env`/`secret`)
 
 # Remove a key
-akm vault unset vault:prod-secrets API_KEY
+akm vault unset vault:prod-secrets API_KEY  # doclint:ignore (historical — akm 0.5.0 release announcement; `vault` type removed in 0.9.0, see `env`/`secret`)
 
 # Print the vault file path for current-shell loading
 source "$(akm vault path vault:prod-secrets)"
 
 # Run one command with the vault injected
-akm vault run vault:prod-secrets -- env
+akm vault run vault:prod-secrets -- env  # doclint:ignore (historical — akm 0.5.0 release announcement; `vault` type removed in 0.9.0, see `env`/`secret`)
 ```
 
 `akm vault path` is the current-shell loading path and `akm vault run` is the one-shot command execution path. Values never appear in structured output; `vault run` passes them directly to the child process environment.
@@ -155,7 +155,7 @@ akm add github:your-org/your-stash --writable
 akm remember "Production DB is read-only on Sundays"
 
 # Commit and push
-akm save -m "add production DB note"
+akm save -m "add production DB note"  # doclint:ignore (historical — akm 0.5.0 release announcement; `save` renamed `sync` in 0.9.0, `-m` survives as `sync`'s own alias)
 ```
 
 If the stash has a remote configured and `--writable` was used on install, `akm save` runs `git commit` and `git push`. Without `--writable` (or without a remote), it commits locally only.
@@ -171,7 +171,7 @@ The git stash provider also switches from HTTP tarball download to `git clone`, 
 akm 0.4.0 added a pre-install audit that scans stash contents for dangerous patterns. By default, installs from unrecognized sources require confirmation. For sources you know and trust, you can skip the audit entirely:
 
 ```sh
-akm add github:your-org/internal-stash --trust
+akm add github:your-org/internal-stash --trust  # doclint:ignore (historical — akm 0.5.0 release announcement; `--trust` no longer a flag on current `add`)
 ```
 
 `--trust` is a one-off bypass — it does not add the source to any persistent allowlist. Use it when you control the source and do not want to step through the audit prompt in a non-interactive context (a CI script, an automated agent workflow, a container build).

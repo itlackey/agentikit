@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { addStash, listStashes, removeStash } from "../../src/commands/sources/source-manage";
+import { addStash, removeStash } from "../../src/commands/sources/source-manage";
 import { getSources, loadConfig, saveConfig } from "../../src/core/config/config";
 import { type Cleanup, sandboxStashDir, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../_helpers/sandbox";
 
@@ -14,14 +14,12 @@ function createTmpDir(prefix = "akm-src-mgmt-"): string {
   return dir;
 }
 
-let testStashDir = "";
 let envCleanup: Cleanup = () => {};
 
 beforeEach(() => {
   const cacheResult = sandboxXdgCacheHome();
   const cfgResult = sandboxXdgConfigHome(cacheResult.cleanup);
   const stashResult = sandboxStashDir(cfgResult.cleanup);
-  testStashDir = stashResult.dir;
   envCleanup = stashResult.cleanup;
   // Write initial config so loadConfig doesn't return defaults with stale caches
   saveConfig({ semanticSearchMode: "auto" });
@@ -30,7 +28,6 @@ beforeEach(() => {
 afterEach(() => {
   envCleanup();
   envCleanup = () => {};
-  testStashDir = "";
 });
 
 afterAll(() => {
@@ -141,6 +138,55 @@ describe("addStash", () => {
     const url = "https://custom.example.com";
     expect(() => addStash({ target: url, providerType: "custom-provider" })).toThrow(/unsupported source type/);
     expect(getSources(loadConfig())).toEqual([]);
+  });
+
+  // ── R-013: --provider npm with a bare package spec ──────────────────────
+  //
+  // Regression coverage for R-013: `akm add <pkg> --provider npm` used to
+  // silently ignore `providerType` for any non-URL target and create a
+  // filesystem bundle for `<cwd>/<pkg>` instead. A bare package spec must
+  // become a declarative npm bundle descriptor (`{ npm: <spec> }`), and a URL
+  // target must be rejected loudly at add time (never a valid npm spec).
+
+  test("a bare package spec with --provider npm creates an npm bundle, not a filesystem one", () => {
+    const result = addStash({ target: "lodash", providerType: "npm" });
+
+    expect(result.added).toBe(true);
+    expect(result.entry?.type).toBe("npm");
+    // npm sources carry their package spec in `path` (config-sources.ts
+    // bundleEntryToSourceEntry) — never `filesystem` and never a resolved
+    // absolute path under cwd.
+    expect(result.entry?.path).toBe("lodash");
+
+    const config = loadConfig();
+    expect(config.bundles?.lodash).toEqual({ npm: "lodash" });
+    expect(getSources(config)).toHaveLength(1);
+    expect(getSources(config)[0]!.type).toBe("npm");
+  });
+
+  test("a scoped package spec with --provider npm and an explicit name is stored as given", () => {
+    const result = addStash({ target: "@scope/pkg@^2", providerType: "npm", name: "scoped-pkg" });
+
+    expect(result.added).toBe(true);
+    expect(result.entry?.name).toBe("scoped-pkg");
+    expect(result.entry?.type).toBe("npm");
+    expect(result.entry?.path).toBe("@scope/pkg@^2");
+  });
+
+  test("rejects a URL target with --provider npm instead of deferring to a sync-time failure", () => {
+    expect(() => addStash({ target: "https://example.com/lodash.tgz", providerType: "npm" })).toThrow(
+      /--provider npm expects a package spec.*not a URL/s,
+    );
+    // Nothing should be written to config on rejection.
+    expect(getSources(loadConfig())).toEqual([]);
+  });
+
+  test("deduplicates a bare npm spec added twice", () => {
+    addStash({ target: "lodash", providerType: "npm" });
+    const result = addStash({ target: "lodash", providerType: "npm" });
+
+    expect(result.added).toBe(false);
+    expect(result.message).toContain("already configured");
   });
 
   test("adds an http:// URL source", () => {
@@ -317,78 +363,35 @@ describe("removeStash", () => {
   });
 });
 
-// ── listStashes ────────────────────────────────────────────────────────
-
-describe("listStashes", () => {
-  test("lists empty stash sources", () => {
-    const result = listStashes();
-
-    expect(result.localSources).toBeDefined();
-    expect(result.sources).toEqual([]);
-    expect((result as unknown as { remoteSources?: unknown }).remoteSources).toBeUndefined();
-  });
-
-  test("lists filesystem stash sources", () => {
-    const fsPath = createTmpDir("akm-list-fs-");
-    addStash({ target: fsPath });
-
-    const result = listStashes();
-    expect(result.sources).toHaveLength(1);
-    expect(result.sources[0]!.type).toBe("filesystem");
-  });
-
-  test("lists URL stash sources", () => {
-    addStash({ target: "https://example.com", providerType: "website" });
-
-    const result = listStashes();
-    expect(result.sources).toHaveLength(1);
-    expect(result.sources[0]!.type).toBe("website");
-    expect(result.sources[0]!.url).toBe("https://example.com");
-  });
-
-  test("lists mixed source types", () => {
-    const fsPath = createTmpDir("akm-list-mixed-");
-    addStash({ target: fsPath });
-    addStash({ target: "https://example.com", providerType: "website" });
-    addStash({ target: "https://git.example.com/repo.git", providerType: "git" });
-
-    const result = listStashes();
-    expect(result.sources).toHaveLength(3);
-  });
-
-  test("includes primary stash dir in localSources", () => {
-    const result = listStashes();
-    // The primary stash dir (from AKM_STASH_DIR) should always be first
-    expect(result.localSources.length).toBeGreaterThanOrEqual(1);
-    expect(result.localSources[0]!.path).toBe(path.resolve(testStashDir));
-  });
-});
-
 // ── Round-trip integration ──────────────────────────────────────────────────
+// R-063 #6: `listStashes`/`SourceListResult` (a thin `{ getSources(loadConfig()),
+// resolveSourceEntries() }` wrapper with zero production callers) were deleted;
+// these round-trip tests cover the real production functions (`addStash` /
+// `removeStash`) and now read sources back via `getSources(loadConfig())` directly.
 
 describe("round-trip integration", () => {
   test("add then list then remove filesystem source", () => {
     const fsPath = createTmpDir("akm-roundtrip-fs-");
     addStash({ target: fsPath, name: "roundtrip-test" });
 
-    const listed = listStashes();
-    expect(listed.sources.some((s) => s.name === "roundtrip-test")).toBe(true);
+    const listed = getSources(loadConfig());
+    expect(listed.some((s) => s.name === "roundtrip-test")).toBe(true);
 
     removeStash("roundtrip-test");
-    const afterRemove = listStashes();
-    expect(afterRemove.sources.some((s) => s.name === "roundtrip-test")).toBe(false);
+    const afterRemove = getSources(loadConfig());
+    expect(afterRemove.some((s) => s.name === "roundtrip-test")).toBe(false);
   });
 
   test("add then list then remove URL source", () => {
     const url = "https://roundtrip.example.com";
     addStash({ target: url, providerType: "website", name: "rt-source" });
 
-    const listed = listStashes();
-    expect(listed.sources.some((s) => s.name === "rt-source")).toBe(true);
+    const listed = getSources(loadConfig());
+    expect(listed.some((s) => s.name === "rt-source")).toBe(true);
 
     removeStash(url);
-    const afterRemove = listStashes();
-    expect(afterRemove.sources.some((s) => s.url === url)).toBe(false);
+    const afterRemove = getSources(loadConfig());
+    expect(afterRemove.some((s) => s.url === url)).toBe(false);
   });
 
   test("add then list then remove git provider source", () => {
@@ -399,14 +402,14 @@ describe("round-trip integration", () => {
       name: "git-rt",
     });
 
-    const listed = listStashes();
-    const entry = listed.sources.find((s) => s.name === "git-rt");
+    const listed = getSources(loadConfig());
+    const entry = listed.find((s) => s.name === "git-rt");
     expect(entry).toBeDefined();
     expect(entry?.type).toBe("git");
 
     removeStash("git-rt");
-    const afterRemove = listStashes();
-    expect(afterRemove.sources.some((s) => s.name === "git-rt")).toBe(false);
+    const afterRemove = getSources(loadConfig());
+    expect(afterRemove.some((s) => s.name === "git-rt")).toBe(false);
   });
 
   test("multiple adds and removes maintain order and integrity", () => {
@@ -420,19 +423,19 @@ describe("round-trip integration", () => {
     addStash({ target: fs2, name: "fs2" });
     addStash({ target: url2, providerType: "website", name: "v2" });
 
-    let sources = listStashes().sources;
+    let sources = getSources(loadConfig());
     expect(sources).toHaveLength(4);
     expect(sources.map((s) => s.name)).toEqual(["fs1", "v1", "fs2", "v2"]);
 
     // Remove middle entry
     removeStash("v1");
-    sources = listStashes().sources;
+    sources = getSources(loadConfig());
     expect(sources).toHaveLength(3);
     expect(sources.map((s) => s.name)).toEqual(["fs1", "fs2", "v2"]);
 
     // Remove first entry
     removeStash("fs1");
-    sources = listStashes().sources;
+    sources = getSources(loadConfig());
     expect(sources).toHaveLength(2);
     expect(sources.map((s) => s.name)).toEqual(["fs2", "v2"]);
   });

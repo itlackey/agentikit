@@ -19,8 +19,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parse as yamlParse } from "yaml";
 import { getDirname } from "../runtime";
+import { parseTaskDocument } from "./parser";
+import type { TaskDocument } from "./schema";
 
 /** Directory holding the bundled core task templates. */
 const CORE_TASKS_DIR = path.join(getDirname(import.meta.url), "../assets/tasks/core");
@@ -71,23 +72,20 @@ export function listEmbeddedTasks(): EmbeddedTask[] {
     } catch {
       continue;
     }
-    let doc: { command?: unknown; schedule?: unknown; description?: unknown; enabled?: unknown };
+    let task: TaskDocument;
     try {
-      doc = yamlParse(yaml) ?? {};
+      task = parseTaskDocument({ yaml, filePath, id });
     } catch {
       continue;
     }
-    const command = typeof doc.command === "string" ? doc.command : "";
-    const schedule = typeof doc.schedule === "string" ? doc.schedule : "";
-    const description = typeof doc.description === "string" ? doc.description : "";
-    const enabled = doc.enabled !== false;
+    if (task.target.kind !== "command") continue;
     tasks.push({
       id,
       label: `core/${id}`,
-      command,
-      schedule,
-      description,
-      enabled,
+      command: task.target.cmd.join(" "),
+      schedule: task.schedule,
+      description: task.description ?? "",
+      enabled: task.enabled,
       yaml,
     });
   }

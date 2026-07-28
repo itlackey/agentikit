@@ -10,7 +10,6 @@
  */
 
 import { UsageError } from "../core/errors";
-import { warn } from "../core/warn";
 
 // findCittyTopLevelCommand(Index) + CittyArg(s)DefinitionForScan moved to
 // ./invocation (chunk-9 WI-9.9 argv-normalization fold — that cluster had no
@@ -80,30 +79,6 @@ export function parseNonNegativeIntFlag(raw: string | undefined, flagName: strin
     throw new UsageError(`Invalid ${flagName} value: "${raw}". Must be a non-negative integer.`, "INVALID_FLAG_VALUE");
   }
   return parseInt(trimmed, 10);
-}
-
-// ── Auto-accept flag parsing (deprecated) ───────────────────────────────────
-
-/**
- * DEPRECATED (0.9.0): `akm improve --auto-accept` is accepted but ignored.
- *
- * The confidence gate the flag configured was deleted in 0.9.0 — proposals
- * now queue for review (`akm proposal` / the drain engine) instead of being
- * auto-promoted by threshold. The flag warns-and-ignores for one minor
- * because installed crontabs embed the old command line; a hard parse error
- * would make scheduled background runs fail invisibly after upgrade. Hard
- * removal in 0.10.
- *
- * - `undefined` (flag absent) → silent no-op.
- * - Any present value (bare flag, `safe`, `false`, a number, garbage) →
- *   one deprecation warning on stderr; never throws.
- */
-export function parseAutoAcceptFlag(raw: string | undefined): void {
-  if (raw === undefined) return;
-  warn(
-    "[improve] --auto-accept is deprecated and ignored (the 0.9.0 confidence gate was removed; " +
-      "proposals queue for review via `akm proposal` or the drain engine). The flag will be removed in 0.10.",
-  );
 }
 
 // ── String flag parsing ──────────────────────────────────────────────────────

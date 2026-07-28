@@ -19,9 +19,9 @@
  *   • A per-call `timeoutMs` override forces a `timeout` reason.
  */
 import { describe, expect, test } from "bun:test";
-
+import type { SpawnedSubprocess, SpawnFn } from "../../src/core/subprocess";
 import type { AgentProfile } from "../../src/integrations/agent/profiles";
-import type { AgentFailureReason, SpawnedSubprocess, SpawnFn } from "../../src/integrations/agent/spawn";
+import type { AgentFailureReason } from "../../src/integrations/agent/spawn";
 import { runAgent } from "../../src/integrations/agent/spawn";
 
 const KNOWN_FAILURE_REASONS: ReadonlySet<AgentFailureReason> = new Set([

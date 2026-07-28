@@ -7,9 +7,11 @@
 // DEFAULT-PRESERVING invariant (#624 mandate): with topN unset, ranking is
 // never invoked and the eligible set is byte-identical to today.
 //
-// Unit test (no real LLM/spawn/serve, no 60s timeout) → lives in tests/, not
-// tests/integration/. Uses sandbox helpers; never touches host state. Run this
-// file individually before any full-suite gate.
+// No real LLM/spawn/serve, no 60s timeout — but it DOES open a real SQLite
+// database (openIndexDatabase) and read/write real files in a sandboxed temp
+// dir (makeStashDir), so — unlike a pure in-memory unit test — it correctly
+// lives here in tests/integration/, not tests/. Uses sandbox helpers; never
+// touches host state. Run this file individually before any full-suite gate.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";

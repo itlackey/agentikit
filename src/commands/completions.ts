@@ -12,13 +12,81 @@ type AnyCmd = Record<string, any>;
 
 // ── Known flag values ────────────────────────────────────────────────────────
 
-const FLAG_VALUES: Record<string, string[] | (() => string[])> = {
-  "--format": ["json", "text", "yaml", "jsonl"],
-  "--detail": ["brief", "normal", "full", "summary"],
-  "--type": () => [...placementTypes(), "any"],
-  "--source": ["stash", "registry", "both"],
-  "--shell": ["bash"],
+/**
+ * A completion rule for one flag, optionally scoped to a set of exact
+ * command paths (the same `"<root> <subcommand...>"` shape `walkCommandTree`
+ * produces below, e.g. `"akm search"`, `"akm graph summary"`). Most flags
+ * (`--format`, `--detail`, `--shape`, `--type`, `--shell`) mean the same
+ * thing on every command that declares them, so they're declared with no
+ * `paths` (global — the rule applies wherever the flag appears).
+ *
+ * `--source` does NOT: it's a closed `stash|registry|both` enum on
+ * `search`/`curate` (src/commands/read/search-cli.ts), but a free-form
+ * stash name/path on every `graph` subcommand
+ * (src/commands/graph/graph-cli.ts) and a free-form URL/ref/path on
+ * `remember` (src/commands/read/remember-cli.ts). Before this fix (R-052a)
+ * `FLAG_VALUES` was a flat `Record` keyed by flag NAME ONLY, so `akm graph
+ * --source <TAB>` wrongly suggested `stash registry both` — search's enum,
+ * tagged onto every occurrence of the flag name regardless of which command
+ * it belonged to. Scoping the rule to `paths` keeps the suggestion where
+ * it's actually correct; every other command path with that flag gets no
+ * suggestion (falls through to bash's default filename completion) rather
+ * than an incorrect one.
+ */
+interface FlagValueRule {
+  /** Exact command paths this rule applies to. Omit for every path with no more specific rule for this flag. */
+  paths?: string[];
+  values: string[] | (() => string[]);
+}
+
+const FLAG_VALUES: Record<string, FlagValueRule[]> = {
+  "--format": [{ values: ["json", "jsonl", "yaml", "text", "md", "html"] }],
+  "--detail": [{ values: ["brief", "normal", "full"] }],
+  "--shape": [{ values: ["human", "agent", "summary"] }],
+  "--type": [{ values: () => [...placementTypes(), "any"] }],
+  "--shell": [{ values: ["bash"] }],
+  "--source": [{ paths: ["akm search", "akm curate"], values: ["stash", "registry", "both"] }],
 };
+
+function resolveRuleValues(rule: FlagValueRule): string[] {
+  return typeof rule.values === "function" ? rule.values() : rule.values;
+}
+
+/**
+ * Build the `${prev}`-case body for one flag. When the flag has no
+ * path-scoped rules, every command shares one value set (unchanged from
+ * before R-052a). When it does (currently only `--source`), nest a
+ * `${cmd_path}` match inside the flag's case so the suggestion depends on
+ * which command is being completed — with a `*)` fallback to any
+ * unscoped/global rule declared alongside the scoped ones, or no suggestion
+ * at all when every rule for that flag is scoped.
+ */
+function buildFlagValueCaseBody(rules: FlagValueRule[]): string {
+  const scoped = rules.filter((rule) => rule.paths && rule.paths.length > 0);
+  const global = rules.find((rule) => !rule.paths || rule.paths.length === 0);
+
+  if (scoped.length === 0) {
+    return `      COMPREPLY=( $(compgen -W "${resolveRuleValues(global as FlagValueRule).join(" ")}" -- "\${cur}") )`;
+  }
+
+  const branches = scoped
+    .map(
+      (rule) =>
+        `        ${(rule.paths as string[]).map((p) => `"${p}"`).join("|")})
+          COMPREPLY=( $(compgen -W "${resolveRuleValues(rule).join(" ")}" -- "\${cur}") )
+          ;;`,
+    )
+    .join("\n");
+  const fallback = global
+    ? `        *)
+          COMPREPLY=( $(compgen -W "${resolveRuleValues(global).join(" ")}" -- "\${cur}") )
+          ;;`
+    : "";
+  return `      case "\${cmd_path}" in
+${branches}
+${fallback}
+      esac`;
+}
 
 // ── Command tree walker ──────────────────────────────────────────────────────
 
@@ -88,10 +156,9 @@ export function generateBashCompletions(cmd: AnyCmd): string {
 
   // Build flag-value completion cases
   const valueCases: string[] = [];
-  for (const [flag, valuesOrFn] of Object.entries(FLAG_VALUES)) {
-    const values = typeof valuesOrFn === "function" ? valuesOrFn() : valuesOrFn;
+  for (const [flag, rules] of Object.entries(FLAG_VALUES)) {
     valueCases.push(`    ${flag})
-      COMPREPLY=( $(compgen -W "${values.join(" ")}" -- "\${cur}") )
+${buildFlagValueCaseBody(rules)}
       return 0
       ;;`);
   }
@@ -111,12 +178,8 @@ _${rootName}() {
     cword=\${COMP_CWORD}
   fi
 
-  # Complete flag values
-  case "\${prev}" in
-${valueCases.join("\n")}
-  esac
-
-  # Build the command path from COMP_WORDS
+  # Build the command path from COMP_WORDS (computed BEFORE flag-value
+  # completion below, so a path-scoped rule — e.g. --source — can match on it)
   local cmd_path="${rootName}"
   for (( i=1; i < cword; i++ )); do
     case "\${words[i]}" in
@@ -124,6 +187,11 @@ ${valueCases.join("\n")}
       *) cmd_path="\${cmd_path} \${words[i]}" ;;
     esac
   done
+
+  # Complete flag values
+  case "\${prev}" in
+${valueCases.join("\n")}
+  esac
 
   # Complete based on current command path
   case "\${cmd_path}" in

@@ -156,7 +156,8 @@ describe("akm-workflow adapter — lint golden", () => {
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) throw new Error("unreachable");
     const expectedProgram = yaml!.result?.program as Record<string, unknown>;
-    expect(parsed.program.version).toBe(expectedProgram.version as number);
+    expect(parsed.program.version).toBe(2);
+    expect(expectedProgram.version).toBe(2);
     expect(parsed.program.name).toBe(expectedProgram.name as string);
     expect(parsed.program.description).toBe(expectedProgram.description as string);
     const expectedSteps = expectedProgram.steps as Array<{ id: string; unit: { instructions: string } }>;

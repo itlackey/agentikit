@@ -15,11 +15,11 @@
  *
  * This test pins the planner-side contract:
  *
- *   1. A stash containing a `script:*` ref that would otherwise be a reflect
+ *   1. A stash containing a `scripts/*` ref that would otherwise be a reflect
  *      candidate never causes akmReflect to be called.
  *   2. The action for that ref is recorded as `reflect-skipped` with reason
  *      `"type-filter"` (not `reflect-failed`) so the run summary is not polluted.
- *   3. A co-located `skill:*` ref (an allowed type) IS reflected normally —
+ *   3. A co-located `skills/*` ref (an allowed type) IS reflected normally —
  *      the guard does not accidentally block allowed types.
  */
 
@@ -28,14 +28,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { AkmDistillResult } from "../../../src/commands/improve/distill";
 import { akmImprove } from "../../../src/commands/improve/improve";
-import type { AkmReflectOptions, AkmReflectResult } from "../../../src/commands/improve/reflect";
+import type { AkmReflectOptions } from "../../../src/commands/improve/reflect";
 import { REFLECT_ALLOWED_TYPES } from "../../../src/commands/improve/reflect";
 import { saveConfig } from "../../../src/core/config/config";
 import { appendEvent } from "../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../src/core/improve-types";
 import { akmIndex } from "../../../src/indexer/indexer";
-import { withTestImproveLlm } from "../../_helpers/improve-config";
+import { withImproveAutonomy, withTestImproveLlm } from "../../_helpers/improve-config";
 
 const tempDirs: string[] = [];
 const savedEnv = {
@@ -56,8 +56,22 @@ function makeTempDir(prefix: string): string {
 
 async function indexStash(stashDir: string): Promise<void> {
   process.env.AKM_STASH_DIR = stashDir;
-  saveConfig(withTestImproveLlm({ semanticSearchMode: "off" }));
+  saveConfig(
+    withImproveAutonomy(
+      withTestImproveLlm({
+        semanticSearchMode: "off",
+        bundles: { stash: { path: stashDir, writable: true } },
+        defaultBundle: "stash",
+        defaultWriteTarget: "stash",
+        index: { enrichment: { enabled: false } },
+      }),
+    ),
+  );
   await akmIndex({ stashDir, full: true });
+}
+
+function durableRef(ref: string): string {
+  return `stash//${ref}`;
 }
 
 function makeStubReflectResult(ref: string): AkmReflectResult {
@@ -86,7 +100,7 @@ function makeStubDistillResult(ref: string): AkmDistillResult {
     ok: true,
     outcome: "queued",
     inputRef: ref,
-    lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+    proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
   };
 }
 
@@ -138,7 +152,7 @@ describe("REFLECT_ALLOWED_TYPES export", () => {
 });
 
 describe("improve loop: unsupported-type reflect pre-check", () => {
-  test("script:* ref is recorded as reflect-skipped, not reflect-failed, and akmReflect is NOT called", async () => {
+  test("scripts/* ref is recorded as reflect-skipped, not reflect-failed, and akmReflect is NOT called", async () => {
     const stash = makeTempDir("akm-improve-reflect-unsupported-stash-");
 
     // Create a script asset — stored under scripts/ with a .sh extension.
@@ -156,10 +170,14 @@ describe("improve loop: unsupported-type reflect pre-check", () => {
     await indexStash(stash);
 
     // Inject positive feedback so both refs pass the signal filter inside improve.
-    appendEvent({ eventType: "feedback", ref: "scripts/deploy.sh", metadata: { signal: "positive", note: "fixture" } });
     appendEvent({
       eventType: "feedback",
-      ref: "skills/deploy-guide",
+      ref: durableRef("scripts/deploy.sh"),
+      metadata: { signal: "positive", note: "fixture" },
+    });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("skills/deploy-guide"),
       metadata: { signal: "positive", note: "fixture" },
     });
 
@@ -187,7 +205,7 @@ describe("improve loop: unsupported-type reflect pre-check", () => {
     const reflectedRefs = reflectCalls.map((c) => c.ref ?? "");
     expect(reflectedRefs.filter((r) => r.startsWith("scripts/"))).toEqual([]);
 
-    // Core assertion 2: 2026-05-27 planner pre-filter — script:* refs are
+    // Core assertion 2: 2026-05-27 planner pre-filter — scripts/* refs are
     // refused by BOTH reflect and distill on the default profile, so the
     // planner drops them before queueing. They MUST NOT appear in
     // `plannedRefs` and they MUST NOT produce any per-ref action (no
@@ -232,7 +250,7 @@ describe("improve loop: inner reflect type-guard fallback maps to reflect-skippe
     await indexStash(stash);
     appendEvent({
       eventType: "feedback",
-      ref: "skills/deploy-guide",
+      ref: durableRef("skills/deploy-guide"),
       metadata: { signal: "positive", note: "fixture" },
     });
 
@@ -291,7 +309,7 @@ describe("improve envelope: per-phase wall-clock durations are emitted at the to
     // (see tests/llm-feature-gate.test.ts) — no explicit config opt-in.
     appendEvent({
       eventType: "feedback",
-      ref: "skill:byphase-fixture",
+      ref: durableRef("skills/byphase-fixture"),
       metadata: { signal: "positive", note: "fixture" },
     });
 

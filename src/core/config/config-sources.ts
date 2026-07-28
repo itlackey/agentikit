@@ -8,7 +8,21 @@
  * in an {@link AkmConfig}.
  */
 import { createHash } from "node:crypto";
+import path from "node:path";
+import { ConfigError } from "../errors";
 import type { AkmConfig, BundleConfigEntry, ConfiguredSource, SourceConfigEntry, SourceSpec } from "./config-types";
+
+/** The current one-component-per-bundle configuration entry, if present. */
+export function bundleComponentConfig(
+  bundle: BundleConfigEntry | undefined,
+): { root?: string; adapter?: string; writable?: boolean } | undefined {
+  if (!bundle?.components) return undefined;
+  const components = Object.values(bundle.components);
+  if (components.length !== 1) {
+    throw new ConfigError("A bundle components map must contain exactly one component.", "INVALID_CONFIG_FILE");
+  }
+  return components[0];
+}
 
 /**
  * Convert a `bundles` map (0.9.0 config-shape cutover, spec §10.1 / D-R5) into
@@ -30,7 +44,16 @@ export function primaryBundlePath(config: AkmConfig): string | undefined {
   const key = config.defaultBundle;
   if (!bundles || !key) return undefined;
   const entry = bundles[key];
-  return entry && typeof entry.path === "string" && entry.path.length > 0 ? entry.path : undefined;
+  if (!entry || typeof entry.path !== "string" || entry.path.length === 0) return undefined;
+  const componentRoot = bundleComponentConfig(entry)?.root;
+  if (!componentRoot || componentRoot === ".") return entry.path;
+  const bundleRoot = path.resolve(entry.path);
+  const resolved = path.resolve(bundleRoot, componentRoot);
+  const relative = path.relative(bundleRoot, resolved);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new ConfigError(`Component root "${componentRoot}" escapes bundle "${key}".`, "INVALID_CONFIG_FILE");
+  }
+  return resolved;
 }
 
 export function bundlesToSourceEntries(config: AkmConfig): SourceConfigEntry[] | undefined {
@@ -56,6 +79,7 @@ export function bundleEntryToSourceEntry(
   const base = {
     name: key,
     ...(bundle.writable !== undefined ? { writable: bundle.writable } : {}),
+    ...(bundle.enabled !== undefined ? { enabled: bundle.enabled } : {}),
     ...(isPrimary ? { primary: true } : {}),
   };
   if (typeof bundle.path === "string" && bundle.path.length > 0) {
@@ -168,8 +192,7 @@ export function parseSourceSpec(entry: SourceConfigEntry): SourceSpec | undefine
     case "npm":
       return entry.path ? { type: "npm", package: entry.path } : undefined;
     default:
-      // Unknown provider — best-effort fallback so callers still get something.
-      return entry.path ? { type: "filesystem", path: entry.path } : undefined;
+      return undefined;
   }
 }
 
@@ -190,7 +213,15 @@ export function resolveConfiguredSources(config: AkmConfig): ConfiguredSource[] 
   const out: ConfiguredSource[] = [];
   for (const persisted of bundleEntries) {
     const runtime = toConfiguredSource(persisted, persisted.primary === true);
-    if (runtime) out.push(runtime);
+    if (runtime) {
+      const component = bundleComponentConfig(config.bundles?.[persisted.name ?? ""]);
+      out.push({
+        ...runtime,
+        ...(component?.adapter ? { adapterId: component.adapter } : {}),
+        ...(component?.root ? { componentRoot: component.root } : {}),
+        ...(component?.writable !== undefined ? { writable: component.writable } : {}),
+      });
+    }
   }
   return out;
 }

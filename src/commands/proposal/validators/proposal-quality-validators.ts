@@ -74,15 +74,10 @@ import { proposalContent } from "../../../core/file-change";
 /**
  * The canonical asset NAME an inputRef names, lower-cased — the tail the
  * "just restates the ref" heuristics compare against. WI-8.5c: the ref is the
- * conceptId (`<subdir>/<name>`), so the name is parsed off the conceptId; a
- * legacy `type:name` falls back to the post-colon segment.
+ * conceptId (`<subdir>/<name>`), so the name is parsed off the conceptId.
  */
 function refNameTail(inputRef: string): string {
-  try {
-    return parseRefInput(inputRef).name.toLowerCase();
-  } catch {
-    return (inputRef.split(":").pop() ?? "").toLowerCase();
-  }
+  return parseRefInput(inputRef).name.toLowerCase();
 }
 
 import { detectTruncatedDescription, TRUNCATION_TRAILING_WORDS } from "../../../core/text-truncation";

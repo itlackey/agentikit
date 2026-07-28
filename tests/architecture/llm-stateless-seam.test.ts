@@ -20,12 +20,23 @@
  *      module state.
  *
  * Together these properties keep every in-tree LLM call to a single
- * bounded request/response cycle. Crossing this seam (introducing a
- * conversation cache, a streaming session, or a hidden module-level
- * config) is a contract violation and should fail this test.
+ * bounded request/response cycle. Crossing this seam by adding a
+ * conversation cache or a streaming session as a new module *export*
+ * (a stateful instance, a Map, any non-function runtime value) will fail
+ * this test — every check below inspects `Object.entries()` of each
+ * module, i.e. its exports only.
+ *
+ * What this test can NOT catch: a hidden, non-exported module-level
+ * variable. `src/llm/client.ts`'s `chatCompletionOverride` (a
+ * module-private `let`, reachable only through the test-only
+ * `_setChatCompletionForTests` setter, client.ts:260-275) never appears in
+ * `Object.entries(client)` and would not trip any assertion here. Do not
+ * read a green run of this suite as proof that no `src/llm/*` module holds
+ * private mutable state — it pins the public export shape only.
  */
 import { describe, expect, test } from "bun:test";
 
+import { parseJsonResponse } from "../../src/core/parse";
 import * as client from "../../src/llm/client";
 import * as embedder from "../../src/llm/embedder";
 import * as indexPasses from "../../src/llm/index-passes";
@@ -35,8 +46,6 @@ import * as metadataEnhance from "../../src/llm/metadata-enhance";
 describe("src/llm/* is bounded and stateless (v1 spec §9.7, §14.4)", () => {
   test("`client` exports are pure functions", () => {
     expect(typeof client.chatCompletion).toBe("function");
-    expect(typeof client.stripJsonFences).toBe("function");
-    expect(typeof client.parseJsonResponse).toBe("function");
     expect(typeof client.isLlmAvailable).toBe("function");
     expect(typeof client.probeLlmCapabilities).toBe("function");
   });
@@ -107,14 +116,13 @@ describe("src/llm/* is bounded and stateless (v1 spec §9.7, §14.4)", () => {
     expect(embedder.resetLocalEmbedder.length).toBe(0);
   });
 
-  test("`stripJsonFences` and `parseJsonResponse` are referentially transparent", () => {
+  test("response parsing is referentially transparent", () => {
     // Two calls with the same input produce the same output. These are
     // pure, so this is not a deep test of statelessness — but it does
     // pin the seam: response parsing is not allowed to learn from
     // prior responses.
     const fenced = '```json\n{"a":1}\n```';
-    expect(client.stripJsonFences(fenced)).toBe(client.stripJsonFences(fenced));
-    expect(client.parseJsonResponse<{ a: number }>(fenced)).toEqual({ a: 1 });
-    expect(client.parseJsonResponse<{ a: number }>(fenced)).toEqual({ a: 1 });
+    expect(parseJsonResponse<{ a: number }>(fenced)).toEqual({ a: 1 });
+    expect(parseJsonResponse<{ a: number }>(fenced)).toEqual({ a: 1 });
   });
 });

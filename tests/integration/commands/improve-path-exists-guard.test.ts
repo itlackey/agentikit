@@ -25,11 +25,10 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { AkmDistillResult } from "../../../src/commands/improve/distill";
 import { akmImprove } from "../../../src/commands/improve/improve";
-import type { AkmReflectResult } from "../../../src/commands/improve/reflect";
 import { saveConfig } from "../../../src/core/config/config";
 import { readEvents } from "../../../src/core/events";
+import type { AkmDistillResult, AkmReflectResult } from "../../../src/core/improve-types";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { writeLesson } from "../../_helpers/assets";
 import { makeProposal } from "../../_helpers/factories";
@@ -54,14 +53,25 @@ function makeTempDir(prefix: string): string {
 
 async function buildIndex(stashDir: string): Promise<void> {
   process.env.AKM_STASH_DIR = stashDir;
-  saveConfig(withTestImproveLlm({ semanticSearchMode: "off" }));
+  saveConfig(
+    withTestImproveLlm({
+      semanticSearchMode: "off",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
+    }),
+  );
   await akmIndex({ stashDir, full: true });
+}
+
+function durableRef(ref: string): string {
+  return `stash//${ref}`;
 }
 
 const reflectFn = async ({ ref }: { ref?: string }): Promise<AkmReflectResult> => ({
   schemaVersion: 2,
   ok: true,
-  proposal: makeProposal(ref ?? "lesson:unknown"),
+  proposal: makeProposal(ref ?? "lessons/unknown"),
   ref: ref ?? "",
   engine: "test",
   durationMs: 1,
@@ -72,7 +82,7 @@ const distillFn = async ({ ref }: { ref: string }): Promise<AkmDistillResult> =>
   ok: true,
   outcome: "queued",
   inputRef: ref,
-  lessonRef: `lesson:${ref.replace(/[:/]/g, "-")}-lesson`,
+  proposalRef: `lessons/${ref.replace(/[:/]/g, "-")}-lesson`,
 });
 
 const reindexFn = async (): Promise<{
@@ -161,8 +171,16 @@ describe("akmImprove final pathExists guard", () => {
     // Inject a positive feedback signal so both lessons pass the signal filter
     // and arrive at the final guard.
     const { appendEvent } = await import("../../../src/core/events");
-    appendEvent({ eventType: "feedback", ref: "lessons/alpha", metadata: { signal: "positive", note: "ok" } });
-    appendEvent({ eventType: "feedback", ref: "lessons/beta", metadata: { signal: "positive", note: "ok" } });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("lessons/alpha"),
+      metadata: { signal: "positive", note: "ok" },
+    });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("lessons/beta"),
+      metadata: { signal: "positive", note: "ok" },
+    });
 
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -201,9 +219,21 @@ describe("akmImprove final pathExists guard", () => {
 
     // Positive feedback so all three pass the signal filter and reach the guard.
     const { appendEvent } = await import("../../../src/core/events");
-    appendEvent({ eventType: "feedback", ref: "lessons/kept", metadata: { signal: "positive", note: "ok" } });
-    appendEvent({ eventType: "feedback", ref: "lessons/gone", metadata: { signal: "positive", note: "ok" } });
-    appendEvent({ eventType: "feedback", ref: "lessons/alive", metadata: { signal: "positive", note: "ok" } });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("lessons/kept"),
+      metadata: { signal: "positive", note: "ok" },
+    });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("lessons/gone"),
+      metadata: { signal: "positive", note: "ok" },
+    });
+    appendEvent({
+      eventType: "feedback",
+      ref: durableRef("lessons/alive"),
+      metadata: { signal: "positive", note: "ok" },
+    });
 
     // Delete one file post-index to simulate the deletion race.
     fs.unlinkSync(path.join(stashDir, "lessons", "gone.md"));

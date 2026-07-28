@@ -48,6 +48,7 @@ export function buildSearchFields(entry: IndexDocument): {
   const tags = tagParts.join(" ").toLowerCase();
 
   const hintParts: string[] = [];
+  if (entry.hints) hintParts.push(entry.hints.join(" "));
   if (entry.searchHints) hintParts.push(entry.searchHints.join(" "));
   if (entry.examples) hintParts.push(entry.examples.join(" "));
   if (entry.usage) hintParts.push(entry.usage.join(" "));
@@ -62,6 +63,7 @@ export function buildSearchFields(entry: IndexDocument): {
   const hints = hintParts.join(" ").toLowerCase();
 
   const contentParts: string[] = [];
+  if (entry.content) contentParts.push(entry.content);
   if (entry.toc) {
     contentParts.push(entry.toc.map((h) => h.text).join(" "));
   }
@@ -86,7 +88,7 @@ export function buildSearchFields(entry: IndexDocument): {
 
 /**
  * Build a single concatenated search text string for an entry.
- * Used for the `search_text` column in the entries table (backward compat)
+ * Used for the `search_text` column in the entries table.
  * and for generating embedding text.
  */
 export function buildSearchText(entry: IndexDocument): string {

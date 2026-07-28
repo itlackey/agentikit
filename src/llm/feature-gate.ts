@@ -19,20 +19,17 @@
  *     and returns `fallback` on disablement, throw, or timeout.
  *
  * The 0.9.0 config shape selects named engines and configures standalone index
- * features through their corresponding `index.*` pass entries.
- * The legacy `LlmFeatureKey` strings (`memory_inference`, etc.) are kept here
- * as a stable external API so call sites do not need to know where each gate
- * lives in the config tree — that mapping is private to this module.
+ * features through their corresponding `index.*` pass entries. Feature keys
+ * keep call sites independent of where each gate lives in the config tree.
  */
 
 import type { AkmConfig } from "../core/config/config";
 
 /**
- * Locked v1 feature keys, kept for backward-compat at the call-site API level.
+ * Internal feature keys used by bounded LLM call sites.
  *
- * `reflect_proposal` (added with the chunk-7 structured-call migration) labels
- * reflect's direct proposal call, which runs UNGATED at the seam — reflect
- * enablement is resolved by the improve strategy before dispatch, so the key
+ * `reflect_proposal` labels reflect's direct proposal call, which runs UNGATED
+ * at the seam. Reflect enablement is resolved by the improve strategy before dispatch, so the key
  * has no `FEATURE_LOCATION` resolver and gating it would hard-close it.
  */
 export type LlmFeatureKey =
@@ -49,16 +46,11 @@ export type LlmFeatureKey =
 
 /**
  * For each feature key, return the effective enabled state by reading the
- * 0.9.0 config shape. Defaults match the legacy `LlmFeatureFlags` docstrings.
+ * 0.9.0 config shape.
  */
-// Defaults below mirror the legacy LlmFeatureFlags docstrings so existing
-// behaviour is preserved when a config is silent on a flag.
 const FEATURE_LOCATION: Partial<Record<LlmFeatureKey, (cfg: AkmConfig) => boolean>> = {
-  // Legacy default: true
   memory_inference: (cfg) => cfg.index?.memory?.enabled ?? true,
-  // Legacy default: true
   graph_extraction: (cfg) => cfg.index?.graph?.enabled ?? true,
-  // Legacy default: false
   metadata_enhance: (cfg) => cfg.index?.metadataEnhance?.enabled ?? false,
   // Always on at the LLM-wrapper level. Enablement is decided ONCE at the
   // extract entry point (`akmExtract`): the `extract.enabled` process toggle
@@ -73,8 +65,7 @@ const FEATURE_LOCATION: Partial<Record<LlmFeatureKey, (cfg: AkmConfig) => boolea
 /**
  * Pure predicate: is the named feature gate enabled in `config`?
  *
- * Reads from the unified 0.9.0 config shape. Defaults follow the legacy
- * `LlmFeatureFlags` docstring defaults.
+ * Reads from the unified 0.9.0 config shape.
  */
 export function isLlmFeatureEnabled(
   config: AkmConfig | undefined,
@@ -159,10 +150,8 @@ export async function tryLlmFeature<T>(
 }
 
 /**
- * Section-agnostic process gate. After the 0.8.0 migration, the canonical
- * accessor is the `FEATURE_LOCATION` map above; this helper exists so older
- * call sites that knew the (section, processName) pair don't all need to
- * relearn the new mapping.
+ * Section-agnostic process gate that maps process identifiers to their current
+ * config locations.
  *
  * For unknown (section, processName) pairs the result is `false`.
  */

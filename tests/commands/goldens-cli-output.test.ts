@@ -49,6 +49,8 @@ import {
   A_WORKFLOW_NAME,
   agentRef,
   commandRef,
+  D_FRAGMENT_NAME,
+  fragmentRef,
   knowledgeRef,
   lessonRef,
   memoryRef,
@@ -87,7 +89,11 @@ beforeEach(() => {
   // only sandboxes once per PROCESS, not per test (see its module docstring).
   storage = withIsolatedAkmStorage();
   stashDir = storage.stashDir;
-  writeSandboxConfig({ semanticSearchMode: "off" });
+  writeSandboxConfig({
+    semanticSearchMode: "off",
+    bundles: { stash: { path: stashDir, writable: true } },
+    defaultBundle: "stash",
+  });
   seedAssets();
 });
 
@@ -185,6 +191,30 @@ describe("family A — search/show/list/info/curate/history/proposal/env/secret/
         exitCode: withRun.code,
       },
     });
+  });
+
+  test("show command — APPLY footer feedback ref is a runnable slash ref (R-002/E-05 regression)", async () => {
+    // 0.9.0 (Q-02): the colon `type:name` ref grammar is retired with no
+    // re-acceptance. `appendShowDirectives` (src/output/text/show-directives.ts)
+    // used to build the APPLY-footer feedback suggestion as `${assetType}:${r.name}`
+    // (e.g. `skill:cli-a-ops`), which `akm feedback` rejects outright. Assert the
+    // footer now emits the slash conceptId AND that the exact suggested command
+    // actually runs — not just that it looks right.
+    const shown = await runCli(["show", skillRef(), "--format=text"]);
+    expect(shown.code).toBe(0);
+
+    const match = shown.stdout.match(/akm feedback '([^']+)' --positive/);
+    expect(match).not.toBeNull();
+    const suggestedRef = match?.[1] ?? "";
+
+    // Slash conceptId, not the retired `type:name` colon grammar.
+    expect(suggestedRef).toBe(skillRef());
+    expect(suggestedRef).not.toContain(":");
+    expect(suggestedRef).toMatch(/^skills\//);
+
+    // The suggestion must actually be runnable, verbatim.
+    const feedback = await runCli(["feedback", suggestedRef, "--positive"]);
+    expect(feedback.code).toBe(0);
   });
 
   test("show --shape=agent and --shape=summary", async () => {
@@ -308,8 +338,16 @@ describe("family A — search/show/list/info/curate/history/proposal/env/secret/
     // src/output/shapes/events.ts); the actual CLI command group is `akm log`
     // (see src/commands/observability-cli.ts). DEVIATION from the brief's
     // literal `events list` / `events tail --limit 1` spelling: there is no
-    // top-level `events` command and no `--limit` flag — the real surface is
-    // `akm log list` / `akm log tail --max-events <n>`.
+    // top-level `events` command — the real surface is `akm log list` /
+    // `akm log tail --max-events <n>`. `log list --limit <n>` now also exists
+    // (D-38, src/commands/observability-cli.ts's `eventsListCommand`) — not
+    // exercised here since this test doesn't pass it, so it never appears in
+    // this golden's key set (the field is only present in the envelope when
+    // `--limit` is actually supplied); see the "log list --limit (D-38)"
+    // describe block in tests/integration/commands/events.test.ts for its own
+    // coverage.
+    // `log tail` still has no `--limit` (it already has the equivalent
+    // `--max-events`, which this test does exercise).
     await runCli(["remember", "an events fixture note", "--name", "events-fixture", "--format=json"]);
     const list = await runCli(["log", "list", "--format=json"]);
     expect(list.code).toBe(0);
@@ -440,12 +478,12 @@ describe("family D — argv-handling surfaces", () => {
     });
   });
 
-  test("show <ref> lines 1 2 --format=text — normalizeShowArgv view-mode", async () => {
-    writeFile("knowledge/lines-fixture.md", "# Heading\nline2\nline3\nline4\n");
-    const result = await runCli(["show", "knowledge/lines-fixture.md", "lines", "1", "2", "--format=text"]);
+  test("show <ref>#<slug> --format=text — fragment section selector", async () => {
+    writeFile(`knowledge/${D_FRAGMENT_NAME}`, "# Heading\nintro\n\n## Details\ndetail body\n");
+    const result = await runCli(["show", `${fragmentRef()}#details`, "--format=text"]);
     expect(result.code).toBe(0);
     expectGolden(
-      "tests/fixtures/goldens/cli/d-show-lines-view.json",
+      "tests/fixtures/goldens/cli/d-show-fragment.json",
       { exitCode: result.code, stdoutScrubbed: result.stdout },
       { stash: stashDir },
     );

@@ -27,7 +27,7 @@
  * changes outnumber retrievals, the term paid a live *bonus* for churn —
  * an asset's score could rise by being rewritten under auto-accept.
  * `accepted_change_count` remains persisted as raw telemetry only; it must
- * never re-enter the score (pinned by tests/commands/improve/outcome-invariance.test.ts).
+ * never re-enter the score (pinned by tests/integration/commands/improve/outcome-invariance.test.ts).
  *
  * ## Eligibility-trace decay
  *
@@ -130,7 +130,7 @@ export interface AssetOutcomeRow {
 // ── Writer ────────────────────────────────────────────────────────────────────
 
 export interface OutcomeUpdateInputs {
-  /** Asset ref (`type:name`). */
+  /** Asset ref. */
   ref: string;
   /**
    * Current total retrieval count from the index DB.
@@ -232,9 +232,8 @@ export function updateAssetOutcome(db: Database, inputs: OutcomeUpdateInputs): O
 
     // Clip to [OUTCOME_SCORE_MIN, OUTCOME_SCORE_MAX] — the ceiling is the RPE
     // saturation analog (G2): without it, long-lived popular assets accumulate
-    // unbounded positive mass (live max was 3.13) and would dominate rank_score
-    // the moment the outcome weight is enabled. Stored legacy scores above the
-    // ceiling converge back under it on their next differential update.
+    // unbounded positive mass and would dominate rank_score when outcome weight
+    // is enabled.
     outcomeScore = Math.min(OUTCOME_SCORE_MAX, Math.max(OUTCOME_SCORE_MIN, newScore));
   }
 
