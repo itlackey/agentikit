@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildShellExportScript, createEnv, listKeys, loadEnv } from "../../src/commands/env/env";
+import { sensitiveMarkerPath } from "../../src/commands/env/marker-path";
 import { getDbPath } from "../../src/core/paths";
 import { resetGraphBoostCache } from "../../src/indexer/graph/graph-boost";
 import { akmIndex } from "../../src/indexer/indexer";
@@ -515,14 +516,15 @@ describe("env remove", () => {
     const stashDir = makeTempDir("akm-envcli-stash-");
     fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
     const dest = path.join(stashDir, "env", "prod.env");
+    const marker = sensitiveMarkerPath(dest, "env");
     fs.writeFileSync(dest, "API_KEY=secret\n", "utf8");
-    fs.writeFileSync(`${dest}.sensitive`, "", "utf8");
+    fs.writeFileSync(marker, "", "utf8");
 
     const result = await runCli(["env", "remove", "env/prod", "--yes"], { AKM_STASH_DIR: stashDir });
 
     expect(result.status).toBe(0);
     expect(fs.existsSync(dest)).toBe(false);
-    expect(fs.existsSync(`${dest}.sensitive`)).toBe(false);
+    expect(fs.existsSync(marker)).toBe(false);
   });
 
   test("never deletes the frozen vaults/ copy", async () => {

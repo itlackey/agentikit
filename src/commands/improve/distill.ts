@@ -267,11 +267,7 @@ export function deriveLessonRef(inputRef: string): string {
 //
 // The actual implementations now live in `core/proposal-quality-validators.ts`
 // so the same checks run inside `runProposalValidators` on `proposal accept`.
-import {
-  detectDoubleFrontmatter,
-  isValidDescription,
-  isValidWhenToUse,
-} from "../proposal/validators/proposal-quality-validators";
+import { detectDoubleFrontmatter, isValidDescription } from "../proposal/validators/proposal-quality-validators";
 
 // ── Prompt assembly ─────────────────────────────────────────────────────────
 
@@ -779,6 +775,22 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
   const salienceWriteKey = options.itemRef ?? durableInputRef;
   const targetKind = options.proposalKind ?? "lesson";
 
+  const config = options.config ?? loadConfig();
+  const improveProfile = options.improveProfile ?? resolveImproveStrategy(undefined, config).config;
+  options = { ...options, improveProfile };
+  if (!resolveProcessEnabled("distill", improveProfile)) {
+    const proposalKind = targetKind === "knowledge" ? "knowledge" : "lesson";
+    return {
+      schemaVersion: 1,
+      ok: true,
+      outcome: "config_disabled",
+      inputRef,
+      proposalRef: proposalKind === "knowledge" ? deriveKnowledgeRef(inputRef) : deriveLessonRef(inputRef),
+      proposalKind,
+      message: "distill is disabled in config; enable processes.distill.enabled to activate.",
+    };
+  }
+
   // Attribution tagging: spread into every distill_invoked event's metadata so
   // the lane that selected this asset is recorded uniformly across all outcome
   // branches. Empty object when no lane was supplied (direct `akm distill`).
@@ -793,8 +805,6 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
   const refused = refuseDisallowedDistillInput({ options, parsedInputRef, inputRef, durableInputRef, eligMeta });
   if (refused) return refused;
 
-  const config = options.config ?? loadConfig();
-  options = { ...options, improveProfile: options.improveProfile ?? resolveImproveStrategy(undefined, config).config };
   const stash = resolveRunStashDir(options.stashDir);
   const chat = options.chat ?? chatCompletion;
   const distillLlm = Object.hasOwn(options, "llmConfig")
@@ -812,31 +822,17 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
   const fetchSimilarLessonsFn =
     options.fetchSimilarLessonsFn ?? ((query, n) => fetchTopSimilarLessons(query, n, options.stashDir));
 
-  // WI-9.10: construct this invocation's RunContext from values already
-  // resolved above — no second config load, no new db handle. distill has no
-  // `dryRun` option (only the best-effort salience stamp below writes a
-  // source asset, routed through `ctx.writeAsset`); `sourceRun` has no
-  // existing run-level convention here (unlike extract/consolidate, distill
-  // simply forwards `options.sourceRun` verbatim wherever it is set — see
-  // the `promoteMemoryToKnowledge` call below), so this is a fresh,
-  // independent token following the same `<verb>-<ms>` shape.
-  const ctx = createRunContext({
+  const assetCtx = createRunContext({
     stashDir: stash,
     config,
     eventsCtx: options.eventsCtx ?? {},
-    // Not yet wired into any proposal call site this stage (mirrors
-    // buildImproveRunContext's proposalsCtx comment in improve.ts).
     proposalsCtx: options.ctx ?? {},
     chat,
     getLlmConfig: () => distillLlm ?? null,
     sourceRun: options.sourceRun ?? `distill-${Date.now()}`,
     dryRun: false,
     signal: options.signal,
-  });
-  // D6: a fresh, per-invocation memo. loadAndScoreInputSalience below is the
-  // genuine content-read + write-back consumer (run-context.ts's D6 seam
-  // docblock cites this exact site).
-  const assetCtx = ctx.withFreshAssetMemo();
+  }).withFreshAssetMemo();
 
   const { assetContent, existingRefVocabulary } = await loadAndScoreInputSalience({
     inputRef,

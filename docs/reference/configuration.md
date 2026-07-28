@@ -280,11 +280,11 @@ section, an absent key, and an explicit `false` all read identically as off.
 ```
 
 - **`experimental.improveAutonomy`** — allows `akm improve` to mutate assets
-  without review: consolidate's merge/delete/contradict actions, the
-  memory-cleanup and contradiction passes, memory-inference writes, and
-  triage `applyMode: "promote"`. `akm improve` itself always runs; this only
-  gates the lanes that act without a human in the loop. `sync.push` is
-  deliberately **not** gated by this key.
+  without review through memory cleanup, memory-inference writes, and triage
+  `applyMode: "promote"`. `akm improve` itself always runs; this only gates the
+  lanes that act without a human in the loop. Consolidation stays enabled
+  because merge/delete/contradict operations are advisory and promotion emits a
+  reviewable proposal. `sync.push` is deliberately **not** gated by this key.
 - **`experimental.workflowEngine`** — allows the native `akm workflow`
   orchestration engine to run: `akm workflow run`/`brief`/`report`/`watch`,
   and authoring a YAML (`version: 2`) workflow program via `akm workflow

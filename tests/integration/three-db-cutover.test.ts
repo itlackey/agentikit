@@ -33,6 +33,7 @@ import {
   deleteWorkflowDb,
   migratePilotTreatmentFiles,
   quarantineIndexDb,
+  repairAlreadyCurrentProposalRefs,
 } from "../../scripts/akm-migrate/migrate/legacy/three-db-cutover";
 import { getMigrationApplyJournalPath } from "../../scripts/akm-migrate/migration-backup";
 import { createProposal } from "../../src/commands/proposal/repository";
@@ -41,6 +42,7 @@ import { deriveBundleIds } from "../../src/core/bundle-id";
 import type { AkmConfig } from "../../src/core/config/config";
 import { getMigrationOperationRoot } from "../../src/core/migration-operation";
 import { getConfigPath, getDataDir, getDbPath, getLockfilePath, getStateDbPathInDataDir } from "../../src/core/paths";
+import { openStateDatabase } from "../../src/core/state-db";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
 import type { StashFile } from "../../src/indexer/passes/metadata";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
@@ -87,6 +89,10 @@ const PRIMARY_BUNDLE = "primary";
 /** item_ref a live entry is re-keyed onto (the durable `bundle//conceptId` form). */
 const SKILL_ITEM_REF = `${PRIMARY_BUNDLE}//skills/all-types-skill`;
 const MEMORY_ITEM_REF = `${PRIMARY_BUNDLE}//memories/all-types-memory`;
+
+function retiredRef(type: string, name: string): string {
+  return [type, name].join(":");
+}
 
 function writeConfigs(): string {
   fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
@@ -299,6 +305,36 @@ test("cutover uses the old provider path when a non-materialized source consumed
   );
 });
 
+test("cutover consumes resolved lock metadata only for the matching desired identity", () => {
+  const localRoot = path.join(getDataDir(), "resolved-package");
+  const config = {
+    bundles: { package: { npm: "@example/package@1" } },
+    defaultBundle: "package",
+  } as unknown as AkmConfig;
+  const matching = { id: "package", source: "npm" as const, ref: "@example/package@1", localRoot };
+  const stale = { ...matching, ref: "@example/other@1" };
+
+  expect(cutoverStashRootsFromConfig(config, [matching])).toContainEqual(
+    expect.objectContaining({ path: localRoot, bundleId: "package" }),
+  );
+  expect(cutoverStashRootsFromConfig(config, [stale])).toEqual([]);
+});
+
+test("cutover matches persisted github locators to migrated git bundle URLs", () => {
+  const localRoot = path.join(getDataDir(), "resolved-github-package");
+  const config = {
+    bundles: { package: { git: "https://github.com/owner/repo/tree/v1" } },
+    defaultBundle: "package",
+  } as unknown as AkmConfig;
+
+  for (const source of ["github", "git"] as const) {
+    const lock = { id: "package", source, ref: "github:owner/repo#v1", localRoot };
+    expect(cutoverStashRootsFromConfig(config, [lock])).toContainEqual(
+      expect.objectContaining({ path: localRoot, bundleId: "package" }),
+    );
+  }
+});
+
 function seedInstalledBundleMigration(): { prepared: string; installedRoot: string; oldRef: string; itemRef: string } {
   const installedRoot = path.join(getDataDir(), "installed-owner-repo");
   fs.mkdirSync(path.join(installedRoot, "skills", "deploy"), { recursive: true });
@@ -404,7 +440,7 @@ test("a real v17 index and a crash-resume preserve installed-bundle durable stat
   ]);
 }, 30_000);
 
-test("a required installed-bundle lock write keeps forward recovery pending", async () => {
+test("a malformed lockfile blocks before mutation", async () => {
   const { prepared, installedRoot } = seedInstalledBundleMigration();
   openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
   fs.mkdirSync(path.dirname(getLockfilePath()), { recursive: true });
@@ -412,16 +448,13 @@ test("a required installed-bundle lock write keeps forward recovery pending", as
 
   const failed = await runCliCapture(["migrate", "apply", "--config", prepared]);
   expect(failed.code).not.toBe(0);
-  expect(failed.stderr).toMatch(/forward recovery/i);
-  expect(JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8"))).toMatchObject({
-    phase: "cutover-applied",
-    migrationLockEntries: [{ id: "installed-owner-repo", localRoot: installedRoot }],
-  });
+  expect(failed.stderr).toMatch(/Cannot plan migration lock entries/i);
+  expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
   expect(JSON.parse(fs.readFileSync(getConfigPath(), "utf8")).configVersion).toBe("0.8.0");
   expect(fs.readFileSync(getLockfilePath(), "utf8")).toBe("not a lockfile");
 
   fs.rmSync(getLockfilePath());
-  const resumed = await runCliCapture(["migrate", "apply"]);
+  const resumed = await runCliCapture(["migrate", "apply", "--config", prepared]);
   expect(resumed.code, resumed.stderr).toBe(0);
   expect(JSON.parse(fs.readFileSync(getLockfilePath(), "utf8"))).toEqual([
     { id: "installed-owner-repo", source: "github", ref: "owner/repo", localRoot: installedRoot },
@@ -484,7 +517,7 @@ test("relative pre-cutover roots resume against the journaled cwd", async () => 
   expect(crashCode).not.toBe(0);
   const journal = JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8"));
   expect(journal).toMatchObject({
-    formatVersion: 4,
+    formatVersion: 5,
     pathResolutionBase: initialCwd,
     phase: "workflow-applied",
   });
@@ -1185,6 +1218,7 @@ describe("WI-8.5d (f) — content migration folds .stash.json + D-R6 renames mis
       // runContentMigration itself never imports proposals — that sibling step
       // lives in config-migrate.ts and needs the migrated state.db handle.
       legacyProposalsImported: 0,
+      sidecarReports: [],
     });
   }, 30_000);
 });
@@ -1338,5 +1372,157 @@ describe("index quarantine boundary recovery", () => {
     expect(fs.readFileSync(`${indexPath}-wal`, "utf8")).toBe("canonical-wal");
     expect(fs.readFileSync(`${indexPath}-shm`, "utf8")).toBe("canonical-shm");
     expect(fs.existsSync(`${target}-shm`)).toBe(false);
+  });
+});
+
+describe("already-current proposal ref repair", () => {
+  test("status blocks an unmappable pending legacy ref", async () => {
+    fs.writeFileSync(getConfigPath(), '{"configVersion":"0.9.0","semanticSearchMode":"off"}\n', { mode: 0o600 });
+    const state = openStateDatabase(getStateDbPathInDataDir());
+    state
+      .prepare(
+        "INSERT INTO proposals(id, stash_dir, ref, status, source, created_at, updated_at, content, frontmatter_json, metadata_json) VALUES (?, '/stash', ?, 'pending', 'legacy', 'c', 'u', 'body', NULL, '{}')",
+      )
+      .run("90909090-9090-4090-8090-909090909090", retiredRef("lesson", "pending"));
+    state.close();
+
+    const status = await runCliCapture(["migrate", "status"]);
+    expect(status.code).not.toBe(0);
+    expect(status.stdout).toContain('"status":"blocked"');
+    expect(status.stdout).toMatch(/pending proposal.*unmappable legacy ref/i);
+  });
+
+  test("an already-current apply quarantines terminal legacy refs and becomes current", async () => {
+    fs.writeFileSync(getConfigPath(), '{"configVersion":"0.9.0","semanticSearchMode":"off"}\n', { mode: 0o600 });
+    const state = openStateDatabase(getStateDbPathInDataDir());
+    state
+      .prepare(
+        "INSERT INTO proposals(id, stash_dir, ref, status, source, created_at, updated_at, content, frontmatter_json, metadata_json) VALUES (?, '/stash', ?, 'rejected', 'legacy', 'c', 'u', 'body', NULL, '{}')",
+      )
+      .run("abababab-abab-4bab-8bab-abababababab", retiredRef("lesson", "terminal"));
+    state.close();
+
+    const status = await runCliCapture(["migrate", "status"]);
+    expect(status.code, status.stderr).toBe(0);
+    expect(status.stdout).toContain('"status":"ready"');
+    const applied = await runCliCapture(["migrate", "apply"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(applied.stdout).toContain('"event":"proposal-ref-repair"');
+
+    const repaired = new Database(getStateDbPathInDataDir(), { readonly: true });
+    try {
+      expect(repaired.query("SELECT COUNT(*) AS count FROM proposals").get()).toEqual({ count: 0 });
+      expect(repaired.query("SELECT old_ref, row_count FROM legacy_state").get()).toEqual({
+        old_ref: retiredRef("lesson", "terminal"),
+        row_count: 1,
+      });
+    } finally {
+      repaired.close();
+    }
+  });
+
+  test("resumes after crashing immediately after current proposal repair commit", async () => {
+    fs.writeFileSync(getConfigPath(), '{"configVersion":"0.9.0","semanticSearchMode":"off"}\n', { mode: 0o600 });
+    const state = openStateDatabase(getStateDbPathInDataDir());
+    state
+      .prepare(
+        "INSERT INTO proposals(id, stash_dir, ref, status, source, created_at, updated_at, content, frontmatter_json, metadata_json) VALUES (?, '/stash', ?, 'rejected', 'legacy', 'c', 'u', 'body', NULL, '{}')",
+      )
+      .run("91919191-9191-4191-8191-919191919191", retiredRef("lesson", "terminal-crash"));
+    state.close();
+
+    const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "apply"], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      env: { ...process.env, AKM_TEST_MIGRATION_CRASH_GAP: "proposal-repair" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(true);
+    const afterCrash = new Database(getStateDbPathInDataDir(), { readonly: true });
+    try {
+      expect(afterCrash.query("SELECT COUNT(*) AS count FROM proposals").get()).toEqual({ count: 0 });
+      expect(afterCrash.query("SELECT old_ref FROM legacy_state").get()).toEqual({
+        old_ref: retiredRef("lesson", "terminal-crash"),
+      });
+    } finally {
+      afterCrash.close();
+    }
+
+    const resumed = await runCliCapture(["migrate", "apply"]);
+    expect(resumed.code, resumed.stderr).toBe(0);
+    expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+  });
+
+  test("rekeys mapped rows and quarantines unmappable terminal rows in one transaction", () => {
+    const statePath = getStateDbPathInDataDir();
+    const state = openStateDbAtCeiling(statePath, PRE_CUTOVER_STATE_CEILING);
+    state.exec(`
+      CREATE TABLE IF NOT EXISTS proposals (
+        id TEXT PRIMARY KEY, stash_dir TEXT, ref TEXT, status TEXT, source TEXT,
+        created_at TEXT, updated_at TEXT, content TEXT, frontmatter_json TEXT, metadata_json TEXT
+      )
+    `);
+    const insert = state.prepare(
+      "INSERT INTO proposals VALUES (?, '/stash', ?, ?, 'legacy', 'created', 'updated', 'content', NULL, '{\"changes\":[{\"path\":\"\",\"op\":\"update\"}]}')",
+    );
+    insert.run("11111111-1111-4111-8111-111111111111", retiredRef("lesson", "mapped"), "accepted");
+    insert.run("22222222-2222-4222-8222-222222222222", retiredRef("lesson", "orphan"), "rejected");
+    state.close();
+
+    expect(
+      repairAlreadyCurrentProposalRefs(statePath, new Map([[retiredRef("lesson", "mapped"), "stash//lessons/mapped"]])),
+    ).toEqual({
+      rekeyed: 1,
+      quarantined: 1,
+    });
+    const repaired = new Database(statePath, { readonly: true });
+    try {
+      expect(repaired.query("SELECT ref FROM proposals").all()).toEqual([{ ref: "stash//lessons/mapped" }]);
+      const retained = repaired.query("SELECT old_ref, row_json FROM legacy_state_rows").get() as {
+        old_ref: string;
+        row_json: string;
+      };
+      expect(retained.old_ref).toBe(retiredRef("lesson", "orphan"));
+      expect(JSON.parse(retained.row_json)).toMatchObject({
+        id: "22222222-2222-4222-8222-222222222222",
+        ref: retiredRef("lesson", "orphan"),
+        status: "rejected",
+        content: "content",
+      });
+    } finally {
+      repaired.close();
+    }
+  });
+
+  test("fails transactionally for an unmappable pending row", () => {
+    const statePath = getStateDbPathInDataDir();
+    const state = openStateDbAtCeiling(statePath, PRE_CUTOVER_STATE_CEILING);
+    state.exec(`
+      CREATE TABLE IF NOT EXISTS proposals (
+        id TEXT PRIMARY KEY, stash_dir TEXT, ref TEXT, status TEXT, source TEXT,
+        created_at TEXT, updated_at TEXT, content TEXT, frontmatter_json TEXT, metadata_json TEXT
+      );
+    `);
+    state
+      .prepare("INSERT INTO proposals VALUES (?, '/stash', ?, 'pending', 'legacy', 'c', 'u', 'body', NULL, '{}')")
+      .run("33333333-3333-4333-8333-333333333333", retiredRef("lesson", "pending"));
+    state.close();
+
+    expect(() => repairAlreadyCurrentProposalRefs(statePath, new Map())).toThrow(/pending proposal.*unmappable/i);
+    const preserved = new Database(statePath, { readonly: true });
+    try {
+      expect(preserved.query("SELECT ref FROM proposals").get()).toEqual({ ref: retiredRef("lesson", "pending") });
+      expect(
+        preserved.query("SELECT name FROM sqlite_master WHERE type='table' AND name='legacy_state_rows'").get(),
+      ).toBeNull();
+    } finally {
+      preserved.close();
+    }
   });
 });

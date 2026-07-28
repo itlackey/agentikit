@@ -272,6 +272,11 @@ type WritePhaseResult =
       failureReason: string | null;
     };
 
+function assertRunStillActive(status: WorkflowRunStatus | undefined, runId: string): void {
+  if (status === "active") return;
+  throw new UsageError(`Workflow run ${runId} is ${status ?? "missing"}; refusing stale driver continuation.`);
+}
+
 /**
  * Phase 1 — load the run's spine under the report guards: refuse a non-active
  * run, refuse a live engine lease, require a current step, honor `--expect-step`,
@@ -431,6 +436,7 @@ async function reportRunningUnit(ctx: ReportContext): Promise<WorkflowReportResu
   const claimExpiresAt = new Date(nowFn().getTime() + CLAIM_TTL_MS).toISOString();
   const claimed = await withWorkflowRunsRepo((repo) =>
     repo.transaction((): "claim" | "heartbeat" => {
+      assertRunStillActive(repo.getRunById(runId)?.status, runId);
       const existing = repo.getUnit(runId, journalId);
       if (existing && (existing.status === "completed" || existing.status === "failed")) {
         throw new UsageError(
@@ -447,7 +453,9 @@ async function reportRunningUnit(ctx: ReportContext): Promise<WorkflowReportResu
         // holder blocks reclaim; an expired one (or a claim already ours) is
         // (re)claimable. First unexpired claim wins (crash recovery on expiry).
         assertClaimHeldByOrFree(existing, holder, nowIso, runId, journalId, "heartbeat");
-        repo.updateUnitClaim(runId, journalId, holder, claimExpiresAt, nowIso);
+        if (!repo.updateUnitClaim(runId, journalId, holder, claimExpiresAt, nowIso)) {
+          throw new UsageError(`Workflow run ${runId} is no longer active; refusing a stale unit heartbeat.`);
+        }
         return "heartbeat";
       }
       repo.insertUnit({
@@ -465,7 +473,9 @@ async function reportRunningUnit(ctx: ReportContext): Promise<WorkflowReportResu
         claimHolder: holder,
         claimExpiresAt,
       });
-      repo.updateUnitClaim(runId, journalId, holder, claimExpiresAt, nowIso);
+      if (!repo.updateUnitClaim(runId, journalId, holder, claimExpiresAt, nowIso)) {
+        throw new UsageError(`Workflow run ${runId} is no longer active; refusing a stale unit claim.`);
+      }
       return "claim";
     }),
   );
@@ -513,6 +523,7 @@ async function writeReportedUnit(
   const holder = sessionId ?? null;
   const writeResult = await withWorkflowRunsRepo((repo) =>
     repo.transaction((): UnitWriteOutcome => {
+      assertRunStillActive(repo.getRunById(runId)?.status, runId);
       const existing = repo.getUnit(runId, journalId);
       if (existing?.status === "completed") {
         if (existing.input_hash === inputHash) return { kind: "idempotent" };

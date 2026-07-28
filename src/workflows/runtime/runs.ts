@@ -14,6 +14,7 @@ import type {
   WorkflowRunStepStatus,
   WorkflowRunSummary,
 } from "../../sources/types";
+import { insertEventOnce } from "../../storage/repositories/events-repository";
 import {
   type WorkflowRunRow,
   type WorkflowRunStepRow,
@@ -272,6 +273,7 @@ export async function startWorkflowRun(
   }
   const planJson = canonicalPlanJson(plan);
   const planHash = computePlanHash(plan);
+  const workflowRefs = await workflowRunRefSet(asset.ref, ref);
   return withWorkflowRunsRepo(async (repo) => {
     const now = new Date().toISOString();
     const runId = randomUUID();
@@ -290,24 +292,24 @@ export async function startWorkflowRun(
     // (workflow_ref, scope_key) pair, refuse to create a parallel run unless
     // `force: true` is set. Previously every call inserted unconditionally,
     // so two terminals running `akm workflow start <ref>` left two runs
-    // racing; `akm workflow next` then non-deterministically picked one.
-    if (!options?.force) {
-      const existing = repo.findActiveRunForScope(asset.ref, scopeKey);
-      if (existing) {
-        throw new UsageError(
-          `Workflow ${asset.ref} already has an active run in this scope (id=${existing.id}, step=${existing.current_step_id ?? "—"}). ` +
-            `Use 'akm workflow next ${asset.ref}' to resume it, 'akm workflow abandon ${existing.id}' to give up on it, or pass --force to start a parallel run.`,
-          "RESOURCE_ALREADY_EXISTS",
-        );
-      }
-    }
-
+    // racing; `akm workflow next` then non-deterministically picked one. The
+    // active-alias query and all inserts now share this immediate transaction.
     // #506: arm a file-signal check-in (a timestamp, NOT a background thread —
     // per the workflow-agent check-in ADR) so a stalled run can be
     // re-targeted with a `continue` directive. The agent harness + session id
     // are already resolved above (agentHarness/agentSessionId, from #501).
 
-    repo.transaction(() => {
+    repo.immediateTransaction(() => {
+      if (!options?.force) {
+        const existing = repo.findActiveRunForScope(workflowRefs, scopeKey);
+        if (existing) {
+          throw new UsageError(
+            `Workflow ${asset.ref} already has an active run in this scope (id=${existing.id}, step=${existing.current_step_id ?? "—"}). ` +
+              `Use 'akm workflow next ${asset.ref}' to resume it, 'akm workflow abandon ${existing.id}' to give up on it, or pass --force to start a parallel run.`,
+            "RESOURCE_ALREADY_EXISTS",
+          );
+        }
+      }
       repo.insertRun({
         id: runId,
         workflowRef: asset.ref,
@@ -410,18 +412,23 @@ export async function listWorkflowRuns(input?: { workflowRef?: string; activeOnl
   if (parsedExactRef.fragment !== undefined) {
     throw new UsageError("Workflow ref filters do not accept fragments.", "INVALID_FLAG_VALUE");
   }
-  const exactRows = await withWorkflowRunsRepo((repo) => repo.listRuns({ scopeKey, workflowRef: exactRef }));
-  if (exactRows.length > 0) {
-    return {
-      runs: exactRows.filter((row) => !activeOnly || row.status === "active").map(toWorkflowRunSummary),
-    };
+  let workflowRefs = [exactRef];
+  try {
+    const canonicalRef = await canonicalizeWorkflowSpecifier(exactRef);
+    workflowRefs = await workflowRunRefSet(canonicalRef, exactRef);
+  } catch (error) {
+    if (parsedExactRef.bundle !== undefined) {
+      const exactRows = await withWorkflowRunsRepo((repo) => repo.listRuns({ scopeKey, workflowRef: exactRef }));
+      if (exactRows.length === 0) throw error;
+      return {
+        runs: exactRows.filter((row) => !activeOnly || row.status === "active").map(toWorkflowRunSummary),
+      };
+    }
+    if (!(error instanceof NotFoundError)) throw error;
   }
-
-  const workflowRef = await canonicalizeWorkflowSpecifier(exactRef);
-  if (workflowRef === exactRef) return { runs: [] };
   return withWorkflowRunsRepo((repo) => ({
     runs: repo
-      .listRuns({ scopeKey, workflowRef, ...(activeOnly ? { activeOnly: true } : {}) })
+      .listRuns({ scopeKey, workflowRefs, ...(activeOnly ? { activeOnly: true } : {}) })
       .map(toWorkflowRunSummary),
   }));
 }
@@ -534,21 +541,24 @@ export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetai
  */
 export async function abandonWorkflowRun(runId: string): Promise<WorkflowRunDetail> {
   return withWorkflowRunsRepo((repo) => {
-    const run = readWorkflowRun(repo, runId);
-    const plan = requireExecutableWorkflowPlan(run);
-    const existingSteps = readWorkflowRunSteps(repo, run.id);
-    assertWorkflowSpineMatchesPlan(plan, run, existingSteps);
-    if (run.status === "completed" || run.status === "failed") {
-      throw new UsageError(`Workflow run ${run.id} is already ${run.status}.`);
-    }
     const now = new Date().toISOString();
-    repo.updateRunState({
-      status: "failed",
-      currentStepId: run.current_step_id,
-      updatedAt: now,
-      completedAt: now,
-      checkinArmedAt: now,
-      runId: run.id,
+    const run = repo.immediateTransaction((db) => {
+      const current = readWorkflowRun(repo, runId);
+      if (current.status === "completed" || current.status === "failed") {
+        throw new UsageError(`Workflow run ${current.id} is already ${current.status}.`);
+      }
+      if (!repo.markRunAbandoned(current.id, now)) {
+        throw new UsageError(`Workflow run ${current.id} is ${current.status} and cannot be abandoned.`);
+      }
+      insertEventOnce(db, {
+        eventType: "workflow_abandoned",
+        ts: now,
+        ref: current.workflow_ref,
+        metadata: { runId: current.id },
+        idempotencyKey: current.id,
+        idempotencyMetadataKey: "runId",
+      });
+      return current;
     });
     const updated: WorkflowRunRow = {
       ...run,
@@ -559,9 +569,6 @@ export async function abandonWorkflowRun(runId: string): Promise<WorkflowRunDeta
     };
     const steps = readWorkflowRunSteps(repo, run.id);
     const detail = buildWorkflowRunDetail(updated, steps);
-    // Same injectable-footprint rule as workflow_started (07 P1-B): ids and
-    // status only, never the frontmatter-derived title.
-    appendEvent({ eventType: "workflow_abandoned", ref: run.workflow_ref, metadata: { runId: run.id } });
     return detail;
   });
 }
@@ -738,24 +745,27 @@ async function resolveRunSpecifier(
   }
 
   const scopeKey = getCurrentWorkflowScopeKey();
-  const exactActive = repo.getActiveRunRowForScope(specifier.trim(), scopeKey);
-  if (exactActive) {
-    if (params && Object.keys(params).length > 0) {
-      throw new UsageError(`--params can only be set on a new run; ${specifier} already has an active run`);
-    }
-    return { run: exactActive, autoStarted: false };
-  }
+  const exactRef = specifier.trim();
+  const parsedExact = parseBundleRef(exactRef);
+  const qualifiedExact = parsedExact.bundle !== undefined && parsedExact.fragment === undefined;
+  const detached = qualifiedExact ? repo.getActiveRunRowForScope(exactRef, scopeKey) : undefined;
 
   let ref: string;
   try {
     ref = await canonicalizeWorkflowSpecifier(specifier);
   } catch (error) {
+    if (detached) {
+      if (params && Object.keys(params).length > 0) {
+        throw new UsageError(`--params can only be set on a new run; ${specifier} already has an active run`);
+      }
+      return { run: detached, autoStarted: false };
+    }
     if (error instanceof NotFoundError && !specifier.includes(":") && !specifier.includes("/")) {
       throw new NotFoundError(`Workflow run or workflow "${specifier}" not found.`, "WORKFLOW_NOT_FOUND");
     }
     throw error;
   }
-  const active = repo.getActiveRunRowForScope(ref, scopeKey);
+  const active = repo.getActiveRunRowForScope(await workflowRunRefSet(ref, exactRef), scopeKey);
   if (active) {
     if (params && Object.keys(params).length > 0) {
       throw new UsageError(`--params can only be set on a new run; ${ref} already has an active run`);
@@ -769,6 +779,56 @@ async function resolveRunSpecifier(
 
 async function canonicalizeWorkflowSpecifier(specifier: string): Promise<string> {
   return canonicalizeWorkflowRefInput(specifier);
+}
+
+async function workflowRunRefSet(canonicalRef: string, exactRef: string): Promise<string[]> {
+  const parsed = parseBundleRef(canonicalRef);
+  const refs = new Set([canonicalRef, exactRef.trim()]);
+  const exact = parseBundleRef(exactRef.trim());
+  if (exact.bundle === undefined) {
+    refs.add(parsed.conceptId);
+  } else {
+    try {
+      if ((await canonicalizeWorkflowSpecifier(parsed.conceptId)) === canonicalRef) refs.add(parsed.conceptId);
+    } catch (error) {
+      if (!(error instanceof NotFoundError)) throw error;
+    }
+  }
+  return [...refs];
+}
+
+/** Resolve an existing active run without auto-starting or rebinding a detached short ref. */
+export async function resolveExistingWorkflowRunId(target: string): Promise<string> {
+  return withWorkflowRunsRepo(async (repo) => {
+    const byId = repo.getRunById(target);
+    if (byId) return byId.id;
+
+    const scopeKey = getCurrentWorkflowScopeKey();
+    const exactRef = target.trim();
+    if (!exactRef.includes(":") && !exactRef.includes("/")) {
+      throw new NotFoundError(`Workflow run or workflow "${target}" not found.`, "WORKFLOW_NOT_FOUND");
+    }
+    const parsedExact = parseBundleRef(exactRef);
+    const detached =
+      parsedExact.bundle && parsedExact.fragment === undefined
+        ? repo.getActiveRunRowForScope(exactRef, scopeKey)
+        : undefined;
+    let canonicalRef: string;
+    try {
+      canonicalRef = await canonicalizeWorkflowSpecifier(exactRef);
+    } catch (error) {
+      if (detached) return detached.id;
+      if (error instanceof NotFoundError) {
+        throw new NotFoundError(`Workflow run or workflow "${target}" not found.`, "WORKFLOW_NOT_FOUND");
+      }
+      throw error;
+    }
+    const active = repo.getActiveRunRowForScope(await workflowRunRefSet(canonicalRef, exactRef), scopeKey);
+    if (!active) {
+      throw new NotFoundError(`No active workflow run for ${canonicalRef} in this scope.`, "WORKFLOW_NOT_FOUND");
+    }
+    return active.id;
+  });
 }
 
 function readWorkflowRun(repo: WorkflowRunsRepository, runId: string): WorkflowRunRow {

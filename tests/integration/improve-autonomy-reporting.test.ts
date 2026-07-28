@@ -21,7 +21,7 @@ const config = {
         processes: {
           reflect: { enabled: false },
           distill: { enabled: false },
-          consolidate: { enabled: true, contradictionDetection: { enabled: true } },
+          consolidate: { enabled: false, contradictionDetection: { enabled: true } },
           memoryInference: { enabled: false },
           graphExtraction: { enabled: false },
           extract: { enabled: false },
@@ -78,7 +78,7 @@ afterEach(() => {
 });
 
 describe("review-first improve autonomy reporting", () => {
-  test("eligible direct lanes emit warnings and improve_skipped events", async () => {
+  test("cleanup and disabled contradiction writes do not emit stale autonomy-gated reports", async () => {
     const warningLines: string[] = [];
     overrideSeam(_setWarnSinkForTests, (level, args) => {
       if (level === "warn") warningLines.push(args.map(String).join(" "));
@@ -114,11 +114,11 @@ describe("review-first improve autonomy reporting", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(result.memoryCleanup).toBeUndefined();
+    expect(result.memoryCleanup?.analyzedDerived).toBe(0);
     expect(contradictionDetectionFn).not.toHaveBeenCalled();
 
-    const expectedLanes = ["consolidate", "contradiction", "memoryCleanup"];
-    const warningLanes = expectedLanes.filter((lane) =>
+    const directLanes = ["consolidate", "contradiction", "memoryCleanup"];
+    const warningLanes = directLanes.filter((lane) =>
       warningLines.some(
         (line) => line.includes(`[improve] ${lane} skipped`) && line.includes(IMPROVE_AUTONOMY_CONFIG_KEY),
       ),
@@ -130,8 +130,8 @@ describe("review-first improve autonomy reporting", () => {
       .sort();
 
     expect({ warningLanes, eventLanes }).toEqual({
-      warningLanes: expectedLanes,
-      eventLanes: expectedLanes,
+      warningLanes: [],
+      eventLanes: [],
     });
   });
 });

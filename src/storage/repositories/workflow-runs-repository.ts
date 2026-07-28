@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { openStateDatabase } from "../../core/state-db";
+import { openStateDatabase, withImmediateTransaction } from "../../core/state-db";
 import type { WorkflowRunStatus, WorkflowRunStepStatus } from "../../sources/types";
 import type { Database } from "../database";
 import { resolveStorageLocations } from "../locations";
@@ -191,6 +191,7 @@ export interface InsertStepInput {
 export interface ListRunsFilter {
   scopeKey: string;
   workflowRef?: string;
+  workflowRefs?: readonly string[];
   /**
    * Restrict to runs that are EXACTLY `status = 'active'` (currently
    * executable). `blocked`/`failed`/`completed` runs are excluded — a `blocked`
@@ -228,29 +229,40 @@ export class WorkflowRunsRepository {
     return this.db.transaction(fn)();
   }
 
+  immediateTransaction<T>(fn: (db: Database) => T): T {
+    return withImmediateTransaction(this.db, () => fn(this.db));
+  }
+
   // ── reads (fully materialised) ─────────────────────────────────────────────
 
   findActiveRunForScope(
-    workflowRef: string,
+    workflowRefs: string | readonly string[],
     scopeKey: string | null,
   ): { id: string; current_step_id: string | null } | undefined {
+    const refs = typeof workflowRefs === "string" ? [workflowRefs] : [...workflowRefs];
+    if (refs.length === 0) return undefined;
     return this.db
       .prepare(
-        "SELECT id, current_step_id FROM workflow_runs WHERE workflow_ref = ? AND scope_key = ? AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
+        `SELECT id, current_step_id FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
       )
-      .get(workflowRef, scopeKey) as { id: string; current_step_id: string | null } | undefined;
+      .get(...refs, scopeKey) as { id: string; current_step_id: string | null } | undefined;
   }
 
   getRunById(runId: string): WorkflowRunRow | undefined {
     return this.db.prepare("SELECT * FROM workflow_runs WHERE id = ?").get(runId) as WorkflowRunRow | undefined;
   }
 
-  getActiveRunRowForScope(workflowRef: string, scopeKey: string | null): WorkflowRunRow | undefined {
+  getActiveRunRowForScope(
+    workflowRefs: string | readonly string[],
+    scopeKey: string | null,
+  ): WorkflowRunRow | undefined {
+    const refs = typeof workflowRefs === "string" ? [workflowRefs] : [...workflowRefs];
+    if (refs.length === 0) return undefined;
     return this.db
       .prepare(
-        "SELECT * FROM workflow_runs WHERE workflow_ref = ? AND scope_key = ? AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
+        `SELECT * FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
       )
-      .get(workflowRef, scopeKey) as WorkflowRunRow | undefined;
+      .get(...refs, scopeKey) as WorkflowRunRow | undefined;
   }
 
   hasRun(runId: string): boolean {
@@ -268,6 +280,9 @@ export class WorkflowRunsRepository {
     if (filter.workflowRef) {
       filters.push("workflow_ref = ?");
       params.push(filter.workflowRef);
+    } else if (filter.workflowRefs && filter.workflowRefs.length > 0) {
+      filters.push(`workflow_ref IN (${filter.workflowRefs.map(() => "?").join(", ")})`);
+      params.push(...filter.workflowRefs);
     }
     if (filter.activeOnly) {
       // `activeOnly` means EXACTLY status='active' — a run currently
@@ -367,7 +382,11 @@ export class WorkflowRunsRepository {
   }
 
   markRunActive(runId: string, updatedAt: string): void {
-    this.db.prepare("UPDATE workflow_runs SET status = 'active', updated_at = ? WHERE id = ?").run(updatedAt, runId);
+    this.db
+      .prepare(
+        "UPDATE workflow_runs SET status = 'active', updated_at = ?, engine_lease_holder = NULL, engine_lease_until = NULL WHERE id = ?",
+      )
+      .run(updatedAt, runId);
   }
 
   updateStepCompletion(input: {
@@ -403,6 +422,17 @@ export class WorkflowRunsRepository {
            WHERE id = ?`,
       )
       .run(input.status, input.currentStepId, input.updatedAt, input.completedAt, input.checkinArmedAt, input.runId);
+  }
+
+  markRunAbandoned(runId: string, updatedAt: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE workflow_runs
+           SET status = 'failed', updated_at = ?, completed_at = ?, checkin_armed_at = ?
+           WHERE id = ? AND status IN ('active', 'blocked')`,
+      )
+      .run(updatedAt, updatedAt, updatedAt, runId);
+    return Number(result.changes) === 1;
   }
 
   rearmCheckin(runId: string, checkinArmedAt: string): void {
@@ -441,7 +471,8 @@ export class WorkflowRunsRepository {
       .prepare(
         `UPDATE workflow_runs
            SET engine_lease_holder = ?, engine_lease_until = ?
-           WHERE id = ? AND (engine_lease_holder IS NULL OR engine_lease_until IS NULL OR engine_lease_until < ?)`,
+           WHERE id = ? AND status = 'active'
+             AND (engine_lease_holder IS NULL OR engine_lease_until IS NULL OR engine_lease_until < ?)`,
       )
       .run(holder, until, runId, now);
     return Number(result.changes) > 0;
@@ -454,20 +485,22 @@ export class WorkflowRunsRepository {
    */
   renewEngineLease(runId: string, holder: string, until: string): boolean {
     const result = this.db
-      .prepare("UPDATE workflow_runs SET engine_lease_until = ? WHERE id = ? AND engine_lease_holder = ?")
+      .prepare(
+        "UPDATE workflow_runs SET engine_lease_until = ? WHERE id = ? AND engine_lease_holder = ? AND status = 'active'",
+      )
       .run(until, runId, holder);
     return Number(result.changes) > 0;
   }
 
   /**
-   * Clear the lease — only while `holder` still owns it, so a crashed-then-
-   * recovered invocation can never release a lease another engine has since
-   * claimed. Releasing an already-lost lease is a harmless no-op.
+   * Clear the lease only while `holder` still owns a non-failed run. Failed
+   * runs retain the final holder/expiry for forensics until explicit resume.
+   * Releasing an already-lost lease is a harmless no-op.
    */
   releaseEngineLease(runId: string, holder: string): void {
     this.db
       .prepare(
-        "UPDATE workflow_runs SET engine_lease_holder = NULL, engine_lease_until = NULL WHERE id = ? AND engine_lease_holder = ?",
+        "UPDATE workflow_runs SET engine_lease_holder = NULL, engine_lease_until = NULL WHERE id = ? AND engine_lease_holder = ? AND status <> 'failed'",
       )
       .run(runId, holder);
   }
@@ -586,14 +619,16 @@ export class WorkflowRunsRepository {
    * final step of a checked reclaim. Never touches `started_at` (the first-claim
    * marker set by {@link insertUnit}).
    */
-  updateUnitClaim(runId: string, unitId: string, holder: string, expiresAt: string, lastCheckinAt: string): void {
-    this.db
+  updateUnitClaim(runId: string, unitId: string, holder: string, expiresAt: string, lastCheckinAt: string): boolean {
+    const result = this.db
       .prepare(
         `UPDATE workflow_run_units
            SET status = 'running', last_checkin_at = ?, claim_holder = ?, claim_expires_at = ?
-           WHERE run_id = ? AND unit_id = ?`,
+           WHERE run_id = ? AND unit_id = ?
+             AND EXISTS (SELECT 1 FROM workflow_runs WHERE id = ? AND status = 'active')`,
       )
-      .run(lastCheckinAt, holder, expiresAt, runId, unitId);
+      .run(lastCheckinAt, holder, expiresAt, runId, unitId, runId);
+    return Number(result.changes) === 1;
   }
 
   /**

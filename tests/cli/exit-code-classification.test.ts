@@ -51,13 +51,18 @@ function runEmit(error: unknown): Captured {
     emitJsonError(error);
     exitCode = typeof process.exitCode === "number" ? process.exitCode : -1;
   } finally {
-    process.exitCode = realExitCode;
+    process.exitCode = realExitCode ?? 0;
     console.error = realError;
   }
   return { exitCode, envelope: JSON.parse(stderr) as Record<string, unknown> };
 }
 
 describe("classifyExitCode via emitJsonError (H6)", () => {
+  it("restores the local process exit code to numeric zero", () => {
+    process.exitCode = 0;
+    runEmit(new UsageError("bad flag", "INVALID_FLAG_VALUE"));
+    expect(process.exitCode).toBe(0);
+  });
   it("UsageError -> exit 2 (unchanged) and carries its code", () => {
     const { exitCode, envelope } = runEmit(new UsageError("bad flag", "INVALID_FLAG_VALUE"));
     expect(exitCode).toBe(2);

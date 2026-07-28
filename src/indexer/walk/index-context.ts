@@ -66,6 +66,8 @@ export interface IndexRunContext {
   sourceDirs: string[];
   /** Whether to perform a full rebuild (true) or incremental update (false). */
   full: boolean;
+  /** Whether the explicit post-index missing-file clean pass owns disappearance reporting. */
+  clean: boolean;
   /** Primary stash directory. */
   stashDir: string;
   /** Progress emitter (always defined; may be a no-op). */

@@ -17,9 +17,7 @@
  * it is documented in `STABILITY.md`, and asking for a format on an exempt
  * command warns instead of silently doing something else.
  *
- * Names are the top-level command token, so a group name covers its
- * subcommands (`completions`); where only one subcommand is exempt the entry is
- * the space-joined pair the invocation actually starts with.
+ * Names are canonical command paths resolved from the Citty tree.
  */
 
 /**
@@ -28,10 +26,6 @@
 const EXEMPT_COMMANDS: ReadonlySet<string> = new Set([
   // Emits shell completion script source for eval.
   "completions",
-  // Interactive wizard: prompts and progress, not a result envelope.
-  "setup",
-  // Hands stdout to a child process; the child's output is not ours to shape.
-  "agent",
   // Both subcommands (`status`, `apply`) are also a child-process passthrough:
   // `runMigrationTool` (src/commands/migration-tool.ts) spawns the standalone
   // `scripts/akm-migrate.ts` tool and writes its stdout/stderr verbatim — the
@@ -75,13 +69,13 @@ const EXEMPT_SUBCOMMANDS: ReadonlySet<string> = new Set([
 /**
  * True when `--format` cannot meaningfully apply to this invocation.
  *
- * `command` is the top-level token; `subcommand` the next positional when there
- * is one.
+ * `commandPath` contains canonical Citty command names from the top-level
+ * command through the deepest resolved subcommand.
  */
-export function isFormatExemptCommand(command: string | undefined, subcommand?: string): boolean {
+export function isFormatExemptCommand(commandPath: readonly string[]): boolean {
+  const command = commandPath[0];
   if (command === undefined) return false;
-  if (EXEMPT_COMMANDS.has(command)) return true;
-  return subcommand !== undefined && EXEMPT_SUBCOMMANDS.has(`${command} ${subcommand}`);
+  return EXEMPT_COMMANDS.has(command) || EXEMPT_SUBCOMMANDS.has(commandPath.join(" "));
 }
 
 /** The declared exempt set, for docs generation and tests. */

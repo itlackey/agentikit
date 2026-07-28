@@ -43,7 +43,7 @@ describe("npm bin contract", () => {
     expect(pkg.engines).toEqual({ node: ">=22" });
     expect(pkg.scripts?.preinstall).toContain("Node.js >= 22");
     expect(pkg.scripts?.preinstall).toContain("working Bun >= 1.0");
-    expect(pkg.scripts?.preinstall).toContain("required for akm-migrate");
+    expect(pkg.scripts?.preinstall).toContain("optional and preferred for akm and akm-migrate");
     expect(pkg.scripts?.preinstall).toContain("runtime-free standalone binary");
     expect(pkg.scripts?.preinstall).not.toContain("process.versions.bun");
     expect(pkg.scripts?.preinstall).not.toContain("bun install -g");
@@ -85,7 +85,7 @@ describe("npm bin contract", () => {
     expect(migrateLauncher.startsWith("#!/usr/bin/env node")).toBe(true);
     expect(migrateLauncher).toContain("requires Node.js >= 22 to bootstrap");
     expect(migrateLauncher).toContain('new URL("./scripts/akm-migrate.js", import.meta.url)');
-    expect(migrateLauncher).toContain("akm-migrate requires Bun >= 1.0");
+    expect(migrateLauncher).toContain('process.versions.bun ? process.execPath : useBun ? "bun" : process.execPath');
     expect(migrateLauncher).not.toContain("migrate-storage-node.mjs");
 
     const wrapper = fs.readFileSync(path.join(REPO_ROOT, "scripts", "node-runtime", "cli-node.mjs"), "utf8");

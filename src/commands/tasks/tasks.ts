@@ -708,12 +708,9 @@ export async function akmTasksDoctor(
   const rawStrategy = resolveImproveStrategy(config.defaults?.improveStrategy, config).config;
   const { config: effectiveStrategy, gated } = applyAutonomyGate(rawStrategy, config);
   const autonomyEnabled = isImproveAutonomyEnabled(config);
-  // The strategy-derived lanes are only part of the picture: the memory-cleanup
-  // and contradiction passes have no strategy flag to downgrade, so
-  // `applyAutonomyGate` cannot see them. Doctor also reports configured direct
-  // lanes a scheduled run would be denied; contradiction is included only when
-  // the selected strategy enables its nested detection pass.
-  const allGated = autonomyEnabled ? [] : [...gated, ...describeGatedLanes(configuredDirectAutonomyLanes(rawStrategy))];
+  // Memory cleanup has no strategy flag to downgrade, so add that direct lane
+  // to the strategy-derived gate report.
+  const allGated = autonomyEnabled ? [] : [...gated, ...describeGatedLanes(configuredDirectAutonomyLanes())];
   const improveAutonomy = {
     enabled: autonomyEnabled,
     configKey: IMPROVE_AUTONOMY_CONFIG_KEY,

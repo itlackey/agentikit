@@ -74,6 +74,7 @@
 function getFlagValueFrom(argv: readonly string[], flag: string): string | undefined {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
+    if (arg === "--") break;
     if (arg === flag) return argv[i + 1];
     if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
   }
@@ -81,7 +82,11 @@ function getFlagValueFrom(argv: readonly string[], flag: string): string | undef
 }
 
 function hasFlagIn(argv: readonly string[], flag: string): boolean {
-  return argv.some((arg) => arg === flag || arg === `${flag}=true`);
+  for (const arg of argv) {
+    if (arg === "--") return false;
+    if (arg === flag || arg === `${flag}=true`) return true;
+  }
+  return false;
 }
 
 /**

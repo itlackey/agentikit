@@ -4,6 +4,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { pathToFileURL } from "node:url";
 import { runWithJsonErrors } from "../src/cli/shared";
 import { UsageError } from "../src/core/errors";
 import { runMigrationApply, runMigrationStatus } from "./akm-migrate/config-migrate";
@@ -88,4 +89,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   }
 }
 
-if (import.meta.main) await runWithJsonErrors(() => main());
+const isMain =
+  (import.meta as ImportMeta & { main?: boolean }).main === true ||
+  (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url);
+if (isMain) await runWithJsonErrors(() => main());

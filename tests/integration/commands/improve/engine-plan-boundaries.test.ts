@@ -5,6 +5,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { configuredDirectAutonomyLanes } from "../../../../src/commands/improve/autonomy-gate";
 import { akmImprove } from "../../../../src/commands/improve/improve";
 import { resolveImprovePlan } from "../../../../src/commands/improve/improve-strategies";
 import { runImproveLoopStage, runImproveMaintenancePasses } from "../../../../src/commands/improve/loop-stages";
@@ -137,15 +138,12 @@ describe("improve engine-plan boundaries", () => {
     }
   });
 
-  test("nested contradiction detection receives the resolved selected strategy and connection", async () => {
+  test("nested contradiction remains a reported plan capability without invoking its writer", async () => {
     const stash = makeStashDir();
     try {
       const config: AkmConfig = {
         configVersion: "0.9.0",
         semanticSearchMode: "off",
-        // D8 — contradiction detection is a gated lane; this test is about the
-        // strategy/connection it receives, not about the gate.
-        experimental: { improveAutonomy: true },
         bundles: { stash: { path: stash.dir, writable: true } },
         defaultBundle: "stash",
         engines: { consolidate: llm("contradiction-model") },
@@ -163,8 +161,17 @@ describe("improve engine-plan boundaries", () => {
           },
         },
       };
-      let seenStrategy: ImproveProfileConfig | undefined;
-      let seenModel: string | undefined;
+      const plan = resolveImprovePlan("contradictions", config);
+      const contradictionDetectionFn = mock(async () => ({
+        familiesExamined: 0,
+        pairsChecked: 0,
+        edgesWritten: 0,
+        warnings: [],
+      }));
+
+      expect(plan.processes.consolidate.enabled).toBe(true);
+      expect(plan.strategy.config.processes?.consolidate?.contradictionDetection?.enabled).toBe(true);
+      expect(configuredDirectAutonomyLanes()).toEqual(["memoryCleanup"]);
 
       await expect(
         akmImprove({
@@ -177,19 +184,14 @@ describe("improve engine-plan boundaries", () => {
             memorySummary: { eligible: 1, derived: 1 },
             strategyFilteredRefs: [],
           })) as never,
-          contradictionDetectionFn: async (_stashDir, _config, _chat, strategy, llmConfig) => {
-            seenStrategy = strategy;
-            seenModel = llmConfig?.model;
-            return { familiesExamined: 0, pairsChecked: 0, edgesWritten: 0, warnings: [] };
-          },
+          contradictionDetectionFn,
           runImprovePreparationStageFn: (async () => {
             throw new Error("stop after contradiction boundary");
           }) as never,
         }),
       ).rejects.toThrow("stop after contradiction boundary");
 
-      expect(seenStrategy?.processes?.consolidate?.contradictionDetection?.enabled).toBe(true);
-      expect(seenModel).toBe("contradiction-model");
+      expect(contradictionDetectionFn).not.toHaveBeenCalled();
     } finally {
       stash.cleanup();
     }

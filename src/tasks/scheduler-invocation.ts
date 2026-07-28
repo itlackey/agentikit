@@ -184,7 +184,8 @@ export function validateSchedulerContextDescriptor(file: string): ScheduledTaskC
 
 /** Load and remove the hidden descriptor argument before citty parses argv. */
 export function consumeSchedulerContextArg(argv: string[], env: NodeJS.ProcessEnv = process.env): string[] {
-  const index = argv.indexOf(SCHEDULER_CONTEXT_ARG);
+  const separator = argv.indexOf("--");
+  const index = argv.slice(0, separator === -1 ? argv.length : separator).indexOf(SCHEDULER_CONTEXT_ARG);
   if (index === -1) return argv;
   const file = argv[index + 1];
   if (!file) {

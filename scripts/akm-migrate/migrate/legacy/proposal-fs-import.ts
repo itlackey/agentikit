@@ -15,8 +15,7 @@
  * probe is gone from the live path: the import now runs ONCE, as an ADDITIVE
  * filesystem step of `akm-migrate apply`'s `cutover-applied` phase — a sibling
  * of the `.stash.json`/D-R6 content migration — AFTER the committed state txn,
- * best-effort (a throw is swallowed + logged by the caller, never aborting a
- * committed cutover) and idempotent.
+ * strict for operational failures and idempotent.
  *
  * Idempotency without the old ledger: each row lands through
  * {@link insertProposalIfAbsent} (INSERT OR IGNORE keyed on the proposal UUID),
@@ -43,7 +42,6 @@ import { parseBundleRef } from "../../../../src/core/asset/asset-ref";
 import { warn } from "../../../../src/core/warn";
 import { parseRegistryRef } from "../../../../src/registry/resolve";
 import { type Database, openDatabase } from "../../../../src/storage/database";
-import { proposalToRowValues } from "../../../../src/storage/repositories/proposals-repository";
 import { classifyRefGrammar, legacyRefToBundleRef, parseAssetRef as parseLegacyAssetRef } from "../legacy-ref-grammar";
 
 /** Legacy (pre-0.9.0) proposal directory: `<stashDir>/.akm/proposals[/archive]`. */
@@ -62,10 +60,8 @@ type LegacyProposalFile = Omit<Proposal, "backupContent"> & { backup?: string };
 /**
  * Import every stash root's legacy `proposal.json` files into the state.db at
  * `stateDbPath`. Returns the total number of rows actually inserted (a re-run
- * over the same roots returns 0 — every UUID is already present). Best-effort:
- * a per-root or per-file failure is logged and skipped, and a failure to open
- * state.db at all returns 0 rather than throwing (the committed cutover is
- * unaffected).
+ * over the same roots returns 0 after exact UUID verification). Malformed JSON
+ * sources are retained and skipped; database and filesystem failures propagate.
  */
 export interface LegacyProposalImportRoot {
   path: string;
@@ -78,14 +74,15 @@ export function importLegacyProposalsIntoState(
   stateDbPath: string,
   stashRoots: readonly LegacyProposalImportRoot[],
 ): number {
-  if (!fs.existsSync(stateDbPath)) return 0;
-  let db: Database;
   try {
-    db = openDatabase(stateDbPath);
-  } catch (err) {
-    warn(`[akm] content-migration: could not open state.db for legacy proposal import: ${errMsg(err)}`);
-    return 0;
+    fs.statSync(stateDbPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`state.db not found for legacy proposal import: ${stateDbPath}`);
+    }
+    throw error;
   }
+  const db: Database = openDatabase(stateDbPath);
   try {
     let imported = 0;
     const seen = new Set<string>();
@@ -161,7 +158,6 @@ function importLegacyProposalsForStash(
 ): number {
   const stashDir = stash.path;
   const liveRoot = legacyProposalsRoot(stashDir, false);
-  if (!fs.existsSync(liveRoot)) return 0;
 
   let imported = 0;
   for (const archive of [false, true]) {
@@ -169,19 +165,16 @@ function importLegacyProposalsForStash(
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
-      continue;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
     }
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.name === "archive") continue;
       const proposalDir = path.join(root, entry.name);
       const proposal = readLegacyProposalFile(proposalDir, stash, bundleAliases, bundleRoots);
       if (!proposal) continue;
-      try {
-        if (insertProposalIfAbsent(db, proposal, stashDir)) imported += 1;
-      } catch (err) {
-        warn(`[akm] content-migration: could not import legacy proposal at ${proposalDir}: ${errMsg(err)}`);
-      }
+      if (insertProposalIfAbsent(db, proposal, stashDir)) imported += 1;
     }
   }
 
@@ -192,7 +185,41 @@ function importLegacyProposalsForStash(
 }
 
 function insertProposalIfAbsent(db: Database, proposal: Proposal, stashDir: string): boolean {
-  const row = proposalToRowValues(proposal, stashDir);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(proposal.id)) {
+    throw new Error(`Legacy proposal ID is not a UUID: ${proposal.id}`);
+  }
+  const metadata: Record<string, unknown> = {
+    changes: proposal.changes.map((change, index) => ({
+      path: change.path,
+      op: change.op,
+      ...(index > 0 && change.after !== undefined ? { after: change.after } : {}),
+    })),
+  };
+  for (const key of [
+    "proposedTarget",
+    "beforeHash",
+    "sourceRun",
+    "review",
+    "confidence",
+    "gateDecision",
+    "backupContent",
+    "acceptedTarget",
+    "eligibilitySource",
+  ] as const) {
+    if (proposal[key] !== undefined) metadata[key] = proposal[key];
+  }
+  const row = {
+    id: proposal.id,
+    stash_dir: stashDir,
+    ref: proposal.ref,
+    status: proposal.status,
+    source: proposal.source,
+    created_at: proposal.createdAt,
+    updated_at: proposal.updatedAt,
+    content: proposal.payload.content,
+    frontmatter_json: proposal.payload.frontmatter ? JSON.stringify(proposal.payload.frontmatter) : null,
+    metadata_json: JSON.stringify(metadata),
+  };
   const result = db
     .prepare(`
       INSERT OR IGNORE INTO proposals
@@ -211,7 +238,18 @@ function insertProposalIfAbsent(db: Database, proposal: Proposal, stashDir: stri
       row.frontmatter_json,
       row.metadata_json,
     );
-  return Number((result as { changes?: number | bigint }).changes ?? 0) > 0;
+  if (Number((result as { changes?: number | bigint }).changes ?? 0) > 0) return true;
+  const existing = db
+    .prepare(
+      "SELECT stash_dir, ref, status, source, created_at, updated_at, content, frontmatter_json, metadata_json FROM proposals WHERE id = ?",
+    )
+    .get(row.id) as Omit<typeof row, "id"> | undefined;
+  const expected = { ...row } as Partial<typeof row>;
+  delete expected.id;
+  if (!existing || JSON.stringify(existing) !== JSON.stringify(expected)) {
+    throw new Error(`Legacy proposal UUID ${proposal.id} already exists with different content.`);
+  }
+  return false;
 }
 
 /**
@@ -228,8 +266,16 @@ function readLegacyProposalFile(
 ): Proposal | undefined {
   const filePath = path.join(proposalDir, "proposal.json");
   let parsed: LegacyProposalFile;
+  let source: string;
   try {
-    parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as LegacyProposalFile;
+    source = fs.readFileSync(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    warn(`[akm] content-migration: skipping legacy proposal at ${filePath}: ${errMsg(error)}`);
+    return undefined;
+  }
+  try {
+    parsed = JSON.parse(source) as LegacyProposalFile;
   } catch (err) {
     warn(`[akm] content-migration: skipping legacy proposal at ${filePath}: ${errMsg(err)}`);
     return undefined;
@@ -246,8 +292,7 @@ function readLegacyProposalFile(
 
   const { backup, ...rest } = parsed;
   let migratedRef = rest.ref;
-  let migratedTarget = rest.proposedTarget;
-  let migratedBundle: string;
+  let migratedBundle = stash.bundleId;
   if (classifyRefGrammar(rest.ref) === "legacy") {
     try {
       const translated = legacyRefToBundleRef(rest.ref);
@@ -271,7 +316,6 @@ function readLegacyProposalFile(
       if (!bundle || !bundleRoots.has(bundle)) throw new Error(`unmapped legacy proposal origin: ${legacyOrigin}`);
       migratedBundle = bundle;
       migratedRef = `${bundle}//${translated.conceptId}`;
-      migratedTarget = { source: bundle, root: bundleRoots.get(bundle) as string };
     } catch (err) {
       warn(`[akm] content-migration: skipping legacy proposal at ${filePath}: ${errMsg(err)}`);
       return undefined;
@@ -283,7 +327,6 @@ function readLegacyProposalFile(
       if (!bundle || !bundleRoots.has(bundle)) throw new Error(`unmapped proposal bundle: ${translated.bundle}`);
       migratedBundle = bundle;
       migratedRef = `${bundle}//${translated.conceptId}`;
-      migratedTarget = { source: bundle, root: bundleRoots.get(bundle) as string };
     } catch (err) {
       warn(`[akm] content-migration: skipping legacy proposal at ${filePath}: ${errMsg(err)}`);
       return undefined;
@@ -293,25 +336,17 @@ function readLegacyProposalFile(
   if (typeof backup === "string" && backup.length > 0) {
     try {
       backupContent = fs.readFileSync(path.join(proposalDir, backup), "utf8");
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       // Backup file lost — import the proposal anyway; revert for it will
       // surface "no backup available", same as a new-asset proposal.
     }
   }
+  const migratedRoot = path.resolve(bundleRoots.get(migratedBundle) as string);
 
   return {
     ...rest,
     ref: migratedRef,
-    ...(migratedTarget ? { proposedTarget: migratedTarget } : {}),
-    ...(rest.acceptedTarget
-      ? {
-          acceptedTarget: {
-            ...rest.acceptedTarget,
-            source: migratedBundle,
-            root: bundleRoots.get(migratedBundle) as string,
-          },
-        }
-      : {}),
     payload: {
       content: rest.payload?.content ?? "",
       ...(rest.payload?.frontmatter ? { frontmatter: rest.payload.frontmatter } : {}),
@@ -324,6 +359,12 @@ function readLegacyProposalFile(
     updatedAt: rest.updatedAt ?? rest.createdAt ?? "",
     status: rest.status ?? "pending",
     source: rest.source ?? "import",
+    ...(rest.proposedTarget
+      ? { proposedTarget: { ...rest.proposedTarget, source: migratedBundle, root: migratedRoot } }
+      : {}),
+    ...(rest.acceptedTarget
+      ? { acceptedTarget: { ...rest.acceptedTarget, source: migratedBundle, root: migratedRoot } }
+      : {}),
     ...(backupContent !== undefined ? { backupContent } : {}),
   };
 }

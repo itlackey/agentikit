@@ -92,35 +92,77 @@ export function readTextFileWithLimit(filePath: string, maxBytes: number, label 
  *   2. fsync the parent directory after rename, so the directory entry change
  *      is durable too. Some filesystems (FAT, certain FUSE mounts) don't
  *      support directory fsync; we ignore EINVAL/ENOTSUP so atomic writes
- *      don't fail on exotic mounts.
+ *      don't fail on those mounts. Windows does not support opening a
+ *      directory for fsync, so the directory-sync step is skipped there.
  */
 export function writeFileAtomic(target: string, content: string | Buffer, mode?: number): void {
   const tmp = `${target}.tmp.${process.pid}.${crypto.randomBytes(8).toString("hex")}`;
-  const fd = fs.openSync(tmp, "w", mode ?? 0o600);
+  const data = typeof content === "string" ? Buffer.from(content) : content;
+  const fileMode = mode ?? 0o600;
+  let fd: number | undefined;
+  let tempOwned = false;
+  let renamed = false;
+  let failed = false;
+  let failure: unknown;
   try {
-    fs.writeSync(fd, typeof content === "string" ? Buffer.from(content) : content);
-    try {
-      fs.fdatasyncSync(fd);
-    } catch {
-      // Best-effort: some pseudo-filesystems lack fdatasync. Fall through
-      // to closeSync — the rename below still preserves atomicity even if
-      // the data isn't durable, and the calling code's retry will recover.
+    fd = fs.openSync(tmp, "wx", fileMode);
+    tempOwned = true;
+    if (process.platform !== "win32") fs.fchmodSync(fd, fileMode);
+    let offset = 0;
+    while (offset < data.byteLength) {
+      const written = fs.writeSync(fd, data, offset, data.byteLength - offset);
+      if (written <= 0) throw new Error(`Could not make progress writing atomic temp file ${tmp}.`);
+      offset += written;
     }
-  } finally {
+    fs.fdatasyncSync(fd);
     fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(tmp, target);
+    renamed = true;
+  } catch (error) {
+    failed = true;
+    failure = error;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          failure = error;
+        }
+      }
+    }
+    if (tempOwned && !renamed) {
+      try {
+        fs.unlinkSync(tmp);
+      } catch (error) {
+        if (!failed && !hasErrnoCode(error, "ENOENT")) {
+          failed = true;
+          failure = error;
+        }
+      }
+    }
   }
-  fs.renameSync(tmp, target);
-  try {
-    const dirFd = fs.openSync(path.dirname(target), "r");
+  if (failed) throw failure;
+
+  if (process.platform !== "win32") {
+    let dirFd: number;
     try {
-      fs.fsyncSync(dirFd);
+      dirFd = fs.openSync(path.dirname(target), "r");
+    } catch (error) {
+      if (hasErrnoCode(error, "EINVAL") || hasErrnoCode(error, "ENOTSUP")) return;
+      throw error;
+    }
+    try {
+      try {
+        fs.fsyncSync(dirFd);
+      } catch (error) {
+        if (!hasErrnoCode(error, "EINVAL") && !hasErrnoCode(error, "ENOTSUP")) throw error;
+      }
     } finally {
       fs.closeSync(dirFd);
     }
-  } catch {
-    // Directory fsync is unsupported on FAT, some FUSE mounts, and Windows
-    // (where directories cannot be opened for read like POSIX). Silently
-    // ignore so writeFileAtomic remains portable.
   }
 }
 

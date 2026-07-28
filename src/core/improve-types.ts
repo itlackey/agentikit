@@ -141,6 +141,8 @@ export interface ConsolidateResult {
   merged: number;
   deleted: number;
   promoted: string[];
+  /** Promotion proposals that could not be emitted and must be retried. */
+  failedPromotions?: number;
   /** Number of contradiction edges written (C-3 / #382). */
   contradicted: number;
   /**
@@ -207,6 +209,8 @@ export interface ConsolidateResult {
    * invariant.
    */
   failedChunkMemories?: number;
+  /** Memories deferred by the pre-embedding budget cap. Deferred runs do not advance the completion watermark. */
+  deferredMemories?: number;
   planned?: ConsolidateOperation[];
   warnings: string[];
   durationMs: number;

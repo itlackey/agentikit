@@ -140,6 +140,34 @@ describe("remote embed", () => {
     }
   });
 
+  test("caller abort while reading an HTTP error body is not swallowed", async () => {
+    const controller = new AbortController();
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(
+          new ReadableStream({
+            start(stream) {
+              stream.enqueue(new TextEncoder().encode("partial error"));
+            },
+          }),
+          { status: 500 },
+        );
+      },
+    });
+    try {
+      const config: EmbeddingConnectionConfig = {
+        endpoint: `http://localhost:${server.port}`,
+        model: "test-model",
+      };
+      const pending = embed("hello", config, controller.signal);
+      setTimeout(() => controller.abort(), 5);
+      await expect(pending).rejects.toThrow(/abort/i);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("isEmbeddingAvailable returns true for valid remote endpoint", async () => {
     const { url, server } = createMockEmbeddingServer([0.1, 0.2]);
     try {

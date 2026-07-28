@@ -32,7 +32,6 @@ import { resolveEntryContentDir, resolveSourceEntries } from "../../indexer/sear
 import { collectEngineCredentialValues } from "../../integrations/agent/engine-resolution";
 import { materializeLlmRunnerConnection } from "../../integrations/agent/runner";
 import { installLlmUsagePersistence } from "../../llm/usage-persist";
-import { withLlmStage } from "../../llm/usage-telemetry";
 import {
   isGitBackedStash,
   listGitChangedPaths,
@@ -44,12 +43,7 @@ import { getEntryCount } from "../../storage/repositories/index-entries-reposito
 import { type DrainResult, drainProposals } from "../proposal/drain";
 import { resolveDrainPolicy } from "../proposal/drain-policies";
 import type { EligibilitySource } from "../proposal/proposal-types";
-import {
-  type AutonomyLane,
-  configuredDirectAutonomyLanes,
-  describeGatedLanes,
-  isAutonomyLaneAllowed,
-} from "./autonomy-gate";
+import { type AutonomyLane, describeGatedLanes, isAutonomyLaneAllowed } from "./autonomy-gate";
 import { akmDistill } from "./distill";
 // Eligibility / candidate-selection predicates live in ./eligibility.
 import {
@@ -74,7 +68,6 @@ import { type ResolvedImprovePlan, resolveImprovePlan } from "./improve-strategi
 import { improveLockPath, MIN_IMPROVE_LOCK_STALE_MS, releaseImproveLock, tryAcquireImproveLock } from "./locks";
 // The cycle loop / post-loop / maintenance stages live in ./loop-stages.
 import { runImproveLoopStage, runImprovePostLoopStage } from "./loop-stages";
-import { detectAndWriteContradictions } from "./memory/memory-contradiction-detect";
 import { analyzeMemoryCleanup, type MemoryCleanupPlan } from "./memory/memory-improve";
 // The pre-loop preparation pipeline lives in ./preparation.
 import { runImprovePreparationStage } from "./preparation";
@@ -300,9 +293,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
       run: setup,
       strategyFilteredRefs,
       plannedRefs,
-      // The preview stays on the result envelope below; the stage sequence is
-      // what APPLIES the plan, so a gated run must not receive it.
-      memoryCleanupPlan: autonomyGatedDirectLanes.includes("memoryCleanup") ? undefined : memoryCleanupPlan,
+      memoryCleanupPlan,
       autonomyGatedDirectLanes,
       memorySummary,
       preEnsureCleanupWarnings,
@@ -651,16 +642,8 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
   warnings: string[];
 }> {
   const { signal } = args;
-  const {
-    scope,
-    options,
-    primaryStashDir,
-    improveProfile,
-    resolvedPlan,
-    _earlyConfig,
-    ensureIndexFn,
-    collectEligibleRefsImpl,
-  } = args.run;
+  const { scope, options, primaryStashDir, improveProfile, _earlyConfig, ensureIndexFn, collectEligibleRefsImpl } =
+    args.run;
   const warnings: string[] = [];
   let plannedRefs: Awaited<ReturnType<typeof collectEligibleRefs>>["plannedRefs"] = [];
   let memorySummary: Awaited<ReturnType<typeof collectEligibleRefs>>["memorySummary"] = { eligible: 0, derived: 0 };
@@ -725,7 +708,7 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
     plannedRefs,
     memorySummary,
     strategyFilteredRefs = [],
-  } = await collectEligibleRefsImpl(scope, options.stashDir, improveProfile));
+  } = await collectEligibleRefsImpl(scope, options.stashDir, improveProfile, _earlyConfig));
   const cleanupParentRef = memoryCleanupParentRef(scope, options.stashDir);
 
   // D8 — the two direct lanes share one eligibility predicate, which reads scope
@@ -734,55 +717,18 @@ async function indexAndCollect(args: { run: ImproveRunSetup; signal: AbortSignal
   // a gated lane is worth REPORTING. A lane that was never eligible was not
   // suppressed by the gate, so claiming it was would be noise.
   const cleanupEligible = shouldAnalyzeMemoryCleanup(scope, memorySummary.eligible, primaryStashDir);
-  const autonomyAllowsDirectLanes = isAutonomyLaneAllowed("memoryCleanup", _earlyConfig);
-  const configuredDirectLanes = configuredDirectAutonomyLanes(improveProfile);
+  // Cleanup remains independent of the disabled contradiction writer.
+  const memoryCleanupPlan = cleanupEligible
+    ? analyzeMemoryCleanup(primaryStashDir as string, cleanupParentRef ? { parentRef: cleanupParentRef } : undefined)
+    : undefined;
+  const cleanupWouldMutate = Boolean(
+    memoryCleanupPlan &&
+      (memoryCleanupPlan.pruneCandidates.length > 0 ||
+        memoryCleanupPlan.beliefStateTransitions.length > 0 ||
+        memoryCleanupPlan.relativeDateCandidates.length > 0),
+  );
   const autonomyGatedDirectLanes: AutonomyLane[] =
-    cleanupEligible && !autonomyAllowsDirectLanes ? configuredDirectLanes : [];
-
-  // M-1 (#367): Run contradiction-detection BEFORE analyzeMemoryCleanup so
-  // the SCC resolver in resolveFamilyContradictions has edges to work on.
-  // Best-effort: failures are warnings, never fatal.
-  // It writes contradiction edges and belief-state transitions, so it needs the
-  // opt-in.
-  if (
-    !options.dryRun &&
-    primaryStashDir &&
-    autonomyAllowsDirectLanes &&
-    cleanupEligible &&
-    configuredDirectLanes.includes("contradiction")
-  ) {
-    try {
-      // Reuse the config resolved at the top of the run instead of a second load.
-      const contradictionDetectionFn = options.contradictionDetectionFn ?? detectAndWriteContradictions;
-      await withLlmStage(
-        "memory-contradiction",
-        () =>
-          contradictionDetectionFn(
-            primaryStashDir,
-            _earlyConfig,
-            undefined,
-            improveProfile,
-            resolvedPlan.processes.consolidate.runner
-              ? materializeLlmRunnerConnection(resolvedPlan.processes.consolidate.runner)
-              : null,
-          ),
-        { engine: resolvedPlan.processes.consolidate.runner?.engine, process: "consolidate" },
-      );
-    } catch (err) {
-      if (signal.aborted) throw err;
-      // Non-fatal: contradiction detection is a best-effort pass.
-      warn(`[improve] contradiction detection failed (non-fatal): ${errMessage(err)}`);
-    }
-  }
-
-  // `analyzeMemoryCleanup` is READ-ONLY, so a dry run may compute the preview
-  // even when autonomy is off. A live gated run has no preview contract and
-  // skips the stash-wide analysis as well as application; autonomy-on live runs
-  // compute the plan that `applyMemoryCleanup` will consume downstream.
-  const memoryCleanupPlan =
-    cleanupEligible && (options.dryRun || autonomyAllowsDirectLanes)
-      ? analyzeMemoryCleanup(primaryStashDir as string, cleanupParentRef ? { parentRef: cleanupParentRef } : undefined)
-      : undefined;
+    cleanupWouldMutate && !isAutonomyLaneAllowed("memoryCleanup", _earlyConfig) ? ["memoryCleanup"] : [];
   const guidance =
     memorySummary.eligible > 0
       ? "Improve folds memory cleanup into the same proposal queue: speculative promotions still go through reflect/distill proposals, while high-confidence redundant derived memories are moved into a recoverable cleanup archive instead of being left active in the stash."

@@ -44,6 +44,13 @@ describe("raw recovery startup", () => {
     }
   });
 
+  test("help and version config bypass ignores child flags after `--`", () => {
+    expect(shouldBypassConfigStartup(["bun", "cli.ts", "env", "run", "env/prod", "--", "tool", "--help"])).toBe(false);
+    expect(
+      shouldBypassConfigStartup(["bun", "cli.ts", "secret", "run", "secrets/token", "TOKEN", "--", "tool", "-v"]),
+    ).toBe(false);
+  });
+
   test("raw validate rejects legacy config without modifying it", async () => {
     const original = '{"configVersion":"0.8.0","profiles":{}}\n';
     fs.writeFileSync(getConfigPath(), original);

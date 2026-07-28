@@ -12,9 +12,9 @@
  */
 
 import path from "node:path";
-import type { Proposal } from "../../commands/proposal/proposal-types";
-import { isBundleSlug } from "../../core/asset/asset-ref";
-import { conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
+import type { Proposal, ProposalGateDecisionOutcome } from "../../commands/proposal/proposal-types";
+import { stashDirFor } from "../../core/asset/asset-placement";
+import { bundleRefToString, isBundleSlug, parseBundleRef } from "../../core/asset/asset-ref";
 import type { FileChange } from "../../core/file-change";
 import type { Database, SqlValue } from "../database";
 
@@ -49,22 +49,40 @@ function storedToChanges(stored: unknown, content: string): FileChange[] {
   if (!Array.isArray(stored) || stored.length === 0) {
     throw new Error("Proposal metadata is missing changes.");
   }
-  return (stored as StoredFileChange[]).map((c, i) => ({
-    path: c.path,
-    op: c.op,
-    ...(i === 0 ? (c.op === "delete" ? {} : { after: content }) : c.after !== undefined ? { after: c.after } : {}),
-  }));
+  return stored.map((value, i) => {
+    if (typeof value !== "object" || value === null) throw new Error("Proposal metadata has invalid changes.");
+    const c = value as { path?: unknown; op?: unknown; after?: unknown };
+    if (
+      typeof c.path !== "string" ||
+      (c.op !== "create" && c.op !== "update" && c.op !== "delete") ||
+      (c.after !== undefined && typeof c.after !== "string") ||
+      (c.op === "delete" && c.after !== undefined) ||
+      (i > 0 && c.op !== "delete" && typeof c.after !== "string")
+    ) {
+      throw new Error("Proposal metadata has invalid changes.");
+    }
+    return {
+      path: c.path,
+      op: c.op,
+      ...(i === 0 ? (c.op === "delete" ? {} : { after: content }) : c.after !== undefined ? { after: c.after } : {}),
+    };
+  });
 }
 
-function currentProposalRef(ref: string): string {
-  let parsed: ReturnType<typeof parseRefInput>;
+function currentProposalRef(ref: string, requireQualified = false): string {
+  let parsed: ReturnType<typeof parseBundleRef>;
   try {
-    parsed = parseRefInput(ref);
+    parsed = parseBundleRef(ref);
   } catch (error) {
     throw new Error(`Proposal row has an invalid current ref: ${ref}`, { cause: error });
   }
-  if (!parsed.origin) throw new Error(`Proposal row ref is not bundle-qualified: ${ref}`);
-  const canonical = `${parsed.origin}//${conceptIdFromTypeName(parsed.type, parsed.name)}`;
+  const colon = parsed.conceptId.indexOf(":");
+  if (colon > 0 && stashDirFor(parsed.conceptId.slice(0, colon)) !== undefined) {
+    throw new Error(`Proposal row has an invalid current ref: ${ref}`);
+  }
+  if (parsed.fragment !== undefined) throw new Error(`Proposal row ref contains a fragment: ${ref}`);
+  if (requireQualified && parsed.bundle === undefined) throw new Error(`Proposal ref is not bundle-qualified: ${ref}`);
+  const canonical = bundleRefToString(parsed);
   if (canonical !== ref) throw new Error(`Proposal row ref is not canonical: ${ref}`);
   return canonical;
 }
@@ -81,6 +99,92 @@ function currentProposalTarget(value: unknown): NonNullable<Proposal["proposedTa
     throw new Error("Proposal metadata has an invalid proposedTarget.");
   }
   return { source: target.source, root: path.resolve(target.root) };
+}
+
+function invalidPresentField(name: string): never {
+  throw new Error(`Proposal metadata has an invalid ${name}.`);
+}
+
+const GATE_OUTCOMES: Record<ProposalGateDecisionOutcome, true> = {
+  "auto-accepted": true,
+  deferred: true,
+  staged: true,
+  "auto-rejected": true,
+};
+
+function validatePresentMetadata(meta: Record<string, unknown>): void {
+  const stringFields = ["sourceRun", "beforeHash", "backupContent"] as const;
+  for (const field of stringFields) {
+    if (Object.hasOwn(meta, field) && typeof meta[field] !== "string") invalidPresentField(field);
+  }
+  if (
+    Object.hasOwn(meta, "confidence") &&
+    (typeof meta.confidence !== "number" ||
+      !Number.isFinite(meta.confidence) ||
+      meta.confidence < 0 ||
+      meta.confidence > 1)
+  ) {
+    invalidPresentField("confidence");
+  }
+  if (Object.hasOwn(meta, "review")) {
+    const review = meta.review as Record<string, unknown> | null;
+    if (
+      typeof review !== "object" ||
+      review === null ||
+      (review.outcome !== "accepted" && review.outcome !== "rejected") ||
+      typeof review.decidedAt !== "string" ||
+      (review.reason !== undefined && typeof review.reason !== "string")
+    ) {
+      invalidPresentField("review");
+    }
+  }
+  if (Object.hasOwn(meta, "gateDecision")) {
+    const gate = meta.gateDecision as Record<string, unknown> | null;
+    if (
+      typeof gate !== "object" ||
+      gate === null ||
+      typeof gate.outcome !== "string" ||
+      !Object.hasOwn(GATE_OUTCOMES, gate.outcome) ||
+      typeof gate.reason !== "string" ||
+      typeof gate.decidedAt !== "string" ||
+      (gate.measured !== undefined && (typeof gate.measured !== "number" || !Number.isFinite(gate.measured))) ||
+      (gate.contentHash !== undefined && typeof gate.contentHash !== "string") ||
+      (gate.gate !== undefined && typeof gate.gate !== "string")
+    ) {
+      invalidPresentField("gateDecision");
+    }
+    if (gate.thresholds !== undefined) {
+      const thresholds = gate.thresholds as Record<string, unknown> | null;
+      if (
+        typeof thresholds !== "object" ||
+        thresholds === null ||
+        [thresholds.maxDiffLines, thresholds.minContentLines].some(
+          (value) => value !== undefined && (typeof value !== "number" || !Number.isFinite(value)),
+        )
+      ) {
+        invalidPresentField("gateDecision");
+      }
+    }
+  }
+  if (Object.hasOwn(meta, "acceptedTarget")) {
+    const target = meta.acceptedTarget as Record<string, unknown> | null;
+    if (
+      typeof target !== "object" ||
+      target === null ||
+      typeof target.source !== "string" ||
+      !isBundleSlug(target.source) ||
+      typeof target.root !== "string" ||
+      !path.isAbsolute(target.root) ||
+      typeof target.path !== "string" ||
+      !path.isAbsolute(target.path) ||
+      typeof target.contentHash !== "string"
+    ) {
+      invalidPresentField("acceptedTarget");
+    }
+  }
+  if (Object.hasOwn(meta, "eligibilitySource") && typeof meta.eligibilitySource !== "string") {
+    invalidPresentField("eligibilitySource");
+  }
 }
 
 /**
@@ -108,23 +212,38 @@ export interface ProposalRow {
  * Convert a raw `ProposalRow` to the public `Proposal` shape.
  */
 export function proposalRowToProposal(row: ProposalRow): Proposal {
+  if (!["pending", "accepted", "rejected", "reverted"].includes(row.status)) {
+    throw new Error(`Proposal row has invalid status: ${row.status}`);
+  }
   let frontmatter: Record<string, unknown> | undefined;
-  if (row.frontmatter_json) {
+  if (row.frontmatter_json !== null) {
     try {
-      frontmatter = JSON.parse(row.frontmatter_json) as Record<string, unknown>;
-    } catch {
-      /* ignore corrupt frontmatter JSON */
+      const parsed: unknown = JSON.parse(row.frontmatter_json);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("Proposal frontmatter_json must contain an object.");
+      }
+      frontmatter = parsed as Record<string, unknown>;
+    } catch (error) {
+      throw new Error("Proposal row has invalid frontmatter_json.", { cause: error });
     }
   }
 
   let meta: Record<string, unknown> = {};
   try {
-    meta = JSON.parse(row.metadata_json) as Record<string, unknown>;
-  } catch {
-    /* ignore */
+    const parsed: unknown = JSON.parse(row.metadata_json);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error("Proposal metadata_json must contain an object.");
+    }
+    meta = parsed as Record<string, unknown>;
+  } catch (error) {
+    throw new Error("Proposal row has invalid metadata_json.", { cause: error });
   }
+  validatePresentMetadata(meta);
 
-  const proposedTarget = currentProposalTarget(meta.proposedTarget);
+  const changes = Object.hasOwn(meta, "changes")
+    ? storedToChanges(meta.changes, row.content)
+    : [{ path: "", op: "update" as const, after: row.content }];
+  const proposedTarget = Object.hasOwn(meta, "proposedTarget") ? currentProposalTarget(meta.proposedTarget) : undefined;
   return {
     id: row.id,
     ref: currentProposalRef(row.ref),
@@ -137,8 +256,8 @@ export function proposalRowToProposal(row: ProposalRow): Proposal {
       content: row.content,
       ...(frontmatter !== undefined ? { frontmatter } : {}),
     },
-    changes: storedToChanges(meta.changes, row.content),
-    proposedTarget,
+    changes,
+    ...(proposedTarget !== undefined ? { proposedTarget } : {}),
     ...(typeof meta.beforeHash === "string" ? { beforeHash: meta.beforeHash } : {}),
     ...(meta.review !== undefined ? { review: meta.review as Proposal["review"] } : {}),
     ...(typeof meta.confidence === "number" ? { confidence: meta.confidence } : {}),
@@ -161,6 +280,17 @@ export function proposalToRowValues(proposal: Proposal, stashDir: string): Omit<
   if (!Array.isArray(proposal.changes) || proposal.changes.length === 0) {
     throw new Error(`Proposal ${proposal.id} has no file changes.`);
   }
+  if (
+    proposal.changes.some(
+      (change) =>
+        typeof change.path !== "string" ||
+        change.path.length === 0 ||
+        !["create", "update", "delete"].includes(change.op) ||
+        (change.op === "delete" ? change.after !== undefined : typeof change.after !== "string"),
+    )
+  ) {
+    throw new Error(`Proposal ${proposal.id} has invalid file changes.`);
+  }
   metaObj.changes = changesToStored(proposal.changes);
   metaObj.proposedTarget = currentProposalTarget(proposal.proposedTarget);
   if (proposal.beforeHash !== undefined) metaObj.beforeHash = proposal.beforeHash;
@@ -171,11 +301,12 @@ export function proposalToRowValues(proposal: Proposal, stashDir: string): Omit<
   if (proposal.backupContent !== undefined) metaObj.backupContent = proposal.backupContent;
   if (proposal.acceptedTarget !== undefined) metaObj.acceptedTarget = proposal.acceptedTarget;
   if (proposal.eligibilitySource !== undefined) metaObj.eligibilitySource = proposal.eligibilitySource;
+  validatePresentMetadata(metaObj);
 
   return {
     id: proposal.id,
     stash_dir: stashDir,
-    ref: currentProposalRef(proposal.ref),
+    ref: currentProposalRef(proposal.ref, true),
     status: proposal.status,
     source: proposal.source,
     created_at: proposal.createdAt,

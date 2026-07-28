@@ -17,17 +17,19 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { resolveStashDir } from "../../core/common";
+import { isWithin, resolveStashDir } from "../../core/common";
 import type { AkmConfig, BundleConfigEntry } from "../../core/config/config";
 import { getSources, loadConfig } from "../../core/config/config";
-import { NotFoundError, UsageError } from "../../core/errors";
+import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { getDbPath } from "../../core/paths";
 import { warn } from "../../core/warn";
+import { withAssetMutationLease } from "../../indexer/index-writer-lock";
 import { akmIndex } from "../../indexer/indexer";
 import type { LockfileEntry } from "../../integrations/lockfile";
-import { readLockfile, upsertLockEntry } from "../../integrations/lockfile";
+import { compareAndSwapLockfile, readLockfile } from "../../integrations/lockfile";
 import { parseRegistryRef } from "../../registry/resolve";
 import type { InstalledBundle, InstallKind } from "../../registry/types";
+import { sha256Hex } from "../../runtime";
 import { parseGitRepoUrl, syncMirroredRepo } from "../../sources/providers/git";
 import { syncFromRef } from "../../sources/providers/sync-from-ref";
 import {
@@ -50,7 +52,7 @@ import type {
 import type { Database } from "../../storage/database";
 import { closeDatabase, openReadonlyExistingDatabase } from "../../storage/repositories/index-connection";
 import { getAllEntries } from "../../storage/repositories/index-entries-repository";
-import { removeInstalledRegistryEntry, upsertInstalledRegistryEntry } from "./source-add";
+import { removeInstalledRegistryEntry } from "./source-add";
 import { removeStash } from "./source-manage";
 
 /**
@@ -324,9 +326,14 @@ async function buildUpdateResponse(
   target: string | undefined,
   all: boolean,
   processed: UpdateResponse["processed"],
-  opts?: { full?: boolean; plainSynced?: UpdatePlainSyncedItem[]; skipped?: UpdateSkippedItem[] },
+  opts?: {
+    full?: boolean;
+    plainSynced?: UpdatePlainSyncedItem[];
+    skipped?: UpdateSkippedItem[];
+    index?: Awaited<ReturnType<typeof akmIndex>>;
+  },
 ): Promise<UpdateResponse> {
-  const index = await akmIndex({ stashDir, ...(opts?.full ? { full: true } : {}) });
+  const index = opts?.index ?? (await akmIndex({ stashDir, ...(opts?.full ? { full: true } : {}) }));
   const finalConfig = loadConfig();
   return {
     schemaVersion: 1,
@@ -433,13 +440,18 @@ function managedInstallViewOfPlainNpm(npmSource: ReturnType<typeof getSources>[n
  * scripts; only the branch that can `rm -rf` needs a gate, not the whole
  * command).
  */
-async function updateManagedInstall(managed: ManagedInstall, force: boolean, yes: boolean): Promise<UpdateResultItem> {
+async function updateManagedInstall(
+  managed: ManagedInstall,
+  force: boolean,
+  yes: boolean,
+  stashDir: string,
+): Promise<{ item: UpdateResultItem; index: Awaited<ReturnType<typeof akmIndex>> }> {
   // No pre-cleanup of the old root, even under --force: the providers already
   // re-materialize staging-first (git clones into a `.tmp-*` sibling and swaps
   // only on success), so destroying `managed.localRoot` BEFORE `syncFromRef`
   // succeeds would turn any sync failure (network down, bad ref) into losing a
-  // previously-working install. The old root is cleaned up below, after the
-  // lock points at the new content.
+  // previously-working install. The old root is cleaned up below only after
+  // config/lock publication and reindexing both succeed.
   const synced = await syncFromRef(managed.ref, {
     force,
     writable: managed.writable,
@@ -462,84 +474,111 @@ async function updateManagedInstall(managed: ManagedInstall, force: boolean, yes
     installedAt: synced.syncedAt,
     writable: synced.writable ?? managed.writable,
   };
-  const { bundleId } = upsertInstalledRegistryEntry(installedEntry);
-  await upsertLockEntry({
-    id: bundleId,
-    // Preserve the STORED install kind: a `github:`-ref entry recorded as
-    // source "git" must not be reclassified by the sync flow's re-derivation
-    // (the issue this file's update pin exists for).
-    source: managed.source,
-    ref: synced.ref,
-    resolvedVersion: synced.resolvedVersion,
-    resolvedRevision: synced.resolvedRevision,
-    integrity: synced.integrity ?? (synced.source === "local" ? "local" : undefined),
-    // §10.2 resolved lock state the sync flow has on hand.
-    localRoot: synced.contentDir,
-    installedAt: synced.syncedAt,
-  });
-  if (
-    managed.localRoot &&
+  const movedRoot =
+    managed.localRoot !== "" &&
     path.resolve(managed.localRoot) !== path.resolve(synced.contentDir) &&
     managed.source !== "local" &&
-    !managed.writable
-  ) {
-    // F1/R-058: this branch deletes a directory (`rm -rf`-equivalent via
-    // `cleanupDirectoryBestEffort`) that may still hold content an operator
-    // cares about, e.g. if the resolved content path moved out from under an
-    // install they expected to be stable. `remove` already requires
-    // confirmation (or `--yes`) before deleting anything; `update`'s
-    // routine "resync in place" path deletes nothing and stays exactly as
-    // it was (no prompt, no flag, unchanged exit code) — only this specific
-    // "the content directory moved" branch is gated, mirroring `remove`'s
-    // `confirmDestructive` usage in sources-cli.ts.
-    //
-    // Unlike `remove` — where declining aborts BEFORE any work happens —
-    // the lock/registry-entry writes above have ALREADY landed by the time
-    // this gate runs, pointing at `synced.contentDir`. That ordering is
-    // deliberate and predates this fix (see the "staging-first" comment at
-    // the top of this function): the new content is proven-good before
-    // anything about the old install is touched, and rolling back an
-    // already-successful resync just because a script forgot `--yes` would
-    // throw away good work over a cleanup step. So declining (or a
-    // non-interactive NON_INTERACTIVE_REQUIRES_YES failure) stops ONLY the
-    // deletion — the resync itself is NOT undone, and a re-run afterwards
-    // will see `managed.localRoot` already equal to `synced.contentDir` (no
-    // move to detect), so it will NOT retry the cleanup on its own. A
-    // directory left behind this way is orphaned but harmless — the warning
-    // below names it explicitly for manual removal.
+    !managed.writable;
+  if (movedRoot) {
     const { confirmDestructive } = await import("../../cli/confirm.js");
     const confirmed = await confirmDestructive(
       `Update resolved a new content directory for "${managed.installId}" (${synced.contentDir}) and would delete the previous install directory at ${managed.localRoot}. This cannot be undone.`,
       { yes },
     );
-    if (confirmed) {
-      cleanupDirectoryBestEffort(managed.localRoot, "update");
-    } else {
-      warn(
-        `[akm update] kept previous install directory at ${managed.localRoot} for "${managed.installId}" (deletion not confirmed). Remove it manually if it is no longer needed.`,
-      );
-    }
+    if (!confirmed) throw new UsageError(`Update cancelled for "${managed.installId}"; no configuration was changed.`);
   }
 
-  const versionChanged = (managed.resolvedVersion ?? "") !== (synced.resolvedVersion ?? "");
-  const revisionChanged = (managed.resolvedRevision ?? "") !== (synced.resolvedRevision ?? "");
+  return withAssetMutationLease("source-update", async () => {
+    const config = loadConfig();
+    const oldLocks = readLockfile();
+    if (!config.bundles?.[managed.bundleKey]) {
+      throw new ConfigError(`Managed source "${managed.installId}" disappeared before update publication.`);
+    }
+    const desiredLock: LockfileEntry = {
+      id: managed.bundleKey,
+      // Preserve the STORED install kind: a `github:`-ref entry recorded as
+      // source "git" must not be reclassified by the sync flow's re-derivation.
+      source: managed.source,
+      ref: synced.ref,
+      resolvedVersion: synced.resolvedVersion,
+      resolvedRevision: synced.resolvedRevision,
+      integrity: synced.integrity ?? (synced.source === "local" ? "local" : undefined),
+      localRoot: synced.contentDir,
+      installedAt: synced.syncedAt,
+    };
+    const desiredLocks = [...oldLocks.filter((entry) => entry.id !== desiredLock.id), desiredLock];
+    const desiredLockGeneration = generationHash(desiredLocks);
+    if (!(await compareAndSwapLockfile(oldLocks, desiredLocks))) throw concurrentGenerationError(managed);
+    const index = await akmIndex({ stashDir });
+    if (generationHash(readLockfile()) !== desiredLockGeneration) throw concurrentGenerationError(managed);
 
-  return {
-    id: managed.installId,
-    source: managed.source,
-    ref: managed.ref,
-    previous: {
-      resolvedVersion: managed.resolvedVersion,
-      resolvedRevision: managed.resolvedRevision,
-      cacheDir: managed.localRoot,
-    },
-    installed: { ...installedEntry, extractedDir: synced.extractedDir },
-    changed: {
-      version: versionChanged,
-      revision: revisionChanged,
-      any: versionChanged || revisionChanged,
-    },
-  };
+    if (movedRoot) {
+      const currentConfig = loadConfig();
+      const currentLocks = readLockfile();
+      if (referencesRoot(managed.localRoot, currentConfig, currentLocks)) {
+        warn(
+          `[akm update] kept previous install directory at ${managed.localRoot} because another configured or locked bundle still references it.`,
+        );
+      } else {
+        cleanupDirectoryBestEffort(managed.localRoot, "update");
+      }
+    }
+
+    const versionChanged = (managed.resolvedVersion ?? "") !== (synced.resolvedVersion ?? "");
+    const revisionChanged = (managed.resolvedRevision ?? "") !== (synced.resolvedRevision ?? "");
+    return {
+      index,
+      item: {
+        id: managed.installId,
+        source: managed.source,
+        ref: managed.ref,
+        previous: {
+          resolvedVersion: managed.resolvedVersion,
+          resolvedRevision: managed.resolvedRevision,
+          cacheDir: managed.localRoot,
+        },
+        installed: { ...installedEntry, extractedDir: synced.extractedDir },
+        changed: {
+          version: versionChanged,
+          revision: revisionChanged,
+          any: versionChanged || revisionChanged,
+        },
+      },
+    };
+  });
+}
+
+function generationHash(value: unknown): string {
+  return sha256Hex(JSON.stringify(value));
+}
+
+function referencesRoot(target: string, config: AkmConfig, locks: LockfileEntry[]): boolean {
+  const resolvedTarget = path.resolve(target);
+  const locksById = new Map(locks.map((entry) => [entry.id, entry]));
+  for (const [bundleId, bundle] of Object.entries(config.bundles ?? {})) {
+    const root = bundle.path ?? locksById.get(bundleId)?.localRoot;
+    if (!root) continue;
+    if (isRootAtOrBelow(root, resolvedTarget)) return true;
+    for (const component of Object.values(bundle.components ?? {})) {
+      if (isRootAtOrBelow(path.resolve(root, component.root ?? "."), resolvedTarget)) return true;
+    }
+  }
+  return locks.some((entry) => entry.localRoot && isRootAtOrBelow(entry.localRoot, resolvedTarget));
+}
+
+function isRootAtOrBelow(candidate: string, root: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  const lexicallyWithin =
+    relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  return lexicallyWithin || isWithin(candidate, root);
+}
+
+function concurrentGenerationError(managed: ManagedInstall): ConfigError {
+  return new ConfigError(
+    `Managed source "${managed.installId}" changed concurrently; retained both materialized roots and deleted nothing.`,
+    "INVALID_CONFIG_FILE",
+    "Inspect `akm list` and retry the update after the concurrent source operation completes.",
+  );
 }
 
 // ── akmUpdate dispatcher ─────────────────────────────────────────────────────
@@ -569,7 +608,8 @@ export async function akmUpdate(input?: {
     // Registry-managed install (lock-backed) — re-download from its locator.
     const managed = resolveManagedTarget(config, target);
     if (managed) {
-      return buildUpdateResponse(stashDir, target, all, [await updateManagedInstall(managed, force, yes)]);
+      const updated = await updateManagedInstall(managed, force, yes, stashDir);
+      return buildUpdateResponse(stashDir, target, all, [updated.item], { index: updated.index });
     }
 
     // Plain git / website source (bundles without a lock) — provider re-sync.
@@ -613,16 +653,21 @@ export async function akmUpdate(input?: {
       return false;
     });
     if (npmMatch) {
-      return buildUpdateResponse(stashDir, target, all, [
-        await updateManagedInstall(managedInstallViewOfPlainNpm(npmMatch), force, yes),
-      ]);
+      const updated = await updateManagedInstall(managedInstallViewOfPlainNpm(npmMatch), force, yes, stashDir);
+      return buildUpdateResponse(stashDir, target, all, [updated.item], { index: updated.index });
     }
   }
 
-  const selected = selectManagedTargets(config, managedInstalls, target, all);
+  const enabledManagedInstalls = all
+    ? managedInstalls.filter((managed) => config.bundles?.[managed.bundleKey]?.enabled !== false)
+    : managedInstalls;
+  const selected = selectManagedTargets(config, enabledManagedInstalls, target, all);
   const processed: UpdateResponse["processed"] = [];
+  let latestManagedIndex: Awaited<ReturnType<typeof akmIndex>> | undefined;
   for (const managed of selected) {
-    processed.push(await updateManagedInstall(managed, force, yes));
+    const updated = await updateManagedInstall(managed, force, yes, stashDir);
+    processed.push(updated.item);
+    latestManagedIndex = updated.index;
   }
 
   // `--all` must account for EVERY configured source, not only the
@@ -638,7 +683,9 @@ export async function akmUpdate(input?: {
   let sawGitSync = false;
   if (all) {
     const managedKeys = new Set(managedInstalls.map((m) => m.bundleKey));
-    const plainSources = getSources(config).filter((s) => !managedKeys.has(s.name ?? ""));
+    const plainSources = getSources(config).filter(
+      (source) => source.enabled !== false && !managedKeys.has(source.name ?? ""),
+    );
     plainSynced = [];
     skipped = [];
     for (const plain of plainSources) {
@@ -648,7 +695,9 @@ export async function akmUpdate(input?: {
           plainSynced.push(await syncGitPlainSource(plain));
           sawGitSync = true;
         } else if (plain.type === "npm") {
-          processed.push(await updateManagedInstall(managedInstallViewOfPlainNpm(plain), force, yes));
+          const updated = await updateManagedInstall(managedInstallViewOfPlainNpm(plain), force, yes, stashDir);
+          processed.push(updated.item);
+          latestManagedIndex = updated.index;
         } else if (plain.type === "website") {
           skipped.push({
             id,
@@ -673,7 +722,12 @@ export async function akmUpdate(input?: {
     }
   }
 
-  return buildUpdateResponse(stashDir, target, all, processed, { full: sawGitSync, plainSynced, skipped });
+  return buildUpdateResponse(stashDir, target, all, processed, {
+    full: sawGitSync,
+    plainSynced,
+    skipped,
+    ...(!sawGitSync && latestManagedIndex ? { index: latestManagedIndex } : {}),
+  });
 }
 
 function selectManagedTargets(

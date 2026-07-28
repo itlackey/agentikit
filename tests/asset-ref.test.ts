@@ -154,6 +154,12 @@ describe("parseBundleRef", () => {
     expect(() => parseBundleRef("core//../outside")).toThrow("Path traversal");
   });
 
+  test("rejects raw internal dot segments before path normalization", () => {
+    expect(() => parseBundleRef("core//knowledge/./guide")).toThrow("relative path segments");
+    expect(() => parseBundleRef("core//knowledge/topic/../guide")).toThrow("relative path segments");
+    expect(() => parseBundleRef("core//knowledge\\.\\guide")).toThrow("relative path segments");
+  });
+
   test("rejects an absolute conceptId", () => {
     expect(() => parseBundleRef("core///etc/passwd")).toThrow("Absolute path");
   });

@@ -19,12 +19,7 @@ import {
   resetConfigCache,
   sanitizeConfigForWrite,
 } from "../../src/core/config/config";
-import {
-  backupExistingConfig,
-  parseConfigText,
-  withConfigLock,
-  writeConfigAtomic,
-} from "../../src/core/config/config-io";
+import { backupExistingConfig, parseConfigText, withConfigLock } from "../../src/core/config/config-io";
 import { ConfigError } from "../../src/core/errors";
 import { withMaintenanceStartBarrier } from "../../src/core/maintenance-barrier";
 import {
@@ -49,13 +44,22 @@ import {
 } from "./migration-backup";
 import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { runMigrations as runStateMigrations } from "../../src/core/state/migrations";
-import { isValidLockfileEntry, type LockfileEntry, mergeLockEntriesSync } from "../../src/integrations/lockfile";
+import {
+  isValidLockfileEntry,
+  type LockfileEntry,
+  mergeLockEntriesSync,
+  planLockMergeSync,
+  publishPlannedLockMergeSync,
+} from "../../src/integrations/lockfile";
 import {
   migrateConfigSourcesToBundles,
   migratedLockEntries,
   oldConfigToSearchSources,
 } from "./migrate/legacy/config-source-migration";
-import { type ContentMigrationReport, runContentMigration } from "./migrate/legacy/content-migration";
+import {
+  type ContentMigrationReport,
+  runContentMigration,
+} from "./migrate/legacy/content-migration";
 import { getLegacyWorkflowDbPath } from "./migrate/legacy/legacy-paths";
 import { importLegacyProposalsIntoState } from "./migrate/legacy/proposal-fs-import";
 import {
@@ -63,14 +67,19 @@ import {
   planTaskTargetRefMigration,
 } from "./migrate/legacy/task-target-ref-migration";
 import {
+  assertLegacyProposalRefsRepairable,
   buildCutoverRefMap,
+  completeCutoverRefMap,
+  countLegacyProposalRefs,
   type CutoverStashRoot,
   cutoverMergeCommitted,
   deleteWorkflowDb,
   loadCutoverRefMap,
+  loadCompletedCutoverRefMap,
   migratePilotTreatmentFiles,
   quarantineIndexDb,
   rekeyStateDb,
+  repairAlreadyCurrentProposalRefs,
   runThreeDbCutover,
 } from "./migrate/legacy/three-db-cutover";
 import { FROZEN_WORKFLOW_MIGRATIONS } from "./migrate/legacy/workflow-migrations-bodies";
@@ -81,6 +90,7 @@ import { EXIT_CODES } from "../../src/cli/shared";
 
 const MANUAL_GUIDANCE =
   "Provide a complete operator-prepared 0.9 config with --config. AKM does not guess profile-to-engine mappings.";
+const MAX_APPLY_JOURNAL_BYTES = MAX_LOCAL_METADATA_BYTES + MAX_CONFIG_FILE_BYTES * 3;
 
 export interface MigrationCommandOptions {
   preparedConfigPath?: string;
@@ -134,8 +144,7 @@ const APPLY_PHASE_ORDER: ApplyPhase[] = [
   "committed",
 ];
 
-interface ApplyJournal {
-  formatVersion: 4;
+interface ApplyJournalBase {
   version: typeof MIGRATION_BACKUP_VERSION;
   operationId: string;
   installationId: string;
@@ -146,6 +155,51 @@ interface ApplyJournal {
   migrationLockEntries: LockfileEntry[];
   pathResolutionBase: string;
   generation: MigrationGenerationFingerprint;
+}
+
+interface ApplyJournalV4 extends ApplyJournalBase {
+  formatVersion: 4;
+}
+
+interface ApplyJournalV5 extends ApplyJournalBase {
+  formatVersion: 5;
+  desiredConfigBytes: AuthenticatedBytes;
+  oldLockBytes: AuthenticatedBytes;
+  desiredLockBytes: AuthenticatedBytes;
+}
+
+type ApplyJournal = ApplyJournalV4 | ApplyJournalV5;
+
+interface AuthenticatedBytes {
+  bytes: string | null;
+  byteSize: number;
+  sha256: string;
+}
+
+function authenticateBytes(bytes: string | null): AuthenticatedBytes {
+  const data = bytes === null ? Buffer.alloc(0) : Buffer.from(bytes);
+  return { bytes, byteSize: data.byteLength, sha256: createHash("sha256").update(data).digest("hex") };
+}
+
+function isAuthenticatedBytes(value: unknown): value is AuthenticatedBytes {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Partial<AuthenticatedBytes>;
+  if (
+    (candidate.bytes !== null && typeof candidate.bytes !== "string") ||
+    !Number.isSafeInteger(candidate.byteSize) ||
+    (candidate.byteSize as number) < 0 ||
+    typeof candidate.sha256 !== "string"
+  ) {
+    return false;
+  }
+  const authenticated = authenticateBytes(candidate.bytes as string | null);
+  return authenticated.byteSize === candidate.byteSize && authenticated.sha256 === candidate.sha256;
+}
+
+function desiredConfigText(journal: ApplyJournal): string {
+  return journal.formatVersion === 5
+    ? (journal.desiredConfigBytes.bytes ?? "")
+    : `${JSON.stringify(journal.targetConfig, null, 2)}\n`;
 }
 
 interface ApplyJournalMetadata {
@@ -316,7 +370,7 @@ function hasGenerationMarkerFromSnapshot(dbPath: string, operationId: string, ph
 }
 
 interface BoundStateGenerationMarker {
-  phase: "state-converting" | "state-applied";
+  phase: "state-converting" | "state-applied" | "proposal-repair";
   generationSha256: string;
 }
 
@@ -710,7 +764,11 @@ function createSqliteReadSnapshot(
   }
 }
 
-function bindStateConvertingMarker(db: Database, operationId: string): void {
+function bindStateGenerationMarker(
+  db: Database,
+  operationId: string,
+  phase: BoundStateGenerationMarker["phase"] = "state-converting",
+): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS akm_migration_generation (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -729,8 +787,8 @@ function bindStateConvertingMarker(db: Database, operationId: string): void {
   }
   const generationSha256 = canonicalStateGenerationSha256(db);
   db.prepare(
-    "INSERT INTO akm_migration_generation(singleton, operation_id, phase, generation_sha256) VALUES (1, ?, 'state-converting', ?) ON CONFLICT(singleton) DO UPDATE SET operation_id=excluded.operation_id, phase=excluded.phase, generation_sha256=excluded.generation_sha256",
-  ).run(operationId, generationSha256);
+    "INSERT INTO akm_migration_generation(singleton, operation_id, phase, generation_sha256) VALUES (1, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET operation_id=excluded.operation_id, phase=excluded.phase, generation_sha256=excluded.generation_sha256",
+  ).run(operationId, phase, generationSha256);
 }
 
 function readBoundStateGenerationMarker(db: Database, operationId: string): BoundStateGenerationMarker | undefined {
@@ -750,7 +808,9 @@ function readBoundStateGenerationMarker(db: Database, operationId: string): Boun
   if (!marker || marker.operation_id !== operationId || !generationSha256 || !/^[a-f0-9]{64}$/.test(generationSha256)) {
     return undefined;
   }
-  if (marker.phase !== "state-converting" && marker.phase !== "state-applied") return undefined;
+  if (marker.phase !== "state-converting" && marker.phase !== "state-applied" && marker.phase !== "proposal-repair") {
+    return undefined;
+  }
   if (canonicalStateGenerationSha256(db) !== generationSha256) {
     throw new ConfigError(
       "state.db no longer matches the exact logical generation bound to its state-converting marker.",
@@ -782,6 +842,13 @@ function readBoundStateGenerationMarkerFromDisk(operationId: string): BoundState
   } finally {
     snapshot.cleanup();
   }
+}
+
+function hasAuthenticatedProposalRepairMarker(journal: ApplyJournal, statePath = getStateDbPathInDataDir()): boolean {
+  return (
+    journal.phase === "prepared" &&
+    readBoundStateGenerationMarkerAtPath(statePath, journal.operationId)?.phase === "proposal-repair"
+  );
 }
 
 function cutoverMergeCommittedFromSnapshot(operationId: string): boolean {
@@ -949,7 +1016,7 @@ function detectAdjacentGeneration(
       },
     };
   }
-  const expectedTarget = `${JSON.stringify(journal.targetConfig, null, 2)}\n`;
+  const expectedTarget = desiredConfigText(journal);
   // Chunk 8, WI-8.2: config is written in the phase AFTER the cutover, so a crash
   // in the config mutation gap leaves the journal at `cutover-applied` with the
   // config already on disk. state (merged) + workflow (deleted) are unchanged
@@ -1042,7 +1109,7 @@ function validateApplyPhase(
   // the intended post-cutover terminal state, not a failure.
   const workflowDeleted = manifest.artifacts["workflow.db"].present && live.workflow.status === "missing";
   const workflowFinal = workflowApplied || workflowDeleted;
-  const expectedTarget = `${JSON.stringify(journal.targetConfig, null, 2)}\n`;
+  const expectedTarget = desiredConfigText(journal);
   const configApplied =
     live.config.status === "current" &&
     fs.existsSync(getConfigPath()) &&
@@ -1060,7 +1127,7 @@ function validateApplyPhase(
             : journal.phase === "workflow-applied"
               ? stateApplied && workflowApplied && (configOriginal || configApplied)
               : journal.phase === "cutover-applied"
-                ? stateApplied && workflowFinal && (configOriginal || configApplied)
+                ? stateApplied && workflowFinal
                 : // config-applied / tasks-* / pilot-* / committed
                   stateApplied && workflowFinal && configApplied;
   if (!reachable) {
@@ -1095,7 +1162,7 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
   let journal: ApplyJournal;
   try {
     const value = JSON.parse(
-      readTextFileWithLimit(journalPath, MAX_LOCAL_METADATA_BYTES, "Migration apply journal"),
+      readTextFileWithLimit(journalPath, MAX_APPLY_JOURNAL_BYTES, "Migration apply journal"),
     ) as unknown;
     const phases: ApplyPhase[] = [
       "prepared",
@@ -1112,7 +1179,7 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
       "rollback-prepared",
       "committed",
     ];
-    const requiredKeys = [
+    const commonKeys = [
       "backupPath",
       "backupRunId",
       "formatVersion",
@@ -1125,6 +1192,11 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
       "targetConfig",
       "version",
     ];
+    const formatVersion = (value as { formatVersion?: unknown })?.formatVersion;
+    const requiredKeys =
+      formatVersion === 5
+        ? [...commonKeys, "desiredConfigBytes", "desiredLockBytes", "oldLockBytes"]
+        : commonKeys;
     if (
       typeof value !== "object" ||
       value === null ||
@@ -1133,14 +1205,23 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
     ) {
       return { error: `Invalid migration apply journal at ${journalPath}.` };
     }
-    const candidate = value as Partial<ApplyJournal>;
+    const candidate = value as Partial<ApplyJournalBase> & {
+      formatVersion?: unknown;
+      desiredConfigBytes?: unknown;
+      oldLockBytes?: unknown;
+      desiredLockBytes?: unknown;
+    };
     if (
-      candidate.formatVersion !== 4 ||
+      (candidate.formatVersion !== 4 && candidate.formatVersion !== 5) ||
       candidate.version !== MIGRATION_BACKUP_VERSION ||
       typeof candidate.operationId !== "string" ||
       !/^[A-Za-z0-9._-]+$/.test(candidate.operationId) ||
       candidate.installationId !== path.basename(getMigrationBackupRoot()) ||
       !isGenerationFingerprint(candidate.generation) ||
+      (candidate.formatVersion === 5 &&
+        (!isAuthenticatedBytes(candidate.desiredConfigBytes) ||
+          !isAuthenticatedBytes(candidate.oldLockBytes) ||
+          !isAuthenticatedBytes(candidate.desiredLockBytes))) ||
       typeof candidate.backupRunId !== "string" ||
       !/^[A-Za-z0-9._-]+$/.test(candidate.backupRunId) ||
       candidate.backupPath !== getMigrationBackupDir(candidate.backupRunId) ||
@@ -1173,6 +1254,13 @@ function readApplyJournalMetadata(): ApplyJournalMetadata {
       );
     }
     const config = parseAndValidateConfigText(JSON.stringify(journal.targetConfig), journalPath);
+    if (
+      journal.formatVersion === 5 &&
+      (journal.desiredConfigBytes.bytes === null ||
+        JSON.stringify(JSON.parse(journal.desiredConfigBytes.bytes)) !== JSON.stringify(journal.targetConfig))
+    ) {
+      throw new ConfigError("Migration apply journal desired config bytes do not match targetConfig.", "INVALID_CONFIG_FILE");
+    }
     const manifest = verifyMigrationBackup(journal.backupPath);
     if (manifest.runId !== journal.backupRunId || manifest.installationId !== journal.installationId) {
       throw new ConfigError(
@@ -1314,6 +1402,9 @@ function readApplyJournal(): {
   const rawGeneration = capture.generation;
   const inspectedArtifacts = capture.artifacts;
   try {
+    if (hasAuthenticatedProposalRepairMarker(journal, capture.paths.stateDbPath)) {
+      return { journal, config, artifacts: inspectedArtifacts };
+    }
     if (isPostCutoverPhase(journal.phase)) {
       if (isTaskOnlyRepair(manifest)) {
         const artifacts = validateApplyPhase(journal, manifest, capture.paths, inspectedArtifacts);
@@ -1379,6 +1470,14 @@ function readApplyJournal(): {
     }
     if (isPreConversionCompatiblePhase(journal.phase)) {
       if (sameApplyJournalGeneration(rawGeneration, journal)) {
+        return {
+          journal,
+          config,
+          artifacts: stateBeforeCompatibilityConversion(journal, manifest),
+          requiresStateConversion: true,
+        };
+      }
+      if (hasAuthenticatedProposalRepairMarker(journal, capture.paths.stateDbPath)) {
         return {
           journal,
           config,
@@ -1501,7 +1600,9 @@ function authenticatePreConversionJournalForApply(): void {
   const metadata = readApplyJournalMetadata();
   if (metadata.error) throw new ConfigError(metadata.error, "INVALID_CONFIG_FILE");
   const journal = metadata.journal;
-  if (!journal || !isPreConversionCompatiblePhase(journal.phase)) return;
+  if (!journal) return;
+  if (hasAuthenticatedProposalRepairMarker(journal)) return;
+  if (!isPreConversionCompatiblePhase(journal.phase)) return;
   const current = fingerprintMigrationGeneration();
   if (isAuthenticatedCutoverAdjacent(journal, current)) return;
   if (readSingleFileBoundStateMarker(journal)?.phase === "state-applied") {
@@ -1533,7 +1634,9 @@ function preparePreConversionJournalForApply(): void {
   const metadata = readApplyJournalMetadata();
   if (metadata.error) throw new ConfigError(metadata.error, "INVALID_CONFIG_FILE");
   const journal = metadata.journal;
-  if (!journal || !isPreConversionCompatiblePhase(journal.phase)) return;
+  if (!journal) return;
+  if (hasAuthenticatedProposalRepairMarker(journal)) return;
+  if (!isPreConversionCompatiblePhase(journal.phase)) return;
 
   let current = fingerprintMigrationGeneration();
   if (isAuthenticatedCutoverAdjacent(journal, current)) return;
@@ -1556,9 +1659,9 @@ function writeApplyJournal(journal: ApplyJournal): void {
   fs.mkdirSync(path.dirname(getMigrationApplyJournalPath()), { recursive: true, mode: 0o700 });
   const serialized = `${JSON.stringify(journal, null, 2)}\n`;
   const byteLength = Buffer.byteLength(serialized, "utf8");
-  if (byteLength > MAX_LOCAL_METADATA_BYTES) {
+  if (byteLength > MAX_APPLY_JOURNAL_BYTES) {
     throw new ConfigError(
-      `Migration apply journal would exceed the ${MAX_LOCAL_METADATA_BYTES}-byte metadata limit (${byteLength} bytes).`,
+      `Migration apply journal would exceed the ${MAX_APPLY_JOURNAL_BYTES}-byte metadata limit (${byteLength} bytes).`,
       "INVALID_CONFIG_FILE",
     );
   }
@@ -1601,6 +1704,7 @@ function crashInMutationGapForTests(
     | "cutover-commit"
     | "cutover"
     | "config"
+    | "proposal-repair"
     | "tasks"
     | "pilot"
     | "rollback",
@@ -1659,7 +1763,7 @@ function runStateMigrationStep(journal: ApplyJournal): void {
       if (!marker) {
         db.transaction(() => {
           runStateMigrations(db);
-          bindStateConvertingMarker(db, journal.operationId);
+          bindStateGenerationMarker(db, journal.operationId);
         })();
       } else {
         runStateMigrations(db, { applyPending: false });
@@ -1811,7 +1915,8 @@ export function cutoverStashRootsFromConfig(
     const seenRoots = new Set<string>();
     for (const [id, entry] of Object.entries(bundles)) {
       const bundlePath = (entry as { path?: string }).path;
-      const lockRoot = locksById.get(id)?.localRoot;
+      const lock = locksById.get(id);
+      const lockRoot = lock && migrationLockMatchesBundle(lock, entry as Record<string, unknown>) ? lock.localRoot : undefined;
       const materializedRoot =
         typeof bundlePath === "string" && bundlePath.length > 0
           ? path.resolve(pathResolutionBase, expandTilde(bundlePath))
@@ -1841,6 +1946,8 @@ export function cutoverStashRootsFromConfig(
       });
     }
     for (const lock of migrationLockEntries) {
+      const configured = bundles[lock.id] as Record<string, unknown> | undefined;
+      if (!configured || !migrationLockMatchesBundle(lock, configured)) continue;
       const localRoot = lock.localRoot;
       if (!localRoot) continue;
       const materializedRoot = path.resolve(pathResolutionBase, expandTilde(localRoot));
@@ -1886,11 +1993,81 @@ export function cutoverStashRootsFromConfig(
   }));
 }
 
+function migrationLockMatchesBundle(lock: LockfileEntry, bundle: Record<string, unknown>): boolean {
+  if (typeof bundle.npm === "string") return lock.source === "npm" && lock.ref === bundle.npm;
+  if (typeof bundle.git === "string") {
+    let resolvedRef = lock.ref;
+    if (resolvedRef.startsWith("git+")) resolvedRef = resolvedRef.slice(4);
+    const githubLocator = resolvedRef.startsWith("github:");
+    if (githubLocator) resolvedRef = resolvedRef.slice("github:".length);
+    if ((lock.source === "github" || githubLocator) && /^[^/:#]+\/[^/#]+(?:#.+)?$/.test(resolvedRef)) {
+      const [repository, requestedRef] = resolvedRef.split("#", 2);
+      resolvedRef = `https://github.com/${repository?.replace(/\.git$/i, "")}${requestedRef ? `/tree/${requestedRef}` : ""}`;
+    }
+    return (lock.source === "git" || lock.source === "github") && resolvedRef === bundle.git;
+  }
+  return false;
+}
+
 function legacyCutoverSources(journal: ApplyJournal): Array<{ path: string; registryId?: string }> {
   const backupConfigPath = path.join(journal.backupPath, "config.json");
   if (!fs.existsSync(backupConfigPath)) return [];
   const text = readTextFileWithLimit(backupConfigPath, MAX_CONFIG_FILE_BYTES, "Migration backup config");
   return oldConfigToSearchSources(parseConfigText(text, backupConfigPath), journal.pathResolutionBase);
+}
+
+function readExactOptionalFile(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function publishJournaledConfigAndLock(journal: ApplyJournal): void {
+  if (journal.formatVersion === 4) {
+    const desiredConfig = desiredConfigText(journal);
+    const oldConfig = readExactOptionalFile(path.join(journal.backupPath, "config.json"));
+    const liveConfig = readExactOptionalFile(getConfigPath());
+    if (liveConfig !== oldConfig && liveConfig !== desiredConfig) {
+      throw new ConfigError(
+        "Refusing migration config publication because config.json is a third generation, neither the backed-up old nor journaled desired bytes.",
+        "INVALID_CONFIG_FILE",
+      );
+    }
+    mergeLockEntriesSync(journal.migrationLockEntries);
+    if (liveConfig === desiredConfig) return;
+    backupExistingConfig(getConfigPath());
+    writeFileAtomic(getConfigPath(), desiredConfig, 0o600);
+    resetConfigCache();
+    return;
+  }
+  if (
+    !isAuthenticatedBytes(journal.desiredConfigBytes) ||
+    !isAuthenticatedBytes(journal.oldLockBytes) ||
+    !isAuthenticatedBytes(journal.desiredLockBytes)
+  ) {
+    throw new ConfigError("Migration journal config/lock bytes failed authentication.", "INVALID_CONFIG_FILE");
+  }
+  const desiredConfig = journal.desiredConfigBytes.bytes;
+  if (desiredConfig === null) throw new ConfigError("Migration journal has no desired config bytes.", "INVALID_CONFIG_FILE");
+  const oldConfig = readExactOptionalFile(path.join(journal.backupPath, "config.json"));
+  const liveConfig = readExactOptionalFile(getConfigPath());
+  if (liveConfig !== oldConfig && liveConfig !== desiredConfig) {
+    throw new ConfigError(
+      "Refusing migration config publication because config.json is a third generation, neither the backed-up old nor journaled desired bytes.",
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  publishPlannedLockMergeSync({
+    oldBytes: journal.oldLockBytes.bytes,
+    desiredBytes: journal.desiredLockBytes.bytes,
+  });
+  if (liveConfig === desiredConfig) return;
+  backupExistingConfig(getConfigPath());
+  writeFileAtomic(getConfigPath(), desiredConfig, 0o600);
+  resetConfigCache();
 }
 
 /**
@@ -1956,6 +2133,7 @@ function runCutoverStep(journal: ApplyJournal, target: AkmConfig): void {
       oldIndexDbPath: indexPath,
       stashRoots,
       mapOutputPath: cutoverRefMapPath(journal),
+      ...(journal.formatVersion === 5 ? { identity: cutoverRefMapIdentity(journal) } : {}),
     });
     // Fail-closed: an integrity failure (unparseable ref / row-count mismatch)
     // throws a CutoverIntegrityError, which the outer catch converts to a
@@ -1987,9 +2165,76 @@ function cutoverRefMapPath(journal: ApplyJournal): string {
   return path.join(path.dirname(getMigrationApplyJournalPath()), `cutover-refmap-${journal.operationId}.json`);
 }
 
+function cutoverRefMapIdentity(journal: ApplyJournal) {
+  return {
+    operationId: journal.operationId,
+    backupRunId: journal.backupRunId,
+    backupPath: journal.backupPath,
+  };
+}
+
+function completedCutoverRefMapPath(): string {
+  return path.join(path.dirname(getMigrationApplyJournalPath()), "completed-cutover-refmap.json");
+}
+
+function loadCompletedProposalRefMap(): Map<string, string> {
+  let refMap = new Map<string, string>();
+  try {
+    const completed = loadCompletedCutoverRefMap(completedCutoverRefMapPath());
+    if (completed.identity) {
+      const manifest = verifyMigrationBackup(completed.identity.backupPath);
+      if (manifest.runId !== completed.identity.backupRunId) {
+        throw new ConfigError(
+          "Completed cutover ref map backup metadata does not match its backup.",
+          "INVALID_CONFIG_FILE",
+        );
+      }
+    }
+    refMap = completed.map;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return refMap;
+}
+
+function inspectLegacyProposalRepair(): { count: number; blocker?: string } {
+  const statePath = getStateDbPathInDataDir();
+  if (!fs.existsSync(statePath)) return { count: 0 };
+  const snapshot = createSqliteReadSnapshot(statePath, "akm-migration-proposals-");
+  try {
+    const count = countLegacyProposalRefs(snapshot.databasePath);
+    if (count === 0) return { count };
+    try {
+      assertLegacyProposalRefsRepairable(snapshot.databasePath, loadCompletedProposalRefMap());
+      return { count };
+    } catch (error) {
+      return { count, blocker: error instanceof Error ? error.message : String(error) };
+    }
+  } finally {
+    snapshot.cleanup();
+  }
+}
+
+function repairAlreadyCurrentProposalState(operationId: string): void {
+  const refMap = loadCompletedProposalRefMap();
+  const report = repairAlreadyCurrentProposalRefs(getStateDbPathInDataDir(), refMap);
+  const db = openDatabaseFinalizing(getStateDbPathInDataDir());
+  try {
+    bindStateGenerationMarker(db, operationId, "proposal-repair");
+  } finally {
+    db.close();
+  }
+  if (report.rekeyed > 0 || report.quarantined > 0) {
+    console.log(JSON.stringify({ event: "proposal-ref-repair", ...report }));
+  }
+}
+
 /** Required forward-only filesystem step after the core config/database cutover verifies. */
 function runPilotTreatmentStep(journal: ApplyJournal, target: AkmConfig): void {
-  const refMap = loadCutoverRefMap(cutoverRefMapPath(journal));
+  const refMap = loadCutoverRefMap(
+    cutoverRefMapPath(journal),
+    journal.formatVersion === 5 ? cutoverRefMapIdentity(journal) : undefined,
+  );
   migratePilotTreatmentFiles(
     cutoverStashRootsFromConfig(
       target,
@@ -2018,18 +2263,19 @@ function contentMigrationReportPath(): string {
  * durable record of the old→new identity.
  */
 function mergePriorReservedRenames(report: ContentMigrationReport): ContentMigrationReport {
+  let text: string;
   try {
-    const prior = JSON.parse(fs.readFileSync(contentMigrationReportPath(), "utf8")) as {
-      reservedRenames?: Array<{ from: string; to: string }>;
-    };
-    const seen = new Set(report.reservedRenames.map((r) => r.from));
-    for (const rename of prior.reservedRenames ?? []) {
-      if (typeof rename?.from === "string" && typeof rename?.to === "string" && !seen.has(rename.from)) {
-        report.reservedRenames.push({ from: rename.from, to: rename.to });
-      }
+    text = fs.readFileSync(contentMigrationReportPath(), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return report;
+    throw error;
+  }
+  const prior = JSON.parse(text) as { reservedRenames?: Array<{ from: string; to: string }> };
+  const seen = new Set(report.reservedRenames.map((r) => r.from));
+  for (const rename of prior.reservedRenames ?? []) {
+    if (typeof rename?.from === "string" && typeof rename?.to === "string" && !seen.has(rename.from)) {
+      report.reservedRenames.push({ from: rename.from, to: rename.to });
     }
-  } catch {
-    // No prior report (first run) or unreadable — nothing to merge.
   }
   return report;
 }
@@ -2070,7 +2316,13 @@ function runContentMigrationStep(journal: ApplyJournal, target: AkmConfig): void
       legacyCutoverSources(journal),
       journal.pathResolutionBase,
     );
-    const report = runContentMigration(roots.map((root) => root.path));
+    const report = runContentMigration(roots.map((root) => root.path), {
+      operationId: journal.operationId,
+      renameBatchPath: path.join(
+        path.dirname(getMigrationApplyJournalPath()),
+        `reserved-renames-${journal.operationId}.json`,
+      ),
+    });
     // Fold the one-time pre-0.9 filesystem-proposal import into this same
     // additive step (it used to run on every proposal operation via
     // `withProposalsDb`). state.db has been merged + collapsed to single-file
@@ -2136,13 +2388,9 @@ function runContentMigrationStep(journal: ApplyJournal, target: AkmConfig): void
 }
 
 function persistContentMigrationReport(report: ContentMigrationReport): void {
-  try {
-    const reportPath = contentMigrationReportPath();
-    fs.mkdirSync(path.dirname(reportPath), { recursive: true, mode: 0o700 });
-    writeFileAtomic(reportPath, `${JSON.stringify(report, null, 2)}\n`, 0o600);
-  } catch {
-    // The report is auditing-only; a persistence failure never affects the cutover.
-  }
+  const reportPath = contentMigrationReportPath();
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true, mode: 0o700 });
+  writeFileAtomic(reportPath, `${JSON.stringify(report, null, 2)}\n`, 0o600);
 }
 
 function unsafeArtifact(name: string, state: MigrationArtifactState): string | undefined {
@@ -2259,13 +2507,18 @@ function buildMigrationPlan(preparedConfigPath: string | undefined, activeApply:
     }
   }
 
+  const proposalRepair = inspectLegacyProposalRepair();
+  const legacyProposalRefs = proposalRepair.count;
+  if (blockers.length === 0 && proposalRepair.blocker) blockers.push(proposalRepair.blocker);
+
   const needsApply =
     !!activeApply.journal ||
     artifacts.config.status !== "current" ||
     artifacts.state.status === "old" ||
     artifacts.workflow.status === "old" ||
     artifacts.workflow.status === "current" ||
-    taskRewrites > 0;
+    taskRewrites > 0 ||
+    legacyProposalRefs > 0;
   return {
     status: blockers.length > 0 ? "blocked" : needsApply ? "ready" : "current",
     artifacts,
@@ -2363,7 +2616,7 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
         ? { path: active.journal.backupPath, manifest: verifyMigrationBackup(active.journal.backupPath) }
         : ensureMigrationBackupWithConfigLockHeld();
       const journal: ApplyJournal = active.journal ?? {
-        formatVersion: 4,
+        formatVersion: 5,
         version: MIGRATION_BACKUP_VERSION,
         operationId: `${process.pid}-${randomUUID()}`,
         installationId: backup.manifest.installationId,
@@ -2374,6 +2627,14 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
         migrationLockEntries,
         pathResolutionBase: path.resolve(process.cwd()),
         generation: fingerprintMigrationGeneration(),
+        desiredConfigBytes: authenticateBytes(`${JSON.stringify(sanitizeConfigForWrite(target), null, 2)}\n`),
+        ...(() => {
+          const lockPlan = planLockMergeSync(migrationLockEntries);
+          return {
+            oldLockBytes: authenticateBytes(lockPlan.oldBytes),
+            desiredLockBytes: authenticateBytes(lockPlan.desiredBytes),
+          };
+        })(),
       };
       if (!active.journal) writeApplyJournal(journal);
       const taskOnlyRepair = isTaskOnlyRepair(backup.manifest);
@@ -2385,6 +2646,8 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
           journal.migrationLockEntries,
         );
         if (taskOnlyRepair) {
+          repairAlreadyCurrentProposalState(journal.operationId);
+          crashInMutationGapForTests("proposal-repair");
           forwardRecoveryRequired = true;
           runTaskOnlyRepair(journal, taskTargetPlan);
           return { plan: inspectMigrationPlan(), backup };
@@ -2432,11 +2695,7 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
 
         if (journal.phase === "cutover-applied") {
           // The cutover is committed, so all remaining work is forward-only.
-          mergeLockEntriesSync(journal.migrationLockEntries);
-
-          backupExistingConfig(getConfigPath());
-          writeConfigAtomic(getConfigPath(), sanitizeConfigForWrite(target));
-          resetConfigCache();
+          publishJournaledConfigAndLock(journal);
           crashInMutationGapForTests("config");
           advanceApplyJournal(journal, "config-applied");
           crashAfterForTests("config");
@@ -2462,6 +2721,13 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
         }
 
         if (journal.phase === "pilot-applied") advanceApplyJournal(journal, "committed");
+        if (!taskOnlyRepair) {
+          completeCutoverRefMap(
+            cutoverRefMapPath(journal),
+            completedCutoverRefMapPath(),
+            journal.formatVersion === 5 ? cutoverRefMapIdentity(journal) : undefined,
+          );
+        }
         clearApplyJournal();
         const completed = inspectMigrationPlan();
         return { plan: completed, backup };

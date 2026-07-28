@@ -458,6 +458,9 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
     const { status, stdout } = spawnCli(["--help"], { cwd: repoRoot });
     expect(status).toBe(0);
     expect(stdout).toContain("USAGE");
+    expect(stdout).toContain("4   health warn");
+    expect(stdout).toContain("70  internal / unclassified error");
+    expect(stdout).toContain("1   not found / command-reported failure");
   });
 });
 
@@ -493,6 +496,7 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
 // `defaultRun` remains an explicit override; touching those means editing
 // files this package does not own.
 describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
+  const ROOT_ONLY_OUTPUT_LEAVES = new Set(["setup"]);
   // biome-ignore lint/suspicious/noExplicitAny: walking citty's dynamically-shaped command tree
   type AnyCittyCommandForTest = Record<string, any>;
 
@@ -536,6 +540,7 @@ describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
 
     const missing: string[] = [];
     for (const { path, args } of leaves) {
+      if (ROOT_ONLY_OUTPUT_LEAVES.has(path)) continue;
       const topLevel = path.split(" ")[0] ?? path;
       if (exemptCommands.includes(topLevel)) continue;
       if (exemptSubcommands.includes(path)) continue;

@@ -9,7 +9,6 @@ import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
 import { GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { isFullRefInput, parseRefInput } from "../../core/asset/resolve-ref";
 import { loadConfig } from "../../core/config/config";
-import { UsageError } from "../../core/errors";
 import { resolveMutationTarget } from "../../core/mutation-target";
 import { getCacheDir } from "../../core/paths";
 import { redactSensitiveText } from "../../core/redaction";
@@ -145,11 +144,6 @@ export const improveCommand = defineCommand({
       type: "string",
       description: "Wall-clock budget for the entire run in milliseconds (default: 7200000 = 2 hours)",
     },
-    "consolidate-recovery": {
-      type: "string",
-      description:
-        "How to handle stale/incomplete consolidation journals: abort (default) or clean (remove stale journal artifacts)",
-    },
     "require-feedback-signal": {
       type: "boolean",
       description:
@@ -207,17 +201,6 @@ export const improveCommand = defineCommand({
       const dryRun = args["dry-run"];
       const limitRaw = parsePositiveIntFlag(args.limit ?? undefined);
       const timeoutMs = parsePositiveIntFlag(args["timeout-ms"], "--timeout-ms");
-      const consolidateRecoveryRaw = args["consolidate-recovery"];
-      const consolidateRecovery =
-        consolidateRecoveryRaw === undefined
-          ? undefined
-          : (consolidateRecoveryRaw.trim().toLowerCase() as "abort" | "clean" | string);
-      if (consolidateRecovery !== undefined && consolidateRecovery !== "abort" && consolidateRecovery !== "clean") {
-        throw new UsageError(
-          `Invalid --consolidate-recovery value: "${consolidateRecoveryRaw}". Must be one of: abort, clean.`,
-          "INVALID_FLAG_VALUE",
-        );
-      }
       const requireFeedbackSignal = args["require-feedback-signal"];
       const skipIfLocked = args["skip-if-locked"];
       const strategyArg = getStringArg(args, "strategy");
@@ -319,7 +302,6 @@ export const improveCommand = defineCommand({
                   target: targetArg,
                   dryRun,
                   task: taskArg,
-                  ...(consolidateRecovery !== undefined ? { recoveryMode: consolidateRecovery } : {}),
                 },
               }),
           },

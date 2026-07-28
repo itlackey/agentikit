@@ -1929,6 +1929,7 @@ steps:
 
 describe("defaultUnitDispatcher — llm failures map into the retry taxonomy (peer review)", () => {
   test("llmFailureReasonFor maps every LlmCallErrorCode to a reason retry.on accepts", () => {
+    expect(llmFailureReasonFor("aborted")).toBe("aborted");
     expect(llmFailureReasonFor("timeout")).toBe("timeout");
     expect(llmFailureReasonFor("rate_limited")).toBe("llm_rate_limit");
     expect(llmFailureReasonFor("parse_error")).toBe("parse_error");
@@ -1939,6 +1940,7 @@ describe("defaultUnitDispatcher — llm failures map into the retry taxonomy (pe
     // parser accepts in `retry.on` — an out-of-taxonomy value ("llm_error")
     // would make the declared failure policy dead for the whole llm runner.
     const codes = [
+      "aborted",
       "timeout",
       "rate_limited",
       "parse_error",

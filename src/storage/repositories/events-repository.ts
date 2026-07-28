@@ -78,21 +78,35 @@ export function insertEvent(
   },
 ): number | undefined {
   try {
-    const result = db
-      .prepare(
-        `INSERT INTO events (event_type, ts, ref, metadata_json)
-         VALUES (?, ?, ?, ?)
-         RETURNING id`,
-      )
-      .get(input.eventType, input.ts, input.ref ?? null, JSON.stringify(input.metadata ?? {})) as
-      | { id: number }
-      | undefined;
-    return result?.id;
+    return insertEventStrict(db, input);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     error(`akm: state.db event insert failed (${message})`);
     return undefined;
   }
+}
+
+/** Insert an event without best-effort error swallowing for transaction-coupled mutations. */
+export function insertEventStrict(
+  db: Database,
+  input: {
+    eventType: string;
+    ts: string;
+    ref?: string;
+    metadata?: Record<string, unknown>;
+  },
+): number {
+  const result = db
+    .prepare(
+      `INSERT INTO events (event_type, ts, ref, metadata_json)
+       VALUES (?, ?, ?, ?)
+       RETURNING id`,
+    )
+    .get(input.eventType, input.ts, input.ref ?? null, JSON.stringify(input.metadata ?? {})) as
+    | { id: number }
+    | undefined;
+  if (!result) throw new Error(`Failed to persist ${input.eventType} event.`);
+  return result.id;
 }
 
 /** Strict idempotent event insert for durable mutation journals. */

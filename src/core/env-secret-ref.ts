@@ -25,12 +25,7 @@ import { isWithin } from "./common";
 import { loadConfig } from "./config/config";
 import { NotFoundError, UsageError } from "./errors";
 import { resolveMutationTarget } from "./mutation-target";
-import {
-  commitWriteTargetBoundary,
-  formatRefForMessage,
-  type ResolvedWriteTarget,
-  recordWriteTargetPath,
-} from "./write-source";
+import { formatRefForMessage, type ResolvedWriteTarget, withWriteTargetMutation } from "./write-source";
 
 export type { IndexSearchSource };
 
@@ -295,15 +290,21 @@ export function resolveSecretWriteTarget(
  * primary stash included) and for `env/` paths a stash `.gitignore` excludes, so
  * callers invoke it unconditionally after every create/ingest/set/remove.
  */
-export function commitEnvSecretWrite(
+export function withEnvSecretWrite<T>(
   target: ResolvedWriteTarget,
   ref: { type: "env" | "secret"; name: string },
   op: "Update" | "Remove",
   paths: string[],
-): void {
-  for (const filePath of paths) recordWriteTargetPath(target.source, filePath);
-  commitWriteTargetBoundary(
+  mutate: () => T,
+): T {
+  return withWriteTargetMutation(
     target,
-    `${op} ${formatRefForMessage({ type: ref.type, name: ref.name, origin: target.source.name })}`,
+    paths,
+    {
+      ignored: "local-only",
+      purpose: `${ref.type}-${op.toLowerCase()}`,
+      message: `${op} ${formatRefForMessage({ type: ref.type, name: ref.name, origin: target.source.name })}`,
+    },
+    mutate,
   );
 }

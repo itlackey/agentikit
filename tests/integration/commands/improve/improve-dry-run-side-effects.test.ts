@@ -143,6 +143,48 @@ afterEach(() => {
 });
 
 describe("akm improve --dry-run writes no AKM artifacts", () => {
+  test("live improve lint is read-only and never invokes the mutating contradiction detector", async () => {
+    const stashDir = makeTempDir("akm-live-readonly-lanes-");
+    const filePath = path.join(stashDir, "knowledge", "guide.md");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const original = "---\ndescription: Guide without updated metadata\n---\n\nBody.\n";
+    fs.writeFileSync(filePath, original);
+    let contradictionCalls = 0;
+    const result = await akmImprove({
+      stashDir,
+      ensureIndexFn: async () => false,
+      contradictionDetectionFn: async () => {
+        contradictionCalls += 1;
+        return { familiesExamined: 0, pairsChecked: 0, edgesWritten: 0, transitionsWritten: 0, warnings: [] };
+      },
+      collectEligibleRefsFn: (async () => ({
+        plannedRefs: [],
+        memorySummary: { eligible: 1, derived: 0 },
+        strategyFilteredRefs: [],
+      })) as never,
+      config: {
+        ...dryRunConfig,
+        bundles: { stash: { path: stashDir, writable: true } },
+        defaultBundle: "stash",
+        experimental: { improveAutonomy: true },
+        improve: {
+          strategies: {
+            default: {
+              processes: {
+                reflect: { enabled: false },
+                distill: { enabled: false },
+                consolidate: { enabled: true, contradictionDetection: { enabled: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(result.lintSummary?.fixed).toBe(0);
+    expect(fs.readFileSync(filePath, "utf8")).toBe(original);
+    expect(contradictionCalls).toBe(0);
+  });
+
   test(
     "stash directory is byte-identical before and after akmImprove({ dryRun: true })",
     async () => {

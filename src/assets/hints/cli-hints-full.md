@@ -342,7 +342,7 @@ local-model tasks, or a number (milliseconds) to override
 
 ## Output Control
 
-All commands accept `--format`, `--detail`, and `--shape` flags:
+Result-envelope commands accept `--format`, `--detail`, and `--shape` flags:
 
 - `--format json` (default) — structured JSON
 - `--format jsonl` — one JSON object per line (streaming-friendly)
@@ -384,8 +384,10 @@ Exit codes:
 | Code | Meaning | Error class |
 | --- | --- | --- |
 | 0 | Success | — |
-| 1 | Not found or general error | `NotFoundError`, other |
+| 1 | Not found or command-reported failure | `NotFoundError`, command result |
 | 2 | Usage / bad input | `UsageError` |
+| 4 | Health warning (`akm health` only) | — |
+| 70 | Internal / unclassified error | unexpected throw |
 | 78 | Configuration error | `ConfigError` |
 
 To detect failure reliably, check either:
@@ -393,9 +395,16 @@ To detect failure reliably, check either:
 - `ok === false` in the parsed JSON response, or
 - a non-zero exit code (`$?` in shell, process exit code in SDK calls)
 
-Both signals are always set consistently. The JSON envelope is the preferred
-signal for agents parsing output programmatically; the exit code is the
-preferred signal for shell scripts.
+On result-envelope surfaces, both signals are always set consistently. The JSON
+envelope is the preferred signal for agents parsing output programmatically;
+the exit code is the preferred signal for shell scripts. Passthrough surfaces
+below preserve the child's own streams and status instead.
+
+`env run`, `secret run`, and `migrate` are process passthroughs and preserve
+the spawned process's exact status. `tasks run` maps task status to 0 or 1 and
+retains a command child's exact status in `result.detail.exitCode`. `agent`
+maps a failed dispatch to 1 and retains the child status in its final result
+envelope.
 
 `akm lint` is the one command that does not follow the exit-code table above:
 it exits **0 on every successful run regardless of findings**. Read

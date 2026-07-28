@@ -9,7 +9,7 @@
  * vectors so the scoring pipeline's L2-to-cosine conversion is correct.
  */
 
-import { fetchWithTimeout, isHttpUrl } from "../../core/common";
+import { fetchWithTimeout, isHttpUrl, readBodyWithByteCap } from "../../core/common";
 import { type EmbeddingConnectionConfig, resolveSecret } from "../../core/config/config";
 import type { Embedder, EmbeddingVector } from "./types";
 
@@ -62,11 +62,16 @@ export class RemoteEmbedder implements Embedder {
     );
 
     if (!response.ok) {
-      const errBody = await response.text().catch(() => "");
+      const errBody = await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: 30_000, signal }).catch((err) => {
+        if (signal?.aborted) throw err;
+        return "";
+      });
       throw new Error(`Embedding request failed (${response.status}): ${errBody}`);
     }
 
-    const json = (await response.json()) as { data: Array<{ embedding: number[] }> };
+    const json = JSON.parse(await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: 30_000, signal })) as {
+      data: Array<{ embedding: number[] }>;
+    };
 
     if (!json.data?.[0]?.embedding) {
       throw new Error(
@@ -111,11 +116,16 @@ export class RemoteEmbedder implements Embedder {
       );
 
       if (!response.ok) {
-        const respBody = await response.text().catch(() => "");
+        const respBody = await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: 30_000, signal }).catch(
+          (err) => {
+            if (signal?.aborted) throw err;
+            return "";
+          },
+        );
         throw new Error(`Embedding batch request failed (${response.status}): ${respBody}`);
       }
 
-      const json = (await response.json()) as {
+      const json = JSON.parse(await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: 30_000, signal })) as {
         data: Array<{ embedding: number[]; index: number }>;
       };
 

@@ -13,7 +13,6 @@
 | `--limit` | `number` | Cap the number of assets processed after utility-score sorting. |
 | `--timeout-ms` | `number` | Wall-clock budget for the entire run. Default: 7 200 000 ms (2 hours). |
 | `--skip-if-locked` | `boolean` | If another improve owns the whole-run lock, return an exit-0 no-op result before triage, indexing, events, or sync. Without the flag, contention is a config error. |
-| `--consolidate-recovery` | `"abort" \| "clean"` | Recovery mode for stale/incomplete consolidate journals. Default: `abort`. |
 | `--require-feedback-signal` | `boolean` | Restrict all/type runs to refs with recent feedback signals; disable retrieval fallback. |
 
 Injected function seams (`reflectFn`, `distillFn`, `ensureIndexFn`, `reindexFn`) replace production defaults in tests.
@@ -37,7 +36,8 @@ flowchart TD
     CLEANUP_ANALYZE -- no --> D
     ANALYZE --> D{dryRun?}
     D -- yes --> DRY[Return dry-run result\nno lock, no events, no writes, no model calls\nincludes memoryCleanupPlan analysis]
-    D -- no --> J[applyMemoryCleanup\npersist belief-state transitions\narchive prune candidates to .akm/archive/]
+    D -- no --> CONSOLIDATE
+    J[applyMemoryCleanup\npersist belief-state transitions\narchive prune candidates to .akm/memory-cleanup/archive/]
     J --> K[filterRemovedPlannedRefs\ndrop archived refs from queue]
 
     K --> L[Signal filter\nkeep only refs with recent feedback events\nhaving metadata.signal or metadata.note]
@@ -105,20 +105,19 @@ flowchart TD
 
     NEXT_ASSET --> S
 
-    BUDGET --> CONSOLIDATE
+    BUDGET --> MAINT
     SKIP --> S
-    NEXT_ASSET -->|all assets done| CONSOLIDATE
+    NEXT_ASSET -->|all assets done| MAINT
 
     subgraph CONSOLIDATE_SUB["akmConsolidate subprocess"]
         CON_A{selected strategy processes.consolidate.enabled?} -- no --> CON_NOOP([return empty result])
-        CON_A -- yes --> CON_B[checkForIncompleteJournal\nabort if prior run incomplete]
-        CON_B --> CON_C[loadMemoriesForSource\nSQLite DB or filesystem fallback\nexclude .derived names]
+        CON_A -- yes --> CON_C[loadMemoriesForSource\nSQLite DB\nexclude .derived names]
         CON_C --> CON_D{memories == 0?} -- yes --> CON_NOOP
         CON_D -- no --> CON_E
 
         subgraph PHASE_A["Phase A — Plan generation (chunked)"]
-            CON_E[split into 20-memory chunks\n500-char body truncation] --> CON_F[For each chunk:\nchatCompletion with frozen consolidate connection]
-            CON_F --> CON_G[parseEmbeddedJsonResponse\nvalidate ops: merge / delete / promote]
+            CON_E[split into configured chunks] --> CON_F[For each chunk:\nchatCompletion with frozen consolidate connection]
+            CON_F --> CON_G[parse and validate ops:\nmerge / delete / promote / contradict]
             CON_G --> CON_H{2+ consecutive failures?} -- yes --> CON_ABORT[push warning, break]
             CON_H -- no --> CON_F
         end
@@ -128,26 +127,18 @@ flowchart TD
         CON_MERGE --> CON_DRY{dryRun?} -- yes --> CON_DRYRESULT([return planned ops, no writes])
         CON_DRY -- no --> PHASE_B
 
-        subgraph PHASE_B["Phase B — Write operations"]
-            PHASE_B_A[writeJournal .akm/consolidate-journal.json] --> PHASE_B_B[For each op:]
-            PHASE_B_B --> PHASE_B_MERGE{op == merge?}
-            PHASE_B_MERGE -- yes --> PHASE_B_M1[generateMergedContent\n2nd chatCompletion for synthesis]
-            PHASE_B_M1 --> PHASE_B_M2[backupFile secondaries\nwriteAssetToSource primary\ndeleteAssetFromSource secondaries\nmarkJournalCompleted]
-            PHASE_B_MERGE -- no --> PHASE_B_DEL{op == delete?}
-            PHASE_B_DEL -- yes --> PHASE_B_D1[backupFile\ndeleteAssetFromSource\nmarkJournalCompleted]
-            PHASE_B_DEL -- no --> PHASE_B_PRO{op == promote?}
-            PHASE_B_PRO -- yes --> PHASE_B_P1[idempotency check:\nlistProposals + fs.existsSync\ncreateProposal source: consolidate\nmarkJournalCompleted]
+        subgraph PHASE_B["Phase B — Advisory result and proposal emission"]
+            PHASE_B_A[Keep merge / delete / contradict\nas advisory planned operations]
+            PHASE_B_A --> PHASE_B_PRO[For each promote op:\nidempotency check and emitProposal\nsource: consolidate]
         end
 
-        PHASE_B_M2 --> CON_DONE
-        PHASE_B_D1 --> CON_DONE
-        PHASE_B_P1 --> CON_DONE[cleanupJournal\nreturn ConsolidateResult]
+        PHASE_B_PRO --> CON_DONE[return ConsolidateResult]
     end
 
     CONSOLIDATE --> CON_A
-    CON_NOOP --> MAINT
-    CON_DONE --> MAINT
-    CON_DRYRESULT --> MAINT
+    CON_NOOP --> J
+    CON_DONE --> J
+    CON_DRYRESULT --> J
     CON_ABORT2 --> MAINT
 
     subgraph MAINTENANCE["Improve-owned maintenance"]
@@ -216,34 +207,35 @@ For `skills/*` refs, reflect also reviews related distilled lessons as consolida
 
 ### consolidate (akmConsolidate)
 
-`akmConsolidate` runs after the per-asset loop completes, regardless of how many assets were processed.
+`akmConsolidate` runs during preparation, before session extraction and the
+per-asset loop.
 
 **Gate:** returns immediately (no-op result) if the selected strategy's
 `processes.consolidate.enabled` is false.
 
 **Phase A — Plan generation:**
 
-1. Check for an incomplete prior journal at `.akm/consolidate-journal.json`; abort if found.
-2. Load non-`.derived` memory assets from the SQLite index (filesystem fallback if DB unavailable).
-3. Chunk memories into groups of 20 (500-char body truncation). For each chunk, call `chatCompletion` with the frozen consolidate LLM connection and `CONSOLIDATE_SYSTEM_PROMPT`, requesting a JSON plan of `merge` / `delete` / `promote` operations.
-4. `parseEmbeddedJsonResponse` extracts and validates each op. After 2+ consecutive chunk failures the loop aborts early.
-5. `mergePlans` deduplicates across chunks: merge ops win over delete ops for the same ref; promote ops blocked by a concurrent merge op are dropped with a warning.
+1. Load eligible non-`.derived` memory assets from the SQLite index.
+2. Chunk memories using the selected strategy's configured limit. For each
+   chunk, call `chatCompletion` with the frozen consolidate LLM connection and
+   `CONSOLIDATE_SYSTEM_PROMPT`, requesting a JSON plan of `merge` / `delete` /
+   `promote` / `contradict` operations.
+3. Parse and validate each op, then use `mergePlans` to deduplicate conflicts
+   across chunks.
 
-**Phase B — Write operations:**
+**Phase B — Advisory result and proposal emission:**
 
-1. Write journal to `.akm/consolidate-journal.json` before any mutations (crash recovery).
-2. For each `merge` op: generate merged content via a second `chatCompletion` call using the same frozen connection, backup secondaries, write merged primary via `writeAssetToSource`, delete secondaries via `deleteAssetFromSource`, mark journal completed.
-3. For each `delete` op: backup file, delete via `deleteAssetFromSource`, mark journal completed.
-4. For each `promote` op: idempotency check (pending proposals and existing file); `createProposal` with `source: "consolidate"`; mark journal completed.
-5. Clean up the journal and timestamp-keyed backup directory on success.
-
-The parent improve run passes its explicit unattended execution policy into consolidation. Standalone consolidation remains confirmation-gated unless its caller sets `assumeYes`.
+1. Return merge, delete, and contradict operations as advisory planned work;
+   consolidation does not mutate memory assets.
+2. For each promote op, perform idempotency checks and emit a reviewable
+   proposal with `source: "consolidate"`.
+3. Advance the consolidation watermark only when every chunk completed, no
+   advisory operation remains unapplied, and every promotion proposal was
+   emitted or deterministically deduplicated.
 
 **What it writes:**
-- `.akm/consolidate-journal.json` — operation log for crash recovery.
-- `.akm/consolidate-backup/<timestamp>/<name>.md` — backup copies of files before delete/merge.
-- Modified or deleted memory asset files via `writeAssetToSource` / `deleteAssetFromSource`.
-- A durable row in the `proposals` table in `state.db` for each `promote` op, partitioned by stash path.
+- A durable row in the `proposals` table in `state.db` for each emitted
+  `promote` op, partitioned by stash path.
 
 ### improve-owned maintenance
 

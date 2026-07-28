@@ -30,9 +30,10 @@
  * round-trip byte-exact, unlike env values which forbid literal newlines.
  */
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { writeFileAtomic } from "../../core/common";
+import { safeRealpath, writeFileAtomic } from "../../core/common";
 import {
   createLockPayload,
   type LockOwnership,
@@ -41,6 +42,7 @@ import {
   releaseLock,
   tryAcquireLockSync,
 } from "../../core/file-lock";
+import { getDataDir } from "../../core/paths";
 import { sleepSync } from "../../runtime";
 
 // ── Write-lock helper ─────────────────────────────────────────────────────────
@@ -52,7 +54,9 @@ import { sleepSync } from "../../runtime";
  * throw rather than silently proceeding.
  */
 export function withSecretLock<T>(secretPath: string, fn: () => T): T {
-  const lockPath = `${secretPath}.lock`;
+  const lockPath = secretLockPath(secretPath);
+  const lockDir = path.dirname(lockPath);
+  fs.mkdirSync(lockDir, { recursive: true, mode: 0o700 });
   const deadline = Date.now() + 5000;
   let ownership: LockOwnership | undefined;
 
@@ -64,12 +68,9 @@ export function withSecretLock<T>(secretPath: string, fn: () => T): T {
       continue;
     }
     if (Date.now() > deadline) {
-      const holderHint =
-        probe.state === "held"
-          ? ` Lock file ${lockPath} is held by live PID ${probe.holderPid}.`
-          : ` Lock file ${lockPath} could not be inspected.`;
+      const holderHint = probe.state === "held" ? ` It is held by live PID ${probe.holderPid}.` : "";
       throw new Error(
-        `Could not acquire secret lock for ${secretPath} after 5s.${holderHint} Retry once any other akm secret operation finishes, or remove the stale lock file.`,
+        `Could not acquire the secret write lock after 5s.${holderHint} Retry once any other akm secret operation finishes.`,
       );
     }
     sleepSync(10);
@@ -80,6 +81,13 @@ export function withSecretLock<T>(secretPath: string, fn: () => T): T {
   } finally {
     releaseLock(ownership);
   }
+}
+
+export function secretLockPath(secretPath: string, platform = process.platform): string {
+  const canonical = safeRealpath(secretPath);
+  const identity = platform === "win32" ? canonical.toLowerCase() : canonical;
+  const key = createHash("sha256").update(identity).digest("hex");
+  return path.join(getDataDir(), "secret-locks", `${key}.lock`);
 }
 
 // ── Atomic byte write ──────────────────────────────────────────────────────────
@@ -104,8 +112,8 @@ export function readValue(secretPath: string): Buffer {
  * mode 0600 under a write-lock. No quoting; multi-line / binary allowed.
  */
 export function setSecret(secretPath: string, value: Buffer): void {
-  ensureParentDir(secretPath);
   withSecretLock(secretPath, () => {
+    ensureParentDir(secretPath);
     // Mode 0600: secrets must never be world-readable, even transiently.
     writeFileAtomic(secretPath, value, 0o600);
   });

@@ -24,8 +24,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { akmUpdate } from "../../src/commands/sources/installed-stashes";
-import { saveConfig } from "../../src/core/config/config";
-import { mergeLockEntriesSync, readLockfile } from "../../src/integrations/lockfile";
+import { loadConfig, saveConfig } from "../../src/core/config/config";
+import { probeIndexWriterLease } from "../../src/indexer/index-writer-lock";
+import { _setAkmIndexForTests } from "../../src/indexer/indexer";
+import { mergeLockEntriesSync, readLockfile, writeLockfile } from "../../src/integrations/lockfile";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
 import {
   type Cleanup,
@@ -35,6 +37,7 @@ import {
   sandboxXdgDataHome,
   sandboxXdgStateHome,
 } from "../_helpers/sandbox";
+import { overrideSeam } from "../_helpers/seams";
 
 const createdTmpDirs: string[] = [];
 
@@ -140,6 +143,8 @@ describe("akm update — destructive-branch confirmation gate (F1/R-058)", () =>
 
     // The gate must fire BEFORE cleanup: the old directory is still there.
     expect(fs.existsSync(path.join(oldRoot, "marker.txt"))).toBe(true);
+    expect(loadConfig().bundles?.["left-pad"]?.npm).toBe("left-pad");
+    expect(readLockfile().find((e) => e.id === "left-pad")?.localRoot).toBe(oldRoot);
   });
 
   test("resolved content dir MOVES, --yes passed: proceeds and deletes the old root", async () => {
@@ -207,5 +212,398 @@ describe("akm update — destructive-branch confirmation gate (F1/R-058)", () =>
     expect(result.processed[0]?.changed.version).toBe(true);
     // The (only) directory in play was never touched by any cleanup path.
     expect(fs.existsSync(path.join(root, "marker.txt"))).toBe(true);
+  });
+
+  test("holds the reentrant asset mutation lease while publishing and reindexing", async () => {
+    const root = createTmpDir("akm-update-lease-");
+    configureManagedBundle("left-pad", root);
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+      id: "left-pad",
+      source: "npm",
+      ref: "npm:left-pad",
+      artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+      resolvedVersion: "1.3.0",
+      contentDir: root,
+      cacheDir: testCacheDir,
+      extractedDir: root,
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+    let leaseState: ReturnType<typeof probeIndexWriterLease>["state"] | undefined;
+    overrideSeam(_setAkmIndexForTests, async () => {
+      leaseState = probeIndexWriterLease().state;
+      return {
+        schemaVersion: 1,
+        stashDir,
+        mode: "incremental",
+        totalEntries: 0,
+        directoriesScanned: 0,
+        directoriesSkipped: 0,
+      } as never;
+    });
+
+    try {
+      await akmUpdate({ target: "left-pad", stashDir });
+    } finally {
+      syncSpy.mockRestore();
+    }
+    expect(leaseState).toBe("held");
+  });
+
+  test("skips old-root deletion when another configured bundle still references it", async () => {
+    const oldRoot = createTmpDir("akm-update-shared-old-");
+    const newRoot = createTmpDir("akm-update-shared-new-");
+    fs.writeFileSync(path.join(oldRoot, "marker.txt"), "shared content");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        "left-pad": { npm: "left-pad" },
+        shared: { path: oldRoot, components: { main: { root: ".", adapter: "akm" } } },
+      },
+    });
+    mergeLockEntriesSync([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+      id: "left-pad",
+      source: "npm",
+      ref: "npm:left-pad",
+      artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+      resolvedVersion: "1.3.0",
+      contentDir: newRoot,
+      cacheDir: testCacheDir,
+      extractedDir: newRoot,
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+
+    try {
+      await akmUpdate({ target: "left-pad", stashDir, yes: true });
+    } finally {
+      syncSpy.mockRestore();
+    }
+    expect(fs.existsSync(path.join(oldRoot, "marker.txt"))).toBe(true);
+  });
+
+  test("skips old-root deletion when another configured bundle is nested beneath it", async () => {
+    const oldRoot = createTmpDir("akm-update-nested-old-");
+    const newRoot = createTmpDir("akm-update-nested-new-");
+    const nestedRoot = path.join(oldRoot, "..notes");
+    fs.mkdirSync(nestedRoot);
+    const marker = path.join(nestedRoot, "marker.txt");
+    fs.writeFileSync(marker, "user content");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        "left-pad": { npm: "left-pad" },
+        notes: { path: nestedRoot },
+      },
+    });
+    mergeLockEntriesSync([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+      id: "left-pad",
+      source: "npm",
+      ref: "npm:left-pad",
+      artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+      resolvedVersion: "1.3.0",
+      contentDir: newRoot,
+      cacheDir: testCacheDir,
+      extractedDir: newRoot,
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+
+    try {
+      await akmUpdate({ target: "left-pad", stashDir, yes: true });
+    } finally {
+      syncSpy.mockRestore();
+    }
+    expect(fs.readFileSync(marker, "utf8")).toBe("user content");
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "skips old-root deletion when a configured source is a nested symlink",
+    async () => {
+      const oldRoot = createTmpDir("akm-update-symlink-old-");
+      const newRoot = createTmpDir("akm-update-symlink-new-");
+      const externalRoot = createTmpDir("akm-update-symlink-external-");
+      const linkedRoot = path.join(oldRoot, "linked-notes");
+      const marker = path.join(externalRoot, "marker.txt");
+      fs.writeFileSync(marker, "external content");
+      fs.symlinkSync(externalRoot, linkedRoot, "dir");
+      saveConfig({
+        semanticSearchMode: "off",
+        bundles: {
+          "left-pad": { npm: "left-pad" },
+          notes: { path: linkedRoot },
+        },
+      });
+      mergeLockEntriesSync([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
+      const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+        id: "left-pad",
+        source: "npm",
+        ref: "npm:left-pad",
+        artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+        resolvedVersion: "1.3.0",
+        contentDir: newRoot,
+        cacheDir: testCacheDir,
+        extractedDir: newRoot,
+        syncedAt: new Date().toISOString(),
+        writable: false,
+      });
+
+      try {
+        await akmUpdate({ target: "left-pad", stashDir, yes: true });
+      } finally {
+        syncSpy.mockRestore();
+      }
+      expect(fs.lstatSync(linkedRoot).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(marker, "utf8")).toBe("external content");
+    },
+  );
+
+  test("explicit disabled managed update preserves enabled and passthrough policy fields", async () => {
+    const root = createTmpDir("akm-update-disabled-managed-");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        "left-pad": {
+          npm: "left-pad",
+          enabled: false,
+          policy: { channel: "stable" },
+          components: { main: { root: ".", adapter: "akm", writable: false } },
+        },
+      },
+    });
+    mergeLockEntriesSync([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: root }]);
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+      id: "left-pad",
+      source: "npm",
+      ref: "npm:left-pad@2.0.0",
+      artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-2.0.0.tgz",
+      resolvedVersion: "2.0.0",
+      contentDir: root,
+      cacheDir: testCacheDir,
+      extractedDir: root,
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+
+    try {
+      await akmUpdate({ target: "left-pad", stashDir });
+    } finally {
+      syncSpy.mockRestore();
+    }
+    const bundle = loadConfig().bundles?.["left-pad"] as Record<string, unknown> | undefined;
+    expect(bundle?.enabled).toBe(false);
+    expect(bundle?.policy).toEqual({ channel: "stable" });
+    expect(bundle?.npm).toBe("left-pad");
+  });
+
+  test("reindex failure keeps the published lock generation and retains both roots", async () => {
+    const oldRoot = createTmpDir("akm-update-compensate-old-");
+    const newRoot = createTmpDir("akm-update-compensate-new-");
+    fs.writeFileSync(path.join(oldRoot, "marker.txt"), "old content");
+    fs.writeFileSync(path.join(newRoot, "marker.txt"), "new content");
+    configureManagedBundle("left-pad", oldRoot);
+
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+      id: "left-pad",
+      source: "npm",
+      ref: "npm:left-pad",
+      artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+      resolvedVersion: "1.3.0",
+      contentDir: newRoot,
+      cacheDir: testCacheDir,
+      extractedDir: newRoot,
+      integrity: "sha512-fake",
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+    let indexCalls = 0;
+    overrideSeam(_setAkmIndexForTests, async () => {
+      indexCalls += 1;
+      if (indexCalls === 1) throw new Error("publish index failed");
+      return {
+        schemaVersion: 1,
+        stashDir,
+        mode: "incremental",
+        totalEntries: 0,
+        directoriesScanned: 0,
+        directoriesSkipped: 0,
+      } as never;
+    });
+
+    try {
+      await expect(akmUpdate({ target: "left-pad", stashDir, yes: true })).rejects.toThrow(/publish index failed/);
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(indexCalls).toBe(1);
+    expect(readLockfile().find((e) => e.id === "left-pad")?.localRoot).toBe(newRoot);
+    expect(loadConfig().bundles?.["left-pad"]?.npm).toBe("left-pad");
+    expect(fs.existsSync(oldRoot)).toBe(true);
+    expect(fs.existsSync(newRoot)).toBe(true);
+  });
+
+  test("fault after lock publication leaves desired config unchanged and retains both roots", async () => {
+    const oldRoot = createTmpDir("akm-update-lock-only-old-");
+    const newRoot = createTmpDir("akm-update-lock-only-new-");
+    fs.writeFileSync(path.join(oldRoot, "marker.txt"), "old content");
+    fs.writeFileSync(path.join(newRoot, "marker.txt"), "new content");
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        "left-pad": {
+          npm: "left-pad",
+          enabled: false,
+          policy: { channel: "stable" },
+          components: { main: { root: ".", adapter: "akm", writable: false } },
+        },
+      },
+    });
+    mergeLockEntriesSync([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: oldRoot }]);
+    const oldConfig = loadConfig();
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+      id: "left-pad",
+      source: "npm",
+      ref: "npm:left-pad",
+      artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-2.0.0.tgz",
+      resolvedVersion: "2.0.0",
+      contentDir: newRoot,
+      cacheDir: testCacheDir,
+      extractedDir: newRoot,
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+    overrideSeam(_setAkmIndexForTests, async () => {
+      throw new Error("crash after lock publication");
+    });
+
+    try {
+      await expect(akmUpdate({ target: "left-pad", stashDir, yes: true })).rejects.toThrow(
+        /crash after lock publication/,
+      );
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(loadConfig()).toEqual(oldConfig);
+    expect(readLockfile().find((entry) => entry.id === "left-pad")?.localRoot).toBe(newRoot);
+    expect(fs.existsSync(oldRoot)).toBe(true);
+    expect(fs.existsSync(newRoot)).toBe(true);
+  });
+
+  test("concurrent lock generation after reindex preserves that generation and deletes neither root", async () => {
+    const oldRoot = createTmpDir("akm-update-lock-race-old-");
+    const newRoot = createTmpDir("akm-update-lock-race-new-");
+    const thirdRoot = createTmpDir("akm-update-lock-race-third-");
+    fs.writeFileSync(path.join(oldRoot, "marker.txt"), "old content");
+    fs.writeFileSync(path.join(newRoot, "marker.txt"), "new content");
+    configureManagedBundle("left-pad", oldRoot);
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+      id: "left-pad",
+      source: "npm",
+      ref: "npm:left-pad",
+      artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-2.0.0.tgz",
+      resolvedVersion: "2.0.0",
+      contentDir: newRoot,
+      cacheDir: testCacheDir,
+      extractedDir: newRoot,
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+    overrideSeam(_setAkmIndexForTests, async () => {
+      await writeLockfile([{ id: "left-pad", source: "npm", ref: "npm:left-pad", localRoot: thirdRoot }]);
+      return {
+        schemaVersion: 1,
+        stashDir,
+        mode: "incremental",
+        totalEntries: 0,
+        directoriesScanned: 0,
+        directoriesSkipped: 0,
+      } as never;
+    });
+
+    try {
+      await expect(akmUpdate({ target: "left-pad", stashDir, yes: true })).rejects.toThrow(/changed concurrently/);
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(readLockfile().find((entry) => entry.id === "left-pad")?.localRoot).toBe(thirdRoot);
+    expect(fs.existsSync(oldRoot)).toBe(true);
+    expect(fs.existsSync(newRoot)).toBe(true);
+  });
+
+  test("concurrent third generation returns degraded without compensation or deletion", async () => {
+    const oldRoot = createTmpDir("akm-update-concurrent-old-");
+    const newRoot = createTmpDir("akm-update-concurrent-new-");
+    fs.writeFileSync(path.join(oldRoot, "marker.txt"), "old content");
+    fs.writeFileSync(path.join(newRoot, "marker.txt"), "new content");
+    configureManagedBundle("left-pad", oldRoot);
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+      id: "left-pad",
+      source: "npm",
+      ref: "npm:left-pad",
+      artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+      resolvedVersion: "1.3.0",
+      contentDir: newRoot,
+      cacheDir: testCacheDir,
+      extractedDir: newRoot,
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+    overrideSeam(_setAkmIndexForTests, async () => {
+      const concurrent = loadConfig();
+      saveConfig({
+        ...concurrent,
+        bundles: { ...concurrent.bundles, "left-pad": { npm: "third-generation" } },
+      });
+      throw new Error("publish index failed");
+    });
+
+    try {
+      await expect(akmUpdate({ target: "left-pad", stashDir, yes: true })).rejects.toThrow(/publish index failed/);
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(loadConfig().bundles?.["left-pad"]?.npm).toBe("third-generation");
+    expect(readLockfile().find((e) => e.id === "left-pad")?.localRoot).toBe(newRoot);
+    expect(fs.existsSync(oldRoot)).toBe(true);
+    expect(fs.existsSync(newRoot)).toBe(true);
+  });
+
+  test("failed reindex keeps the published lock and retains both roots", async () => {
+    const oldRoot = createTmpDir("akm-update-degraded-old-");
+    const newRoot = createTmpDir("akm-update-degraded-new-");
+    fs.writeFileSync(path.join(oldRoot, "marker.txt"), "old content");
+    fs.writeFileSync(path.join(newRoot, "marker.txt"), "new content");
+    configureManagedBundle("left-pad", oldRoot);
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
+      id: "left-pad",
+      source: "npm",
+      ref: "npm:left-pad",
+      artifactUrl: "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+      resolvedVersion: "1.3.0",
+      contentDir: newRoot,
+      cacheDir: testCacheDir,
+      extractedDir: newRoot,
+      syncedAt: new Date().toISOString(),
+      writable: false,
+    });
+    overrideSeam(_setAkmIndexForTests, async () => {
+      throw new Error("index unavailable");
+    });
+
+    try {
+      await expect(akmUpdate({ target: "left-pad", stashDir, yes: true })).rejects.toThrow(/index unavailable/);
+    } finally {
+      syncSpy.mockRestore();
+    }
+
+    expect(readLockfile().find((e) => e.id === "left-pad")?.localRoot).toBe(newRoot);
+    expect(fs.existsSync(oldRoot)).toBe(true);
+    expect(fs.existsSync(newRoot)).toBe(true);
   });
 });

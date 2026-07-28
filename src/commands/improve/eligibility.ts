@@ -5,11 +5,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
-import { conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
-import type { ImproveProfileConfig } from "../../core/config/config";
+import { conceptIdFromTypeName, parseRefInput, resolveRef } from "../../core/asset/resolve-ref";
+import type { AkmConfig, ImproveProfileConfig } from "../../core/config/config";
+import { loadConfig } from "../../core/config/config";
 import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
 import { readEvents } from "../../core/events";
 import type { ImproveEligibleRef } from "../../core/improve-types";
+import { deriveInstallations } from "../../indexer/installations";
 import { getWritableStashDirs, resolveSourceEntries } from "../../indexer/search/search-source";
 import { resolveAssetPath } from "../../indexer/walk/path-resolver";
 import type { Database } from "../../storage/database";
@@ -49,7 +51,7 @@ export function resolveImproveScope(scope: string | undefined): { mode: "all" | 
     // deliberately-removed type like tool/vault, D1.5-6) — that must still
     // surface as a real error, not be silently absorbed into a type filter
     // that will never match anything.
-    if (!trimmed.includes(":")) {
+    if (!/[/:#]/.test(trimmed)) {
       return { mode: "type", value: trimmed };
     }
     const message = err instanceof Error ? err.message : String(err);
@@ -58,7 +60,8 @@ export function resolveImproveScope(scope: string | undefined): { mode: "all" | 
 }
 
 /**
- * Dedupe a list of eligible refs by `ref`, preserving first-seen order. Used to
+ * Dedupe eligible refs by their durable item ref when available, preserving
+ * the first candidate and its display ref. Used to
  * merge the eligibility sources (feedback-signal, Layer-2 proactive-maintenance,
  * high-salience) without admitting a ref into the loop twice.
  */
@@ -66,8 +69,9 @@ export function dedupeRefs(refs: ImproveEligibleRef[]): ImproveEligibleRef[] {
   const seen = new Set<string>();
   const out: ImproveEligibleRef[] = [];
   for (const r of refs) {
-    if (seen.has(r.ref)) continue;
-    seen.add(r.ref);
+    const key = r.itemRef ?? r.ref;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push(r);
   }
   return out;
@@ -77,6 +81,7 @@ export async function collectEligibleRefs(
   scope: { mode: "all" | "type" | "ref"; value?: string },
   stashDir?: string,
   improveProfile?: ImproveProfileConfig,
+  config?: AkmConfig,
 ): Promise<{
   plannedRefs: ImproveEligibleRef[];
   memorySummary: { eligible: number; derived: number };
@@ -99,7 +104,7 @@ export async function collectEligibleRefs(
    */
   strategyFilteredRefs: ImproveEligibleRef[];
 }> {
-  return collectEligibleRefsFromIndex(scope, stashDir, improveProfile, false);
+  return collectEligibleRefsFromIndex(scope, stashDir, improveProfile, false, config);
 }
 
 /** Dry-run planner path: query an existing index without creating or mutating it. */
@@ -107,8 +112,9 @@ export async function collectEligibleRefsReadOnly(
   scope: { mode: "all" | "type" | "ref"; value?: string },
   stashDir?: string,
   improveProfile?: ImproveProfileConfig,
+  config?: AkmConfig,
 ): ReturnType<typeof collectEligibleRefs> {
-  return collectEligibleRefsFromIndex(scope, stashDir, improveProfile, true);
+  return collectEligibleRefsFromIndex(scope, stashDir, improveProfile, true, config);
 }
 
 async function collectEligibleRefsFromIndex(
@@ -116,31 +122,66 @@ async function collectEligibleRefsFromIndex(
   stashDir: string | undefined,
   improveProfile: ImproveProfileConfig | undefined,
   readOnly: boolean,
+  configOverride?: AkmConfig,
 ): ReturnType<typeof collectEligibleRefs> {
+  const config = configOverride ?? loadConfig();
   if (scope.mode === "ref" && scope.value) {
-    const parsed = parseRefInput(scope.value);
-    const writableDirs = new Set(getWritableStashDirs(stashDir).map((dir) => path.resolve(dir)));
-    const filePath = await findAssetFilePath(scope.value, stashDir, writableDirs);
-    if (!filePath) {
+    const writableDirs = new Set(getWritableStashDirs(stashDir, config).map((dir) => path.resolve(dir)));
+    let db: Database | undefined;
+    try {
+      db = readOnly ? openReadonlyExistingDatabase() : openExistingDatabase();
+      if (!db) {
+        return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+      }
+      const entries = getAllEntries(db);
+      const entriesByItemRef = new Map(
+        entries.flatMap((entry) =>
+          entry.bundleId && entry.conceptId ? [[`${entry.bundleId}//${entry.conceptId}`, entry] as const] : [],
+        ),
+      );
+      const installations = deriveInstallations(resolveSourceEntries(stashDir, config));
+      const resolved = resolveRef(scope.value, {
+        defaultBundle: config.defaultBundle,
+        bundles: installations.map((installation) => ({
+          id: installation.id,
+          hasConcept: (conceptId) => entriesByItemRef.has(`${installation.id}//${conceptId}`),
+        })),
+      });
+      const indexed = entriesByItemRef.get(`${resolved.bundle}//${resolved.conceptId}`);
+      if (!indexed?.bundleId || !indexed.conceptId || !fs.existsSync(indexed.filePath)) {
+        if (await findAssetFilePath(scope.value, stashDir)) {
+          return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+        }
+        throw new NotFoundError(`Asset not found in the selected writable source: ${scope.value}`, "ASSET_NOT_FOUND");
+      }
+      if (
+        !isEntryInScope(indexed.stashDir, indexed.filePath, stashDir) ||
+        !isEntryInWritableSource(indexed.stashDir, indexed.filePath, writableDirs)
+      ) {
+        return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+      }
+      const itemRef = `${indexed.bundleId}//${indexed.conceptId}`;
       return {
-        plannedRefs: [],
-        memorySummary: { eligible: 0, derived: 0 },
+        plannedRefs: [{ ref: indexed.conceptId, itemRef, reason: "scope-ref", filePath: indexed.filePath }],
+        memorySummary: {
+          eligible: indexed.entry.type === "memory" ? 1 : 0,
+          derived: indexed.entry.type === "memory" && indexed.entry.name.endsWith(".derived") ? 1 : 0,
+        },
         strategyFilteredRefs: [],
       };
+    } catch (error) {
+      if (error instanceof Error && /no such table:\s*entries/i.test(error.message)) {
+        return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
+      }
+      throw error;
+    } finally {
+      if (db) closeDatabase(db);
     }
-    return {
-      plannedRefs: [{ ref: scope.value, reason: "scope-ref", filePath }],
-      memorySummary: {
-        eligible: parsed.type === "memory" ? 1 : 0,
-        derived: parsed.type === "memory" && parsed.name.endsWith(".derived") ? 1 : 0,
-      },
-      strategyFilteredRefs: [],
-    };
   }
 
   let sources: ReturnType<typeof resolveSourceEntries>;
   try {
-    sources = resolveSourceEntries(stashDir);
+    sources = resolveSourceEntries(stashDir, config);
   } catch {
     return { plannedRefs: [], memorySummary: { eligible: 0, derived: 0 }, strategyFilteredRefs: [] };
   }
@@ -152,7 +193,7 @@ async function collectEligibleRefsFromIndex(
   // or remote stashes that the user did not mark writable.
   let writableDirs: string[];
   try {
-    writableDirs = getWritableStashDirs(stashDir);
+    writableDirs = getWritableStashDirs(stashDir, config);
   } catch {
     writableDirs = sources.slice(0, 1).map((s) => s.path); // fallback: primary only
   }

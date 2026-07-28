@@ -193,6 +193,19 @@ export async function writeLockfile(entries: LockfileEntry[]): Promise<void> {
   }
 }
 
+/** Replace one exact parsed lock generation while the lockfile sentinel is held. */
+export async function compareAndSwapLockfile(expected: LockfileEntry[], desired: LockfileEntry[]): Promise<boolean> {
+  const release = await acquireLockSentinel();
+  try {
+    const current = readLockfileOrThrow();
+    if (JSON.stringify(current) !== JSON.stringify(expected)) return false;
+    writeLockfileUnlocked(desired);
+    return true;
+  } finally {
+    release();
+  }
+}
+
 export async function upsertLockEntry(entry: LockfileEntry): Promise<void> {
   const release = await acquireLockSentinel();
   try {
@@ -249,6 +262,66 @@ export function mergeLockEntriesSync(entries: LockfileEntry[]): void {
   });
   const incomingIds = new Set(entries.map((e) => e.id));
   writeLockfileUnlocked([...existing.filter((e) => !incomingIds.has(e.id)), ...merged]);
+}
+
+export interface PlannedLockMerge {
+  oldBytes: string | null;
+  desiredBytes: string | null;
+}
+
+/** Freeze exact old/desired lockfile bytes while the migration lifecycle lock is held. */
+export function planLockMergeSync(entries: LockfileEntry[]): PlannedLockMerge {
+  const lockfilePath = getLockfilePath();
+  let oldBytes: string | null = null;
+  let existing: LockfileEntry[] = [];
+  try {
+    oldBytes = fs.readFileSync(lockfilePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (oldBytes !== null) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(oldBytes);
+    } catch (error) {
+      throw new ConfigError(
+        `Cannot plan migration lock entries from unreadable lockfile ${lockfilePath}: ${error instanceof Error ? error.message : String(error)}.`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
+    if (!Array.isArray(parsed) || !parsed.every(isValidLockfileEntry)) {
+      throw new ConfigError(
+        `Cannot plan migration lock entries from malformed lockfile ${lockfilePath}.`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
+    existing = parsed;
+  }
+  if (entries.length === 0) return { oldBytes, desiredBytes: oldBytes };
+  const byId = new Map(existing.map((entry) => [entry.id, entry]));
+  for (const entry of entries) byId.set(entry.id, { ...byId.get(entry.id), ...entry });
+  return { oldBytes, desiredBytes: `${JSON.stringify([...byId.values()], null, 2)}\n` };
+}
+
+/** Publish a frozen migration lock generation, accepting only exact old or exact desired bytes. */
+export function publishPlannedLockMergeSync(plan: PlannedLockMerge): void {
+  const lockfilePath = getLockfilePath();
+  let current: string | null = null;
+  try {
+    current = fs.readFileSync(lockfilePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (current === plan.desiredBytes) return;
+  if (current !== plan.oldBytes) {
+    throw new ConfigError(
+      `Refusing migration lockfile publication because ${lockfilePath} is a third generation, neither the journaled old nor desired bytes.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  if (plan.desiredBytes === null) return;
+  fs.mkdirSync(path.dirname(lockfilePath), { recursive: true });
+  writeFileAtomic(lockfilePath, plan.desiredBytes, 0o600);
 }
 
 export async function removeLockEntry(id: string): Promise<void> {

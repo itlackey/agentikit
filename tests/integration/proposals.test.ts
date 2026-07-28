@@ -212,6 +212,7 @@ describe("ref-filter parse failures are LOUD (D-R3)", () => {
   // Legacy `type:name` built via interpolation so the test-ref-literal ratchet
   // never counts it (the type keyword is not literally adjacent to the colon).
   const legacyRef = `skill:${"deploy"}`;
+  const qualifiedLegacyRef = `stash//lesson:${"retired"}`;
 
   test("listProposals --ref with an unparseable filter throws UsageError, not a silent empty list", () => {
     const stash = makeStashDir();
@@ -223,8 +224,9 @@ describe("ref-filter parse failures are LOUD (D-R3)", () => {
     });
     // A retired legacy `type:name` filter no longer silently matches nothing.
     expect(() => listProposals(stash, { ref: legacyRef })).toThrow(UsageError);
-    // A garbage filter is loud too.
-    expect(() => listProposals(stash, { ref: "!!not-a-ref!!" })).toThrow(UsageError);
+    expect(() => listProposals(stash, { ref: qualifiedLegacyRef })).toThrow(UsageError);
+    // Non-AKM opaque concept IDs remain valid identity syntax.
+    expect(listProposals(stash, { ref: "!!not-a-ref!!" })).toEqual([]);
   });
 
   test("a VALID 0.9.0 ref filter still returns results (no false loudness)", () => {
@@ -250,6 +252,12 @@ describe("ref-filter parse failures are LOUD (D-R3)", () => {
       payload: { content: VALID_LESSON },
     });
     expect(() => resolveProposalId(stash, legacyRef)).toThrow(UsageError);
+    expect(() => resolveProposalId(stash, qualifiedLegacyRef)).toThrow(UsageError);
+  });
+
+  test("an opaque colon concept that is not a retired AKM type remains valid identity syntax", () => {
+    const stash = makeStashDir();
+    expect(listProposals(stash, { ref: "stash//external:record" })).toEqual([]);
   });
 });
 
@@ -1477,7 +1485,7 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     expect(meta.changes?.[0]?.after).toBeUndefined();
   });
 
-  test("a row without persisted changes is rejected", () => {
+  test("a historical row without persisted changes projects the reader-only sentinel", () => {
     const stash = makeStashDir();
     const created = createProposal(stash, {
       ref: "lessons/envelope-legacy",
@@ -1498,10 +1506,12 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
     state.close();
 
-    expect(() => getProposal(stash, created.id)).toThrow(/missing changes/i);
+    const historical = getProposal(stash, created.id);
+    expect(historical.changes).toEqual([{ path: "", op: "update", after: historical.payload.content }]);
+    expect(historical.proposedTarget).toEqual({ source: "stash", root: path.resolve(stash) });
   });
 
-  test("a row without a current proposedTarget is rejected", () => {
+  test("a historical row without proposedTarget remains readable with an optional target", () => {
     const stash = makeStashDir();
     const created = createProposal(stash, {
       ref: "lessons/missing-target",
@@ -1520,7 +1530,9 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
     state.close();
 
-    expect(() => getProposal(stash, created.id)).toThrow(/missing proposedTarget/i);
+    const historical = getProposal(stash, created.id);
+    expect(historical.proposedTarget).toBeUndefined();
+    expect(historical.changes).toEqual(created.changes);
   });
 
   test("a row with a retired ref grammar is rejected", () => {
@@ -1534,7 +1546,8 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     });
     if (isProposalSkipped(created)) throw new Error("unexpected skip");
     const state = openStateDatabase();
-    state.prepare("UPDATE proposals SET ref = ? WHERE id = ?").run("stash//lesson:retired", created.id);
+    const retiredRef = `stash//lesson:${"retired"}`;
+    state.prepare("UPDATE proposals SET ref = ? WHERE id = ?").run(retiredRef, created.id);
     state.close();
 
     expect(() => getProposal(stash, created.id)).toThrow(/invalid current ref/i);

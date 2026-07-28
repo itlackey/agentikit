@@ -67,6 +67,7 @@ export type LlmUsageErrorCode =
   | "network_error"
   | "parse_error"
   | "timeout"
+  | "aborted"
   | "unknown_error";
 
 /** Receives one {@link LlmUsageRecord} per LLM call. Must not throw to callers (errors are swallowed). */

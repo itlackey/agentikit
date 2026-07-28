@@ -161,7 +161,7 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
   const fullRef =
     workflowAdapterId === "akm-workflow"
       ? makeBundleRef(sourceBundleId, canonicalName)
-      : canonicalWorkflowRunRef(bundleRef.bundle, canonicalName);
+      : canonicalWorkflowRunRef(sourceBundleId, canonicalName);
 
   // Format detection by extension: `.yaml`/`.yml` is a YAML workflow program
   // (redesign addendum, R1); everything else is the markdown document format.

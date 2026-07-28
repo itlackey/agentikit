@@ -7,10 +7,12 @@ import type { WorkflowRunRow, WorkflowRunStepRow } from "../../storage/repositor
 import { decodeCanonicalPlan } from "../ir/plan-hash";
 import { WORKFLOW_IR_VERSION, type WorkflowPlanGraph } from "../ir/schema";
 
-export type WorkflowExecutionSupport = "supported" | "corrupt-plan";
+export type WorkflowExecutionSupport = "supported" | "unsupported-version" | "missing-plan" | "corrupt-plan";
 
 export type ClassifiedWorkflowPlan =
   | { support: "supported"; plan: WorkflowPlanGraph; irVersion: typeof WORKFLOW_IR_VERSION }
+  | { support: "unsupported-version"; irVersion: number; error: string }
+  | { support: "missing-plan"; irVersion: number | null; error: string }
   | { support: "corrupt-plan"; irVersion: number | null; error: string };
 
 /** Validate that a live run carries exactly the current frozen-plan format. */
@@ -23,15 +25,26 @@ export function classifyWorkflowRunPlan(row: {
   const runId = row.id ?? "(unknown)";
   if (!row.plan_json) {
     return {
-      support: "corrupt-plan",
+      support: "missing-plan",
       irVersion: row.plan_ir_version ?? null,
       error: `Workflow run ${runId} has no frozen workflow plan.`,
+    };
+  }
+  if (
+    row.plan_ir_version !== null &&
+    row.plan_ir_version !== undefined &&
+    row.plan_ir_version !== WORKFLOW_IR_VERSION
+  ) {
+    return {
+      support: "unsupported-version",
+      irVersion: row.plan_ir_version,
+      error: `Workflow run ${runId} uses unsupported workflow IR version ${row.plan_ir_version}; this runtime requires version ${WORKFLOW_IR_VERSION}.`,
     };
   }
   if (row.plan_ir_version !== WORKFLOW_IR_VERSION) {
     return {
       support: "corrupt-plan",
-      irVersion: row.plan_ir_version ?? null,
+      irVersion: null,
       error: `Workflow run ${runId} does not declare workflow IR version ${WORKFLOW_IR_VERSION}.`,
     };
   }

@@ -273,9 +273,9 @@ export function typeNameFromConceptId(conceptId: string): AssetRefParts | undefi
  * `type` returned here is never a {@link KnownType} — it is a passthrough
  * label, not a claim that AKM recognizes or owns the concept.
  */
-function opaqueRefParts(conceptId: string): AssetRefParts | undefined {
+function opaqueRefParts(conceptId: string, allowRoot = false): AssetRefParts | undefined {
   const slash = conceptId.indexOf("/");
-  if (slash <= 0) return undefined;
+  if (slash <= 0) return allowRoot && !conceptId.includes(":") ? { type: conceptId, name: conceptId } : undefined;
   const segment = conceptId.slice(0, slash);
   if (segment.includes(":")) return undefined; // retired `type:name` grammar, not opaque data (Q-02).
   const type = placementSpecFor(segment) === undefined ? segment : conceptId;
@@ -314,7 +314,7 @@ export function parseRefInput(raw: string): AssetRef {
       "INVALID_FLAG_VALUE",
     );
   }
-  const parts = typeNameFromConceptId(ref.conceptId) ?? opaqueRefParts(ref.conceptId);
+  const parts = typeNameFromConceptId(ref.conceptId) ?? opaqueRefParts(ref.conceptId, ref.bundle !== undefined);
   if (parts === undefined) {
     throw new NotFoundError(
       `Unrecognized asset ref "${raw.trim()}": conceptId "${ref.conceptId}" has no known asset-type prefix.`,
@@ -365,7 +365,8 @@ export function isFullRefInput(raw: string): boolean {
   const trimmed = raw.trim();
   if (!trimmed) return false;
   try {
-    return typeNameFromConceptId(parseBundleRef(trimmed).conceptId) !== undefined;
+    const parsed = parseBundleRef(trimmed);
+    return parsed.bundle !== undefined || typeNameFromConceptId(parsed.conceptId) !== undefined;
   } catch {
     return false;
   }

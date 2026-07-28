@@ -77,6 +77,10 @@ export function mergePlans(
             mergeOp = { ...op, secondaries: filteredSecondaries };
           }
         }
+        if (mergeOp.secondaries.length > 1) {
+          warnings.push(`Merge: ${mergeOp.primary} proposed multiple secondaries; retaining one secondary for review.`);
+          mergeOp = { ...mergeOp, secondaries: mergeOp.secondaries.slice(0, 1) };
+        }
         // merge wins over delete
         if (deleteOps.has(mergeOp.primary)) {
           deleteOps.delete(mergeOp.primary);

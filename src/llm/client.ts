@@ -9,7 +9,7 @@
  * probing, and availability checks) separate from higher-level workflows.
  */
 
-import { fetchWithTimeout } from "../core/common";
+import { fetchWithTimeout, readBodyWithByteCap } from "../core/common";
 import { type LlmConnectionConfig, resolveSecret } from "../core/config/config";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
 import { parseJsonResponse } from "../core/parse";
@@ -174,6 +174,18 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForRetry(ms: number, wait: (ms: number) => Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return wait(ms);
+  if (signal.aborted) throw new LlmCallError("LLM request aborted", "aborted");
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => reject(new LlmCallError("LLM request aborted", "aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    wait(ms)
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 /** Compute a uniform jittered backoff in the [200, 800)ms range. */
 function retryBackoffMs(): number {
   return RETRY_BACKOFF_MIN_MS + Math.random() * (RETRY_BACKOFF_MAX_MS - RETRY_BACKOFF_MIN_MS);
@@ -310,7 +322,7 @@ async function chatCompletionReal(
     warnVerbose(`[akm] LLM transient failure (${err.code}); retrying once: ${err.message}`);
 
     const wait = retryBackoffMs();
-    await (options?.sleep ?? sleep)(wait);
+    await waitForRetry(wait, options?.sleep ?? sleep, options?.signal);
 
     // The retry must not exceed the original budget.
     return await chatCompletionAttempt(config, messages, options, remaining);
@@ -373,6 +385,9 @@ async function chatCompletionAttempt(
   // emitted duration covers the full request/response/parse cycle of a single
   // attempt, not the retry-wrapping `chatCompletion`.
   const requestStartedAt = Date.now();
+  const requestDeadlineAt = timeoutMs === null ? null : requestStartedAt + timeoutMs;
+  const remainingAttemptMs = (): number | undefined =>
+    requestDeadlineAt === null ? undefined : Math.max(0, requestDeadlineAt - Date.now());
   let terminalFields: Pick<
     LlmUsageRecord,
     "model" | "modelSource" | "finishReason" | "promptTokens" | "completionTokens" | "totalTokens" | "reasoningTokens"
@@ -398,6 +413,9 @@ async function chatCompletionAttempt(
       // "timed out" for AbortController-driven timeouts, or "aborted" for
       // caller-driven cancellations. Map both to typed LlmCallError.
       const msg = err instanceof Error ? err.message : String(err);
+      if (options?.signal?.aborted || msg.includes("Request aborted")) {
+        throw new LlmCallError("LLM request aborted", "aborted");
+      }
       if (err instanceof DOMException && err.name === "AbortError") {
         throw new LlmCallError(`Request timed out${timeoutMs === null ? "" : ` after ${timeoutMs}ms`}`, "timeout");
       }
@@ -408,7 +426,16 @@ async function chatCompletionAttempt(
     }
 
     if (!response.ok) {
-      const rawBody = await response.text().catch(() => "");
+      const rawBody = await readBodyWithByteCap(response, undefined, {
+        ...(requestDeadlineAt === null ? {} : { bodyTimeoutMs: remainingAttemptMs() }),
+        signal: options?.signal,
+      }).catch((err) => {
+        if (options?.signal?.aborted) throw new LlmCallError("LLM response read aborted", "aborted");
+        if (err instanceof Error && err.name === "BodyReadTimeoutError") {
+          throw new LlmCallError("LLM response body read timed out", "timeout");
+        }
+        return "";
+      });
       const safeBody = redactSensitiveText(redactErrorBody(rawBody), resolvedKey ? [resolvedKey] : []);
       const status = response.status;
       if (status === 429) {
@@ -442,7 +469,19 @@ async function chatCompletionAttempt(
     // A 2xx response is still an error if the body is HTML where JSON was
     // expected (e.g. a provider serving its web UI). Read the raw body first so
     // we can categorize an HTML page distinctly from a malformed-JSON parse_error.
-    const rawOkBody = await response.text();
+    let rawOkBody: string;
+    try {
+      rawOkBody = await readBodyWithByteCap(response, undefined, {
+        ...(requestDeadlineAt === null ? {} : { bodyTimeoutMs: remainingAttemptMs() }),
+        signal: options?.signal,
+      });
+    } catch (err) {
+      if (options?.signal?.aborted) throw new LlmCallError("LLM response read aborted", "aborted");
+      if (err instanceof Error && err.name === "BodyReadTimeoutError") {
+        throw new LlmCallError("LLM response body read timed out", "timeout");
+      }
+      throw err;
+    }
     if (isHtmlResponse(rawOkBody)) {
       throw new LlmCallError(
         `LLM provider returned HTML instead of JSON (${response.status}) ${config.endpoint}: ${redactSensitiveText(htmlExcerpt(rawOkBody), resolvedKey ? [resolvedKey] : [])}`,

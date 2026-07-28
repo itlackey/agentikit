@@ -11,16 +11,14 @@
  * into no-ops and removed the only normal producer of memory inference and graph
  * extraction; gating the autonomy resolves that without removing the feature.
  *
- * Five lanes are gated. `sync.push` deliberately is NOT: it publishes
+ * Three lanes are gated. `sync.push` deliberately is NOT: it publishes
  * already-committed content to a remote the user configured for that purpose and
  * has its own `sync.push: false` / `--no-push` controls.
  *
- * Three lanes are reachable through the strategy config, so the gate downgrades
+ * Two lanes are reachable through the strategy config, so the gate downgrades
  * that config in one place ({@link applyAutonomyGate}) rather than scattering
- * checks through the run. Two — the memory-cleanup and contradiction passes —
- * bypass the plan entirely (their only guard is `shouldAnalyzeMemoryCleanup`,
- * which reads scope and eligible-memory count and no strategy flag at all), so
- * they ask {@link isAutonomyLaneAllowed} directly at their call sites.
+ * checks through the run. Memory cleanup bypasses the plan entirely, so it asks
+ * {@link isAutonomyLaneAllowed} directly at its call site.
  *
  * **A gated lane must never become a silent no-op.** That is the whole design
  * constraint: `applyAutonomyGate` returns every downgrade it made so the caller
@@ -37,13 +35,7 @@ import {
 } from "../../core/config/experimental";
 
 /** The lanes `experimental.improveAutonomy` gates. */
-export const AUTONOMY_LANES = [
-  "consolidate",
-  "memoryInference",
-  "triagePromote",
-  "memoryCleanup",
-  "contradiction",
-] as const;
+export const AUTONOMY_LANES = ["memoryInference", "triagePromote", "memoryCleanup"] as const;
 
 export type AutonomyLane = (typeof AUTONOMY_LANES)[number];
 
@@ -57,11 +49,9 @@ export interface GatedLane {
 }
 
 const LANE_REASONS: Record<AutonomyLane, string> = {
-  consolidate: "merges memories and deletes the superseded files",
   memoryInference: "writes derived memory children and rewrites parent frontmatter",
   triagePromote: "auto-accepts queued proposals into the stash (downgraded to queue)",
   memoryCleanup: "rewrites belief-state frontmatter and moves files into the cleanup archive",
-  contradiction: "writes contradiction edges and belief-state transitions",
 };
 
 /**
@@ -70,7 +60,7 @@ const LANE_REASONS: Record<AutonomyLane, string> = {
  * {@link applyAutonomyGate} cannot see them — anything reporting the full gated
  * set has to add these.
  */
-export const DIRECT_AUTONOMY_LANES = ["memoryCleanup", "contradiction"] as const;
+export const DIRECT_AUTONOMY_LANES = ["memoryCleanup"] as const;
 
 function gatedLane(lane: AutonomyLane): GatedLane {
   return { lane, configKey: IMPROVE_AUTONOMY_CONFIG_KEY, reason: LANE_REASONS[lane] };
@@ -85,15 +75,13 @@ export function describeGatedLanes(lanes: readonly AutonomyLane[]): GatedLane[] 
   return lanes.map(gatedLane);
 }
 
-/** Direct lanes enabled by the selected strategy before the autonomy gate. */
-export function configuredDirectAutonomyLanes(strategy: ImproveProfileConfig): AutonomyLane[] {
-  const lanes: AutonomyLane[] = ["memoryCleanup"];
-  if (strategy.processes?.consolidate?.contradictionDetection?.enabled === true) lanes.push("contradiction");
-  return lanes;
+/** Configured capabilities that tasks doctor reports behind the autonomy gate. */
+export function configuredDirectAutonomyLanes(): AutonomyLane[] {
+  return ["memoryCleanup"];
 }
 
 /**
- * True when a lane may mutate. Used by the two lanes that bypass the strategy
+ * True when a lane may mutate. Used by the lane that bypasses the strategy
  * config; the other three are handled by {@link applyAutonomyGate}.
  */
 export function isAutonomyLaneAllowed(_lane: AutonomyLane, config: ExperimentalConfigHolder | undefined): boolean {
@@ -119,10 +107,6 @@ export function applyAutonomyGate(
   const gated: GatedLane[] = [];
   const processes = { ...(strategy.processes ?? {}) };
 
-  if (processes.consolidate?.enabled === true) {
-    processes.consolidate = { ...processes.consolidate, enabled: false };
-    gated.push(gatedLane("consolidate"));
-  }
   if (processes.memoryInference?.enabled === true) {
     processes.memoryInference = { ...processes.memoryInference, enabled: false };
     gated.push(gatedLane("memoryInference"));

@@ -17,7 +17,7 @@ import {
   getMigrationApplyJournalPath,
   inspectMigrationState,
 } from "../../scripts/akm-migrate/migration-backup";
-import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../../src/core/paths";
+import { getConfigPath, getDbPath, getLockfilePath, getStateDbPathInDataDir } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
 import { type Database as AkmDatabase, openDatabaseFinalizing } from "../../src/storage/database";
 import { runMigrations as runSqliteMigrations } from "../../src/storage/engines/sqlite-migrations";
@@ -287,7 +287,13 @@ describe("cross-artifact migration apply crash recovery", () => {
       ]);
       expect(exitCode).not.toBe(0);
       expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(true);
-      expect(JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8")).phase).toBe(`${phase}-applied`);
+      const interruptedJournal = JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8")) as {
+        phase: string;
+        operationId: string;
+        backupRunId: string;
+        backupPath: string;
+      };
+      expect(interruptedJournal.phase).toBe(`${phase}-applied`);
       expect(() => openStateDatabase()).toThrow(/recovery is pending/i);
 
       const status = await runCliCapture(["migrate", "status"]);
@@ -303,6 +309,51 @@ describe("cross-artifact migration apply crash recovery", () => {
         workflow: { status: "missing" }, // deleted by the three-DB cutover
       });
       expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+      const completedMap = JSON.parse(
+        fs.readFileSync(
+          path.join(path.dirname(getMigrationApplyJournalPath()), "completed-cutover-refmap.json"),
+          "utf8",
+        ),
+      );
+      expect(completedMap).toMatchObject({
+        active: false,
+        operationId: interruptedJournal.operationId,
+        backupRunId: interruptedJournal.backupRunId,
+        backupPath: interruptedJournal.backupPath,
+        entriesSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      expect(
+        fs.existsSync(
+          path.join(
+            path.dirname(getMigrationApplyJournalPath()),
+            `cutover-refmap-${interruptedJournal.operationId}.json`,
+          ),
+        ),
+      ).toBe(false);
+    }, 20_000);
+  }
+
+  for (const artifact of ["config", "lock"] as const) {
+    test(`preserves a third-generation ${artifact} during journal recovery`, async () => {
+      const prepared = seed();
+      const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "apply", "--config", prepared], {
+        cwd: path.resolve(import.meta.dir, "../.."),
+        env: { ...process.env, AKM_TEST_MIGRATION_CRASH_AFTER: "cutover" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+      const journalBefore = fs.readFileSync(getMigrationApplyJournalPath());
+      const artifactPath = artifact === "config" ? getConfigPath() : getLockfilePath();
+      const thirdGeneration = artifact === "config" ? '{"configVersion":"0.9.0","third":true}\n' : "[]\n";
+      fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+      fs.writeFileSync(artifactPath, thirdGeneration);
+
+      const resumed = await runCliCapture(["migrate", "apply"]);
+      expect(resumed.code).not.toBe(0);
+      expect(resumed.stderr).toMatch(/third generation/i);
+      expect(fs.readFileSync(artifactPath, "utf8")).toBe(thirdGeneration);
+      expect(fs.readFileSync(getMigrationApplyJournalPath())).toEqual(journalBefore);
     }, 20_000);
   }
 

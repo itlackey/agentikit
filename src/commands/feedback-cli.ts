@@ -16,7 +16,7 @@ import { resolveMutationTarget } from "../core/mutation-target";
 import { getDbPath } from "../core/paths";
 import { withStateDb } from "../core/state-db";
 import { warn } from "../core/warn";
-import { commitWriteTargetBoundary, recordWriteTargetPath } from "../core/write-source";
+import { withWriteTargetMutation } from "../core/write-source";
 import { resolveSourceEntries } from "../indexer/search/search-source";
 import { countFeedbackSignals, insertUsageEvent, resolveUsageEventSource } from "../indexer/usage/usage-events";
 import { resolveSourcesForOrigin } from "../registry/origin-resolve";
@@ -107,7 +107,43 @@ function appendLessonStrength(refInput: AssetRef, feedbackRef: string): { ref: s
     throw new UsageError(`Resolved lesson ${requestedRef} is outside bundle "${bundleId}".`);
   }
 
-  const raw = fs.readFileSync(filePath, "utf8");
+  fs.lstatSync(filePath);
+  const initialUpdate = buildLessonStrengthUpdate(fs.readFileSync(filePath), feedbackRef);
+  if (!initialUpdate.nextBytes) {
+    return { ref: makeBundleRef(bundleId, conceptId), strength: initialUpdate.strength };
+  }
+
+  let strength = initialUpdate.strength;
+  let mutationStarted = false;
+  try {
+    withWriteTargetMutation(
+      resolved.target,
+      [filePath],
+      {
+        ignored: "reject",
+        purpose: "feedback-lesson-credit",
+        message: `Update ${makeBundleRef(bundleId, conceptId)}`,
+      },
+      () => {
+        const stat = fs.lstatSync(filePath);
+        const update = buildLessonStrengthUpdate(fs.readFileSync(filePath), feedbackRef);
+        strength = update.strength;
+        if (!update.nextBytes) return;
+        mutationStarted = true;
+        // Preserve the existing file's permission bits (markdown assets are typically 0o644).
+        writeFileAtomic(filePath, update.nextBytes, stat.mode & 0o777);
+      },
+    );
+  } catch (err) {
+    if (mutationStarted) throw err;
+    warn(`[feedback] --applied-to: failed to write ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+  return { ref: makeBundleRef(bundleId, conceptId), strength };
+}
+
+function buildLessonStrengthUpdate(rawBytes: Buffer, feedbackRef: string): { strength: number; nextBytes?: Buffer } {
+  const raw = rawBytes.toString("utf8");
   const parsed = parseFrontmatter(raw);
   const data = { ...parsed.data };
   const existing = data.lessonStrength;
@@ -117,8 +153,7 @@ function appendLessonStrength(refInput: AssetRef, feedbackRef: string): { ref: s
       ? [existing.trim()]
       : [];
   if (strengthList.includes(feedbackRef)) {
-    // Already credited — idempotent no-op.
-    return { ref: makeBundleRef(bundleId, conceptId), strength: strengthList.length };
+    return { strength: strengthList.length };
   }
   strengthList.push(feedbackRef);
   data.lessonStrength = strengthList;
@@ -126,18 +161,8 @@ function appendLessonStrength(refInput: AssetRef, feedbackRef: string): { ref: s
   const block = parseFrontmatterBlock(raw);
   const body = block?.content ?? raw;
   const next = assembleAsset(data, body);
-  try {
-    // Preserve the existing file's permission bits (markdown assets are
-    // typically 0o644); writeFileAtomic defaults to 0o600 otherwise.
-    const mode = fs.statSync(filePath).mode & 0o777;
-    writeFileAtomic(filePath, next, mode);
-    recordWriteTargetPath(resolved.target.source, filePath);
-    commitWriteTargetBoundary(resolved.target, `Update ${makeBundleRef(bundleId, conceptId)}`);
-  } catch (err) {
-    warn(`[feedback] --applied-to: failed to write ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
-  return { ref: makeBundleRef(bundleId, conceptId), strength: strengthList.length };
+  const nextBytes = Buffer.from(next);
+  return rawBytes.equals(nextBytes) ? { strength: strengthList.length } : { strength: strengthList.length, nextBytes };
 }
 
 /**
@@ -424,8 +449,13 @@ export const feedbackCommand = defineJsonCommand({
     const appliedToRaw = (args["applied-to"] as string | undefined)?.trim();
     let appliedToResult: { lessonRef: string; strength: number } | null = null;
     if (appliedToRaw && signal === "positive") {
+      let parsedApplied: AssetRef | undefined;
       try {
-        const parsedApplied = parseRefInput(appliedToRaw);
+        parsedApplied = parseRefInput(appliedToRaw);
+      } catch (err) {
+        warn(`[feedback] --applied-to failed for ${appliedToRaw}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (parsedApplied) {
         if (parsedApplied.type === "lesson") {
           const updated = appendLessonStrength(parsedApplied, durableRef);
           if (updated) {
@@ -437,8 +467,6 @@ export const feedbackCommand = defineJsonCommand({
               "not a lesson. Only `lessons/<name>` refs can be credited via --applied-to.",
           );
         }
-      } catch (err) {
-        warn(`[feedback] --applied-to failed for ${appliedToRaw}: ${err instanceof Error ? err.message : String(err)}`);
       }
     } else if (appliedToRaw && signal !== "positive") {
       warn(

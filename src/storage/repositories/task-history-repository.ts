@@ -20,12 +20,20 @@ export type TaskHistoryDetail = {
   exitCode?: number | null;
 };
 
-export type TaskHistoryMetadata = {
-  metadataVersion: 2;
-  durationMs: number;
-  detail: TaskHistoryDetail | null;
-  engine?: string | null;
-};
+export type TaskHistoryMetadata =
+  | {
+      metadataVersion: 1;
+      durationMs: number;
+      detail: TaskHistoryDetail | null;
+      legacyProfile?: string;
+      engine?: never;
+    }
+  | {
+      metadataVersion: 2;
+      durationMs: number;
+      detail: TaskHistoryDetail | null;
+      engine?: string | null;
+    };
 
 function metadataError(message: string): never {
   throw new Error(`invalid task_history metadata_json: ${message}`);
@@ -50,7 +58,7 @@ function validateDetail(value: unknown): asserts value is TaskHistoryDetail | nu
   }
 }
 
-/** Decode current task-history metadata. */
+/** Decode supported historical and current task-history metadata. */
 export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryMetadata {
   let parsed: unknown = input;
   if (typeof input === "string") {
@@ -61,6 +69,25 @@ export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryM
     }
   }
   if (!isRecord(parsed)) metadataError("root must be an object");
+
+  if (parsed.metadataVersion === undefined || parsed.metadataVersion === 1) {
+    const allowed = new Set(["metadataVersion", "durationMs", "detail", "profile"]);
+    const unknown = Object.keys(parsed).filter((key) => !allowed.has(key));
+    if (unknown.length > 0) metadataError(`unknown v1 fields: ${unknown.sort().join(", ")}`);
+    if (parsed.durationMs !== undefined && typeof parsed.durationMs !== "number") {
+      metadataError("durationMs must be a number");
+    }
+    if (parsed.profile !== undefined && typeof parsed.profile !== "string") {
+      metadataError("profile must be a string");
+    }
+    validateDetail(parsed.detail);
+    return {
+      metadataVersion: 1,
+      durationMs: parsed.durationMs ?? 0,
+      detail: parsed.detail ?? null,
+      ...(parsed.profile !== undefined ? { legacyProfile: parsed.profile } : {}),
+    };
+  }
 
   if (parsed.metadataVersion === 2) {
     const allowed = new Set(["metadataVersion", "durationMs", "detail", "engine"]);
@@ -210,7 +237,14 @@ export function getTaskHistoryRuns(db: Database, taskId: string, limit = 50): Ta
  */
 export function queryTaskHistory(
   db: Database,
-  options: { since?: string; until?: string; status?: string; targetKind?: string; targetRef?: string } = {},
+  options: {
+    since?: string;
+    until?: string;
+    status?: string;
+    targetKind?: string;
+    targetRef?: string;
+    limit?: number;
+  } = {},
 ): TaskHistoryRow[] {
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -235,11 +269,13 @@ export function queryTaskHistory(
     params.push(options.targetRef);
   }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limit = options.limit !== undefined ? "LIMIT ?" : "";
+  if (options.limit !== undefined) params.push(options.limit);
   return db
     .prepare(
       `SELECT task_id, status, started_at, completed_at, failed_at, log_path,
               target_kind, target_ref, metadata_json
-       FROM task_history ${where} ORDER BY started_at DESC, id DESC`,
+       FROM task_history ${where} ORDER BY started_at DESC, id DESC ${limit}`,
     )
     .all(...(params as SqlValue[])) as TaskHistoryRow[];
 }
