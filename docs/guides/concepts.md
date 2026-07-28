@@ -348,7 +348,7 @@ demand**:
 ```sh
 akm show meta                       # working stash's .meta/index.md
 akm show meta:about                 # working stash's .meta/about.md
-akm show local//meta                # the primary stash explicitly
+akm show akm//meta                  # the primary stash explicitly
 ```
 
 `akm show <origin>//meta:<name>` resolves `<name>.md` first, then an
@@ -361,7 +361,7 @@ does not currently resolve even for an installed stash — `resolveSourcesForOri
 (`src/registry/origin-resolve.ts`) matches only derived installation ids, not
 raw install refs, and this is pinned by a test
 (`tests/integration/origin-resolve.test.ts`: "does not parse a full install
-locator as an asset bundle"). Use `local//meta` for the primary stash, or the
+locator as an asset bundle"). Use `akm//meta` for the primary stash, or the
 bundle key you gave it in `bundles` (`config.json`), not the original install
 ref.
 

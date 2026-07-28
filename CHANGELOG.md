@@ -346,6 +346,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A freshly scaffolded stash passes its own `akm lint`.** All 12 shipped
+  `facts/conventions/**` convention templates carry frontmatter but none
+  carried an `updated` field, so the first `akm lint` after `akm init` flagged
+  12 `missing-updated` issues on files the user never wrote. The templates now
+  ship the field, and a regression test lints a freshly scaffolded stash and
+  requires nothing flagged.
+
+- **`akm show akm//meta` is the documented spelling for the primary stash.**
+  `docs/reference/cli.md` and `docs/guides/concepts.md` showed
+  `akm show local//meta`, which errors with `ASSET_NOT_FOUND` — `local//` is no
+  longer a scoping prefix, so it reads as a bundle named `local`.
+
+- **`akm sync` emits `shape: "sync"`.** The envelope kept the `"save"` shape
+  from the command's pre-rename name even after the persisted `eventType` was
+  renamed. Unlike the event log, the shape is per-invocation and never
+  persisted, so it needs no read-side synonym.
+
 - **`akm add <pkg> --provider npm` adds an npm source instead of a broken
   filesystem bundle.** `--provider` was only read inside the remote-URL branch,
   so any non-URL target fell through to the filesystem path with the flag

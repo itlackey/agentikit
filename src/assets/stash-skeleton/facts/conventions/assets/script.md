@@ -3,6 +3,7 @@ type: fact
 category: convention
 description: Soft authoring conventions for script assets using agent-safe CLI helper principles.
 when_to_use: Surfaced to authoring agents when they write or revise a script asset.
+updated: 2026-07-28
 ---
 
 <!--

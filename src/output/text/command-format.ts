@@ -87,7 +87,7 @@ export function formatImportPlain(r: Record<string, unknown>): string {
   return `Imported ${source} → ${ref} at ${pathValue}`;
 }
 
-export function formatSavePlain(r: Record<string, unknown>): string {
+export function formatSyncPlain(r: Record<string, unknown>): string {
   if (r.ok === false) {
     const reason = typeof r.reason === "string" ? r.reason : "unknown";
     return `save: failed (${reason})`;

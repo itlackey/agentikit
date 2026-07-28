@@ -514,7 +514,7 @@ akm show knowledge/guide#nope            # lists the available fragment slugs
 # Stash .meta/ orientation docs — direct-read, not indexed:
 akm show meta                       # working stash's .meta/index.md
 akm show meta:about                 # working stash's .meta/about.md
-akm show local//meta                # the primary stash explicitly
+akm show akm//meta                  # the primary stash explicitly
 akm show github:owner/repo//meta    # an installed stash's .meta/index.md
 
 # Multi-tenant scope filtering:
