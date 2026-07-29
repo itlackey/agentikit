@@ -61,7 +61,12 @@ describe("scheduler runtime binding", () => {
           resolveInvocation: sourceCandidate,
           writeDescriptor: () => "/data/context.json",
         }),
-      ).toEqual({ binding: ["/usr/bin/bun", "/repo/src/cli.ts"], contextPath: "/data/context.json" });
+      ).toEqual({
+        binding: ["/usr/bin/bun", "/repo/src/cli.ts"],
+        contextPath: "/data/context.json",
+        eligible: false,
+        kind: "checkout",
+      });
     } finally {
       storage.cleanup();
     }
@@ -109,6 +114,92 @@ describe("scheduler runtime binding", () => {
         binding: ["/new/node", "/new/dist/akm"],
         contextPath: "/new/context.json",
       });
+    } finally {
+      storage.cleanup();
+    }
+  });
+
+  test("sync --rebind warns once when the resolved runtime is ineligible", async () => {
+    const storage = withIsolatedAkmStorage();
+    try {
+      configureStash(storage.stashDir);
+      writeTask(storage.stashDir);
+      const backend: TaskBackend = {
+        name: "cron",
+        install() {},
+        uninstall() {},
+        setEnabled() {},
+        list: () => [
+          {
+            id: "ping",
+            signature: "installed",
+            binding: ["/old/node", "/old/dist/akm"],
+            contextPath: "/old/context.json",
+          },
+        ],
+        expectedSignature: () => "expected",
+      };
+
+      const result = await akmTasksSync(
+        {
+          backend,
+          schedulerRuntime: () => ({
+            binding: ["/repo/bun", "/repo/src/cli.ts"],
+            contextPath: "/new/context.json",
+            eligible: false,
+            kind: "checkout",
+          }),
+        },
+        undefined,
+        { rebind: true },
+      );
+
+      expect(result.warnings).toBeDefined();
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings?.[0]).toContain("ineligible checkout invocation");
+      expect(result.warnings?.[0]).toContain("/repo/bun /repo/src/cli.ts");
+      expect(result.warnings?.[0]).toContain("--rebind");
+    } finally {
+      storage.cleanup();
+    }
+  });
+
+  test("sync --rebind emits no warning when the resolved runtime is eligible", async () => {
+    const storage = withIsolatedAkmStorage();
+    try {
+      configureStash(storage.stashDir);
+      writeTask(storage.stashDir);
+      const backend: TaskBackend = {
+        name: "cron",
+        install() {},
+        uninstall() {},
+        setEnabled() {},
+        list: () => [
+          {
+            id: "ping",
+            signature: "installed",
+            binding: ["/old/node", "/old/dist/akm"],
+            contextPath: "/old/context.json",
+          },
+        ],
+        expectedSignature: () => "expected",
+      };
+
+      const result = await akmTasksSync(
+        {
+          backend,
+          schedulerRuntime: () => ({
+            binding: ["/usr/local/bin/node", "/usr/local/lib/node_modules/akm-cli/dist/akm"],
+            contextPath: "/new/context.json",
+            eligible: true,
+            kind: "npm",
+          }),
+        },
+        undefined,
+        { rebind: true },
+      );
+
+      expect(result.warnings).toBeUndefined();
     } finally {
       storage.cleanup();
     }

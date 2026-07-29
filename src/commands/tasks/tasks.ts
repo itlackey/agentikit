@@ -32,7 +32,7 @@ import { resolveAssetPath } from "../../sources/resolve";
 import { backendNameForPlatform, selectBackend } from "../../tasks/backends";
 import type { InstalledTaskRef, RebindTaskRef, TaskBackend } from "../../tasks/backends/types";
 import { parseTaskDocument } from "../../tasks/parser";
-import { resolveAkmInvocation } from "../../tasks/resolve-akm-bin";
+import { type ResolvedAkmInvocation, resolveAkmInvocation } from "../../tasks/resolve-akm-bin";
 import {
   exitCodeForStatus,
   INVALID_TASK_ATTEMPT_ID,
@@ -107,6 +107,9 @@ export interface TaskMutationDeps {
 export interface PreparedSchedulerRuntime {
   binding: string[];
   contextPath: string;
+  /** Eligibility of the resolved invocation; absent when the caller supplied its own runtime. */
+  eligible?: boolean;
+  kind?: ResolvedAkmInvocation["kind"];
 }
 
 export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps = {}): Promise<TasksAddResult> {
@@ -486,6 +489,8 @@ export interface TasksSyncResult {
   unchanged: string[];
   skipped: { id: string; reason: string }[];
   backend: string;
+  /** Present only when a rebind bound an ineligible (e.g. mutable checkout) runtime. */
+  warnings?: string[];
 }
 
 /**
@@ -534,6 +539,7 @@ export async function akmTasksSync(
   const updated: string[] = [];
   const unchanged: string[] = [];
   const skipped: { id: string; reason: string }[] = [];
+  const warnings: string[] = [];
 
   for (const id of fileIds) {
     const filePath = path.join(typeRoot, `${id}.yml`);
@@ -573,6 +579,7 @@ export async function akmTasksSync(
           deps,
           options.rebind === true,
           `create scheduler entry for task "${id}"`,
+          warnings,
         );
         await sched.install(task, runtimeOpts);
         installed.push(id);
@@ -593,6 +600,7 @@ export async function akmTasksSync(
       deps,
       options.rebind === true,
       `rebind scheduler entry for task "${id}"`,
+      warnings,
     );
     const installedSig = installedEntry.signature;
     const expectedSig = sched.expectedSignature?.(task, runtimeOpts);
@@ -611,7 +619,15 @@ export async function akmTasksSync(
       removed.push(installedId);
     }
   }
-  return { installed, updated, removed, unchanged, skipped, backend: sched.name };
+  return {
+    installed,
+    updated,
+    removed,
+    unchanged,
+    skipped,
+    backend: sched.name,
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
 }
 
 export interface TasksDoctorResult {
@@ -757,6 +773,7 @@ function schedulerInstallOptions(
   deps: { backend?: TaskBackend; schedulerRuntime?: () => PreparedSchedulerRuntime },
   explicitRebind: boolean,
   operation: string,
+  warnings: string[] = [],
 ): { target?: string; binding?: readonly string[]; contextPath?: string } | undefined {
   if (installed && !explicitRebind) {
     return {
@@ -768,6 +785,13 @@ function schedulerInstallOptions(
   // Injected backends can own their default runtime unless a resolver is supplied.
   if (deps.backend && !deps.schedulerRuntime) return base;
   const runtime = deps.schedulerRuntime?.() ?? prepareSchedulerRuntime(explicitRebind, operation);
+  // --rebind bypasses the eligibility refusal in prepareSchedulerRuntime; warn once
+  // per sync run rather than silently writing a mutable/unproven binary into cron.
+  if (explicitRebind && runtime.eligible === false && warnings.length === 0) {
+    warnings.push(
+      `--rebind bound scheduled tasks to an ineligible ${runtime.kind ?? "unknown"} invocation (${runtime.binding.join(" ")}); scheduled runs will invoke a mutable, unproven binary. Install akm via \`npm install --global akm-cli\` or a standalone release, then re-run \`akm tasks sync --rebind\`.`,
+    );
+  }
   return { ...base, binding: runtime.binding, contextPath: runtime.contextPath };
 }
 
@@ -788,7 +812,7 @@ export function prepareSchedulerRuntime(
     );
   }
   const contextPath = (deps.writeDescriptor ?? writeSchedulerContextDescriptor)(schedulerContextDescriptor());
-  return { binding: invocation.argv, contextPath };
+  return { binding: invocation.argv, contextPath, eligible: invocation.eligible, kind: invocation.kind };
 }
 
 function groupInstalledBindings(entries: readonly InstalledTaskRef[]): TasksDoctorResult["bindings"] {
