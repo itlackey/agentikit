@@ -163,10 +163,9 @@ CHANGELOG with a migration note.
   named engines and task history metadata is versioned. Schema additions in
   patch releases; removals only at minor. Bare `akm tasks` reports scheduler
   diagnostics (equivalent to `akm tasks doctor`).
-- **Events / log** — `akm log` is the primary event-stream surface (`akm
-  history` is a different, asset-scoped surface).
-- **Lessons** — `akm lessons` subcommand surface (singular `akm lesson` is an
-  additive alias).
+- **Events / log** — `akm log` is the event-stream surface (0.9.0: the
+  asset-scoped `akm history` surface, and `log`'s own `tail` subcommand, were
+  both removed; `log` is now a leaf command — the former `list` surface).
 - **Bundles & the workspace model** — installed sources are *bundles*; each is
   recognized by a built-in *adapter* (native Agent Skills, Claude and OpenCode
   commands/agents, knowledge, YAML workflows, tasks, env/secret files, scripts,

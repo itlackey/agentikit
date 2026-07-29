@@ -470,15 +470,10 @@ These are core auditability flows to validate in `0.9.x`.
 - [ ] `akm feedback` with no ref fails with `MISSING_REQUIRED_ARGUMENT`.
 - [ ] `akm feedback skills/k8s-deploy --positive --negative` fails with a
       structured usage error.
-- [ ] `akm history --ref skills/k8s-deploy` returns chronological history entries.
-- [ ] `akm history --since 2026-01-01T00:00:00Z --format jsonl` emits one JSON
+- [ ] `akm log` shows appended mutation events.
+- [ ] `akm log --type feedback --ref skills/k8s-deploy` filters correctly.
+- [ ] `akm log --since 2026-01-01T00:00:00Z --format jsonl` emits one JSON
       object per line.
-- [ ] `akm log list` shows appended mutation events.
-- [ ] `akm log list --type feedback --ref skills/k8s-deploy` filters correctly.
-- [ ] `akm log tail --max-events 2 --format jsonl` streams events and ends
-      with a trailer row containing `nextOffset`.
-- [ ] `akm log tail --max-events 1 --format text` emits line-oriented events
-      on stdout and the trailer on stderr.
 
 ---
 
@@ -696,15 +691,13 @@ for cmd in \
   'info' \
   'config list' \
   'curate "review code"' \
-  'history --ref skills/k8s-deploy' \
-  'log list'; do
+  'log --ref skills/k8s-deploy'; do
   akm $cmd --format json | jq -e . > /dev/null || exit 1
 done
 ```
 
 - [ ] All representative `--format json` commands parse successfully.
-- [ ] At least one `search`/`history`/`events tail` path is verified with
-      `--format jsonl`.
+- [ ] At least one `search`/`log` path is verified with `--format jsonl`.
 - [ ] At least one `info`/`show` path is verified with `--format yaml`.
 
 ---

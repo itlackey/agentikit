@@ -119,7 +119,6 @@ akm proposal diff <ref-or-id>                   # Diff by ref, UUID, or 8-char p
 akm proposal accept 7c115132                    # Accept by UUID prefix
 akm proposal reject skills/my-skill --reason "not ready" # Reject by asset ref
 akm search "<query>" --include-proposed        # Surface proposal-queue entries in search
-akm history --ref <ref>                        # Per-asset state-change trail
 ```
 
 Run `akm -h` for the full command reference.

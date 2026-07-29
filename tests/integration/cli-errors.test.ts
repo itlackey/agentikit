@@ -431,19 +431,13 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
   // per-test budget — green locally, intermittently red under CI load, and
   // reported as a timeout that names no group. Per-group tests each carry one
   // spawn, and a failure says which group broke.
-  for (const group of [
-    "graph",
-    "migrate",
-    "registry",
-    "log",
-    "lessons",
-    "config",
-    "proposal",
-    "env",
-    "secret",
-    "tasks",
-    "workflow",
-  ]) {
+  //
+  // 0.9.0 CLI overhaul (S3): `log` and `lessons` dropped out of this list —
+  // `log` is now a terminal leaf command (bare `akm log` is a valid
+  // invocation, not a bare-group usage error; see
+  // tests/commands/observability-cli-envelope.test.ts) and `lessons` was
+  // removed entirely.
+  for (const group of ["graph", "migrate", "registry", "config", "proposal", "env", "secret", "tasks", "workflow"]) {
     test(`bare akm ${group} emits the canonical usage envelope and exits 2`, () => {
       const { status, stderr } = spawnCli([group], { cwd: repoRoot });
       expect(status).toBe(2);
@@ -509,10 +503,14 @@ describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
   /**
    * Walk the full `main` command tree and collect every TERMINAL leaf — a
    * node with its own `run` and no `subCommands` of its own — at every
-   * depth. Excludes both pure routing groups with no `run` at all (e.g. `akm
-   * log`, `akm lessons`, which never render output) and `defineGroupCommand`
-   * dispatch groups that have both a `run` AND `subCommands` (out of scope —
-   * see the describe-block comment above).
+   * depth. Excludes both pure routing groups with no `run` at all (never
+   * render output on their own) and `defineGroupCommand` dispatch groups
+   * that have both a `run` AND `subCommands` (out of scope — see the
+   * describe-block comment above). 0.9.0 CLI overhaul (S3): `akm log` was
+   * one such pure routing group (`list`/`tail` subcommands); it is now
+   * itself a terminal leaf (the `tail` subcommand was dropped) and so is
+   * swept up by this walk like any other leaf. `akm lessons` (the other
+   * former example here) was dropped entirely.
    */
   function collectTerminalLeafCommands(
     cmd: AnyCittyCommandForTest,

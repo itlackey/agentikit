@@ -97,17 +97,8 @@
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `akm log list`/`log tail --max-events 1` (the \"events\" output-shape family) JSON envelope key-sets. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "e477a47754a6c3efc3d76fea3310706d55f8b482bf66b652d87930648f1b8389"
-    },
-    {
-      "path": "tests/fixtures/goldens/cli/a-history.json",
-      "designation": "frozen-migration-input",
-      "consumers": [
-        "tests/commands/goldens-cli-output.test.ts"
-      ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `history --ref <ref>` JSON envelope key-set, seeded via real usage events. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "17a58c19dbf3ab89ac9ec408f184ee04b6bd029aa7d90aabd5966cde092dd445"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family A `akm log` (the \"events\" output-shape family) JSON envelope key-set. Re-baselined for the 0.9.0 CLI overhaul (S3): `log tail` was dropped along with the `list`/`tail` group shape, so `log` is now a leaf command and only the former `list` key-set survives. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
+      "sha256": "8eb5c5cbe71a91940b93f51da7bea761bced9182c43f721e40cc26a6053bc565"
     },
     {
       "path": "tests/fixtures/goldens/cli/a-info.json",
@@ -295,8 +286,8 @@
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family F two representative raw `throw new Error(...)` sites in src/commands/ (lessons coverage on a schema-less index.db; source-clone.ts's self-clone guard) surfacing as {ok:false} envelopes with NO `code` field, exit 70 (INTERNAL) — the typed-error sweep's oracle that these do not silently gain an AkmError `code`. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "90f751c59346d82cbfedb32ffadfa1d1bf567432a6e626e97658098e7c1fb820"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family F a representative raw `throw new Error(...)` site in src/commands/ (source-clone.ts's self-clone guard) surfacing as an {ok:false} envelope with NO `code` field, exit 70 (INTERNAL) — the typed-error sweep's oracle that this does not silently gain an AkmError `code`. Re-baselined for the 0.9.0 CLI overhaul (S3): the paired `lessons coverage` raw-throw example was dropped along with the whole `lessons` group; the general contract is additionally pinned at the unit level in tests/cli/exit-code-classification.test.ts. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
+      "sha256": "0a87cc43710b1ed306a8a027a0fdf00b84faa8744aade199005e16e02acd8977"
     },
     {
       "path": "tests/fixtures/goldens/cli/e-events-since.json",
@@ -304,7 +295,7 @@
       "consumers": [
         "tests/commands/goldens-duration-flags.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family E `akm log list --since`: the duration-shorthand form (`24h`) is REJECTED (INVALID_FLAG_VALUE) while `@offset:<id>` is accepted — a fourth, distinct --since grammar from health/extract/consolidate, captured as-is. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family E `akm log --since` (0.9.0 CLI overhaul S3: `log` is now a leaf command, formerly `log list`): the duration-shorthand form (`24h`) is REJECTED (INVALID_FLAG_VALUE) while `@offset:<id>` is accepted — a fourth, distinct --since grammar from health/extract/consolidate, captured as-is. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
       "sha256": "651b6d656f5ee583bc99fbde7a67d88223fabeb0fe7cc724f1dbebefd06f1ee7"
     },
     {

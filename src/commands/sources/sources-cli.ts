@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Source-management CLI commands — `akm list/remove/update/upgrade/sync/clone/history`.
+ * Source-management CLI commands — `akm list/remove/update/upgrade/sync/clone`.
  *
  * Extracted verbatim from src/cli.ts (WS6). Each `main.subCommands.<key>`
  * registration line stays byte-identical; the args/output shape of every
@@ -16,17 +16,19 @@
  * (stdout/stderr/exit-code) as the inline form. `sync` keeps `defineCommand`
  * because its `run` delegates to `runSyncBody` (which owns the
  * `runWithJsonErrors` wrapper) rather than wrapping inline.
+ *
+ * 0.9.0 CLI overhaul (S3): top-level `history` was dropped; its
+ * `--accept-rate-by-source` metric was folded into `akm health --report`
+ * (src/commands/health/accept-rate.ts).
  */
 import { defineCommand } from "citty";
 import { defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
-import { resolveSourceEntries } from "../../indexer/search/search-source";
 import { resolveWritableOverride, saveGitStash } from "../../sources/providers/git";
 import type { SourceKind } from "../../sources/types";
 import { pkgVersion } from "../../version";
-import { akmHistory } from "./history";
 import { akmListSources, akmRemove, akmUpdate } from "./installed-stashes";
 import { checkForUpdate, performUpgrade } from "./self-update";
 import { akmClone } from "./source-clone";
@@ -242,67 +244,5 @@ export const cloneCommand = defineJsonCommand({
       target: args.target,
     });
     output("clone", result);
-  },
-});
-
-export const historyCommand = defineJsonCommand({
-  meta: {
-    name: "history",
-    description:
-      "Show mutation/usage history for a single asset (--ref) or stash-wide.\n\n" +
-      "Event sources:\n" +
-      "  usage_events (default): search, show, and feedback events from the local index.\n" +
-      "  state.db events (--include-proposals): proposal lifecycle events (promoted, rejected)\n" +
-      "    emitted by `akm proposal accept` / `akm proposal reject`.\n\n" +
-      "Results from all active sources are merged and sorted chronologically.",
-  },
-  args: {
-    ref: { type: "string", description: "Asset ref ([bundle//]conceptId). Omit for stash-wide history." },
-    since: { type: "string", description: "ISO timestamp or epoch ms — only events on/after this time" },
-    generator: {
-      type: "string",
-      description: "Filter by event generator: user, improve, task, audit, or unknown.",
-    },
-    "include-proposals": {
-      type: "boolean",
-      description:
-        "Also include proposal lifecycle events (promoted, rejected) from state.db events. " +
-        "Default: false (usage_events only).",
-      default: false,
-    },
-    "accept-rate-by-source": {
-      type: "boolean",
-      description:
-        "Compute accept-rate-per-source metrics from the proposal store and include them in the output (F-4 / #385). " +
-        "Useful for measuring which generators (reflect, distill, …) produce the most accepted proposals.",
-      default: false,
-    },
-  },
-  async run({ args }) {
-    const generatorFlag = args.generator as "user" | "improve" | "task" | "audit" | "unknown" | undefined;
-    if (
-      generatorFlag !== undefined &&
-      generatorFlag !== "user" &&
-      generatorFlag !== "improve" &&
-      generatorFlag !== "task" &&
-      generatorFlag !== "audit" &&
-      generatorFlag !== "unknown"
-    ) {
-      throw new UsageError(
-        `Invalid --generator value: "${generatorFlag}". Must be user, improve, task, audit, or unknown.`,
-        "INVALID_FLAG_VALUE",
-      );
-    }
-    const sources = resolveSourceEntries();
-    const stashDir = sources[0]?.path;
-    const result = await akmHistory({
-      ref: args.ref,
-      since: args.since,
-      source: generatorFlag,
-      includeProposals: args["include-proposals"],
-      acceptRateBySource: args["accept-rate-by-source"] as boolean | undefined,
-      stashDir,
-    });
-    output("history", result);
   },
 });

@@ -31,7 +31,6 @@ export {
   formatEventLine,
   formatEventsPlain,
   formatFeedbackPlain,
-  formatHistoryPlain,
   formatImportPlain,
   formatIndexPlain,
   formatInfoPlain,

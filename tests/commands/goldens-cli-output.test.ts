@@ -53,7 +53,6 @@ import {
   fragmentRef,
   knowledgeRef,
   lessonRef,
-  memoryRef,
   scriptRef,
   skillRef,
 } from "../fixtures/goldens/cli/fixture-refs";
@@ -83,10 +82,10 @@ function seedAssets(): void {
 
 beforeEach(() => {
   // Full 5-dir isolation (stash + data/cache/config/state), not just the
-  // stash: several scenarios in this file (curate/history index; the
-  // raw-throw-Error `lessons coverage` case) are sensitive to a stale
-  // index.db/state.db bleeding in from an XDG_DATA_HOME that `_preload.ts`
-  // only sandboxes once per PROCESS, not per test (see its module docstring).
+  // stash: several scenarios in this file (curate index; the raw-throw-Error
+  // self-clone case) are sensitive to a stale index.db/state.db bleeding in
+  // from an XDG_DATA_HOME that `_preload.ts` only sandboxes once per PROCESS,
+  // not per test (see its module docstring).
   storage = withIsolatedAkmStorage();
   stashDir = storage.stashDir;
   writeSandboxConfig({
@@ -106,7 +105,7 @@ afterEach(() => {
 // Family A — output helpers / shape registries / show content per asset type
 // ─────────────────────────────────────────────────────────────────────────
 
-describe("family A — search/show/list/info/curate/history/proposal/env/secret/events/config", () => {
+describe("family A — search/show/list/info/curate/proposal/env/secret/events/config", () => {
   test("search <term> — json + text", async () => {
     const json = await runCli(["search", A_SCRIPT_NAME.replace(/\.sh$/, ""), "--format=json"]);
     expect(json.code).toBe(0);
@@ -264,20 +263,6 @@ describe("family A — search/show/list/info/curate/history/proposal/env/secret/
     });
   });
 
-  test("history <ref> — seeded usage events", async () => {
-    await runCli(["index", "--full", "--format=json"]);
-    await runCli(["search", "history", "--format=json"]);
-    const shown = await runCli(["show", memoryRef(), "--format=json"]);
-    expect(shown.code).toBe(0);
-    const result = await runCli(["history", "--ref", memoryRef(), "--format=json"]);
-    expect(result.code).toBe(0);
-    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
-    expectGolden("tests/fixtures/goldens/cli/a-history.json", {
-      exitCode: result.code,
-      stdoutKeys: Object.keys(parsed).sort(),
-    });
-  });
-
   test("proposal list/show/diff — seeded proposal", async () => {
     const created = createProposal(stashDir, {
       ref: lessonRef(),
@@ -333,42 +318,29 @@ describe("family A — search/show/list/info/curate/history/proposal/env/secret/
     });
   });
 
-  test("events (akm log) list + tail --max-events 1", async () => {
-    // "events" is the output-shape family name (`events-list`/`events-tail`,
-    // src/output/shapes/events.ts); the actual CLI command group is `akm log`
+  test("events (akm log)", async () => {
+    // "events" is the output-shape family name (`events-list`,
+    // src/output/shapes/events.ts); the actual CLI command is `akm log`
     // (see src/commands/observability-cli.ts). DEVIATION from the brief's
-    // literal `events list` / `events tail --limit 1` spelling: there is no
-    // top-level `events` command — the real surface is `akm log list` /
-    // `akm log tail --max-events <n>`. `log list --limit <n>` now also exists
-    // (D-38, src/commands/observability-cli.ts's `eventsListCommand`) — not
+    // literal `events list` spelling: there is no top-level `events` command
+    // — the real surface is `akm log`. `log --limit <n>` now also exists
+    // (D-38, src/commands/observability-cli.ts's `logCommand`) — not
     // exercised here since this test doesn't pass it, so it never appears in
     // this golden's key set (the field is only present in the envelope when
-    // `--limit` is actually supplied); see the "log list --limit (D-38)"
-    // describe block in tests/integration/commands/events.test.ts for its own
+    // `--limit` is actually supplied); see the "log --limit (D-38)" describe
+    // block in tests/integration/commands/events.test.ts for its own
     // coverage.
-    // `log tail` still has no `--limit` (it already has the equivalent
-    // `--max-events`, which this test does exercise).
+    //
+    // 0.9.0 CLI overhaul (S3): `log` was a group with `list`/`tail`
+    // subcommands; `tail` (a foreground polling daemon) is dropped and `log`
+    // is now the leaf command that is today's `list` surface, unchanged.
     await runCli(["remember", "an events fixture note", "--name", "events-fixture", "--format=json"]);
-    const list = await runCli(["log", "list", "--format=json"]);
+    const list = await runCli(["log", "--format=json"]);
     expect(list.code).toBe(0);
-    const tail = await runCli([
-      "log",
-      "tail",
-      "--format=json",
-      "--max-events",
-      "1",
-      "--max-duration-ms",
-      "1000",
-      "--interval-ms",
-      "20",
-    ]);
-    expect(tail.code).toBe(0);
 
     const listJson = JSON.parse(list.stdout) as Record<string, unknown>;
-    const tailJson = JSON.parse(tail.stdout) as Record<string, unknown>;
     expectGolden("tests/fixtures/goldens/cli/a-events.json", {
       list: { exitCode: list.code, stdoutKeys: Object.keys(listJson).sort() },
-      tail: { exitCode: tail.code, stdoutKeys: Object.keys(tailJson).sort() },
     });
   });
 
@@ -572,20 +544,18 @@ describe("family F — error envelopes", () => {
   });
 
   test("raw throw-new-Error sites surface as ok:false envelopes (no `code`, exit 70)", async () => {
-    // `lessons coverage` opens the index database directly (openExistingDatabase)
-    // with no index present: a bare `throw new Error(...)` deep in better-sqlite3
-    // escapes runWithJsonErrors uncaught by any AkmError branch, so
-    // classifyExitCode falls through to INTERNAL(70) and the envelope carries
-    // no `code` field (src/cli/shared.ts:83-92 only adds `code` for AkmError).
-    const coverage = await runCli(["lessons", "coverage", "--format=json"]);
-    expect(coverage.code).toBe(70);
-    const coverageEnv = JSON.parse(coverage.stderr);
-    expect(coverageEnv.ok).toBe(false);
-    expect(coverageEnv.code).toBeUndefined();
-
+    // 0.9.0 CLI overhaul (S3): this scenario used to pair two representative
+    // raw `throw new Error(...)` sites — `lessons coverage` (removed along
+    // with the whole `lessons` group) and source-clone.ts's self-clone guard.
+    // `selfClone` is the sole surviving example; the general
+    // bare-throw-maps-to-INTERNAL(70)-with-no-code contract is additionally
+    // pinned at the unit level in tests/cli/exit-code-classification.test.ts.
+    //
     // `akm clone script:<name>` with no --name/--dest, source stash == dest
     // stash: source-clone.ts:152-154's self-clone guard is a bare
-    // `throw new Error(...)`, not an AkmError, so it also maps to INTERNAL(70).
+    // `throw new Error(...)`, not an AkmError, so it maps to INTERNAL(70) and
+    // the envelope carries no `code` field (src/cli/shared.ts:83-92 only adds
+    // `code` for AkmError).
     const selfClone = await runCli(["clone", scriptRef(), "--format=json"]);
     expect(selfClone.code).toBe(70);
     const selfCloneEnv = JSON.parse(selfClone.stderr);
@@ -594,7 +564,6 @@ describe("family F — error envelopes", () => {
     expect(selfCloneEnv.error).toContain("Source and destination are the same path");
 
     expectGolden("tests/fixtures/goldens/cli/f-raw-error-sites.json", {
-      lessonsCoverage: { exitCode: coverage.code, stderrKeys: Object.keys(coverageEnv).sort() },
       selfClone: { exitCode: selfClone.code, stderrKeys: Object.keys(selfCloneEnv).sort() },
     });
   });

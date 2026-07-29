@@ -97,7 +97,7 @@ import { extractCommand } from "./commands/improve/extract-cli";
 import { improveCommand } from "./commands/improve/improve-cli";
 import { migrateCommand } from "./commands/migrate-cli";
 import { mvCommand } from "./commands/mv-cli";
-import { hintsCommand, lessonsCommand, logCommand } from "./commands/observability-cli";
+import { hintsCommand, logCommand } from "./commands/observability-cli";
 import { proposalCommand } from "./commands/proposal/proposal-cli";
 import { rememberCommand } from "./commands/read/remember-cli";
 import { curateCommand, searchCommand, showCommand } from "./commands/read/search-cli";
@@ -106,7 +106,6 @@ import { addCommand } from "./commands/sources/add-cli";
 import { renderMigrationHelp } from "./commands/sources/migration-help";
 import {
   cloneCommand,
-  historyCommand,
   listCommand,
   removeCommand,
   syncCommand,
@@ -359,6 +358,7 @@ const healthCommand = defineCommand({
       resultStatus = base.status;
       if (report) {
         const { listPendingProposals } = await import("./commands/proposal/proposal");
+        const { computeAcceptRateBySource } = await import("./commands/health/accept-rate");
         output("health", {
           ...base,
           report: {
@@ -366,6 +366,7 @@ const healthCommand = defineCommand({
             compare: reportCompare,
             comparisonMode: explicitWindows ? "custom" : "duration",
             pendingProposals: listPendingProposals().map(({ ref, source, createdAt }) => ({ ref, source, createdAt })),
+            acceptRateBySource: computeAcceptRateBySource(),
           },
         });
         return;
@@ -541,9 +542,7 @@ export const main = defineCommand({
     migrate: migrateCommand,
     config: configCommand,
     feedback: feedbackCommand,
-    history: historyCommand,
     log: logCommand,
-    lessons: lessonsCommand,
     agent: agentCommand,
     lint: lintCommand,
     improve: improveCommand,

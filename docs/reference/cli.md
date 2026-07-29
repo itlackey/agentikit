@@ -1428,160 +1428,41 @@ present in the current local index.
 
 The `--applied-to` flag drives the lesson-strength ranking signal: lessons that
 have demonstrably helped resolve tasks receive a small additive ranking boost
-(capped at +0.3) so they float to the top of search. Pair with `akm lessons
-coverage` to find tags that don't yet have a crystallized lesson.
-
-### lessons
-
-Lesson-asset tooling. Currently exposes a single subcommand for tag-coverage
-analysis.
-
-#### lessons coverage
-
-```sh
-akm lessons coverage
-akm lessons coverage --format text
-```
-
-Reports tags that exist on indexed assets but are NOT yet covered by any
-lesson. Useful for spotting topics where the stash has skills/commands/scripts
-but no crystallized lesson — a signal that the team has tacit knowledge worth
-distilling.
-
-Default output is JSON:
-
-```json
-{
-  "ok": true,
-  "uncoveredTags": ["auth", "networking", "observability"],
-  "lessonTagCount": 12,
-  "totalTagCount": 47
-}
-```
-
-### history
-
-Surface per-asset state changes recorded in the local `usage_events` log
-(searches, shows, feedback, and any other mutations the indexer has captured).
-Use it for audit trails, lifecycle inspection, and debugging utility-score
-shifts without re-deriving an audit log from raw SQL.
-
-`history` is the *per-asset state-change* view. It complements the realtime
-events stream (`akm log`, [#204](https://github.com/itlackey/akm/issues/204)):
-events emit at the moment a mutation happens; `history` is the durable replay
-of what was recorded for an asset (or for the whole stash).
-
-```sh
-akm history                                    # Stash-wide, oldest first
-akm history --ref skills/deploy                 # Filter to one asset ref
-akm history --since 2026-04-01T00:00:00Z       # Filter by ISO timestamp
-akm history --since 1717200000000              # Filter by epoch ms
-akm history --ref skills/deploy --format jsonl  # One entry per line
-akm history --format text                      # Human-readable trail
-akm history --include-proposals                # Also include proposal lifecycle events
-akm history --accept-rate-by-source             # Compute accept-rate-per-source metrics
-```
-
-| Flag | Description |
-| --- | --- |
-| `--ref` | Filter to a single asset ref (`[bundle//]conceptId`). Omit for stash-wide history. |
-| `--since` | Lower bound on `createdAt`. Accepts ISO 8601, `YYYY-MM-DD`, or epoch milliseconds. |
-| `--generator` | Filter by event provenance: `user`, `improve`, `task`, `audit`, or `unknown`. No filter is applied by default. |
-| `--include-proposals` | Also include proposal lifecycle events (`promoted`, `rejected`) from `state.db` events, emitted by `akm proposal accept`/`reject`. Default: `false` (`usage_events` only). |
-| `--accept-rate-by-source` | Compute accept-rate-per-source metrics from the proposal store and include them in the output — useful for measuring which generators (`reflect`, `distill`, …) produce the most accepted proposals. |
-| `--format` | Standard global flag. `text` renders a chronological trail; `json`/`jsonl`/`yaml` emit the envelope. |
-
-Output envelope (JSON):
-
-```json
-{
-  "schemaVersion": 1,
-  "ref": "skills/deploy",
-  "since": "2026-04-01 00:00:00",
-  "totalCount": 3,
-  "entries": [
-    {
-      "id": 17,
-      "eventType": "feedback",
-      "ref": "skills/deploy",
-      "entryId": 42,
-      "query": null,
-      "signal": "positive",
-      "source": "user",
-      "metadata": null,
-      "createdAt": "2026-04-12 14:03:21"
-    }
-  ],
-  "warnings": []
-}
-```
-
-`schemaVersion` is always `1` for this release. `ref` and `since` are echoed
-back only when the corresponding flags were supplied. `totalCount` matches
-`entries.length` (no server-side pagination yet). `warnings` is omitted when
-empty. Entries are returned in chronological order (oldest first).
-
-`usage_events` is durable in `state.db`, not the regenerable index. A fresh
-state database receives the schema through state migrations and returns an
-empty `entries` array rather than erroring.
+(capped at +0.3) so they float to the top of search.
 
 ### log
 
-Append-only realtime events stream (#204). Every mutating CLI verb appends
-an event row to `<dataDir>/state.db`; `akm log list` reads it and
-`akm log tail` follows it via polling.
+Append-only realtime events stream (#204). Every mutating CLI verb appends an
+event row to `<dataDir>/state.db`; `akm log` reads it.
 
-> **Note:** there is no `akm events` command — use `akm log`.
+> **Note:** there is no `akm events` command, and no `akm history` command —
+> use `akm log`. There is no `akm log tail` either (0.9.0: dropped — a
+> foreground polling daemon in a one-shot CLI); poll `--since
+> '@offset:<id>'` from a cooperating process instead.
 
 ```sh
-akm log list                                      # All events, oldest first
-akm log list --type feedback                      # Filter by event type
-akm log list --ref skills/deploy                   # Filter by asset ref
-akm log list --since 2026-04-01T00:00:00Z         # ISO timestamp
-akm log list --since '@offset:12345'              # Resume from a row-id cursor
-akm log list --limit 20                           # Only the 20 most recent events (unlimited by default)
-akm log tail --max-events 10                      # Follow until 10 events
-akm log tail --format jsonl                       # Stream as JSONL
+akm log                                      # All events, oldest first
+akm log --type feedback                      # Filter by event type
+akm log --ref skills/deploy                   # Filter by asset ref
+akm log --since 2026-04-01T00:00:00Z         # ISO timestamp
+akm log --since '@offset:12345'              # Resume from a row-id cursor
+akm log --limit 20                           # Only the 20 most recent events (unlimited by default)
 ```
-
-**`history` vs `log` — which one do I want?**
-
-| | `akm history` | `akm log` |
-| --- | --- | --- |
-| Scope | Per-asset (or stash-wide) state changes | Raw stash-wide mutation stream |
-| Backing store | `state.db` `usage_events` table | `state.db` append-only `events` table |
-| Granularity | Analytical replay — what was *recorded* for an asset | Every mutating verb, at the moment it happens |
-| Cross-source | Yes — aggregates across configured sources | No — the local `state.db` only |
-| Resumable cursor | No | Yes (`--since '@offset:<id>'`) |
-| Typical use | Audit a specific asset; debug utility-score shifts | Tail the live mutation bus; drive cooperating processes |
-
-In short: reach for `history` when you care about *an asset's lifecycle*, and
-for `log` when you care about *the raw, resumable mutation stream*.
 
 | Flag | Description |
 | --- | --- |
 | `--since` | Lower bound. Accepts ISO 8601, epoch ms, or `@offset:<id>` for a durable row-id cursor that survives across processes. |
 | `--type` | Filter by event type. Common values include `add`, `remove`, `update`, `remember`, `import`, `sync`, `feedback`, `promoted`, `rejected`, `propose_invoked`, `reflect_invoked`, `distill_invoked`, `select`, and `improve_skipped`. `sync` and the legacy `save` are synonyms on read, so `--type save` still returns rows written before the 0.9.0 rename as well as new ones. |
 | `--ref` | Filter by asset ref (`[bundle//]conceptId`). |
-| `--limit` | (`list` only) Return only the most recent N events matching every other filter. Default: unlimited. |
-| `--interval-ms` | (`tail` only) Polling interval. Default `75`. |
-| `--max-events` | (`tail` only) Stop after this many events. |
-| `--max-duration-ms` | (`tail` only) Stop after this many ms. |
+| `--limit` | Return only the most recent N events matching every other filter. Default: unlimited. |
 | `--include-tags` | Only include events with ALL these tags (repeatable). |
 | `--exclude-tags` | Exclude events matching these tags (repeatable). |
 
-The list/tail envelope echoes a `nextOffset` row-id cursor — persist it and
-pass it back as `--since '@offset:<nextOffset>'` to resume from exactly
-where you stopped, with no duplicates and no losses, even across process
-boundaries.
-
-Streaming output (`--format jsonl` / `--format text`) emits each event as
-a single line on stdout, then a trailer:
-
-- `--format jsonl` ends with a final discriminated row on stdout:
-  `{"_kind":"trailer","schemaVersion":1,"nextOffset":<id>,"totalCount":<n>,"reason":"signal|maxEvents|maxDuration"}`.
-- `--format text` writes the trailer to stderr to keep stdout pristine for
-  line-oriented parsers: `[events-tail] reason=<r> nextOffset=<n> total=<t>`.
+The envelope echoes a `nextOffset` row-id cursor — persist it and pass it
+back as `--since '@offset:<nextOffset>'` to resume from exactly where you
+stopped, with no duplicates and no losses, even across process boundaries
+(poll on an interval from a cooperating process if you need to follow the
+stream live).
 
 #### Environment isolation
 

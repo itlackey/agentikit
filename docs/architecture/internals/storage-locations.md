@@ -404,8 +404,8 @@ The JSONL file at `$CACHE/events.jsonl` is no longer written by akm. Existing fi
 | `akm improve` (distill pass) | `feedback` per ref | Builds LLM prompt context (last 20 events) |
 | `akm improve` (reflect pass) | `feedback` per ref | Builds agent prompt context (last 10 per-ref / 20 global) |
 | `akm show` | `show` per ref | Loop detection: warns at 3+ repeated shows |
-| `akm history` | `promoted`, `rejected` | Unified lifecycle trail |
-| `akm log` | user-supplied | Direct inspection / tail |
+| `akm log --type promoted\|rejected` | `promoted`, `rejected` | Proposal lifecycle trail (0.9.0: `akm history --include-proposals` was removed; this is the surviving read path) |
+| `akm log` | user-supplied | Direct inspection |
 
 ---
 

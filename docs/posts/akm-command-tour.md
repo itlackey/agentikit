@@ -344,25 +344,16 @@ akm feedback skills/legacy-deploy --negative --reason "Outdated after platform m
 
 Real-world use: over time, assets that consistently help rise in ranking and stale ones become easier to spot.
 
-### `akm history`
-
-Inspect the recorded state changes for an asset or the stash.
-
-```sh
-akm history --ref workflow:ship-release
-```
-
-Real-world use: you want to know whether a workflow was searched, shown, or downvoted recently while cleaning up a team's stash.
-
 ### `akm log`
 
-Read the append-only realtime event stream.
+Read the append-only realtime event stream — inspect the recorded state
+changes for an asset or the whole stash.
 
 ```sh
-akm log tail --format jsonl
+akm log --ref workflow:ship-release
 ```
 
-Real-world use: another process is watching `akm` activity and reacting when new feedback, imports, or proposals land.
+Real-world use: you want to know whether a workflow was searched, shown, or downvoted recently while cleaning up a team's stash, or another process is watching `akm` activity and reacting when new feedback, imports, or proposals land (poll `--since '@offset:<id>'` to resume without duplicates).
 
 ### `akm improve`
 

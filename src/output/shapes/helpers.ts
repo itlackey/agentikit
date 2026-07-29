@@ -202,45 +202,6 @@ export function shapeEventEntry(entry: Record<string, unknown>, detail: DetailLe
   return pickFields(entry, ["id", "schemaVersion", "eventType", "ref", "ts", "metadata"]);
 }
 
-export function shapeHistoryOutput(result: Record<string, unknown>, detail: DetailLevel): Record<string, unknown> {
-  const entries = Array.isArray(result.entries) ? (result.entries as Record<string, unknown>[]) : [];
-  const shapedEntries = entries.map((entry) => shapeHistoryEntry(entry, detail));
-  if (detail === "full") {
-    return {
-      schemaVersion: result.schemaVersion ?? 1,
-      ...(result.ref !== undefined ? { ref: result.ref } : {}),
-      ...(result.since !== undefined ? { since: result.since } : {}),
-      totalCount: result.totalCount ?? shapedEntries.length,
-      entries: shapedEntries,
-      // `sources` lists the state.db event sources included in this response.
-      ...(Array.isArray(result.sources) ? { sources: result.sources } : {}),
-      ...(Array.isArray(result.warnings) && result.warnings.length > 0 ? { warnings: result.warnings } : {}),
-    };
-  }
-  return {
-    ...(result.ref !== undefined ? { ref: result.ref } : {}),
-    ...(result.since !== undefined ? { since: result.since } : {}),
-    totalCount: result.totalCount ?? shapedEntries.length,
-    entries: shapedEntries,
-    ...(Array.isArray(result.sources) ? { sources: result.sources } : {}),
-    ...(Array.isArray(result.warnings) && result.warnings.length > 0 ? { warnings: result.warnings } : {}),
-  };
-}
-
-export function shapeHistoryEntry(entry: Record<string, unknown>, detail: DetailLevel): Record<string, unknown> {
-  if (detail === "brief") {
-    // signal is load-bearing for feedback rows (positive/negative) so we
-    // project it even at brief — without it the entry is ambiguous.
-    // source lets callers verify filter correctness (e.g. --source user).
-    return pickFields(entry, ["eventType", "ref", "signal", "source", "createdAt"]);
-  }
-  if (detail === "normal") {
-    return pickFields(entry, ["eventType", "ref", "signal", "source", "query", "createdAt"]);
-  }
-  // full: return everything the reader emits.
-  return pickFields(entry, ["id", "eventType", "ref", "entryId", "query", "signal", "source", "metadata", "createdAt"]);
-}
-
 export function shapeSearchOutput(
   result: Record<string, unknown>,
   detail: DetailLevel,

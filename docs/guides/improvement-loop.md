@@ -39,40 +39,30 @@ akm feedback skills/deploy --negative \
   --failure-mode dangerous
 ```
 
-## akm history / akm log
+## akm log
 
-`akm history` gives a durable, per-asset audit trail of state changes — searches,
-shows, and feedback events. `akm log` gives the realtime append-only stream
-that every mutating CLI verb writes to.
+`akm log` gives the realtime append-only event stream that every mutating CLI
+verb writes to.
 
 ```sh
-# Per-asset audit trail
-akm history                                     # Stash-wide, oldest first
-akm history --ref skills/deploy                  # One asset
-akm history --since 2026-05-01T00:00:00Z
-akm history --format text                       # Human-readable
-
-# Realtime event stream
-akm log list                                    # All events
-akm log list --type feedback                    # Filter by event type
-akm log list --ref skills/deploy
-akm log tail --format jsonl                     # Follow new events live
-akm log tail --max-events 20
+akm log                                         # All events, oldest first
+akm log --type feedback                         # Filter by event type
+akm log --ref skills/deploy
 ```
 
-`akm log tail` supports `--since '@offset:<id>'` cursors so you can resume
-from exactly where you left off across process boundaries without duplicates.
+`akm log` supports `--since '@offset:<id>'` cursors so you can resume from
+exactly where you left off across process boundaries without duplicates.
 
 **Example: see what was used recently**
 
-`akm log list --since` (like `akm history --since`) takes an ISO timestamp or
-epoch ms — not a duration shorthand like `7d`. That shorthand is accepted by a
-different parser, used by both `akm health --since` and `akm extract --since`
-(e.g. `akm extract --since 24h`); several commands share the `--since` flag
-name but not all of them accept the same format.
+`akm log --since` takes an ISO timestamp or epoch ms — not a duration
+shorthand like `7d`. That shorthand is accepted by a different parser, used by
+both `akm health --since` and `akm extract --since` (e.g. `akm extract --since
+24h`); several commands share the `--since` flag name but not all of them
+accept the same format.
 
 ```sh
-akm log list --since 2026-05-01T00:00:00Z --type select --format text
+akm log --since 2026-05-01T00:00:00Z --type select --format text
 ```
 
 ## akm improve

@@ -25,7 +25,7 @@
  * sweep names it explicitly as a residue that must not be folded into the
  * duration grammar without this baseline exposing the change.
  *
- * `akm log list --since` (family A/E's "events" surface) turns out to use a
+ * `akm log --since` (family A/E's "events" surface) turns out to use a
  * FOURTH parser again: neither `DURATION_UNITS` nor `parseSinceArg` — only a
  * literal ISO timestamp / epoch ms, or the `@offset:<id>` cursor grammar. A
  * plain duration shorthand like `24h` is REJECTED there (see the "family E —
@@ -133,17 +133,17 @@ describe("family E — health --since", () => {
 });
 
 describe("family E — events (log) --since", () => {
-  test("log list --since 24h (rejected) and --since @offset:0 (accepted)", async () => {
+  test("log --since 24h (rejected) and --since @offset:0 (accepted)", async () => {
     writeSandboxConfig({ semanticSearchMode: "off" });
     // Seed at least one state.db event so @offset:0 has something to return.
     await runCli(["remember", "duration flags fixture note", "--name", "duration-fixture", "--format=json"]);
 
-    const durationShorthand = await runCli(["log", "list", "--since", "24h", "--format=json"]);
-    const offsetCursor = await runCli(["log", "list", "--since", "@offset:0", "--format=json"]);
+    const durationShorthand = await runCli(["log", "--since", "24h", "--format=json"]);
+    const offsetCursor = await runCli(["log", "--since", "@offset:0", "--format=json"]);
 
-    // Captured as-is (module docstring): `akm log list --since` does NOT
-    // accept the `24h`-style duration shorthand that `health`/`extract` do —
-    // only an ISO timestamp / epoch ms, or `@offset:<id>`.
+    // Captured as-is (module docstring): `akm log --since` does NOT accept
+    // the `24h`-style duration shorthand that `health`/`extract` do — only
+    // an ISO timestamp / epoch ms, or `@offset:<id>`.
     expect(durationShorthand.code).toBe(2);
     expect(offsetCursor.code).toBe(0);
 

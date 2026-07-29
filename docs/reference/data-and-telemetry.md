@@ -192,8 +192,10 @@ the set of types the code actually emits at HEAD (verified against every
 
 ### 2. Usage Events Table
 
-`usage_events` is the local analytical record behind `akm history`, utility
-ranking, retrieval-demand counts, GRR, and real-query eval generation. It stores
+`usage_events` is the local analytical record behind utility ranking,
+retrieval-demand counts, GRR, and real-query eval generation (0.9.0: its CLI
+read surface, `akm history`, was removed — the table itself and everything
+below still applies). It stores
 search/curate queries, per-entry search impressions, explicit show/curate
 engagement, feedback signals, stable refs, and timestamps. It never leaves the
 machine unless you explicitly copy the database or send derived content to a
@@ -226,8 +228,8 @@ use `control: false` and may contain:
 
 Attribution metadata contains fully-qualified refs and graph identifiers, never
 asset bodies or provenance content. It is not added to `search`, `curate`, or
-`show` result payloads, but stored metadata is visible through
-`akm history --detail full`. The full index still applies its existing
+`show` result payloads; there is no CLI surface that reads it back (0.9.0:
+`akm history` was removed). The full index still applies its existing
 higher-priority-wins `(type, entry.name)` dedup across sources: attribution
 source-qualifies every indexed row but does not invent a lower-priority row for
 an identity that production indexing omitted.
@@ -258,16 +260,13 @@ A record of scheduled task runs (from `akm tasks`):
 
 ```sh
 # List recent events
-akm log list
-
-# Stream live events (tail)
-akm log tail
+akm log
 
 # Filter by type
-akm log list --type search --limit 20
+akm log --type search --limit 20
 
 # Filter by asset ref
-akm log list --ref skills/code-review
+akm log --ref skills/code-review
 ```
 
 ### Inspect proposals

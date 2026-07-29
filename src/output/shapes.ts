@@ -24,7 +24,6 @@ import type { DetailLevel, ShapeMode } from "./context";
 import { curateShapes } from "./shapes/curate";
 import { envListShapes } from "./shapes/env-list";
 import { eventsShapes } from "./shapes/events";
-import { historyShapes } from "./shapes/history";
 import { passthroughShapes } from "./shapes/passthrough";
 import { proposalAcceptShapes } from "./shapes/proposal/accept";
 import { proposalDiffShapes } from "./shapes/proposal/diff";
@@ -49,7 +48,6 @@ const BUILT_IN_OUTPUT_SHAPES: OutputShapeEntry[] = [
   ...curateShapes,
   ...registrySearchShapes,
   ...showShapes,
-  ...historyShapes,
   ...eventsShapes,
   ...proposalListShapes,
   ...proposalShowShapes,

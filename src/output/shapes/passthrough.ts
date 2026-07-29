@@ -46,7 +46,6 @@ const PASSTHROUGH_COMMANDS = [
   "extract",
   "health",
   "improve",
-  "lessons-coverage",
   "import",
   "index",
   "info",

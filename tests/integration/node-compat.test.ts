@@ -406,24 +406,24 @@ describe("history parity", () => {
 describe("events parity", () => {
   afterEach(() => cleanup());
 
-  test.skipIf(!ENABLED)("log list returns same shape on Bun and Node after seeding", async () => {
+  test.skipIf(!ENABLED)("log returns same shape on Bun and Node after seeding", async () => {
     setupStorage();
-    // The append-only events stream is read by `akm log list` (there is no
+    // The append-only events stream is read by `akm log` (there is no
     // top-level `events` command). Seed + index so the events table exists.
     await boundedWithEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
       await runCliCapture(["remember", "events parity test"]);
       await runCliCapture(["index"]);
     });
 
-    const nodeResult = nodeRun(["log", "list"], nodeEnv);
-    assertNoBoundaryLeak(nodeResult, "log list");
+    const nodeResult = nodeRun(["log"], nodeEnv);
+    assertNoBoundaryLeak(nodeResult, "log");
     expect(nodeResult.status).toBe(0);
     const nodeJson = parseJson(nodeResult.stdout) as { totalCount?: number; events?: unknown[] } | undefined;
     expect(Array.isArray(nodeJson?.events)).toBe(true);
 
     const bunResult = await boundedWithEnv(
       { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
-      () => runCliCapture(["log", "list"]),
+      () => runCliCapture(["log"]),
     );
     expect(bunResult.code).toBe(0);
     const bunJson = parseJson(bunResult.stdout) as { totalCount?: number; events?: unknown[] } | undefined;
