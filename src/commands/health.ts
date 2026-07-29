@@ -8,8 +8,9 @@ import { resolveStashDir } from "../core/common";
 import { loadConfig } from "../core/config/config";
 import { ConfigError, UsageError } from "../core/errors";
 import { readEvents } from "../core/events";
+import { listTxnJournalsTolerant, TXN_SWEEP_GRACE_MS } from "../core/fs-txn";
 import { openLogsDatabase } from "../core/logs-db";
-import { getCacheDir, getConfigPath, getStateDbPathInDataDir } from "../core/paths";
+import { getCacheDir, getConfigPath, getDataDir, getStateDbPathInDataDir } from "../core/paths";
 import { listExistingTableNames, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
 import { readSemanticStatus } from "../indexer/search/semantic-status";
@@ -46,6 +47,7 @@ import {
   IMPROVE_COMPLETED_EVENT,
   type ImproveHealthMetrics,
   type ImproveRunSummary,
+  MIN_ROWS_FOR_WORST_TASK_FAIL_RATE,
   type SessionLogAdvisory,
   type WindowResult,
   type WindowSpec,
@@ -140,9 +142,63 @@ interface TaskHistoryPhase {
   taskRowsWithLogsCount: number;
   existingLogRowsCount: number;
   stuckActiveRuns: number;
+  stuckActiveTasks: { taskId: string; ageMs: number }[];
   logBackingRate: number;
   taskFailRate: number;
+  worstTaskFailRate: { taskId: string; rate: number; rows: number } | null;
   agentFailureRate: number;
+}
+
+/**
+ * Item 7: dedupe stuck-active rows by task_id (keeping the oldest/largest age
+ * per id) so the `active-runs` check can name WHICH tasks are stuck instead of
+ * just a count. No pid/liveness probing — purely a projection of the rows
+ * already read.
+ */
+function dedupeStuckActiveTasks(
+  rows: { task_id: string; started_at: string }[],
+  now: () => number,
+): { taskId: string; ageMs: number }[] {
+  const byTask = new Map<string, number>();
+  for (const row of rows) {
+    const ageMs = now() - new Date(row.started_at).getTime();
+    const existing = byTask.get(row.task_id);
+    if (existing === undefined || ageMs > existing) byTask.set(row.task_id, ageMs);
+  }
+  return [...byTask.entries()].map(([taskId, ageMs]) => ({ taskId, ageMs }));
+}
+
+/**
+ * Item 6: group task_history rows by task_id and return the one with the
+ * highest fail rate among tasks with at least MIN_ROWS_FOR_WORST_TASK_FAIL_RATE
+ * rows in the window — surfaces a consistently-failing task that a large,
+ * mostly-healthy population would otherwise hide behind the aggregate rate.
+ * `null` when no task_id meets the row-count floor. Ties break toward the
+ * task with more rows (a stronger signal), then by task_id for determinism.
+ */
+function computeWorstTaskFailRate(
+  rows: { task_id: string; status: string }[],
+): { taskId: string; rate: number; rows: number } | null {
+  const byTask = new Map<string, { total: number; failed: number }>();
+  for (const row of rows) {
+    const entry = byTask.get(row.task_id) ?? { total: 0, failed: 0 };
+    entry.total += 1;
+    if (row.status === "failed") entry.failed += 1;
+    byTask.set(row.task_id, entry);
+  }
+  let worst: { taskId: string; rate: number; rows: number } | null = null;
+  for (const [taskId, { total, failed }] of byTask) {
+    if (total < MIN_ROWS_FOR_WORST_TASK_FAIL_RATE) continue;
+    const rate = failed / total;
+    if (
+      worst === null ||
+      rate > worst.rate ||
+      (rate === worst.rate && (total > worst.rows || (total === worst.rows && taskId < worst.taskId)))
+    ) {
+      worst = { taskId, rate, rows: total };
+    }
+  }
+  return worst;
 }
 
 /** Table presence, the state.db round-trip probe, and task_history-derived rates. */
@@ -164,9 +220,7 @@ function gatherTaskHistoryPhase(
   const { withLogs: taskRowsWithLogs, backed: existingLogRows } = partitionLogBackedRows(taskRows, logsDb);
   const failedTaskRows = taskRows.filter((row) => row.status === "failed");
   const activeRows = taskRows.filter((row) => row.status === "active" && row.completed_at === null);
-  const stuckActiveRuns = activeRows.filter(
-    (row) => now() - new Date(row.started_at).getTime() > ACTIVE_RUN_WARN_MS,
-  ).length;
+  const stuckActiveRows = activeRows.filter((row) => now() - new Date(row.started_at).getTime() > ACTIVE_RUN_WARN_MS);
   const promptRows = taskRows.filter((row) => row.target_kind === "prompt");
   const promptFailures = promptRows.filter((row) => {
     const detail = parseTaskMetadata(row).detail;
@@ -183,11 +237,51 @@ function gatherTaskHistoryPhase(
     taskRowCount: taskRows.length,
     taskRowsWithLogsCount: taskRowsWithLogs.length,
     existingLogRowsCount: existingLogRows.length,
-    stuckActiveRuns,
+    stuckActiveRuns: stuckActiveRows.length,
+    stuckActiveTasks: dedupeStuckActiveTasks(stuckActiveRows, now),
     logBackingRate,
     taskFailRate,
+    worstTaskFailRate: computeWorstTaskFailRate(taskRows),
     agentFailureRate,
   };
+}
+
+interface StaleTxnJournalsPhase {
+  dir: string;
+  count: number;
+  oldestAgeMs: number | null;
+  unreadable: number;
+}
+
+/**
+ * Item 4: leftover durable-transaction journals under `$DATA/txn` (stranded
+ * recovery state seen twice in a real 0.9 migration) had zero health
+ * visibility. Uses the tolerant scan variant so one corrupt journal.json is
+ * counted rather than aborting the whole gather; a journal younger than
+ * {@link TXN_SWEEP_GRACE_MS} is presumed to belong to a currently-running
+ * operation and is not counted as stale. Best-effort: any unexpected error
+ * (e.g. a permissions issue under `$DATA/txn`) degrades to "no signal" rather
+ * than aborting the health report.
+ */
+function gatherStaleTxnJournalsPhase(now: () => number): StaleTxnJournalsPhase {
+  const dir = path.join(getDataDir(), "txn");
+  try {
+    const { matches, unreadableMtimes } = listTxnJournalsTolerant(() => true);
+    const nowMs = now();
+    const staleAges = [
+      ...matches.map((m) => nowMs - m.mtimeMs),
+      ...unreadableMtimes.map((mtimeMs) => nowMs - mtimeMs),
+    ].filter((ageMs) => ageMs >= TXN_SWEEP_GRACE_MS);
+    const staleUnreadableCount = unreadableMtimes.filter((mtimeMs) => nowMs - mtimeMs >= TXN_SWEEP_GRACE_MS).length;
+    return {
+      dir,
+      count: staleAges.length,
+      oldestAgeMs: staleAges.length > 0 ? Math.max(...staleAges) : null,
+      unreadable: staleUnreadableCount,
+    };
+  } catch {
+    return { dir, count: 0, oldestAgeMs: null, unreadable: 0 };
+  }
 }
 
 interface SemanticConfigPhase {
@@ -432,6 +526,8 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
     const taskHistory = gatherTaskHistoryPhase(db, logsDb, since, stateDbPath, now);
     const { tableNames, missingTables, probe } = taskHistory;
 
+    const staleTxnJournals = gatherStaleTxnJournalsPhase(now);
+
     const { semanticStatus, semanticSearchMode, embeddingEndpoint, egressConfigView } = gatherSemanticConfigPhase();
 
     const { improveSummary } = gatherImproveSummaryPhase(db, stateDbPath, since, now);
@@ -456,6 +552,9 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
       existingLogRowsCount: taskHistory.existingLogRowsCount,
       logBackingRate: taskHistory.logBackingRate,
       stuckActiveRuns: taskHistory.stuckActiveRuns,
+      stuckActiveTasks: taskHistory.stuckActiveTasks,
+      worstTaskFailRate: taskHistory.worstTaskFailRate,
+      staleTxnJournals,
       semanticStatus,
       semanticSearchMode,
       embeddingEndpoint,

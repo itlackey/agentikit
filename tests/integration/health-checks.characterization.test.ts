@@ -184,6 +184,13 @@ describe("health checks characterization (WS9)", () => {
         confidence: "low",
         message: "Auto-accept gate did not run (disabled or no proposals above threshold).",
       },
+      {
+        name: "stale-txn-journals",
+        kind: "deterministic",
+        status: "pass",
+        confidence: "high",
+        message: "No stale transaction journals found.",
+      },
     ]);
 
     expect(result.ok).toBe(true);
@@ -264,6 +271,7 @@ describe("health checks characterization (WS9)", () => {
       "session-extraction",
       "pool-saturation",
       "auto-accept-validation",
+      "stale-txn-journals",
     ]);
 
     const logBacking = findCheck(result.hardChecks, "task-log-backing");

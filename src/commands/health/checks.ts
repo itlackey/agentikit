@@ -46,6 +46,16 @@ export interface HealthCheckContext {
   logBackingRate: number;
   /** Active runs older than the stale threshold. */
   stuckActiveRuns: number;
+  /** One entry per {@link stuckActiveRuns} row: which task and how stale. */
+  stuckActiveTasks: { taskId: string; ageMs: number }[];
+  /**
+   * The task_id with the highest per-task fail rate among tasks with at least
+   * `MIN_ROWS_FOR_WORST_TASK_FAIL_RATE` rows in the window. `null` when no
+   * task_id meets the row-count floor.
+   */
+  worstTaskFailRate: { taskId: string; rate: number; rows: number } | null;
+  /** Leftover durable-transaction journals under `$DATA/txn` (item 4). */
+  staleTxnJournals: { dir: string; count: number; oldestAgeMs: number | null; unreadable: number };
   semanticStatus: SemanticSearchStatus | undefined;
   /** Effective `semanticSearchMode` from config (for the embedding advisory). */
   semanticSearchMode: string | undefined;
@@ -373,17 +383,24 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
   {
     name: "active-runs",
     channel: "hard",
-    run: (ctx) => ({
-      name: "active-runs",
-      kind: "deterministic",
-      status: ctx.stuckActiveRuns === 0 ? "pass" : "warn",
-      confidence: "high",
-      message:
-        ctx.stuckActiveRuns === 0
-          ? "No active task runs exceeded the stale threshold."
-          : `${ctx.stuckActiveRuns} active task run(s) are older than ${Math.round(ACTIVE_RUN_WARN_MS / 60000)} minutes.`,
-      evidence: { stuckActiveRuns: ctx.stuckActiveRuns },
-    }),
+    run: (ctx) => {
+      // Name the stuck task_ids (deduped, oldest first) so an operator knows
+      // WHICH tasks to investigate, not just how many rows are stale. No
+      // pid/liveness detection — that's out of scope here.
+      const named = [...ctx.stuckActiveTasks].sort((a, b) => b.ageMs - a.ageMs);
+      const detail = named.map((t) => `${t.taskId} (${Math.round(t.ageMs / 60000)}m)`).join(", ");
+      return {
+        name: "active-runs",
+        kind: "deterministic",
+        status: ctx.stuckActiveRuns === 0 ? "pass" : "warn",
+        confidence: "high",
+        message:
+          ctx.stuckActiveRuns === 0
+            ? "No active task runs exceeded the stale threshold."
+            : `${ctx.stuckActiveRuns} active task run(s) are older than ${Math.round(ACTIVE_RUN_WARN_MS / 60000)} minutes: ${detail}.`,
+        evidence: { stuckActiveRuns: ctx.stuckActiveRuns, stuckActiveTasks: ctx.stuckActiveTasks },
+      };
+    },
   },
   {
     name: "default-engine",
@@ -405,24 +422,51 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
     // in the HTML report but never surfaced as an advisory, so a sustained
     // 15–16% fail rate stayed invisible on `akm health`. Warn at/above the SAME
     // 5% threshold the html-report badge uses (see TASK_FAIL_RATE_WARN).
+    //
+    // Item 6: the aggregate can hide a single consistently-failing task inside
+    // a large, mostly-healthy population (e.g. 1 flaky task at 100 rows total
+    // reads as <5% aggregate). Also warn when the single worst task_id (with
+    // enough rows to be a real signal — see MIN_ROWS_FOR_WORST_TASK_FAIL_RATE)
+    // crosses the same threshold, naming it explicitly.
     name: "task-fail-rate",
     channel: "advisory",
     run: (ctx) => {
       const pctStr = `${(ctx.taskFailRate * 100).toFixed(1)}%`;
       const thresholdPct = `${(TASK_FAIL_RATE_WARN * 100).toFixed(0)}%`;
-      const warn = ctx.taskFailRate >= TASK_FAIL_RATE_WARN;
+      const aggregateWarn = ctx.taskFailRate >= TASK_FAIL_RATE_WARN;
+      const worst = ctx.worstTaskFailRate;
+      const worstWarn = worst !== null && worst.rate >= TASK_FAIL_RATE_WARN;
+      const warn = aggregateWarn || worstWarn;
+
+      let message: string;
+      if (ctx.taskRowCount === 0) {
+        message = `No cron tasks ran since ${ctx.since} — no task-fail-rate signal.`;
+      } else if (warn) {
+        const parts: string[] = [];
+        if (aggregateWarn) {
+          parts.push(`aggregate ${pctStr} across ${ctx.taskRowCount} task(s) since ${ctx.since} ≥ ${thresholdPct}`);
+        }
+        if (worstWarn && worst) {
+          const worstPctStr = `${(worst.rate * 100).toFixed(1)}%`;
+          parts.push(`task "${worst.taskId}" fails ${worstPctStr} of its ${worst.rows} run(s) ≥ ${thresholdPct}`);
+        }
+        message = `Cron task fail rate warning: ${parts.join("; ")} — inspect failed runs (ok=false) for early-exit/harness errors.`;
+      } else {
+        message = `Cron task fail rate ${pctStr} across ${ctx.taskRowCount} task(s) since ${ctx.since} (below ${thresholdPct} threshold).`;
+      }
+
       return {
         name: "task-fail-rate",
         kind: "deterministic",
         status: warn ? "warn" : "pass",
         confidence: "high",
-        message:
-          ctx.taskRowCount === 0
-            ? `No cron tasks ran since ${ctx.since} — no task-fail-rate signal.`
-            : warn
-              ? `Cron task fail rate ${pctStr} across ${ctx.taskRowCount} task(s) since ${ctx.since} ≥ ${thresholdPct} threshold — inspect failed runs (ok=false) for early-exit/harness errors.`
-              : `Cron task fail rate ${pctStr} across ${ctx.taskRowCount} task(s) since ${ctx.since} (below ${thresholdPct} threshold).`,
-        evidence: { taskFailRate: ctx.taskFailRate, taskRowCount: ctx.taskRowCount, threshold: TASK_FAIL_RATE_WARN },
+        message,
+        evidence: {
+          taskFailRate: ctx.taskFailRate,
+          taskRowCount: ctx.taskRowCount,
+          threshold: TASK_FAIL_RATE_WARN,
+          worstTaskFailRate: worst,
+        },
       };
     },
   },
@@ -573,6 +617,31 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
               ? `Auto-accept healthy: ${aa.promoted} proposal(s) promoted, 0 validation failures.`
               : "Auto-accept gate did not run (disabled or no proposals above threshold).",
         evidence: { promoted: aa.promoted, validationFailed: aa.validationFailed },
+      };
+    },
+  },
+  {
+    // Item 4: stale durable-transaction journals under $DATA/txn (stranded
+    // recovery state seen twice in a real 0.9 migration) had zero health
+    // visibility. `count`/`unreadable` already exclude journals younger than
+    // the sweeper's grace period (a currently-running operation), so any
+    // nonzero count here is a real leftover.
+    name: "stale-txn-journals",
+    channel: "advisory",
+    run: (ctx) => {
+      const s = ctx.staleTxnJournals;
+      const warn = s.count > 0;
+      const unreadablePart = s.unreadable > 0 ? `, ${s.unreadable} unreadable` : "";
+      const agePart = s.oldestAgeMs !== null ? `, oldest ${Math.round(s.oldestAgeMs / 60000)}m old` : "";
+      return {
+        name: "stale-txn-journals",
+        kind: "deterministic",
+        status: warn ? "warn" : "pass",
+        confidence: "high",
+        message: warn
+          ? `${s.count} stale transaction journal(s) found under ${s.dir}${unreadablePart}${agePart} — see docs/migration/v0.9.0-troubleshooting.md for journal reconciliation steps.`
+          : "No stale transaction journals found.",
+        evidence: { dir: s.dir, count: s.count, unreadable: s.unreadable, oldestAgeMs: s.oldestAgeMs },
       };
     },
   },

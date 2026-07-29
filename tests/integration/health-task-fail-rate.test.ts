@@ -97,3 +97,78 @@ describe("task-fail-rate advisory (C2)", () => {
     expect(advisory.status).toBe("pass");
   });
 });
+
+/** Seed `count` completed/failed task_history rows, one per row, all sharing `taskId`. */
+function seedTaskRows(taskId: string, failed: number, completed: number): void {
+  const db = openStateDatabase();
+  try {
+    const now = Date.now();
+    let offsetMs = 0;
+    for (let i = 0; i < failed; i++) {
+      offsetMs += 1;
+      const ts = new Date(now + offsetMs).toISOString();
+      upsertTaskHistory(db, {
+        task_id: taskId,
+        status: "failed",
+        started_at: ts,
+        completed_at: ts,
+        failed_at: ts,
+        log_path: null,
+        target_kind: "improve",
+        target_ref: null,
+        metadata_json: JSON.stringify({ durationMs: 10 }),
+      });
+    }
+    for (let i = 0; i < completed; i++) {
+      offsetMs += 1;
+      const ts = new Date(now + offsetMs).toISOString();
+      upsertTaskHistory(db, {
+        task_id: taskId,
+        status: "completed",
+        started_at: ts,
+        completed_at: ts,
+        failed_at: null,
+        log_path: null,
+        target_kind: "improve",
+        target_ref: null,
+        metadata_json: JSON.stringify({ durationMs: 10 }),
+      });
+    }
+  } finally {
+    db.close();
+  }
+}
+
+// Item 6: a single consistently-failing task can hide behind a healthy
+// aggregate when the overall population is large. `task-fail-rate` now also
+// warns off the worst single task_id (min row-count floor applies).
+describe("task-fail-rate worst-single-task signal (item 6)", () => {
+  test("warns off the worst task when the aggregate stays below threshold", () => {
+    // 96 distinct single-row healthy tasks (0 failed) + one "flaky-task" with
+    // 5 rows (1 failed, 4 completed). Aggregate = 1/101 ≈ 1% (well below 5%).
+    // flaky-task alone: 1/5 = 20% (>= 5% threshold, and >= the 5-row floor).
+    for (let i = 0; i < 96; i++) seedTaskRows(`healthy-${i}`, 0, 1);
+    seedTaskRows("flaky-task", 1, 4);
+
+    const result = akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => [] });
+    const advisory = findCheck(result.advisories, "task-fail-rate");
+    expect(advisory.status).toBe("warn");
+    expect(advisory.message).toContain('task "flaky-task" fails 20.0%');
+    expect(advisory.evidence?.worstTaskFailRate).toEqual({ taskId: "flaky-task", rate: 0.2, rows: 5 });
+    // The aggregate itself must stay below the threshold in this scenario.
+    expect(advisory.evidence?.taskFailRate).toBeLessThan(0.05);
+  });
+
+  test("ignores a below-min-rows task even at a 100% local fail rate", () => {
+    // 96 distinct single-row healthy tasks (0 failed) + one task with only 4
+    // failed rows (below the 5-row floor). Aggregate = 4/100 = 4% (< 5%).
+    for (let i = 0; i < 96; i++) seedTaskRows(`healthy2-${i}`, 0, 1);
+    seedTaskRows("flaky-below-min", 4, 0);
+
+    const result = akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => [] });
+    const advisory = findCheck(result.advisories, "task-fail-rate");
+    expect(advisory.evidence?.taskFailRate).toBeCloseTo(0.04, 5);
+    expect(advisory.evidence?.worstTaskFailRate).toBeNull();
+    expect(advisory.status).toBe("pass");
+  });
+});

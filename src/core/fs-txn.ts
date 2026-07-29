@@ -283,13 +283,22 @@ export function cleanupTxn(dir: string): string | null {
 }
 
 /**
+ * Grace period (ms) before a transaction directory/journal with no other
+ * evidence of activity is treated as stale rather than possibly belonging to
+ * a still-running operation. Shared by {@link sweepJournallessTxnDir} (racing
+ * a sibling's mkdir→journal window) and by read-only reporting such as `akm
+ * health`'s stale-journal advisory (see {@link listTxnJournalsTolerant}).
+ */
+export const TXN_SWEEP_GRACE_MS = 300_000;
+
+/**
  * Sweep a transaction directory that has NO journal — but only when it is
  * demonstrably stale. All kinds share one namespace per root, so a scanner
  * may encounter a SIBLING transaction inside `beginTxn`'s mkdir→journal
  * window; a grace period keeps the sweep from racing it. Returns true when
  * the directory was removed.
  */
-export function sweepJournallessTxnDir(dir: string, graceMs = 300_000): boolean {
+export function sweepJournallessTxnDir(dir: string, graceMs = TXN_SWEEP_GRACE_MS): boolean {
   try {
     const age = Date.now() - fs.statSync(dir).mtimeMs;
     if (age < graceMs) return false;
@@ -408,4 +417,54 @@ export function listTxnJournals(predicate: (journal: TxnJournal<unknown>) => boo
     }
   }
   return matches;
+}
+
+/** One journal matched by {@link listTxnJournalsTolerant}, plus its file mtime. */
+export interface TxnJournalScanEntry {
+  journal: TxnJournal<unknown>;
+  /** `journal.json` mtime (ms since epoch) — an age proxy independent of parsing. */
+  mtimeMs: number;
+}
+
+export interface TxnJournalScanResult {
+  matches: TxnJournalScanEntry[];
+  /** `journal.json` mtimes for files that could not be read/parsed. */
+  unreadableMtimes: number[];
+}
+
+/**
+ * Read-only, best-effort sibling of {@link listTxnJournals} for reporting
+ * (e.g. `akm health`'s stale-journal advisory): a corrupt `journal.json` is
+ * counted rather than thrown, so one damaged journal doesn't abort the whole
+ * scan. Recovery call sites (which must decide how to roll a journal forward
+ * or back) keep using {@link listTxnJournals} — it fails loudly on purpose,
+ * since silently skipping a damaged journal there could leave an interrupted,
+ * irreversible mutation unrecovered.
+ */
+export function listTxnJournalsTolerant(predicate: (journal: TxnJournal<unknown>) => boolean): TxnJournalScanResult {
+  const home = path.join(getDataDir(), "txn");
+  const matches: TxnJournalScanEntry[] = [];
+  const unreadableMtimes: number[] = [];
+  if (!fs.existsSync(home)) return { matches, unreadableMtimes };
+  for (const ns of fs.readdirSync(home, { withFileTypes: true })) {
+    if (!ns.isDirectory()) continue;
+    const nsDir = path.join(home, ns.name);
+    for (const entry of fs.readdirSync(nsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const journalPath = path.join(nsDir, entry.name, "journal.json");
+      let mtimeMs: number;
+      try {
+        mtimeMs = fs.statSync(journalPath).mtimeMs;
+      } catch {
+        continue; // no journal.json here, or it vanished mid-scan
+      }
+      try {
+        const journal = readJournal(journalPath);
+        if (predicate(journal)) matches.push({ journal, mtimeMs });
+      } catch {
+        unreadableMtimes.push(mtimeMs);
+      }
+    }
+  }
+  return { matches, unreadableMtimes };
 }

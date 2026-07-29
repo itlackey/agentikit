@@ -433,6 +433,14 @@ export const ENRICHMENT_MINTED_FAIL_SHARE = 0.15;
 export const TASK_FAIL_RATE_WARN = 0.05;
 
 /**
+ * Minimum task_history rows a single task_id needs in the window before its
+ * per-task fail rate feeds the `task-fail-rate` advisory's "worst single
+ * task" signal. Guards against a rarely-run task (e.g. 1 failure out of 1
+ * run) reading as a 100% fail rate off a single noisy sample.
+ */
+export const MIN_ROWS_FOR_WORST_TASK_FAIL_RATE = 5;
+
+/**
  * The enrichment-vs-minting split over the health window's accepted,
  * lane-attributed proposals. Create-vs-update is discriminated by
  * `metadata_json.backupContent`: apply captures the prior content for
