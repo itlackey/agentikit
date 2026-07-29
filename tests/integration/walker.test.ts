@@ -240,6 +240,21 @@ describe("walkStashFlat", () => {
       statSpy.mockRestore();
     }
   });
+
+  test("ignores tracked files deleted from the worktree", () => {
+    const root = tmpDir();
+    const deleted = path.join(root, "knowledge", "deleted.md");
+    writeFile(deleted, "# Deleted\n");
+    writeFile(path.join(root, "knowledge", "kept.md"), "# Kept\n");
+    expect(spawnSync("git", ["init"], { cwd: root }).status).toBe(0);
+    expect(spawnSync("git", ["add", "knowledge/deleted.md"], { cwd: root }).status).toBe(0);
+    fs.unlinkSync(deleted);
+
+    const result = walkStashFlatWithStatus(root);
+
+    expect(result.complete).toBe(true);
+    expect(result.files.map((file) => file.relPath)).toEqual(["knowledge/kept.md"]);
+  });
 });
 
 // ── T6: isInsideGitRepo in nested repo ───────────────────────────────────────

@@ -37,9 +37,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { parse as parseYaml } from "yaml";
 import { ensureAkmMarkdownType } from "../../core/asset/akm-markdown";
 import { assetPathForName, placementTypes, stashDirFor } from "../../core/asset/asset-placement";
 import { isBundleSlug, parseBundleRef } from "../../core/asset/asset-ref";
+import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import { isWithin } from "../../core/common";
 import { type AkmConfig, loadConfig } from "../../core/config/config";
@@ -93,6 +95,8 @@ import {
   listStateProposals,
   upsertProposal,
 } from "../../storage/repositories/proposals-repository";
+import { runBaseChecks } from "../lint/base-linter";
+import type { LintIssue, LintIssueType } from "../lint/types";
 import { formatNewAssetDiff, formatUnifiedDiff } from "./diff-format";
 import {
   AUTOMATED_PROPOSAL_SOURCES,
@@ -108,6 +112,8 @@ import {
 } from "./proposal-types";
 import { hasCanonicalProposalValidator } from "./validators/proposal-validators";
 import { repairProposalContent, validateProposal } from "./validators/proposals";
+
+const PROMOTION_LINT_BLOCKERS = new Set<LintIssueType>(["unquoted-colon", "missing-ref", "stale-path"]);
 
 // ── Proposal domain types (moved to ./proposal-types.ts, WI-9.8 KILL 1) ─────
 //
@@ -1888,6 +1894,46 @@ export async function promoteProposal(
   return withAssetMutationLease("proposal-accept", () => promoteProposalWithLease(stashDir, config, id, options, ctx));
 }
 
+function promotionLintBlockers(
+  raw: string,
+  assetPath: string,
+  targetRoot: string,
+  refType: string,
+  config: AkmConfig,
+): LintIssue[] {
+  let data: Record<string, unknown>;
+  let body: string;
+  let frontmatter: string | null;
+  if (refType === "task") {
+    try {
+      const parsed = parseYaml(raw);
+      data = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+    } catch {
+      data = {};
+    }
+    body = raw;
+    frontmatter = null;
+  } else {
+    ({ data, content: body, frontmatter } = parseFrontmatter(raw));
+  }
+
+  const resolvedRoot = path.resolve(targetRoot);
+  const extraStashRoots = resolveSourceEntries(targetRoot, config)
+    .map((source) => source.path)
+    .filter((sourcePath) => path.resolve(sourcePath) !== resolvedRoot);
+  return runBaseChecks({
+    filePath: assetPath,
+    relPath: path.relative(targetRoot, assetPath),
+    raw,
+    data,
+    body,
+    frontmatter,
+    fix: false,
+    stashRoot: targetRoot,
+    extraStashRoots,
+  }).filter((finding) => PROMOTION_LINT_BLOCKERS.has(finding.issue));
+}
+
 async function promoteProposalWithLease(
   stashDir: string,
   config: AkmConfig,
@@ -1998,6 +2044,16 @@ async function promoteProposalWithLease(
     throw new UsageError(
       `Proposal target was created after proposal ${id}; refusing to overwrite newer content.`,
       "INVALID_FLAG_VALUE",
+    );
+  }
+  assertAkmAssetWrite(mutationTarget.source);
+  const lintBlockers = promotionLintBlockers(repairedContent, assetPath, mutationTarget.source.path, ref.type, config);
+  if (lintBlockers.length > 0) {
+    const message = lintBlockers.map((finding) => `[${finding.issue}] ${finding.detail}`).join("\n");
+    throw new UsageError(
+      `Proposal ${id} failed lint:\n${message}`,
+      "INVALID_PROPOSAL",
+      "Fix or explicitly suppress the reported lint findings, then retry.",
     );
   }
   const refIdentity = proposalRefIdentity(proposalToValidate.ref);

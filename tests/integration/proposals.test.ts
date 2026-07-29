@@ -148,6 +148,41 @@ describe("createProposal / listProposals / getProposal", () => {
     expect((events.events[0]?.metadata as Record<string, unknown> | undefined)?.proposalId).toBe(created.id);
   });
 
+  test.each([
+    {
+      issue: "unquoted-colon",
+      content:
+        "---\ndescription: Proposal lint:blocks invalid output.\nwhen_to_use: Testing proposal lint\n---\n\nUseful body.\n",
+    },
+    {
+      issue: "missing-ref",
+      content:
+        "---\ndescription: Proposal with a missing ref\nwhen_to_use: Testing proposal lint\nxrefs:\n  - memories/proposal-lint-missing\n---\n\nUseful body.\n",
+    },
+    {
+      issue: "stale-path",
+      content:
+        "---\ndescription: Proposal with a stale path\nwhen_to_use: Testing proposal lint\n---\n\nUse /tmp/akm-proposal-lint-path-that-does-not-exist.\n",
+    },
+  ])("blocks $issue findings before publishing", async ({ issue, content }) => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const slug = `lint-block-${issue}`;
+    const createdResult = createProposal(stash, {
+      ref: `lessons/${slug}`,
+      source: "reflect",
+      force: true,
+      payload: { content },
+    });
+    if (isProposalSkipped(createdResult)) throw new Error("unexpected skip");
+
+    await expect(akmProposalAccept({ stashDir: stash, id: createdResult.id, config })).rejects.toThrow(issue);
+
+    expect(fs.existsSync(path.join(stash, "lessons", `${slug}.md`))).toBe(false);
+    expect(getProposal(stash, createdResult.id).status).toBe("pending");
+    expect(readEvents({ type: "promoted" }).events).toHaveLength(0);
+  });
+
   test("reject path: archive contains entry, status rejected, rejected event emitted", async () => {
     const stash = makeStashDir();
     const createdResult2 = createProposal(stash, {

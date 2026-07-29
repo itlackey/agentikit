@@ -11,7 +11,12 @@ import {
   getAllRenderers,
   getRenderer,
 } from "../../src/indexer/walk/file-context";
-import { directoryMatcher, smartMdMatcher } from "../../src/indexer/walk/matchers";
+import {
+  directoryMatcher,
+  parentDirHintMatcher,
+  smartMdMatcher,
+  workflowProgramMatcher,
+} from "../../src/indexer/walk/matchers";
 import { walkStashFlat } from "../../src/indexer/walk/walker";
 
 // ── Temp directory helpers ──────────────────────────────────────────────────
@@ -181,6 +186,32 @@ describe("recognizeMatch", () => {
     expect(result).not.toBeNull();
     expect(result?.type).toBe("skill");
     expect(result?.specificity).toBe(10);
+  });
+
+  test("nested skill references are not classified by typed ancestor directories", () => {
+    const root = tmpDir();
+    const markdownPath = path.join(root, "skills", "cloudflare", "references", "workflows", "api.md");
+    const yamlPath = path.join(root, "skills", "cloudflare", "references", "workflows", "api.yml");
+    writeFile(markdownPath, "# Workflow API reference\nDocumentation only.\n");
+    writeFile(yamlPath, "title: Workflow API reference\n");
+
+    const markdown = buildFileContext(root, markdownPath);
+    const yaml = buildFileContext(root, yamlPath);
+
+    expect(directoryMatcher(markdown)).toBeNull();
+    expect(parentDirHintMatcher(markdown)).toBeNull();
+    expect(workflowProgramMatcher(yaml)).toBeNull();
+  });
+
+  test("direct markdown files under skills remain skill assets", () => {
+    const root = tmpDir();
+    const filePath = path.join(root, "skills", "deploy.md");
+    writeFile(filePath, "# Deploy\n");
+
+    const result = parentDirHintMatcher(buildFileContext(root, filePath));
+
+    expect(result?.type).toBe("skill");
+    expect(result?.specificity).toBe(15);
   });
 
   test("directoryMatcher matches .md under commands/ as 'command'", () => {

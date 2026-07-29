@@ -42,6 +42,7 @@ import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { assembleAsset } from "../../core/asset/asset-serialize";
 import { parseFrontmatter, parseFrontmatterBlock } from "../../core/asset/frontmatter";
 import { conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
+import { todayIso } from "../../core/common";
 import { concurrentMap } from "../../core/concurrent";
 import type { SourceConfigEntry } from "../../core/config/config";
 import { warn } from "../../core/warn";
@@ -302,7 +303,7 @@ export async function runMemoryInferencePass(ctx: MemoryInferencePassContext): P
               ),
             validate,
             undefined,
-            "",
+            "memory-inference-v2",
             {
               onCacheHit: () => {
                 fromCache = true;
@@ -573,6 +574,7 @@ function renderDerivedMemory(parent: MemoryRecord, derived: DerivedMemoryDraft):
     searchHints: derived.searchHints,
     title: derived.title,
     derivedFrom: parent.name,
+    updated: todayIso(),
   };
   return assembleAsset(fm, `# ${derived.title.trim()}\n\n${derived.content.trim()}\n`);
 }

@@ -139,6 +139,10 @@ function isTypedDirDocFile(fileName: string): boolean {
   return TYPED_DIR_DOC_FILES.has(fileName.toLowerCase());
 }
 
+function isNestedSkillResource(ctx: FileContext): boolean {
+  return ctx.ancestorDirs[0] === "skills" && ctx.ancestorDirs.length > 1 && ctx.fileName !== "SKILL.md";
+}
+
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
@@ -175,6 +179,7 @@ function classifyByExtension(ctx: FileContext): MatchFact | null {
 }
 
 function classifyByDirectory(ctx: FileContext): MatchFact | null {
+  if (isNestedSkillResource(ctx)) return null;
   for (const dir of ctx.ancestorDirs) {
     const result = matchDirectoryHint(dir, ctx, 10);
     if (result) return result;
@@ -184,6 +189,8 @@ function classifyByDirectory(ctx: FileContext): MatchFact | null {
 
 function classifyByParentDirHint(ctx: FileContext): MatchFact | null {
   const { parentDir, ext, fileName } = ctx;
+
+  if (isNestedSkillResource(ctx)) return null;
 
   if (parentDir === "skills" && (fileName === "SKILL.md" || ext === ".md")) {
     return { type: "skill", specificity: 15 };
@@ -256,8 +263,10 @@ const WORKFLOW_PROGRAM_EXTENSIONS = new Set([".yaml", ".yml"]);
 function classifyByWorkflowProgram(ctx: FileContext): MatchFact | null {
   if (!WORKFLOW_PROGRAM_EXTENSIONS.has(ctx.ext)) return null;
   if (isTypedDirDocFile(ctx.fileName)) return null;
-  if (ctx.parentDir === "workflows") return { type: "workflow", specificity: 15 };
-  if (ctx.ancestorDirs.includes("workflows")) return { type: "workflow", specificity: 10 };
+  if (!isNestedSkillResource(ctx)) {
+    if (ctx.parentDir === "workflows") return { type: "workflow", specificity: 15 };
+    if (ctx.ancestorDirs.includes("workflows")) return { type: "workflow", specificity: 10 };
+  }
   if (looksLikeWorkflowProgram(ctx.content())) return { type: "workflow", specificity: 19 };
   return null;
 }

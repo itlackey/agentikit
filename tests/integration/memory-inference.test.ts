@@ -381,6 +381,7 @@ describe("runMemoryInferencePass — enabled", () => {
     expect(derived.data.searchHints).toEqual(["compressed parent", "derived memory", "higher signal summary"]);
     expect(derived.data.title).toBe("Compressed Parent Insight");
     expect(derived.data.derivedFrom).toBe("parent");
+    expect(derived.data.updated).toBe(new Date().toISOString().slice(0, 10));
     expect(derived.content).toContain("# Compressed Parent Insight");
     expect(derived.content).toContain("## Root Cause");
   });

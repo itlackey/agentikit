@@ -7,7 +7,13 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import fs from "node:fs";
 import { isIP } from "node:net";
 import path from "node:path";
-import { fetchWithRetry, ResponseTooLargeError, readBodyWithByteCap, resolveStashDir } from "../../core/common";
+import {
+  fetchWithRetry,
+  ResponseTooLargeError,
+  readBodyWithByteCap,
+  resolveStashDir,
+  todayIso,
+} from "../../core/common";
 import type { SourceConfigEntry } from "../../core/config/config";
 import { ConfigError, UsageError } from "../../core/errors";
 import { getRegistryIndexCacheDir } from "../../core/paths";
@@ -391,8 +397,8 @@ async function fetchWebsiteResponse(
 
 function buildMarkdownSnapshot(page: WebsitePage, slug: string, tags?: string[]): string {
   const title = sanitizeString(page.title, 200) || slug;
-  const description = sanitizeString(`Snapshot of ${page.url}`, 500);
   const host = sanitizeString(new URL(page.url).hostname, 120);
+  const description = sanitizeString(`Website snapshot from ${host}`, 500);
   const content = page.markdown.trim() || `Source: ${page.url}`;
   const normalizedTags = Array.from(new Set(["website", host, ...(tags ?? [])]));
 
@@ -402,6 +408,9 @@ function buildMarkdownSnapshot(page: WebsitePage, slug: string, tags?: string[])
     `description: ${JSON.stringify(description)}`,
     `sourceUrl: ${JSON.stringify(page.url)}`,
     `title: ${JSON.stringify(title)}`,
+    `updated: ${todayIso()}`,
+    "lint_skip:",
+    "  - stale-path",
     "tags:",
     ...normalizedTags.map((tag) => `  - ${JSON.stringify(tag)}`),
     "---",

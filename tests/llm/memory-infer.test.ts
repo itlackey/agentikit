@@ -175,6 +175,22 @@ describe("compressMemoryToDerivedMemory — characterization", () => {
     expect(warnCalls).toEqual(["memory inference: incomplete derived memory payload from LLM; skipping memory."]);
   });
 
+  test("prompt placeholder payload -> undefined + placeholder warn", async () => {
+    chatResponder = () =>
+      JSON.stringify({
+        title: "short title string",
+        description: "one sentence summary string",
+        content: "2-3 sentence compressed body preserving key facts verbatim",
+        tags: ["tag1", "tag2"],
+        searchHints: ["search phrase 1", "search phrase 2"],
+      });
+
+    const result = await compressMemoryToDerivedMemory(LLM_CONFIG, "body", undefined, ENABLED_CONFIG);
+
+    expect(result).toBeUndefined();
+    expect(warnCalls).toEqual(["memory inference: prompt placeholder response from LLM; skipping memory."]);
+  });
+
   test("thrown context-size error -> undefined + generic 'memory inference failed' warn (NOT a distinct branch)", async () => {
     const ctxMsg = "This model's maximum context length is 8192 tokens; your prompt exceeded that limit.";
     // Sanity: the real classifier recognizes this string as a context-size error.

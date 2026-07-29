@@ -387,7 +387,13 @@ describe("runMemoryInferencePass — cache hit skips LLM call", () => {
     const parsed = parseFrontmatter(raw);
     const exactBody = parsed.content; // exactly what the pass hashes
 
-    upsertLlmCacheEntry(db, freshPath, computeBodyHash(exactBody), JSON.stringify(sampleDraft("Cached Result")));
+    upsertLlmCacheEntry(
+      db,
+      freshPath,
+      computeBodyHash(exactBody),
+      JSON.stringify(sampleDraft("Cached Result")),
+      "memory-inference-v2",
+    );
 
     // Run the pass — cache hit → LLM must NOT be called.
     const result = await runMemoryInferencePass({ config: configWithLlm(), sources: sources(), db, reEnrich: false });
@@ -407,6 +413,7 @@ describe("runMemoryInferencePass — cache hit skips LLM call", () => {
       filePath,
       computeBodyHash("completely different old body"),
       JSON.stringify(sampleDraft("Stale")),
+      "memory-inference-v2",
     );
 
     // Run — body hash mismatch → cache miss → LLM called.
@@ -423,7 +430,13 @@ describe("runMemoryInferencePass — cache hit skips LLM call", () => {
     const { parseFrontmatter } = await import("../../src/core/asset/frontmatter");
     const raw = fs.readFileSync(filePath, "utf8");
     const exactBody = parseFrontmatter(raw).content;
-    upsertLlmCacheEntry(db, filePath, computeBodyHash(exactBody), JSON.stringify(sampleDraft("Cached")));
+    upsertLlmCacheEntry(
+      db,
+      filePath,
+      computeBodyHash(exactBody),
+      JSON.stringify(sampleDraft("Cached")),
+      "memory-inference-v2",
+    );
 
     // Run with reEnrich=true — must call LLM despite cache hit.
     await runMemoryInferencePass({ config: configWithLlm(), sources: sources(), db, reEnrich: true });

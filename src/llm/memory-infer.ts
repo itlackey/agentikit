@@ -35,6 +35,16 @@ const SYSTEM_PROMPT = memoryInferSystemPrompt;
 
 const USER_PROMPT_PREFIX = memoryInferUserPrompt;
 
+const PROMPT_PLACEHOLDERS = new Set([
+  "short title string",
+  "one sentence summary string",
+  "tag1",
+  "tag2",
+  "search phrase 1",
+  "search phrase 2",
+  "2-3 sentence compressed body preserving key facts verbatim",
+]);
+
 export interface DerivedMemoryDraft {
   title: string;
   description: string;
@@ -152,6 +162,14 @@ export async function compressMemoryToDerivedMemory(
         : [];
       if (!title || !description || !content || tags.length === 0 || searchHints.length === 0) {
         warn("memory inference: incomplete derived memory payload from LLM; skipping memory.");
+        return undefined;
+      }
+      if (
+        [title, description, content, ...tags, ...searchHints].some((value) =>
+          PROMPT_PLACEHOLDERS.has(value.toLowerCase()),
+        )
+      ) {
+        warn("memory inference: prompt placeholder response from LLM; skipping memory.");
         return undefined;
       }
       return { title, description, tags, searchHints, content };

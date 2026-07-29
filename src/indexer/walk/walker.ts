@@ -112,6 +112,15 @@ function walkStashGit(stashRoot: string, options: WalkStashFlatOptions): WalkSta
   // result.success is false if the process exited non-zero OR git was not found
   if (!result.success) return null;
 
+  // `--cached` includes tracked files deleted from the worktree. They are not
+  // scan failures and must not make an otherwise complete snapshot look stale.
+  const deletedResult = spawnSync(["git", "ls-files", "--deleted", "-z", "--", "."], { cwd: stashRoot });
+  if (!deletedResult.success) return null;
+  const deletedStdout = Buffer.isBuffer(deletedResult.stdout)
+    ? deletedResult.stdout.toString("utf8")
+    : String(deletedResult.stdout ?? "");
+  const deletedFiles = new Set(deletedStdout.split("\0").filter(Boolean));
+
   // Data-hygiene filename skips: the legacy metadata sidecar (never indexed as
   // content — Chunk-8 folds it into the bundle format) plus git dot-files.
   const SKIP_FILES = new Set([".stash.json", ".gitignore", ".gitattributes"]);
@@ -120,6 +129,7 @@ function walkStashGit(stashRoot: string, options: WalkStashFlatOptions): WalkSta
   const files = stdout
     .split("\0")
     .filter((f) => f.length > 0)
+    .filter((f) => !deletedFiles.has(f))
     .filter((f) => !f.startsWith("..") && !path.isAbsolute(f))
     .filter((f) => {
       const dirParts = path
