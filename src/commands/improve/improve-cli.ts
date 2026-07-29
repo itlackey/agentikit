@@ -12,13 +12,9 @@ import { loadConfig } from "../../core/config/config";
 import { resolveMutationTarget } from "../../core/mutation-target";
 import { getCacheDir } from "../../core/paths";
 import { redactSensitiveText } from "../../core/redaction";
-import { withStateDb } from "../../core/state-db";
 import { clearLogFile, setLogFile, warn } from "../../core/warn";
 import { resolveWriteTarget } from "../../core/write-source";
 import { collectEngineCredentialValues } from "../../integrations/agent/engine-resolution";
-import { getActiveCanaries, queryRecentCycleMetrics } from "../../storage/repositories/canaries-repository";
-import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
-import { refreshCanarySet } from "./collapse-detector";
 import { akmImprove } from "./improve";
 import {
   buildImproveRunId,
@@ -34,57 +30,6 @@ let akmImproveForRun: typeof akmImprove = akmImprove;
 /** Swap the CLI's improve work implementation in deterministic subprocess tests. */
 export function _setAkmImproveForTests(fake?: typeof akmImprove): void {
   akmImproveForRun = fake ?? akmImprove;
-}
-
-// R5 — collapse-detector canary set inspection / explicit refresh. The
-// detector NEVER auto-refreshes the canary set (silent re-baselining is how a
-// slow collapse hides); this verb is the only refresh path.
-//
-// Dispatched from the parent improve run() on `scope === "canary"` — NOT a
-// citty subCommand: registering subCommands makes citty treat EVERY first
-// positional as a subcommand name, breaking `akm improve <type|ref>` outright
-// (citty throws "Unknown command memory"), and citty also re-runs the parent
-// run() after a matched subcommand.
-async function runCanaryInspection(refresh: boolean): Promise<void> {
-  const config = loadConfig();
-  const cfg = config.improve?.collapseDetector ?? {};
-
-  const result = withStateDb((stateDb) => {
-    let refreshOutcome: "refreshed" | "kept-old-set" | undefined;
-    if (refresh) {
-      const indexDb = openExistingDatabase();
-      try {
-        // Mint-first, deactivate-after (refreshCanarySet): an empty/unreadable
-        // index keeps the old baseline instead of destroying it.
-        refreshOutcome = refreshCanarySet(stateDb, indexDb, cfg) === null ? "kept-old-set" : "refreshed";
-      } finally {
-        closeDatabase(indexDb);
-      }
-    }
-    const canaries = getActiveCanaries(stateDb);
-    const canarySetId = canaries[0]?.canary_set_id;
-    const recentCycles = canarySetId ? queryRecentCycleMetrics(stateDb, canarySetId, cfg.windowCycles ?? 5) : [];
-    return {
-      schemaVersion: 1 as const,
-      ok: true,
-      refreshed: refreshOutcome === "refreshed",
-      ...(refreshOutcome === "kept-old-set"
-        ? { warning: "refresh skipped: no mintable learning entries in the index — existing canary set kept" }
-        : {}),
-      canarySetId: canarySetId ?? null,
-      canaries: canaries.map((c) => ({ id: c.id, anchorRef: c.anchor_ref, query: c.query })),
-      recentCycles: recentCycles.map((r) => ({
-        ts: r.ts,
-        pass: r.pass,
-        meanRecall: r.mean_recall,
-        meanNdcg: r.mean_ndcg,
-        distinctContentRatio: r.distinct_content_ratio,
-        mergeFloorViolations: r.merge_floor_violations,
-        alerts: JSON.parse(r.alerts_json) as string[],
-      })),
-    };
-  });
-  output("improve-canary", result);
 }
 
 /**
@@ -118,7 +63,7 @@ export const improveCommand = defineCommand({
   meta: {
     name: "improve",
     description:
-      "Analyze existing AKM assets and generate improvement proposals; also consolidates memories when the selected strategy enables consolidate. `akm improve canary [--refresh]` inspects the collapse-detector canary set.",
+      "Analyze existing AKM assets and generate improvement proposals; also consolidates memories when the selected strategy enables consolidate.",
   },
   // Raw defineCommand, so the global output flags are declared here explicitly.
   // Without them citty treats `--format` as a boolean and its space-separated
@@ -131,12 +76,6 @@ export const improveCommand = defineCommand({
       required: false,
     },
     task: { type: "string", description: "Add extra guidance for this improvement pass" },
-    refresh: {
-      type: "boolean",
-      description:
-        "(canary scope only) Mint a new collapse-detector canary set and deactivate the old one; old rows and their cycle history are retained",
-      default: false,
-    },
     "dry-run": { type: "boolean", description: "Show planned actions without writing", default: false },
     target: { type: "string", description: "Override the write target for accepted proposals" },
     limit: { type: "string", description: "Maximum number of assets to process (highest utility first)" },
@@ -178,16 +117,6 @@ export const improveCommand = defineCommand({
     },
   },
   async run({ args }) {
-    // "canary" is a reserved scope word: no `canary` stash subdir exists, so
-    // it can never be a real asset type, and it can never parse as a full
-    // ref either (isFullRefInput requires a slash-qualified conceptId with a
-    // known type prefix). So intercepting it here can't collide with a
-    // legitimate --type/ref positional. Dispatch to the detector inspection
-    // verb instead of an improve run.
-    if (args.scope === "canary") {
-      await runWithJsonErrors(() => runCanaryInspection(args.refresh));
-      return;
-    }
     await runWithJsonErrors(async () => {
       // D7 — `--format` used to be rejected here outright. It is a global flag on
       // a command that does emit an envelope through `output()` (always on

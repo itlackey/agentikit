@@ -506,7 +506,7 @@ export function reconcileBodyOpeningIndexState(
     `${flagEnabled ? "disabled" : "enabled"}. Incremental runs only re-extract changed files, so ` +
     "indexed text and embeddings are stale for unchanged entries. Run `akm index --full` to apply the new " +
     "setting everywhere (embeddings regenerate), and re-mint collapse-detector canary baselines via " +
-    "`akm improve canary --refresh` if you use them."
+    "`bun scripts/refresh-canary-set.ts --refresh` if you use them."
   );
 }
 

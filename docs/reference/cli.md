@@ -2215,8 +2215,6 @@ akm improve workflows/release-checklist --task "reduce duplication"
 akm improve --skip-if-locked           # for high-frequency scheduled runs: skip (exit 0) if a run is already in progress
 akm improve --no-sync                  # skip the end-of-run git commit entirely (default: on for git-backed stashes)
 akm improve --sync --no-push           # commit only, skip the push after it
-akm improve canary                     # inspect the collapse-detector canary set
-akm improve canary --refresh           # mint a new canary set, deactivating the old one
 ```
 
 | Flag | Description |
@@ -2232,14 +2230,14 @@ akm improve canary --refresh           # mint a new canary set, deactivating the
 | `--skip-if-locked` | If another improve run already holds the lock, skip gracefully (exit 0) instead of failing with "already running" (exit 78). Use for high-frequency scheduled runs so they don't pile up failures while a longer run is in progress. |
 | `--sync` / `--no-sync` | Commit (and optionally push) the git-backed primary stash when the run finishes. Default: on for git-backed stashes (per profile config). |
 | `--push` / `--no-push` | Push after the end-of-run sync commit when writable with a remote configured. `--no-push` commits only, skipping the push. Default: per profile config (`true`). `sync.push` stays outside the autonomy gate — this is a per-run opt-out, not a default change. |
-| `--refresh` | `canary` scope only. Mint a new collapse-detector canary set and deactivate the old one; old rows and their cycle history are retained. |
 
 `akm improve` is the public entrypoint for whole-stash, type-scoped, and
 ref-scoped improvement. It owns the memory-cleanup and lesson-distillation
 flow. A qualified scope such as `team//skills/code-review` selects that bundle;
-a different explicit `--target` is a usage error. `akm improve canary
-[--refresh]` is a reserved scope value, not a subcommand — it inspects the
-collapse-detector canary set instead of improving assets.
+a different explicit `--target` is a usage error. Inspecting or re-minting the
+collapse-detector canary set is maintainer tooling, not a CLI verb — run
+`bun scripts/refresh-canary-set.ts` (add `--refresh` to mint a new set and
+deactivate the old one; old rows and their cycle history are retained).
 
 Built-in `default` and `frequent` leave the improve-stage extract process off,
 and `default` plus `reflect-distill` leave proactive maintenance off. Use the

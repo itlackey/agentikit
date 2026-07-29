@@ -193,7 +193,7 @@ const IndexConfigRuntimeSchema = z.preprocess(
             "lowest-weight `content` search column and the embedding text (default false). Secret/env files " +
             "and session-kind memories are never captured. Toggling the flag changes indexed text: run " +
             "`akm index --full` afterwards to re-extract every entry and regenerate embeddings, and re-mint " +
-            "collapse-detector canary baselines via `akm improve canary --refresh`.",
+            "collapse-detector canary baselines via `bun scripts/refresh-canary-set.ts --refresh`.",
         ),
     })
     .catchall(IndexPassConfigSchema),
