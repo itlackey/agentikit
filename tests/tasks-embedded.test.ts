@@ -3,13 +3,19 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Embedded core task registry — asserts the 5 bundled templates are present
- * with the exact ids and default schedules from issue #512, and
- * that they are read from the bundled assets dir (not any user stash).
+ * Embedded task registry — asserts the 5 bundled `core/` templates and the 5
+ * bundled `improve/` templates are present with the exact ids and default
+ * schedules, and that they are read from the bundled assets dir (not any
+ * user stash).
  *
  * `update-stashes` (nightly `akm update --all`) was retired in meta-review
  * 06-M2 — third-party stash pulls are on-demand only now. `backup` (which
  * only ever invoked the nonexistent `akm db backups`) was dropped in 0.9.0.
+ *
+ * The `improve/` set was folded in from the retired
+ * `DEFAULT_IMPROVE_TASKS`/`registerDefaultTasks`/`akm tasks init` path in 0.9
+ * (S6): `akm setup`'s task-review step is now the single seeding mechanism
+ * for both sets (src/setup/steps/tasks.ts).
  */
 import { describe, expect, test } from "bun:test";
 import type { ArgsDef } from "citty";
@@ -19,17 +25,22 @@ import { listEmbeddedTasks } from "../src/tasks/embedded";
 import { parseTaskDocument } from "../src/tasks/parser";
 
 const EXPECTED = [
-  { id: "improve", schedule: "0 2 * * *", enabled: true },
-  { id: "version-check", schedule: "0 9 * * 1", enabled: true },
-  { id: "index-refresh", schedule: "0 4 * * *", enabled: true },
-  { id: "extract", schedule: "*/30 * * * *", enabled: true },
-  { id: "sync", schedule: "*/15 * * * *", enabled: true },
+  { id: "improve", category: "core", schedule: "0 2 * * *", enabled: true },
+  { id: "version-check", category: "core", schedule: "0 9 * * 1", enabled: true },
+  { id: "index-refresh", category: "core", schedule: "0 4 * * *", enabled: true },
+  { id: "extract", category: "core", schedule: "*/30 * * * *", enabled: true },
+  { id: "sync", category: "core", schedule: "*/15 * * * *", enabled: true },
+  { id: "akm-improve-frequent", category: "improve", schedule: "40 * * * *", enabled: true },
+  { id: "akm-improve-consolidate", category: "improve", schedule: "20 */4 * * *", enabled: true },
+  { id: "akm-improve-nightly", category: "improve", schedule: "15 2 * * *", enabled: true },
+  { id: "akm-improve-catchup", category: "improve", schedule: "0 4 * * *", enabled: true },
+  { id: "akm-graph-refresh-weekly", category: "improve", schedule: "10 3 * * 0", enabled: true },
 ] as const;
 
-describe("embedded core task registry", () => {
-  test("enumerates all 5 templates", () => {
+describe("embedded task registry", () => {
+  test("enumerates all 10 templates", () => {
     const tasks = listEmbeddedTasks();
-    expect(tasks.length).toBe(5);
+    expect(tasks.length).toBe(10);
   });
 
   test("each template has the exact id, default schedule, and enablement", () => {
@@ -41,8 +52,14 @@ describe("embedded core task registry", () => {
       expect(got?.schedule).toBe(exp.schedule);
       expect(got?.enabled).toBe(exp.enabled);
       expect(got?.description.length).toBeGreaterThan(0);
-      expect(got?.label).toBe(`core/${exp.id}`);
+      expect(got?.label).toBe(`${exp.category}/${exp.id}`);
     }
+  });
+
+  test("every improve/ template guards against overlapping runs", () => {
+    const improveTasks = listEmbeddedTasks().filter((t) => t.label.startsWith("improve/"));
+    expect(improveTasks.length).toBe(5);
+    for (const task of improveTasks) expect(task.command).toContain("--skip-if-locked");
   });
 
   test("every enabled embedded command resolves to a real top-level CLI command", () => {

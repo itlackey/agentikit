@@ -37,7 +37,7 @@ export function isImproveAutonomyEnabled(config: ExperimentalConfigHolder | unde
  * The config key an operator sets to enable a gated lane.
  *
  * Named rather than inlined because it is user-facing text: it goes into the
- * `improve_skipped` event metadata, the `akm tasks doctor` output, and the
+ * `improve_skipped` event metadata, the `akm task doctor` output, and the
  * health advisory, and those three must name the same key as the schema.
  */
 export const IMPROVE_AUTONOMY_CONFIG_KEY = "experimental.improveAutonomy";

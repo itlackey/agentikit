@@ -248,7 +248,7 @@ Contents:
 
 ### 4. Task History Table
 
-A record of scheduled task runs (from `akm tasks`):
+A record of scheduled task runs (from `akm task`):
 - Task ID, status, start/end times
 - Log file path (the log content stays in `$CACHE/tasks/logs/`)
 

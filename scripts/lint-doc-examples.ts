@@ -94,12 +94,25 @@ const SKIP_MARKER = "doclint:ignore";
  * the documented prompt text — so the exception lives here instead. `akm
  * wiki ingest`/`akm wiki lint` were real 0.8.0-era commands; the whole
  * `wiki` family was removed in 0.9.0.
+ *
+ * docs/posts/task-assets-persistent-workflows-11.md:86 — the line begins a
+ * backslash-continued multi-line `akm tasks add …` invocation (the same
+ * dated 0.8.0-era task-assets post). A trailing `# doclint:ignore` comment
+ * would break the `\` line continuation, corrupting the copy-pasteable
+ * example — so the exception lives here instead. `tasks` (plural) was the
+ * command group's spelling at the time; it was renamed to singular `task`
+ * in 0.9.0 (S6).
  */
 const ALLOWED_VIOLATIONS: ReadonlySet<string> = new Set([
   "docs/migration/v0.7-to-v0.8.md:1154:migrate",
   "docs/migration/v0.7-to-v0.8.md:1154:--dry-run",
   "docs/migration/v0.7-to-v0.8.md:1154:--print-diff",
   "docs/posts/task-assets-persistent-workflows-11.md:73:wiki",
+  "docs/posts/task-assets-persistent-workflows-11.md:86:tasks",
+  "docs/posts/task-assets-persistent-workflows-11.md:86:--schedule",
+  "docs/posts/task-assets-persistent-workflows-11.md:86:--command",
+  "docs/posts/task-assets-persistent-workflows-11.md:86:--name",
+  "docs/posts/task-assets-persistent-workflows-11.md:86:--description",
 ]);
 
 // ── 1. Build the real command tree from src/cli.ts (single source of truth —

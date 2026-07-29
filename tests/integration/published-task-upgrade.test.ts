@@ -113,7 +113,7 @@ function generatedDisabledCronCommand(crontab: string, id: string): string {
 }
 
 function readLatestHistory(currentCli: string, id: string, env: NodeJS.ProcessEnv): TaskHistoryRow {
-  const history = run([currentCli, "tasks", "history", "--id", id, "--limit", "1"], env);
+  const history = run([currentCli, "task", "history", "--id", id, "--limit", "1"], env);
   expectSuccess(history, `read ${id} task history`);
   const parsed = JSON.parse(history.stdout) as { rows: TaskHistoryRow[] };
   expect(parsed.rows).toHaveLength(1);
@@ -444,7 +444,7 @@ test.skipIf(!ENABLED)(
       expect(fs.readFileSync(path.join(legacyBackupPath, "state.db"))).toEqual(legacyBackupState);
 
       const migratedOldHistory = run(
-        [currentCli, "tasks", "history", "--id", "upgrade-command", "--limit", "1"],
+        [currentCli, "task", "history", "--id", "upgrade-command", "--limit", "1"],
         currentEnv,
       );
       expectSuccess(migratedOldHistory, "read published 0.8.14 task history after migration");
@@ -459,7 +459,7 @@ test.skipIf(!ENABLED)(
       expectSuccess(version, "packed 0.9 --version");
       expect(version.stdout).toContain(candidatePackage.version);
 
-      const sync = run([currentCli, "tasks", "sync", "--rebind"], currentEnv);
+      const sync = run([currentCli, "task", "sync", "--rebind"], currentEnv);
       expectSuccess(sync, "packed 0.9 tasks sync");
       const syncJson = JSON.parse(sync.stdout) as {
         installed: string[];
@@ -544,7 +544,7 @@ test.skipIf(!ENABLED)(
         `run_id=${workflowHistory.detail?.runId} status=active`,
       );
 
-      const manualDisabled = run([currentCli, "tasks", "run", "upgrade-disabled"], currentEnv);
+      const manualDisabled = run([currentCli, "task", "run", "upgrade-disabled"], currentEnv);
       expectSuccess(manualDisabled, "intentionally invoke disabled task manually");
       expect(JSON.parse(manualDisabled.stdout)).toMatchObject({
         result: { id: "upgrade-disabled", status: "completed", detail: { exitCode: 0 } },

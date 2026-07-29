@@ -88,7 +88,7 @@ Check `ok === false` or a non-zero exit code to detect failure. The `hint`
 field, when present, describes a corrective action.
 
 `env run`, `secret run`, and `migrate` preserve the spawned process's exact
-status. `tasks run` and `agent` map a failed result to exit 1 while retaining
+status. `task run` and `agent` map a failed result to exit 1 while retaining
 the child status in their result envelope.
 
 `akm lint` is the exception: it exits **0 on every successful run regardless

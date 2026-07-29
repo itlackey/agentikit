@@ -522,7 +522,7 @@ export async function stepAgentConnection(
       "This connection is used for agentic commands:",
       "  • akm proposal new (generate improvement proposals)",
       "  • akm improve       (run the reflect/distill/consolidate self-improvement pipeline)",
-      "  • akm tasks run     (run automated task prompts)",
+      "  • akm task run     (run automated task prompts)",
     ].join("\n"),
   );
 
@@ -588,7 +588,7 @@ export async function stepAgentConnection(
         "Agentic features disabled:",
         '  • akm proposal new — will show "no agent configured" error',
         '  • akm improve — will show "no agent configured" error',
-        '  • akm tasks run — will show "no agent configured" error',
+        '  • akm task run — will show "no agent configured" error',
         "",
         "You can configure this later with `akm setup`.",
       ].join("\n"),

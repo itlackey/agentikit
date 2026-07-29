@@ -124,7 +124,7 @@ describe("bundle-targeted tasks via --target", () => {
 
     const body = cronBody(exec.current(), "foo");
     expect(body).toBeDefined();
-    expect(body).toContain("tasks run foo --target work --scheduled");
+    expect(body).toContain("task run foo --target work --scheduled");
     // The file must NOT have been written to the primary stash.
     expect(fs.existsSync(path.join(iso.stashDir, "tasks", "foo.yml"))).toBe(false);
 
@@ -201,7 +201,7 @@ describe("bundle-targeted tasks via --target", () => {
     const body = cronBody(exec.current(), "baz");
     expect(body).toBeDefined();
     expect(body).not.toContain("--target");
-    expect(body).toContain("tasks run baz --scheduled");
+    expect(body).toContain("task run baz --scheduled");
 
     // Byte-for-byte equal to the pre-0.9 no-target rendering.
     const task: TaskDocument = {

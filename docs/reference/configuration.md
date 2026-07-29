@@ -262,7 +262,7 @@ omitted. Per-command flags always override these.
 `setup` is reserved for configuration derived by `akm setup`. It currently
 holds no keys — the `setup.taskSchedules` sub-key was removed in 0.9.0 after
 nothing in the setup flow or the tasks subsystem was found to read or write
-it. Scheduling lives in the tasks subsystem (`akm tasks`).
+it. Scheduling lives in the tasks subsystem (`akm task`).
 
 ## Experimental opt-ins
 

@@ -71,7 +71,7 @@ declining leaves both task files and scheduler state unchanged.
 Verify the resulting setup with:
 
 ```sh
-akm tasks doctor
+akm task doctor
 ```
 
 ## Initialize Your Working Stash
@@ -100,35 +100,31 @@ only if the schedules and enabled flags are correct:
 
 ```sh
 akm setup
-akm tasks doctor
+akm task doctor
 ```
 
 Task definitions live under `<stash>/tasks/`; scheduler entries are separate OS
 state. Activation captures the installed akm runtime so scheduled execution does
 not silently switch to a different checkout or package. Editing definitions and
-running ordinary `akm tasks sync` preserves that captured runtime. If akm was
+running ordinary `akm task sync` preserves that captured runtime. If akm was
 moved, reinstalled under a different package prefix, or repaired after an
 installation problem, migrate scheduler entries deliberately:
 
 ```sh
-akm tasks sync --rebind
-akm tasks doctor
+akm task sync --rebind
+akm task doctor
 ```
 
 Use `--rebind` only for that explicit runtime migration or repair.
 
 Rerunning `akm setup` preserves existing scheduler bindings by design. If you
 change the AKM storage path during reconfiguration, or move/install akm at a new
-runtime path, follow setup with `akm tasks sync --rebind`; setup never silently
+runtime path, follow setup with `akm task sync --rebind`; setup never silently
 rebinds existing entries.
 
-Fresh setup offers the small core task-template set shown in its review. It no
-longer registers the separate maintainer-oriented multi-cadence improve task set.
-`akm tasks init` is the explicit maintainer opt-in, but it is not a preview or
-preparation command: it creates missing definitions and immediately installs all
-enabled schedules. Inspect the documented default task set and the `--server`,
-`--laptop`, and `--rebind` options in the [tasks CLI reference](../reference/cli.md#tasks)
-before running it.
+Setup's review covers both the general-purpose core task-template set and the
+maintainer-oriented multi-cadence improve task set in one pass — see the
+[task CLI reference](../reference/cli.md#task) for the full template list.
 
 ## Add Your First Asset
 

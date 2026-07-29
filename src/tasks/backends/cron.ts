@@ -2,13 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// crontab backend for `akm tasks` (Linux default).
+// crontab backend for `akm task` (Linux default).
 //
 // Each akm-owned entry is wrapped in markers so a hand-edited crontab keeps
 // its other lines untouched:
 //
 //     # akm:task <id> BEGIN
-//     [SCHED] /abs/akm tasks run <id> >> /home/.../tasks/logs/<id>.log 2>&1
+//     [SCHED] /abs/akm task run <id> >> /home/.../tasks/logs/<id>.log 2>&1
 //     # akm:task <id> END
 //
 // The backend reads/writes the user's crontab via `crontab -l` and
@@ -116,22 +116,26 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): TaskBackend {
     },
     list(): InstalledTaskRef[] {
       const existing = readCrontab(exec);
-      return listBlocks(existing).map(({ id, body }) => {
+      const refs: InstalledTaskRef[] = [];
+      for (const { id, body } of listBlocks(existing)) {
         const installed = extractCronInvocation(body);
-        if (!installed) {
-          throw new ConfigError(
-            `Crontab task "${id}" does not contain a current AKM scheduler invocation.`,
-            "INVALID_CONFIG_FILE",
-          );
-        }
-        return {
+        // An invocation that no longer parses (e.g. a pre-0.9 `tasks run`
+        // entry surviving the scheduler-ABI respelling, or any other
+        // foreign/malformed line between our markers) is an orphan of its
+        // marker id, not a hard failure: omit it here so `akmTasksSync`
+        // treats the id as "not present" and reinstalls it from the current
+        // task file — going through the normal eligibility/`--rebind` gate
+        // exactly like a fresh install.
+        if (!installed) continue;
+        refs.push({
           id,
           signature: normalizeSignature(body),
-          ...(installed?.target !== undefined ? { target: installed.target } : {}),
+          ...(installed.target !== undefined ? { target: installed.target } : {}),
           binding: installed.binding,
           contextPath: installed.contextPath,
-        };
-      });
+        });
+      }
+      return refs;
     },
     listForRebind() {
       const existing = readCrontab(exec);
@@ -239,7 +243,7 @@ function malformedBlockError(id: string): ConfigError {
 
 /**
  * Recover the bundle name from an installed cron block body by reading the
- * `--target <bundle>` token embedded in the scheduled `akm tasks run …`
+ * `--target <bundle>` token embedded in the scheduled `akm task run …`
  * invocation. Returns undefined for the byte-identical primary/default form
  * (no `--target`). Bundle slugs never contain whitespace (config-schema
  * `isBundleSlug`), so the quoted token is a single whitespace-delimited field

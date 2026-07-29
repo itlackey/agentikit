@@ -525,7 +525,7 @@ indexed like a local filesystem bundle.
 
 ### macOS (launchd)
 
-**Plist:** `~/Library/LaunchAgents/com.akm.task.<id>.plist` — XML plist. Contains label, `ProgramArguments` (`akm tasks run <id>`), `StandardOutPath`, `StandardErrorPath`, trigger (`StartInterval` or `StartCalendarInterval`), and `EnvironmentVariables` (PATH captured at install time).
+**Plist:** `~/Library/LaunchAgents/com.akm.task.<id>.plist` — XML plist. Contains label, `ProgramArguments` (`akm task run <id>`), `StandardOutPath`, `StandardErrorPath`, trigger (`StartInterval` or `StartCalendarInterval`), and `EnvironmentVariables` (PATH captured at install time).
 
 Registered via `launchctl bootstrap gui/<uid> <plist>`.
 
@@ -535,7 +535,7 @@ No files written. User crontab edited in-place via `crontab -l` / `crontab -`. E
 
 ```
 # akm:task <id> BEGIN
-<cronexpr> /abs/akm tasks run <id> >> ~/.cache/akm/tasks/logs/<id>.log 2>&1
+<cronexpr> /abs/akm task run <id> >> ~/.cache/akm/tasks/logs/<id>.log 2>&1
 # akm:task <id> END
 ```
 

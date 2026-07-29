@@ -399,7 +399,8 @@ files, and workflows, and none of them fire, inject, or gain write access until
 you explicitly activate them:
 
 - **Tasks** install disabled. The scheduler skips an installed task at fire time
-  until you run `akm tasks enable`; only manual (non-scheduled) runs are exempt.
+  until you set `enabled: true` in its file and run `akm task sync`; only
+  manual (non-scheduled) runs are exempt.
 - **Env injection** from a registry-installed (third-party) source hard-blocks
   process-hijacking keys (`LD_PRELOAD`, `PATH`, …); your own first-party stash
   only warns. A freshly-installed stash carrying dangerous env keys gates the

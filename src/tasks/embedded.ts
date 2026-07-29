@@ -3,14 +3,18 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Embedded core task templates.
+ * Embedded task templates.
  *
- * A curated set of read-only YAML task templates ships inside the akm binary
- * under `src/assets/tasks/core/`. They are resolved at runtime via
+ * Curated sets of read-only YAML task templates ship inside the akm binary
+ * under `src/assets/tasks/<category>/` — `core/` (general-purpose maintenance)
+ * and `improve/` (the maintainer-oriented multi-cadence improve schedule,
+ * folded in from the retired `registerDefaultTasks`/`akm tasks init` path in
+ * 0.9, S6). Every category subdirectory is enumerated the same way; adding a
+ * new one needs no code change here. Templates are resolved at runtime via
  * `import.meta.dir` (mirroring `SKELETON_DIR` in
  * src/commands/stash-skeleton.ts) and are NOT written to any stash at
- * install/init time — the `akm setup` wizard copies a template into the
- * primary stash only when the user opts in (copy-on-enable).
+ * install time — the `akm setup` wizard copies a template into the primary
+ * stash only when the user opts in (copy-on-enable).
  *
  * Each entry exposes the parsed `command`, `schedule`, and `description`
  * alongside the raw `yaml`, so the wizard can both render a choice and write
@@ -23,8 +27,8 @@ import { getDirname } from "../runtime";
 import { parseTaskDocument } from "./parser";
 import type { TaskDocument } from "./schema";
 
-/** Directory holding the bundled core task templates. */
-const CORE_TASKS_DIR = path.join(getDirname(import.meta.url), "../assets/tasks/core");
+/** Directory holding the bundled task template categories. */
+const TASKS_ASSETS_DIR = path.join(getDirname(import.meta.url), "../assets/tasks");
 
 export interface EmbeddedTask {
   /**
@@ -48,46 +52,59 @@ export interface EmbeddedTask {
 }
 
 /**
- * Enumerate the embedded core task templates from the bundled assets
- * directory. Sorted by id for deterministic ordering. Returns an empty array
- * if the directory is missing (defensive — a build without assets should not
- * crash the wizard).
+ * Enumerate the embedded task templates from every category subdirectory of
+ * the bundled assets directory. Sorted by category then id for deterministic
+ * ordering. Returns an empty array if the directory is missing (defensive —
+ * a build without assets should not crash the wizard).
  */
 export function listEmbeddedTasks(): EmbeddedTask[] {
-  let entries: string[];
+  let categories: string[];
   try {
-    entries = fs.readdirSync(CORE_TASKS_DIR);
+    categories = fs
+      .readdirSync(TASKS_ASSETS_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
   } catch {
     return [];
   }
 
   const tasks: EmbeddedTask[] = [];
-  for (const entry of entries.sort()) {
-    if (!entry.endsWith(".yml")) continue;
-    const id = entry.slice(0, -4);
-    const filePath = path.join(CORE_TASKS_DIR, entry);
-    let yaml: string;
+  for (const category of categories) {
+    const categoryDir = path.join(TASKS_ASSETS_DIR, category);
+    let entries: string[];
     try {
-      yaml = fs.readFileSync(filePath, "utf8");
+      entries = fs.readdirSync(categoryDir);
     } catch {
       continue;
     }
-    let task: TaskDocument;
-    try {
-      task = parseTaskDocument({ yaml, filePath, id });
-    } catch {
-      continue;
+    for (const entry of entries.sort()) {
+      if (!entry.endsWith(".yml")) continue;
+      const id = entry.slice(0, -4);
+      const filePath = path.join(categoryDir, entry);
+      let yaml: string;
+      try {
+        yaml = fs.readFileSync(filePath, "utf8");
+      } catch {
+        continue;
+      }
+      let task: TaskDocument;
+      try {
+        task = parseTaskDocument({ yaml, filePath, id });
+      } catch {
+        continue;
+      }
+      if (task.target.kind !== "command") continue;
+      tasks.push({
+        id,
+        label: `${category}/${id}`,
+        command: task.target.cmd.join(" "),
+        schedule: task.schedule,
+        description: task.description ?? "",
+        enabled: task.enabled,
+        yaml,
+      });
     }
-    if (task.target.kind !== "command") continue;
-    tasks.push({
-      id,
-      label: `core/${id}`,
-      command: task.target.cmd.join(" "),
-      schedule: task.schedule,
-      description: task.description ?? "",
-      enabled: task.enabled,
-      yaml,
-    });
   }
   return tasks;
 }

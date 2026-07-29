@@ -167,7 +167,7 @@ metadata enhancement, `akm remember --enrich`, and `akm curate --rerank`. Suppor
 OpenAI, LM Studio, or any custom endpoint. Skipping disables enrichment features.
 
 **Step 2 — Agent connection** (for agentic commands)
-Configures how `akm improve`, `akm proposal new`, and `akm tasks run` dispatch AI sessions.
+Configures how `akm improve`, `akm proposal new`, and `akm task run` dispatch AI sessions.
 Options:
 - **Same connection** — reuse the Step 1 endpoint with a (optionally different) model
 - **New connection** — separate endpoint, model, and API key
@@ -2301,106 +2301,82 @@ akm proposal drain --strategy default --promote -y  # Read the triage block from
 forwarded into feedback metadata and consumed by improve/distill proposal
 prompts. Negative feedback requires a reason by default.
 
-### tasks
+### task
 
-`akm tasks` is the scheduling surface for workflows, agent prompts, and
+`akm task` is the scheduling surface for workflows, agent prompts, and
 shell commands. It manages on-disk task definitions under
 `<stash>/tasks/<id>.yml` and reconciles them with the OS-native scheduler
-(cron / launchd / schtasks). Only version-2 task YAML is discovered.
+(cron / launchd / schtasks). Only version-2 task YAML is discovered. The
+group is `add | run | sync | doctor | history` — there is no `list` or
+`remove`; use `akm search --type task` / `akm show tasks/<id>` to inspect,
+and edit the file + `akm task sync` to change or remove a schedule.
 
 ```sh
-akm search --type task                      # List tasks (cross-bundle; replaces `tasks list`)
-akm show tasks/<id>                          # Inspect one task (replaces `tasks show`)
-akm tasks add <id> --schedule "@daily" \    # Register a new task and install it
+akm search --type task                      # List tasks (cross-bundle)
+akm show tasks/<id>                          # Inspect one task
+akm task add <id> --schedule "@daily" \     # Register a new task and install it
   --command "akm improve --strategy default"
-akm tasks add review --schedule "@daily" --prompt "Review recent changes" --engine reviewer
-akm tasks add nightly --schedule "@daily" --command "akm improve" --disabled  # register but leave off
-akm tasks add nightly --schedule "@daily" --command "akm improve" --force    # overwrite an existing task id
-akm tasks init                              # Create and immediately activate default improve schedules
-akm tasks run <id>                          # Execute now (what the scheduler calls)
-akm tasks enable <id> / disable <id>        # Toggle scheduler entry
-akm tasks history [--id <id>] [--limit <n>] # Recent runs from state.db
-akm tasks sync                              # Reconcile on-disk YAML with scheduler
-akm tasks sync --rebind                     # Also capture the current installed runtime
-akm tasks doctor                            # Report scheduler backend + paths
+akm task add review --schedule "@daily" --prompt "Review recent changes" --engine reviewer
+akm task add nightly --schedule "@daily" --command "akm improve" --disabled  # register but leave off
+akm task add nightly --schedule "@daily" --command "akm improve" --force    # overwrite an existing task id
+akm task run <id>                           # Execute now (what the scheduler calls)
+akm task history [--id <id>] [--limit <n>]  # Recent runs from state.db
+akm task sync                               # Reconcile on-disk YAML with scheduler
+akm task sync --rebind                      # Also capture the current installed runtime
+akm task doctor                             # Report scheduler backend + paths
 ```
 
-`tasks add` also accepts `--disabled` (register but leave off in the OS
+`task add` also accepts `--disabled` (register but leave off in the OS
 scheduler), `--force` (overwrite an existing task with the same id), and
 `--rebind` (explicitly permit scheduler creation from a local invocation that
-would otherwise be considered ineligible — the same guard `tasks init` uses).
+would otherwise be considered ineligible).
 
-`akm tasks run` is what cron / launchd / schtasks invoke at the scheduled
+`akm task run` is what cron / launchd / schtasks invoke at the scheduled
 time. Each run is recorded as a row in the durable `task_history` table
-(`state.db`), surfaced by `akm tasks history` — **not** by `akm log`; there is
-no `tasks_invoked`/`tasks_completed` event type on the `akm log` stream.
+(`state.db`), surfaced by `akm task history` — **not** by `akm log`; there is
+no `task_invoked`/`task_completed` event type on the `akm log` stream.
 
-`akm tasks init` skips entirely when the `CI` environment variable is `true`.
+To disable a scheduled task, set `enabled: false` in its file and run
+`akm task sync`. To remove one, delete its file (`<bundle>/tasks/<id>.yml`)
+and run `akm task sync` — sync uninstalls the orphaned scheduler entry.
 
-To remove a scheduled task, delete its file (`<bundle>/tasks/<id>.yml`) and run
-`akm tasks sync` — sync uninstalls the orphaned scheduler entry.
-
-Scheduler activation captures the installed akm runtime. Ordinary `tasks sync`
+Scheduler activation captures the installed akm runtime. Ordinary `task sync`
 reconciles definitions, schedules, and enabled state while preserving that
-runtime binding. Use `tasks sync --rebind` only after intentionally moving or
+runtime binding. Use `task sync --rebind` only after intentionally moving or
 replacing the installation, or to repair a stale runtime path, then verify the
-result with `akm tasks doctor`. Interactive `akm setup` reviews the complete task
-plan and asks once before changing task files or scheduler state;
-non-interactive setup changes neither.
+result with `akm task doctor`. Interactive `akm setup` reviews every embedded
+task template (both the core set and the improve-schedule set) and asks once
+before changing task files or scheduler state; non-interactive setup changes
+neither.
 
 Setup reconfiguration preserves existing scheduler runtime bindings. Changing
 the AKM storage path or installed runtime path therefore requires an explicit
-`akm tasks sync --rebind`; setup does not silently migrate those entries. Fresh
-setup reviews the core templates only and does not register the separate
-maintainer-oriented improve task set.
+`akm task sync --rebind`; setup does not silently migrate those entries.
 
-`akm tasks init` is the explicit maintainer opt-in. It has no preview phase: the
-command creates missing task definitions and immediately installs every enabled
-schedule. Inspect this default set before running it:
-
-| Task | Default schedule/state |
-| --- | --- |
-| `akm-improve-frequent` | Hourly at `:40`, enabled |
-| `akm-improve-consolidate` | Every four hours at `:20`, enabled |
-| `akm-improve-nightly` | Daily at `02:15`, enabled for server mode and disabled for laptop mode |
-| `akm-improve-catchup` | Manual recovery task, disabled |
-| `akm-graph-refresh-weekly` | Sunday at `03:10`, enabled |
-
-Use `--server` to enable the nightly sweep, `--laptop` to leave it disabled, or
-neither to use platform detection. `--rebind` explicitly permits scheduler
-creation from a source-checkout invocation. Because creation and activation are
-immediate, choose these options before invoking `akm tasks init`.
-
-**Bundle targeting (`--target <bundle>`).** By default every subcommand operates
-on the primary/default bundle. Pass `--target <bundle>` to `add`, `enable`,
-`disable`, `run`, or `sync` (also accepted by `history` / `doctor`) to schedule
-and reconcile tasks that live in another configured bundle:
+**Bundle targeting (`--bundle <bundle>` / `--target <bundle>`).** By default
+every subcommand operates on the primary/default bundle. `task add` accepts
+`--bundle <bundle>`; `history`, `sync`, `doctor`, and `run` accept
+`--target <bundle>` to schedule and reconcile tasks that live in another
+configured bundle:
 
 ```sh
-akm tasks add nightly --schedule "@daily" --command "akm improve" --target team-stash
-akm tasks enable nightly --target team-stash   # install from a non-default bundle
-akm tasks sync --target team-stash             # reconcile only that bundle
+akm task add nightly --schedule "@daily" --command "akm improve" --bundle team-stash
+akm task sync --target team-stash              # reconcile only that bundle
 ```
 
 A non-default bundle is recorded in the installed scheduler entry as a
-`--target <bundle>` token, so the scheduled `akm tasks run` resolves the task
+`--target <bundle>` token, so the scheduled `akm task run` resolves the task
 (and its relative asset refs) from that bundle. `sync` reconciles one bundle at a
 time and only touches entries attributed to it, so a plain (primary) sync never
 disturbs another bundle's scheduled tasks. Scheduler ids are the bare task id and
-are never namespaced: enabling a task whose id is already scheduled from a
+are never namespaced: registering a task whose id is already scheduled from a
 different bundle is a hard error.
 
 Each task targets exactly one of `--workflow <ref>`, `--prompt <text-or-ref>`,
 or `--command <shell>`. Task YAML is strict and begins with `version: 2`.
 Prompt targets dispatch through `--engine` or `defaults.engine` and may set
 `model`, `timeoutMs`, and LLM request overrides; command tasks may set only
-`timeoutMs`; workflow tasks may set only `params`. `tasks add` accepts
+`timeoutMs`; workflow tasks may set only `params`. `task add` accepts
 `--engine`, `--model`, `--timeout-ms`, `--params`, `--name`, `--when-to-use`,
 `--description`, and `--tags`. A v1 task is diagnosed by sync and doctor
 but is never rewritten or executed.
-
-`akm tasks run` is what cron / launchd / schtasks invoke at the scheduled
-time. Each run writes a row to the durable `task_history` table in
-`state.db`, auditable via `akm tasks history` — this is a different table
-from the `akm log` events stream, and there is no corresponding
-`tasks_invoked`/`tasks_completed` event type on it.

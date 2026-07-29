@@ -672,7 +672,7 @@ describe("tasks parity", () => {
 
   test.skipIf(!ENABLED)("tasks doctor registers the supported Node wrapper", () => {
     setupStorage();
-    const result = nodeRun(["tasks", "doctor"], nodeEnv);
+    const result = nodeRun(["task", "doctor"], nodeEnv);
     assertNoBoundaryLeak(result, "tasks doctor");
     expect(result.status).toBe(0);
     const json = parseJson(result.stdout) as { akm?: { argv?: string[] } } | undefined;
@@ -751,12 +751,12 @@ describe("tasks parity", () => {
         expect(fs.readFileSync(fakeCrontab, "utf8")).toContain("node fallback crontab probe");
         fs.rmSync(fakeCrontab);
 
-        const doctor = launcherRun(["tasks", "doctor"]);
+        const doctor = launcherRun(["task", "doctor"]);
         assertNoBoundaryLeak(doctor, "Node fallback tasks doctor");
         expect(doctor.status).toBe(0);
         expect((parseJson(doctor.stdout) as { akm?: { argv?: string[] } })?.akm?.argv?.[1]).toBe(launcher);
 
-        const add = launcherRun(["tasks", "add", id, "--schedule", "@daily", "--command", "akm --version", "--rebind"]);
+        const add = launcherRun(["task", "add", id, "--schedule", "@daily", "--command", "akm --version", "--rebind"]);
         assertNoBoundaryLeak(add, "Node fallback tasks add");
         expect(add.status).toBe(0);
         taskAdded = true;
@@ -778,7 +778,7 @@ describe("tasks parity", () => {
           `generated Node scheduler command\nstdout:\n${scheduled.stdout}\nstderr:\n${scheduled.stderr}`,
         ).toBe(0);
 
-        const history = launcherRun(["tasks", "history", "--id", id, "--limit", "1"]);
+        const history = launcherRun(["task", "history", "--id", id, "--limit", "1"]);
         expect(history.status).toBe(0);
         const row = (parseJson(history.stdout) as { rows?: Array<{ status: string; log: string }> })?.rows?.[0];
         expect(row?.status).toBe("completed");
@@ -786,7 +786,7 @@ describe("tasks parity", () => {
           (JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")) as { version: string }).version,
         );
       } finally {
-        if (taskAdded) launcherRun(["tasks", "remove", id]);
+        if (taskAdded) launcherRun(["task", "remove", id]);
       }
     },
     180_000,

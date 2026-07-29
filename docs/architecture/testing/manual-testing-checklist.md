@@ -12,7 +12,7 @@ cover:
 - migration/error envelopes
 - file-system side effects
 - newer command surfaces and maintenance flows (`history`, `log`, `graph`,
-  `improve`, `proposal`, `tasks`, `wiki`, `env`, `secret`)
+  `improve`, `proposal`, `task`, `wiki`, `env`, `secret`)
 
 Time budget:
 
@@ -122,7 +122,7 @@ Fixture refs worth using throughout this doc:
       `remember`, `import`, `sync`, `clone`, `mv`, `registry`, `migrate`,
       `config`, `feedback`, `history`, `log`, `agent`, `lessons`, `lint`,
       `improve`, `proposal`, `help`, `hints`,
-      `completions`, `env`, `secret`, `tasks`. There is no `wiki` command
+      `completions`, `env`, `secret`, `task`. There is no `wiki` command
       (removed in 0.9.0 in favor of the `llm-wiki` bundle format). There are
       no top-level `extract`/`propose` commands — see `akm proposal extract`
       / `akm proposal new`.
@@ -626,7 +626,7 @@ checklist did not exercise.
 - [ ] `akm show tasks/<id>.md` strips the suffix and resolves to the `.yml`
       file; missing `.yml` yields a structured "task not found", not a parse
       error.
-- [ ] `akm tasks add` writes a new `.yml` and refuses to overwrite an existing
+- [ ] `akm task add` writes a new `.yml` and refuses to overwrite an existing
       `.md` without `--force`.
 
 #### `env set` and secret set --from-env / stdin behavior

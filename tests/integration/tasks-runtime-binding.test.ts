@@ -296,18 +296,15 @@ describe("scheduler runtime binding", () => {
           { id: "tampered", binding: [process.execPath], contextPath: tamperedContextPath },
         ],
       };
-      const result = await akmTasksDoctor(
-        {},
-        {
-          backend,
-          resolveInvocation: () => ({
-            argv: [process.execPath],
-            via: "standalone",
-            kind: "standalone",
-            eligible: true,
-          }),
-        },
-      );
+      const result = await akmTasksDoctor({
+        backend,
+        resolveInvocation: () => ({
+          argv: [process.execPath],
+          via: "standalone",
+          kind: "standalone",
+          eligible: true,
+        }),
+      });
 
       expect(result.bindings).toContainEqual({
         argv: [process.execPath],
@@ -322,7 +319,7 @@ describe("scheduler runtime binding", () => {
         status: ["invalid-context"],
       });
       expect(result.caller.kind).toBe("standalone");
-      expect(result.remediation).toBe("akm tasks sync --rebind");
+      expect(result.remediation).toBe("akm task sync --rebind");
     } finally {
       storage.cleanup();
     }

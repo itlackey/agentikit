@@ -1,0 +1,5 @@
+version: 2
+schedule: "0 4 * * *"
+command: akm improve --strategy catchup --skip-if-locked
+enabled: true
+description: Manual recovery — consolidation + triage drain (run on demand via `akm task run akm-improve-catchup`)

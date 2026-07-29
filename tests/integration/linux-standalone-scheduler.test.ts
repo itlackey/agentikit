@@ -123,11 +123,11 @@ test.skipIf(!ENABLED)(
       expectSuccess(version, "standalone candidate --version");
       expect(version.stdout).toContain(candidateVersion as string);
 
-      const doctor = run([binary, "tasks", "doctor"], env);
+      const doctor = run([binary, "task", "doctor"], env);
       expectSuccess(doctor, "standalone tasks doctor");
       expect(JSON.parse(doctor.stdout)).toMatchObject({ akm: { argv: [binary], via: "standalone" } });
 
-      const add = run([binary, "tasks", "add", id, "--schedule", "@daily", "--command", "akm --version"], env);
+      const add = run([binary, "task", "add", id, "--schedule", "@daily", "--command", "akm --version"], env);
       expectSuccess(add, "standalone tasks add");
       taskAdded = true;
 
@@ -142,7 +142,7 @@ test.skipIf(!ENABLED)(
       const scheduled = run(["/bin/sh", "-c", scheduledCommand], { ...env, PATH: "/usr/bin:/bin" });
       expectSuccess(scheduled, "generated standalone cron command");
 
-      const history = run([binary, "tasks", "history", "--id", id, "--limit", "1"], env);
+      const history = run([binary, "task", "history", "--id", id, "--limit", "1"], env);
       expectSuccess(history, "standalone tasks history");
       const row = (
         JSON.parse(history.stdout) as {
@@ -153,7 +153,7 @@ test.skipIf(!ENABLED)(
       expect(fs.readFileSync(row!.log, "utf8")).toContain(candidateVersion as string);
       expect(fs.readFileSync(taskPath)).toEqual(originalTask);
     } finally {
-      if (taskAdded) run([binary, "tasks", "remove", id], env);
+      if (taskAdded) run([binary, "task", "remove", id], env);
       sandbox.cleanup();
     }
   },

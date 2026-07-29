@@ -42,7 +42,7 @@ describe("tasks run startup", () => {
     fs.mkdirSync(path.dirname(journalPath), { recursive: true });
     fs.writeFileSync(journalPath, "{}\n", { mode: 0o600 });
 
-    const child = Bun.spawn(["bun", "src/cli.ts", "tasks", "run", "blocked-command", "--scheduled"], {
+    const child = Bun.spawn(["bun", "src/cli.ts", "task", "run", "blocked-command", "--scheduled"], {
       cwd: path.resolve(import.meta.dir, "../.."),
       env: { ...process.env },
       stdout: "pipe",

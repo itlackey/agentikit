@@ -83,7 +83,7 @@ bun run build
 
 ```sh
 akm setup                             # guided first-time setup
-akm tasks doctor                      # verify scheduler and installed runtime
+akm task doctor                       # verify scheduler and installed runtime
 akm add github:itlackey/akm-stash     # install the official onboarding stash
 akm index                             # build the search index
 akm curate "deploy"                   # get a curated shortlist
@@ -160,25 +160,22 @@ akm clone workflows/ship-release --dest ./project/.claude
 ```sh
 akm setup                 # review definitions, schedules, and enabled state
 # Confirm scheduler activation only after reviewing the complete task summary.
-akm tasks doctor          # verify backend, runtime, task state, and warnings
+akm task doctor           # verify backend, runtime, task state, and warnings
 ```
 
-Setup shows the complete task review before asking one explicit question about
-changing task files and the OS scheduler. Only confirmation prepares the
-definitions and syncs the scheduler. Declining, or running setup
-non-interactively, leaves both unchanged. A scheduled entry captures
-the installed akm runtime used during activation. Ordinary `akm tasks sync`
-preserves that runtime; after moving or replacing the installation, use
-`akm tasks sync --rebind` explicitly to migrate or repair scheduler entries, then
-run `akm tasks doctor` again.
+Setup shows the complete task review — both the general-purpose core
+templates and the maintainer-oriented improve cadence — before asking one
+explicit question about changing task files and the OS scheduler. Only
+confirmation prepares the definitions and syncs the scheduler. Declining, or
+running setup non-interactively, leaves both unchanged. A scheduled entry
+captures the installed akm runtime used during activation. Ordinary
+`akm task sync` preserves that runtime; after moving or replacing the
+installation, use `akm task sync --rebind` explicitly to migrate or repair
+scheduler entries, then run `akm task doctor` again.
 
 Rerunning setup preserves existing scheduler bindings. If setup changes the AKM
 storage path, or the installed runtime path changes, run
-`akm tasks sync --rebind` explicitly. Fresh setup offers the core task templates;
-it does not register the separate maintainer-oriented improve cadence. That
-automation remains an explicit `akm tasks init` operation, which creates missing
-definitions and immediately installs enabled schedules. Inspect its documented
-task set and options before running it.
+`akm task sync --rebind` explicitly.
 
 ## The improvement loop
 

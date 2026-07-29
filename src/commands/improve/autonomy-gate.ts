@@ -23,7 +23,7 @@
  * **A gated lane must never become a silent no-op.** That is the whole design
  * constraint: `applyAutonomyGate` returns every downgrade it made so the caller
  * can emit an `improve_skipped` event naming the lane and the config key, and so
- * `akm tasks doctor` and the health advisory can report it. Whatever a user would
+ * `akm task doctor` and the health advisory can report it. Whatever a user would
  * have seen happen, they now see explained.
  */
 
@@ -68,7 +68,7 @@ function gatedLane(lane: AutonomyLane): GatedLane {
 
 /**
  * Describe lanes for reporting — the warning line, the `improve_skipped` event,
- * and `akm tasks doctor` all render the same {@link GatedLane} shape, so the
+ * and `akm task doctor` all render the same {@link GatedLane} shape, so the
  * lane name, config key, and reason cannot drift between the three surfaces.
  */
 export function describeGatedLanes(lanes: readonly AutonomyLane[]): GatedLane[] {

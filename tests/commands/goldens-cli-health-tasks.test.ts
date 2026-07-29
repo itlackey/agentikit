@@ -5,7 +5,7 @@
 /**
  * WI-07 (Chunk 0a — brief §11, R4): CLI output baselines for the Chunk 9
  * sweep, families B (`akm health` json/text/md/html + exit codes + repeated
- * `--windows`) and C (`akm tasks` command family incl. the config-bypass
+ * `--windows`) and C (`akm task` command family incl. the config-bypass
  * `tasks run` path).
  *
  * See `tests/commands/goldens-cli-output.test.ts` for the shared design
@@ -251,7 +251,7 @@ describe("family B — akm health", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// Family C — akm tasks
+// Family C — akm task
 // ─────────────────────────────────────────────────────────────────────────
 
 function writeTrueTask(): void {
@@ -262,7 +262,7 @@ function writeTrueTask(): void {
   );
 }
 
-describe("family C — akm tasks", () => {
+describe("family C — akm task", () => {
   test("tasks run maps a command task's non-zero status to akm failure exit 1", async () => {
     const id = "golden-false";
     fs.mkdirSync(path.join(storage.stashDir, "tasks"), { recursive: true });
@@ -271,7 +271,7 @@ describe("family C — akm tasks", () => {
       ["version: 2", 'schedule: "@daily"', "enabled: true", 'command: ["/bin/sh", "-c", "exit 7"]', ""].join("\n"),
     );
 
-    const run = await runCli(["tasks", "run", id, "--format=json"]);
+    const run = await runCli(["task", "run", id, "--format=json"]);
     expect(run.code).toBe(1);
     expect(JSON.parse(run.stdout).result.detail.exitCode).toBe(7);
   });
@@ -279,15 +279,15 @@ describe("family C — akm tasks", () => {
   test("tasks run / history / doctor — command-type task running `true`", async () => {
     writeTrueTask();
 
-    const run = await runCli(["tasks", "run", "--format", "json", TASK_TRUE_ID]);
+    const run = await runCli(["task", "run", "--format", "json", TASK_TRUE_ID]);
     expect(run.code).toBe(0);
     const runJson = JSON.parse(run.stdout) as { result: Record<string, unknown> };
     expect(runJson.result.status).toBe("completed");
 
-    const history = await runCli(["tasks", "history", "--format=json"]);
+    const history = await runCli(["task", "history", "--format=json"]);
     expect(history.code).toBe(0);
 
-    const doctor = await runCli(["tasks", "doctor", "--format=json"]);
+    const doctor = await runCli(["task", "doctor", "--format=json"]);
     expect(doctor.code).toBe(0);
 
     expectGolden(
@@ -318,7 +318,7 @@ describe("family C — akm tasks", () => {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, "{ not valid json");
 
-    const run = await runCli(["tasks", "run", TASK_TRUE_ID, "--format=json"]);
+    const run = await runCli(["task", "run", TASK_TRUE_ID, "--format=json"]);
     expect(run.code).toBe(0);
     const runJson = JSON.parse(run.stdout) as { result: Record<string, unknown> };
     expect(runJson.result.status).toBe("completed");

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * launchd backend for `akm tasks` (macOS default).
+ * launchd backend for `akm task` (macOS default).
  *
  * Each task is written as a per-user LaunchAgent plist at
  * `~/Library/LaunchAgents/com.akm.task.<id>.plist` and registered via
@@ -254,7 +254,9 @@ export function LAUNCHD_BACKEND(options: LaunchdBackendOptions = {}): TaskBacken
       }
       if (ids.length === 0) return [];
       const disabledLabels = readDisabledLabels(exec);
-      return ids.map((id) => inspectInstalledLaunchdTask(id, fsLike.readFile(plistPath(id)), disabledLabels, exec));
+      return ids
+        .map((id) => inspectInstalledLaunchdTask(id, fsLike.readFile(plistPath(id)), disabledLabels, exec))
+        .filter((ref): ref is InstalledTaskRef => ref !== undefined);
     },
     listForRebind() {
       if (!fsLike.exists(agentsDir)) return [];
@@ -286,14 +288,13 @@ function inspectInstalledLaunchdTask(
   raw: string,
   disabledLabels: Set<string> | undefined,
   exec: LaunchdExec,
-): InstalledTaskRef {
+): InstalledTaskRef | undefined {
   const installed = extractPlistInvocation(raw);
-  if (!installed) {
-    throw new ConfigError(
-      `LaunchAgent task "${id}" does not contain a current AKM scheduler invocation.`,
-      "INVALID_CONFIG_FILE",
-    );
-  }
+  // An invocation that no longer parses (e.g. a pre-0.9 `tasks run` entry
+  // surviving the scheduler-ABI respelling) is an orphan of its marker id,
+  // not a hard failure: `list()` omits it so `akmTasksSync` treats the id as
+  // "not present" and reinstalls it from the current task file.
+  if (!installed) return undefined;
   const metadata = {
     ...(installed.target !== undefined ? { target: installed.target } : {}),
     binding: installed.binding,
@@ -457,7 +458,7 @@ function defaultAgentsDir(): string {
     throw new ConfigError(
       "Cannot determine user home directory; launchd backend requires HOME to locate ~/Library/LaunchAgents.",
       "INVALID_CONFIG_FILE",
-      "Set $HOME (POSIX) or the equivalent before running `akm tasks` on macOS.",
+      "Set $HOME (POSIX) or the equivalent before running `akm task` on macOS.",
     );
   }
   return path.join(home, "Library", "LaunchAgents");

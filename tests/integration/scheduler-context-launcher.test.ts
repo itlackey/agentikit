@@ -157,7 +157,7 @@ test("standalone/direct CLI bootstrap applies scheduler context before config re
 
     const result = spawnSync(
       process.execPath,
-      [path.resolve("src/cli.ts"), "--scheduler-context", file, "tasks", "doctor", "--format=json"],
+      [path.resolve("src/cli.ts"), "--scheduler-context", file, "task", "doctor", "--format=json"],
       {
         encoding: "utf8",
         env: { ...process.env, BUN_TEST: "1", AKM_CONFIG_DIR: ambientConfig },
@@ -175,7 +175,7 @@ test("standalone/direct CLI bootstrap applies scheduler context before config re
     });
     const invalidResult = spawnSync(
       process.execPath,
-      [path.resolve("src/cli.ts"), "--scheduler-context", tampered, "tasks", "doctor", "--format=json"],
+      [path.resolve("src/cli.ts"), "--scheduler-context", tampered, "task", "doctor", "--format=json"],
       {
         encoding: "utf8",
         env: { ...process.env, BUN_TEST: "1", AKM_CONFIG_DIR: ambientConfig },

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `akm tasks sync` schedule-drift detection (0.8.4 hotfix).
+ * `akm task sync` schedule-drift detection (0.8.4 hotfix).
  *
  * Before the fix, sync classified any task already present in the scheduler as
  * "unchanged" without comparing its cron line, so a changed `schedule:` in the
@@ -95,7 +95,7 @@ describe("akmTasksSync — schedule drift", () => {
     writeTask("beta", "0 2 * * *");
     await akmTasksSync({ backend });
 
-    // Edit beta's schedule on disk, as `akm tasks` never rewrites it.
+    // Edit beta's schedule on disk, as `akm task` never rewrites it.
     writeTask("beta", "45 */6 * * *");
 
     const result = await akmTasksSync({ backend });
@@ -104,7 +104,7 @@ describe("akmTasksSync — schedule drift", () => {
     expect(result.installed).toEqual([]);
     // The crontab now carries the new schedule, not the stale one.
     expect(exec.current()).toContain("45 */6 * * * /usr/local/bin/akm --scheduler-context");
-    expect(exec.current()).toContain("tasks run beta --scheduled");
+    expect(exec.current()).toContain("task run beta --scheduled");
     expect(exec.current()).not.toContain("0 2 * * * /usr/local/bin/akm");
   });
 
@@ -119,7 +119,7 @@ describe("akmTasksSync — schedule drift", () => {
     const result = await akmTasksSync({ backend });
     expect(result.updated).toEqual(["alpha"]);
     expect(exec.current()).toContain("# akm:disabled */15 * * * * /usr/local/bin/akm --scheduler-context");
-    expect(exec.current()).toContain("tasks run alpha --scheduled");
+    expect(exec.current()).toContain("task run alpha --scheduled");
   });
 
   test("removes orphaned scheduler entries with no backing file", async () => {
@@ -132,8 +132,8 @@ describe("akmTasksSync — schedule drift", () => {
     fs.rmSync(path.join(tasksDir, "gamma.yml"));
     const result = await akmTasksSync({ backend });
     expect(result.removed).toEqual(["gamma"]);
-    expect(exec.current()).not.toContain("tasks run gamma");
-    expect(exec.current()).toContain("tasks run alpha");
+    expect(exec.current()).not.toContain("task run gamma");
+    expect(exec.current()).toContain("task run alpha");
   });
 
   test("skips an unversioned task without installing it", async () => {
@@ -152,7 +152,11 @@ describe("akmTasksSync — schedule drift", () => {
     expect(exec.current()).toBe("");
   });
 
-  test("rejects a persisted scheduler invocation without a context descriptor", async () => {
+  // 0.9 scheduler ABI respelling (S6): a persisted invocation that no longer
+  // parses (missing context descriptor, or the pre-rename `tasks run`
+  // spelling below) is an orphan of its marker id, not a hard failure — sync
+  // reinstalls it from the current task file instead of crashing.
+  test("reinstalls a persisted scheduler invocation without a context descriptor", async () => {
     const exec = memoryExec(
       [
         "# akm:task alpha BEGIN",
@@ -164,8 +168,28 @@ describe("akmTasksSync — schedule drift", () => {
     const backend = backendFor(exec);
     writeTask("alpha", "*/15 * * * *", false);
 
-    await expect(akmTasksSync({ backend })).rejects.toThrow("does not contain a current AKM scheduler invocation");
-    expect(exec.current()).toContain("/usr/local/bin/akm tasks run alpha");
+    const result = await akmTasksSync({ backend });
+    expect(result.installed).toEqual(["alpha"]);
+    expect(exec.current()).toContain("--scheduler-context");
+    expect(exec.current()).toContain("task run alpha");
+  });
+
+  test("reinstalls a pre-rename `tasks run` invocation as an orphan of its marker id", async () => {
+    const exec = memoryExec(
+      [
+        "# akm:task alpha BEGIN",
+        `*/15 * * * * /usr/local/bin/akm --scheduler-context /var/lib/akm/context/one.json tasks run alpha --scheduled >> /var/log/akm/alpha.log 2>&1`,
+        "# akm:task alpha END",
+        "",
+      ].join("\n"),
+    );
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *", true);
+
+    const result = await akmTasksSync({ backend });
+    expect(result.installed).toEqual(["alpha"]);
+    expect(exec.current()).toContain("task run alpha");
+    expect(exec.current()).not.toContain("tasks run alpha");
   });
 
   test("a failed replacement leaves the prior native definition active", async () => {

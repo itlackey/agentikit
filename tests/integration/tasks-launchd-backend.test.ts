@@ -46,7 +46,7 @@ describe("buildPlistXml", () => {
     expect(xml).toContain("<key>Minute</key><integer>45</integer>");
     expect(xml).not.toContain("<key>StartInterval</key>");
     expect(xml).toContain("<string>/abs/akm</string>");
-    expect(xml).toContain("<string>tasks</string>");
+    expect(xml).toContain("<string>task</string>");
     expect(xml).toContain("<string>run</string>");
     expect(xml).toContain("<string>ping</string>");
     expect(xml).toContain("<string>--scheduled</string>");
@@ -491,7 +491,11 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
 });
 
 describe("LAUNCHD_BACKEND drift signatures", () => {
-  test("rejects an installed plist without the current context descriptor", () => {
+  // 0.9 scheduler ABI respelling (S6): an installed plist whose invocation no
+  // longer parses is an orphan of its marker id, not a hard failure —
+  // `list()` omits it so `akmTasksSync` treats the id as "not present" and
+  // reinstalls it from the task file.
+  test("omits an installed plist without the current context descriptor", () => {
     const { backend, fs } = makeBackend();
     backend.install(makeTask("0 9 * * *"));
     const file = "/tmp/agents/com.akm.task.ping.plist";
@@ -500,7 +504,7 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
       fs.readFile(file).replace(/\s*<string>--scheduler-context<\/string>\s*<string>[^<]+<\/string>/, ""),
     );
 
-    expect(() => backend.list()).toThrow("does not contain a current AKM scheduler invocation");
+    expect(backend.list()).toEqual([]);
   });
 
   test("no-op comparison reads a stable signature from the actual launchd enabled state", () => {

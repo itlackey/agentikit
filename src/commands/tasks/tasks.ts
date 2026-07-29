@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `akm tasks` — register, inspect, run, and remove scheduled task assets.
+ * `akm task` — register, inspect, run, and remove scheduled task assets.
  *
  * Each handler exported here is a pure function that performs the real work;
  * `src/cli.ts` wraps these in citty `defineCommand`s and shapes their return
@@ -154,7 +154,7 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   }
   if (fs.existsSync(assetPath) && !input.force) {
     throw new UsageError(
-      `Task "${id}" already exists. Pass --force to overwrite, or delete its file and run \`akm tasks sync\` first.`,
+      `Task "${id}" already exists. Pass --force to overwrite, or delete its file and run \`akm task sync\` first.`,
       "RESOURCE_ALREADY_EXISTS",
     );
   }
@@ -508,8 +508,8 @@ export interface TasksSyncResult {
  * `--target` token; absent ⇒ primary). This is the security boundary that keeps
  * "registering a bundle never activates code": a plain (primary) sync never
  * installs from, updates, or removes another bundle's entries, and sync never
- * scans all bundles. Activation happens only through explicit `enable` /
- * `add --target`.
+ * scans all bundles. Activation happens only through explicit `add --bundle`
+ * (or `sync --target` on a bundle whose task files are already present).
  */
 export async function akmTasksSync(
   deps: { backend?: TaskBackend; schedulerRuntime?: () => PreparedSchedulerRuntime } = {},
@@ -640,7 +640,7 @@ export interface TasksDoctorResult {
     taskIds: string[];
     status: string[];
   }>;
-  remediation: "akm tasks sync --rebind";
+  remediation: "akm task sync --rebind";
   logDir: string;
   historyDir: string;
   engine: { defaultEngine?: string; available: string[] };
@@ -679,7 +679,6 @@ export interface TasksDoctorResult {
 }
 
 export async function akmTasksDoctor(
-  _input: { target?: string } = {},
   deps: { backend?: TaskBackend; resolveInvocation?: typeof resolveAkmInvocation } = {},
 ): Promise<TasksDoctorResult> {
   const warnings: string[] = [];
@@ -753,7 +752,7 @@ export async function akmTasksDoctor(
     akm: invocation,
     caller: invocation,
     bindings,
-    remediation: "akm tasks sync --rebind",
+    remediation: "akm task sync --rebind",
     logDir: getTaskLogDir(),
     historyDir: getTaskHistoryDir(),
     engine: { defaultEngine, available: engines },
@@ -789,7 +788,7 @@ function schedulerInstallOptions(
   // per sync run rather than silently writing a mutable/unproven binary into cron.
   if (explicitRebind && runtime.eligible === false && warnings.length === 0) {
     warnings.push(
-      `--rebind bound scheduled tasks to an ineligible ${runtime.kind ?? "unknown"} invocation (${runtime.binding.join(" ")}); scheduled runs will invoke a mutable, unproven binary. Install akm via \`npm install --global akm-cli\` or a standalone release, then re-run \`akm tasks sync --rebind\`.`,
+      `--rebind bound scheduled tasks to an ineligible ${runtime.kind ?? "unknown"} invocation (${runtime.binding.join(" ")}); scheduled runs will invoke a mutable, unproven binary. Install akm via \`npm install --global akm-cli\` or a standalone release, then re-run \`akm task sync --rebind\`.`,
     );
   }
   return { ...base, binding: runtime.binding, contextPath: runtime.contextPath };
@@ -1033,7 +1032,7 @@ export function setEnabledInYaml(yaml: string, enabled: boolean): string {
 // Re-exported so tests can verify the validator path directly.
 // Re-export error classes consumed by callers that want to instanceof-check.
 // Re-export this so the CLI can decide what process exit code to use after
-// `akm tasks run` completes.
+// `akm task run` completes.
 export { ConfigError, exitCodeForStatus, NotFoundError, parseTaskDocument, UsageError };
 
 // Accept a bare task id or the canonical `[bundle//]tasks/<id>` ref.

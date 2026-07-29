@@ -43,16 +43,16 @@ describe("cron backend helpers", () => {
   test("buildCronLine emits absolute akm path", () => {
     const line = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log/akm", contextPath());
     expect(line).toContain("/usr/local/bin/akm --scheduler-context");
-    expect(line).toContain("tasks run ping --scheduled");
+    expect(line).toContain("task run ping --scheduled");
     expect(line).not.toContain("AKM_STASH_DIR=");
     expect(line).not.toContain("AKM_LLM_API_KEY");
   });
 
   test("buildCronLine embeds --target only when a non-default bundle is given", () => {
     const withTarget = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log", contextPath(), "work");
-    expect(withTarget).toContain("tasks run ping --target work --scheduled");
+    expect(withTarget).toContain("task run ping --target work --scheduled");
     const withoutTarget = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log", contextPath());
-    expect(withoutTarget).toContain("tasks run ping --scheduled");
+    expect(withoutTarget).toContain("task run ping --scheduled");
     expect(withoutTarget).not.toContain("--target");
   });
 
@@ -96,7 +96,7 @@ describe("cron backend helpers", () => {
     );
     expect(line).not.toContain("PATH=");
     expect(line).toContain("'/opt/100'\\%' ready/akm'\\''s bin'");
-    expect(line).toContain("tasks run ping\\%done");
+    expect(line).toContain("task run ping\\%done");
     expect(line).toContain("'/var/log/100'\\%' ready/ping'\\%'done.log'");
   });
 
@@ -296,7 +296,12 @@ describe("cron backend drift detection", () => {
     expect(backend.expectedSignature?.(SYNC_TASK, { target: "work" })).not.toBe(backend.expectedSignature?.(SYNC_TASK));
   });
 
-  test("list() rejects an entry without the current context descriptor", () => {
+  // 0.9 scheduler ABI respelling (S6): an entry whose invocation no longer
+  // parses (missing context descriptor, pre-rename `tasks run` spelling, or
+  // any other foreign content between the markers) is an orphan of its
+  // marker id, not a hard failure — `list()` omits it so `akmTasksSync`
+  // treats the id as "not present" and reinstalls it from the task file.
+  test("list() omits an entry without the current context descriptor", () => {
     const exec = memoryExec(
       [
         "# akm:task ping BEGIN",
@@ -306,7 +311,7 @@ describe("cron backend drift detection", () => {
       ].join("\n"),
     );
 
-    expect(() => CRON_BACKEND(opts(exec)).list()).toThrow("does not contain a current AKM scheduler invocation");
+    expect(CRON_BACKEND(opts(exec)).list()).toEqual([]);
   });
 
   test("expectedSignature changes when the schedule changes (drift is detectable)", () => {

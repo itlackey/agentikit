@@ -347,7 +347,7 @@ describe("output shape registry — every CLI verb returns a registered shape", 
     "health",
     "lint",
     "info",
-    "tasks",
+    "task",
     "graph",
     "db",
     "list",
@@ -437,7 +437,7 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
   // invocation, not a bare-group usage error; see
   // tests/commands/observability-cli-envelope.test.ts) and `lessons` was
   // removed entirely.
-  for (const group of ["graph", "migrate", "registry", "config", "proposal", "env", "secret", "tasks", "workflow"]) {
+  for (const group of ["graph", "migrate", "registry", "config", "proposal", "env", "secret", "task", "workflow"]) {
     test(`bare akm ${group} emits the canonical usage envelope and exits 2`, () => {
       const { status, stderr } = spawnCli([group], { cwd: repoRoot });
       expect(status).toBe(2);
@@ -478,7 +478,7 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
 //
 // Scope note: this walk only considers TERMINAL leaves — commands with a
 // `run` and no `subCommands` of their own. `defineGroupCommand`-based
-// dispatch groups (`akm graph`, `akm tasks`, `akm proposal`, …) also have a
+// dispatch groups (`akm graph`, `akm task`, `akm proposal`, …) also have a
 // `run` (their subcommand-routing + bare-invocation guard), but whether
 // their OWN bare-invocation behavior needs `GLOBAL_OUTPUT_ARGS` is a
 // separate, broader question this triage item didn't scope or fix. Note: as

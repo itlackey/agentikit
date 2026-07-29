@@ -399,7 +399,7 @@ the exit code is the preferred signal for shell scripts. Passthrough surfaces
 below preserve the child's own streams and status instead.
 
 `env run`, `secret run`, and `migrate` are process passthroughs and preserve
-the spawned process's exact status. `tasks run` maps task status to 0 or 1 and
+the spawned process's exact status. `task run` maps task status to 0 or 1 and
 retains a command child's exact status in `result.detail.exitCode`. `agent`
 maps a failed dispatch to 1 and retains the child status in its final result
 envelope.

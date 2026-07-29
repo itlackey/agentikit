@@ -41,7 +41,7 @@ import { ConfigError } from "../../core/errors";
  * The config key an operator sets to enable the workflow engine.
  *
  * Named rather than inlined because it is user-facing text: it goes into the
- * thrown error's message and `akm tasks doctor`, and those must name the same
+ * thrown error's message and `akm task doctor`, and those must name the same
  * key as the schema.
  */
 export const WORKFLOW_ENGINE_CONFIG_KEY = "experimental.workflowEngine";

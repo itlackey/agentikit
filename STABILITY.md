@@ -156,11 +156,12 @@ CHANGELOG with a migration note.
   becomes a hard error in 0.10. The replacement is
   `akm improve && akm proposal drain --promote --yes`, or a `triage` block
   with `applyMode: "promote"` in your strategy.
-- **Tasks** — `akm tasks` subcommand surface (singular `akm task` is an
-  additive alias); strict version-2 YAML for scheduled tasks. Prompt tasks use
-  named engines and task history metadata is versioned. Schema additions in
-  patch releases; removals only at minor. Bare `akm tasks` reports scheduler
-  diagnostics (equivalent to `akm tasks doctor`).
+- **Tasks** — `akm task` subcommand surface (`add | run | sync | doctor |
+  history`; no alias, no `list`/`remove`/`init`/`enable`/`disable`); strict
+  version-2 YAML for scheduled tasks. Prompt tasks use named engines and task
+  history metadata is versioned. Schema additions in patch releases; removals
+  only at minor. Bare `akm task` is a usage error naming the subcommands
+  (`akm task doctor` reports scheduler diagnostics).
 - **Events / log** — `akm log` is the event-stream surface (0.9.0: the
   asset-scoped `akm history` surface, and `log`'s own `tail` subcommand, were
   both removed; `log` is now a leaf command — the former `list` surface).
@@ -265,7 +266,7 @@ is no partial-execution fallback to downgrade into:
 
 Each refusal is a classified `ConfigError` (`WORKFLOW_ENGINE_NOT_ENABLED`, exit
 78) naming the exact surface and config key — never a silent no-op — and `akm
-tasks doctor` reports the gate's state under `workflowEngine.enabled` /
+task doctor` reports the gate's state under `workflowEngine.enabled` /
 `workflowEngine.configKey`. `akm lint --type workflows` is unaffected even
 against a `.yaml` program file: it type-checks the file without executing
 anything, and creating a *markdown* workflow (the `create` default) is
@@ -287,9 +288,9 @@ akm config set experimental.improveAutonomy true
 Without it, these three lanes are downgraded, and each downgrade is **reported,
 not silent**: it warns on stderr naming the lane and the key, appends an
 `improve_skipped` event with `reason: "autonomy_gated"`, is counted in
-`akm health`'s improve skip-reason summary, and is listed by `akm tasks doctor`
+`akm health`'s improve skip-reason summary, and is listed by `akm task doctor`
 under `improveAutonomy.gatedLanes` — which is where to look when a *scheduled*
-run stops doing something it used to. `akm tasks doctor` also reports the
+run stops doing something it used to. `akm task doctor` also reports the
 **effective** `improveTriage.applyMode`, so a `promote` strategy under a
 review-first config correctly shows `queue`.
 

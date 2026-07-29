@@ -203,8 +203,8 @@ The refusal names the exact surface and config key, e.g.:
 ```
 
 `akm lint --type workflows` is **not** gated even against a `.yaml` program
-file — it only type-checks the program without executing anything. `akm
-tasks doctor` reports the gate's live state under `workflowEngine.enabled`
+file — it only type-checks the program without executing anything. `akm task
+doctor` reports the gate's live state under `workflowEngine.enabled`
 and `workflowEngine.configKey`, so you can confirm whether it is on without
 tripping a refusal. The engine is never enabled by inference: an absent
 `experimental` section, an absent `workflowEngine` key, and an explicit

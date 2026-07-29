@@ -40,7 +40,7 @@ describe("scheduled task invocation", () => {
       "/opt/akm/bin/akm",
       "--scheduler-context",
       "/data/tasks/context/one.json",
-      "tasks",
+      "task",
       "run",
       "ping",
       "--scheduled",
@@ -52,7 +52,7 @@ describe("scheduled task invocation", () => {
       "/opt/akm",
       "--scheduler-context",
       "/data/context.json",
-      "tasks",
+      "task",
       "run",
       "ping",
       "--target",
@@ -62,7 +62,25 @@ describe("scheduled task invocation", () => {
   });
 
   test("recognizes only the current descriptor-bearing invocation shape", () => {
-    expect(parseScheduledTaskArgv(["/opt/akm", "tasks", "run", "ping", "--scheduled"])).toBeUndefined();
+    expect(parseScheduledTaskArgv(["/opt/akm", "task", "run", "ping", "--scheduled"])).toBeUndefined();
+    expect(
+      parseScheduledTaskArgv([
+        "/opt/akm",
+        "--scheduler-context",
+        "/data/context.json",
+        "task",
+        "run",
+        "ping",
+        "--scheduled",
+      ]),
+    ).toEqual({ binding: ["/opt/akm"], contextPath: "/data/context.json" });
+  });
+
+  // 0.9 scheduler ABI respelling (`tasks run` → `task run`, S6): a pre-rename
+  // installed invocation is no longer parseable — `task sync` treats it as an
+  // orphan of its marker id and reinstalls it from the current file state
+  // rather than crashing (src/tasks/backends/{cron,launchd,schtasks}.ts).
+  test("no longer recognizes the pre-rename `tasks run` spelling", () => {
     expect(
       parseScheduledTaskArgv([
         "/opt/akm",
@@ -73,7 +91,7 @@ describe("scheduled task invocation", () => {
         "ping",
         "--scheduled",
       ]),
-    ).toEqual({ binding: ["/opt/akm"], contextPath: "/data/context.json" });
+    ).toBeUndefined();
   });
 
   test("writes an immutable restrictive descriptor containing only directories and PATH", () => {

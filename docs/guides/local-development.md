@@ -14,7 +14,7 @@ Run the working tree directly for the normal edit-test loop:
 
 ```bash
 bun src/cli.ts search "deploy"
-bun src/cli.ts tasks doctor
+bun src/cli.ts task doctor
 ```
 
 This executes current uncommitted source. Tests that spawn the CLI should use
@@ -28,7 +28,7 @@ Build first, then invoke the package launcher from `dist/`:
 ```bash
 bun run build
 node dist/akm search "deploy"
-node dist/akm tasks doctor
+node dist/akm task doctor
 ```
 
 This checks generated imports, copied assets, and launcher behavior while still
@@ -61,9 +61,9 @@ akm --version
 ```
 
 This replaces the globally resolved package and can affect agents, shells, and
-scheduled tasks that invoke `akm`. Re-run `akm tasks sync --rebind` only when you
+scheduled tasks that invoke `akm`. Re-run `akm task sync --rebind` only when you
 intend existing scheduler entries to capture the new installed runtime, then
-verify with `akm tasks doctor`.
+verify with `akm task doctor`.
 
 ## Transitional Machine-Local Wrapper
 
