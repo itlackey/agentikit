@@ -20,6 +20,9 @@ import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
 import { loadConfig, primaryBundlePath } from "../../core/config/config";
 import { resolveSourceEntries } from "../../indexer/search/search-source";
+import { compileWorkflowProgram } from "../../workflows/ir/compile";
+import { parseWorkflowProgram } from "../../workflows/program/parser";
+import { isWorkflowProgramPath } from "../../workflows/program/project";
 import { runBaseChecks } from "./base-linter";
 import { checkEnvForDangerousKeys } from "./env-key-rules";
 import type { LintContext, LintIssue } from "./types";
@@ -66,6 +69,27 @@ function collectYamlFiles(dir: string): string[] {
     if (entry.isDirectory()) {
       results.push(...collectYamlFiles(full));
     } else if (entry.isFile() && entry.name.endsWith(".yml")) {
+      results.push(full);
+    }
+  }
+  return results;
+}
+
+/**
+ * YAML workflow *programs* under `workflows/` (`.yaml`/`.yml` — the format the
+ * native engine executes). Dropped `workflow validate`'s only unique coverage
+ * (parse + compile structural errors); `akm lint --type workflows` is now the
+ * one place that checks them, alongside the markdown workflow documents
+ * `collectMarkdownFiles` already finds.
+ */
+function collectWorkflowProgramFiles(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const results: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...collectWorkflowProgramFiles(full));
+    } else if (entry.isFile() && isWorkflowProgramPath(entry.name)) {
       results.push(full);
     }
   }
@@ -183,8 +207,49 @@ function appendMemoryStubIssue(ctx: LintContext, issues: LintIssue[]): void {
   issues.push({ file: ctx.relPath, issue: "orphaned-stub", detail: ORPHANED_STUB_DETAIL, fixed: false });
 }
 
+/**
+ * `invalid-workflow-structure` for a YAML workflow *program*: re-parse via
+ * `parseWorkflowProgram`, then — only when the parse is clean — compile via
+ * `compileWorkflowProgram` so expression/reference errors surface too (the
+ * same two-stage check `workflow validate` used to run before it was
+ * dropped). Non-fatal compiler WARNINGS are not lint findings (lint has no
+ * warning bucket) — they stay covered by `tests/workflows/program-warnings.test.ts`
+ * / `tests/workflows/ir-compile.test.ts`. No placeholder-stub check: that
+ * marker set is markdown-only, matching `workflow validate`'s prior scope.
+ */
+function workflowProgramDiagnostics(relPath: string, raw: string, filePath: string): LintIssue[] {
+  const issues: LintIssue[] = [];
+  try {
+    const parsed = parseWorkflowProgram(raw, { path: filePath });
+    if (!parsed.ok) {
+      for (const err of parsed.errors) {
+        issues.push({ file: relPath, issue: "invalid-workflow-structure", detail: err.message, fixed: false });
+      }
+      return issues;
+    }
+    const compiled = compileWorkflowProgram(parsed.program);
+    if (!compiled.ok) {
+      for (const err of compiled.errors) {
+        issues.push({ file: relPath, issue: "invalid-workflow-structure", detail: err.message, fixed: false });
+      }
+    }
+  } catch (e) {
+    issues.push({
+      file: relPath,
+      issue: "invalid-workflow-structure",
+      detail: `workflow program parser error: ${e instanceof Error ? e.message : String(e)}`,
+      fixed: false,
+    });
+  }
+  return issues;
+}
+
 /** WorkflowLinter's `placeholder-stub` (WITH `--fix` delete) + `invalid-workflow-structure` (workflow-linter.ts:22-79). */
 function appendWorkflowIssues(ctx: LintContext, issues: LintIssue[]): void {
+  if (isWorkflowProgramPath(ctx.filePath)) {
+    issues.push(...workflowProgramDiagnostics(ctx.relPath, ctx.raw, ctx.filePath));
+    return;
+  }
   const placeholder = matchWorkflowPlaceholder(ctx.body);
   if (placeholder) {
     if (ctx.fix) {
@@ -274,8 +339,14 @@ export function akmLint(options: AkmLintOptions = {}): AkmLintResult {
 
   for (const subdir of dirsToScan) {
     const dirPath = path.join(stashRoot, subdir);
-    // Tasks are .yml files; everything else is .md
-    const files = subdir === "tasks" ? collectYamlFiles(dirPath) : collectMarkdownFiles(dirPath, true);
+    // Tasks are .yml files; workflows are markdown documents PLUS .yaml/.yml
+    // programs; everything else is .md
+    const files =
+      subdir === "tasks"
+        ? collectYamlFiles(dirPath)
+        : subdir === "workflows"
+          ? [...collectMarkdownFiles(dirPath, true), ...collectWorkflowProgramFiles(dirPath)]
+          : collectMarkdownFiles(dirPath, true);
 
     // Directory-level check: skills require a SKILL.md entry point (was
     // SkillLinter.lintDirectory). Run once per direct subdirectory before the
@@ -310,8 +381,9 @@ export function akmLint(options: AkmLintOptions = {}): AkmLintResult {
       let body: string;
       let frontmatter: string | null;
 
-      if (subdir === "tasks") {
-        // Task files are pure YAML — parseFrontmatter returns empty data for them.
+      if (subdir === "tasks" || (subdir === "workflows" && isWorkflowProgramPath(filePath))) {
+        // Task files and workflow YAML programs are pure YAML — parseFrontmatter
+        // returns empty data for them.
         try {
           const parsed = parseYaml(raw);
           data =

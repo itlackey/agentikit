@@ -103,7 +103,7 @@ please file it.
   child-process passthrough in `env run` / `secret run` / `migrate` (`status`
   and `apply` both spawn the
   standalone `akm-migrate` tool), a bare-path payload from `env path`, and
-  document payloads from `workflow template` / `help migrate` / `hints`. The
+  document payloads from `help migrate` / `hints`. The
   set is declared in
   `src/output/format-exempt.ts`, and
   passing `--format` to one of them warns rather than silently doing something
@@ -228,18 +228,21 @@ for scripted use.
   written as YAML programs (`workflows/*.yaml`, `version: 2`, validated
   against `schemas/akm-workflow.json`), executed by `akm workflow run`, plus
   the harness-neutral driver protocol (`akm workflow brief` / `akm workflow
-  report`) and `akm workflow watch`. Requires the `experimental.workflowEngine`
+  report`). Requires the `experimental.workflowEngine`
   opt-in — see [below](#akm-workflow-engine--opt-in-in-090). The YAML format,
   its schema, the flags, and all JSON output shapes may change. Classic **linear markdown
   workflows are unchanged and stable**, as is the workflow CLI contract
-  (`start` / `next` / `complete` / `status` / `list` / `create` / `validate` /
-  `template` / `resume` / `abandon`) — none of that is gated.
+  (`start` / `next` / `complete` / `status` / `list` / `create` / `resume` /
+  `abandon`) — none of that is gated. There is no `akm workflow template`,
+  `akm workflow validate`, or `akm workflow watch` (0.9.0: dropped —
+  `create --print`, `akm lint --type workflows`, and `akm log --run <id>`
+  are the replacements, respectively).
 
 ### `akm workflow` engine — opt-in in 0.9.0
 
 **The native workflow engine requires an explicit opt-in in 0.9.0.** Classic
 linear markdown workflows — `start` / `next` / `complete` / `status` / `list` /
-`create` (markdown, the default) / `template` / `validate` / `resume` /
+`create` (markdown, the default) / `resume` /
 `abandon` — are unaffected and ship unconditionally, exactly as before. The
 engine-execution surface is gated:
 
@@ -256,15 +259,15 @@ is no partial-execution fallback to downgrade into:
 | `akm workflow run` | Executes a run's steps with the native engine, dispatching each step's units to the configured runner |
 | `akm workflow brief` | Read-only half of the harness-neutral driver protocol |
 | `akm workflow report` | Mutating half of the harness-neutral driver protocol |
-| `akm workflow watch` | Streams a run's `workflow_*` events |
 | `akm workflow create <name>.yaml` | Authors a YAML (`version: 2`) workflow *program* — the format the engine executes |
 
 Each refusal is a classified `ConfigError` (`WORKFLOW_ENGINE_NOT_ENABLED`, exit
 78) naming the exact surface and config key — never a silent no-op — and `akm
 tasks doctor` reports the gate's state under `workflowEngine.enabled` /
-`workflowEngine.configKey`. `akm workflow validate` is unaffected even against
-a `.yaml` program file: it type-checks the file without executing anything,
-and creating a *markdown* workflow (the `create` default) is unaffected too.
+`workflowEngine.configKey`. `akm lint --type workflows` is unaffected even
+against a `.yaml` program file: it type-checks the file without executing
+anything, and creating a *markdown* workflow (the `create` default) is
+unaffected too.
 
 The engine is never enabled by inference: an absent `experimental` section, an
 absent key, and an explicit `false` all read as off.

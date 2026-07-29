@@ -302,7 +302,7 @@ The npm package requires Node.js >= 22. It prefers a working Bun >= 1.0 on
 To try workflows:
 
 ```sh
-akm workflow template
+akm workflow template  # doclint:ignore (historical — akm 0.5.0 release announcement; `template` folded into `workflow create --print` in the 0.9.0 CLI overhaul)
 # Copy the output to workflows/your-first-workflow.md and edit it
 akm workflow create your-first-workflow
 akm workflow start workflow:your-first-workflow

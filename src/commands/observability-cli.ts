@@ -58,6 +58,10 @@ export const logCommand = defineJsonCommand({
     },
     type: { type: "string", description: "Filter by event type (add, remove, remember, feedback, ...)" },
     ref: { type: "string", description: "Filter by asset ref ([bundle//]conceptId)" },
+    run: {
+      type: "string",
+      description: "Filter to a workflow run's events (metadata.runId), e.g. the id from `akm workflow start`",
+    },
     "exclude-tags": {
       type: "string",
       description: "Exclude events matching these tags (repeatable)",
@@ -79,6 +83,7 @@ export const logCommand = defineJsonCommand({
       since: args.since,
       type: args.type,
       ref: args.ref,
+      run: args.run,
       ...(excludeTags.length > 0 ? { excludeTags } : {}),
       ...(includeTags.length > 0 ? { includeTags } : {}),
       ...(limit !== undefined ? { limit } : {}),

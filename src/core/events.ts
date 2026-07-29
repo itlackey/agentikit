@@ -279,6 +279,13 @@ export interface ReadEventsOptions {
   /** Only include events whose metadata.tags contain ALL of these tags. */
   includeTags?: string[];
   /**
+   * Filter to events whose `metadata.runId` matches (the `workflow_*` event
+   * family's run-scoping field). 0.9.0 CLI overhaul (S5): `akm workflow
+   * watch <run-id>` is dropped; this is the replacement for its run-scoped
+   * filter on the general `akm log` leaf.
+   */
+  runId?: string;
+  /**
    * D-38 (`akm log list --limit`): cap the result to the MOST RECENT `limit`
    * events matching every other filter (since/type/ref AND the tag
    * post-filter below). Undefined means unlimited — the historical default,
@@ -343,7 +350,10 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
     // pre-existing behavior) and apply `limit` ourselves, below, AFTER the
     // post-filter runs.
     const needsPostFilter =
-      typeIsAliased || (options.excludeTags?.length ?? 0) > 0 || (options.includeTags?.length ?? 0) > 0;
+      typeIsAliased ||
+      (options.excludeTags?.length ?? 0) > 0 ||
+      (options.includeTags?.length ?? 0) > 0 ||
+      options.runId !== undefined;
     const pushLimitToSql = options.limit !== undefined && !needsPostFilter;
     const { events: rawEvents, nextId } = readStateEvents(db, {
       sinceId: options.sinceOffset,
@@ -355,6 +365,7 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
 
     const filtered = rawEvents.filter((envelope) => {
       if (typeIsAliased && !SAVE_SYNC_EVENT_TYPE_ALIASES.has(envelope.eventType)) return false;
+      if (options.runId !== undefined && envelope.metadata?.runId !== options.runId) return false;
       // Apply tag filters after the indexed state.db read.
       const tags = (envelope.metadata?.tags as string[] | undefined) ?? [];
       if (options.excludeTags?.some((t) => tags.includes(t))) return false;

@@ -8,12 +8,16 @@
  * args/output shape are byte-identical. Handlers whose body is a plain
  * `runWithJsonErrors(...) + output(...)` are migrated to `defineJsonCommand`,
  * which emits the same JSON envelope (stdout/stderr/exit-code) as the inline
- * form. `workflow template` keeps a plain `defineCommand` because it writes the
- * template straight to stdout with no JSON envelope.
+ * form.
+ *
+ * 0.9.0 CLI overhaul (S5): `workflow template` is dropped — `workflow create
+ * --print` prints the same content (markdown, or a YAML program with a
+ * .yaml/.yml name) without writing. `workflow validate` is dropped — `akm
+ * lint --type workflows` covers structural validation of both markdown
+ * documents and YAML programs. `workflow watch` is dropped — poll `akm log
+ * --since '@offset:<id>' --run <run-id>` instead.
  */
 
-import fs from "node:fs";
-import { defineCommand } from "citty";
 import { getParsedInvocation } from "../cli/invocation";
 import { getStringArg } from "../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
@@ -21,14 +25,7 @@ import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "
 import { loadConfig } from "../core/config/config";
 import { NotFoundError, UsageError } from "../core/errors";
 import { akmIndex } from "../indexer/indexer";
-import {
-  createWorkflowAsset,
-  formatWorkflowErrors,
-  getWorkflowProgramTemplate,
-  getWorkflowTemplate,
-  validateWorkflowProgramSource,
-  validateWorkflowSource,
-} from "../workflows/authoring/authoring";
+import { createWorkflowAsset, getWorkflowProgramTemplate, getWorkflowTemplate } from "../workflows/authoring/authoring";
 import { parseWorkflowJsonObject, parseWorkflowStepState, WORKFLOW_STEP_STATES } from "../workflows/cli";
 import { requireWorkflowEngineEnabled } from "../workflows/exec/workflow-engine-gate";
 import { isWorkflowProgramPath } from "../workflows/program/project";
@@ -42,7 +39,6 @@ import {
   resumeWorkflowRun,
   startWorkflowRun,
 } from "../workflows/runtime/runs";
-import { loadWorkflowAsset } from "../workflows/runtime/workflow-asset-loader";
 
 const workflowStartCommand = defineJsonCommand({
   meta: {
@@ -217,6 +213,12 @@ const workflowCreateCommand = defineJsonCommand({
       description: "Explicitly replace an existing workflow with a fresh template (use with --force)",
       default: false,
     },
+    print: {
+      type: "boolean",
+      description:
+        "Print the template that would be written (markdown, or YAML with a .yaml/.yml name) without creating anything",
+      default: false,
+    },
   },
   async run({ args }) {
     // `name` is flat; subdirectory placement is `--path`'s job.
@@ -227,6 +229,15 @@ const workflowCreateCommand = defineJsonCommand({
       throw new UsageError(
         "Workflow name must start with a lowercase letter or digit and contain only lowercase letters, digits, hyphens, dots, underscores, and slashes.",
       );
+    }
+    if (args.print) {
+      const isProgram = isWorkflowProgramPath(effectiveName);
+      output("workflow-create", {
+        ok: true,
+        template: isProgram ? getWorkflowProgramTemplate() : getWorkflowTemplate(),
+        kind: isProgram ? "program" : "markdown",
+      });
+      return;
     }
     if (args.force && !args.from && !args.reset) {
       throw new UsageError(
@@ -252,89 +263,13 @@ const workflowCreateCommand = defineJsonCommand({
   },
 });
 
-const workflowTemplateCommand = defineCommand({
-  meta: {
-    name: "template",
-    description: "Print a valid workflow template (markdown by default, --yaml for a YAML program)",
-  },
-  args: {
-    yaml: {
-      type: "boolean",
-      description: "Print a minimal valid YAML workflow program instead of the markdown template",
-      default: false,
-    },
-  },
-  run({ args }) {
-    process.stdout.write(args.yaml ? getWorkflowProgramTemplate() : getWorkflowTemplate());
-  },
-});
-
-const workflowValidateCommand = defineJsonCommand({
-  meta: {
-    name: "validate",
-    description: "Validate a workflow file or ref (markdown document or YAML program) and print any errors",
-  },
-  args: {
-    target: {
-      type: "positional",
-      description: "Workflow ref (workflows/<name>) or filesystem path to a workflow .md/.yaml",
-      required: true,
-    },
-  },
-  async run({ args }) {
-    const filePath = await resolveWorkflowFilePath(args.target);
-    // YAML programs (redesign addendum, R1) validate through the program
-    // parser AND compiler so expression/reference errors surface at lint
-    // time; both error lists carry line numbers. Markdown is unchanged.
-    if (isWorkflowProgramPath(filePath)) {
-      const { result } = validateWorkflowProgramSource(filePath);
-      if (!result.ok) {
-        throw new UsageError(formatWorkflowErrors(filePath, result.errors));
-      }
-      // Non-fatal WARNINGS ride the envelope additively — `ok` stays true. The
-      // text formatter renders them clearly marked for humans; the JSON key is
-      // the machine channel. Empty array when the program is fully typed/declared.
-      output("workflow-validate", {
-        ok: true,
-        path: filePath,
-        format: "program",
-        title: result.program.name,
-        stepCount: result.program.steps.length,
-        warnings: result.warnings.map((w) => ({ line: w.line, message: w.message })),
-      });
-      return;
-    }
-    const { parse } = validateWorkflowSource(filePath);
-    if (parse.ok) {
-      output("workflow-validate", {
-        ok: true,
-        path: filePath,
-        title: parse.document.title,
-        stepCount: parse.document.steps.length,
-      });
-      return;
-    }
-    throw new UsageError(formatWorkflowErrors(filePath, parse.errors));
-  },
-});
-
-async function resolveWorkflowFilePath(target: string): Promise<string> {
-  if (/[/\\]{2}/.test(target) && fs.existsSync(target)) return target;
-  try {
-    return (await loadWorkflowAsset(target)).path;
-  } catch (error) {
-    const looksLikeWorkflowRef = target.startsWith("workflows/") || target.includes("//");
-    if (looksLikeWorkflowRef) throw error;
-    return target;
-  }
-}
-
 const workflowRunCommand = defineJsonCommand({
   meta: {
     name: "run",
     description:
-      "EXPERIMENTAL: execute a workflow's steps with the native engine — akm dispatches each step's units " +
-      "(fan-out, schema output) to the configured runner and advances the run through the normal completion gates",
+      "EXPERIMENTAL, gated behind `experimental.workflowEngine`: execute a workflow's steps with the native " +
+      "engine — akm dispatches each step's units (fan-out, schema output) to the configured runner and advances " +
+      "the run through the normal completion gates",
   },
   args: {
     target: { type: "positional", description: "Workflow run id or workflow ref (auto-starts a run)", required: true },
@@ -374,9 +309,10 @@ const workflowBriefCommand = defineJsonCommand({
   meta: {
     name: "brief",
     description:
-      "EXPERIMENTAL: describe a run's active step as an executable work-list for ANY agent session (the " +
-      "harness-neutral driver protocol) — read-only, takes no engine lease, mutates nothing; prints per-unit " +
-      "instructions, output schema, env binding names, and the exact `akm workflow report` command lines",
+      "EXPERIMENTAL, gated behind `experimental.workflowEngine`: describe a run's active step as an executable " +
+      "work-list for ANY agent session (the harness-neutral driver protocol) — read-only, takes no engine lease, " +
+      "mutates nothing; prints per-unit instructions, output schema, env binding names, and the exact " +
+      "`akm workflow report` command lines",
   },
   args: {
     target: {
@@ -400,8 +336,9 @@ const workflowReportCommand = defineJsonCommand({
   meta: {
     name: "report",
     description:
-      "EXPERIMENTAL: report a unit's result back into a run (the mutating half of the harness-neutral driver " +
-      "protocol) — ingested through the SAME shared step semantics the engine uses. --status running claims/" +
+      "EXPERIMENTAL, gated behind `experimental.workflowEngine`: report a unit's result back into a run (the " +
+      "mutating half of the harness-neutral driver protocol) — ingested through the SAME shared step semantics " +
+      "the engine uses. --status running claims/" +
       "heartbeats a unit; completed/failed records it and, when the step's work-list is fully terminal, runs the " +
       "engine's completion path (reducer, artifact + schema validation, gate). --settle (no --unit) advances a run " +
       "parked on a route-only/empty step. Refused while a live engine lease exists",
@@ -535,44 +472,6 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-const workflowWatchCommand = defineJsonCommand({
-  meta: {
-    name: "watch",
-    description:
-      "Print a run's workflow_* events (state.db events table) as NDJSON and exit; --stream polls in the " +
-      "foreground until the run reaches a terminal status (no daemon)",
-  },
-  args: {
-    runId: { type: "positional", description: "Workflow run id", required: true },
-    stream: {
-      type: "boolean",
-      description: "Keep polling for new events until the run leaves 'active' (completed/failed/blocked)",
-      default: false,
-    },
-    "interval-ms": { type: "string", description: "Poll interval in milliseconds for --stream (default: 1000)" },
-  },
-  async run({ args }) {
-    requireWorkflowEngineEnabled(loadConfig(), "watch");
-    const rawInterval = getStringArg(args, "interval-ms");
-    let intervalMs: number | undefined;
-    if (rawInterval !== undefined) {
-      intervalMs = Number.parseInt(rawInterval, 10);
-      if (!/^\d+$/.test(rawInterval) || intervalMs <= 0) {
-        throw new UsageError(`--interval-ms must be a positive integer, got "${rawInterval}".`, "INVALID_FLAG_VALUE");
-      }
-    }
-    const { watchWorkflowRun } = await import("../workflows/exec/watch.js");
-    const result = await watchWorkflowRun({
-      runId: args.runId,
-      stream: args.stream === true,
-      ...(intervalMs !== undefined ? { intervalMs } : {}),
-    });
-    // The event lines above are raw NDJSON on stdout; this trailing envelope
-    // is the machine-readable command result (counts + terminal status).
-    output("workflow-watch", { ok: true, ...result });
-  },
-});
-
 const workflowAbandonCommand = defineJsonCommand({
   meta: {
     name: "abandon",
@@ -613,14 +512,11 @@ export const workflowCommand = defineGroupCommand({
     status: workflowStatusCommand,
     list: workflowListCommand,
     create: workflowCreateCommand,
-    template: workflowTemplateCommand,
     resume: workflowResumeCommand,
     abandon: workflowAbandonCommand,
-    validate: workflowValidateCommand,
     run: workflowRunCommand,
     brief: workflowBriefCommand,
     report: workflowReportCommand,
-    watch: workflowWatchCommand,
   },
   // No `defaultRun`: bare `akm workflow` is a usage error (exit 2), the
   // canonical bare-group behavior — owner ruling 12. Run `akm workflow list

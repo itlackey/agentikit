@@ -58,20 +58,6 @@ export class OpenCodeProvider extends AbstractSessionLogProvider implements Sess
     return path.join(base, OPENCODE_DB_FILENAME);
   }
 
-  /**
-   * Directories/files opencode writes session data under. Returns the base dir
-   * when the SQLite store (`opencode.db`) exists, the legacy JSON session root
-   * (`<base>/storage/session`) when present, or both during a migration overlap.
-   * Empty when neither exists. See {@link SessionLogHarness.watchRoots}.
-   */
-  watchRoots(): string[] {
-    const roots: string[] = [];
-    if (fs.existsSync(this.#dbPath(this.#baseDir))) roots.push(this.#baseDir);
-    const sessionRoot = path.join(this.#baseDir, "storage", "session");
-    if (fs.existsSync(sessionRoot)) roots.push(sessionRoot);
-    return roots;
-  }
-
   *readEvents(input: { sinceMs: number }): Iterable<SessionEvent> {
     // Legacy behavior: stream raw log lines from the top-level dir and `log/`
     // subdirectory. Kept to keep `getExecutionLogCandidates` working without

@@ -317,7 +317,7 @@ function collectStepBody(
       message:
         `Step "${stepTitle}" has an unknown "### ${sub.name}" section. Supported sections: ` +
         `"### Instructions", "### Completion Criteria". For orchestrated workflows (runners, ` +
-        `fan-out, routing), author a YAML workflow program instead — see \`akm workflow template --yaml\`.`,
+        `fan-out, routing), author a YAML workflow program instead — see \`akm workflow create <name>.yaml --print\`.`,
     });
   }
 

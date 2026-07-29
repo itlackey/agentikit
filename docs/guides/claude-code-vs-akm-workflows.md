@@ -196,7 +196,7 @@ Both formats share the same `start`/`next`/`complete`/`status`/`list`/`resume`/
 and works on either format unconditionally. What's gated is *executing* a YAML
 program with the native engine, and the driver protocol that mirrors it:
 
-`akm workflow run|watch|brief|report`, plus authoring a YAML program via `akm
+`akm workflow run|brief|report`, plus authoring a YAML program via `akm
 workflow create <name>.yaml`, all refuse with a classified `ConfigError`
 (`WORKFLOW_ENGINE_NOT_ENABLED`, **exit code 78**) until
 `experimental.workflowEngine` is set:
@@ -218,10 +218,10 @@ $ akm workflow run some-run-id
 
 (Both refusals above were reproduced against a real build,
 `src/workflows/exec/workflow-engine-gate.ts`; the second command clears the
-gate and fails for the ordinary reason instead.) `akm workflow validate` is
-**not** gated even against a `.yaml` program — it only type-checks. Creating a
-*markdown* workflow with `akm workflow create <name>` (no `.yaml`/`.yml`
-suffix) is unaffected either way.
+gate and fails for the ordinary reason instead.) `akm lint --type workflows`
+is **not** gated even against a `.yaml` program — it only type-checks.
+Creating a *markdown* workflow with `akm workflow create <name>` (no
+`.yaml`/`.yml` suffix) is unaffected either way.
 
 The rest of Part B describes the union of both formats; each subsection says
 which format(s) it applies to.
@@ -372,16 +372,18 @@ For the markdown loop, progress is still **pull-based**: `next`/`status`
 report step rows, notes, evidence, and summary; there's no daemon, the agent
 (or human) polls. This much is unchanged from before the engine existed.
 
-What's new: **`akm workflow watch <run-id>`** prints a run's `workflow_*` /
-`workflow_unit_*` events as NDJSON and exits; `--stream` polls from the last
-seen event (default 1000ms) in the foreground — no daemon — and exits when
-the run reaches a terminal status. It's not a push channel in Claude Code's
+What's new: **`akm log --run <run-id>`** reads a run's `workflow_*` /
+`workflow_unit_*` events off the general append-only events stream;
+`--since '@offset:<id>'` resumes from the last seen row-id cursor, so a
+cooperating process can poll it on an interval — there's no daemon, and
+no dedicated workflow-watch command (0.9.0 dropped one; this is the general
+`log` surface instead). It's not a push channel in Claude Code's
 `/workflows`-live-tree sense (there's no server pushing to a client — the
-watcher polls under the hood), but it closes most of the practical gap: a
-second terminal running `akm workflow watch <run-id> --stream` next to `akm
-workflow run <run-id>` gets a live-feeling tail with no polling of its own.
-Event metadata is ids/status/enums only, never workflow-authored content, so
-it's safe to pipe into logs or dashboards.
+poller polls under the hood), but it closes most of the practical gap: a
+second terminal polling `akm log --run <run-id> --since '@offset:<id>'` next
+to `akm workflow run <run-id>` gets a live-feeling tail with no daemon of its
+own. Event metadata is ids/status/enums only, never workflow-authored
+content, so it's safe to pipe into logs or dashboards.
 
 ### B.7 Quality gates
 
@@ -418,17 +420,20 @@ pure-timestamp design, different granularity.
 
 ### B.9 CLI surface
 
-`akm workflow` (`src/commands/workflow-cli.ts`) exposes **fourteen**
+`akm workflow` (`src/commands/workflow-cli.ts`) exposes **eleven**
 subcommands — derived here from `workflowCommand.subCommands`, not
 hand-listed:
 
 ```
-akm workflow start|next|complete|status|list|create|template|resume|abandon|validate|run|brief|report|watch
+akm workflow start|next|complete|status|list|create|resume|abandon|run|brief|report
 ```
 
-`start`, `next`, `complete`, `status`, `list`, `create` (markdown), `template`,
-`resume`, `abandon`, and `validate` are stable and ungated. `run`, `brief`,
-`report`, and `watch` — plus `create <name>.yaml` — are the experimental,
+`start`, `next`, `complete`, `status`, `list`, `create` (markdown), `resume`,
+and `abandon` are stable and ungated (`create --print` prints a starter
+template without writing, and `akm lint --type workflows` — not a `workflow`
+subcommand — structurally validates both markdown and YAML programs; 0.9.0
+dropped the standalone `template`/`validate`/`watch` subcommands). `run`,
+`brief`, and `report` — plus `create <name>.yaml` — are the experimental,
 gated engine surface (B.0). Bare `akm workflow` with no subcommand is a usage
 error (exit 2); there is no default action.
 
@@ -449,7 +454,7 @@ both formats agree.
 | **Control flow** | Full JS: loops, conditionals, fan-out, budget-scaled | Fixed linear step sequence | `unit`/`map`/`route` steps + a closed `${{ … }}` expression language; no loops/conditionals beyond routing and the bounded gate-retry loop |
 | **State store** | Transcript dir (`journal.jsonl`, `agent-*.jsonl`) | SQLite `state.db`, `workflow_runs` + `workflow_run_steps` | Same `state.db`, plus `workflow_run_units` (one row per dispatched/reported unit) and a frozen `plan_json`/`plan_hash` on the run |
 | **Scope / lifetime** | One session, one turn-shaped fan-out | Cross-session, per-project `scope_key`, resumable indefinitely | Same, plus a 90s **run lease** arbitrating one engine *or* one external driver at a time |
-| **Progress model** | Push: live `/workflows` tree + `task-notification` | Pull: poll `workflow next`/`status`, JSON envelopes | Pull, but near-live: `workflow watch --stream` polls and tails `workflow_*` events as NDJSON with no daemon |
+| **Progress model** | Push: live `/workflows` tree + `task-notification` | Pull: poll `workflow next`/`status`, JSON envelopes | Pull, but near-live: `akm log --run <id> --since '@offset:<id>'` polls and tails `workflow_*` events as NDJSON with no daemon |
 | **Resume** | Prefix-cache replay keyed on `runId` (needs determinism) | Re-read durable rows; `resume` reopens blocked/failed | Journaled replay keyed on content-derived unit identity; a completed unit with matching inputs is reused, a mismatched one is a hard "replay divergence" error |
 | **Determinism constraint** | `Date.now`/`random`/`new Date()` forbidden | None — it advances rows, it doesn't replay a script | None on the plan itself, but a unit's *recorded inputs* must reproduce under its content-derived identity or replay fails loudly |
 | **Quality gates** | Agent-authored (adversarial verify, judge panels, schemas) | Built-in LLM summary judge (fail-open) + `blocked` human gates | LLM judge over the step's **typed artifact** (not prose), with `gate.max_loops` (bounded retry) and `gate.required` (closes the fail-open hole) |
@@ -483,8 +488,8 @@ used to be:
    Schema (YAML programs, validated with a retry-on-mismatch) and, for
    markdown, the LLM summary-vs-criteria judge.
 6. **Scaffolding + validation of the artifact** — `meta` shape checks vs.
-   `akm workflow template` / `validate` and the accumulating parser (for both
-   akm formats).
+   `akm workflow create --print` / `akm lint --type workflows` and the
+   accumulating parser (for both akm formats).
 7. **Bounded, capped concurrency with the same default formula.** Claude
    Code's `agent()` cap and akm's YAML-program unit scheduler both default to
    `min(16, cores − 2)` — not a coincidence; the engine's CPU-derived default
@@ -565,7 +570,7 @@ harness-agnostic ones any driver (including Claude Code) can use today:
 | Formerly-proposed idea | Status |
 |---|---|
 | A blessed "akm-driver" loop pattern any agent runs to drive an akm run, with structured per-step results | **Shipped**, generalized: the `brief`/`report` driver protocol (Part B.4) — not Claude-Code-specific, any agent session works |
-| Machine-readable, near-live progress instead of polling `status` | **Shipped**: `akm workflow watch --stream` (Part B.6) |
+| Machine-readable, near-live progress instead of polling `status` | **Shipped**: `akm log --run <id> --since '@offset:<id>'` (Part B.6) |
 | Structural (schema) validation of step output, not just an LLM prose judge | **Shipped**: per-unit `output` JSON Schema + typed step artifacts, validated before a gate ever runs (Part B.4/B.7) |
 | An explicit, opt-in fan-out step type | **Shipped**: `map` steps with `over`/`concurrency`/`reducer` (Part B.4) |
 

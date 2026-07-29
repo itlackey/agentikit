@@ -87,7 +87,7 @@ akm import - --name scratch-notes < notes.md   # Import stdin as a knowledge doc
 akm import https://example.com/docs/auth       # Fetch one URL and import it as knowledge
 akm import ./doc.md --target my-other-stash    # Route import to a named writable stash source
 akm workflow create ship-release               # Create a workflow asset in the stash
-akm workflow validate workflows/foo.yaml       # Validate a YAML v2/markdown workflow or ref; lists every error
+akm lint --type workflows                      # Validate every YAML v2/markdown workflow; lists every error
 akm workflow next workflows/ship-release       # Start or resume the next workflow step
 akm feedback skills/code-review --positive     # Record that an asset helped
 akm feedback agents/reviewer --negative        # Record that an asset missed the mark
@@ -162,7 +162,7 @@ so one active run does not block unrelated directories from starting the same
 workflow. Direct run-id commands still target the exact run.
 
 ```sh
-akm workflow template                         # Print a starter workflow template
+akm workflow create ship-release --print     # Print a starter workflow template, without writing
 akm workflow create ship-release             # Scaffold a new workflow asset
 akm workflow start workflows/ship-release    # Start a new run in the current scope
 akm workflow next workflows/ship-release     # Advance to the next step (or auto-start) in the current scope

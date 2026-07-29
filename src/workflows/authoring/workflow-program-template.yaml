@@ -1,6 +1,6 @@
 # akm YAML workflow program (binding YAML v2).
 # Save under workflows/<name>.yaml and lint with:
-#   akm workflow validate workflows/<name>.yaml
+#   akm lint --type workflows
 version: 2
 name: example-workflow
 description: Describe what this workflow accomplishes.

@@ -169,6 +169,7 @@ export function shapeEventsOutput(result: Record<string, unknown>, detail: Detai
   const base: Record<string, unknown> = {
     ...(result.ref !== undefined ? { ref: result.ref } : {}),
     ...(result.type !== undefined ? { type: result.type } : {}),
+    ...(result.run !== undefined ? { run: result.run } : {}),
     ...(result.since !== undefined ? { since: result.since } : {}),
     ...(typeof result.sinceOffset === "number" ? { sinceOffset: result.sinceOffset } : {}),
     // D-38: echo `--limit` through the shaped envelope too — `akmEventsList`

@@ -5,11 +5,11 @@
 /**
  * Pins that the shipped YAML workflow-program template
  * (`src/workflows/authoring/workflow-program-template.yaml`, printed by
- * `akm workflow template --yaml`) actually parses AND compiles.
+ * `akm workflow create <name>.yaml --print`) actually parses AND compiles.
  *
  * This used to be asserted only by
- * `tests/integration/node-compat.test.ts` ("workflow template --yaml
- * round-trips through validate on Node"), which is gated behind
+ * `tests/integration/node-compat.test.ts` ("workflow create --print --yaml
+ * round-trips through lint on Node"), which is gated behind
  * `AKM_NODE_COMPAT_TESTS=1` and does not run in `bun run check` or default CI
  * — so nothing actually pinned the template in the normal test run. This
  * in-process test runs unconditionally and is cheap (no subprocess, no

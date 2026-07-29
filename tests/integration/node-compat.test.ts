@@ -860,7 +860,7 @@ describe("registry parity", () => {
 
 // ── workflow smoke (better-sqlite3 workflow.db + markdown/YAML round-trip) ──────
 //
-// A minimal workflow smoke on Node: `workflow template --yaml | validate` proves
+// A minimal workflow smoke on Node: `workflow create --print --yaml | lint` proves
 // the YAML program path parses on the Node runtime, and `workflow create + start
 // + status` exercises the workflow-runs repository (workflow.db) through the
 // better-sqlite3 driver — the run-state boundary the other families never touch.
@@ -869,23 +869,31 @@ describe("registry parity", () => {
 describe("workflow smoke parity", () => {
   afterEach(() => cleanup());
 
-  test.skipIf(!ENABLED)("workflow template --yaml round-trips through validate on Node", () => {
+  test.skipIf(!ENABLED)("workflow create --print --yaml round-trips through lint on Node", () => {
     setupStorage();
-    // `workflow template --yaml` prints a YAML program straight to stdout (no
-    // envelope). Persist it and validate the file on Node — a clean round-trip.
-    const tpl = nodeRun(["workflow", "template", "--yaml"], nodeEnv);
-    assertNoBoundaryLeak(tpl, "workflow template --yaml");
+    // `workflow create <name>.yaml --print` emits a JSON envelope carrying the
+    // YAML program template text (0.9.0: replaces the dropped `workflow
+    // template --yaml`, which wrote it straight to stdout with no envelope).
+    const tpl = nodeRun(["workflow", "create", "smoke-program.yaml", "--print"], nodeEnv);
+    assertNoBoundaryLeak(tpl, "workflow create --print --yaml");
     expect(tpl.status).toBe(0);
-    expect(tpl.stdout).toContain("version:");
+    const tplJson = parseJson(tpl.stdout) as { ok?: boolean; kind?: string; template?: string } | undefined;
+    expect(tplJson?.ok).toBe(true);
+    expect(tplJson?.kind).toBe("program");
+    expect(tplJson?.template).toContain("version:");
 
-    const file = path.join(stashDir, "smoke-program.yaml");
-    fs.writeFileSync(file, tpl.stdout, "utf8");
-    const val = nodeRun(["workflow", "validate", file], nodeEnv);
-    assertNoBoundaryLeak(val, "workflow validate yaml");
+    // Persist it and lint the stash on Node — a clean round-trip. 0.9.0:
+    // `workflow validate` is dropped; `akm lint --type workflows` is the
+    // structural-validation surface for both markdown and YAML programs.
+    const file = path.join(stashDir, "workflows", "smoke-program.yaml");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, tplJson?.template ?? "", "utf8");
+    const val = nodeRun(["lint", "--type", "workflows"], nodeEnv);
+    assertNoBoundaryLeak(val, "lint --type workflows");
     expect(val.status).toBe(0);
-    const json = parseJson(val.stdout) as { ok?: boolean; format?: string } | undefined;
+    const json = parseJson(val.stdout) as { ok?: boolean; summary?: { flagged?: number } } | undefined;
     expect(json?.ok).toBe(true);
-    expect(json?.format).toBe("program");
+    expect(json?.summary?.flagged).toBe(0);
   });
 
   test.skipIf(!ENABLED)("workflow create + start + status round-trips through workflow.db on Node", () => {

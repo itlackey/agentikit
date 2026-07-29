@@ -6,7 +6,7 @@
  * Q-05 — the `experimental.workflowEngine` gate at the CLI boundary.
  *
  * Before Q-05 the workflow-engine dispatch (`akm workflow run`/`brief`/
- * `report`/`watch`, and creating a YAML workflow *program*) ran
+ * `report`, and creating a YAML workflow *program*) ran
  * unconditionally: STABILITY.md documented `experimental.workflowEngine`, but
  * it was absent from the config schema and read nowhere in the runtime.
  * Because the top-level config schema is `.passthrough()`, setting the key
@@ -119,18 +119,6 @@ describe("akm workflow — experimental.workflowEngine gate OFF (default)", () =
     expect(env.error).toContain(WORKFLOW_ENGINE_CONFIG_KEY);
   });
 
-  test("`workflow watch` refuses with the same error shape", async () => {
-    writeSingleStepWorkflow("gated-watch");
-    const started = await startWorkflowRun("workflows/gated-watch", {});
-
-    const { code, stderr } = await runCliCapture(["--json", "workflow", "watch", started.run.id]);
-    expect(code).toBe(78);
-    const env = JSON.parse(stderr) as ErrorEnvelope;
-    expect(env.ok).toBe(false);
-    expect(env.code).toBe("WORKFLOW_ENGINE_NOT_ENABLED");
-    expect(env.error).toContain(WORKFLOW_ENGINE_CONFIG_KEY);
-  });
-
   test("`workflow create <name>.yaml` (a YAML program) refuses, before any write", async () => {
     const { code, stderr } = await runCliCapture(["--json", "workflow", "create", "gated-program.yaml"]);
     expect(code).toBe(78);
@@ -148,21 +136,6 @@ describe("akm workflow — surfaces NOT gated by experimental.workflowEngine", (
     const env = JSON.parse(stdout) as { ok: boolean; ref: string };
     expect(env.ok).toBe(true);
     expect(env.ref).toContain("workflows/ungated-md");
-  });
-
-  test("`workflow validate` on a YAML program is unaffected (read-only lint, not execution)", async () => {
-    const file = path.join(storage.stashDir, "workflows", "ungated-program.yaml");
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(
-      file,
-      ["version: 2", "name: ungated-program", "steps:", "  - id: only", "    unit:", "      instructions: Do it."].join(
-        "\n",
-      ),
-      "utf8",
-    );
-    const { code, stdout } = await runCliCapture(["--json", "workflow", "validate", file]);
-    expect(code).toBe(0);
-    expect(JSON.parse(stdout)).toMatchObject({ ok: true, format: "program" });
   });
 
   test("`workflow start`/`status` (the classic manual contract) are unaffected", async () => {

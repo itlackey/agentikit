@@ -31,6 +31,12 @@ export interface EventsListOptions {
   includeTags?: string[];
   /** D-38: cap the result to the most recent `limit` matching events. Undefined is unlimited. */
   limit?: number;
+  /**
+   * Filter to events whose `metadata.runId` matches — the replacement for
+   * the dropped `akm workflow watch <run-id>`'s run-scoped filter (0.9.0
+   * CLI overhaul, S5).
+   */
+  run?: string;
   /** Test seam — overrides the state database / clock. */
   ctx?: EventsContext;
 }
@@ -73,6 +79,8 @@ export interface EventsListResult {
   sinceOffset?: number;
   /** Echoed when --limit was passed. */
   limit?: number;
+  /** Echoed when --run was passed. */
+  run?: string;
   nextOffset: number;
   events: EventEnvelope[];
 }
@@ -87,8 +95,18 @@ function validateRef(ref: string | undefined): string | undefined {
   return makeBundleRef(parsed.bundle, parsed.conceptId);
 }
 
+function validateRunId(run: string | undefined): string | undefined {
+  if (run === undefined) return undefined;
+  const trimmed = run.trim();
+  if (!trimmed) {
+    throw new UsageError("--run cannot be empty.", "INVALID_FLAG_VALUE");
+  }
+  return trimmed;
+}
+
 export function akmEventsList(options: EventsListOptions = {}): EventsListResult {
   const ref = validateRef(options.ref);
+  const run = validateRunId(options.run);
   const parsed = parseSinceFlag(options.since);
   const result = readEvents(
     {
@@ -96,6 +114,7 @@ export function akmEventsList(options: EventsListOptions = {}): EventsListResult
       sinceOffset: parsed.sinceOffset,
       type: options.type,
       ref,
+      runId: run,
       excludeTags: options.excludeTags,
       includeTags: options.includeTags,
       limit: options.limit,
@@ -110,6 +129,7 @@ export function akmEventsList(options: EventsListOptions = {}): EventsListResult
     ...(parsed.since !== undefined ? { since: parsed.since } : {}),
     ...(parsed.sinceOffset !== undefined ? { sinceOffset: parsed.sinceOffset } : {}),
     ...(options.limit !== undefined ? { limit: options.limit } : {}),
+    ...(run !== undefined ? { run } : {}),
     nextOffset: result.nextOffset,
     events: result.events,
   };

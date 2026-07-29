@@ -8,14 +8,13 @@ human approves gates.
 
 > **The native orchestration engine requires an opt-in.** `start` / `next` /
 > `complete` / `status` / `list` / `create` (markdown, the default) /
-> `template` / `validate` / `resume` / `abandon` — everything through
-> [Writing a workflow](#writing-a-workflow) below — work with no config
-> changes. But `akm workflow run`, `akm workflow brief`, `akm workflow
-> report`, `akm workflow watch`, and authoring a YAML program with `akm
-> workflow create <name>.yaml` all refuse outright until
-> `experimental.workflowEngine` is set — see [Enabling the workflow
-> engine](#enabling-the-workflow-engine-opt-in-in-090) before trying any of
-> those five.
+> `resume` / `abandon` — everything through [Writing a
+> workflow](#writing-a-workflow) below — work with no config changes. But
+> `akm workflow run`, `akm workflow brief`, `akm workflow report`, and
+> authoring a YAML program with `akm workflow create <name>.yaml` all refuse
+> outright until `experimental.workflowEngine` is set — see [Enabling the
+> workflow engine](#enabling-the-workflow-engine-opt-in-in-090) before trying
+> any of those four.
 
 ## akm workflow start
 
@@ -121,13 +120,13 @@ akm workflow list --active
 ## Writing a workflow
 
 Workflow files are plain markdown with a specific heading structure. Use
-`akm workflow template` to print a valid starter, then edit it and register it
-with `akm workflow create`.
+`akm workflow create --print` to print a valid starter, then edit it and
+register it with `akm workflow create`.
 
 ```sh
-akm workflow template          # Print the template
+akm workflow create my-release --print   # Print the template, without writing
 akm workflow create my-release --from ./my-release.md
-akm workflow validate workflows/my-release  # Check for errors before using it
+akm lint --type workflows                # Check for structural errors before using it
 ```
 
 **Minimal workflow format:**
@@ -173,8 +172,8 @@ akm workflow next workflows/print-book-review
 ## Enabling the workflow engine (opt-in in 0.9.0)
 
 Everything above this line — `start`, `next`, `complete`, `status`, `list`,
-`create` for a markdown workflow, `template`, `validate`, `resume`, and
-`abandon` — ships unconditionally and needs no config change.
+`create` for a markdown workflow, `resume`, and `abandon` — ships
+unconditionally and needs no config change.
 
 The rest of this section, through "Orchestrated steps: YAML workflow
 programs," describes the **native orchestration engine**: YAML (`version: 2`)
@@ -191,7 +190,6 @@ akm config set experimental.workflowEngine true
 | `akm workflow run` | Executes a run's steps with the native engine, dispatching each step's units to the configured runner |
 | `akm workflow brief` | Read-only half of the harness-neutral driver protocol |
 | `akm workflow report` | Mutating half of the harness-neutral driver protocol |
-| `akm workflow watch` | Streams a run's `workflow_*` events |
 | `akm workflow create <name>.yaml` (or `.yml`) | Authors a YAML workflow *program* — the format the engine executes. `akm workflow create <name>` with no `.yaml`/`.yml` suffix is unaffected — it still writes a markdown workflow |
 
 The refusal names the exact surface and config key, e.g.:
@@ -204,7 +202,7 @@ The refusal names the exact surface and config key, e.g.:
 }
 ```
 
-`akm workflow validate` is **not** gated even against a `.yaml` program
+`akm lint --type workflows` is **not** gated even against a `.yaml` program
 file — it only type-checks the program without executing anything. `akm
 tasks doctor` reports the gate's live state under `workflowEngine.enabled`
 and `workflowEngine.configKey`, so you can confirm whether it is on without
@@ -238,9 +236,9 @@ byte-identical unit graphs.
 
 YAML programs live in your stash under `workflows/` with a `.yaml` or `.yml`
 extension and are addressed with the same `workflows/<name>` refs. Print a
-starter with **`akm workflow template --yaml`**, and lint with
-`akm workflow validate <path|workflows/ref>` — validation is backed by the
-published JSON Schema at `schemas/akm-workflow.json`.
+starter with **`akm workflow create <name>.yaml --print`**, and lint with
+`akm lint --type workflows` — validation is backed by the published JSON
+Schema at `schemas/akm-workflow.json`.
 
 ```yaml
 version: 2
@@ -352,8 +350,8 @@ lookup. Templates are parsed once into literal/reference segments and
 resolved in a single pass — substituted content is data and is **never
 re-scanned**, so a value that happens to contain `${{ params.x }}` is
 inserted literally and cannot inject further references. Every reference
-names its producer explicitly, and `akm workflow validate` checks each edge
-(unknown step, unknown param, bad path) at lint time.
+names its producer explicitly, and `akm lint --type workflows` checks each
+edge (unknown step, unknown param, bad path) at lint time.
 
 One caveat: there is **no escape syntax**. A literal `${{` cannot appear in
 instructions — the validator reports a parse error if you write one.
@@ -809,22 +807,22 @@ next `brief r1` would show `step.gate.currentLoop: 2`, a `gateFeedback`
 object, and a fresh work-list whose unit prompts already carry the judge's
 missing-criteria feedback — you re-execute and re-report exactly as in loop 1.
 
-### akm workflow watch
+### Following a run's events
 
-`akm workflow watch <run-id>` prints the run's `workflow_*` /
-`workflow_unit_*` events as NDJSON — one event envelope per line — and
-exits. With `--stream` it keeps polling from the last seen event
-(`--interval-ms`, default 1000) in the foreground — no daemon — and exits
-when the run reaches a terminal status (`completed`, `failed`, or
-`blocked`).
+There is no `akm workflow watch` (0.9.0: dropped — a foreground polling
+daemon in a one-shot CLI). `akm log --run <run-id>` reads the same
+`workflow_*` / `workflow_unit_*` events from the general append-only events
+stream: `--since '@offset:<id>'` gives a durable row-id cursor a cooperating
+process can poll from, in place of `watch --stream`'s in-process loop.
 
 ```sh
-akm workflow run <run-id> &            # engine in one shell
-akm workflow watch <run-id> --stream   # live NDJSON tail in another
+akm workflow run <run-id> &                                  # engine in one shell
+akm log --run <run-id> --since '@offset:0'                   # backlog so far
+akm log --run <run-id> --since '@offset:<nextOffset>'        # poll for more, from the prior call's nextOffset
 ```
 
 Event metadata is ids/status/enums only — never workflow-authored content —
-so a watch stream is safe to pipe into logs or dashboards.
+so following a run's events is safe to pipe into logs or dashboards.
 
 ### Worktree isolation
 

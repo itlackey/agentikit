@@ -236,16 +236,20 @@ async function setupWorkflow(env: NodeJS.ProcessEnv, name = "test-flow"): Promis
 }
 
 describe("workflow CLI", async () => {
-  test("template prints a valid workflow document", async () => {
+  test("create --print prints a valid workflow document without writing", async () => {
     const env = createWorkflowEnv();
-    const result = await runCli(["workflow", "template"], env);
+    const result = await runCli(["workflow", "create", "print-test", "--print"], env);
 
     expect(result.status).toBe(0);
-    const parsed = parseWorkflow(result.stdout, { path: "<template>" });
+    const { template, kind } = JSON.parse(result.stdout) as { template: string; kind: string };
+    expect(kind).toBe("markdown");
+    const parsed = parseWorkflow(template, { path: "<template>" });
     if (!parsed.ok) {
       throw new Error(`template did not parse: ${parsed.errors.map((e) => e.message).join("; ")}`);
     }
     expect(parsed.document.steps.length).toBeGreaterThan(0);
+    // --print never writes the workflow asset.
+    expect(fs.existsSync(path.join(env.AKM_STASH_DIR as string, "workflows", "print-test.md"))).toBe(false);
   });
 
   test("create writes a workflow and show returns structured step data", async () => {

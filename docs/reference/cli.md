@@ -52,7 +52,7 @@ A small set of commands is **format-exempt** because their output is not a
 result envelope at all — `completions`, child-process passthrough (`env run`,
 `secret run`, and `migrate`
 `status`/`apply`, which spawn the standalone migration tool and print its
-fixed JSON verbatim), document payloads (`hints`, `workflow template`,
+fixed JSON verbatim), document payloads (`hints`,
 `help migrate`), and `env path` (a bare filesystem path is the payload, the
 documented shell-substitution primitive — wrapping it in an envelope would
 break `$(akm env path <ref>)` substitutions). Passing `--format` to one of
@@ -527,13 +527,11 @@ to run `akm add <origin>` first.
 Author, inspect, and execute structured workflow assets.
 
 ```sh
-akm workflow template
-akm workflow template --yaml                  # Print a YAML v2 program starter
+akm workflow create ship-release --print
+akm workflow create review.yaml --print       # Print a YAML v2 program starter, without writing
 akm workflow create ship-release
 akm workflow create ship-release --from ./ship-release.md
 akm workflow create review.yaml --from ./review.yaml
-akm workflow validate workflows/ship-release    # Validate a workflow ref
-akm workflow validate ./workflows/review.yaml  # Validate YAML v2 or markdown
 akm workflow start workflows/ship-release --params '{"version":"1.2.3"}'
 akm workflow next workflows/ship-release
 akm workflow next workflows/ship-release --params '{"version":"1.2.3"}'
@@ -552,9 +550,7 @@ Subcommands:
 
 | Subcommand | Description |
 | --- | --- |
-| `template` | Print a markdown starter, or a YAML v2 program with `--yaml` |
-| `create <name>` | Validate and write markdown (`<name>`) or YAML v2 (`<name>.yaml` / `.yml`) under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites |
-| `validate <ref\|path>` | Validate a workflow markdown/YAML file or ref and print any errors |
+| `create <name>` | Validate and write markdown (`<name>`) or YAML v2 (`<name>.yaml` / `.yml`) under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites; `--print` prints the template that would be written instead of writing it |
 | `start <ref>` | Create a new persisted workflow run. `--params <json>` supplies parameters; `--force` allows a parallel run when an active run already exists in this scope |
 | `next <run-id\|ref>` | Return the current actionable step; resumes active runs and starts a new run when the ref has no active run |
 | `complete <run-id> --step <step-id>` | Update the current pending step on an active run and persist status, notes, and evidence. `--summary` is **required** and validated against completion criteria; `--evidence <json>` attaches structured evidence |
@@ -565,11 +561,17 @@ Subcommands:
 | `run <run-id\|ref>` | **EXPERIMENTAL, gated.** Execute a run's steps with the native engine, dispatching each step's units to the configured runner |
 | `brief <run-id\|ref>` | **EXPERIMENTAL, gated.** Describe the active step as an executable work-list for any agent session (read-only, mutates nothing) |
 | `report <run-id\|ref>` | **EXPERIMENTAL, gated.** Report a unit's result back into a run — the mutating half of the harness-neutral driver protocol; `--settle` advances a route-only/empty step with no unit to report |
-| `watch <run-id>` | **EXPERIMENTAL, gated.** Print a run's `workflow_*` events as NDJSON; `--stream` polls until the run reaches a terminal status |
 
-#### The experimental workflow engine (`run`/`brief`/`report`/`watch`, and `create <name>.yaml`)
+There is no `akm workflow template` or `akm workflow validate` either (0.9.0:
+dropped). `akm workflow create --print` prints the template `template` used
+to; `akm lint --type workflows` structurally validates both markdown workflow
+documents and YAML v2 programs. There is no `akm workflow watch` either —
+poll `akm log --since '@offset:<id>' --run <run-id>` instead (see the [`log`
+section](#log)).
 
-`akm workflow run`, `brief`, `report`, and `watch` — plus `akm workflow create
+#### The experimental workflow engine (`run`/`brief`/`report`, and `create <name>.yaml`)
+
+`akm workflow run`, `brief`, and `report` — plus `akm workflow create
 <name>.yaml`/`.yml` (authoring a YAML v2 workflow *program*, the format the
 engine executes) — are gated behind the `experimental.workflowEngine` config
 key. Until it is set, every one of these refuses with a `ConfigError`
@@ -588,10 +590,10 @@ akm config set experimental.workflowEngine true   # opt in
 ```
 
 The classic linear-markdown workflow CLI contract — `start`, `next`,
-`complete`, `status`, `list`, `create` (markdown), `template`, `validate`,
-`resume`, `abandon` — is **not** gated and is stable per STABILITY.md; those
-verbs progress a run by hand (or from any agent already) regardless of
-whether the underlying asset is markdown or a YAML program.
+`complete`, `status`, `list`, `create` (markdown), `resume`, `abandon` — is
+**not** gated and is stable per STABILITY.md; those verbs progress a run by
+hand (or from any agent already) regardless of whether the underlying asset
+is markdown or a YAML program.
 
 ```sh
 akm workflow run workflows/ship-release --max-steps 3
@@ -600,8 +602,6 @@ akm workflow brief <run-id>                     # per-unit instructions, output 
 akm workflow report <run-id> --unit <unit-id> --status completed --result '{"ok":true}'
 akm workflow report <run-id> --unit <unit-id> --status running --note "still working"
 akm workflow report <run-id> --settle           # advance a route-only/empty step
-akm workflow watch <run-id>                     # print buffered workflow_* events and exit
-akm workflow watch <run-id> --stream            # poll in the foreground until terminal
 ```
 
 | Flag | Applies to | Description |
@@ -615,8 +615,6 @@ akm workflow watch <run-id> --stream            # poll in the foreground until t
 | `--result` / `--result-file` | `report` | Result payload (JSON for a schema unit, else text); `completed` only |
 | `--tokens <n>` | `report` | Tokens spent on this unit, counted against a declared budget |
 | `--rerun` | `report` | Re-run an already-failed unit as a new attempt instead of refusing a differing re-report |
-| `--stream` | `watch` | Keep polling for new events until the run leaves `active` |
-| `--interval-ms <ms>` | `watch` | Poll interval for `--stream` (default `1000`) |
 
 Workflow runs are scoped to the current working context, not globally across all
 repos or directories. akm resolves that context from the nearest `.akm/config.json`
@@ -645,6 +643,7 @@ akm workflow create release.yaml --path deploy   # writes workflows/deploy/relea
 | `--from <file>` | Import and validate content from an existing file, parsed per the destination extension |
 | `--force` | Overwrite an existing workflow. Requires `--from` or `--reset`. |
 | `--reset` | Explicitly replace an existing workflow with a fresh template (use with `--force`) |
+| `--print` | Print the template that would be written (markdown, or a YAML v2 program with a `.yaml`/`.yml` name) without creating anything |
 
 `--force` requires either `--from <file>` (replace from a source file) or
 `--reset` (explicitly acknowledge you are overwriting in place). Without one of
@@ -1385,6 +1384,7 @@ akm log --ref skills/deploy                   # Filter by asset ref
 akm log --since 2026-04-01T00:00:00Z         # ISO timestamp
 akm log --since '@offset:12345'              # Resume from a row-id cursor
 akm log --limit 20                           # Only the 20 most recent events (unlimited by default)
+akm log --run <run-id>                       # Only events for one workflow run
 ```
 
 | Flag | Description |
@@ -1392,6 +1392,7 @@ akm log --limit 20                           # Only the 20 most recent events (u
 | `--since` | Lower bound. Accepts ISO 8601, epoch ms, or `@offset:<id>` for a durable row-id cursor that survives across processes. |
 | `--type` | Filter by event type. Common values include `add`, `remove`, `update`, `remember`, `import`, `sync`, `feedback`, `promoted`, `rejected`, `propose_invoked`, `reflect_invoked`, `distill_invoked`, `select`, and `improve_skipped`. `sync` and the legacy `save` are synonyms on read, so `--type save` still returns rows written before the 0.9.0 rename as well as new ones. |
 | `--ref` | Filter by asset ref (`[bundle//]conceptId`). |
+| `--run` | Filter to one workflow run's events (`metadata.runId`) — the replacement for the dropped `akm workflow watch <run-id>`. Poll with `--since '@offset:<id>'` for a live tail; there is no daemon. |
 | `--limit` | Return only the most recent N events matching every other filter. Default: unlimited. |
 | `--include-tags` | Only include events with ALL these tags (repeatable). |
 | `--exclude-tags` | Exclude events matching these tags (repeatable). |
@@ -1963,7 +1964,6 @@ akm extract --type claude-code --since 24h
 akm extract --type opencode --since 7d --dry-run
 akm extract --auto                 # iterate every available harness
 akm extract --type claude-code --location /custom/path --session-id <id>
-akm extract --watch                # watch session-log dirs and extract on change
 ```
 
 | Flag | Description |
@@ -1978,17 +1978,17 @@ akm extract --watch                # watch session-log dirs and extract on chang
 | `--timeout-ms <ms>` | Per-session LLM timeout in ms (default `600000`). |
 | `--engine <name>` | Named LLM engine for this invocation. Mutually exclusive with `--strategy`. |
 | `--strategy <name>` | Improve strategy supplying extract behavior and engine. Mutually exclusive with `--engine`. |
-| `--watch` | Watch harness session-log directories and run extract on change (debounced). Stays alive until SIGINT/SIGTERM. |
-| `--debounce-ms <ms>` | Debounce window in ms for `--watch` (default `2000`). |
 
-`--type` and `--auto` are mutually exclusive; one of them (or `--watch`) is
-required. `--auto` iterates `getAvailableHarnesses()` — every harness with a
-detectable session-log location on the current machine — and returns an
-aggregated `extract-auto-result` envelope (`harnessesProcessed`,
-`totalProposals`, per-harness `results`); the run exits non-zero only when
-every harness failed. `--watch` emits an `extract-watch-started` envelope and
-then runs continuously, re-invoking extract (debounced, per harness) whenever
-a watched session-log root changes.
+`--type` and `--auto` are mutually exclusive; one of them is required.
+`--auto` iterates `getAvailableHarnesses()` — every harness with a detectable
+session-log location on the current machine — and returns an aggregated
+`extract-auto-result` envelope (`harnessesProcessed`, `totalProposals`,
+per-harness `results`); the run exits non-zero only when every harness
+failed.
+
+There is no `akm extract --watch`/`--debounce-ms` either (0.9.0: dropped — a
+foreground polling daemon in a one-shot CLI); the shipped `core/extract.yml`
+cron template (`akm extract --auto` on a schedule) is the answer.
 
 Requires an LLM engine: pass `--engine`, select a `--strategy` whose
 `processes.extract.engine` is set, or configure `defaults.llmEngine`.
@@ -2001,7 +2001,11 @@ stale paths, and broken refs — in body text and in
 `refs`/`xrefs`/`supersededBy`/`contradictedBy` frontmatter. Also reports
 `dangerous-env-key` findings for env files (the same key set `akm add`
 enforces — see [Dangerous env key audit](#dangerous-env-key-audit) — but
-non-blocking here; `lint` only warns).
+non-blocking here; `lint` only warns). `--type workflows` also structurally
+validates YAML v2 workflow *programs* (`.yaml`/`.yml`) — parse and compile
+errors surface as `invalid-workflow-structure` findings alongside the
+markdown-workflow checks (0.9.0: this is the only structural-validation
+surface now that `akm workflow validate` is gone).
 
 ```sh
 akm lint                        # Report findings; exits 0 regardless

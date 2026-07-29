@@ -375,14 +375,13 @@ isolated working directory with disposable output paths.
 Workflows now include authoring, validation, execution, and recovery flows.
 
 - [ ] `akm workflow list` is empty in a fresh sandbox.
-- [ ] `akm workflow template > "$AKM_STASH_DIR/workflows/test.md"` prints a valid
-      starter document.
+- [ ] `akm workflow create test --print > "$AKM_STASH_DIR/workflows/test.md"` prints a valid
+      starter document, without creating the workflow.
 - [ ] Insert one short paragraph between `# Workflow:` and the first `## Step:`.
-- [ ] `akm workflow validate "$AKM_STASH_DIR/workflows/test.md"` succeeds,
-      confirming intro prose is accepted.
 - [ ] `akm workflow create test-created --from "$AKM_STASH_DIR/workflows/test.md"`
-      writes and indexes the workflow.
-- [ ] `akm workflow validate workflows/test-created` succeeds by ref.
+      writes and indexes the workflow, confirming intro prose is accepted.
+- [ ] `akm lint --type workflows` reports no `invalid-workflow-structure`
+      finding for `workflows/test-created`.
 - [ ] `akm workflow start workflows/test-created` returns a run with `id`,
       `workflowRef`, and steps.
 - [ ] `akm workflow status <run-id>` returns the full run state.

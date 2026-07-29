@@ -7,11 +7,10 @@
  * JSON envelope (stdout payload shape + the {ok:false,…} error envelope on
  * stderr / exit code) for representative subcommands, proving the extraction of
  * the family from cli.ts into src/commands/workflow-cli.ts and the migration of
- * the leaf handlers onto `defineJsonCommand` is byte-identical. `workflow
- * template` is verified separately because it writes the markdown template
- * straight to stdout with no JSON envelope. Workflows are authored in-process
- * via `workflow create --from <file>` against an isolated stash dir; the CLI
- * reads that stash back through AKM_STASH_DIR via the in-process harness.
+ * the leaf handlers onto `defineJsonCommand` is byte-identical. Workflows are
+ * authored in-process via `workflow create --from <file>` against an isolated
+ * stash dir; the CLI reads that stash back through AKM_STASH_DIR via the
+ * in-process harness.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -113,12 +112,16 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
     expect(Array.isArray(statusEnv.workflow.steps)).toBe(true);
   });
 
-  test("workflow template: writes markdown to stdout with no JSON envelope", async () => {
+  test("workflow create --print: envelope carries the markdown template and writes nothing", async () => {
     const stash = makeStashDir();
-    const { stdout, status } = await runCli(["workflow", "template"], stash);
+    const { stdout, status } = await runCli(["--json", "workflow", "create", "print-flow", "--print"], stash);
     expect(status).toBe(0);
-    expect(stdout).toContain("# Workflow:");
-    expect(stdout).toContain("Step ID:");
+    const env = JSON.parse(stdout);
+    expect(env.ok).toBe(true);
+    expect(env.kind).toBe("markdown");
+    expect(env.template).toContain("# Workflow:");
+    expect(env.template).toContain("Step ID:");
+    expect(fs.existsSync(path.join(stash, "workflows", "print-flow.md"))).toBe(false);
   });
 
   test("workflow status: unknown run → byte-identical {ok:false} not-found envelope on stderr", async () => {

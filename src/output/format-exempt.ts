@@ -37,9 +37,9 @@ const EXEMPT_COMMANDS: ReadonlySet<string> = new Set([
   // does not change their behavior — this is the `env run`/`secret run`
   // passthrough pattern, not the generic-text-fallback one.
   "migrate",
-  // Document payload, exactly like `workflow template` / `help migrate`
-  // below: prints the embedded CLI-reference guide verbatim
-  // (`src/commands/observability-cli.ts`), not a result envelope.
+  // Document payload, exactly like `help migrate` below: prints the embedded
+  // CLI-reference guide verbatim (`src/commands/observability-cli.ts`), not a
+  // result envelope.
   "hints",
 ]);
 
@@ -51,8 +51,7 @@ const EXEMPT_SUBCOMMANDS: ReadonlySet<string> = new Set([
   // Child-process passthrough (the env/secret groups otherwise format fine).
   "env run",
   "secret run",
-  // Document payloads: the document is the output, not a field within one.
-  "workflow template",
+  // Document payload: the document is the output, not a field within one.
   "help migrate",
   // B3/B4 (W1-F): a bare absolute filesystem path IS the payload — the
   // documented shell-substitution primitive (`$(akm env path <ref>)`,

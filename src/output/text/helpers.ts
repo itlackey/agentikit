@@ -68,5 +68,4 @@ export {
   formatWorkflowResumePlain,
   formatWorkflowRunPlain,
   formatWorkflowStatusPlain,
-  formatWorkflowValidatePlain,
 } from "./workflow-format";

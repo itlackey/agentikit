@@ -34,15 +34,14 @@ export const ExperimentalConfigSchema = z
      *
      * OFF by default. Gates `akm workflow run` (the native step-execution
      * engine), `akm workflow brief`/`report` (the harness-neutral driver
-     * protocol), `akm workflow watch` (engine-run event streaming), and
-     * creating a YAML (`version: 2`) workflow *program* via `akm workflow
-     * create <name>.yaml` — the format the engine executes.
+     * protocol), and creating a YAML (`version: 2`) workflow *program* via
+     * `akm workflow create <name>.yaml` — the format the engine executes.
      *
      * Deliberately NOT gated: the classic linear-markdown workflow CLI
      * contract (`start`/`next`/`complete`/`status`/`list`/`create` for a
-     * markdown document/`template`/`validate`/`resume`/`abandon`) is
-     * unchanged and stable regardless of this key — it progresses a run by
-     * hand (or from any agent already) and predates the native engine.
+     * markdown document/`resume`/`abandon`) is unchanged and stable
+     * regardless of this key — it progresses a run by hand (or from any
+     * agent already) and predates the native engine.
      *
      * Unlike `improveAutonomy`, a gated call here REFUSES outright rather than
      * degrading: a workflow step either executes or it does not, so there is

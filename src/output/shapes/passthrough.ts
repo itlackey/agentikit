@@ -80,8 +80,6 @@ const PASSTHROUGH_COMMANDS = [
   "workflow-run",
   "workflow-start",
   "workflow-status",
-  "workflow-validate",
-  "workflow-watch",
 ] as const;
 
 export const passthroughShapes: OutputShapeEntry[] = PASSTHROUGH_COMMANDS.map((command) => ({

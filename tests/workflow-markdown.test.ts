@@ -154,7 +154,7 @@ describe("parseWorkflow", () => {
     if (result.ok) return;
     const error = result.errors.find((e) => e.message.includes("Fan-out"));
     expect(error?.message).toContain('"### Instructions", "### Completion Criteria"');
-    expect(error?.message).toContain("akm workflow template --yaml");
+    expect(error?.message).toContain("akm workflow create <name>.yaml --print");
   });
 
   test("rejects unsupported workflow frontmatter keys", () => {
