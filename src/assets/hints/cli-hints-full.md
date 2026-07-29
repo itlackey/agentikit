@@ -8,8 +8,8 @@ You have access to a searchable library of scripts, skills, commands, agents, kn
 akm search "<query>"                          # Search all sources
 akm curate "<task>"                          # Curate the best matches for a task
 akm search "<query>" --type workflow          # Filter by asset type
-akm search "<query>" --source both            # Also search registries
-akm search "<query>" --source registry        # Search registries only
+akm search "<query>" --from all                # Also search registries
+akm search "<query>" --from registry           # Search registries only
 akm search "<query>" --limit 10               # Limit results
 akm search "<query>" --detail full            # Include scores, paths, timing
 akm search "memories/projectA/"               # Enumerate a subtree (conceptId prefix; trailing slash required)
@@ -20,7 +20,7 @@ akm search "team-catalog//"                   # List every item in one bundle
 | Flag | Values | Default |
 | --- | --- | --- |
 | `--type` | free-form. Built-ins: `skill`, `command`, `agent`, `knowledge`, `workflow`, `script`, `memory`, `lesson`, `task`, `session`, `fact`, `env`, `secret`, `instruction` — plus any adapter-defined type (`website`, `wiki-source`, a wiki `pageKind`). Exact match; an unknown type returns no hits. | `any` |
-| `--source` | `stash`, `registry`, `both`, or a configured bundle name | `stash` |
+| `--from` | `local`, `registry`, `all`, or a configured bundle name | `local` |
 | `--limit` | number | `20` |
 | `--format` | `json`, `jsonl`, `text`, `yaml`, `md`, `html` | `json` |
 | `--detail` | `brief`, `normal`, `full` | `brief` |
@@ -77,7 +77,7 @@ akm show knowledge/my-doc                     # Show content (local or remote)
 ```sh
 akm remember "Deployment needs VPN access"     # Record a memory in your stash
 akm remember --name release-retro < notes.md   # Save multiline memory from stdin
-akm remember "note" --target my-other-stash    # Route write to a named writable stash source
+akm remember "note" --bundle my-other-stash    # Route write to a named writable stash source
 akm remember "note" --xref knowledge/auth-flow # Cite provenance in frontmatter xrefs (repeatable; ref must resolve)
 akm remember "fix" --supersedes memories/old-note # Write a correction AND demote the old asset (beliefState: superseded)
 akm import ./docs/auth-flow.md                 # Import a file as knowledge
@@ -274,8 +274,8 @@ akm registry add <url>                        # Add a registry
 akm registry add <url> --name my-team         # Add with label
 akm registry add <url> --provider skills-sh   # Specify provider type
 akm registry remove <url-or-name>             # Remove a registry
-akm registry search "<query>"                 # Search all registries
-akm registry search "<query>" --assets        # Include asset-level results
+akm search "<query>" --from registry          # Search all registries (registry search was folded into search)
+akm search "<query>" --from registry --assets # Include asset-level results
 ```
 
 ## Configuration

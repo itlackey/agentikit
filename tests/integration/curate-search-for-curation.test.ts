@@ -43,7 +43,7 @@ describe("searchForCuration", () => {
       const result = await searchForCuration({
         query: "docker cleanup audit",
         limit: 12,
-        source: "stash",
+        source: "local",
       });
 
       const refs = result.hits.map((hit) => ("ref" in hit ? hit.ref : `registry:${hit.id}`));
@@ -69,7 +69,7 @@ describe("searchForCuration", () => {
       const result = await searchForCuration({
         query: "docker homelab",
         limit: 12,
-        source: "stash",
+        source: "local",
       });
 
       const refs = result.hits.map((hit) => ("ref" in hit ? hit.ref : `registry:${hit.id}`));
@@ -91,7 +91,7 @@ describe("searchForCuration", () => {
 
       await akmIndex({ stashDir, full: true });
 
-      const result = await searchForCuration({ query: "the docker", limit: 12, source: "stash" });
+      const result = await searchForCuration({ query: "the docker", limit: 12, source: "local" });
 
       const refs = result.hits.map((hit) => ("ref" in hit ? hit.ref : `registry:${hit.id}`));
       expect(refs.length).toBeGreaterThan(0);

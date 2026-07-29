@@ -123,8 +123,8 @@ akm sync my-skills -m "Update"   # Named writable git source
 Push behavior depends on configuration: if the stash is a git repo with a
 remote and `writable: true`, sync also pushes. Otherwise it commits only.
 
-Writes that land on a writable git source via `--target` (e.g.
-`akm remember --target my-skills`, proposal accept/revert, consolidate) are
+Writes that land on a writable git source via an explicit destination flag
+(e.g. `akm remember --bundle my-skills`, proposal accept/revert, consolidate) are
 committed automatically in a single batch at the end of the operation — one
 complete commit (staging `.akm/` + assets together), pushed under the same
 `writable + remote` gate as `akm sync`. The per-asset `options.pushOnCommit`
@@ -145,9 +145,9 @@ The registry is a discovery index — it lets you find and install stashes you
 don't know about yet. The official registry ships pre-configured.
 
 ```sh
-akm registry list                         # See configured registries
-akm registry search "deploy"              # Search registry stashes by topic
-akm registry search "code review" --assets  # Include asset-level hits
+akm registry list                             # See configured registries
+akm search "deploy" --from registry           # Search registry stashes by topic
+akm search "code review" --from registry --assets  # Include asset-level hits
 akm registry add https://example.com/registry/index.json --name my-team
 akm registry remove my-team
 ```
@@ -155,7 +155,7 @@ akm registry remove my-team
 Once you find an interesting stash in the registry, install it with `akm add`:
 
 ```sh
-akm registry search "kubernetes"
+akm search "kubernetes" --from registry
 akm add github:some-org/k8s-stash
 akm index
 ```

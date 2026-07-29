@@ -85,8 +85,8 @@ describe("CLI error handling", () => {
     expect(parsed.code).toBe("MISSING_REQUIRED_ARGUMENT");
   });
 
-  test("search --source invalid prints hint about source", async () => {
-    const { stderr, status } = await runCli("search", "test", "--source", "invalid");
+  test("search --from invalid prints hint about source", async () => {
+    const { stderr, status } = await runCli("search", "test", "--from", "invalid");
     expect(status).not.toBe(0);
     // Named-source validation: unknown source names produce INVALID_SOURCE_VALUE
     // with a message that lists valid source names (or says none are configured).

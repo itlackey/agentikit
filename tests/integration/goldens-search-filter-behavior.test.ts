@@ -248,7 +248,7 @@ async function runScored(combo: FilterCombo): Promise<SourceSearchHit[]> {
   const result = await akmSearch({
     query: FTS_QUERY,
     type: "any",
-    source: "stash",
+    source: "local",
     limit: 50,
     includeProposed: combo.includeProposed,
     belief: combo.belief,
@@ -264,7 +264,7 @@ async function runEnumerate(combo: FilterCombo): Promise<SourceSearchHit[]> {
   const result = await akmSearch({
     query: "",
     type: "any",
-    source: "stash",
+    source: "local",
     limit: 50,
     includeProposed: combo.includeProposed,
     belief: combo.belief,
@@ -340,7 +340,7 @@ describe("WI-0b.5a: derived-twin belief inheritance -- the REAL two-path diverge
     const result = await akmSearch({
       query: "duskfall",
       type: "any",
-      source: "stash",
+      source: "local",
       limit: 50,
       belief: "all",
       disableProjectContext: true,
@@ -445,7 +445,7 @@ describe("golden fixture: filter-behavior/why-matched.json (WI-0b.5b)", () => {
     const result = await akmSearch({
       query: FTS_QUERY,
       type: "any",
-      source: "stash",
+      source: "local",
       limit: 50,
       includeProposed: false,
       belief: "all",
@@ -503,7 +503,7 @@ describe("golden fixture: rank-metrics/search-filter.json (WI-0b.5c)", () => {
     const result = await akmSearch({
       query: FTS_QUERY,
       type: "any",
-      source: "stash",
+      source: "local",
       limit: 50,
       includeProposed: true,
       belief: "all",

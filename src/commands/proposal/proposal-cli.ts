@@ -9,6 +9,10 @@
  * migrated to `defineJsonCommand`, which wraps the body in `runWithJsonErrors`
  * and emits the same JSON envelope (stdout/stderr/exit-code) as the inline
  * `runWithJsonErrors` form it replaces.
+ *
+ * 0.9 CLI overhaul (S8): the former top-level `extract` and `propose`
+ * commands are absorbed here as `extract` and `new` — no top-level
+ * registration remains for either spelling.
  */
 
 import { parsePositiveIntFlag } from "../../cli/parse-args";
@@ -19,6 +23,7 @@ import { UsageError } from "../../core/errors";
 import { resolveTriageJudgmentRunner } from "../../integrations/agent/runner";
 import { installLlmUsagePersistenceIfAbsent } from "../../llm/usage-persist";
 import { withLlmStage } from "../../llm/usage-telemetry";
+import { extractCommand } from "../improve/extract-cli";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
 import { drainProposals } from "./drain";
 import { resolveDrainPolicy } from "./drain-policies";
@@ -31,6 +36,7 @@ import {
   akmProposalShow,
   bulkAdjudicateProposals,
 } from "./proposal";
+import { proposeCommand } from "./propose-cli";
 
 /**
  * Parse + validate the shared bulk-adjudication filter flags
@@ -499,7 +505,10 @@ const proposalDrainCommand = defineJsonCommand({
 // ── proposal noun group ───────────────────────────────────────────────────────
 
 export const proposalCommand = defineGroupCommand({
-  meta: { name: "proposal", description: "Manage the proposal queue: list, show, diff, accept, reject, revert" },
+  meta: {
+    name: "proposal",
+    description: "Manage the proposal queue: list, show, diff, accept, reject, revert, extract, new, drain",
+  },
   // The group declared `--queue`/`--status`/`--ref`/`--type` only so the bare
   // form could act as `proposal list`. That form is gone (see below), and
   // `proposalListCommand` declares the identical set, so keeping them here
@@ -513,6 +522,8 @@ export const proposalCommand = defineGroupCommand({
     reject: proposalRejectCommand,
     revert: proposalRevertCommand,
     drain: proposalDrainCommand,
+    extract: extractCommand,
+    new: proposeCommand,
   },
   // No `defaultRun`: bare `akm proposal [--status …]` is a usage error (exit 2),
   // the canonical bare-group behavior — owner ruling 12. `akm proposal list`

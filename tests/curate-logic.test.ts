@@ -30,7 +30,7 @@ function searchResponse(overrides: Partial<SearchResponse> = {}): SearchResponse
   return {
     schemaVersion: 1,
     stashDir: "/tmp/stash",
-    source: "stash",
+    source: "local",
     hits: [],
     ...overrides,
   };

@@ -375,7 +375,7 @@ The JSONL file at `$CACHE/events.jsonl` is no longer written by akm. Existing fi
 | `promoted` | `akm proposal accept` | `proposalId`, `source`, `assetPath` |
 | `rejected` | `akm proposal reject` | `proposalId`, `source`, `reason` |
 | `reflect_invoked` | reflect pass inside `akm improve` | `task`, `engine`, `eligibilitySource` |
-| `propose_invoked` | `akm propose` | `type`, `name`, `task`, `engine` |
+| `propose_invoked` | `akm proposal new` | `type`, `name`, `task`, `engine` |
 | `distill_invoked` | distill pass inside `akm improve` | `outcome` (queued\|skipped\|validation_failed\|quality_rejected), `lessonRef`, `score`, `reason` |
 | `search` | `akm search` | `query`, `hitCount`, `resultRefs[]`, `mode` (semantic\|keyword) |
 | `show` | `akm show` | `type`, `name` |

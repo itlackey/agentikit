@@ -26,11 +26,11 @@ akm search "<query>"                          # Search all sources
 akm curate "<task>"                          # Curate the best matches for a task
 akm search "<query>" --type workflow          # Filter to workflow assets
 akm search "memories/projectA/"               # List a subtree (conceptId prefix; trailing slash required)
-akm search "<query>" --source both            # Also search registries
+akm search "<query>" --from all               # Also search registries
 akm show <ref>                                # View asset details
 akm workflow next <ref>                       # Start or resume a workflow
 akm remember "Deployment needs VPN access"    # Record a memory in your stash
-akm remember "note" --target my-stash         # Route write to a named writable stash source
+akm remember "note" --bundle my-stash         # Route write to a named writable stash source
 akm remember "note" --xref knowledge/auth-flow # Cite provenance in frontmatter xrefs (repeatable)
 akm remember "fix" --supersedes memories/old-note # Write a correction AND demote the superseded asset
 akm import ./notes/release-checklist.md       # Import a knowledge doc into your stash
@@ -44,7 +44,7 @@ akm clone <ref>                               # Copy an asset to the working sta
 akm sync                                      # Commit (and push if writable remote) changes in the primary stash (--no-push to commit only)
 akm improve --no-sync                         # Run improve without the end-of-run auto-commit
 akm improve --no-push                         # Auto-commit but skip push for this run
-akm registry search "<query>"                 # Search all registries
+akm search "<query>" --from registry          # Search all registries (registry search was folded into search)
 ```
 
 ## Primary Asset Types
@@ -110,8 +110,8 @@ go through `akm proposal accept`.
 ```sh
 akm improve <ref>                              # Produce an improvement proposal for an existing asset
 akm improve <ref> --task "tighten the description"
-akm propose <type> <name> --task "..."         # Draft a new asset proposal from a description
-akm propose lesson docker-cleanup --task "consolidate cleanup feedback"
+akm proposal new <type> <name> --task "..."    # Draft a new asset proposal from a description
+akm proposal new lesson docker-cleanup --task "consolidate cleanup feedback"
 akm proposal list                              # List pending proposals
 akm proposal list --status pending|accepted|rejected|reverted
 akm proposal show <id>                          # Render the proposal body

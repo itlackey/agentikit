@@ -3,14 +3,16 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * CLI surface for `akm extract`.
+ * CLI surface for `akm proposal extract` (formerly the top-level `akm
+ * extract`, moved under the `proposal` group in the 0.9 CLI overhaul, S8 —
+ * see src/commands/proposal/proposal-cli.ts for its registration).
  *
  * Examples:
- *   akm extract --type claude-code --session-id <id>
- *   akm extract --type claude-code --since 24h
- *   akm extract --type opencode --since 7d --dry-run
- *   akm extract --auto                 # iterate all available harnesses
- *   akm extract --type claude-code --location /custom/path --session-id <id>
+ *   akm proposal extract --type claude-code --session-id <id>
+ *   akm proposal extract --type claude-code --since 24h
+ *   akm proposal extract --type opencode --since 7d --dry-run
+ *   akm proposal extract --auto                 # iterate all available harnesses
+ *   akm proposal extract --type claude-code --location /custom/path --session-id <id>
  *
  * Output is the AkmExtractResult JSON envelope (or an aggregated one when
  * `--auto` runs multiple harnesses).

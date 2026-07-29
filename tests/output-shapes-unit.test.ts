@@ -713,10 +713,12 @@ describe("shapeProposal* — proposal commands", () => {
     // R-063/R-064: the "reflect" shape registration was deleted — `akm
     // reflect` has no standalone CLI verb and no `output("reflect", ...)`
     // call site (reflect.ts is an internal function the improve loop calls
-    // directly). "propose" shares the same producer-shape handler and IS a
-    // live CLI verb (contribute-cli.ts), so it covers this registry path.
+    // directly). "proposal-new" (`akm proposal new`, formerly the top-level
+    // `akm propose`) shares the same producer-shape handler and IS a live CLI
+    // verb (src/commands/proposal/propose-cli.ts), so it covers this
+    // registry path.
     const propose = shapeForCommand(
-      "propose",
+      "proposal-new",
       { schemaVersion: 2, ok: true, ref: "lessons/x", proposal: fullProposal, engine: "p", durationMs: 1 },
       "normal",
     ) as Record<string, unknown>;

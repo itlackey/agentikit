@@ -514,13 +514,13 @@ describe("akm proposal multi-bundle queues", () => {
   });
 });
 
-describe("akm propose (CLI)", () => {
+describe("akm proposal new (CLI)", () => {
   test("--task and --file are mutually exclusive", async () => {
     const stash = makeStashDir();
     const promptFile = path.join(makeTempDir("akm-proposal-prompt-"), "prompt.md");
     fs.writeFileSync(promptFile, "author a lesson", "utf8");
     const result = await runCli(
-      ["propose", "lesson", "rg-over-grep", "--task", "inline", "--file", promptFile, "--format=json"],
+      ["proposal", "new", "lesson", "rg-over-grep", "--task", "inline", "--file", promptFile, "--format=json"],
       { stashDir: stash },
     );
     expect(result.status).toBe(2);

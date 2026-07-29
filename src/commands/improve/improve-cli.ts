@@ -77,7 +77,7 @@ export const improveCommand = defineCommand({
     },
     task: { type: "string", description: "Add extra guidance for this improvement pass" },
     "dry-run": { type: "boolean", description: "Show planned actions without writing", default: false },
-    target: { type: "string", description: "Override the write target for accepted proposals" },
+    bundle: { type: "string", description: "Override the write target for accepted proposals" },
     limit: { type: "string", description: "Maximum number of assets to process (highest utility first)" },
     "timeout-ms": {
       type: "string",
@@ -125,7 +125,7 @@ export const improveCommand = defineCommand({
       // exemption. It now applies to that envelope; progress output stays on
       // stderr regardless.
       const jsonToStdout = args["json-to-stdout"];
-      const targetArg = getStringArg(args, "target");
+      const targetArg = getStringArg(args, "bundle");
       const taskArg = getStringArg(args, "task");
       const dryRun = args["dry-run"];
       const limitRaw = parsePositiveIntFlag(args.limit ?? undefined);

@@ -135,7 +135,7 @@ are applied last, so an explicit `enabled: true` still opts the selected
 strategy in.
 
 These improve-stage defaults do not gate explicit standalone extraction through
-`akm extract --type <harness>` or `akm extract --auto`. The interactive
+`akm proposal extract --type <harness>` or `akm proposal extract --auto`. The interactive
 scheduled-task step also continues to offer the bundled `core/extract` template
 as an unselected opt-in; it is not installed merely because the template is
 bundled.
@@ -213,12 +213,13 @@ full bundle model (`path`, `git`, `website`, `npm`, `writable`, `registryId`,
 
 `defaultWriteTarget` names the bundle that write commands (`akm remember`,
 `akm env`/`secret create`, `akm improve`, etc.) fall back to when no
-explicit `--target` is given and the command isn't already scoped to a
+explicit destination flag is given and the command isn't already scoped to a
 specific source. It must name a configured bundle; setting it with no
 `bundles` configured, or naming an unconfigured bundle, is rejected at
 `config set` (or config load) time. The full write-target resolution order
-is `--target` -> `defaultWriteTarget` -> working stash (`defaultBundle`) ->
-`ConfigError`.
+is the command's destination flag (`--bundle` on `remember`/`clone`/
+`improve`, `--target` on `env`/`secret create`) -> `defaultWriteTarget` ->
+working stash (`defaultBundle`) -> `ConfigError`.
 
 ### Memory scope
 

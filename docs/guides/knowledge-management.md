@@ -28,7 +28,7 @@ akm remember "Found this snippet: curl -fsSL ... | bash" --auto
 cat long-meeting-notes.md | akm remember --name meeting-2026-05 --enrich
 
 # Route to a named writable stash:
-akm remember "Use staging cluster for blue-green" --target team-stash
+akm remember "Use staging cluster for blue-green" --bundle team-stash
 ```
 
 Memories support scope flags (`--user`, `--agent`, `--run`, `--channel`) for

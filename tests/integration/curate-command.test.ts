@@ -119,7 +119,7 @@ describe("curate command", () => {
     expect(new Set(json.items.map((item) => item.type)).size).toBeGreaterThanOrEqual(2);
 
     for (const item of json.items) {
-      if (item.source === "stash") {
+      if (item.source === "local") {
         expect(typeof item.ref).toBe("string");
         expect(String(item.followUp)).toContain("akm show");
         expect(typeof item.reason).toBe("string");
@@ -197,8 +197,8 @@ describe("curate command", () => {
     const full = JSON.parse(await runCli(stashDir, ["curate", "release", "--format=json", "--detail=full"])) as {
       items: Array<Record<string, unknown>>;
     };
-    const briefStash = brief.items.find((i) => i.source === "stash");
-    const fullStash = full.items.find((i) => i.source === "stash");
+    const briefStash = brief.items.find((i) => i.source === "local");
+    const fullStash = full.items.find((i) => i.source === "local");
     expect(briefStash).toBeDefined();
     expect(fullStash).toBeDefined();
     // brief omits description; full carries it (when the item has one).
@@ -209,7 +209,7 @@ describe("curate command", () => {
     const stashDir = makeStash();
     const output = await runCli(stashDir, ["curate", "release", "--format=json", "--shape=agent"]);
     const json = JSON.parse(output) as { items: Array<Record<string, unknown>> };
-    const stashItem = json.items.find((i) => i.source === "stash");
+    const stashItem = json.items.find((i) => i.source === "local");
     expect(stashItem).toBeDefined();
     // agent shape never carries the heavyweight `preview` field.
     expect(stashItem).not.toHaveProperty("preview");

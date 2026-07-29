@@ -1596,7 +1596,7 @@ async function resolveReflectSource(
           schemaVersion: 2,
           ok: false,
           reason: "unsupported_type" as AgentFailureReason,
-          error: `Reflect refused: asset type "${parsedRef.type}" is not supported by reflect (only markdown-canonical types are allowed: ${[...REFLECT_ALLOWED_TYPES].sort().join(", ")}). Use \`akm propose\` or edit the file directly.`,
+          error: `Reflect refused: asset type "${parsedRef.type}" is not supported by reflect (only markdown-canonical types are allowed: ${[...REFLECT_ALLOWED_TYPES].sort().join(", ")}). Use \`akm proposal new\` or edit the file directly.`,
           ref: options.ref,
           exitCode: null,
         },

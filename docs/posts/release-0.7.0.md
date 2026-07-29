@@ -49,7 +49,7 @@ These three commands are the primary way to generate proposals.
 
 ```sh
 akm reflect [ref] [--task ...]        # reflect on an asset and propose improvements — doclint:ignore (historical — akm 0.7.0 release announcement; folded into `akm improve` later)
-akm propose <type> <name> --task "…"  # generate a new asset as a proposal
+akm propose <type> <name> --task "…"  # generate a new asset as a proposal — doclint:ignore (historical — akm 0.7.0 release announcement; moved to `akm proposal new` in 0.9.0)
 akm distill <ref>                     # synthesize a lesson from an asset — doclint:ignore (historical — akm 0.7.0 release announcement; folded into `akm improve` later)
 ```
 

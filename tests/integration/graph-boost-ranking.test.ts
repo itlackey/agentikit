@@ -308,7 +308,7 @@ function installGraphWithMutator(mutator: (graph: GraphFile) => GraphFile): void
 }
 
 async function searchHits(query: string) {
-  const result = await akmSearch({ query, source: "stash", limit: 100 });
+  const result = await akmSearch({ query, source: "local", limit: 100 });
   return result.hits;
 }
 

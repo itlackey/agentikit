@@ -22,7 +22,16 @@ async function runCli(args: string[]): Promise<{ status: number; stdout: string;
 
 describe("standalone extract CLI engine boundary", () => {
   test("rejects --engine with --strategy before resolving either selection", async () => {
-    const result = await runCli(["extract", "--type", "claude-code", "--engine", "fast", "--strategy", "thorough"]);
+    const result = await runCli([
+      "proposal",
+      "extract",
+      "--type",
+      "claude-code",
+      "--engine",
+      "fast",
+      "--strategy",
+      "thorough",
+    ]);
     expect(result.status).toBe(2);
     const parsed = JSON.parse(result.stderr) as { error: string; code?: string };
     expect(parsed.code).toBe("INVALID_FLAG_VALUE");
@@ -41,7 +50,7 @@ describe("standalone extract CLI engine boundary", () => {
       const [executable, ...args] = task.target.cmd;
       expect(executable).toBe("akm");
 
-      const bare = await runCli(["extract"]);
+      const bare = await runCli(["proposal", "extract"]);
       expect(bare.status).toBe(2);
       expect(JSON.parse(bare.stderr)).toMatchObject({ code: "MISSING_REQUIRED_ARGUMENT" });
 

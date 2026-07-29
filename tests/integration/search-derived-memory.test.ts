@@ -181,7 +181,7 @@ function buildFixture(): void {
 
 describe("derived-memory search enrichment (Phase 5A / Advantage D5)", () => {
   test("parent hit gains expandTo + derived child's description/tags when child exists", async () => {
-    const result = await akmSearch({ query: "claude-prefs", source: "stash", limit: 10 });
+    const result = await akmSearch({ query: "claude-prefs", source: "local", limit: 10 });
     const parentHit = result.hits.find((h) => h.type === "memory" && h.name === "claude-prefs");
     expect(parentHit).toBeDefined();
     if (!parentHit || !("ref" in parentHit)) return;
@@ -198,7 +198,7 @@ describe("derived-memory search enrichment (Phase 5A / Advantage D5)", () => {
   });
 
   test("memory without a derived child is unchanged (no expandTo, no rewrite)", async () => {
-    const result = await akmSearch({ query: "lonely-pref", source: "stash", limit: 10 });
+    const result = await akmSearch({ query: "lonely-pref", source: "local", limit: 10 });
     const hit = result.hits.find((h) => h.type === "memory" && h.name === "lonely-pref");
     expect(hit).toBeDefined();
     if (!hit || !("ref" in hit)) return;
@@ -209,7 +209,7 @@ describe("derived-memory search enrichment (Phase 5A / Advantage D5)", () => {
   });
 
   test("derived child hit is not double-enriched (no recursive expandTo)", async () => {
-    const result = await akmSearch({ query: "claude-prefs.derived", source: "stash", limit: 10 });
+    const result = await akmSearch({ query: "claude-prefs.derived", source: "local", limit: 10 });
     const derivedHit = result.hits.find((h) => h.type === "memory" && h.name === "claude-prefs.derived");
     expect(derivedHit).toBeDefined();
     if (!derivedHit || !("ref" in derivedHit)) return;

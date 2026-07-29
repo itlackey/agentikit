@@ -249,7 +249,7 @@ describe("classifyReflectAction", () => {
         ref: "scripts/google/get-token.ts",
         result: {
           error:
-            'Reflect refused: asset type "script" is not supported by reflect (only markdown-canonical types are allowed: agent, command, knowledge, lesson, memory, skill, workflow). Use `akm propose` or edit the file directly.',
+            'Reflect refused: asset type "script" is not supported by reflect (only markdown-canonical types are allowed: agent, command, knowledge, lesson, memory, skill, workflow). Use `akm proposal new` or edit the file directly.',
         },
       },
       "run-1",

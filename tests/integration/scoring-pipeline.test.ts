@@ -614,7 +614,7 @@ describe("Cross-stash identity at index time", () => {
     });
     await akmIndex({ stashDir: primaryStash, full: true });
 
-    const result = await akmSearch({ query: "github", source: "stash" });
+    const result = await akmSearch({ query: "github", source: "local" });
     const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
 
     // Filter to just the "github" platform adapter hits
@@ -647,7 +647,7 @@ describe("Cross-stash identity at index time", () => {
     });
     await akmIndex({ stashDir: primaryStash, full: true });
 
-    const result = await akmSearch({ query: "github adapter", source: "stash" });
+    const result = await akmSearch({ query: "github adapter", source: "local" });
     const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
 
     // Filter to just the adapter hits (same description from different roots)
@@ -673,7 +673,7 @@ describe("Cross-stash identity at index time", () => {
     });
     await akmIndex({ stashDir: primaryStash, full: true });
 
-    const result = await akmSearch({ query: "helper", source: "stash" });
+    const result = await akmSearch({ query: "helper", source: "local" });
     const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
     const helperHits = localHits.filter((h) => h.name.includes("helper"));
 

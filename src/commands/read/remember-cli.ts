@@ -110,7 +110,7 @@ export const rememberCommand = defineJsonCommand({
       description: "Call the configured LLM to propose tags and description (requires LLM config)",
       default: false,
     },
-    target: {
+    bundle: {
       type: "string",
       description:
         "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working stash.",
@@ -163,7 +163,7 @@ export const rememberCommand = defineJsonCommand({
     // untouched. Refs resolvable only in a configured extra stash source are
     // accepted (cross-stash provenance).
     const rawSupersedes = parseAllFlagValues("--supersedes");
-    const writeTarget = resolveSupersedesWriteTarget(rawSupersedes, args.target);
+    const writeTarget = resolveSupersedesWriteTarget(rawSupersedes, args.bundle);
     const xrefs = resolveXrefsForWrite(parseAllFlagValues("--xref"), writeTarget);
 
     // Collect and validate --supersedes occurrences (repeatable). Same

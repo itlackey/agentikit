@@ -205,7 +205,7 @@ const GOLDEN_STEPS_V07: StepSnapshot[] = [
     status: "success",
     detail:
       "2 old file(s) noted at <CACHE>/registry-index — registry index cache will be rebuilt on next " +
-      "'akm registry search'. Safe to delete: <CACHE>/registry-index/*.json",
+      "'akm search --from registry'. Safe to delete: <CACHE>/registry-index/*.json",
   },
 ];
 

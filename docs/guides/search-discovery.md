@@ -30,8 +30,8 @@ by relevance and utility score; there is no source-by-source fan-out.
 ```sh
 akm search "deploy"
 akm search "deploy" --type script --limit 10
-akm search "lint" --source registry          # Search the public registry instead
-akm search "docker" --source both --detail full
+akm search "lint" --from registry            # Search the public registry instead
+akm search "docker" --from all --detail full
 ```
 
 **Key flags**
@@ -40,7 +40,7 @@ akm search "docker" --source both --detail full
 | --- | --- |
 | `--type` | Narrow to one asset type: `skill`, `script`, `workflow`, `knowledge`, etc. |
 | `--limit` | Maximum hits returned (default 20) |
-| `--source` | `stash` (default), `registry`, or `both` |
+| `--from` | `local` (default), `registry`, or `all` |
 | `--shape agent` | Adds agent-oriented fields (`path`, `editable`, `description`, `score`) on top of the default hit shape — use this from agents |
 
 The `ref` field (e.g. `scripts/deploy.sh`) is present at `--detail brief`
@@ -72,7 +72,7 @@ behavior as on `akm search`.
 akm curate "plan a release"
 akm curate "deploy a Bun app" --limit 3
 akm curate "review an architecture proposal" --type skill
-akm curate "learn the release workflow" --source both --format text
+akm curate "learn the release workflow" --from all --format text
 ```
 
 Use `akm curate` at the start of a complex task to build context before

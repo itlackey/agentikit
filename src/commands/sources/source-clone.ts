@@ -65,7 +65,7 @@ export async function akmClone(options: CloneOptions): Promise<CloneResponse> {
   const unmanagedDest = options.dest;
   const hasUnmanagedDest = unmanagedDest !== undefined;
   if (hasUnmanagedDest && options.target !== undefined) {
-    throw new UsageError("--dest and --target cannot be used together; choose an unmanaged path or a managed bundle.");
+    throw new UsageError("--dest and --bundle cannot be used together; choose an unmanaged path or a managed bundle.");
   }
 
   // F1b/F4b: accept the 0.9.0 conceptId spelling (`akm clone scripts/deploy.sh`).

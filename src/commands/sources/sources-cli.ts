@@ -228,12 +228,12 @@ export const cloneCommand = defineJsonCommand({
     ref: { type: "positional", description: "Asset ref (e.g. npm:@scope/pkg//scripts/deploy.sh)", required: true },
     name: { type: "string", description: "New name for the cloned asset" },
     force: { type: "boolean", description: "Overwrite if the asset already exists at the destination", default: false },
-    target: {
+    bundle: {
       type: "string",
       description:
         "Override the managed destination. Accepts a bundle name from config; falls back to defaultWriteTarget then the working stash.",
     },
-    dest: { type: "string", description: "Unmanaged destination directory (cannot be combined with --target)" },
+    dest: { type: "string", description: "Unmanaged destination directory (cannot be combined with --bundle)" },
   },
   async run({ args }) {
     const result = await akmClone({
@@ -241,7 +241,7 @@ export const cloneCommand = defineJsonCommand({
       newName: args.name,
       force: args.force,
       dest: args.dest,
-      target: args.target,
+      target: args.bundle,
     });
     output("clone", result);
   },

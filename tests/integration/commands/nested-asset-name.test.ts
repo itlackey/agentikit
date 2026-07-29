@@ -197,7 +197,7 @@ describe("akm env create — --path", () => {
   });
 });
 
-describe("akm secret set / akm propose — flat-name enforcement", () => {
+describe("akm secret set / akm proposal new — flat-name enforcement", () => {
   test("secret set rejects a '/' in the ref name and points at --path", async () => {
     const result = await runCli(["secret", "set", "team/deploy-key"]);
     expect(result.status).toBe(2);
@@ -205,8 +205,8 @@ describe("akm secret set / akm propose — flat-name enforcement", () => {
     expect(fs.existsSync(path.join(currentStashDir, "secrets", "team"))).toBe(false);
   });
 
-  test("propose rejects a '/' in the name positional before invoking any agent", async () => {
-    const result = await runCli(["propose", "skill", "team/helper", "--task", "do a thing"]);
+  test("proposal new rejects a '/' in the name positional before invoking any agent", async () => {
+    const result = await runCli(["proposal", "new", "skill", "team/helper", "--task", "do a thing"]);
     expect(result.status).toBe(2);
     expect(JSON.parse(result.stderr).error).toMatch(/--path/);
   });

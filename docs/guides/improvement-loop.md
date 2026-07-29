@@ -57,9 +57,9 @@ exactly where you left off across process boundaries without duplicates.
 
 `akm log --since` takes an ISO timestamp or epoch ms — not a duration
 shorthand like `7d`. That shorthand is accepted by a different parser, used by
-both `akm health --since` and `akm extract --since` (e.g. `akm extract --since
-24h`); several commands share the `--since` flag name but not all of them
-accept the same format.
+both `akm health --since` and `akm proposal extract --since` (e.g. `akm
+proposal extract --since 24h`); several commands share the `--since` flag name
+but not all of them accept the same format.
 
 ```sh
 akm log --since 2026-05-01T00:00:00Z --type select --format text
@@ -91,8 +91,9 @@ akm improve --limit 10                # Cap assets processed
 The shipped `default` and `frequent` strategies leave improve-stage session
 extraction off. Proactive maintenance is also opt-in: use `akm improve
 --strategy proactive-maintenance` or explicitly enable the process in your
-selected strategy. Direct extraction commands (`akm extract --type <harness>`
-and `akm extract --auto`) remain independent of the improve-stage toggle.
+selected strategy. Direct extraction commands (`akm proposal extract --type
+<harness>` and `akm proposal extract --auto`) remain independent of the
+improve-stage toggle.
 
 Selection defaults to assets with recent feedback signals first, with a
 retrieval-count fallback for high-traffic assets that have no feedback yet.
@@ -148,16 +149,17 @@ akm proposal diff abc12345             # preview the proposed consolidation
 akm proposal accept abc12345           # write it to the stash
 ```
 
-## akm propose
+## akm proposal new
 
-`akm propose` authors a brand-new asset via the LLM pipeline — useful when you
-want to create something from scratch rather than improving an existing asset.
-Output always goes to the proposal queue, never directly to the stash.
+`akm proposal new` authors a brand-new asset via the LLM pipeline — useful
+when you want to create something from scratch rather than improving an
+existing asset. Output always goes to the proposal queue, never directly to
+the stash.
 
 ```sh
-akm propose skill code-review --task "PR-style review skill for TypeScript repos"
-akm propose lesson docker-cleanup --file ./prompts/docker-cleanup.md
-akm propose workflow release-checklist --task "Standard steps for shipping a release"
+akm proposal new skill code-review --task "PR-style review skill for TypeScript repos"
+akm proposal new lesson docker-cleanup --file ./prompts/docker-cleanup.md
+akm proposal new workflow release-checklist --task "Standard steps for shipping a release"
 ```
 
 After the proposal is generated, review it with `akm proposal diff <id>` and apply with
@@ -166,7 +168,7 @@ After the proposal is generated, review it with `akm proposal diff <id>` and app
 **Example: generate a new lesson from a prompt file**
 
 ```sh
-akm propose lesson deployment-gotchas --file ./prompts/lessons-from-may-incidents.md
+akm proposal new lesson deployment-gotchas --file ./prompts/lessons-from-may-incidents.md
 akm proposal list --status pending
 akm proposal diff deployment-gotchas
 akm proposal accept deployment-gotchas

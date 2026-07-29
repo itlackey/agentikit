@@ -4,16 +4,18 @@
 
 /**
  * WS6 characterization test for the contribution command cluster
- * (`akm agent`, `akm lint`, `akm propose`). Pins the JSON envelope (stdout
- * payload shape, the {ok:false,code} usage-error envelope on stderr, and exit
- * codes) for each command, proving the extraction from cli.ts into
- * src/commands/contribute-cli.ts is byte-identical.
+ * (`akm agent`, `akm lint`) plus `akm proposal new` (formerly the top-level
+ * `akm propose`, moved under `proposal` in the 0.9 CLI overhaul, S8). Pins
+ * the JSON envelope (stdout payload shape, the {ok:false,code} usage-error
+ * envelope on stderr, and exit codes) for each command, proving the
+ * extraction from cli.ts into src/commands/contribute-cli.ts /
+ * src/commands/proposal/propose-cli.ts is byte-identical.
  *
  * All three handlers keep the inline `runWithJsonErrors` form (they call
  * `process.exit` conditionally on the result), so the {ok:false} error path
  * still routes through the same envelope. Only deterministic paths are
  * exercised: argument validation (exit 2) and the `lint` happy path on an
- * empty sandbox stash (exit 0). The agent/propose success paths spawn an
+ * empty sandbox stash (exit 0). The agent/proposal-new success paths spawn an
  * external agent CLI and are covered by their own behaviour suites.
  */
 
@@ -61,19 +63,20 @@ describe("akm contribution cluster — JSON envelope snapshot (WS6)", () => {
     expect(typeof env.summary.flagged).toBe("number");
   });
 
-  test("propose (missing args): {ok:false} usage envelope on stderr (exit 2)", async () => {
-    const { stderr, status } = await runCli(["--json", "propose"]);
+  test("proposal new (missing args): {ok:false} usage envelope on stderr (exit 2)", async () => {
+    const { stderr, status } = await runCli(["--json", "proposal", "new"]);
     expect(status).toBe(2);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);
     expect(env.code).toBe("MISSING_REQUIRED_ARGUMENT");
-    expect(env.error).toMatch(/Usage: akm propose/);
+    expect(env.error).toMatch(/Usage: akm proposal new/);
   });
 
-  test("propose (both --task and --file): {ok:false} INVALID_FLAG_VALUE on stderr (exit 2)", async () => {
+  test("proposal new (both --task and --file): {ok:false} INVALID_FLAG_VALUE on stderr (exit 2)", async () => {
     const { stderr, status } = await runCli([
       "--json",
-      "propose",
+      "proposal",
+      "new",
       "skill",
       "demo",
       "--task",

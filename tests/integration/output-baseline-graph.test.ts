@@ -343,7 +343,7 @@ describe("output baseline", () => {
     try {
       const output = await runCliAsync(
         stashDir,
-        ["search", "deploy", "--format=json", "--detail=brief", "--source=both"],
+        ["search", "deploy", "--format=json", "--detail=brief", "--from=all"],
         {
           configVersion: "0.9.0",
           registries: [{ url: `http://127.0.0.1:${address.port}/index.json` }],

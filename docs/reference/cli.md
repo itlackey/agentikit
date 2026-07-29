@@ -167,7 +167,7 @@ metadata enhancement, `akm remember --enrich`, and `akm curate --rerank`. Suppor
 OpenAI, LM Studio, or any custom endpoint. Skipping disables enrichment features.
 
 **Step 2 — Agent connection** (for agentic commands)
-Configures how `akm improve`, `akm propose`, and `akm tasks run` dispatch AI sessions.
+Configures how `akm improve`, `akm proposal new`, and `akm tasks run` dispatch AI sessions.
 Options:
 - **Same connection** — reuse the Step 1 endpoint with a (optionally different) model
 - **New connection** — separate endpoint, model, and API key
@@ -307,8 +307,8 @@ Search stash assets, registry stashes, or both.
 ```sh
 akm search "deploy"
 akm search "deploy" --type script --limit 10
-akm search "lint" --source registry
-akm search "docker" --source both --detail full
+akm search "lint" --from registry
+akm search "docker" --from all --detail full
 
 # Multi-tenant scope filtering:
 akm search "deploy" --filter user=alice
@@ -338,7 +338,7 @@ Because the prefix matches the **conceptId** — the same spelling every emitted
 `ref` carries — a ref copied out of search output can be truncated to a prefix
 and pasted straight back in. Hits carry the fixed browse score `1` in
 deterministic listing order, matching the empty-query enumeration contract, and
-compose with `--limit`, `--belief`, `--filter`, and named `--source` narrowing.
+compose with `--limit`, `--belief`, `--filter`, and named `--from` narrowing.
 A full ref without the trailing slash (`memories/projectA/auth-tip`) stays an
 ordinary keyword search — use `akm show` to resolve a single ref. An explicit
 `--type` flag wins over the prefix.
@@ -351,7 +351,8 @@ tip names the conceptId spelling that replaces it.
 | --- | --- | --- | --- |
 | `--type` | `skill`, `command`, `agent`, `knowledge`, `instruction`, `workflow`, `script`, `memory`, `env`, `secret`, `lesson`, `task`, `session`, `fact`, `any` | `any` | Filter by asset type. Free-form and unvalidated — an unknown type returns no hits. Also accepts any adapter-defined type (e.g. `website`). |
 | `--limit` | number | `20` | Maximum results |
-| `--source` | `stash`, `registry`, `both` | `stash` | Where to search (`local` is an alias for `stash`) |
+| `--from` | `local`, `registry`, `all` | `local` | Where to search |
+| `--assets` | flag | `false` | Include asset-level registry results (only meaningful with `--from registry\|all`; folds in the retired `akm registry search --assets`) |
 | `--filter` | `<key>=<value>` | _(none)_ | Scope filter — repeatable. Valid keys: `user`, `agent`, `run`, `channel`. Example: `--filter user=alice --filter channel=ops`. Narrows the result set; ranking is unchanged. |
 | `--include-proposed` | flag | `false` | Include entries with `quality: "proposed"` in the result set. Default search excludes them; `generated` and `curated` quality entries are always included. Unknown quality values warn once and remain searchable. |
 | `--belief` | `all`, `current`, `historical` | `all` | Memory belief filter. `current` keeps active memory beliefs; `historical` keeps contradicted/superseded/archived ones. |
@@ -420,14 +421,14 @@ compact, follow-up-friendly summary.
 akm curate "plan a release"
 akm curate "deploy a Bun app" --limit 3
 akm curate "review an architecture proposal" --type skill
-akm curate "learn the release workflow" --source both --format text
+akm curate "learn the release workflow" --from all --format text
 ```
 
 | Flag | Values | Default | Description |
 | --- | --- | --- | --- |
 | `--type` | `skill`, `command`, `agent`, `knowledge`, `instruction`, `workflow`, `script`, `memory`, `env`, `secret`, `lesson`, `task`, `session`, `fact`, `any` | `any` | Filter curated results by asset type |
 | `--limit` | number | `4` | Maximum curated results |
-| `--source` | `stash`, `registry`, `both` | `stash` | Where to search before curating |
+| `--from` | `local`, `registry`, `all` | `local` | Where to search before curating |
 
 `akm curate` selects a small relevance-first shortlist. It preserves the
 strongest search hits first, uses only small type-aware nudges for close-score
@@ -977,7 +978,7 @@ akm clone scripts/deploy.sh
 akm clone "npm:@scope/pkg//scripts/deploy.sh"
 akm clone scripts/deploy.sh --name my-deploy.sh
 akm clone scripts/deploy.sh --force
-akm clone scripts/deploy.sh --target team-stash
+akm clone scripts/deploy.sh --bundle team-stash
 akm clone scripts/deploy.sh --dest ./project/.claude
 akm clone "npm:@scope/pkg//scripts/deploy.sh" --dest /tmp/preview
 ```
@@ -986,8 +987,8 @@ akm clone "npm:@scope/pkg//scripts/deploy.sh" --dest /tmp/preview
 | --- | --- |
 | `--name` | New name for the cloned asset |
 | `--force` | Overwrite if the asset already exists at the destination |
-| `--target <name>` | Managed destination bundle. When omitted, clone falls back to `defaultWriteTarget`, then the working stash |
-| `--dest <path>` | Unmanaged destination directory. Bypasses managed target resolution and cannot be combined with `--target`; the type subdirectory is appended automatically |
+| `--bundle <name>` | Managed destination bundle. When omitted, clone falls back to `defaultWriteTarget`, then the working stash |
+| `--dest <path>` | Unmanaged destination directory. Bypasses managed target resolution and cannot be combined with `--bundle`; the type subdirectory is appended automatically |
 
 Skills (directories) are copied recursively. Other types copy a single file.
 
@@ -1006,7 +1007,7 @@ akm clone "/path/to/stash//skills/code-review" --dest ./project/.claude
 ```
 
 Without `--dest`, clone uses normal write-target resolution: explicit
-`--target` -> `defaultWriteTarget` -> working stash. Managed clones use the
+`--bundle` -> `defaultWriteTarget` -> working stash. Managed clones use the
 destination bundle's canonical ref and are indexed immediately. When `--dest`
 is provided, no managed write target is required, which keeps clone usable in
 CI or fresh environments without running `akm setup` first.
@@ -1176,14 +1177,14 @@ write target and returns the resulting ref.
 
 **Write target resolution:** the destination is the working stash
 (`defaultBundle`) unless `defaultWriteTarget` is set in config, which
-overrides it to a named source. An explicit `--target <name>` flag overrides
-both. The full order is `--target` → `defaultWriteTarget` → working stash →
+overrides it to a named source. An explicit `--bundle <name>` flag overrides
+both. The full order is `--bundle` → `defaultWriteTarget` → working stash →
 `ConfigError`. See [Configuration](configuration.md#bundles-and-write-target) for
 details.
 
 A bundle-qualified mutation ref implies that bundle. In particular, a
 qualified `--supersedes team//memories/old` routes the correction and demotion
-to `team`; a different explicit `--target` is a usage error. Qualified `--xref`
+to `team`; a different explicit `--bundle` is a usage error. Qualified `--xref`
 values only identify the cited copy and do not select the write target.
 
 ```sh
@@ -1218,7 +1219,7 @@ akm remember "Staging now uses the new gateway endpoint" \
   --name new-endpoint --supersedes memories/projectA/old-endpoint
 
 # Route the write to a specific writable stash:
-akm remember "Deployment needs VPN access" --target team-stash
+akm remember "Deployment needs VPN access" --bundle team-stash
 ```
 
 | Flag | Description |
@@ -1230,14 +1231,14 @@ akm remember "Deployment needs VPN access" --target team-stash
 | `--expires <dur>` | Expiry shorthand (`30d`, `12h`, `6m`). Resolved to an ISO date |
 | `--source <s>` | Free-form source reference — URL, asset ref, file path, or any string |
 | `--xref <ref>` | Cross-reference ref recorded in the memory's `xrefs:` frontmatter list. Repeatable: `--xref knowledge/auth-flow --xref memories/vpn-note`. Each ref must resolve in the write target or a configured source (read-only sources count); an unresolvable ref fails with exit 2 before anything is written. More than 5 refs warns (soft cap) but still writes. Does not trigger the tags-required check. |
-| `--supersedes <ref>` | Ref of an existing asset this memory corrects. Repeatable. Writes the correction with the old ref folded into its `xrefs:` (correction provenance) AND demotes the old asset — `beliefState: superseded` + `supersededBy: [<new ref>]`, a metadata-only frontmatter edit that preserves every other key and the body — then reindexes it so ranking prefers the correction and `--belief current` hides the stale version immediately. An unresolvable ref fails with exit 2 before anything is written or demoted; so does a ref naming the asset being written itself (a correction cannot supersede itself, e.g. `--force` overwriting the same name). A ref that resolves only outside the write target and the working stash still writes the correction but skips the demotion: stderr warns and the JSON output reports `superseded: [{ref, applied: false, reason}]` — the reason names the `--target` remedy when the old asset lives in a configured writable source. An old asset whose existing frontmatter is not parseable YAML is skipped the same way (`applied: false`) instead of being rewritten lossily. Re-running the same correction is idempotent. On a git write target the correction and the demoted old asset land in the same single boundary commit. |
+| `--supersedes <ref>` | Ref of an existing asset this memory corrects. Repeatable. Writes the correction with the old ref folded into its `xrefs:` (correction provenance) AND demotes the old asset — `beliefState: superseded` + `supersededBy: [<new ref>]`, a metadata-only frontmatter edit that preserves every other key and the body — then reindexes it so ranking prefers the correction and `--belief current` hides the stale version immediately. An unresolvable ref fails with exit 2 before anything is written or demoted; so does a ref naming the asset being written itself (a correction cannot supersede itself, e.g. `--force` overwriting the same name). A ref that resolves only outside the write target and the working stash still writes the correction but skips the demotion: stderr warns and the JSON output reports `superseded: [{ref, applied: false, reason}]` — the reason names the `--bundle` remedy when the old asset lives in a configured writable source. An old asset whose existing frontmatter is not parseable YAML is skipped the same way (`applied: false`) instead of being rewritten lossily. Re-running the same correction is idempotent. On a git write target the correction and the demoted old asset land in the same single boundary commit. |
 | `--auto` | Apply heuristic tagging from the body (opt-in, zero-latency, pure TS) |
 | `--enrich` | Call the configured LLM for tag/description proposals (opt-in, 10s timeout, fails soft) |
 | `--user <id>` | Scope this memory to a user id. Persisted as the canonical `scope_user` frontmatter key. |
 | `--agent <id>` | Scope this memory to an agent id. Persisted as `scope_agent`. |
 | `--run <id>` | Scope this memory to a run id. Persisted as `scope_run`. |
 | `--channel <name>` | Scope this memory to a channel name. Persisted as `scope_channel`. |
-| `--target <name>` | Override the write destination. Accepts a source name from your config; falls back to `defaultWriteTarget` then the working stash. |
+| `--bundle <name>` | Override the write destination. Accepts a source name from your config; falls back to `defaultWriteTarget` then the working stash. |
 
 Pass the content as a quoted positional argument for short notes, or pipe
 markdown into stdin for longer memories.
@@ -1413,8 +1414,9 @@ cooperating processes, set those env vars consistently across them.
 
 ### registry
 
-Manage stash registries. The `registry` command has four subcommands: `list`,
-`add`, `remove`, and `search`.
+Manage stash registries. The `registry` command has three subcommands: `list`,
+`add`, and `remove`. Searching registries is `akm search --from registry`
+(0.9.0: `registry search` was dropped in favor of it — see [search](#search)).
 
 Building a registry index is maintainer tooling, not a CLI command — see
 `bun scripts/build-registry-index.ts` in the akm repository.
@@ -1459,21 +1461,6 @@ akm registry remove my-team --yes    # Skip the confirmation prompt
 | Flag | Description |
 | --- | --- |
 | `-y`, `--yes` | Skip confirmation prompt |
-
-#### registry search
-
-Search all enabled registries for stashes.
-
-```sh
-akm registry search "deploy"
-akm registry search "code review" --assets
-akm registry search "docker" --limit 5
-```
-
-| Flag | Description |
-| --- | --- |
-| `--limit` | Maximum number of results |
-| `--assets` | Include asset-level results from v3 registry indexes |
 
 ### migrate
 
@@ -1951,48 +1938,6 @@ akm format. Interactive child stdout/stderr remain inherited and raw. A failed
 dispatch exits 1; `exitCode` in the envelope retains the child's exact status
 when one exists.
 
-### extract
-
-Extract durable insights from native coding-agent session files (claude-code,
-opencode) and queue them as proposals. This is the standalone entrypoint for
-session extraction — it replaces the legacy session-checkpoint hook and runs
-independently of the improve-stage extract toggle (see `improve` below).
-
-```sh
-akm extract --type claude-code --session-id <id>
-akm extract --type claude-code --since 24h
-akm extract --type opencode --since 7d --dry-run
-akm extract --auto                 # iterate every available harness
-akm extract --type claude-code --location /custom/path --session-id <id>
-```
-
-| Flag | Description |
-| --- | --- |
-| `--type <harness>` | Harness name (`claude-code`, `opencode`). Required unless `--auto`. |
-| `--session-id <id>` | Process only this session ID. When absent, discover sessions via `--since`. |
-| `--location <path>` | Override the harness's default session-discovery location. |
-| `--since <cutoff>` | Discovery cutoff. ISO timestamp or duration (`24h`, `7d`, `30m`). Default `24h`. |
-| `--auto` | Iterate every available harness with the default `--since`. Mutually exclusive with `--type`. |
-| `--dry-run` | Show candidates without queuing proposals. |
-| `--force` | Re-process sessions even if they were already extracted and have no new events. Default: skip already-seen sessions. |
-| `--timeout-ms <ms>` | Per-session LLM timeout in ms (default `600000`). |
-| `--engine <name>` | Named LLM engine for this invocation. Mutually exclusive with `--strategy`. |
-| `--strategy <name>` | Improve strategy supplying extract behavior and engine. Mutually exclusive with `--engine`. |
-
-`--type` and `--auto` are mutually exclusive; one of them is required.
-`--auto` iterates `getAvailableHarnesses()` — every harness with a detectable
-session-log location on the current machine — and returns an aggregated
-`extract-auto-result` envelope (`harnessesProcessed`, `totalProposals`,
-per-harness `results`); the run exits non-zero only when every harness
-failed.
-
-There is no `akm extract --watch`/`--debounce-ms` either (0.9.0: dropped — a
-foreground polling daemon in a one-shot CLI); the shipped `core/extract.yml`
-cron template (`akm extract --auto` on a schedule) is the answer.
-
-Requires an LLM engine: pass `--engine`, select a `--strategy` whose
-`processes.extract.engine` is set, or configure `defaults.llmEngine`.
-
 ### lint
 
 Scan stash markdown files for structural issues: unquoted colons, missing
@@ -2044,7 +1989,7 @@ akm improve --sync --no-push           # commit only, skip the push after it
 | --- | --- |
 | `--task` | Optional extra guidance for this improvement pass |
 | `--dry-run` | Show the schema-v2 result on stdout without creating config, data, state, cache, stash, log, or result artifacts. Dry-run results are never persisted, including on errors or signals. |
-| `--target` | Select the proposal/write target; when the ref scope is bundle-qualified, it must name the same bundle |
+| `--bundle` | Select the proposal/write target; when the ref scope is bundle-qualified, it must name the same bundle |
 | `--limit <n>` | Maximum number of assets to process (highest utility first) |
 | `--timeout-ms <ms>` | Wall-clock budget for the run (default: `7200000` = 2 hours) |
 | `--require-feedback-signal` | Only process assets with recent feedback signals |
@@ -2057,7 +2002,7 @@ akm improve --sync --no-push           # commit only, skip the push after it
 `akm improve` is the public entrypoint for whole-stash, type-scoped, and
 ref-scoped improvement. It owns the memory-cleanup and lesson-distillation
 flow. A qualified scope such as `team//skills/code-review` selects that bundle;
-a different explicit `--target` is a usage error. Inspecting or re-minting the
+a different explicit `--bundle` is a usage error. Inspecting or re-minting the
 collapse-detector canary set is maintainer tooling, not a CLI verb — run
 `bun scripts/refresh-canary-set.ts` (add `--refresh` to mint a new set and
 deactivate the old one; old rows and their cycle history are retained).
@@ -2066,7 +2011,8 @@ Built-in `default` and `frequent` leave the improve-stage extract process off,
 and `default` plus `reflect-distill` leave proactive maintenance off. Use the
 explicit `proactive-maintenance` strategy or set the selected strategy's
 process `enabled: true` to opt in. The stage toggle does not disable a direct
-`akm extract --type <harness>` or `akm extract --auto` invocation.
+`akm proposal extract --type <harness>` or `akm proposal extract --auto`
+invocation.
 
 The maintenance pass run by `improve` also expires stale proposals: any pending
 proposal older than the top-level `archiveRetentionDays` config key (default
@@ -2092,41 +2038,14 @@ destination than `memory`. The deterministic search ranking also prefers
 `knowledge` over `memory` hits, including inferred `.derived` memories, when
 the evidence is otherwise comparable.
 
-### propose
-
-Generate a brand-new asset proposal from a description. Output is always a
-proposal — never a direct write.
-
-```sh
-akm propose <type> <name> --task "..."
-akm propose <type> <name> --file ./prompt.md
-akm propose skill code-review --task "PR-style review skill"
-akm propose lesson docker-cleanup --file ./prompts/docker-cleanup.md
-akm propose skill code-review --path team --task "PR-style review skill"  # writes under skills/team/
-```
-
-| Flag | Description |
-| --- | --- |
-| `--path` | Relative subdirectory under the type dir to place the proposed asset in (e.g. `release`). The filename comes from `<name>`. |
-| `--task` | Inline task text |
-| `--file` | Read task text from a UTF-8 file |
-| `--engine` | Override the default execution engine |
-| `--timeout-ms` | Override the selected engine timeout for this call |
-
-Exactly one of `--task` or `--file` is required. Emits `propose_invoked`.
-
-**Prompt-task `timeoutMs`:** a version-2 prompt task may set `timeoutMs` to
-override its selected engine timeout. Set it to `null` to disable the timer, or
-to a positive integer (milliseconds) to apply a task-specific limit.
-
 ### proposal
 
 Manage the proposal queue. The canonical grammar is `akm proposal <verb>`:
-`list`, `show`, `diff`, `accept`, `reject`, `revert`, `drain`. Bare `akm
-proposal` is a usage error (exit 2) as of 0.9.0 — it used to behave as `akm
-proposal list`; name the verb. There are no flat-verb spellings (`akm
-proposals`, `akm accept`, `akm reject`, `akm diff`, `akm revert`) — use the
-`akm proposal <verb>` form.
+`extract`, `new`, `list`, `show`, `diff`, `accept`, `reject`, `revert`,
+`drain`. Bare `akm proposal` is a usage error (exit 2) as of 0.9.0 — it used
+to behave as `akm proposal list`; name the verb. There are no flat-verb
+spellings (`akm proposals`, `akm extract`, `akm propose`, `akm accept`, `akm
+reject`, `akm diff`, `akm revert`) — use the `akm proposal <verb>` form.
 
 `list`, `show`, `diff`, `accept`, `reject`, and `revert` (and bulk accept/
 reject) support `--queue <source>`. It selects the proposal queue stored for
@@ -2142,6 +2061,76 @@ command fails with exit 2. An unbound proposal in a selected non-primary queue
 uses that authenticated queue root. A short historical unbound proposal
 mutation requires either an explicit `--target` or a selected `--queue` that
 authenticates its root; it never falls back to an ambient write target.
+
+#### proposal extract
+
+Extract durable insights from native coding-agent session files (claude-code,
+opencode) and queue them as proposals. This is the standalone entrypoint for
+session extraction — it replaces the legacy session-checkpoint hook and runs
+independently of the improve-stage extract toggle (see `improve` above).
+
+```sh
+akm proposal extract --type claude-code --session-id <id>
+akm proposal extract --type claude-code --since 24h
+akm proposal extract --type opencode --since 7d --dry-run
+akm proposal extract --auto                 # iterate every available harness
+akm proposal extract --type claude-code --location /custom/path --session-id <id>
+```
+
+| Flag | Description |
+| --- | --- |
+| `--type <harness>` | Harness name (`claude-code`, `opencode`). Required unless `--auto`. |
+| `--session-id <id>` | Process only this session ID. When absent, discover sessions via `--since`. |
+| `--location <path>` | Override the harness's default session-discovery location. |
+| `--since <cutoff>` | Discovery cutoff. ISO timestamp or duration (`24h`, `7d`, `30m`). Default `24h`. |
+| `--auto` | Iterate every available harness with the default `--since`. Mutually exclusive with `--type`. |
+| `--dry-run` | Show candidates without queuing proposals. |
+| `--force` | Re-process sessions even if they were already extracted and have no new events. Default: skip already-seen sessions. |
+| `--timeout-ms <ms>` | Per-session LLM timeout in ms (default `600000`). |
+| `--engine <name>` | Named LLM engine for this invocation. Mutually exclusive with `--strategy`. |
+| `--strategy <name>` | Improve strategy supplying extract behavior and engine. Mutually exclusive with `--engine`. |
+
+`--type` and `--auto` are mutually exclusive; one of them is required.
+`--auto` iterates `getAvailableHarnesses()` — every harness with a detectable
+session-log location on the current machine — and returns an aggregated
+`extract-auto-result` envelope (`harnessesProcessed`, `totalProposals`,
+per-harness `results`); the run exits non-zero only when every harness
+failed.
+
+There is no `akm proposal extract --watch`/`--debounce-ms` either (0.9.0:
+dropped — a foreground polling daemon in a one-shot CLI); the shipped
+`core/extract.yml` cron template (`akm proposal extract --auto` on a
+schedule) is the answer.
+
+Requires an LLM engine: pass `--engine`, select a `--strategy` whose
+`processes.extract.engine` is set, or configure `defaults.llmEngine`.
+
+#### proposal new
+
+Generate a brand-new asset proposal from a description. Output is always a
+proposal — never a direct write.
+
+```sh
+akm proposal new <type> <name> --task "..."
+akm proposal new <type> <name> --file ./prompt.md
+akm proposal new skill code-review --task "PR-style review skill"
+akm proposal new lesson docker-cleanup --file ./prompts/docker-cleanup.md
+akm proposal new skill code-review --path team --task "PR-style review skill"  # writes under skills/team/
+```
+
+| Flag | Description |
+| --- | --- |
+| `--path` | Relative subdirectory under the type dir to place the proposed asset in (e.g. `release`). The filename comes from `<name>`. |
+| `--task` | Inline task text |
+| `--file` | Read task text from a UTF-8 file |
+| `--engine` | Override the default execution engine |
+| `--timeout-ms` | Override the selected engine timeout for this call |
+
+Exactly one of `--task` or `--file` is required. Emits `propose_invoked`.
+
+**Prompt-task `timeoutMs`:** a version-2 prompt task may set `timeoutMs` to
+override its selected engine timeout. Set it to `null` to disable the timer, or
+to a positive integer (milliseconds) to apply a task-specific limit.
 
 #### proposal list
 

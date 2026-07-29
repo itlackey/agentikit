@@ -172,7 +172,7 @@ describe("qualified mutation targets", () => {
       "Team deployment note",
       "--name",
       "deployment-note",
-      "--target",
+      "--bundle",
       "team",
     ]);
     expect(remembered.code).toBe(0);
@@ -195,7 +195,7 @@ describe("qualified mutation targets", () => {
       "Indexed team note",
       "--name",
       "indexed-team-note",
-      "--target",
+      "--bundle",
       "team",
     ]);
     expect(remembered.code).toBe(0);

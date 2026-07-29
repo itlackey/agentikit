@@ -170,7 +170,7 @@ describe("akm search --filter narrows by scope", () => {
     await akmIndex({ stashDir, full: true });
 
     // Unscoped query sees all three memories
-    const all = await akmSearch({ query: "deployment", source: "stash" });
+    const all = await akmSearch({ query: "deployment", source: "local" });
     const allLocal = all.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
     const allNames = allLocal.map((h) => h.name).sort();
     expect(allNames).toContain("alice-note");
@@ -179,7 +179,7 @@ describe("akm search --filter narrows by scope", () => {
     // Filter user=alice — only alice's memory
     const filtered = await akmSearch({
       query: "deployment",
-      source: "stash",
+      source: "local",
       filters: { user: "alice" },
     });
     const filteredLocal = filtered.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
@@ -198,7 +198,7 @@ describe("akm search --filter narrows by scope", () => {
 
     await akmIndex({ stashDir, full: true });
 
-    const result = await akmSearch({ query: "legacy", source: "stash" });
+    const result = await akmSearch({ query: "legacy", source: "local" });
     const hits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
     expect(hits.some((h) => h.name === "legacy")).toBe(true);
   });
@@ -216,7 +216,7 @@ describe("akm search --filter narrows by scope", () => {
 
     const result = await akmSearch({
       query: "legacy",
-      source: "stash",
+      source: "local",
       filters: { user: "alice" },
     });
     const hits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");

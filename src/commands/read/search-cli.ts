@@ -43,7 +43,12 @@ export const searchCommand = defineJsonCommand({
         "Asset type filter — free-form, exact match, unvalidated; an unknown type returns no hits (default: any). Built-ins: skill, command, agent, knowledge, workflow, script, memory, lesson, task, session, fact, env, secret, instruction — plus any adapter-defined type (e.g. website, wiki-source, a wiki pageKind). Use workflow to find step-by-step task assets.",
     },
     limit: { type: "string", description: "Maximum number of results" },
-    source: { type: "string", description: "Search source (stash|registry|both)", default: "stash" },
+    from: { type: "string", description: "Search source (local|registry|all)", default: "local" },
+    assets: {
+      type: "boolean",
+      description: "Include asset-level search results (only meaningful with --from registry|all)",
+      default: false,
+    },
     filter: {
       type: "string",
       description:
@@ -101,7 +106,7 @@ export const searchCommand = defineJsonCommand({
     const query = (args.query ?? "").trim();
     const type = args.type as string | undefined;
     const limit = parsePositiveIntFlag(args.limit ?? undefined);
-    const source = parseSearchSource(args.source);
+    const source = parseSearchSource(args.from);
     // Repeatable; citty exposes only the last `--filter` value, so read all
     // occurrences directly from argv (same pattern as `--tag`).
     const filterTokens = parseAllFlagValues("--filter");
@@ -111,6 +116,7 @@ export const searchCommand = defineJsonCommand({
     const disableProjectContext = args["project-context"] === false;
     const skipLogging = args["track-usage"] === false;
     const includeSessions = args["include-sessions"];
+    const assets = args.assets === true;
     const outputMode = getOutputMode();
     const result = await akmSearch({
       query,
@@ -124,6 +130,7 @@ export const searchCommand = defineJsonCommand({
       disableProjectContext,
       disableScopedUtility: disableProjectContext,
       skipLogging,
+      assets,
       eventSource: resolveUsageEventSource(),
       attributionProjection: outputMode.shape === "agent" ? "agent" : outputMode.detail,
     });
@@ -144,7 +151,7 @@ export const curateCommand = defineJsonCommand({
         "Asset type filter — free-form, exact match, unvalidated; an unknown type returns no hits (default: any). Built-ins: skill, command, agent, knowledge, workflow, script, memory, lesson, task, session, fact, env, secret, instruction — plus any adapter-defined type (e.g. website, wiki-source, a wiki pageKind). Use workflow to curate step-by-step task assets.",
     },
     limit: { type: "string", description: "Maximum number of curated results", default: "4" },
-    source: { type: "string", description: "Search source (stash|registry|both)", default: "stash" },
+    from: { type: "string", description: "Search source (local|registry|all)", default: "local" },
     // Output-contract flags. The active values are read from the process-level
     // singleton (parsed from argv at startup); these declarations make them
     // visible in `akm curate --help` and document the supported axes.
@@ -174,7 +181,7 @@ export const curateCommand = defineJsonCommand({
     const type = args.type as string | undefined;
     const limitParsed = parsePositiveIntFlag(args.limit ?? undefined);
     const limit = limitParsed && limitParsed > 0 ? limitParsed : 4;
-    const source = parseSearchSource(args.source ?? "stash");
+    const source = parseSearchSource(args.from ?? "local");
     const skipLogging = args["track-usage"] === false;
     const outputMode = getOutputMode();
     const curated = await akmCurate({

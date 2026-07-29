@@ -203,7 +203,7 @@ Real-world use: your team keeps its shared stash in Git. After improving a workf
 Use registries to discover new stashes you have not installed yet.
 
 ```sh
-akm registry search "code review"
+akm search "code review" --from registry
 akm registry add https://example.com/registry/index.json --name team
 ```
 
@@ -365,12 +365,12 @@ akm improve skills/code-review --task "make this stricter about test coverage"
 
 Real-world use: you have a decent review skill, but you want an agent to improve it based on how it's actually being used.
 
-### `akm propose`
+### `akm proposal new`
 
 Generate a brand-new asset proposal.
 
 ```sh
-akm propose workflow incident-rollback --task "Rollback procedure for failed production deploys"
+akm proposal new workflow incident-rollback --task "Rollback procedure for failed production deploys"
 ```
 
 Real-world use: repeated gaps in your stash show up in `history` and `log`, so you create a first draft for the missing workflow or skill.

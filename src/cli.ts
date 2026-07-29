@@ -82,7 +82,7 @@ import {
   setParsedInvocation,
 } from "./cli/invocation";
 import { EXIT_CODES, emitJsonError, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "./cli/shared";
-import { agentCommand, lintCommand, proposeCommand } from "./commands/agent/contribute-cli";
+import { agentCommand, lintCommand } from "./commands/agent/contribute-cli";
 import { generateBashCompletions, installBashCompletions } from "./commands/completions";
 import { configCommand } from "./commands/config-cli";
 import { envCommand } from "./commands/env/env-cli";
@@ -92,7 +92,6 @@ import { akmHealth } from "./commands/health";
 import "./commands/health/renderers";
 import type { WindowSpec } from "./commands/health/types";
 import { parseWindowSpec } from "./commands/health/windows";
-import { extractCommand } from "./commands/improve/extract-cli";
 import { improveCommand } from "./commands/improve/improve-cli";
 import { migrateCommand } from "./commands/migrate-cli";
 import { mvCommand } from "./commands/mv-cli";
@@ -112,7 +111,7 @@ import {
   upgradeCommand,
 } from "./commands/sources/sources-cli";
 import { importKnowledgeCommand, indexCommand, infoCommand, initCommand } from "./commands/sources/stash-cli";
-import { tasksCommand } from "./commands/tasks/tasks-cli";
+import { taskCommand } from "./commands/tasks/tasks-cli";
 import { workflowCommand } from "./commands/workflow-cli";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config/config";
 import { UsageError } from "./core/errors";
@@ -544,15 +543,13 @@ export const main = defineCommand({
     agent: agentCommand,
     lint: lintCommand,
     improve: improveCommand,
-    extract: extractCommand,
-    propose: proposeCommand,
     proposal: proposalCommand,
     help: helpCommand,
     hints: hintsCommand,
     completions: completionsCommand,
     env: envCommand,
     secret: secretCommand,
-    tasks: tasksCommand,
+    task: taskCommand,
   },
 });
 
@@ -562,10 +559,10 @@ function isTaskRunWithId(argv: readonly string[]): boolean {
   const args = argv.slice(2);
   const commandIndex = findCittyTopLevelCommandIndex(args, MAIN_TOP_LEVEL_ARGS);
   const command = commandIndex >= 0 ? args[commandIndex] : undefined;
-  if (command !== "tasks" && command !== "task") return false;
+  if (command !== "task") return false;
   const taskArgs = args.slice(commandIndex + 1);
   if (taskArgs[0] !== "run") return false;
-  const runCommand = (tasksCommand.subCommands as unknown as Record<string, { args?: ArgsDef }> | undefined)?.run;
+  const runCommand = (taskCommand.subCommands as unknown as Record<string, { args?: ArgsDef }> | undefined)?.run;
   if (!runCommand?.args) return false;
   try {
     const parsed = parseArgs(taskArgs.slice(1), runCommand.args) as Record<string, unknown>;

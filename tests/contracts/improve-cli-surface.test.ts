@@ -3,7 +3,7 @@ import { CLI_DOC_PATH, extractSection, readDoc } from "./contract-helpers";
 
 // Pins the current documented improvement command surface.
 
-const IMPROVEMENT_COMMANDS = ["agent", "improve", "propose", "proposal"] as const;
+const IMPROVEMENT_COMMANDS = ["agent", "improve", "proposal"] as const;
 
 describe("current improvement CLI documentation contract", () => {
   const cli = readDoc(CLI_DOC_PATH);
@@ -22,16 +22,16 @@ describe("current improvement CLI documentation contract", () => {
     expect(cli).not.toContain("§9.4");
   });
 
-  test("agent and propose select named engines while improve selects a strategy", () => {
+  test("agent and proposal new select named engines while improve selects a strategy", () => {
     expect(extractSection(cli, "### agent")).toContain("--engine <name>");
-    expect(extractSection(cli, "### propose")).toContain("`--engine`");
+    expect(extractSection(cli, "#### proposal new")).toContain("`--engine`");
     expect(extractSection(cli, "### improve")).toContain("`--strategy <name>`");
     expect(extractSection(cli, "### agent")).not.toContain("profiles.agent");
   });
 
   test("proposal documents the complete current lifecycle grammar", () => {
     const section = extractSection(cli, "### proposal");
-    for (const verb of ["list", "show", "diff", "accept", "reject", "revert"]) {
+    for (const verb of ["extract", "new", "list", "show", "diff", "accept", "reject", "revert"]) {
       expect(section).toContain(`proposal ${verb}`);
     }
   });

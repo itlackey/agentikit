@@ -253,7 +253,7 @@ describe("akm search conceptId-prefix enumeration (D4)", () => {
     expect(historical.map((h) => h.name)).toEqual(["projecta/deploy-note"]);
   });
 
-  test("named --source filter composes with ref-prefix enumeration", async () => {
+  test("named --from filter composes with ref-prefix enumeration", async () => {
     const extra = makeSandboxDir("akm-ref-prefix-extra");
     try {
       writeMd(

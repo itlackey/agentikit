@@ -130,7 +130,7 @@ Your agent gets the full SKILL.md content, ready to use. For scripts, it gets a 
 Want to search the community registries too? `akm` ships with [skills.sh](https://skills.sh) built in:
 
 ```bash
-akm search "code review" --source both
+akm search "code review" --from all
 ```
 
 Now you're searching your local stash and community registries in one shot. Found something useful? Install it:

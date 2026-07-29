@@ -139,7 +139,7 @@ describe("#627 curate inherits session exclusion (AC1c)", () => {
       await buildIndex(stash);
 
       const res = await akmCurate({ query: TOKEN });
-      const stashItems = res.items.filter((i) => i.source === "stash");
+      const stashItems = res.items.filter((i) => i.source === "local");
       const types = stashItems.map((i) => i.type);
 
       expect(types).not.toContain("session");

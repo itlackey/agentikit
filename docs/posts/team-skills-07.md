@@ -94,7 +94,7 @@ For larger teams or organizations that want discoverability without mandating sp
 akm registry add https://registry.internal.company.com --name team
 
 # Search — registries you've added are searched automatically
-akm search "deploy" --source registry
+akm search "deploy" --from registry
 
 # Install a specific skill from the registry (each hit's `action` field
 # prints the exact `akm add <installRef>` to run)

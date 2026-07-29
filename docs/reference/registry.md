@@ -86,16 +86,13 @@ Search registries alongside or instead of the local stash:
 
 ```bash
 # Search registries only
-akm search "deploy" --source registry
+akm search "deploy" --from registry
 
 # Search both local stash and registries
-akm search "deploy" --source both
-
-# Search registries directly via the registry subcommand
-akm registry search "deploy"
+akm search "deploy" --from all
 
 # Include asset-level results from v3 indexes
-akm registry search "deploy" --assets
+akm search "deploy" --from registry --assets
 ```
 
 ### Search Results
@@ -115,12 +112,12 @@ Use `--detail full` to include ranking metadata like `score`.
 
 ### The `--assets` Flag
 
-When a registry publishes a v3 index (see below), `akm registry search` can
-return individual asset-level hits in addition to stash-level hits. Pass
-`--assets` to enable this:
+When a registry publishes a v3 index (see below), `akm search --from
+registry` can return individual asset-level hits in addition to stash-level
+hits. Pass `--assets` to enable this:
 
 ```bash
-akm registry search "code review" --assets
+akm search "code review" --from registry --assets
 ```
 
 Asset hits include `assetType`, `assetName`, `description`, and the parent

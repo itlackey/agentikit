@@ -12,7 +12,7 @@ cover:
 - migration/error envelopes
 - file-system side effects
 - newer command surfaces and maintenance flows (`history`, `log`, `graph`,
-  `improve`, `propose`, `proposal`, `tasks`, `wiki`, `env`, `secret`)
+  `improve`, `proposal`, `tasks`, `wiki`, `env`, `secret`)
 
 Time budget:
 
@@ -121,9 +121,11 @@ Fixture refs worth using throughout this doc:
       `remove`, `update`, `upgrade`, `search`, `curate`, `show`, `workflow`,
       `remember`, `import`, `sync`, `clone`, `mv`, `registry`, `migrate`,
       `config`, `feedback`, `history`, `log`, `agent`, `lessons`, `lint`,
-      `improve`, `extract`, `propose`, `proposal`, `help`, `hints`,
+      `improve`, `proposal`, `help`, `hints`,
       `completions`, `env`, `secret`, `tasks`. There is no `wiki` command
-      (removed in 0.9.0 in favor of the `llm-wiki` bundle format).
+      (removed in 0.9.0 in favor of the `llm-wiki` bundle format). There are
+      no top-level `extract`/`propose` commands — see `akm proposal extract`
+      / `akm proposal new`.
 - [ ] `akm config enable` and `akm config disable` fail as unknown subcommands
       (removed in 0.9.0 — use `akm registry add|remove`).
 - [ ] `akm upgrade --check` returns structured version/install-method info and
@@ -156,9 +158,9 @@ Fixture refs worth using throughout this doc:
 - [ ] `akm search docker --format json | jq '.hits | length'` matches the
       visible count.
 - [ ] `akm search "code review" --type skill` returns only skill hits.
-- [ ] `akm search code --source registry` emits `registryHits[]` and does not
+- [ ] `akm search code --from registry` emits `registryHits[]` and does not
       mix local hits into `hits[]`.
-- [ ] `akm search code --source both` emits both `hits[]` and `registryHits[]`.
+- [ ] `akm search code --from all` emits both `hits[]` and `registryHits[]`.
 - [ ] `akm search docker --detail full` includes richer hit fields such as
       `ref`, `score`, optional `origin`, and ranking metadata.
 - [ ] `akm search docker --shape agent` includes `ref` plus the smaller
@@ -281,9 +283,9 @@ These cover the shared write-target path and git-backed save behavior.
 - [ ] Add a second filesystem source:
       `mkdir -p "$AKM_SANDBOX/alt" && akm add "$AKM_SANDBOX/alt"`.
 - [ ] Confirm the source name via `akm list --format json`.
-- [ ] `akm remember "to alt" --name alt-mem --target <source-name>` writes to
+- [ ] `akm remember "to alt" --name alt-mem --bundle <source-name>` writes to
       that source.
-- [ ] `akm remember "x" --name y --target nonexistent` fails with
+- [ ] `akm remember "x" --name y --bundle nonexistent` fails with
       `INVALID_FLAG_VALUE`.
 
 ### 8.3 defaultWriteTarget
@@ -350,10 +352,10 @@ These cover the shared write-target path and git-backed save behavior.
 These steps need network access.
 
 - [ ] `akm registry list` shows the configured registries.
-- [ ] `akm registry search docker --detail full` returns registry hits with
-      `installRef` and score.
-- [ ] `akm registry search docker --assets` includes asset-level matches if the
-      provider supports them.
+- [ ] `akm search docker --from registry --detail full` returns registry hits
+      with `installRef` and score.
+- [ ] `akm search docker --from registry --assets` includes asset-level
+      matches if the provider supports them.
 - [ ] `akm registry add https://registry.example/index.json --name test-reg`
       adds a test registry, `akm registry list` shows it, and
       `akm registry remove test-reg` removes it.
@@ -492,7 +494,7 @@ Run only inside the sandbox.
       result without a stack trace.
 - [ ] `akm proposal reject <id> --reason "manual qa"` archives it cleanly.
 
-### 15.2 improve / propose
+### 15.2 improve / proposal new
 
 - [ ] `akm improve skills/k8s-deploy --task "tighten the description"` either
       queues a proposal successfully or fails with a structured config/usage
@@ -648,9 +650,9 @@ checklist did not exercise.
 - [ ] `akm proposal accept memories/my-note` resolves the pending proposal by ref.
 - [ ] `akm proposal reject` / `akm proposal diff` accept the same forms.
 
-#### `--target` uniformity
+#### Write-target flag uniformity
 
-- [ ] `akm remember "note" --target <stash>` writes to the named target.
+- [ ] `akm remember "note" --bundle <stash>` writes to the named target.
 - [ ] `akm import ./file.md --target <stash>` writes to the named target.
 - [ ] Legacy `--stash` on any of the above is rejected with a structured
       usage error.

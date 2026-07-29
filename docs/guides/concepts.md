@@ -450,7 +450,7 @@ These terms have precise meanings in akm. Use this table to avoid confusion:
 | **bundle** | Optional prefix narrowing an item ref to a bundle | `team-catalog//scripts/deploy.sh` |
 | **install ref** | A package identifier passed to `akm add` or `akm clone` | `npm:@scope/pkg`, `github:owner/repo` |
 | **git ref** | A branch, tag, or commit (used when installing) | `main`, `v1.0.0` |
-| **search source** | Where to look: `stash` (local), `registry`, or `both` | `--source stash` |
+| **search source** | Where to look: `local`, `registry`, or `all` | `--from local` |
 
 ## Further Reading
 

@@ -1,5 +1,5 @@
 version: 2
 schedule: "*/30 * * * *"
-command: akm extract --auto
+command: akm proposal extract --auto
 enabled: true
 description: Opt-in all-harness session extraction every 30 min

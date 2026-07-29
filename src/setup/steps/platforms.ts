@@ -74,9 +74,9 @@ export function printCapabilitySummary(smallModelSkipped: boolean, agentConfigur
   }
 
   if (agentConfigured) {
-    lines.push("  ✓ akm propose, akm improve, akm tasks — agent configured");
+    lines.push("  ✓ akm proposal new, akm improve, akm tasks — agent configured");
   } else {
-    lines.push("  ✗ akm propose, akm improve, akm tasks — run `akm setup` to enable");
+    lines.push("  ✗ akm proposal new, akm improve, akm tasks — run `akm setup` to enable");
   }
 
   p.note(lines.join("\n"), "Feature Summary");

@@ -496,7 +496,7 @@ set +e
 docker exec "$AKM_OKF_CONTAINER" akm remember \
   'Correction written during OKF conformance evaluation' \
   --name correction \
-  --target adversarial \
+  --bundle adversarial \
   --supersedes adversarial//knowledge/roundtrip
 export OKF_WRITE_STATUS=$?
 set -e
@@ -543,10 +543,10 @@ source is generally writable or consumer-only:
 RESERVED_BEFORE=$(docker exec "$AKM_OKF_CONTAINER" sh -lc 'find /tmp/okf-adversarial -type f \( -iname "index.md" -o -iname "log.md" \) -exec sha256sum {} + | sort | sha256sum')
 set +e
 docker exec "$AKM_OKF_CONTAINER" akm remember \
-  'Reserved index payload' --name index --target adversarial
+  'Reserved index payload' --name index --bundle adversarial
 INDEX_WRITE_STATUS=$?
 docker exec "$AKM_OKF_CONTAINER" akm remember \
-  'Reserved log payload' --name log --target adversarial
+  'Reserved log payload' --name log --bundle adversarial
 LOG_WRITE_STATUS=$?
 set -e
 test "$INDEX_WRITE_STATUS" -ne 0

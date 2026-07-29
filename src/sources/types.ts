@@ -5,7 +5,7 @@
 import type { InstalledBundle, InstallKind } from "../registry/types";
 
 export type AkmSearchType = string;
-export type SearchSource = "stash" | "registry" | "both";
+export type SearchSource = "local" | "registry" | "all";
 export type SearchHitSize = "small" | "medium" | "large";
 export type BeliefFilterMode = "all" | "current" | "historical";
 

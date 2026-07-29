@@ -4,8 +4,9 @@ import { ARCHITECTURE_PATH, extractSection, readDoc } from "./contract-helpers";
 // Current orchestration invariants:
 //   * search → indexer.search(q); registry hits never merge into source hits.
 //   * show → indexer.lookup(ref) then read file from disk.
-//   * remember/import target resolution: --target → defaultWriteTarget →
-//     working stash → ConfigError.
+//   * remember/clone/improve target resolution: --bundle → defaultWriteTarget →
+//     working stash → ConfigError. (import keeps --target, out of 0.9's S8
+//     rename scope.)
 //   * `index.db` is ephemeral; `usage_events` is preserved across schema bumps.
 
 describe("current orchestration documentation contract", () => {

@@ -139,9 +139,10 @@ remain available across minor releases, but flag names, prompts, and
 proposal-queue shape may shift. Breaking changes will be flagged in the
 CHANGELOG with a migration note.
 
-- **Improvement loop** — `akm improve`, `akm propose`, `akm extract`, and the
-  proposal noun group
-  `akm proposal {list,show,diff,accept,reject,revert,drain}`. Output JSON keys
+- **Improvement loop** — `akm improve` and the proposal noun group
+  `akm proposal {extract,new,list,show,diff,accept,reject,revert,drain}`
+  (`extract` and `new` are the former top-level `akm extract`/`akm propose`,
+  moved under `proposal` in 0.9.0). Output JSON keys
   are stable; CLI flags (`--strategy`, `--task`, `--generator`) may add
   options or tighten validation across releases. `akm improve` stays on by
   default and is **review-first**: the lanes that mutate assets without review
@@ -185,9 +186,10 @@ CHANGELOG with a migration note.
 - **Proposal queue** — quality classifications (`accepted`, `pending`,
   `proposed`, `rejected`, `archived`) are stable; the JSON shape of a
   proposal record may add fields.
-- **Registries** — `akm registry {list,add,remove,search}`. Building a registry
-  index is maintainer tooling (Internal) and lives outside the CLI, in
-  `scripts/build-registry-index.ts`.
+- **Registries** — `akm registry {list,add,remove}`. Searching registries is
+  `akm search --from registry` (0.9.0: `registry search` was folded into
+  `search`). Building a registry index is maintainer tooling (Internal) and
+  lives outside the CLI, in `scripts/build-registry-index.ts`.
 - **Upgrade** — `akm upgrade`. Checksum verification is not optional; the
   recovery hatch is the `AKM_UPGRADE_SKIP_CHECKSUM` environment variable
   (Internal), not a flag.

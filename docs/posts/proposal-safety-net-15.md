@@ -21,7 +21,7 @@ akm's proposal queue is the answer to that problem. Introduced in 0.7.0 and exte
 
 ## How the Queue Works
 
-When `akm improve` or `akm propose` runs, the output goes to the proposal queue — not to your stash. Proposals live outside the asset tree. They never appear in `akm search` results and never get indexed alongside your real assets. The `quality: "proposed"` marker ensures this at the database level: proposed assets are excluded from default search and only surface through the `akm proposal *` commands or an explicit `--include-proposed` flag.
+When `akm improve` or `akm proposal new` runs, the output goes to the proposal queue — not to your stash. Proposals live outside the asset tree. They never appear in `akm search` results and never get indexed alongside your real assets. The `quality: "proposed"` marker ensures this at the database level: proposed assets are excluded from default search and only surface through the `akm proposal *` commands or an explicit `--include-proposed` flag.
 
 This means an agent can generate dozens of proposals in a single `akm improve` run and none of them affect your live stash until you decide they should. Multiple proposals for the same ref coexist without filesystem collisions. You can review them at your own pace, reject the bad ones, and accept the rest in whatever order makes sense.
 

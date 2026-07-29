@@ -46,7 +46,7 @@ export type CurateSupportRef = {
 };
 
 export type CuratedStashItem = {
-  source: "stash";
+  source: "local";
   type: string;
   name: string;
   ref: string;
@@ -236,7 +236,7 @@ export async function akmCurate(options: CurateOptions): Promise<CurateResponse>
   }
 
   const limit = options.limit && options.limit > 0 ? options.limit : DEFAULT_CURATE_LIMIT;
-  const source = options.source ?? parseSearchSource("stash");
+  const source = options.source ?? parseSearchSource("local");
   const searchResponse =
     options.searchResponse ??
     (await searchForCuration({
@@ -327,7 +327,7 @@ async function enrichCuratedStashHit(
   const mergedSupportRefs = mergeCurateSupportRefs(supportRefs, shown?.related?.hits, selectedRefs, hit.ref);
 
   const item: CuratedStashItem = {
-    source: "stash",
+    source: "local",
     type: shown?.type ?? hit.type,
     name: shown?.name ?? hit.name,
     ref: hit.ref,

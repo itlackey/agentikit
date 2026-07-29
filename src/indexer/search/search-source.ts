@@ -78,7 +78,7 @@ export function resolveSourceEntries(overrideStashDir?: string, existingConfig?:
     if (seen.has(resolved)) {
       // Already in the source list — typically the primary stash injected at
       // sources[0] before this loop. Enrich that entry with whatever metadata
-      // the matching config source carries so `--source <config-name>` can
+      // the matching config source carries so `--from <config-name>` can
       // find it via registryId. Without this, the primary stash entry stays
       // identity-less and a user-named primary source ("name": "my-stash")
       // would validate but match zero entries when filtering.

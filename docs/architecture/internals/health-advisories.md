@@ -19,7 +19,7 @@ and whether to act. Some `warn`s below are *adjudicated, expected* states — tr
 | `stash-git-exposure` | `env/` or `secrets/` assets are git-tracked **and** a remote is set — `git push` can leak keys. | `git rm --cached` the files, add `env/`+`secrets/` to `.gitignore` (a rule alone does not untrack). |
 | `semantic-search-runtime` | Semantic search is blocked; often a configured remote embedding endpoint is down. | Restore the endpoint, or set `semanticSearchMode` to `off`, or drop `embedding.endpoint` to use the local model. |
 | `session-extraction` | Extraction ran but hit harness errors or produced zero proposals across ≥5 sessions. | Check the agent CLI and session-log source; extraction is degraded, not failing hard. |
-| `pool-saturation` | <2% of the session pool was new — possible discovery/dedup bug. | Verify `akm extract` still finds new sessions; a healthy steady state sits above 10%. |
+| `pool-saturation` | <2% of the session pool was new — possible discovery/dedup bug. | Verify `akm proposal extract` still finds new sessions; a healthy steady state sits above 10%. |
 | `auto-accept-validation` | Proposals passed the confidence gate but failed validation (bad frontmatter, truncation). | Review the affected pending proposals via `akm proposal list`; they were held, not lost. |
 | `session-log-failures` | Informational only (pre-LLM keyword scan, false-positive prone). | No action — never gates; does not reflect the real extract pipeline. |
 | `outcome-proxy-adequacy` | Retrieval proxy is *inverted* (corr < −0.3): popular assets are the most-needing-improvement. | Known WS-2 limitation; no live action — see plan §WS-2 / CONTEXT before tuning. |

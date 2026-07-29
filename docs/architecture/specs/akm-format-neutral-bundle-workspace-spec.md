@@ -1701,7 +1701,7 @@ akm info
 akm health
 
 akm bundle create|install|list|show|items|update|remove|sync|export  // doclint:ignore — not yet implemented, target surface
-akm registry search|show
+akm registry search|show  // doclint:ignore — target surface; `registry search` folded into `akm search --from registry` in 0.9.0, `registry show` not yet implemented
 
 akm search
 akm show

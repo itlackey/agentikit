@@ -128,7 +128,7 @@ akm show scripts/migrate.sh
 
 **Capture and route knowledge**
 ```sh
-akm remember "Hot-fix deploys skip staging" --target team-stash
+akm remember "Hot-fix deploys skip staging" --bundle team-stash
 akm import ./incident-report.md
 ```
 

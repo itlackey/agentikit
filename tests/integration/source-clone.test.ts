@@ -115,7 +115,7 @@ describe("akmClone", () => {
     expect(result.destination.ref).toContain("my-deploy.sh");
   });
 
-  test("CLI --target clones to a writable filesystem bundle and returns its qualified ref", async () => {
+  test("CLI --bundle clones to a writable filesystem bundle and returns its qualified ref", async () => {
     const targetDir = createStashDir("akm-clone-target-");
     writeFile(path.join(searchPathDir, "scripts", "deploy.sh"), "echo deploy\n");
     saveConfig({
@@ -129,7 +129,7 @@ describe("akmClone", () => {
     const result = await runCliCapture([
       "clone",
       `${searchPathDir}//scripts/deploy.sh`,
-      "--target",
+      "--bundle",
       "team",
       "--format=json",
     ]);
@@ -180,7 +180,7 @@ describe("akmClone", () => {
     expect(fs.readFileSync(destination, "utf8")).toBe("echo original\n");
   });
 
-  test("uses defaultWriteTarget when --target is omitted", async () => {
+  test("uses defaultWriteTarget when --bundle is omitted", async () => {
     const targetDir = createStashDir("akm-clone-default-target-");
     writeFile(path.join(searchPathDir, "scripts", "deploy.sh"), "echo deploy\n");
     saveConfig({
@@ -467,7 +467,7 @@ describe("akmClone --dest", () => {
     expect(fs.existsSync(path.join(stashDir, "scripts", "deploy.sh"))).toBe(false);
   });
 
-  test("rejects ambiguous --dest and --target CLI options", async () => {
+  test("rejects ambiguous --dest and --bundle CLI options", async () => {
     writeFile(path.join(searchPathDir, "scripts", "deploy.sh"), "echo deploy\n");
 
     const result = await runCliCapture([
@@ -475,13 +475,13 @@ describe("akmClone --dest", () => {
       "scripts/deploy.sh",
       "--dest",
       customDest,
-      "--target",
+      "--bundle",
       "searchpath",
       "--format=json",
     ]);
 
     expect(result.code).toBe(2);
-    expect(JSON.parse(result.stderr).error).toContain("--dest and --target cannot be used together");
+    expect(JSON.parse(result.stderr).error).toContain("--dest and --bundle cannot be used together");
     expect(fs.existsSync(path.join(customDest, "scripts", "deploy.sh"))).toBe(false);
   });
 
