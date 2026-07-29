@@ -9,7 +9,7 @@
  * grammar is retired (owner ruling 5, Q-02) — it is NOT accepted here, and it
  * must never be re-accepted by any parser.
  *
- * This drives THREE representative commands (`show`, `feedback`, `graph`) at the
+ * This drives representative commands (`show`, `feedback`) at the
  * command level and proves that the SAME asset resolves through both surviving
  * spellings of its ref — the short `conceptId` and the fully-qualified
  * `bundle//conceptId` — so F2's re-keyed test literals no longer throw at the
@@ -24,15 +24,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { akmGraphRelated } from "../../../src/commands/graph/graph";
 import { akmShowUnified } from "../../../src/commands/read/show";
 import { saveConfig } from "../../../src/core/config/config";
 import { getDbPath } from "../../../src/core/paths";
-import { replaceStoredGraph } from "../../../src/indexer/db/graph-db";
-import { GRAPH_FILE_SCHEMA_VERSION } from "../../../src/indexer/graph/graph-extraction";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { mergeLockEntriesSync } from "../../../src/integrations/lockfile";
-import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
 // Trigger source-provider self-registration.
 import "../../../src/sources/providers/index";
 import { runCliCapture } from "../../_helpers/cli";
@@ -105,40 +101,5 @@ describe("F1b input boundaries accept both ref grammars (command level)", () => 
       const res = await runCliCapture(["feedback", ref, "--positive"]);
       expect(res.code, `feedback ${ref} exit (stderr: ${res.stderr})`).toBe(0);
     }
-  });
-
-  test("`akm graph related` resolves the same target via both spellings", async () => {
-    // Seed a stored graph snapshot for the catalog source so `graph related`
-    // gets past its data-load step; the entry rows already exist (akmIndex).
-    const db = openIndexDatabase(getDbPath());
-    try {
-      replaceStoredGraph(db, {
-        schemaVersion: GRAPH_FILE_SCHEMA_VERSION,
-        generatedAt: "2026-05-01T00:00:00.000Z",
-        stashRoot: catalogRoot,
-        files: [
-          {
-            path: guidePath,
-            type: "knowledge",
-            bodyHash: "guide-body-hash",
-            entities: ["caching", "http"],
-            relations: [{ from: "caching", to: "http", type: "uses" }],
-          },
-        ],
-        entities: ["caching", "http"],
-        relations: [{ from: "caching", to: "http", type: "uses" }],
-      });
-    } finally {
-      closeDatabase(db);
-    }
-
-    const targets: string[] = [];
-    for (const ref of SPELLINGS) {
-      const result = await akmGraphRelated({ ref });
-      expect(result.shape, `graph ${ref} shape`).toBe("graph-related");
-      targets.push(result.path);
-    }
-    expect(targets[0]).toBe(guidePath);
-    expect(targets[1]).toBe(guidePath);
   });
 });

@@ -241,7 +241,7 @@ function bareGroupUsageError<T extends ArgsDef>(meta: CommandDef<T>["meta"], sub
 
 /**
  * Define a citty subcommand-group command (env, secret, proposal, tasks, wiki,
- * graph, …) that shares one wiring shape: a `subCommands` map, a routing set
+ * …) that shares one wiring shape: a `subCommands` map, a routing set
  * DERIVED from that map's keys (so the set can never silently desync from the
  * registered subcommands), and a default body that fires ONLY for the bare
  * group invocation — citty still runs the group body after dispatching a

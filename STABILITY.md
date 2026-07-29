@@ -109,10 +109,7 @@ please file it.
   passing `--format` to one of them warns rather than silently doing something
   else. Scripted `setup` modes emit a normal format-aware result; interactive
   `setup` is a terminal UI and emits no result document. `agent` leaves
-  inherited child streams raw and formats its final result envelope. `akm graph
-  export` has no local `--format`: the artifact payload
-  follows the `--out` extension (`.jsonl` writes JSONL, anything else JSON),
-  and the global flag only renders the command's own envelope.
+  inherited child streams raw and formats its final result envelope.
 
   | Exit code | Meaning |
   | --- | --- |
@@ -221,9 +218,6 @@ for scripted use.
 - **Memory belief-state transitions** — `captureMode`, `beliefState`,
   contradiction edges, and the consolidate journal are observable but
   the algorithm that writes them is tuning across patch releases.
-- **`akm graph`** — read-only inspection of the indexed entity graph
-  (`summary`, `entities`, `relations`, `related`, `entity`, `orphans`,
-  `export`, `update`). It exposes indexer internals; its shapes will change.
 - **Improve tuning config** — `improve.strategies.*.processes.*` (per-process
   engines, limits, gates, and the anti-collapse / CLS / fidelity knobs) and
   the `index.*` per-pass config. The 0.9.x series is explicitly still settling

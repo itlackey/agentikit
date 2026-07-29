@@ -292,75 +292,13 @@ generated across five or more scanned sessions. The `session-log-failures` advis
 is informational only and never triggers `warn` — it reports raw keyword matches,
 not LLM-validated extraction outcomes.
 
-### graph
-
-Inspect and export the indexed graph data stored in `index.db`.
-
-```sh
-akm graph summary                    # Bare `akm graph` is a usage error (exit 2) — a subcommand is required
-akm graph entities --limit 25
-akm graph relations --limit 25
-akm graph entity "React Router"
-akm graph related knowledge/react-router
-akm graph orphans --limit 20
-akm graph export --out ./graph.json
-akm graph export --out ./graph.jsonl --format jsonl   # global --format selects the payload
-akm graph update                        # Re-extract all eligible files
-akm graph update memories/foo             # Re-extract only this ref
-akm graph update memories/foo skills/bar   # Re-extract multiple refs
-akm graph update --source my-stash      # Target a specific stash source
-```
-
-Subcommands:
-
-| Subcommand | Description |
-| --- | --- |
-| `summary` | Show graph counts and optional quality telemetry (`consideredFiles`, `extractedFiles`, `extractionCoverage`, `density`) |
-| `entities` | List deduplicated entities with per-file occurrence counts and best confidence |
-| `entity <name>` | Show every asset that contains the given entity, ordered by per-asset confidence. Inverts the `entities` view |
-| `relations` | List deduplicated relations with occurrence counts and best confidence |
-| `related <ref>` | Show assets related to `<ref>` via shared graph entities (asset neighbors) |
-| `orphans` | List assets with zero extracted graph entities — useful for quality triage |
-| `export` | Write the graph to disk as `json` or `jsonl` |
-| `update [refs...]` | Re-run graph extraction outside the improve loop, optionally scoped to specific refs. Unknown refs emit a warning and are skipped. |
-
-`akm graph related <ref>` returns the closest graph neighbors of an asset:
-each hit lists the asset's `type`, label, the `shared` entities, and the
-`relationCount` connecting them. The text formatter also appends a `Next:` hint
-pointing at the top hit so agents know which ref to load next.
-
-`akm graph entity <name>` lists assets that mention an entity, ordered by
-extraction confidence — useful when you have an entity name from
-`akm graph entities` and want to inspect every source that surfaced it.
-
-`akm graph orphans` lists assets that produced zero entities during the
-extraction pass. These are good candidates for re-extraction, content
-improvement, or pruning.
-
-**`akm graph update` [refs...]:** Re-extract graph entities from eligible files.
-When refs are provided, only those assets are re-extracted (incremental scoped
-pass). When no refs are given, performs a full re-extraction over all eligible
-files. Unknown refs (not currently in the index) emit a warning and are skipped
-without error. Returns a `graph-update` shaped result with `filesExtracted`,
-`entitiesUpserted`, `relationsUpserted`, `durationMs`, and `scoped` (true if
-specific refs were targeted).
-
-Common flags:
-
-| Flag | Description |
-| --- | --- |
-| `--source <name\|path>` | Select which configured source stash to inspect (defaults to primary source) |
-| `--limit <n>` | Cap rows returned by `entities`, `entity`, `relations`, `related`, `orphans` |
-| `--out <path>` | Required for `export`; output file path |
-
-If no graph artifact exists yet, run the flow that refreshes graph extraction for your stash.
-
-Graph data is automatically re-extracted on the first `akm improve` cycle after
-a `DB_VERSION` upgrade.
-
-Search ranking can optionally use graph-derived confidence-weighted boosts.
-Tune `search.graphBoost.confidenceMode` and `search.graphBoost.confidenceWeight`
-in [`docs/reference/configuration.md#search-tuning`](configuration.md#search-tuning).
+The indexed entity graph (entities/relations extracted from stash assets) has
+no dedicated inspection command; its summary counts surface as an info-level
+metric in `akm health`. Graph data is automatically re-extracted on the first
+`akm improve` cycle after a `DB_VERSION` upgrade, and search ranking can
+optionally use graph-derived confidence-weighted boosts — tune
+`search.graphBoost.confidenceMode` and `search.graphBoost.confidenceWeight` in
+[`docs/reference/configuration.md#search-tuning`](configuration.md#search-tuning).
 
 ### search
 

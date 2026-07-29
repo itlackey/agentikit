@@ -107,8 +107,10 @@ function createUnknownImproveMetrics(): ImproveHealthMetrics {
     graphExtraction: {
       ran: false,
       extractedFiles: 0,
+      consideredFiles: 0,
       entities: 0,
       relations: 0,
+      extractionCoverage: 0,
       cacheHits: 0,
       cacheMisses: 0,
       cacheHitRate: 0,
@@ -416,7 +418,10 @@ function applyGraphExtraction(metrics: ImproveHealthMetrics, result: Record<stri
   const graphExtraction = result.graphExtraction as Record<string, unknown> | undefined;
   if (graphExtraction) {
     const quality = graphExtraction.quality as Record<string, unknown> | undefined;
-    if (quality) metrics.graphExtraction.extractedFiles += toFiniteNumber(quality.extractedFiles);
+    if (quality) {
+      metrics.graphExtraction.extractedFiles += toFiniteNumber(quality.extractedFiles);
+      metrics.graphExtraction.consideredFiles += toFiniteNumber(quality.consideredFiles);
+    }
     metrics.graphExtraction.entities += toFiniteNumber(graphExtraction.totalEntities);
     metrics.graphExtraction.relations += toFiniteNumber(graphExtraction.totalRelations);
     const telemetry = graphExtraction.telemetry as Record<string, unknown> | undefined;
@@ -504,6 +509,10 @@ function finalizeImproveMetrics(metrics: ImproveHealthMetrics): void {
     metrics.graphExtraction.durationMs > 0;
   const cacheTotal = metrics.graphExtraction.cacheHits + metrics.graphExtraction.cacheMisses;
   metrics.graphExtraction.cacheHitRate = cacheTotal > 0 ? roundRate(metrics.graphExtraction.cacheHits / cacheTotal) : 0;
+  metrics.graphExtraction.extractionCoverage =
+    metrics.graphExtraction.consideredFiles > 0
+      ? roundRate(metrics.graphExtraction.extractedFiles / metrics.graphExtraction.consideredFiles)
+      : 0;
   metrics.sessionExtraction.ran =
     metrics.sessionExtraction.sessionsScanned > 0 ||
     metrics.sessionExtraction.proposalsCreated > 0 ||
@@ -587,6 +596,7 @@ function mergeImproveMetrics(dst: ImproveHealthMetrics, src: ImproveHealthMetric
   dst.memoryInference.retryAttempts += src.memoryInference.retryAttempts;
   dst.memoryInference.durationMs += src.memoryInference.durationMs;
   dst.graphExtraction.extractedFiles += src.graphExtraction.extractedFiles;
+  dst.graphExtraction.consideredFiles += src.graphExtraction.consideredFiles;
   dst.graphExtraction.entities += src.graphExtraction.entities;
   dst.graphExtraction.relations += src.graphExtraction.relations;
   dst.graphExtraction.cacheHits += src.graphExtraction.cacheHits;

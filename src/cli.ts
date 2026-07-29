@@ -88,7 +88,6 @@ import { configCommand } from "./commands/config-cli";
 import { envCommand } from "./commands/env/env-cli";
 import { secretCommand } from "./commands/env/secret-cli";
 import { feedbackCommand } from "./commands/feedback-cli";
-import { graphCommand } from "./commands/graph/graph-cli";
 import { akmHealth } from "./commands/health";
 import "./commands/health/renderers";
 import type { WindowSpec } from "./commands/health/types";
@@ -523,7 +522,6 @@ export const main = defineCommand({
     index: indexCommand,
     health: healthCommand,
     info: infoCommand,
-    graph: graphCommand,
     add: addCommand,
     list: listCommand,
     remove: removeCommand,

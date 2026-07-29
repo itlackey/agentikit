@@ -146,10 +146,10 @@ describe("completions command", () => {
   });
 
   // R-052(a): --source means a closed enum on search/curate but a free-form
-  // stash name (graph) or free-form ref/URL/path (remember) elsewhere.
-  // FLAG_VALUES used to be a flat Record keyed by flag NAME, so the enum
-  // leaked onto every command with a --source flag. The fix scopes the rule
-  // to a cmd_path match inside the --source case.
+  // ref/URL/path (remember) elsewhere. FLAG_VALUES used to be a flat Record
+  // keyed by flag NAME, so the enum leaked onto every command with a
+  // --source flag. The fix scopes the rule to a cmd_path match inside the
+  // --source case.
   test("scopes --source completion to search/curate, not globally (R-052a)", () => {
     const sourceCase = script.match(/--source\)[\s\S]*?return 0\n\s*;;/)?.[0];
     expect(sourceCase).toBeDefined();
@@ -158,10 +158,10 @@ describe("completions command", () => {
     expect(sourceCase).toContain('case "${cmd_path}" in');
     expect(sourceCase).toContain('"akm search"|"akm curate")');
     expect(sourceCase).toContain("stash registry both");
-    // graph's --source (a free-form stash name) must not be lumped into the
-    // search/curate enum branch, and there must be no unscoped fallback
+    // remember's --source (a free-form ref/URL/path) must not be lumped into
+    // the search/curate enum branch, and there must be no unscoped fallback
     // branch re-offering the enum to every other command.
-    expect(sourceCase).not.toContain('"akm graph"');
+    expect(sourceCase).not.toContain('"akm remember"');
     expect(sourceCase).not.toMatch(/\*\)\s*\n\s*COMPREPLY/);
   });
 });

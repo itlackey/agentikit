@@ -235,7 +235,7 @@ Recommended first graph-aware use in curate:
 - do not use graph as a primary reranker yet
 - use graph to attach 1-2 support refs or navigation hints to a top-level curated result
 - prefer hints like `see also`, `related`, or `inspect next` over full graph payloads
-- keep full graph exploration in `akm show` or `akm graph related`
+- keep full graph exploration in `akm show`'s `related` block
 
 What not to do yet:
 

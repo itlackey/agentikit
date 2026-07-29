@@ -81,8 +81,10 @@ function zeroImprove(): ImproveHealthMetrics {
     graphExtraction: {
       ran: false,
       extractedFiles: 0,
+      consideredFiles: 0,
       entities: 0,
       relations: 0,
+      extractionCoverage: 0,
       cacheHits: 0,
       cacheMisses: 0,
       cacheHitRate: 0,

@@ -15,23 +15,21 @@ type AnyCmd = Record<string, any>;
 /**
  * A completion rule for one flag, optionally scoped to a set of exact
  * command paths (the same `"<root> <subcommand...>"` shape `walkCommandTree`
- * produces below, e.g. `"akm search"`, `"akm graph summary"`). Most flags
+ * produces below, e.g. `"akm search"`, `"akm curate"`). Most flags
  * (`--format`, `--detail`, `--shape`, `--type`, `--shell`) mean the same
  * thing on every command that declares them, so they're declared with no
  * `paths` (global — the rule applies wherever the flag appears).
  *
  * `--source` does NOT: it's a closed `stash|registry|both` enum on
  * `search`/`curate` (src/commands/read/search-cli.ts), but a free-form
- * stash name/path on every `graph` subcommand
- * (src/commands/graph/graph-cli.ts) and a free-form URL/ref/path on
- * `remember` (src/commands/read/remember-cli.ts). Before this fix (R-052a)
- * `FLAG_VALUES` was a flat `Record` keyed by flag NAME ONLY, so `akm graph
- * --source <TAB>` wrongly suggested `stash registry both` — search's enum,
- * tagged onto every occurrence of the flag name regardless of which command
- * it belonged to. Scoping the rule to `paths` keeps the suggestion where
- * it's actually correct; every other command path with that flag gets no
- * suggestion (falls through to bash's default filename completion) rather
- * than an incorrect one.
+ * URL/ref/path on `remember` (src/commands/read/remember-cli.ts). Before this
+ * fix (R-052a) `FLAG_VALUES` was a flat `Record` keyed by flag NAME ONLY, so
+ * `akm remember --source <TAB>` wrongly suggested `stash registry both` —
+ * search's enum, tagged onto every occurrence of the flag name regardless of
+ * which command it belonged to. Scoping the rule to `paths` keeps the
+ * suggestion where it's actually correct; every other command path with that
+ * flag gets no suggestion (falls through to bash's default filename
+ * completion) rather than an incorrect one.
  */
 interface FlagValueRule {
   /** Exact command paths this rule applies to. Omit for every path with no more specific rule for this flag. */
