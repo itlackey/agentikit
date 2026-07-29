@@ -189,8 +189,9 @@ CHANGELOG with a migration note.
 - **Proposal queue** — quality classifications (`accepted`, `pending`,
   `proposed`, `rejected`, `archived`) are stable; the JSON shape of a
   proposal record may add fields.
-- **Registries** — `akm registry {list,add,remove,search}`.
-  `akm registry build-index` is maintainer tooling (Internal).
+- **Registries** — `akm registry {list,add,remove,search}`. Building a registry
+  index is maintainer tooling (Internal) and lives outside the CLI, in
+  `scripts/build-registry-index.ts`.
 - **Upgrade** — `akm upgrade`. Checksum verification is not optional; the
   recovery hatch is the `AKM_UPGRADE_SKIP_CHECKSUM` environment variable
   (Internal), not a flag.
@@ -338,8 +339,9 @@ on them.
   backup` / `restore`). `akm migrate` is a thin process forwarder; `akm backup`
   and `akm config migrate` are removed. `akm help migrate <version>` is Stable
   and only renders release notes.
-- **`akm registry build-index`** — maintainer tooling for building a registry
-  index.
+- **`bun scripts/build-registry-index.ts`** — maintainer tooling for building a
+  registry index. It is a repository script, not a CLI command (the former
+  `akm registry build-index` subcommand was removed).
 - **Environment variables** — see the table below.
 
 ### Environment variables

@@ -3,10 +3,10 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildRegistryIndex, writeRegistryIndex } from "../../src/registry/build-index";
+import { buildRegistryIndex, writeRegistryIndex } from "../../scripts/build-registry-index";
 import { sandboxXdgCacheHome } from "../_helpers/sandbox";
 
-const CLI = path.join(import.meta.dir, "..", "..", "src", "cli.ts");
+const BUILD_SCRIPT = path.join(import.meta.dir, "..", "..", "scripts", "build-registry-index.ts");
 const tempDirs: string[] = [];
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
 
@@ -440,7 +440,7 @@ function waitForChild(
   });
 }
 
-describe("akm registry build-index", () => {
+describe("bun scripts/build-registry-index.ts", () => {
   test(
     "writes the generated index to disk",
     async () => {
@@ -467,17 +467,14 @@ describe("akm registry build-index", () => {
       const child = spawn(
         "bun",
         [
-          CLI,
-          "registry",
-          "build-index",
-          "--format=json",
+          BUILD_SCRIPT,
           "--out",
           outPath,
           "--manual",
           manualEntriesPath,
-          "--npmRegistry",
+          "--npm-registry",
           serverBase,
-          "--githubApi",
+          "--github-api",
           serverBase,
         ],
         {

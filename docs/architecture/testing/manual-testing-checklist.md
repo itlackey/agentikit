@@ -364,8 +364,9 @@ These steps need network access.
 - [ ] Installing a hit still happens through `akm add <installRef>`; there is
       no `registry add-kit` subcommand.
 
-`registry build-index` is primarily a publisher/developer flow. Run it only in
-an isolated working directory with disposable output paths.
+Building a registry index is a publisher/maintainer flow and is no longer a CLI
+subcommand — it lives in `scripts/build-registry-index.ts`. Run it only in an
+isolated working directory with disposable output paths.
 
 ---
 

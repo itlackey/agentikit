@@ -147,13 +147,6 @@ export function formatRegistrySearchPlain(r: Record<string, unknown>, detail: De
   return formatSearchPlain(r, detail);
 }
 
-export function formatRegistryBuildIndexPlain(r: Record<string, unknown>): string {
-  const outPath = String(r.outPath ?? "?");
-  const total = typeof r.totalKits === "number" ? r.totalKits : 0;
-  const version = typeof r.version === "number" ? `v${r.version}` : "";
-  return `Wrote registry index ${version} (${total} kits) → ${outPath}`.replace(/\s+/g, " ").trim();
-}
-
 export function formatEnvListPlain(r: Record<string, unknown>): string {
   // Multi-env listing: { envs: [{ ref, path, keys }, ...] }
   const envs = Array.isArray(r.envs) ? (r.envs as Array<Record<string, unknown>>) : [];

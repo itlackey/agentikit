@@ -6,7 +6,6 @@
 
 import {
   formatRegistryAddPlain,
-  formatRegistryBuildIndexPlain,
   formatRegistryListPlain,
   formatRegistryRemovePlain,
   formatRegistrySearchPlain,
@@ -18,5 +17,4 @@ export const registryCommandFormatters: TextFormatterEntry[] = [
   { command: "registry-add", handler: (r) => formatRegistryAddPlain(r) },
   { command: "registry-remove", handler: (r) => formatRegistryRemovePlain(r) },
   { command: "registry-search", handler: (r, detail) => formatRegistrySearchPlain(r, detail) },
-  { command: "registry-build-index", handler: (r) => formatRegistryBuildIndexPlain(r) },
 ];

@@ -393,10 +393,11 @@ Host the file at a stable URL and have team members add it:
 akm registry add https://your-server.com/akm-registry/index.json --name team
 ```
 
-To generate the index automatically, use the built-in `build-index` subcommand:
+To generate the index automatically, use the maintainer script in the akm
+repository:
 
 ```bash
-akm registry build-index --out dist/index.json
+bun scripts/build-registry-index.ts --out dist/index.json
 ```
 
 This does not scan the current directory. It fans out to three discovery
@@ -446,7 +447,8 @@ Each asset entry supports:
 | `tags` | no | Searchable keywords |
 
 The 0.6.0 release dropped support for the legacy v1 / v2 indexes;
-publishers must regenerate `index.json` with `akm registry build-index`
+publishers must regenerate `index.json` with the
+`scripts/build-registry-index.ts` maintainer script
 or the [akm-registry](https://github.com/itlackey/akm-registry) tooling
 (see the [v0.5 → v0.6 migration guide](../migration/v0.5-to-v0.6.md)). akm
 treats unknown fields inside a v3 entry as forward-compatible.

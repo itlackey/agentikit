@@ -304,7 +304,7 @@ Built-in registries:
 
 | Kind | Role |
 | --- | --- |
-| `static-index` | Reads the v2 or v3 JSON index schema, same `stashes[]` wire format (official akm registry, team mirrors). `akm registry build-index` emits v3; the live official registry currently publishes v2. |
+| `static-index` | Reads the v2 or v3 JSON index schema, same `stashes[]` wire format (official akm registry, team mirrors). `scripts/build-registry-index.ts` emits v3; the live official registry currently publishes v2. |
 | `skills-sh` | Wraps the skills.sh REST API. |
 
 Context Hub is **not** a registry provider type. It is just a recommended git

@@ -38,7 +38,6 @@ export {
   formatInitPlain,
   formatListPlain,
   formatRegistryAddPlain,
-  formatRegistryBuildIndexPlain,
   formatRegistryListPlain,
   formatRegistryRemovePlain,
   formatRegistrySearchPlain,

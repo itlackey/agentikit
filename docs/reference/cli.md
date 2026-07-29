@@ -1593,8 +1593,11 @@ cooperating processes, set those env vars consistently across them.
 
 ### registry
 
-Manage stash registries. The `registry` command has five subcommands: `list`,
-`add`, `remove`, `search`, and `build-index`.
+Manage stash registries. The `registry` command has four subcommands: `list`,
+`add`, `remove`, and `search`.
+
+Building a registry index is maintainer tooling, not a CLI command — see
+`bun scripts/build-registry-index.ts` in the akm repository.
 
 #### registry list
 
@@ -1636,22 +1639,6 @@ akm registry remove my-team --yes    # Skip the confirmation prompt
 | Flag | Description |
 | --- | --- |
 | `-y`, `--yes` | Skip confirmation prompt |
-
-#### registry build-index
-
-Generate a v3 registry index from npm/GitHub discovery and manual entries.
-
-```sh
-akm registry build-index
-akm registry build-index --out dist/index.json
-```
-
-| Flag | Description |
-| --- | --- |
-| `--out` | Output path for the generated index (default: `./index.json`) |
-| `--manual` | Path to a JSON file with manual stash entries |
-| `--npm-registry` | Override npm registry base URL |
-| `--github-api` | Override GitHub API base URL |
 
 #### registry search
 

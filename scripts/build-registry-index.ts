@@ -7,21 +7,46 @@
  * schema is the input contract owned by
  * `src/registry/providers/static-index.ts`. When the schema changes, the
  * parser and builder must be updated together.
+ *
+ * Maintainer tooling (STABILITY.md "Internal"): this used to ship as the
+ * `akm registry build-index` subcommand. It is a publisher/registry-operator
+ * one-off with no place on the user-facing CLI surface, so it lives here
+ * instead — `scripts/` may import `src/`, never the reverse.
+ *
+ * Usage:
+ *   bun scripts/build-registry-index.ts [--out <path>] [--manual <path>]
+ *                                       [--npm-registry <url>] [--github-api <url>]
+ *
+ *   --out           Output path for the generated index
+ *                   (default: <cacheDir>/registry-build/index.json)
+ *   --manual        Manual entries JSON file
+ *                   (default: <cacheDir>/registry-build/manual-entries.json)
+ *   --npm-registry  Override the npm registry base URL
+ *   --github-api    Override the GitHub API base URL
+ *   --help          Print this usage and exit
+ *
+ * Prints a JSON summary ({ outPath, version, updatedAt, totalKits, counts,
+ * manualEntriesPath }) to stdout.
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import { fetchWithRetry, jsonWithByteCap } from "../core/common";
-import { getCacheDir } from "../core/paths";
-import type { IndexDocument } from "../indexer/passes/metadata";
-import { recognizeStashEntries } from "../indexer/scan/drain-dir";
-import { walkStashFlat } from "../indexer/walk/walker";
-import { asRecord, asString, GITHUB_API_BASE, githubHeaders } from "../integrations/github";
-import { writeResponseToFileCapped } from "../runtime";
-import { copyIncludedPaths, findNearestIncludeConfig } from "../sources/include";
-import { detectStashRoot } from "../sources/providers/provider-utils";
-import { extractTarGzSecure } from "../sources/providers/tar-utils";
-import { parseRegistryIndex, type RegistryBundleEntry, type RegistryIndex } from "./providers/static-index";
+import { parseArgs } from "node:util";
+import { fetchWithRetry, jsonWithByteCap } from "../src/core/common";
+import { getCacheDir } from "../src/core/paths";
+import type { IndexDocument } from "../src/indexer/passes/metadata";
+import { recognizeStashEntries } from "../src/indexer/scan/drain-dir";
+import { walkStashFlat } from "../src/indexer/walk/walker";
+import { asRecord, asString, GITHUB_API_BASE, githubHeaders } from "../src/integrations/github";
+import {
+  parseRegistryIndex,
+  type RegistryBundleEntry,
+  type RegistryIndex,
+} from "../src/registry/providers/static-index";
+import { writeResponseToFileCapped } from "../src/runtime";
+import { copyIncludedPaths, findNearestIncludeConfig } from "../src/sources/include";
+import { detectStashRoot } from "../src/sources/providers/provider-utils";
+import { extractTarGzSecure } from "../src/sources/providers/tar-utils";
 
 const DEFAULT_NPM_REGISTRY_BASE = "https://registry.npmjs.org";
 const REQUIRED_KEYWORDS = ["akm-stash"];
@@ -493,4 +518,59 @@ function sortAssets(assets: NonNullable<RegistryBundleEntry["assets"]>): NonNull
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+const USAGE = `Usage: bun scripts/build-registry-index.ts [options]
+
+  --out <path>           Output path for the generated index
+  --manual <path>        Manual entries JSON file
+  --npm-registry <url>   Override the npm registry base URL
+  --github-api <url>     Override the GitHub API base URL
+  --help                 Print this usage and exit
+`;
+
+async function main(argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      out: { type: "string" },
+      manual: { type: "string" },
+      "npm-registry": { type: "string" },
+      "github-api": { type: "string" },
+      help: { type: "boolean", default: false },
+    },
+  });
+
+  if (values.help) {
+    process.stdout.write(USAGE);
+    return;
+  }
+
+  const result = await buildRegistryIndex({
+    manualEntriesPath: values.manual,
+    npmRegistryBase: values["npm-registry"],
+    githubApiBase: values["github-api"],
+  });
+  const outPath = writeRegistryIndex(result.index, values.out);
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        outPath,
+        version: result.index.version,
+        updatedAt: result.index.updatedAt,
+        totalKits: result.counts.total,
+        counts: result.counts,
+        manualEntriesPath: result.paths.manualEntriesPath,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+if (import.meta.main) {
+  main(process.argv.slice(2)).catch((error: unknown) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
 }

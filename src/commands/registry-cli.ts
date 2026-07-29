@@ -9,7 +9,6 @@ import type { RegistryConfigEntry } from "../core/config/config";
 import { getEffectiveRegistries, loadUserConfig, mutateConfig } from "../core/config/config";
 import { UsageError } from "../core/errors";
 import { warn } from "../core/warn";
-import { buildRegistryIndex, writeRegistryIndex } from "../registry/build-index";
 import { searchRegistry } from "./read/registry-search";
 
 export const registryCommand = defineGroupCommand({
@@ -138,31 +137,6 @@ export const registryCommand = defineGroupCommand({
           registries: config.registries,
         });
         output("registry-search", result);
-      },
-    }),
-    "build-index": defineJsonCommand({
-      meta: { name: "build-index", description: "Build a v2 registry index from discovery and manual entries" },
-      args: {
-        out: { type: "string", description: "Output path for the generated index" },
-        manual: { type: "string", description: "Manual entries JSON file" },
-        "npm-registry": { type: "string", description: "Override npm registry base URL" },
-        "github-api": { type: "string", description: "Override GitHub API base URL" },
-      },
-      async run({ args }) {
-        const result = await buildRegistryIndex({
-          manualEntriesPath: args.manual,
-          npmRegistryBase: args["npm-registry"],
-          githubApiBase: args["github-api"],
-        });
-        const outPath = writeRegistryIndex(result.index, args.out);
-        output("registry-build-index", {
-          outPath,
-          version: result.index.version,
-          updatedAt: result.index.updatedAt,
-          totalKits: result.counts.total,
-          counts: result.counts,
-          manualEntriesPath: result.paths.manualEntriesPath,
-        });
       },
     }),
   },

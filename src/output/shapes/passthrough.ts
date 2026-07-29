@@ -60,7 +60,6 @@ const PASSTHROUGH_COMMANDS = [
   "proposal-reject-batch",
   "proposal-revert",
   "registry-add",
-  "registry-build-index",
   "registry-list",
   "registry-remove",
   "remember",

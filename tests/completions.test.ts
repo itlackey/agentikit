@@ -108,7 +108,7 @@ describe("completions command", () => {
 
   test("contains nested registry subcommands", () => {
     expect(script).toContain('"akm registry"');
-    for (const sub of ["list", "add", "remove", "search", "build-index"]) {
+    for (const sub of ["list", "add", "remove", "search"]) {
       expect(script).toContain(sub);
     }
   });
