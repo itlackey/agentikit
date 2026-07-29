@@ -21,8 +21,10 @@
       "scripts/*.ts",
       "!src/assets/templates/html",
       "!tests/fixtures/goldens/**/*.json",
-      "!tests/fixtures/format-family-goldens/**/*.json"
-    ]
+      "!tests/fixtures/format-family-goldens/**/*.json",
+      "!.claude/**"
+    ],
+    "experimentalScannerIgnores": [".claude"]
   },
   "overrides": [
     {
