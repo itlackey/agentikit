@@ -27,6 +27,21 @@ import { akmCurate } from "./curate";
 import { akmSearch, parseBeliefFilterMode, parseScopeFilterFlags, parseSearchSource } from "./search";
 import { akmShowUnified } from "./show";
 
+/**
+ * `--source` was renamed to `--from` on `search`/`curate` in 0.9 (S8). citty
+ * is non-strict, so the retired spelling is silently absorbed rather than
+ * rejected — the command then runs against the DEFAULT `--from` value
+ * (local) instead of the source the caller named, with exit 0 and no error.
+ * Reject it explicitly instead.
+ */
+function rejectRetiredSourceFlag(): void {
+  if (!getParsedInvocation().hasFlag("--source")) return;
+  throw new UsageError(
+    "`--source` was renamed to `--from` in 0.9. Use `--from local|registry|all` instead.",
+    "INVALID_FLAG_VALUE",
+  );
+}
+
 export const searchCommand = defineJsonCommand({
   meta: { name: "search", description: "Search the stash" },
   args: {
@@ -103,6 +118,7 @@ export const searchCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    rejectRetiredSourceFlag();
     const query = (args.query ?? "").trim();
     const type = args.type as string | undefined;
     const limit = parsePositiveIntFlag(args.limit ?? undefined);
@@ -171,6 +187,7 @@ export const curateCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    rejectRetiredSourceFlag();
     if (!args.query || !String(args.query).trim()) {
       throw new UsageError(
         'A curate query is required. Usage: akm curate "<task or prompt>" [--type <type>] [--limit <n>]',

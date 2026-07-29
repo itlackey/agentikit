@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { getParsedInvocation } from "../../cli/invocation";
 import { getStringArg } from "../../cli/parse-args";
 import { defineJsonCommand, output, parseAllFlagValues } from "../../cli/shared";
 import { UsageError } from "../../core/errors";
@@ -45,6 +46,20 @@ async function fetchSimilarMemories(
   } catch {
     return [];
   }
+}
+
+/**
+ * `--target` was renamed to `--bundle` on `remember` in 0.9 (S8). citty is
+ * non-strict, so the retired spelling is silently absorbed rather than
+ * rejected — the memory then lands in the default bundle instead of the one
+ * the caller named, with exit 0 and no error. Reject it explicitly instead.
+ */
+function rejectRetiredTargetFlag(): void {
+  if (!getParsedInvocation().hasFlag("--target")) return;
+  throw new UsageError(
+    "`akm remember --target` was renamed to `--bundle` in 0.9. Use `--bundle <name>` instead.",
+    "INVALID_FLAG_VALUE",
+  );
 }
 
 // ── Command definition ────────────────────────────────────────────────────────
@@ -146,6 +161,7 @@ export const rememberCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    rejectRetiredTargetFlag();
     const body = readMemoryContent(args.content);
     const eventSource = resolveUsageEventSource();
 

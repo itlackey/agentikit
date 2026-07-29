@@ -32,9 +32,29 @@
 import { defineCommand } from "citty";
 import { parsePositiveIntFlag } from "../cli/parse-args";
 import { defineJsonCommand, output, parseAllFlagValues, runWithJsonErrors } from "../cli/shared";
+import { UsageError } from "../core/errors";
 import { EMBEDDED_HINTS, EMBEDDED_HINTS_FULL } from "../output/cli-hints";
 import { parseDetailLevel } from "../output/context";
 import { akmEventsList } from "./log";
+
+/**
+ * `log` flattened from a group (`log list`/`log tail`) to a leaf in 0.9 (S3).
+ * `log` declares no positional args, so citty leaves any leftover positional
+ * token in `args._` uninterpreted rather than rejecting it — meaning
+ * `akm log tail` and `akm log list` silently ran today's `log` surface
+ * instead of failing like the other removed spellings (`log tail` is the
+ * dangerous one: it used to stream/follow, so an unmigrated caller got a
+ * silent one-shot snapshot instead of an error).
+ */
+function rejectExtraLogPositionals(positionals: unknown): void {
+  const extra = Array.isArray(positionals) ? (positionals as unknown[]).map(String) : [];
+  if (extra.length === 0) return;
+  throw new UsageError(
+    `akm log takes no positional arguments, but got ${extra.map((token) => `"${token}"`).join(" ")}. ` +
+      '"log list"/"log tail" were removed in 0.9.0 — `akm log` alone is today\'s `log list` surface.',
+    "INVALID_FLAG_VALUE",
+  );
+}
 
 // ── `akm log` ────────────────────────────────────────────────────────────────
 // Append-only events stream surface (#204). Reads state.db events with
@@ -76,6 +96,7 @@ export const logCommand = defineJsonCommand({
     },
   },
   run({ args }) {
+    rejectExtraLogPositionals(args._);
     const excludeTags = parseAllFlagValues("--exclude-tags");
     const includeTags = parseAllFlagValues("--include-tags");
     const limit = parsePositiveIntFlag(args.limit);

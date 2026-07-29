@@ -22,6 +22,7 @@
  * (src/commands/health/accept-rate.ts).
  */
 import { defineCommand } from "citty";
+import { getParsedInvocation } from "../../cli/invocation";
 import { defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
@@ -219,6 +220,20 @@ export const syncCommand = defineCommand({
   },
 });
 
+/**
+ * `--target` was renamed to `--bundle` on `clone` in 0.9 (S8). citty is
+ * non-strict, so the retired spelling is silently absorbed rather than
+ * rejected — the asset then lands in the default bundle instead of the one
+ * the caller named, with exit 0 and no error. Reject it explicitly instead.
+ */
+function rejectRetiredCloneTargetFlag(): void {
+  if (!getParsedInvocation().hasFlag("--target")) return;
+  throw new UsageError(
+    "`akm clone --target` was renamed to `--bundle` in 0.9. Use `--bundle <name>` instead.",
+    "INVALID_FLAG_VALUE",
+  );
+}
+
 export const cloneCommand = defineJsonCommand({
   meta: {
     name: "clone",
@@ -236,6 +251,7 @@ export const cloneCommand = defineJsonCommand({
     dest: { type: "string", description: "Unmanaged destination directory (cannot be combined with --bundle)" },
   },
   async run({ args }) {
+    rejectRetiredCloneTargetFlag();
     const result = await akmClone({
       sourceRef: args.ref,
       newName: args.name,

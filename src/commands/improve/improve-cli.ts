@@ -9,6 +9,7 @@ import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
 import { GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { isFullRefInput, parseRefInput } from "../../core/asset/resolve-ref";
 import { loadConfig } from "../../core/config/config";
+import { UsageError } from "../../core/errors";
 import { resolveMutationTarget } from "../../core/mutation-target";
 import { getCacheDir } from "../../core/paths";
 import { redactSensitiveText } from "../../core/redaction";
@@ -57,6 +58,37 @@ function resolveScopeAfterRetiredAutoAccept(scopeArg: string | undefined): strin
     return undefined;
   }
   return scopeArg;
+}
+
+/**
+ * `akm improve canary` was removed in 0.9 (moved to
+ * `scripts/refresh-canary-set.ts`). Without this check "canary" falls through
+ * to the generic scope positional, where resolveImproveScope treats any bare
+ * word as a type filter that matches zero entries — so an unmigrated caller
+ * silently acquires the improve lock and exits 0 having done nothing, instead
+ * of getting an error.
+ */
+function rejectRetiredCanaryScope(scopeArg: string | undefined): void {
+  if (scopeArg !== "canary") return;
+  throw new UsageError(
+    '"akm improve canary" was removed in 0.9. Use `bun scripts/refresh-canary-set.ts [--refresh]` instead.',
+    "INVALID_FLAG_VALUE",
+  );
+}
+
+/**
+ * `--target` was renamed to `--bundle` on `improve` in 0.9 (S8). citty is
+ * non-strict, so the retired spelling is silently absorbed rather than
+ * rejected — accepted proposals then write into the default bundle instead
+ * of the one the caller named, with exit 0 and no error. Reject it
+ * explicitly instead.
+ */
+function rejectRetiredImproveTargetFlag(): void {
+  if (!getParsedInvocation().hasFlag("--target")) return;
+  throw new UsageError(
+    "`akm improve --target` was renamed to `--bundle` in 0.9. Use `--bundle <name>` instead.",
+    "INVALID_FLAG_VALUE",
+  );
 }
 
 export const improveCommand = defineCommand({
@@ -118,6 +150,7 @@ export const improveCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
+      rejectRetiredImproveTargetFlag();
       // D7 — `--format` used to be rejected here outright. It is a global flag on
       // a command that does emit an envelope through `output()` (always on
       // `--dry-run`, otherwise with `--json-to-stdout`), so rejecting it made
@@ -135,6 +168,7 @@ export const improveCommand = defineCommand({
       const strategyArg = getStringArg(args, "strategy");
       const effectiveConfig = loadConfig();
       const scopeArg = resolveScopeAfterRetiredAutoAccept(getStringArg(args, "scope"));
+      rejectRetiredCanaryScope(scopeArg);
       const scopeRef = scopeArg && isFullRefInput(scopeArg) ? parseRefInput(scopeArg) : undefined;
       const writeTarget = dryRun
         ? undefined

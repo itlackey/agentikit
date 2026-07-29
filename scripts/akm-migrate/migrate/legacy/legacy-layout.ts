@@ -691,7 +691,7 @@ function detectRegistrySearchId(ref: string): string | undefined {
   }
   lines.push(
     "Or search for the installable ref:",
-    `  akm search "${segments.length > 2 ? segments[segments.length - 1] : rest}" --source registry`,
+    `  akm search "${segments.length > 2 ? segments[segments.length - 1] : rest}" --from registry`,
     "Then install using the installRef value from the result:",
     "  akm add github:owner/repo",
     "  akm add npm:package-name",
