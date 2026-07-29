@@ -32,12 +32,11 @@ afterEach(() => {
 });
 
 describe("raw recovery startup", () => {
-  test("validate/path and migrate/backup/setup forwarders bypass normal config startup", () => {
+  test("path and migrate/setup forwarders bypass normal config startup", () => {
     for (const args of [
-      ["bun", "cli.ts", "config", "validate"],
       ["bun", "cli.ts", "migrate", "status"],
       ["bun", "cli.ts", "config", "path"],
-      ["bun", "cli.ts", "setup", "--detect-only"],
+      ["bun", "cli.ts", "setup"],
       ["bun", "cli.ts", "workflow", "--help"],
     ]) {
       expect(shouldBypassConfigStartup(args)).toBe(true);
@@ -49,15 +48,6 @@ describe("raw recovery startup", () => {
     expect(
       shouldBypassConfigStartup(["bun", "cli.ts", "secret", "run", "secrets/token", "TOKEN", "--", "tool", "-v"]),
     ).toBe(false);
-  });
-
-  test("raw validate rejects legacy config without modifying it", async () => {
-    const original = '{"configVersion":"0.8.0","profiles":{}}\n';
-    fs.writeFileSync(getConfigPath(), original);
-    const validate = await runCliCapture(["config", "validate"]);
-    expect(validate.code).toBe(78);
-    expect(validate.stderr).toContain("UNSUPPORTED_CONFIG_VERSION");
-    expect(fs.readFileSync(getConfigPath(), "utf8")).toBe(original);
   });
 
   test("top-level migrate status is wired through the real CLI process", async () => {

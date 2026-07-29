@@ -1683,14 +1683,12 @@ error (exit 2), the canonical bare-group behavior — name a subcommand.
 
 ```sh
 akm config list                     # List current config
-akm config show                     # Alias for `akm config list`
 akm config get output.format        # Read one key
 akm config set output.detail full   # Set one key
 akm config set output.detail full --silent  # Set without the post-write config dump on stdout
 akm config unset llm                # Remove an optional key
 akm config path                     # Print path to config file
 akm config path --all               # Print all config-related paths
-akm config validate                 # Validate the on-disk config against the schema; exits non-zero on errors
 ```
 
 Subcommands:
@@ -1699,11 +1697,9 @@ Subcommands:
 | --- | --- |
 | `get <key>` | Read one config key |
 | `list` | List current configuration |
-| `show` | Alias for `list` |
 | `set <key> <value>` | Set one config key |
 | `unset <key>` | Unset an optional key, or a whole `embedding`/engine section |
-| `path` | Show paths to config, stash, cache, and index. `--all` prints every path; without it, just the config path. |
-| `validate` | Validate the on-disk config file against the schema. Exits non-zero on errors. Load-bearing: `config path` and `config validate` are the two subcommands the CLI still allows to run when the on-disk config itself fails to load, so you always have a way to inspect or fix a broken config. |
+| `path` | Show paths to config, stash, cache, and index. `--all` prints every path; without it, just the config path. Load-bearing: `config path` is the one subcommand the CLI still allows to run when the on-disk config itself fails to load, so you always have a way to locate a broken config. |
 
 `set` and `unset` accept `--silent` to suppress the post-write config dump on
 stdout (the write still happens and errors still print) — use it from hooks
@@ -1711,6 +1707,8 @@ and CI scripts.
 
 > **Removed in 0.9.0:** `akm config enable`/`akm config disable`. Use
 > `akm registry add|remove` to toggle a registry, the general mechanism.
+> `akm config show` (an alias of `list`) and `akm config validate` (load-time
+> schema checks already reject an invalid config) were also removed.
 
 See [configuration.md](configuration.md) for details.
 
@@ -1783,10 +1781,6 @@ akm env list
 akm env create prod                          # creates env/prod.env (mode 0600)
 akm env create prod --from-file ./.env        # ingest an existing .env
 akm env create prod --path staging            # creates env/staging/prod.env
-echo "https://db" | akm env set env/prod DATABASE_URL   # set one key (value via stdin)
-akm env set env/prod API_TOKEN --from-env CI_TOKEN      # set from an env var (not argv)
-akm env set env/prod API_TOKEN --from-env CI_TOKEN --target team   # write to the `team` source
-akm env unset env/prod DEBUG OLD_FLAG          # remove one or more keys
 $EDITOR "$(akm env path env/prod --quiet)"    # edit the file directly
 akm env run env/prod -- npm test              # run a command with the whole file injected
 akm env run env/prod -- $SHELL                # interactive shell with the env loaded
@@ -1794,17 +1788,13 @@ akm env run env/prod --only DATABASE_URL -- ./migrate   # inject just one var
 akm env remove env/prod --yes                 # remove the whole env file
 ```
 
-`env set`/`env unset` do a minimal, comment-preserving edit and use `dotenv`
-as the round-trip oracle — a value is only written if `dotenv.parse` reads it
-back exactly, and the whole edit is re-verified so no other key is disturbed.
-Set-values are read from stdin (default), `--from-env <VAR>`, or `--from-file
-<path>` — never from argv — and are never echoed. `env unset <ref> <KEY...>`
-removes keys; `env remove <ref>` removes the whole file.
+akm does not manage individual keys — edit the `.env` file directly (`$EDITOR
+"$(akm env path <ref>)"`). `env remove <ref>` removes the whole file.
 
-Env mutations (`create`, `set`, `unset`, `remove`) pick their write destination
-the same way every other write command does: an explicit `--target <source>`
-wins, else `defaultWriteTarget`, else the working stash. The chosen source must
-be writable — a non-writable `--target`/`defaultWriteTarget` fails with a
+Env mutations (`create`, `remove`) pick their write destination the same way
+every other write command does: an explicit `--target <source>` wins, else
+`defaultWriteTarget`, else the working stash. The chosen source must be
+writable — a non-writable `--target`/`defaultWriteTarget` fails with a
 `ConfigError` before anything is written — and on a git-backed writable target
 the mutation lands in a single boundary commit (filesystem targets are
 committed by `akm sync`; `env/` stays out of git when your stash `.gitignore`
@@ -1818,11 +1808,12 @@ Subcommands:
 | `list` | List all env files across all stashes with key names only |
 | `run <ref> -- <command>` | Run a command with the env injected. `--only` / `--except` filter which keys are injected; `--clean` starts from a minimal inherited environment |
 | `create <name>` | Create an env file. Empty by default; seed with `--from-file <path>` or `--from-stdin` |
-| `set <ref> <key>` | Set (create or update) a single key in an env file. Value read from stdin by default, or `--from-env`/`--from-file` |
-| `unset <ref> <key...>` | Remove one or more keys from an env file, preserving the rest |
 | `path <ref>` | Print the absolute env file path (Docker `_FILE` / `--env-file` / direct editing). `--quiet` suppresses the warning |
 | `export <ref> --out <file>` | Write a safe sourceable `export` script to a file (never to stdout) |
 | `remove <ref>` | Delete an env file (and its `.sensitive` marker) |
+
+> **Removed in 0.9.0:** `akm env set`/`akm env unset`. akm does not manage
+> individual keys — edit the `.env` file directly.
 
 #### env run — the primary value path
 

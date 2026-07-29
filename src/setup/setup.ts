@@ -572,7 +572,7 @@ export async function runSetupWizard(opts?: { dir?: string; noInit?: boolean }):
   const detection = await detectEnvironment({ existingStashDir: primaryBundlePath(current) });
   p.note(renderDetectionSummary(detection), "Detected environment");
 
-  // Interactive entry point for `--reset-recommended`: offer to apply the
+  // Interactive entry point for `runResetRecommended`: offer to apply the
   // opinionated, detection-derived defaults and skip the step-by-step wizard.
   const useRecommended = await prompt(() =>
     p.confirm({
@@ -857,7 +857,7 @@ export async function runSetupWithDefaults(opts: {
 
 /**
  * Run ONLY environment detection and return the typed result. Performs no
- * config writes and shows no prompts. Backs `akm setup --detect-only`.
+ * config writes and shows no prompts.
  *
  * SAFETY: The returned object carries env var NAMES only — never any API key
  * value.
@@ -918,10 +918,10 @@ export function deriveRecommendedConfig(env: DetectedEnvironment): {
 }
 
 /**
- * `akm setup --reset-recommended`: merge opinionated, detection-derived
- * defaults into the existing config WITHOUT removing pre-existing custom keys.
- * Uses the same merge path as {@link runSetupFromConfig} so custom keys survive
- * (follows #511 semantics).
+ * Merge opinionated, detection-derived defaults into the existing config
+ * WITHOUT removing pre-existing custom keys. Backs the interactive wizard's
+ * "apply recommended defaults" prompt. Uses the same merge path as
+ * {@link runSetupFromConfig} so custom keys survive (follows #511 semantics).
  */
 export async function runResetRecommended(opts: {
   dir?: string;

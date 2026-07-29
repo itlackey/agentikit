@@ -218,38 +218,10 @@ const setupCommand = defineCommand({
       default: false,
       description: "Probe LLM/embedding endpoints before writing config to verify connectivity",
     },
-    "detect-only": {
-      type: "boolean",
-      default: false,
-      description:
-        "Run environment detection only and print the result (no prompts, no writes). Pair with --format json.",
-    },
-    "reset-recommended": {
-      type: "boolean",
-      default: false,
-      description:
-        "Merge opinionated, detection-derived defaults into the existing config without removing custom keys.",
-    },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
       const noInit = !args.init;
-      const detectOnly = args["detect-only"];
-      const resetRecommended = args["reset-recommended"];
-      if (detectOnly) {
-        // Detection only: no prompts, no writes.
-        const { runDetectOnly } = await import("./setup/setup");
-        const detection = await runDetectOnly();
-        output("setup", detection);
-        return;
-      }
-      if (resetRecommended) {
-        const { runResetRecommended } = await import("./setup/setup");
-        const result = await runResetRecommended({ dir: args.dir, noInit, probe: args.probe });
-        output("setup", result);
-        printSetupTtyHint(result);
-        return;
-      }
       if (args.from && args.config) {
         throw new UsageError("Pass either --from <file> or --config <json>, not both.", "INVALID_FLAG_VALUE");
       }
@@ -619,7 +591,7 @@ export function shouldBypassConfigStartup(argv: readonly string[]): boolean {
   if (command !== "config") return false;
   const configIndex = args.indexOf("config");
   const subcommand = args.slice(configIndex + 1).find((arg) => !arg.startsWith("-"));
-  return subcommand === "path" || subcommand === "validate";
+  return subcommand === "path";
 }
 
 // ── Exit codes ──────────────────────────────────────────────────────────────

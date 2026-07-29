@@ -78,9 +78,8 @@ describe("env/secret write-target routing", () => {
 
     const res = await runCliCapture([
       "env",
-      "set",
+      "create",
       "prod",
-      "API_TOKEN",
       "--from-file",
       valueFile(),
       "--target",
@@ -126,16 +125,7 @@ describe("env/secret write-target routing", () => {
   test("no --target and no defaultWriteTarget writes to the working stash (unchanged default)", async () => {
     writeSandboxConfig({ bundles: { stash: { path: storage.stashDir } }, defaultBundle: "stash" });
 
-    const res = await runCliCapture([
-      "env",
-      "set",
-      "prod",
-      "API_TOKEN",
-      "--from-file",
-      valueFile(),
-      "--format",
-      "json",
-    ]);
+    const res = await runCliCapture(["env", "create", "prod", "--from-file", valueFile(), "--format", "json"]);
 
     expect(res.code).toBe(0);
     expect(fs.existsSync(path.join(storage.stashDir, "env", "prod.env"))).toBe(true);
@@ -148,9 +138,8 @@ describe("env/secret write-target routing", () => {
 
     const res = await runCliCapture([
       "env",
-      "set",
+      "create",
       "prod",
-      "API_TOKEN",
       "--from-file",
       valueFile(),
       "--target",
@@ -172,9 +161,8 @@ describe("env/secret write-target routing", () => {
 
     const res = await runCliCapture([
       "env",
-      "set",
+      "create",
       "prod",
-      "API_TOKEN",
       "--from-file",
       valueFile(),
       "--target",
@@ -203,9 +191,8 @@ describe("env/secret write-target routing", () => {
 
     const res = await runCliCapture([
       "env",
-      "set",
+      "create",
       "prod",
-      "API_TOKEN",
       "--from-file",
       valueFile(),
       "--target",
@@ -237,16 +224,7 @@ describe("env/secret write-target routing", () => {
       defaultWriteTarget: "team",
     });
 
-    const res = await runCliCapture([
-      "env",
-      "set",
-      "prod",
-      "API_TOKEN",
-      "--from-file",
-      valueFile(),
-      "--format",
-      "json",
-    ]);
+    const res = await runCliCapture(["env", "create", "prod", "--from-file", valueFile(), "--format", "json"]);
 
     expect(res.code).toBe(0);
     // Exactly one boundary commit was added and the tree is clean.

@@ -102,11 +102,7 @@ no `akm vault` command — use `env`/`secret`.)
 akm env create prod                       # create an empty .env group
 akm env create prod --from-file ./.env    # or ingest an existing .env
 
-# Set/unset individual keys without exposing the value on argv or stdout:
-echo -n "$VALUE" | akm env set env/prod API_URL
-akm env unset env/prod API_URL
-
-# Or edit the whole file with your own editor:
+# akm does not manage individual keys — edit the whole file with your own editor:
 $EDITOR "$(akm env path env/prod --quiet)"
 
 akm env list

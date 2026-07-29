@@ -98,21 +98,6 @@ export const indexCommand = defineCommand({
       description: "When combined with --clean, report stale entries without deleting them.",
       default: false,
     },
-    background: {
-      type: "boolean",
-      // R-023: the previous wording ("Run as a background process ... manages
-      // PID file") described a feature that was never implemented — this flag
-      // does not fork, detach, or return control to the shell early, and there
-      // is no PID file anywhere in its code path. It runs in the FOREGROUND
-      // exactly like a plain `akm index` and only changes two things: no
-      // spinner, and (unlike the global `--quiet`) the final JSON result is
-      // suppressed too. Kept as a headless/cron-invocation quiet mode.
-      description:
-        "Quiet mode for headless/unattended invocation (e.g. cron): suppresses the progress spinner and " +
-        "the final result output. Still runs in the foreground and blocks until indexing finishes — it does " +
-        "NOT fork a detached background process and does NOT manage a PID file.",
-      default: false,
-    },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
@@ -126,11 +111,6 @@ export const indexCommand = defineCommand({
           "`akm index --re-enrich` has been removed. Re-enrichment of index-time LLM passes is not exposed in this slice.",
         );
       }
-      // Quiet mode only (see the flag's description above) — NOT a real
-      // background/detached process. Named `isBackground` to match the
-      // `--background` flag it reads; do not read the name as a promise of
-      // actual backgrounding.
-      const isBackground = args.background === true;
       const outputMode = getOutputMode();
       const controller = new AbortController();
       const abort = (): void => controller.abort(new Error("index interrupted"));
@@ -144,7 +124,7 @@ export const indexCommand = defineCommand({
       );
       setLogFile(indexLogFile);
       const verbose = isVerbose();
-      const spin = !verbose && !isBackground && outputMode.format === "text" ? p.spinner() : null;
+      const spin = !verbose && outputMode.format === "text" ? p.spinner() : null;
       if (spin) {
         spin.start(`Building search index${args.full ? " (full rebuild)" : ""}...`);
       }
@@ -174,9 +154,7 @@ export const indexCommand = defineCommand({
         if (spin) {
           spin.stop(`Indexed ${result.totalEntries} assets.`);
         }
-        if (!isBackground) {
-          output("index", result);
-        }
+        output("index", result);
       } catch (error) {
         if (spin) {
           spin.stop(latestMessage ? `Indexing failed after: ${latestMessage}` : "Indexing failed.");

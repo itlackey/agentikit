@@ -103,12 +103,6 @@ export const configCommand = defineGroupCommand({
         output("config", listConfig(loadConfig()));
       },
     }),
-    show: defineJsonCommand({
-      meta: { name: "show", description: "Alias for `akm config list` — list current configuration" },
-      run() {
-        output("config", listConfig(loadConfig()));
-      },
-    }),
     get: defineJsonCommand({
       meta: { name: "get", description: "Get a configuration value by key" },
       args: {
@@ -160,16 +154,6 @@ export const configCommand = defineGroupCommand({
         if (!args.silent) {
           output("config", listConfig(updated));
         }
-      },
-    }),
-    validate: defineJsonCommand({
-      meta: {
-        name: "validate",
-        description: "Validate the on-disk config file against the schema. Exits non-zero on errors.",
-      },
-      async run() {
-        const { runConfigValidate } = await import("../cli/config-validate.js");
-        await runConfigValidate();
       },
     }),
   },

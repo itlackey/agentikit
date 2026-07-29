@@ -216,7 +216,7 @@ full bundle model (`path`, `git`, `website`, `npm`, `writable`, `registryId`,
 explicit `--target` is given and the command isn't already scoped to a
 specific source. It must name a configured bundle; setting it with no
 `bundles` configured, or naming an unconfigured bundle, is rejected at
-`config set`/`config validate` time. The full write-target resolution order
+`config set` (or config load) time. The full write-target resolution order
 is `--target` -> `defaultWriteTarget` -> working stash (`defaultBundle`) ->
 `ConfigError`.
 
@@ -302,7 +302,6 @@ akm config get engines.fast
 akm config set engines.fast '{"kind":"llm","endpoint":"http://localhost:11434/v1/chat/completions","model":"qwen3"}'
 akm config set engines.fast.apiKey '$LOCAL_LLM_API_KEY'
 akm config unset engines.old
-akm config validate
 akm migrate status
 akm migrate status --config ./prepared-0.9.json
 akm migrate apply --config ./prepared-0.9.json --dry-run

@@ -3,12 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Embedded core task registry — asserts the 6 bundled templates are present
+ * Embedded core task registry — asserts the 5 bundled templates are present
  * with the exact ids and default schedules from issue #512, and
  * that they are read from the bundled assets dir (not any user stash).
  *
  * `update-stashes` (nightly `akm update --all`) was retired in meta-review
- * 06-M2 — third-party stash pulls are on-demand only now.
+ * 06-M2 — third-party stash pulls are on-demand only now. `backup` (which
+ * only ever invoked the nonexistent `akm db backups`) was dropped in 0.9.0.
  */
 import { describe, expect, test } from "bun:test";
 import type { ArgsDef } from "citty";
@@ -19,7 +20,6 @@ import { parseTaskDocument } from "../src/tasks/parser";
 
 const EXPECTED = [
   { id: "improve", schedule: "0 2 * * *", enabled: true },
-  { id: "backup", schedule: "0 3 * * 0", enabled: false },
   { id: "version-check", schedule: "0 9 * * 1", enabled: true },
   { id: "index-refresh", schedule: "0 4 * * *", enabled: true },
   { id: "extract", schedule: "*/30 * * * *", enabled: true },
@@ -27,9 +27,9 @@ const EXPECTED = [
 ] as const;
 
 describe("embedded core task registry", () => {
-  test("enumerates all 6 templates", () => {
+  test("enumerates all 5 templates", () => {
     const tasks = listEmbeddedTasks();
-    expect(tasks.length).toBe(6);
+    expect(tasks.length).toBe(5);
   });
 
   test("each template has the exact id, default schedule, and enablement", () => {

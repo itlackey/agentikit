@@ -29,7 +29,6 @@ import { writeFileAtomic } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import { makeEnvRef, resolveEnvPath, resolveEnvWriteTarget, withEnvSecretWrite } from "../../core/env-secret-ref";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
-import { isQuiet } from "../../core/warn";
 import { resolveSourceEntries } from "../../indexer/search/search-source";
 import { readStdin } from "../../runtime";
 import { buildChildEnv } from "./child-env";
@@ -414,110 +413,6 @@ const envRemoveCommand = defineJsonCommand({
   },
 });
 
-const envSetCommand = defineJsonCommand({
-  meta: {
-    name: "set",
-    description:
-      "Set (create or update) a single KEY in an env file: `akm env set <ref> <KEY>`. The value is read from stdin by default (never via argv); use --from-env <VAR> or --from-file <path>. Preserves existing comments and key order; the value is never printed. Creates the env file if it does not exist.",
-  },
-  args: {
-    ref: { type: "positional", description: "Env ref (e.g. env/prod or just prod)", required: true },
-    key: { type: "positional", description: "Key name to set (e.g. API_URL)", required: true },
-    "from-env": { type: "string", description: "Read the value from the named environment variable" },
-    "from-file": { type: "string", description: "Read the value from this file" },
-    target: {
-      type: "string",
-      description:
-        "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working stash.",
-    },
-  },
-  async run({ args }) {
-    const { name, absPath, target, ref } = resolveEnvWriteTarget(args.ref, args.target);
-    const key = String(args.key);
-    const { ENV_KEY_RE, setEnvKey } = await import("./env.js");
-    if (!ENV_KEY_RE.test(key)) {
-      throw new UsageError(`Invalid env key "${key}". Keys match [A-Za-z_][A-Za-z0-9_]*.`, "INVALID_FLAG_VALUE");
-    }
-
-    const fromEnv = args["from-env"];
-    const fromFile = args["from-file"];
-    if (fromEnv !== undefined && fromFile !== undefined) {
-      throw new UsageError("Pass only one of --from-file or --from-env (or use stdin).", "INVALID_FLAG_VALUE");
-    }
-    const MAX_ENV_VALUE_BYTES = 1024 * 1024; // 1 MB
-    let value: string;
-    if (fromFile !== undefined) {
-      if (!fs.existsSync(fromFile)) {
-        throw new NotFoundError(`File not found: ${fromFile}`, "FILE_NOT_FOUND");
-      }
-      const buf = fs.readFileSync(fromFile);
-      if (buf.byteLength > MAX_ENV_VALUE_BYTES) throw new UsageError("Value exceeds the 1 MB limit.");
-      value = buf.toString("utf8");
-    } else if (fromEnv !== undefined) {
-      const v = process.env[fromEnv];
-      if (v === undefined) {
-        throw new UsageError(`Environment variable "${fromEnv}" is not set.`, "INVALID_FLAG_VALUE");
-      }
-      value = v;
-    } else {
-      const buf = await readStdin(MAX_ENV_VALUE_BYTES, () => new UsageError("Value exceeds the 1 MB limit."));
-      // Strip a single trailing newline so `echo "$VAL" | akm env set` is exact.
-      value = buf.toString("utf8").replace(/\n$/, "");
-    }
-    withEnvSecretWrite(target, { type: "env", name }, "Update", [absPath], () => setEnvKey(absPath, key, value));
-    // Warn (never block) on process-hijacking key names, matching the env-run audit.
-    const { isDangerousEnvKey } = await import("../lint/env-key-rules.js");
-    if (isDangerousEnvKey(key) && !isQuiet()) {
-      process.stderr.write(
-        `warning: "${key}" can influence process execution when this env is loaded via 'akm env run'.\n`,
-      );
-    }
-    output("env-set", { ref, key });
-  },
-});
-
-const envUnsetCommand = defineJsonCommand({
-  meta: {
-    name: "unset",
-    description:
-      "Remove one or more KEYs from an env file: `akm env unset <ref> <KEY...>`. Preserves other keys and comments. To remove the whole file, use `akm env remove`.",
-  },
-  args: {
-    ref: { type: "positional", description: "Env ref (e.g. env/prod or just prod)", required: true },
-    // `key` is read from the raw positionals (one or more) in run(); declared
-    // non-required so citty doesn't block before we emit a structured error.
-    key: { type: "positional", description: "Key name(s) to remove (one or more)", required: false },
-    target: {
-      type: "string",
-      description:
-        "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working stash.",
-    },
-  },
-  async run({ args }) {
-    const { name, absPath, target, ref } = resolveEnvWriteTarget(args.ref, args.target);
-    if (!fs.existsSync(absPath)) {
-      throw new NotFoundError(`Env not found: ${ref}`);
-    }
-    // citty puts every positional in `args._` (incl. the ref at [0]); the keys
-    // are the remaining positionals. The global output flags are declared on
-    // every defineJsonCommand (GLOBAL_OUTPUT_ARGS), so their space-separated
-    // values are consumed by the parser and never land here.
-    const keys = (Array.isArray(args._) ? (args._ as unknown[]).map(String) : []).slice(1);
-    if (keys.length === 0) {
-      throw new UsageError("Usage: akm env unset <ref> <KEY...> (one or more keys).", "MISSING_REQUIRED_ARGUMENT");
-    }
-    const { ENV_KEY_RE, unsetEnvKeys } = await import("./env.js");
-    const invalid = keys.filter((k) => !ENV_KEY_RE.test(k));
-    if (invalid.length > 0) {
-      throw new UsageError(`Invalid env key(s): ${invalid.join(", ")}.`, "INVALID_FLAG_VALUE");
-    }
-    const { removed, missing } = withEnvSecretWrite(target, { type: "env", name }, "Update", [absPath], () =>
-      unsetEnvKeys(absPath, keys),
-    );
-    output("env-unset", { ref, removed, missing });
-  },
-});
-
 export const envCommand = defineGroupCommand({
   meta: {
     name: "env",
@@ -530,8 +425,6 @@ export const envCommand = defineGroupCommand({
     export: envExportCommand,
     run: envRunCommand,
     create: envCreateCommand,
-    set: envSetCommand,
-    unset: envUnsetCommand,
     remove: envRemoveCommand,
   },
   // No `defaultRun`: bare `akm env` is a usage error (exit 2), the canonical

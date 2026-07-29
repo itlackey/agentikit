@@ -28,7 +28,7 @@ afterAll(() => {
 });
 
 describe("config command apiKey redaction", () => {
-  test("config list/show/get show symbolic refs but never env-sourced values", async () => {
+  test("config list/get show symbolic refs but never env-sourced values", async () => {
     const secretLlm = "sk-llm-secret-123";
     const secretEmbed = "sk-embed-secret-456";
     const env = freshEnv({ AKM_LLM_API_KEY: secretLlm, AKM_EMBED_API_KEY: secretEmbed });
@@ -54,13 +54,12 @@ describe("config command apiKey redaction", () => {
       });
 
       const list = await runCliCapture(["--json", "config", "list"]);
-      const show = await runCliCapture(["--json", "config", "show"]);
       const embedding = await runCliCapture(["--json", "config", "get", "embedding"]);
       const llm = await runCliCapture(["--json", "config", "get", "engines.default"]);
       const engines = await runCliCapture(["--json", "config", "get", "engines"]);
       const llmApiKey = await runCliCapture(["--json", "config", "get", "engines.default.apiKey"]);
 
-      return { list, show, embedding, llm, engines, llmApiKey };
+      return { list, embedding, llm, engines, llmApiKey };
     });
 
     for (const result of Object.values(outputs)) {
@@ -70,14 +69,13 @@ describe("config command apiKey redaction", () => {
     }
 
     const list = JSON.parse(outputs.list.stdout) as Record<string, unknown>;
-    const show = JSON.parse(outputs.show.stdout) as Record<string, unknown>;
     const embedding = JSON.parse(outputs.embedding.stdout) as Record<string, unknown>;
     const llm = JSON.parse(outputs.llm.stdout) as Record<string, unknown>;
     const engines = JSON.parse(outputs.engines.stdout) as Record<string, unknown>;
     const llmApiKey = JSON.parse(outputs.llmApiKey.stdout);
 
     expect(JSON.stringify(list)).toContain("$AKM_LLM_API_KEY");
-    expect(JSON.stringify(show)).toContain("$AKM_EMBED_API_KEY");
+    expect(JSON.stringify(list)).toContain("$AKM_EMBED_API_KEY");
     expect(embedding.apiKey).toBe("$AKM_EMBED_API_KEY");
     expect(llm.apiKey).toBe("$AKM_LLM_API_KEY");
     expect(JSON.stringify(engines)).toContain("$AKM_LLM_API_KEY");
