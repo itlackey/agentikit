@@ -100,7 +100,7 @@ describe("capture commands", () => {
     const homeDir = makeTempDir("akm-init-home-");
     // Init's sandbox guard (item 6) refuses explicit --dir /tmp/... under a
     // test runner; this test legitimately exercises that flag, so opt out.
-    const { result } = await runCli(["init", "--dir", customDir], {
+    const { result } = await runCli(["bundle", "create", "--dir", customDir], {
       env: { HOME: homeDir, AKM_FORCE_INIT_TMP_STASH: "1" },
     });
     expect(result.status).toBe(0);
@@ -122,7 +122,7 @@ describe("capture commands", () => {
     expect(primary?.path).toBe(path.resolve(customDir));
   }
 
-  test("init honors --dir for a custom stash path", async () => {
+  test("bundle create honors --dir for a custom stash path", async () => {
     await expectInitUsesCustomDir();
   });
 

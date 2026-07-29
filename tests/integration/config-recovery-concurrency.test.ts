@@ -162,7 +162,7 @@ describe("locked config mutation", () => {
     const commands = [
       ["config", "set", "--silent", "output.detail", "full"],
       ["registry", "add", "https://registry-one.example/index.json", "--name", "registry-one"],
-      ["add", "https://source-one.example", "--provider", "website", "--name", "source-one"],
+      ["bundle", "add", "https://source-one.example", "--provider", "website", "--name", "source-one"],
     ];
     const children = commands.map((args) =>
       Bun.spawn(["bun", "src/cli.ts", ...args], {

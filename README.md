@@ -49,8 +49,8 @@ bun run build
 
 - **Manage sources** — add local dirs, git repos, npm packages, and websites as searchable asset sources [(details)](docs/guides/sources-registries.md)
   ```sh
-  akm add github:owner/stash        # GitHub
-  akm add https://docs.example.com  # crawled website
+  akm bundle add github:owner/stash        # GitHub
+  akm bundle add https://docs.example.com  # crawled website
   ```
 - **Search a unified index** — one FTS5 index across all your sources [(details)](docs/guides/search-discovery.md)
   ```sh
@@ -84,7 +84,7 @@ bun run build
 ```sh
 akm setup                             # guided first-time setup
 akm task doctor                       # verify scheduler and installed runtime
-akm add github:itlackey/akm-stash     # install the official onboarding stash
+akm bundle add github:itlackey/akm-stash     # install the official onboarding stash
 akm index                             # build the search index
 akm curate "deploy"                   # get a curated shortlist
 akm show workflows/deploy             # load the best match
@@ -120,7 +120,7 @@ See [docs/guides/concepts.md](docs/guides/concepts.md) for classification rules 
 
 **Add and search a stash**
 ```sh
-akm add github:owner/team-stash
+akm bundle add github:owner/team-stash
 akm index
 akm search "database migration" --type script
 akm show scripts/migrate.sh
@@ -134,7 +134,7 @@ akm import ./incident-report.md
 
 **Use a living wiki (Karpathy LLM wiki pattern)**
 ```sh
-akm add github:team/research-wiki          # install an LLM-wiki bundle (schema.md + pages/ + raw/)
+akm bundle add github:team/research-wiki          # install an LLM-wiki bundle (schema.md + pages/ + raw/)
 akm search "attention"                     # its pages are indexed like any other content
 akm show research-wiki//pages/attention    # read a page by bundle//conceptId ref
 ```

@@ -72,12 +72,8 @@ describe("completions command", () => {
 
   test("contains all top-level subcommands", () => {
     const expected = [
-      "init",
+      "bundle",
       "index",
-      "add",
-      "list",
-      "remove",
-      "update",
       "upgrade",
       "search",
       "curate",
@@ -96,6 +92,13 @@ describe("completions command", () => {
     ];
     for (const cmd of expected) {
       expect(script).toContain(cmd);
+    }
+  });
+
+  test("contains nested bundle subcommands", () => {
+    expect(script).toContain('"akm bundle"');
+    for (const sub of ["create", "add", "list", "show", "remove", "update"]) {
+      expect(script).toContain(sub);
     }
   });
 

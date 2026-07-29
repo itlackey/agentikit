@@ -84,7 +84,7 @@ Real-world use: you just installed `akm` on a new laptop and want the wizard to 
 Use this when you want to skip the wizard and just create the working stash.
 
 ```sh
-akm init --dir ~/akm
+akm init --dir ~/akm  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Real-world use: you're scripting environment bootstrap for a devcontainer or CI image and want a known stash location without interactive prompts.
@@ -134,10 +134,10 @@ These commands answer two related questions:
 This is how you register a source.
 
 ```sh
-akm add ~/.claude/skills
-akm add github:your-org/team-agent-toolkit
-akm add @scope/platform-stash
-akm add https://docs.example.com --name public-docs
+akm add ~/.claude/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add github:your-org/team-agent-toolkit  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add @scope/platform-stash  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add https://docs.example.com --name public-docs  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Real-world use:
@@ -152,7 +152,7 @@ Real-world use:
 Shows what sources are already connected.
 
 ```sh
-akm list
+akm list  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Real-world use: you're debugging why a search result isn't appearing and want to verify whether the expected repo or local directory is even registered.
@@ -162,7 +162,7 @@ Real-world use: you're debugging why a search result isn't appearing and want to
 Refreshes managed sources.
 
 ```sh
-akm update --all
+akm update --all  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Real-world use: your platform team shipped an updated deployment stash and everyone pulls the latest version before a release.
@@ -172,7 +172,7 @@ Real-world use: your platform team shipped an updated deployment stash and every
 Disconnect a source you no longer want indexed.
 
 ```sh
-akm remove public-docs
+akm remove public-docs  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Real-world use: a website source became noisy or outdated and you want it out of search results.
@@ -437,7 +437,7 @@ In practice, most teams live in a much smaller subset of the CLI:
 
 ```sh
 akm setup
-akm add ...
+akm add ...  # doclint:ignore (historical — pre-0.9.0 command spelling)
 akm index
 akm curate "..."
 akm show <ref>
@@ -482,8 +482,8 @@ And if you're wondering where to start, start here:
 
 ```sh
 akm setup
-akm add ~/.claude/skills
-akm add github:your-org/team-agent-toolkit
+akm add ~/.claude/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add github:your-org/team-agent-toolkit  # doclint:ignore (historical — pre-0.9.0 command spelling)
 akm index
 akm curate "code review"
 akm show skills/code-review

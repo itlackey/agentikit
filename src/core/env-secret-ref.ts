@@ -85,7 +85,7 @@ export function parseEnvRef(ref: string): AssetRef {
 export function findEnvSource(origin: string | undefined, type: "env" | "secret", name: string): IndexSearchSource {
   const sources = resolveSourceEntries(undefined, loadConfig());
   if (sources.length === 0) {
-    throw new UsageError("No stashes configured. Run `akm init` to create your working stash.");
+    throw new UsageError("No stashes configured. Run `akm bundle create` to create your working stash.");
   }
   const candidates = origin ? resolveSourcesForOrigin(origin, sources) : sources;
   const typeDir = type === "env" ? "env" : "secrets";
@@ -96,7 +96,7 @@ export function findEnvSource(origin: string | undefined, type: "env" | "secret"
   if (!origin) {
     const fallback = candidates[0];
     if (fallback) return fallback;
-    throw new UsageError("No stashes configured. Run `akm init` to create your working stash.");
+    throw new UsageError("No stashes configured. Run `akm bundle create` to create your working stash.");
   }
   const named = candidates[0];
   if (!named) {

@@ -5,25 +5,25 @@ package, or crawled website. **Registries** are discovery indexes that let you
 find sources you haven't heard of yet. Together they give you a unified,
 searchable library that can pull from anywhere and grow over time.
 
-## akm add
+## akm bundle add
 
-`akm add` connects a new source. The source kind is inferred from the input:
+`akm bundle add` connects a new source. The source kind is inferred from the input:
 no flags required for the common cases.
 
 ```sh
-akm add ~/.claude/skills                          # Local directory (filesystem)
-akm add github:owner/team-stash                  # GitHub repo (git)
-akm add @scope/stash                              # npm package
-akm add npm:@scope/stash@latest                  # npm with version pin
-akm add github:owner/repo#v1.2.3                 # GitHub at a specific tag
-akm add https://docs.example.com --name docs     # Crawled website (website)
-akm add https://docs.example.com --max-pages 200 --max-depth 5
+akm bundle add ~/.claude/skills                          # Local directory (filesystem)
+akm bundle add github:owner/team-stash                  # GitHub repo (git)
+akm bundle add @scope/stash                              # npm package
+akm bundle add npm:@scope/stash@latest                  # npm with version pin
+akm bundle add github:owner/repo#v1.2.3                 # GitHub at a specific tag
+akm bundle add https://docs.example.com --name docs     # Crawled website (website)
+akm bundle add https://docs.example.com --max-pages 200 --max-depth 5
 
 # Add the official onboarding stash:
-akm add github:itlackey/akm-stash
+akm bundle add github:itlackey/akm-stash
 
 # Mark a git stash as writable (enables akm sync to push):
-akm add git@github.com:org/skills.git --provider git --name my-skills --writable
+akm bundle add git@github.com:org/skills.git --provider git --name my-skills --writable
 ```
 
 | Source kind | Input shape | Behavior |
@@ -33,54 +33,54 @@ akm add git@github.com:org/skills.git --provider git --name my-skills --writable
 | `npm` | `@scope/pkg` | Installed into cache, read-only |
 | `website` | HTTP/HTTPS URL (non-git host) | Crawled, converted to markdown, refreshed every 12 hours |
 
-After `akm add`, run `akm index` to bring the search index up to date.
+After `akm bundle add`, run `akm index` to bring the search index up to date.
 
 **Example: add a team stash from GitHub**
 
 ```sh
-akm add github:my-org/team-stash --name team
+akm bundle add github:my-org/team-stash --name team
 akm index
 akm search "deploy" --type script
 ```
 
-## akm list
+## akm bundle list
 
-`akm list` shows all configured sources — local directories, managed packages,
+`akm bundle list` shows all configured sources — local directories, managed packages,
 and remote providers — so you know what is in your library.
 
 ```sh
-akm list                          # All sources
-akm list --kind filesystem        # Only local directories
-akm list --kind git               # Only git-cloned sources
-akm list --kind npm               # Only npm packages
-akm list --kind filesystem,git    # Multiple kinds (comma-separated)
+akm bundle list                          # All sources
+akm bundle list --kind filesystem        # Only local directories
+akm bundle list --kind git               # Only git-cloned sources
+akm bundle list --kind npm               # Only npm packages
+akm bundle list --kind filesystem,git    # Multiple kinds (comma-separated)
 ```
 
 Valid `--kind` values are the four source providers: `filesystem`, `git`,
 `npm`, `website`.
 
-## akm update / akm remove
+## akm bundle update / akm bundle remove
 
-`akm update` pulls the latest version of a managed (git or npm) source.
-`akm remove` disconnects a source and re-indexes without it.
+`akm bundle update` pulls the latest version of a managed (git or npm) source.
+`akm bundle remove` disconnects a source and re-indexes without it.
 
 ```sh
 # Update
-akm update @scope/stash          # One managed source
-akm update --all                 # All managed sources
-akm update --all --force         # Force fresh download even if version unchanged
+akm bundle update @scope/stash          # One managed source
+akm bundle update --all                 # All managed sources
+akm bundle update --all --force         # Force fresh download even if version unchanged
 
 # Remove
-akm remove @scope/stash          # By npm id
-akm remove github:owner/repo     # By git ref
-akm remove ~/.claude/skills      # By path
-akm remove my-provider           # By name
+akm bundle remove @scope/stash          # By npm id
+akm bundle remove github:owner/repo     # By git ref
+akm bundle remove ~/.claude/skills      # By path
+akm bundle remove my-provider           # By name
 ```
 
 **Example: keep sources fresh**
 
 ```sh
-akm update --all && akm index
+akm bundle update --all && akm index
 ```
 
 ## akm clone
@@ -111,7 +111,7 @@ akm clone workflows/ship-release --dest ./project/.claude
 ## akm sync
 
 `akm sync` stages, commits, and optionally pushes your writable stash. It is
-the complement to `akm add`: once you have made changes locally, `sync` persists
+the complement to `akm bundle add`: once you have made changes locally, `sync` persists
 them to git. (There is no `akm save` command — use `akm sync`.)
 
 ```sh
@@ -152,11 +152,11 @@ akm registry add https://example.com/registry/index.json --name my-team
 akm registry remove my-team
 ```
 
-Once you find an interesting stash in the registry, install it with `akm add`:
+Once you find an interesting stash in the registry, install it with `akm bundle add`:
 
 ```sh
 akm search "kubernetes" --from registry
-akm add github:some-org/k8s-stash
+akm bundle add github:some-org/k8s-stash
 akm index
 ```
 

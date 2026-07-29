@@ -100,17 +100,10 @@ import { proposalCommand } from "./commands/proposal/proposal-cli";
 import { rememberCommand } from "./commands/read/remember-cli";
 import { curateCommand, searchCommand, showCommand } from "./commands/read/search-cli";
 import { registryCommand } from "./commands/registry-cli";
-import { addCommand } from "./commands/sources/add-cli";
+import { bundleCommand } from "./commands/sources/bundle-cli";
 import { renderMigrationHelp } from "./commands/sources/migration-help";
-import {
-  cloneCommand,
-  listCommand,
-  removeCommand,
-  syncCommand,
-  updateCommand,
-  upgradeCommand,
-} from "./commands/sources/sources-cli";
-import { importKnowledgeCommand, indexCommand, infoCommand, initCommand } from "./commands/sources/stash-cli";
+import { cloneCommand, syncCommand, upgradeCommand } from "./commands/sources/sources-cli";
+import { importKnowledgeCommand, indexCommand, infoCommand } from "./commands/sources/stash-cli";
 import { taskCommand } from "./commands/tasks/tasks-cli";
 import { workflowCommand } from "./commands/workflow-cli";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config/config";
@@ -161,7 +154,7 @@ function printSetupTtyHint(result: { stashDir?: string; configPath?: string }): 
   console.error(
     plainize(
       `\n✓ Stash created at ${result.stashDir}\n` +
-        `  Next: \`akm add github:itlackey/akm-stash\` then \`akm index\` to populate the stash.`,
+        `  Next: \`akm bundle add github:itlackey/akm-stash\` then \`akm index\` to populate the stash.`,
     ),
   );
 }
@@ -517,14 +510,10 @@ export const main = defineCommand({
   },
   subCommands: {
     setup: setupCommand,
-    init: initCommand,
     index: indexCommand,
     health: healthCommand,
     info: infoCommand,
-    add: addCommand,
-    list: listCommand,
-    remove: removeCommand,
-    update: updateCommand,
+    bundle: bundleCommand,
     upgrade: upgradeCommand,
     search: searchCommand,
     curate: curateCommand,

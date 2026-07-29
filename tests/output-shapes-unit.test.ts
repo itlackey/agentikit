@@ -138,7 +138,7 @@ describe("shapeSearchHit — registry hits", () => {
     type: "registry",
     name: "azure-ops",
     description: "Azure ops kit",
-    action: "akm add npm:azure-ops",
+    action: "akm bundle add npm:azure-ops",
     warnings: ["registry rate limit hit, results may be stale"],
     id: "npm:azure-ops",
     score: 0.7,
@@ -161,7 +161,7 @@ describe("shapeSearchHit — registry hits", () => {
     expect(out).toMatchObject({
       name: "azure-ops",
       description: "Azure ops kit",
-      action: "akm add npm:azure-ops",
+      action: "akm bundle add npm:azure-ops",
       warnings: ["registry rate limit hit, results may be stale"],
     });
     expect(out).not.toHaveProperty("curated");
@@ -421,7 +421,7 @@ describe("shapeSearchOutput", () => {
 
   test("agent registry hits never acquire a local path", () => {
     const out = shapeSearchOutput(
-      { hits: [], registryHits: [{ type: "registry", name: "kit", id: "kit", action: "akm add kit" }] },
+      { hits: [], registryHits: [{ type: "registry", name: "kit", id: "kit", action: "akm bundle add kit" }] },
       "normal",
       "agent",
     ) as { registryHits: Record<string, unknown>[] };
@@ -454,7 +454,7 @@ describe("curate agent access projection", () => {
             type: "registry",
             name: "deploy-kit",
             id: "deploy-kit",
-            followUp: "akm add deploy-kit",
+            followUp: "akm bundle add deploy-kit",
             reason: "External kit",
           },
         ],
@@ -481,7 +481,7 @@ describe("shapeRegistrySearchOutput", () => {
         {
           name: "azure-ops",
           description: "Azure ops kit",
-          action: "akm add npm:azure-ops",
+          action: "akm bundle add npm:azure-ops",
           // v1 §4.2: no more `curated` key.
           score: 0.5,
           id: "npm:azure-ops",

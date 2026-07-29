@@ -399,7 +399,7 @@ function resolveImproveReadSource(
     const entry = bundlesToSourceEntries(config)?.find((source) => source.name === configuredSelector);
     if (!entry) {
       throw new UsageError(
-        `No source named "${configuredSelector}" is configured. Run \`akm list\` to see available sources.`,
+        `No source named "${configuredSelector}" is configured. Run \`akm bundle list\` to see available sources.`,
         "INVALID_FLAG_VALUE",
       );
     }
@@ -415,7 +415,7 @@ function resolveImproveReadSource(
 
   const implicit = resolveSourceEntries(undefined, config)[0];
   if (!implicit) {
-    throw new ConfigError("no source configured; run `akm init`", "STASH_DIR_NOT_FOUND");
+    throw new ConfigError("no source configured; run `akm bundle create`", "STASH_DIR_NOT_FOUND");
   }
   return { source: { name: implicit.registryId ?? "stash", path: implicit.path } };
 }

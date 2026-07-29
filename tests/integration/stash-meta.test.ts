@@ -1,6 +1,6 @@
 /**
  * Tests for the stash `.meta/` convention: ref parsing, on-disk resolution
- * (including traversal guards), and the `akm init` scaffold.
+ * (including traversal guards), and the `akm bundle create` scaffold.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -64,7 +64,7 @@ describe("resolveMetaFilePath", () => {
   });
 });
 
-describe("akm init .meta scaffold", () => {
+describe("akm bundle create .meta scaffold", () => {
   let cleanup: Cleanup = () => {};
   beforeEach(() => {
     process.env.AKM_FORCE_INIT_TMP_STASH = "1";

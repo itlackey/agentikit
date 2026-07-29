@@ -347,7 +347,7 @@ export async function ensureSourceCaches(
       if (!isMaterializedDir(lockedRoot)) {
         warn(
           `Warning: managed source "${entry.name}" is missing its locked materialization at ${lockedRoot}; ` +
-            `run \`akm update ${entry.name}\` to restore it.`,
+            `run \`akm bundle update ${entry.name}\` to restore it.`,
         );
       }
       // Managed installs are refreshed only by add/update. Hydrating the URL-

@@ -204,20 +204,20 @@ Add any source — a local directory, a GitHub repo, an npm package, or a websit
 Every source materialises files to a directory; akm indexes them locally:
 
 ```sh
-akm add ~/.claude/skills              # Your Claude Code skills
-akm add github:owner/repo             # A team's shared stash
-akm add @scope/my-stash                 # An npm package
-akm add https://docs.example.com --name docs  # A documentation site
+akm bundle add ~/.claude/skills              # Your Claude Code skills
+akm bundle add github:owner/repo             # A team's shared stash
+akm bundle add @scope/my-stash                 # An npm package
+akm bundle add https://docs.example.com --name docs  # A documentation site
 ```
 
-All become searchable immediately. Use `akm list` to see your sources and
-`akm update --all` to keep managed sources current.
+All become searchable immediately. Use `akm bundle list` to see your sources and
+`akm bundle update --all` to keep managed sources current.
 
 Website sources are crawled and converted to markdown knowledge assets. Control
 the crawl with `--max-pages` and `--max-depth`:
 
 ```sh
-akm add https://www.agentic-patterns.com/ --name agent-patterns --max-pages 100
+akm bundle add https://www.agentic-patterns.com/ --name agent-patterns --max-pages 100
 ```
 
 See [registry.md](../reference/registry.md) for the full install flow and supported
@@ -261,7 +261,7 @@ pattern is safe to script into CI or agent test harnesses.
 
 If you want the rest of the official akm ecosystem after first-time setup:
 
-- [itlackey/akm-stash](https://github.com/itlackey/akm-stash) -- install the official onboarding stash with `akm add github:itlackey/akm-stash`
+- [itlackey/akm-stash](https://github.com/itlackey/akm-stash) -- install the official onboarding stash with `akm bundle add github:itlackey/akm-stash`
 - [itlackey/akm-registry](https://github.com/itlackey/akm-registry) -- browse the official registry source that ships with akm
 - [itlackey/akm-plugins](https://github.com/itlackey/akm-plugins) -- optional integrations for editors and agent tools
 - [itlackey/akm-bench](https://github.com/itlackey/akm-bench) -- benchmark and evaluation tooling for measuring akm-assisted agent runs

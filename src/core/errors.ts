@@ -30,14 +30,14 @@ export type ConfigErrorCode =
   | "LLM_NOT_CONFIGURED"
   | "INVALID_CONFIG_FILE"
   | "UNSUPPORTED_CONFIG_VERSION"
-  // Defense-in-depth sentinel raised by `akm init` under `bun test` to
-  // refuse persisting a temp-dir stashDir to the user's real config.
+  // Defense-in-depth sentinel raised by `akm bundle create` under `bun test`
+  // to refuse persisting a temp-dir stashDir to the user's real config.
   // See src/commands/sources/init.ts.
   | "INIT_TMP_STASH_REFUSED"
   | "SETUP_TMP_STASH_REFUSED"
   | "UNKNOWN_IMPROVE_STRATEGY"
   // Refused stashDir that would clobber a sensitive system path or the user's
-  // home directory (#473). Triggered by `akm init`/`akm setup` when the
+  // home directory (#473). Triggered by `akm bundle create`/`akm setup` when the
   // explicit `--dir` argument resolves to e.g. `/`, `$HOME`, `~/.config`,
   // `/etc`, etc.
   | "UNSAFE_STASH_DIR"
@@ -118,8 +118,9 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   INVALID_SHAPE_VALUE: "Pick one of: human, agent, summary (summary is only valid on `akm show`).",
   INVALID_JSON_CONFIG_VALUE:
     'Quote JSON values in your shell, for example: akm config set embedding \'{"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}\'.',
-  MISSING_OR_AMBIGUOUS_TARGET: "Use `akm update --all` or pass a target like `akm update npm:@scope/pkg` (not both).",
-  TARGET_NOT_UPDATABLE: "Run `akm list` to view your sources, then retry with one of those values.",
+  MISSING_OR_AMBIGUOUS_TARGET:
+    "Use `akm bundle update --all` or pass a target like `akm bundle update npm:@scope/pkg` (not both).",
+  TARGET_NOT_UPDATABLE: "Run `akm bundle list` to view your sources, then retry with one of those values.",
   MISSING_REQUIRED_ARGUMENT:
     "Refs use the form [bundle//]conceptId, e.g. `akm show knowledge/guide.md` or `akm show skills/deploy`.",
 };
@@ -127,7 +128,7 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
 /** Default hint for each NotFoundError code. */
 const NOT_FOUND_HINTS: Partial<Record<NotFoundErrorCode, string>> = {
   ASSET_NOT_FOUND: "Run `akm search <query>` or `akm index` to refresh the index.",
-  SOURCE_NOT_FOUND: "Run `akm list` to view your sources, then retry with one of those values.",
+  SOURCE_NOT_FOUND: "Run `akm bundle list` to view your sources, then retry with one of those values.",
   WORKFLOW_NOT_FOUND: "Run `akm workflow list --active` to see runs.",
   FILE_NOT_FOUND: "Check the path exists and is readable.",
 };

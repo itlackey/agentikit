@@ -25,6 +25,8 @@ function makeStampHandler(command: string) {
 const PASSTHROUGH_COMMANDS = [
   "add",
   "agent-result",
+  "bundle-create",
+  "bundle-show",
   "clone",
   "config",
   "disable",
@@ -41,7 +43,6 @@ const PASSTHROUGH_COMMANDS = [
   "import",
   "index",
   "info",
-  "init",
   "lint",
   "list",
   "mv",

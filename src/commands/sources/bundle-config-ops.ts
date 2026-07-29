@@ -7,7 +7,7 @@
  *
  * The `stashDir`/`sources[]`/`installed[]` trio is retired: every source is now
  * a `bundles.<slug>` entry, and the primary working stash is the `defaultBundle`.
- * These helpers give the source writers (`akm init`, `akm setup`, `akm add`,
+ * These helpers give the source writers (`akm bundle create`, `akm setup`, `akm bundle add`,
  * `akm sources add/remove`) one place to derive slug-legal bundle keys (via the
  * shared {@link deriveBundleId} — D-R5), locate an existing bundle by its source
  * descriptor, and set/repoint the primary bundle — without duplicating the

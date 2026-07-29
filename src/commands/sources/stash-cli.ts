@@ -3,14 +3,17 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Stash-lifecycle command cluster — the create/index/ingest/inspect verbs for
- * the working stash and its index database: `akm init` (create the stash +
- * persist stashDir), `akm index` (build/refresh the search index), `akm import`
- * (ingest a knowledge doc/URL), and `akm info` (system capabilities + index
- * stats).
+ * Stash-lifecycle command cluster — the index/ingest/inspect verbs for
+ * the working stash and its index database: `akm index` (build/refresh the
+ * search index), `akm import` (ingest a knowledge doc/URL), and `akm info`
+ * (system capabilities + index stats).
  * Extracted verbatim from src/cli.ts (WS6) so the God Module shrinks; the
- * `main.subCommands.{init,index,import,info}` keys and every subcommand's
+ * `main.subCommands.{index,import,info}` keys and every subcommand's
  * args/output shape stay byte-identical.
+ *
+ * 0.9 CLI overhaul (S7): `init` moved out of this cluster into the new
+ * `akm bundle create` (src/commands/sources/bundle-cli.ts) — no top-level
+ * `init` remains.
  *
  * These share no private helper with any command still inline in cli.ts — every
  * dependency is already exported from a shared module (core/paths, core/warn,
@@ -53,30 +56,6 @@ import {
   writeMarkdownAsset,
 } from "../read/knowledge";
 import { assembleInfo } from "./info";
-import { akmInit } from "./init";
-
-export const initCommand = defineJsonCommand({
-  meta: {
-    name: "init",
-    description: "Initialize akm's working stash directory and persist its bundle in config",
-  },
-  args: {
-    dir: { type: "string", description: "Custom stash directory path (default: ~/akm)" },
-    "set-default": {
-      type: "boolean",
-      description:
-        "Make --dir the default bundle. Without this, `akm init --dir X` scaffolds X but leaves your existing default bundle unchanged.",
-      default: false,
-    },
-  },
-  async run({ args }) {
-    const result = await akmInit({
-      dir: args.dir,
-      setDefault: args["set-default"],
-    });
-    output("init", result);
-  },
-});
 
 export const indexCommand = defineCommand({
   meta: { name: "index", description: "Build search index (incremental by default; --full forces full reindex)" },

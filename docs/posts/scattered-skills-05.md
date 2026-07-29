@@ -57,9 +57,9 @@ curl -fsSL https://raw.githubusercontent.com/itlackey/akm/main/install.sh | bash
 akm setup
 
 # Point at your existing skill directories
-akm add ~/.claude/skills
-akm add ~/.codex/skills
-akm add .cursor/rules
+akm add ~/.claude/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add ~/.codex/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add .cursor/rules  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Search across all of them
 akm search "deploy"

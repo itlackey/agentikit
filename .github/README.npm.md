@@ -46,7 +46,7 @@ binaries are runtime-free.
 ```sh
 akm setup                         # Guided setup: configure, initialize, and index
 akm task doctor                    # Verify scheduler and installed runtime
-akm add github:owner/repo         # Add a stash from GitHub
+akm bundle add github:owner/repo         # Add a stash from GitHub
 akm search "deploy"               # Find assets across all sources
 akm show scripts/deploy.sh        # View details and run command
 ```
@@ -98,13 +98,13 @@ via the `akm` CLI. Use `akm -h` for details.
 ## Install Stashes from Anywhere
 
 ```sh
-akm add @scope/my-stash                     # npm
-akm add github:owner/repo#v1.2.3            # GitHub with tag
-akm add git+https://gitlab.com/org/stash    # Any git repo
-akm add ./path/to/local/stash               # Local directory
+akm bundle add @scope/my-stash                     # npm
+akm bundle add github:owner/repo#v1.2.3            # GitHub with tag
+akm bundle add git+https://gitlab.com/org/stash    # Any git repo
+akm bundle add ./path/to/local/stash               # Local directory
 ```
 
-Manage stashes with `akm list`, `akm update --all`, and `akm remove`.
+Manage stashes with `akm bundle list`, `akm bundle update --all`, and `akm bundle remove`.
 
 ## Publish Your Own Stash
 

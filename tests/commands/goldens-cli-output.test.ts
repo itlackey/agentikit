@@ -232,7 +232,7 @@ describe("family A — search/show/list/info/curate/proposal/env/secret/events/c
   });
 
   test("list", async () => {
-    const result = await runCli(["list", "--format=json"]);
+    const result = await runCli(["bundle", "list", "--format=json"]);
     expect(result.code).toBe(0);
     const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
     expectGolden("tests/fixtures/goldens/cli/a-list.json", {
@@ -531,7 +531,7 @@ describe("family F — error envelopes", () => {
     const configPath = getConfigPath();
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, "{ not valid json");
-    const result = await runCli(["list", "--format=json"]);
+    const result = await runCli(["bundle", "list", "--format=json"]);
     expect(result.code).toBe(78);
     const parsed = JSON.parse(result.stderr);
     expect(parsed.ok).toBe(false);

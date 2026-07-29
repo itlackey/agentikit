@@ -1,7 +1,7 @@
 # Stash Maker's Guide
 
 This guide walks through building a stash from scratch and sharing it so others
-can install it with `akm add`.
+can install it with `akm bundle add`.
 
 ## Step 1: Organize Your Assets
 
@@ -309,10 +309,10 @@ Before sharing, install your stash locally to verify everything works:
 
 ```sh
 # Install from the local directory
-akm add ./my-stash
+akm bundle add ./my-stash
 
 # Check it appears in the list
-akm list
+akm bundle list
 
 # Search for your assets
 akm search "deploy"
@@ -342,15 +342,15 @@ akm show scripts/deploy.sh
 3. Others can now install it:
 
    ```sh
-   akm add github:your-username/my-stash
+   akm bundle add github:your-username/my-stash
    ```
 
-4. To pin a version, create a GitHub release. When a release exists, `akm add`
+4. To pin a version, create a GitHub release. When a release exists, `akm bundle add`
    uses the latest release tarball. Otherwise it uses the default branch.
 
    ```sh
    # Install a specific tag
-   akm add github:your-username/my-stash#v1.0.0
+   akm bundle add github:your-username/my-stash#v1.0.0
    ```
 
 ## Sharing on npm
@@ -394,7 +394,7 @@ akm show scripts/deploy.sh
 4. Others can now install it:
 
    ```sh
-   akm add @your-scope/my-stash
+   akm bundle add @your-scope/my-stash
    ```
 
 ## Submitting to the Registry
@@ -428,7 +428,7 @@ stashes.
 2. Each team member adds it as a source:
 
    ```sh
-   akm add /mnt/shared/team-stash
+   akm bundle add /mnt/shared/team-stash
    ```
 
    Or add it directly to `~/.config/akm/config.json`:
@@ -440,7 +440,7 @@ stashes.
    ```
 
 3. Assets from the stash appear in search results immediately --
-   no `akm add` needed. To fork an asset into the primary stash, use clone:
+   no `akm bundle add` needed. To fork an asset into the primary stash, use clone:
 
    ```sh
    akm clone scripts/deploy.sh
@@ -463,13 +463,13 @@ after the working stash.
 If your stash includes env files under `env/`, be aware of how `akm` handles
 them during install.
 
-**Dangerous key detection.** `akm add` and `akm lint` scan env files for
+**Dangerous key detection.** `akm bundle add` and `akm lint` scan env files for
 environment variable names that can be used to hijack process execution when
 the file is loaded via `akm env run`. The flagged names include `LD_PRELOAD`,
 `PATH`, `DYLD_INSERT_LIBRARIES`, `NODE_OPTIONS`, and 37 others (41 literal
 keys total), plus two pattern-based families (`BASH_FUNC_*`, Shellshock-class
 injection; `GIT_CONFIG_*`, git config override injection). When these keys
-are found, `akm add` pauses in interactive mode and asks the user to confirm
+are found, `akm bundle add` pauses in interactive mode and asks the user to confirm
 before continuing. In non-interactive (CI) mode the install fails unless the
 user passes `--allow-insecure`. `akm env run` applies the same scan at run time:
 a third-party-sourced stash is refused outright; a first-party stash warns and
@@ -525,5 +525,5 @@ directly.
   reads these directly.
 
 - **Version your stash.** Use npm versions or GitHub releases so users can pin
-  to a known-good state with `akm add npm:pkg@1.2.3` or
-  `akm add github:owner/repo#v1.2.3`.
+  to a known-good state with `akm bundle add npm:pkg@1.2.3` or
+  `akm bundle add github:owner/repo#v1.2.3`.

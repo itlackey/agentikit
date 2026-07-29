@@ -3,13 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Source-management CLI commands — `akm list/remove/update/upgrade/sync/clone`.
+ * Source-management CLI commands — `akm upgrade/sync/clone`.
  *
  * Extracted verbatim from src/cli.ts (WS6). Each `main.subCommands.<key>`
  * registration line stays byte-identical; the args/output shape of every
- * subcommand is unchanged. The `--kind` filter helper (`parseKindFilter` +
- * `VALID_SOURCE_KINDS`) and the `runSyncBody` git-commit/push body are used ONLY by
- * this cluster, so they move with it.
+ * subcommand is unchanged. The `runSyncBody` git-commit/push body is used
+ * ONLY by this cluster, so it moves with it.
  *
  * Leaf handlers whose body is a plain `runWithJsonErrors(async () => { … })`
  * are migrated to `defineJsonCommand`, which emits the same JSON envelope
@@ -20,6 +19,12 @@
  * 0.9.0 CLI overhaul (S3): top-level `history` was dropped; its
  * `--accept-rate-by-source` metric was folded into `akm health --report`
  * (src/commands/health/accept-rate.ts).
+ *
+ * 0.9 CLI overhaul (S7): `list`/`remove`/`update` moved out of this cluster
+ * into the new `akm bundle` group (src/commands/sources/bundle-cli.ts) — no
+ * top-level `list`/`remove`/`update` remains. Root `sync` and this file's
+ * `clone`/`upgrade` stay top-level (the shipped `core/sync.yml` task calls
+ * `akm sync` directly).
  */
 import { defineCommand } from "citty";
 import { getParsedInvocation } from "../../cli/invocation";
@@ -28,102 +33,9 @@ import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { resolveWritableOverride, saveGitStash } from "../../sources/providers/git";
-import type { SourceKind } from "../../sources/types";
 import { pkgVersion } from "../../version";
-import { akmListSources, akmRemove, akmUpdate } from "./installed-stashes";
 import { checkForUpdate, performUpgrade } from "./self-update";
 import { akmClone } from "./source-clone";
-
-const VALID_SOURCE_KINDS = new Set<SourceKind>(["filesystem", "git", "npm", "website"]);
-
-function parseKindFilter(raw: string | undefined): SourceKind[] | undefined {
-  if (!raw) return undefined;
-  const kinds = raw.split(",").map((s) => s.trim()) as SourceKind[];
-  for (const k of kinds) {
-    if (!VALID_SOURCE_KINDS.has(k)) {
-      throw new UsageError(`Invalid --kind value: "${k}". Expected one of: filesystem, git, npm, website`);
-    }
-  }
-  return kinds;
-}
-
-export const listCommand = defineJsonCommand({
-  meta: { name: "list", description: "List configured bundles and their resolved source state" },
-  args: {
-    kind: {
-      type: "string",
-      description: "Filter by source provider (filesystem, git, npm, website). Comma-separated.",
-    },
-  },
-  async run({ args }) {
-    const kind = parseKindFilter(args.kind);
-    const result = await akmListSources({ kind });
-    output("list", result);
-  },
-});
-
-export const removeCommand = defineJsonCommand({
-  meta: { name: "remove", description: "Remove a source by id, ref, path, URL, or name" },
-  args: {
-    target: { type: "positional", description: "Source to remove (id, ref, path, URL, or name)", required: true },
-    yes: { type: "boolean", alias: "y", description: "Skip confirmation prompt", default: false },
-  },
-  async run({ args }) {
-    const { confirmDestructive } = await import("../../cli/confirm.js");
-    const confirmed = await confirmDestructive(`Remove source "${args.target}"? This cannot be undone.`, {
-      yes: args.yes === true,
-    });
-    if (!confirmed) {
-      process.stderr.write("Aborted.\n");
-      return;
-    }
-    const result = await akmRemove({ target: args.target });
-    appendEvent({
-      eventType: "remove",
-      metadata: {
-        target: args.target,
-        ref: typeof result.removed?.ref === "string" ? result.removed.ref : null,
-        id: typeof result.removed?.id === "string" ? result.removed.id : null,
-      },
-    });
-    output("remove", result);
-  },
-});
-
-export const updateCommand = defineJsonCommand({
-  meta: { name: "update", description: "Update one or all managed sources" },
-  args: {
-    target: { type: "positional", description: "Source to update (id or ref)", required: false },
-    all: { type: "boolean", description: "Update all installed entries", default: false },
-    force: { type: "boolean", description: "Force fresh download even if version is unchanged", default: false },
-    // F1/R-058: gates ONLY the rare branch where the resolved content
-    // directory moves and the previous `localRoot` is deleted — a normal
-    // refresh (the overwhelming majority of updates) deletes nothing and
-    // never consults this flag. Mirrors `remove`'s `-y/--yes`.
-    yes: {
-      type: "boolean",
-      alias: "y",
-      description:
-        "Skip the confirmation prompt when an update needs to delete a previous install directory (because the resolved content location moved). No effect on a normal refresh, which deletes nothing.",
-      default: false,
-    },
-  },
-  async run({ args }) {
-    const result = await akmUpdate({ target: args.target, all: args.all, force: args.force, yes: args.yes });
-    appendEvent({
-      eventType: "update",
-      metadata: {
-        target: args.target ?? null,
-        all: args.all === true,
-        force: args.force === true,
-        processed: Array.isArray((result as { processed?: unknown[] }).processed)
-          ? (result as { processed: unknown[] }).processed.length
-          : 0,
-      },
-    });
-    output("update", result);
-  },
-});
 
 export const upgradeCommand = defineJsonCommand({
   meta: { name: "upgrade", description: "Upgrade akm to the latest release" },

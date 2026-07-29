@@ -53,7 +53,7 @@ Every entry gets indexed into the same search pipeline as your local assets, whi
 If you already have `akm` installed:
 
 ```bash
-akm add context-hub
+akm add context-hub  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 That's the full setup. Under the hood, this adds the default Context Hub repository as a git source. It downloads the repo as an archive, extracts it into a local cache, and on the next `akm index`, every `DOC.md` and `SKILL.md` gets indexed into the same FTS5 search pipeline as your local assets.
@@ -63,7 +63,7 @@ The cache refreshes automatically every 12 hours. If the network is down, it fal
 Verify it's registered:
 
 ```bash
-akm list
+akm list  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 You should see `context-hub` in the list alongside your local stash directories and any other providers you've configured.
@@ -124,7 +124,7 @@ The default `akm add context-hub` points at Andrew Ng's repository, but you're n
 Say your organization maintains an internal knowledge base for agent context — API references, architecture decisions, coding standards:
 
 ```bash
-akm add https://github.com/your-org/team-knowledge \
+akm add https://github.com/your-org/team-knowledge \  # doclint:ignore (historical — pre-0.9.0 command spelling)
   --provider git \
   --name "team-knowledge"
 ```
@@ -134,7 +134,7 @@ Now `akm search` queries your team's knowledge base alongside the public Context
 Need a specific branch instead of `main`?
 
 ```bash
-akm add https://github.com/your-org/team-knowledge/tree/staging \
+akm add https://github.com/your-org/team-knowledge/tree/staging \  # doclint:ignore (historical — pre-0.9.0 command spelling)
   --provider git \
   --name "team-staging"
 ```
@@ -170,24 +170,24 @@ curl -fsSL https://raw.githubusercontent.com/itlackey/akm/main/install.sh | bash
 akm setup
 
 # Local platform assets
-akm add ~/.claude/skills
-akm add .opencode/skills
-akm add .cursor/rules
+akm add ~/.claude/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add .opencode/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add .cursor/rules  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Community and team stashes
-akm add github:your-org/team-agent-toolkit
-akm add @scope/deploy-skills
+akm add github:your-org/team-agent-toolkit  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add @scope/deploy-skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Community knowledge (Context Hub is just a git repo)
-akm add context-hub
+akm add context-hub  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Team knowledge (any git repo works)
-akm add https://github.com/your-org/team-knowledge \
+akm add https://github.com/your-org/team-knowledge \  # doclint:ignore (historical — pre-0.9.0 command spelling)
   --provider git \
   --name team-knowledge
 
 # Remote context server
-akm add https://your-viking.internal:1933 \
+akm add https://your-viking.internal:1933 \  # doclint:ignore (historical — pre-0.9.0 command spelling)
   --provider openviking \
   --name team-context \
   --options '{"apiKey":"..."}'

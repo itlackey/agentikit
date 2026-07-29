@@ -19,6 +19,7 @@
 
 export {
   formatAddPlain,
+  formatBundleShowPlain,
   formatClonePlain,
   formatConfigPlain,
   formatCuratePlain,

@@ -90,8 +90,13 @@ async function configureInventory(): Promise<void> {
 }
 
 describe("akm list bundle inventory", () => {
-  test("the duplicate bundle command namespace is not registered", () => {
-    expect((main.subCommands as Record<string, unknown>).bundle).toBeUndefined();
+  // 0.9 CLI overhaul (S7): `akm bundle` is now the canonical group housing
+  // `create`/`add`/`list`/`show`/`remove`/`update` (src/commands/sources/
+  // bundle-cli.ts) — the guard that used to pin its ABSENCE here predates the
+  // overhaul and is obsolete; see tests/integration/commands/bundle-cli-
+  // envelope.test.ts for the group's own envelope coverage.
+  test("the bundle command namespace is registered exactly once", () => {
+    expect(typeof (main.subCommands as Record<string, unknown>).bundle).toBe("object");
   });
 
   test("joins desired config, lock state, components, and indexed counts", async () => {
@@ -141,7 +146,7 @@ describe("akm list bundle inventory", () => {
 
   test("the CLI emits the enriched list shape", async () => {
     await configureInventory();
-    const result = await runCliCapture(["list", "--format", "json"]);
+    const result = await runCliCapture(["bundle", "list", "--format", "json"]);
     expect(result.code).toBe(0);
     const output = JSON.parse(result.stdout);
     expect(output.shape).toBe("list");

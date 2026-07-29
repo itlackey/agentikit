@@ -8,7 +8,7 @@
  * Distinct from the {@link SourceProvider} interface, which only deals with
  * configured sources already resolved into a directory.
  * These types describe the resolution+lockfile step that runs when
- * `akm add <install-ref>` materialises an upstream artifact into a local
+ * `akm bundle add <install-ref>` materialises an upstream artifact into a local
  * cache directory.
  *
  * They live here, outside `provider.ts`, so SourceProvider stays minimal.

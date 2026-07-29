@@ -21,7 +21,7 @@
  *   - `npm install --no-save better-sqlite3`  →  native binding for Node ABI
  *
  * Coverage map — runtime-boundary branches exercised:
- *   better-sqlite3      init / remember / index / search / show / health / events
+ *   better-sqlite3      bundle create / remember / index / search / show / health / events
  *   readStdin           remember -
  *   spawnSync           setup (ripgrep download + rg --version)
  *   spawn               setup (agent-availability detection)
@@ -128,7 +128,7 @@ function setupStorage(): void {
     XDG_DATA_HOME: storage.dataDir,
     XDG_CACHE_HOME: storage.cacheDir,
     XDG_STATE_HOME: storage.stateDir,
-    // The Node child inherits BUN_TEST=1 from the bun-test parent, so init's
+    // The Node child inherits BUN_TEST=1 from the bun-test parent, so bundle create's
     // `assertInitSandbox` guard (which refuses to persist a /tmp --dir stash
     // under a test runner) fires. This suite legitimately scaffolds a stash in
     // an isolated tmp dir, so opt into the guard's documented escape hatch.
@@ -179,19 +179,19 @@ describe("version parity", () => {
   });
 });
 
-// ── init + remember + show ────────────────────────────────────────────────────
+// ── bundle create + remember + show ─────────────────────────────────────────
 
-describe("init / remember / show parity", () => {
+describe("bundle create / remember / show parity", () => {
   afterEach(() => cleanup());
 
-  test.skipIf(!ENABLED)("init creates stash on Node", () => {
+  test.skipIf(!ENABLED)("bundle create creates stash on Node", () => {
     setupStorage();
     // withIsolatedAkmStorage pre-creates `stashDir` with skeleton subdirs, so
-    // `init --dir <stashDir>` would report created:false. Point at a fresh,
-    // not-yet-existing subpath so init genuinely creates the stash.
+    // `bundle create --dir <stashDir>` would report created:false. Point at a fresh,
+    // not-yet-existing subpath so bundle create genuinely creates the stash.
     const freshDir = path.join(stashDir, "fresh");
-    const r = nodeRun(["init", "--dir", freshDir], nodeEnv);
-    assertNoBoundaryLeak(r, "init");
+    const r = nodeRun(["bundle", "create", "--dir", freshDir], nodeEnv);
+    assertNoBoundaryLeak(r, "bundle-create");
     expect(r.status).toBe(0);
     const json = parseJson(r.stdout) as { created?: boolean } | undefined;
     expect(json?.created).toBe(true);
@@ -234,8 +234,8 @@ describe("init / remember / show parity", () => {
 
   test.skipIf(!ENABLED)("remember via stdin (readStdin Node branch)", () => {
     setupStorage();
-    // init first
-    nodeRun(["init", "--dir", stashDir], nodeEnv);
+    // bundle create first
+    nodeRun(["bundle", "create", "--dir", stashDir], nodeEnv);
 
     const r = nodeRun(["remember", "-"], nodeEnv, "piped stdin node compat memory content\n");
     assertNoBoundaryLeak(r, "remember-stdin");
@@ -441,15 +441,15 @@ describe("sources parity", () => {
   test.skipIf(!ENABLED)("sources list output is structurally identical on Bun and Node", async () => {
     setupStorage();
 
-    // The configured-sources listing is `akm list` (there is no top-level
-    // `sources list` command). Its JSON envelope carries shape:"list".
-    const nodeResult = nodeRun(["list"], nodeEnv);
-    assertNoBoundaryLeak(nodeResult, "list");
+    // The configured-sources listing is `akm bundle list` (there is no
+    // top-level `sources list` command). Its JSON envelope carries shape:"list".
+    const nodeResult = nodeRun(["bundle", "list"], nodeEnv);
+    assertNoBoundaryLeak(nodeResult, "bundle-list");
     expect(nodeResult.status).toBe(0);
 
     const bunResult = await boundedWithEnv(
       { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
-      () => runCliCapture(["list"]),
+      () => runCliCapture(["bundle", "list"]),
     );
     const nodeJson = parseJson(nodeResult.stdout) as { shape?: string } | undefined;
     const bunJson = parseJson(bunResult.stdout) as { shape?: string } | undefined;

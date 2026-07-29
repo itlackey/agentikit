@@ -397,7 +397,7 @@ function buildCuratedRegistryItem(query: string, hit: RegistrySearchResultHit): 
     name: hit.name,
     id: hit.id,
     ...(hit.description ? { description: hit.description } : {}),
-    followUp: hit.action ?? `akm add ${hit.id}`,
+    followUp: hit.action ?? `akm bundle add ${hit.id}`,
     reason: `Useful external source to explore for ${query}.`,
     ...(hit.score !== undefined ? { score: hit.score } : {}),
   };

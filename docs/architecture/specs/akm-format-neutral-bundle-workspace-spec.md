@@ -1696,7 +1696,7 @@ Secret values MUST NOT enter:
 The logical command surface SHOULD converge toward:
 
 ```text
-akm init
+akm bundle create
 akm info
 akm health
 

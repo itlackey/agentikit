@@ -302,7 +302,7 @@ function scoreAssets(
             estimatedTokens: asset.estimatedTokens,
             stash: { id: stash.id, name: stash.name },
             registryName,
-            action: `akm add ${installRef}`,
+            action: `akm bundle add ${installRef}`,
             score: Math.round(score * 1000) / 1000,
           },
           score,

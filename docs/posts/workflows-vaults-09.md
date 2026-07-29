@@ -165,7 +165,7 @@ So far in this series, stashes have been read-only: you pull in a team repo or a
 When you create a stash with `--writable`, `akm save` will stage, commit, and push your changes back to the remote:
 
 ```sh
-akm add git@github.com:your-org/skills.git --provider git --name team-skills --writable
+akm add git@github.com:your-org/skills.git --provider git --name team-skills --writable  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 ```sh

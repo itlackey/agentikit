@@ -45,7 +45,7 @@ akm remember "Hot-fix deploys skip staging; always notify on-call first" \
 ## akm import
 
 `akm import` brings an existing document — a local file, a single URL, or
-stdin — into `knowledge/` as a searchable reference asset. Unlike `akm add`
+stdin — into `knowledge/` as a searchable reference asset. Unlike `akm bundle add`
 (which registers a persistent source), `import` is a one-shot capture.
 
 ```sh
@@ -79,7 +79,7 @@ automatically at install time, and its pages are indexed like any other
 content:
 
 ```sh
-akm add github:team/research-wiki        # install a wiki bundle (or a local dir)
+akm bundle add github:team/research-wiki        # install a wiki bundle (or a local dir)
 akm search "attention mechanism"         # pages rank alongside all other assets
 akm show research-wiki//pages/attention  # read a page by bundle//conceptId ref
 ```

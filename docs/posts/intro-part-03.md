@@ -36,7 +36,7 @@ The part that matters for `akm` is the API. OpenViking exposes REST endpoints fo
 If you already have `akm` installed and an OpenViking server running, the setup is one command:
 
 ```bash
-akm add http://localhost:1933 --provider openviking
+akm add http://localhost:1933 --provider openviking  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 That registers the server as a source. From that point on, `akm search` queries your local stash and the OpenViking server in parallel. Results from both show up in the same `hits[]` array, ranked together.
@@ -44,7 +44,7 @@ That registers the server as a source. From that point on, `akm search` queries 
 If your server requires authentication:
 
 ```bash
-akm add http://localhost:1933 \
+akm add http://localhost:1933 \  # doclint:ignore (historical — pre-0.9.0 command spelling)
   --provider openviking \
   --options '{"apiKey":"your-api-key"}'
 ```
@@ -52,7 +52,7 @@ akm add http://localhost:1933 \
 Give it a name to keep things tidy:
 
 ```bash
-akm add http://localhost:1933 \
+akm add http://localhost:1933 \  # doclint:ignore (historical — pre-0.9.0 command spelling)
   --provider openviking \
   --name "team-context" \
   --options '{"apiKey":"your-api-key"}'
@@ -61,7 +61,7 @@ akm add http://localhost:1933 \
 Verify it's registered:
 
 ```bash
-akm list
+akm list  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 That's the full setup. No config files to hand-edit, no environment variables to set. The provider handles caching, retries, and graceful degradation — if the server goes down, your local stash still works fine and the provider falls back to cached results for up to an hour.
@@ -85,7 +85,7 @@ That fetches the content — from the local index if available, or from the Open
 By default, OpenViking search uses semantic matching (via `POST /api/v1/search/find`). If you prefer text search for exact matching, configure the provider with:
 
 ```bash
-akm add http://localhost:1933 \
+akm add http://localhost:1933 \  # doclint:ignore (historical — pre-0.9.0 command spelling)
   --provider openviking \
   --options '{"apiKey":"your-key","searchType":"text"}'
 ```
@@ -112,7 +112,7 @@ The seed script loads a handful of test documents — project architecture notes
 Now register it:
 
 ```bash
-akm add http://localhost:1933 \
+akm add http://localhost:1933 \  # doclint:ignore (historical — pre-0.9.0 command spelling)
   --provider openviking \
   --name openviking \
   --options '{"apiKey":"akm-test-key"}'
@@ -159,16 +159,16 @@ curl -fsSL https://raw.githubusercontent.com/itlackey/akm/main/install.sh | bash
 akm setup
 
 # Local platform assets
-akm add ~/.claude/skills
-akm add .opencode/skills
-akm add .cursor/rules
+akm add ~/.claude/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add .opencode/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add .cursor/rules  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Community and team stashes
-akm add github:your-org/team-agent-toolkit
-akm add @scope/deploy-skills
+akm add github:your-org/team-agent-toolkit  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add @scope/deploy-skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Remote context server
-akm add https://your-viking.internal:1933 \
+akm add https://your-viking.internal:1933 \  # doclint:ignore (historical — pre-0.9.0 command spelling)
   --provider openviking \
   --name team-context \
   --options '{"apiKey":"..."}'

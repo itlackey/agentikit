@@ -218,41 +218,41 @@ remove. Only use disposable targets.
 
 ### 7.1 Filesystem source
 
-- [ ] `mkdir -p "$AKM_SANDBOX/extra-stash" && akm add "$AKM_SANDBOX/extra-stash"`
+- [ ] `mkdir -p "$AKM_SANDBOX/extra-stash" && akm bundle add "$AKM_SANDBOX/extra-stash"`
       succeeds and triggers indexing.
-- [ ] `akm list --format json | jq '.sources[]'` includes the new source with a
+- [ ] `akm bundle list --format json | jq '.sources[]'` includes the new source with a
       filesystem/local kind, path, and writable state.
-- [ ] `akm remove "$AKM_SANDBOX/extra-stash"` removes it cleanly.
+- [ ] `akm bundle remove "$AKM_SANDBOX/extra-stash"` removes it cleanly.
 
 ### 7.2 Git source
 
-- [ ] `akm add github:<owner>/<repo>` against a small disposable public repo.
-- [ ] `akm list` shows the git source.
-- [ ] `akm update <name>` fetches successfully.
+- [ ] `akm bundle add github:<owner>/<repo>` against a small disposable public repo.
+- [ ] `akm bundle list` shows the git source.
+- [ ] `akm bundle update <name>` fetches successfully.
 - [ ] `akm search <term-from-repo>` surfaces indexed content from the cloned
       source.
-- [ ] `akm remove <name>` cleans it up.
+- [ ] `akm bundle remove <name>` cleans it up.
 
 ### 7.3 npm source
 
-- [ ] `akm add npm:<small-package>` succeeds.
-- [ ] `akm list` shows `kind: "npm"` or equivalent rendered npm source info.
-- [ ] `akm remove <name>` succeeds.
+- [ ] `akm bundle add npm:<small-package>` succeeds.
+- [ ] `akm bundle list` shows `kind: "npm"` or equivalent rendered npm source info.
+- [ ] `akm bundle remove <name>` succeeds.
 
 ### 7.4 Website source
 
-- [ ] `akm add https://example-skills-site.dev --name docs-site` adds the
+- [ ] `akm bundle add https://example-skills-site.dev --name docs-site` adds the
       source.
-- [ ] `akm list` shows the remote/website source.
-- [ ] `akm update docs-site` either refreshes it successfully or returns a
+- [ ] `akm bundle list` shows the remote/website source.
+- [ ] `akm bundle update docs-site` either refreshes it successfully or returns a
       structured non-updatable error that matches current behavior.
 
 ### 7.5 Writable rejection
 
 - [ ] Edit `$XDG_CONFIG_HOME/akm/config.json` to set `"writable": true` on a
       `npm` or `website` source.
-- [ ] `akm list` fails with a `ConfigError` and actionable hint.
-- [ ] Revert the edit; `akm list` succeeds again.
+- [ ] `akm bundle list` fails with a `ConfigError` and actionable hint.
+- [ ] Revert the edit; `akm bundle list` succeeds again.
 
 ---
 
@@ -281,8 +281,8 @@ These cover the shared write-target path and git-backed save behavior.
 ### 8.2 remember target resolution
 
 - [ ] Add a second filesystem source:
-      `mkdir -p "$AKM_SANDBOX/alt" && akm add "$AKM_SANDBOX/alt"`.
-- [ ] Confirm the source name via `akm list --format json`.
+      `mkdir -p "$AKM_SANDBOX/alt" && akm bundle add "$AKM_SANDBOX/alt"`.
+- [ ] Confirm the source name via `akm bundle list --format json`.
 - [ ] `akm remember "to alt" --name alt-mem --bundle <source-name>` writes to
       that source.
 - [ ] `akm remember "x" --name y --bundle nonexistent` fails with
@@ -319,7 +319,7 @@ These cover the shared write-target path and git-backed save behavior.
       the sandbox repo.
 - [ ] Add a second git-backed sandbox source with an explicit slash-containing
       name (for example `team/sync-qa`), confirm that exact name via
-      `akm list --format json`, then run
+      `akm bundle list --format json`, then run
       `akm sync team/sync-qa -m "Manual QA named sync"`
       and verify the commit lands in that repo, not the primary stash.
 - [ ] If the named source is literally `json`, `akm sync json --format json`
@@ -363,7 +363,7 @@ These steps need network access.
       `--allow-insecure` is supplied.
 - [ ] `akm registry add http://registry.example/index.json --allow-insecure`
       succeeds with a warning on stderr.
-- [ ] Installing a hit still happens through `akm add <installRef>`; there is
+- [ ] Installing a hit still happens through `akm bundle add <installRef>`; there is
       no `registry add-kit` subcommand.
 
 Building a registry index is a publisher/maintainer flow and is no longer a CLI
@@ -412,7 +412,7 @@ component whose root holds `schema.md` plus a `pages/` directory. There is
 no `akm wiki` subcommand to test; verify the adapter surface instead:
 
 - [ ] A directory with `schema.md` + `pages/<page>.md` + `raw/<source>.md`,
-      registered as a `bundles` entry (or installed via `akm add`), is
+      registered as a `bundles` entry (or installed via `akm bundle add`), is
       recognized as an `llm-wiki` component on `akm index --full` — no
       manual registration step beyond the normal bundle config/install.
 - [ ] `akm search <term-from-a-page>` returns the page as a hit (its `type`
@@ -537,14 +537,14 @@ Run only inside the sandbox.
 
 - [ ] Replace `$XDG_CONFIG_HOME/akm/config.json` with one using legacy
       `stashes[]`.
-- [ ] `akm list` fails with a structured `INVALID_CONFIG_FILE` error telling you
+- [ ] `akm bundle list` fails with a structured `INVALID_CONFIG_FILE` error telling you
       to rename `stashes[]` to `sources`.
 - [ ] Restore a valid config before continuing.
 
 ### 16.2 OpenViking rejection
 
 - [ ] Inject an `openviking` source into `sources[]`.
-- [ ] `akm list` fails with a structured `ConfigError` that points at migration
+- [ ] `akm bundle list` fails with a structured `ConfigError` that points at migration
       guidance.
 - [ ] Remove it; normal commands work again.
 

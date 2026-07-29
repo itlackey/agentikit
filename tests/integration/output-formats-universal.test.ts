@@ -118,7 +118,7 @@ describe("every --format value produces real output on every read command", () =
 
 describe("html is no longer health-only", () => {
   test("a non-health read command renders html instead of exiting 2", async () => {
-    const result = await runCliCapture(["list", "--format=html"]);
+    const result = await runCliCapture(["bundle", "list", "--format=html"]);
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("<!doctype html>");

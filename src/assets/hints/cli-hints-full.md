@@ -111,10 +111,10 @@ Install one as a source, then search and read its pages with the ordinary
 commands — no wiki-specific verbs:
 
 ```sh
-akm add owner/llm-wiki-repo                    # Install an LLM Wiki bundle as a source (npm, GitHub, git, or local dir)
+akm bundle add owner/llm-wiki-repo                    # Install an LLM Wiki bundle as a source (npm, GitHub, git, or local dir)
 akm search "attention"                         # Wiki pages surface in ordinary search results
 akm show team-catalog//pages/attention          # Read a page by its bundle//conceptId ref (copy the ref from search)
-akm list                                       # Confirm the bundle is installed
+akm bundle list                                       # Confirm the bundle is installed
 ```
 
 Files under the bundle's `raw/` directory and the wiki infrastructure files
@@ -184,7 +184,7 @@ akm clone <ref> --force                       # Overwrite existing
 akm clone "npm:@scope/pkg//scripts/deploy.sh" # Clone from remote package
 ```
 
-When `--dest` is provided, `akm init` is not required first.
+When `--dest` is provided, `akm bundle create` is not required first.
 
 ## Move / Rename
 
@@ -243,27 +243,27 @@ akm improve --sync                            # force sync even on strategies th
 Strategy sync defaults: `default` and `thorough` auto-commit + push; `quick` and
 `memory-focus` skip sync entirely. Override with `--sync` / `--no-sync` flags.
 
-The `--writable` flag on `akm add` opts a remote git stash into push-on-sync:
+The `--writable` flag on `akm bundle add` opts a remote git stash into push-on-sync:
 
 ```sh
-akm add git@github.com:org/skills.git --provider git --name my-skills --writable
+akm bundle add git@github.com:org/skills.git --provider git --name my-skills --writable
 ```
 
 ## Add & Manage Sources
 
 ```sh
-akm add <ref>                                 # Add a source
-akm add @scope/stash                            # From npm (managed)
-akm add owner/repo                            # From GitHub (managed)
-akm add ./path/to/local/stash                   # Local directory
-akm add git@github.com:org/repo.git --provider git --name my-skills --writable
+akm bundle add <ref>                                 # Add a source
+akm bundle add @scope/stash                            # From npm (managed)
+akm bundle add owner/repo                            # From GitHub (managed)
+akm bundle add ./path/to/local/stash                   # Local directory
+akm bundle add git@github.com:org/repo.git --provider git --name my-skills --writable
 akm registry add https://skills.sh --name skills.sh --provider skills-sh  # Add the skills.sh registry
 akm registry remove skills.sh                 # Remove the skills.sh registry
-akm list                                      # List all sources
-akm list --kind managed                       # List managed sources only
-akm remove <target>                           # Remove by id, ref, path, or name
-akm update --all                              # Update all managed sources
-akm update <target> --force                   # Force re-download
+akm bundle list                                      # List all sources
+akm bundle list --kind managed                       # List managed sources only
+akm bundle remove <target>                           # Remove by id, ref, path, or name
+akm bundle update --all                              # Update all managed sources
+akm bundle update <target> --force                   # Force re-download
 ```
 
 ## Registries
@@ -291,13 +291,13 @@ akm config path --all                         # Show all config paths
 ## Other Commands
 
 ```sh
-akm init                                      # Initialize working stash (scaffold only)
+akm bundle create                                      # Initialize working stash (scaffold only)
 akm setup                                     # Interactive wizard: stash + LLM/embedding + agent + registry config
 akm setup --dir ~/custom-stash                # Run the wizard against a custom stash path
 akm setup --yes                               # Non-interactive, accepts all defaults
 akm index                                     # Rebuild search index (metadata enrichment when configured)
 akm index --full                              # Full reindex (metadata enrichment when configured)
-akm list                                      # List all sources
+akm bundle list                                      # List all sources
 akm lint                                      # Structural lint over the stash; exits 0 regardless of findings
 akm lint --fix                                # Auto-fix Tier 1 issues
 akm lint --fail-on-flagged                    # Exit non-zero when summary.flagged > 0 (CI-friendly)
@@ -309,10 +309,10 @@ akm completions                               # Print bash completion script
 akm completions --install                     # Install completions
 ```
 
-`akm init` only scaffolds the stash directory and registers it in config;
+`akm bundle create` only scaffolds the stash directory and registers it in config;
 `akm setup` additionally walks through embedding/LLM connections, agent
 profiles, sources, and registries. Use `setup` for first-time onboarding,
-`init` when you just need a bare stash.
+`bundle create` when you just need a bare stash.
 
 ## Proposals & Improvement (0.8.0+)
 

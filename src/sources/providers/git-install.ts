@@ -143,8 +143,8 @@ function replaceDirectory(stagedDir: string, destination: string): void {
 }
 
 /**
- * Materialize a Git install ref (`akm add github:owner/repo` or
- * `akm add git:url`) through the clone, strip, and include-filter pipeline.
+ * Materialize a Git install ref (`akm bundle add github:owner/repo` or
+ * `akm bundle add git:url`) through the clone, strip, and include-filter pipeline.
  */
 export async function syncGitRef(ref: string, options?: SyncOptions): Promise<SourceLockData> {
   const parsed = parseRegistryRef(ref);
@@ -482,7 +482,7 @@ export function cloneRepo(cloneUrl: string, ref: string | null, destDir: string,
 
 /**
  * Translate git's stderr into an actionable message. Without this, a user
- * who passes a nonexistent or private repo to `akm add` sees:
+ * who passes a nonexistent or private repo to `akm bundle add` sees:
  *
  *   "could not read Username for 'https://github.com': No such device or
  *    address"

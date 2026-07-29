@@ -239,10 +239,10 @@ export function formatSearchPlain(r: Record<string, unknown>, detail: DetailLeve
       (w) => String(w).toLowerCase().includes("no stash") || String(w).toLowerCase().includes("not configured"),
     );
     if (hasSetupWarning) {
-      return "No stash configured. Run `akm init` to create your working stash, then `akm index` to build the search index.";
+      return "No stash configured. Run `akm bundle create` to create your working stash, then `akm index` to build the search index.";
     }
     const base = r.tip ? String(r.tip) : "No matches found.";
-    return `${base}\nTry:\n  akm search '<broader-term>'          # fewer keywords\n  akm list                             # see all configured sources\n  akm curate '<query>'                 # let akm select the best match`;
+    return `${base}\nTry:\n  akm search '<broader-term>'          # fewer keywords\n  akm bundle list                      # see all configured sources\n  akm curate '<query>'                 # let akm select the best match`;
   }
 
   const lines: string[] = [];
@@ -443,7 +443,7 @@ export function formatIndexPlain(r: Record<string, unknown>): string {
 
 export function formatListPlain(r: Record<string, unknown>): string {
   const sources = Array.isArray(r.sources) ? (r.sources as Record<string, unknown>[]) : [];
-  if (sources.length === 0) return "No sources configured. Use `akm add` to add a source.";
+  if (sources.length === 0) return "No sources configured. Use `akm bundle add` to add a source.";
   const lines: string[] = [];
   for (const src of sources) {
     const kind = typeof src.kind === "string" ? src.kind : "unknown";
@@ -461,13 +461,39 @@ export function formatListPlain(r: Record<string, unknown>): string {
   return lines.join("\n");
 }
 
+/** Render a single `SourceEntry` — `akm bundle show <name>`'s detail view of one `list` row. */
+export function formatBundleShowPlain(r: Record<string, unknown>): string {
+  const name = typeof r.name === "string" ? r.name : "unknown";
+  const kind = typeof r.kind === "string" ? r.kind : "unknown";
+  const lines = [`${name} [${kind}]`];
+  if (r.default === true) lines.push("  default: true");
+  if (r.writable === true) lines.push("  writable: true");
+  if (typeof r.version === "string") lines.push(`  version: ${r.version}`);
+  if (typeof r.provider === "string") lines.push(`  provider: ${r.provider}`);
+  if (typeof r.path === "string") lines.push(`  path: ${r.path}`);
+  if (typeof r.ref === "string") lines.push(`  ref: ${r.ref}`);
+  if (typeof r.registryId === "string") lines.push(`  registryId: ${r.registryId}`);
+  lines.push(`  items: ${typeof r.itemCount === "number" ? r.itemCount : 0}`);
+  const byType = r.byType as Record<string, number> | undefined;
+  if (byType && Object.keys(byType).length > 0) {
+    lines.push(
+      `  byType: ${Object.entries(byType)
+        .map(([t, n]) => `${t}=${n}`)
+        .join(", ")}`,
+    );
+  }
+  const status = r.status as { exists?: boolean } | undefined;
+  if (status?.exists === false) lines.push("  status: MISSING on disk");
+  return lines.join("\n");
+}
+
 export function formatAddPlain(r: Record<string, unknown>): string {
-  // `akm add <ref>` (source-add.ts `AddResponse`) and `akm add <target>
-  // --provider <kind>` (source-manage.ts `SourceAddResult`) are genuinely
-  // different operations that happen to share the "add" command name: the
-  // former eagerly fetches and indexes content, the latter only writes a
-  // desired locator to config — nothing is synced until a later `akm
-  // update`. Force-fitting the declarative shape's `added`/`entry`/`message`
+  // `akm bundle add <ref>` (source-add.ts `AddResponse`) and `akm bundle add
+  // <target> --provider <kind>` (source-manage.ts `SourceAddResult`) are
+  // genuinely different operations that happen to share the "add" command
+  // name: the former eagerly fetches and indexes content, the latter only
+  // writes a desired locator to config — nothing is synced until a later
+  // `akm bundle update`. Force-fitting the declarative shape's `added`/`entry`/`message`
   // fields into the "Installed <ref> (N scanned...)" wording produced
   // "Installed undefined (0 directories scanned...)" (R-014) because it
   // implied a sync that never happened. `AddResponse` always carries an
@@ -501,11 +527,11 @@ function formatDeclarativeAddPlain(r: Record<string, unknown>): string {
     "source";
   // A filesystem bundle reflects files already on disk — nothing to fetch,
   // just index it. Every other declarative kind (git/website/npm) is a
-  // locator only; its content is not materialized until `akm update`.
+  // locator only; its content is not materialized until `akm bundle update`.
   if (kind === "filesystem") {
     return `Added ${name} (filesystem) — run \`akm index\` to index it.`;
   }
-  return `Added ${name} (${kind}) — not yet synced; run \`akm update ${name}\` to fetch it.`;
+  return `Added ${name} (${kind}) — not yet synced; run \`akm bundle update ${name}\` to fetch it.`;
 }
 
 export function formatRemovePlain(r: Record<string, unknown>): string {

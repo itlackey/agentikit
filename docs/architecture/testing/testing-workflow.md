@@ -13,7 +13,7 @@ CLI coverage, then Docker-based deployment and upgrade validation.
 
 - core CLI flows: `setup`, `index`, `search`, `show`, `info`, `list`, `config`
 - asset lifecycle: add assets, re-index, search, show, and incremental refresh
-- managed-source lifecycle: `akm add`, `akm list`, `akm update`, `akm remove`
+- managed-source lifecycle: `akm bundle add`, `akm bundle list`, `akm bundle update`, `akm bundle remove`
 - binary lifecycle: install, run, `akm upgrade --check`, `akm upgrade`
 - cross-environment behavior on Ubuntu, Debian, Alpine, and Fedora containers
 
@@ -180,13 +180,13 @@ binary deployment gate focuses on the glibc-based targets we currently support.
 The Docker smoke test in `tests/docker/smoke-test.sh` verifies:
 
 - `akm --help`
-- `akm init`
+- `akm bundle create`
 - stash directory creation
 - `akm index`
 - `akm search`
 - `akm show`
 - `akm info`
-- `akm list`
+- `akm bundle list`
 - incremental re-index after adding a new asset
 
 ### 4. Benchmark (agent utility)
@@ -369,9 +369,9 @@ musl-based image if you publish binaries intended for both environments.
 
 There are two different upgrade paths and both matter.
 
-### 1. Managed-source upgrades: `akm update`
+### 1. Managed-source upgrades: `akm bundle update`
 
-`akm update` refreshes managed stashes, not the `akm` binary itself.
+`akm bundle update` refreshes managed stashes, not the `akm` binary itself.
 
 Automated coverage already exists in the `tests/integration/registry-*.test.ts`
 and `tests/provider-registry.test.ts` suites.
@@ -383,25 +383,25 @@ two versions.
 Recommended manual flow:
 
 ```sh
-akm add <managed-source-ref>
-akm list
+akm bundle add <managed-source-ref>
+akm bundle list
 akm search "<known asset>"
 
 # publish or expose an updated source version here
 
-akm update <managed-source-ref>
-akm update <managed-source-ref> --force
-akm list --format json
+akm bundle update <managed-source-ref>
+akm bundle update <managed-source-ref> --force
+akm bundle list --format json
 akm search "<updated asset>" --detail full
 ```
 
 Validate:
 
-- the source appears as `managed` in `akm list`
-- `akm update` reports `changed.version`, `changed.revision`, and `changed.any` correctly
+- the source appears as `managed` in `akm bundle list`
+- `akm bundle update` reports `changed.version`, `changed.revision`, and `changed.any` correctly
 - `--force` clears stale cache and re-downloads cleanly
 - reindexing happens automatically and new asset contents are searchable
-- `akm remove <managed-source-ref>` removes the managed source and cleans cache
+- `akm bundle remove <managed-source-ref>` removes the managed source and cleans cache
 
 ### 2. CLI self-upgrade: `akm upgrade`
 
@@ -465,13 +465,13 @@ For any release candidate, keep these artifacts:
 - Docker matrix summary from `./tests/docker/run-docker-tests.sh`
 - one successful `install.sh` transcript in a fresh container
 - one successful `akm upgrade` transcript from an older binary to the candidate
-- one successful `akm update` transcript against a disposable managed source
+- one successful `akm bundle update` transcript against a disposable managed source
 
 ## Practical Notes
 
 - always isolate `AKM_STASH_DIR`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` during manual testing
 - use Docker for any test that mutates the installed binary or depends on OS packaging
-- treat `akm update` and `akm upgrade` as separate release gates; they test different code paths
+- treat `akm bundle update` and `akm upgrade` as separate release gates; they test different code paths
 - if a change touches packaging, runtime detection, or checksums, do not rely on unit tests alone
 
 ## Coverage Gap Guide

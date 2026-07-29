@@ -321,10 +321,10 @@ describe("akm CLI mutation events", () => {
     const feedback = await runCli(["feedback", "memories/alpha", "--positive", "--format=json"]);
     expect(feedback.status).toBe(0);
 
-    // ─ add (local directory source) ──────────────────────────────────────
+    // ─ bundle add (local directory source) ────────────────────────────────
     const localSource = makeTempDir("akm-events-local-");
     writeFile(path.join(localSource, "skills", "demo.md"), "# demo\n\nA demo skill.\n");
-    const add = await runCli(["add", localSource, "--format=json"]);
+    const add = await runCli(["bundle", "add", localSource, "--format=json"]);
     expect(add.status).toBe(0);
 
     // Confirm events are in state.db by querying through the CLI.

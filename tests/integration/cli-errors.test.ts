@@ -193,8 +193,8 @@ describe("error class hints", () => {
       "Pick one of: human, agent, summary (summary is only valid on `akm show`).",
     );
     expect(new UsageError("bad json", "INVALID_JSON_CONFIG_VALUE").hint()).toContain("Quote JSON values");
-    expect(new UsageError("bad target", "MISSING_OR_AMBIGUOUS_TARGET").hint()).toContain("akm update --all");
-    expect(new UsageError("not updatable", "TARGET_NOT_UPDATABLE").hint()).toContain("akm list");
+    expect(new UsageError("bad target", "MISSING_OR_AMBIGUOUS_TARGET").hint()).toContain("akm bundle update --all");
+    expect(new UsageError("not updatable", "TARGET_NOT_UPDATABLE").hint()).toContain("akm bundle list");
   });
 
   test("UsageError without a code-mapped hint returns undefined", () => {
@@ -206,7 +206,7 @@ describe("error class hints", () => {
 
   test("NotFoundError derives hint from code by default", () => {
     // Wave C #284 added canned hints for the remaining codes.
-    expect(new NotFoundError("missing source", "SOURCE_NOT_FOUND").hint()).toContain("akm list");
+    expect(new NotFoundError("missing source", "SOURCE_NOT_FOUND").hint()).toContain("akm bundle list");
     expect(new NotFoundError("missing asset", "ASSET_NOT_FOUND").hint()).toContain("akm search");
     expect(new NotFoundError("missing wf", "WORKFLOW_NOT_FOUND").hint()).toContain("akm workflow list");
     expect(new NotFoundError("missing file", "FILE_NOT_FOUND").hint()).toContain("path exists");

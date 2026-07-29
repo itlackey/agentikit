@@ -1121,7 +1121,7 @@ export function prepareWriteTargetForMutation(
   const upstream = inspectGitUpstream(repoPath);
   if (upstream.behind > 0) {
     throw new UsageError(
-      `Writable Git target "${target.source.name}" is behind ${upstream.upstream}; run \`akm update ${target.source.name}\` before writing.`,
+      `Writable Git target "${target.source.name}" is behind ${upstream.upstream}; run \`akm bundle update ${target.source.name}\` before writing.`,
       "INVALID_FLAG_VALUE",
     );
   }
@@ -1142,7 +1142,7 @@ function gitTargetNotMaterialized(target: ResolvedWriteTarget, contentRoot: stri
   return new ConfigError(
     `Writable Git target "${target.source.name}" is not materialized as a Git checkout at ${contentRoot}; refusing to write without a commit boundary.`,
     "INVALID_CONFIG_FILE",
-    `Run \`akm update ${target.source.name}\` to materialize it, or point the bundle at a writable Git checkout.`,
+    `Run \`akm bundle update ${target.source.name}\` to materialize it, or point the bundle at a writable Git checkout.`,
   );
 }
 
@@ -1168,8 +1168,8 @@ export function resolveWritableTargets(akmConfig: AkmConfig): ResolvedWriteTarge
  *
  *   1. Explicit `--target <name>` (when supplied)
  *   2. `config.defaultWriteTarget`
- *   3. `config.defaultBundle`'s path (the working stash created by `akm init`)
- *   4. `ConfigError("no writable source configured; run `akm init`")`
+ *   3. `config.defaultBundle`'s path (the working stash created by `akm bundle create`)
+ *   4. `ConfigError("no writable source configured; run `akm bundle create`")`
  *
  * The legacy `first-writable-in-source-array-order` fallback is *not* used —
  * see plan §6 decision 3 for the rationale.
@@ -1187,7 +1187,7 @@ export function resolveWriteTarget(
     const match = configuredSources.find((s) => s.name === explicitTarget);
     if (!match) {
       throw new UsageError(
-        `--target must reference a source name from your config. No source named "${explicitTarget}" is configured. Run \`akm list\` to see available sources.`,
+        `--target must reference a source name from your config. No source named "${explicitTarget}" is configured. Run \`akm bundle list\` to see available sources.`,
         "INVALID_FLAG_VALUE",
       );
     }
@@ -1230,7 +1230,7 @@ export function resolveWriteTarget(
     throw new ConfigError(
       `defaultWriteTarget "${akmConfig.defaultWriteTarget}" does not match any configured source.`,
       "INVALID_CONFIG_FILE",
-      "Update `defaultWriteTarget` in your config (run `akm config get defaultWriteTarget`) or run `akm list` to see configured sources.",
+      "Update `defaultWriteTarget` in your config (run `akm config get defaultWriteTarget`) or run `akm bundle list` to see configured sources.",
     );
   }
 

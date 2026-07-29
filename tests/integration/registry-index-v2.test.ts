@@ -186,7 +186,7 @@ describe("parser: v2 index with assets", () => {
       expect(deployHit?.estimatedTokens).toBe(64);
       expect(deployHit?.stash.id).toBe("github:owner/my-stash");
       expect(deployHit?.stash.name).toBe("My Stash");
-      expect(deployHit?.action).toBe("akm add github:owner/my-stash");
+      expect(deployHit?.action).toBe("akm bundle add github:owner/my-stash");
     } finally {
       srv.close();
     }
@@ -306,7 +306,7 @@ describe("asset-level search", () => {
       expect(hit?.assetName).toBe("setup.sh");
       expect(hit?.stash.id).toBe("local:my-local-stash");
       // Local source should use file: prefix, not "github:"
-      expect(hit?.action).toBe("akm add file:/home/user/stashes/my-local-stash");
+      expect(hit?.action).toBe("akm bundle add file:/home/user/stashes/my-local-stash");
       expect(hit?.action).not.toContain("github:");
     } finally {
       srv.close();

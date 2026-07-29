@@ -21,7 +21,7 @@ describe("formatAddPlain", () => {
   });
 
   it("never renders 'Installed undefined' for a SourceAddResult (--provider add) shape", () => {
-    // R-014 repro shape: `akm add backbone --provider npm --name backbone2`
+    // R-014 repro shape: `akm bundle add backbone --provider npm --name backbone2`
     // returned source-manage.ts's SourceAddResult (sources/added/entry/message
     // — no `ref`, no `index`), which the old formatter still read as if it
     // were an AddResponse.
@@ -55,7 +55,7 @@ describe("formatAddPlain", () => {
     });
     expect(text).toContain("my-git");
     expect(text).toContain("not yet synced");
-    expect(text).toContain("akm update my-git");
+    expect(text).toContain("akm bundle update my-git");
   });
 
   it("renders a no-op declarative add via its message, not 'Installed undefined'", () => {
@@ -70,7 +70,7 @@ describe("formatUpdatePlain", () => {
   });
 
   it("renders a successful plain git/website sync instead of 'nothing to update' (R-015/adjacent)", () => {
-    // R-015-adjacent repro: a successful single-target `akm update <git-name>`
+    // R-015-adjacent repro: a successful single-target `akm bundle update <git-name>`
     // returned processed: [] (git/website plain syncs have no UpdateResultItem
     // to report), so the old formatter rendered the same text as a true no-op.
     const text = formatUpdatePlain({
@@ -83,7 +83,7 @@ describe("formatUpdatePlain", () => {
   });
 
   it("reports skipped plain sources instead of omitting them (R-015)", () => {
-    // R-015 repro: `akm update --all` against a stash with only plain sources
+    // R-015 repro: `akm bundle update --all` against a stash with only plain sources
     // returned processed: [] and rendered "nothing to update", never
     // mentioning the four configured sources anywhere.
     const text = formatUpdatePlain({

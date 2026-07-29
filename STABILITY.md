@@ -60,13 +60,14 @@ please file it.
   `"<type>:"` / `"<type>:<prefix>/"` spelling was removed; a query in that
   shape is now an ordinary keyword search whose empty-result tip names the
   conceptId spelling that replaces it.
-- **Read commands** — `akm search`, `akm show`, `akm list`, `akm curate`,
+- **Read commands** — `akm search`, `akm show`, `akm bundle list`, `akm curate`,
   `akm info`, `akm config get`, `akm config list`, `akm config path`,
   `akm env list`, `akm secret list`, `akm proposal list` (list filters),
   `akm help`, `akm hints`, `akm completions`.
-- **Write commands core surface** — `akm add`, `akm update`, `akm remove`,
-  `akm clone`, `akm import`, `akm sync`, `akm index`, `akm init`, `akm setup`,
-  `akm remember`, `akm feedback`, `akm config set`, `akm config unset`.
+- **Write commands core surface** — `akm bundle add`, `akm bundle update`,
+  `akm bundle remove`, `akm clone`, `akm import`, `akm sync`, `akm index`,
+  `akm bundle create`, `akm setup`, `akm remember`, `akm feedback`,
+  `akm config set`, `akm config unset`.
 - **Renames are delete + create** — moving or renaming an item gives it a new
   identity; learned state does not follow it. Cross-bundle movement is
   copy/import plus delete. `akm mv` still ships and claims to preserve identity
@@ -171,8 +172,13 @@ CHANGELOG with a migration note.
   OKF and LLM-wiki knowledge bases). Config is keyed by `bundles` and
   `defaultBundle`. The adapter set, bundle-recognition rules, and the
   `bundles` config shape may still shift. Bundles are inspected through
-  `akm list` and enumerated through `akm search "bundle//"` — the separate
-  `akm bundle` noun group was removed in 0.9.0 as duplicative. OKF is the
+  `akm bundle list` / `akm bundle show <name>` and enumerated through
+  `akm search "bundle//"`. (An earlier `akm bundle items` noun group was
+  removed in 0.9.0 as duplicative of `akm search`; the current `akm bundle`
+  group — `create | add | list | show | remove | update` — is the
+  lifecycle-management surface consolidated from the former top-level
+  `init`/`add`/`list`/`remove`/`update` commands, not a revival of that one.)
+  OKF is the
   first-class baseline for Markdown concept identity and generic reads; every
   applicable OKF conformance case is required to pass. AKM-authored Markdown is
   an OKF-compatible superset whose adapter adds native behavior progressively.

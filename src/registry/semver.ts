@@ -13,7 +13,7 @@
  * `>1.0.0`, `<2.0.0`, compound ranges (`>=1.0.0 <2.0.0`), partial carets
  * (`^1.2`), OR-ranges (`a || b`), hyphen ranges (`1.2.3 - 2.3.4`), and plain
  * exact versions used as a range. A silently-empty `maxSatisfying` result for
- * a genuinely satisfiable range meant `akm add pkg@<range>` could fail to
+ * a genuinely satisfiable range meant `akm bundle add pkg@<range>` could fail to
  * resolve a real, installable version.
  *
  * `semver` (the npm package) is already a runtime dependency

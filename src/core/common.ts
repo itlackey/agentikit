@@ -192,7 +192,7 @@ export function resolveStashDir(env: NodeJS.ProcessEnv = process.env): string {
   }
 
   throw new ConfigError(
-    `No stash directory found. Run "akm init" to create one at ${defaultDir}.`,
+    `No stash directory found. Run "akm bundle create" to create one at ${defaultDir}.`,
     "STASH_DIR_NOT_FOUND",
   );
 }

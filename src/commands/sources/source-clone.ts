@@ -96,7 +96,7 @@ export async function akmClone(options: CloneOptions): Promise<CloneResponse> {
 
   if (!destRoot) {
     throw new ConfigError(
-      "No writable source configured and no --dest provided. Run `akm init` or pass --dest.",
+      "No writable source configured and no --dest provided. Run `akm bundle create` or pass --dest.",
       "STASH_DIR_NOT_FOUND",
     );
   }

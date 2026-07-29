@@ -118,9 +118,9 @@ retaining the child status in its formatted result envelope.
 
 ## Commands
 
-### init
+### bundle create
 
-> **Note:** `akm setup` is the recommended entry point — it runs the same directory initialization plus guides you through AI connection configuration. `akm init` remains available as a low-level building block.
+> **Note:** `akm setup` is the recommended entry point — it runs the same directory initialization plus guides you through AI connection configuration. `akm bundle create` remains available as a low-level building block.
 
 Create the stash directory structure and persist the working stash path in
 config.
@@ -137,19 +137,20 @@ Creates one subdirectory per asset type under the stash path — currently
 [technical/filesystem.md](../architecture/internals/storage-locations.md) for config file locations.
 
 ```sh
-akm init                              # Initialize the default stash (~/akm) and set it as default
-akm init --dir ~/scratch-stash        # Scaffold a secondary stash WITHOUT changing your default
-akm init --dir ~/scratch-stash --set-default  # Scaffold AND make it the default stash
+akm bundle create                              # Initialize the default stash (~/akm) and set it as default
+akm bundle create --dir ~/scratch-stash        # Scaffold a secondary stash WITHOUT changing your default
+akm bundle create --dir ~/scratch-stash --set-default  # Scaffold AND make it the default stash
 ```
 
 **`--dir <path>`** scaffolds (and backfills) the target directory. By design it
-does **not** change your configured default stash unless you ask: `init`
-updates the primary `bundles` entry and `defaultBundle` in `config.json` only
-when (a) no `--dir` is given, (b) no default is configured yet (first-time
-bootstrap), or (c) you pass **`--set-default`**. When a `--dir` is given and a
-default already exists without `--set-default`, your default stash pointer is
-left untouched and `init` prints a note telling you so. This prevents `akm
-init --dir /tmp/throwaway` from silently hijacking your real default stash.
+does **not** change your configured default stash unless you ask: `bundle
+create` updates the primary `bundles` entry and `defaultBundle` in
+`config.json` only when (a) no `--dir` is given, (b) no default is configured
+yet (first-time bootstrap), or (c) you pass **`--set-default`**. When a `--dir`
+is given and a default already exists without `--set-default`, your default
+stash pointer is left untouched and `bundle create` prints a note telling you
+so. This prevents `akm bundle create --dir /tmp/throwaway` from silently
+hijacking your real default stash.
 
 ### setup
 
@@ -434,7 +435,7 @@ akm curate "learn the release workflow" --from all --format text
 strongest search hits first, uses only small type-aware nudges for close-score
 ties, can collapse obvious root/reference families into one top-level result,
 and falls back to token searches when the phrase result set is weak. Curate
-includes direct follow-up commands such as `akm show <ref>` or `akm add <stash>`
+includes direct follow-up commands such as `akm show <ref>` or `akm bundle add <stash>`
 so you can immediately inspect or install what it found.
 `--detail` and `--shape agent` both work on curate output; `--shape summary`
 does not.
@@ -521,7 +522,7 @@ and effective `writable` policy, not persisted in the index; unknown paths fail
 closed. `editHint` is present only when `editable` is `false`. `akm show` uses
 the local index and materialized disk path, with no remote-provider fallback. If
 the ref points to a package origin that is not installed, it returns guidance
-to run `akm add <origin>` first.
+to run `akm bundle add <origin>` first.
 
 ### workflow
 
@@ -757,37 +758,37 @@ Workflow markdown contract:
 - `### Completion Criteria` is optional, but when present it must contain at least one non-empty item. Each non-empty line is treated as one criterion, with an optional leading `-` or `*` removed.
 - No other frontmatter keys, top-level headings, or step subsections are accepted.
 
-### How `add` works
+### How `bundle add` works
 
-`akm add` infers what to do from the input:
+`akm bundle add` infers what to do from the input:
 
 | Input | What happens |
 | --- | --- |
-| `akm add ~/.claude/skills` | Registers a local directory as a `filesystem` source |
-| `akm add github:owner/repo` | Clones the repo into akm's cache as a `git` source |
-| `akm add @scope/stash` | Installs the npm package as a `git`/`npm` source |
-| `akm add https://docs.example.com` | Crawls and caches a website as a `website` source |
+| `akm bundle add ~/.claude/skills` | Registers a local directory as a `filesystem` source |
+| `akm bundle add github:owner/repo` | Clones the repo into akm's cache as a `git` source |
+| `akm bundle add @scope/stash` | Installs the npm package as a `git`/`npm` source |
+| `akm bundle add https://docs.example.com` | Crawls and caches a website as a `website` source |
 | `akm registry add <url>` | Adds a discovery registry (separate concept) |
 
 HTTP(S) URLs pointing to known git hosts (GitHub, GitLab, Bitbucket, Codeberg,
 SourceHut) or ending in `.git` are treated as git sources. All other HTTP(S)
 URLs are treated as website sources.
 
-### add
+### bundle add
 
 Add a source — a local directory, npm package, GitHub repo, git URL, or website.
 
 ```sh
-akm add ~/.claude/skills              # Local directory
-akm add @scope/stash                    # npm package
-akm add npm:@scope/stash@latest         # npm with version
-akm add github:owner/repo#v1.2.3     # GitHub with tag
-akm add https://github.com/owner/repo
-akm add git+https://gitlab.com/org/stash
-akm add ./path/to/local/stash
-akm add github:andrewyng/context-hub --name context-hub  # context-hub as a git stash
-akm add https://docs.example.com --name docs              # Website
-akm add https://docs.example.com --max-pages 100 --max-depth 5
+akm bundle add ~/.claude/skills              # Local directory
+akm bundle add @scope/stash                    # npm package
+akm bundle add npm:@scope/stash@latest         # npm with version
+akm bundle add github:owner/repo#v1.2.3     # GitHub with tag
+akm bundle add https://github.com/owner/repo
+akm bundle add git+https://gitlab.com/org/stash
+akm bundle add ./path/to/local/stash
+akm bundle add github:andrewyng/context-hub --name context-hub  # context-hub as a git stash
+akm bundle add https://docs.example.com --name docs              # Website
+akm bundle add https://docs.example.com --max-pages 100 --max-depth 5
 ```
 
 | Flag | Description |
@@ -802,7 +803,7 @@ akm add https://docs.example.com --max-pages 100 --max-depth 5
 
 #### Dangerous env key audit
 
-When `akm add` installs a stash that contains env files, it recursively scans
+When `akm bundle add` installs a stash that contains env files, it recursively scans
 every `.env`-suffixed file under `env/` (the same "real env file" test used
 everywhere else — a bare `.env` or any name ending `.env`, at any depth) for
 environment variable names that can be used for process-execution hijacking. A
@@ -822,17 +823,17 @@ set is 41 literal names plus 2 regex pattern families (`src/commands/lint/env-ke
 matching `^BASH_FUNC_` (Shellshock-class injection) or `^GIT_CONFIG_` (git
 config override injection).
 
-When dangerous keys are found, `akm add` pauses and prompts for
+When dangerous keys are found, `akm bundle add` pauses and prompts for
 confirmation (default: No). In non-interactive mode (CI, scripts) the
 install fails with **exit 1** unless `--allow-insecure` is passed, and the
 freshly-installed stash is rolled back before the process exits.
 
 ```sh
 # Interactive: prompts before continuing
-akm add github:owner/repo-with-sensitive-env
+akm bundle add github:owner/repo-with-sensitive-env
 
 # Non-interactive: fails unless bypassed
-akm add github:owner/repo-with-sensitive-env --allow-insecure
+akm bundle add github:owner/repo-with-sensitive-env --allow-insecure
 ```
 
 Stash publishers: see the [Stash Maker's Guide](../guides/stash-makers.md#env-security)
@@ -846,8 +847,8 @@ each page to markdown, and stores the results as knowledge assets with the URL
 path hierarchy preserved.
 
 ```sh
-akm add https://www.agentic-patterns.com/ --name agent-patterns
-akm add https://docs.example.com/guide --name guide --max-pages 200
+akm bundle add https://www.agentic-patterns.com/ --name agent-patterns
+akm bundle add https://docs.example.com/guide --name guide --max-pages 200
 ```
 
 Pages are cached locally and refreshed every 12 hours. The crawl stays within
@@ -859,55 +860,55 @@ config so subsequent re-indexes use the same limits.
 
 See [registry.md](registry.md) for the full install flow for managed sources.
 
-> **Note:** there is no `akm add context-hub` convenience alias or `akm
+> **Note:** there is no `akm bundle add context-hub` convenience alias or `akm
 > enable`/`disable context-hub` command — add it explicitly as a git stash:
-> `akm add github:andrewyng/context-hub --name context-hub`. A stash *type*
+> `akm bundle add github:andrewyng/context-hub --name context-hub`. A stash *type*
 > string of `"context-hub"` in an existing config still normalizes to
 > `"git"` at load time, so you don't need to edit your config files.
 
-### list
+### bundle list
 
 Show all sources — local directories, managed packages, and remote providers.
 
 ```sh
-akm list                            # All sources
-akm list --kind filesystem          # Only plain filesystem/local directory sources
-akm list --kind git                 # Only git sources
-akm list --kind npm                 # Only npm-managed sources
-akm list --kind website             # Only crawled website sources
-akm list --kind filesystem,git      # Multiple kinds (comma-separated)
+akm bundle list                            # All sources
+akm bundle list --kind filesystem          # Only plain filesystem/local directory sources
+akm bundle list --kind git                 # Only git sources
+akm bundle list --kind npm                 # Only npm-managed sources
+akm bundle list --kind website             # Only crawled website sources
+akm bundle list --kind filesystem,git      # Multiple kinds (comma-separated)
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--kind` | Filter by source provider: `filesystem`, `git`, `npm`, `website` (comma-separated). Any other value is a usage error (exit 2) — there is no `local`/`managed`/`remote` grouping. |
 
-### remove
+### bundle remove
 
 Remove a source by id, ref, path, URL, or name and reindex.
 
 ```sh
-akm remove npm:@scope/stash           # Managed source by id
-akm remove owner/repo               # Managed source by ref
-akm remove ~/.claude/skills         # Local source by path
-akm remove my-provider              # Any source by name
-akm remove my-provider --yes        # Skip the confirmation prompt
+akm bundle remove npm:@scope/stash           # Managed source by id
+akm bundle remove owner/repo               # Managed source by ref
+akm bundle remove ~/.claude/skills         # Local source by path
+akm bundle remove my-provider              # Any source by name
+akm bundle remove my-provider --yes        # Skip the confirmation prompt
 ```
 
 | Flag | Description |
 | --- | --- |
 | `-y`, `--yes` | Skip the confirmation prompt |
 
-### update
+### bundle update
 
 Update one or all managed sources to the latest available version. Local and
 remote sources are not updatable — akm explains why if you target one.
 
 ```sh
-akm update npm:@scope/stash
-akm update --all
-akm update --all --force   # Force fresh download even if version is unchanged
-akm update --all --yes     # Skip confirmation when an update needs to delete a moved install dir
+akm bundle update npm:@scope/stash
+akm bundle update --all
+akm bundle update --all --force   # Force fresh download even if version is unchanged
+akm bundle update --all --yes     # Skip confirmation when an update needs to delete a moved install dir
 ```
 
 | Flag | Description |
@@ -996,7 +997,7 @@ Skills (directories) are copied recursively. Other types copy a single file.
 installed locally (e.g. an npm package or local path not in your stash
 sources), akm fetches it to the cache automatically and extracts the
 requested asset. The package is **not** registered as a managed source --
-use `akm add` for that.
+use `akm bundle add` for that.
 
 ```sh
 # Clone a single script from a remote package without installing the full stash
@@ -1167,7 +1168,7 @@ return a skipped result.
 To make a named remote git stash writable, pass `--writable` when adding it:
 
 ```sh
-akm add git@github.com:org/skills.git --provider git --name my-skills --writable
+akm bundle add git@github.com:org/skills.git --provider git --name my-skills --writable
 ```
 
 ### remember
@@ -1829,7 +1830,7 @@ plus `pages/` is recognized automatically at install time, and its pages are
 indexed and addressed like any other asset:
 
 ```sh
-akm add github:team/research-wiki        # install a wiki bundle (or a local dir)
+akm bundle add github:team/research-wiki        # install a wiki bundle (or a local dir)
 akm search "attention"                   # pages rank alongside all other assets
 akm show research-wiki//pages/attention  # read a page by bundle//conceptId ref
 ```
@@ -1944,7 +1945,7 @@ Scan stash markdown files for structural issues: unquoted colons, missing
 `updated` field, orphaned stubs, placeholder stubs, missing `name`/`type`,
 stale paths, and broken refs — in body text and in
 `refs`/`xrefs`/`supersededBy`/`contradictedBy` frontmatter. Also reports
-`dangerous-env-key` findings for env files (the same key set `akm add`
+`dangerous-env-key` findings for env files (the same key set `akm bundle add`
 enforces — see [Dangerous env key audit](#dangerous-env-key-audit) — but
 non-blocking here; `lint` only warns). `--type workflows` also structurally
 validates YAML v2 workflow *programs* (`.yaml`/`.yml`) — parse and compile

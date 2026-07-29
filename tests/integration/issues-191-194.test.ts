@@ -137,7 +137,7 @@ Do thing two.
 describe("issue #191 — memory search misses freshly-added memory", () => {
   test("exact-phrase search returns the memory hit at high score", async () => {
     const env = makeEnv();
-    expect((await runCli(["init"], env)).status).toBe(0);
+    expect((await runCli(["bundle", "create"], env)).status).toBe(0);
 
     const phrase = "Sandbox memory for rc1 test";
     const remembered = await runCli(["remember", phrase], env);
@@ -154,14 +154,14 @@ describe("issue #191 — memory search misses freshly-added memory", () => {
   });
 });
 
-describe("issue #192 — `akm list` after `akm init`", () => {
-  test("list resolves the stashDir written by init", async () => {
+describe("issue #192 — `akm bundle list` after `akm bundle create`", () => {
+  test("bundle list resolves the stashDir written by bundle create", async () => {
     const env = makeEnv();
-    const initRes = await runCli(["init"], env);
+    const initRes = await runCli(["bundle", "create"], env);
     expect(initRes.status).toBe(0);
     const initJson = JSON.parse(initRes.stdout) as { stashDir: string };
 
-    const listRes = await runCli(["list", "--format", "json"], env);
+    const listRes = await runCli(["bundle", "list", "--format", "json"], env);
     expect(listRes.status).toBe(0);
     const listJson = JSON.parse(listRes.stdout) as { stashDir: string };
     expect(listJson.stashDir).toBe(initJson.stashDir);
@@ -202,7 +202,7 @@ describe("issue #193 — database is locked under contention", () => {
 describe("issue #194 — workflow create --from then start has non-null workflowEntryId", () => {
   test("imported workflow run carries a real numeric workflowEntryId", async () => {
     const env = makeEnv();
-    expect((await runCli(["init"], env)).status).toBe(0);
+    expect((await runCli(["bundle", "create"], env)).status).toBe(0);
 
     const configPath = path.join(env.XDG_CONFIG_HOME as string, "akm", "config.json");
     const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;

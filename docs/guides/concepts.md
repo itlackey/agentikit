@@ -14,22 +14,22 @@ sources       → where assets come from (local dirs, git repos, websites, npm)
 registries    → where you discover sources you don't know about yet
 ```
 
-A **source** is anything you add with `akm add`. Every source materialises
+A **source** is anything you add with `akm bundle add`. Every source materialises
 files to a local directory; the indexer walks that directory and builds the
 search index. Each source has a **kind** inferred from the input:
 
 | Input | Kind | Behavior |
 | --- | --- | --- |
 | `~/.claude/skills` | `filesystem` | Indexed in place. Not updatable. Writable by default. |
-| `github:owner/repo` | `git` | Cloned into `~/.cache/akm/registry/`. Updatable via `akm update`. Read-only by default. |
-| `npm:@scope/stash` | `npm` | Installed into `~/.cache/akm/registry/`. Updatable via `akm update`. Read-only. |
+| `github:owner/repo` | `git` | Cloned into `~/.cache/akm/registry/`. Updatable via `akm bundle update`. Read-only by default. |
+| `npm:@scope/stash` | `npm` | Installed into `~/.cache/akm/registry/`. Updatable via `akm bundle update`. Read-only. |
 | `https://docs.example.com` | `website` | Crawled, converted to markdown, cached. Refreshed every 12 hours. Read-only. |
 
-The user never picks the kind. `akm add` infers it from the input shape.
+The user never picks the kind. `akm bundle add` infers it from the input shape.
 
-1. **Sources** are places assets come from. Add any source with `akm add` —
+1. **Sources** are places assets come from. Add any source with `akm bundle add` —
    a local directory, a GitHub repo, an npm package, or a website. Use
-   `akm list` to see all your sources.
+   `akm bundle list` to see all your sources.
 2. **Registries** are discovery indexes for finding sources you don't know
    about yet. The official registry ships by default; add third-party
    registries with `akm registry add`.
@@ -50,7 +50,7 @@ The two terms come up often:
 
 - **Source** is the configuration concept (an entry in the `bundles` map in
   your config file). It's any directory akm has been told to index.
-  Configured via `akm add`.
+  Configured via `akm bundle add`.
 - **Working stash** is the special source created by `akm setup` — the
   default destination for `akm remember`, `akm import`, and other writes.
   Named by `defaultBundle` in config and registered automatically as a
@@ -89,7 +89,7 @@ my-stash/
 ```
 
 LLM Wikis are a related but separate concept: a wiki is its own installable
-bundle (`akm add github:team/research-wiki`), not a type-subdirectory inside a
+bundle (`akm bundle add github:team/research-wiki`), not a type-subdirectory inside a
 regular stash. See [Wikis](wikis.md) for how akm recognizes and indexes them.
 
 ## Asset Types
@@ -136,7 +136,7 @@ To add a memory source:
 
 ```sh
 # File-based memory store from another tool
-akm add ~/my-agent/memories
+akm bundle add ~/my-agent/memories
 ```
 
 Memory assets appear in search results with the `memory` type, giving agents
@@ -221,7 +221,7 @@ to show. The structured fields `conceptId` and `bundle` in search results
 provide the same information in a parseable form.
 
 Source locators like `github:owner/repo` and `npm:@scope/pkg` are **install
-refs**, accepted only by `akm add` and `akm clone`. They are not asset refs.
+refs**, accepted only by `akm bundle add` and `akm clone`. They are not asset refs.
 
 ### Namespacing assets across projects and teams
 
@@ -355,7 +355,7 @@ akm show akm//meta                  # the primary stash explicitly
 `akm show <origin>//meta:<name>` resolves `<name>.md` first, then an
 extensionless `<name>`. The convention is open-ended: stash owners add new docs
 by dropping files into `.meta/` — no configuration or code changes required.
-`akm init` scaffolds a starter `.meta/index.md`.
+`akm bundle create` scaffolds a starter `.meta/index.md`.
 
 **Known gap (Q-19):** an install-ref origin (`akm show github:owner/repo//meta`)
 does not currently resolve even for an installed stash — `resolveSourcesForOrigin`
@@ -440,7 +440,7 @@ These terms have precise meanings in akm. Use this table to avoid confusion:
 
 | Term | Meaning | Example |
 | --- | --- | --- |
-| **source** | A place assets come from — added via `akm add` | A directory, git repo, npm package, or website |
+| **source** | A place assets come from — added via `akm bundle add` | A directory, git repo, npm package, or website |
 | **filesystem source** | A directory on disk, indexed in place | `~/akm`, `~/.claude/skills` |
 | **git source** | A git repo cloned into akm's cache, updatable | A GitHub repo |
 | **npm source** | An npm package installed into akm's cache, updatable | `@scope/my-stash` |
@@ -449,7 +449,7 @@ These terms have precise meanings in akm. Use this table to avoid confusion:
 | **registry** | A discovery index for finding sources | The official registry, skills.sh |
 | **ref** (item ref) | A `[bundle//]conceptId` handle for an item | `scripts/deploy.sh`, `team//skills/review` |
 | **bundle** | Optional prefix narrowing an item ref to a bundle | `team-catalog//scripts/deploy.sh` |
-| **install ref** | A package identifier passed to `akm add` or `akm clone` | `npm:@scope/pkg`, `github:owner/repo` |
+| **install ref** | A package identifier passed to `akm bundle add` or `akm clone` | `npm:@scope/pkg`, `github:owner/repo` |
 | **git ref** | A branch, tag, or commit (used when installing) | `main`, `v1.0.0` |
 | **search source** | Where to look: `local`, `registry`, or `all` | `--from local` |
 
