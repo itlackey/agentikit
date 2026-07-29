@@ -281,6 +281,24 @@ describe("loadConfig", () => {
     expect(() => loadConfig()).toThrow(ConfigError);
     expect(() => loadConfig()).toThrow(/installed is the retired pre-cutover source shape/);
   });
+
+  // Mitigation item 3: `stashDir` gets a per-key message pointing at its
+  // replacement (bundles / akm-migrate apply) instead of only the generic
+  // "retired pre-cutover source shape" sentence shared by sources/installed.
+  test("hard-rejects the retired `stashDir` key with a stashDir-specific message", () => {
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({
+        configVersion: "0.9.0",
+        stashDir: "/legacy-stash",
+      }),
+    );
+
+    expect(() => loadConfig()).toThrow(ConfigError);
+    expect(() => loadConfig()).toThrow(/stashDir is retired in 0\.9/);
+    expect(() => loadConfig()).toThrow(/bundles/);
+    expect(() => loadConfig()).toThrow(/akm-migrate apply/);
+  });
 });
 
 // ── saveConfig ──────────────────────────────────────────────────────────────

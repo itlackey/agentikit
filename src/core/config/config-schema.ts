@@ -159,6 +159,17 @@ export const AkmConfigShape = {
 
 export const AkmConfigBaseSchema = z.object(AkmConfigShape).passthrough();
 
+/**
+ * Per-key overrides for the retired `stashDir`/`sources`/`installed` source-
+ * shape rejection below. Keys without an entry fall back to the shared
+ * "retired pre-cutover source shape" message, which already names the
+ * replacement (bundles) and the migration command.
+ */
+const RETIRED_SOURCE_SHAPE_KEY_MESSAGES: Record<string, string> = {
+  stashDir:
+    "stashDir is retired in 0.9; the stash path now comes from `bundles`. Run `akm-migrate apply` to convert a pre-0.9 config, or see `akm config path --all` / `akm info`.",
+};
+
 export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => {
   const raw = config as Record<string, unknown>;
   for (const key of ["profiles", "llm", "agent", "features", "stashes"]) {
@@ -191,7 +202,9 @@ export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => 
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: [key],
-        message: `${key} is the retired pre-cutover source shape; run \`akm-migrate apply\` to convert it to bundles`,
+        message:
+          RETIRED_SOURCE_SHAPE_KEY_MESSAGES[key] ??
+          `${key} is the retired pre-cutover source shape; run \`akm-migrate apply\` to convert it to bundles`,
       });
     }
   }

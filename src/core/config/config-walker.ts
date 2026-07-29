@@ -435,9 +435,27 @@ function unsetPath(config: Record<string, unknown>, path: Path): Record<string, 
 
 // ── Hint generation (#460) ──────────────────────────────────────────────────
 
-export function unknownKeyHint(_attempted: string): string {
+/**
+ * Per-key "use X instead" guidance for config keys retired before the 0.9
+ * cutover, keyed on the first dotted-path segment. Mitigation item 3: the
+ * generic "valid top-level keys" hint doesn't tell a pre-0.9 user what
+ * replaced the key they typed — this does.
+ */
+const RETIRED_KEY_HINTS: Record<string, string> = {
+  stashDir: "stashDir was removed in 0.9; get the stash path from `akm config path --all` or `akm info`.",
+  sources: "sources was replaced by bundles in 0.9; run `akm-migrate apply` on a pre-0.9 config to convert it.",
+  installed: "installed was replaced by bundles in 0.9; run `akm-migrate apply` on a pre-0.9 config to convert it.",
+  wikiName: "the wiki subsystem was removed in 0.9; wikis are ordinary knowledge assets now — see `akm import`.",
+  wiki: "the wiki subsystem was removed in 0.9; wikis are ordinary knowledge assets now — see `akm import`.",
+  llm: "llm was replaced by named engines configuration in 0.9; configure `engines` instead.",
+};
+
+export function unknownKeyHint(attempted: string): string {
   const keys = listTopLevelConfigKeys();
-  return `Valid top-level keys: ${keys.join(", ")}. Use dotted paths for nested values (e.g. embedding.endpoint, engines.<name>.model).`;
+  const generic = `Valid top-level keys: ${keys.join(", ")}. Use dotted paths for nested values (e.g. embedding.endpoint, engines.<name>.model).`;
+  const firstSegment = attempted.split(".")[0] ?? "";
+  const retiredHint = RETIRED_KEY_HINTS[firstSegment];
+  return retiredHint ? `${retiredHint} ${generic}` : generic;
 }
 
 // ── Re-exports for the CLI ──────────────────────────────────────────────────
