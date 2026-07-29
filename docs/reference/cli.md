@@ -2354,14 +2354,13 @@ Setup reconfiguration preserves existing scheduler runtime bindings. Changing
 the AKM storage path or installed runtime path therefore requires an explicit
 `akm task sync --rebind`; setup does not silently migrate those entries.
 
-**Bundle targeting (`--bundle <bundle>` / `--target <bundle>`).** By default
-every subcommand operates on the primary/default bundle. `task add` accepts
-`--bundle <bundle>`; `history`, `sync`, `doctor`, and `run` accept
-`--target <bundle>` to schedule and reconcile tasks that live in another
-configured bundle:
+**Bundle targeting (`--target <bundle>`).** By default every subcommand
+operates on the primary/default bundle. `add`, `history`, `sync`, `doctor`,
+and `run` all accept `--target <bundle>` to schedule and reconcile tasks that
+live in another configured bundle:
 
 ```sh
-akm task add nightly --schedule "@daily" --command "akm improve" --bundle team-stash
+akm task add nightly --schedule "@daily" --command "akm improve" --target team-stash
 akm task sync --target team-stash              # reconcile only that bundle
 ```
 

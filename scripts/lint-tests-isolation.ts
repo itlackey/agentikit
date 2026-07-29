@@ -227,10 +227,6 @@ const ALLOWED_FILES = new Set<string>([
   "tests/integration/agent/agent-config-loader.test.ts",
   "tests/integration/belief-state-phase1a.test.ts",
   "tests/integration/commands/events.test.ts",
-  "tests/integration/commands/graph-cli-negative.test.ts",
-  "tests/integration/commands/graph.test.ts",
-  "tests/integration/commands/graph-update.test.ts",
-  "tests/integration/commands/history.test.ts",
   "tests/integration/commands/improve-distill-planner-skip-lessons.test.ts",
   "tests/integration/commands/improve-ensure-index-first.test.ts",
   "tests/integration/commands/improve-memory.test.ts",
@@ -251,7 +247,6 @@ const ALLOWED_FILES = new Set<string>([
   "tests/integration/commands/improve/improve-dry-run-side-effects.test.ts",
   "tests/integration/commands/improve/improve-no-hang.test.ts",
   "tests/integration/index-clean.test.ts",
-  "tests/integration/lessons-coverage.test.ts",
   "tests/integration/llm-enrichment-cache.test.ts",
   "tests/integration/commands/reflect/reflect-completed-on-failure.test.ts",
   "tests/integration/commands/reflect/reflect-pipeline-fixes.test.ts",
@@ -346,7 +341,7 @@ const SPAWN_ALLOWED = new Set<string>([]);
  * list; grandfathered into `ALLOWED_FILES` pending migration → 73. Draining
  * those 22 (and the pre-existing balance) toward the ~5 KPI is follow-up work.
  */
-export const ALLOWLIST_RATCHET_BASELINE = 73;
+export const ALLOWLIST_RATCHET_BASELINE = 68;
 
 /** Live size of the combined grandfather allowlist (all rule sets). */
 export function combinedAllowlistSize(): number {

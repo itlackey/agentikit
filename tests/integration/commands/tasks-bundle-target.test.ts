@@ -18,7 +18,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { akmTasksAdd, akmTasksRun, akmTasksSetEnabled, akmTasksSync } from "../../../src/commands/tasks/tasks";
+import { akmTasksAdd, akmTasksRun, akmTasksSync } from "../../../src/commands/tasks/tasks";
 import { saveConfig } from "../../../src/core/config/config";
 import { buildCronLine, CRON_BACKEND, type CronExec, type CronExecResult } from "../../../src/tasks/backends/cron";
 import {
@@ -110,17 +110,16 @@ afterEach(() => {
 });
 
 describe("bundle-targeted tasks via --target", () => {
-  test("enable/disable/run a task in a NON-default bundle carries --target through cron", async () => {
+  test("sync of a task in a NON-default bundle carries --target through cron, and a file-edit disable comments it", async () => {
     writeTaskFile(
       work.dir,
       "foo",
-      ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: false", ""].join("\n"),
+      ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: true", ""].join("\n"),
     );
 
-    // enable --target work → installs, cron line embeds `--target work`.
-    const enabled = await akmTasksSetEnabled("foo", true, { backend: cron() }, "work");
-    expect(enabled.enabled).toBe(true);
-    expect(fs.readFileSync(path.join(work.dir, "tasks", "foo.yml"), "utf8")).toContain("enabled: true");
+    // sync --target work → installs, cron line embeds `--target work`.
+    const synced = await akmTasksSync({ backend: cron() }, "work");
+    expect(synced.installed).toEqual(["foo"]);
 
     const body = cronBody(exec.current(), "foo");
     expect(body).toBeDefined();
@@ -132,21 +131,23 @@ describe("bundle-targeted tasks via --target", () => {
     const ran = await akmTasksRun("foo", { target: "work" });
     expect(ran.result.status).toBe("completed");
 
-    // disable --target work comments the entry (still target-attributed).
-    await akmTasksSetEnabled("foo", false, { backend: cron() }, "work");
-    const disabledBody = cronBody(exec.current(), "foo");
-    expect(disabledBody?.startsWith("# akm:disabled ")).toBe(true);
-    expect(disabledBody).toContain("--target work");
-  });
-
-  test("--target on a NON-writable bundle fails with a writable-enforcement error", async () => {
+    // Editing the file to `enabled: false` and re-syncing comments the entry
+    // (still target-attributed) — `task enable`/`task disable` were removed in
+    // 0.9 (S6.3); a plain file edit + `task sync` is the surviving model.
     writeTaskFile(
       work.dir,
       "foo",
       ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: false", ""].join("\n"),
     );
-    await expect(akmTasksSetEnabled("foo", true, { backend: cron() }, "readonly")).rejects.toThrow(/not writable/i);
-    // add --target readonly is likewise refused before writing anything.
+    const resynced = await akmTasksSync({ backend: cron() }, "work");
+    expect(resynced.updated).toEqual(["foo"]);
+    const disabledBody = cronBody(exec.current(), "foo");
+    expect(disabledBody?.startsWith("# akm:disabled ")).toBe(true);
+    expect(disabledBody).toContain("--target work");
+  });
+
+  test("add --target on a NON-writable bundle fails with a writable-enforcement error", async () => {
+    // add --target readonly is refused before writing anything.
     await expect(
       akmTasksAdd({ id: "bar", schedule: "@daily", command: "true", target: "readonly" }, { backend: cron() }),
     ).rejects.toThrow(/not writable/i);
@@ -158,7 +159,7 @@ describe("bundle-targeted tasks via --target", () => {
       "foo",
       ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: true", ""].join("\n"),
     );
-    await akmTasksSetEnabled("foo", true, { backend: cron() }, "work");
+    await akmTasksSync({ backend: cron() }, "work");
 
     // Adding the same id to the primary bundle collides with work's entry.
     await expect(akmTasksAdd({ id: "foo", schedule: "@daily", command: "true" }, { backend: cron() })).rejects.toThrow(
@@ -177,7 +178,7 @@ describe("bundle-targeted tasks via --target", () => {
       "foo",
       ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: true", ""].join("\n"),
     );
-    await akmTasksSetEnabled("foo", true, { backend: cron() }, "work");
+    await akmTasksSync({ backend: cron() }, "work");
 
     // Plain (primary) sync: reconciles only `bar`; `foo` (target work) is untouched.
     const primarySync = await akmTasksSync({ backend: cron() });

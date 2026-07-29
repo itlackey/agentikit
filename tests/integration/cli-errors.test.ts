@@ -343,23 +343,20 @@ describe("output shape registry — every CLI verb returns a registered shape", 
   // Verbs that take no required args and are read-only against the
   // empty/isolated temp stash. Anything that requires a ref, takes interactive
   // input, mutates external state, or needs network access belongs elsewhere.
-  const READ_ONLY_VERBS: string[] = [
-    "health",
-    "lint",
-    "info",
-    "task",
-    "graph",
-    "db",
-    "list",
-    "config",
-    "log",
-    "history",
-    "registry",
+  const READ_ONLY_VERBS: readonly (readonly string[])[] = [
+    ["health"],
+    ["lint"],
+    ["info"],
+    ["task"],
+    ["config"],
+    ["log"],
+    ["registry"],
+    ["bundle", "list"],
   ];
 
   for (const verb of READ_ONLY_VERBS) {
-    test(`akm ${verb} --format json does not return an "output shape not registered" envelope`, async () => {
-      const { stdout } = await runCli(verb, "--format", "json");
+    test(`akm ${verb.join(" ")} --format json does not return an "output shape not registered" envelope`, async () => {
+      const { stdout } = await runCli(...verb, "--format", "json");
       // The bug class produces this exact substring. Any future verb that calls
       // output() without a registered shape will trip this.
       expect(stdout).not.toContain("output shape not registered");
@@ -437,7 +434,7 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
   // invocation, not a bare-group usage error; see
   // tests/commands/observability-cli-envelope.test.ts) and `lessons` was
   // removed entirely.
-  for (const group of ["graph", "migrate", "registry", "config", "proposal", "env", "secret", "task", "workflow"]) {
+  for (const group of ["migrate", "registry", "config", "proposal", "env", "secret", "task", "workflow"]) {
     test(`bare akm ${group} emits the canonical usage envelope and exits 2`, () => {
       const { status, stderr } = spawnCli([group], { cwd: repoRoot });
       expect(status).toBe(2);

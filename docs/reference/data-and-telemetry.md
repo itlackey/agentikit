@@ -53,7 +53,7 @@ Everything in the cache is regenerable. It is safe to delete the entire cache di
 |---|---|---|
 | `config-backups/config-<timestamp>.json` | Pre-save config snapshots (5 retained; owner-only permissions — file `0600`, dir `0700`, since 08-F4) | Yes |
 | `config-backups/config.latest.json` | Latest backup alias (owner-only `0600`) | Yes |
-| `registry/` | Downloaded registry tarballs (stash packages from npm, GitHub, etc.) | Yes — re-downloaded on next `akm add` or `akm update` |
+| `registry/` | Downloaded registry tarballs (stash packages from npm, GitHub, etc.) | Yes — re-downloaded on next `akm bundle add` or `akm bundle update` |
 | `registry-index/` | Legacy per-URL JSON cache (v0.7 artifact) | Yes — fully replaced by `index.db` in 0.8.0 |
 | `semantic-status.json` | Semantic index build status marker | Yes |
 | `bin/` | Downloaded AKM binary cache (used by `akm upgrade`) | Yes |
@@ -104,9 +104,9 @@ the set of types the code actually emits at HEAD (verified against every
 
 | Event type | When emitted | Key metadata fields |
 |---|---|---|
-| `add` | `akm add <source>` | `ref`, `provider` |
-| `remove` | `akm remove <source>` | `ref` |
-| `update` | `akm update [source]` | `ref` |
+| `add` | `akm bundle add <source>` | `ref`, `provider` |
+| `remove` | `akm bundle remove <source>` | `ref` |
+| `update` | `akm bundle update [source]` | `ref` |
 | `remember` | `akm remember <text>` | `ref` |
 | `import` | `akm import <file>` | `ref` |
 | `mv` | A successful `akm mv` rename only — nothing is emitted on failure | `ref` (the new ref); metadata `{from, to, rewroteFiles, readOnlyCiters, twinMoved}` (counts only) |

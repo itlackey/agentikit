@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { akmTasksAdd, akmTasksSetEnabled, akmTasksSync } from "../../../src/commands/tasks/tasks";
+import { akmTasksAdd, akmTasksSync } from "../../../src/commands/tasks/tasks";
 import type { TaskBackend } from "../../../src/tasks/backends/types";
 import type { ScheduleBackend } from "../../../src/tasks/schedule";
 import type { TaskDocument } from "../../../src/tasks/schema";
@@ -145,29 +145,6 @@ describe("task lifecycle failure handling", () => {
     expect(enabledCalls).toEqual([]);
     expect(uninstallCalls).toEqual([]);
     expect(installed.get("nightly")).toMatchObject({ schedule: "0 2 * * *", enabled: false });
-  });
-
-  test("set-enabled trusts a rejected install to preserve prior scheduler state and restores only source", async () => {
-    const priorYaml = 'version: 2\nschedule: "@daily"\ncommand: echo prior\nenabled: true';
-    const taskPath = writeTask("toggle", priorYaml);
-    installed.set("toggle", {
-      version: 2,
-      schemaVersion: 2,
-      id: "toggle",
-      schedule: "@daily",
-      enabled: true,
-      target: { kind: "command", cmd: ["echo", "prior"] },
-      source: { path: taskPath },
-    });
-    failInstall = (task) => !task.enabled;
-
-    await expect(akmTasksSetEnabled("toggle", false, { backend })).rejects.toThrow("install failed for toggle");
-
-    expect(fs.readFileSync(taskPath, "utf8")).toBe(priorYaml);
-    expect(installCalls.map((task) => task.enabled)).toEqual([false]);
-    expect(enabledCalls).toEqual([]);
-    expect(uninstallCalls).toEqual([]);
-    expect(installed.get("toggle")?.enabled).toBe(true);
   });
 
   test("add does not uninstall an orphaned prior scheduler entry when replacement install rejects", async () => {
@@ -496,45 +473,6 @@ describe("task lifecycle failure handling", () => {
       { schedule: "0 2 * * *", enabled: false },
     ]);
     expect(installed.get("nightly")).toMatchObject({ schedule: "0 2 * * *", enabled: false });
-  });
-
-  test.each([
-    ["enable", false, true],
-    ["disable", true, false],
-  ])("%s restores the exact definition and scheduler state when commit fails", async (_verb, before, after) => {
-    const yaml = [
-      "version: 2",
-      'schedule: "@daily"',
-      "command: echo keep",
-      `enabled: ${before} # preserve this comment`,
-      "",
-    ].join("\n");
-    const taskPath = writeTask("toggle", yaml);
-    installed.set("toggle", {
-      version: 2,
-      schemaVersion: 2,
-      id: "toggle",
-      schedule: "@daily",
-      enabled: before,
-      target: { kind: "command", cmd: ["echo", "keep"] },
-      source: { path: taskPath },
-    });
-    let commitCalls = 0;
-
-    await expect(
-      akmTasksSetEnabled("toggle", after, {
-        backend,
-        commitBoundary() {
-          commitCalls += 1;
-          if (commitCalls === 1) throw new Error("commit boundary failed");
-        },
-      }),
-    ).rejects.toThrow("commit boundary failed");
-
-    expect(commitCalls).toBe(2);
-    expect(fs.readFileSync(taskPath, "utf8")).toBe(yaml);
-    expect(installCalls.map((task) => task.enabled)).toEqual([after, before]);
-    expect(installed.get("toggle")?.enabled).toBe(before);
   });
 
   test("sync installs command arguments without obsolete-command handling", async () => {

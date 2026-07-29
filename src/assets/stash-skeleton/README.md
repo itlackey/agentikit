@@ -101,4 +101,4 @@ akm proposal accept <id>
 
 ---
 
-*Created by `akm init`. See `akm --help` for full command reference.*
+*Created by `akm bundle create`. See `akm --help` for full command reference.*

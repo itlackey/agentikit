@@ -193,7 +193,7 @@ The PR is the durable artefact. Make it readable.
    `{{ knowledge_wiki }}` wiki, recording the choice, the rejected
    alternatives, and the reasoning. Pages are edited directly with your
    file tools — there is no `akm wiki` write command; find the wiki's
-   filesystem path with `akm list --format json` if you do not already
+   filesystem path with `akm bundle list --format json` if you do not already
    have it.
 3. Re-index so the new decision is searchable:
 

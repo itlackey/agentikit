@@ -1,13 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import {
-  akmTasksAdd,
-  akmTasksDoctor,
-  akmTasksSetEnabled,
-  akmTasksSync,
-  prepareSchedulerRuntime,
-} from "../../src/commands/tasks/tasks";
+import { akmTasksAdd, akmTasksDoctor, akmTasksSync, prepareSchedulerRuntime } from "../../src/commands/tasks/tasks";
 import type { TaskBackend, TaskInstallOptions } from "../../src/tasks/backends/types";
 import { schedulerContextDescriptor, writeSchedulerContextDescriptor } from "../../src/tasks/scheduler-invocation";
 import { withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
@@ -244,11 +238,17 @@ describe("scheduler runtime binding", () => {
     }
   });
 
-  test("enable and disable reinstall using the current binding and descriptor", async () => {
+  test("a file-edit reinstall uses the current binding and descriptor", async () => {
     const storage = withIsolatedAkmStorage();
     try {
       configureStash(storage.stashDir);
       writeTask(storage.stashDir);
+      // The enable/disable mutation API was removed in 0.9 (S6.3) — flipping a
+      // task's `enabled:` field is now a plain file edit, reconciled by sync.
+      fs.writeFileSync(
+        path.join(storage.stashDir, "tasks", "ping.yml"),
+        'version: 2\nschedule: "@daily"\ncommand: echo ping\nenabled: false\n',
+      );
       const installs: Array<TaskInstallOptions | undefined> = [];
       const backend: TaskBackend = {
         name: "cron",
@@ -260,7 +260,7 @@ describe("scheduler runtime binding", () => {
         list: () => [{ id: "ping", binding: ["/current/akm"], contextPath: "/current/context.json" }],
       };
 
-      await akmTasksSetEnabled("ping", false, {
+      await akmTasksSync({
         backend,
         schedulerRuntime: () => {
           throw new Error("must not derive caller binding");

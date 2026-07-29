@@ -108,13 +108,13 @@ akm show env/prod           # shows key names only; values never appear in outpu
 akm show ops//pages/runbook # a page in the "ops" LLM Wiki bundle
 
 # From a specific bundle (bundle-qualified ref — the bundle name is whatever
-# `akm add` registered it as, e.g. via `--name`, NOT the install source):
+# `akm bundle add` registered it as, e.g. via `--name`, NOT the install source):
 akm show "team-catalog//scripts/deploy.sh"
 akm show "personal//knowledge/guide"
 ```
 
 Note: `npm:@scope/pkg` and `github:owner/repo` are **install refs** — they
-name a source to fetch, and are only accepted by `akm add`/`akm clone`. A
+name a source to fetch, and are only accepted by `akm bundle add`/`akm clone`. A
 bundle-qualified `show`/`search` ref never contains a `:`; passing an install
 ref to `show` fails (exit 2, "A bundle slug may not contain ':'"). See
 [Concepts](../guides/concepts.md#namespacing-assets-across-projects-and-teams)

@@ -132,18 +132,18 @@ function detectRegistrySearchId(ref: string): string | undefined {
 
   const lines = [
     `"${ref}" looks like a registry search result ID, not an installable ref.`,
-    `The "${prefix}:" prefix is a registry identifier and cannot be passed to \`akm add\`.`,
+    `The "${prefix}:" prefix is a registry identifier and cannot be passed to \`akm bundle add\`.`,
     "",
   ];
   if (suggestedRef) {
-    lines.push(`Try installing the source repository directly:`, `  akm add ${suggestedRef}`, "");
+    lines.push(`Try installing the source repository directly:`, `  akm bundle add ${suggestedRef}`, "");
   }
   lines.push(
     "Or search for the installable ref:",
     `  akm search "${segments.length > 2 ? segments[segments.length - 1] : rest}" --from registry`,
     "Then install using the installRef value from the result:",
-    "  akm add github:owner/repo",
-    "  akm add npm:package-name",
+    "  akm bundle add github:owner/repo",
+    "  akm bundle add npm:package-name",
   );
   return lines.join("\n");
 }

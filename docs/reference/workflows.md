@@ -920,7 +920,7 @@ file, hit any network" is what makes workflows useful as automation.
 The consequence is that **you should treat workflow sources the same way you
 treat package dependencies**:
 
-- **Only add workflow sources you trust.** `akm add github:<some-user>/stash`
+- **Only add workflow sources you trust.** `akm bundle add github:<some-user>/stash`
   followed by `akm workflow next workflows/<their-thing>` is functionally
   equivalent to piping a stranger's bash script into your shell. Read the
   workflow file first (`akm show workflows/<name>`) before running it.
@@ -929,8 +929,8 @@ treat package dependencies**:
   any environment variable visible to the akm process — including secrets
   exported by your shell or injected via `akm env run` / `akm secret run`.
 - **Pin known-good versions** when adding workflow sources from a registry
-  or git remote (`akm add github:owner/stash#v1.2.3`), and update
-  deliberately rather than via `akm update --all`. A trusted workflow source
+  or git remote (`akm bundle add github:owner/stash#v1.2.3`), and update
+  deliberately rather than via `akm bundle update --all`. A trusted workflow source
   can become hostile if its upstream is compromised.
 - **Workflow steps cannot escape this trust model** by being labeled
   `dryRun` or `interactive` — those flags affect bookkeeping, not execution.

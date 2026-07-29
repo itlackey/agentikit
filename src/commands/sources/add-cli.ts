@@ -213,7 +213,7 @@ export async function auditInstalledStashForDangerousKeys(opts: {
     } catch (_rollbackErr) {
       return (
         `Rollback failed — stash may still be installed at ${installedStashRoot}. ` +
-        `Remove it manually with: akm remove ${rollbackTarget}`
+        `Remove it manually with: akm bundle remove ${rollbackTarget}`
       );
     }
   }

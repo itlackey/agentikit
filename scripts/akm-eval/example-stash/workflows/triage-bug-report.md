@@ -133,7 +133,7 @@ The point of doing triage inside a workflow is that the *next* triage gets
 faster. This step makes that real. A wiki is a plain directory (`schema.md`
 + `pages/`) that the agent edits directly with its normal file tools — there
 is no `akm wiki` write command. Find the wiki's filesystem path with
-`akm list --format json` (the matching source's `path` field) if you do not
+`akm bundle list --format json` (the matching source's `path` field) if you do not
 already have it, and follow that wiki's own `schema.md` for voice and
 page-kind conventions.
 

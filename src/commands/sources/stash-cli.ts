@@ -22,7 +22,7 @@
  * ./core/asset-create, ./core/common), so the cluster moves with zero hoisting.
  *
  * The leaf handlers whose body is a plain `runWithJsonErrors(...) + output(...)`
- * (`init`, `import`, `info`) are migrated onto
+ * (`import`, `info`) are migrated onto
  * `defineJsonCommand`, which emits the same JSON envelope (stdout/stderr/
  * exit-code) as the inline form. `index` keeps a plain `defineCommand` wrapping
  * `runWithJsonErrors` because its body owns a spinner, an AbortController, and

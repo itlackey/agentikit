@@ -440,7 +440,7 @@ Confirm that guarantee carefully.
 
 - [ ] `akm env list` is empty initially.
 - [ ] `akm env create test-env` creates `env/test-env.env`.
-- [ ] `printf '%s' "secret-value" | akm env set env/test-env API_KEY` succeeds.
+- [ ] Edit the file directly: `printf 'API_KEY=secret-value\n' >> "$AKM_STASH_DIR/env/test-env.env"`.
 - [ ] `akm show env/test-env` lists keys/comments only.
 - [ ] `akm env list --format json` contains the env under `envs[]` with
       `keys` and no secret values.
@@ -455,7 +455,8 @@ Confirm that guarantee carefully.
       injects only that variable.
 - [ ] `akm secret path secrets/test-token` and `akm secret remove secrets/test-token`
       both exit 2 with `Unknown command` (removed in 0.9.0).
-- [ ] `akm env unset env/test-env API_KEY` removes the key.
+- [ ] Remove the `API_KEY=` line directly from `env/test-env.env` and confirm
+      `akm env list --format json` no longer lists it under `keys`.
 - [ ] `rm "$AKM_STASH_DIR/secrets/test-token"` removes the secret (there is no
       `akm secret remove`).
 
@@ -629,19 +630,19 @@ checklist did not exercise.
 - [ ] `akm task add` writes a new `.yml` and refuses to overwrite an existing
       `.md` without `--force`.
 
-#### `env set` and secret set --from-env / stdin behavior
+#### secret set --from-env / stdin behavior
 
-- [ ] `printf '%s' "secret" | akm env set env/prod KEY` writes via stdin.
-- [ ] `AKM_VAL=secret akm env set env/prod KEY --from-env AKM_VAL` writes from
-      the named env var; unset var exits with code 2.
+`env` has no per-key write command (0.9 removed `env set`/`env unset` — you
+edit the `.env` file directly and akm loads it; see the env-cli.ts model
+statement). `secret set` still writes one secret at a time and keeps its
+--from-env / stdin surface:
+
 - [ ] `printf '%s' "secret" | akm secret set secrets/prod SECRET_TOKEN` writes via
       stdin.
 - [ ] `AKM_VAL=secret akm secret set secrets/prod SECRET_TOKEN --from-env AKM_VAL`
       writes from the named env var; unset var exits with code 2.
-- [ ] Piping a payload > 1 MB to `akm env set` is rejected with a
+- [ ] Piping a payload > 5 MB to `akm secret set` is rejected with a
       `UsageError`.
-- [ ] `akm env set env/prod KEY=value` (positional value or KEY=VALUE
-      form) is rejected with `UsageError`.
 
 #### Proposal resolution by ref or UUID prefix
 

@@ -58,16 +58,7 @@ describe("qualified mutation targets", () => {
     configure(team);
     const value = seed(storage.root, "value.txt", "secret-value");
 
-    const result = await runCliCapture([
-      "env",
-      "set",
-      "team//env/prod",
-      "API_TOKEN",
-      "--from-file",
-      value,
-      "--format",
-      "json",
-    ]);
+    const result = await runCliCapture(["env", "create", "team//env/prod", "--from-file", value, "--format", "json"]);
 
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout).ref).toBe("team//env/prod");
@@ -94,9 +85,8 @@ describe("qualified mutation targets", () => {
 
     const conflicting = await runCliCapture([
       "env",
-      "set",
+      "create",
       "team//env/conflict",
-      "API_TOKEN",
       "--from-file",
       value,
       "--target",
@@ -113,7 +103,7 @@ describe("qualified mutation targets", () => {
     configure(team, "team");
     const value = seed(storage.root, "value.txt", "secret-value");
 
-    const result = await runCliCapture(["env", "set", "prod", "API_TOKEN", "--from-file", value]);
+    const result = await runCliCapture(["env", "create", "prod", "--from-file", value]);
 
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout).ref).toBe("team//env/prod");
@@ -129,7 +119,7 @@ describe("qualified mutation targets", () => {
     });
     const value = seed(storage.root, "implicit-value.txt", "secret-value");
 
-    const result = await runCliCapture(["env", "set", "stash//env/implicit", "API_TOKEN", "--from-file", value]);
+    const result = await runCliCapture(["env", "create", "stash//env/implicit", "--from-file", value]);
 
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout).ref).toBe("stash//env/implicit");

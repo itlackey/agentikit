@@ -159,7 +159,7 @@ embedding-based search. `"auto"` lets AKM set up embeddings (which downloads
 a local model unless you point `embedding` at a remote provider) and falls
 back to keyword-only FTS if the embedding runtime is unavailable; `"off"`
 disables semantic search outright and search is always keyword-only FTS.
-The default is `"off"` so a bare or headless install (`akm init`, `--yes`,
+The default is `"off"` so a bare or headless install (`akm bundle create`, `--yes`,
 `--config`) never silently downloads the local embedding model on first
 index.
 The interactive `akm setup` wizard pre-selects semantic search **on**
@@ -245,7 +245,7 @@ disables expiry entirely.
 ## Registries
 
 `registries` (top-level array, distinct from `bundles`) lists remote package
-registries `akm registry`/`akm add --registry` can search and install from.
+registries `akm registry`/`akm bundle add` can search and install from.
 Each entry is `{ url, name?, enabled?, provider?, options? }`; `provider`
 defaults to `"static-index"`. See [Registries](registry.md) for the full
 field reference and provider list.

@@ -87,6 +87,7 @@ describe("family E — extract --since", () => {
         ["5M-case-variant", "5M"],
       ] as const) {
         const result = await runCli([
+          "proposal",
           "extract",
           "--type",
           "claude-code",

@@ -20,7 +20,7 @@ akm index --verbose    # Print phase-by-phase progress to stderr
 
 When an LLM endpoint is configured, akm can enhance metadata during indexing
 (titles, descriptions, tags) without a separate command. Run `akm index`
-after `akm add` or `akm update` to bring the index up to date.
+after `akm bundle add` or `akm bundle update` to bring the index up to date.
 
 ## akm search
 

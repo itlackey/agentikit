@@ -327,14 +327,14 @@ Resolve the target wiki:
   `raw/` directories is enough, then register it as its own bundle:
 
   ```sh
-  akm add wikis/{{ wiki_name }} --name {{ wiki_name }}
+  akm bundle add wikis/{{ wiki_name }} --name {{ wiki_name }}
   ```
 
-  Point `akm add` at the wiki's own directory, not a path nested inside the
+  Point `akm bundle add` at the wiki's own directory, not a path nested inside the
   primary AKM stash — a nested path gets claimed by the primary stash's own
   adapter instead of `llm-wiki` and loses wiki recognition.
 - If it already exists, find its registered path with
-  `akm list --format json` (the matching source's `path` field) if you do
+  `akm bundle list --format json` (the matching source's `path` field) if you do
   not already have it.
 
 There is no ingest command — copy or write the raw material straight into

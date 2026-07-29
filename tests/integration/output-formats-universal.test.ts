@@ -39,7 +39,7 @@ const FORMATS = ["json", "jsonl", "yaml", "text", "md", "html"] as const;
  */
 const READ_COMMANDS: readonly (readonly string[])[] = [
   ["search", "alias"],
-  ["list"],
+  ["bundle", "list"],
   ["info"],
   ["config", "list"],
   ["env", "list"],
@@ -161,31 +161,5 @@ describe("akm health keeps its bespoke reports through the registry", () => {
 
     expect([0, 4]).toContain(result.code);
     expect(result.stdout).toContain("<h1>akm health</h1>");
-  });
-});
-
-describe("graph export has no local --format", () => {
-  // Exporting a real artifact needs a stored graph snapshot, which only the
-  // graph-extraction flow produces — out of scope here. What D7 changed is the
-  // ARGUMENT surface: `--format` used to be declared locally as well as
-  // globally (one token, two parsers). These pin that the global flag now
-  // reaches the command unopposed, by asserting each format gets as far as
-  // loading the graph (exit 1, FILE_NOT_FOUND) rather than being rejected as
-  // usage (exit 2) or accepted only for json/jsonl.
-  for (const format of ["jsonl", "md", "html", "yaml"] as const) {
-    test(`--format ${format} reaches graph loading rather than a usage error`, async () => {
-      const out = path.join(stashDir, `graph-${format}.out`);
-      const result = await runCliCapture(["graph", "export", `--out=${out}`, `--format=${format}`]);
-
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain("FILE_NOT_FOUND");
-    });
-  }
-
-  test("--out is still required, and its usage error is unaffected by the format", async () => {
-    const result = await runCliCapture(["graph", "export", "--format=md"]);
-
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain("MISSING_REQUIRED_ARGUMENT");
   });
 });

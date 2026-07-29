@@ -18,17 +18,19 @@
  * templates under src/assets/tasks/improve/ (see src/tasks/embedded.ts),
  * seeded through the interactive `akm setup` task-review step instead of a
  * separate CLI command, and toggling a task's enabled state is a file edit +
- * `task sync` (tasks-sync.test.ts already proves the flip path).
+ * `task sync` (tasks-sync.test.ts already proves the flip path). Every
+ * subcommand (`add`/`run`/`history`/`sync`) shares one `--target <bundle>`
+ * axis (Gate-1 fix: S8.4 renamed `task add`'s to `--bundle` in isolation,
+ * splitting the group against itself — reverted so `task` matches `import`
+ * and `proposal accept`, which also keep `--target`).
  */
 
 import { defineCommand } from "citty";
-import { getParsedInvocation } from "../../cli/invocation";
 import { parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
-import { UsageError } from "../../core/errors";
 import { akmTasksAdd, akmTasksDoctor, akmTasksHistory, akmTasksRun, akmTasksSync } from "./tasks";
 
-/** Shared `--target <bundle>` arg wired onto read/reconcile subcommands. */
+/** Shared `--target <bundle>` arg wired onto every task subcommand. */
 const targetArg = {
   target: {
     type: "string",
@@ -36,29 +38,12 @@ const targetArg = {
   },
 } as const;
 
-/**
- * `--target` was renamed to `--bundle` on `task add` in 0.9 (S8/S6). citty is
- * non-strict, so the retired spelling is silently absorbed rather than
- * rejected — the task then registers against the default bundle instead of
- * the one the caller named, with exit 0 and no error. Reject it explicitly.
- */
-function rejectRetiredTaskAddTargetFlag(): void {
-  if (!getParsedInvocation().hasFlag("--target")) return;
-  throw new UsageError(
-    "`akm task add --target` was renamed to `--bundle` in 0.9. Use `--bundle <name>` instead.",
-    "INVALID_FLAG_VALUE",
-  );
-}
-
 const tasksAddCommand = defineJsonCommand({
   meta: { name: "add", description: "Register a new scheduled task and install it in the OS scheduler" },
   args: {
     id: { type: "positional", description: "Task id (used as filename and scheduler entry)", required: true },
     schedule: { type: "string", description: 'Cron-style schedule, e.g. "0 9 * * *" or "@daily"', required: true },
-    bundle: {
-      type: "string",
-      description: "Bundle to register the task in (defaults to the primary/default bundle)",
-    },
+    ...targetArg,
     workflow: { type: "string", description: "Workflow ref to invoke (e.g. workflows/my-flow)" },
     prompt: {
       type: "string",
@@ -86,11 +71,10 @@ const tasksAddCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
-    rejectRetiredTaskAddTargetFlag();
     const result = await akmTasksAdd({
       id: args.id,
       schedule: args.schedule,
-      target: args.bundle,
+      target: args.target,
       workflow: args.workflow,
       prompt: args.prompt,
       command: args.command,
