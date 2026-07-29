@@ -388,6 +388,31 @@ describe("runTask — command target", () => {
     expect(log).toContain("timed_out=true timeout_ms=100");
     expect(log).toContain("exit_code=143");
   });
+
+  test("redacts a webhook URL from both the log file and logs.db rows", async () => {
+    const webhookUrl = "https://discord.com/api/webhooks/123456789012345678/abcDEF-123_token";
+    writeTask(
+      "leaky-webhook",
+      [
+        "version: 2",
+        'schedule: "@daily"',
+        `command: ${JSON.stringify([process.execPath, "-e", `console.log(${JSON.stringify(`posting to ${webhookUrl}`)})`])}`,
+        "",
+      ].join("\n"),
+    );
+
+    const result = await runTask("leaky-webhook", { stashDir, logDir });
+
+    expect(result.status).toBe("completed");
+    const log = fs.readFileSync(result.log, "utf8");
+    expect(log).not.toContain("abcDEF-123_token");
+    expect(log).toContain("https://discord.com/api/webhooks/123456789012345678/[REDACTED]");
+
+    const rows = readRunLogRows("leaky-webhook");
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.line).not.toContain("abcDEF-123_token");
+    expect(rows.some((row) => row.line.includes("discord.com/api/webhooks/123456789012345678/[REDACTED]"))).toBe(true);
+  });
 });
 
 describe("runTask — prompt target", () => {

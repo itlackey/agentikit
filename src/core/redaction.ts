@@ -305,6 +305,42 @@ function addMappedMatches(coverageDelta: Int32Array, haystack: NormalizedText, n
 }
 
 /**
+ * Redact credential-shaped substrings from arbitrary text by pattern alone —
+ * unlike {@link redactSensitiveText}, which requires the exact secret value
+ * up front, this catches credentials no caller ever knew to list. No
+ * truncation is applied; callers that need a length cap (e.g.
+ * {@link redactErrorBody} in src/llm/client.ts) apply it themselves.
+ *
+ * Targets:
+ *  - `Bearer <token>` headers echoed back by a provider
+ *  - `sk-…` / `sk_…` style API keys (OpenAI / Anthropic-shaped)
+ *  - `key-…` / `key_…` shorthand keys
+ *  - `"api_key": "…"` / `"apiKey": "…"` JSON fields
+ *  - Discord webhook URLs (`discord.com/api/webhooks/<id>/<token>`) — the id
+ *    is kept, only the token segment is redacted
+ *  - Slack incoming-webhook URLs (`hooks.slack.com/services/<team>/<channel>/<token>`)
+ *    — the team/channel ids are kept, only the trailing token is redacted
+ */
+export function redactCredentialPatterns(input: string): string {
+  if (!input) return "";
+  return (
+    input
+      // Bearer tokens (case-insensitive)
+      .replace(/\bBearer\s+[A-Za-z0-9._\-+/=]+/gi, "Bearer [REDACTED]")
+      // sk-/sk_ style keys
+      .replace(/\bsk[-_][A-Za-z0-9._-]{6,}/g, "[REDACTED]")
+      // key-/key_ shorthand keys
+      .replace(/\bkey[-_][A-Za-z0-9._-]{6,}/g, "[REDACTED]")
+      // JSON-style "api_key": "...", "apiKey": "...", "api-key": "..."
+      .replace(/("(?:api[_-]?key|apiKey|authorization|token)"\s*:\s*")([^"]*)(")/gi, "$1[REDACTED]$3")
+      // Discord webhook URLs: keep the webhook id, redact the token segment.
+      .replace(/(discord(?:app)?\.com\/api\/webhooks\/\d+\/)[A-Za-z0-9_-]+/gi, "$1[REDACTED]")
+      // Slack incoming-webhook URLs: keep the team/channel ids, redact the token.
+      .replace(/(hooks\.slack\.com\/services\/[A-Za-z0-9]+\/[A-Za-z0-9]+\/)[A-Za-z0-9]+/gi, "$1[REDACTED]")
+  );
+}
+
+/**
  * Replace exact sensitive values in text. Longer values are replaced first so
  * an overlapping prefix cannot expose the suffix of a longer credential.
  */

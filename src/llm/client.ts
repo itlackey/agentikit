@@ -13,7 +13,7 @@ import { fetchWithTimeout, readBodyWithByteCap } from "../core/common";
 import { type LlmConnectionConfig, resolveSecret } from "../core/config/config";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
 import { parseJsonResponse } from "../core/parse";
-import { redactSensitiveText } from "../core/redaction";
+import { redactCredentialPatterns, redactSensitiveText } from "../core/redaction";
 import { warnVerbose } from "../core/warn";
 import { DEFAULT_LLM_TIMEOUT_MS } from "../integrations/agent/config";
 import {
@@ -35,23 +35,13 @@ const JSON_SCHEMA_RESPONSE_NAME = "akm_response";
  * including it in a thrown Error. The body is also trimmed to a fixed length
  * so that a verbose provider response cannot leak large amounts of context.
  *
- * Targets:
- *  - `Bearer <token>` headers echoed back by the provider
- *  - `sk-…` / `sk_…` style API keys (OpenAI / Anthropic-shaped)
- *  - `key-…` / `key_…` shorthand keys
- *  - `"api_key": "…"` / `"apiKey": "…"` JSON fields
+ * The pattern set itself lives in {@link redactCredentialPatterns}
+ * (src/core/redaction.ts) so other output paths (e.g. task run logs) can
+ * reuse it without this function's length cap.
  */
 export function redactErrorBody(input: string): string {
   if (!input) return "";
-  let out = input
-    // Bearer tokens (case-insensitive)
-    .replace(/\bBearer\s+[A-Za-z0-9._\-+/=]+/gi, "Bearer [REDACTED]")
-    // sk-/sk_ style keys
-    .replace(/\bsk[-_][A-Za-z0-9._-]{6,}/g, "[REDACTED]")
-    // key-/key_ shorthand keys
-    .replace(/\bkey[-_][A-Za-z0-9._-]{6,}/g, "[REDACTED]")
-    // JSON-style "api_key": "...", "apiKey": "...", "api-key": "..."
-    .replace(/("(?:api[_-]?key|apiKey|authorization|token)"\s*:\s*")([^"]*)(")/gi, "$1[REDACTED]$3");
+  let out = redactCredentialPatterns(input);
   if (out.length > ERROR_BODY_MAX_LEN) {
     out = `${out.slice(0, ERROR_BODY_MAX_LEN)}…`;
   }

@@ -7,9 +7,48 @@ import {
   collectSensitiveValues,
   ENV_PASSTHROUGH_REDACTION_ALLOWLIST,
   isEnvPassthroughValueSafeToExpose,
+  redactCredentialPatterns,
   redactSensitiveText,
   redactSensitiveValue,
 } from "../src/core/redaction";
+
+describe("redactCredentialPatterns", () => {
+  test("redacts a Discord webhook URL, keeping the webhook id", () => {
+    const text = "uncaught fetch error: https://discord.com/api/webhooks/123456789012345678/abcDEF-123_token";
+    expect(redactCredentialPatterns(text)).toBe(
+      "uncaught fetch error: https://discord.com/api/webhooks/123456789012345678/[REDACTED]",
+    );
+  });
+
+  test("redacts a Slack incoming-webhook URL, keeping the team/channel ids", () => {
+    // Deliberately non-realistic segments: GitHub push protection rejects
+    // fixtures shaped like live Slack webhooks (T…/B…/24-char token).
+    const text = "posting to https://hooks.slack.com/services/Tfake/Bfake/faketoken now";
+    expect(redactCredentialPatterns(text)).toBe(
+      "posting to https://hooks.slack.com/services/Tfake/Bfake/[REDACTED] now",
+    );
+  });
+
+  test("still catches Bearer tokens and sk- style API keys", () => {
+    expect(redactCredentialPatterns("Authorization: Bearer abc123XYZ.token-value")).toBe(
+      "Authorization: Bearer [REDACTED]",
+    );
+    expect(redactCredentialPatterns('{"error":"bad key sk-proj-Abcdef1234567890ZZZ"}')).toBe(
+      '{"error":"bad key [REDACTED]"}',
+    );
+  });
+
+  test("leaves ordinary URLs and long text untouched (no truncation)", () => {
+    const ordinary = "See https://example.com/api/webhooks/123/abc for docs, plus more context after that.";
+    expect(redactCredentialPatterns(ordinary)).toBe(ordinary);
+    const long = "x".repeat(500);
+    expect(redactCredentialPatterns(long)).toBe(long);
+  });
+
+  test("returns empty for empty input", () => {
+    expect(redactCredentialPatterns("")).toBe("");
+  });
+});
 
 describe("redactSensitiveText", () => {
   test("redacts exact values longest-first without treating them as patterns", () => {

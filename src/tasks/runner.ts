@@ -45,6 +45,7 @@ import {
   type TaskLogStream,
 } from "../core/logs-db";
 import { getTaskLogDir } from "../core/paths";
+import { redactCredentialPatterns } from "../core/redaction";
 import { withStateDb } from "../core/state-db";
 import { runManagedSubprocess, type SpawnFn } from "../core/subprocess";
 import type { AgentRunResult, RunAgentOptions } from "../integrations/agent";
@@ -655,6 +656,11 @@ function streamLines(text: string, stream: TaskLogStream, level: TaskLogLevel): 
  * task_history keeps resolving for humans and older consumers) plus
  * structured rows in logs.db keyed by `buildTaskRunId(taskId, startedAt)`.
  *
+ * Both sinks are pattern-redacted (`redactCredentialPatterns`) before being
+ * written — task output is raw command/agent/LLM text that can echo a
+ * credential-bearing URL (e.g. a Discord webhook) nothing upstream expects to
+ * scrub.
+ *
  * The DB write is best-effort, mirroring {@link appendHistory}: an unwritable
  * logs.db must never fail a task run.
  */
@@ -666,10 +672,12 @@ function persistRunLog(input: {
   fileText: string;
   dbLines: readonly TaskLogLineInput[];
 }): void {
+  const fileText = redactCredentialPatterns(input.fileText);
+  const dbLines = input.dbLines.map((entry) => ({ ...entry, line: redactCredentialPatterns(entry.line) }));
   if (input.logPath) {
     try {
       fs.mkdirSync(path.dirname(input.logPath), { recursive: true });
-      fs.writeFileSync(input.logPath, input.fileText);
+      fs.writeFileSync(input.logPath, fileText);
     } catch (error) {
       rethrowIfTestIsolationError(error);
       // Transitional file logging is fully best-effort.
@@ -682,7 +690,7 @@ function persistRunLog(input: {
         taskId: input.taskId,
         runId: buildTaskRunId(input.taskId, input.startedAtIso),
         ts: input.finishedAtIso,
-        lines: input.dbLines,
+        lines: dbLines,
       });
     } finally {
       db.close();
