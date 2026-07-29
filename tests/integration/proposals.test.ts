@@ -1588,3 +1588,181 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     expect(() => getProposal(stash, created.id)).toThrow(/invalid current ref/i);
   });
 });
+
+// ── Reject tolerates malformed legacy rows (0.9 mitigation item 2) ──────────
+//
+// 0.8-era pending rows minted before the WI-6.2 envelope was required can
+// carry a missing `proposedTarget` and/or a `changes[]` entry with an
+// empty/missing `path`. Before this fix, `akm proposal reject` on such a row
+// either threw at decode time (a genuinely malformed `changes` array — see
+// the "strict decode failure" case below) or at re-serialize time (a present
+// `proposedTarget` plus an empty `changes[].path` took the full
+// `upsertProposal` path and died in `proposalToRowValues`), forcing operators
+// to fix the row with manual SQL. `archiveProposal` / `rejectProposalDurably`
+// now read leniently and `persistProposalUpdate` takes the targeted-UPDATE
+// branch for any row with unusable `changes`, so reject always reaches the
+// status flip. Accept is untouched — it must keep failing on these rows
+// exactly as before.
+describe("akmProposalReject tolerates malformed legacy proposal rows", () => {
+  test("reject succeeds when proposedTarget is missing entirely", async () => {
+    const stash = makeStashDir();
+    const created = createProposal(stash, {
+      ref: "lessons/legacy-missing-target",
+      source: "reflect",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const state = openStateDatabase();
+    const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
+      metadata_json: string;
+    };
+    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
+    delete metadata.proposedTarget;
+    state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
+    state.close();
+
+    const result = await akmProposalReject({ stashDir: stash, id: created.id, reason: "legacy row cleanup" });
+    expect(result.ok).toBe(true);
+    expect(result.reason).toBe("legacy row cleanup");
+    expect(getProposal(stash, created.id).status).toBe("rejected");
+    expect(getProposal(stash, created.id).review?.reason).toBe("legacy row cleanup");
+  });
+
+  test("reject succeeds when proposedTarget is present but changes[].path is empty", async () => {
+    const stash = makeStashDir();
+    const created = createProposal(stash, {
+      ref: "lessons/legacy-empty-path",
+      source: "reflect",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const state = openStateDatabase();
+    const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
+      metadata_json: string;
+    };
+    const metadata = JSON.parse(row.metadata_json) as { changes?: Array<Record<string, unknown>> };
+    // proposedTarget stays intact — only the changes[0].path is blanked out.
+    metadata.changes = [{ ...metadata.changes?.[0], path: "" }];
+    state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
+    state.close();
+
+    const result = await akmProposalReject({ stashDir: stash, id: created.id, reason: "legacy row cleanup" });
+    expect(result.ok).toBe(true);
+    expect(getProposal(stash, created.id).status).toBe("rejected");
+    expect(getProposal(stash, created.id).review?.reason).toBe("legacy row cleanup");
+  });
+
+  test("reject succeeds on a row whose changes[] fails strict decode entirely", async () => {
+    const stash = makeStashDir();
+    const created = createProposal(stash, {
+      ref: "lessons/legacy-no-changes",
+      source: "reflect",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const state = openStateDatabase();
+    const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
+      metadata_json: string;
+    };
+    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
+    // An empty `changes` array (as opposed to an absent key) fails the strict
+    // decoder's `storedToChanges` outright ("Proposal metadata is missing
+    // changes.") — confirmed against the unmodified strict decoder.
+    metadata.changes = [];
+    delete metadata.proposedTarget;
+    state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
+    state.close();
+
+    expect(() => getProposal(stash, created.id)).toThrow(/missing changes/i);
+
+    const result = await akmProposalReject({ stashDir: stash, id: created.id, reason: "legacy row cleanup" });
+    expect(result.ok).toBe(true);
+    // The row's `changes` metadata is never repaired by reject (only the
+    // targeted status/review fields are touched), so a plain `getProposal`
+    // still fails strict decode afterward — assert on the reject call's own
+    // in-memory result instead, exactly as the terminal-status paths do.
+    expect(result.proposal.status).toBe("rejected");
+  });
+
+  test("accept still fails on the same malformed rows with the pre-existing error", async () => {
+    const stash = makeStashDir();
+    const created = createProposal(stash, {
+      ref: "lessons/legacy-accept-still-fails",
+      source: "reflect",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const state = openStateDatabase();
+    const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
+      metadata_json: string;
+    };
+    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
+    metadata.changes = [];
+    delete metadata.proposedTarget;
+    state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
+    state.close();
+
+    const config = makeConfig(stash);
+    await expect(akmProposalAccept({ stashDir: stash, id: created.id, config })).rejects.toThrow(/missing changes/i);
+    // Accept never wrote anything — confirm via raw SQL rather than
+    // `getProposal`, which would still fail strict decode on this row.
+    const state2 = openStateDatabase();
+    const statusRow = state2.prepare("SELECT status FROM proposals WHERE id = ?").get(created.id) as {
+      status: string;
+    };
+    state2.close();
+    expect(statusRow.status).toBe("pending");
+  });
+
+  test("a rejected legacy row remains listable with --status rejected", async () => {
+    const stash = makeStashDir();
+    const created = createProposal(stash, {
+      ref: "lessons/legacy-list-after-reject",
+      source: "reflect",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const state = openStateDatabase();
+    const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
+      metadata_json: string;
+    };
+    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
+    metadata.changes = [];
+    delete metadata.proposedTarget;
+    state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
+    state.close();
+
+    await akmProposalReject({ stashDir: stash, id: created.id, reason: "legacy row cleanup" });
+
+    const listResult = akmProposalList({ stashDir: stash, status: "rejected" });
+    expect(listResult.proposals.some((p) => p.id === created.id)).toBe(true);
+    expect(listResult.proposals.find((p) => p.id === created.id)?.status).toBe("rejected");
+  });
+
+  test("a well-formed row's reject behaviour is unchanged (no decode warnings)", async () => {
+    const stash = makeStashDir();
+    const created = createProposal(stash, {
+      ref: "lessons/well-formed-reject",
+      source: "reflect",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalReject({ stashDir: stash, id: created.id, reason: "no longer relevant" });
+    expect(result.ok).toBe(true);
+    expect(result.proposal.status).toBe("rejected");
+    expect(result.proposal.review?.reason).toBe("no longer relevant");
+    expect((result.proposal as unknown as { decodeWarnings?: string[] }).decodeWarnings).toBeUndefined();
+  });
+});

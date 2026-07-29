@@ -33,6 +33,7 @@ import {
   recoverProposalTransactionsForStash,
   rejectProposalDurably,
   resolveProposalId,
+  resolveProposalIdForReject,
   revertProposal,
 } from "./repository";
 import { validateProposal } from "./validators/proposals";
@@ -206,7 +207,10 @@ export async function akmProposalReject(options: ProposalRejectOptions): Promise
   return withAssetMutationLease("proposal-reject", async () => {
     const config = options.config ?? loadConfig();
     const { stashDir: stash } = resolveProposalQueue(options.stashDir, options.queue, config);
-    const proposalId = resolveProposalId(stash, options.id).id;
+    // resolveProposalIdForReject tolerates a legacy row whose metadata fails
+    // strict decoding — resolveProposalId's exact-UUID match would otherwise
+    // throw here, before the terminal-status machinery even runs.
+    const proposalId = resolveProposalIdForReject(stash, options.id, options.ctx);
     await recoverProposalTransactionsForStash(stash, config, options.ctx, proposalId);
     const updated = rejectProposalDurably(stash, proposalId, options.reason, options.ctx, options.gateDecision);
 
