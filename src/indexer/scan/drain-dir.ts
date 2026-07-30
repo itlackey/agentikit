@@ -39,8 +39,6 @@ import { akmAdapter } from "../../core/adapter/adapters/akm-adapter";
 import type { BundleAdapter } from "../../core/adapter/bundle-adapter";
 import type { BundleComponent, IndexDocument } from "../../core/adapter/types";
 import { parseWorkflow } from "../../workflows/parser";
-import { parseWorkflowProgram } from "../../workflows/program/parser";
-import { WORKFLOW_PROGRAM_RENDERER_NAME } from "../../workflows/program/project";
 import { cacheWorkflowDocument } from "../../workflows/runtime/document-cache";
 import { buildMetadataSkipWarning, type StashFile } from "../passes/metadata";
 import { buildFileContext, type FileContext } from "../walk/file-context";
@@ -138,21 +136,11 @@ export function recognizeStashEntries(stashRoot: string, files: string[]): Stash
  * `null` immediately.
  */
 function handleWorkflowDoc(doc: IndexDocument, entry: IndexDocument, file: FileContext): string | null {
-  const renderer = docRenderer(doc);
+  if (docRenderer(doc) !== WORKFLOW_MD_RENDERER) return null;
 
-  if (renderer === WORKFLOW_MD_RENDERER) {
-    const result = parseWorkflow(file.content(), { path: file.relPath });
-    if (!result.ok) return workflowDropWarning(file, result.errors);
-    cacheWorkflowDocument(entry, result.document);
-    return null;
-  }
-
-  if (renderer === WORKFLOW_PROGRAM_RENDERER_NAME) {
-    const result = parseWorkflowProgram(file.content(), { path: file.relPath });
-    if (!result.ok) return workflowDropWarning(file, result.errors);
-    return null;
-  }
-
+  const result = parseWorkflow(file.content(), { path: file.relPath });
+  if (!result.ok) return workflowDropWarning(file, result.errors);
+  cacheWorkflowDocument(entry, result.document);
   return null;
 }
 

@@ -21,7 +21,7 @@ import { extractCommentMetadata } from "../indexer/passes/metadata";
 import type { AssetRenderer, RenderContext } from "../indexer/walk/file-context";
 import { registerRenderer } from "../indexer/walk/file-context";
 import type { ShowResponse, SourceSearchHit } from "../sources/types";
-import { buildWorkflowAction, workflowMdRenderer, workflowProgramRenderer } from "../workflows/renderer";
+import { buildWorkflowAction, workflowMdRenderer } from "../workflows/renderer";
 
 // ── ExecHints types ──────────────────────────────────────────────────────────
 
@@ -561,7 +561,6 @@ const builtinRenderers: AssetRenderer[] = [
   lessonMdRenderer,
   memoryMdRenderer,
   workflowMdRenderer,
-  workflowProgramRenderer,
   scriptSourceRenderer,
   envFileRenderer,
   secretFileRenderer,
@@ -596,5 +595,4 @@ export {
   secretFileRenderer,
   skillMdRenderer,
   workflowMdRenderer,
-  workflowProgramRenderer,
 };

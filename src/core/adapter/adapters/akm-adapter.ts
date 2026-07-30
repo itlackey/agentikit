@@ -17,9 +17,9 @@
  *
  * `file-context.ts#runMatchers` (`:242-265`) is async ONLY because of its lazy
  * `ensureBuiltinsRegistered()` dynamic import; its ARBITRATION is pure and
- * synchronous. We reproduce it here by importing the SAME five builtin matcher
+ * synchronous. We reproduce it here by importing the SAME four builtin matcher
  * functions (`matchers.ts` `extensionMatcher` / `directoryMatcher` /
- * `parentDirHintMatcher` / `smartMdMatcher` / `workflowProgramMatcher`) in the
+ * `parentDirHintMatcher` / `smartMdMatcher`) in the
  * SAME order they are registered, collecting every non-null
  * `MatchResult` and picking the winner by **specificity descending, ties broken
  * by later-registered (higher index) winning** — byte-identical to

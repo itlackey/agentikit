@@ -5,7 +5,7 @@
 /**
  * Index-time metadata fold for the `akm` adapter's `recognize` — akm 0.9.0
  * chunk-2, WI-C, implementing spec §2 ("the nine index-time metadata
- * contributors move into recognize") + the 2 workflow contributors.
+ * contributors move into recognize") + the workflow contributor.
  *
  * This leaf reproduces the 11 `registerMetadataContributor` sites keyed on the
  * winning RENDERER name (exactly how each contributor's `appliesTo({ rendererName })`
@@ -15,8 +15,7 @@
  *     lesson-frontmatter-metadata, memory-frontmatter-metadata,
  *     script-comment-metadata, env-file-metadata, secret-file-metadata,
  *     task-yaml-metadata, session-md-metadata, fact-md-metadata;
- *   - `workflows/renderer.ts` (2): workflow-document-metadata (workflow-md),
- *     workflow-program-metadata (workflow-program-yaml).
+ *   - `workflows/renderer.ts` (1): workflow-document-metadata (workflow-md).
  *
  * ── Cycle-safety (chunk-2 ratchet, baseline 18) ──
  *
@@ -62,8 +61,6 @@ import { listKeys } from "../../../commands/env/env";
 import type { IndexDocument } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseWorkflow } from "../../../workflows/parser";
-import { parseWorkflowProgram } from "../../../workflows/program/parser";
-import { programStepInstructions, projectProgramParameters } from "../../../workflows/program/project";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { TocHeading } from "../../asset/markdown";
 import { parseMarkdownToc } from "../../asset/markdown";
@@ -315,46 +312,21 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
         if (!result.ok) return out;
         const doc = result.document;
         const hints = new Set<string>();
-        hints.add(doc.title);
         for (const step of doc.steps) {
-          hints.add(step.title);
           hints.add(step.id);
-          hints.add(step.instructions.text);
-          for (const criterion of step.completionCriteria ?? []) hints.add(criterion.text);
+          if (step.instructions) hints.add(step.instructions.text);
+          if (step.gateRubric) hints.add(step.gateRubric.text);
         }
         out.searchHints = Array.from(hints).filter(Boolean);
-        if (doc.parameters?.length) {
-          out.parameters = doc.parameters.map((p) => ({
-            name: p.name,
-            ...(p.description ? { description: p.description } : {}),
-          }));
+        if (doc.params) {
+          const parameters = Object.entries(doc.params).map(([name, schema]) => {
+            const description = schema.description;
+            return { name, ...(typeof description === "string" && description ? { description } : {}) };
+          });
+          if (parameters.length) out.parameters = parameters;
         }
       } catch {
         // See file header: broken workflows drop at drain time, not here.
-      }
-      return out;
-    }
-
-    // ── workflow-program-metadata (workflow-program-yaml) ──
-    case "workflow-program-yaml": {
-      try {
-        const result = parseWorkflowProgram(file.content(), { path: file.relPath });
-        if (!result.ok) return out;
-        const program = result.program;
-        const hints = new Set<string>();
-        hints.add(program.name);
-        for (const step of program.steps) {
-          hints.add(step.id);
-          if (step.title) hints.add(step.title);
-          hints.add(programStepInstructions(step));
-          for (const criterion of step.gate?.criteria ?? []) hints.add(criterion);
-        }
-        out.searchHints = Array.from(hints).filter(Boolean);
-        if (!out.description && program.description) out.description = program.description;
-        const parameters = projectProgramParameters(program);
-        if (parameters?.length) out.parameters = parameters;
-      } catch {
-        // See file header: broken programs drop at drain time, not here.
       }
       return out;
     }
