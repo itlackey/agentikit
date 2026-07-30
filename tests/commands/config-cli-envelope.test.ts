@@ -72,12 +72,12 @@ describe("akm config — JSON envelope snapshot (WS6)", () => {
     expect(stdout.trim()).toBe("");
   });
 
-  test("config path --all: success envelope carries config/stash/cache/index paths", async () => {
+  test("config path --all: success envelope carries config/bundle/cache/index paths", async () => {
     const { stdout, status } = await runCli(["--json", "config", "path", "--all"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(typeof env.config).toBe("string");
-    expect(typeof env.stash).toBe("string");
+    expect(typeof env.bundle).toBe("string");
     expect(typeof env.cache).toBe("string");
     expect(typeof env.index).toBe("string");
   });
