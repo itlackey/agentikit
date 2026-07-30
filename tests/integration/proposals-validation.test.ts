@@ -175,7 +175,14 @@ describe("createProposal validation", () => {
     expect(isProposalSkipped(result)).toBe(false);
   });
 
-  test("rejects a workflow with numbered step headings before queueing", () => {
+  // Ported for workflow-format-unification: the old grammar's authoring
+  // mistake ("numbered step headings", e.g. "## Step 1: Validate inputs")
+  // has no equivalent under the unified grammar's single rule — every
+  // level-2 heading must be `## <declared-step-id>` exactly (spec §2.2 body
+  // rule 1). A heading that doesn't match a declared step id is now
+  // "Unexpected level-2 heading ...", pinned below with the new parser's
+  // real message rather than an invented one.
+  test("rejects a workflow whose body heading doesn't match a declared step id before queueing", () => {
     const stash = makeStashDir();
     let caught: { code?: string; message?: string } | undefined;
     try {
@@ -185,7 +192,7 @@ describe("createProposal validation", () => {
         force: true,
         payload: {
           content:
-            "# Workflow: Ship Feature From Spec\n\n## Step 1: Validate inputs\nStep ID: validate\n\n### Instructions\nValidate the specification.\n",
+            "---\ntype: workflow\ndescription: Ship Feature From Spec\nsteps:\n  - id: validate\n---\n\n## Step 1: Validate inputs\n\nValidate the specification.\n",
         },
       });
     } catch (err) {
@@ -193,7 +200,8 @@ describe("createProposal validation", () => {
     }
 
     expect(caught?.code).toBe("INVALID_PROPOSAL");
-    expect(caught?.message).toContain('Only "## Step: <title>" sections are allowed');
+    expect(caught?.message).toContain('Unexpected level-2 heading "## Step 1: Validate inputs"');
+    expect(caught?.message).toContain("Level-2 headings must exactly match a declared step id");
     expect(listProposals(stash)).toHaveLength(0);
   });
 

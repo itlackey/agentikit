@@ -26,19 +26,22 @@ afterEach(() => {
   for (const d of disposers.splice(0)) d.cleanup();
 });
 
+// Unified-format fixture (frontmatter graph + `## <id>` body — spec §2.2).
 const ONE_STEP_WORKFLOW = `---
+type: workflow
 description: Envelope test workflow
+steps:
+  - id: deploy
 ---
 
-# Workflow: Release Flow
+# Release Flow
 
-## Step: Deploy
-Step ID: deploy
+## deploy
 
-### Instructions
 Run the deployment command and watch health checks.
 
-### Completion Criteria
+### gate
+
 - Deployment confirmed
 `;
 
@@ -120,8 +123,10 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
     // pipeable raw starter document (parity with the removed `workflow
     // template`, which was format-exempt for the same reason).
     expect(stdout.trimStart().startsWith("{")).toBe(false);
-    expect(stdout).toContain("# Workflow:");
-    expect(stdout).toContain("Step ID:");
+    // Unified template: no "# Workflow:"/"Step ID:" grammar — frontmatter
+    // carries the graph, `## <id>` headings carry the body (spec §2.2).
+    expect(stdout).toContain("type: workflow");
+    expect(stdout).toContain("## first-step");
     expect(fs.existsSync(path.join(stash, "workflows", "print-flow.md"))).toBe(false);
   });
 

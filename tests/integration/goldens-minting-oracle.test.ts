@@ -100,19 +100,28 @@ const CASES: MintingCase[] = [
     relFilePath: "docs/knowledge/example-knowledge.md",
     expected: "docs/knowledge/example-knowledge",
   },
-  // workflow -- markdownSpec-like but strips any of .md/.yaml/.yml.
+  // workflow -- markdownSpec-like, but workflow-format-unification (spec §3)
+  // shrinks WORKFLOW_EXTENSIONS to [".md"] only (the YAML workflow *program*
+  // is deleted as a distinct on-disk format). A non-.md extension is no
+  // longer stripped -- it passes through as part of the canonical name.
   { type: "workflow", label: "canonical", relFilePath: "workflows/example-workflow.md", expected: "example-workflow" },
   {
     type: "workflow",
-    label: "canonicalYaml",
+    label: "canonicalNonMdExtensionKept",
     relFilePath: "workflows/example-workflow.yaml",
-    expected: "example-workflow",
+    expected: "example-workflow.yaml",
   },
   {
     type: "workflow",
     label: "fallback",
-    relFilePath: "installed/workflows/example-workflow.yaml",
+    relFilePath: "installed/workflows/example-workflow.md",
     expected: "installed/workflows/example-workflow",
+  },
+  {
+    type: "workflow",
+    label: "fallbackNonMdExtensionKept",
+    relFilePath: "installed/workflows/example-workflow.yaml",
+    expected: "installed/workflows/example-workflow.yaml",
   },
   // script -- identity join, extension is PART of the canonical name.
   { type: "script", label: "canonical", relFilePath: "scripts/example-script.sh", expected: "example-script.sh" },
@@ -248,11 +257,18 @@ describe("golden fixture: deriveCanonicalAssetNameFromStashRoot minting oracle (
           "literal -- the function is pure, no fs access), name (the derived canonical name, or undefined)}. Every " +
           'type has a "canonical" (first path segment matches TYPE_DIRS[type]) and a "fallback" (custom ' +
           "top-level dir, e.g. the function's own doc-comment example tools/agents/svelte-file-editor) case; " +
-          "several types carry extra documented branches (workflow's multi-extension strip, memory's .derived.md " +
-          "twin, env's \"default\" alias in both branches, secret's nested-name identity join).",
+          "several types carry extra documented branches (workflow's non-.md-extension-kept behavior, memory's " +
+          ".derived.md twin, env's \"default\" alias in both branches, secret's nested-name identity join).",
         "FROZEN behavior-parity oracle (D0b-1/D0b-3): this is the exact function Chunk 8's full-table re-key pass " +
           "leans on (anchors.md Section C) -- Chunk 2's format adapters and Chunk 8's re-key must reproduce both " +
           "branches byte-for-byte.",
+        "RE-BASELINED (workflow-format-unification, driver-side test port, reBaselineChunk 4): WORKFLOW_EXTENSIONS " +
+          'shrinks to [".md"] only (spec §3 -- the YAML workflow *program* is deleted as a distinct on-disk ' +
+          "format), so workflowSpec.toCanonicalName no longer strips a .yaml/.yml extension. Renamed workflow's " +
+          '"canonicalYaml" case to "canonicalNonMdExtensionKept" (expected name now KEEPS the .yaml extension: ' +
+          '"example-workflow.yaml", not "example-workflow"); the "fallback" case switched to a .md relFilePath ' +
+          'so it stays a pure fallback-branch pin, and a new "fallbackNonMdExtensionKept" case documents the same ' +
+          "extension-kept behavior in the fallback branch. Every other type/case is byte-identical.",
       ],
       pureFunction,
     });

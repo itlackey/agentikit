@@ -105,32 +105,35 @@ afterEach(() => {
   }
 });
 
+// Unified-format fixture (frontmatter graph + `## <id>` body — spec §2.2).
 const ACA_WORKFLOW = `---
+type: workflow
 description: Test workflow imported via workflow create --from
 tags:
   - test
 params:
-  app_name: name of the app
+  app_name: { type: string, description: name of the app }
+steps:
+  - id: first-step
+  - id: second-step
 ---
 
-# Workflow: Imported Test Workflow
+# Imported Test Workflow
 
-## Step: First Step
-Step ID: first-step
+## first-step
 
-### Instructions
 Do thing one.
 
-### Completion Criteria
+### gate
+
 - Done
 
-## Step: Second Step
-Step ID: second-step
+## second-step
 
-### Instructions
 Do thing two.
 
-### Completion Criteria
+### gate
+
 - Done
 `;
 

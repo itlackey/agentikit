@@ -176,52 +176,56 @@ afterEach(() => {
   }
 });
 
+// Unified-format fixtures (frontmatter graph + `## <id>` body; gate rubric in
+// the body's `### gate`, control key in frontmatter — spec §2.2/§2.4).
 const RELEASE_WORKFLOW = `---
+type: workflow
 description: Ship a release
 tags:
   - release
 params:
-  version: Version being released
+  version: { type: string, description: Version being released }
+steps:
+  - id: validate
+  - id: deploy
 ---
 
-# Workflow: Ship Release
+# Ship Release
 
-## Step: Validate Release Inputs
-Step ID: validate
+## validate
 
-### Instructions
 Confirm release notes, tag, and version are present.
 
-### Completion Criteria
+### gate
+
 - Release notes reviewed
 - Version matches tag
 
-## Step: Deploy Release
-Step ID: deploy
+## deploy
 
-### Instructions
 Run the deployment command and watch health checks.
 `;
 
 const TWO_STEP_WORKFLOW = `---
+type: workflow
 description: Test workflow
+steps:
+  - id: first
+  - id: second
 ---
 
-# Workflow: Test Flow
+# Test Flow
 
-## Step: First Step
-Step ID: first
+## first
 
-### Instructions
 Do the first thing.
 
-### Completion Criteria
+### gate
+
 - First thing done
 
-## Step: Second Step
-Step ID: second
+## second
 
-### Instructions
 Do the second thing.
 `;
 
@@ -270,35 +274,39 @@ describe("workflow CLI", async () => {
       steps: Array<{ id: string; title: string }>;
     };
     expect(json.type).toBe("workflow");
-    expect(json.workflowTitle).toBe("Release Flow");
-    expect(json.steps[0]?.id).toBe("release-flow-setup");
+    // No authored titles anywhere in the unified format (spec §2.2): the show
+    // response's `workflowTitle` is the asset's canonical name, and a step's
+    // `title` is just its id.
+    expect(json.workflowTitle).toBe("release-flow");
+    expect(json.steps[0]?.id).toBe("first-step");
+    expect(json.steps[0]?.title).toBe("first-step");
   });
 
   test("create --from rejects invalid workflow documents", async () => {
     const env = createWorkflowEnv();
     const sourceDir = makeTempDir("akm-workflow-source-");
     const sourcePath = path.join(sourceDir, "invalid.md");
-    fs.writeFileSync(sourcePath, "# Workflow: Broken\n\n## Step: Missing Instructions\nStep ID: broken\n", "utf8");
+    fs.writeFileSync(sourcePath, "---\ntype: workflow\nsteps:\n  - id: broken\n---\n", "utf8");
 
     const result = await runCli(["workflow", "create", "broken", "--from", sourcePath], env);
     expect(result.status).toBe(2);
 
     const error = parseLastJsonLine(result.stderr) as { error: string };
-    expect(error.error).toContain('"### Instructions" section');
+    expect(error.error).toContain('"## broken" body section');
   });
 
   test("create --from rejects duplicate step ids", async () => {
     const env = createWorkflowEnv();
     const sourceDir = makeTempDir("akm-workflow-source-");
     const sourcePath = path.join(sourceDir, "duplicate.md");
-    fs.writeFileSync(sourcePath, RELEASE_WORKFLOW.replace("Step ID: deploy", "Step ID: validate"), "utf8");
+    fs.writeFileSync(sourcePath, RELEASE_WORKFLOW.replace("- id: deploy", "- id: validate"), "utf8");
 
     const result = await runCli(["workflow", "create", "duplicate", "--from", sourcePath], env);
     expect(result.status).toBe(2);
 
     const error = parseLastJsonLine(result.stderr) as { error: string };
-    expect(error.error).toContain('"validate"');
-    expect(error.error).toContain("already used");
+    expect(error.error).toContain('Duplicate step id "validate"');
+    expect(error.error).toContain("must be unique");
   });
 
   test("start, next, complete, list, and status manage persisted workflow runs", async () => {
@@ -321,7 +329,9 @@ describe("workflow CLI", async () => {
     expect(next.status).toBe(0);
     const nextJson = JSON.parse(next.stdout) as { step: { id: string; title: string; completionCriteria: string[] } };
     expect(nextJson.step.id).toBe("validate");
-    expect(nextJson.step.completionCriteria).toEqual(["Release notes reviewed", "Version matches tag"]);
+    // The gate rubric is carried through as ONE criterion string — the whole
+    // "### gate" section byte-exact (spec §2.4) — not split per bullet line.
+    expect(nextJson.step.completionCriteria).toEqual(["- Release notes reviewed\n- Version matches tag"]);
 
     const completed = await runCli(
       [

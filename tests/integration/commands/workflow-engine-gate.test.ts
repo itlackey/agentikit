@@ -50,7 +50,10 @@ beforeEach(() => {
 
 afterEach(() => storage.cleanup());
 
-/** Write a single-step markdown workflow into the sandboxed stash. */
+/**
+ * Write a single-step unified-format workflow (frontmatter graph + `## <id>`
+ * body — workflow-format-unification spec §2.2) into the sandboxed stash.
+ */
 function writeSingleStepWorkflow(name: string): void {
   const file = path.join(storage.stashDir, "workflows", `${name}.md`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -58,15 +61,16 @@ function writeSingleStepWorkflow(name: string): void {
     file,
     [
       "---",
+      "type: workflow",
       "description: Gate test workflow",
+      "steps:",
+      "  - id: only-step",
       "---",
       "",
-      `# Workflow: ${name}`,
+      `# ${name}`,
       "",
-      "## Step: Only Step",
-      "Step ID: only-step",
+      "## only-step",
       "",
-      "### Instructions",
       "Do the gated thing.",
       "",
     ].join("\n"),
@@ -119,12 +123,16 @@ describe("akm workflow — experimental.workflowEngine gate OFF (default)", () =
     expect(env.error).toContain(WORKFLOW_ENGINE_CONFIG_KEY);
   });
 
-  test("`workflow create <name>.yaml` (a YAML program) refuses, before any write", async () => {
+  // workflow-format-unification (spec §3): the YAML workflow *program* is
+  // deleted as a distinct on-disk format, so `create <name>.yaml` is no
+  // longer a gated surface at all — it is now a plain, always-on usage error
+  // regardless of `experimental.workflowEngine`. Pinned below (gate-independent).
+  test("`workflow create <name>.yaml` refuses unconditionally: workflows are markdown-only now", async () => {
     const { code, stderr } = await runCliCapture(["--json", "workflow", "create", "gated-program.yaml"]);
-    expect(code).toBe(78);
+    expect(code).toBe(2);
     const env = JSON.parse(stderr) as ErrorEnvelope;
     expect(env.ok).toBe(false);
-    expect(env.code).toBe("WORKFLOW_ENGINE_NOT_ENABLED");
+    expect(env.error).toContain("markdown-only");
     expect(fs.existsSync(path.join(storage.stashDir, "workflows", "gated-program.yaml"))).toBe(false);
   });
 });
@@ -154,12 +162,14 @@ describe("akm workflow — experimental.workflowEngine gate ON", () => {
     writeSandboxConfig({ experimental: { workflowEngine: true } });
   });
 
-  test("`workflow create <name>.yaml` succeeds once opted in", async () => {
-    const { code, stdout } = await runCliCapture(["--json", "workflow", "create", "opted-in-program.yaml"]);
-    expect(code).toBe(0);
-    const env = JSON.parse(stdout) as { ok: boolean; ref: string };
-    expect(env.ok).toBe(true);
-    expect(env.ref).toContain("workflows/opted-in-program");
+  // Opting into the gate does NOT resurrect the deleted YAML-program format —
+  // `create <name>.yaml` still refuses (workflow-format-unification, spec §3).
+  test("`workflow create <name>.yaml` still refuses even with the gate opted in", async () => {
+    const { code, stderr } = await runCliCapture(["--json", "workflow", "create", "opted-in-program.yaml"]);
+    expect(code).toBe(2);
+    const env = JSON.parse(stderr) as ErrorEnvelope;
+    expect(env.ok).toBe(false);
+    expect(env.error).toContain("markdown-only");
   });
 
   test("`workflow brief` runs past the gate and returns the driver-protocol brief", async () => {
