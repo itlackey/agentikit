@@ -236,10 +236,10 @@ export function formatSearchPlain(r: Record<string, unknown>, detail: DetailLeve
   if (allHits.length === 0) {
     const warnings = Array.isArray(r.warnings) ? (r.warnings as unknown[]) : [];
     const hasSetupWarning = warnings.some(
-      (w) => String(w).toLowerCase().includes("no stash") || String(w).toLowerCase().includes("not configured"),
+      (w) => String(w).toLowerCase().includes("no bundle") || String(w).toLowerCase().includes("not configured"),
     );
     if (hasSetupWarning) {
-      return "No stash configured. Run `akm bundle create` to create your working stash, then `akm index` to build the search index.";
+      return "No bundle configured. Run `akm bundle create` to create your working bundle, then `akm index` to build the search index.";
     }
     const base = r.tip ? String(r.tip) : "No matches found.";
     return `${base}\nTry:\n  akm search '<broader-term>'          # fewer keywords\n  akm bundle list                      # see all configured sources\n  akm curate '<query>'                 # let akm select the best match`;
@@ -405,7 +405,7 @@ export function formatInitPlain(r: Record<string, unknown>): string {
   let out = `Bundle initialized at ${r.bundleDir ?? "unknown"}`;
   // When --dir scaffolded a secondary bundle but the default was deliberately
   // left untouched, tell the user instead of silently repointing their default.
-  if (r.defaultStashUpdated === false && typeof r.previousBundleDir === "string" && r.previousBundleDir) {
+  if (r.defaultBundleUpdated === false && typeof r.previousBundleDir === "string" && r.previousBundleDir) {
     out += `\nYour default bundle is unchanged (${r.previousBundleDir}). Re-run with --set-default to make ${r.bundleDir} the default.`;
   } else if (r.configPath) {
     out += `\nConfig saved to ${r.configPath}`;

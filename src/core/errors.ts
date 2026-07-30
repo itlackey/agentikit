@@ -95,7 +95,7 @@ export type NotFoundErrorCode =
  * imperative. Returning undefined means "no canned hint".
  */
 const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
-  STASH_DIR_NOT_FOUND: "Run `akm setup` to create and configure your stash, or configure a defaultBundle path.",
+  STASH_DIR_NOT_FOUND: "Run `akm setup` to create and configure your bundle, or configure a defaultBundle path.",
   STASH_DIR_NOT_A_DIRECTORY:
     "The configured default bundle path exists but isn't a directory. Update it to point at a folder.",
   STASH_DIR_UNREADABLE: "Check the path exists and your user has read permission, or update the default bundle path.",
@@ -107,7 +107,7 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
   SETUP_TMP_STASH_REFUSED:
     "Use a persistent directory, or set AKM_FORCE_SETUP_TMP_STASH=1 to opt in to a sandboxed setup (setup also pre-sets AKM_BUNDLE_DIR so config and cache writes auto-isolate into $stashDir/.akm/ — host config is preserved).",
   UNSAFE_STASH_DIR:
-    "Choose a path inside your home directory (e.g. ~/akm) or another empty workspace. The stash directory cannot be the filesystem root, your home directory itself, or a sensitive system path like /etc, /var, ~/.config, or ~/.ssh.",
+    "Choose a path inside your home directory (e.g. ~/akm) or another empty workspace. The bundle directory cannot be the filesystem root, your home directory itself, or a sensitive system path like /etc, /var, ~/.config, or ~/.ssh.",
   UNKNOWN_IMPROVE_STRATEGY:
     "Pass one of the listed strategy names to `--strategy`, or define it under `improve.strategies`. Names are case-sensitive.",
   WORKFLOW_ENGINE_NOT_ENABLED: "Run `akm config set experimental.workflowEngine true` to enable it.",
@@ -116,7 +116,7 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
 /** Default hint for each UsageError code. */
 const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   INVALID_FLAG_VALUE: "Run `akm <command> --help` to see accepted values.",
-  INVALID_SOURCE_VALUE: "Pick one of: stash, registry, both.",
+  INVALID_SOURCE_VALUE: "Pick one of: local, registry, all, or a configured source name.",
   INVALID_FORMAT_VALUE: "Pick one of: json, jsonl, yaml, text, md, html.",
   INVALID_DETAIL_VALUE: "Pick one of: brief, normal, full. For agent/summary projections use --shape.",
   INVALID_SHAPE_VALUE: "Pick one of: human, agent, summary (summary is only valid on `akm show`).",

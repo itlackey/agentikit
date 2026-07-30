@@ -80,7 +80,7 @@ explicitly opt in via `experimental.improveAutonomy` (see
 independent of that gate.
 
 ```sh
-akm improve                           # Full stash pass
+akm improve                           # Full bundle pass
 akm improve memory                    # Scope to memory assets only
 akm improve skills/code-review         # One asset
 akm improve --task "reduce duplication"
@@ -106,10 +106,10 @@ akm improve --limit 20       # run a bounded pass
 akm proposal list            # review what was generated
 ```
 
-**End-of-run auto-sync:** For git-backed stashes (detected by a `.git`
+**End-of-run auto-sync:** For git-backed bundles (detected by a `.git`
 directory), `akm improve` automatically commits all changes as a single batch
 at the end of the run — the same operation as `akm sync` — and pushes if the
-stash is writable, per the active strategy's `sync` setting. The
+bundle is writable, per the active strategy's `sync` setting. The
 `reflect-distill` and `proactive-maintenance` strategies skip sync entirely
 (an interrupted run would otherwise leave an uncommitted backlog). Use
 `--no-sync` to disable for any single run, or `--no-push` to commit without
@@ -134,19 +134,19 @@ akm proposal diff <id>                          # Preview the change vs. the liv
 
 # Apply or discard
 akm proposal accept <uuid-or-prefix>
-akm proposal accept skills/akm-dream --target team-stash
+akm proposal accept skills/akm-dream --target team-bundle
 akm proposal reject <uuid-or-prefix> --reason "duplicates existing workflow"
 ```
 
 Accepts full UUIDs, 8-character UUID prefixes, or asset refs. `akm proposal accept` runs
-full validation before promoting the proposal into your stash.
+full validation before promoting the proposal into your bundle.
 
 **Example: review and accept a memory consolidation**
 
 ```sh
 akm proposal list --status pending
 akm proposal diff abc12345             # preview the proposed consolidation
-akm proposal accept abc12345           # write it to the stash
+akm proposal accept abc12345           # write it to the bundle
 ```
 
 ## akm proposal new
@@ -154,7 +154,7 @@ akm proposal accept abc12345           # write it to the stash
 `akm proposal new` authors a brand-new asset via the LLM pipeline — useful
 when you want to create something from scratch rather than improving an
 existing asset. Output always goes to the proposal queue, never directly to
-the stash.
+the bundle.
 
 ```sh
 akm proposal new skill code-review --task "PR-style review skill for TypeScript repos"

@@ -207,7 +207,7 @@ function installSetupSeams(): void {
   overrideSeam(_setAkmInitForTests, async (options?: { dir?: string }) => {
     const dir = options?.dir ?? DEFAULT_STASH_DIR;
     setupState.initCalls.push({ dir });
-    return { bundleDir: dir, created: true, configPath: DEFAULT_CONFIG_PATH, defaultStashUpdated: true };
+    return { bundleDir: dir, created: true, configPath: DEFAULT_CONFIG_PATH, defaultBundleUpdated: true };
   });
   overrideSeam(_setAkmIndexForTests, async (options) => {
     setupState.indexCalls.push({

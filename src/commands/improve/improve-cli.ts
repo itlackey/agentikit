@@ -328,7 +328,7 @@ export const improveCommand = defineCommand({
         }
       } else {
         process.stderr.write(
-          `warning: no writable stash directory resolved; improve result not persisted to state.db (use --json-to-stdout to capture)\n`,
+          `warning: no writable bundle directory resolved; improve result not persisted to state.db (use --json-to-stdout to capture)\n`,
         );
       }
 

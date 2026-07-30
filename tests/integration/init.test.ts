@@ -200,7 +200,7 @@ describe("akmInit (akm bundle create)", () => {
     test("no --dir, no existing primary → default-path init persists the primary bundle", async () => {
       expect(primaryBundlePath(loadUserConfig())).toBeUndefined();
       const result = await akmInit();
-      expect(result.defaultStashUpdated).toBe(true);
+      expect(result.defaultBundleUpdated).toBe(true);
       expect(result.previousBundleDir).toBeUndefined();
       expect(primaryBundlePath(loadUserConfig())).toBe(result.bundleDir);
     });
@@ -210,7 +210,7 @@ describe("akmInit (akm bundle create)", () => {
       fs.rmSync(dirX, { recursive: true, force: true });
       expect(primaryBundlePath(loadUserConfig())).toBeUndefined();
       const result = await akmInit({ dir: dirX });
-      expect(result.defaultStashUpdated).toBe(true);
+      expect(result.defaultBundleUpdated).toBe(true);
       expect(primaryBundlePath(loadUserConfig())).toBe(dirX);
     });
 
@@ -225,7 +225,7 @@ describe("akmInit (akm bundle create)", () => {
       // Config still points at Y — default pointer left alone.
       expect(primaryBundlePath(loadUserConfig())).toBe(dirY);
       expect(result.bundleDir).toBe(dirX);
-      expect(result.defaultStashUpdated).toBe(false);
+      expect(result.defaultBundleUpdated).toBe(false);
       expect(result.previousBundleDir).toBe(dirY);
 
       // ...but X is still fully scaffolded (regression for the non-persist case).
@@ -243,7 +243,7 @@ describe("akmInit (akm bundle create)", () => {
       const result = await akmInit({ dir: dirX, setDefault: true });
 
       expect(primaryBundlePath(loadUserConfig())).toBe(dirX);
-      expect(result.defaultStashUpdated).toBe(true);
+      expect(result.defaultBundleUpdated).toBe(true);
       expect(result.previousBundleDir).toBeUndefined();
     });
 
@@ -251,7 +251,7 @@ describe("akmInit (akm bundle create)", () => {
       const dirX = makeTempDir("akm-init-equal-");
       saveWithPrimary(dirX);
       const result = await akmInit({ dir: dirX });
-      expect(result.defaultStashUpdated).toBe(false);
+      expect(result.defaultBundleUpdated).toBe(false);
       expect(primaryBundlePath(loadUserConfig())).toBe(dirX);
     });
   });

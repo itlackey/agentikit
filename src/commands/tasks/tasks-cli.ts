@@ -19,31 +19,48 @@
  * seeded through the interactive `akm setup` task-review step instead of a
  * separate CLI command, and toggling a task's enabled state is a file edit +
  * `task sync` (tasks-sync.test.ts already proves the flip path). Every
- * subcommand (`add`/`run`/`history`/`sync`) shares one `--target <bundle>`
- * axis (Gate-1 fix: S8.4 renamed `task add`'s to `--bundle` in isolation,
- * splitting the group against itself — reverted so `task` matches `import`
- * and `proposal accept`, which also keep `--target`).
+ * subcommand (`add`/`run`/`history`/`sync`) shares one `--bundle <bundle>`
+ * axis (S8.4 ratified `task add`'s `--target` → `--bundle`; a later Gate-1
+ * fix reverted it to match `import`/`proposal accept`, splitting the
+ * write-target axis three-vs-one against `remember`/`clone`/`improve` — the
+ * final review re-applied the ratified rename here).
  */
 
 import { defineCommand } from "citty";
+import { getParsedInvocation } from "../../cli/invocation";
 import { parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
+import { UsageError } from "../../core/errors";
 import { akmTasksAdd, akmTasksDoctor, akmTasksHistory, akmTasksRun, akmTasksSync } from "./tasks";
 
-/** Shared `--target <bundle>` arg wired onto every task subcommand. */
-const targetArg = {
-  target: {
+/** Shared `--bundle <bundle>` arg wired onto every task subcommand. */
+const bundleArg = {
+  bundle: {
     type: "string",
     description: "Bundle to operate on (defaults to the primary/default bundle)",
   },
 } as const;
+
+/**
+ * `--target` was renamed to `--bundle` on `task` in 0.9 (S8.4). citty is
+ * non-strict, so the retired spelling is silently absorbed rather than
+ * rejected — reject it explicitly instead (mirrors improve-cli.ts /
+ * remember-cli.ts).
+ */
+function rejectRetiredTaskTargetFlag(): void {
+  if (!getParsedInvocation().hasFlag("--target")) return;
+  throw new UsageError(
+    "`akm task --target` was renamed to `--bundle` in 0.9. Use `--bundle <name>` instead.",
+    "INVALID_FLAG_VALUE",
+  );
+}
 
 const tasksAddCommand = defineJsonCommand({
   meta: { name: "add", description: "Register a new scheduled task and install it in the OS scheduler" },
   args: {
     id: { type: "positional", description: "Task id (used as filename and scheduler entry)", required: true },
     schedule: { type: "string", description: 'Cron-style schedule, e.g. "0 9 * * *" or "@daily"', required: true },
-    ...targetArg,
+    ...bundleArg,
     workflow: { type: "string", description: "Workflow ref to invoke (e.g. workflows/my-flow)" },
     prompt: {
       type: "string",
@@ -71,10 +88,11 @@ const tasksAddCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    rejectRetiredTaskTargetFlag();
     const result = await akmTasksAdd({
       id: args.id,
       schedule: args.schedule,
-      target: args.target,
+      target: args.bundle,
       workflow: args.workflow,
       prompt: args.prompt,
       command: args.command,
@@ -109,14 +127,15 @@ const tasksRunCommand = defineCommand({
   args: {
     ...GLOBAL_OUTPUT_ARGS,
     id: { type: "positional", description: "Task id", required: true },
-    ...targetArg,
+    ...bundleArg,
     scheduled: { type: "boolean", description: "Internal marker for scheduler-generated runs", default: false },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
+      rejectRetiredTaskTargetFlag();
       const envelope = await akmTasksRun(args.id, {
         scheduled: args.scheduled === true,
-        ...(args.target !== undefined ? { target: args.target } : {}),
+        ...(args.bundle !== undefined ? { target: args.bundle } : {}),
       });
       output("task-run", envelope);
       // F4: was `process.exit(envelope.exitCode)`, terminating synchronously
@@ -134,11 +153,12 @@ const tasksHistoryCommand = defineJsonCommand({
   args: {
     id: { type: "string", description: "Filter to one task id" },
     limit: { type: "string", description: "Maximum rows to return (default 50)" },
-    ...targetArg,
+    ...bundleArg,
   },
   async run({ args }) {
+    rejectRetiredTaskTargetFlag();
     const limit = parsePositiveIntFlag(args.limit ?? undefined);
-    const result = await akmTasksHistory({ id: args.id, limit, target: args.target });
+    const result = await akmTasksHistory({ id: args.id, limit, target: args.bundle });
     output("task-history", result);
   },
 });
@@ -149,7 +169,7 @@ const tasksSyncCommand = defineJsonCommand({
     description: "Reconcile the on-disk task files of a bundle with the OS scheduler",
   },
   args: {
-    ...targetArg,
+    ...bundleArg,
     rebind: {
       type: "boolean",
       description: "Replace installed bindings with the current invocation",
@@ -157,7 +177,8 @@ const tasksSyncCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
-    const result = await akmTasksSync({}, args.target, { rebind: args.rebind === true });
+    rejectRetiredTaskTargetFlag();
+    const result = await akmTasksSync({}, args.bundle, { rebind: args.rebind === true });
     output("task-sync", result);
   },
 });

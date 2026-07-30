@@ -38,7 +38,7 @@ describe("resolveStashDir", () => {
 
   test("throws when no stash dir is configured and default does not exist", () => {
     // HOME is already sandboxed (no akm subdir), AKM_BUNDLE_DIR is deleted in beforeEach
-    expect(() => resolveStashDir()).toThrow("No stash directory found");
+    expect(() => resolveStashDir()).toThrow("No bundle directory found");
   });
 
   test("throws when AKM_BUNDLE_DIR points to nonexistent path", () => {

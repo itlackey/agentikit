@@ -163,7 +163,7 @@ export async function akmSearch(input: {
       bundleDir: "",
       source,
       hits: [],
-      warnings: ["No stashes configured. Run `akm bundle create` to create your working stash."],
+      warnings: ["No bundles configured. Run `akm bundle create` to create your working bundle."],
       timing: { totalMs: Date.now() - t0 },
     };
     maybeLogSearchEvent(input, query, response);
@@ -435,7 +435,7 @@ function assertNamedSourceExists(config: AkmConfig, namedSourceName: string): vo
     const hint =
       validNames.length > 0
         ? `Known source names: ${validNames.join(", ")}`
-        : "No named sources are configured. Run `akm bundle list` to see installed stashes.";
+        : "No named sources are configured. Run `akm bundle list` to see installed bundles.";
     throw new UsageError(`Unknown source name: "${namedSourceName}". ${hint}`, "INVALID_SOURCE_VALUE");
   }
 }

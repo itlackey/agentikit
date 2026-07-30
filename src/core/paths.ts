@@ -322,7 +322,7 @@ export function getDefaultStashDir(env: NodeJS.ProcessEnv = process.env): string
 
   const home = env.HOME?.trim();
   if (!home) {
-    throw new ConfigError("Unable to determine default stash directory. Set HOME.", "STASH_DIR_NOT_FOUND");
+    throw new ConfigError("Unable to determine default bundle directory. Set HOME.", "STASH_DIR_NOT_FOUND");
   }
   return path.join(home, "akm");
 }

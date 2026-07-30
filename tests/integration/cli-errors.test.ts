@@ -72,7 +72,7 @@ describe("CLI error handling", () => {
   test("search without stash dir prints JSON error with hint", async () => {
     const { stderr, status } = await runCli("search", "test");
     expect(status).not.toBe(0);
-    expect(stderr).toContain("No stash directory found");
+    expect(stderr).toContain("No bundle directory found");
     expect(stderr).toContain("hint");
   });
 
@@ -182,7 +182,9 @@ describe("error class hints", () => {
   });
 
   test("UsageError derives hint from code by default", () => {
-    expect(new UsageError("bad source", "INVALID_SOURCE_VALUE").hint()).toBe("Pick one of: stash, registry, both.");
+    expect(new UsageError("bad source", "INVALID_SOURCE_VALUE").hint()).toBe(
+      "Pick one of: local, registry, all, or a configured source name.",
+    );
     expect(new UsageError("bad format", "INVALID_FORMAT_VALUE").hint()).toBe(
       "Pick one of: json, jsonl, yaml, text, md, html.",
     );
@@ -463,7 +465,7 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
     const parsed = JSON.parse(stderr.trim());
     expect(parsed.ok).toBe(false);
     expect(parsed.code).toBe("UNKNOWN_COMMAND");
-    expect(parsed.error).toContain("Unknown command");
+    expect(parsed.error).toBe("Unknown command totally-bogus");
     expect(parsed.hint).toContain("akm --help");
   });
 

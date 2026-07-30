@@ -53,7 +53,7 @@ const FALLBACK_STASHES: SetupBundleEntry[] = [
   {
     id: "itlackey/akm-stash",
     name: "itlackey/akm-stash",
-    description: "Official AKM onboarding stash",
+    description: "Official AKM onboarding bundle",
     url: "https://github.com/itlackey/akm-stash",
     source: "fallback",
     defaultSelected: true,
@@ -61,7 +61,7 @@ const FALLBACK_STASHES: SetupBundleEntry[] = [
   {
     id: "andrewyng/context-hub",
     name: "andrewyng/context-hub",
-    description: "Optional community prompt and context stash",
+    description: "Optional community prompt and context bundle",
     url: "https://github.com/andrewyng/context-hub",
     source: "fallback",
     defaultSelected: false,

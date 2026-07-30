@@ -32,8 +32,8 @@ export interface InstalledTaskRef {
   signature?: string;
   /**
    * The bundle this scheduled entry was installed from, parsed from the
-   * embedded `--target <bundle>` token. Absent (undefined) means the primary /
-   * default bundle — the byte-identical, no-`--target` form. `tasks sync`
+   * embedded `--bundle <bundle>` token. Absent (undefined) means the primary /
+   * default bundle — the byte-identical, no-`--bundle` form. `tasks sync`
    * scopes reconciliation to entries whose `target` matches the bundle being
    * synced so a plain (primary) sync never removes another bundle's entries.
    */
@@ -49,7 +49,7 @@ export interface RebindTaskRef {
 
 /**
  * Optional per-install context. `target` is the bundle name embedded as a
- * `--target <bundle>` token in the scheduled invocation — passed ONLY for a
+ * `--bundle <bundle>` token in the scheduled invocation — passed ONLY for a
  * non-default bundle (a default/primary task installs without it so its native
  * definition stays byte-identical). `expectedSignature` receives the same opts
  * so drift detection compares against the target-aware signature.

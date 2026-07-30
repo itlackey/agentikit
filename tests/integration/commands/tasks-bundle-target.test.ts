@@ -4,15 +4,15 @@
 
 /**
  * End-to-end coverage for bundle-targeted tasks (issue #711): scheduling tasks
- * from a non-default bundle via `--target`, threaded through the command layer
+ * from a non-default bundle via `--bundle`, threaded through the command layer
  * into the real cron backend (an in-memory crontab). Proves:
  *   1. enable / disable / run a task living in a NON-default bundle works
- *      end-to-end (file resolved from that bundle; cron line carries `--target`).
- *   2. `--target` on a NON-writable bundle fails with a writable-enforcement error.
+ *      end-to-end (file resolved from that bundle; cron line carries `--bundle`).
+ *   2. `--bundle` on a NON-writable bundle fails with a writable-enforcement error.
  *   3. an id colliding with one already scheduled from another bundle → hard error.
- *   4. a plain (primary) sync never removes a `--target <other>` entry; a scoped
- *      `sync --target X` reconciles only X's entries.
- *   5. the default bundle (or no `--target`) produces a byte-identical cron line.
+ *   4. a plain (primary) sync never removes a `--bundle <other>` entry; a scoped
+ *      `sync --bundle X` reconciles only X's entries.
+ *   5. the default bundle (or no `--bundle`) produces a byte-identical cron line.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -109,25 +109,25 @@ afterEach(() => {
   readonlyDir.cleanup();
 });
 
-describe("bundle-targeted tasks via --target", () => {
-  test("sync of a task in a NON-default bundle carries --target through cron, and a file-edit disable comments it", async () => {
+describe("bundle-targeted tasks via --bundle", () => {
+  test("sync of a task in a NON-default bundle carries --bundle through cron, and a file-edit disable comments it", async () => {
     writeTaskFile(
       work.dir,
       "foo",
       ["version: 2", 'schedule: "@daily"', 'command: "true"', "enabled: true", ""].join("\n"),
     );
 
-    // sync --target work → installs, cron line embeds `--target work`.
+    // sync --bundle work → installs, cron line embeds `--bundle work`.
     const synced = await akmTasksSync({ backend: cron() }, "work");
     expect(synced.installed).toEqual(["foo"]);
 
     const body = cronBody(exec.current(), "foo");
     expect(body).toBeDefined();
-    expect(body).toContain("task run foo --target work --scheduled");
+    expect(body).toContain("task run foo --bundle work --scheduled");
     // The file must NOT have been written to the primary stash.
     expect(fs.existsSync(path.join(iso.stashDir, "tasks", "foo.yml"))).toBe(false);
 
-    // run --target work resolves the file from bundle work and executes it.
+    // run --bundle work resolves the file from bundle work and executes it.
     const ran = await akmTasksRun("foo", { target: "work" });
     expect(ran.result.status).toBe("completed");
 
@@ -143,11 +143,11 @@ describe("bundle-targeted tasks via --target", () => {
     expect(resynced.updated).toEqual(["foo"]);
     const disabledBody = cronBody(exec.current(), "foo");
     expect(disabledBody?.startsWith("# akm:disabled ")).toBe(true);
-    expect(disabledBody).toContain("--target work");
+    expect(disabledBody).toContain("--bundle work");
   });
 
-  test("add --target on a NON-writable bundle fails with a writable-enforcement error", async () => {
-    // add --target readonly is refused before writing anything.
+  test("add --bundle on a NON-writable bundle fails with a writable-enforcement error", async () => {
+    // add --bundle readonly is refused before writing anything.
     await expect(
       akmTasksAdd({ id: "bar", schedule: "@daily", command: "true", target: "readonly" }, { backend: cron() }),
     ).rejects.toThrow(/not writable/i);
@@ -167,10 +167,10 @@ describe("bundle-targeted tasks via --target", () => {
     );
     // The primary add must not have written a file or clobbered the cron entry.
     expect(fs.existsSync(path.join(iso.stashDir, "tasks", "foo.yml"))).toBe(false);
-    expect(cronBody(exec.current(), "foo")).toContain("--target work");
+    expect(cronBody(exec.current(), "foo")).toContain("--bundle work");
   });
 
-  test("plain sync never removes a --target entry; sync --target reconciles only that bundle", async () => {
+  test("plain sync never removes a --bundle entry; sync --bundle reconciles only that bundle", async () => {
     // A primary task and a work-bundle task, both scheduled.
     await akmTasksAdd({ id: "bar", schedule: "@daily", command: "true" }, { backend: cron() });
     writeTaskFile(
@@ -183,10 +183,10 @@ describe("bundle-targeted tasks via --target", () => {
     // Plain (primary) sync: reconciles only `bar`; `foo` (target work) is untouched.
     const primarySync = await akmTasksSync({ backend: cron() });
     expect(primarySync.removed).toEqual([]);
-    expect(cronBody(exec.current(), "foo")).toContain("--target work");
+    expect(cronBody(exec.current(), "foo")).toContain("--bundle work");
     expect(cronBody(exec.current(), "bar")).toBeDefined();
 
-    // Deleting the work file then syncing --target work removes only foo.
+    // Deleting the work file then syncing --bundle work removes only foo.
     fs.rmSync(path.join(work.dir, "tasks", "foo.yml"));
     const workSync = await akmTasksSync({ backend: cron() }, "work");
     expect(workSync.removed).toEqual(["foo"]);
@@ -195,13 +195,13 @@ describe("bundle-targeted tasks via --target", () => {
     expect(cronBody(exec.current(), "bar")).toBeDefined();
   });
 
-  test("default bundle / no --target yields a byte-identical cron line (no --target token)", async () => {
+  test("default bundle / no --bundle yields a byte-identical cron line (no --bundle token)", async () => {
     const result = await akmTasksAdd({ id: "baz", schedule: "@daily", command: "true" }, { backend: cron() });
     expect(result.bundleDir).toBe(iso.stashDir);
 
     const body = cronBody(exec.current(), "baz");
     expect(body).toBeDefined();
-    expect(body).not.toContain("--target");
+    expect(body).not.toContain("--bundle");
     expect(body).toContain("task run baz --scheduled");
 
     // Byte-for-byte equal to the pre-0.9 no-target rendering.
@@ -222,7 +222,7 @@ describe("bundle-targeted tasks via --target", () => {
     );
     expect(body).toBe(expectedLine);
 
-    // Adding with --target stash (the DEFAULT bundle by name) is also byte-identical.
+    // Adding with --bundle stash (the DEFAULT bundle by name) is also byte-identical.
     fs.rmSync(path.join(iso.stashDir, "tasks", "baz.yml"));
     exec = memoryExec();
     await akmTasksAdd({ id: "baz", schedule: "@daily", command: "true", target: "stash" }, { backend: cron() });

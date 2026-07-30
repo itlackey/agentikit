@@ -47,7 +47,7 @@ describe("scheduled task invocation", () => {
     ]);
   });
 
-  test("embeds --target only for a non-default bundle", () => {
+  test("embeds --bundle only for a non-default bundle", () => {
     expect(buildScheduledTaskInvocation(["/opt/akm"], "ping", "/data/context.json", "work").argv).toEqual([
       "/opt/akm",
       "--scheduler-context",
@@ -55,7 +55,7 @@ describe("scheduled task invocation", () => {
       "task",
       "run",
       "ping",
-      "--target",
+      "--bundle",
       "work",
       "--scheduled",
     ]);

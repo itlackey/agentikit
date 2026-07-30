@@ -120,7 +120,7 @@ Full docs, CLI reference, and guides are available on [GitHub](https://github.co
 - [Getting Started](https://github.com/itlackey/akm/blob/main/docs/guides/getting-started.md)
 - [CLI Reference](https://github.com/itlackey/akm/blob/main/docs/reference/cli.md)
 - [Configuration](https://github.com/itlackey/akm/blob/main/docs/reference/configuration.md)
-- [Stash Maker's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/stash-makers.md)
+- [Bundle Maker's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/stash-makers.md)
 - [Registry](https://github.com/itlackey/akm/blob/main/docs/reference/registry.md)
 
 ## License

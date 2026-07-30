@@ -650,7 +650,7 @@ function buildSummaryRows(aggregates: AggregatesPhase, trend: TrendBlock): Summa
       "Stash derived",
       num(aggregates.memorySummary.derived),
       "up",
-      "Whole-stash recount of derived assets at report time — not a per-run sum.",
+      "Whole-bundle recount of derived assets at report time — not a per-run sum.",
     ],
     ["Median wall time", fmtMs(wallTime.medianMs), trend.latency],
     ["P95 wall time", fmtMs(wallTime.p95Ms), trend.latency],

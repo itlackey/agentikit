@@ -69,7 +69,7 @@ export interface InitResponse {
    * the default stash pointer). False when `--dir` targeted a secondary stash
    * and the existing default was deliberately left untouched.
    */
-  defaultStashUpdated: boolean;
+  defaultBundleUpdated: boolean;
   /**
    * The bundle dir that was configured BEFORE this init ran, when it differs
    * from the dir we scaffolded and was left in place. Only set when a `--dir`
@@ -158,7 +158,7 @@ async function akmInitReal(options?: {
   // Otherwise (--dir + existing default + no --set-default) leave the default
   // pointer alone; the target dir is still scaffolded above.
   const configPath = getConfigPath();
-  let defaultStashUpdated = false;
+  let defaultBundleUpdated = false;
   let previousStashDir: string | undefined;
   if (options?.persistConfig !== false) {
     const result = mutateConfig((latest) => {
@@ -173,10 +173,10 @@ async function akmInitReal(options?: {
       if (currentPrimary === stashDir) return latest;
       return withPrimaryBundle(latest, stashDir);
     });
-    defaultStashUpdated = result.written;
+    defaultBundleUpdated = result.written;
   }
 
-  return { bundleDir: stashDir, created, configPath, defaultStashUpdated, previousBundleDir: previousStashDir };
+  return { bundleDir: stashDir, created, configPath, defaultBundleUpdated, previousBundleDir: previousStashDir };
 }
 
 /** Initialise `dir` as a git repository if it is not already one. */

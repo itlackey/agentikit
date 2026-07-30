@@ -1,11 +1,11 @@
-# Stash Maker's Guide
+# Bundle Maker's Guide
 
-This guide walks through building a stash from scratch and sharing it so others
+This guide walks through building a bundle from scratch and sharing it so others
 can install it with `akm bundle add`.
 
 ## Step 1: Organize Your Assets
 
-You can organize a stash however you like. akm classifies assets by
+You can organize a bundle however you like. akm classifies assets by
 **file extension and content**, so directory names are not required to
 follow any particular pattern.
 
@@ -13,7 +13,7 @@ That said, using these preferred directory names is an **opt-in convention**
 that increases classification confidence during indexing:
 
 ```text
-my-stash/
+my-bundle/
   scripts/        # .sh, .ts, .js, .py, .rb, .go, etc.
   skills/         # Directories containing SKILL.md
   commands/       # .md prompt templates (agent frontmatter, $ARGUMENTS)
@@ -24,20 +24,20 @@ my-stash/
   workflows/      # .md step-by-step workflow documents
   lessons/        # .md distilled feedback lessons
   memories/       # .md recalled context fragments
-  facts/          # .md durable stash-level facts
+  facts/          # .md durable bundle-level facts
   tasks/          # .yml scheduled or on-demand automation tasks
   sessions/       # .md machine-placed indexed session summaries
 ```
 
 LLM Wikis are a separate, related concept: a wiki is its own installable
-bundle, not a type-subdirectory inside a regular stash — see
+bundle, not a type-subdirectory inside a regular bundle — see
 [docs/guides/wikis.md](wikis.md).
 
 These directories are hints, not requirements. A `.sh` file is a script
-whether it lives in `scripts/`, `deploy/`, or at the stash root. A `.md` file
+whether it lives in `scripts/`, `deploy/`, or at the bundle root. A `.md` file
 with `model` in its frontmatter is an agent definition no matter where you
 put it. Nesting is fully supported — `scripts/azure/deploy/run.sh` works
-just as well as `scripts/run.sh`. Organize your stash in whatever way makes
+just as well as `scripts/run.sh`. Organize your bundle in whatever way makes
 sense for your project.
 
 ## Step 2: Add Assets
@@ -181,7 +181,7 @@ requiring explicit prompts.
 
 ## Step 3: Add Metadata
 
-Metadata makes your stash searchable. Prefer metadata that travels with the
+Metadata makes your bundle searchable. Prefer metadata that travels with the
 asset itself.
 
 ### Preferred: inline metadata
@@ -207,13 +207,13 @@ For scripts, keep metadata in the file header so it stays in sync with the code:
 # @cwd .
 ```
 
-When someone installs your stash and runs `akm index`, metadata is generated
+When someone installs your bundle and runs `akm index`, metadata is generated
 from frontmatter, code comments, filenames, and `package.json`. This works well
-for most stashes and keeps descriptions close to the asset body.
+for most bundles and keeps descriptions close to the asset body.
 
 ### Legacy: `.stash.json`
 
-`.stash.json` support was removed in v0.8.0. Do not create new stashes with
+`.stash.json` support was removed in v0.8.0. Do not create new bundles with
 it. If you are upgrading from v0.7, migrate any existing `.stash.json` sidecars
 to inline metadata using the guidance below before indexing.
 
@@ -256,13 +256,13 @@ See [Filesystem Layout](../architecture/internals/storage-locations.md) for the 
 
 ## Step 3.5: Orient Readers with `.meta/` (optional)
 
-Add a `.meta/` directory at the stash root to give agents and humans a quick
-orientation to the stash *as a whole* — what it's for, where to start, and the
+Add a `.meta/` directory at the bundle root to give agents and humans a quick
+orientation to the bundle *as a whole* — what it's for, where to start, and the
 conventions to follow. This is separate from per-asset metadata: `.meta/`
-describes the stash, not individual assets.
+describes the bundle, not individual assets.
 
 ```text
-my-stash/
+my-bundle/
   .meta/
     index.md          # akm show meta
     about.md          # akm show meta:about
@@ -280,7 +280,7 @@ conventions:
   - "Scripts are bun-first; shebang #!/usr/bin/env bun"
 maintainer: you <you@example.com>
 ---
-# About this stash
+# About this bundle
 
 Start with `skills/git-release`. The bump→changelog→tag→push flow lives in
 `scripts/bump-version` then `commands/changelog-entry`.
@@ -290,9 +290,9 @@ Key properties:
 
 - **Not indexed.** `.meta/` is a dot-directory, so the indexer skips it — these
   docs never appear in `akm search` and never compete for ranking. They are
-  read directly via `akm show meta[:<name>]` (or `akm show <stash>//meta[:<name>]`
+  read directly via `akm show meta[:<name>]` (or `akm show <bundle>//meta[:<name>]`
   once installed).
-- **Travels with the stash.** It's committed files in your tree, so installers
+- **Travels with the bundle.** It's committed files in your tree, so installers
   get your conventions automatically.
 - **Open-ended.** Add any doc by dropping a file — `akm show meta:<name>`
   resolves `.meta/<name>.md` (then an extensionless `.meta/<name>`) with no
@@ -305,11 +305,11 @@ Key properties:
 
 ## Step 4: Test Locally
 
-Before sharing, install your stash locally to verify everything works:
+Before sharing, install your bundle locally to verify everything works:
 
 ```sh
 # Install from the local directory
-akm bundle add ./my-stash
+akm bundle add ./my-bundle
 
 # Check it appears in the list
 akm bundle list
@@ -323,7 +323,7 @@ akm show scripts/deploy.sh
 
 ## Sharing on GitHub
 
-1. Push your stash to a GitHub repository.
+1. Push your bundle to a GitHub repository.
 
 2. Add the `akm-stash` topic to your repo so it appears in registry search:
 
@@ -334,7 +334,7 @@ akm show scripts/deploy.sh
    Or add it from the repository settings page under "Topics". `akm-cli`
    0.6.0 indexes only the `akm-stash` topic; the pre-0.6.0 `akm-kit` and
    `agentikit` topics are **not** honored as fallbacks. If you are migrating
-   a 0.5.x stash, add the new topic (and remove the old ones once your
+   a 0.5.x bundle, add the new topic (and remove the old ones once your
    audience has moved). See the
    [v0.5 → v0.6 migration guide](../migration/v0.5-to-v0.6.md) for the full
    publisher checklist.
@@ -342,7 +342,7 @@ akm show scripts/deploy.sh
 3. Others can now install it:
 
    ```sh
-   akm bundle add github:your-username/my-stash
+   akm bundle add github:your-username/my-bundle
    ```
 
 4. To pin a version, create a GitHub release. When a release exists, `akm bundle add`
@@ -350,7 +350,7 @@ akm show scripts/deploy.sh
 
    ```sh
    # Install a specific tag
-   akm bundle add github:your-username/my-stash#v1.0.0
+   akm bundle add github:your-username/my-bundle#v1.0.0
    ```
 
 ## Sharing on npm
@@ -359,20 +359,20 @@ akm show scripts/deploy.sh
 
    ```json
    {
-     "name": "@your-scope/my-stash",
+     "name": "@your-scope/my-bundle",
      "version": "1.0.0",
      "description": "Scripts and skills for deployment workflows",
      "keywords": ["akm-stash"]
    }
    ```
 
-2. If your repo contains files that should not be part of the stash (source
+2. If your repo contains files that should not be part of the bundle (source
    code, tests, CI config), use `akm.include` to declare which paths
    to ship:
 
    ```json
    {
-     "name": "@your-scope/my-stash",
+     "name": "@your-scope/my-bundle",
      "version": "1.0.0",
      "keywords": ["akm-stash"],
      "akm": {
@@ -394,13 +394,13 @@ akm show scripts/deploy.sh
 4. Others can now install it:
 
    ```sh
-   akm bundle add @your-scope/my-stash
+   akm bundle add @your-scope/my-bundle
    ```
 
 ## Submitting to the Registry
 
 The official [akm-registry](https://github.com/itlackey/akm-registry) gets
-your stash listed in three ways:
+your bundle listed in three ways:
 
 - Publish an npm package with `akm-stash` in `keywords`
 - Add the `akm-stash` GitHub topic to your repository
@@ -414,12 +414,12 @@ CLI-based submission (`akm` driving the PR) is planned for a future release.
 ## Sharing on a Network Directory
 
 For teams that want to share assets without publishing to a registry, use
-stashes.
+bundles.
 
-1. Place your stash on a shared filesystem (NFS, SMB, cloud-synced folder):
+1. Place your bundle on a shared filesystem (NFS, SMB, cloud-synced folder):
 
    ```text
-   /mnt/shared/team-stash/
+   /mnt/shared/team-bundle/
      scripts/
      skills/
      commands/
@@ -428,19 +428,19 @@ stashes.
 2. Each team member adds it as a source:
 
    ```sh
-   akm bundle add /mnt/shared/team-stash
+   akm bundle add /mnt/shared/team-bundle
    ```
 
    Or add it directly to `~/.config/akm/config.json`:
 
    ```json
    {
-     "sources": [{ "type": "filesystem", "path": "/mnt/shared/team-stash" }]
+     "sources": [{ "type": "filesystem", "path": "/mnt/shared/team-bundle" }]
    }
    ```
 
-3. Assets from the stash appear in search results immediately --
-   no `akm bundle add` needed. To fork an asset into the primary stash, use clone:
+3. Assets from the bundle appear in search results immediately --
+   no `akm bundle add` needed. To fork an asset into the primary bundle, use clone:
 
    ```sh
    akm clone scripts/deploy.sh
@@ -460,7 +460,7 @@ after the working bundle.
 > The `vault` asset type was removed in 0.9.0; `env` replaces it. See the
 > [0.8 → 0.9 migration guide](../migration/v0.8-to-v0.9.md).
 
-If your stash includes env files under `env/`, be aware of how `akm` handles
+If your bundle includes env files under `env/`, be aware of how `akm` handles
 them during install.
 
 **Dangerous key detection.** `akm bundle add` and `akm lint` scan env files for
@@ -472,16 +472,16 @@ injection; `GIT_CONFIG_*`, git config override injection). When these keys
 are found, `akm bundle add` pauses in interactive mode and asks the user to confirm
 before continuing. In non-interactive (CI) mode the install fails unless the
 user passes `--allow-insecure`. `akm env run` applies the same scan at run time:
-a third-party-sourced stash is refused outright; a first-party stash warns and
+a third-party-sourced bundle is refused outright; a first-party bundle warns and
 proceeds.
 
-This is not a ban — it is a speed bump. If your stash legitimately needs one
+This is not a ban — it is a speed bump. If your bundle legitimately needs one
 of these keys (for example, a `PATH` override for a hermetic toolchain), do
 the following before publishing:
 
 1. Document the reason clearly in your `README.md`. Explain which key is set,
    why it is needed, and what the value does.
-2. Run `akm lint` against your stash locally to see the `dangerous-env-key`
+2. Run `akm lint` against your bundle locally to see the `dangerous-env-key`
    findings before your users do (suppress a specific key with a
    `# akm-lint-ok: dangerous-env-key` comment on the preceding line):
 
@@ -499,9 +499,9 @@ on `akm env create` hides a file from `env list` but does not prevent key names
 from appearing in search results or agent context when the file is shown
 directly.
 
-## Stash Structure Tips
+## Bundle Structure Tips
 
-- **Keep it focused.** A stash with 5 great scripts is more useful than one with
+- **Keep it focused.** A bundle with 5 great scripts is more useful than one with
   50 mediocre ones.
 
 - **Write good descriptions.** The `description` field (preferably in
@@ -516,7 +516,7 @@ directly.
   strong results from good filenames plus leading comments and tags like
   `@param`, `@run`, `@setup`, and `@cwd`.
 
-- **Test the search experience.** After installing your stash, search for it
+- **Test the search experience.** After installing your bundle, search for it
   using the terms you expect users to try. If results are poor, improve the
   descriptions, tags, and searchHints.
 
@@ -524,6 +524,6 @@ directly.
   `SKILL.md`. For commands, put the workflow in the markdown body. The agent
   reads these directly.
 
-- **Version your stash.** Use npm versions or GitHub releases so users can pin
+- **Version your bundle.** Use npm versions or GitHub releases so users can pin
   to a known-good state with `akm bundle add npm:pkg@1.2.3` or
   `akm bundle add github:owner/repo#v1.2.3`.

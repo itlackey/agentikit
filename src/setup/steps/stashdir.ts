@@ -38,7 +38,7 @@ export async function stepStashDir(
 
   const customPath = await prompt(() =>
     p.text({
-      message: "Enter the stash directory path:",
+      message: "Enter the bundle directory path:",
       placeholder: defaultDir,
       validate: (v) => {
         if (!v?.trim()) return "Path cannot be empty";
@@ -46,7 +46,7 @@ export async function stepStashDir(
           assertSafeStashDir(v.trim());
         } catch (err) {
           if (err instanceof Error) return err.message;
-          return "Refused: unsafe stash directory";
+          return "Refused: unsafe bundle directory";
         }
       },
     }),

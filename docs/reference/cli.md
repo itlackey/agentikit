@@ -476,7 +476,7 @@ akm show memories/retro --filter user=alice --filter agent=claude
 human-authored orientation doc from a bundle's optional `.meta/` directory
 (`<name>` defaults to `index`; `.meta/<name>.md` is tried before an
 extensionless `.meta/<name>`). These files are never indexed, so they do not
-appear in `akm search`. See [concepts.md](../guides/concepts.md#stash-orientation-the-meta-convention)
+appear in `akm search`. See [concepts.md](../guides/concepts.md#bundle-orientation-the-meta-convention)
 for the full convention.
 
 `--filter` accepts the same `<key>=<value>` shape as `akm search --filter` — one
@@ -2360,19 +2360,19 @@ Setup reconfiguration preserves existing scheduler runtime bindings. Changing
 the AKM storage path or installed runtime path therefore requires an explicit
 `akm task sync --rebind`; setup does not silently migrate those entries.
 
-**Bundle targeting (`--target <bundle>`).** By default every subcommand
+**Bundle targeting (`--bundle <bundle>`).** By default every subcommand
 operates on the primary/default bundle. `add`, `history`, `sync`, and `run`
-all accept `--target <bundle>` to schedule and reconcile tasks that live in
+all accept `--bundle <bundle>` to schedule and reconcile tasks that live in
 another configured bundle (`doctor` reports scheduler-wide state and takes no
-`--target`):
+`--bundle`):
 
 ```sh
-akm task add nightly --schedule "@daily" --command "akm improve" --target team-bundle
-akm task sync --target team-bundle             # reconcile only that bundle
+akm task add nightly --schedule "@daily" --command "akm improve" --bundle team-bundle
+akm task sync --bundle team-bundle             # reconcile only that bundle
 ```
 
 A non-default bundle is recorded in the installed scheduler entry as a
-`--target <bundle>` token, so the scheduled `akm task run` resolves the task
+`--bundle <bundle>` token, so the scheduled `akm task run` resolves the task
 (and its relative asset refs) from that bundle. `sync` reconciles one bundle at a
 time and only touches entries attributed to it, so a plain (primary) sync never
 disturbs another bundle's scheduled tasks. Scheduler ids are the bare task id and

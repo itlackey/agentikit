@@ -138,7 +138,7 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
     relativeAssetPath.startsWith(`..${path.sep}`) ||
     path.isAbsolute(relativeAssetPath)
   ) {
-    throw new UsageError(`Resolved workflow path escapes the stash: "${normalizedName}"`, "PATH_ESCAPE_VIOLATION");
+    throw new UsageError(`Resolved workflow path escapes the bundle: "${normalizedName}"`, "PATH_ESCAPE_VIOLATION");
   }
   // Codex round-3 finding C: a `workflows/<name>` ref is canonical across every
   // recognized extension (`.md`/`.yaml`/`.yml`) and resolves `.md` BEFORE

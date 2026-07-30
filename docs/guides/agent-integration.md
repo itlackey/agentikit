@@ -3,7 +3,7 @@
 akm works with any AI coding assistant that can run shell commands — Claude
 Code, OpenCode, Cursor, Windsurf, Aider, and others. No plugins or SDKs are
 required for the core workflow: a three-line system prompt block plus shell
-access is all an agent needs to start using your stash.
+access is all an agent needs to start using your bundle.
 
 ## AGENTS.md / CLAUDE.md snippet
 
@@ -22,7 +22,7 @@ That is the minimum. The agent can then run `akm curate <task>` at the start
 of any complex task to pull the most relevant assets into context, and
 `akm show <ref>` to load any asset by ref.
 
-**Example: configure Claude Code to use your stash**
+**Example: configure Claude Code to use your bundle**
 
 Add the three-line block above to `~/.claude/CLAUDE.md` (global) or
 `./CLAUDE.md` (project-level). The agent will call `akm curate` and
@@ -138,9 +138,9 @@ akm show workflows/deploy-to-prod
 akm feedback workflows/deploy-to-prod --positive --reason "Completed without issues"
 ```
 
-## akm agent — dispatching with a stash agent asset
+## akm agent — dispatching with a bundle agent asset
 
-`akm agent` can embody a stash agent asset (`agents/<name>`) to apply that
+`akm agent` can embody a bundle agent asset (`agents/<name>`) to apply that
 agent's system prompt, model, and tool policy to any task. Select the named
 agent engine with `--engine` and pass the asset ref positionally.
 

@@ -48,12 +48,12 @@ describe("cron backend helpers", () => {
     expect(line).not.toContain("AKM_LLM_API_KEY");
   });
 
-  test("buildCronLine embeds --target only when a non-default bundle is given", () => {
+  test("buildCronLine embeds --bundle only when a non-default bundle is given", () => {
     const withTarget = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log", contextPath(), "work");
-    expect(withTarget).toContain("task run ping --target work --scheduled");
+    expect(withTarget).toContain("task run ping --bundle work --scheduled");
     const withoutTarget = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log", contextPath());
     expect(withoutTarget).toContain("task run ping --scheduled");
-    expect(withoutTarget).not.toContain("--target");
+    expect(withoutTarget).not.toContain("--bundle");
   });
 
   test("extractInstalledTarget recovers the bundle from a cron body (and undefined for the primary form)", () => {
@@ -280,7 +280,7 @@ describe("cron backend drift detection", () => {
     expect(listed).toHaveLength(1);
     expect(listed[0]!.id).toBe("ping");
     expect(listed[0]!.signature).toBe(backend.expectedSignature?.(SYNC_TASK));
-    // No --target token → primary attribution (target omitted).
+    // No --bundle token → primary attribution (target omitted).
     expect(listed[0]!.target).toBeUndefined();
   });
 

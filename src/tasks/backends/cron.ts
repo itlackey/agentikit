@@ -243,9 +243,9 @@ function malformedBlockError(id: string): ConfigError {
 
 /**
  * Recover the bundle name from an installed cron block body by reading the
- * `--target <bundle>` token embedded in the scheduled `akm task run …`
+ * `--bundle <bundle>` token embedded in the scheduled `akm task run …`
  * invocation. Returns undefined for the byte-identical primary/default form
- * (no `--target`). Bundle slugs never contain whitespace (config-schema
+ * (no `--bundle`). Bundle slugs never contain whitespace (config-schema
  * `isBundleSlug`), so the quoted token is a single whitespace-delimited field
  * even when cron-quoted — a plain field split recovers it, and
  * the shell-word parser below reverses the quoting.

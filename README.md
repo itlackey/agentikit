@@ -226,7 +226,7 @@ No plugins or SDKs required. Platform-specific integrations are available in [ak
 | [Concepts](docs/guides/concepts.md) | Sources, registries, asset types, refs, and the bundle |
 | [CLI Reference](docs/reference/cli.md) | All commands and flags |
 | [Configuration](docs/reference/configuration.md) | Settings, providers, embedding, and Ollama setup |
-| [Stash Maker's Guide](docs/guides/stash-makers.md) | Build, publish, and share your own stashes |
+| [Bundle Maker's Guide](docs/guides/stash-makers.md) | Build, publish, and share your own bundles |
 | [Registry](docs/reference/registry.md) | Registries, the index format, and private registry setup |
 | [Wikis](docs/guides/wikis.md) | Multi-wiki knowledge bases |
 | [Release Notes — 0.9.0](docs/migration/release-notes/0.9.0.md) | Latest release notes and migration guide |

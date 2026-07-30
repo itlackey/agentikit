@@ -192,7 +192,7 @@ export function resolveStashDir(env: NodeJS.ProcessEnv = process.env): string {
   }
 
   throw new ConfigError(
-    `No stash directory found. Run "akm bundle create" to create one at ${defaultDir}.`,
+    `No bundle directory found. Run "akm bundle create" to create one at ${defaultDir}.`,
     "STASH_DIR_NOT_FOUND",
   );
 }
@@ -203,10 +203,10 @@ function validateStashDir(raw: string): string {
   try {
     stat = fs.statSync(stashDir);
   } catch {
-    throw new ConfigError(`Unable to read stash directory at "${stashDir}".`, "STASH_DIR_UNREADABLE");
+    throw new ConfigError(`Unable to read bundle directory at "${stashDir}".`, "STASH_DIR_UNREADABLE");
   }
   if (!stat.isDirectory()) {
-    throw new ConfigError(`Stash path must point to a directory: "${stashDir}".`, "STASH_DIR_NOT_A_DIRECTORY");
+    throw new ConfigError(`Bundle path must point to a directory: "${stashDir}".`, "STASH_DIR_NOT_A_DIRECTORY");
   }
   return stashDir;
 }

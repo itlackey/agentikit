@@ -59,7 +59,7 @@ export interface TasksAddInput {
   /**
    * Bundle to write the task into and schedule from. Defaults to the primary /
    * default write target. Resolved via {@link resolveWriteTarget}; a non-default
-   * bundle is recorded in the scheduled invocation as `--target <bundle>`.
+   * bundle is recorded in the scheduled invocation as `--bundle <bundle>`.
    */
   target?: string;
   workflow?: string;
@@ -321,7 +321,7 @@ export async function akmTasksRun(
 
   let stashDir: string;
   try {
-    // No --target uses the primary stash. With --target, resolve (read-only)
+    // No --bundle uses the primary stash. With --bundle, resolve (read-only)
     // the named bundle so the task file and
     // its relative asset refs load from that bundle's path.
     stashDir =
@@ -385,14 +385,14 @@ export interface TasksSyncResult {
  *     the signature the current definition would produce)
  *   • remove orphan scheduler entries that no longer have a backing file
  *
- * `--target <bundle>` scopes the reconciliation to that bundle: the file set is
+ * `--bundle <bundle>` scopes the reconciliation to that bundle: the file set is
  * the bundle's `tasks/*.yml` and — crucially — the scheduler entries considered
  * are ONLY those attributed to the same bundle (parsed from the installed
- * `--target` token; absent ⇒ primary). This is the security boundary that keeps
+ * `--bundle` token; absent ⇒ primary). This is the security boundary that keeps
  * "registering a bundle never activates code": a plain (primary) sync never
  * installs from, updates, or removes another bundle's entries, and sync never
  * scans all bundles. Activation happens only through explicit `add --bundle`
- * (or `sync --target` on a bundle whose task files are already present).
+ * (or `sync --bundle` on a bundle whose task files are already present).
  */
 export async function akmTasksSync(
   deps: { backend?: TaskBackend; schedulerRuntime?: () => PreparedSchedulerRuntime } = {},
@@ -400,7 +400,7 @@ export async function akmTasksSync(
   options: { rebind?: boolean } = {},
 ): Promise<TasksSyncResult> {
   const stashDir = resolveTaskInspectDir(bundleTarget);
-  // Primary-bundle scheduler entries omit --target; other bundles carry it.
+  // Primary-bundle scheduler entries omit --bundle; other bundles carry it.
   const syncTarget = bundleTarget !== undefined && !isPrimaryStashPath(stashDir) ? bundleTarget : undefined;
   const typeRoot = path.join(stashDir, "tasks");
   const fileIds = fs.existsSync(typeRoot)
@@ -415,7 +415,7 @@ export async function akmTasksSync(
   const allEntries: Array<InstalledTaskRef | RebindTaskRef> =
     options.rebind && sched.listForRebind ? await sched.listForRebind() : await sched.list();
   // Attribution filter: only entries installed from THIS bundle are reconciled
-  // here. Entries carrying a `--target` for a different bundle are invisible to
+  // here. Entries carrying a `--bundle` for a different bundle are invisible to
   // this sync — never removed, never touched.
   const present = new Map(allEntries.filter((t) => sameBundle(t.target, syncTarget)).map((t) => [t.id, t] as const));
   const installed: string[] = [];
@@ -776,7 +776,7 @@ async function restoreTaskSourceBytes(
 
 /**
  * Resolve the bundle a mutating/run task command targets. Returns the resolved
- * write/read target, its stash path, and the `--target <bundle>` token to embed
+ * write/read target, its stash path, and the `--bundle <bundle>` token to embed
  * in scheduled invocations. The primary bundle uses the target-less form.
  */
 function resolveTaskBundle(
@@ -792,7 +792,7 @@ function resolveTaskBundle(
 
 /**
  * Resolve the tasks/ directory a read/inspect command operates on. No
- * `--target` uses the primary stash; `--target X` resolves bundle X read-only.
+ * `--bundle` uses the primary stash; `--bundle X` resolves bundle X read-only.
  */
 function resolveTaskInspectDir(target: string | undefined): string {
   if (target === undefined) return resolveStashDir();

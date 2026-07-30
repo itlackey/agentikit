@@ -119,7 +119,7 @@ describe("runSetupFromConfig — deep merge", () => {
     let initCalls = 0;
     _setAkmInitForTests(async () => {
       initCalls += 1;
-      return { bundleDir: "/unused", created: true, configPath: getConfigPath(), defaultStashUpdated: false };
+      return { bundleDir: "/unused", created: true, configPath: getConfigPath(), defaultBundleUpdated: false };
     });
 
     await withMockedFetch(
@@ -283,7 +283,7 @@ describe("runSetupFromConfig — backup guarantees", () => {
     let backupExistedAtInit = false;
     _setAkmInitForTests(async () => {
       backupExistedAtInit = fs.existsSync(path.join(backupDir(), "config.latest.json"));
-      return { bundleDir: "/unused", created: true, configPath: getConfigPath(), defaultStashUpdated: false };
+      return { bundleDir: "/unused", created: true, configPath: getConfigPath(), defaultBundleUpdated: false };
     });
 
     await runSetupFromConfig({ configJson: JSON.stringify({ output: { format: "text" } }) });
@@ -298,7 +298,7 @@ describe("runSetupFromConfig — backup guarantees", () => {
     let initCalls = 0;
     _setAkmInitForTests(async () => {
       initCalls++;
-      return { bundleDir: "/unused", created: true, configPath: getConfigPath(), defaultStashUpdated: false };
+      return { bundleDir: "/unused", created: true, configPath: getConfigPath(), defaultBundleUpdated: false };
     });
 
     await withEnv({ XDG_CACHE_HOME: unusableCacheRoot }, async () => {

@@ -904,7 +904,12 @@ function toUsageErrorFromCliError(error: Error, rawArgs: readonly string[]): Usa
   const attempt = code === "UNKNOWN_COMMAND" ? findUnknownCommandAttempt(rawArgs) : undefined;
   const suggestion = attempt ? closestCommandMatch(attempt.attempted, attempt.candidates) : undefined;
   const hint = suggestion ? `Did you mean \`${suggestion}\`? ${CLI_HELP_POINTER}` : CLI_HELP_POINTER;
-  return new UsageError(error.message, code, hint);
+  // citty colorizes error.message with ANSI escapes even when stdout/stderr
+  // is not a TTY. Strip them so the JSON envelope's `error` field is plain
+  // text instead of embedding raw escape sequences.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — strip ANSI escape codes
+  const message = error.message.replace(/\x1b\[[0-9;]*m/g, "");
+  return new UsageError(message, code, hint);
 }
 
 /**

@@ -101,7 +101,7 @@ describe("error hint rendering (#8)", () => {
   test("UsageError with INVALID_SOURCE_VALUE has a hint", () => {
     const err = new UsageError("bad source", "INVALID_SOURCE_VALUE");
     expect(err.hint()).toBeDefined();
-    expect(err.hint()).toContain("stash");
+    expect(err.hint()).toContain("local");
   });
 
   test("NotFoundError with ASSET_NOT_FOUND has a canned hint (Wave C #284)", () => {

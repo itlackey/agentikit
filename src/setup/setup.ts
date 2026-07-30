@@ -433,7 +433,7 @@ export function buildSetupSteps(options: {
   const steps: SetupStep[] = [
     {
       id: "stash-dir",
-      label: "Stash Directory",
+      label: "Bundle Directory",
       nonInteractive: true,
       async run(ctx) {
         const stashDir = await stepStashDir(ctx.config, {
@@ -488,7 +488,7 @@ export function buildSetupSteps(options: {
     },
     {
       id: "stash-sources",
-      label: "Stash Sources",
+      label: "Bundle Sources",
       async run(ctx) {
         const stashes = await stepAddSources(ctx.config, { promptForAdditional: false });
         const platforms = await stepAgentPlatforms({ ...ctx.config, additionalSources: stashes });
@@ -633,12 +633,12 @@ export async function runSetupWizard(opts?: { dir?: string; noInit?: boolean }):
   const effectiveRegistries = registries ?? DEFAULT_CONFIG.registries ?? [];
   p.note(
     [
-      `Stash directory:  ${stashDir}`,
+      `Bundle directory: ${stashDir}`,
       `Embedding:        ${embedding ? `${embedding.provider ?? "remote"} / ${embedding.model}` : "built-in local"}`,
       `LLM:              ${llm ? `${llm.provider ?? "remote"} / ${llm.model}` : "disabled"}`,
       `Semantic search:  ${semanticSearchMode.mode}`,
       `Registries:       ${effectiveRegistries.filter((r) => r.enabled !== false).length} enabled`,
-      `Stash sources:    ${allStashes.length}`,
+      `Bundle sources:   ${allStashes.length}`,
       `Agent default:    ${newConfig.defaults?.engine ?? "disabled"}`,
       `Output:           ${newConfig.output?.format ?? "json"} / ${newConfig.output?.detail ?? "brief"}`,
     ].join("\n"),

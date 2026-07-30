@@ -326,7 +326,7 @@ function inspectInstalledLaunchdTask(
 }
 
 /**
- * Recover the bundle name embedded as a `--target <bundle>` pair in a plist's
+ * Recover the bundle name embedded as a `--bundle <bundle>` pair in a plist's
  * `<ProgramArguments>`. Returns undefined for the primary/default form.
  */
 export function extractPlistTarget(xml: string): string | undefined {

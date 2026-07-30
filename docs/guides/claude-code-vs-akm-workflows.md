@@ -351,7 +351,7 @@ of contact between the two systems in this whole comparison.
 ### B.5 Scoping & concurrency guards (two different guards)
 
 Runs are partitioned by **`scope_key`** — a `sha256` of the nearest project
-anchor (`.akm/config.json` root → git root → stash dir → cwd),
+anchor (`.akm/config.json` root → git root → bundle dir → cwd),
 `src/workflows/authoring/scope-key.ts`. Within a `(workflow_ref, scope_key)`
 pair, `startWorkflowRun` enforces a **single active run** unless `--force` is
 passed, so two terminals starting the same ref can't leave two runs racing
@@ -447,7 +447,7 @@ both formats agree.
 | Dimension | Claude Code workflow | akm markdown workflow | akm YAML v2 program (`workflow run`, experimental) |
 |---|---|---|---|
 | **Artifact** | Imperative JS program (`script`) | Declarative Markdown document (`.md`) | Declarative YAML program (`version: 2`), compiled to a plan graph |
-| **Authored by** | The agent, inline, per-task, ephemeral | Human or agent, saved as a reusable stash asset | Human or agent, saved as a reusable stash asset |
+| **Authored by** | The agent, inline, per-task, ephemeral | Human or agent, saved as a reusable bundle asset | Human or agent, saved as a reusable bundle asset |
 | **Who executes work** | The harness runs the script; subagents do the work | The external agent does the work; akm only tracks state | The native engine dispatches units to a configured runner (`llm`/`agent`/`sdk`) — **or** any external driver via `brief`/`report`, producing a byte-identical unit graph |
 | **Unit of work** | `agent()` — a fresh LLM subagent context | A step — an instruction handed to the driving agent | A unit — one dispatch, or one item of a `map` fan-out |
 | **Concurrency** | Massively parallel (≤16 concurrent, ≤1000 total, `pipeline`/`parallel`) | Strictly sequential — one `current_step_id` | Real, bounded: `min(map concurrency, workflow.maxConcurrency, engine cap, CPU-derived default min(16, cores−2))` — the same default formula as Claude Code's `agent()` cap |

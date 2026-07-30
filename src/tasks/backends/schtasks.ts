@@ -269,7 +269,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
 }
 
 /**
- * Recover the bundle name embedded as a `--target <bundle>` pair in the
+ * Recover the bundle name embedded as a `--bundle <bundle>` pair in the
  * PowerShell `<Arguments>` of an installed Task Scheduler definition. Returns
  * undefined for the primary/default form.
  */
@@ -348,7 +348,7 @@ export interface BuildSchtasksXmlOptions {
   binding?: string[];
   /** Current Windows user SID embedded in the principal. */
   userSid: string;
-  /** Non-default bundle embedded as a `--target <bundle>` token. */
+  /** Non-default bundle embedded as a `--bundle <bundle>` token. */
   target?: string;
 }
 

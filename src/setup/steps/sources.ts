@@ -55,7 +55,7 @@ export async function stepAdditionalSources(currentSources: SourceConfigEntry[])
   while (addMore) {
     const action = await prompt(() =>
       p.select({
-        message: "Add another stash source?",
+        message: "Add another bundle source?",
         options: [
           { value: "done", label: "Done — no more sources" },
           { value: "github-repo", label: "GitHub repository", hint: "custom URL" },
@@ -84,7 +84,7 @@ export async function stepAdditionalSources(currentSources: SourceConfigEntry[])
 
       const name = await promptOrBack(() =>
         p.text({
-          message: "Give this stash a name (optional):",
+          message: "Give this bundle a name (optional):",
           placeholder: "my-repo",
         }),
       );
@@ -103,7 +103,7 @@ export async function stepAdditionalSources(currentSources: SourceConfigEntry[])
       const fsPath = await promptOrBack(() =>
         p.text({
           message: "Enter the directory path:",
-          placeholder: "/path/to/stash",
+          placeholder: "/path/to/bundle",
           validate: (v) => {
             if (!v?.trim()) return "Path cannot be empty";
           },
@@ -114,8 +114,8 @@ export async function stepAdditionalSources(currentSources: SourceConfigEntry[])
       const resolved = fsPath.trim();
       const name = await promptOrBack(() =>
         p.text({
-          message: "Give this stash a name (optional):",
-          placeholder: "my-stash",
+          message: "Give this bundle a name (optional):",
+          placeholder: "my-bundle",
         }),
       );
       if (name === null) continue;
@@ -204,11 +204,11 @@ export async function stepAddSources(
   const sources: SourceConfigEntry[] = [];
 
   if (existingSources.length > 0) {
-    p.note(renderConfiguredSourceList(existingSources), "Configured stash sources");
+    p.note(renderConfiguredSourceList(existingSources), "Configured bundle sources");
     const options = existingSources.map(describeConfiguredSource);
     const selected = await prompt(() =>
       p.multiselect({
-        message: "Configured stash sources — uncheck any you want to disable:",
+        message: "Configured bundle sources — uncheck any you want to disable:",
         options,
         initialValues: options.map((option) => option.value),
         required: false,
@@ -223,7 +223,7 @@ export async function stepAddSources(
   }
 
   if (managedSources.length > 0) {
-    p.note(renderInstalledSourceList(managedSources), "Installed managed stashes (preserved)");
+    p.note(renderInstalledSourceList(managedSources), "Installed managed bundles (preserved)");
   }
 
   // ── Registry-driven stash recommendations ─────────────────────────────
@@ -254,8 +254,8 @@ export async function stepAddSources(
       p.multiselect({
         message:
           availableStashes[0]?.source === "registry"
-            ? "Available stashes from the AKM registry — toggle to add or remove:"
-            : "Recommended stash sources — toggle to add or remove:",
+            ? "Available bundles from the AKM registry — toggle to add or remove:"
+            : "Recommended bundle sources — toggle to add or remove:",
         options: stashOptions,
         initialValues,
         required: false,

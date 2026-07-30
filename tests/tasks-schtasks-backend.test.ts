@@ -311,7 +311,7 @@ describe("buildSchtasksXml", () => {
 });
 
 describe("schtasks bundle attribution", () => {
-  test("parses --target from the current descriptor-bearing invocation", () => {
+  test("parses --bundle from the current descriptor-bearing invocation", () => {
     const xml = buildSchtasksXml(makeTask("0 9 * * *"), ["C:\\Program Files\\O'Brien & Sons\\akm.exe"], "C:/log", {
       ...xmlOptions(),
       target: "work",

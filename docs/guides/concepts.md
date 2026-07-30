@@ -22,7 +22,7 @@ search index. Each source has a **kind** inferred from the input:
 | --- | --- | --- |
 | `~/.claude/skills` | `filesystem` | Indexed in place. Not updatable. Writable by default. |
 | `github:owner/repo` | `git` | Cloned into `~/.cache/akm/registry/`. Updatable via `akm bundle update`. Read-only by default. |
-| `npm:@scope/stash` | `npm` | Installed into `~/.cache/akm/registry/`. Updatable via `akm bundle update`. Read-only. |
+| `npm:@scope/bundle` | `npm` | Installed into `~/.cache/akm/registry/`. Updatable via `akm bundle update`. Read-only. |
 | `https://docs.example.com` | `website` | Crawled, converted to markdown, cached. Refreshed every 12 hours. Read-only. |
 
 The user never picks the kind. `akm bundle add` infers it from the input shape.
@@ -59,9 +59,9 @@ The two terms come up often:
 If you don't pick a write destination explicitly with `--target` or
 `defaultWriteTarget`, writes land in the working bundle.
 
-## What's In a Stash?
+## What's In a Bundle?
 
-A stash is a directory of assets you can share and install. There's no required
+A bundle is a directory of assets you can share and install. There's no required
 structure -- `akm` classifies assets by **file extension and content**, not by
 directory name. A `.sh` file is a script whether it lives in `scripts/`,
 `deploy/`, or at the root.
@@ -71,7 +71,7 @@ indexing confidence. Env files are the current exception: `.env` env assets are
 only discovered under `env/` paths.
 
 ```text
-my-stash/
+my-bundle/
   scripts/        # Executable scripts (.sh, .ts, .js, .py, .rb, .go, etc.)
   skills/         # Skill definitions (directories with SKILL.md)
   commands/       # Slash commands (.md with $ARGUMENTS or agent frontmatter)
@@ -82,15 +82,15 @@ my-stash/
   workflows/      # Workflow documents (.md) and YAML v2 programs (.yaml/.yml)
   lessons/        # Distilled lessons (.md, see akm improve / proposals)
   memories/       # Recalled context fragments (.md)
-  facts/          # Durable stash-level facts (.md, see "Asset Types" below)
+  facts/          # Durable bundle-level facts (.md, see "Asset Types" below)
   tasks/          # Scheduled or on-demand automation tasks (.yml)
   sessions/       # Machine-placed indexed session summaries (.md)
-  .meta/          # Optional stash orientation, not indexed (see "Metadata" below)
+  .meta/          # Optional bundle orientation, not indexed (see "Metadata" below)
 ```
 
 LLM Wikis are a related but separate concept: a wiki is its own installable
 bundle (`akm bundle add github:team/research-wiki`), not a type-subdirectory inside a
-regular stash. See [Wikis](wikis.md) for how akm recognizes and indexes them.
+regular bundle. See [Wikis](wikis.md) for how akm recognizes and indexes them.
 
 ## Asset Types
 
@@ -108,7 +108,7 @@ There are thirteen asset types:
 | **workflow** | A structured multi-step procedure | Parsed steps, completion criteria, and resumable run state |
 | **lesson** | A distilled feedback lesson | `when_to_use` guidance plus the lesson body (see [`akm improve`](../reference/cli.md#improve)) |
 | **memory** | Context from external systems | Background information the agent should consider |
-| **fact** | A durable stash-level fact | Mostly-static semantic knowledge — personal/team/project details, coding conventions / "constitution", and stash-meta (naming conventions, active projects). `category` scopes it; `pinned: true` marks always-injected core context |
+| **fact** | A durable bundle-level fact | Mostly-static semantic knowledge — personal/team/project details, coding conventions / "constitution", and bundle-meta (naming conventions, active projects). `category` scopes it; `pinned: true` marks always-injected core context |
 | **task** | A scheduled or on-demand automation task | Stored under `tasks/` |
 | **session** | An indexed session summary | Machine-placed under `sessions/<harness>/<id>.md`; excluded from untyped search by default |
 
@@ -262,7 +262,7 @@ search — resolving a single ref is `akm show`'s job.
 singular type token. That spelling is gone; use the conceptId prefix.)
 
 **Recommendation:** use physical subdirectories now to organize multi-project
-or multi-team stashes. They sort cleanly on disk and require no configuration.
+or multi-team bundles. They sort cleanly on disk and require no configuration.
 
 **Treat a ref as permanent.** A rename is **delete plus create**: the new path
 is a new identity, so the destination starts with fresh learned state
@@ -291,7 +291,7 @@ scope-born types (`memory`, `lesson`, `task`, `env`, `secret`) take the current
 limits, no-volatile-facets, off-axis facets as tags, and how to cross-link for
 retrieval — ship as the `facts/conventions/organization`,
 `facts/conventions/backlinks`, and `facts/conventions/domains` convention facts
-in the stash skeleton, and are surfaced to agents automatically at authoring
+in the bundle skeleton, and are surfaced to agents automatically at authoring
 time.
 
 Future iterations (no committed dates):
@@ -326,16 +326,16 @@ frontmatter, and package.json.
 
 See [Filesystem Layout](../architecture/internals/storage-locations.md) for the full field reference.
 
-### Stash orientation: the `.meta/` convention
+### Bundle orientation: the `.meta/` convention
 
-A stash may carry an optional `.meta/` directory at its root holding
-human-authored orientation for the stash *as a whole* — purpose, key assets,
+A bundle may carry an optional `.meta/` directory at its root holding
+human-authored orientation for the bundle *as a whole* — purpose, key assets,
 conventions, maintainer. This is distinct from per-asset metadata, which
 still lives with each asset: `.meta/` never describes individual assets, only
-the stash itself.
+the bundle itself.
 
 ```text
-my-stash/
+my-bundle/
   .meta/
     index.md          # shown by `akm show meta` — the default orientation doc
     about.md          # shown by `akm show meta:about`
@@ -349,20 +349,20 @@ demand**:
 ```sh
 akm show meta                       # working bundle's .meta/index.md
 akm show meta:about                 # working bundle's .meta/about.md
-akm show akm//meta                  # the primary stash explicitly
+akm show akm//meta                  # the primary bundle explicitly
 ```
 
 `akm show <origin>//meta:<name>` resolves `<name>.md` first, then an
-extensionless `<name>`. The convention is open-ended: stash owners add new docs
+extensionless `<name>`. The convention is open-ended: bundle owners add new docs
 by dropping files into `.meta/` — no configuration or code changes required.
 `akm bundle create` scaffolds a starter `.meta/index.md`.
 
 **Known gap (Q-19):** an install-ref origin (`akm show github:owner/repo//meta`)
-does not currently resolve even for an installed stash — `resolveSourcesForOrigin`
+does not currently resolve even for an installed bundle — `resolveSourcesForOrigin`
 (`src/registry/origin-resolve.ts`) matches only derived installation ids, not
 raw install refs, and this is pinned by a test
 (`tests/integration/origin-resolve.test.ts`: "does not parse a full install
-locator as an asset bundle"). Use `akm//meta` for the primary stash, or the
+locator as an asset bundle"). Use `akm//meta` for the primary bundle, or the
 bundle key you gave it in `bundles` (`config.json`), not the original install
 ref.
 
@@ -402,10 +402,10 @@ you explicitly activate them:
   until you set `enabled: true` in its file and run `akm task sync`; only
   manual (non-scheduled) runs are exempt.
 - **Env injection** from a registry-installed (third-party) source hard-blocks
-  process-hijacking keys (`LD_PRELOAD`, `PATH`, …); your own first-party stash
-  only warns. A freshly-installed stash carrying dangerous env keys gates the
+  process-hijacking keys (`LD_PRELOAD`, `PATH`, …); your own first-party bundle
+  only warns. A freshly-installed bundle carrying dangerous env keys gates the
   install unless you confirm or pass `--allow-insecure`.
-- **Writes** only ever land in the primary stash or a source explicitly marked
+- **Writes** only ever land in the primary bundle or a source explicitly marked
   `writable: true` — a registry cache is never written in place.
 
 This is enforced at one workspace activation-policy point; installing a bundle is
@@ -443,7 +443,7 @@ These terms have precise meanings in akm. Use this table to avoid confusion:
 | **source** | A place assets come from — added via `akm bundle add` | A directory, git repo, npm package, or website |
 | **filesystem source** | A directory on disk, indexed in place | `~/akm`, `~/.claude/skills` |
 | **git source** | A git repo cloned into akm's cache, updatable | A GitHub repo |
-| **npm source** | An npm package installed into akm's cache, updatable | `@scope/my-stash` |
+| **npm source** | An npm package installed into akm's cache, updatable | `@scope/my-bundle` |
 | **website source** | A crawled website stored as knowledge | `https://docs.example.com` |
 | **working bundle** | Your primary directory for editable assets (`~/akm`) | Created by `akm setup` |
 | **registry** | A discovery index for finding sources | The official registry, skills.sh |
@@ -457,8 +457,8 @@ These terms have precise meanings in akm. Use this table to avoid confusion:
 
 - [CLI Reference](../reference/cli.md)
 - [Wikis](wikis.md) -- Multi-wiki knowledge bases (Karpathy-style)
-- [Stash Maker's Guide](stash-makers.md) -- How to build and share a stash
-- [Registry](../reference/registry.md) -- Finding and installing stashes
+- [Bundle Maker's Guide](stash-makers.md) -- How to build and share a bundle
+- [Registry](../reference/registry.md) -- Finding and installing bundles
 - [Search Architecture](../architecture/internals/search.md) -- Hybrid search details
 - [Indexing](../architecture/internals/indexing.md) -- How the search index is built
 - [Filesystem Layout](../architecture/internals/storage-locations.md) -- Directory structure and metadata schema

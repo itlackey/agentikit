@@ -12,17 +12,17 @@ no flags required for the common cases.
 
 ```sh
 akm bundle add ~/.claude/skills                          # Local directory (filesystem)
-akm bundle add github:owner/team-stash                  # GitHub repo (git)
-akm bundle add @scope/stash                              # npm package
-akm bundle add npm:@scope/stash@latest                  # npm with version pin
+akm bundle add github:owner/team-bundle                  # GitHub repo (git)
+akm bundle add @scope/bundle                              # npm package
+akm bundle add npm:@scope/bundle@latest                  # npm with version pin
 akm bundle add github:owner/repo#v1.2.3                 # GitHub at a specific tag
 akm bundle add https://docs.example.com --name docs     # Crawled website (website)
 akm bundle add https://docs.example.com --max-pages 200 --max-depth 5
 
-# Add the official onboarding stash:
+# Add the official onboarding bundle:
 akm bundle add github:itlackey/akm-stash
 
-# Mark a git stash as writable (enables akm sync to push):
+# Mark a git bundle as writable (enables akm sync to push):
 akm bundle add git@github.com:org/skills.git --provider git --name my-skills --writable
 ```
 
@@ -35,10 +35,10 @@ akm bundle add git@github.com:org/skills.git --provider git --name my-skills --w
 
 After `akm bundle add`, run `akm index` to bring the search index up to date.
 
-**Example: add a team stash from GitHub**
+**Example: add a team bundle from GitHub**
 
 ```sh
-akm bundle add github:my-org/team-stash --name team
+akm bundle add github:my-org/team-bundle --name team
 akm index
 akm search "deploy" --type script
 ```
@@ -66,12 +66,12 @@ Valid `--kind` values are the four source providers: `filesystem`, `git`,
 
 ```sh
 # Update
-akm bundle update @scope/stash          # One managed source
+akm bundle update @scope/bundle          # One managed source
 akm bundle update --all                 # All managed sources
 akm bundle update --all --force         # Force fresh download even if version unchanged
 
 # Remove
-akm bundle remove @scope/stash          # By npm id
+akm bundle remove @scope/bundle          # By npm id
 akm bundle remove github:owner/repo     # By git ref
 akm bundle remove ~/.claude/skills      # By path
 akm bundle remove my-provider           # By name
@@ -85,7 +85,7 @@ akm bundle update --all && akm index
 
 ## akm clone
 
-`akm clone` copies a single asset from any source into your writable stash (or
+`akm clone` copies a single asset from any source into your writable bundle (or
 a custom destination) for local editing. After cloning, your local copy wins in
 subsequent searches automatically.
 
@@ -110,17 +110,17 @@ akm clone workflows/ship-release --dest ./project/.claude
 
 ## akm sync
 
-`akm sync` stages, commits, and optionally pushes your writable stash. It is
+`akm sync` stages, commits, and optionally pushes your writable bundle. It is
 the complement to `akm bundle add`: once you have made changes locally, `sync` persists
 them to git. (There is no `akm save` command — use `akm sync`.)
 
 ```sh
-akm sync                          # Primary stash, auto timestamp message
+akm sync                          # Primary bundle, auto timestamp message
 akm sync -m "Add deploy skill"   # Custom commit message
 akm sync my-skills -m "Update"   # Named writable git source
 ```
 
-Push behavior depends on configuration: if the stash is a git repo with a
+Push behavior depends on configuration: if the bundle is a git repo with a
 remote and `writable: true`, sync also pushes. Otherwise it commits only.
 
 Writes that land on a writable git source via an explicit destination flag
@@ -130,10 +130,10 @@ complete commit (staging `.akm/` + assets together), pushed under the same
 `writable + remote` gate as `akm sync`. The per-asset `options.pushOnCommit`
 knob is deprecated; rely on `writable: true` + push instead.
 
-**Example: publish your own stash**
+**Example: publish your own bundle**
 
 ```sh
-# One-time setup: make the primary stash push on sync
+# One-time setup: make the primary bundle push on sync
 # Set `"writable": true` in ~/.config/akm/config.json
 akm sync -m "Add deployment skills"
 # → stages, commits, and pushes to your configured remote
@@ -141,22 +141,22 @@ akm sync -m "Add deployment skills"
 
 ## akm registry
 
-The registry is a discovery index — it lets you find and install stashes you
+The registry is a discovery index — it lets you find and install bundles you
 don't know about yet. The official registry ships pre-configured.
 
 ```sh
 akm registry list                             # See configured registries
-akm search "deploy" --from registry           # Search registry stashes by topic
+akm search "deploy" --from registry           # Search registry bundles by topic
 akm search "code review" --from registry --assets  # Include asset-level hits
 akm registry add https://example.com/registry/index.json --name my-team
 akm registry remove my-team
 ```
 
-Once you find an interesting stash in the registry, install it with `akm bundle add`:
+Once you find an interesting bundle in the registry, install it with `akm bundle add`:
 
 ```sh
 akm search "kubernetes" --from registry
-akm bundle add github:some-org/k8s-stash
+akm bundle add github:some-org/k8s-bundle
 akm index
 ```
 
@@ -167,4 +167,4 @@ akm index
 - [Agent Integration](agent-integration.md) — using refs across sources in prompts
 - [CLI Reference](../reference/cli.md) — full flag documentation for `add`, `list`, `update`, `remove`, `clone`, `sync`, `registry`
 - [Registry](../reference/registry.md) — registry index format and private registry setup
-- [Stash Maker's Guide](../guides/stash-makers.md) — build and publish your own stash
+- [Bundle Maker's Guide](../guides/stash-makers.md) — build and publish your own bundle

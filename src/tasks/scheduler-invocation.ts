@@ -50,7 +50,7 @@ export function resolveScheduledTaskContext(
 /**
  * Build the one scheduler-generated argv shape consumed by all backends.
  *
- * `target` records the bundle a non-primary task lives in as a `--target
+ * `target` records the bundle a non-primary task lives in as a `--bundle
  * <bundle>` token so the scheduled `akm task run` resolves the task (and its
  * relative asset refs) from that bundle. It is emitted ONLY when supplied and
  * non-empty — callers pass it exclusively for a non-default bundle, so a
@@ -62,7 +62,7 @@ export function buildScheduledTaskInvocation(
   contextPath: string,
   target?: string,
 ): ScheduledTaskInvocation {
-  const targetArgs = target !== undefined && target !== "" ? ["--target", target] : [];
+  const targetArgs = target !== undefined && target !== "" ? ["--bundle", target] : [];
   return {
     argv: [
       ...akmArgv,
@@ -212,7 +212,7 @@ export function parseScheduledTaskArgv(argv: readonly string[]):
 
   let index = tasksIndex + 3;
   let target: string | undefined;
-  if (argv[index] === "--target") {
+  if (argv[index] === "--bundle") {
     target = argv[index + 1];
     if (!target) return undefined;
     index += 2;

@@ -30,13 +30,13 @@ export async function stepAgentPlatforms(current: SetupDraftConfig): Promise<Sou
   const newPlatforms = platforms.filter((pl) => !existingPaths.has(pl.path));
 
   if (newPlatforms.length === 0) {
-    p.log.info(`Detected ${platforms.length} agent platform(s), all already configured as stash sources.`);
+    p.log.info(`Detected ${platforms.length} agent platform(s), all already configured as bundle sources.`);
     return [];
   }
 
   const selected = await prompt(() =>
     p.multiselect({
-      message: "Found agent platform configurations. Add as stash sources?",
+      message: "Found agent platform configurations. Add as bundle sources?",
       options: newPlatforms.map((pl) => ({
         value: pl.path,
         label: pl.name,

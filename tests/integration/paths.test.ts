@@ -472,7 +472,7 @@ describe("getDefaultStashDir", () => {
   test("throws when HOME is unset on Unix", () => {
     delete process.env.AKM_BUNDLE_DIR;
     delete process.env.HOME;
-    expect(() => getDefaultStashDir()).toThrow("Unable to determine default stash directory. Set HOME.");
+    expect(() => getDefaultStashDir()).toThrow("Unable to determine default bundle directory. Set HOME.");
   });
 
   test("AKM_BUNDLE_DIR overrides all other paths", () => {
