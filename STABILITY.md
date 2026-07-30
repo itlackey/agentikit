@@ -26,6 +26,96 @@ please file it.
 | **Experimental** | Subject to change without notice. Not recommended for scripted use. Some experimental surfaces additionally require an explicit opt-in — see [`akm improve` autonomy](#akm-improve-autonomy--opt-in-in-090) and [`akm workflow` engine](#akm-workflow-engine--opt-in-in-090). |
 | **Internal** | Not a public interface. May change or disappear in any release, without a CHANGELOG note. Listed here only so you can recognize it. |
 
+## Command tier index
+
+The canonical index: every command and subcommand group in the current tree
+(enumerated from `main.subCommands` in `src/cli.ts` and each group's own
+`subCommands`), with its tier. The prose sections below remain the detailed
+explanation of *why*; this table is the lookup. Two spots have no single
+explicit sentence naming their tier and were resolved by reading neighbors:
+`akm bundle show` is assigned Evolving because it is discussed only inside
+the Evolving "Bundles & the workspace model" bullet, alongside the still-
+shifting adapter set, unlike its sibling `akm bundle list`, which the Stable
+section names explicitly; and `akm proposal list` is assigned Stable — the
+Stable section names it explicitly ("list filters"), which takes precedence
+over its incidental mention inside the Evolving "Improvement loop" bullet's
+enumeration of the whole `proposal` noun group.
+
+| Command | Tier | Notes |
+| --- | --- | --- |
+| `akm setup` | Stable | |
+| `akm index` | Stable | |
+| `akm health` | Evolving | Exit codes are Evolving; report *content* and rendered `md`/`html` layout are Experimental — do not script against report layout. |
+| `akm info` | Stable | |
+| `akm bundle create` | Stable | |
+| `akm bundle add` | Stable | |
+| `akm bundle list` | Stable | |
+| `akm bundle show` | Evolving | See note above. |
+| `akm bundle remove` | Stable | |
+| `akm bundle update` | Stable | |
+| `akm upgrade` | Evolving | |
+| `akm search` | Stable | |
+| `akm curate` | Stable | |
+| `akm show` | Stable | |
+| `akm workflow start` | Stable | Classic linear markdown workflow contract. |
+| `akm workflow next` | Stable | |
+| `akm workflow complete` | Stable | |
+| `akm workflow status` | Stable | |
+| `akm workflow list` | Stable | |
+| `akm workflow create` | Stable | |
+| `akm workflow resume` | Stable | |
+| `akm workflow abandon` | Stable | |
+| `akm workflow run` | Experimental | Requires `experimental.workflowEngine` opt-in. |
+| `akm workflow brief` | Experimental | Harness-neutral driver protocol; same opt-in as `run`. |
+| `akm workflow report` | Experimental | Harness-neutral driver protocol; same opt-in as `run`. |
+| `akm remember` | Stable | |
+| `akm import` | Stable | |
+| `akm sync` | Stable | |
+| `akm clone` | Stable | |
+| `akm mv` | Experimental | Not covered by the identity-preservation contract; prefer a filesystem move plus `akm index`/`akm lint`. |
+| `akm registry list` | Evolving | |
+| `akm registry add` | Evolving | |
+| `akm registry remove` | Evolving | |
+| `akm migrate status` | Internal | Thin forwarder to the standalone `akm-migrate` tool; `hidden: true` in `--help`. |
+| `akm migrate apply` | Internal | Thin forwarder to the standalone `akm-migrate` tool; `hidden: true` in `--help`. |
+| `akm config path` | Stable | |
+| `akm config list` | Stable | |
+| `akm config get` | Stable | |
+| `akm config set` | Stable | |
+| `akm config unset` | Stable | |
+| `akm feedback` | Stable | |
+| `akm log` | Evolving | |
+| `akm agent` | Evolving | |
+| `akm lint` | Evolving | |
+| `akm improve` | Evolving | Review-first by default; mutating lanes require `experimental.improveAutonomy` — see below. |
+| `akm proposal list` | Stable | See reconciliation note above. |
+| `akm proposal show` | Evolving | |
+| `akm proposal diff` | Evolving | |
+| `akm proposal accept` | Evolving | |
+| `akm proposal reject` | Evolving | |
+| `akm proposal revert` | Evolving | |
+| `akm proposal drain` | Evolving | |
+| `akm proposal extract` | Evolving | Former top-level `akm extract`. |
+| `akm proposal new` | Evolving | Former top-level `akm propose`. |
+| `akm help` | Stable | |
+| `akm help agents` | Stable | |
+| `akm help migrate` | Stable | Only renders release notes. |
+| `akm completions` | Stable | Format-exempt (emits shell script source). |
+| `akm env list` | Stable | Read-and-inject surface. |
+| `akm env path` | Stable | Read-and-inject surface. |
+| `akm env export` | Stable | Read-and-inject surface. |
+| `akm env run` | Stable | Read-and-inject surface. |
+| `akm env create` | Experimental | Write verb. |
+| `akm env remove` | Experimental | Write verb. |
+| `akm secret list` | Stable | Read-and-inject surface. |
+| `akm secret run` | Stable | Read-and-inject surface. |
+| `akm secret set` | Experimental | Write verb. |
+| `akm task add` | Evolving | |
+| `akm task run` | Evolving | |
+| `akm task history` | Evolving | |
+| `akm task sync` | Evolving | |
+| `akm task doctor` | Evolving | |
+
 ## Stable
 
 - **Asset ref syntax** — `[bundle//]conceptId[#fragment]`. A `conceptId` is
