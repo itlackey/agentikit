@@ -978,3 +978,107 @@ function parseType(filePath: string): unknown {
   const match = raw.match(/^---\n([\s\S]*?)\n---/);
   return match?.[1]?.match(/^type:\s*(.+)$/m)?.[1];
 }
+
+// ── OKF v0.2 fixture bundle — reads alongside the v0.1 fixture (D1) ──────────
+//
+// `tests/fixtures/bundles/okf-sample-v2/` exercises the v0.2 trust/provenance
+// (`generated`/`verified`/`sources`) and lifecycle (`status`/`stale_after`)
+// frontmatter families, plus a root `okf_version`. It must index end-to-end
+// exactly like the frozen v0.1 `okf-sample` fixture (byte-identical, untouched
+// by this change) — both bundles are OKF, just different spec minor versions.
+describe("OKF v0.2 fixture bundle indexes end-to-end alongside the v0.1 fixture", () => {
+  let v2Storage: IsolatedAkmStorage;
+  const V2_FIXTURE_ROOT = path.join(import.meta.dir, "../fixtures/bundles/okf-sample-v2");
+
+  beforeEach(() => {
+    v2Storage = withIsolatedAkmStorage();
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "local",
+      bundles: {
+        local: {
+          path: v2Storage.stashDir,
+          writable: true,
+          components: { main: { root: ".", adapter: "akm", writable: true } },
+        },
+        "okf-v2": {
+          path: V2_FIXTURE_ROOT,
+          writable: true,
+          components: { main: { root: ".", adapter: "okf", writable: true } },
+        },
+      },
+    });
+  });
+
+  afterEach(() => v2Storage.cleanup());
+
+  test("every non-reserved concept indexes with adapterId=okf; reserved index.md/log.md are excluded", async () => {
+    await akmIndex({ stashDir: v2Storage.stashDir, full: true });
+
+    const db = openExistingDatabase(getDbPath());
+    try {
+      const rows = db
+        .prepare(
+          "SELECT item_ref AS itemRef, adapter_id AS adapterId, entry_json AS entryJson " +
+            "FROM entries WHERE bundle_id = 'okf-v2' ORDER BY item_ref",
+        )
+        .all() as Array<{ itemRef: string; adapterId: string; entryJson: string }>;
+
+      expect(rows.map((row) => row.itemRef)).toEqual([
+        "okf-v2//reports/draft-note",
+        "okf-v2//reports/legacy",
+        "okf-v2//reports/quarterly",
+      ]);
+      expect(rows.every((row) => row.adapterId === "okf")).toBe(true);
+
+      const byRef = new Map(rows.map((row) => [row.itemRef, JSON.parse(row.entryJson) as Record<string, unknown>]));
+
+      // Full v0.2 family: generated + verified (list form) + object-list sources + status + stale_after.
+      const quarterly = byRef.get("okf-v2//reports/quarterly") as {
+        updated?: string;
+        provenance?: {
+          generatedBy?: string;
+          generatedAt?: string;
+          verified?: Array<{ by: string; at?: string }>;
+          sources?: Array<{ resource: string }>;
+        };
+        lifecycleStatus?: string;
+        staleAfter?: string;
+      };
+      expect(quarterly.updated).toBe("2026-06-20T22:53:05Z");
+      expect(quarterly.provenance?.generatedBy).toBe("reference_agent/gemini-2.5-pro");
+      expect(quarterly.provenance?.generatedAt).toBe("2026-06-20T22:53:05Z");
+      expect(quarterly.provenance?.verified).toEqual([
+        { by: "human:ahormati", at: "2026-06-25T09:00:00Z" },
+        { by: "process:finance-nightly", at: "2026-06-26T03:00:00Z" },
+      ]);
+      expect(quarterly.provenance?.sources).toEqual([
+        expect.objectContaining({ resource: "https://example.com/data/q3-export.csv", id: "main-dataset" }),
+        expect.objectContaining({ resource: "gs://acme-bucket/q3/events.parquet" }),
+      ]);
+      expect(quarterly.lifecycleStatus).toBe("stable");
+      expect(quarterly.staleAfter).toBe("2026-12-31");
+
+      // verified SINGLE-MAPPING form normalizes to a one-element array.
+      const draft = byRef.get("okf-v2//reports/draft-note") as {
+        provenance?: { verified?: Array<{ by: string; at?: string }> };
+        lifecycleStatus?: string;
+      };
+      expect(draft.provenance?.verified).toEqual([{ by: "human:ahormati", at: "2026-06-18T00:05:00Z" }]);
+      expect(draft.lifecycleStatus).toBe("draft");
+
+      // Legacy v0.1-style note (no `generated` family) still falls back to `timestamp`.
+      const legacy = byRef.get("okf-v2//reports/legacy") as { updated?: string; provenance?: unknown };
+      expect(legacy.updated).toBe("2026-05-01T00:00:00Z");
+      expect(legacy.provenance).toBeUndefined();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("show accepts the path-derived ref for a v0.2 concept", async () => {
+    await akmIndex({ stashDir: v2Storage.stashDir, full: true });
+    const shown = await showLocal({ ref: "okf-v2//reports/quarterly" });
+    expect(shown.content).toContain("Q3 Rollup");
+  });
+});

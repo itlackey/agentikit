@@ -139,7 +139,7 @@ describe("okf adapter — conceptId + OKF field projection (§0.1/§3)", () => {
     expect(doc?.adapterId).toBe("okf");
   });
 
-  test("name <- title; description <- description; tags <- tags; updated <- timestamp", () => {
+  test("name <- title; description <- description; tags <- tags; updated <- legacy timestamp fallback (v0.1 fixture carries no `generated`)", () => {
     const doc = okfAdapter.recognize(component(), fc("tables/orders.md"));
     expect(doc?.name).toBe("Orders");
     expect(doc?.description).toBe("One row per completed customer order.");
@@ -157,6 +157,289 @@ describe("okf adapter — conceptId + OKF field projection (§0.1/§3)", () => {
     expect(doc?.content).toContain("WAU counts distinct");
     expect(doc?.content).not.toContain("type: Metric"); // frontmatter excluded from content
     expect(doc?.hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+// ── recognize: v0.2 `updated` precedence (generated.at over legacy timestamp) ─
+
+describe("okf adapter — v0.2 `updated` precedence: generated.at over legacy timestamp fallback", () => {
+  test("generated.at WINS when both generated.at and legacy timestamp are present (v0.2 breaking change)", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic(
+        "reports/both.md",
+        "---\ntype: Report\ngenerated:\n  by: human:jdoe\n  at: 2026-06-20T22:53:05Z\ntimestamp: 2020-01-01T00:00:00Z\n---\n\nbody\n",
+      ),
+    );
+    expect(doc?.updated).toBe("2026-06-20T22:53:05Z");
+  });
+
+  test("generated.at is used when legacy timestamp is absent entirely", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic(
+        "reports/generated-only.md",
+        "---\ntype: Report\ngenerated:\n  by: human:jdoe\n  at: 2026-06-21T00:00:00Z\n---\n\nbody\n",
+      ),
+    );
+    expect(doc?.updated).toBe("2026-06-21T00:00:00Z");
+  });
+
+  test("legacy timestamp is used as the fallback when generated (or generated.at) is absent — the v0.2-permitted fallback", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic("reports/timestamp-only.md", "---\ntype: Report\ntimestamp: 2020-01-01T00:00:00Z\n---\n\nbody\n"),
+    );
+    expect(doc?.updated).toBe("2020-01-01T00:00:00Z");
+  });
+
+  test("a `generated` mapping missing `at` still falls back to legacy timestamp (tolerant of a malformed generated block)", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic(
+        "reports/generated-no-at.md",
+        "---\ntype: Report\ngenerated:\n  by: human:jdoe\ntimestamp: 2020-01-01T00:00:00Z\n---\n\nbody\n",
+      ),
+    );
+    expect(doc?.updated).toBe("2020-01-01T00:00:00Z");
+  });
+
+  test("neither generated.at nor timestamp present => `updated` stays undefined (both remain optional)", () => {
+    const doc = okfAdapter.recognize(component(), synthetic("reports/neither.md", "---\ntype: Report\n---\n\nbody\n"));
+    expect(doc?.updated).toBeUndefined();
+  });
+});
+
+// ── recognize: v0.2 trust/provenance/lifecycle families (§0.1, okf-support.md v0.2 note) ─
+
+describe("okf adapter — v0.2 provenance family: generated/verified/sources land under the NAMESPACED `provenance` field (D1.3 collision avoidance)", () => {
+  test("generated {by, at} populates provenance.generatedBy / provenance.generatedAt", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic(
+        "reports/gen.md",
+        "---\ntype: Report\ngenerated:\n  by: reference_agent/gemini-2.5-pro\n  at: 2026-06-20T22:53:05Z\n---\n\nbody\n",
+      ),
+    );
+    expect(doc?.provenance?.generatedBy).toBe("reference_agent/gemini-2.5-pro");
+    expect(doc?.provenance?.generatedAt).toBe("2026-06-20T22:53:05Z");
+  });
+
+  test("verified LIST form (multiple entries) populates provenance.verified", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic(
+        "reports/verified-list.md",
+        "---\ntype: Report\nverified:\n  - by: human:ahormati\n    at: 2026-06-25T09:00:00Z\n  - by: process:finance-nightly\n    at: 2026-06-26T03:00:00Z\n---\n\nbody\n",
+      ),
+    );
+    expect(doc?.provenance?.verified).toEqual([
+      { by: "human:ahormati", at: "2026-06-25T09:00:00Z" },
+      { by: "process:finance-nightly", at: "2026-06-26T03:00:00Z" },
+    ]);
+  });
+
+  test("verified SINGLE-MAPPING form (no list dash, v0.2 §-permitted shorthand) normalizes to a one-element array", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic(
+        "reports/verified-single.md",
+        "---\ntype: Report\nverified:\n  by: human:ahormati\n  at: 2026-06-18T00:05:00Z\n---\n\nbody\n",
+      ),
+    );
+    expect(doc?.provenance?.verified).toEqual([{ by: "human:ahormati", at: "2026-06-18T00:05:00Z" }]);
+  });
+
+  test("a verified entry missing `at` is still recorded with just `by`", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic("reports/verified-no-at.md", "---\ntype: Report\nverified:\n  by: human:ahormati\n---\n\nbody\n"),
+    );
+    expect(doc?.provenance?.verified).toEqual([{ by: "human:ahormati" }]);
+  });
+
+  test("a verified entry missing `by` is dropped (tolerant — never rejects the document)", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic("reports/verified-no-by.md", "---\ntype: Report\nverified:\n  at: 2026-06-18T00:05:00Z\n---\n\nbody\n"),
+    );
+    expect(doc).not.toBeNull();
+    expect(doc?.provenance).toBeUndefined();
+  });
+
+  test("v0.2 OBJECT-LIST `sources` survive INTACT under provenance.sources — today they would be dropped if folded onto the bare native `sources` string field", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic(
+        "reports/sources.md",
+        [
+          "---",
+          "type: Report",
+          "sources:",
+          "  - resource: https://example.com/data/q3-export.csv",
+          "    id: main-dataset",
+          "    title: Q3 sales export",
+          "    author: human:jdoe",
+          "    usage_count: 42",
+          '    last_modified: "2026-06-01"',
+          "  - resource: gs://acme-bucket/q3/events.parquet",
+          "---",
+          "",
+          "body",
+          "",
+        ].join("\n"),
+      ),
+    );
+    expect(doc?.provenance?.sources).toEqual([
+      {
+        resource: "https://example.com/data/q3-export.csv",
+        id: "main-dataset",
+        title: "Q3 sales export",
+        author: "human:jdoe",
+        usage_count: 42,
+        last_modified: "2026-06-01",
+      },
+      { resource: "gs://acme-bucket/q3/events.parquet" },
+    ]);
+    // The PRE-EXISTING AKM-native `sources: string[]` field (wiki citations, D1.3
+    // collision) must NEVER be populated by the okf adapter — it is a completely
+    // different field from `provenance.sources`.
+    expect(doc?.sources).toBeUndefined();
+  });
+
+  test("a `sources` entry missing `resource` is dropped (tolerant); an empty/all-dropped list leaves provenance.sources unset", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic(
+        "reports/sources-malformed.md",
+        "---\ntype: Report\nsources:\n  - title: No resource here\n---\n\nbody\n",
+      ),
+    );
+    expect(doc?.provenance).toBeUndefined();
+  });
+
+  test("status is read into lifecycleStatus for each of draft/stable/deprecated", () => {
+    for (const status of ["draft", "stable", "deprecated"] as const) {
+      const doc = okfAdapter.recognize(
+        component(),
+        synthetic(`reports/status-${status}.md`, `---\ntype: Report\nstatus: ${status}\n---\n\nbody\n`),
+      );
+      expect(doc?.lifecycleStatus).toBe(status);
+    }
+  });
+
+  test("an unrecognized status value is ignored (never rejects; lifecycleStatus stays unset)", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic("reports/status-bogus.md", "---\ntype: Report\nstatus: not-a-real-status\n---\n\nbody\n"),
+    );
+    expect(doc?.lifecycleStatus).toBeUndefined();
+  });
+
+  test("stale_after is read verbatim into staleAfter", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic("reports/stale.md", '---\ntype: Report\nstale_after: "2026-12-31"\n---\n\nbody\n'),
+    );
+    expect(doc?.staleAfter).toBe("2026-12-31");
+  });
+
+  test("okf_version is read into okfVersion best-effort (Rule 9) even on a non-root concept", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic("reports/versioned.md", '---\ntype: Report\nokf_version: "0.2"\n---\n\nbody\n'),
+    );
+    expect(doc?.okfVersion).toBe("0.2");
+  });
+
+  test("a concept with none of the v0.2 families sets no v0.2 fields (fully optional, never defaulted)", () => {
+    const doc = okfAdapter.recognize(component(), synthetic("reports/none.md", "---\ntype: Report\n---\n\nbody\n"));
+    expect(doc?.provenance).toBeUndefined();
+    expect(doc?.lifecycleStatus).toBeUndefined();
+    expect(doc?.staleAfter).toBeUndefined();
+    expect(doc?.okfVersion).toBeUndefined();
+  });
+
+  test("generated/verified/sources/status/stale_after/okf_version never leak into documentJson (no duplication with the first-class fields)", () => {
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic(
+        "reports/all-families.md",
+        [
+          "---",
+          "type: Report",
+          "generated:",
+          "  by: human:jdoe",
+          "  at: 2026-06-20T22:53:05Z",
+          "verified:",
+          "  by: human:jdoe",
+          "  at: 2026-06-20T23:00:00Z",
+          "sources:",
+          "  - resource: https://example.com/a.csv",
+          "status: stable",
+          'stale_after: "2026-12-31"',
+          'okf_version: "0.2"',
+          "vendor_extra: keep-me",
+          "---",
+          "",
+          "body",
+          "",
+        ].join("\n"),
+      ),
+    );
+    expect(doc?.documentJson).toEqual({ vendor_extra: "keep-me" });
+  });
+
+  test("wildly malformed v0.2 fields (wrong shapes) never throw and never reject the document", () => {
+    expect(() =>
+      okfAdapter.recognize(
+        component(),
+        synthetic(
+          "reports/garbage.md",
+          [
+            "---",
+            "type: Report",
+            "generated: not-a-mapping",
+            "verified: 12345",
+            "sources: { not: an-array }",
+            "status: [draft]",
+            "stale_after:",
+            "  nested: object",
+            "okf_version: 2",
+            "---",
+            "",
+            "body",
+            "",
+          ].join("\n"),
+        ),
+      ),
+    ).not.toThrow();
+    const doc = okfAdapter.recognize(
+      component(),
+      synthetic(
+        "reports/garbage.md",
+        [
+          "---",
+          "type: Report",
+          "generated: not-a-mapping",
+          "verified: 12345",
+          "sources: { not: an-array }",
+          "status: [draft]",
+          "stale_after:",
+          "  nested: object",
+          "okf_version: 2",
+          "---",
+          "",
+          "body",
+          "",
+        ].join("\n"),
+      ),
+    );
+    expect(doc?.type).toBe("Report");
+    expect(doc?.provenance).toBeUndefined();
+    expect(doc?.lifecycleStatus).toBeUndefined();
+    expect(doc?.staleAfter).toBeUndefined();
+    expect(doc?.okfVersion).toBeUndefined();
   });
 });
 
@@ -288,10 +571,24 @@ describe("okf adapter — validate is LENIENT (§5)", () => {
     expect(diags.some((d) => d.issue === "missing-ref")).toBe(false);
   });
 
-  test("a `timestamp` satisfies the freshness check — no `missing-updated` (§0.1)", async () => {
+  test("a `timestamp` satisfies the freshness check — no `missing-updated` (§0.1, legacy v0.1 fallback)", async () => {
     const diags = await okfAdapter.validate(
       component(),
       [change("tables/orders.md", readFixture("tables/orders.md"))],
+      makeValidateContext({ resolveRef: async () => ({ exists: true }) }),
+    );
+    expect(diags.some((d) => d.issue === "missing-updated")).toBe(false);
+  });
+
+  test("a v0.2 `generated.at` (no legacy timestamp) ALSO satisfies the freshness check — no `missing-updated`", async () => {
+    const diags = await okfAdapter.validate(
+      component(),
+      [
+        change(
+          "reports/generated-only.md",
+          "---\ntype: Report\ngenerated:\n  by: human:jdoe\n  at: 2026-06-20T22:53:05Z\n---\n\nbody\n",
+        ),
+      ],
       makeValidateContext({ resolveRef: async () => ({ exists: true }) }),
     );
     expect(diags.some((d) => d.issue === "missing-updated")).toBe(false);
@@ -301,6 +598,15 @@ describe("okf adapter — validate is LENIENT (§5)", () => {
     const diags = await okfAdapter.validate(
       component(),
       [change("notes/stale.md", "---\ntype: knowledge\ntitle: Stale\n---\n\nbody\n")],
+      makeValidateContext({ resolveRef: async () => ({ exists: true }) }),
+    );
+    expect(diags.some((d) => d.issue === "missing-updated")).toBe(false);
+  });
+
+  test("neither timestamp nor generated present — still no `missing-updated` (both remain fully optional under v0.2)", async () => {
+    const diags = await okfAdapter.validate(
+      component(),
+      [change("reports/neither.md", "---\ntype: Report\n---\n\nbody\n")],
       makeValidateContext({ resolveRef: async () => ({ exists: true }) }),
     );
     expect(diags.some((d) => d.issue === "missing-updated")).toBe(false);
