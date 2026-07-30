@@ -17,15 +17,33 @@
  * D5 (WorkflowDocuments reader) removed those inversions; this guard ratchets
  * them shut so they cannot regrow.
  *
- * Scope is intentionally NARROW. Raw SQL legitimately lives in many other
- * modules (health, indexer, usage-telemetry, the improve read-side, …) and the
- * codebase does NOT funnel all SQL through one repository directory — so a
- * blanket "no SQL outside repositories" rule would be a large status-quo
- * allowlist, not a real boundary. This guard enforces only the boundary that
- * was actually inverted and actually regressed.
+ * Scope for `db-owner-import` / `db-open-call` is intentionally NARROW. Raw
+ * SQL legitimately lives in many other modules (health, indexer,
+ * usage-telemetry, the improve read-side, …) and the codebase does NOT funnel
+ * all SQL through one repository directory — so a blanket "no SQL outside
+ * repositories" rule would be a large status-quo allowlist, not a real
+ * boundary. Those two rules enforce only the boundary that was actually
+ * inverted and actually regressed.
  *
- * Comments and string literals are stripped before matching, so prose that
- * merely mentions these names does not trip the guard — only real code does.
+ * A third rule, `state-table-sql` (#672 part 2), is scoped differently and
+ * much more broadly: raw SQL naming the `asset_salience` / `asset_outcome`
+ * state.db tables is guarded EVERYWHERE under `src/` except
+ * `src/storage/repositories/**` (their new home,
+ * salience-repository.ts / outcome-repository.ts) and
+ * `src/core/state/migrations.ts` (schema DDL, not application read/write
+ * SQL — migrations are append-only history and are never refactored to use
+ * a repository). Unlike the first two rules, a widened `GUARDED_PREFIXES`
+ * would not express this: `salience.ts` and `outcome-loop.ts` take `db`
+ * parameters and import no DB-owner module, so they pass the first two rules
+ * today with their SQL fully intact — unlike `db-owner-import`/`db-open-call`,
+ * this is a raw-SQL-content rule, not an import/open-call rule, so it needs
+ * its own pattern and its own scope predicate (`isStateTableSqlScope` below),
+ * not just a wider prefix list.
+ *
+ * Comments and string literals are stripped before matching (except for rules
+ * that opt into `keepStrings`, which need to see string content — import
+ * specifiers and SQL text both live inside string literals), so prose that
+ * merely mentions these names does not trip any rule — only real code does.
  *
  * Exit codes: 0 — clean; 1 — violations (or internal error).
  * Usage: bun scripts/lint-repository-sql.ts
@@ -41,15 +59,49 @@ const srcDir = path.join(repoRoot, "src");
  * Subsystems that must use repositories rather than DB internals. POSIX-relative
  * directory prefixes. Add a new boundary here only when its inversions are
  * already cleared (the guard must stay at 0 violations).
+ *
+ * Scope for `db-owner-import` and `db-open-call` ONLY — the `state-table-sql`
+ * rule (#672 part 2) has its own, much broader scope; see
+ * `isStateTableSqlScope` below. Left unchanged by #672 part 2 on purpose.
  */
 const GUARDED_PREFIXES: readonly string[] = ["src/registry/", "src/workflows/runtime/"];
+
+/**
+ * `state-table-sql` scope (#672 part 2): applies everywhere under `src/`
+ * except these directory prefixes …
+ */
+const STATE_TABLE_SQL_EXCLUDED_PREFIXES: readonly string[] = ["src/storage/repositories/"];
+
+/** … and except these exact files (POSIX-relative to repo root). */
+const STATE_TABLE_SQL_EXCLUDED_FILES: readonly string[] = ["src/core/state/migrations.ts"];
+
+/** Scope predicate for the original two rules: registry + workflow-runtime only. */
+function isGuardedPrefix(rel: string): boolean {
+  return GUARDED_PREFIXES.some((p) => rel.startsWith(p));
+}
+
+/**
+ * Scope predicate for `state-table-sql`: everywhere under `src/` except the
+ * repository directory (the new home for this SQL) and the migrations file
+ * (schema DDL, append-only, never behind a repository).
+ */
+function isStateTableSqlScope(rel: string): boolean {
+  if (!rel.startsWith("src/")) return false;
+  if (STATE_TABLE_SQL_EXCLUDED_FILES.includes(rel)) return false;
+  return !STATE_TABLE_SQL_EXCLUDED_PREFIXES.some((p) => rel.startsWith(p));
+}
 
 interface Rule {
   id: string;
   pattern: RegExp;
   message: string;
-  /** Match against string-preserving text (for import-specifier rules). */
+  /** Match against string-preserving text (for import-specifier / SQL-text rules). */
   keepStrings?: boolean;
+  /**
+   * Which files this rule applies to, given a repo-relative POSIX path.
+   * Defaults to `isGuardedPrefix` (the original two rules' scope) when absent.
+   */
+  appliesTo?: (rel: string) => boolean;
 }
 
 const RULES: readonly Rule[] = [
@@ -67,6 +119,15 @@ const RULES: readonly Rule[] = [
       /\b(?:openExistingDatabase|openIndexDatabase|openStateDatabase|openManagedDatabase)\s*\(|\bnew\s+Database\s*\(/,
     message:
       "opens a database directly — registry/workflow-runtime code must query through a repository in src/storage/repositories/**",
+  },
+  {
+    id: "state-table-sql",
+    // Raw SQL (or any code) naming the asset_salience / asset_outcome tables.
+    pattern: /\basset_salience\b|\basset_outcome\b/,
+    message:
+      "raw SQL names a state-table (asset_salience/asset_outcome) outside src/storage/repositories/** — move the query behind salience-repository.ts / outcome-repository.ts (repository-owns-SQL boundary, #672)",
+    keepStrings: true,
+    appliesTo: isStateTableSqlScope,
   },
 ];
 
@@ -162,7 +223,11 @@ interface Violation {
 
 /** Pure matcher: lint one file's content given its repo-relative POSIX path. */
 export function lintContent(rel: string, raw: string): Violation[] {
-  if (!GUARDED_PREFIXES.some((p) => rel.startsWith(p))) return [];
+  // Each rule has its own scope (appliesTo, default isGuardedPrefix). Skip the
+  // (relatively expensive) comment/string stripping entirely when NO rule
+  // could possibly apply to this file.
+  const applicableRules = RULES.filter((rule) => (rule.appliesTo ?? isGuardedPrefix)(rel));
+  if (applicableRules.length === 0) return [];
 
   const noStrings = stripCommentsAndStrings(raw, false).split("\n");
   const withStrings = stripCommentsAndStrings(raw, true).split("\n");
@@ -170,7 +235,7 @@ export function lintContent(rel: string, raw: string): Violation[] {
 
   const violations: Violation[] = [];
   for (let i = 0; i < rawLines.length; i++) {
-    for (const rule of RULES) {
+    for (const rule of applicableRules) {
       const subject = rule.keepStrings ? withStrings[i] : noStrings[i];
       if (subject !== undefined && rule.pattern.test(subject)) {
         violations.push({
@@ -203,7 +268,8 @@ if (import.meta.main) {
   const violations = lintRepositorySql();
   if (violations.length === 0) {
     console.log(
-      "lint-repository-sql: OK — registry + workflow-runtime reach storage only through src/storage/repositories",
+      "lint-repository-sql: OK — registry + workflow-runtime reach storage only through src/storage/repositories, " +
+        "and no raw asset_salience/asset_outcome SQL lives outside it",
     );
     process.exit(0);
   }
