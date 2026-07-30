@@ -8,7 +8,7 @@
  * Sandbox isolation is unconditional — even with `--no-sandbox` on the
  * parent run, this runner builds its own sandbox via `createSandbox`. The
  * runner MUST NOT touch the real stash or real data dir under any
- * circumstance (it shells out to akm with AKM_STASH_DIR / AKM_DATA_DIR /
+ * circumstance (it shells out to akm with AKM_BUNDLE_DIR / AKM_DATA_DIR /
  * HOME carve-outs).
  *
  * Inputs:  { fixture: string; improveArgs?: string[] }

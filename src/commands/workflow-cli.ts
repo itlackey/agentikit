@@ -185,7 +185,7 @@ const workflowCreateCommand = defineJsonCommand({
   meta: {
     name: "create",
     description:
-      "Create a workflow in the working stash (markdown document by default; a .yaml/.yml name writes a YAML program)",
+      "Create a workflow in the working bundle (markdown document by default; a .yaml/.yml name writes a YAML program)",
   },
   args: {
     name: {

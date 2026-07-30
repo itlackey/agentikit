@@ -69,7 +69,7 @@ Usage:
 Options:
   --suite <name>          Eval suite (default: improve-smoke).
   --stash <path>          Source stash to fork into both sandboxes
-                          (default: \$AKM_STASH_DIR or ~/akm).
+                          (default: \$AKM_BUNDLE_DIR or ~/akm).
   --cases-dir <path>      Root containing <suite>/*.json case files
                           (default: scripts/akm-eval/cases/).
   --akm <bin>             Path to akm binary (default: \$AKM_BIN or 'akm').

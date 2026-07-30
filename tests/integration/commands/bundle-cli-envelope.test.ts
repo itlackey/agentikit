@@ -64,14 +64,14 @@ afterEach(() => {
 });
 
 describe("akm bundle group — JSON envelope snapshot (S7)", () => {
-  test("create: success envelope carries stashDir + created + bundle-create shape (exit 0)", async () => {
+  test("create: success envelope carries bundleDir + created + bundle-create shape (exit 0)", async () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), "akm-bundle-create-"));
     createdTmpDirs.push(parent);
     const stashDir = path.join(parent, "newstash");
     const { stdout, status } = await runCli(["--json", "bundle", "create", "--dir", stashDir]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
-    expect(env.stashDir).toBe(stashDir);
+    expect(env.bundleDir).toBe(stashDir);
     expect(env.created).toBe(true);
     expect(env.shape).toBe("bundle-create");
     expect(fs.existsSync(path.join(stashDir, "lessons"))).toBe(true);

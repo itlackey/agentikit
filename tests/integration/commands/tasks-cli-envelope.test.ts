@@ -10,7 +10,7 @@
  * leaf handlers onto `defineJsonCommand` is byte-identical. Only the
  * scheduler-free subcommands are exercised (`doctor`, the bare-group default,
  * and the `run` not-found error path) so the test never touches the host OS
- * scheduler. The CLI reads an isolated stash through AKM_STASH_DIR via the
+ * scheduler. The CLI reads an isolated stash through AKM_BUNDLE_DIR via the
  * in-process harness.
  */
 
@@ -53,7 +53,7 @@ function writeDisabledCommandTask(stashDir: string): void {
 }
 
 async function runCli(args: string[], stashDir: string): Promise<{ stdout: string; stderr: string; status: number }> {
-  const { code, stdout, stderr } = await withEnv({ AKM_STASH_DIR: stashDir }, () => runCliCapture(args));
+  const { code, stdout, stderr } = await withEnv({ AKM_BUNDLE_DIR: stashDir }, () => runCliCapture(args));
   return { stdout, stderr, status: code };
 }
 
@@ -105,12 +105,12 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
     const capturedStash = makeStashDir();
     const ambientStash = makeStashDir();
     writeDisabledCommandTask(capturedStash);
-    const generated = await withEnv({ AKM_STASH_DIR: capturedStash }, () => {
+    const generated = await withEnv({ AKM_BUNDLE_DIR: capturedStash }, () => {
       const contextPath = writeSchedulerContextDescriptor(schedulerContextDescriptor());
       return buildScheduledTaskInvocation(["akm"], "disabled-command", contextPath);
     });
 
-    const { code, stdout, stderr } = await withEnv({ AKM_STASH_DIR: ambientStash }, () => {
+    const { code, stdout, stderr } = await withEnv({ AKM_BUNDLE_DIR: ambientStash }, () => {
       const consumed = consumeSchedulerContextArg(generated.argv);
       return runCliCapture(["--json", ...consumed.slice(1)]);
     });

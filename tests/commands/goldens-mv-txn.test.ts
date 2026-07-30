@@ -131,8 +131,8 @@ const GOLDEN_PATH = "tests/fixtures/goldens/journal/move-txn.json";
 const HEAD_SHA = "3d9ee7b1917e8c4872f135fe9993d94b61b36ed1";
 
 function writeSandboxConfig(partial: Record<string, unknown>): void {
-  const stashDir = process.env.AKM_STASH_DIR;
-  if (!stashDir) throw new Error("AKM_STASH_DIR is required for mv tests");
+  const stashDir = process.env.AKM_BUNDLE_DIR;
+  if (!stashDir) throw new Error("AKM_BUNDLE_DIR is required for mv tests");
   const bundles = (partial.bundles ?? {}) as Record<string, unknown>;
   writeConfig({
     ...partial,

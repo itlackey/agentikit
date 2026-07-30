@@ -74,9 +74,9 @@ Verify the resulting setup with:
 akm task doctor
 ```
 
-## Initialize Your Working Stash
+## Initialize Your Working Bundle
 
-For non-interactive use, run `akm setup --yes` to create your working stash —
+For non-interactive use, run `akm setup --yes` to create your working bundle —
 the primary directory where your personal assets live:
 
 ```sh
@@ -140,7 +140,7 @@ chmod +x ~/akm/scripts/hello.sh
 ```
 
 Any file with a known extension (`.sh`, `.ts`, `.py`, etc.) placed in your
-working stash is automatically recognized. The `scripts/` directory is not
+working bundle is automatically recognized. The `scripts/` directory is not
 required -- it just increases classification confidence. See
 [concepts.md](concepts.md) for how classification works.
 
@@ -157,7 +157,7 @@ Build the search index so your assets are discoverable:
 akm index
 ```
 
-**`setup` vs `index`:** `akm setup` creates your working stash directory (run
+**`setup` vs `index`:** `akm setup` creates your working bundle directory (run
 once). `akm index` scans all sources, then builds the
 search database (run whenever you add or change assets). They are separate
 steps — `setup` creates the stash, `index` makes its contents searchable.
@@ -227,7 +227,7 @@ ref formats.
 
 When testing agent behavior, authoring new assets, or reproducing an issue,
 you often want a clean stash that does not touch your real one. Every akm
-command honours the standard XDG env vars plus `AKM_STASH_DIR`, so you can
+command honours the standard XDG env vars plus `AKM_BUNDLE_DIR`, so you can
 spin up a disposable environment in a single terminal:
 
 ```bash
@@ -236,7 +236,7 @@ export HOME="$SANDBOX"
 export XDG_CONFIG_HOME="$SANDBOX/config"
 export XDG_DATA_HOME="$SANDBOX/data"
 export XDG_CACHE_HOME="$SANDBOX/cache"
-export AKM_STASH_DIR="$SANDBOX/stash"
+export AKM_BUNDLE_DIR="$SANDBOX/stash"
 
 akm setup --yes                 # initialize the sandbox stash
 akm index --full                # empty but valid index

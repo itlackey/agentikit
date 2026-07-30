@@ -22,7 +22,7 @@ stash_dir() {
     echo "$STASH_DIR"
     return
   fi
-  echo "${AKM_STASH_DIR:-$HOME/akm}"
+  echo "${AKM_BUNDLE_DIR:-$HOME/akm}"
 }
 
 evals_runs_dir() {

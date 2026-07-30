@@ -90,7 +90,7 @@ describe("task asset mutations honor write-target resolution", () => {
         { backend: fakeBackend },
       );
 
-      expect(result.stashDir).toBe(target.dir);
+      expect(result.bundleDir).toBe(target.dir);
       expect(fs.existsSync(path.join(target.dir, "tasks", "nightly.yml"))).toBe(true);
       expect(fs.existsSync(path.join(iso.stashDir, "tasks", "nightly.yml"))).toBe(false);
       expect(backendState.installCalls).toEqual(["nightly"]);

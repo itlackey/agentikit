@@ -54,7 +54,7 @@ function spawnImprove(args: string[], stashDir: string): { status: number; stdou
     timeout: 30_000,
     env: {
       ...process.env,
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       XDG_CONFIG_HOME: config.dir,
       XDG_DATA_HOME: data.dir,
     },

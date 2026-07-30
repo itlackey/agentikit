@@ -146,7 +146,7 @@ describe("secret set", () => {
     fs.writeFileSync(src, pem);
 
     const { status } = await runCli(["secret", "set", "secrets/key", "--from-file", src], {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
     });
     expect(status).toBe(0);
     expect(fs.readFileSync(path.join(stashDir, "secrets", "key"), "utf8")).toBe(pem);
@@ -155,7 +155,7 @@ describe("secret set", () => {
   test("--from-env reads the value from the named environment variable", async () => {
     const stashDir = makeStash();
     const { status } = await runCli(["secret", "set", "secrets/demo", "--from-env", "AKM_VALUE"], {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       AKM_VALUE: "from-the-env",
     });
     expect(status).toBe(0);
@@ -166,7 +166,7 @@ describe("secret set", () => {
     const stashDir = makeStash();
     const { status, stderr } = await runCli(
       ["secret", "set", "secrets/demo", "--from-file", "/tmp/x", "--from-env", "AKM_VALUE"],
-      { AKM_STASH_DIR: stashDir, AKM_VALUE: "v" },
+      { AKM_BUNDLE_DIR: stashDir, AKM_VALUE: "v" },
     );
     expect(status).toBe(2);
     expect(JSON.parse(stderr.trim()).ok).toBe(false);
@@ -178,7 +178,7 @@ describe("secret list", () => {
     const stashDir = makeStash();
     setSecret(path.join(stashDir, "secrets", "deploy-key"), Buffer.from("the-actual-secret-value"));
 
-    const { stdout, status } = await runCli(["secret", "list", "--format", "json"], { AKM_STASH_DIR: stashDir });
+    const { stdout, status } = await runCli(["secret", "list", "--format", "json"], { AKM_BUNDLE_DIR: stashDir });
     expect(status).toBe(0);
     const parsed = JSON.parse(stdout.trim());
     const refs = parsed.secrets.map((s: { ref: string }) => s.ref);
@@ -209,7 +209,7 @@ describe("colon ref spelling removed (Q-08)", () => {
     setSecret(path.join(stashDir, "secrets", "deploy-key"), Buffer.from("the-actual-secret-value"));
 
     const { status, stderr, stdout } = await runCli(["secret", "run", "secret:deploy-key", "TOKEN", "--", "true"], {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
     });
 
     expect(status).toBe(2);
@@ -229,7 +229,7 @@ describe("colon ref spelling removed (Q-08)", () => {
     setSecret(path.join(stashDir, "secrets", "deploy-key"), Buffer.from("v"));
 
     const { status, stderr } = await runCli(["secret", "run", "secrets:deploy-key", "TOKEN", "--", "true"], {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
     });
 
     expect(status).toBe(2);
@@ -253,7 +253,7 @@ describe("colon ref spelling removed (Q-08)", () => {
     setSecret(fp, Buffer.from("v"));
 
     const { status } = await runCli(["secret", "set", "secrets/deploy-key", "--from-env", "AKM_VALUE"], {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       AKM_VALUE: "updated-value",
     });
 

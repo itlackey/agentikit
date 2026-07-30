@@ -50,7 +50,7 @@ const originalXdgCacheHome = process.env.XDG_CACHE_HOME;
 const originalXdgDataHome = process.env.XDG_DATA_HOME;
 const originalXdgStateHome = process.env.XDG_STATE_HOME;
 const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
-const originalStashDir = process.env.AKM_STASH_DIR;
+const originalStashDir = process.env.AKM_BUNDLE_DIR;
 let testCacheDir = "";
 let testConfigDir = "";
 let testDataDir = "";
@@ -66,11 +66,11 @@ beforeEach(() => {
   makeStashDir(stashDir);
   process.env.XDG_CACHE_HOME = testCacheDir;
   process.env.XDG_CONFIG_HOME = testConfigDir;
-  // Pair AKM_STASH_DIR with XDG_DATA_HOME / XDG_STATE_HOME so the
+  // Pair AKM_BUNDLE_DIR with XDG_DATA_HOME / XDG_STATE_HOME so the
   // test-isolation guard in src/core/paths.ts stays inert.
   process.env.XDG_DATA_HOME = testDataDir;
   process.env.XDG_STATE_HOME = testStateDir;
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
 });
 
 afterEach(() => {
@@ -86,8 +86,8 @@ afterEach(() => {
   if (originalXdgStateHome === undefined) delete process.env.XDG_STATE_HOME;
   else process.env.XDG_STATE_HOME = originalXdgStateHome;
 
-  if (originalStashDir === undefined) delete process.env.AKM_STASH_DIR;
-  else process.env.AKM_STASH_DIR = originalStashDir;
+  if (originalStashDir === undefined) delete process.env.AKM_BUNDLE_DIR;
+  else process.env.AKM_BUNDLE_DIR = originalStashDir;
 
   if (testCacheDir) {
     fs.rmSync(testCacheDir, { recursive: true, force: true });

@@ -39,7 +39,7 @@ beforeEach(async () => {
 
   fs.mkdirSync(path.join(stashDir, "skills"), { recursive: true });
   fs.writeFileSync(path.join(stashDir, "skills", "widget.md"), "---\ndescription: a widget skill\n---\n# Widget\n");
-  await withEnv({ AKM_STASH_DIR: stashDir }, async () => {
+  await withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
     resetConfigCache();
     saveConfig({ semanticSearchMode: "off" });
     await akmIndex({ stashDir, full: true });

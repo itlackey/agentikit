@@ -36,13 +36,13 @@ async function runCli(
   const stashDir = options?.stashDir ?? makeTempDir("akm-capture-stash-");
   const xdgCache = makeTempDir("akm-capture-cache-");
   const xdgConfig = makeTempDir("akm-capture-config-");
-  // Pair AKM_STASH_DIR with XDG_DATA_HOME / XDG_STATE_HOME so the
+  // Pair AKM_BUNDLE_DIR with XDG_DATA_HOME / XDG_STATE_HOME so the
   // test-isolation guard in src/core/paths.ts stays inert.
   const xdgData = makeTempDir("akm-capture-data-");
   const xdgState = makeTempDir("akm-capture-state-");
   const result = await withEnv(
     {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       XDG_CACHE_HOME: xdgCache,
       XDG_CONFIG_HOME: xdgConfig,
       XDG_DATA_HOME: xdgData,
@@ -76,7 +76,7 @@ function spawnCli(
     input: options?.input,
     env: {
       ...process.env,
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       XDG_CACHE_HOME: xdgCache,
       XDG_CONFIG_HOME: xdgConfig,
       XDG_DATA_HOME: xdgData,
@@ -105,9 +105,9 @@ describe("capture commands", () => {
     });
     expect(result.status).toBe(0);
 
-    const json = JSON.parse(result.stdout) as { stashDir: string; configPath: string; created: boolean };
+    const json = JSON.parse(result.stdout) as { bundleDir: string; configPath: string; created: boolean };
     expect(json.created).toBe(true);
-    expect(json.stashDir).toBe(path.resolve(customDir));
+    expect(json.bundleDir).toBe(path.resolve(customDir));
     expect(fs.existsSync(path.join(customDir, "knowledge"))).toBe(true);
     expect(fs.existsSync(path.join(homeDir, "akm"))).toBe(false);
 

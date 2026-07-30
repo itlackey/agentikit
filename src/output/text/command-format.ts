@@ -22,7 +22,7 @@ import type { DetailLevel } from "../context";
 export function formatInfoPlain(r: Record<string, unknown>): string {
   const lines: string[] = [];
   if (r.version) lines.push(`version: ${String(r.version)}`);
-  if (r.stashDir) lines.push(`stashDir: ${String(r.stashDir)}`);
+  if (r.bundleDir) lines.push(`bundleDir: ${String(r.bundleDir)}`);
   if (r.configPath) lines.push(`configPath: ${String(r.configPath)}`);
   if (r.cacheDir) lines.push(`cacheDir: ${String(r.cacheDir)}`);
   if (r.dbPath) lines.push(`dbPath: ${String(r.dbPath)}`);
@@ -402,11 +402,11 @@ export function formatCuratePlain(r: Record<string, unknown>, detail: DetailLeve
 }
 
 export function formatInitPlain(r: Record<string, unknown>): string {
-  let out = `Stash initialized at ${r.stashDir ?? "unknown"}`;
-  // When --dir scaffolded a secondary stash but the default was deliberately
+  let out = `Bundle initialized at ${r.bundleDir ?? "unknown"}`;
+  // When --dir scaffolded a secondary bundle but the default was deliberately
   // left untouched, tell the user instead of silently repointing their default.
-  if (r.defaultStashUpdated === false && typeof r.previousStashDir === "string" && r.previousStashDir) {
-    out += `\nYour default stash is unchanged (${r.previousStashDir}). Re-run with --set-default to make ${r.stashDir} the default.`;
+  if (r.defaultStashUpdated === false && typeof r.previousBundleDir === "string" && r.previousBundleDir) {
+    out += `\nYour default bundle is unchanged (${r.previousBundleDir}). Re-run with --set-default to make ${r.bundleDir} the default.`;
   } else if (r.configPath) {
     out += `\nConfig saved to ${r.configPath}`;
   }

@@ -44,7 +44,7 @@ describe("preload safety invariants", () => {
     // the test runs, so by the time any test body executes, an override that is
     // still set must resolve to a live dir under the temp root — never a
     // dangling pointer that would surface as STASH_DIR_UNREADABLE.
-    for (const k of ["AKM_STASH_DIR", "AKM_CONFIG_DIR", "AKM_CACHE_DIR", "AKM_DATA_DIR", "AKM_STATE_DIR"]) {
+    for (const k of ["AKM_BUNDLE_DIR", "AKM_CONFIG_DIR", "AKM_CACHE_DIR", "AKM_DATA_DIR", "AKM_STATE_DIR"]) {
       const v = process.env[k];
       if (v !== undefined) expect(underTmp(v)).toBe(true);
     }

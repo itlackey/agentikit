@@ -58,13 +58,13 @@ function spawnCli(
     encoding: "utf8",
     timeout: 10_000,
     cwd: options.cwd,
-    env: { ...process.env, AKM_STASH_DIR: undefined, ...options.env },
+    env: { ...process.env, AKM_BUNDLE_DIR: undefined, ...options.env },
   });
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? 1 };
 }
 
 // The default sandbox (from the preload) has no stash configured, which is what
-// the original spawn version achieved by passing AKM_STASH_DIR undefined.
+// the original spawn version achieved by passing AKM_BUNDLE_DIR undefined.
 
 // Tests.
 
@@ -98,7 +98,7 @@ describe("CLI error handling", () => {
   test("search --detail invalid prints hint about detail", async () => {
     const stash = makeStashDir();
     disposers.push(stash);
-    const { stderr, status } = await withEnv({ AKM_STASH_DIR: stash.dir }, () =>
+    const { stderr, status } = await withEnv({ AKM_BUNDLE_DIR: stash.dir }, () =>
       runCli("search", "test", "--detail", "invalid"),
     );
     expect(status).not.toBe(0);
@@ -239,7 +239,7 @@ describe("config path subcommand", () => {
     expect(status).toBe(0);
     const parsed = JSON.parse(stdout.trim());
     expect(parsed).toHaveProperty("config");
-    expect(parsed).toHaveProperty("stash");
+    expect(parsed).toHaveProperty("bundle");
     expect(parsed).toHaveProperty("cache");
     expect(parsed).toHaveProperty("index");
   });

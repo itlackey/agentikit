@@ -67,7 +67,7 @@ function rejectRetiredTargetFlag(): void {
 export const rememberCommand = defineJsonCommand({
   meta: {
     name: "remember",
-    description: "Record a memory in the default stash",
+    description: "Record a memory in the default bundle",
   },
   args: {
     content: {
@@ -113,7 +113,7 @@ export const rememberCommand = defineJsonCommand({
     supersedes: {
       type: "string",
       description:
-        "Ref of an existing asset this memory corrects (repeatable: --supersedes memories/projectA/old-note). Writes the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the write; a ref outside the write target and working stash still writes the correction but skips the demotion (reported as applied: false).",
+        "Ref of an existing asset this memory corrects (repeatable: --supersedes memories/projectA/old-note). Writes the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the write; a ref outside the write target and working bundle still writes the correction but skips the demotion (reported as applied: false).",
     },
     auto: {
       type: "boolean",
@@ -128,7 +128,7 @@ export const rememberCommand = defineJsonCommand({
     bundle: {
       type: "string",
       description:
-        "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working stash.",
+        "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working bundle.",
     },
     user: {
       type: "string",

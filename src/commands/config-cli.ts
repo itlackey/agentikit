@@ -71,9 +71,9 @@ export const configCommand = defineGroupCommand({
   meta: { name: "config", description: "Show and manage configuration" },
   subCommands: {
     path: defineJsonCommand({
-      meta: { name: "path", description: "Show paths to config, stash, cache, and index" },
+      meta: { name: "path", description: "Show paths to config, bundle, cache, and index" },
       args: {
-        all: { type: "boolean", description: "Show all paths (config, stash, cache, index)", default: false },
+        all: { type: "boolean", description: "Show all paths (config, bundle, cache, index)", default: false },
       },
       run({ args }) {
         const configPath = getConfigPath();
@@ -87,7 +87,7 @@ export const configCommand = defineGroupCommand({
           const cacheDir = getCacheDir();
           const result = {
             config: configPath,
-            stash: stashDir,
+            bundle: stashDir,
             cache: cacheDir,
             index: getDbPath(),
           };

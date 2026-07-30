@@ -236,7 +236,7 @@ export async function akmListSources(input?: { stashDir?: string; kind?: SourceK
 
   return {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     defaultBundle: config.defaultBundle ?? null,
     sources,
     totalSources: sources.length,
@@ -264,7 +264,7 @@ export async function akmRemove(input: { target: string; stashDir?: string }): P
 
     return {
       schemaVersion: 1,
-      stashDir,
+      bundleDir: stashDir,
       target,
       removed: {
         id: managed.installId,
@@ -297,7 +297,7 @@ export async function akmRemove(input: { target: string; stashDir?: string }): P
 
   return {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     target,
     removed: {
       id: removedEntry.name ?? removedEntry.path ?? removedEntry.url ?? target,
@@ -337,7 +337,7 @@ async function buildUpdateResponse(
   const finalConfig = loadConfig();
   return {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     target,
     all,
     processed,

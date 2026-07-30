@@ -159,7 +159,7 @@ function benchOne(cmdStr: string, fixture: string, judgments: JudgmentsFile): {
       AKM_EMBED_DETERMINISTIC: "1",
       AKM_EVENT_SOURCE: "audit",
       HOME: home,
-      AKM_STASH_DIR: stash,
+      AKM_BUNDLE_DIR: stash,
       AKM_DATA_DIR: data,
       XDG_CONFIG_HOME: config,
       XDG_CACHE_HOME: path.join(home, ".cache"),

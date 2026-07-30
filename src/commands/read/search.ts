@@ -160,7 +160,7 @@ export async function akmSearch(input: {
     // and a warning, so no downstream code will try to use the empty path.
     const response: SearchResponse = {
       schemaVersion: 1,
-      stashDir: "",
+      bundleDir: "",
       source,
       hits: [],
       warnings: ["No stashes configured. Run `akm bundle create` to create your working stash."],
@@ -213,7 +213,7 @@ export async function akmSearch(input: {
     const hasResults = localHits.length > 0;
     const response: SearchResponse = {
       schemaVersion: 1,
-      stashDir,
+      bundleDir: stashDir,
       source,
       hits: localHits,
       tip: hasResults ? undefined : localResult?.tip,
@@ -244,7 +244,7 @@ export async function akmSearch(input: {
     const hasResults = slicedRegistryHits.length > 0;
     const response: SearchResponse = {
       schemaVersion: 1,
-      stashDir,
+      bundleDir: stashDir,
       source,
       hits: [],
       registryHits: slicedRegistryHits,
@@ -263,7 +263,7 @@ export async function akmSearch(input: {
 
   const response: SearchResponse = {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     source,
     hits: allStashHits,
     registryHits,
@@ -401,7 +401,7 @@ function logSearchEvent(
         if (resolvedIds.length > 0) {
           let scopeKey: string | undefined;
           try {
-            const stashPath = response.stashDir;
+            const stashPath = response.bundleDir;
             const disabled = disableScopedUtility || (stashPath && isTransientStashPath(stashPath));
             scopeKey = disabled ? undefined : getCurrentWorkflowScopeKey();
           } catch {

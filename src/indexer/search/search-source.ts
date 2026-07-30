@@ -38,7 +38,7 @@ export interface SearchSource {
  * Build the ordered list of stash sources, walking every configured stash
  * once. Iteration order:
  *
- *   1. An explicit argument or `AKM_STASH_DIR`, when present.
+ *   1. An explicit argument or `AKM_BUNDLE_DIR`, when present.
  *   2. The configured `defaultBundle`, after component-root validation.
  *   3. Remaining configured bundles in installation-priority order.
  *
@@ -51,7 +51,7 @@ export interface SearchSource {
 export function resolveSourceEntries(overrideStashDir?: string, existingConfig?: AkmConfig): SearchSource[] {
   const config = existingConfig ?? loadConfig();
   const configuredEntries = bundlesToSourceEntries(config) ?? [];
-  const envOverride = process.env.AKM_STASH_DIR?.trim();
+  const envOverride = process.env.AKM_BUNDLE_DIR?.trim();
   const implicitStashDir =
     overrideStashDir !== undefined
       ? path.resolve(overrideStashDir)

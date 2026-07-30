@@ -37,7 +37,7 @@ function freshDirs(options?: { stashDir?: string }) {
   return {
     stashDir,
     env: {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       XDG_CACHE_HOME: makeTempDir("akm-rmfm-cache-"),
       XDG_CONFIG_HOME: makeTempDir("akm-rmfm-config-"),
       XDG_DATA_HOME: makeTempDir("akm-rmfm-data-"),

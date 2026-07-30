@@ -13,8 +13,8 @@ import { makeSandboxDir, type SandboxedDir, withEnv, writeSandboxConfig } from "
 // Migrated from per-test spawnSync("bun", [cliPath, ...]) to the in-process
 // harness (tests/_helpers/cli.ts). Proposals are seeded in-process via
 // createProposal() against an isolated stash dir; the CLI then reads that stash
-// back through AKM_STASH_DIR. The preload (tests/_preload.ts) sandboxes
-// HOME / XDG dirs per test, so runCli only needs to point AKM_STASH_DIR at the
+// back through AKM_BUNDLE_DIR. The preload (tests/_preload.ts) sandboxes
+// HOME / XDG dirs per test, so runCli only needs to point AKM_BUNDLE_DIR at the
 // seeded stash for the duration of the call (via the allowlisted withEnv
 // wrapper). The spawn version set cwd: repoRoot, which is already the in-process
 // cwd — no chdir needed — so every test migrates cleanly.
@@ -49,8 +49,9 @@ async function runCli(
   args: string[],
   options: { stashDir: string; env?: Record<string, string | undefined> } = { stashDir: "" },
 ): Promise<{ stdout: string; stderr: string; status: number }> {
-  const { code, stdout, stderr } = await withEnv({ AKM_STASH_DIR: options.stashDir || undefined, ...options.env }, () =>
-    runCliCapture(args),
+  const { code, stdout, stderr } = await withEnv(
+    { AKM_BUNDLE_DIR: options.stashDir || undefined, ...options.env },
+    () => runCliCapture(args),
   );
   return { stdout, stderr, status: code };
 }

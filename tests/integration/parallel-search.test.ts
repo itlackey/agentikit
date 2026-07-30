@@ -52,7 +52,7 @@ async function buildTestIndex(stashDir: string, files: Record<string, string>) {
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
     fs.writeFileSync(fullPath, content);
   }
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig({ semanticSearchMode: "off" });
   await akmIndex({ stashDir, full: true });
 }

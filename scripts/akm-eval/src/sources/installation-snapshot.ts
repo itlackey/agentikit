@@ -295,13 +295,13 @@ function materializeInstallationSnapshotUnlocked(
     XDG_DATA_HOME: path.join(runtimeRoot, "xdg-data"),
     XDG_CACHE_HOME: path.join(runtimeRoot, "xdg-cache"),
     XDG_STATE_HOME: path.join(runtimeRoot, "xdg-state"),
-    AKM_STASH_DIR: bundleRoots[manifest.defaultBundle] ?? "",
+    AKM_BUNDLE_DIR: bundleRoots[manifest.defaultBundle] ?? "",
     AKM_CONFIG_DIR: path.dirname(configPath),
     AKM_DATA_DIR: dataDir,
     AKM_CACHE_DIR: path.join(runtimeRoot, "cache"),
     AKM_STATE_DIR: path.join(runtimeRoot, "state"),
   };
-  if (!env.AKM_STASH_DIR) throw new Error("snapshot default bundle root is missing");
+  if (!env.AKM_BUNDLE_DIR) throw new Error("snapshot default bundle root is missing");
   const physicalEnvDirectories = [
     path.join(physicalRuntimeRoot, "home"),
     path.join(physicalRuntimeRoot, "xdg-config"),

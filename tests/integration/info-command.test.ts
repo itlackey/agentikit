@@ -192,11 +192,11 @@ describe("assembleInfo", () => {
     expect(info.indexStats.byType).toEqual({});
   });
 
-  // R-057(a): akm info previously had no top-level stashDir/defaultBundle,
+  // R-057(a): akm info previously had no top-level bundleDir/defaultBundle,
   // even though akm sources list resolves and reports both (SourceListResponse).
   // akm info must agree with akm sources list on which stash/bundle is primary
   // — i.e. use the SAME resolution (resolveStashDir(), env override first).
-  test("stashDir matches resolveStashDir() and defaultBundle matches the configured bundle", () => {
+  test("bundleDir matches resolveStashDir() and defaultBundle matches the configured bundle", () => {
     const config = loadConfig();
     config.bundles = { primary: { path: makeStashDir() } };
     config.defaultBundle = "primary";
@@ -205,14 +205,14 @@ describe("assembleInfo", () => {
 
     const info = assembleInfo();
 
-    expect(info.stashDir).toBe(resolveStashDir());
+    expect(info.bundleDir).toBe(resolveStashDir());
     expect(info.defaultBundle).toBe("primary");
   });
 
   test("defaultBundle is null when no bundle is configured", () => {
     const info = assembleInfo();
     expect(info.defaultBundle).toBeNull();
-    expect(typeof info.stashDir).toBe("string");
+    expect(typeof info.bundleDir).toBe("string");
   });
 
   // R-057(b): readIndexStats' error branch used to write straight to

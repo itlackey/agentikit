@@ -42,7 +42,7 @@ export type ConfigErrorCode =
   // `/etc`, etc.
   | "UNSAFE_STASH_DIR"
   // Defense-in-depth sentinel raised under `bun test` / NODE_ENV=test
-  // when a test sets AKM_STASH_DIR but forgets to also point
+  // when a test sets AKM_BUNDLE_DIR but forgets to also point
   // XDG_DATA_HOME / AKM_DATA_DIR (and XDG_STATE_HOME / AKM_STATE_DIR)
   // at temp directories. See src/core/paths.ts.
   | "TEST_ISOLATION_MISSING"
@@ -99,9 +99,9 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
   LLM_NOT_CONFIGURED:
     'Run `akm setup` or configure an `engines` entry with `kind: "llm"`, then select it with `defaults.llmEngine`.',
   TEST_ISOLATION_MISSING:
-    "Under bun test, when AKM_STASH_DIR is set you MUST also set XDG_DATA_HOME (or AKM_DATA_DIR) and XDG_STATE_HOME (or AKM_STATE_DIR) to temp directories so the test does not touch the developer's real ~/.local/share/akm or ~/.local/state/akm.",
+    "Under bun test, when AKM_BUNDLE_DIR is set you MUST also set XDG_DATA_HOME (or AKM_DATA_DIR) and XDG_STATE_HOME (or AKM_STATE_DIR) to temp directories so the test does not touch the developer's real ~/.local/share/akm or ~/.local/state/akm.",
   SETUP_TMP_STASH_REFUSED:
-    "Use a persistent directory, or set AKM_FORCE_SETUP_TMP_STASH=1 to opt in to a sandboxed setup (setup also pre-sets AKM_STASH_DIR so config and cache writes auto-isolate into $stashDir/.akm/ — host config is preserved).",
+    "Use a persistent directory, or set AKM_FORCE_SETUP_TMP_STASH=1 to opt in to a sandboxed setup (setup also pre-sets AKM_BUNDLE_DIR so config and cache writes auto-isolate into $stashDir/.akm/ — host config is preserved).",
   UNSAFE_STASH_DIR:
     "Choose a path inside your home directory (e.g. ~/akm) or another empty workspace. The stash directory cannot be the filesystem root, your home directory itself, or a sensitive system path like /etc, /var, ~/.config, or ~/.ssh.",
   UNKNOWN_IMPROVE_STRATEGY:
@@ -213,7 +213,7 @@ export class NotFoundError extends AkmError {
  * Test-isolation guard helper.
  *
  * `src/core/paths.ts` throws `ConfigError("TEST_ISOLATION_MISSING")` under
- * `bun test` when `AKM_STASH_DIR` is set without a paired data-dir or
+ * `bun test` when `AKM_BUNDLE_DIR` is set without a paired data-dir or
  * state-dir override. That throw must never be swallowed by best-effort
  * catches around DB/data-dir operations — otherwise the guard's loud failure
  * silently degrades into a "no result" outcome (cold cache, missing snapshot,

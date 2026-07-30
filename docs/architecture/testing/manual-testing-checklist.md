@@ -32,7 +32,7 @@ you care about.
 
 - [ ] Use a disposable shell session.
 - [ ] Isolate `HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`,
-      `AKM_DATA_DIR`, and `AKM_STASH_DIR` under one temp directory.
+      `AKM_DATA_DIR`, and `AKM_BUNDLE_DIR` under one temp directory.
 - [ ] Invoke the CLI from this repo (`bun ./src/cli.ts` or the freshly built
       binary from this branch), not a previously installed global `akm`.
 - [ ] Only add disposable local paths, test registries, and remotes you control.
@@ -62,8 +62,8 @@ export XDG_CONFIG_HOME="$AKM_SANDBOX/config"
 export XDG_CACHE_HOME="$AKM_SANDBOX/cache"
 export XDG_DATA_HOME="$AKM_SANDBOX/data"
 export AKM_DATA_DIR="$AKM_SANDBOX/data-home"
-export AKM_STASH_DIR="$AKM_SANDBOX/stash"
-mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$AKM_DATA_DIR" "$AKM_STASH_DIR"
+export AKM_BUNDLE_DIR="$AKM_SANDBOX/stash"
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$AKM_DATA_DIR" "$AKM_BUNDLE_DIR"
 
 # 2.3 Convenience alias for this shell only
 alias akm='bun ./src/cli.ts'
@@ -86,8 +86,8 @@ Use them as a synthetic stash so search/show output is deterministic.
 
 ```sh
 # 2.1 Mirror the fixture stash into the sandbox
-cp -r tests/fixtures/stashes/ranking-baseline/* "$AKM_STASH_DIR/"
-ls "$AKM_STASH_DIR"
+cp -r tests/fixtures/stashes/ranking-baseline/* "$AKM_BUNDLE_DIR/"
+ls "$AKM_BUNDLE_DIR"
 ```
 
 - [ ] Expected fixture top-level entries exist:
@@ -377,10 +377,10 @@ isolated working directory with disposable output paths.
 Workflows now include authoring, validation, execution, and recovery flows.
 
 - [ ] `akm workflow list` is empty in a fresh sandbox.
-- [ ] `akm workflow create test --print > "$AKM_STASH_DIR/workflows/test.md"` prints a valid
+- [ ] `akm workflow create test --print > "$AKM_BUNDLE_DIR/workflows/test.md"` prints a valid
       starter document, without creating the workflow.
 - [ ] Insert one short paragraph between `# Workflow:` and the first `## Step:`.
-- [ ] `akm workflow create test-created --from "$AKM_STASH_DIR/workflows/test.md"`
+- [ ] `akm workflow create test-created --from "$AKM_BUNDLE_DIR/workflows/test.md"`
       writes and indexes the workflow, confirming intro prose is accepted.
 - [ ] `akm lint --type workflows` reports no `invalid-workflow-structure`
       finding for `workflows/test-created`.
@@ -440,7 +440,7 @@ Confirm that guarantee carefully.
 
 - [ ] `akm env list` is empty initially.
 - [ ] `akm env create test-env` creates `env/test-env.env`.
-- [ ] Edit the file directly: `printf 'API_KEY=secret-value\n' >> "$AKM_STASH_DIR/env/test-env.env"`.
+- [ ] Edit the file directly: `printf 'API_KEY=secret-value\n' >> "$AKM_BUNDLE_DIR/env/test-env.env"`.
 - [ ] `akm show env/test-env` lists keys/comments only.
 - [ ] `akm env list --format json` contains the env under `envs[]` with
       `keys` and no secret values.
@@ -457,7 +457,7 @@ Confirm that guarantee carefully.
       both exit 2 with `Unknown command` (removed in 0.9.0).
 - [ ] Remove the `API_KEY=` line directly from `env/test-env.env` and confirm
       `akm env list --format json` no longer lists it under `keys`.
-- [ ] `rm "$AKM_STASH_DIR/secrets/test-token"` removes the secret (there is no
+- [ ] `rm "$AKM_BUNDLE_DIR/secrets/test-token"` removes the secret (there is no
       `akm secret remove`).
 
 ---
@@ -708,7 +708,7 @@ done
 
 ```sh
 rm -rf "$AKM_SANDBOX"
-unset AKM_SANDBOX HOME XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME AKM_DATA_DIR AKM_STASH_DIR
+unset AKM_SANDBOX HOME XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME AKM_DATA_DIR AKM_BUNDLE_DIR
 unalias akm
 ```
 

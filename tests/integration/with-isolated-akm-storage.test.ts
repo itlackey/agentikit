@@ -36,7 +36,7 @@ describe("withIsolatedAkmStorage", () => {
   test("points the four managed env vars at the context dirs", () => {
     const s = withIsolatedAkmStorage();
     try {
-      expect(process.env.AKM_STASH_DIR).toBe(s.stashDir);
+      expect(process.env.AKM_BUNDLE_DIR).toBe(s.stashDir);
       expect(process.env.XDG_DATA_HOME).toBe(s.dataDir);
       expect(process.env.XDG_CACHE_HOME).toBe(s.cacheDir);
       expect(process.env.XDG_CONFIG_HOME).toBe(s.configDir);
@@ -58,15 +58,15 @@ describe("withIsolatedAkmStorage", () => {
   });
 
   test("cleanup restores prior env values and removes the temp root", () => {
-    const prevStash = process.env.AKM_STASH_DIR;
+    const prevStash = process.env.AKM_BUNDLE_DIR;
     const prevData = process.env.XDG_DATA_HOME;
 
     const s = withIsolatedAkmStorage();
     const root = s.root;
-    expect(process.env.AKM_STASH_DIR).not.toBe(prevStash);
+    expect(process.env.AKM_BUNDLE_DIR).not.toBe(prevStash);
     s.cleanup();
 
-    expect(process.env.AKM_STASH_DIR).toBe(prevStash);
+    expect(process.env.AKM_BUNDLE_DIR).toBe(prevStash);
     expect(process.env.XDG_DATA_HOME).toBe(prevData);
     expect(fs.existsSync(root)).toBe(false);
   });
@@ -83,7 +83,7 @@ describe("withIsolatedAkmStorage", () => {
     try {
       expect(process.env.XDG_CONFIG_HOME).toBe("/sentinel-config");
       // The other managed vars still point at the temp root.
-      expect(process.env.AKM_STASH_DIR).toBe(s.stashDir);
+      expect(process.env.AKM_BUNDLE_DIR).toBe(s.stashDir);
     } finally {
       s.cleanup();
     }
@@ -109,7 +109,7 @@ describe("withIsolatedAkmStorage", () => {
     afterEach(() => storage.cleanup());
 
     test("the stash dir is live during a test", () => {
-      expect(process.env.AKM_STASH_DIR).toBe(storage.stashDir);
+      expect(process.env.AKM_BUNDLE_DIR).toBe(storage.stashDir);
       expect(fs.existsSync(storage.stashDir)).toBe(true);
     });
   });

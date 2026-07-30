@@ -3,7 +3,7 @@
  *
  * Standalone so the toolkit never imports akm internals. Kept in lock-step
  * with `src/core/paths.ts` semantics: respects `AKM_DATA_DIR`,
- * `XDG_DATA_HOME`, and `AKM_STASH_DIR`.
+ * `XDG_DATA_HOME`, and `AKM_BUNDLE_DIR`.
  */
 
 import fs from "node:fs";
@@ -36,7 +36,7 @@ export function resolveStashDir(
   env: Record<string, string | undefined> = process.env,
 ): string {
   if (override) return path.resolve(override);
-  if (env.AKM_STASH_DIR) return path.resolve(env.AKM_STASH_DIR);
+  if (env.AKM_BUNDLE_DIR) return path.resolve(env.AKM_BUNDLE_DIR);
   return path.resolve(path.join(os.homedir(), "akm"));
 }
 

@@ -120,7 +120,7 @@ function materializeFixture(destinationRoot: string): MaterializedInstallation {
     dataDir,
     env: {
       ...isolatedDirs,
-      AKM_STASH_DIR: bundle,
+      AKM_BUNDLE_DIR: bundle,
       AKM_DATA_DIR: dataDir,
       AKM_CONFIG_DIR: path.dirname(configPath),
     },
@@ -1239,7 +1239,7 @@ import path from "node:path";
 import { Database } from "bun:sqlite";
 const verb = process.argv[2] ?? "";
 fs.appendFileSync(process.env.EVAL_ENV_LOG, JSON.stringify({
-  stash: process.env.AKM_STASH_DIR,
+  stash: process.env.AKM_BUNDLE_DIR,
   verb,
   cwd: process.cwd(),
   tmp: process.env.TMPDIR,
@@ -1256,7 +1256,7 @@ if (verb === "index") process.exit(0);
 if (verb === "improve") {
   if (process.env.FAKE_ENDPOINT_TOKEN !== "private-token") process.exit(9);
   await Bun.sleep(25);
-  fs.writeFileSync(path.join(process.env.AKM_STASH_DIR, "asset.md"), "treated\\n");
+  fs.writeFileSync(path.join(process.env.AKM_BUNDLE_DIR, "asset.md"), "treated\\n");
   const db = new Database(path.join(process.env.AKM_DATA_DIR, "state.db"));
   const telemetry = process.env.FAKE_TELEMETRY_FAILURE === "1"
     ? {outcome:"error",modelSource:"configured",model:"fixture-model",durationMs:100,errorCode:"provider_error"}

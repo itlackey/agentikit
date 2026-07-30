@@ -243,7 +243,7 @@ test.skipIf(!ENABLED)(
         XDG_DATA_HOME: dataHome,
         XDG_CACHE_HOME: cacheHome,
         XDG_STATE_HOME: stateHome,
-        AKM_STASH_DIR: stashDir,
+        AKM_BUNDLE_DIR: stashDir,
         FAKE_CRONTAB: fakeCrontab,
         NO_COLOR: "1",
       };

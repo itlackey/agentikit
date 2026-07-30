@@ -36,7 +36,7 @@ import { withTestImproveLlm } from "../../_helpers/improve-config";
 
 const tempDirs: string[] = [];
 const savedEnv = {
-  AKM_STASH_DIR: process.env.AKM_STASH_DIR,
+  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
   AKM_DATA_DIR: process.env.AKM_DATA_DIR,
   XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
   XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
@@ -52,7 +52,7 @@ function makeTempDir(prefix: string): string {
 }
 
 async function buildIndex(stashDir: string): Promise<void> {
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig(
     withTestImproveLlm({
       semanticSearchMode: "off",
@@ -109,8 +109,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (savedEnv.AKM_STASH_DIR === undefined) delete process.env.AKM_STASH_DIR;
-  else process.env.AKM_STASH_DIR = savedEnv.AKM_STASH_DIR;
+  if (savedEnv.AKM_BUNDLE_DIR === undefined) delete process.env.AKM_BUNDLE_DIR;
+  else process.env.AKM_BUNDLE_DIR = savedEnv.AKM_BUNDLE_DIR;
   if (savedEnv.AKM_DATA_DIR === undefined) delete process.env.AKM_DATA_DIR;
   else process.env.AKM_DATA_DIR = savedEnv.AKM_DATA_DIR;
   if (savedEnv.XDG_STATE_HOME === undefined) delete process.env.XDG_STATE_HOME;

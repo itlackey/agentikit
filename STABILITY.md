@@ -355,7 +355,7 @@ on them.
 
 | Variable | Purpose |
 | --- | --- |
-| `AKM_STASH_DIR`, `AKM_CONFIG_DIR`, `AKM_DATA_DIR`, `AKM_CACHE_DIR` | Filesystem layout overrides |
+| `AKM_BUNDLE_DIR`, `AKM_CONFIG_DIR`, `AKM_DATA_DIR`, `AKM_CACHE_DIR` | Filesystem layout overrides |
 | `AKM_LLM_API_KEY`, `AKM_EMBED_API_KEY`, `AKM_ENGINE_<NAME>_API_KEY` | Credential provision for `$VAR` config references |
 | `AKM_LLM_ENDPOINT`, `AKM_LLM_BASE_URL` | Setup provider inference |
 | `AKM_VERBOSE`, `AKM_DEBUG`, `AKM_NON_INTERACTIVE` | Diagnostics and CI behavior |

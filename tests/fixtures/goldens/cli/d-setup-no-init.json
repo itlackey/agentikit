@@ -1,5 +1,13 @@
 {
   "exitCode": 0,
   "stashScaffolded": false,
-  "stdoutKeys": ["configPath", "fields", "schemaVersion", "shape", "stashCreated", "stashDir", "written"]
+  "stdoutKeys": [
+    "bundleDir",
+    "configPath",
+    "fields",
+    "schemaVersion",
+    "shape",
+    "stashCreated",
+    "written"
+  ]
 }

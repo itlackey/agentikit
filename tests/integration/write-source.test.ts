@@ -404,11 +404,11 @@ describe("resolveWriteTarget", () => {
   const xdgTempDirs: string[] = [];
 
   beforeEach(() => {
-    savedEnv = process.env.AKM_STASH_DIR;
+    savedEnv = process.env.AKM_BUNDLE_DIR;
     savedCfgEnv = process.env.AKM_CONFIG_DIR;
     savedDataHome = process.env.XDG_DATA_HOME;
     savedStateHome = process.env.XDG_STATE_HOME;
-    // Pair AKM_STASH_DIR (set by individual tests below) with XDG_DATA_HOME /
+    // Pair AKM_BUNDLE_DIR (set by individual tests below) with XDG_DATA_HOME /
     // XDG_STATE_HOME so the test-isolation guard in src/core/paths.ts stays inert.
     const dataTmp = makeTempDir("akm-write-source-data-");
     const stateTmp = makeTempDir("akm-write-source-state-");
@@ -418,8 +418,8 @@ describe("resolveWriteTarget", () => {
   });
 
   afterEach(() => {
-    if (savedEnv === undefined) delete process.env.AKM_STASH_DIR;
-    else process.env.AKM_STASH_DIR = savedEnv;
+    if (savedEnv === undefined) delete process.env.AKM_BUNDLE_DIR;
+    else process.env.AKM_BUNDLE_DIR = savedEnv;
     if (savedCfgEnv === undefined) delete process.env.AKM_CONFIG_DIR;
     else process.env.AKM_CONFIG_DIR = savedCfgEnv;
     if (savedDataHome === undefined) delete process.env.XDG_DATA_HOME;
@@ -543,7 +543,7 @@ describe("resolveWriteTarget", () => {
 
   test("preserves the default bundle identity for the configured working stash", () => {
     const stashDir = makeTempDir("akm-target-default-bundle-");
-    process.env.AKM_STASH_DIR = stashDir;
+    process.env.AKM_BUNDLE_DIR = stashDir;
     const result = resolveWriteTarget({
       semanticSearchMode: "off",
       bundles: { akm: { path: stashDir, writable: true } },

@@ -26,7 +26,7 @@ function makeTempDir(prefix: string): string {
 }
 
 async function buildIndex(stashDir: string): Promise<void> {
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig(
     withImproveAutonomy(
       withTestImproveLlm({

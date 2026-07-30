@@ -60,7 +60,7 @@ import { resetAllSeams } from "./_helpers/seams";
  */
 const HARNESSED: readonly string[] = [
   // Storage layout overrides.
-  "AKM_STASH_DIR",
+  "AKM_BUNDLE_DIR",
   "AKM_CONFIG_DIR",
   "AKM_CACHE_DIR",
   "AKM_DATA_DIR",
@@ -159,7 +159,7 @@ const baselineEnvKeys: Set<string> = new Set(Object.keys(process.env));
 // down the *directory* but leaks the *env var* or leaves *config-file* content
 // in the shared sandbox; the next file inherits it):
 //
-//   1. Env leak  — e.g. AKM_STASH_DIR left pointing at a now-deleted /tmp dir.
+//   1. Env leak  — e.g. AKM_BUNDLE_DIR left pointing at a now-deleted /tmp dir.
 //   2. FS leak   — e.g. a config.json with a stale stashDir written into the
 //                  shared suite-sandbox XDG_CONFIG_HOME.
 //
@@ -186,7 +186,7 @@ const SANDBOX_ENV: Record<string, string> = {
 };
 
 const AKM_DIR_OVERRIDES: readonly string[] = [
-  "AKM_STASH_DIR",
+  "AKM_BUNDLE_DIR",
   "AKM_CONFIG_DIR",
   "AKM_CACHE_DIR",
   "AKM_DATA_DIR",

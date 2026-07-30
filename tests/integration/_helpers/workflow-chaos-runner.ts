@@ -17,7 +17,7 @@
  * bare sleep as the sole coordination.
  *
  * Storage is shared with the parent purely through the inherited env
- * (AKM_STASH_DIR + XDG_* from the parent's `withIsolatedAkmStorage`). The parent
+ * (AKM_BUNDLE_DIR + XDG_* from the parent's `withIsolatedAkmStorage`). The parent
  * freezes the plan with `startWorkflowRun` before spawning; this driver only
  * needs the run id — `runWorkflowSteps` executes the FROZEN plan off the run
  * row, so the asset file is never re-read here.

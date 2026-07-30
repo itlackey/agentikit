@@ -37,7 +37,7 @@ const isolatedHome = makeTempDir();
 async function runCli(...args: string[]): Promise<{ stdout: string; stderr: string; status: number }> {
   const { stdout, stderr, code } = await withEnv(
     {
-      AKM_STASH_DIR: undefined,
+      AKM_BUNDLE_DIR: undefined,
       HOME: isolatedHome,
       XDG_CACHE_HOME: xdgCache,
       XDG_CONFIG_HOME: xdgConfig,

@@ -2,7 +2,7 @@
  * Test-isolation guard — no-swallow contract.
  *
  * The write-guard added in src/core/paths.ts (commit ac8ca22) throws
- * `ConfigError("TEST_ISOLATION_MISSING")` under `bun test` when `AKM_STASH_DIR`
+ * `ConfigError("TEST_ISOLATION_MISSING")` under `bun test` when `AKM_BUNDLE_DIR`
  * is set but `XDG_DATA_HOME` / `AKM_DATA_DIR` (or `XDG_STATE_HOME` /
  * `AKM_STATE_DIR`) is not paired alongside it.
  *
@@ -13,7 +13,7 @@
  * patched surface.
  *
  * Each test follows the same shape:
- *   1. Set `AKM_STASH_DIR` to a tmp dir.
+ *   1. Set `AKM_BUNDLE_DIR` to a tmp dir.
  *   2. DELIBERATELY leave `XDG_DATA_HOME` and `XDG_STATE_HOME` unset (we
  *      remember and restore them in the cleanup hooks).
  *   3. Confirm that calling the patched code throws `TEST_ISOLATION_MISSING`
@@ -32,7 +32,7 @@ import { ConfigError, isTestIsolationError, rethrowIfTestIsolationError } from "
 
 // ── Env capture ──────────────────────────────────────────────────────────────
 
-const originalStashDir = process.env.AKM_STASH_DIR;
+const originalStashDir = process.env.AKM_BUNDLE_DIR;
 const originalDataHome = process.env.XDG_DATA_HOME;
 const originalStateHome = process.env.XDG_STATE_HOME;
 const originalAkmDataDir = process.env.AKM_DATA_DIR;
@@ -59,7 +59,7 @@ function leakyEnv(): void {
   // Setup a tmp stash dir but DELIBERATELY do not pair it with data-dir /
   // state-dir overrides — this is the leak the guard protects against.
   const stash = makeTmp("akm-leak-stash-");
-  process.env.AKM_STASH_DIR = stash;
+  process.env.AKM_BUNDLE_DIR = stash;
   delete process.env.XDG_DATA_HOME;
   delete process.env.XDG_STATE_HOME;
   delete process.env.AKM_DATA_DIR;
@@ -84,7 +84,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  restoreEnv(originalStashDir, "AKM_STASH_DIR");
+  restoreEnv(originalStashDir, "AKM_BUNDLE_DIR");
   restoreEnv(originalDataHome, "XDG_DATA_HOME");
   restoreEnv(originalStateHome, "XDG_STATE_HOME");
   restoreEnv(originalAkmDataDir, "AKM_DATA_DIR");

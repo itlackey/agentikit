@@ -229,7 +229,7 @@ export function shapeSearchOutput(
   if (detail === "full") {
     return {
       schemaVersion: result.schemaVersion,
-      stashDir: result.stashDir,
+      bundleDir: result.bundleDir,
       source: result.source,
       hits: shapedHits,
       ...(shapedRegistryHits.length > 0 ? { registryHits: shapedRegistryHits } : {}),

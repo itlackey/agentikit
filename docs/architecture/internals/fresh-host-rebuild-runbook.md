@@ -23,7 +23,7 @@ git (the 08-F1 recovery pattern — see step 3).
    placeholders; export those environment variables (or restore your env/secret
    assets) so named engines and the embedding connection resolve. Never commit
    the resolved values.
-5. **Restore the working stash.** Clone your stash git remote to the path
+5. **Restore the working bundle.** Clone your stash git remote to the path
    named by your working bundle's entry under `bundles` in the restored
    config (`defaultBundle` selects which one; default path `~/akm`). There is
    no top-level `stashDir` config key in 0.9 — it is retired and rejected at

@@ -51,7 +51,7 @@ function spawnCli(
     encoding: "utf8",
     timeout: 15_000,
     cwd: repoRoot,
-    env: { ...process.env, AKM_STASH_DIR: undefined, ...extraEnv },
+    env: { ...process.env, AKM_BUNDLE_DIR: undefined, ...extraEnv },
   });
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? 1 };
 }
@@ -98,7 +98,7 @@ describe("secret path / secret remove — removed in 0.9.0 (R-027 / D-49)", () =
     const fp = path.join(stashDir, "secrets", "demo");
     setSecret(fp, Buffer.from("super-secret-token-value"));
 
-    const { stdout, stderr, status } = spawnCli(["secret", "path", "secrets/demo"], { AKM_STASH_DIR: stashDir });
+    const { stdout, stderr, status } = spawnCli(["secret", "path", "secrets/demo"], { AKM_BUNDLE_DIR: stashDir });
 
     expect(status).toBe(2);
     expect(stderr).toContain("Unknown command");
@@ -114,7 +114,7 @@ describe("secret path / secret remove — removed in 0.9.0 (R-027 / D-49)", () =
     const fp = path.join(stashDir, "secrets", "demo");
     setSecret(fp, Buffer.from("v"));
 
-    const { stderr, status } = spawnCli(["secret", "remove", "secrets/demo", "--yes"], { AKM_STASH_DIR: stashDir });
+    const { stderr, status } = spawnCli(["secret", "remove", "secrets/demo", "--yes"], { AKM_BUNDLE_DIR: stashDir });
 
     expect(status).toBe(2);
     expect(stderr).toContain("Unknown command");
@@ -133,7 +133,7 @@ describe("secret run", () => {
     const stashDir = makeStash();
     setSecret(path.join(stashDir, "secrets", "demo"), Buffer.from("v"));
     const { status, stderr } = await runCli(["secret", "run", "secrets/demo", "LD_PRELOAD", "--", "true"], {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
     });
     expect(status).toBe(2);
     expect(JSON.parse(stderr.trim()).error).toContain("LD_PRELOAD");
@@ -143,7 +143,7 @@ describe("secret run", () => {
     const stashDir = makeStash();
     setSecret(path.join(stashDir, "secrets", "demo"), Buffer.from("v"));
     const { status } = await runCli(["secret", "run", "secrets/demo", "not a var", "--", "true"], {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
     });
     expect(status).toBe(2);
   });
@@ -151,7 +151,7 @@ describe("secret run", () => {
   test("errors when no command is supplied after --", async () => {
     const stashDir = makeStash();
     setSecret(path.join(stashDir, "secrets", "demo"), Buffer.from("v"));
-    const { status } = await runCli(["secret", "run", "secrets/demo", "TOKEN"], { AKM_STASH_DIR: stashDir });
+    const { status } = await runCli(["secret", "run", "secrets/demo", "TOKEN"], { AKM_BUNDLE_DIR: stashDir });
     expect(status).toBe(2);
   });
 });

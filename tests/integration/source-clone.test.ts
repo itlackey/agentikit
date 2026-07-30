@@ -498,8 +498,8 @@ describe("akmClone --dest", () => {
 
   test("--dest does not require a working stash", async () => {
     writeFile(path.join(searchPathDir, "scripts", "deploy.sh"), "echo deploy\n");
-    // Point AKM_STASH_DIR to a non-existent directory to simulate no working stash
-    process.env.AKM_STASH_DIR = path.join(os.tmpdir(), `nonexistent-stash-${Date.now()}`);
+    // Point AKM_BUNDLE_DIR to a non-existent directory to simulate no working stash
+    process.env.AKM_BUNDLE_DIR = path.join(os.tmpdir(), `nonexistent-stash-${Date.now()}`);
 
     const result = await akmClone({
       sourceRef: `${searchPathDir}//scripts/deploy.sh`,

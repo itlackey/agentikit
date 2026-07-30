@@ -28,7 +28,7 @@ const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
 const originalXdgCacheHome = process.env.XDG_CACHE_HOME;
 const originalXdgDataHome = process.env.XDG_DATA_HOME;
 const originalXdgStateHome = process.env.XDG_STATE_HOME;
-const originalAkmStashDir = process.env.AKM_STASH_DIR;
+const originalAkmStashDir = process.env.AKM_BUNDLE_DIR;
 
 beforeEach(() => {
   testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-clean-config-"));
@@ -42,9 +42,9 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = testStateDir;
 
   if (originalAkmStashDir === undefined) {
-    delete process.env.AKM_STASH_DIR;
+    delete process.env.AKM_BUNDLE_DIR;
   } else {
-    process.env.AKM_STASH_DIR = originalAkmStashDir;
+    process.env.AKM_BUNDLE_DIR = originalAkmStashDir;
   }
 
   // Wipe any leftover database from previous test
@@ -80,9 +80,9 @@ afterEach(() => {
     process.env.XDG_STATE_HOME = originalXdgStateHome;
   }
   if (originalAkmStashDir === undefined) {
-    delete process.env.AKM_STASH_DIR;
+    delete process.env.AKM_BUNDLE_DIR;
   } else {
-    process.env.AKM_STASH_DIR = originalAkmStashDir;
+    process.env.AKM_BUNDLE_DIR = originalAkmStashDir;
   }
 
   for (const dir of [testConfigDir, testCacheDir, testDataDir, testStateDir]) {
@@ -120,7 +120,7 @@ test("akmIndex --clean with no missing files: removed is 0, checked matches entr
   writeFile(path.join(stashDir, "scripts", "deploy", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n");
   writeFile(path.join(stashDir, "scripts", "lint", "lint.ts"), "console.log('lint')\n");
 
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig({ semanticSearchMode: "off" });
 
   // First index: build the normal index
@@ -144,7 +144,7 @@ test("akmIndex --clean with a missing file: entry deleted from DB, removedRefs p
   writeFile(deployFile, "#!/usr/bin/env bash\necho deploy\n");
   writeFile(lintFile, "console.log('lint')\n");
 
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig({ semanticSearchMode: "off" });
 
   // Build initial index with both files present
@@ -184,7 +184,7 @@ test("akmIndex --clean --dry-run with missing file: removed is 0, ref listed, en
   writeFile(deployFile, "#!/usr/bin/env bash\necho deploy\n");
   writeFile(lintFile, "console.log('lint')\n");
 
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig({ semanticSearchMode: "off" });
 
   // Build initial index
@@ -220,7 +220,7 @@ test("akmIndex --dry-run without --clean rejects instead of silently running a r
   const stashDir = tmpStash();
   writeFile(path.join(stashDir, "scripts", "deploy", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n");
 
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig({ semanticSearchMode: "off" });
 
   // Before the fix, `dryRun` was only consulted inside the `--clean` pass, so

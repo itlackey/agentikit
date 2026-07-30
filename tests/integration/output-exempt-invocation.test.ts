@@ -52,7 +52,7 @@ console.log(JSON.stringify({ before: before ?? null, after: process.exitCode }))
     fs.writeFileSync(path.join(stash, "env", "prod.env"), "FOO=bar\n");
 
     const result = spawnCli(["--format", "text", "env", "run", "env/prod", "--", "/bin/true"], {
-      AKM_STASH_DIR: stash,
+      AKM_BUNDLE_DIR: stash,
     });
 
     expect(result.status).toBe(0);
@@ -65,7 +65,7 @@ console.log(JSON.stringify({ before: before ?? null, after: process.exitCode }))
     fs.writeFileSync(path.join(stash, "env", "prod.env"), "FOO=bar\n");
 
     const result = spawnCli(["env", "run", "env/prod", "--format", "text", "--", "/bin/true"], {
-      AKM_STASH_DIR: stash,
+      AKM_BUNDLE_DIR: stash,
     });
 
     expect(result.status).toBe(0);
@@ -78,7 +78,7 @@ console.log(JSON.stringify({ before: before ?? null, after: process.exitCode }))
     fs.writeFileSync(path.join(stash, "env", "prod.env"), "FOO=bar\n");
 
     const result = spawnCli(["env", "run", "env/prod", "--", "/bin/true", "--format", "text"], {
-      AKM_STASH_DIR: stash,
+      AKM_BUNDLE_DIR: stash,
     });
 
     expect(result.status).toBe(0);
@@ -91,7 +91,7 @@ console.log(JSON.stringify({ before: before ?? null, after: process.exitCode }))
     fs.writeFileSync(path.join(stash, "env", "prod.env"), "FOO=bar\n");
 
     const result = spawnCli(["--format", "text", "env", "run", "env/prod", "--", "/bin/true", "--quiet"], {
-      AKM_STASH_DIR: stash,
+      AKM_BUNDLE_DIR: stash,
     });
 
     expect(result.status).toBe(0);
@@ -105,7 +105,7 @@ console.log(JSON.stringify({ before: before ?? null, after: process.exitCode }))
 
     const result = spawnCli(
       ["env", "run", "env/prod", "--", "/bin/true", "--scheduler-context", "/does/not/exist.json"],
-      { AKM_STASH_DIR: stash },
+      { AKM_BUNDLE_DIR: stash },
     );
 
     expect(result.status).toBe(0);
@@ -116,7 +116,7 @@ console.log(JSON.stringify({ before: before ?? null, after: process.exitCode }))
     const stash = tempDir("akm-setup-format-");
     const result = spawnCli(["--format", "text", "setup", "--yes", "--no-init", "--dir", stash], {
       AKM_FORCE_SETUP_TMP_STASH: "1",
-      AKM_STASH_DIR: stash,
+      AKM_BUNDLE_DIR: stash,
     });
 
     expect(result.status).toBe(0);
@@ -144,7 +144,7 @@ console.log(JSON.stringify({ before: before ?? null, after: process.exitCode }))
     );
 
     const result = spawnCli(["--format", "text", "agent", "--engine", "test"], {
-      AKM_STASH_DIR: stash,
+      AKM_BUNDLE_DIR: stash,
       XDG_CONFIG_HOME: configHome,
     });
 

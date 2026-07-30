@@ -60,7 +60,7 @@ async function runCli(args: string[], options: { stashDir?: string; configDir: s
   const xdgState = makeTempDir("akm-import-state-");
   const result = await withEnv(
     {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       AKM_CONFIG_DIR: path.join(options.configDir, "akm"),
       XDG_CACHE_HOME: xdgCache,
       XDG_DATA_HOME: xdgData,

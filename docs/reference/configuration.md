@@ -219,7 +219,7 @@ specific source. It must name a configured bundle; setting it with no
 `config set` (or config load) time. The full write-target resolution order
 is the command's destination flag (`--bundle` on `remember`/`clone`/
 `improve`, `--target` on `env`/`secret create`) -> `defaultWriteTarget` ->
-working stash (`defaultBundle`) -> `ConfigError`.
+working bundle (`defaultBundle`) -> `ConfigError`.
 
 ### Memory scope
 
@@ -322,7 +322,7 @@ generic walker.
 | `AKM_ENGINE_<NAME>_API_KEY` | Fallback credential for LLM engine `<name>` |
 | `AKM_LLM_API_KEY` | Fallback only for the selected `defaults.llmEngine` |
 | `AKM_EMBED_API_KEY` | Embedding credential |
-| `AKM_STASH_DIR` | Override the stash directory |
+| `AKM_BUNDLE_DIR` | Override the stash directory |
 | `AKM_DATA_DIR` | Override the data directory — durable `index.db`/`workflow.db`/`state.db`, `akm.lock`, config backups (or set `XDG_DATA_HOME`) |
 | `AKM_CACHE_DIR` | Override the cache directory — regenerable caches (or set `XDG_CACHE_HOME`) |
 | `AKM_STATE_DIR` | Override the state directory — task-scheduler invocation state (or set `XDG_STATE_HOME`) |

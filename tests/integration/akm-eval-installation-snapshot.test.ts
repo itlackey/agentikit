@@ -301,7 +301,7 @@ describePosix("akm-eval installation snapshots", () => {
       expect(materializedConfig.engines.runner?.workspace).toBe(
         path.join(installation.bundleRoots.personal ?? "", "workspace"),
       );
-      expect(installation.env.AKM_STASH_DIR).toBe(installation.bundleRoots.personal);
+      expect(installation.env.AKM_BUNDLE_DIR).toBe(installation.bundleRoots.personal);
       expect(fs.statSync(path.join(installation.bundleRoots.personal ?? "", "memories", "preference.md")).mtimeMs).toBe(
         causalMtimeMs,
       );
@@ -341,7 +341,7 @@ describePosix("akm-eval installation snapshots", () => {
         "XDG_DATA_HOME",
         "XDG_CACHE_HOME",
         "XDG_STATE_HOME",
-        "AKM_STASH_DIR",
+        "AKM_BUNDLE_DIR",
         "AKM_CONFIG_DIR",
         "AKM_DATA_DIR",
         "AKM_CACHE_DIR",

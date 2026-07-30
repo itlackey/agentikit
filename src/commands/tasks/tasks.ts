@@ -88,7 +88,7 @@ export interface TasksAddResult {
   id: string;
   ref: string;
   path: string;
-  stashDir: string;
+  bundleDir: string;
   schedule: string;
   enabled: boolean;
   backend: string;
@@ -287,7 +287,7 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     id,
     ref: conceptIdFromTypeName("task", id),
     path: assetPath,
-    stashDir,
+    bundleDir: stashDir,
     schedule: task.schedule,
     enabled: task.enabled,
     backend,

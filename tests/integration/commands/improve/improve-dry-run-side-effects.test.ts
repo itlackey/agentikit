@@ -39,7 +39,7 @@ const dryRunConfig = {
 const tempDirs: string[] = [];
 let sandboxRoots: Record<"cache" | "config" | "data" | "state", string>;
 const savedEnv: Record<string, string | undefined> = {
-  AKM_STASH_DIR: process.env.AKM_STASH_DIR,
+  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
   AKM_DATA_DIR: process.env.AKM_DATA_DIR,
   AKM_STATE_DIR: process.env.AKM_STATE_DIR,
   XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
@@ -191,7 +191,7 @@ describe("akm improve --dry-run writes no AKM artifacts", () => {
       const stashDir = makeTempDir("akm-dryrun-stash-");
       writeMemory(stashDir, "alpha", "Remember alpha details.");
       writeMemory(stashDir, "beta", "Remember beta details too.");
-      process.env.AKM_STASH_DIR = stashDir;
+      process.env.AKM_BUNDLE_DIR = stashDir;
       saveConfig(dryRunConfig);
       await akmIndex({ stashDir, full: true });
 
@@ -220,7 +220,7 @@ describe("akm improve --dry-run writes no AKM artifacts", () => {
     async () => {
       const stashDir = makeTempDir("akm-dryrun-empty-");
       fs.mkdirSync(path.join(stashDir, "memories"), { recursive: true });
-      process.env.AKM_STASH_DIR = stashDir;
+      process.env.AKM_BUNDLE_DIR = stashDir;
       const before = snapshotSandboxRoots(stashDir);
 
       const result = await akmImprove({ stashDir, dryRun: true, config: dryRunConfig });

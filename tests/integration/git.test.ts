@@ -279,7 +279,7 @@ describe("GitSourceProvider", () => {
 
 describe("saveGitStash — commit message sanitization (issue #270)", () => {
   test("--message with embedded newlines is collapsed to a single line", () => {
-    const stashDir = process.env.AKM_STASH_DIR as string;
+    const stashDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(stashDir);
     // Stage some change to commit.
     writeFile(path.join(stashDir, "skills", "x.md"), "x\n");
@@ -296,7 +296,7 @@ describe("saveGitStash — commit message sanitization (issue #270)", () => {
   });
 
   test("--message with NUL byte is sanitized so commit succeeds", () => {
-    const stashDir = process.env.AKM_STASH_DIR as string;
+    const stashDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(stashDir);
     writeFile(path.join(stashDir, "skills", "y.md"), "y\n");
 
@@ -310,7 +310,7 @@ describe("saveGitStash — commit message sanitization (issue #270)", () => {
   });
 
   test("--message that sanitizes to empty falls back to the timestamped default", () => {
-    const stashDir = process.env.AKM_STASH_DIR as string;
+    const stashDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(stashDir);
     writeFile(path.join(stashDir, "skills", "z.md"), "z\n");
 
@@ -324,7 +324,7 @@ describe("saveGitStash — commit message sanitization (issue #270)", () => {
   });
 
   test("--message exceeding 4096 chars is clamped", () => {
-    const stashDir = process.env.AKM_STASH_DIR as string;
+    const stashDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(stashDir);
     writeFile(path.join(stashDir, "skills", "w.md"), "w\n");
 

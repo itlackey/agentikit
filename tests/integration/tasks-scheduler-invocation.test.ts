@@ -24,13 +24,13 @@ function writeRawDescriptor(dir: string, value: unknown): string {
 
 function testContext(root: string) {
   const context = {
-    AKM_STASH_DIR: path.join(root, "stash"),
+    AKM_BUNDLE_DIR: path.join(root, "stash"),
     AKM_CONFIG_DIR: path.join(root, "config"),
     AKM_DATA_DIR: path.join(root, "data"),
     AKM_CACHE_DIR: path.join(root, "cache"),
     AKM_STATE_DIR: path.join(root, "state"),
   };
-  fs.mkdirSync(context.AKM_STASH_DIR, { recursive: true });
+  fs.mkdirSync(context.AKM_BUNDLE_DIR, { recursive: true });
   return context;
 }
 
@@ -100,7 +100,7 @@ describe("scheduled task invocation", () => {
       fs.mkdirSync(path.join(sandbox.dir, "stash"));
       const context = resolveScheduledTaskContext({
         HOME: sandbox.dir,
-        AKM_STASH_DIR: path.join(sandbox.dir, "stash"),
+        AKM_BUNDLE_DIR: path.join(sandbox.dir, "stash"),
         AKM_CONFIG_DIR: path.join(sandbox.dir, "config"),
         AKM_DATA_DIR: path.join(sandbox.dir, "data"),
         AKM_CACHE_DIR: path.join(sandbox.dir, "cache"),

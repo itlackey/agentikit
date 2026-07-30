@@ -37,27 +37,27 @@ The user never picks the kind. `akm bundle add` infers it from the input shape.
    scripts, skills, commands, agents, knowledge documents, env files,
    secrets, workflows, and memories.
 
-Your **working stash** (`~/akm`) is created by `akm setup` — it's the
+Your **working bundle** (`~/akm`) is created by `akm setup` — it's the
 primary directory for your personal, editable assets, and is registered as
 a `filesystem` source automatically.
 
 When you search, akm queries the unified local FTS5 index, which includes
 every source's directory. There is no per-source fan-out at search time.
 
-### Source vs. working stash
+### Source vs. working bundle
 
 The two terms come up often:
 
 - **Source** is the configuration concept (an entry in the `bundles` map in
   your config file). It's any directory akm has been told to index.
   Configured via `akm bundle add`.
-- **Working stash** is the special source created by `akm setup` — the
+- **Working bundle** is the special source created by `akm setup` — the
   default destination for `akm remember`, `akm import`, and other writes.
   Named by `defaultBundle` in config and registered automatically as a
   `filesystem` source.
 
 If you don't pick a write destination explicitly with `--target` or
-`defaultWriteTarget`, writes land in the working stash.
+`defaultWriteTarget`, writes land in the working bundle.
 
 ## What's In a Stash?
 
@@ -128,7 +128,7 @@ specificity-based matching system.
 ### Memories
 
 Memories are context fragments — observations, decisions, snippets — captured
-as markdown files. You can capture a memory directly in your working stash
+as markdown files. You can capture a memory directly in your working bundle
 with `akm remember "..."`, or point akm at any directory of memory files
 written by another tool.
 
@@ -311,10 +311,10 @@ Until those land, physical subdirectories remain the recommended pattern.
 configured source's directory. Within the index, results are ranked by
 relevance and utility — there is no source-by-source fan-out.
 
-When two sources contain an asset with the same name, the working stash wins
+When two sources contain an asset with the same name, the working bundle wins
 by convention because its files are usually more recent, but precedence is
 expressed through ranking rather than a fixed lookup order. Use `akm clone`
-to copy an asset into your working stash for local editing — your edits
+to copy an asset into your working bundle for local editing — your edits
 override the upstream copy in subsequent searches.
 
 ## Metadata
@@ -347,8 +347,8 @@ appear in `akm search` and never compete for ranking. They are **direct-read on
 demand**:
 
 ```sh
-akm show meta                       # working stash's .meta/index.md
-akm show meta:about                 # working stash's .meta/about.md
+akm show meta                       # working bundle's .meta/index.md
+akm show meta:about                 # working bundle's .meta/about.md
 akm show akm//meta                  # the primary stash explicitly
 ```
 
@@ -387,7 +387,7 @@ this precedence:
 
 1. `--target <name>` flag (must name a writable source)
 2. The root-level `defaultWriteTarget` field in config
-3. The working stash created by `akm setup` (named by `defaultBundle`)
+3. The working bundle created by `akm setup` (named by `defaultBundle`)
 
 If none are configured, write commands raise a `ConfigError` pointing at
 `akm setup`.
@@ -427,7 +427,7 @@ akm uses XDG-compliant directories backed by **three** databases:
 | `~/.local/share/akm/akm.lock` | Installed bundle lockfile |
 | `~/.cache/akm/registry/` | Downloaded bundle packages (regenerable) |
 | `~/.config/akm/config.json` | User configuration (`bundles` / `defaultBundle`) |
-| `~/akm` (the `defaultBundle` path) | Your writable working stash |
+| `~/akm` (the `defaultBundle` path) | Your writable working bundle |
 
 Events, proposals, task history, and workflow run state all live in `state.db` —
 not in flat files or in the search index. The search index (`index.db`) is
@@ -445,7 +445,7 @@ These terms have precise meanings in akm. Use this table to avoid confusion:
 | **git source** | A git repo cloned into akm's cache, updatable | A GitHub repo |
 | **npm source** | An npm package installed into akm's cache, updatable | `@scope/my-stash` |
 | **website source** | A crawled website stored as knowledge | `https://docs.example.com` |
-| **working stash** | Your primary directory for editable assets (`~/akm`) | Created by `akm setup` |
+| **working bundle** | Your primary directory for editable assets (`~/akm`) | Created by `akm setup` |
 | **registry** | A discovery index for finding sources | The official registry, skills.sh |
 | **ref** (item ref) | A `[bundle//]conceptId` handle for an item | `scripts/deploy.sh`, `team//skills/review` |
 | **bundle** | Optional prefix narrowing an item ref to a bundle | `team-catalog//scripts/deploy.sh` |

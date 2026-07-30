@@ -35,7 +35,7 @@ import {
 } from "../../_helpers/sandbox";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
-  AKM_STASH_DIR: "/srv/akm/stash",
+  AKM_BUNDLE_DIR: "/srv/akm/stash",
   AKM_CONFIG_DIR: "/srv/akm/config",
   AKM_DATA_DIR: "/srv/akm/data",
   AKM_CACHE_DIR: "/srv/akm/cache",
@@ -197,7 +197,7 @@ describe("bundle-targeted tasks via --target", () => {
 
   test("default bundle / no --target yields a byte-identical cron line (no --target token)", async () => {
     const result = await akmTasksAdd({ id: "baz", schedule: "@daily", command: "true" }, { backend: cron() });
-    expect(result.stashDir).toBe(iso.stashDir);
+    expect(result.bundleDir).toBe(iso.stashDir);
 
     const body = cronBody(exec.current(), "baz");
     expect(body).toBeDefined();

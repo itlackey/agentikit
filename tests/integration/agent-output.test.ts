@@ -38,7 +38,7 @@ async function runCli(stashDir: string, args: string[], config?: Record<string, 
   if (config) writeConfig(xdgConfig, config);
   return withEnv(
     {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       XDG_CACHE_HOME: xdgCache,
       XDG_CONFIG_HOME: xdgConfig,
       XDG_DATA_HOME: xdgData,

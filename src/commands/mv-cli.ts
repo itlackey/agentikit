@@ -1018,7 +1018,7 @@ function resolveMoveSourceIdentity(
   defaultBundle?: string,
 ): string {
   const primarySource = configuredSources.find((entry) => path.resolve(entry.path) === path.resolve(stashDir));
-  // An explicit `AKM_STASH_DIR` override is a supported CI/scripting entry
+  // An explicit `AKM_BUNDLE_DIR` override is a supported CI/scripting entry
   // point, and `resolveSourceEntries` surfaces it as an identity-less source.
   // Throwing here would break every `mv` under the override; fall back to the
   // durable name the pre-0.9.0 implementation used so stored rows keep the

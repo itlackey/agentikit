@@ -71,7 +71,7 @@ import {
 // and every test reads or mutates the same shared DB). Because the suite runs
 // all 253 test files in ONE process sharing process.env, the env vars this
 // file's DB depends on must be re-asserted before EACH test so another
-// concurrently-interleaved file can't clobber XDG_DATA_HOME / AKM_STASH_DIR
+// concurrently-interleaved file can't clobber XDG_DATA_HOME / AKM_BUNDLE_DIR
 // mid-run and point our index DB resolution at the wrong file. We sandbox to
 // STABLE per-file dirs (created once in beforeAll, re-pointed in beforeEach)
 // rather than rebuilding the fixture per test.
@@ -110,7 +110,7 @@ beforeEach(() => {
   process.env.XDG_CONFIG_HOME = fileConfigHome;
   process.env.XDG_DATA_HOME = fileDataHome;
   process.env.XDG_STATE_HOME = fileStateHome;
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   // The graph-boost module caches the parsed graph keyed by (stashPath,
   // generatedAt). Several tests mutate the stored graph in place via
   // installGraphWithMutator() while KEEPING generatedAt stable, so the cache

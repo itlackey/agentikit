@@ -237,12 +237,12 @@
     },
     {
       "path": "tests/fixtures/goldens/cli/d-setup-no-init.json",
-      "designation": "frozen-migration-input",
+      "designation": "re-baseline",
+      "reBaselineChunk": "9",
       "consumers": [
         "tests/commands/goldens-cli-output.test.ts"
       ],
-      "notes": "WI-07, plan §11 Chunk 0a / R4. Family D `setup --yes --no-init --dir <tmp>` — JSON key-set + a boolean confirming the stash directory is not scaffolded. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals.",
-      "sha256": "6671fdfc1f0027003ee97adb28f884e982ce28554982c1627421140d4325dc86"
+      "notes": "WI-07, plan §11 Chunk 0a / R4. Family D `setup --yes --no-init --dir <tmp>` — JSON key-set + a boolean confirming the stash directory is not scaffolded. Chunk 9 oracle (\"CLI output baselines from Chunk 0a stay green\") — key-set/count/boolean assertions only, no production ref literals. | Re-baselined by the 0.9 CLI overhaul S10 bundle-vocabulary sweep: the `setup` JSON result's `stashDir` field was renamed to `bundleDir` (wire/user-surface rename, spec §10.1 bundle vocabulary). Same surface-owner rule/bucket as a-info.json and a-list.json's prior re-designation; sha256 pin dropped since re-baseline assets are not integrity-pinned. Diff is a rename-only — `stdoutKeys` lost `stashDir` and gained `bundleDir`; every other key is unchanged."
     },
     {
       "path": "tests/fixtures/goldens/cli/d-shape-summary-gate.json",

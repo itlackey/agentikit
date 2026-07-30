@@ -104,7 +104,7 @@ export const syncCommand = defineCommand({
   meta: {
     name: "sync",
     description:
-      "Sync changes in a git-backed stash: commits (and pushes when writable + remote is configured). No-op for non-git stashes.",
+      "Sync changes in a git-backed bundle: commits (and pushes when writable + remote is configured). No-op for non-git bundles.",
   },
   // Raw defineCommand (not defineJsonCommand), so the global output flags are
   // spread in explicitly — without them the optional `name` positional would
@@ -113,7 +113,7 @@ export const syncCommand = defineCommand({
     ...GLOBAL_OUTPUT_ARGS,
     name: {
       type: "positional",
-      description: "Name of the git stash to sync (default: primary stash directory)",
+      description: "Name of the git bundle to sync (default: primary bundle directory)",
       required: false,
     },
     message: {
@@ -158,7 +158,7 @@ export const cloneCommand = defineJsonCommand({
     bundle: {
       type: "string",
       description:
-        "Override the managed destination. Accepts a bundle name from config; falls back to defaultWriteTarget then the working stash.",
+        "Override the managed destination. Accepts a bundle name from config; falls back to defaultWriteTarget then the working bundle.",
     },
     dest: { type: "string", description: "Unmanaged destination directory (cannot be combined with --bundle)" },
   },

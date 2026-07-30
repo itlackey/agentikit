@@ -165,7 +165,7 @@ const updateCommand = defineJsonCommand({
 export const bundleCommand = defineGroupCommand({
   meta: {
     name: "bundle",
-    description: "Create, add to, inspect, and manage your bundles (working stash + configured sources)",
+    description: "Create, add to, inspect, and manage your bundles (working bundle + configured sources)",
   },
   subCommands: {
     create: createCommand,

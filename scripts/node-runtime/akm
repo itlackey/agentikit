@@ -10,7 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const CONTEXT_ARG = "--scheduler-context";
-const CONTEXT_KEYS = ["AKM_STASH_DIR", "AKM_CONFIG_DIR", "AKM_DATA_DIR", "AKM_CACHE_DIR", "AKM_STATE_DIR"];
+const CONTEXT_KEYS = ["AKM_BUNDLE_DIR", "AKM_CONFIG_DIR", "AKM_DATA_DIR", "AKM_CACHE_DIR", "AKM_STATE_DIR"];
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
 
 function invalidContext(file, reason) {

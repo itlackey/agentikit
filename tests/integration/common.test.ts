@@ -26,8 +26,8 @@ describe("resolveStashDir", () => {
     const cfgResult = sandboxXdgConfigHome(homeResult.cleanup);
     testConfigHome = cfgResult.dir;
     envCleanup = cfgResult.cleanup;
-    // Delete AKM_STASH_DIR so each test starts with a clean slate
-    delete process.env.AKM_STASH_DIR;
+    // Delete AKM_BUNDLE_DIR so each test starts with a clean slate
+    delete process.env.AKM_BUNDLE_DIR;
   });
 
   afterEach(() => {
@@ -37,30 +37,30 @@ describe("resolveStashDir", () => {
   });
 
   test("throws when no stash dir is configured and default does not exist", () => {
-    // HOME is already sandboxed (no akm subdir), AKM_STASH_DIR is deleted in beforeEach
+    // HOME is already sandboxed (no akm subdir), AKM_BUNDLE_DIR is deleted in beforeEach
     expect(() => resolveStashDir()).toThrow("No stash directory found");
   });
 
-  test("throws when AKM_STASH_DIR points to nonexistent path", () => {
-    process.env.AKM_STASH_DIR = "/nonexistent/path/that/does/not/exist";
+  test("throws when AKM_BUNDLE_DIR points to nonexistent path", () => {
+    process.env.AKM_BUNDLE_DIR = "/nonexistent/path/that/does/not/exist";
     expect(() => resolveStashDir()).toThrow("Unable to read");
   });
 
-  test("throws when AKM_STASH_DIR path is a file, not a directory", () => {
+  test("throws when AKM_BUNDLE_DIR path is a file, not a directory", () => {
     const tmpFile = path.join(os.tmpdir(), `akm-common-test-file-${Date.now()}`);
     fs.writeFileSync(tmpFile, "not a directory");
     try {
-      process.env.AKM_STASH_DIR = tmpFile;
+      process.env.AKM_BUNDLE_DIR = tmpFile;
       expect(() => resolveStashDir()).toThrow("must point to a directory");
     } finally {
       fs.unlinkSync(tmpFile);
     }
   });
 
-  test("returns resolved path for valid AKM_STASH_DIR", () => {
+  test("returns resolved path for valid AKM_BUNDLE_DIR", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-"));
     try {
-      process.env.AKM_STASH_DIR = tmpDir;
+      process.env.AKM_BUNDLE_DIR = tmpDir;
       const result = resolveStashDir();
       expect(result).toBe(path.resolve(tmpDir));
     } finally {
@@ -72,7 +72,7 @@ describe("resolveStashDir", () => {
     // 0.9.0 cutover: a retired top-level `stashDir` (no bundles) is no longer
     // silently honoured — resolveStashDir refuses it with the same `akm-migrate
     // apply` hint the schema hard-reject uses, instead of split-brain success.
-    delete process.env.AKM_STASH_DIR;
+    delete process.env.AKM_BUNDLE_DIR;
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-stash-"));
     try {
       const configDir = path.join(testConfigHome, "akm");
@@ -85,7 +85,7 @@ describe("resolveStashDir", () => {
   });
 
   test("reads the primary stash from the migrated bundles/defaultBundle shape", () => {
-    delete process.env.AKM_STASH_DIR;
+    delete process.env.AKM_BUNDLE_DIR;
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-bundle-"));
     try {
       const configDir = path.join(testConfigHome, "akm");
@@ -113,7 +113,7 @@ describe("resolveStashDir", () => {
     const envDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-env-"));
     const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-cfg-"));
     try {
-      process.env.AKM_STASH_DIR = envDir;
+      process.env.AKM_BUNDLE_DIR = envDir;
 
       const configRoot = path.join(testConfigHome, "akm");
       fs.mkdirSync(configRoot, { recursive: true });

@@ -36,7 +36,7 @@ afterAll(() => {
 /** A fresh XDG/HOME env override so writes from one test don't bleed into another. */
 function freshEnv(): Record<string, string | undefined> {
   return {
-    AKM_STASH_DIR: undefined,
+    AKM_BUNDLE_DIR: undefined,
     HOME: makeTempDir(),
     XDG_CONFIG_HOME: makeTempDir(),
     XDG_CACHE_HOME: makeTempDir(),

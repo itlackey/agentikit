@@ -91,7 +91,7 @@ afterEach(() => {
 
 describe("saveGitStash — scoped staging (auto-sync incident regression)", () => {
   test("named sync commits the lock-backed managed checkout instead of a URL-derived mirror", () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     const contentDir = path.join(repoDir, "content");
     initRepo(repoDir);
     writeFile(path.join(contentDir, "memories", "seed.md"), "seed\n");
@@ -124,7 +124,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("content-layout boundary commits only content and leaves repository-root WIP dirty", () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     const contentDir = path.join(repoDir, "content");
     initRepo(repoDir);
     writeFile(path.join(contentDir, "memories", "asset.md"), "asset\n");
@@ -144,7 +144,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("content-layout boundary does not commit unrelated pre-staged WIP", () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     const contentDir = path.join(repoDir, "content");
     initRepo(repoDir);
     writeFile(path.join(repoDir, "src", "staged-wip.ts"), "pre-staged WIP\n");
@@ -166,7 +166,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("write boundary excludes pre-staged WIP inside the same content asset directory", async () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     const contentDir = path.join(repoDir, "content");
     initRepo(repoDir);
     writeFile(path.join(contentDir, "memories", "staged-wip.md"), "pre-staged content WIP\n");
@@ -191,7 +191,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("canonical writes reject same-path WIP before overwriting it", async () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     const contentDir = path.join(repoDir, "content");
     const ownedPath = path.join(contentDir, "memories", "owned.md");
     initRepo(repoDir);
@@ -216,7 +216,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("canonical writes reject ignored destinations before creating them", async () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     const contentDir = path.join(repoDir, "content");
     const ignoredPath = path.join(contentDir, "memories", "ignored.md");
     initRepo(repoDir);
@@ -240,7 +240,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("mutation preparation rejects a detached local target before writing", async () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     const contentDir = path.join(repoDir, "content");
     initRepo(repoDir);
     writeFile(path.join(repoDir, "README.md"), "seed\n");
@@ -258,7 +258,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("canonical boundaries reject edits made after the recorded write snapshot", async () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     const contentDir = path.join(repoDir, "content");
     initRepo(repoDir);
     writeFile(path.join(repoDir, "README.md"), "seed\n");
@@ -284,7 +284,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("durable publication rejects operation-path edits made after its snapshot", () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(repoDir);
     writeFile(path.join(repoDir, "README.md"), "seed\n");
     git(repoDir, ["add", "."]);
@@ -312,7 +312,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("durable publication cannot treat a newly ignored operation path as a no-op", () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(repoDir);
     writeFile(path.join(repoDir, ".gitignore"), "memories/\n");
     git(repoDir, ["add", ".gitignore"]);
@@ -339,7 +339,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("an ignored path aborts a mixed exact-path commit without staging its siblings", () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(repoDir);
     writeFile(path.join(repoDir, ".gitignore"), "memories/ignored.md\n");
     git(repoDir, ["add", ".gitignore"]);
@@ -359,7 +359,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("durable publication rejects a predecessor commit created after preflight", () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(repoDir);
     writeFile(path.join(repoDir, "README.md"), "seed\n");
     git(repoDir, ["add", "."]);
@@ -389,7 +389,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("durable publication rejects a changed effective push URL", () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     const remoteDir = path.join(process.env.XDG_CACHE_HOME as string, "remote.git");
     const alternateRemote = path.join(process.env.XDG_CACHE_HOME as string, "alternate.git");
     fs.mkdirSync(remoteDir, { recursive: true });
@@ -425,7 +425,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("durable publication validates Unicode paths without quoted-path drift", () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(repoDir);
     writeFile(path.join(repoDir, "README.md"), "seed\n");
     git(repoDir, ["add", "."]);
@@ -455,7 +455,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("durable publication refuses to recreate an upstream branch deleted after preflight", () => {
-    const repoDir = process.env.AKM_STASH_DIR as string;
+    const repoDir = process.env.AKM_BUNDLE_DIR as string;
     const remoteDir = path.join(process.env.XDG_CACHE_HOME as string, "deleted-upstream.git");
     fs.mkdirSync(remoteDir, { recursive: true });
     git(remoteDir, ["init", "--bare"]);
@@ -493,7 +493,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("commits akm-managed files and leaves unrelated non-akm files dirty/untouched", () => {
-    const stashDir = process.env.AKM_STASH_DIR as string;
+    const stashDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(stashDir);
 
     // akm-managed dirty files.
@@ -528,7 +528,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("does NOT throw the old 'refusing to push' error when non-akm files are present", () => {
-    const stashDir = process.env.AKM_STASH_DIR as string;
+    const stashDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(stashDir);
     writeFile(path.join(stashDir, "facts", "a.md"), "fact a\n");
     writeFile(path.join(stashDir, "scratch.tmp"), "stray\n");
@@ -543,7 +543,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("explicit options.paths stages only the listed subset", () => {
-    const stashDir = process.env.AKM_STASH_DIR as string;
+    const stashDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(stashDir);
     writeFile(path.join(stashDir, "memories", "keep.md"), "keep\n");
     writeFile(path.join(stashDir, "memories", "skip.md"), "skip\n");
@@ -562,7 +562,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("commit-tree bypasses user commit hooks", () => {
-    const stashDir = process.env.AKM_STASH_DIR as string;
+    const stashDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(stashDir);
     writeFile(path.join(stashDir, "knowledge", "seed.md"), "seed\n");
     git(stashDir, ["add", "."]);
@@ -582,7 +582,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("only non-akm files dirty → nothing committed, no commit created, no throw", () => {
-    const stashDir = process.env.AKM_STASH_DIR as string;
+    const stashDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(stashDir);
     // Seed an initial commit so HEAD exists, then add only non-akm dirt.
     writeFile(path.join(stashDir, "knowledge", "seed.md"), "seed\n");
@@ -609,7 +609,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("clean tree → nothing to commit, working tree clean", () => {
-    const stashDir = process.env.AKM_STASH_DIR as string;
+    const stashDir = process.env.AKM_BUNDLE_DIR as string;
     initRepo(stashDir);
     writeFile(path.join(stashDir, "facts", "seed.md"), "seed\n");
     saveGitStash(undefined, "seed");
@@ -620,7 +620,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("committed change pushes when a remote is configured and stash is writable", () => {
-    const stashDir = process.env.AKM_STASH_DIR as string;
+    const stashDir = process.env.AKM_BUNDLE_DIR as string;
     // Bare remote to push into.
     const remoteDir = `${stashDir}-remote.git`;
     spawnSync("git", ["init", "--bare", "--initial-branch=main", remoteDir], { encoding: "utf8" });
@@ -655,7 +655,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
   });
 
   test("pushes the exact AKM commit when a pre-push hook creates a local descendant", () => {
-    const stashDir = process.env.AKM_STASH_DIR as string;
+    const stashDir = process.env.AKM_BUNDLE_DIR as string;
     const remoteDir = path.join(process.env.XDG_CACHE_HOME as string, "exact-push-remote.git");
     fs.mkdirSync(remoteDir, { recursive: true });
     git(remoteDir, ["init", "--bare"]);

@@ -35,7 +35,7 @@ Outputs land under `<stash>/.akm/evals/runs/<eval-run-id>/`:
 | `report.md` | Human-readable rollup (also written to stdout by default). |
 | `latest` | Symlink to the most recent run. |
 
-By default the runner reads from `$AKM_STASH_DIR` (falling back to
+By default the runner reads from `$AKM_BUNDLE_DIR` (falling back to
 `~/akm`). Override with `--stash <path>` per invocation.
 
 ## What it measures
@@ -515,7 +515,7 @@ Run the suite once now (state is essentially pre-proactive — only ~13 assets
 changed) and store it as the T0 baseline:
 
 ```sh
-AKM_STASH_DIR=~/akm scripts/akm-eval/bin/akm-eval-run \
+AKM_BUNDLE_DIR=~/akm scripts/akm-eval/bin/akm-eval-run \
   --suite "$GENERATION" --mode baseline --label "T0-pre-proactive-2026-06-14"
 ```
 
@@ -576,7 +576,7 @@ proactive promotions / 15 decided proposals exist, well under the 30 floor.
 
 ```sh
 # 1. Keep the suite files frozen and capture a fresh current run.
-AKM_STASH_DIR=~/akm scripts/akm-eval/bin/akm-eval-run --suite "$GENERATION" --mode baseline
+AKM_BUNDLE_DIR=~/akm scripts/akm-eval/bin/akm-eval-run --suite "$GENERATION" --mode baseline
 
 # 2. Render the verdict (selects newest current first, then the oldest run
 #    carrying that same suite fingerprint as its baseline).

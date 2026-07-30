@@ -247,7 +247,7 @@ destination flag (`--bundle` on `remember`/`clone`/`improve`, `--target` on
 stash (`defaultBundle`) -> `ConfigError`. The resolved target keeps the
 optional configured selector separate from the stable `source.name`: APIs
 that must re-resolve a destination use the selector, while durable refs and
-state rows always use `source.name`. The implicit working stash therefore has
+state rows always use `source.name`. The implicit working bundle therefore has
 no selector but has durable identity `stash`.
 
 On mutation surfaces that accept asset refs, a qualified ref implies its

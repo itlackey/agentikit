@@ -73,7 +73,7 @@ function runCli(args: string[], stashDir: string): CliRun {
     env: {
       ...process.env,
       BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       XDG_CACHE_HOME: cache.dir,
       XDG_CONFIG_HOME: config.dir,
       XDG_DATA_HOME: data.dir,
@@ -320,7 +320,7 @@ describe("akm improve CLI result storage", () => {
       env: {
         ...process.env,
         BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
-        AKM_STASH_DIR: stashDir,
+        AKM_BUNDLE_DIR: stashDir,
         XDG_CACHE_HOME: cache.dir,
         XDG_CONFIG_HOME: config.dir,
         XDG_DATA_HOME: data.dir,

@@ -296,7 +296,7 @@ export const addCommand = defineJsonCommand({
     name: { type: "string", description: "Human-friendly name for the source" },
     writable: {
       type: "boolean",
-      description: "Mark a git stash as writable so changes can be pushed back",
+      description: "Mark a git bundle as writable so changes can be pushed back",
       default: false,
     },
     "max-pages": { type: "string", description: "Maximum pages to crawl for website sources (default: 50)" },
@@ -304,7 +304,7 @@ export const addCommand = defineJsonCommand({
     "allow-insecure": {
       type: "boolean",
       description:
-        "Allow a plain HTTP source URL and skip confirmation for dangerous env keys (e.g. LD_PRELOAD, PATH). Use only after explicitly reviewing the stash.",
+        "Allow a plain HTTP source URL and skip confirmation for dangerous env keys (e.g. LD_PRELOAD, PATH). Use only after explicitly reviewing the bundle.",
       default: false,
     },
   },

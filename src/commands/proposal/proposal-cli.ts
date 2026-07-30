@@ -96,7 +96,7 @@ const proposalListCommand = defineJsonCommand({
 });
 
 const proposalAcceptCommand = defineJsonCommand({
-  meta: { name: "accept", description: "Accept a proposal and promote it into the stash" },
+  meta: { name: "accept", description: "Accept a proposal and promote it into the bundle" },
   args: {
     id: {
       type: "positional",

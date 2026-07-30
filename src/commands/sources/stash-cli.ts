@@ -159,7 +159,7 @@ export const infoCommand = defineJsonCommand({
 export const importKnowledgeCommand = defineJsonCommand({
   meta: {
     name: "import",
-    description: "Import a knowledge document or URL into the default stash",
+    description: "Import a knowledge document or URL into the default bundle",
   },
   args: {
     source: {
@@ -185,7 +185,7 @@ export const importKnowledgeCommand = defineJsonCommand({
     target: {
       type: "string",
       description:
-        "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working stash.",
+        "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working bundle.",
     },
     xref: {
       type: "string",
@@ -195,7 +195,7 @@ export const importKnowledgeCommand = defineJsonCommand({
     supersedes: {
       type: "string",
       description:
-        "Ref of an existing asset this document corrects (repeatable: --supersedes knowledge/legacy-guide). Imports the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the import; a ref outside the write target and working stash still imports the correction but skips the demotion (reported as applied: false).",
+        "Ref of an existing asset this document corrects (repeatable: --supersedes knowledge/legacy-guide). Imports the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the import; a ref outside the write target and working bundle still imports the correction but skips the demotion (reported as applied: false).",
     },
   },
   async run({ args }) {

@@ -40,7 +40,7 @@ akm proposal accept 7c115132                  # Accept by UUID prefix
 akm proposal reject skills/my-skill --reason "..."  # Reject by ref
 akm feedback <ref> --positive|--negative      # Record whether an asset helped
 akm bundle add <ref>                                 # Add a source (npm, GitHub, git, local dir)
-akm clone <ref>                               # Copy an asset to the working stash (optional --dest arg to clone to specific location)
+akm clone <ref>                               # Copy an asset to the working bundle (optional --dest arg to clone to specific location)
 akm sync                                      # Commit (and push if writable remote) changes in the primary stash (--no-push to commit only)
 akm improve --no-sync                         # Run improve without the end-of-run auto-commit
 akm improve --no-push                         # Auto-commit but skip push for this run

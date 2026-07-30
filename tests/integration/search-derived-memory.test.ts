@@ -82,7 +82,7 @@ beforeEach(() => {
   process.env.XDG_CONFIG_HOME = fileConfigHome;
   process.env.XDG_DATA_HOME = fileDataHome;
   process.env.XDG_STATE_HOME = fileStateHome;
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   resetConfigCache();
 });
 

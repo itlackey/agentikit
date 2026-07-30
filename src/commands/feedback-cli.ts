@@ -239,7 +239,7 @@ export const feedbackCommand = defineJsonCommand({
   meta: {
     name: "feedback",
     description:
-      "Record positive or negative feedback for any indexed stash asset.\n\n" +
+      "Record positive or negative feedback for any indexed bundle asset.\n\n" +
       "Both signals update the asset's EMA utility score immediately, in the same\n" +
       "process: positive feedback raises it, negative feedback lowers it. Neither\n" +
       "signal requires a full reindex — the new score affects ranking starting with\n" +

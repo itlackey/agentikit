@@ -250,7 +250,7 @@ export async function runBaseValidateChecks(
     const found = await ctx.readFile(candidate);
     if (found !== null) continue;
     const portableHint = candidate.startsWith(componentRoot)
-      ? ` (portable form: $AKM_STASH_DIR${candidate.slice(componentRoot.length)})`
+      ? ` (portable form: $AKM_BUNDLE_DIR${candidate.slice(componentRoot.length)})`
       : "";
     diagnostics.push({
       file: relPath,

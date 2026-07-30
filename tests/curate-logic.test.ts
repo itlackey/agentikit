@@ -29,7 +29,7 @@ function registryHit(
 function searchResponse(overrides: Partial<SearchResponse> = {}): SearchResponse {
   return {
     schemaVersion: 1,
-    stashDir: "/tmp/stash",
+    bundleDir: "/tmp/stash",
     source: "local",
     hits: [],
     ...overrides,

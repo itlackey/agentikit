@@ -26,7 +26,7 @@ const TIMEOUT_MS = 20_000;
 
 const tempDirs: string[] = [];
 const savedEnv: Record<string, string | undefined> = {
-  AKM_STASH_DIR: process.env.AKM_STASH_DIR,
+  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
   AKM_DATA_DIR: process.env.AKM_DATA_DIR,
   AKM_STATE_DIR: process.env.AKM_STATE_DIR,
   XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
@@ -48,7 +48,7 @@ function writeMemory(stashDir: string, name: string, body: string): void {
 }
 
 async function buildIndex(stashDir: string): Promise<void> {
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig(
     withTestImproveLlm({
       semanticSearchMode: "off",

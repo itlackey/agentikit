@@ -65,7 +65,7 @@ function spawnCli(
     encoding: "utf8",
     timeout: 20_000,
     cwd,
-    env: { ...process.env, AKM_STASH_DIR: undefined, ...env },
+    env: { ...process.env, AKM_BUNDLE_DIR: undefined, ...env },
   });
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? 1 };
 }
@@ -115,7 +115,7 @@ function seedIsolatedRun(): { cwd: string; env: Record<string, string> } {
       XDG_CONFIG_HOME: xdgConfig,
       XDG_CACHE_HOME: xdgCache,
       XDG_DATA_HOME: xdgData,
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
     },
   };
 }

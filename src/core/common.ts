@@ -168,7 +168,7 @@ export function writeFileAtomic(target: string, content: string | Buffer, mode?:
 
 /**
  * Resolve the stash directory using a three-level fallback chain:
- *   1. AKM_STASH_DIR environment variable (override for CI/scripts)
+ *   1. AKM_BUNDLE_DIR environment variable (override for CI/scripts)
  *   2. The configured default bundle path
  *   3. Platform default (~/akm or ~/Documents/akm on Windows)
  *
@@ -176,7 +176,7 @@ export function writeFileAtomic(target: string, content: string | Buffer, mode?:
  */
 export function resolveStashDir(env: NodeJS.ProcessEnv = process.env): string {
   // 1. Env var override (for CI, scripts, testing)
-  const envDir = env.AKM_STASH_DIR?.trim();
+  const envDir = env.AKM_BUNDLE_DIR?.trim();
   if (envDir) {
     return validateStashDir(envDir);
   }

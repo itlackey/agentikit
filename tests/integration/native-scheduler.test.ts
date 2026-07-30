@@ -54,7 +54,7 @@ function expectSuccess(result: RunResult, label: string): void {
 function withoutHarnessOverrides(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of [
-    "AKM_STASH_DIR",
+    "AKM_BUNDLE_DIR",
     "AKM_CONFIG_DIR",
     "AKM_DATA_DIR",
     "AKM_CACHE_DIR",
@@ -147,7 +147,7 @@ test.skipIf(!ENABLED)(
 
     const env = withoutHarnessOverrides({
       HOME: nativeHome,
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       AKM_CONFIG_DIR: configDir,
       AKM_DATA_DIR: dataDir,
       AKM_CACHE_DIR: cacheDir,
@@ -264,7 +264,7 @@ test.skipIf(!ENABLED || process.platform !== "win32")(
     expect(restrictedPath.toLowerCase()).not.toContain("bun");
 
     const env = withoutHarnessOverrides({
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       AKM_CONFIG_DIR: configDir,
       AKM_DATA_DIR: dataDir,
       AKM_CACHE_DIR: cacheDir,

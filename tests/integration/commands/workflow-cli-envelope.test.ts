@@ -9,7 +9,7 @@
  * the family from cli.ts into src/commands/workflow-cli.ts and the migration of
  * the leaf handlers onto `defineJsonCommand` is byte-identical. Workflows are
  * authored in-process via `workflow create --from <file>` against an isolated
- * stash dir; the CLI reads that stash back through AKM_STASH_DIR via the
+ * stash dir; the CLI reads that stash back through AKM_BUNDLE_DIR via the
  * in-process harness.
  */
 
@@ -61,7 +61,7 @@ function writeWorkflowSource(): string {
 
 async function runCli(args: string[], stashDir: string): Promise<{ stdout: string; stderr: string; status: number }> {
   const { code, stdout, stderr } = await withEnv(
-    { AKM_STASH_DIR: stashDir, XDG_CONFIG_HOME: path.join(stashDir, ".config") },
+    { AKM_BUNDLE_DIR: stashDir, XDG_CONFIG_HOME: path.join(stashDir, ".config") },
     () => {
       writeWorkflowTestConfig();
       return runCliCapture(args);

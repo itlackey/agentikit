@@ -96,7 +96,7 @@ describe("write mutation lease", () => {
 
     const child = worker(["workflow", stash, "# Workflow: Leased\n\n## Step: One\nDo it.\n", "-", "-"], {
       ...process.env,
-      AKM_STASH_DIR: stash,
+      AKM_BUNDLE_DIR: stash,
       AKM_CONFIG_DIR: config,
     });
     await Bun.sleep(250);

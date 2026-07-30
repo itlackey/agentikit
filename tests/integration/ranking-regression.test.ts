@@ -44,7 +44,7 @@ let fixtureCleanup: (() => void) | undefined;
 // fixture index per test; instead the env vars this file depends on are
 // re-asserted in beforeEach so another concurrently-interleaved test file
 // (the suite runs all files in ONE process sharing process.env) can't clobber
-// XDG_DATA_HOME/AKM_STASH_DIR mid-run and point our searches at the wrong DB.
+// XDG_DATA_HOME/AKM_BUNDLE_DIR mid-run and point our searches at the wrong DB.
 let fileDataHome = "";
 
 // ── Environment isolation ───────────────────────────────────────────────────
@@ -69,7 +69,7 @@ beforeAll(async () => {
   FIXTURE_STASH = loaded.stashDir;
   fixtureCleanup = loaded.cleanup;
 
-  process.env.AKM_STASH_DIR = FIXTURE_STASH;
+  process.env.AKM_BUNDLE_DIR = FIXTURE_STASH;
 
   saveConfig({
     semanticSearchMode: "off",
@@ -84,19 +84,19 @@ beforeAll(async () => {
 beforeEach(() => {
   // Re-establish the env vars this file's pre-built index depends on. Under
   // the shared-process suite, another file's beforeEach/afterEach can leave
-  // XDG_DATA_HOME / AKM_STASH_DIR pointing elsewhere between our tests; the
+  // XDG_DATA_HOME / AKM_BUNDLE_DIR pointing elsewhere between our tests; the
   // preload snapshots/restores in afterEach but a concurrently-scheduled
   // file could still have mutated them. Pointing back at the SAME stable
   // fixture dir + data home (not a fresh one) reuses the index built once in
   // beforeAll while guaranteeing correctness.
   process.env.XDG_DATA_HOME = fileDataHome;
-  process.env.AKM_STASH_DIR = FIXTURE_STASH;
+  process.env.AKM_BUNDLE_DIR = FIXTURE_STASH;
 });
 
 afterAll(() => {
   envCleanup();
   envCleanup = () => {};
-  if (process.env.AKM_STASH_DIR === FIXTURE_STASH) delete process.env.AKM_STASH_DIR;
+  if (process.env.AKM_BUNDLE_DIR === FIXTURE_STASH) delete process.env.AKM_BUNDLE_DIR;
 
   fixtureCleanup?.();
 });

@@ -71,7 +71,7 @@ describe("in-process CLI harness", () => {
     //
     // The "no stash" condition must be constructed explicitly, not inherited
     // from the ambient environment. `resolveStashDir` falls back to the
-    // platform default `$HOME/akm` when neither `AKM_STASH_DIR` nor a config
+    // platform default `$HOME/akm` when neither `AKM_BUNDLE_DIR` nor a config
     // `stashDir` is set; under the suite-wide preload sandbox, `HOME` is a
     // SHARED per-process directory. If any earlier test in the sequential suite
     // creates `$HOME/akm` (e.g. by resolving the default stash dir without
@@ -83,7 +83,7 @@ describe("in-process CLI harness", () => {
     const freshHome = makeSandboxDir("akm-harness-home");
     disposers.push(freshHome);
     const noStash = await withEnv(
-      { HOME: freshHome.dir, XDG_CONFIG_HOME: path.join(freshHome.dir, "config"), AKM_STASH_DIR: undefined },
+      { HOME: freshHome.dir, XDG_CONFIG_HOME: path.join(freshHome.dir, "config"), AKM_BUNDLE_DIR: undefined },
       () => runCliCapture(["search", "test"]),
     );
     expect(noStash.code).not.toBe(0);
@@ -94,7 +94,7 @@ describe("in-process CLI harness", () => {
     // resolved (missing) stash.
     const stash = makeStashDir();
     disposers.push(stash);
-    const withStash = await withEnv({ AKM_STASH_DIR: stash.dir }, () => runCliCapture(["search", "test"]));
+    const withStash = await withEnv({ AKM_BUNDLE_DIR: stash.dir }, () => runCliCapture(["search", "test"]));
     expect(withStash.code).toBe(0);
     expect(withStash.stderr).not.toContain("STASH_DIR_NOT_FOUND");
   });

@@ -8,7 +8,7 @@
  * flagged.
  *
  * Rule 2 (unguarded env assignment): flag any test file that *assigns* an
- * AKM-/XDG-/HOME env var (`process.env.AKM_STASH_DIR = …`) without routing
+ * AKM-/XDG-/HOME env var (`process.env.AKM_BUNDLE_DIR = …`) without routing
  * through a sanctioned restoring wrapper (`withEnv` / `sandbox*` helpers).
  * Under `bun test` the whole suite shares ONE `process.env`; a stray
  * assignment that survives past a yield point (or a forgotten restore) silently
@@ -92,7 +92,7 @@ import path from "node:path";
  * tripwire. ISOLATION-08.
  */
 const AKM_ENV_VARS: readonly string[] = [
-  "AKM_STASH_DIR",
+  "AKM_BUNDLE_DIR",
   "AKM_CONFIG_DIR",
   "AKM_CACHE_DIR",
   "AKM_DATA_DIR",
@@ -129,7 +129,7 @@ const ENV_ASSIGN_ALLOWED = new Set<string>([
   "tests/registry-resolve.test.ts",
 
   // ISOLATION-06/RUNTIME-04: tests/fixtures/stashes/load.test.ts's sentinel-
-  // value AKM_STASH_DIR test moved to
+  // value AKM_BUNDLE_DIR test moved to
   // tests/integration/fixtures/stashes/load.test.ts (it also exercises
   // loadFixtureStash's real-subprocess default path, which Rule 5 requires
   // to live under tests/integration/) and was rewritten there to route the
@@ -146,7 +146,7 @@ const ALLOWED_FILES = new Set<string>([
   // deferred — the env vars are set via per-subprocess env objects, not
   // process.env mutation in the caller process.
 
-  // workflow-path-escape.test.ts: sets AKM_STASH_DIR per-test for symlink
+  // workflow-path-escape.test.ts: sets AKM_BUNDLE_DIR per-test for symlink
   // path testing; each test creates a specific stash/symlink pair and the
   // afterEach correctly deletes all env vars. Per-test pattern, not beforeEach.
   "tests/integration/workflow-path-escape.test.ts",
@@ -154,35 +154,35 @@ const ALLOWED_FILES = new Set<string>([
   // tests/_helpers/sandbox.ts itself: defines the helpers.
   "tests/_helpers/sandbox.ts",
 
-  // source-clone.test.ts: one test overrides AKM_STASH_DIR to a nonexistent
+  // source-clone.test.ts: one test overrides AKM_BUNDLE_DIR to a nonexistent
   // path to verify --dest works without a working stash. The assignment is a
   // deliberate semantics override inside the test body; beforeEach/afterEach
   // still use the sandbox helper for all other isolation.
   "tests/integration/source-clone.test.ts",
 
-  // indexer.test.ts: multi-stash tests set AKM_STASH_DIR = primaryStash
+  // indexer.test.ts: multi-stash tests set AKM_BUNDLE_DIR = primaryStash
   // inside test bodies to configure cross-stash scenarios. This is intentional
   // test-body logic (not isolation boilerplate); the sandbox handles restore
   // via afterEach. Only the multi-stash describe blocks need per-test overrides.
 
-  // issue-36-repro.test.ts: three tests set AKM_STASH_DIR in test bodies for
+  // issue-36-repro.test.ts: three tests set AKM_BUNDLE_DIR in test bodies for
   // cross-source and incremental-index tests. These are deliberate per-test
   // overrides; beforeEach/afterEach use the sandbox helper for outer isolation.
   "tests/integration/issue-36-repro.test.ts",
 
   // source.test.ts: ~50 tests each create a dedicated stash with specific file
-  // content and set AKM_STASH_DIR so akmSearch/akmIndex/akmShow read that stash.
+  // content and set AKM_BUNDLE_DIR so akmSearch/akmIndex/akmShow read that stash.
   // These are per-test content fixtures, not isolation boilerplate; XDG vars are
   // now properly sandboxed via beforeEach/afterEach.
   "tests/integration/source.test.ts",
 
   // search-include-proposed-cli.test.ts: one test creates a custom stash with
-  // specific quality-marked skills and sets AKM_STASH_DIR to that stash so the
+  // specific quality-marked skills and sets AKM_BUNDLE_DIR to that stash so the
   // spawned CLI subprocess reads it. Deliberate fixture setup; XDG vars are
   // sandboxed via beforeEach/afterEach.
   "tests/integration/search-include-proposed-cli.test.ts",
 
-  // common.test.ts: resolveStashDir tests intentionally set/delete AKM_STASH_DIR
+  // common.test.ts: resolveStashDir tests intentionally set/delete AKM_BUNDLE_DIR
   // to verify the function's env-var lookup precedence (nonexistent path, file vs
   // dir, config.json fallback, default HOME/akm). These are semantic tests of the
   // env var behaviour itself; HOME and XDG_CONFIG_HOME are sandboxed.
@@ -196,27 +196,27 @@ const ALLOWED_FILES = new Set<string>([
   // refactoring of the cross-describe env sharing pattern.
   "tests/integration/semantic-search-e2e.test.ts",
 
-  // wiki.test.ts: a few tests set XDG_CONFIG_HOME or AKM_STASH_DIR in their bodies
+  // wiki.test.ts: a few tests set XDG_CONFIG_HOME or AKM_BUNDLE_DIR in their bodies
   // to configure wiki registration (external sources / config-based detection) or
   // to point searchInWiki at a specific stash. These are deliberate fixture setups;
   // the module-level beforeEach/afterEach now use the sandbox for outer isolation.
 
-  // scoring-pipeline.test.ts: buildTestIndex sets AKM_STASH_DIR to the per-test
+  // scoring-pipeline.test.ts: buildTestIndex sets AKM_BUNDLE_DIR to the per-test
   // tmpStash() dir so akmIndex and akmSearch read the right fixture stash. Each
   // test creates its own isolated stash with specific content; XDG vars are
   // sandboxed via beforeEach/afterEach.
   "tests/integration/scoring-pipeline.test.ts",
 
-  // commands/search.test.ts: buildTestIndex and several tests set AKM_STASH_DIR
+  // commands/search.test.ts: buildTestIndex and several tests set AKM_BUNDLE_DIR
   // to per-test fixture stash dirs so akmIndex and akmSearch read the right content.
   // XDG vars are sandboxed via beforeEach/afterEach.
 
-  // parallel-search.test.ts: buildTestIndex sets AKM_STASH_DIR to the per-test
+  // parallel-search.test.ts: buildTestIndex sets AKM_BUNDLE_DIR to the per-test
   // tmpStash() so akmIndex and akmSearch read the right fixture stash.
   // XDG vars are sandboxed via beforeEach/afterEach.
   "tests/integration/parallel-search.test.ts",
 
-  // proposed-quality.test.ts: buildTestIndex sets AKM_STASH_DIR to the per-test
+  // proposed-quality.test.ts: buildTestIndex sets AKM_BUNDLE_DIR to the per-test
   // tmpStash() dir so akmSearch resolves the indexed content correctly.
   // XDG vars are sandboxed via beforeEach/afterEach.
   "tests/integration/proposed-quality.test.ts",
@@ -678,7 +678,7 @@ if (import.meta.main) {
     if (showFixHints && v.envVars && (v.rule === "mkdtemp-env" || v.rule === "unguarded-env")) {
       const importPath = v.file.startsWith("tests/") ? "../_helpers/sandbox" : "./_helpers/sandbox";
       const helpers = v.envVars.map((e) => {
-        if (e === "AKM_STASH_DIR") return "sandboxStashDir";
+        if (e === "AKM_BUNDLE_DIR") return "sandboxStashDir";
         if (e === "XDG_CONFIG_HOME") return "sandboxXdgConfigHome";
         if (e === "XDG_DATA_HOME") return "sandboxXdgDataHome";
         if (e === "XDG_CACHE_HOME") return "sandboxXdgCacheHome";

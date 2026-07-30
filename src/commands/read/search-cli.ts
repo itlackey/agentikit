@@ -43,7 +43,7 @@ function rejectRetiredSourceFlag(): void {
 }
 
 export const searchCommand = defineJsonCommand({
-  meta: { name: "search", description: "Search the stash" },
+  meta: { name: "search", description: "Search the bundle" },
   args: {
     query: {
       type: "positional",
@@ -285,7 +285,7 @@ function rejectExtraShowPositionals(positionals: unknown, ref: string): void {
 export const showCommand = defineJsonCommand({
   meta: {
     name: "show",
-    description: "Show a stash asset by ref (e.g. akm show knowledge/guide.md, akm show knowledge/guide.md#auth)",
+    description: "Show a bundle asset by ref (e.g. akm show knowledge/guide.md, akm show knowledge/guide.md#auth)",
   },
   args: {
     ref: {

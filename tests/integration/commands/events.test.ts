@@ -47,7 +47,7 @@ function sandboxStash(): string {
 /**
  * Like {@link sandboxStash}, but also isolates `XDG_DATA_HOME` (and so
  * `state.db`, per `src/core/paths.ts`'s `getDataDir`). `sandboxStash` alone
- * only sandboxes `AKM_STASH_DIR`, so the tests above that use it tolerate
+ * only sandboxes `AKM_BUNDLE_DIR`, so the tests above that use it tolerate
  * events accumulating across tests in this file (they assert `.toContain(...)`
  * / `>= 1`, never exact counts). The `--limit` tests below assert EXACT
  * counts and exact "most recent N" contents, so they need a state.db that

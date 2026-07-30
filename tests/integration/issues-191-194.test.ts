@@ -52,13 +52,13 @@ function makeEnv(): NodeJS.ProcessEnv {
     XDG_CONFIG_HOME: path.join(akmHome, "config"),
     XDG_CACHE_HOME: path.join(akmHome, "cache"),
     XDG_DATA_HOME: path.join(akmHome, "data"),
-    AKM_STASH_DIR: path.join(akmHome, "stash"),
+    AKM_BUNDLE_DIR: path.join(akmHome, "stash"),
   };
 }
 
 const RUNCLI_ENV_KEYS = [
   "HOME",
-  "AKM_STASH_DIR",
+  "AKM_BUNDLE_DIR",
   "XDG_CONFIG_HOME",
   "XDG_CACHE_HOME",
   "XDG_DATA_HOME",
@@ -155,16 +155,16 @@ describe("issue #191 — memory search misses freshly-added memory", () => {
 });
 
 describe("issue #192 — `akm bundle list` after `akm bundle create`", () => {
-  test("bundle list resolves the stashDir written by bundle create", async () => {
+  test("bundle list resolves the bundleDir written by bundle create", async () => {
     const env = makeEnv();
     const initRes = await runCli(["bundle", "create"], env);
     expect(initRes.status).toBe(0);
-    const initJson = JSON.parse(initRes.stdout) as { stashDir: string };
+    const initJson = JSON.parse(initRes.stdout) as { bundleDir: string };
 
     const listRes = await runCli(["bundle", "list", "--format", "json"], env);
     expect(listRes.status).toBe(0);
-    const listJson = JSON.parse(listRes.stdout) as { stashDir: string };
-    expect(listJson.stashDir).toBe(initJson.stashDir);
+    const listJson = JSON.parse(listRes.stdout) as { bundleDir: string };
+    expect(listJson.bundleDir).toBe(initJson.bundleDir);
   });
 });
 

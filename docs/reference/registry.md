@@ -265,7 +265,7 @@ akm bundle remove npm:@scope/my-stash
 ### Cloning Assets
 
 Managed sources are cache-managed and may be overwritten by `akm bundle update`.
-To edit an asset from a managed source, clone it into the working stash:
+To edit an asset from a managed source, clone it into the working bundle:
 
 ```bash
 akm clone "npm:@scope/my-stash//scripts/deploy.sh"
@@ -274,10 +274,10 @@ akm clone "npm:@scope/my-stash//scripts/deploy.sh"
 akm clone "npm:@scope/my-stash//scripts/deploy.sh" --name my-deploy.sh
 ```
 
-The cloned asset lives in the working stash and takes priority over the
+The cloned asset lives in the working bundle and takes priority over the
 installed version in search and show.
 
-Use `--dest` to clone to a custom directory instead of the working stash:
+Use `--dest` to clone to a custom directory instead of the working bundle:
 
 ```bash
 # Deploy a script directly into a project's .claude directory
@@ -300,9 +300,9 @@ results are ranked by relevance and utility, and precedence is expressed
 through ranking rather than a per-source fan-out (see
 [concepts.md](../guides/concepts.md#search-priority)).
 
-When two sources contain an asset with the same name, the working stash
+When two sources contain an asset with the same name, the working bundle
 typically wins by convention because its files are usually more recent.
-Use `akm clone` to copy an asset into your working stash for local
+Use `akm clone` to copy an asset into your working bundle for local
 editing — your edits then override the upstream copy in subsequent
 searches.
 

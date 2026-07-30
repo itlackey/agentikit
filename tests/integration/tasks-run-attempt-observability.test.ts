@@ -48,7 +48,7 @@ function writeRawConfig(contents: string): void {
 
 function capturedSchedulerContext(): Record<string, string> {
   return {
-    AKM_STASH_DIR: storage.stashDir,
+    AKM_BUNDLE_DIR: storage.stashDir,
     AKM_CONFIG_DIR: path.join(storage.configDir, "akm"),
     AKM_DATA_DIR: path.join(storage.dataDir, "akm"),
     AKM_CACHE_DIR: path.join(storage.cacheDir, "akm"),

@@ -22,14 +22,14 @@ import { computeFixtureContentHash, fixtureContentHash, listFixtures, loadFixtur
 
 describe("loadFixtureStash", () => {
   test("with { skipIndex: true } does not invoke akm index", () => {
-    const priorAkmStashDir = process.env.AKM_STASH_DIR;
+    const priorAkmStashDir = process.env.AKM_BUNDLE_DIR;
 
     const { stashDir, cleanup } = loadFixtureStash("minimal", { skipIndex: true });
 
     try {
-      // The fixture is still materialised and AKM_STASH_DIR is still set.
+      // The fixture is still materialised and AKM_BUNDLE_DIR is still set.
       expect(fs.existsSync(stashDir)).toBe(true);
-      expect(process.env.AKM_STASH_DIR).toBe(stashDir);
+      expect(process.env.AKM_BUNDLE_DIR).toBe(stashDir);
 
       // But the index DB the helper would otherwise have created in the
       // isolated XDG_CACHE_HOME is absent — proving no `akm index` ran.
@@ -38,14 +38,14 @@ describe("loadFixtureStash", () => {
       expect(fs.existsSync(dbPath)).toBe(false);
 
       // cleanup() (exercised below) is solely responsible for restoring
-      // AKM_STASH_DIR — asserted here rather than via a second manual
+      // AKM_BUNDLE_DIR — asserted here rather than via a second manual
       // restore in this test body, which would re-trip the isolation lint's
       // unguarded-env rule for no behavioural benefit.
     } finally {
       cleanup();
     }
 
-    expect(process.env.AKM_STASH_DIR).toBe(priorAkmStashDir);
+    expect(process.env.AKM_BUNDLE_DIR).toBe(priorAkmStashDir);
   });
 });
 

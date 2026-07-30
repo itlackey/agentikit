@@ -77,7 +77,7 @@ assert_json_field() {
 STASH_DIR="$(mktemp -d)/akm-smoke"
 CONFIG_DIR="$(mktemp -d)/akm-config"
 CACHE_DIR="$(mktemp -d)/akm-cache"
-export AKM_STASH_DIR="$STASH_DIR"
+export AKM_BUNDLE_DIR="$STASH_DIR"
 export XDG_CONFIG_HOME="$CONFIG_DIR"
 export XDG_CACHE_HOME="$CACHE_DIR"
 

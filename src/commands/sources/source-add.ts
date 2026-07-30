@@ -104,7 +104,7 @@ async function addLocalSource(
 
   return {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     ref,
     sourceAdded: {
       type: "filesystem",
@@ -163,7 +163,7 @@ async function addWebsiteSource(
 
   return {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     ref,
     sourceAdded: {
       type: "website",
@@ -254,7 +254,7 @@ async function addRegistryStash(ref: string, stashDir: string, writable?: boolea
 
   return {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     ref,
     installed: {
       id: synced.id,

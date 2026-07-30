@@ -10,7 +10,7 @@ import { ConfigError } from "../core/errors";
 import { getCacheDir, getConfigDir, getDataDir, getTaskContextDir } from "../core/paths";
 
 export const SCHEDULED_TASK_CONTEXT_KEYS = [
-  "AKM_STASH_DIR",
+  "AKM_BUNDLE_DIR",
   "AKM_CONFIG_DIR",
   "AKM_DATA_DIR",
   "AKM_CACHE_DIR",
@@ -38,7 +38,7 @@ export function resolveScheduledTaskContext(
   platform: NodeJS.Platform = process.platform,
 ): ScheduledTaskContext {
   return canonicalContext({
-    AKM_STASH_DIR: path.resolve(resolveStashDir(env)),
+    AKM_BUNDLE_DIR: path.resolve(resolveStashDir(env)),
     AKM_CONFIG_DIR: path.resolve(getConfigDir(env, platform)),
     AKM_DATA_DIR: path.resolve(getDataDir(env, platform)),
     AKM_CACHE_DIR: path.resolve(getCacheDir(env)),

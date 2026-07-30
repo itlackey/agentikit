@@ -105,7 +105,7 @@ Usage:
   akm-eval-compare <baseline-id|latest> <current-id|latest> [options]
 
 Options:
-  --stash <path>          Stash root (default: $AKM_STASH_DIR or ~/akm).
+  --stash <path>          Stash root (default: $AKM_BUNDLE_DIR or ~/akm).
   --format json|md        Output format (default: md).
   --threshold <0..1>      Min score drop counted as regression (default: 0.1).
   --out <path>            Write comparison JSON to this path (overrides default).

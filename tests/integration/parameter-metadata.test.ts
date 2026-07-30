@@ -370,7 +370,7 @@ describe("indexing pipeline with parameters", () => {
       '---\ndescription: "Deploy Docker container"\n---\nDeploy $1 to $2 using {{registry_url}}\n',
     );
 
-    process.env.AKM_STASH_DIR = stashDir;
+    process.env.AKM_BUNDLE_DIR = stashDir;
     await akmIndex({ stashDir });
 
     const db = openIndexDatabase();

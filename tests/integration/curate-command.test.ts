@@ -15,7 +15,7 @@ import {
 
 // Migrated from per-test spawnSync("bun", [CLI, ...]) to the in-process harness
 // (tests/_helpers/cli.ts). Each runCli call pins a fresh isolated set of XDG
-// dirs (cache/config/data) plus AKM_STASH_DIR via the allowlisted withEnv
+// dirs (cache/config/data) plus AKM_BUNDLE_DIR via the allowlisted withEnv
 // wrapper and resets the config cache before driving the CLI in-process,
 // restoring env in finally. The `curate` command auto-indexes into index.db
 // (not state.db), so the in-process write does not contend with the suite's
@@ -45,7 +45,7 @@ async function runCliWithDataDir(stashDir: string, args: string[]): Promise<{ st
   const xdgData = makeTempDir("akm-curate-data-");
   const res = await withEnv(
     {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       XDG_CACHE_HOME: xdgCache,
       XDG_CONFIG_HOME: xdgConfig,
       XDG_DATA_HOME: xdgData,
@@ -230,7 +230,7 @@ describe("curate command", () => {
     const xdgConfig = makeTempDir("akm-curate-config-");
     const res = await withEnv(
       {
-        AKM_STASH_DIR: stashDir,
+        AKM_BUNDLE_DIR: stashDir,
         XDG_CACHE_HOME: makeTempDir("akm-curate-cache-"),
         XDG_CONFIG_HOME: xdgConfig,
         XDG_DATA_HOME: makeTempDir("akm-curate-data-"),

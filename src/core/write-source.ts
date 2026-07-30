@@ -1156,7 +1156,7 @@ export function resolveWritableTargets(akmConfig: AkmConfig): ResolvedWriteTarge
     const existing = byRoot.get(root);
     if (!existing || target.source.name === akmConfig.defaultWriteTarget) byRoot.set(root, target);
   }
-  if (process.env.AKM_STASH_DIR?.trim()) {
+  if (process.env.AKM_BUNDLE_DIR?.trim()) {
     const target = resolveWorkingStashTarget(akmConfig);
     byRoot.set(path.resolve(target.source.path), target);
   }
@@ -1245,7 +1245,7 @@ export function resolveWorkingStashTarget(
 ): ResolvedWriteTarget {
   const configuredSources = resolveConfiguredSources(akmConfig);
   const requireWritable = options.requireWritable !== false;
-  if (process.env.AKM_STASH_DIR?.trim()) {
+  if (process.env.AKM_BUNDLE_DIR?.trim()) {
     const stashDir = resolveStashDir();
     const configured = configuredSources.find((source) => {
       const sourcePath = source.source.type === "filesystem" ? source.source.path : undefined;

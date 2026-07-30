@@ -25,7 +25,7 @@ import { withEnv } from "../_helpers/sandbox";
 // ── CLI harness ──────────────────────────────────────────────────────────────
 //
 // All `akm remember` invocations here run through the shared in-process harness
-// (tests/_helpers/cli.ts). `remember` resolves its target from AKM_STASH_DIR
+// (tests/_helpers/cli.ts). `remember` resolves its target from AKM_BUNDLE_DIR
 // (XDG), not process.cwd(), so it runs faithfully in-process.
 //
 // The two stdin-driven tests (piping a body via a real subprocess's stdin) live
@@ -48,7 +48,7 @@ function freshDirs(options?: { stashDir?: string }) {
   return {
     stashDir,
     env: {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       XDG_CACHE_HOME: makeTempDir("akm-rmfm-cache-"),
       XDG_CONFIG_HOME: makeTempDir("akm-rmfm-config-"),
       XDG_DATA_HOME: makeTempDir("akm-rmfm-data-"),

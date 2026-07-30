@@ -12,7 +12,7 @@ function makeTempDir(): string {
 
 function freshEnv(overrides: Record<string, string | undefined> = {}): Record<string, string | undefined> {
   return {
-    AKM_STASH_DIR: makeTempDir(),
+    AKM_BUNDLE_DIR: makeTempDir(),
     HOME: makeTempDir(),
     XDG_CONFIG_HOME: makeTempDir(),
     XDG_CACHE_HOME: makeTempDir(),

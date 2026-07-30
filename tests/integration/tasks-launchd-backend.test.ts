@@ -13,7 +13,7 @@ import type { TaskDocument } from "../../src/tasks/schema";
 import { sandboxStashDir } from "../_helpers/sandbox";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
-  AKM_STASH_DIR: "/Users/Akm User/stash & notes",
+  AKM_BUNDLE_DIR: "/Users/Akm User/stash & notes",
   AKM_CONFIG_DIR: "/Users/Akm User/config",
   AKM_DATA_DIR: "/Users/Akm User/data",
   AKM_CACHE_DIR: "/Users/Akm User/cache",
@@ -52,7 +52,7 @@ describe("buildPlistXml", () => {
     expect(xml).toContain("<string>--scheduled</string>");
     expect(xml).toContain("<string>--scheduler-context</string>");
     expect(xml).toContain("/tasks/context/");
-    expect(xml).not.toContain("<key>AKM_STASH_DIR</key>");
+    expect(xml).not.toContain("<key>AKM_BUNDLE_DIR</key>");
     expect(xml).not.toContain("AKM_LLM_API_KEY");
     expect(xml).toContain("<string>/var/log/akm/ping.log</string>");
   });

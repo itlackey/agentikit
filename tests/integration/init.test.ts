@@ -51,7 +51,7 @@ describe("akmInit (akm bundle create)", () => {
     // Remove dir so init reports created=true
     fs.rmSync(stashDir, { recursive: true, force: true });
     const result = await akmInit({ dir: stashDir });
-    expect(result.stashDir).toBe(stashDir);
+    expect(result.bundleDir).toBe(stashDir);
     expect(result.created).toBe(true);
     expect(fs.existsSync(path.join(stashDir, "lessons"))).toBe(true);
     // Also verify other core type dirs exist (fingerprint of TYPE_DIRS sweep).
@@ -201,8 +201,8 @@ describe("akmInit (akm bundle create)", () => {
       expect(primaryBundlePath(loadUserConfig())).toBeUndefined();
       const result = await akmInit();
       expect(result.defaultStashUpdated).toBe(true);
-      expect(result.previousStashDir).toBeUndefined();
-      expect(primaryBundlePath(loadUserConfig())).toBe(result.stashDir);
+      expect(result.previousBundleDir).toBeUndefined();
+      expect(primaryBundlePath(loadUserConfig())).toBe(result.bundleDir);
     });
 
     test("--dir X, NO existing primary → first-time bootstrap persists X", async () => {
@@ -224,9 +224,9 @@ describe("akmInit (akm bundle create)", () => {
 
       // Config still points at Y — default pointer left alone.
       expect(primaryBundlePath(loadUserConfig())).toBe(dirY);
-      expect(result.stashDir).toBe(dirX);
+      expect(result.bundleDir).toBe(dirX);
       expect(result.defaultStashUpdated).toBe(false);
-      expect(result.previousStashDir).toBe(dirY);
+      expect(result.previousBundleDir).toBe(dirY);
 
       // ...but X is still fully scaffolded (regression for the non-persist case).
       expect(fs.existsSync(path.join(dirX, "lessons"))).toBe(true);
@@ -244,7 +244,7 @@ describe("akmInit (akm bundle create)", () => {
 
       expect(primaryBundlePath(loadUserConfig())).toBe(dirX);
       expect(result.defaultStashUpdated).toBe(true);
-      expect(result.previousStashDir).toBeUndefined();
+      expect(result.previousBundleDir).toBeUndefined();
     });
 
     test("--dir X where X equals existing primary → no-op, no spurious rewrite", async () => {

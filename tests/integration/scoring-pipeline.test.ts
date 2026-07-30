@@ -59,7 +59,7 @@ async function buildTestIndex(stashDir: string, files: Record<string, string> = 
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
     fs.writeFileSync(fullPath, content);
   }
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig({ semanticSearchMode: "off" });
   await akmIndex({ stashDir, full: true });
 }
@@ -607,7 +607,7 @@ describe("Cross-stash identity at index time", () => {
     writeFile(path.join(primaryStash, "knowledge", "github.md"), asset);
     writeFile(path.join(secondStash, "knowledge", "github.md"), asset);
 
-    process.env.AKM_STASH_DIR = primaryStash;
+    process.env.AKM_BUNDLE_DIR = primaryStash;
     saveConfig({
       semanticSearchMode: "off",
       bundles: { second: { path: secondStash } },
@@ -640,7 +640,7 @@ describe("Cross-stash identity at index time", () => {
     writeFile(path.join(primaryStash, "knowledge", "tracker", "platforms", "github.md"), adapterFm);
     writeFile(path.join(secondStash, "knowledge", "platforms", "github.md"), adapterFm);
 
-    process.env.AKM_STASH_DIR = primaryStash;
+    process.env.AKM_BUNDLE_DIR = primaryStash;
     saveConfig({
       semanticSearchMode: "off",
       bundles: { second: { path: secondStash } },
@@ -666,7 +666,7 @@ describe("Cross-stash identity at index time", () => {
     writeFile(path.join(primaryStash, "knowledge", "helper.md"), "---\ndescription: Build helper for CI\n---\n");
     writeFile(path.join(secondStash, "knowledge", "helper.md"), "---\ndescription: Test helper for local dev\n---\n");
 
-    process.env.AKM_STASH_DIR = primaryStash;
+    process.env.AKM_BUNDLE_DIR = primaryStash;
     saveConfig({
       semanticSearchMode: "off",
       bundles: { second: { path: secondStash } },

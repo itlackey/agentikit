@@ -40,7 +40,7 @@ async function runCli(args: string[]): Promise<{ status: number; stdout: string;
 beforeEach(() => {
   // Chain sandboxXdgDataHome onto sandboxStashDir so `index.db` (which lives
   // under XDG_DATA_HOME, see src/core/paths.ts:getDataDir) is isolated
-  // per-test too — not just AKM_STASH_DIR.
+  // per-test too — not just AKM_BUNDLE_DIR.
   const stash = sandboxStashDir();
   const data = sandboxXdgDataHome(stash.cleanup);
   stashCleanup = data.cleanup;

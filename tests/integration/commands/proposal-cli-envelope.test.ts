@@ -9,7 +9,7 @@
  * from cli.ts into src/commands/proposal-cli.ts and the migration of the leaf
  * handlers onto `defineJsonCommand` is byte-identical. Proposals are seeded
  * in-process via createProposal() against an isolated stash dir; the CLI reads
- * that stash back through AKM_STASH_DIR via the in-process harness.
+ * that stash back through AKM_BUNDLE_DIR via the in-process harness.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -56,7 +56,7 @@ function seedProposal(stash: string, ref = "lessons/rg-over-grep"): string {
 }
 
 async function runCli(args: string[], stashDir: string): Promise<{ stdout: string; stderr: string; status: number }> {
-  const { code, stdout, stderr } = await withEnv({ AKM_STASH_DIR: stashDir }, () => runCliCapture(args));
+  const { code, stdout, stderr } = await withEnv({ AKM_BUNDLE_DIR: stashDir }, () => runCliCapture(args));
   return { stdout, stderr, status: code };
 }
 

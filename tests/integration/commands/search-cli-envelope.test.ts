@@ -11,7 +11,7 @@
  * `defineJsonCommand` is byte-identical. The three commands share the private
  * `resolveEventSource` helper and the `parseScopeFilterFlags`/`parseSearchSource`
  * parsers, which moved with the cluster. The CLI reads an isolated, freshly
- * indexed stash through AKM_STASH_DIR via the in-process harness.
+ * indexed stash through AKM_BUNDLE_DIR via the in-process harness.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -34,7 +34,7 @@ import {
 const disposers: SandboxedDir[] = [];
 
 async function runCli(args: string[], stashDir: string): Promise<{ stdout: string; stderr: string; status: number }> {
-  return withEnv({ AKM_STASH_DIR: stashDir }, async () => {
+  return withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
     resetConfigCache();
     const res = await runCliCapture(args);
     return { stdout: res.stdout, stderr: res.stderr, status: res.code };
@@ -65,7 +65,7 @@ async function makeIndexedStash(): Promise<string> {
     path.join(stash, "skills", "deploy-widgets", "SKILL.md"),
     "---\ndescription: deploy widgets uniformly\ntags:\n  - deploy\nquality: curated\n---\n# Deploy widgets\n",
   );
-  await withEnv({ AKM_STASH_DIR: stash }, async () => {
+  await withEnv({ AKM_BUNDLE_DIR: stash }, async () => {
     resetConfigCache();
     saveConfig({ semanticSearchMode: "off" });
     await akmIndex({ stashDir: stash, full: true });
@@ -123,7 +123,7 @@ describe("akm search/curate/show — JSON envelope snapshot (WS6)", () => {
       path.join(stash, "skills", "widget-note", "SKILL.md"),
       "---\ndescription: widget helper note\ntags:\n  - akm\nquality: curated\n---\n# Widget note\n",
     );
-    await withEnv({ AKM_STASH_DIR: stash }, async () => {
+    await withEnv({ AKM_BUNDLE_DIR: stash }, async () => {
       resetConfigCache();
       saveConfig({ semanticSearchMode: "off" });
       await akmIndex({ stashDir: stash, full: true });

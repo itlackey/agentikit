@@ -145,16 +145,16 @@ function applyEarlyStderrFlags(argv: string[]): void {
  * Silent when: stderr is not a TTY (CI, pipes), --format=text/yaml (the user
  * already gets readable output), --quiet, or the result is missing fields.
  */
-function printSetupTtyHint(result: { stashDir?: string; configPath?: string }): void {
+function printSetupTtyHint(result: { bundleDir?: string; configPath?: string }): void {
   if (!process.stderr.isTTY) return;
   const mode = getOutputMode();
   if (mode.format !== "json" && mode.format !== "jsonl") return;
   if (isQuiet()) return;
-  if (!result?.stashDir) return;
+  if (!result?.bundleDir) return;
   console.error(
     plainize(
-      `\n✓ Stash created at ${result.stashDir}\n` +
-        `  Next: \`akm bundle add github:itlackey/akm-stash\` then \`akm index\` to populate the stash.`,
+      `\n✓ Bundle created at ${result.bundleDir}\n` +
+        `  Next: \`akm bundle add github:itlackey/akm-stash\` then \`akm index\` to populate the bundle.`,
     ),
   );
 }
@@ -189,7 +189,7 @@ const setupCommand = defineCommand({
     },
     dir: {
       type: "string",
-      description: "Stash directory path (overrides stashDir in config or --config JSON)",
+      description: "Bundle directory path (overrides defaultBundle in config or --config JSON)",
     },
     // Declared as the POSITIVE name with `default: true` so citty's native
     // `--no-<name>` negation (it strips a leading `--no-` from ANY token and
@@ -201,7 +201,7 @@ const setupCommand = defineCommand({
     init: {
       type: "boolean",
       default: true,
-      description: "Scaffold the stash directory. Use --no-init to write configuration without scaffolding it.",
+      description: "Scaffold the bundle directory. Use --no-init to write configuration without scaffolding it.",
     },
     probe: {
       type: "boolean",
@@ -467,7 +467,7 @@ export const main = defineCommand({
     name: "akm",
     version: pkgVersion,
     description:
-      "Agent Knowledge Management — search, show, and manage assets from your stash.\n\n" +
+      "Agent Knowledge Management — search, show, and manage assets from your bundle.\n\n" +
       "Exit codes:\n" +
       "  0   success\n" +
       "  1   not found / command-reported failure\n" +

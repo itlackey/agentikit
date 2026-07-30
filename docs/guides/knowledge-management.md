@@ -116,7 +116,7 @@ akm env run env/prod -- $SHELL            # interactive session with the env loa
 printf '%s' "$TOKEN" | akm secret set secrets/deploy-token
 akm secret run secrets/deploy-token GITHUB_TOKEN -- gh release create v1.0.0
 
-# Write into a specific source instead of the working stash:
+# Write into a specific source instead of the working bundle:
 akm secret set secrets/deploy-token --target team --from-file ./token
 ```
 
@@ -127,7 +127,7 @@ only key names are shown.
 
 Env/secret **mutations** (`create`, `set`, `unset`, `remove`) choose their write
 destination like every other write command: `--target <source>` wins, else
-`defaultWriteTarget`, else the working stash; the target must be writable, and a
+`defaultWriteTarget`, else the working bundle; the target must be writable, and a
 git-backed writable target commits the change at the operation boundary. Reads
 (`list`, `show`, `path`, `run`) still span all configured sources.
 

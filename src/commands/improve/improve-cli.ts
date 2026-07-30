@@ -140,7 +140,7 @@ export const improveCommand = defineCommand({
     sync: {
       type: "boolean",
       description:
-        "Commit (and optionally push) the git-backed primary stash when the run finishes. Use --no-sync to disable. Default: on for git-backed stashes (per profile config).",
+        "Commit (and optionally push) the git-backed primary bundle when the run finishes. Use --no-sync to disable. Default: on for git-backed bundles (per profile config).",
     },
     push: {
       type: "boolean",

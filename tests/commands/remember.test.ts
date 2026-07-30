@@ -34,7 +34,7 @@ import {
 // Migrated from per-test spawnSync("bun", [CLI, ...]) to the in-process harness
 // (tests/_helpers/cli.ts). None of these tests feed stdin, so there is no
 // harness gap. The spawn version wrote config via AKM_CONFIG_DIR and minted its
-// own stash/XDG dirs; in-process we sandbox AKM_STASH_DIR via the allowlisted
+// own stash/XDG dirs; in-process we sandbox AKM_BUNDLE_DIR via the allowlisted
 // sandboxStashDir helper in beforeEach and write config through
 // writeSandboxConfig (XDG_CONFIG_HOME/akm/config.json, which getConfigDir
 // resolves once the preload has cleared AKM_CONFIG_DIR). Extra `--target`

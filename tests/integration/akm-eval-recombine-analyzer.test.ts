@@ -626,7 +626,7 @@ describe("akm-eval recombine analyzer CLI read-only boundary", () => {
       env: {
         ...process.env,
         AKM_DATA_DIR: fixtureDb.dataDir,
-        AKM_STASH_DIR: fixtureDb.stashDir,
+        AKM_BUNDLE_DIR: fixtureDb.stashDir,
       },
       stdout: "pipe",
       stderr: "pipe",

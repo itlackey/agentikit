@@ -61,7 +61,7 @@ function isUnderTestRunner(): boolean {
 }
 
 export interface InitResponse {
-  stashDir: string;
+  bundleDir: string;
   created: boolean;
   configPath: string;
   /**
@@ -71,12 +71,12 @@ export interface InitResponse {
    */
   defaultStashUpdated: boolean;
   /**
-   * The `stashDir` that was configured BEFORE this init ran, when it differs
+   * The bundle dir that was configured BEFORE this init ran, when it differs
    * from the dir we scaffolded and was left in place. Only set when a `--dir`
    * was provided, an existing default already existed, and `--set-default` was
    * NOT passed — so the CLI can tell the user their default is unchanged.
    */
-  previousStashDir?: string;
+  previousBundleDir?: string;
 }
 
 // ── Test seam ────────────────────────────────────────────────────────────────
@@ -176,7 +176,7 @@ async function akmInitReal(options?: {
     defaultStashUpdated = result.written;
   }
 
-  return { stashDir, created, configPath, defaultStashUpdated, previousStashDir };
+  return { bundleDir: stashDir, created, configPath, defaultStashUpdated, previousBundleDir: previousStashDir };
 }
 
 /** Initialise `dir` as a git repository if it is not already one. */

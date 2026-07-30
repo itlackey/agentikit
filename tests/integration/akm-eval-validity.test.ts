@@ -22,7 +22,7 @@ const storageKeys = [
   "XDG_DATA_HOME",
   "XDG_CACHE_HOME",
   "XDG_STATE_HOME",
-  "AKM_STASH_DIR",
+  "AKM_BUNDLE_DIR",
   "AKM_CONFIG_DIR",
   "AKM_DATA_DIR",
   "AKM_CACHE_DIR",

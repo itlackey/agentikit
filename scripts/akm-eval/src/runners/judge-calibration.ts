@@ -161,7 +161,7 @@ function collectConfigCandidates(env: Record<string, string>): string[] {
   const xdgConfigHome = asNonEmptyString(env.XDG_CONFIG_HOME);
   if (xdgConfigHome) push(path.join(xdgConfigHome, "akm", "config.json"));
 
-  const stashDir = asNonEmptyString(env.AKM_STASH_DIR);
+  const stashDir = asNonEmptyString(env.AKM_BUNDLE_DIR);
   if (stashDir) push(path.join(stashDir, ".akm", "config.json"));
 
   const home = asNonEmptyString(env.HOME);
@@ -284,7 +284,7 @@ export function resolveJudgeCalibrationSandboxConfig(
     ok: false,
     reason:
       "judge-calibration requires an LLM path, but no AKM config with `defaults.llm` / `profiles.llm` was found in " +
-      "AKM_CONFIG_DIR, XDG_CONFIG_HOME, AKM_STASH_DIR/.akm, or HOME/.config/akm. Configure an LLM profile, then re-run the suite.",
+      "AKM_CONFIG_DIR, XDG_CONFIG_HOME, AKM_BUNDLE_DIR/.akm, or HOME/.config/akm. Configure an LLM profile, then re-run the suite.",
   };
 }
 

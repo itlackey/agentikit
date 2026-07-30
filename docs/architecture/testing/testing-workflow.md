@@ -65,7 +65,7 @@ Rules, enforced by `bun scripts/lint-tests-isolation.ts` (part of `bun run lint`
      `sandboxXdgCacheHome`, `sandboxXdgStateHome`, `sandboxHome` — set the env var
      to an isolated temp dir and return a `cleanup` that restores the prior value.
      Chain them and call `cleanup()` in `afterEach`.
-   - `withEnv({ AKM_STASH_DIR }, async () => …)` — scoped override that always
+   - `withEnv({ AKM_BUNDLE_DIR }, async () => …)` — scoped override that always
      restores in a `finally`, even on throw. Use this for per-call overrides
      around an in-process CLI invocation.
    - `makeStashDir` / `makeSandboxDir` — temp dirs that are NOT wired into env
@@ -263,7 +263,7 @@ Use an isolated environment so host config and cache do not affect results:
 ```sh
 export XDG_CONFIG_HOME="$(mktemp -d)"
 export XDG_CACHE_HOME="$(mktemp -d)"
-export AKM_STASH_DIR="$(mktemp -d)/akm"
+export AKM_BUNDLE_DIR="$(mktemp -d)/akm"
 
 bun run build
 bun run src/cli.ts setup --yes
@@ -272,13 +272,13 @@ bun run src/cli.ts setup --yes
 Then run a complete user flow:
 
 ```sh
-mkdir -p "$AKM_STASH_DIR/scripts/deploy"
-cat > "$AKM_STASH_DIR/scripts/deploy/deploy-app.sh" <<'EOF'
+mkdir -p "$AKM_BUNDLE_DIR/scripts/deploy"
+cat > "$AKM_BUNDLE_DIR/scripts/deploy/deploy-app.sh" <<'EOF'
 #!/usr/bin/env bash
 # Deploy application
 echo deploying
 EOF
-chmod +x "$AKM_STASH_DIR/scripts/deploy/deploy-app.sh"
+chmod +x "$AKM_BUNDLE_DIR/scripts/deploy/deploy-app.sh"
 
 bun run src/cli.ts index
 bun run src/cli.ts search deploy --detail full
@@ -469,7 +469,7 @@ For any release candidate, keep these artifacts:
 
 ## Practical Notes
 
-- always isolate `AKM_STASH_DIR`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` during manual testing
+- always isolate `AKM_BUNDLE_DIR`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` during manual testing
 - use Docker for any test that mutates the installed binary or depends on OS packaging
 - treat `akm bundle update` and `akm upgrade` as separate release gates; they test different code paths
 - if a change touches packaging, runtime detection, or checksums, do not rely on unit tests alone

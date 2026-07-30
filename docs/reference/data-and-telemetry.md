@@ -69,7 +69,7 @@ Override: set `AKM_CACHE_DIR` or `XDG_CACHE_HOME`.
 | `<stash>/` | All your asset files: agents, skills, commands, knowledge, instructions, workflows, scripts, memories, env files, secrets, lessons, tasks, sessions, facts, plus any bundle-adapter-owned content (e.g. `llm-wiki` bundle roots — not an AKM `PLACEMENT_SPECS` type) | **No** — this is YOUR data |
 | `<stash>/.akm/` | Hidden AKM metadata (v0.7 proposals, legacy runs) | Caution — check for pending proposals first |
 
-Override: set `AKM_STASH_DIR`, or configure `bundles`/`defaultBundle` in `config.json` (the top-level `stashDir` key from 0.8 is retired and rejected in 0.9 — see [Configuration](configuration.md#bundles-and-write-target)).
+Override: set `AKM_BUNDLE_DIR`, or configure `bundles`/`defaultBundle` in `config.json` (the top-level `stashDir` key from 0.8 is retired and rejected in 0.9 — see [Configuration](configuration.md#bundles-and-write-target)).
 
 ---
 
@@ -322,7 +322,7 @@ You can redirect any AKM directory to a custom path:
 | `AKM_SQLITE_JOURNAL_MODE` | SQLite journal mode: `WAL` (default), `DELETE`, or `TRUNCATE`. Use `DELETE`/`TRUNCATE` on network filesystems (NFS/SMB) where WAL is impossible. When left at the `WAL` default, akm auto-detects a network FS for the data dir and falls back to `DELETE`. |
 | `AKM_STATE_DIR` | State directory (`~/.local/state/akm/`) |
 | `AKM_CACHE_DIR` | Cache directory (`~/.cache/akm/`) |
-| `AKM_STASH_DIR` | Default stash directory (`~/akm/`) |
+| `AKM_BUNDLE_DIR` | Default stash directory (`~/akm/`) |
 | `XDG_CONFIG_HOME` | XDG base — akm appends `/akm` |
 | `XDG_DATA_HOME` | XDG base — akm appends `/akm` |
 | `XDG_STATE_HOME` | XDG base — akm appends `/akm` |

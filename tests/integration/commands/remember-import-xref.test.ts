@@ -284,7 +284,7 @@ describe("remember --xref", () => {
 
 describe("--xref root set and resolver parity", () => {
   test("resolves working-stash refs when defaultWriteTarget routes the write to a named source", async () => {
-    // The primary working stash (AKM_STASH_DIR) is NOT in config.sources here,
+    // The primary working stash (AKM_BUNDLE_DIR) is NOT in config.sources here,
     // and the write goes to the named "team" source — the root set must still
     // include the working stash (--supersedes already did; --xref did not).
     const teamDir = makeDir("akm-xref-team-target");

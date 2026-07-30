@@ -11,7 +11,7 @@ import {
 import type { TaskDocument } from "../src/tasks/schema";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
-  AKM_STASH_DIR: "C:\\Users\\Akm User\\O'Brien & notes",
+  AKM_BUNDLE_DIR: "C:\\Users\\Akm User\\O'Brien & notes",
   AKM_CONFIG_DIR: "C:\\Users\\Akm User\\config",
   AKM_DATA_DIR: "C:\\Users\\Akm User\\data",
   AKM_CACHE_DIR: "C:\\Users\\Akm User\\cache",
@@ -86,7 +86,7 @@ describe("buildSchtasksXml", () => {
     expect(xml).toContain("<URI>\\akm\\ping</URI>");
     expect(xml).toContain(`<UserId>${USER_SID}</UserId>`);
     expect(xml).toContain("<Command>powershell.exe</Command>");
-    expect(xml).not.toContain("$env:AKM_STASH_DIR=");
+    expect(xml).not.toContain("$env:AKM_BUNDLE_DIR=");
     expect(xml).toContain("&apos;--scheduler-context&apos;");
     expect(xml).toContain("&apos;task&apos; &apos;run&apos; &apos;ping&apos; &apos;--scheduled&apos;");
     expect(xml).not.toContain("AKM_LLM_API_KEY");

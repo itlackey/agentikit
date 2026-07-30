@@ -118,7 +118,7 @@ beforeAll(async () => {
   FIXTURE_STASH = loaded.stashDir;
   fixtureCleanup = loaded.cleanup;
 
-  process.env.AKM_STASH_DIR = FIXTURE_STASH;
+  process.env.AKM_BUNDLE_DIR = FIXTURE_STASH;
 
   // semanticSearchMode: "off" — no embedding provider, no vector scores, so
   // rankingMode is always "fts" and the minScore floor never applies. This is
@@ -137,15 +137,15 @@ beforeEach(() => {
   // Re-establish the env vars this file's pre-built index depends on — the
   // suite runs all files in one process sharing process.env, so a
   // concurrently-interleaved file's beforeEach could otherwise repoint
-  // XDG_DATA_HOME/AKM_STASH_DIR mid-run (same guard as ranking-regression.test.ts).
+  // XDG_DATA_HOME/AKM_BUNDLE_DIR mid-run (same guard as ranking-regression.test.ts).
   process.env.XDG_DATA_HOME = fileDataHome;
-  process.env.AKM_STASH_DIR = FIXTURE_STASH;
+  process.env.AKM_BUNDLE_DIR = FIXTURE_STASH;
 });
 
 afterAll(() => {
   envCleanup();
   envCleanup = () => {};
-  if (process.env.AKM_STASH_DIR === FIXTURE_STASH) delete process.env.AKM_STASH_DIR;
+  if (process.env.AKM_BUNDLE_DIR === FIXTURE_STASH) delete process.env.AKM_BUNDLE_DIR;
   fixtureCleanup?.();
 });
 

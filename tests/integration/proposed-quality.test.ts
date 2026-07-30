@@ -54,7 +54,7 @@ function tmpStash(): string {
 }
 
 async function buildTestIndex(stashDir: string) {
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig({ semanticSearchMode: "off" });
   return akmIndex({ stashDir, full: true });
 }

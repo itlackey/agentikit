@@ -78,7 +78,7 @@ describe("akm bundle add website", () => {
       const websiteUrl = serveWebsite();
       const env = {
         ...process.env,
-        AKM_STASH_DIR: stashDir,
+        AKM_BUNDLE_DIR: stashDir,
         XDG_CACHE_HOME: xdgCache,
         XDG_CONFIG_HOME: xdgConfig,
         XDG_DATA_HOME: xdgData,

@@ -69,12 +69,12 @@ afterEach(() => {
 });
 
 /**
- * Drive the CLI in-process against a specific stash dir. Re-pins AKM_STASH_DIR
+ * Drive the CLI in-process against a specific stash dir. Re-pins AKM_BUNDLE_DIR
  * for the call and resets the config cache so the run re-reads against the
  * narrowed stash, mirroring what the spawned subprocess got via its env.
  */
 async function runCli(args: string[], stashDir: string): Promise<{ stdout: string; stderr: string; status: number }> {
-  return withEnv({ AKM_STASH_DIR: stashDir }, async () => {
+  return withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
     resetConfigCache();
     const res = await runCliCapture(args);
     return { stdout: res.stdout, stderr: res.stderr, status: res.code };
@@ -100,7 +100,7 @@ describe("akm search --from <name> filters hits to that source", () => {
       "---\ndescription: shared-keyword in the library stash\ntags:\n  - shared-keyword\n---\n# Library\n",
     );
 
-    process.env.AKM_STASH_DIR = primary;
+    process.env.AKM_BUNDLE_DIR = primary;
     saveConfig({
       semanticSearchMode: "off",
       bundles: {

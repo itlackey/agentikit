@@ -174,10 +174,10 @@ akm workflow list                            # List workflow runs in the current
 
 ## Clone
 
-Copy an asset to the working stash or a custom destination for editing.
+Copy an asset to the working bundle or a custom destination for editing.
 
 ```sh
-akm clone <ref>                               # Clone to working stash
+akm clone <ref>                               # Clone to working bundle
 akm clone <ref> --name new-name               # Rename on clone
 akm clone <ref> --dest ./project/.claude       # Clone to custom location
 akm clone <ref> --force                       # Overwrite existing
@@ -291,7 +291,7 @@ akm config path --all                         # Show all config paths
 ## Other Commands
 
 ```sh
-akm bundle create                                      # Initialize working stash (scaffold only)
+akm bundle create                                      # Initialize working bundle (scaffold only)
 akm setup                                     # Interactive wizard: stash + LLM/embedding + agent + registry config
 akm setup --dir ~/custom-stash                # Run the wizard against a custom stash path
 akm setup --yes                               # Non-interactive, accepts all defaults

@@ -21,7 +21,7 @@ import {
 import type { TaskDocument } from "../src/tasks/schema";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
-  AKM_STASH_DIR: "/srv/akm stash/100%'s",
+  AKM_BUNDLE_DIR: "/srv/akm stash/100%'s",
   AKM_CONFIG_DIR: "/srv/akm config",
   AKM_DATA_DIR: "/srv/akm data",
   AKM_CACHE_DIR: "/srv/akm cache",
@@ -44,7 +44,7 @@ describe("cron backend helpers", () => {
     const line = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log/akm", contextPath());
     expect(line).toContain("/usr/local/bin/akm --scheduler-context");
     expect(line).toContain("task run ping --scheduled");
-    expect(line).not.toContain("AKM_STASH_DIR=");
+    expect(line).not.toContain("AKM_BUNDLE_DIR=");
     expect(line).not.toContain("AKM_LLM_API_KEY");
   });
 

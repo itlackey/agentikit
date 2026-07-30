@@ -42,7 +42,7 @@ function spawnCli(
     timeout: 15_000,
     cwd: repoRoot,
     input: stdinInput,
-    env: { ...process.env, AKM_STASH_DIR: undefined, ...extraEnv },
+    env: { ...process.env, AKM_BUNDLE_DIR: undefined, ...extraEnv },
   });
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? 1 };
 }
@@ -52,7 +52,7 @@ describe("secret set (stdin)", () => {
     const stashDir = makeStash();
     const { stderr, status } = spawnCli(
       ["secret", "set", "secrets/demo"],
-      { AKM_STASH_DIR: stashDir },
+      { AKM_BUNDLE_DIR: stashDir },
       "tok-from-stdin",
     );
     expect(status).toBe(0);
@@ -63,7 +63,7 @@ describe("secret set (stdin)", () => {
 
   test("strips a single trailing newline from the stdin value", () => {
     const stashDir = makeStash();
-    spawnCli(["secret", "set", "secrets/demo"], { AKM_STASH_DIR: stashDir }, "tok\n");
+    spawnCli(["secret", "set", "secrets/demo"], { AKM_BUNDLE_DIR: stashDir }, "tok\n");
     expect(fs.readFileSync(path.join(stashDir, "secrets", "demo"), "utf8")).toBe("tok");
   });
 });

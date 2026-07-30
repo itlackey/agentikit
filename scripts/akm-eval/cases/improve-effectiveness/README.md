@@ -31,7 +31,7 @@ mkdir -p "$STASH" "$DATA" "$CONFIG" "$BENCH_ROOT/cache" "$BENCH_ROOT/state"
 cp -R "$SUITE_DIR/fixtures/corpus/." "$STASH/"
 chmod -R go-rwx "$BENCH_ROOT"
 
-export AKM_STASH_DIR="$STASH"
+export AKM_BUNDLE_DIR="$STASH"
 export AKM_DATA_DIR="$DATA"
 export AKM_CONFIG_DIR="$CONFIG"
 export AKM_CACHE_DIR="$BENCH_ROOT/cache"

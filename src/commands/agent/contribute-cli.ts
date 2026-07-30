@@ -36,14 +36,14 @@ export const agentCommand = defineCommand({
   meta: {
     name: "agent",
     description:
-      "Dispatch an agent CLI (opencode, claude, …) with an optional agent asset that provides the system prompt, model, and tool policy. Use <agent-ref> to embody a stash agent, --model to override the model, and --prompt/--command/--workflow to provide the task.",
+      "Dispatch an agent CLI (opencode, claude, …) with an optional agent asset that provides the system prompt, model, and tool policy. Use <agent-ref> to embody a bundle agent, --model to override the model, and --prompt/--command/--workflow to provide the task.",
   },
   args: {
     ...GLOBAL_OUTPUT_ARGS,
     "agent-ref": {
       type: "positional",
       description:
-        "Optional agent asset ref (e.g. agents/code-reviewer). Loads system prompt, model, and tool policy from the stash asset.",
+        "Optional agent asset ref (e.g. agents/code-reviewer). Loads system prompt, model, and tool policy from the bundle asset.",
       required: false,
     },
     prompt: { type: "string", description: "Task prompt to pass to the agent" },
@@ -140,7 +140,7 @@ export const lintCommand = defineCommand({
   meta: {
     name: "lint",
     description:
-      "Scan stash .md files for structural issues (unquoted colons, missing updated field, orphaned stubs, placeholder stubs, missing name/type, stale paths, broken refs in body text and in refs/xrefs/supersededBy/contradictedBy frontmatter). Use --fix to auto-fix Tier 1 issues. Exits 0 on success regardless of findings; use --fail-on-flagged for CI fail-on-finding behavior.",
+      "Scan bundle .md files for structural issues (unquoted colons, missing updated field, orphaned stubs, placeholder stubs, missing name/type, stale paths, broken refs in body text and in refs/xrefs/supersededBy/contradictedBy frontmatter). Use --fix to auto-fix Tier 1 issues. Exits 0 on success regardless of findings; use --fail-on-flagged for CI fail-on-finding behavior.",
   },
   args: {
     // R-051: `lint` is a raw `defineCommand` (not `defineJsonCommand`), so it
@@ -155,7 +155,7 @@ export const lintCommand = defineCommand({
       description: "Apply auto-fixes in place (alias: --auto-fix)",
       default: false,
     },
-    dir: { type: "string", description: "Override stash root directory (default: from config)" },
+    dir: { type: "string", description: "Override bundle root directory (default: from config)" },
     "fail-on-flagged": {
       type: "boolean",
       description: "Exit non-zero when summary.flagged > 0 (CI-friendly). Default: exit 0 regardless of findings.",

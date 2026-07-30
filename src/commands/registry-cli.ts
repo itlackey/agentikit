@@ -10,7 +10,7 @@ import { UsageError } from "../core/errors";
 import { warn } from "../core/warn";
 
 export const registryCommand = defineGroupCommand({
-  meta: { name: "registry", description: "Manage stash registries" },
+  meta: { name: "registry", description: "Manage bundle registries" },
   subCommands: {
     list: defineJsonCommand({
       meta: { name: "list", description: "List configured registries" },

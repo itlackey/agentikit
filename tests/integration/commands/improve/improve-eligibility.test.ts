@@ -72,7 +72,7 @@ const NEWER_MS = Date.now() - 30_000;
 
 const tempDirs: string[] = [];
 const savedEnv = {
-  AKM_STASH_DIR: process.env.AKM_STASH_DIR,
+  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
   AKM_DATA_DIR: process.env.AKM_DATA_DIR,
   XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
   XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
@@ -95,7 +95,7 @@ function writeMemory(stashDir: string, name: string, body: string, mtime?: Date)
 }
 
 async function buildIndex(stashDir: string): Promise<void> {
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig(
     withImproveAutonomy(
       withTestImproveLlm({
