@@ -6,6 +6,13 @@ fixture for the `okf` adapter's unit and integration test suites
 `tests/integration/okf-conformance.test.ts`) and the `okf`
 format-family goldens.
 
+This doc file deliberately lives BESIDE `okf-sample/`, not inside it (#730
+review). The `okf` adapter's `recognize` has no directory gate — ANY `.md`
+file under the bundle root other than the reserved `index.md`/`log.md`
+becomes a concept, defaulting to `type: knowledge` when it carries no `type:`
+frontmatter. A README dropped inside the bundle root would silently become
+an extra indexed concept in a fixture meant to stay behavior-frozen.
+
 - **Adapter:** `src/core/adapter/adapters/okf-adapter.ts` — fully implemented
   (unlike several sibling format families under
   `tests/fixtures/format-family-goldens/`, whose goldens were authored ahead
