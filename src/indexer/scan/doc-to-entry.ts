@@ -69,6 +69,16 @@ export function indexDocumentToStashEntry(doc: IndexDocument): IndexDocument {
   if (doc.links !== undefined) entry.links = doc.links;
   if (doc.adapterId === "okf") {
     if (doc.documentJson !== undefined) entry.documentJson = doc.documentJson;
+    // OKF v0.2 trust/provenance/lifecycle family (okf-support.md v0.2 note).
+    // These are first-class IndexDocument members the okf adapter sets
+    // directly (never routed through documentJson), so — unlike the akm
+    // adapter's DOCUMENT_JSON_CARRIED_FIELDS reconstruction below — they need
+    // an explicit carry here too, or persistence silently drops them even
+    // though `recognize()` itself returns them correctly.
+    if (doc.provenance !== undefined) entry.provenance = doc.provenance;
+    if (doc.lifecycleStatus !== undefined) entry.lifecycleStatus = doc.lifecycleStatus;
+    if (doc.staleAfter !== undefined) entry.staleAfter = doc.staleAfter;
+    if (doc.okfVersion !== undefined) entry.okfVersion = doc.okfVersion;
     return entry;
   }
   if (doc.aliases !== undefined) entry.aliases = doc.aliases;
