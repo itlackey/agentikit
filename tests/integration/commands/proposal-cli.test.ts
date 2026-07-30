@@ -262,6 +262,27 @@ describe("accept/reject --generator flag (WS3)", () => {
     expect(JSON.parse(result.stdout).rejected).toBe(1);
     expect(result.stderr).not.toContain("deprecated");
   });
+
+  test("proposal accept rejects the retired --source flag (renamed to --generator in 0.9)", async () => {
+    const stash = makeStashDir();
+    seedProposal(stash);
+    const result = await runCli(["proposal", "accept", "--source", "reflect", "--yes", "--format=json"], {
+      stashDir: stash,
+    });
+    expect(result.status).toBe(2);
+    expect(JSON.parse(result.stderr).code).toBe("INVALID_FLAG_VALUE");
+  });
+
+  test("proposal reject rejects the retired --source flag (renamed to --generator in 0.9)", async () => {
+    const stash = makeStashDir();
+    seedProposal(stash);
+    const result = await runCli(
+      ["proposal", "reject", "--source", "reflect", "--reason", "dup", "--yes", "--format=json"],
+      { stashDir: stash },
+    );
+    expect(result.status).toBe(2);
+    expect(JSON.parse(result.stderr).code).toBe("INVALID_FLAG_VALUE");
+  });
 });
 
 describe("akm proposal noun group (canonical)", () => {

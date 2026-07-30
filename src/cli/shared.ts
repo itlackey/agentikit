@@ -152,25 +152,36 @@ export type JsonCommandDef<T extends ArgsDef = ArgsDef> = Omit<CommandDef<T>, "r
  * exactly once, from the invocation singleton at startup — no command body may
  * read these args (that is the same one-parse rule `cli/invocation.ts`
  * documents).
+ *
+ * These are also the canonical descriptions for the root command's own args
+ * (`main.args` in src/cli.ts) — the root spreads this same object rather than
+ * redeclaring the text, so root help and leaf help can never drift apart.
+ * `format`/`detail` need per-site `default` overrides (root has one, leaves
+ * don't — see the one-parse rule above), so those two keys get shallow
+ * overrides at the root; the description text itself is never duplicated.
  */
 export const GLOBAL_OUTPUT_ARGS = {
   format: { type: "string", description: "Output format: json|jsonl|yaml|text|md|html (global flag)" },
   detail: {
     type: "string",
-    description: "Output detail: brief|normal|full (global flag).",
+    description: "Detail level (verbosity): brief|normal|full (global flag).",
   },
-  // R-050(c): mirrors the root command's own `--shape` help
-  // (`main.args.shape` in src/cli.ts) so the caveat is visible from every
-  // leaf's own `--help`, not only the top-level one. `summary` outside
-  // `show` is a hard usage error (exit 2, INVALID_SHAPE_VALUE), enforced at
-  // startup in src/cli.ts before any command body runs.
+  // R-050(c): single-sourced with the root command's own `--shape` help
+  // (`main.args.shape` in src/cli.ts, which spreads this object) so the
+  // caveat is visible from every leaf's own `--help`, not only the top-level
+  // one. `summary` outside `show` is a hard usage error (exit 2,
+  // INVALID_SHAPE_VALUE), enforced at startup in src/cli.ts before any
+  // command body runs.
   shape: {
     type: "string",
     description:
-      "Output projection: human|agent|summary (global flag). 'summary' is only valid on 'akm show' " +
-      "(a usage error, exit 2, everywhere else).",
+      "Output projection: human|agent|summary (global flag). 'agent' trims to agent-essential fields; " +
+      "'summary' is only valid on 'akm show' (a usage error, exit 2, everywhere else). Default: human.",
   },
-  output: { type: "string", description: "Write rendered output to a file instead of stdout (global flag)" },
+  output: {
+    type: "string",
+    description: "Write rendered output to a file instead of stdout (all formats except jsonl) (global flag)",
+  },
   // S11: surfaced at every leaf (not just the root) so `akm <command> --help`
   // documents them too — they already apply globally, parsed from raw argv
   // by `applyEarlyStderrFlags` in src/cli.ts before citty ever sees them, so
@@ -180,12 +191,15 @@ export const GLOBAL_OUTPUT_ARGS = {
   quiet: {
     type: "boolean",
     alias: "q",
-    description: "Suppress non-essential stderr output (global flag).",
+    description:
+      "Suppress non-essential stderr output (banners, spinners, progress info) (global flag). " +
+      "Safety-critical output is never suppressed: errors, destructive-action confirmation prompts, " +
+      "and auto-migration banners always appear regardless of --quiet.",
     default: false,
   },
   verbose: {
     type: "boolean",
-    description: "Print per-spec diagnostics to stderr (global flag).",
+    description: "Print per-spec diagnostics to stderr (global flag; also honours AKM_VERBOSE env var).",
     default: false,
   },
 } as const satisfies ArgsDef;

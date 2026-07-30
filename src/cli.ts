@@ -533,36 +533,12 @@ export const main = defineCommand({
       "  78  config error",
   },
   args: {
-    format: { type: "string", description: "Output format (json|jsonl|text|yaml|md|html)", default: "json" },
-    output: {
-      type: "string",
-      description: "Write rendered output to a file instead of stdout (all formats except jsonl)",
-    },
-    detail: {
-      type: "string",
-      description: "Detail level (verbosity): brief|normal|full. Default: brief.",
-      default: "brief",
-    },
-    shape: {
-      type: "string",
-      description:
-        "Output projection: human|agent|summary. 'agent' trims to agent-essential fields; " +
-        "'summary' is only valid on 'akm show'. Default: human.",
-    },
-    quiet: {
-      type: "boolean",
-      alias: "q",
-      description:
-        "Suppress non-essential stderr output (banners, spinners, progress info). " +
-        "Safety-critical output is never suppressed: errors, destructive-action confirmation prompts, " +
-        "and auto-migration banners always appear regardless of --quiet.",
-      default: false,
-    },
-    verbose: {
-      type: "boolean",
-      description: "Print per-spec diagnostics to stderr (also honours AKM_VERBOSE env var)",
-      default: false,
-    },
+    // Single-sourced from GLOBAL_OUTPUT_ARGS (src/cli/shared.ts) so root help
+    // and leaf help state identical text. format/detail get their `default`
+    // added here only — the description text itself is never redeclared.
+    ...GLOBAL_OUTPUT_ARGS,
+    format: { ...GLOBAL_OUTPUT_ARGS.format, default: "json" },
+    detail: { ...GLOBAL_OUTPUT_ARGS.detail, default: "brief" },
   },
   subCommands: {
     setup: setupCommand,

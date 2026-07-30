@@ -15,6 +15,7 @@
  * registration remains for either spelling.
  */
 
+import { getParsedInvocation } from "../../cli/invocation";
 import { parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, output } from "../../cli/shared";
 import { resolveStashDir } from "../../core/common";
@@ -37,6 +38,23 @@ import {
   bulkAdjudicateProposals,
 } from "./proposal";
 import { proposeCommand } from "./propose-cli";
+
+/**
+ * `--source` was renamed to `--generator` on `proposal accept`/`proposal
+ * reject` in 0.9 (WS3/S8 — "Removed in 0.9.0"). citty is non-strict, so the
+ * retired spelling is silently absorbed rather than rejected — a bulk
+ * accept/reject invoked with `--source <name>` then has neither `--generator`
+ * nor a positional id, and falls through to the single-proposal path, which
+ * throws MISSING_REQUIRED_ARGUMENT instead of running the bulk action the
+ * caller asked for. Reject it explicitly instead.
+ */
+function rejectRetiredProposalSourceFlag(subcommand: "accept" | "reject"): void {
+  if (!getParsedInvocation().hasFlag("--source")) return;
+  throw new UsageError(
+    `\`akm proposal ${subcommand} --source\` was renamed to \`--generator\` in 0.9. Use \`--generator <name>\` instead.`,
+    "INVALID_FLAG_VALUE",
+  );
+}
 
 /**
  * Parse + validate the shared bulk-adjudication filter flags
@@ -135,6 +153,7 @@ const proposalAcceptCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    rejectRetiredProposalSourceFlag("accept");
     const generator = args.generator as string | undefined;
     // F-6 / #393: Bulk-accept when --generator is provided without a positional id.
     if (generator && !args.id) {
@@ -215,6 +234,7 @@ const proposalRejectCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    rejectRetiredProposalSourceFlag("reject");
     const generator = args.generator as string | undefined;
     if (!args.reason || !String(args.reason).trim()) {
       throw new UsageError(
