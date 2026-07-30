@@ -116,19 +116,29 @@ defaults: { timeout: 10m, on_error: fail }
 budget: { max_units: 60 }
 steps:
   - id: intake
+    output: { type: object }
   - id: implement
     map:
       over: steps.intake.output.issues
       concurrency: 3
       unit: { isolation: worktree, retry: { max: 2, on: [timeout] } }
-    output: { type: object }
+    # `output` describes the REDUCER RESULT: the default `collect` reducer
+    # folds per-item unit results into an array.
+    output: { type: array }
+    # Retry lives here, not in a backward route: a failed gate re-runs this
+    # step with the judge's feedback, bounded by max_loops.
     gate: { required: true, max_loops: 2 }
   - id: verdict
+    inputs: [steps.implement.output]
+    output: { type: object }
+  - id: pick-outcome
     route:
-      input: steps.implement.output.status
-      when: [{ match: clean, step: done }]
-      default: intake
-  - id: done
+      input: steps.verdict.output.status
+      when: [{ match: clean, step: announce }]
+      default: escalate       # both targets are LATER steps — routes are forward-only
+  - id: escalate
+    inputs: [steps.verdict.output]
+  - id: announce
     inputs: [steps.implement.output]
 ---
 
@@ -261,6 +271,30 @@ an agent/LLM engine, so this is the same trust the instructions already
 extend everywhere else. If a non-agent unit kind (raw shell/exec) is ever
 added, *that unit kind* reintroduces substitution as its own need — scoped
 there, not in prose.
+
+### 2.3a Routes are forward-only; gates are the retry mechanism
+
+Two invariants inherited unchanged from the program format, doubly enforced
+today (`program/parser.ts:459` and `ir/schema.ts:227`), and preserved here:
+
+- **A route target must be a LATER step**, and a step never routes to itself.
+  The plan stays a DAG, so termination is structural rather than a runtime
+  budget's job.
+- **Retry is a gate, not a backward edge.** A failed gate re-runs its own
+  step with the judge's feedback, bounded by `gate.max_loops`; a declared
+  `output:` schema that the artifact fails is the one error the gate loop may
+  retry through (`artifactSchemaFailure`). Anything wanting "go back and fix
+  it" expresses it as a gate on the step being fixed.
+
+A backward `default:` therefore does not mean "loop" — it is a lint error.
+
+### 2.3b `output:` describes the reducer result
+
+For a map step, `output:` validates the **promoted artifact**, i.e. what the
+reducer produced — not one unit's result. The default `collect` reducer folds
+per-item results into an **array**, so a collected map step's schema is
+`{ type: array }`. (`vote` folds to the winning value.) A unit step's
+`output:` describes that single unit's structured result.
 
 ### 2.4 Gates: control in frontmatter, rubric in the body
 

@@ -7,14 +7,15 @@ gates, and tracking completion criteria per step. The agent follows steps; the
 human approves gates.
 
 > **The native orchestration engine requires an opt-in.** `start` / `next` /
-> `complete` / `status` / `list` / `create` (markdown, the default) /
-> `resume` / `abandon` — everything through [Writing a
-> workflow](#writing-a-workflow) below — work with no config changes. But
-> `akm workflow run`, `akm workflow brief`, `akm workflow report`, and
-> authoring a YAML program with `akm workflow create <name>.yaml` all refuse
-> outright until `experimental.workflowEngine` is set — see [Enabling the
-> workflow engine](#enabling-the-workflow-engine-opt-in-in-090) before trying
-> any of those four.
+> `complete` / `status` / `list` / `create` / `resume` / `abandon` —
+> everything through [Writing a workflow](#writing-a-workflow) below — work
+> with no config changes, including a workflow whose frontmatter declares
+> `map`/`route`/`gate`. But `akm workflow run`, `akm workflow brief`, and
+> `akm workflow report` — the surfaces that actually dispatch a step's units
+> with the native engine or the driver protocol — refuse outright until
+> `experimental.workflowEngine` is set — see [Enabling the workflow
+> engine](#enabling-the-workflow-engine-opt-in-in-090) before trying any of
+> those three.
 
 ## akm workflow start
 
@@ -86,13 +87,12 @@ akm workflow status <run-id> --units
 ```
 
 This is a **diagnostic** surface, deliberately kept out of the deterministic
-artifact graph. A step's promoted artifact (what `${{ steps.x.output }}`
-resolves to, and what a gate judges) keeps only a failed unit's structured
-`failure_reason` — never the raw error text — so step evidence stays
-reproducible across the engine and `brief`/`report` surfaces. When you need
-the human-facing *why* behind a failure, `--units` reads the unit journal
-directly and shows it without ever feeding that text back into an artifact or
-input hash.
+artifact graph. A step's promoted artifact (what `steps.x.output` resolves to,
+and what a gate judges) keeps only a failed unit's structured `failure_reason`
+— never the raw error text — so step evidence stays reproducible across the
+engine and `brief`/`report` surfaces. When you need the human-facing *why*
+behind a failure, `--units` reads the unit journal directly and shows it
+without ever feeding that text back into an artifact or input hash.
 
 ## akm workflow list
 
@@ -119,8 +119,15 @@ akm workflow list --active
 
 ## Writing a workflow
 
-Workflow files are plain markdown with a specific heading structure. Use
-`akm workflow create --print` to print a valid starter, then edit it and
+A workflow is an ordinary AKM markdown asset — the same envelope as every
+other type, OKF-conformant frontmatter plus a markdown body — whose
+frontmatter carries the entire orchestration graph (params, and how each step
+dispatches, fans out, routes, and gates) and whose body carries each step's
+instructions and gate rubric under plain headings, joined to the frontmatter
+by step id. There is **one** format: no separate YAML "program" surface, no
+`.yaml`/`.yml` workflow files.
+
+Use `akm workflow create --print` to print a valid starter, then edit it and
 register it with `akm workflow create`.
 
 ```sh
@@ -129,57 +136,267 @@ akm workflow create my-release --from ./my-release.md
 akm lint --type workflows                # Check for structural errors before using it
 ```
 
-**Minimal workflow format:**
+**A minimal workflow:**
 
 ```markdown
 ---
+type: workflow
 description: Ship a tagged release to production
 params:
-  version: The semver version string to release
+  version: { type: string, description: The semver version string to release }
+steps:
+  - id: validate
+  - id: build
+    inputs: [steps.validate.output]
 ---
 
-# Workflow: Ship Release
+# Ship Release
 
-## Step: Validate inputs
-Step ID: validate
+## validate
 
-### Instructions
-Check that `version` follows semver and the tag does not already exist.
+Check that the `version` parameter follows semver and the tag does not
+already exist.
 
-### Completion Criteria
-- `git tag v<version>` does not already exist
-- Version string matches `^\d+\.\d+\.\d+$`
+### gate
 
-## Step: Build and test
-Step ID: build
+- `git tag v<version>` does not already exist.
+- The version string matches `^\d+\.\d+\.\d+$`.
 
-### Instructions
-Run `npm run build && npm test`. Fix any failures before proceeding.
+## build
+
+Run `npm run build && npm test`, using the validation from `validate`,
+attached to this unit as input. Fix any failures before proceeding.
 ```
 
-Rules: one `# Workflow: <title>` heading, each step is `## Step: <title>` with
-a `Step ID: <id>` line and a `### Instructions` section. Completion criteria
-are optional but recommended for human-review gates.
+**Body rules** (checked by `akm lint --type workflows`):
 
-**Example: run a print book review workflow**
+1. Every level-2 heading must be `## <step-id>` for a step declared in
+   frontmatter, exactly — no titles, no `Step:`/`Step ID:` lines, no
+   `# Workflow:` prefix on the H1. (Fenced code blocks are skipped when
+   scanning for headings.)
+2. A `unit` or `map` step **must** have a body section — its instructions,
+   or its per-item template for a map step, byte-exact to the next H2 or
+   EOF. A `route` step **may** have one (documentation, plus a gate rubric
+   if it is gated). Everything before the first H2 is free preamble —
+   indexed for search, shown in `akm show`, never dispatched.
+3. Inside a step's section, an optional `### gate` sub-heading starts that
+   step's gate rubric, running to the section end — the format's **single
+   reserved marker**. The judge that evaluates the step receives this whole
+   section byte-exact. Frontmatter `gate:` without a `### gate` rubric is a
+   lint error; a `### gate` rubric alone declares a default gate (fail-open,
+   unbounded loops — tune with the frontmatter key, see *Required gates*
+   below).
 
-```sh
-akm workflow start workflows/print-book-review --params '{"draft":"v3.pdf"}'
-akm workflow next workflows/print-book-review
-# agent reads instructions → runs checks → completes each step in sequence
+Prose is never templated — see [The reference grammar](#the-reference-grammar)
+for how a step's instructions refer to run params, upstream artifacts, and a
+map unit's item.
+
+**Frontmatter**, validated by one published JSON Schema
+(`schemas/akm-workflow.json`): the standard AKM asset envelope (`type`,
+`description`, `tags`, `when_to_use`, `xrefs`, `updated`/`timestamp`, and the
+OKF v0.2 trust/lifecycle families) plus the orchestration keys:
+
+- `params` — name → `{ type, description }` (JSON-Schema-typed, unlike a bare
+  description string).
+- `defaults` — run-level dispatch defaults (`engine`, `model`, `llm`,
+  `timeout`, `on_error`), overridable per unit.
+- `budget` — run-lifetime ceilings (`max_units`, `max_tokens`; see *Budget
+  ceilings* below).
+- `steps` — an ordered list. Each step has an `id`
+  (`[A-Za-z_][A-Za-z0-9_-]*` — no dots) and **at most one** of `unit`, `map`,
+  or `route`. A step with neither is **still a unit step** — bare
+  `- id: validate` is the complete minimal declaration. `unit:` is the
+  optional dispatch-override bag (`engine`, `model`, `llm`, `timeout`,
+  `retry`, `on_error`, `env`, `isolation`; see below).
+- `inputs` — on a `unit`/`map` step, the prior-step artifacts this step
+  consumes, as bare reference strings (sub-paths legal:
+  `steps.x.output.issues`, not just `steps.x.output`). This is how a step's
+  attached context sees upstream data, and how replay hashing gets its exact
+  input set — a step re-dispatches only when the slice it actually consumes
+  changes.
+- `output` — a JSON Schema for the step's promoted artifact.
+- `gate` — control only: `required` (never silently bypassed — see
+  *Required gates*) and `max_loops` (bounded evaluator-optimizer retry, see
+  *Gates judge the artifact*). The rubric itself lives in the body's
+  `### gate` section.
+
+No `version:`/`name:` keys — identity is the ref, and the frozen plan already
+versions execution semantics — and no step titles anywhere: a step is its id,
+and the asset's human name is its `description` and H1 like any other asset
+type.
+
+**A richer example** — fan-out, routing, retries, gates, and a run budget:
+
+```markdown
+---
+type: workflow
+description: Review changed files and route the outcome
+params:
+  changed_files: { type: array, description: Files to review }
+defaults: { engine: reviewer, model: balanced, timeout: 10m, on_error: fail }
+budget: { max_units: 40, max_tokens: 200000 }
+steps:
+  - id: discover
+    output: { type: object, properties: { files: { type: array } }, required: [files] }
+  - id: review
+    map:
+      over: steps.discover.output.files
+      concurrency: 8
+      unit:
+        engine: reviewer
+        model: deep
+        timeout: 5m
+        retry: { max: 1, on: [timeout, llm_rate_limit] }
+        on_error: continue
+        isolation: worktree
+        output: { type: object, properties: { file: { type: string }, verdict: { type: string } }, required: [file, verdict] }
+    # `output` here describes the REDUCER RESULT, not one unit's result: the
+    # default `collect` reducer folds per-item unit results into an array.
+    output: { type: array }
+    gate: { max_loops: 2 }
+  - id: aggregate
+    inputs: [steps.review.output]
+    output: { type: object, properties: { verdict: { type: string } }, required: [verdict] }
+  - id: triage
+    route:
+      input: steps.aggregate.output.verdict
+      when: [{ match: pass, step: ship }, { match: fail, step: rework }]
+      default: manual-triage
+  - id: ship
+  - id: rework
+  - id: manual-triage
+---
+
+# Review Changes
+
+## discover
+
+List the files that need review, drawn from the `changed_files` parameter.
+
+### gate
+
+Every file named by `changed_files` is listed in the reported result.
+
+## review
+
+This section is the **map unit template** — the engine attaches each unit's
+item (the file to review) and its index as context; instructions refer to
+"the file you were given," never a template expression.
+
+Review the file you were given for correctness bugs.
+
+### gate
+
+Every changed file has a verdict of `pass` or `fail`.
+
+## aggregate
+
+Combine the per-file review verdicts — attached to this unit as input via
+`inputs: [steps.review.output]` above — into one overall verdict, `pass` or
+`fail`.
+
+## triage
+
+Routes on the verdict `aggregate` reported: `pass` proceeds to `ship`, `fail`
+proceeds to `rework`, anything else goes to `manual-triage`.
+
+## ship
+
+Ship the change.
+
+## rework
+
+Address the review findings. Confirming the fix is a fresh `akm workflow
+start` of this workflow, not a step this run routes back to.
+
+## manual-triage
+
+Summarize the ambiguous verdict for a human to triage.
 ```
+
+## The reference grammar
+
+Workflow prose is **never templated** — there is no `${{ … }}`/`{{ … }}`
+interpolation anywhere in a workflow's body, and no escape syntax to learn,
+because there are no delimiters in prose to escape.
+
+Bare reference strings appear in exactly three frontmatter positions, each an
+unquoted-style YAML string:
+
+| Position | What it names |
+| --- | --- |
+| `map.over` | The list a map step fans out over. |
+| `route.input` | The value a route step matches on. |
+| `inputs` (each entry) | A prior step's artifact this step consumes. |
+
+Every reference resolves against exactly two roots:
+
+| Reference | Meaning |
+| --- | --- |
+| `params.<name>` | A run parameter, by name. |
+| `steps.<id>.output( .<ident> \| [<int>] )*` | A prior step's artifact, addressed by producer step id; the path walks properties (`.name`) and array indexes (`[0]`). |
+
+Nothing else parses: no functions, no clock, no randomness, no ambient
+lookup. `item` and `item_index` are **not** part of the language — a map
+unit's item and its index are never referenced from anywhere in frontmatter
+or body. They arrive as **attached context** instead, the same way as
+everything else a unit needs.
+
+**Context attachment, not string splicing.** Each dispatched unit receives,
+alongside its byte-exact instructions, structured context:
+
+- every run **param** (params are run-scoped and documented non-secret — see
+  *Params are not secret* below);
+- for a **map** unit, its **item** and **item index**;
+- the artifacts named by its step's **`inputs:`**.
+
+Instructions refer to this context in plain language — "clone the repository
+named by the `repo` parameter," "review the file you were given," "using the
+intake step's artifact attached to this unit" — never by splicing a value
+into the instruction string. This closes the injection class at the root:
+data never enters the instruction string, spliced or otherwise.
+
+`akm lint --type workflows` still checks every bare reference statically —
+unknown step, unknown param, bad path — at lint time.
+
+**What a step's output is.** `steps.<id>.output` resolves to the value the
+step's execution produced:
+
+- a `unit` step → the unit's structured result (when the unit declares
+  `output`) or its text;
+- a `map` step → the collected array of per-item results, in item order
+  (under `on_error: continue`, a failed item's slot is `null`), unless the
+  step's own `output` schema describes a reduced, single-value shape
+  instead;
+- a step completed manually through `akm workflow complete` exposes whatever
+  evidence was recorded for it as its output.
+
+**An empty successful free-text output is treated as no output.** When a
+schemaless unit (one that declares no `output` schema) succeeds but returns
+the empty string, akm normalizes it to *absent*: nothing is journaled for its
+result, and its contribution to the step artifact is `null` — a `null` slot
+in a collected array, or `output = null` for a solo step. This absence is
+deliberate and consistent across every driver surface (engine, and
+`brief`/`report`), so a live run and a resumed/reported run promote the
+identical artifact. The practical consequence: a downstream step that
+declares an empty upstream result in its `inputs:` gets nothing meaningful
+attached for it — akm surfaces this loudly rather than silently attaching an
+empty string. A unit that declares an `output` schema is unaffected — an
+empty response is not valid JSON, so it fails as a parse error and can never
+satisfy a schema as a silent `null`.
 
 ## Enabling the workflow engine (opt-in in 0.9.0)
 
 Everything above this line — `start`, `next`, `complete`, `status`, `list`,
-`create` for a markdown workflow, `resume`, and `abandon` — ships
-unconditionally and needs no config change.
+`create`, `resume`, and `abandon` — ships unconditionally and needs no config
+change, whether or not the workflow's frontmatter declares `map`/`route`/
+`gate`.
 
-The rest of this section, through "Orchestrated steps: YAML workflow
-programs," describes the **native orchestration engine**: YAML (`version: 2`)
-workflow programs and the commands that execute them. Those commands are
-gated behind an explicit opt-in and refuse outright — a classified
-`ConfigError` (`WORKFLOW_ENGINE_NOT_ENABLED`, exit code 78) — until you set:
+The rest of this doc describes the **native orchestration engine**: the
+map/route/gate/retry/budget/isolation capabilities a workflow's frontmatter
+can declare, and the commands that execute them. Those commands are gated
+behind an explicit opt-in and refuse outright — a classified `ConfigError`
+(`WORKFLOW_ENGINE_NOT_ENABLED`, exit code 78) — until you set:
 
 ```sh
 akm config set experimental.workflowEngine true
@@ -190,7 +407,6 @@ akm config set experimental.workflowEngine true
 | `akm workflow run` | Executes a run's steps with the native engine, dispatching each step's units to the configured runner |
 | `akm workflow brief` | Read-only half of the harness-neutral driver protocol |
 | `akm workflow report` | Mutating half of the harness-neutral driver protocol |
-| `akm workflow create <name>.yaml` (or `.yml`) | Authors a YAML workflow *program* — the format the engine executes. `akm workflow create <name>` with no `.yaml`/`.yml` suffix is unaffected — it still writes a markdown workflow |
 
 The refusal names the exact surface and config key, e.g.:
 
@@ -202,8 +418,8 @@ The refusal names the exact surface and config key, e.g.:
 }
 ```
 
-`akm lint --type workflows` is **not** gated even against a `.yaml` program
-file — it only type-checks the program without executing anything. `akm task
+`akm lint --type workflows` is **not** gated — it only type-checks a
+workflow's frontmatter and body without executing anything. `akm task
 doctor` reports the gate's live state under `workflowEngine.enabled`
 and `workflowEngine.configKey`, so you can confirm whether it is on without
 tripping a refusal. The engine is never enabled by inference: an absent
@@ -213,17 +429,13 @@ tripping a refusal. The engine is never enabled by inference: an absent
 See [STABILITY.md](../../STABILITY.md) for the full stability classification
 of these surfaces.
 
-## Orchestrated steps: YAML workflow programs (experimental)
-
-Alongside the stable linear markdown format above, a workflow can be written
-as a **YAML orchestration program** and executed engine-driven with
-`akm workflow run <run-id|workflows/ref>`: akm compiles the program into a
-plan graph, freezes that plan on the run, dispatches each step's units to the
-configured engine (fan-out runs units concurrently), records every unit in
-`workflow_run_units`, and advances the run through the normal completion
-gates. Linear markdown workflows are unaffected — they keep compiling to a
-linear plan exactly as before, and the manual `next`/`complete` loop keeps
-working on every run.
+`akm workflow run <run-id|workflows/ref>` compiles the frontmatter's step
+graph into a plan, freezes that plan on the run, dispatches each step's units
+to the configured engine (fan-out runs units concurrently), records every
+unit in `workflow_run_units`, and advances the run through the normal
+completion gates. A workflow with no `map`/`route` steps compiles to a linear
+plan, and the manual `next`/`complete` loop keeps working on every run either
+way.
 
 The native engine is not the only thing that can drive an orchestrated run.
 The **harness-neutral driver protocol** (`akm workflow brief` /
@@ -234,179 +446,28 @@ code paths the engine uses. A run is driven by **one engine _or_ one external
 driver at a time** (the run lease arbitrates), and both surfaces produce
 byte-identical unit graphs.
 
-YAML programs live in your stash under `workflows/` with a `.yaml` or `.yml`
-extension and are addressed with the same `workflows/<name>` refs. Print a
-starter with **`akm workflow create <name>.yaml --print`**, and lint with
-`akm lint --type workflows` — validation is backed by the published JSON
-Schema at `schemas/akm-workflow.json`.
+## Frozen plans
 
-```yaml
-version: 2
-name: review-changes
-description: Review changed files and route the outcome
-params:
-  changed_files: { type: array, items: { type: string } }
-defaults:            # run-level defaults, overridable per unit
-  engine: reviewer
-  model: balanced
-  timeout: 10m
-  on_error: fail
-budget:              # run-lifetime ceilings, seeded from the unit journal
-  max_units: 40
-  max_tokens: 200000
-
-steps:
-  - id: discover
-    title: Discover targets
-    unit:
-      instructions: |
-        List the files that need review for ${{ params.changed_files }}.
-      output:                      # typed step artifact (JSON Schema)
-        type: object
-        properties: { files: { type: array, items: { type: string } } }
-        required: [files]
-    gate:
-      criteria: [every target is listed]
-
-  - id: review
-    title: Review files
-    map:
-      over: ${{ steps.discover.output.files }}   # explicit producer address
-      concurrency: 8
-      reducer: collect             # step output = array of per-file verdicts
-      unit:
-        engine: reviewer
-        model: deep
-        timeout: 5m
-        retry: { max: 1, on: [timeout, llm_rate_limit] }
-        on_error: continue
-        isolation: worktree      # fresh detached git worktree per unit
-        instructions: |
-          Review ${{ item }} for correctness bugs.
-        output: { type: object, properties: { file: { type: string }, verdict: { type: string } }, required: [file, verdict] }
-    gate:
-      criteria: [every changed file has a verdict]
-      max_loops: 2                 # evaluator-optimizer, bounded
-
-  - id: aggregate
-    title: Combine verdicts
-    unit:
-      instructions: |
-        Combine these per-file review verdicts into one overall verdict
-        (pass or fail): ${{ steps.review.output }}
-      output:
-        type: object
-        properties: { verdict: { type: string } }
-        required: [verdict]
-
-  - id: triage
-    route:                         # routing on an explicit input
-      input: ${{ steps.aggregate.output.verdict }}
-      when: { pass: ship, fail: rework }
-      default: manual-triage
-
-  - id: ship
-    unit:
-      instructions: Ship the change.
-
-  - id: rework
-    unit:
-      instructions: Address the review findings, then re-run the review.
-
-  - id: manual-triage
-    unit:
-      instructions: Summarize the ambiguous verdict for a human to triage.
-```
-
-**Format rules.** Top-level keys: `version: 2` (required), `name`,
-`description?`, `params?` (name → JSON-Schema declaration), `defaults?`
-(`engine`, `model`, `timeout`, `on_error`, `llm`), `budget?` (`max_tokens`,
-`max_units` — run-lifetime ceilings, see below), and `steps`. Each step has
-an `id`, an optional `title`, and **exactly one of** `unit` (single
-dispatch), `map` (fan a unit template out over `over:` with optional
-`concurrency` and a `collect` | `vote` reducer), or `route`. A unit carries
-`instructions` (required) plus optional `engine`, `model`, `llm`,
-`timeout`, `retry`, `on_error`, `output` (JSON Schema for the unit's
-structured result), `env` (env asset refs injected via the `akm env run`
-machinery — works on agent engines; LLM units fail loudly), and
-`isolation` (`none` | `worktree`, see below). Timeouts are
-`"<n>ms" | "<n>s" | "<n>m" | "none"`. Steps may also declare `output` (the
-step-artifact schema) and `gate` (`criteria`, `max_loops`, `required`).
-
-### The expression language
-
-`${{ … }}` references are **parsed, not string-replaced** — a closed grammar
-with exactly four reference kinds:
-
-| Reference | Meaning |
-| --- | --- |
-| `${{ params.<name> }}` | A run parameter, by name. |
-| `${{ steps.<id>.output.<path> }}` | A prior step's artifact, addressed by producer step id; the path walks properties (`.name`) and array indexes (`[0]`). |
-| `${{ item }}` | The current fan-out item (only inside a `map` unit). |
-| `${{ item_index }}` | The current item's index (only inside a `map` unit). |
-
-Nothing else parses: no functions, no clock, no randomness, no ambient
-lookup. Templates are parsed once into literal/reference segments and
-resolved in a single pass — substituted content is data and is **never
-re-scanned**, so a value that happens to contain `${{ params.x }}` is
-inserted literally and cannot inject further references. Every reference
-names its producer explicitly, and `akm lint --type workflows` checks each
-edge (unknown step, unknown param, bad path) at lint time.
-
-One caveat: there is **no escape syntax**. A literal `${{` cannot appear in
-instructions — the validator reports a parse error if you write one.
-
-**What a step's output is.** `steps.<id>.output` resolves to the value the
-step's execution produced:
-
-- a `unit` step → the unit's structured result (when the unit declares
-  `output`) or its text;
-- a `map` step with `reducer: collect` → the array of per-item results, in
-  item order (under `on_error: continue`, a failed item's slot is `null`);
-- a `map` step with `reducer: vote` → the winning value.
-
-So in the example above, `${{ steps.discover.output.files }}` addresses into
-the discover unit's structured result, and `${{ steps.review.output }}` is
-the collected array of per-file verdicts (`[0].verdict` addresses the
-first). A step completed manually through `akm workflow complete` exposes
-whatever evidence was recorded for it as its output.
-
-**An empty successful free-text output is treated as no output.** When a
-schemaless unit (one that declares no `output` schema) succeeds but returns
-the empty string, akm normalizes it to *absent*: nothing is journaled for
-its result, and its contribution to the step artifact is `null` — a `null`
-slot in a `collect` array, or `output = null` for a solo step. This absence
-is deliberate and consistent across every driver surface (engine, and
-`brief`/`report`), so a live run and a resumed/reported run promote the
-identical artifact. The practical consequence: referencing an empty step's
-output downstream (`${{ steps.x.output }}`) fails **loudly** at expression
-resolution (`… resolved to null`) rather than silently substituting `""`.
-A unit that declares an `output` schema is unaffected — an empty response is
-not valid JSON, so it fails as a parse error and can never satisfy a schema
-as a silent `null`.
-
-### Frozen plans
-
-`akm workflow start` compiles the program and freezes the resulting plan on
+`akm workflow start` compiles the workflow and freezes the resulting plan on
 the run row (`plan_json` + `plan_hash`). **A run executes the plan compiled
 at start; edits to the source file need a new run** — the file is never
 re-read for an in-flight run, so `run`, `next`, and `resume` all see the same
-program no matter what has changed on disk. Orchestration decisions are pure
+workflow no matter what has changed on disk. Orchestration decisions are pure
 functions of the frozen plan, the run params, and journaled unit results.
 
 **Resume is journaled replay.** Every dispatched unit is journaled with a
-content-derived identity — the step id plus a hash of the unit's input item
-(so identity survives item-list reordering and regeneration) — and its input
-hash. On re-run, a journaled completed unit with the same identity and the
-same inputs is **reused**, never re-dispatched; a failed or missing unit is
-dispatched live. If a journaled completed unit matches by identity but its
-recorded inputs differ, the engine fails the step with a **replay
-divergence** error naming the unit — it never silently re-runs work whose
-inputs changed under it. (Divergence means the program produced different
-data for the "same" unit across invocations — a nondeterminism bug worth
-surfacing, not papering over.)
+content-derived identity — the step id plus a hash of the unit's frozen
+instructions, its item (for a map unit), its declared `inputs:` artifacts,
+and the params snapshot — and its input hash. On re-run, a journaled
+completed unit with the same identity and the same inputs is **reused**,
+never re-dispatched; a failed or missing unit is dispatched live. If a
+journaled completed unit matches by identity but its recorded inputs differ,
+the engine fails the step with a **replay divergence** error naming the unit
+— it never silently re-runs work whose inputs changed under it. (Divergence
+means the program produced different data for the "same" unit across
+invocations — a nondeterminism bug worth surfacing, not papering over.)
 
-### Failure policy
+## Failure policy
 
 Fail-fast is the default. Per unit (or via `defaults.on_error`):
 
@@ -424,68 +485,89 @@ A unit's `output` schema is validated on every runner; a validation miss
 re-dispatches once with corrective feedback before the unit is recorded as
 failed.
 
-### Routing
+## Routing
 
 A `route` step makes classify-and-dispatch first-class: the engine resolves
 the explicit `input:` expression, selects the matching `when:` branch (or
 `default:`), and auto-skips the unselected branch targets as the spine
-reaches them. Targets must be later steps; an unroutable value with no
-`default` fails the step rather than letting every branch run. Route
-decisions are journaled, so a resumed run replays the same choice. Skips
-cascade: when a route step is itself skipped (it was the unselected target
-of an earlier route), its own branch targets are skipped too — a router that
-never decided selects nothing. Routing (like fan-out) is an engine feature:
-it applies under `akm workflow run` — the manual `next`/`complete` loop does
-not auto-skip.
+reaches them. **Routes are forward-only**: every target (each `when.step`
+and `default`) must be a step declared *later* in the workflow than the
+routing step, and a step never routes to itself — this keeps the plan a DAG,
+so termination is structural rather than a runtime budget's job. A
+`default:` that names an earlier step is a lint error, not a loop. An
+unroutable value with no `default` fails the step rather than letting every
+branch run.
 
-### Typed step artifacts
+**"Go back and fix it" is a gate, not a backward route.** A failed gate
+re-runs its *own* step with the judge's feedback, bounded by `gate.max_loops`
+— and a declared `output:` schema the promoted artifact fails is specifically
+the error a gate loop retries through. A workflow that used to describe "loop
+back to an earlier step until this passes" expresses that as a bounded gate
+on the step doing the work, not as routing.
+
+Route decisions are journaled, so a resumed run replays the same choice.
+Skips cascade: when a route step is itself skipped (it was the unselected
+target of an earlier route), its own branch targets are skipped too — a
+router that never decided selects nothing. Routing (like fan-out) is an
+engine feature: it applies under `akm workflow run` — the manual
+`next`/`complete` loop does not auto-skip.
+
+## Typed step artifacts
 
 When a step declares `output`, the promoted step artifact (the unit's
-structured result, the collected array, or the vote winner — see *What a
-step's output is* above) is validated against that schema **before** the
-step can complete. A mismatch fails the step with the validation errors in
-its summary. This is fail-fast on purpose: a bounded gate loop (next
+structured result, the collected array, or a reduced single value — see
+*What a step's output is* above) is validated against that schema **before**
+the step can complete. A mismatch fails the step with the validation errors
+in its summary. This is fail-fast on purpose: a bounded gate loop (next
 section) can re-run the step with those errors as corrective feedback.
 
-### Gates judge the artifact; `max_loops` bounds the retry
+## Gates judge the artifact; `max_loops` bounds the retry
 
-Under `akm workflow run`, a step with completion criteria is gated on its
-**artifact**, not on engine prose: the judge receives the step's artifact as
-canonical JSON (clipped at 4000 characters) alongside the criteria, so the
-gate evaluates real results rather than a machine summary like "Executed 3
-units". Each engine-driven gate evaluation is itself an LLM call and is
-journaled as a unit row (`<step-id>.gate:l<loop>`); human approvals are
-never cached — a blocked gate stays blocked until a human acts.
+Under `akm workflow run`, a step with a body `### gate` rubric is gated on
+its **artifact**, not on engine prose: the judge receives the step's
+artifact as canonical JSON (clipped at 4000 characters) alongside the
+`### gate` section byte-exact, so the gate evaluates real results rather
+than a machine summary like "Executed 3 units". Each engine-driven gate
+evaluation is itself an LLM call and is journaled as a unit row
+(`<step-id>.gate:l<loop>`); human approvals are never cached — a blocked
+gate stays blocked until a human acts.
 
-`gate.max_loops: <n>` turns the gate into a bounded evaluator-optimizer
-loop: on a rejection (or a typed-artifact schema mismatch) with loop budget
-left, the engine re-executes the step's units with the gate feedback and the
-missing-criteria list appended to every unit prompt. The feedback changes
-each unit's inputs, so the re-run naturally dispatches fresh units instead
-of replaying journaled results. When the loop budget is spent, the rejection
-stands exactly as in the one-shot case.
+`gate.max_loops: <n>` (frontmatter) turns the gate into a bounded
+evaluator-optimizer loop: on a rejection (or a typed-artifact schema
+mismatch) with loop budget left, the engine re-executes the step's units
+with the gate feedback and the missing-criteria list appended as attached
+context. The feedback changes each unit's inputs, so the re-run naturally
+dispatches fresh units instead of replaying journaled results. When the loop
+budget is spent, the rejection stands exactly as in the one-shot case.
 
-### Required gates (never silently bypassed)
+## Required gates (never silently bypassed)
 
-By default a completion gate is **fail-open**: with no completion criteria,
-or when no LLM judge is available (offline, or the default LLM cannot be
+By default a completion gate is **fail-open**: with no `### gate` rubric, or
+when no LLM judge is available (offline, or the default LLM cannot be
 resolved), the step completes without judging. That keeps offline use
 working, but it means a workflow that relies on a gate can be silently
 bypassed in a misconfigured environment.
 
 `gate.required: true` closes that hole for a specific step:
 
-```yaml
-- id: ship
-  title: Ship
-  unit:
-    instructions: Ship the release.
-  gate:
-    criteria: [the changelog is updated, the version is bumped]
-    required: true
+```markdown
+---
+steps:
+  - id: ship
+    gate: { required: true }
+---
+...
+## ship
+
+Ship the release.
+
+### gate
+
+- The changelog is updated.
+- The version is bumped.
 ```
 
-When a **required** gate carries criteria but no judge is available, the step
+When a **required** gate carries a rubric but no judge is available, the step
 does **not** fail open — it is **BLOCKED** (the run goes to `blocked`) with a
 message telling you to configure an LLM. Nothing is silently passed. A human
 resolves it via the documented manual path: `akm workflow resume <run-id>`
@@ -498,13 +580,13 @@ identically: `akm workflow run` (the engine) and `akm workflow report` (any
 external driver) block the step the same way.
 
 `akm workflow run --require-gates` is the run-wide override: it treats
-**every** criteria-bearing gate in the run as required for that invocation,
+**every** rubric-bearing gate in the run as required for that invocation,
 without editing the workflow. Use it in CI or any environment where an
 unjudged gate must never pass. (The flag applies to the engine invocation; a
 per-step `gate.required: true` is the portable form that also governs the
 `report` driver path.)
 
-### Budget ceilings
+## Budget ceilings
 
 The top-level `budget:` key declares run-lifetime ceilings: `max_units`
 (total dispatched units) and `max_tokens` (total reported token usage). Both
@@ -515,7 +597,7 @@ the step's still-pending dispatches and fails the step with a
 stop that ignores `on_error: continue`. Because the plan is frozen, raising
 a budget means starting a new run.
 
-### One engine drives a run (the run lease)
+## One engine drives a run (the run lease)
 
 `akm workflow run` takes a **run lease** before dispatching anything: a
 random holder id with a 90-second expiry recorded on the run row, renewed
@@ -530,7 +612,7 @@ detail surfaces a live lease as `engineLease` (holder + expiry). An
 orchestrated run can also be driven by an external agent instead of the
 engine — see *Driving a run from any agent (brief/report)* below.
 
-### Driving a run from any agent (brief/report)
+## Driving a run from any agent (brief/report)
 
 `akm workflow run` is the engine driving a run itself. But an orchestrated
 run does not require akm to spawn the agents — **any** agent session (Claude
@@ -550,16 +632,17 @@ driver-driven run of the same plan produce **byte-identical unit graphs**.
   artifact-promotion, schema-validation, and gate path the engine runs, and
   advances the step when its work-list is fully terminal.
 
-#### Params are not secret
+### Params are not secret
 
-Workflow **params** are declared **non-secret**. A run's params are
-interpolated into every unit prompt (both `${{ params.* }}` references and a
-`PARAMS_JSON` preamble line) **and** are hashed into each unit's identity. The
-driver protocol's core guarantee is that `brief` surfaces the *byte-identical*
-prompt a driver must execute — so params **cannot** be redacted without
-breaking the input-hash contract and cross-surface parity. **Never put
-credentials in params.** Put secrets in **env bindings** (`env:` refs), which
-`brief` surfaces by **name only** and never resolves.
+Workflow **params** are declared **non-secret**. A run's params are attached
+as structured context to every dispatched unit — the assembled prompt
+threads them in alongside a `PARAMS_JSON` preamble block, rather than
+splicing them into the instruction text — and are hashed into each unit's
+identity. The driver protocol's core guarantee is that `brief` surfaces the
+*byte-identical* prompt a driver must execute — so params **cannot** be
+redacted without breaking the input-hash contract and cross-surface parity.
+**Never put credentials in params.** Put secrets in **env bindings** (`env:`
+refs), which `brief` surfaces by **name only** and never resolves.
 
 As a guardrail, both `akm workflow start` and every `brief` emit a best-effort
 **secret-shaped-value warning** (in the response `warnings` array) when a param
@@ -568,7 +651,7 @@ high-entropy string, or a known token prefix. It is advisory only: it **never
 blocks** a run and is intentionally heuristic (expect false positives and
 misses). It exists to nudge an author toward an env binding, not to scan.
 
-#### The protocol loop
+### The protocol loop
 
 Driving a run is a loop: **brief → execute → report → repeat**, until the
 brief reports the run is done.
@@ -578,9 +661,9 @@ brief reports the run is done.
    - `unitId` — the content-derived id you pass back verbatim to `report`;
    - `nodeId`, `engine`, `runtimeKind`, `platform`, `model`, `timeoutMs`, `retry`, `onError`;
    - `resolved.instructions` — the fully-assembled prompt (engine preamble +
-     interpolated instructions + any gate feedback + schema directive),
-     **byte-identical** to what the engine would dispatch — and
-     `resolved.inputHash`;
+     the step's byte-exact instructions + attached params/item/`inputs:`
+     context + any gate feedback + schema directive), **byte-identical** to
+     what the engine would dispatch — and `resolved.inputHash`;
    - `outputSchema` — the JSON Schema your result must validate against, when
      the unit declares one;
    - `env` — env binding asset **names only** (`brief` never resolves a
@@ -601,7 +684,7 @@ brief reports the run is done.
 
    The top-level brief also carries a `spineToken` — an opaque watermark over
    the run id, active step id, gate loop, and a run-mutation counter — and a
-   `warnings` array (see *Params are not secret* below).
+   `warnings` array (see *Params are not secret* above).
 
    **The spine can move under you.** Between the `brief` you plan against and
    the `report` you send, a concurrent `report`/`run`/manual completion can
@@ -612,7 +695,7 @@ brief reports the run is done.
    `spineToken` across polls to detect the move yourself.
 2. **Execute** each pending unit however you like — in the current session,
    by spawning a subagent, or by hand. `brief` also emits the step's gate
-   criteria, its output-schema contract, and (for a route step) the
+   rubric, its output-schema contract, and (for a route step) the
    deterministic branch decision.
 3. **`report`** each result. For a schema unit, pass JSON matching
    `outputSchema` via `--result '<json>'`, `--result-file <path>`, or stdin;
@@ -622,16 +705,16 @@ brief reports the run is done.
 4. When your `report` makes the step's work-list fully terminal, akm runs the
    **same completion path the engine runs** — reduce the unit outputs, promote
    and validate the typed step artifact, and judge the artifact against the
-   gate criteria — then either advances the spine or, on a gate rejection with
+   gate rubric — then either advances the spine or, on a gate rejection with
    loop budget left, leaves the step active. Re-run `brief`: if the gate
    looped, the next brief emits **loop-N's work-list with the judge feedback
-   already threaded into every unit prompt** (recovered from the journaled
-   `<stepId>.gate:l<n>` row, so the loop-N unit ids and hashes match what the
-   engine would compute).
+   already threaded into every unit's attached context** (recovered from
+   the journaled `<stepId>.gate:l<n>` row, so the loop-N unit ids and hashes
+   match what the engine would compute).
 
 Repeat until `brief` reports `done: true`.
 
-#### Advancing a step with no reportable units (`--settle`)
+### Advancing a step with no reportable units (`--settle`)
 
 Two states leave the active step with **no** per-unit work a driver can
 `report --unit`, so a driver looping on `brief → report --unit` would get stuck
@@ -666,7 +749,7 @@ in-flight, or a retry-eligible failure — `report --unit`/`--rerun` those
 instead) and, like every mutating verb, refused under a live engine lease. It
 carries `--expect-step` so a stale copy fails once the spine has moved.
 
-#### Unit check-in and heartbeat
+### Unit check-in and heartbeat
 
 Executing a long unit? Claim it and heartbeat so other drivers know it is in
 progress:
@@ -685,7 +768,7 @@ died. Staleness is a pure timestamp evaluation (no daemon, no background
 thread — the same design as the run-level check-in), deterministic in the
 injected clock.
 
-#### Lease interplay: one engine _or_ one external driver
+### Lease interplay: one engine _or_ one external driver
 
 The run lease arbitrates: a run is driven by **one engine or one external
 driver at a time**, never both.
@@ -700,7 +783,7 @@ driver at a time**, never both.
   `report` refuses while a *live engine* lease exists. Coordinate concurrent
   human drivers with the unit check-in above.
 
-#### Replay and idempotency guarantees
+### Replay and idempotency guarantees
 
 `report` ingests through the frozen plan's journal, so its safety properties
 are the engine's:
@@ -731,10 +814,10 @@ are the engine's:
   workflow's `retry.on`. An absent reason defaults to `reported_failure`.
 
 Because both surfaces share one implementation, the conformance suite runs
-every golden program twice — engine-driven, then brief/report-driven — and
+every golden workflow twice — engine-driven, then brief/report-driven — and
 asserts the two unit graphs are identical.
 
-#### Historical runs without an executable frozen plan
+### Historical runs without an executable frozen plan
 
 `brief` and `report` describe and ingest against a run's **frozen plan**
 (migration 006). A run started before frozen plans exist (`plan_json` is NULL —
@@ -744,7 +827,7 @@ historical rows from a mutable source asset. They remain available to
 inspection and abandonment surfaces; start a new run to execute the current
 workflow source.
 
-#### Worked example
+### Worked example
 
 Drive a two-step review workflow by hand. Start a run without dispatching,
 then loop brief → execute → report:
@@ -761,7 +844,7 @@ akm workflow brief r1
 {
   "ok": true,
   "active": true,
-  "step": { "stepId": "discover", "gate": { "criteria": ["every target is listed"], "currentLoop": 1 } },
+  "step": { "stepId": "discover", "gate": { "currentLoop": 1 } },
   "workList": {
     "isFanOut": false,
     "units": [
@@ -796,7 +879,7 @@ akm workflow brief r1
 akm workflow report r1 --unit review:1f3a… --status running --note "reviewing a.ts"
 akm workflow report r1 --unit review:1f3a… --status completed \
   --result '{"file":"a.ts","verdict":"pass"}'
-# → the review step's collect reducer promotes the array, the gate judges it.
+# → the review step's collected array promotes the artifact, the gate judges it.
 
 akm workflow brief r1
 # → {"done": true, "message": "Workflow run is completed — no work remains."}
@@ -805,9 +888,10 @@ akm workflow brief r1
 If a gate had rejected the `review` step (with `max_loops` budget left), the
 next `brief r1` would show `step.gate.currentLoop: 2`, a `gateFeedback`
 object, and a fresh work-list whose unit prompts already carry the judge's
-missing-criteria feedback — you re-execute and re-report exactly as in loop 1.
+missing-criteria feedback in their attached context — you re-execute and
+re-report exactly as in loop 1.
 
-### Following a run's events
+## Following a run's events
 
 There is no `akm workflow watch` (0.9.0: dropped — a foreground polling
 daemon in a one-shot CLI). `akm log --run <run-id>` reads the same
@@ -824,7 +908,7 @@ akm log --run <run-id> --since '@offset:<nextOffset>'        # poll for more, fr
 Event metadata is ids/status/enums only — never workflow-authored content —
 so following a run's events is safe to pipe into logs or dashboards.
 
-### Worktree isolation
+## Worktree isolation
 
 A file-mutating unit can declare `isolation: worktree` (agent and sdk
 runners). Each unit attempt gets a fresh **detached git worktree** of the
@@ -853,7 +937,7 @@ clean and removed: those files are disposable by the repo's own declaration,
 and retaining a worktree after every package install or build would blow up
 disk under the temp root.
 
-### Model tiers
+## Model tiers
 
 Reference semantic aliases in `model:` fields instead of exact model ids so a
 workflow stays harness-agnostic. Recommended vocabulary (convention, not
@@ -880,7 +964,7 @@ platform with no config. Point `deep` work (review, verification, judging) at
 Trust note: a workflow that fans out is authorizing **N parallel agents**, not
 one — the security section below applies with multiplied blast radius. The
 engine enforces a concurrency cap, a lifetime unit cap per run, per-unit
-timeouts, and (when the program declares them) run budget ceilings.
+timeouts, and (when the workflow declares them) run budget ceilings.
 
 Native fan-out (`akm workflow run`) uses the minimum of four limits: the map's
 declared `concurrency`, the run's frozen `workflow.maxConcurrency`, the

@@ -1,77 +1,85 @@
 ---
+type: workflow
 description: Review a single pull request against the project's actual conventions and prior decisions, leaving structured feedback that an author can act on without a follow-up call. Doubles as a way to capture review heuristics back into the stash.
-tags:
-  - example
-  - code-review
-  - pull-requests
-  - feedback
-  - memory
+tags: [example, code-review, pull-requests, feedback, memory]
 params:
-  pr_ref: "Pull request reference (e.g. `gh:itlackey/akm#214`, or a freeform PR ID for non-GitHub forges)."
-  reviewer_persona: "Optional persona ref to bias the review (e.g. `skills/senior-typescript-reviewer`, `skills/security-reviewer`). Defaults to a generalist reviewer."
-  workspace_dir: "Directory for run artefacts. Defaults to `.akm-run/{{ runId }}`."
-  conventions_query: "Search query used to discover project conventions in the stash (e.g. `error handling conventions`, `react component style`). Defaults to the PR title."
-  knowledge_wiki: "AKM wiki to consult for prior architectural decisions and to update with new heuristics. Defaults to `engineering`."
+  pr_ref: { type: string, description: "Pull request reference (e.g. `gh:itlackey/akm#214`, or a freeform PR ID for non-GitHub forges)." }
+  reviewer_persona: { type: string, description: "Optional persona ref to bias the review (e.g. `skills/senior-typescript-reviewer`, `skills/security-reviewer`). Defaults to a generalist reviewer." }
+  workspace_dir: { type: string, description: "Directory for run artefacts. Defaults to a per-run directory such as `.akm-run/<run-id>/`." }
+  conventions_query: { type: string, description: "Search query used to discover project conventions in the stash (e.g. `error handling conventions`, `react component style`). Defaults to the PR title." }
+  knowledge_wiki: { type: string, description: "AKM wiki to consult for prior architectural decisions and to update with new heuristics. Defaults to `engineering`." }
+steps:
+  - id: load-context
+  - id: read-with-intent
+    inputs: [steps.load-context.output]
+  - id: apply-rubric
+    inputs: [steps.read-with-intent.output]
+  - id: post-review
+    inputs: [steps.apply-rubric.output]
+  - id: capture-heuristics
+    inputs: [steps.post-review.output]
 ---
 
-# Workflow: Code Review PR
+# Code Review PR
 
 A repeatable structure for high-signal PR review. The goal is to give the
 author the smallest set of changes that materially improve the patch — not to
 relitigate the architecture and not to nit-pick. The workflow also captures
-durable lessons so the next reviewer benefits from this one's effort.
+durable lessons so the next reviewer benefits from this one's effort. Every
+path below is relative to the workspace directory named by the
+`workspace_dir` parameter, unless stated otherwise.
 
-## Step: Load the PR and surface relevant prior art
-Step ID: load-context
+## load-context
 
-### Instructions
 A review starts with context the author already had, not a blank slate.
 
-1. Pull the PR metadata and diff:
+1. Pull the PR metadata and diff for the pull request named by the `pr_ref`
+   parameter:
 
    ```sh
-   gh pr view {{ pr_ref }} --json title,body,author,headRefName,baseRefName,additions,deletions,files,labels
-   gh pr diff {{ pr_ref }} > {{ workspace_dir }}/pr.diff
+   gh pr view <pr_ref> --json title,body,author,headRefName,baseRefName,additions,deletions,files,labels
+   gh pr diff <pr_ref> > pr.diff
    ```
 
-   Cache the JSON in `{{ workspace_dir }}/pr-meta.json`.
-2. Discover project conventions relevant to the changed surfaces. Wiki pages
-   are indexed like any other asset, so a plain stash search covers both
-   (there is no `akm wiki search`):
+   Cache the JSON in `pr-meta.json`.
+2. Discover project conventions relevant to the changed surfaces, using the
+   query named by the `conventions_query` parameter (or the PR title, if that
+   parameter is empty). Wiki pages are indexed like any other asset, so a
+   plain stash search covers both (there is no `akm wiki search`):
 
    ```sh
-   akm search "{{ conventions_query }}"
+   akm search "<conventions_query>"
    ```
 
-   Record the top 5 hits in `{{ workspace_dir }}/conventions.md` with a
-   one-line note on whether each applies to this PR.
-3. If `reviewer_persona` is set, load it and treat its review rubric as the
-   authoritative checklist:
+   Record the top 5 hits in `conventions.md` with a one-line note on whether
+   each applies to this PR.
+3. If the `reviewer_persona` parameter is set, load it and treat its review
+   rubric as the authoritative checklist:
 
    ```sh
-   akm show {{ reviewer_persona }}
+   akm show <reviewer_persona>
    ```
 
-### Completion Criteria
+### gate
+
 - `pr-meta.json` and `pr.diff` are saved to disk for offline re-reading.
 - `conventions.md` lists relevant stash and wiki hits with applicability
   notes.
 - The reviewer persona (if any) is loaded; otherwise the run notes
   explicitly state the generalist rubric is in use.
 
-## Step: Read the change with intent
-Step ID: read-with-intent
+## read-with-intent
 
-### Instructions
-Three passes, in order. Do not skip ahead.
+Three passes, in order. Do not skip ahead. Use the PR metadata and diff
+gathered by `load-context`, attached to this unit as input.
 
 1. **What is the PR trying to do?** Read the description and the linked
-   issue. Write a one-paragraph summary in
-   `{{ workspace_dir }}/intent.md`. If you cannot articulate the intent
-   from the description, that is itself review feedback — record it.
+   issue. Write a one-paragraph summary in `intent.md`. If you cannot
+   articulate the intent from the description, that is itself review
+   feedback — record it.
 2. **Does the diff implement the stated intent?** Walk the files in the
    order the author put them in the PR. For each file, note in
-   `{{ workspace_dir }}/walkthrough.md`:
+   `walkthrough.md`:
    - what changed in this file
    - whether it serves the intent or seems orthogonal
    - any callers/tests it implies but does not include
@@ -80,25 +88,24 @@ Three passes, in order. Do not skip ahead.
    documentation. Record those gaps separately under a `## Gaps` section
    in `walkthrough.md`.
 
-### Completion Criteria
+### gate
+
 - `intent.md` summarises the goal in your own words.
 - `walkthrough.md` covers every file in the diff and lists expected-but-
   missing changes under `Gaps`.
 - Off-topic refactors are flagged for the author to split out, not
   silently approved.
 
-## Step: Apply the rubric
-Step ID: apply-rubric
+## apply-rubric
 
-### Instructions
 Score the PR against an explicit rubric so feedback is calibrated, not
-vibes-based.
+vibes-based, drawing on the walkthrough produced by `read-with-intent`,
+attached to this unit as input.
 
-For each rubric item, write a verdict in
-`{{ workspace_dir }}/rubric.md`: `pass`, `concern`, `block`, with one
-line of justification.
+For each rubric item, write a verdict in `rubric.md`: `pass`, `concern`,
+`block`, with one line of justification.
 
-Default rubric (extend per `reviewer_persona`):
+Default rubric (extend per the loaded `reviewer_persona`, if any):
 
 1. **Correctness** — does it implement the stated intent and only that?
 2. **Tests** — is the new behaviour covered, including edge cases the diff
@@ -116,19 +123,19 @@ Promote a `block` verdict only when the issue would harm production or
 permanently regress a contract. A code style preference is a `concern`,
 not a `block`.
 
-### Completion Criteria
+### gate
+
 - Every rubric item has a verdict and a one-line justification.
 - `block` verdicts cite a concrete production or contract harm.
 - Style preferences are filed as `concern`, not `block`.
 
-## Step: Post the review
-Step ID: post-review
+## post-review
 
-### Instructions
 A good review reads as a single coherent message, not 14 separate inline
-comments that contradict each other.
+comments that contradict each other. Use the rubric verdicts produced by
+`apply-rubric`, attached to this unit as input.
 
-1. Draft `{{ workspace_dir }}/review.md` with this structure:
+1. Draft `review.md` with this structure:
    - **Summary**: 2–3 sentences on what this PR does and overall verdict.
    - **Required to merge** (`block` items): each one tied to a file/line
      and the rubric item it failed.
@@ -140,7 +147,7 @@ comments that contradict each other.
 2. Post the review:
 
    ```sh
-   gh pr review {{ pr_ref }} --request-changes -F {{ workspace_dir }}/review.md
+   gh pr review <pr_ref> --request-changes -F review.md
    ```
 
    (Use `--approve` or `--comment` instead if there are no `block`
@@ -148,26 +155,27 @@ comments that contradict each other.
 3. Record inline comments only for items that need to point to a specific
    line and would be ambiguous in the summary.
 
-### Completion Criteria
+### gate
+
 - A single review is posted with `block`, `concern`, and nit sections
   clearly separated.
 - Inline comments exist only where a line reference is necessary.
 - The review includes at least one specific positive observation.
 
-## Step: Capture durable heuristics
-Step ID: capture-heuristics
+## capture-heuristics
 
-### Instructions
 A review that taught you something should leave a trace beyond the PR
-thread. A wiki is a plain directory (`schema.md` + `pages/`) that the agent
-edits directly with its normal file tools — there is no `akm wiki` write
-command. Find the wiki's filesystem path with `akm bundle list --format json` (the
-matching source's `path` field) if you do not already have it.
+thread, drawing on the posted review from `post-review`, attached to this
+unit as input. A wiki is a plain directory (`schema.md` + `pages/`) that the
+agent edits directly with its normal file tools — there is no `akm wiki`
+write command. Find the wiki's filesystem path with
+`akm bundle list --format json` (the matching source's `path` field) if you
+do not already have it.
 
 1. If a recurring pattern surfaced (good or bad) that future reviews
-   should look for, write or update a page under `pages/` in the
-   `{{ knowledge_wiki }}` wiki describing it. One page per pattern, not one
-   mega-page.
+   should look for, write or update a page under `pages/` in the wiki named
+   by the `knowledge_wiki` parameter describing it. One page per pattern,
+   not one mega-page.
 2. Save personal review heuristics with `akm remember`:
 
    ```sh
@@ -176,14 +184,14 @@ matching source's `path` field) if you do not already have it.
    schema.ts."
    ```
 
-3. If you used a reviewer persona and it surfaced a useful prompt or
-   missed something important, signal that with `akm feedback`:
+3. If the `reviewer_persona` parameter was used and it surfaced a useful
+   prompt or missed something important, signal that with `akm feedback`:
 
    ```sh
-   akm feedback {{ reviewer_persona }} --positive --reason "Caught an
+   akm feedback <reviewer_persona> --positive --reason "Caught an
    auth-bypass pattern I would have missed."
    # or
-   akm feedback {{ reviewer_persona }} --negative --reason "Missed an
+   akm feedback <reviewer_persona> --negative --reason "Missed an
    obvious test gap; rubric needs a coverage step."
    ```
 
@@ -193,7 +201,8 @@ matching source's `path` field) if you do not already have it.
    akm index
    ```
 
-### Completion Criteria
+### gate
+
 - At least one of: a wiki page added/updated, a memory recorded, or an
   explicit note that this PR carried no durable lesson.
 - If `reviewer_persona` was used, a feedback signal is recorded.
