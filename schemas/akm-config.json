@@ -1594,6 +1594,15 @@
             }
           },
           "additionalProperties": true
+        },
+        "stateGc": {
+          "type": "object",
+          "properties": {
+            "collect": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": true
         }
       },
       "additionalProperties": true
@@ -3220,6 +3229,15 @@
                 "retentionDays": {
                   "type": "integer",
                   "minimum": 1
+                }
+              },
+              "additionalProperties": true
+            },
+            "stateGc": {
+              "type": "object",
+              "properties": {
+                "collect": {
+                  "type": "boolean"
                 }
               },
               "additionalProperties": true

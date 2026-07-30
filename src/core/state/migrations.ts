@@ -980,6 +980,31 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+
+  // ── Migration 021 — asset_salience / asset_outcome: missing_since (#733) ────
+  //
+  // Orphan-GC grace clock (Workstream C / #733,
+  // docs/architecture/specs/0.9.0-close-out-plan.md). Neither table carries a
+  // column that records when a row's ref STOPPED resolving against
+  // `entries.item_ref` — `updated_at` is bumped by improve itself on every
+  // touch, so it cannot double as a "went missing" timestamp.
+  //
+  // `missing_since` is stamped by `runOrphanStateGcPass`
+  // (src/commands/improve/loop-stages.ts) the first time a row's ref fails to
+  // resolve against the live index, cleared the moment the ref resolves
+  // again, and used to gate deletion once `STATE_GC_GRACE_MS` (7 days) has
+  // elapsed — and ONLY when `improve.stateGc.collect` is true (default
+  // false). Mirrors the additive ADD-COLUMN style of migration 011.
+  //
+  // NULL = never missing (the steady-state default for every existing row —
+  // both a fresh row and a pre-migration row read back NULL here).
+  {
+    id: "021-asset-state-missing-since",
+    up: `
+      ALTER TABLE asset_salience ADD COLUMN missing_since INTEGER DEFAULT NULL;
+      ALTER TABLE asset_outcome ADD COLUMN missing_since INTEGER DEFAULT NULL;
+    `,
+  },
 ];
 
 /**

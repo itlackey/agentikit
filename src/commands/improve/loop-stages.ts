@@ -1494,3 +1494,30 @@ export function runRetentionPurgePass(ctx: MaintenanceCtx): { warnings: string[]
   }
   return { warnings };
 }
+
+// ── #733 — orphan-state GC pass (Workstream C) ──────────────────────────────
+//
+// TODO(#733 RED): scaffolding only — STATE_GC_GRACE_MS and
+// runOrphanStateGcPass's real resolution/stamp/collect logic land in the
+// GREEN commit. This stub exists solely so the test-first suite
+// (tests/integration/commands/improve/state-gc.test.ts) compiles and runs,
+// failing on behavioral assertions instead of a missing-export error.
+
+/**
+ * Grace window (ms) before an unresolved `asset_salience` / `asset_outcome`
+ * row becomes delete-eligible — only when `improve.stateGc.collect` is true.
+ * A named constant, not a config knob (owner ruling — see the close-out
+ * plan's Workstream C). Mirrors `TXN_SWEEP_GRACE_MS` (src/core/fs-txn.ts:298).
+ */
+export const STATE_GC_GRACE_MS = daysToMs(7);
+
+/**
+ * Orphan-state GC — #733 (Workstream C). NOT YET IMPLEMENTED (RED
+ * placeholder): always reports zero and never touches either state table.
+ */
+export function runOrphanStateGcPass(
+  _ctx: MaintenanceCtx,
+  _dbCell: IndexDbCell,
+): { pending: number; collected: number; warnings: string[] } {
+  return { pending: 0, collected: 0, warnings: [] };
+}

@@ -143,3 +143,70 @@ export function getOutcomeScoresByRef(db: Database, refs: string[]): Map<string,
   }
   return result;
 }
+
+// ── #733 orphan-GC (missing_since) ──────────────────────────────────────────
+//
+// Support for `runOrphanStateGcPass` (src/commands/improve/loop-stages.ts).
+// `missing_since` is added by migration 021; NULL means "not currently
+// unresolvable". These are the only functions that may touch that column —
+// the `state-table-sql` lint rule (#672) forbids raw asset_outcome SQL
+// anywhere else under src/. Mirrors salience-repository.ts's four functions
+// of the same shape verbatim, one table apart.
+
+export interface AssetOutcomeMissingRow {
+  asset_ref: string;
+  missing_since: number | null;
+}
+
+/** List every `asset_outcome` ref with its current `missing_since` marker. */
+export function listAssetOutcomeMissingState(db: Database): AssetOutcomeMissingRow[] {
+  return db.prepare(`SELECT asset_ref, missing_since FROM asset_outcome`).all() as AssetOutcomeMissingRow[];
+}
+
+/**
+ * Stamp `missing_since = now` for the given refs, but ONLY where it is
+ * currently NULL — a ref already stamped keeps its original timestamp so the
+ * grace window measures from first sighting, not last. Refs with no row at
+ * all are silently skipped (0 rows affected). Returns the number of rows
+ * actually stamped.
+ */
+export function stampAssetOutcomeMissing(db: Database, refs: readonly string[], now: number): number {
+  if (refs.length === 0) return 0;
+  const stmt = db.prepare(`UPDATE asset_outcome SET missing_since = ? WHERE asset_ref = ? AND missing_since IS NULL`);
+  let changed = 0;
+  for (const ref of refs) changed += stmt.run(now, ref).changes;
+  return changed;
+}
+
+/**
+ * Clear `missing_since` for refs that resolved again. Returns the number of
+ * rows actually cleared.
+ */
+export function clearAssetOutcomeMissing(db: Database, refs: readonly string[]): number {
+  if (refs.length === 0) return 0;
+  const stmt = db.prepare(
+    `UPDATE asset_outcome SET missing_since = NULL WHERE asset_ref = ? AND missing_since IS NOT NULL`,
+  );
+  let changed = 0;
+  for (const ref of refs) changed += stmt.run(ref).changes;
+  return changed;
+}
+
+/**
+ * Delete `asset_outcome` rows whose `missing_since` is older than
+ * `cutoffMs`. A single DELETE — SQLite runs it as one implicit transaction.
+ * Returns the number of rows deleted.
+ */
+export function deleteAssetOutcomeMissingBefore(db: Database, cutoffMs: number): number {
+  return db
+    .prepare(`DELETE FROM asset_outcome WHERE missing_since IS NOT NULL AND missing_since < ?`)
+    .run(cutoffMs).changes;
+}
+
+/** Count `asset_outcome` rows currently marked missing (the live backlog size). */
+export function countAssetOutcomeMissing(db: Database): number {
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM asset_outcome WHERE missing_since IS NOT NULL`).get() as {
+    n: number;
+  };
+  return row.n;
+}
