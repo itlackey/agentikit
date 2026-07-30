@@ -78,17 +78,15 @@ files to source control. Normal `akm env` and `akm secret` output never echoes
 values; materialize values only at the command boundary with `akm env run`,
 `akm secret run`, or `akm secret path`.
 
-`akm graph export` follows the same owner-only precedent: the artifact is
-written atomically at mode `0600`, and any new parent directories it creates
-are `0700`, since a graph export can carry knowledge-derived content out of
-the stash to an arbitrary `--out` path. It is still plaintext, not encrypted
-at rest, and `--out` can point anywhere the akm process can write — only the
-permission bits changed.
+The knowledge graph extracted from your assets (entities/relations) lives
+only in `$DATA/index.db` and is surfaced as aggregate counts via `akm health`
+(`--report` for the full breakdown) — there is no export command that writes
+graph content to an arbitrary path.
 
 ### Improve / propose send asset content to the configured LLM
 
 `akm improve` (whose strategies run processes such as reflect, distill, and
-consolidate) and `akm propose` can send asset frontmatter and body to the
+consolidate) and `akm proposal new` can send asset frontmatter and body to the
 named LLM engine selected by the command, strategy, or current defaults. LLM
 connections live under
 `engines.<name>` in `~/.config/akm/config.json`. If you configure a third-party

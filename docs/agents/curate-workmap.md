@@ -171,7 +171,7 @@ Current behavior:
 - curate enriches stash hits by calling `akmShowUnified({ ref })`
 - if show fails, enrichment silently degrades to raw search-hit data
 - stash follow-up remains `akm show <ref>` even for runnable scripts with a concrete `run`
-- registry follow-up uses the registry action, usually `akm add ...`
+- registry follow-up uses the registry action, usually `akm bundle add ...`
 
 Product implication:
 

@@ -365,9 +365,9 @@ The JSONL file at `$CACHE/events.jsonl` is no longer written by akm. Existing fi
 
 | `eventType` | Emitted by | Key `metadata` fields |
 |---|---|---|
-| `add` | `akm add` | `target`, `provider`, `name`, `writable` |
-| `remove` | `akm remove` | `target`, `ref` |
-| `update` | `akm update` | `target`, `all`, `processed` |
+| `add` | `akm bundle add` | `target`, `provider`, `name`, `writable` |
+| `remove` | `akm bundle remove` | `target`, `ref` |
+| `update` | `akm bundle update` | `target`, `all`, `processed` |
 | `remember` | `akm remember` | `path`, `force`, `tagCount`, `enriched`, `auto`, `scope` |
 | `import` | `akm import` | `source`, `path`, `force` |
 | `save` | `akm sync` | `name`, `message`, `ok` |
@@ -429,7 +429,7 @@ One line per memory belief-state transition: `{ appliedAt, ref, parentRef, fromS
 | `<cwd>/.akm/config.json` | Project-scoped config overrides. Walked up to filesystem root; all ancestors merged. | Manual |
 | `$CACHE/config-backups/config-<ISO-ts>.json` | Pre-save snapshot of `config.json`, written by `backupExistingConfig()` in `src/core/config/config-io.ts` before each config write. `config.latest.json` is a second copy (not a symlink) always overwritten with the newest snapshot. Dir created/chmod'd `0700`; both the timestamped file and `config.latest.json` are chmod'd `0600` (08-F4, mirroring the env-cli write-mode convention). This is the only live backup location — legacy `$DATA/config-backups/` and `$CONFIG/config-backups/` write paths have been removed. | Capped at `MAX_CONFIG_BACKUPS = 5` most-recent timestamped snapshots; `pruneOldBackups()` deletes the rest on every write |
 | `$CONFIG/akm.lock` | Legacy location. Removed in v0.8.0 — akm reads ONLY from `$DATA/akm.lock`. Run the migration script to copy this file to `$DATA/akm.lock` before upgrading. | Legacy |
-| `$DATA/akm.lock` | Installed stash lockfile (moved from `$CONFIG`). Application-managed install state. Same format as `$CONFIG/akm.lock`. | Managed by `akm add/remove` |
+| `$DATA/akm.lock` | Installed stash lockfile (moved from `$CONFIG`). Application-managed install state. Same format as `$CONFIG/akm.lock`. | Managed by `akm bundle add`/`akm bundle remove` |
 | `$CACHE/semantic-status.json` | Embedding provider health: `status` (pending/ready-js/ready-vec/blocked), `reason`, `providerFingerprint`, `lastCheckedAt`, `entryCount`, `embeddingCount`. Blocked status auto-expires after 24h. | Reset on `akm index --full` |
 | `$CACHE/registry-index/<slug>.json` | Removed in v0.8.0 — data now stored in `registry_index_cache` table in `$DATA/index.db`. Delete these files after running the migration script. | — |
 | `$CACHE/registry-index/skills-sh-search-<md5>.json` | Skills.sh search result cache. Fresh 15min; stale 1d. Key = MD5 of `url + query + limit`. | TTL |

@@ -8,7 +8,7 @@ and whether to act. Some `warn`s below are *adjudicated, expected* states — tr
 
 | Advisory (name in output) | What it means | Action |
 |---|---|---|
-| `state-db-schema` | state.db is missing required tables. | Re-run `akm init`; a fresh/older DB was opened. |
+| `state-db-schema` | state.db is missing required tables. | Re-run `akm bundle create`; a fresh/older DB was opened. |
 | `state-db-round-trip` | Append/read probe against state.db failed. | Check disk/permissions on the state.db path; the store is unwritable. |
 | `task-log-backing` | task_history rows reference log files missing on disk. | Logs were pruned/moved out from under the DB; safe to ignore if intentional, else restore the log dir. |
 | `active-runs` | A task run has exceeded the stale threshold (>15 min). | Inspect with `akm task history`; a lane is likely wedged — kill/re-run it. |

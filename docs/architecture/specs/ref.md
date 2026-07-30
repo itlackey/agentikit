@@ -208,7 +208,7 @@ than an error, because "unrecognized" is not a decidable property. Callers that
 want a closed set should filter on conceptId prefix instead (see above).
 
 The closed set still applies where a type must select a *write placement* —
-`akm propose <type>`, `placeNew` — because those need a directory to write to.
+`akm proposal new <type> <name>`, `placeNew` — because those need a directory to write to.
 
 ## Reserved structural files
 
@@ -262,11 +262,16 @@ prose are not refs**: `memories/foo` in a sentence is ordinary text, and no
 tool may rewrite it.
 
 Only lint's missing-ref scan honours this rule today. The other consumer,
-`akm mv`'s inbound-ref rewriting, is defective: it implements the rule exactly
-inverted (it rewrites bare conceptIds and matches no `bundle//` pattern at
-all), so it rewrites prose that is not a ref while leaving real anchored refs
-dangling. That is why `akm mv` is **Experimental** in 0.9.0 and not covered by
-the stability contract.
+`akm mv`'s inbound-ref rewriting, was defective: it implemented the rule
+exactly inverted (it rewrote bare conceptIds and matched no `bundle//` pattern
+at all), so it rewrote prose that is not a ref while leaving real anchored
+refs dangling. That defect is why `akm mv` shipped **Experimental** earlier in
+the 0.9.0 cycle and was never covered by the stability contract.
+
+**Amended 2026-07-30.** `akm mv` was removed outright before the 0.9.0
+release (no alias, no stub — see [`0.9.0-decisions.md` §D3](./0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-ships-experimental)).
+There is no tool today that rewrites inbound refs on rename; see "Renames and
+moves" below for the current procedure.
 
 ## Renames and moves
 
@@ -287,15 +292,27 @@ identity-preserving cross-bundle move.
 
 This supersedes the pre-0.9.0 rule that a rename "MUST use an explicit
 state-rekey transaction". That rule was a product choice made during the bundle
-refactor, not a constraint the architecture imposes. `akm mv`, which implements
-the superseded rule, still ships — but as an **Experimental** surface outside
-the stability contract, because its inbound-ref rewriting is inverted (above).
-The procedure above is the recommended one. If preserving learned state through
-renames later proves materially valuable, a narrow same-bundle `akm rename` can
-return — resolving
+refactor, not a constraint the architecture imposes. `akm mv`, which implemented
+the superseded rule, shipped briefly as an **Experimental** surface outside
+the stability contract, because its inbound-ref rewriting was inverted (above),
+then was removed outright before the 0.9.0 release. The procedure above —
+plain filesystem move, then `akm index`, then `akm lint` — is the only
+supported path today. If preserving learned state through renames later proves
+materially valuable, a narrow same-bundle `akm rename` can return — resolving
 through the index, using adapter-owned placement, accepting qualified refs,
 rewriting only anchored prose refs, applying one qualified old→new state
 mapping, and rebuilding derived index data rather than preserving row IDs.
+
+**Amended 2026-07-30.** Carrying learned state (utility, salience, usage
+history) across a rename is opt-in and out-of-band: run
+`bun scripts/rekey-asset-ref.ts <old-ref> <new-ref>` from a source checkout
+**before** `akm index`, and it re-keys the `entries` row plus
+`asset_salience`/`asset_outcome`/`usage_events` in place rather than letting
+`akm index` mint a fresh row. Automated garbage collection of orphaned rows
+left by renames that skip this script is tracked as issue #733; until it
+lands, the script is the only path. See
+[`v0.9.0-troubleshooting.md`](../../migration/v0.9.0-troubleshooting.md) for
+the full walkthrough.
 
 ## Usage Notes
 

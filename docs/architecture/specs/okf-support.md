@@ -73,7 +73,7 @@ The result is progressive enhancement:
 3. Unknown `type` values remain valid data. They get generic behavior unless
    the selected adapter explicitly adds more.
 
-`akm init` records `adapter: akm`. `akm add` records the detected adapter, and an
+`akm bundle create` records `adapter: akm`. `akm bundle add` records the detected adapter, and an
 explicit configured adapter always wins over probing. Strong native AKM layout
 evidence wins before the broader OKF probe because AKM Markdown is an OKF
 superset. An index-less bundle containing conformant typed Markdown can still be

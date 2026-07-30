@@ -11,8 +11,8 @@ cover:
 - prompt/usage flows
 - migration/error envelopes
 - file-system side effects
-- newer command surfaces and maintenance flows (`history`, `log`, `graph`,
-  `improve`, `proposal`, `task`, `wiki`, `env`, `secret`)
+- newer command surfaces and maintenance flows (`log`, `health`,
+  `improve`, `proposal`, `task`, `llm-wiki` bundle format, `env`, `secret`)
 
 Time budget:
 
@@ -69,7 +69,7 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$AKM_DAT
 alias akm='bun ./src/cli.ts'
 
 # 2.4 Verify isolation
-akm setup --yes | jq '.stashDir'
+akm setup --yes | jq '.bundleDir'
 akm config path --all
 ```
 
@@ -107,25 +107,31 @@ Fixture refs worth using throughout this doc:
 
 ## 4. First-Run Surface
 
-- [ ] `akm info` returns JSON with `schemaVersion`, `version`, `stashDir`,
+- [ ] `akm info` returns JSON with `schemaVersion`, `version`, `bundleDir`,
       `defaultBundle`, `assetTypes`, `searchModes`, `semanticSearch`,
       `registries`, `sourceProviders`, and `indexStats` (incl. `byType`, a
       per-asset-type breakdown of `entryCount`).
 - [ ] `akm config list` emits `sources`, not legacy `stashes`, for current
       persisted config.
 - [ ] `akm config path --all` returns sandbox-local paths only.
-- [ ] `akm hints` prints non-empty text.
-- [ ] `akm hints --detail full` prints the extended hint text.
+- [ ] `akm help agents` prints non-empty text.
+- [ ] `akm help agents --full` prints the extended hint text.
 - [ ] `akm --help` lists the current command surface:
-      `setup`, `init`, `index`, `health`, `info`, `graph`, `add`, `list`,
-      `remove`, `update`, `upgrade`, `search`, `curate`, `show`, `workflow`,
-      `remember`, `import`, `sync`, `clone`, `mv`, `registry`, `migrate`,
-      `config`, `feedback`, `history`, `log`, `agent`, `lessons`, `lint`,
-      `improve`, `proposal`, `help`, `hints`,
-      `completions`, `env`, `secret`, `task`. There is no `wiki` command
-      (removed in 0.9.0 in favor of the `llm-wiki` bundle format). There are
-      no top-level `extract`/`propose` commands — see `akm proposal extract`
-      / `akm proposal new`.
+      `setup`, `index`, `health`, `info`, `bundle`, `upgrade`, `search`,
+      `curate`, `show`, `workflow`, `remember`, `import`, `sync`, `clone`,
+      `registry`, `config`, `feedback`, `log`, `agent`, `lint`, `improve`,
+      `proposal`, `help`, `completions`, `env`, `secret`, `task`. There is no
+      `wiki` command (removed in 0.9.0 in favor of the `llm-wiki` bundle
+      format). There are no top-level `init`/`add`/`list`/`remove`/`update`
+      commands — see `akm bundle create`/`add`/`list`/`remove`/`update`.
+      There is no top-level `mv` (removed outright — plain filesystem move +
+      `akm index` + `akm lint`), `history` (folded into `akm health
+      --report`), `graph` (summary counts folded into `akm health`), or
+      `lessons` (the `lesson` asset type is read/written via
+      `akm search`/`akm show`/the proposal queue, not a command group)
+      command. There is no top-level `hints` command — see `akm help
+      agents`. There are no top-level `extract`/`propose` commands — see
+      `akm proposal extract` / `akm proposal new`.
 - [ ] `akm config enable` and `akm config disable` fail as unknown subcommands
       (removed in 0.9.0 — use `akm registry add|remove`).
 - [ ] `akm upgrade --check` returns structured version/install-method info and
@@ -138,7 +144,7 @@ Fixture refs worth using throughout this doc:
 
 - [ ] `akm setup --yes` runs without prompts, writes config with sandbox paths,
       and exits zero.
-- [ ] `akm setup --yes | jq '.stashDir'` returns a path under `$AKM_SANDBOX`.
+- [ ] `akm setup --yes | jq '.bundleDir'` returns a path under `$AKM_SANDBOX`.
 - [ ] `akm setup --config '{"engines":{"local":{"kind":"llm","endpoint":"http://localhost:1234/v1/chat/completions","model":"test-model"}},"defaults":{"llmEngine":"local"}}'`
       applies the JSON blob non-interactively and exits zero.
 - [ ] `akm config get engines.local.endpoint` after the above returns

@@ -27,7 +27,7 @@ Task-oriented guides for using akm.
 
 ## [Agents](agents/README.md)
 
-- `akm hints` (or `akm hints --detail brief`) -- The CLI reference agents load to use akm; always the embedded corpus at `src/assets/hints/cli-hints-{full,short}.md`
+- `akm help agents` (short guide by default; `akm help agents --full` for the complete guide) -- The CLI reference agents load to use akm; always the embedded corpus at `src/assets/hints/cli-hints-{full,short}.md`
 - [Agent Install Guide](agents/agent-install.md) -- Step-by-step automated install for agents
 - [Curate Workmap](agents/curate-workmap.md) -- Read before changing `akm curate` ranking or output
 
@@ -52,7 +52,7 @@ Source articles for the dev.to publishing pipeline (historical record).
 
 ## Official Ecosystem Repositories
 
-- [itlackey/akm-stash](https://github.com/itlackey/akm-stash) -- the official onboarding stash with ready-made assets you can install with `akm add`
+- [itlackey/akm-stash](https://github.com/itlackey/akm-stash) -- the official onboarding stash with ready-made assets you can install with `akm bundle add`
 - [itlackey/akm-registry](https://github.com/itlackey/akm-registry) -- the official registry index that powers built-in discovery
 - [itlackey/akm-plugins](https://github.com/itlackey/akm-plugins) -- optional integrations for tools like OpenCode
 - [itlackey/akm-bench](https://github.com/itlackey/akm-bench) -- the standalone benchmark and evaluation repo for akm

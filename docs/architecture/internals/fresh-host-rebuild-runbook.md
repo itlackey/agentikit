@@ -29,8 +29,8 @@ git (the 08-F1 recovery pattern — see step 3).
    no top-level `stashDir` config key in 0.9 — it is retired and rejected at
    load. If starting clean instead, run `akm setup --yes` to scaffold it.
 6. **Re-add non-git sources.** For each managed source not carried in the stash
-   git (websites, npm packages, GitHub repos), run `akm add <ref>`. Verify the
-   full set with `akm list`.
+   git (websites, npm packages, GitHub repos), run `akm bundle add <ref>`. Verify the
+   full set with `akm bundle list`.
 7. **Rebuild the index:** `akm index --full` (forces a complete reindex rather
    than an incremental update).
 8. **Verify health:** `akm health` (checks runtime, artifacts, and improve

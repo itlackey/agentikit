@@ -2,8 +2,8 @@
 
 Documentation for wiring AI agents into akm.
 
-Run `akm hints` for the CLI reference agents should load into a system prompt
-(`akm hints --detail brief` for the short form). It always prints the embedded
+Run `akm help agents` for the CLI reference agents should load into a system prompt
+(the short form is the default; pass `--full` for the complete guide). It always prints the embedded
 corpus at `src/assets/hints/cli-hints-full.md` / `cli-hints-short.md` --
 browse those files directly if you want to read the reference without running
 the CLI. There used to be a separate `docs/agents/AGENTS.md` /
