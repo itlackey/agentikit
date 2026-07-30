@@ -324,6 +324,9 @@ describe("0.9 migration backup", () => {
     const state = new Database(getStateDbPathInDataDir());
     // This fixture marks 010-asset-outcome applied, so it must materialize the
     // table migration 010 creates — migration 018's DROP COLUMN needs it to exist.
+    // It also marks 009/011/015 (asset_salience + its two ADD COLUMNs) applied,
+    // so #733's migration 021 (ALTER TABLE asset_salience ADD COLUMN
+    // missing_since) needs that table to exist too.
     state.exec(`
       CREATE TABLE improve_runs(id TEXT PRIMARY KEY, profile TEXT, started_at TEXT);
       CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
@@ -340,6 +343,18 @@ describe("0.9 migration backup", () => {
       );
       CREATE INDEX idx_asset_outcome_review_pressure ON asset_outcome(review_pressure DESC);
       CREATE INDEX idx_asset_outcome_score ON asset_outcome(outcome_score DESC);
+      CREATE TABLE asset_salience (
+        asset_ref              TEXT    PRIMARY KEY,
+        encoding_salience       REAL    NOT NULL DEFAULT 0.5,
+        outcome_salience        REAL    NOT NULL DEFAULT 0.0,
+        retrieval_salience      REAL    NOT NULL DEFAULT 0.0,
+        rank_score              REAL    NOT NULL DEFAULT 0.0,
+        consecutive_no_ops      INTEGER NOT NULL DEFAULT 0,
+        updated_at               INTEGER NOT NULL DEFAULT 0,
+        homeostatic_demoted_at  INTEGER DEFAULT NULL,
+        encoding_source         TEXT DEFAULT NULL
+      );
+      CREATE INDEX idx_asset_salience_rank ON asset_salience(rank_score DESC);
     `);
     const stateInsert = state.prepare("INSERT INTO schema_migrations(id) VALUES (?)");
     for (const id of [

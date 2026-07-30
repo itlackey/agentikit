@@ -118,6 +118,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   task id (never namespaced): enabling a task whose id is already scheduled from a
   different bundle is a hard error rather than a silent clobber.
 
+- **Orphan-GC pass for unresolvable `asset_salience` / `asset_outcome` state
+  rows** (#733). A new improve maintenance pass (`runOrphanStateGcPass`, run
+  next to the existing orphan-proposal purge) stamps `missing_since` on any
+  state row whose ref no longer resolves against `entries.item_ref`, clears
+  the stamp the moment the ref resolves again, and — only when
+  `improve.stateGc.collect` is set to `true` (**default `false`**) — deletes
+  rows whose stamp is older than a fixed 7-day grace window
+  (`STATE_GC_GRACE_MS`). The pass always runs and always reports counts via
+  the new `asset_state_gc` event (`{pending, collected, byTable}`), emitted
+  only when there is something to report, so live data can prove the report
+  clean before `collect` is ever turned on. Additive migration
+  `021-asset-state-missing-since` adds the `missing_since` column to both
+  tables. Deliberately lean by design (Workstream C): no quarantine archive,
+  no circuit breaker, no health-advisory plumbing, no new tables — "ref not
+  present in `entries.item_ref`" is trusted as the authoritative-deletion
+  predicate because the indexer already preserves a source's last-known-good
+  rows when its scan is incomplete, so a temporarily unreachable source never
+  contributes false candidates. `usage_events` is out of scope (already
+  covered by cascade-on-delete plus its own 90-day retention purge).
+
 ### Changed
 
 - **akm is described as a knowledge toolkit, not a package manager** (R-048).

@@ -150,6 +150,18 @@ export type EventType =
   | "collapse_detector_alert"
   /** R5 — emitted by the maintenance purge when improve_cycle_metrics rows past retention are deleted. Metadata: `{purgedCount, retentionDays}`. */
   | "improve_cycle_metrics_purged"
+  /**
+   * #733 — emitted by `runOrphanStateGcPass` (the orphan-state GC maintenance
+   * pass) when a run has something to report: any `asset_salience` /
+   * `asset_outcome` row currently pending (unresolved against
+   * `entries.item_ref`) or collected (deleted, only when
+   * `improve.stateGc.collect` is true) this run. A quiet run with nothing
+   * pending and nothing collected emits no event. Metadata carries
+   * `{pending, collected, byTable}`, where `byTable` breaks both counts down
+   * per table (`asset_salience` / `asset_outcome`). Sentinel ref:
+   * `asset_state/_gc` (same convention as `proposals/_orphan-purge`).
+   */
+  | "asset_state_gc"
   | string;
 
 export interface AppendEventInput {

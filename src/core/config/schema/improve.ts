@@ -72,6 +72,23 @@ const ImproveCollapseDetectorSchema = z
   })
   .passthrough();
 
+// #733 — orphan-GC pass (Workstream C, lean by design: one config gate).
+// The pass ALWAYS runs and ALWAYS reports counts (via the `asset_state_gc`
+// event); this gate controls ONLY whether it actually deletes rows whose
+// `missing_since` has been past the grace window (`STATE_GC_GRACE_MS`, 7
+// days — a named constant, not configurable) for longer than that window.
+const ImproveStateGcSchema = z
+  .object({
+    /**
+     * Actually DELETE `asset_salience` / `asset_outcome` rows once they have
+     * been unresolvable for longer than the grace window. Default false for
+     * 0.9.0: live data (the event's `pending` counts) proves the report
+     * clean before deletion is turned on.
+     */
+    collect: z.boolean().optional(),
+  })
+  .passthrough();
+
 export const ImproveConfigSchema = z
   .object({
     strategies: z.record(engineName, ImproveProfileConfigSchema).optional(),
@@ -79,5 +96,6 @@ export const ImproveConfigSchema = z
     eventRetentionDays: nonNegativeNumber.optional(),
     salience: ImproveSalienceSchema.optional(),
     collapseDetector: ImproveCollapseDetectorSchema.optional(),
+    stateGc: ImproveStateGcSchema.optional(),
   })
   .passthrough();

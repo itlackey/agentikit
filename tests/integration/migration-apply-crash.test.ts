@@ -81,6 +81,27 @@ const ASSET_OUTCOME_010_DDL = `
   CREATE INDEX idx_asset_outcome_score ON asset_outcome(outcome_score DESC);
 `;
 
+// The physical shape asset_salience has by ledger checkpoint 016 — migration
+// 009's base CREATE plus the two ADD COLUMNs from 011 (homeostatic_demoted_at)
+// and 015 (encoding_source), both marked applied in STATE_IDS. Same rationale
+// as ASSET_OUTCOME_010_DDL above: #733's migration 021 (`ALTER TABLE
+// asset_salience ADD COLUMN missing_since`) fails with "no such table" unless
+// this fixture materializes the table it alters.
+const ASSET_SALIENCE_016_DDL = `
+  CREATE TABLE asset_salience (
+    asset_ref              TEXT    PRIMARY KEY,
+    encoding_salience       REAL    NOT NULL DEFAULT 0.5,
+    outcome_salience        REAL    NOT NULL DEFAULT 0.0,
+    retrieval_salience      REAL    NOT NULL DEFAULT 0.0,
+    rank_score              REAL    NOT NULL DEFAULT 0.0,
+    consecutive_no_ops      INTEGER NOT NULL DEFAULT 0,
+    updated_at               INTEGER NOT NULL DEFAULT 0,
+    homeostatic_demoted_at  INTEGER DEFAULT NULL,
+    encoding_source         TEXT DEFAULT NULL
+  );
+  CREATE INDEX idx_asset_salience_rank ON asset_salience(rank_score DESC);
+`;
+
 let cleanup: Cleanup | undefined;
 
 beforeEach(() => {
@@ -108,6 +129,7 @@ function seed(options?: { failingWorkflow?: boolean }): string {
   state.exec(`
     CREATE TABLE improve_runs(id TEXT PRIMARY KEY, profile TEXT, started_at TEXT);
     ${ASSET_OUTCOME_010_DDL}
+    ${ASSET_SALIENCE_016_DDL}
   `);
   ledger(state, STATE_IDS);
   state.close();

@@ -23,6 +23,7 @@ exports[`SQLite migration runner characterization state.db: fresh-DB migration r
     "018-drop-dead-lane-schema",
     "019-proposal-fingerprints",
     "020-three-db-cutover",
+    "021-asset-state-missing-since",
   ],
   "schema": [
     {
@@ -263,7 +264,7 @@ exports[`SQLite migration runner characterization state.db: fresh-DB migration r
         accepted_change_count    INTEGER NOT NULL DEFAULT 0,
         outcome_score            REAL    NOT NULL DEFAULT 0.0,
         updated_at               INTEGER NOT NULL DEFAULT 0
-      )"
+      , missing_since INTEGER DEFAULT NULL)"
 ,
       "type": "table",
     },
@@ -278,7 +279,7 @@ exports[`SQLite migration runner characterization state.db: fresh-DB migration r
         rank_score         REAL    NOT NULL DEFAULT 0.0,
         consecutive_no_ops INTEGER NOT NULL DEFAULT 0,
         updated_at         INTEGER NOT NULL DEFAULT 0
-      , homeostatic_demoted_at INTEGER DEFAULT NULL, encoding_source TEXT DEFAULT NULL)"
+      , homeostatic_demoted_at INTEGER DEFAULT NULL, encoding_source TEXT DEFAULT NULL, missing_since INTEGER DEFAULT NULL)"
 ,
       "type": "table",
     },

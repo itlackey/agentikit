@@ -39,6 +39,21 @@ import { type CycleMetricsRow, purgeOldCycleMetrics } from "../../storage/reposi
 import { purgeOldEvents } from "../../storage/repositories/events-repository";
 import { purgeOldImproveRuns } from "../../storage/repositories/improve-runs-repository";
 import { closeDatabase, openIndexDatabase } from "../../storage/repositories/index-connection";
+import { getEntryByRef } from "../../storage/repositories/index-entries-repository";
+import {
+  clearAssetOutcomeMissing,
+  countAssetOutcomeMissing,
+  deleteAssetOutcomeMissingBefore,
+  listAssetOutcomeMissingState,
+  stampAssetOutcomeMissing,
+} from "../../storage/repositories/outcome-repository";
+import {
+  clearAssetSalienceMissing,
+  countAssetSalienceMissing,
+  deleteAssetSalienceMissingBefore,
+  listAssetSalienceMissingState,
+  stampAssetSalienceMissing,
+} from "../../storage/repositories/salience-repository";
 import { expireStaleProposals, listProposals, purgeOrphanProposals } from "../proposal/repository";
 import { checkDeadUrls, type DeadUrl } from "../url-checker";
 import { DEFAULT_RETENTION_DAYS as CYCLE_METRICS_RETENTION_DAYS, runCollapseDetector } from "./collapse-detector";
@@ -59,7 +74,7 @@ import { type ResolvedImprovePlan, shouldSkipRef } from "./improve-strategies";
 import type { applyMemoryCleanup } from "./memory/memory-improve";
 import { recordNoOp, resetConsecutiveNoOps } from "./salience";
 import { errMessage, refSlug } from "./shared";
-import { durableImproveRef } from "./source-identity";
+import { bareImproveRef, durableImproveRef } from "./source-identity";
 
 // ── improve loop / post-loop / maintenance stages ───────────────────
 // The cycle stages run by akmImprove, extracted from improve.ts.
@@ -1030,6 +1045,13 @@ async function runMaintenancePassesUnderLease(
     const orphan = runOrphanProposalPurgePass(ctx);
     allWarnings.push(...orphan.warnings);
 
+    // #733: orphan-state GC — stamps/clears/(optionally) collects
+    // asset_salience/asset_outcome rows whose ref no longer resolves in
+    // index.db. Needs the SAME already-open index.db handle (dbCell.current)
+    // the passes above share.
+    const stateGc = runOrphanStateGcPass(ctx, dbCell);
+    allWarnings.push(...stateGc.warnings);
+
     const expiration = runProposalExpirationPass(ctx);
     allWarnings.push(...expiration.warnings);
 
@@ -1493,4 +1515,200 @@ export function runRetentionPurgePass(ctx: MaintenanceCtx): { warnings: string[]
     }
   }
   return { warnings };
+}
+
+// ── #733 — orphan-state GC pass (Workstream C) ──────────────────────────────
+//
+// Deliberately lean: one maintenance pass, one additive migration (021), one
+// event type (asset_state_gc), one config gate (improve.stateGc.collect,
+// default false). See docs/architecture/specs/0.9.0-close-out-plan.md
+// Workstream C for the full design rationale. No quarantine archive, no
+// circuit breaker, no health-advisory plumbing, no new tables.
+
+/**
+ * Grace window (ms) before an unresolved `asset_salience` / `asset_outcome`
+ * row becomes delete-eligible — only when `improve.stateGc.collect` is true.
+ * A named constant, not a config knob (owner ruling — see the close-out
+ * plan's Workstream C). Mirrors `TXN_SWEEP_GRACE_MS` (src/core/fs-txn.ts:298).
+ */
+export const STATE_GC_GRACE_MS = daysToMs(7);
+
+/**
+ * Resolve one state-table's stored `asset_ref` against the live index.
+ *
+ * "ref not present in entries.item_ref" is the authoritative-deletion
+ * predicate (see the pass doc comment below), so this is a thin wrapper
+ * around the same single-ref probe the rest of improve uses
+ * (`getEntryByRef`, index-entries-repository.ts) — which already resolves
+ * both storage spellings a write can produce (`salienceWriteKey`/
+ * `outcomeWriteKey` = `itemRef ?? ref`): an exact bundle-qualified item_ref,
+ * or a bare conceptId matched by suffix across all bundles.
+ *
+ * On top of that, falls back to the BARE conceptId form (`bareImproveRef` —
+ * the same primitive `preparation.ts`'s `normalizeStoredKey` map is built
+ * from via `improveStateReadRefs`) when the stored ref carries a bundle
+ * prefix that no longer matches exactly. This is the legacy-spelling
+ * normalization trap: a naive `asset_ref NOT IN (SELECT item_ref FROM
+ * entries)` would treat a live asset whose row predates bundle-qualification
+ * (or whose bundle prefix is stale) as an orphan and delete it. Preferring
+ * "never delete a live row" over "never miss a genuinely dead one" mirrors
+ * `getEntryByRef`'s own bare-conceptId suffix-match trade-off.
+ */
+function isStateRefLive(indexDb: Database, storedRef: string): boolean {
+  if (getEntryByRef(indexDb, storedRef) !== null) return true;
+  const bare = bareImproveRef(storedRef);
+  return bare !== storedRef && getEntryByRef(indexDb, bare) !== null;
+}
+
+/** Per-table sweep result — the {pending, collected} shape the event and pass summary report. */
+interface StateGcTableResult {
+  pending: number;
+  collected: number;
+}
+
+/** The four repository operations {@link gcOneStateTable} needs, injected so both tables share one sweep body. */
+interface StateGcTableOps {
+  refRows: ReadonlyArray<{ asset_ref: string; missing_since: number | null }>;
+  stamp: (refs: string[], now: number) => number;
+  clear: (refs: string[]) => number;
+  deleteOlderThan: (cutoffMs: number) => number;
+  countPending: () => number;
+}
+
+/**
+ * Sweep ONE state table: stamp refs that just went unresolved, clear refs
+ * that resolved again, and — only when `collect` is true — delete rows whose
+ * `missing_since` is older than {@link STATE_GC_GRACE_MS}. `pending` is a
+ * point-in-time snapshot taken AFTER stamp/clear/delete (re-queried, not
+ * accumulated), so it reflects the current backlog rather than this run's
+ * delta — "every run emits the counts either way, so live data accumulates
+ * proof" (close-out plan, Workstream C).
+ */
+function gcOneStateTable(
+  args: { indexDb: Database; now: number; collect: boolean } & StateGcTableOps,
+): StateGcTableResult {
+  const { refRows, indexDb, now, collect, stamp, clear, deleteOlderThan, countPending } = args;
+  const toStamp: string[] = [];
+  const toClear: string[] = [];
+  for (const row of refRows) {
+    const live = isStateRefLive(indexDb, row.asset_ref);
+    if (!live && row.missing_since == null) toStamp.push(row.asset_ref);
+    else if (live && row.missing_since != null) toClear.push(row.asset_ref);
+  }
+  if (toStamp.length > 0) stamp(toStamp, now);
+  if (toClear.length > 0) clear(toClear);
+
+  const collected = collect ? deleteOlderThan(now - STATE_GC_GRACE_MS) : 0;
+  const pending = countPending();
+
+  return { pending, collected };
+}
+
+/**
+ * Orphan-state GC — #733 (Workstream C). For each of the two per-asset state
+ * tables (`asset_salience`, `asset_outcome`), stamps `missing_since` on refs
+ * that no longer resolve against `entries.item_ref` in index.db, clears the
+ * stamp on refs that resolve again, and — only when `improve.stateGc.collect`
+ * is true — deletes rows whose stamp is older than {@link STATE_GC_GRACE_MS}.
+ *
+ * "ref not present in entries.item_ref" IS the authoritative-deletion
+ * predicate: "absent ≠ deleted" is inherited from the indexer, not
+ * re-implemented here — an incomplete or failed source scan preserves that
+ * source's last-known-good `entries` rows (indexer.ts ~1195-1199), and
+ * mass-wipe is already gated upstream (`preserveExistingIndex` +
+ * `fullDelete && scanComplete`). A temporarily unreachable source therefore
+ * never surfaces candidates; no separate scan-status tracking is needed.
+ *
+ * Runs under the SAME index-writer lease / borrowed-state.db-connection
+ * discipline as the neighboring maintenance passes: `dbCell.current` supplies
+ * the already-open index.db handle (#584), and state.db access goes through
+ * `withStateDb(..., { borrowed: eventsCtx?.db })` so this never opens a
+ * second live writer alongside a long-lived `eventsCtx.db` connection — see
+ * the #585 comment on {@link runRetentionPurgePass}'s events-purge call for
+ * why that matters ("database is locked").
+ *
+ * Exported for direct test coverage (tests/integration/commands/improve/
+ * state-gc.test.ts), mirroring the `runMemoryInferenceMaintenancePass` /
+ * `runGraphExtractionMaintenancePass` / `runRetentionPurgePass` precedent;
+ * production callers reach it only through `runMaintenancePassesUnderLease`.
+ */
+export function runOrphanStateGcPass(
+  ctx: MaintenanceCtx,
+  dbCell: IndexDbCell,
+): { pending: number; collected: number; warnings: string[] } {
+  const { eventsCtx, config } = ctx;
+  const warnings: string[] = [];
+  const indexDb = dbCell.current;
+  if (!indexDb) {
+    warnings.push("orphan state GC skipped: no index.db handle available");
+    return { pending: 0, collected: 0, warnings };
+  }
+
+  const collect = config.improve?.stateGc?.collect === true;
+  const now = Date.now();
+  let pending = 0;
+  let collected = 0;
+
+  try {
+    withStateDb(
+      (stateDb) => {
+        const salienceResult = gcOneStateTable({
+          refRows: listAssetSalienceMissingState(stateDb),
+          indexDb,
+          now,
+          collect,
+          stamp: (refs, ts) => stampAssetSalienceMissing(stateDb, refs, ts),
+          clear: (refs) => clearAssetSalienceMissing(stateDb, refs),
+          deleteOlderThan: (cutoffMs) => deleteAssetSalienceMissingBefore(stateDb, cutoffMs),
+          countPending: () => countAssetSalienceMissing(stateDb),
+        });
+
+        const outcomeResult = gcOneStateTable({
+          refRows: listAssetOutcomeMissingState(stateDb),
+          indexDb,
+          now,
+          collect,
+          stamp: (refs, ts) => stampAssetOutcomeMissing(stateDb, refs, ts),
+          clear: (refs) => clearAssetOutcomeMissing(stateDb, refs),
+          deleteOlderThan: (cutoffMs) => deleteAssetOutcomeMissingBefore(stateDb, cutoffMs),
+          countPending: () => countAssetOutcomeMissing(stateDb),
+        });
+
+        // Table-name-shaped keys ("salience"/"outcome", not the guarded
+        // "asset_salience"/"asset_outcome" table names) — this file sits
+        // outside src/storage/repositories/**, where the state-table-sql
+        // lint rule (#672) forbids naming those tables even in a log string
+        // or an object key, not just in raw SQL.
+        const byTable = { salience: salienceResult, outcome: outcomeResult };
+        pending = salienceResult.pending + outcomeResult.pending;
+        collected = salienceResult.collected + outcomeResult.collected;
+
+        if (pending > 0 || collected > 0) {
+          info(
+            `[improve] orphan state GC: ${pending} pending, ${collected} collected ` +
+              `(salience ${salienceResult.pending}/${salienceResult.collected}, ` +
+              `outcome ${outcomeResult.pending}/${outcomeResult.collected})`,
+          );
+          // #733 — asset_state_gc reports the current per-table backlog
+          // snapshot (`pending`) plus this run's deletions (`collected`);
+          // emitted only when there is something to report (mirrors the
+          // rekey script's no-op-stays-silent precedent) so a perpetually
+          // clean stash never accumulates events.
+          appendEvent(
+            {
+              eventType: "asset_state_gc",
+              ref: "asset_state/_gc",
+              metadata: { pending, collected, byTable },
+            },
+            eventsCtx,
+          );
+        }
+      },
+      { path: eventsCtx?.dbPath, borrowed: eventsCtx?.db },
+    );
+  } catch (err) {
+    warnings.push(`orphan state GC failed: ${errMessage(err)}`);
+  }
+
+  return { pending, collected, warnings };
 }
