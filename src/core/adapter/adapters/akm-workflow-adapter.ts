@@ -128,7 +128,16 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
   return diagnostics;
 }
 
-/** True when a top-level file in `root` is workflow-shaped (used by looksLikeRoot). */
+/**
+ * True when a top-level file in `root` is workflow-shaped (used by
+ * looksLikeRoot). Unlike `isWorkflowFile` (which admits an absent `type:` —
+ * the lenient default ONCE a source is already known to be this bundle),
+ * this requires an EXPLICIT `type: workflow` — the install-time probe is
+ * choosing WHICH adapter owns an unconfigured root among several candidates
+ * (spec §1.2), and an incidental `.md` with no frontmatter type at all
+ * (common in an OKF or llm-wiki bundle) must not misclassify that root as
+ * akm-workflow's.
+ */
 function hasTopLevelWorkflowFile(root: string, entries: fs.Dirent[]): boolean {
   for (const entry of entries) {
     if (!entry.isFile()) continue;
@@ -140,7 +149,7 @@ function hasTopLevelWorkflowFile(root: string, entries: fs.Dirent[]): boolean {
     } catch {
       continue;
     }
-    if (isWorkflowFile(raw)) return true;
+    if (parseFrontmatter(raw).data.type === "workflow") return true;
   }
   return false;
 }

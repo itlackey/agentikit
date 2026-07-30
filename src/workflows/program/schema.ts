@@ -24,15 +24,20 @@
  * enums against these constants so the two cannot drift.
  */
 
-import type { SourceRef } from "../schema";
-
-// LlmInvocationOverrides / AgentFailureReason referenced via inline
-// `import("...")` TYPE QUERIES (WI-9.8 KILL 3) rather than top-level
-// `import type` statements: both are self-contained, zero-dependency shapes
-// living in the (heavy) agent-runtime modules, and this file is reached from
-// `output/renderers.ts` (via `workflows/renderer.ts`) — a top-level import
-// here would route the renderers hub straight back into the agent-runtime /
-// harness-barrel cluster KILL 3 severs.
+// SourceRef / LlmInvocationOverrides / AgentFailureReason referenced via
+// inline `import("...")` TYPE QUERIES (WI-9.8 KILL 3) rather than top-level
+// `import type` statements. `SourceRef` lives in `../schema`, which now
+// itself imports THIS file's step-vocabulary types (the unified document
+// shape embeds `ProgramUnit`/`ProgramMap`/`ProgramRoute`/`ProgramGate`) — a
+// top-level `import type { SourceRef } from "../schema"` here would close a
+// two-file cycle the import-cycle ratchet counts (it counts `import type`,
+// unlike this inline form). `LlmInvocationOverrides`/`AgentFailureReason` are
+// self-contained, zero-dependency shapes living in the (heavy) agent-runtime
+// modules, and this file is reached from `output/renderers.ts` (via
+// `workflows/renderer.ts`) — a top-level import here would route the
+// renderers hub straight back into the agent-runtime / harness-barrel
+// cluster KILL 3 severs.
+type SourceRef = import("../schema").SourceRef;
 type LlmInvocationOverrides = import("../../integrations/agent/engine-resolution").LlmInvocationOverrides;
 type AgentFailureReason = import("../../integrations/agent/spawn").AgentFailureReason;
 
