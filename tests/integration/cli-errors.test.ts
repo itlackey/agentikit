@@ -484,6 +484,48 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
     expect(parsed.hint).not.toContain("Did you mean");
     expect(parsed.hint).toBe("Run `akm --help` for usage.");
   });
+
+  // Retired 0.9-overhaul spellings get their REPLACEMENT, never a
+  // did-you-mean: edit distance steers agents into the wrong command
+  // (`init`→`info`, `update`→`upgrade` — the latter replaces the binary).
+  test("retired top-level spellings hint the replacement, not did-you-mean", () => {
+    const cases: Array<[string[], string]> = [
+      [["init"], "akm bundle create"],
+      [["update"], "akm bundle update"],
+      [["tasks", "doctor"], "akm task <subcommand>"],
+      [["history"], "akm log --ref"],
+      [["hints"], "akm help agents"],
+      [["mv", "a", "b"], "rekey-asset-ref.ts"],
+      [["extract"], "akm proposal extract"],
+    ];
+    for (const [argv, expected] of cases) {
+      const { status, stderr } = spawnCli(argv, { cwd: repoRoot });
+      expect(status, argv.join(" ")).toBe(2);
+      const parsed = JSON.parse(stderr.trim());
+      expect(parsed.code, argv.join(" ")).toBe("UNKNOWN_COMMAND");
+      expect(parsed.hint, argv.join(" ")).toContain(expected);
+      expect(parsed.hint, argv.join(" ")).not.toContain("Did you mean");
+      // Every retired-spelling hint routes to the in-CLI rename table.
+      expect(parsed.hint, argv.join(" ")).toContain("akm help migrate 0.9.0");
+    }
+  });
+
+  test("retired group-scoped spellings resolve against their parent group", () => {
+    const cases: Array<[string[], string]> = [
+      [["env", "set", "prod", "KEY"], "edit the `.env` file"],
+      [["registry", "search", "x"], "akm search --from registry"],
+      [["workflow", "watch", "run-1"], "akm log --run"],
+      [["config", "show"], "akm config list"],
+      [["task", "enable", "t1"], "akm task sync"],
+      [["log", "tail"], "@offset:"],
+    ];
+    for (const [argv, expected] of cases) {
+      const { status, stderr } = spawnCli(argv, { cwd: repoRoot });
+      expect(status, argv.join(" ")).toBe(2);
+      const parsed = JSON.parse(stderr.trim());
+      expect(parsed.hint, argv.join(" ")).toContain(expected);
+    }
+  });
 });
 
 // S11 item 1/2: the sectioned root help groups top-level commands instead of

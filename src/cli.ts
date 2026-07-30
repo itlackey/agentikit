@@ -81,6 +81,7 @@ import {
   resolveHelpMigrateVersionArg,
   setParsedInvocation,
 } from "./cli/invocation";
+import { retiredCommandHint } from "./cli/retired-commands";
 import {
   defineGroupCommand,
   EXIT_CODES,
@@ -813,9 +814,10 @@ async function renderSectionedRootHelp(): Promise<string> {
  */
 function findUnknownCommandAttempt(
   rawArgs: readonly string[],
-): { attempted: string; candidates: string[] } | undefined {
+): { attempted: string; candidates: string[]; parentPath: string[] } | undefined {
   let cmd: AnyCittyCommand = main as AnyCittyCommand;
   let args = rawArgs;
+  const parentPath: string[] = [];
   for (;;) {
     const subCommands = cmd.subCommands as Record<string, AnyCittyCommand> | undefined;
     if (!subCommands || Object.keys(subCommands).length === 0) return undefined;
@@ -823,7 +825,8 @@ function findUnknownCommandAttempt(
     const token = idx >= 0 ? args[idx] : undefined;
     if (token === undefined) return undefined;
     const sub = findCittySubCommandByName(subCommands, token);
-    if (!sub) return { attempted: token, candidates: Object.keys(subCommands) };
+    if (!sub) return { attempted: token, candidates: Object.keys(subCommands), parentPath };
+    parentPath.push(token);
     cmd = sub;
     args = args.slice(idx + 1);
   }
@@ -900,8 +903,13 @@ function cittyCliErrorUsageCode(error: Error & { code?: string }): UsageErrorCod
 function toUsageErrorFromCliError(error: Error, rawArgs: readonly string[]): UsageError {
   const code = cittyCliErrorUsageCode(error as Error & { code?: string });
   const attempt = code === "UNKNOWN_COMMAND" ? findUnknownCommandAttempt(rawArgs) : undefined;
-  const suggestion = attempt ? closestCommandMatch(attempt.attempted, attempt.candidates) : undefined;
-  const hint = suggestion ? `Did you mean \`${suggestion}\`? ${CLI_HELP_POINTER}` : CLI_HELP_POINTER;
+  // Retired spellings from the 0.9 hard break get their replacement, not a
+  // did-you-mean: edit distance suggests the WRONG command for most of them
+  // (`init`→`info`, `update`→`upgrade`), and agents follow suggestions.
+  const retired = attempt ? retiredCommandHint(attempt.parentPath, attempt.attempted) : undefined;
+  const suggestion =
+    retired === undefined && attempt ? closestCommandMatch(attempt.attempted, attempt.candidates) : undefined;
+  const hint = retired ?? (suggestion ? `Did you mean \`${suggestion}\`? ${CLI_HELP_POINTER}` : CLI_HELP_POINTER);
   // citty colorizes error.message with ANSI escapes even when stdout/stderr
   // is not a TTY. Strip them so the JSON envelope's `error` field is plain
   // text instead of embedding raw escape sequences.
