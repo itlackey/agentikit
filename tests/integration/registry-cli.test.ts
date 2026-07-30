@@ -396,18 +396,20 @@ describe("config roundtrip", () => {
   });
 });
 
-// ── `akm registry search` via the real CLI (R-008) ──────────────────────────
+// ── `akm search --from registry` via the real CLI (R-008) ───────────────────
 //
-// Regression for R-008: `registry-cli.ts`'s `search` subcommand used to call
-// `searchRegistry(query, { limit, includeAssets })` — omitting `registries`
-// entirely — so it always fell through to `resolveRegistries()`'s no-arg
-// default (DEFAULT_CONFIG), never the on-disk config a user builds with
-// `akm registry add`. These drive the actual `registryCommand` handler
-// (not `searchRegistry` directly) so a regression in the CLI wiring itself
-// is caught, not just in the underlying library function.
+// Regression for R-008: the retired `registry-cli.ts` `search` subcommand
+// used to call `searchRegistry(query, { limit, includeAssets })` — omitting
+// `registries` entirely — so it always fell through to
+// `resolveRegistries()`'s no-arg default (DEFAULT_CONFIG), never the
+// on-disk config a user builds with `akm registry add`. Registry search was
+// folded into `akm search --from registry` in the 0.9 CLI overhaul (S8);
+// this drives the actual `searchCommand` handler (not `searchRegistry`
+// directly) so a regression in the CLI wiring itself is caught, not just in
+// the underlying library function.
 
 describe("registry search via CLI consults configured registries (R-008)", () => {
-  test("a registry added to config is searched by `akm registry search`", async () => {
+  test("a registry added to config is searched by `akm search --from registry`", async () => {
     const index: RegistryIndex = {
       version: 3,
       updatedAt: "2026-01-01T00:00:00Z",
@@ -428,11 +430,11 @@ describe("registry search via CLI consults configured registries (R-008)", () =>
       saveConfig({ ...config, registries: [{ url: srv.url, name: "cli-test-registry" }] });
       resetConfigCache();
 
-      const result = await runCliCapture(["registry", "search", "widget", "--format=json"]);
+      const result = await runCliCapture(["search", "widget", "--from", "registry", "--detail=full", "--format=json"]);
       expect(result.code).toBe(0);
       const parsed = JSON.parse(result.stdout);
-      const installRefs = (parsed.hits ?? []).map((h: { installRef: string }) => h.installRef);
-      expect(installRefs).toContain("npm:cli-configured-only");
+      const registryIds = (parsed.registryHits ?? []).map((h: { id: string }) => h.id);
+      expect(registryIds).toContain("npm:cli-configured-only");
     } finally {
       srv.close();
     }
@@ -478,12 +480,12 @@ describe("registry search via CLI consults configured registries (R-008)", () =>
       });
       resetConfigCache();
 
-      const result = await runCliCapture(["registry", "search", "widget", "--format=json"]);
+      const result = await runCliCapture(["search", "widget", "--from", "registry", "--detail=full", "--format=json"]);
       expect(result.code).toBe(0);
       const parsed = JSON.parse(result.stdout);
-      const installRefs = (parsed.hits ?? []).map((h: { installRef: string }) => h.installRef);
-      expect(installRefs).toContain("npm:enabled-widget");
-      expect(installRefs).not.toContain("npm:disabled-widget");
+      const registryIds = (parsed.registryHits ?? []).map((h: { id: string }) => h.id);
+      expect(registryIds).toContain("npm:enabled-widget");
+      expect(registryIds).not.toContain("npm:disabled-widget");
     } finally {
       enabledSrv.close();
       disabledSrv.close();

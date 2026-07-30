@@ -66,7 +66,7 @@ afterAll(() => {
   }
 });
 
-describe("akm add website", () => {
+describe("akm bundle add website", () => {
   test(
     "adds a website stash source, caches markdown, and indexes it",
     async () => {
@@ -78,7 +78,7 @@ describe("akm add website", () => {
       const websiteUrl = serveWebsite();
       const env = {
         ...process.env,
-        AKM_STASH_DIR: stashDir,
+        AKM_BUNDLE_DIR: stashDir,
         XDG_CACHE_HOME: xdgCache,
         XDG_CONFIG_HOME: xdgConfig,
         XDG_DATA_HOME: xdgData,
@@ -92,7 +92,7 @@ describe("akm add website", () => {
         `${JSON.stringify({ configVersion: "0.9.0", semanticSearchMode: "off" }, null, 2)}\n`,
       );
 
-      const child = spawn("bun", [CLI, "add", websiteUrl, "--name", "docs-site", "--format=json"], {
+      const child = spawn("bun", [CLI, "bundle", "add", websiteUrl, "--name", "docs-site", "--format=json"], {
         stdio: ["ignore", "pipe", "pipe"],
         env,
       });

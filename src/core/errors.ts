@@ -30,19 +30,19 @@ export type ConfigErrorCode =
   | "LLM_NOT_CONFIGURED"
   | "INVALID_CONFIG_FILE"
   | "UNSUPPORTED_CONFIG_VERSION"
-  // Defense-in-depth sentinel raised by `akm init` under `bun test` to
-  // refuse persisting a temp-dir stashDir to the user's real config.
+  // Defense-in-depth sentinel raised by `akm bundle create` under `bun test`
+  // to refuse persisting a temp-dir stashDir to the user's real config.
   // See src/commands/sources/init.ts.
   | "INIT_TMP_STASH_REFUSED"
   | "SETUP_TMP_STASH_REFUSED"
   | "UNKNOWN_IMPROVE_STRATEGY"
   // Refused stashDir that would clobber a sensitive system path or the user's
-  // home directory (#473). Triggered by `akm init`/`akm setup` when the
+  // home directory (#473). Triggered by `akm bundle create`/`akm setup` when the
   // explicit `--dir` argument resolves to e.g. `/`, `$HOME`, `~/.config`,
   // `/etc`, etc.
   | "UNSAFE_STASH_DIR"
   // Defense-in-depth sentinel raised under `bun test` / NODE_ENV=test
-  // when a test sets AKM_STASH_DIR but forgets to also point
+  // when a test sets AKM_BUNDLE_DIR but forgets to also point
   // XDG_DATA_HOME / AKM_DATA_DIR (and XDG_STATE_HOME / AKM_STATE_DIR)
   // at temp directories. See src/core/paths.ts.
   | "TEST_ISOLATION_MISSING"
@@ -53,7 +53,7 @@ export type ConfigErrorCode =
   // contract, filesystem permissions, or leftover upgrade state). The error
   // message carries the specific remediation.
   | "UPGRADE_BLOCKED"
-  // Q-05: `akm workflow run`/`brief`/`report`/`watch`, and creating a YAML
+  // Q-05: `akm workflow run`/`brief`/`report`, and creating a YAML
   // workflow program, refuse outright until `experimental.workflowEngine` is
   // set — see src/workflows/exec/workflow-engine-gate.ts.
   | "WORKFLOW_ENGINE_NOT_ENABLED";
@@ -76,7 +76,11 @@ export type UsageErrorCode =
   | "TASK_SCHEMA_VERSION_UNSUPPORTED"
   | "WORKFLOW_IR_VERSION_UNSUPPORTED"
   | "INVALID_PROPOSAL"
-  | "NON_INTERACTIVE_REQUIRES_YES";
+  | "NON_INTERACTIVE_REQUIRES_YES"
+  // citty's own CLIError (unknown top-level command or subcommand), reclassified
+  // by src/cli.ts so it flows through the same JSON envelope as every other
+  // usage error instead of citty's raw usage-banner + console.error path.
+  | "UNKNOWN_COMMAND";
 
 /** Stable, machine-readable codes for NotFoundError. */
 export type NotFoundErrorCode =
@@ -91,7 +95,7 @@ export type NotFoundErrorCode =
  * imperative. Returning undefined means "no canned hint".
  */
 const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
-  STASH_DIR_NOT_FOUND: "Run `akm setup` to create and configure your stash, or configure a defaultBundle path.",
+  STASH_DIR_NOT_FOUND: "Run `akm setup` to create and configure your bundle, or configure a defaultBundle path.",
   STASH_DIR_NOT_A_DIRECTORY:
     "The configured default bundle path exists but isn't a directory. Update it to point at a folder.",
   STASH_DIR_UNREADABLE: "Check the path exists and your user has read permission, or update the default bundle path.",
@@ -99,11 +103,11 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
   LLM_NOT_CONFIGURED:
     'Run `akm setup` or configure an `engines` entry with `kind: "llm"`, then select it with `defaults.llmEngine`.',
   TEST_ISOLATION_MISSING:
-    "Under bun test, when AKM_STASH_DIR is set you MUST also set XDG_DATA_HOME (or AKM_DATA_DIR) and XDG_STATE_HOME (or AKM_STATE_DIR) to temp directories so the test does not touch the developer's real ~/.local/share/akm or ~/.local/state/akm.",
+    "Under bun test, when AKM_BUNDLE_DIR is set you MUST also set XDG_DATA_HOME (or AKM_DATA_DIR) and XDG_STATE_HOME (or AKM_STATE_DIR) to temp directories so the test does not touch the developer's real ~/.local/share/akm or ~/.local/state/akm.",
   SETUP_TMP_STASH_REFUSED:
-    "Use a persistent directory, or set AKM_FORCE_SETUP_TMP_STASH=1 to opt in to a sandboxed setup (setup also pre-sets AKM_STASH_DIR so config and cache writes auto-isolate into $stashDir/.akm/ — host config is preserved).",
+    "Use a persistent directory, or set AKM_FORCE_SETUP_TMP_STASH=1 to opt in to a sandboxed setup (setup also pre-sets AKM_BUNDLE_DIR so config and cache writes auto-isolate into $stashDir/.akm/ — host config is preserved).",
   UNSAFE_STASH_DIR:
-    "Choose a path inside your home directory (e.g. ~/akm) or another empty workspace. The stash directory cannot be the filesystem root, your home directory itself, or a sensitive system path like /etc, /var, ~/.config, or ~/.ssh.",
+    "Choose a path inside your home directory (e.g. ~/akm) or another empty workspace. The bundle directory cannot be the filesystem root, your home directory itself, or a sensitive system path like /etc, /var, ~/.config, or ~/.ssh.",
   UNKNOWN_IMPROVE_STRATEGY:
     "Pass one of the listed strategy names to `--strategy`, or define it under `improve.strategies`. Names are case-sensitive.",
   WORKFLOW_ENGINE_NOT_ENABLED: "Run `akm config set experimental.workflowEngine true` to enable it.",
@@ -112,22 +116,24 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
 /** Default hint for each UsageError code. */
 const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   INVALID_FLAG_VALUE: "Run `akm <command> --help` to see accepted values.",
-  INVALID_SOURCE_VALUE: "Pick one of: stash, registry, both.",
+  INVALID_SOURCE_VALUE: "Pick one of: local, registry, all, or a configured source name.",
   INVALID_FORMAT_VALUE: "Pick one of: json, jsonl, yaml, text, md, html.",
   INVALID_DETAIL_VALUE: "Pick one of: brief, normal, full. For agent/summary projections use --shape.",
   INVALID_SHAPE_VALUE: "Pick one of: human, agent, summary (summary is only valid on `akm show`).",
   INVALID_JSON_CONFIG_VALUE:
     'Quote JSON values in your shell, for example: akm config set embedding \'{"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}\'.',
-  MISSING_OR_AMBIGUOUS_TARGET: "Use `akm update --all` or pass a target like `akm update npm:@scope/pkg` (not both).",
-  TARGET_NOT_UPDATABLE: "Run `akm list` to view your sources, then retry with one of those values.",
+  MISSING_OR_AMBIGUOUS_TARGET:
+    "Use `akm bundle update --all` or pass a target like `akm bundle update npm:@scope/pkg` (not both).",
+  TARGET_NOT_UPDATABLE: "Run `akm bundle list` to view your sources, then retry with one of those values.",
   MISSING_REQUIRED_ARGUMENT:
     "Refs use the form [bundle//]conceptId, e.g. `akm show knowledge/guide.md` or `akm show skills/deploy`.",
+  UNKNOWN_COMMAND: "Run `akm --help` to see available commands.",
 };
 
 /** Default hint for each NotFoundError code. */
 const NOT_FOUND_HINTS: Partial<Record<NotFoundErrorCode, string>> = {
   ASSET_NOT_FOUND: "Run `akm search <query>` or `akm index` to refresh the index.",
-  SOURCE_NOT_FOUND: "Run `akm list` to view your sources, then retry with one of those values.",
+  SOURCE_NOT_FOUND: "Run `akm bundle list` to view your sources, then retry with one of those values.",
   WORKFLOW_NOT_FOUND: "Run `akm workflow list --active` to see runs.",
   FILE_NOT_FOUND: "Check the path exists and is readable.",
 };
@@ -212,7 +218,7 @@ export class NotFoundError extends AkmError {
  * Test-isolation guard helper.
  *
  * `src/core/paths.ts` throws `ConfigError("TEST_ISOLATION_MISSING")` under
- * `bun test` when `AKM_STASH_DIR` is set without a paired data-dir or
+ * `bun test` when `AKM_BUNDLE_DIR` is set without a paired data-dir or
  * state-dir override. That throw must never be swallowed by best-effort
  * catches around DB/data-dir operations — otherwise the guard's loud failure
  * silently degrades into a "no result" outcome (cold cache, missing snapshot,

@@ -90,7 +90,7 @@ describe("task asset mutations honor write-target resolution", () => {
         { backend: fakeBackend },
       );
 
-      expect(result.stashDir).toBe(target.dir);
+      expect(result.bundleDir).toBe(target.dir);
       expect(fs.existsSync(path.join(target.dir, "tasks", "nightly.yml"))).toBe(true);
       expect(fs.existsSync(path.join(iso.stashDir, "tasks", "nightly.yml"))).toBe(false);
       expect(backendState.installCalls).toEqual(["nightly"]);
@@ -124,37 +124,6 @@ describe("task asset mutations honor write-target resolution", () => {
       ).rejects.toThrow(/install failed/);
 
       expect(fs.existsSync(path.join(target.dir, "tasks", "broken.yml"))).toBe(false);
-    } finally {
-      iso.cleanup();
-      target.cleanup();
-    }
-  });
-
-  test("setEnabled mutates the write target, not the primary stash", async () => {
-    const iso = withIsolatedAkmStorage();
-    const target = makeSandboxDir("akm-task-target");
-    try {
-      saveConfig({
-        configVersion: "0.9.0",
-        semanticSearchMode: "off",
-        defaultWriteTarget: "target",
-        bundles: { target: { path: target.dir, writable: true } },
-      });
-
-      await tasksModule.akmTasksAdd(
-        {
-          id: "toggle-me",
-          schedule: "0 2 * * *",
-          command: "echo toggle",
-        },
-        { backend: fakeBackend },
-      );
-
-      await tasksModule.akmTasksSetEnabled("toggle-me", false, { backend: fakeBackend });
-      const taskPath = path.join(target.dir, "tasks", "toggle-me.yml");
-      expect(fs.readFileSync(taskPath, "utf8")).toContain("enabled: false");
-      // The task file lives in the write target, never the primary stash.
-      expect(fs.existsSync(path.join(iso.stashDir, "tasks", "toggle-me.yml"))).toBe(false);
     } finally {
       iso.cleanup();
       target.cleanup();

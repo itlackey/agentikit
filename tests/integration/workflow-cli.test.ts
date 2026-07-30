@@ -40,7 +40,7 @@ function createWorkflowEnv(): NodeJS.ProcessEnv {
   const xdgState = makeTempDir("akm-workflow-state-");
   const env = {
     ...process.env,
-    AKM_STASH_DIR: stashDir,
+    AKM_BUNDLE_DIR: stashDir,
     XDG_CACHE_HOME: xdgCache,
     XDG_CONFIG_HOME: xdgConfig,
     XDG_DATA_HOME: xdgData,
@@ -59,7 +59,7 @@ function writeConfig(env: NodeJS.ProcessEnv, config: Record<string, unknown>) {
   fs.mkdirSync(configDir, { recursive: true });
   withEnvSync(
     {
-      AKM_STASH_DIR: env.AKM_STASH_DIR,
+      AKM_BUNDLE_DIR: env.AKM_BUNDLE_DIR,
       XDG_CACHE_HOME: env.XDG_CACHE_HOME,
       XDG_CONFIG_HOME: env.XDG_CONFIG_HOME,
       XDG_DATA_HOME: env.XDG_DATA_HOME,
@@ -133,7 +133,7 @@ async function runCli(
   // Every env/cwd mutation is reverted in `finally` so the per-test sandbox
   // tripwire in tests/_preload.ts stays satisfied.
   const ENV_KEYS = [
-    "AKM_STASH_DIR",
+    "AKM_BUNDLE_DIR",
     "AKM_CONFIG_DIR",
     "AKM_CACHE_DIR",
     "AKM_DATA_DIR",
@@ -236,16 +236,21 @@ async function setupWorkflow(env: NodeJS.ProcessEnv, name = "test-flow"): Promis
 }
 
 describe("workflow CLI", async () => {
-  test("template prints a valid workflow document", async () => {
+  test("create --print prints a valid workflow document without writing", async () => {
     const env = createWorkflowEnv();
-    const result = await runCli(["workflow", "template"], env);
+    const result = await runCli(["workflow", "create", "print-test", "--print"], env);
 
     expect(result.status).toBe(0);
+    // Raw document on stdout — no JSON envelope — so `--print > starter.md`
+    // yields a usable file (parity with the removed `workflow template`).
+    expect(result.stdout.trimStart().startsWith("{")).toBe(false);
     const parsed = parseWorkflow(result.stdout, { path: "<template>" });
     if (!parsed.ok) {
       throw new Error(`template did not parse: ${parsed.errors.map((e) => e.message).join("; ")}`);
     }
     expect(parsed.document.steps.length).toBeGreaterThan(0);
+    // --print never writes the workflow asset.
+    expect(fs.existsSync(path.join(env.AKM_BUNDLE_DIR as string, "workflows", "print-test.md"))).toBe(false);
   });
 
   test("create writes a workflow and show returns structured step data", async () => {

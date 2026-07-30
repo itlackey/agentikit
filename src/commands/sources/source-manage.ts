@@ -62,7 +62,7 @@ export function addStash(opts: {
   if (providerType === "npm" && targetIsUrl) {
     throw new UsageError(
       `--provider npm expects a package spec (e.g. "lodash" or "@scope/pkg@^2"), not a URL: "${target}". ` +
-        "Drop --provider npm and re-run `akm add <package>` to add an npm source.",
+        "Drop --provider npm and re-run `akm bundle add <package>` to add an npm source.",
     );
   }
   // A bare (non-URL) target with --provider npm is a declarative npm source

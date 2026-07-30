@@ -11,8 +11,8 @@ cover:
 - prompt/usage flows
 - migration/error envelopes
 - file-system side effects
-- newer command surfaces and maintenance flows (`history`, `log`, `graph`,
-  `improve`, `propose`, `proposal`, `tasks`, `wiki`, `env`, `secret`)
+- newer command surfaces and maintenance flows (`log`, `health`,
+  `improve`, `proposal`, `task`, `llm-wiki` bundle format, `env`, `secret`)
 
 Time budget:
 
@@ -32,7 +32,7 @@ you care about.
 
 - [ ] Use a disposable shell session.
 - [ ] Isolate `HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`,
-      `AKM_DATA_DIR`, and `AKM_STASH_DIR` under one temp directory.
+      `AKM_DATA_DIR`, and `AKM_BUNDLE_DIR` under one temp directory.
 - [ ] Invoke the CLI from this repo (`bun ./src/cli.ts` or the freshly built
       binary from this branch), not a previously installed global `akm`.
 - [ ] Only add disposable local paths, test registries, and remotes you control.
@@ -62,14 +62,14 @@ export XDG_CONFIG_HOME="$AKM_SANDBOX/config"
 export XDG_CACHE_HOME="$AKM_SANDBOX/cache"
 export XDG_DATA_HOME="$AKM_SANDBOX/data"
 export AKM_DATA_DIR="$AKM_SANDBOX/data-home"
-export AKM_STASH_DIR="$AKM_SANDBOX/stash"
-mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$AKM_DATA_DIR" "$AKM_STASH_DIR"
+export AKM_BUNDLE_DIR="$AKM_SANDBOX/stash"
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$AKM_DATA_DIR" "$AKM_BUNDLE_DIR"
 
 # 2.3 Convenience alias for this shell only
 alias akm='bun ./src/cli.ts'
 
 # 2.4 Verify isolation
-akm setup --yes | jq '.stashDir'
+akm setup --yes | jq '.bundleDir'
 akm config path --all
 ```
 
@@ -86,8 +86,8 @@ Use them as a synthetic stash so search/show output is deterministic.
 
 ```sh
 # 2.1 Mirror the fixture stash into the sandbox
-cp -r tests/fixtures/stashes/ranking-baseline/* "$AKM_STASH_DIR/"
-ls "$AKM_STASH_DIR"
+cp -r tests/fixtures/stashes/ranking-baseline/* "$AKM_BUNDLE_DIR/"
+ls "$AKM_BUNDLE_DIR"
 ```
 
 - [ ] Expected fixture top-level entries exist:
@@ -107,23 +107,31 @@ Fixture refs worth using throughout this doc:
 
 ## 4. First-Run Surface
 
-- [ ] `akm info` returns JSON with `schemaVersion`, `version`, `stashDir`,
+- [ ] `akm info` returns JSON with `schemaVersion`, `version`, `bundleDir`,
       `defaultBundle`, `assetTypes`, `searchModes`, `semanticSearch`,
       `registries`, `sourceProviders`, and `indexStats` (incl. `byType`, a
       per-asset-type breakdown of `entryCount`).
 - [ ] `akm config list` emits `sources`, not legacy `stashes`, for current
       persisted config.
 - [ ] `akm config path --all` returns sandbox-local paths only.
-- [ ] `akm hints` prints non-empty text.
-- [ ] `akm hints --detail full` prints the extended hint text.
+- [ ] `akm help agents` prints non-empty text.
+- [ ] `akm help agents --full` prints the extended hint text.
 - [ ] `akm --help` lists the current command surface:
-      `setup`, `init`, `index`, `health`, `info`, `graph`, `add`, `list`,
-      `remove`, `update`, `upgrade`, `search`, `curate`, `show`, `workflow`,
-      `remember`, `import`, `sync`, `clone`, `mv`, `registry`, `migrate`,
-      `config`, `feedback`, `history`, `log`, `agent`, `lessons`, `lint`,
-      `improve`, `extract`, `propose`, `proposal`, `help`, `hints`,
-      `completions`, `env`, `secret`, `tasks`. There is no `wiki` command
-      (removed in 0.9.0 in favor of the `llm-wiki` bundle format).
+      `setup`, `index`, `health`, `info`, `bundle`, `upgrade`, `search`,
+      `curate`, `show`, `workflow`, `remember`, `import`, `sync`, `clone`,
+      `registry`, `config`, `feedback`, `log`, `agent`, `lint`, `improve`,
+      `proposal`, `help`, `completions`, `env`, `secret`, `task`. There is no
+      `wiki` command (removed in 0.9.0 in favor of the `llm-wiki` bundle
+      format). There are no top-level `init`/`add`/`list`/`remove`/`update`
+      commands — see `akm bundle create`/`add`/`list`/`remove`/`update`.
+      There is no top-level `mv` (removed outright — plain filesystem move +
+      `akm index` + `akm lint`), `history` (folded into `akm health
+      --report`), `graph` (summary counts folded into `akm health`), or
+      `lessons` (the `lesson` asset type is read/written via
+      `akm search`/`akm show`/the proposal queue, not a command group)
+      command. There is no top-level `hints` command — see `akm help
+      agents`. There are no top-level `extract`/`propose` commands — see
+      `akm proposal extract` / `akm proposal new`.
 - [ ] `akm config enable` and `akm config disable` fail as unknown subcommands
       (removed in 0.9.0 — use `akm registry add|remove`).
 - [ ] `akm upgrade --check` returns structured version/install-method info and
@@ -136,7 +144,7 @@ Fixture refs worth using throughout this doc:
 
 - [ ] `akm setup --yes` runs without prompts, writes config with sandbox paths,
       and exits zero.
-- [ ] `akm setup --yes | jq '.stashDir'` returns a path under `$AKM_SANDBOX`.
+- [ ] `akm setup --yes | jq '.bundleDir'` returns a path under `$AKM_SANDBOX`.
 - [ ] `akm setup --config '{"engines":{"local":{"kind":"llm","endpoint":"http://localhost:1234/v1/chat/completions","model":"test-model"}},"defaults":{"llmEngine":"local"}}'`
       applies the JSON blob non-interactively and exits zero.
 - [ ] `akm config get engines.local.endpoint` after the above returns
@@ -156,9 +164,9 @@ Fixture refs worth using throughout this doc:
 - [ ] `akm search docker --format json | jq '.hits | length'` matches the
       visible count.
 - [ ] `akm search "code review" --type skill` returns only skill hits.
-- [ ] `akm search code --source registry` emits `registryHits[]` and does not
+- [ ] `akm search code --from registry` emits `registryHits[]` and does not
       mix local hits into `hits[]`.
-- [ ] `akm search code --source both` emits both `hits[]` and `registryHits[]`.
+- [ ] `akm search code --from all` emits both `hits[]` and `registryHits[]`.
 - [ ] `akm search docker --detail full` includes richer hit fields such as
       `ref`, `score`, optional `origin`, and ranking metadata.
 - [ ] `akm search docker --shape agent` includes `ref` plus the smaller
@@ -216,41 +224,41 @@ remove. Only use disposable targets.
 
 ### 7.1 Filesystem source
 
-- [ ] `mkdir -p "$AKM_SANDBOX/extra-stash" && akm add "$AKM_SANDBOX/extra-stash"`
+- [ ] `mkdir -p "$AKM_SANDBOX/extra-stash" && akm bundle add "$AKM_SANDBOX/extra-stash"`
       succeeds and triggers indexing.
-- [ ] `akm list --format json | jq '.sources[]'` includes the new source with a
+- [ ] `akm bundle list --format json | jq '.sources[]'` includes the new source with a
       filesystem/local kind, path, and writable state.
-- [ ] `akm remove "$AKM_SANDBOX/extra-stash"` removes it cleanly.
+- [ ] `akm bundle remove "$AKM_SANDBOX/extra-stash"` removes it cleanly.
 
 ### 7.2 Git source
 
-- [ ] `akm add github:<owner>/<repo>` against a small disposable public repo.
-- [ ] `akm list` shows the git source.
-- [ ] `akm update <name>` fetches successfully.
+- [ ] `akm bundle add github:<owner>/<repo>` against a small disposable public repo.
+- [ ] `akm bundle list` shows the git source.
+- [ ] `akm bundle update <name>` fetches successfully.
 - [ ] `akm search <term-from-repo>` surfaces indexed content from the cloned
       source.
-- [ ] `akm remove <name>` cleans it up.
+- [ ] `akm bundle remove <name>` cleans it up.
 
 ### 7.3 npm source
 
-- [ ] `akm add npm:<small-package>` succeeds.
-- [ ] `akm list` shows `kind: "npm"` or equivalent rendered npm source info.
-- [ ] `akm remove <name>` succeeds.
+- [ ] `akm bundle add npm:<small-package>` succeeds.
+- [ ] `akm bundle list` shows `kind: "npm"` or equivalent rendered npm source info.
+- [ ] `akm bundle remove <name>` succeeds.
 
 ### 7.4 Website source
 
-- [ ] `akm add https://example-skills-site.dev --name docs-site` adds the
+- [ ] `akm bundle add https://example-skills-site.dev --name docs-site` adds the
       source.
-- [ ] `akm list` shows the remote/website source.
-- [ ] `akm update docs-site` either refreshes it successfully or returns a
+- [ ] `akm bundle list` shows the remote/website source.
+- [ ] `akm bundle update docs-site` either refreshes it successfully or returns a
       structured non-updatable error that matches current behavior.
 
 ### 7.5 Writable rejection
 
 - [ ] Edit `$XDG_CONFIG_HOME/akm/config.json` to set `"writable": true` on a
       `npm` or `website` source.
-- [ ] `akm list` fails with a `ConfigError` and actionable hint.
-- [ ] Revert the edit; `akm list` succeeds again.
+- [ ] `akm bundle list` fails with a `ConfigError` and actionable hint.
+- [ ] Revert the edit; `akm bundle list` succeeds again.
 
 ---
 
@@ -279,11 +287,11 @@ These cover the shared write-target path and git-backed save behavior.
 ### 8.2 remember target resolution
 
 - [ ] Add a second filesystem source:
-      `mkdir -p "$AKM_SANDBOX/alt" && akm add "$AKM_SANDBOX/alt"`.
-- [ ] Confirm the source name via `akm list --format json`.
-- [ ] `akm remember "to alt" --name alt-mem --target <source-name>` writes to
+      `mkdir -p "$AKM_SANDBOX/alt" && akm bundle add "$AKM_SANDBOX/alt"`.
+- [ ] Confirm the source name via `akm bundle list --format json`.
+- [ ] `akm remember "to alt" --name alt-mem --bundle <source-name>` writes to
       that source.
-- [ ] `akm remember "x" --name y --target nonexistent` fails with
+- [ ] `akm remember "x" --name y --bundle nonexistent` fails with
       `INVALID_FLAG_VALUE`.
 
 ### 8.3 defaultWriteTarget
@@ -317,7 +325,7 @@ These cover the shared write-target path and git-backed save behavior.
       the sandbox repo.
 - [ ] Add a second git-backed sandbox source with an explicit slash-containing
       name (for example `team/sync-qa`), confirm that exact name via
-      `akm list --format json`, then run
+      `akm bundle list --format json`, then run
       `akm sync team/sync-qa -m "Manual QA named sync"`
       and verify the commit lands in that repo, not the primary stash.
 - [ ] If the named source is literally `json`, `akm sync json --format json`
@@ -350,10 +358,10 @@ These cover the shared write-target path and git-backed save behavior.
 These steps need network access.
 
 - [ ] `akm registry list` shows the configured registries.
-- [ ] `akm registry search docker --detail full` returns registry hits with
-      `installRef` and score.
-- [ ] `akm registry search docker --assets` includes asset-level matches if the
-      provider supports them.
+- [ ] `akm search docker --from registry --detail full` returns registry hits
+      with `installRef` and score.
+- [ ] `akm search docker --from registry --assets` includes asset-level
+      matches if the provider supports them.
 - [ ] `akm registry add https://registry.example/index.json --name test-reg`
       adds a test registry, `akm registry list` shows it, and
       `akm registry remove test-reg` removes it.
@@ -361,7 +369,7 @@ These steps need network access.
       `--allow-insecure` is supplied.
 - [ ] `akm registry add http://registry.example/index.json --allow-insecure`
       succeeds with a warning on stderr.
-- [ ] Installing a hit still happens through `akm add <installRef>`; there is
+- [ ] Installing a hit still happens through `akm bundle add <installRef>`; there is
       no `registry add-kit` subcommand.
 
 Building a registry index is a publisher/maintainer flow and is no longer a CLI
@@ -375,14 +383,13 @@ isolated working directory with disposable output paths.
 Workflows now include authoring, validation, execution, and recovery flows.
 
 - [ ] `akm workflow list` is empty in a fresh sandbox.
-- [ ] `akm workflow template > "$AKM_STASH_DIR/workflows/test.md"` prints a valid
-      starter document.
+- [ ] `akm workflow create test --print > "$AKM_BUNDLE_DIR/workflows/test.md"` prints a valid
+      starter document, without creating the workflow.
 - [ ] Insert one short paragraph between `# Workflow:` and the first `## Step:`.
-- [ ] `akm workflow validate "$AKM_STASH_DIR/workflows/test.md"` succeeds,
-      confirming intro prose is accepted.
-- [ ] `akm workflow create test-created --from "$AKM_STASH_DIR/workflows/test.md"`
-      writes and indexes the workflow.
-- [ ] `akm workflow validate workflows/test-created` succeeds by ref.
+- [ ] `akm workflow create test-created --from "$AKM_BUNDLE_DIR/workflows/test.md"`
+      writes and indexes the workflow, confirming intro prose is accepted.
+- [ ] `akm lint --type workflows` reports no `invalid-workflow-structure`
+      finding for `workflows/test-created`.
 - [ ] `akm workflow start workflows/test-created` returns a run with `id`,
       `workflowRef`, and steps.
 - [ ] `akm workflow status <run-id>` returns the full run state.
@@ -411,7 +418,7 @@ component whose root holds `schema.md` plus a `pages/` directory. There is
 no `akm wiki` subcommand to test; verify the adapter surface instead:
 
 - [ ] A directory with `schema.md` + `pages/<page>.md` + `raw/<source>.md`,
-      registered as a `bundles` entry (or installed via `akm add`), is
+      registered as a `bundles` entry (or installed via `akm bundle add`), is
       recognized as an `llm-wiki` component on `akm index --full` — no
       manual registration step beyond the normal bundle config/install.
 - [ ] `akm search <term-from-a-page>` returns the page as a hit (its `type`
@@ -439,7 +446,7 @@ Confirm that guarantee carefully.
 
 - [ ] `akm env list` is empty initially.
 - [ ] `akm env create test-env` creates `env/test-env.env`.
-- [ ] `printf '%s' "secret-value" | akm env set env/test-env API_KEY` succeeds.
+- [ ] Edit the file directly: `printf 'API_KEY=secret-value\n' >> "$AKM_BUNDLE_DIR/env/test-env.env"`.
 - [ ] `akm show env/test-env` lists keys/comments only.
 - [ ] `akm env list --format json` contains the env under `envs[]` with
       `keys` and no secret values.
@@ -454,8 +461,9 @@ Confirm that guarantee carefully.
       injects only that variable.
 - [ ] `akm secret path secrets/test-token` and `akm secret remove secrets/test-token`
       both exit 2 with `Unknown command` (removed in 0.9.0).
-- [ ] `akm env unset env/test-env API_KEY` removes the key.
-- [ ] `rm "$AKM_STASH_DIR/secrets/test-token"` removes the secret (there is no
+- [ ] Remove the `API_KEY=` line directly from `env/test-env.env` and confirm
+      `akm env list --format json` no longer lists it under `keys`.
+- [ ] `rm "$AKM_BUNDLE_DIR/secrets/test-token"` removes the secret (there is no
       `akm secret remove`).
 
 ---
@@ -470,15 +478,10 @@ These are core auditability flows to validate in `0.9.x`.
 - [ ] `akm feedback` with no ref fails with `MISSING_REQUIRED_ARGUMENT`.
 - [ ] `akm feedback skills/k8s-deploy --positive --negative` fails with a
       structured usage error.
-- [ ] `akm history --ref skills/k8s-deploy` returns chronological history entries.
-- [ ] `akm history --since 2026-01-01T00:00:00Z --format jsonl` emits one JSON
+- [ ] `akm log` shows appended mutation events.
+- [ ] `akm log --type feedback --ref skills/k8s-deploy` filters correctly.
+- [ ] `akm log --since 2026-01-01T00:00:00Z --format jsonl` emits one JSON
       object per line.
-- [ ] `akm log list` shows appended mutation events.
-- [ ] `akm log list --type feedback --ref skills/k8s-deploy` filters correctly.
-- [ ] `akm log tail --max-events 2 --format jsonl` streams events and ends
-      with a trailer row containing `nextOffset`.
-- [ ] `akm log tail --max-events 1 --format text` emits line-oriented events
-      on stdout and the trailer on stderr.
 
 ---
 
@@ -498,7 +501,7 @@ Run only inside the sandbox.
       result without a stack trace.
 - [ ] `akm proposal reject <id> --reason "manual qa"` archives it cleanly.
 
-### 15.2 improve / propose
+### 15.2 improve / proposal new
 
 - [ ] `akm improve skills/k8s-deploy --task "tighten the description"` either
       queues a proposal successfully or fails with a structured config/usage
@@ -541,14 +544,14 @@ Run only inside the sandbox.
 
 - [ ] Replace `$XDG_CONFIG_HOME/akm/config.json` with one using legacy
       `stashes[]`.
-- [ ] `akm list` fails with a structured `INVALID_CONFIG_FILE` error telling you
+- [ ] `akm bundle list` fails with a structured `INVALID_CONFIG_FILE` error telling you
       to rename `stashes[]` to `sources`.
 - [ ] Restore a valid config before continuing.
 
 ### 16.2 OpenViking rejection
 
 - [ ] Inject an `openviking` source into `sources[]`.
-- [ ] `akm list` fails with a structured `ConfigError` that points at migration
+- [ ] `akm bundle list` fails with a structured `ConfigError` that points at migration
       guidance.
 - [ ] Remove it; normal commands work again.
 
@@ -630,22 +633,22 @@ checklist did not exercise.
 - [ ] `akm show tasks/<id>.md` strips the suffix and resolves to the `.yml`
       file; missing `.yml` yields a structured "task not found", not a parse
       error.
-- [ ] `akm tasks add` writes a new `.yml` and refuses to overwrite an existing
+- [ ] `akm task add` writes a new `.yml` and refuses to overwrite an existing
       `.md` without `--force`.
 
-#### `env set` and secret set --from-env / stdin behavior
+#### secret set --from-env / stdin behavior
 
-- [ ] `printf '%s' "secret" | akm env set env/prod KEY` writes via stdin.
-- [ ] `AKM_VAL=secret akm env set env/prod KEY --from-env AKM_VAL` writes from
-      the named env var; unset var exits with code 2.
+`env` has no per-key write command (0.9 removed `env set`/`env unset` — you
+edit the `.env` file directly and akm loads it; see the env-cli.ts model
+statement). `secret set` still writes one secret at a time and keeps its
+--from-env / stdin surface:
+
 - [ ] `printf '%s' "secret" | akm secret set secrets/prod SECRET_TOKEN` writes via
       stdin.
 - [ ] `AKM_VAL=secret akm secret set secrets/prod SECRET_TOKEN --from-env AKM_VAL`
       writes from the named env var; unset var exits with code 2.
-- [ ] Piping a payload > 1 MB to `akm env set` is rejected with a
+- [ ] Piping a payload > 5 MB to `akm secret set` is rejected with a
       `UsageError`.
-- [ ] `akm env set env/prod KEY=value` (positional value or KEY=VALUE
-      form) is rejected with `UsageError`.
 
 #### Proposal resolution by ref or UUID prefix
 
@@ -654,9 +657,9 @@ checklist did not exercise.
 - [ ] `akm proposal accept memories/my-note` resolves the pending proposal by ref.
 - [ ] `akm proposal reject` / `akm proposal diff` accept the same forms.
 
-#### `--target` uniformity
+#### Write-target flag uniformity
 
-- [ ] `akm remember "note" --target <stash>` writes to the named target.
+- [ ] `akm remember "note" --bundle <stash>` writes to the named target.
 - [ ] `akm import ./file.md --target <stash>` writes to the named target.
 - [ ] Legacy `--stash` on any of the above is rejected with a structured
       usage error.
@@ -696,15 +699,13 @@ for cmd in \
   'info' \
   'config list' \
   'curate "review code"' \
-  'history --ref skills/k8s-deploy' \
-  'log list'; do
+  'log --ref skills/k8s-deploy'; do
   akm $cmd --format json | jq -e . > /dev/null || exit 1
 done
 ```
 
 - [ ] All representative `--format json` commands parse successfully.
-- [ ] At least one `search`/`history`/`events tail` path is verified with
-      `--format jsonl`.
+- [ ] At least one `search`/`log` path is verified with `--format jsonl`.
 - [ ] At least one `info`/`show` path is verified with `--format yaml`.
 
 ---
@@ -713,7 +714,7 @@ done
 
 ```sh
 rm -rf "$AKM_SANDBOX"
-unset AKM_SANDBOX HOME XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME AKM_DATA_DIR AKM_STASH_DIR
+unset AKM_SANDBOX HOME XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME AKM_DATA_DIR AKM_BUNDLE_DIR
 unalias akm
 ```
 

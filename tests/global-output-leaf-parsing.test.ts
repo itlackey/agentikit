@@ -4,9 +4,10 @@
 
 import { describe, expect, test } from "bun:test";
 import { type ArgsDef, parseArgs } from "citty";
-import { agentCommand, proposeCommand } from "../src/commands/agent/contribute-cli";
+import { agentCommand } from "../src/commands/agent/contribute-cli";
 import { improveCommand } from "../src/commands/improve/improve-cli";
-import { tasksCommand } from "../src/commands/tasks/tasks-cli";
+import { proposeCommand } from "../src/commands/proposal/propose-cli";
+import { taskCommand } from "../src/commands/tasks/tasks-cli";
 
 type StaticCommand = { args?: unknown };
 
@@ -14,7 +15,7 @@ function parseLeaf(command: StaticCommand, rawArgs: string[]) {
   return parseArgs(rawArgs, command.args as ArgsDef) as Record<string, unknown>;
 }
 
-const tasksRunCommand = (tasksCommand.subCommands as unknown as Record<string, StaticCommand>).run;
+const tasksRunCommand = (taskCommand.subCommands as unknown as Record<string, StaticCommand>).run;
 if (!tasksRunCommand) throw new Error("tasks run command is not registered");
 
 describe("space-separated global output flags on raw command leaves", () => {
@@ -26,7 +27,7 @@ describe("space-separated global output flags on raw command leaves", () => {
     expect(args.scope).toBeUndefined();
   });
 
-  test("propose preserves both positionals after the format flag", () => {
+  test("proposal new preserves both positionals after the format flag", () => {
     const args = parseLeaf(proposeCommand, ["--format", "html", "skill", "foo", "--task", "draft the skill"]);
 
     expect(args.format).toBe("html");

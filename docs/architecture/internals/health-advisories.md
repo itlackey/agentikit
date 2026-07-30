@@ -8,18 +8,18 @@ and whether to act. Some `warn`s below are *adjudicated, expected* states — tr
 
 | Advisory (name in output) | What it means | Action |
 |---|---|---|
-| `state-db-schema` | state.db is missing required tables. | Re-run `akm init`; a fresh/older DB was opened. |
+| `state-db-schema` | state.db is missing required tables. | Re-run `akm bundle create`; a fresh/older DB was opened. |
 | `state-db-round-trip` | Append/read probe against state.db failed. | Check disk/permissions on the state.db path; the store is unwritable. |
 | `task-log-backing` | task_history rows reference log files missing on disk. | Logs were pruned/moved out from under the DB; safe to ignore if intentional, else restore the log dir. |
-| `active-runs` | A task run has exceeded the stale threshold (>15 min). | Inspect with `akm tasks history`; a lane is likely wedged — kill/re-run it. |
+| `active-runs` | A task run has exceeded the stale threshold (>15 min). | Inspect with `akm task history`; a lane is likely wedged — kill/re-run it. |
 | `default-engine` | The configured general default agent, SDK, or LLM engine is missing or incomplete. | Correct `defaults.engine`; native SDK operation requires its package or binary, while a fallback LLM is checked only when configured. |
 | `default-llm-engine` | The independently configured LLM default is missing, incompatible, or lacks a required credential. | Correct `defaults.llmEngine`, its connection, and any symbolic credential binding. |
 | `active-improve-strategy` | An enabled process in the effective improve strategy cannot resolve its engine or required credential. | Inspect the named unavailable process, then correct its process override, strategy triage engine, SDK fallback, or default LLM. |
-| `task-fail-rate` | ≥5% of scheduled task runs failed in the window (exit 143/70 recurring). | Triage as a bug: `akm tasks doctor`, inspect failing lane logs; exit-143 = killed/timeout, exit-70 = internal error. |
+| `task-fail-rate` | ≥5% of scheduled task runs failed in the window (exit 143/70 recurring). | Triage as a bug: `akm task doctor`, inspect failing lane logs; exit-143 = killed/timeout, exit-70 = internal error. |
 | `stash-git-exposure` | `env/` or `secrets/` assets are git-tracked **and** a remote is set — `git push` can leak keys. | `git rm --cached` the files, add `env/`+`secrets/` to `.gitignore` (a rule alone does not untrack). |
 | `semantic-search-runtime` | Semantic search is blocked; often a configured remote embedding endpoint is down. | Restore the endpoint, or set `semanticSearchMode` to `off`, or drop `embedding.endpoint` to use the local model. |
 | `session-extraction` | Extraction ran but hit harness errors or produced zero proposals across ≥5 sessions. | Check the agent CLI and session-log source; extraction is degraded, not failing hard. |
-| `pool-saturation` | <2% of the session pool was new — possible discovery/dedup bug. | Verify `akm extract` still finds new sessions; a healthy steady state sits above 10%. |
+| `pool-saturation` | <2% of the session pool was new — possible discovery/dedup bug. | Verify `akm proposal extract` still finds new sessions; a healthy steady state sits above 10%. |
 | `auto-accept-validation` | Proposals passed the confidence gate but failed validation (bad frontmatter, truncation). | Review the affected pending proposals via `akm proposal list`; they were held, not lost. |
 | `session-log-failures` | Informational only (pre-LLM keyword scan, false-positive prone). | No action — never gates; does not reflect the real extract pipeline. |
 | `outcome-proxy-adequacy` | Retrieval proxy is *inverted* (corr < −0.3): popular assets are the most-needing-improvement. | Known WS-2 limitation; no live action — see plan §WS-2 / CONTEXT before tuning. |

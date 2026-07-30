@@ -3,18 +3,23 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Programmatic event listing and tailing behind `akm log` (#204).
+ * Programmatic event listing behind `akm log` (#204).
  *
- * Programmatic surface — the CLI dispatcher in `src/cli.ts` registers two
- * verbs that delegate here. Both return JSON envelopes shaped by
+ * Programmatic surface — the CLI dispatcher in `src/cli.ts` registers the
+ * `log` leaf command that delegates here. Returns a JSON envelope shaped by
  * `src/output/shapes.ts` so the output flows through the same shape and
  * text-renderer pipeline as the rest of the CLI (no silent
  * `JSON.stringify` fallback).
+ *
+ * 0.9.0 CLI overhaul (S3): `akmEventsTail` (and the `log tail` command it
+ * backed) was dropped — a foreground polling daemon in a one-shot CLI. The
+ * lower-level `tailEvents` poller it wrapped (src/core/events.ts) had no
+ * other caller and was removed with it.
  */
 
 import { makeBundleRef, parseBundleRef } from "../core/asset/asset-ref";
 import { UsageError } from "../core/errors";
-import { type EventsContext, readEvents, type TailOptions, tailEvents } from "../core/events";
+import { type EventsContext, readEvents } from "../core/events";
 import type { EventEnvelope } from "../core/events-types";
 import { parseSinceToIso } from "../core/time";
 
@@ -26,6 +31,12 @@ export interface EventsListOptions {
   includeTags?: string[];
   /** D-38: cap the result to the most recent `limit` matching events. Undefined is unlimited. */
   limit?: number;
+  /**
+   * Filter to events whose `metadata.runId` matches — the replacement for
+   * the dropped `akm workflow watch <run-id>`'s run-scoped filter (0.9.0
+   * CLI overhaul, S5).
+   */
+  run?: string;
   /** Test seam — overrides the state database / clock. */
   ctx?: EventsContext;
 }
@@ -68,6 +79,8 @@ export interface EventsListResult {
   sinceOffset?: number;
   /** Echoed when --limit was passed. */
   limit?: number;
+  /** Echoed when --run was passed. */
+  run?: string;
   nextOffset: number;
   events: EventEnvelope[];
 }
@@ -82,8 +95,18 @@ function validateRef(ref: string | undefined): string | undefined {
   return makeBundleRef(parsed.bundle, parsed.conceptId);
 }
 
+function validateRunId(run: string | undefined): string | undefined {
+  if (run === undefined) return undefined;
+  const trimmed = run.trim();
+  if (!trimmed) {
+    throw new UsageError("--run cannot be empty.", "INVALID_FLAG_VALUE");
+  }
+  return trimmed;
+}
+
 export function akmEventsList(options: EventsListOptions = {}): EventsListResult {
   const ref = validateRef(options.ref);
+  const run = validateRunId(options.run);
   const parsed = parseSinceFlag(options.since);
   const result = readEvents(
     {
@@ -91,6 +114,7 @@ export function akmEventsList(options: EventsListOptions = {}): EventsListResult
       sinceOffset: parsed.sinceOffset,
       type: options.type,
       ref,
+      runId: run,
       excludeTags: options.excludeTags,
       includeTags: options.includeTags,
       limit: options.limit,
@@ -105,58 +129,8 @@ export function akmEventsList(options: EventsListOptions = {}): EventsListResult
     ...(parsed.since !== undefined ? { since: parsed.since } : {}),
     ...(parsed.sinceOffset !== undefined ? { sinceOffset: parsed.sinceOffset } : {}),
     ...(options.limit !== undefined ? { limit: options.limit } : {}),
+    ...(run !== undefined ? { run } : {}),
     nextOffset: result.nextOffset,
     events: result.events,
-  };
-}
-
-export interface EventsTailOptions extends EventsListOptions {
-  intervalMs?: number;
-  maxDurationMs?: number;
-  maxEvents?: number;
-  signal?: AbortSignal;
-  onEvent?: (event: EventEnvelope) => void;
-}
-
-export interface EventsTailResult extends EventsListResult {
-  reason: "signal" | "maxEvents" | "maxDuration";
-}
-
-/** Trailer line discriminator for streaming jsonl output (#204). */
-export interface EventsTailTrailer {
-  _kind: "trailer";
-  schemaVersion: 1;
-  nextOffset: number;
-  totalCount: number;
-  reason: "signal" | "maxEvents" | "maxDuration";
-}
-
-export async function akmEventsTail(options: EventsTailOptions = {}): Promise<EventsTailResult> {
-  const ref = validateRef(options.ref);
-  const parsed = parseSinceFlag(options.since);
-  const tailOptions: TailOptions = {
-    since: parsed.since,
-    sinceOffset: parsed.sinceOffset,
-    type: options.type,
-    ref,
-    intervalMs: options.intervalMs,
-    maxDurationMs: options.maxDurationMs,
-    maxEvents: options.maxEvents,
-    signal: options.signal,
-    onEvent: options.onEvent,
-    excludeTags: options.excludeTags,
-    includeTags: options.includeTags,
-  };
-  const result = await tailEvents(tailOptions, options.ctx);
-  return {
-    schemaVersion: 1,
-    totalCount: result.events.length,
-    ...(ref !== undefined ? { ref } : {}),
-    ...(options.type !== undefined ? { type: options.type } : {}),
-    ...(parsed.since !== undefined ? { since: parsed.since } : {}),
-    ...(parsed.sinceOffset !== undefined ? { sinceOffset: parsed.sinceOffset } : {}),
-    nextOffset: result.nextOffset,
-    events: result.events,
-    reason: result.reason,
   };
 }

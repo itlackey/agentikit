@@ -38,7 +38,7 @@ export interface SearchSource {
  * Build the ordered list of stash sources, walking every configured stash
  * once. Iteration order:
  *
- *   1. An explicit argument or `AKM_STASH_DIR`, when present.
+ *   1. An explicit argument or `AKM_BUNDLE_DIR`, when present.
  *   2. The configured `defaultBundle`, after component-root validation.
  *   3. Remaining configured bundles in installation-priority order.
  *
@@ -51,7 +51,7 @@ export interface SearchSource {
 export function resolveSourceEntries(overrideStashDir?: string, existingConfig?: AkmConfig): SearchSource[] {
   const config = existingConfig ?? loadConfig();
   const configuredEntries = bundlesToSourceEntries(config) ?? [];
-  const envOverride = process.env.AKM_STASH_DIR?.trim();
+  const envOverride = process.env.AKM_BUNDLE_DIR?.trim();
   const implicitStashDir =
     overrideStashDir !== undefined
       ? path.resolve(overrideStashDir)
@@ -78,7 +78,7 @@ export function resolveSourceEntries(overrideStashDir?: string, existingConfig?:
     if (seen.has(resolved)) {
       // Already in the source list — typically the primary stash injected at
       // sources[0] before this loop. Enrich that entry with whatever metadata
-      // the matching config source carries so `--source <config-name>` can
+      // the matching config source carries so `--from <config-name>` can
       // find it via registryId. Without this, the primary stash entry stays
       // identity-less and a user-named primary source ("name": "my-stash")
       // would validate but match zero entries when filtering.
@@ -347,7 +347,7 @@ export async function ensureSourceCaches(
       if (!isMaterializedDir(lockedRoot)) {
         warn(
           `Warning: managed source "${entry.name}" is missing its locked materialization at ${lockedRoot}; ` +
-            `run \`akm update ${entry.name}\` to restore it.`,
+            `run \`akm bundle update ${entry.name}\` to restore it.`,
         );
       }
       // Managed installs are refreshed only by add/update. Hydrating the URL-
@@ -420,6 +420,6 @@ function warnIfSourceUnavailableForRead(entry: SourceConfigEntry, providerName: 
   if (dir && isMaterializedDir(dir)) return;
   warn(
     `Warning: source "${providerName}" is not materialized locally; skipping it for this read. ` +
-      "Run `akm index` (or `akm update`) to fetch it.",
+      "Run `akm index` (or `akm bundle update`) to fetch it.",
   );
 }

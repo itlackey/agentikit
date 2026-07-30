@@ -8,6 +8,7 @@
  * domain (checks, metrics, improve, session-log, per-run, window-compare).
  */
 
+import type { AcceptRateEntry } from "./accept-rate";
 import type { HealthCheckResult } from "./types-checks";
 import type { ImproveHealthMetrics } from "./types-improve";
 import type { HealthMetrics } from "./types-metrics";
@@ -31,6 +32,11 @@ export interface HealthReportContext {
   comparisonMode: "duration" | "custom";
   /** Pending proposal queue at report time. */
   pendingProposals: { ref: string; source: string; createdAt: string }[];
+  /**
+   * Accept-rate-per-source metrics (F-4 / #385), folded from the removed
+   * `akm history --accept-rate-by-source` flag. See ./accept-rate.ts.
+   */
+  acceptRateBySource: AcceptRateEntry[];
 }
 
 export interface AkmHealthResult {

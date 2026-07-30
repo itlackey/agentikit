@@ -1,8 +1,4 @@
 {
-  "lessonsCoverage": {
-    "exitCode": 70,
-    "stderrKeys": ["error", "ok"]
-  },
   "selfClone": {
     "exitCode": 70,
     "stderrKeys": ["error", "ok"]

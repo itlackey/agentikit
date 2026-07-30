@@ -3,7 +3,7 @@
  *
  * Each fixture lives at `tests/fixtures/stashes/<name>/` with a `MANIFEST.json`
  * and the standard akm stash layout. `loadFixtureStash(name)` copies the
- * fixture into a fresh tmp dir, sets `AKM_STASH_DIR`, runs `akm index`, and
+ * fixture into a fresh tmp dir, sets `AKM_BUNDLE_DIR`, runs `akm index`, and
  * returns the materialised path plus a cleanup function.
  *
  * See the 2026-05 benchmark methodology §5.5 for the contract.
@@ -21,7 +21,7 @@ const CLI_ENTRY = path.join(REPO_ROOT, "src", "cli.ts");
 export interface LoadedFixtureStash {
   /** Absolute path to the materialised stash directory. */
   stashDir: string;
-  /** Restore the prior `AKM_STASH_DIR` env value and remove the tmp dir. */
+  /** Restore the prior `AKM_BUNDLE_DIR` env value and remove the tmp dir. */
   cleanup: () => void;
   /** Deterministic SHA-256 of the fixture's source content (not the tmp copy). */
   contentHash: string;
@@ -88,7 +88,7 @@ export const computeFixtureContentHash = fixtureContentHash;
 export interface LoadFixtureStashOptions {
   /**
    * If true, skip the `akm index` invocation. The fixture is still copied to
-   * a tmp dir and `AKM_STASH_DIR` is still set, but no SQLite DB is created
+   * a tmp dir and `AKM_BUNDLE_DIR` is still set, but no SQLite DB is created
    * in the isolated XDG cache. Useful for callers that build their own index
    * directly via the internal indexer DB API and would otherwise pay ~200-
    * 300ms for a wasted spawn. Defaults to false.
@@ -97,7 +97,7 @@ export interface LoadFixtureStashOptions {
 }
 
 /**
- * Copy the named fixture into a fresh tmp dir, set `AKM_STASH_DIR`, and run
+ * Copy the named fixture into a fresh tmp dir, set `AKM_BUNDLE_DIR`, and run
  * `akm index` against it. Returns the tmp path plus a cleanup function that
  * restores the prior env value and recursively removes the tmp dir.
  *
@@ -116,8 +116,8 @@ export function loadFixtureStash(name: string, options: LoadFixtureStashOptions 
   fs.mkdirSync(cacheHome, { recursive: true });
   fs.mkdirSync(configHome, { recursive: true });
 
-  const priorAkmStashDir = process.env.AKM_STASH_DIR;
-  process.env.AKM_STASH_DIR = stashDir;
+  const priorAkmStashDir = process.env.AKM_BUNDLE_DIR;
+  process.env.AKM_BUNDLE_DIR = stashDir;
 
   if (!options.skipIndex) {
     // Use isolated XDG dirs for the index invocation so the helper never
@@ -137,7 +137,7 @@ export function loadFixtureStash(name: string, options: LoadFixtureStashOptions 
       cwd: stashDir,
       env: {
         ...process.env,
-        AKM_STASH_DIR: stashDir,
+        AKM_BUNDLE_DIR: stashDir,
         XDG_CACHE_HOME: cacheHome,
         XDG_CONFIG_HOME: configHome,
         XDG_DATA_HOME: path.join(tmpRoot, "data"),
@@ -150,8 +150,8 @@ export function loadFixtureStash(name: string, options: LoadFixtureStashOptions 
     if (result.exitCode !== 0) {
       // Restore env and clean up before throwing so the caller is not left
       // with a leaked tmp dir or mutated process state.
-      if (priorAkmStashDir === undefined) delete process.env.AKM_STASH_DIR;
-      else process.env.AKM_STASH_DIR = priorAkmStashDir;
+      if (priorAkmStashDir === undefined) delete process.env.AKM_BUNDLE_DIR;
+      else process.env.AKM_BUNDLE_DIR = priorAkmStashDir;
       fs.rmSync(tmpRoot, { recursive: true, force: true });
       const stderr = result.stderr ? new TextDecoder().decode(result.stderr) : "";
       throw new Error(`akm index failed for fixture "${name}" (exit ${result.exitCode}): ${stderr}`);
@@ -159,8 +159,8 @@ export function loadFixtureStash(name: string, options: LoadFixtureStashOptions 
   }
 
   const cleanup = (): void => {
-    if (priorAkmStashDir === undefined) delete process.env.AKM_STASH_DIR;
-    else process.env.AKM_STASH_DIR = priorAkmStashDir;
+    if (priorAkmStashDir === undefined) delete process.env.AKM_BUNDLE_DIR;
+    else process.env.AKM_BUNDLE_DIR = priorAkmStashDir;
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   };
 

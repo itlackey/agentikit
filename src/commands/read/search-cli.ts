@@ -27,8 +27,23 @@ import { akmCurate } from "./curate";
 import { akmSearch, parseBeliefFilterMode, parseScopeFilterFlags, parseSearchSource } from "./search";
 import { akmShowUnified } from "./show";
 
+/**
+ * `--source` was renamed to `--from` on `search`/`curate` in 0.9 (S8). citty
+ * is non-strict, so the retired spelling is silently absorbed rather than
+ * rejected — the command then runs against the DEFAULT `--from` value
+ * (local) instead of the source the caller named, with exit 0 and no error.
+ * Reject it explicitly instead.
+ */
+function rejectRetiredSourceFlag(): void {
+  if (!getParsedInvocation().hasFlag("--source")) return;
+  throw new UsageError(
+    "`--source` was renamed to `--from` in 0.9. Use `--from local|registry|all` instead.",
+    "INVALID_FLAG_VALUE",
+  );
+}
+
 export const searchCommand = defineJsonCommand({
-  meta: { name: "search", description: "Search the stash" },
+  meta: { name: "search", description: "Search the bundle" },
   args: {
     query: {
       type: "positional",
@@ -43,7 +58,12 @@ export const searchCommand = defineJsonCommand({
         "Asset type filter — free-form, exact match, unvalidated; an unknown type returns no hits (default: any). Built-ins: skill, command, agent, knowledge, workflow, script, memory, lesson, task, session, fact, env, secret, instruction — plus any adapter-defined type (e.g. website, wiki-source, a wiki pageKind). Use workflow to find step-by-step task assets.",
     },
     limit: { type: "string", description: "Maximum number of results" },
-    source: { type: "string", description: "Search source (stash|registry|both)", default: "stash" },
+    from: { type: "string", description: "Search source (local|registry|all)", default: "local" },
+    assets: {
+      type: "boolean",
+      description: "Include asset-level search results (only meaningful with --from registry|all)",
+      default: false,
+    },
     filter: {
       type: "string",
       description:
@@ -60,8 +80,6 @@ export const searchCommand = defineJsonCommand({
         "Memory belief filter: all|current|historical. current keeps active memory beliefs; historical keeps contradicted/superseded/archived memory beliefs.",
       default: "all",
     },
-    format: { type: "string", description: "Output format (json|jsonl|yaml|text|md|html)" },
-    detail: { type: "string", description: "Detail level (brief|normal|full)" },
     // Declared as the POSITIVE name with `default: true` so citty's native
     // `--no-<name>` negation (it strips a leading `--no-` from ANY token and
     // negates the remainder BEFORE consulting the declared-args table — see
@@ -98,10 +116,11 @@ export const searchCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    rejectRetiredSourceFlag();
     const query = (args.query ?? "").trim();
     const type = args.type as string | undefined;
     const limit = parsePositiveIntFlag(args.limit ?? undefined);
-    const source = parseSearchSource(args.source);
+    const source = parseSearchSource(args.from);
     // Repeatable; citty exposes only the last `--filter` value, so read all
     // occurrences directly from argv (same pattern as `--tag`).
     const filterTokens = parseAllFlagValues("--filter");
@@ -111,6 +130,7 @@ export const searchCommand = defineJsonCommand({
     const disableProjectContext = args["project-context"] === false;
     const skipLogging = args["track-usage"] === false;
     const includeSessions = args["include-sessions"];
+    const assets = args.assets === true;
     const outputMode = getOutputMode();
     const result = await akmSearch({
       query,
@@ -124,6 +144,7 @@ export const searchCommand = defineJsonCommand({
       disableProjectContext,
       disableScopedUtility: disableProjectContext,
       skipLogging,
+      assets,
       eventSource: resolveUsageEventSource(),
       attributionProjection: outputMode.shape === "agent" ? "agent" : outputMode.detail,
     });
@@ -132,7 +153,11 @@ export const searchCommand = defineJsonCommand({
 });
 
 export const curateCommand = defineJsonCommand({
-  meta: { name: "curate", description: "Curate the best matching assets for a task or prompt" },
+  meta: {
+    name: "curate",
+    description:
+      "Pick the assets worth loading for a task. Unlike `akm search`, this reranks by intent, attaches a preview and run details per hit, adds related support refs, and summarizes the set — the usual starting point for an agent.",
+  },
   args: {
     // Optional in citty so run() is invoked when omitted; we re-validate
     // below to surface a structured UsageError (exit 2) instead of citty's
@@ -144,13 +169,7 @@ export const curateCommand = defineJsonCommand({
         "Asset type filter — free-form, exact match, unvalidated; an unknown type returns no hits (default: any). Built-ins: skill, command, agent, knowledge, workflow, script, memory, lesson, task, session, fact, env, secret, instruction — plus any adapter-defined type (e.g. website, wiki-source, a wiki pageKind). Use workflow to curate step-by-step task assets.",
     },
     limit: { type: "string", description: "Maximum number of curated results", default: "4" },
-    source: { type: "string", description: "Search source (stash|registry|both)", default: "stash" },
-    // Output-contract flags. The active values are read from the process-level
-    // singleton (parsed from argv at startup); these declarations make them
-    // visible in `akm curate --help` and document the supported axes.
-    format: { type: "string", description: "Output format (json|jsonl|yaml|text|md|html)" },
-    detail: { type: "string", description: "Detail level (brief|normal|full)" },
-    shape: { type: "string", description: "Output projection (human|agent)" },
+    from: { type: "string", description: "Search source (local|registry|all)", default: "local" },
     // Declared as the POSITIVE name with `default: true` — see the
     // `project-context` comment on `searchCommand` above for why a flag NAME
     // must never start with `no-`.
@@ -164,6 +183,7 @@ export const curateCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    rejectRetiredSourceFlag();
     if (!args.query || !String(args.query).trim()) {
       throw new UsageError(
         'A curate query is required. Usage: akm curate "<task or prompt>" [--type <type>] [--limit <n>]',
@@ -174,7 +194,7 @@ export const curateCommand = defineJsonCommand({
     const type = args.type as string | undefined;
     const limitParsed = parsePositiveIntFlag(args.limit ?? undefined);
     const limit = limitParsed && limitParsed > 0 ? limitParsed : 4;
-    const source = parseSearchSource(args.source ?? "stash");
+    const source = parseSearchSource(args.from ?? "local");
     const skipLogging = args["track-usage"] === false;
     const outputMode = getOutputMode();
     const curated = await akmCurate({
@@ -261,7 +281,7 @@ function rejectExtraShowPositionals(positionals: unknown, ref: string): void {
 export const showCommand = defineJsonCommand({
   meta: {
     name: "show",
-    description: "Show a stash asset by ref (e.g. akm show knowledge/guide.md, akm show knowledge/guide.md#auth)",
+    description: "Show a bundle asset by ref (e.g. akm show knowledge/guide.md, akm show knowledge/guide.md#auth)",
   },
   args: {
     ref: {
@@ -270,9 +290,6 @@ export const showCommand = defineJsonCommand({
         "Asset ref ([bundle//]conceptId[#fragment]). On a markdown document `#fragment` selects one section by heading slug, and an unmatched fragment lists the available slugs. Example: `akm show knowledge/guide.md#auth`.",
       required: true,
     },
-    format: { type: "string", description: "Output format (json|jsonl|yaml|text|md|html)" },
-    detail: { type: "string", description: "Detail level (brief|normal|full)" },
-    shape: { type: "string", description: "Output projection (human|agent|summary)" },
     filter: {
       type: "string",
       description:

@@ -5,7 +5,7 @@
 import type { InstalledBundle, InstallKind } from "../registry/types";
 
 export type AkmSearchType = string;
-export type SearchSource = "stash" | "registry" | "both";
+export type SearchSource = "local" | "registry" | "all";
 export type SearchHitSize = "small" | "medium" | "large";
 export type BeliefFilterMode = "all" | "current" | "historical";
 
@@ -88,7 +88,7 @@ export type SearchHit = SourceSearchHit | RegistrySearchResultHit;
 
 export interface SearchResponse {
   schemaVersion: number;
-  stashDir: string;
+  bundleDir: string;
   source: SearchSource;
   hits: SearchHit[];
   registryHits?: RegistrySearchResultHit[];
@@ -171,7 +171,7 @@ export interface WorkflowRunSummary {
 
 export interface AddResponse {
   schemaVersion: number;
-  stashDir: string;
+  bundleDir: string;
   ref: string;
   /** Present for registry stash installs (npm, github, git) */
   installed?: {
@@ -264,7 +264,7 @@ export interface SourceEntry {
 
 export interface SourceListResponse {
   schemaVersion: number;
-  stashDir: string;
+  bundleDir: string;
   defaultBundle: string | null;
   sources: SourceEntry[];
   totalSources: number;
@@ -272,7 +272,7 @@ export interface SourceListResponse {
 
 export interface RemoveResponse {
   schemaVersion: number;
-  stashDir: string;
+  bundleDir: string;
   target: string;
   removed: {
     id: string;
@@ -340,7 +340,7 @@ export interface UpdateSkippedItem {
 
 export interface UpdateResponse {
   schemaVersion: number;
-  stashDir: string;
+  bundleDir: string;
   target?: string;
   all: boolean;
   processed: UpdateResultItem[];
@@ -468,8 +468,8 @@ export interface UpgradeResponse {
 export interface InfoResponse {
   schemaVersion: number;
   version: string;
-  /** Primary stash directory (spec §10.1), same resolution `akm sources list` uses (R-057). */
-  stashDir: string;
+  /** Primary bundle directory (spec §10.1), same resolution `akm sources list` uses (R-057). */
+  bundleDir: string;
   /** Name of the primary bundle from config, or `null` when none is configured (R-057). */
   defaultBundle: string | null;
   assetTypes: string[];

@@ -149,7 +149,7 @@ enabled: true
 The script calls `akm health --since 4h` and `--since 8h`, computes deltas for trend context, and posts a Discord embed:
 
 ```sh
-akm tasks sync   # register the cron
+akm tasks sync   # register the cron; doclint:ignore (`tasks` was renamed to singular `task` in 0.9.0)
 ```
 
 The embed has three inline fields — Output (promoted, merged, MI yield), Failures (chunk failures, skip reason anomalies), and Latency (median, P95, previous-window comparison) — plus a Needs Attention section that only appears when something is actually off. The footer includes the hostname and timestamp so reports from multiple machines are distinguishable at a glance.

@@ -789,7 +789,7 @@ describe("OKF first-class conformance", () => {
       },
     });
 
-    await withEnv({ AKM_STASH_DIR: undefined }, async () => {
+    await withEnv({ AKM_BUNDLE_DIR: undefined }, async () => {
       resetConfigCache();
       await expect(loadWorkflowAsset("workflows/same")).rejects.toThrow(
         /adapter "okf".*does not support native workflow execution/i,
@@ -842,7 +842,7 @@ describe("OKF first-class conformance", () => {
       },
     });
 
-    await withEnv({ AKM_STASH_DIR: undefined }, async () => {
+    await withEnv({ AKM_BUNDLE_DIR: undefined }, async () => {
       resetConfigCache();
       expect(() => createWorkflowAsset({ name: "blocked" })).toThrow(
         /adapter "okf".*does not support AKM asset writes/i,
@@ -883,7 +883,7 @@ describe("OKF first-class conformance", () => {
 
   test("an implicit OKF working stash rejects native writes", async () => {
     writeSandboxConfig({ semanticSearchMode: "off" });
-    await withEnv({ AKM_STASH_DIR: okfRoot }, async () => {
+    await withEnv({ AKM_BUNDLE_DIR: okfRoot }, async () => {
       resetConfigCache();
       await expect(
         writeMarkdownAsset({
@@ -916,7 +916,7 @@ describe("OKF first-class conformance", () => {
       },
     });
 
-    await withEnv({ AKM_STASH_DIR: okfRoot }, async () => {
+    await withEnv({ AKM_BUNDLE_DIR: okfRoot }, async () => {
       resetConfigCache();
       const supersedes = resolveSupersedesForWrite(["vendor//memories/old"], "team");
       expect(supersedes[0]?.writable).toBe(false);
@@ -949,7 +949,7 @@ describe("OKF first-class conformance", () => {
       },
     });
 
-    await withEnv({ AKM_STASH_DIR: undefined }, async () => {
+    await withEnv({ AKM_BUNDLE_DIR: undefined }, async () => {
       resetConfigCache();
       const written = await writeMarkdownAsset({
         type: "memory",

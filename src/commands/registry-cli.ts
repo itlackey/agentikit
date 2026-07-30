@@ -3,16 +3,14 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { defineCommand } from "citty";
-import { parsePositiveIntFlag } from "../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
 import type { RegistryConfigEntry } from "../core/config/config";
 import { getEffectiveRegistries, loadUserConfig, mutateConfig } from "../core/config/config";
 import { UsageError } from "../core/errors";
 import { warn } from "../core/warn";
-import { searchRegistry } from "./read/registry-search";
 
 export const registryCommand = defineGroupCommand({
-  meta: { name: "registry", description: "Manage stash registries" },
+  meta: { name: "registry", description: "Manage bundle registries" },
   subCommands: {
     list: defineJsonCommand({
       meta: { name: "list", description: "List configured registries" },
@@ -114,29 +112,6 @@ export const registryCommand = defineGroupCommand({
           removed: removed !== undefined,
           ...(removed ? { entry: removed } : { message: "No matching registry found" }),
         });
-      },
-    }),
-    search: defineJsonCommand({
-      meta: { name: "search", description: "Search enabled registries for stashes" },
-      args: {
-        query: { type: "positional", description: "Search query", required: true },
-        limit: { type: "string", description: "Maximum number of results" },
-        assets: { type: "boolean", description: "Include asset-level search results", default: false },
-      },
-      async run({ args }) {
-        const limitRaw = parsePositiveIntFlag(args.limit ?? undefined);
-        // R-008: this used to omit `registries`, so `searchRegistry` fell
-        // back to `resolveRegistries()`'s no-arg default (DEFAULT_CONFIG,
-        // never the on-disk config) and silently ignored every registry the
-        // user had added via `akm registry add`. Pass the loaded config's
-        // registries, mirroring `akm search --source registry` (search.ts).
-        const config = loadUserConfig();
-        const result = await searchRegistry(args.query, {
-          limit: limitRaw,
-          includeAssets: args.assets,
-          registries: config.registries,
-        });
-        output("registry-search", result);
       },
     }),
   },

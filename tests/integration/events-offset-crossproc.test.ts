@@ -50,12 +50,15 @@ afterEach(() => {
 });
 
 describe("events @offset cursor across a real process boundary", () => {
-  test("`akm log list --since @offset:N` resumes across a real process boundary", () => {
+  test("`akm log --since @offset:N` resumes across a real process boundary", () => {
     // This is the cross-process durability contract: a producer writes N
     // events, persists nextOffset to a temp file, appends MORE events, and
-    // then a SECOND `bun src/cli.ts log list` invocation reads the cursor
-    // from the file and must emit only the post-cursor events with no
-    // duplicates and no losses.
+    // then a SECOND `bun src/cli.ts log` invocation reads the cursor from
+    // the file and must emit only the post-cursor events with no duplicates
+    // and no losses.
+    //
+    // 0.9.0 CLI overhaul (S3): `log` was a group with a `list` subcommand;
+    // it is now the leaf command directly (no `list` token).
     const dataDir = makeTempDir("akm-events-xproc-data-");
     const cacheDir = makeTempDir("akm-events-xproc-cache-");
     const configDir = makeTempDir("akm-events-xproc-config-");
@@ -92,7 +95,7 @@ describe("events @offset cursor across a real process boundary", () => {
     //    and asks the CLI for events with `--since @offset:<cursor>`. This
     //    exercises a real exec boundary, not just in-process arithmetic.
     const persisted = fs.readFileSync(cursorFile, "utf8").trim();
-    const child = spawnCli(["log", "list", "--since", `@offset:${persisted}`, "--format=json"], childEnv);
+    const child = spawnCli(["log", "--since", `@offset:${persisted}`, "--format=json"], childEnv);
     expect(child.status).toBe(0);
     const parsed = JSON.parse(child.stdout) as {
       events: Array<{ ref: string }>;

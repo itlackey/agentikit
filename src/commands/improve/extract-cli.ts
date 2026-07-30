@@ -3,34 +3,27 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * CLI surface for `akm extract`.
+ * CLI surface for `akm proposal extract` (formerly the top-level `akm
+ * extract`, moved under the `proposal` group in the 0.9 CLI overhaul, S8 —
+ * see src/commands/proposal/proposal-cli.ts for its registration).
  *
  * Examples:
- *   akm extract --type claude-code --session-id <id>
- *   akm extract --type claude-code --since 24h
- *   akm extract --type opencode --since 7d --dry-run
- *   akm extract --auto                 # iterate all available harnesses
- *   akm extract --type claude-code --location /custom/path --session-id <id>
+ *   akm proposal extract --type claude-code --session-id <id>
+ *   akm proposal extract --type claude-code --since 24h
+ *   akm proposal extract --type opencode --since 7d --dry-run
+ *   akm proposal extract --auto                 # iterate all available harnesses
+ *   akm proposal extract --type claude-code --location /custom/path --session-id <id>
  *
  * Output is the AkmExtractResult JSON envelope (or an aggregated one when
  * `--auto` runs multiple harnesses).
  */
 
-import fs from "node:fs";
-import path from "node:path";
 import { getStringArg } from "../../cli/parse-args";
 import { defineJsonCommand, EXIT_CODES, output } from "../../cli/shared";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
-import { getAvailableHarnesses, getWatchTargets } from "../../integrations/session-logs";
-import {
-  type AkmExtractOptions,
-  type AkmExtractResult,
-  akmExtract,
-  type ResolvedExtractPlan,
-  resolveStandaloneExtractPlan,
-} from "./extract";
-import { akmExtractWatch, type WatchEvent, type WatchEventSource } from "./extract-watch";
+import { getAvailableHarnesses } from "../../integrations/session-logs";
+import { type AkmExtractResult, akmExtract, resolveStandaloneExtractPlan } from "./extract";
 
 export const extractCommand = defineJsonCommand({
   meta: {
@@ -83,16 +76,6 @@ export const extractCommand = defineJsonCommand({
       type: "string",
       description: "Improve strategy supplying extract behavior and engine. Mutually exclusive with --engine.",
     },
-    watch: {
-      type: "boolean",
-      description:
-        "Watch harness session-log directories and run extract on change (debounced). Stays alive until SIGINT/SIGTERM.",
-      default: false,
-    },
-    "debounce-ms": {
-      type: "string",
-      description: "Debounce window in ms for --watch (default 2000).",
-    },
   },
   async run({ args }) {
     const type = getStringArg(args, "type") ?? "";
@@ -118,22 +101,10 @@ export const extractCommand = defineJsonCommand({
       throw new UsageError("--engine and --strategy are mutually exclusive. Pick one.", "INVALID_FLAG_VALUE");
     }
 
-    const watch = args.watch === true;
-    const debounceMs =
-      typeof args["debounce-ms"] === "string" && args["debounce-ms"] !== ""
-        ? Number.parseInt(args["debounce-ms"], 10)
-        : 2000;
-    if (watch && (!Number.isFinite(debounceMs) || debounceMs <= 0)) {
-      throw new UsageError(
-        `--debounce-ms must be a positive integer (got "${args["debounce-ms"]}").`,
-        "INVALID_FLAG_VALUE",
-      );
-    }
-
-    if (!watch && auto && type) {
+    if (auto && type) {
       throw new UsageError("--auto and --type are mutually exclusive. Pick one.", "INVALID_FLAG_VALUE");
     }
-    if (!watch && !auto && !type) {
+    if (!auto && !type) {
       throw new UsageError(
         "--type is required (or pass --auto to try every available harness).",
         "MISSING_REQUIRED_ARGUMENT",
@@ -146,11 +117,6 @@ export const extractCommand = defineJsonCommand({
       ...(strategy ? { strategy } : {}),
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     });
-
-    if (watch) {
-      await runWatchMode({ debounceMs, dryRun, force, config, resolvedPlan, ...(since ? { since } : {}) });
-      return;
-    }
 
     const commonOptions = Object.freeze({
       ...(sessionId ? { sessionId } : {}),
@@ -193,7 +159,7 @@ export const extractCommand = defineJsonCommand({
       // Signal failure to callers/schedulers when every harness failed. output()
       // only renders; without this a scheduled run exits 0 on a total failure
       // and the breakage is invisible to exit-code monitoring. process.exitCode
-      // (not process.exit) lets stdout flush and the watcher/timers settle.
+      // (not process.exit) lets stdout flush before the process exits.
       if (!ok) process.exitCode = EXIT_CODES.GENERAL;
       return;
     }
@@ -203,117 +169,3 @@ export const extractCommand = defineJsonCommand({
     if (!result.ok) process.exitCode = EXIT_CODES.GENERAL;
   },
 });
-
-/**
- * A thin {@link WatchEventSource} over `fs.watch` for each configured root.
- * This adapter is the ONLY place a real `fs.watch` is created (the core stays
- * injectable + fully unit-tested); it is intentionally not unit-covered.
- *
- * `fs.watch(dir, { recursive: true })` is unreliable for recursive mode on some
- * Node/Bun/Linux combinations. A root that cannot be watched is skipped while
- * successfully-created watchers continue running.
- */
-function createFsWatchEventSource(roots: string[]): WatchEventSource {
-  return {
-    subscribe(listener: (e: WatchEvent) => void): () => void {
-      const watchers: fs.FSWatcher[] = [];
-      for (const root of roots) {
-        try {
-          const watcher = fs.watch(root, { recursive: true }, (_event, filename) => {
-            if (!filename) return;
-            const filePath = path.isAbsolute(filename.toString())
-              ? filename.toString()
-              : path.join(root, filename.toString());
-            listener({ path: filePath });
-          });
-          watchers.push(watcher);
-        } catch {
-          // A root that can't be watched is skipped.
-        }
-      }
-      return () => {
-        for (const w of watchers) {
-          try {
-            w.close();
-          } catch {
-            // best-effort teardown
-          }
-        }
-      };
-    },
-  };
-}
-
-type ExtractWatchTriggerOptions = Pick<AkmExtractOptions, "config" | "dryRun" | "force" | "resolvedPlan" | "since">;
-type ExtractFn = (options: AkmExtractOptions) => Promise<unknown>;
-
-/** Snapshot the CLI-resolved watch options once and reuse them for every debounced trigger. */
-export function createExtractWatchTrigger(
-  options: ExtractWatchTriggerOptions,
-  extractFn: ExtractFn = akmExtract,
-): (harnessName: string) => Promise<void> {
-  const snapshot = Object.freeze({ ...options });
-  return async (harnessName) => {
-    await extractFn({ type: harnessName, ...snapshot });
-  };
-}
-
-/**
- * Run `akm extract --watch`: watch every available harness's session-log
- * roots and run extract (debounced, per-harness) on change. Stays alive until
- * SIGINT/SIGTERM, then stops cleanly. PROCESS-HYGIENE: stop() removes every
- * watcher + pending timer before the process exits.
- */
-async function runWatchMode(opts: {
-  debounceMs: number;
-  dryRun: boolean;
-  force: boolean;
-  config: ReturnType<typeof loadConfig>;
-  resolvedPlan: ResolvedExtractPlan;
-  since?: string;
-}): Promise<void> {
-  const targets = getWatchTargets();
-  if (targets.length === 0) {
-    output("extract", {
-      schemaVersion: 1,
-      ok: false,
-      shape: "extract-watch-started" as const,
-      warnings: ["no watchable harness session-log directories found on this machine"],
-      watching: [] as string[],
-    });
-    return;
-  }
-
-  const allRoots = targets.flatMap((t) => t.roots);
-  const eventSource = createFsWatchEventSource(allRoots);
-  const onTrigger = createExtractWatchTrigger({
-    dryRun: opts.dryRun,
-    force: opts.force,
-    config: opts.config,
-    resolvedPlan: opts.resolvedPlan,
-    ...(opts.since ? { since: opts.since } : {}),
-  });
-  const handle = akmExtractWatch({
-    roots: targets,
-    eventSource,
-    debounceMs: opts.debounceMs,
-    onTrigger,
-  });
-
-  output("extract", {
-    schemaVersion: 1,
-    ok: true,
-    shape: "extract-watch-started" as const,
-    debounceMs: opts.debounceMs,
-    watching: allRoots,
-  });
-
-  await new Promise<void>((resolve) => {
-    const shutdown = () => {
-      handle.stop();
-      resolve();
-    };
-    process.once("SIGINT", shutdown);
-    process.once("SIGTERM", shutdown);
-  });
-}

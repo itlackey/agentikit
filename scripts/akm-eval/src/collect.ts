@@ -125,7 +125,7 @@ Usage:
   akm-eval-collect --from-improve-run <id|latest> [options]
 
 Options:
-  --stash <path>       Stash root (default: $AKM_STASH_DIR or ~/akm).
+  --stash <path>       Stash root (default: $AKM_BUNDLE_DIR or ~/akm).
   --out <path>         Write collected.json to this path (overrides default).
   --format json|md     Output format (default: json).
 `);

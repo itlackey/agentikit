@@ -71,7 +71,7 @@ process.on("uncaughtException", (err) => {
 });
 
 import fs from "node:fs";
-import { type ArgsDef, type CommandDef, defineCommand, parseArgs, runCommand, showUsage } from "citty";
+import { type ArgsDef, type CommandDef, defineCommand, parseArgs, renderUsage, runCommand, showUsage } from "citty";
 import {
   type CittyArgsDefinitionForScan,
   findCittyTopLevelCommand,
@@ -81,49 +81,47 @@ import {
   resolveHelpMigrateVersionArg,
   setParsedInvocation,
 } from "./cli/invocation";
-import { EXIT_CODES, emitJsonError, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "./cli/shared";
-import { agentCommand, lintCommand, proposeCommand } from "./commands/agent/contribute-cli";
+import { retiredCommandHint } from "./cli/retired-commands";
+import {
+  defineGroupCommand,
+  EXIT_CODES,
+  emitJsonError,
+  GLOBAL_OUTPUT_ARGS,
+  output,
+  runWithJsonErrors,
+} from "./cli/shared";
+import { agentCommand, lintCommand } from "./commands/agent/contribute-cli";
 import { generateBashCompletions, installBashCompletions } from "./commands/completions";
 import { configCommand } from "./commands/config-cli";
 import { envCommand } from "./commands/env/env-cli";
 import { secretCommand } from "./commands/env/secret-cli";
 import { feedbackCommand } from "./commands/feedback-cli";
-import { graphCommand } from "./commands/graph/graph-cli";
 import { akmHealth } from "./commands/health";
 import "./commands/health/renderers";
 import type { WindowSpec } from "./commands/health/types";
 import { parseWindowSpec } from "./commands/health/windows";
-import { extractCommand } from "./commands/improve/extract-cli";
 import { improveCommand } from "./commands/improve/improve-cli";
 import { migrateCommand } from "./commands/migrate-cli";
-import { mvCommand } from "./commands/mv-cli";
-import { hintsCommand, lessonsCommand, logCommand } from "./commands/observability-cli";
+import { logCommand } from "./commands/observability-cli";
 import { proposalCommand } from "./commands/proposal/proposal-cli";
 import { rememberCommand } from "./commands/read/remember-cli";
 import { curateCommand, searchCommand, showCommand } from "./commands/read/search-cli";
 import { registryCommand } from "./commands/registry-cli";
-import { addCommand } from "./commands/sources/add-cli";
+import { bundleCommand } from "./commands/sources/bundle-cli";
 import { renderMigrationHelp } from "./commands/sources/migration-help";
-import {
-  cloneCommand,
-  historyCommand,
-  listCommand,
-  removeCommand,
-  syncCommand,
-  updateCommand,
-  upgradeCommand,
-} from "./commands/sources/sources-cli";
-import { importKnowledgeCommand, indexCommand, infoCommand, initCommand } from "./commands/sources/stash-cli";
-import { tasksCommand } from "./commands/tasks/tasks-cli";
+import { cloneCommand, syncCommand, upgradeCommand } from "./commands/sources/sources-cli";
+import { importKnowledgeCommand, indexCommand, infoCommand } from "./commands/sources/stash-cli";
+import { taskCommand } from "./commands/tasks/tasks-cli";
 import { workflowCommand } from "./commands/workflow-cli";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config/config";
-import { UsageError } from "./core/errors";
+import { UsageError, type UsageErrorCode } from "./core/errors";
 import { assertNoPendingMigrationOperation } from "./core/migration-operation";
 import { getConfigPath } from "./core/paths";
 import { DURATION_UNITS, parseDuration } from "./core/time";
 import { plainize } from "./core/tty";
 import { info, isQuiet, setQuiet, setVerbose, warn } from "./core/warn";
 import { disposeDispatchResources } from "./integrations/agent/runner-dispatch";
+import { EMBEDDED_HINTS, EMBEDDED_HINTS_FULL } from "./output/cli-hints";
 import { getOutputMode, initOutputMode } from "./output/context";
 import { isFormatExemptCommand } from "./output/format-exempt";
 import { consumeSchedulerContextArg } from "./tasks/scheduler-invocation";
@@ -155,16 +153,16 @@ function applyEarlyStderrFlags(argv: string[]): void {
  * Silent when: stderr is not a TTY (CI, pipes), --format=text/yaml (the user
  * already gets readable output), --quiet, or the result is missing fields.
  */
-function printSetupTtyHint(result: { stashDir?: string; configPath?: string }): void {
+function printSetupTtyHint(result: { bundleDir?: string; configPath?: string }): void {
   if (!process.stderr.isTTY) return;
   const mode = getOutputMode();
   if (mode.format !== "json" && mode.format !== "jsonl") return;
   if (isQuiet()) return;
-  if (!result?.stashDir) return;
+  if (!result?.bundleDir) return;
   console.error(
     plainize(
-      `\n✓ Stash created at ${result.stashDir}\n` +
-        `  Next: \`akm add github:itlackey/akm-stash\` then \`akm index\` to populate the stash.`,
+      `\n✓ Bundle created at ${result.bundleDir}\n` +
+        '  Next: `akm bundle add <source>`, `akm index`, `akm search "<query>"`, `akm help agents`',
     ),
   );
 }
@@ -183,6 +181,11 @@ const setupCommand = defineCommand({
       "Interactive configuration wizard. Configures embeddings/LLM connections (for indexing/enrichment), agent profiles (CLI agent, embedded SDK, or none), sources, and registries. Shows which features are enabled at the end. Use --config <json> or --yes for non-interactive/scripting mode.",
   },
   args: {
+    // R-051/S11: `setup` is a raw `defineCommand` (not `defineJsonCommand`),
+    // so it does not get `GLOBAL_OUTPUT_ARGS` for free — same gap `health`
+    // already had. Three of its four run branches call `output()`; spreading
+    // this in is a `--help` visibility fix, not a behavior change.
+    ...GLOBAL_OUTPUT_ARGS,
     config: {
       type: "string",
       description: 'Config JSON to apply non-interactively, e.g. \'{"llm":{"endpoint":"...","model":"..."}}\'',
@@ -199,7 +202,7 @@ const setupCommand = defineCommand({
     },
     dir: {
       type: "string",
-      description: "Stash directory path (overrides stashDir in config or --config JSON)",
+      description: "Bundle directory path (overrides defaultBundle in config or --config JSON)",
     },
     // Declared as the POSITIVE name with `default: true` so citty's native
     // `--no-<name>` negation (it strips a leading `--no-` from ANY token and
@@ -211,45 +214,17 @@ const setupCommand = defineCommand({
     init: {
       type: "boolean",
       default: true,
-      description: "Scaffold the stash directory. Use --no-init to write configuration without scaffolding it.",
+      description: "Scaffold the bundle directory. Use --no-init to write configuration without scaffolding it.",
     },
     probe: {
       type: "boolean",
       default: false,
       description: "Probe LLM/embedding endpoints before writing config to verify connectivity",
     },
-    "detect-only": {
-      type: "boolean",
-      default: false,
-      description:
-        "Run environment detection only and print the result (no prompts, no writes). Pair with --format json.",
-    },
-    "reset-recommended": {
-      type: "boolean",
-      default: false,
-      description:
-        "Merge opinionated, detection-derived defaults into the existing config without removing custom keys.",
-    },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
       const noInit = !args.init;
-      const detectOnly = args["detect-only"];
-      const resetRecommended = args["reset-recommended"];
-      if (detectOnly) {
-        // Detection only: no prompts, no writes.
-        const { runDetectOnly } = await import("./setup/setup");
-        const detection = await runDetectOnly();
-        output("setup", detection);
-        return;
-      }
-      if (resetRecommended) {
-        const { runResetRecommended } = await import("./setup/setup");
-        const result = await runResetRecommended({ dir: args.dir, noInit, probe: args.probe });
-        output("setup", result);
-        printSetupTtyHint(result);
-        return;
-      }
       if (args.from && args.config) {
         throw new UsageError("Pass either --from <file> or --config <json>, not both.", "INVALID_FLAG_VALUE");
       }
@@ -387,6 +362,7 @@ const healthCommand = defineCommand({
       resultStatus = base.status;
       if (report) {
         const { listPendingProposals } = await import("./commands/proposal/proposal");
+        const { computeAcceptRateBySource } = await import("./commands/health/accept-rate");
         output("health", {
           ...base,
           report: {
@@ -394,6 +370,7 @@ const healthCommand = defineCommand({
             compare: reportCompare,
             comparisonMode: explicitWindows ? "custom" : "duration",
             pendingProposals: listPendingProposals().map(({ ref, source, createdAt }) => ({ ref, source, createdAt })),
+            acceptRateBySource: computeAcceptRateBySource(),
           },
         });
         return;
@@ -417,12 +394,48 @@ const healthCommand = defineCommand({
   },
 });
 
-const helpCommand = defineCommand({
+/**
+ * R-006 (S11 relocation): `loadAgentHints` used to prefer reading
+ * `<pkgroot>/docs/agents/AGENTS[.full].md` off disk (the pre-0.9 `akm hints`
+ * command), falling back to the embedded `EMBEDDED_HINTS[_FULL]` constants
+ * only when that path didn't resolve — an npm/binary install always fell
+ * through to the embedded copy while a git checkout always read the
+ * separate `docs/agents/` copy instead, and the two had already drifted.
+ * Single-sourced now: always the embedded constant
+ * (`src/assets/hints/cli-hints-{short,full}.md`), in every environment.
+ * `akm hints` is REMOVED in 0.9.0 (hard break) — `akm help agents` is the
+ * only reference to point readers at now.
+ */
+function loadAgentHints(full: boolean): string {
+  return full ? EMBEDDED_HINTS_FULL : EMBEDDED_HINTS;
+}
+
+const helpCommand = defineGroupCommand({
   meta: {
     name: "help",
-    description: "Print focused help topics such as migration guidance for a release",
+    description:
+      "Print focused help topics: the sectioned command overview, agent usage instructions, or a release's migration guidance",
   },
   subCommands: {
+    agents: defineCommand({
+      meta: {
+        name: "agents",
+        description:
+          "Print agent instructions on how to use akm — the short guide by default; pass --full for the complete guide",
+      },
+      args: {
+        full: {
+          type: "boolean",
+          default: false,
+          description: "Print the complete guide instead of the short one.",
+        },
+      },
+      run({ args }) {
+        return runWithJsonErrors(() => {
+          process.stdout.write(loadAgentHints(args.full === true));
+        });
+      },
+    }),
     migrate: defineCommand({
       meta: {
         name: "migrate",
@@ -453,6 +466,13 @@ const helpCommand = defineCommand({
         });
       },
     }),
+  },
+  // Bare `akm help` (S11): print the same sectioned overview as `akm --help`,
+  // exit 0 — NOT the canonical bare-group usage error every other group
+  // gets, since `help` with no subcommand is a normal, complete request, not
+  // a mistake.
+  async defaultRun() {
+    process.stdout.write(`${await renderSectionedRootHelp()}\n`);
   },
 });
 
@@ -503,7 +523,7 @@ export const main = defineCommand({
     name: "akm",
     version: pkgVersion,
     description:
-      "Agent Knowledge Management — search, show, and manage assets from your stash.\n\n" +
+      "Agent Knowledge Management — search, show, and manage assets from your bundle.\n\n" +
       "Exit codes:\n" +
       "  0   success\n" +
       "  1   not found / command-reported failure\n" +
@@ -513,48 +533,19 @@ export const main = defineCommand({
       "  78  config error",
   },
   args: {
-    format: { type: "string", description: "Output format (json|jsonl|text|yaml|md|html)", default: "json" },
-    output: {
-      type: "string",
-      description: "Write rendered output to a file instead of stdout (all formats except jsonl)",
-    },
-    detail: {
-      type: "string",
-      description: "Detail level (verbosity): brief|normal|full. Default: brief.",
-      default: "brief",
-    },
-    shape: {
-      type: "string",
-      description:
-        "Output projection: human|agent|summary. 'agent' trims to agent-essential fields; " +
-        "'summary' is only valid on 'akm show'. Default: human.",
-    },
-    quiet: {
-      type: "boolean",
-      alias: "q",
-      description:
-        "Suppress non-essential stderr output (banners, spinners, progress info). " +
-        "Safety-critical output is never suppressed: errors, destructive-action confirmation prompts, " +
-        "and auto-migration banners always appear regardless of --quiet.",
-      default: false,
-    },
-    verbose: {
-      type: "boolean",
-      description: "Print per-spec diagnostics to stderr (also honours AKM_VERBOSE env var)",
-      default: false,
-    },
+    // Single-sourced from GLOBAL_OUTPUT_ARGS (src/cli/shared.ts) so root help
+    // and leaf help state identical text. format/detail get their `default`
+    // added here only — the description text itself is never redeclared.
+    ...GLOBAL_OUTPUT_ARGS,
+    format: { ...GLOBAL_OUTPUT_ARGS.format, default: "json" },
+    detail: { ...GLOBAL_OUTPUT_ARGS.detail, default: "brief" },
   },
   subCommands: {
     setup: setupCommand,
-    init: initCommand,
     index: indexCommand,
     health: healthCommand,
     info: infoCommand,
-    graph: graphCommand,
-    add: addCommand,
-    list: listCommand,
-    remove: removeCommand,
-    update: updateCommand,
+    bundle: bundleCommand,
     upgrade: upgradeCommand,
     search: searchCommand,
     curate: curateCommand,
@@ -564,26 +555,20 @@ export const main = defineCommand({
     import: importKnowledgeCommand,
     sync: syncCommand,
     clone: cloneCommand,
-    mv: mvCommand,
     registry: registryCommand,
     migrate: migrateCommand,
     config: configCommand,
     feedback: feedbackCommand,
-    history: historyCommand,
     log: logCommand,
-    lessons: lessonsCommand,
     agent: agentCommand,
     lint: lintCommand,
     improve: improveCommand,
-    extract: extractCommand,
-    propose: proposeCommand,
     proposal: proposalCommand,
     help: helpCommand,
-    hints: hintsCommand,
     completions: completionsCommand,
     env: envCommand,
     secret: secretCommand,
-    tasks: tasksCommand,
+    task: taskCommand,
   },
 });
 
@@ -593,10 +578,10 @@ function isTaskRunWithId(argv: readonly string[]): boolean {
   const args = argv.slice(2);
   const commandIndex = findCittyTopLevelCommandIndex(args, MAIN_TOP_LEVEL_ARGS);
   const command = commandIndex >= 0 ? args[commandIndex] : undefined;
-  if (command !== "tasks" && command !== "task") return false;
+  if (command !== "task") return false;
   const taskArgs = args.slice(commandIndex + 1);
   if (taskArgs[0] !== "run") return false;
-  const runCommand = (tasksCommand.subCommands as unknown as Record<string, { args?: ArgsDef }> | undefined)?.run;
+  const runCommand = (taskCommand.subCommands as unknown as Record<string, { args?: ArgsDef }> | undefined)?.run;
   if (!runCommand?.args) return false;
   try {
     const parsed = parseArgs(taskArgs.slice(1), runCommand.args) as Record<string, unknown>;
@@ -619,7 +604,7 @@ export function shouldBypassConfigStartup(argv: readonly string[]): boolean {
   if (command !== "config") return false;
   const configIndex = args.indexOf("config");
   const subcommand = args.slice(configIndex + 1).find((arg) => !arg.startsWith("-"));
-  return subcommand === "path" || subcommand === "validate";
+  return subcommand === "path";
 }
 
 // ── Exit codes ──────────────────────────────────────────────────────────────
@@ -686,25 +671,21 @@ function findCittySubCommandByName(
 /**
  * Re-implementation of citty's own (unexported) `resolveSubCommand`: walks
  * `rawArgs` down the subcommand tree the same way its private
- * `findSubCommandIndex` / `_findSubCommand` do, so the usage banner rendered
- * on a CLIError names the deepest command the user was actually invoking —
- * matching what citty's own `runMain` would have shown, byte-for-byte.
+ * `findSubCommandIndex` / `_findSubCommand` do, so an explicit `--help`
+ * renders the deepest command the user was actually invoking, matching what
+ * citty's own `runMain` would have shown.
  */
-function resolveDeepestCittyCommand(
-  cmd: AnyCittyCommand,
-  rawArgs: readonly string[],
-  parent?: AnyCittyCommand,
-): [AnyCittyCommand, AnyCittyCommand | undefined] {
+function resolveDeepestCittyCommand(cmd: AnyCittyCommand, rawArgs: readonly string[]): AnyCittyCommand {
   const subCommands = cmd.subCommands as Record<string, AnyCittyCommand> | undefined;
   if (subCommands && Object.keys(subCommands).length > 0) {
     const idx = findCittyTopLevelCommandIndex(rawArgs, (cmd.args ?? {}) as CittyArgsDefinitionForScan);
     const name = idx >= 0 ? rawArgs[idx] : undefined;
     if (name !== undefined) {
       const sub = findCittySubCommandByName(subCommands, name);
-      if (sub) return resolveDeepestCittyCommand(sub, rawArgs.slice(idx + 1), cmd);
+      if (sub) return resolveDeepestCittyCommand(sub, rawArgs.slice(idx + 1));
     }
   }
-  return [cmd, parent];
+  return cmd;
 }
 
 function resolveCittyCommandPath(
@@ -721,6 +702,222 @@ function resolveCittyCommandPath(
   if (!sub) return [...path];
   const name = Object.entries(subCommands).find(([, candidate]) => candidate === sub)?.[0] ?? token;
   return resolveCittyCommandPath(sub, rawArgs.slice(index + 1), [...path, name]);
+}
+
+/**
+ * `showUsage`/`renderUsage` (citty) render a subcommand's own USAGE line as
+ * `${parentMeta.name} ${cmdMeta.name}` using only the DIRECT parent — for a
+ * two-deep command (`akm task run`) that renders `task run`, silently
+ * dropping the `akm ` root prefix every top-level command's `--help` already
+ * shows. Building a synthetic parent whose `meta.name` is the full prefix
+ * (`akm task`) fixes it for any depth without patching the vendored
+ * dependency (S11 item 4).
+ */
+function buildUsageParentForPath(path: readonly string[]): AnyCittyCommand {
+  // `version` carries through too — citty's renderUsage falls back to
+  // `parentMeta.version` when the resolved command itself declares none
+  // (true of every subcommand here), and the real parent it substitutes for
+  // always resolves to `main`, which does declare one.
+  return { meta: { name: ["akm", ...path.slice(0, -1)].join(" "), version: pkgVersion } };
+}
+
+// ── Sectioned root help (S11) ────────────────────────────────────────────────
+//
+// citty's own generated COMMANDS list is a flat, unordered dump of every
+// top-level command — fine for a handful of commands, not for the ~28 this
+// CLI has grown to. Groups them instead under four fixed sections mirroring
+// how they're actually used, reusing citty's own `renderUsage` for the
+// banner/USAGE/OPTIONS portion (so it stays byte-identical to every
+// subcommand's own `--help`) and replacing only the COMMANDS section.
+
+const HELP_SECTIONS: ReadonlyArray<{ readonly title: string; readonly commands: readonly string[] }> = [
+  {
+    title: "AGENT LOOP",
+    commands: ["search", "curate", "show", "remember", "import", "feedback", "sync", "index", "improve"],
+  },
+  { title: "ASSETS", commands: ["clone", "lint"] },
+  { title: "MANAGE", commands: ["bundle", "proposal", "task", "workflow", "env", "secret", "registry", "config"] },
+  { title: "SYSTEM", commands: ["agent", "setup", "health", "info", "log", "upgrade", "help", "completions"] },
+];
+
+/** Abbreviations whose trailing period does not end a sentence. */
+const NON_TERMINAL_ABBREVIATIONS = ["e.g.", "i.e.", "etc.", "vs."];
+
+/**
+ * First sentence of a description, for the root command list.
+ *
+ * Several commands carry multi-paragraph descriptions that are correct on
+ * `akm <cmd> --help` but turn the root listing back into the undifferentiated
+ * wall this section replaced (a single command's description ran past 1k
+ * characters on one row).
+ */
+function firstSentence(text: string): string {
+  const line = text.split("\n", 1)[0]?.trim() ?? "";
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] !== "." && line[i] !== "!" && line[i] !== "?") continue;
+    const candidate = line.slice(0, i + 1);
+    const next = line[i + 1];
+    if (next !== undefined && next !== " ") continue;
+    if (NON_TERMINAL_ABBREVIATIONS.some((abbr) => candidate.toLowerCase().endsWith(abbr))) continue;
+    return candidate;
+  }
+  return line;
+}
+
+function topLevelCommandDescription(name: string): string {
+  const sub = (main.subCommands as Record<string, AnyCittyCommand> | undefined)?.[name];
+  return firstSentence((sub?.meta as { description?: string } | undefined)?.description ?? "");
+}
+
+function formatCommandRows(names: readonly string[]): string {
+  const width = Math.max(...names.map((name) => name.length));
+  return names.map((name) => `  ${name.padEnd(width)}  ${topLevelCommandDescription(name)}`).join("\n");
+}
+
+function renderCommandSections(): string {
+  return HELP_SECTIONS.map(({ title, commands }) => `${title}\n${formatCommandRows(commands)}`).join("\n\n");
+}
+
+/**
+ * Sectioned replacement for citty's root COMMANDS list (S11 item 1). Reuses
+ * `renderUsage(main)` for the banner + exit-code table (kept verbatim) +
+ * USAGE line + global OPTIONS, then cuts the string before citty's own
+ * "COMMANDS" heading (present because `main` has `subCommands`) and appends
+ * the grouped sections plus a one-line bundle/ref-grammar tagline and the
+ * `akm help agents` pointer.
+ */
+async function renderSectionedRootHelp(): Promise<string> {
+  const base = await renderUsage(main as CommandDef, undefined);
+  const commandsHeadingIndex = base.indexOf("COMMANDS");
+  // Cut at the START of the heading's own line, not the word itself — the
+  // word is preceded by citty's own ANSI bold/underline escape codes, and
+  // slicing mid-line would leave a dangling open escape sequence.
+  const cutIndex = commandsHeadingIndex === -1 ? -1 : base.lastIndexOf("\n", commandsHeadingIndex);
+  const head = (cutIndex === -1 ? base : base.slice(0, cutIndex)).replace(/\n+$/, "");
+  const epilogue = [
+    'A "bundle" is your managed directory of assets (skills, agents, memories, workflows, ...). Refs use the ' +
+      "grammar [bundle//]conceptId[#fragment], where the concept id is the bundle's own path for the asset — " +
+      "e.g. `akm show skills/deploy`, or `akm show work//skills/deploy` for a named bundle. Copy ids from " +
+      "`akm search` output rather than synthesizing them.",
+    "",
+    "Run `akm <command> --help` for details on any command.",
+    "agents: run `akm help agents`",
+  ].join("\n");
+  return [head, "", renderCommandSections(), "", epilogue].join("\n");
+}
+
+/**
+ * Walk down the subcommand tree the same way {@link resolveDeepestCittyCommand}
+ * does, but stop and report the first token that fails to resolve instead of
+ * silently giving up — the attempted spelling plus its sibling candidate set,
+ * for the did-you-mean suggestion below. Returns undefined when every token
+ * resolved (e.g. "no command specified", or a missing positional/flag on an
+ * otherwise-valid command) — there is no unknown NAME to suggest a fix for.
+ */
+function findUnknownCommandAttempt(
+  rawArgs: readonly string[],
+): { attempted: string; candidates: string[]; parentPath: string[] } | undefined {
+  let cmd: AnyCittyCommand = main as AnyCittyCommand;
+  let args = rawArgs;
+  const parentPath: string[] = [];
+  for (;;) {
+    const subCommands = cmd.subCommands as Record<string, AnyCittyCommand> | undefined;
+    if (!subCommands || Object.keys(subCommands).length === 0) return undefined;
+    const idx = findCittyTopLevelCommandIndex(args, (cmd.args ?? {}) as CittyArgsDefinitionForScan);
+    const token = idx >= 0 ? args[idx] : undefined;
+    if (token === undefined) return undefined;
+    const sub = findCittySubCommandByName(subCommands, token);
+    if (!sub) return { attempted: token, candidates: Object.keys(subCommands), parentPath };
+    parentPath.push(token);
+    cmd = sub;
+    args = args.slice(idx + 1);
+  }
+}
+
+/**
+ * Standard edit-distance DP, single-row-at-a-time (sizes here are always
+ * short command-name strings). Builds each row left-to-right, appending as
+ * it goes, so every index read below is already-populated — the `?? 0`
+ * fallbacks only satisfy `noUncheckedIndexedAccess`, they never fire.
+ */
+function levenshteinDistance(a: string, b: string): number {
+  let previousRow: number[] = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const currentRow: number[] = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
+      const deletion = (previousRow[j] ?? 0) + 1;
+      const insertion = (currentRow[j - 1] ?? 0) + 1;
+      const substitution = (previousRow[j - 1] ?? 0) + substitutionCost;
+      currentRow.push(Math.min(deletion, insertion, substitution));
+    }
+    previousRow = currentRow;
+  }
+  return previousRow[b.length] ?? 0;
+}
+
+/** Closest candidate within a length-scaled distance threshold, or undefined when nothing is close enough to be worth suggesting. */
+function closestCommandMatch(attempted: string, candidates: readonly string[]): string | undefined {
+  let best: string | undefined;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) {
+    const distance = levenshteinDistance(attempted, candidate);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = candidate;
+    }
+  }
+  const threshold = Math.max(2, Math.ceil(attempted.length / 2));
+  return best !== undefined && bestDistance <= threshold ? best : undefined;
+}
+
+const CLI_HELP_POINTER = "Run `akm --help` for usage.";
+
+/**
+ * citty's `CLIError` carries its own stable `.code` (not exported in its
+ * types, but present on every instance — see {@link isCittyCliError}'s doc
+ * comment): `E_UNKNOWN_COMMAND` for an unrecognized command/subcommand name,
+ * `EARG`/`E_NO_COMMAND` for a missing required argument/positional or a bare
+ * group with no `run`. Maps that to one of this CLI's own stable
+ * `UsageErrorCode`s so the reclassified error (below) carries a real code
+ * instead of the generic fallback.
+ */
+function cittyCliErrorUsageCode(error: Error & { code?: string }): UsageErrorCode {
+  switch (error.code) {
+    case "E_UNKNOWN_COMMAND":
+      return "UNKNOWN_COMMAND";
+    case "EARG":
+    case "E_NO_COMMAND":
+      return "MISSING_REQUIRED_ARGUMENT";
+    default:
+      return "INVALID_FLAG_VALUE";
+  }
+}
+
+/**
+ * Route a citty `CLIError` through the standard JSON envelope instead of
+ * citty's own usage-banner + raw `console.error(message)` (S11 item 3): the
+ * one-line diagnosis is the error's own message (e.g. "Unknown command
+ * foo"), and the hint is a short pointer — with a did-you-mean suggestion
+ * prepended when the unresolved token is close to a real sibling command —
+ * rather than the full ~46KB usage dump citty would otherwise print.
+ */
+function toUsageErrorFromCliError(error: Error, rawArgs: readonly string[]): UsageError {
+  const code = cittyCliErrorUsageCode(error as Error & { code?: string });
+  const attempt = code === "UNKNOWN_COMMAND" ? findUnknownCommandAttempt(rawArgs) : undefined;
+  // Retired spellings from the 0.9 hard break get their replacement, not a
+  // did-you-mean: edit distance suggests the WRONG command for most of them
+  // (`init`→`info`, `update`→`upgrade`), and agents follow suggestions.
+  const retired = attempt ? retiredCommandHint(attempt.parentPath, attempt.attempted) : undefined;
+  const suggestion =
+    retired === undefined && attempt ? closestCommandMatch(attempt.attempted, attempt.candidates) : undefined;
+  const hint = retired ?? (suggestion ? `Did you mean \`${suggestion}\`? ${CLI_HELP_POINTER}` : CLI_HELP_POINTER);
+  // citty colorizes error.message with ANSI escapes even when stdout/stderr
+  // is not a TTY. Strip them so the JSON envelope's `error` field is plain
+  // text instead of embedding raw escape sequences.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — strip ANSI escape codes
+  const message = error.message.replace(/\x1b\[[0-9;]*m/g, "");
+  return new UsageError(message, code, hint);
 }
 
 /**
@@ -824,8 +1021,15 @@ async function runCli(): Promise<void> {
     const passthroughAt = rawArgs.indexOf("--");
     const ownArgs = passthroughAt === -1 ? rawArgs : rawArgs.slice(0, passthroughAt);
     if (HELP_FLAGS.some((flag) => ownArgs.includes(flag))) {
-      const [resolved, parent] = resolveDeepestCittyCommand(main, rawArgs);
-      await showUsage(resolved as CommandDef, parent as CommandDef | undefined);
+      const resolved = resolveDeepestCittyCommand(main, rawArgs);
+      if (resolved === (main as AnyCittyCommand)) {
+        // Root `--help` (S11 item 1): the sectioned overview, not citty's
+        // flat COMMANDS dump.
+        process.stdout.write(`${await renderSectionedRootHelp()}\n`);
+      } else {
+        const path = resolveCittyCommandPath(main, rawArgs);
+        await showUsage(resolved as CommandDef, buildUsageParentForPath(path) as CommandDef);
+      }
       return;
     }
     if (rawArgs.length === 1 && VERSION_FLAGS.includes(rawArgs[0] as string)) {
@@ -835,14 +1039,14 @@ async function runCli(): Promise<void> {
     await runCommand(main, { rawArgs });
   } catch (error) {
     if (isCittyCliError(error)) {
-      // R-032: reclassify citty's own "unknown command" / "no command
-      // specified" / "missing required argument" family as USAGE (2) —
-      // citty's `runMain` would have printed this same usage banner +
-      // message, then unconditionally called `process.exit(1)`.
-      const [resolved, parent] = resolveDeepestCittyCommand(main, rawArgs);
-      await showUsage(resolved as CommandDef, parent as CommandDef | undefined);
-      console.error(error.message);
-      process.exitCode = EXIT_CODES.USAGE;
+      // R-032/S11: reclassify citty's own "unknown command" / "no command
+      // specified" / "missing required argument" family as USAGE (2) and
+      // route it through the SAME JSON envelope every other command's
+      // failure uses (`emitJsonError`), rather than citty's own usage-banner
+      // + raw `console.error(message)` — a one-line diagnosis plus a short
+      // hint (with a did-you-mean suggestion when applicable), not a ~46KB
+      // usage dump.
+      emitJsonError(toUsageErrorFromCliError(error, rawArgs));
       return;
     }
     // Anything else escaping here is a genuinely unexpected failure outside

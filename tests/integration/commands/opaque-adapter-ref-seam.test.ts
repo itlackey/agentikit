@@ -12,10 +12,10 @@
  * (`tables/customers`), a website page, a wiki pageKind, an adapter
  * `instruction` doc — in every ref-consuming command EXCEPT `show` (which
  * bypasses `parseRefInput` entirely via its indexed-projection path, landed
- * separately). D11 requires the ref-consuming commands (graph, tasks,
- * improve, proposals, utility repo, indexer walk) to accept these refs too.
+ * separately). D11 requires the ref-consuming commands (tasks, improve,
+ * proposals, utility repo, indexer walk) to accept these refs too.
  *
- * This file drives each of those five command-level surfaces (utility-repo
+ * This file drives each of those command-level surfaces (utility-repo
  * coverage lives in `tests/integration/get-retrieval-counts.test.ts`, next to
  * its existing durable-ref suite) against a real OKF-adapter component whose
  * conceptId (`tables/customers`) has NO AKM placement type at all — proving
@@ -25,15 +25,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { akmGraphRelated } from "../../../src/commands/graph/graph";
 import { resolveImproveScope } from "../../../src/commands/improve/eligibility";
 import { resetConfigCache } from "../../../src/core/config/config";
-import { getDbPath } from "../../../src/core/paths";
-import { replaceStoredGraph } from "../../../src/indexer/db/graph-db";
-import { GRAPH_FILE_SCHEMA_VERSION } from "../../../src/indexer/graph/graph-extraction";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { resolveAssetPath } from "../../../src/indexer/walk/path-resolver";
-import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
 import { type ProposalRow, proposalRowToProposal } from "../../../src/storage/repositories/proposals-repository";
 import type { TaskDocument } from "../../../src/tasks/schema";
 import { validateTaskDocument } from "../../../src/tasks/validator";
@@ -85,39 +80,6 @@ describe("Q-07 / D11 — opaque adapter conceptIds at the ref-consuming commands
   });
 
   afterEach(() => storage.cleanup());
-
-  test("graph: `akm graph related` resolves an opaque bundle-qualified conceptId", async () => {
-    await akmIndex({ stashDir: storage.stashDir, full: true });
-
-    // Seed a stored graph snapshot for the adversarial source so `graph
-    // related` gets past its data-load step (mirrors ref-input-boundary.test.ts).
-    const db = openIndexDatabase(getDbPath());
-    try {
-      replaceStoredGraph(db, {
-        schemaVersion: GRAPH_FILE_SCHEMA_VERSION,
-        generatedAt: "2026-07-27T00:00:00.000Z",
-        stashRoot: okfRoot,
-        files: [
-          {
-            path: conceptPath,
-            type: "table",
-            bodyHash: "customers-body-hash",
-            entities: ["customers"],
-            relations: [],
-          },
-        ],
-        entities: ["customers"],
-        relations: [],
-      });
-    } finally {
-      closeDatabase(db);
-    }
-
-    const result = await akmGraphRelated({ ref: "adversarial//tables/customers" });
-    expect(result.shape).toBe("graph-related");
-    expect(result.path).toBe(conceptPath);
-    expect(result.ref).toBe("adversarial//tables/customers");
-  });
 
   test("indexer walk resolves opaque conceptIds from the index without guessing a disk serialization", async () => {
     await akmIndex({ stashDir: storage.stashDir, full: true });

@@ -75,8 +75,9 @@ export function formatProposalListPlain(r: Record<string, unknown>): string {
     // registered top-level commands (see the subCommands map in src/cli.ts) —
     // an agent following this hint would run a command that does not exist.
     // The real ways to queue a proposal are `akm improve <ref>` (which runs
-    // the reflect/distill/consolidate pipeline internally) and `akm propose`.
-    return `${total} proposal(s).\nNo proposals.\nGenerate one with \`akm improve <ref>\` or \`akm propose <type> <name> --task ...\`.`;
+    // the reflect/distill/consolidate pipeline internally) and
+    // `akm proposal new`.
+    return `${total} proposal(s).\nNo proposals.\nGenerate one with \`akm improve <ref>\` or \`akm proposal new <type> <name> --task ...\`.`;
   }
   const lines = [`${total} proposal(s)`, ""];
   for (const p of proposals) {

@@ -12,7 +12,11 @@ const configArg = {
 };
 
 export const migrateCommand = defineGroupCommand({
-  meta: { name: "migrate", description: "Inspect or apply config and durable database migrations" },
+  // Hidden from `--help` and the completions walker (S11): this is the
+  // self-update contract's internal command, not a surface end users
+  // discover by browsing help. `akm migrate status`/`apply` still execute
+  // normally — `hidden` only affects listing.
+  meta: { name: "migrate", hidden: true, description: "Inspect or apply config and durable database migrations" },
   subCommands: {
     status: defineJsonCommand({
       meta: { name: "status", description: "Read-only cross-artifact migration eligibility check" },

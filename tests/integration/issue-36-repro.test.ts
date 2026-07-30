@@ -43,7 +43,7 @@ async function buildTestIndex(stashDir: string, files: Record<string, string> = 
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
     fs.writeFileSync(fullPath, content);
   }
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig({ semanticSearchMode: "off" });
   return akmIndex({ stashDir, full: true });
 }
@@ -312,7 +312,7 @@ describe("Issue #36: Stale .stash.json prevents new files from being indexed", (
     );
 
     // Incremental index (not full)
-    process.env.AKM_STASH_DIR = stashDir;
+    process.env.AKM_BUNDLE_DIR = stashDir;
     saveConfig({ semanticSearchMode: "off" });
     const result = await akmIndex({ stashDir });
 
@@ -337,7 +337,7 @@ describe("Issue #36: Search path and installed source indexing", () => {
       "#!/usr/bin/env bash\n# Provision AI Foundry resources on Azure\naz group create --name ai-foundry\n",
     );
 
-    process.env.AKM_STASH_DIR = workingStash;
+    process.env.AKM_BUNDLE_DIR = workingStash;
     saveConfig({ semanticSearchMode: "off", bundles: { searchpath: { path: searchPathStash } } });
     await akmIndex({ stashDir: workingStash, full: true });
 
@@ -368,7 +368,7 @@ describe("Issue #36: Search path and installed source indexing", () => {
       "---\ndescription: Release the project\n---\n# Release\n",
     );
 
-    process.env.AKM_STASH_DIR = workingStash;
+    process.env.AKM_BUNDLE_DIR = workingStash;
     saveConfig({ semanticSearchMode: "off", bundles: { searchpath: { path: searchPathStash } } });
     const indexResult = await akmIndex({ stashDir: workingStash, full: true });
 

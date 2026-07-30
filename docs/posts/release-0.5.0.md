@@ -102,7 +102,7 @@ akm workflow complete <run-id> --step validate --notes "Inputs verified"
 akm workflow list
 
 # Print a starter workflow you can adapt
-akm workflow template
+akm workflow template  # doclint:ignore (historical — akm 0.5.0 release announcement; `template` folded into `workflow create --print` in the 0.9.0 CLI overhaul)
 ```
 
 Workflows live in the stash like any other asset, so `akm search workflow:…` finds them and `akm show workflow:release-checklist` renders the current step. They can be shared in a stash and versioned in a git stash.
@@ -149,7 +149,7 @@ Until now, git-backed stashes were read-only: `akm add github:owner/repo` would 
 
 ```sh
 # Clone a git stash and opt it into push-on-save
-akm add github:your-org/your-stash --writable
+akm add github:your-org/your-stash --writable  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Make some changes — add a skill, author a wiki page, record a memory
 akm remember "Production DB is read-only on Sundays"

@@ -1,14 +1,22 @@
 /**
- * remember --target tests
+ * remember --bundle tests
  *
- * Verifies the `--target` flag added to `akm remember` per v1 implementation
- * plan §6 decision 3. Resolution order is:
- *   --target → defaultWriteTarget → defaultBundle → ConfigError
+ * Verifies the write-destination flag added to `akm remember` per v1
+ * implementation plan §6 decision 3 (renamed `--target` → `--bundle` in the
+ * 0.9 CLI overhaul, S8). Resolution order is:
+ *   --bundle → defaultWriteTarget → defaultBundle → ConfigError
  *
  * These tests exercise the explicit-target path:
  *   - resolves to a configured filesystem source by name
  *   - errors on unknown target names (UsageError)
  *   - errors on non-writable targets (ConfigError)
+ *
+ * The underlying shared write-target resolver (`resolveWriteTarget`,
+ * src/core/write-source.ts) is unchanged and still names its own parameter
+ * `--target` in error text — its callers span several commands whose flag
+ * names now diverge (`--bundle` here, `--target` on `import`/env/secret), so
+ * the error assertions below intentionally still expect the literal
+ * `--target` substring from that shared message.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -26,7 +34,7 @@ import {
 // Migrated from per-test spawnSync("bun", [CLI, ...]) to the in-process harness
 // (tests/_helpers/cli.ts). None of these tests feed stdin, so there is no
 // harness gap. The spawn version wrote config via AKM_CONFIG_DIR and minted its
-// own stash/XDG dirs; in-process we sandbox AKM_STASH_DIR via the allowlisted
+// own stash/XDG dirs; in-process we sandbox AKM_BUNDLE_DIR via the allowlisted
 // sandboxStashDir helper in beforeEach and write config through
 // writeSandboxConfig (XDG_CONFIG_HOME/akm/config.json, which getConfigDir
 // resolves once the preload has cleared AKM_CONFIG_DIR). Extra `--target`
@@ -66,8 +74,8 @@ afterEach(() => {
   for (const d of disposers.splice(0)) d.cleanup();
 });
 
-describe("remember --target", () => {
-  test("--target resolves to a configured filesystem source", async () => {
+describe("remember --bundle", () => {
+  test("--bundle resolves to a configured filesystem source", async () => {
     const targetDir = makeTargetDir();
     writeConfig({
       semanticSearchMode: "off",
@@ -77,7 +85,7 @@ describe("remember --target", () => {
     const { stashDir, result } = await runCli([
       "remember",
       "Pinned context for the rollout",
-      "--target",
+      "--bundle",
       "writable-target",
     ]);
     expect(result.status).toBe(0);
@@ -93,14 +101,14 @@ describe("remember --target", () => {
     expect(fs.existsSync(path.join(stashDir, "memories", "pinned-context-for-the-rollout.md"))).toBe(false);
   });
 
-  test("--target with an unknown source name throws a usage error", async () => {
+  test("--bundle with an unknown source name throws a usage error", async () => {
     const targetDir = makeTargetDir();
     writeConfig({
       semanticSearchMode: "off",
       bundles: { "real-target": { path: targetDir, writable: true } },
     });
 
-    const { result } = await runCli(["remember", "won't be written", "--target", "nope"]);
+    const { result } = await runCli(["remember", "won't be written", "--bundle", "nope"]);
     expect(result.status).toBe(2);
 
     const json = JSON.parse(result.stderr) as { error: string };
@@ -108,14 +116,14 @@ describe("remember --target", () => {
     expect(json.error).toContain("--target must reference a source name");
   });
 
-  test("--target on a non-writable source throws a config error", async () => {
+  test("--bundle on a non-writable source throws a config error", async () => {
     const targetDir = makeTargetDir();
     writeConfig({
       semanticSearchMode: "off",
       bundles: { "read-only": { path: targetDir, writable: false } },
     });
 
-    const { result } = await runCli(["remember", "won't be written", "--target", "read-only"]);
+    const { result } = await runCli(["remember", "won't be written", "--bundle", "read-only"]);
     // VALUE-17: pin the exact classified failure (ConfigError -> exit 78,
     // code INVALID_CONFIG_FILE — see src/core/write-source.ts's
     // `resolveWriteTarget` non-writable-target branch and
@@ -130,8 +138,8 @@ describe("remember --target", () => {
   });
 });
 
-describe("remember --target", () => {
-  test("default bundle is used when --target is omitted", async () => {
+describe("remember --bundle", () => {
+  test("default bundle is used when --bundle is omitted", async () => {
     writeConfig({
       semanticSearchMode: "off",
       bundles: { stash: { path: currentStashDir, writable: true } },

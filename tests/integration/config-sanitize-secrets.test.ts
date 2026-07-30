@@ -37,7 +37,7 @@ beforeEach(() => {
   process.env.AKM_CACHE_DIR = path.join(tmp, "cache");
   process.env.AKM_DATA_DIR = path.join(tmp, "data");
   process.env.AKM_STATE_DIR = path.join(tmp, "state");
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   for (const d of [
     configDir,
     process.env.AKM_CACHE_DIR,
@@ -50,7 +50,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const k of ["AKM_CONFIG_DIR", "AKM_CACHE_DIR", "AKM_DATA_DIR", "AKM_STATE_DIR", "AKM_STASH_DIR"]) {
+  for (const k of ["AKM_CONFIG_DIR", "AKM_CACHE_DIR", "AKM_DATA_DIR", "AKM_STATE_DIR", "AKM_BUNDLE_DIR"]) {
     delete process.env[k];
   }
   while (tempDirs.length > 0) {

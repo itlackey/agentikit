@@ -9,8 +9,13 @@
  * migrated to `defineJsonCommand`, which wraps the body in `runWithJsonErrors`
  * and emits the same JSON envelope (stdout/stderr/exit-code) as the inline
  * `runWithJsonErrors` form it replaces.
+ *
+ * 0.9 CLI overhaul (S8): the former top-level `extract` and `propose`
+ * commands are absorbed here as `extract` and `new` — no top-level
+ * registration remains for either spelling.
  */
 
+import { getParsedInvocation } from "../../cli/invocation";
 import { parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, output } from "../../cli/shared";
 import { resolveStashDir } from "../../core/common";
@@ -19,6 +24,7 @@ import { UsageError } from "../../core/errors";
 import { resolveTriageJudgmentRunner } from "../../integrations/agent/runner";
 import { installLlmUsagePersistenceIfAbsent } from "../../llm/usage-persist";
 import { withLlmStage } from "../../llm/usage-telemetry";
+import { extractCommand } from "../improve/extract-cli";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
 import { drainProposals } from "./drain";
 import { resolveDrainPolicy } from "./drain-policies";
@@ -31,6 +37,24 @@ import {
   akmProposalShow,
   bulkAdjudicateProposals,
 } from "./proposal";
+import { proposeCommand } from "./propose-cli";
+
+/**
+ * `--source` was renamed to `--generator` on `proposal accept`/`proposal
+ * reject` in 0.9 (WS3/S8 — "Removed in 0.9.0"). citty is non-strict, so the
+ * retired spelling is silently absorbed rather than rejected — a bulk
+ * accept/reject invoked with `--source <name>` then has neither `--generator`
+ * nor a positional id, and falls through to the single-proposal path, which
+ * throws MISSING_REQUIRED_ARGUMENT instead of running the bulk action the
+ * caller asked for. Reject it explicitly instead.
+ */
+function rejectRetiredProposalSourceFlag(subcommand: "accept" | "reject"): void {
+  if (!getParsedInvocation().hasFlag("--source")) return;
+  throw new UsageError(
+    `\`akm proposal ${subcommand} --source\` was renamed to \`--generator\` in 0.9. Use \`--generator <name>\` instead.`,
+    "INVALID_FLAG_VALUE",
+  );
+}
 
 /**
  * Parse + validate the shared bulk-adjudication filter flags
@@ -90,7 +114,7 @@ const proposalListCommand = defineJsonCommand({
 });
 
 const proposalAcceptCommand = defineJsonCommand({
-  meta: { name: "accept", description: "Accept a proposal and promote it into the stash" },
+  meta: { name: "accept", description: "Accept a proposal and promote it into the bundle" },
   args: {
     id: {
       type: "positional",
@@ -129,6 +153,7 @@ const proposalAcceptCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    rejectRetiredProposalSourceFlag("accept");
     const generator = args.generator as string | undefined;
     // F-6 / #393: Bulk-accept when --generator is provided without a positional id.
     if (generator && !args.id) {
@@ -209,6 +234,7 @@ const proposalRejectCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    rejectRetiredProposalSourceFlag("reject");
     const generator = args.generator as string | undefined;
     if (!args.reason || !String(args.reason).trim()) {
       throw new UsageError(
@@ -499,7 +525,10 @@ const proposalDrainCommand = defineJsonCommand({
 // ── proposal noun group ───────────────────────────────────────────────────────
 
 export const proposalCommand = defineGroupCommand({
-  meta: { name: "proposal", description: "Manage the proposal queue: list, show, diff, accept, reject, revert" },
+  meta: {
+    name: "proposal",
+    description: "Manage the proposal queue: list, show, diff, accept, reject, revert, extract, new, drain",
+  },
   // The group declared `--queue`/`--status`/`--ref`/`--type` only so the bare
   // form could act as `proposal list`. That form is gone (see below), and
   // `proposalListCommand` declares the identical set, so keeping them here
@@ -513,6 +542,8 @@ export const proposalCommand = defineGroupCommand({
     reject: proposalRejectCommand,
     revert: proposalRevertCommand,
     drain: proposalDrainCommand,
+    extract: extractCommand,
+    new: proposeCommand,
   },
   // No `defaultRun`: bare `akm proposal [--status …]` is a usage error (exit 2),
   // the canonical bare-group behavior — owner ruling 12. `akm proposal list`

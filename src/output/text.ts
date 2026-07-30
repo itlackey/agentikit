@@ -28,6 +28,8 @@
 import type { DetailLevel } from "./context";
 import type { OutputCommandName } from "./shapes";
 import { addFormatters } from "./text/add";
+import { bundleCreateFormatters } from "./text/bundle-create";
+import { bundleShowFormatters } from "./text/bundle-show";
 import { cloneFormatters } from "./text/clone";
 import { configFormatters } from "./text/config";
 import { curateFormatters } from "./text/curate";
@@ -35,11 +37,9 @@ import { enableDisableFormatters } from "./text/enable-disable";
 import { envFormatters } from "./text/env";
 import { eventsFormatters } from "./text/events";
 import { feedbackFormatters } from "./text/feedback";
-import { historyFormatters } from "./text/history";
 import { importFormatters } from "./text/import";
 import { indexFormatters } from "./text/index";
 import { infoFormatters } from "./text/info";
-import { initFormatters } from "./text/init";
 import { listFormatters } from "./text/list";
 import { proposalProducerFormatters } from "./text/proposal/producer";
 import { proposalFormatters } from "./text/proposal/proposal";
@@ -61,7 +61,8 @@ import { workflowFormatters } from "./text/workflow";
 // and because each name is referenced statically, a deleted export fails to
 // compile instead of silently disappearing at runtime.
 const BUILT_IN_TEXT_FORMATTERS: TextFormatterEntry[] = [
-  ...initFormatters,
+  ...bundleCreateFormatters,
+  ...bundleShowFormatters,
   ...indexFormatters,
   ...showFormatters,
   ...searchFormatters,
@@ -73,7 +74,6 @@ const BUILT_IN_TEXT_FORMATTERS: TextFormatterEntry[] = [
   ...updateFormatters,
   ...upgradeFormatters,
   ...cloneFormatters,
-  ...historyFormatters,
   ...eventsFormatters,
   ...proposalFormatters,
   ...proposalProducerFormatters,

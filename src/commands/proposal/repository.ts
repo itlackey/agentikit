@@ -58,7 +58,6 @@ import {
   fsyncTxnFile,
   listTxnJournals,
   mintTxnId,
-  recoverTxnsForRoot,
   registerTxnKind,
   sweepJournallessTxnDir,
   type Txn,
@@ -1599,7 +1598,6 @@ export async function recoverProposalTransactionsForStash(
     }
     const key = path.resolve(target.source.path);
     if (recoveredRoots.has(key)) continue;
-    await recoverTxnsForRoot(target.source.path, (journal) => journal.kind === "mv");
     const recovered = await recoverProposalTransactions(target, stashDir, ctx);
     for (const [id, proposal] of recovered) completed.set(id, proposal);
     recoveredRoots.add(key);
@@ -2041,7 +2039,6 @@ async function promoteProposalWithLease(
   await recoverProposalTransactionsForStash(stashDir, config, ctx, id);
   proposal = getProposal(stashDir, id, ctx);
   const target = resolveProposalWriteTarget(config, proposal, options.target, options.queueTarget);
-  await recoverTxnsForRoot(target.source.path, (journal) => journal.kind === "mv");
   if (proposal.status === "accepted") {
     if (!proposal.acceptedTarget) {
       throw new UsageError(`Accepted proposal ${id} has no recorded target.`, "INVALID_PROPOSAL");
@@ -2244,7 +2241,6 @@ async function revertProposalWithLease(
   const assetPath = requestedAssetPath;
   const acceptedHash = proposal.acceptedTarget.contentHash;
   target = prepareWriteTargetForMutation(target);
-  await recoverTxnsForRoot(target.source.path, (journal) => journal.kind === "mv");
   if (!fs.existsSync(assetPath) || proposalFileHash(assetPath) !== acceptedHash) {
     throw new UsageError(
       `asset content changed after proposal ${id} was accepted; refusing to clobber the newer content`,

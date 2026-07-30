@@ -44,7 +44,7 @@ let fixtureCleanup: (() => void) | undefined;
 // fixture index per test; instead the env vars this file depends on are
 // re-asserted in beforeEach so another concurrently-interleaved test file
 // (the suite runs all files in ONE process sharing process.env) can't clobber
-// XDG_DATA_HOME/AKM_STASH_DIR mid-run and point our searches at the wrong DB.
+// XDG_DATA_HOME/AKM_BUNDLE_DIR mid-run and point our searches at the wrong DB.
 let fileDataHome = "";
 
 // ── Environment isolation ───────────────────────────────────────────────────
@@ -69,7 +69,7 @@ beforeAll(async () => {
   FIXTURE_STASH = loaded.stashDir;
   fixtureCleanup = loaded.cleanup;
 
-  process.env.AKM_STASH_DIR = FIXTURE_STASH;
+  process.env.AKM_BUNDLE_DIR = FIXTURE_STASH;
 
   saveConfig({
     semanticSearchMode: "off",
@@ -84,19 +84,19 @@ beforeAll(async () => {
 beforeEach(() => {
   // Re-establish the env vars this file's pre-built index depends on. Under
   // the shared-process suite, another file's beforeEach/afterEach can leave
-  // XDG_DATA_HOME / AKM_STASH_DIR pointing elsewhere between our tests; the
+  // XDG_DATA_HOME / AKM_BUNDLE_DIR pointing elsewhere between our tests; the
   // preload snapshots/restores in afterEach but a concurrently-scheduled
   // file could still have mutated them. Pointing back at the SAME stable
   // fixture dir + data home (not a fresh one) reuses the index built once in
   // beforeAll while guaranteeing correctness.
   process.env.XDG_DATA_HOME = fileDataHome;
-  process.env.AKM_STASH_DIR = FIXTURE_STASH;
+  process.env.AKM_BUNDLE_DIR = FIXTURE_STASH;
 });
 
 afterAll(() => {
   envCleanup();
   envCleanup = () => {};
-  if (process.env.AKM_STASH_DIR === FIXTURE_STASH) delete process.env.AKM_STASH_DIR;
+  if (process.env.AKM_BUNDLE_DIR === FIXTURE_STASH) delete process.env.AKM_BUNDLE_DIR;
 
   fixtureCleanup?.();
 });
@@ -104,7 +104,7 @@ afterAll(() => {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 async function search(query: string, limit = 20): Promise<SourceSearchHit[]> {
-  const result = await akmSearch({ query, source: "stash", limit });
+  const result = await akmSearch({ query, source: "local", limit });
   return result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
 }
 
@@ -558,12 +558,12 @@ describe("Metadata signal strength", () => {
 
 describe("Empty and edge case queries", () => {
   test("empty query returns all entries", async () => {
-    const result = await akmSearch({ query: "", source: "stash" });
+    const result = await akmSearch({ query: "", source: "local" });
     expect(result.hits.length).toBeGreaterThan(0);
   });
 
   test("query with no matches returns empty results with tip", async () => {
-    const result = await akmSearch({ query: "xyznonexistent123", source: "stash" });
+    const result = await akmSearch({ query: "xyznonexistent123", source: "local" });
     const hits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
     expect(hits.length).toBe(0);
   });
@@ -571,7 +571,7 @@ describe("Empty and edge case queries", () => {
   test("single character query returns results when prefix matches", async () => {
     // Single char queries are too short for prefix expansion (< 3 chars)
     // but may still match on exact tokens
-    const result = await akmSearch({ query: "k", source: "stash" });
+    const result = await akmSearch({ query: "k", source: "local" });
     // This may or may not return results depending on FTS tokenizer behavior
     // The important thing is it does not crash
     expect(result).toBeDefined();

@@ -35,12 +35,12 @@ export function getWorkflowTemplate(): string {
 
 /**
  * Minimal valid YAML workflow *program* (redesign addendum, R1), printed by
- * `akm workflow template --yaml`. Kept as an external asset file per the repo
- * convention (see `workflow-program-template.yaml` next to this module);
- * `tests/workflows/authoring-template.test.ts` pins that it parses AND
- * compiles (in-process, runs unconditionally in `bun run check`/CI).
- * `tests/integration/node-compat.test.ts` ("workflow template --yaml
- * round-trips through validate on Node") additionally round-trips it through
+ * `akm workflow create <name>.yaml --print`. Kept as an external asset file
+ * per the repo convention (see `workflow-program-template.yaml` next to this
+ * module); `tests/workflows/authoring-template.test.ts` pins that it parses
+ * AND compiles (in-process, runs unconditionally in `bun run check`/CI).
+ * `tests/integration/node-compat.test.ts` ("workflow create --print --yaml
+ * round-trips through lint on Node") additionally round-trips it through
  * the real CLI on the Node runtime, but that one is gated behind
  * `AKM_NODE_COMPAT_TESTS=1` and does not run by default — it is a bonus
  * cross-runtime check, not the thing pinning correctness.
@@ -138,7 +138,7 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
     relativeAssetPath.startsWith(`..${path.sep}`) ||
     path.isAbsolute(relativeAssetPath)
   ) {
-    throw new UsageError(`Resolved workflow path escapes the stash: "${normalizedName}"`, "PATH_ESCAPE_VIOLATION");
+    throw new UsageError(`Resolved workflow path escapes the bundle: "${normalizedName}"`, "PATH_ESCAPE_VIOLATION");
   }
   // Codex round-3 finding C: a `workflows/<name>` ref is canonical across every
   // recognized extension (`.md`/`.yaml`/`.yml`) and resolves `.md` BEFORE

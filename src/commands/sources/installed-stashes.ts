@@ -6,13 +6,13 @@
  * Source operations: list, remove, update.
  *
  * Provides unified operations across all configured bundle source providers.
- * The CLI's `akm list`, `akm remove`, and `akm update` commands are wired here.
+ * The CLI's `akm bundle list`, `akm bundle remove`, and `akm bundle update` commands are wired here.
  *
  * 0.9.0 (spec §10.1/§10.2): the retired `installed[]` array is gone — a
  * registry-managed source is now a `bundles.<slug>` entry (the desired locator)
  * paired with a lock entry (the resolved `localRoot`/version). A bundle that has
  * a lock entry is "managed" (installed from a registry and overwritten on
- * `akm update`); a bundle with no lock is a plain filesystem/git/website source.
+ * `akm bundle update`); a bundle with no lock is a plain filesystem/git/website source.
  */
 
 import fs from "node:fs";
@@ -101,7 +101,7 @@ function listManagedInstalls(config: AkmConfig): ManagedInstall[] {
   return out;
 }
 
-/** Resolve an `akm remove`/`akm update` target to a managed install, if any. */
+/** Resolve an `akm bundle remove`/`akm bundle update` target to a managed install, if any. */
 function resolveManagedTarget(config: AkmConfig, target: string): ManagedInstall | undefined {
   const installs = listManagedInstalls(config);
   const byId = installs.find((m) => m.installId === target || m.bundleKey === target);
@@ -183,7 +183,7 @@ function readBundleCounts(): Map<string, BundleCounts> {
       counts.set(row.bundleId, count);
     }
   } catch (error) {
-    warn(`[akm list] failed to read bundle counts from ${dbPath}: ${String(error)}`);
+    warn(`[akm bundle list] failed to read bundle counts from ${dbPath}: ${String(error)}`);
   } finally {
     if (db) {
       try {
@@ -236,7 +236,7 @@ export async function akmListSources(input?: { stashDir?: string; kind?: SourceK
 
   return {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     defaultBundle: config.defaultBundle ?? null,
     sources,
     totalSources: sources.length,
@@ -247,7 +247,7 @@ export async function akmRemove(input: { target: string; stashDir?: string }): P
   const target = input.target.trim();
   if (!target)
     throw new UsageError(
-      "Target is required. Provide the source id, ref, path, URL, or name (e.g. `akm remove npm:@scope/stash` or `akm remove ~/my-stash`).",
+      "Target is required. Provide the source id, ref, path, URL, or name (e.g. `akm bundle remove npm:@scope/stash` or `akm bundle remove ~/my-stash`).",
     );
 
   const stashDir = input.stashDir ?? resolveStashDir();
@@ -264,7 +264,7 @@ export async function akmRemove(input: { target: string; stashDir?: string }): P
 
     return {
       schemaVersion: 1,
-      stashDir,
+      bundleDir: stashDir,
       target,
       removed: {
         id: managed.installId,
@@ -297,7 +297,7 @@ export async function akmRemove(input: { target: string; stashDir?: string }): P
 
   return {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     target,
     removed: {
       id: removedEntry.name ?? removedEntry.path ?? removedEntry.url ?? target,
@@ -337,7 +337,7 @@ async function buildUpdateResponse(
   const finalConfig = loadConfig();
   return {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     target,
     all,
     processed,
@@ -405,7 +405,7 @@ async function updateWebsiteSource(
  * git/website, resolving an npm package requires a registry round-trip to
  * pick a concrete version/tarball, which is exactly what the lock records.
  * So a plain npm source is synced via the same registry-install pipeline as
- * `akm add <package>` and PROMOTED to a registry-managed (lock-backed)
+ * `akm bundle add <package>` and PROMOTED to a registry-managed (lock-backed)
  * install as a side effect of its first successful sync; it is reported via
  * `processed` like any other managed install from then on. Building a
  * {@link ManagedInstall} view onto the plain entry lets this reuse
@@ -517,7 +517,7 @@ async function updateManagedInstall(
       const currentLocks = readLockfile();
       if (referencesRoot(managed.localRoot, currentConfig, currentLocks)) {
         warn(
-          `[akm update] kept previous install directory at ${managed.localRoot} because another configured or locked bundle still references it.`,
+          `[akm bundle update] kept previous install directory at ${managed.localRoot} because another configured or locked bundle still references it.`,
         );
       } else {
         cleanupDirectoryBestEffort(managed.localRoot, "update");
@@ -577,7 +577,7 @@ function concurrentGenerationError(managed: ManagedInstall): ConfigError {
   return new ConfigError(
     `Managed source "${managed.installId}" changed concurrently; retained both materialized roots and deleted nothing.`,
     "INVALID_CONFIG_FILE",
-    "Inspect `akm list` and retry the update after the concurrent source operation completes.",
+    "Inspect `akm bundle list` and retry the update after the concurrent source operation completes.",
   );
 }
 
@@ -702,7 +702,7 @@ export async function akmUpdate(input?: {
           skipped.push({
             id,
             kind: "website",
-            reason: `website caching not yet implemented for --all; run \`akm update ${id}\` to re-mirror this source individually.`,
+            reason: `website caching not yet implemented for --all; run \`akm bundle update ${id}\` to re-mirror this source individually.`,
           });
         } else {
           skipped.push({
@@ -762,7 +762,7 @@ function selectManagedTargets(
     if (stashMatch.type === "website") {
       throw new UsageError(
         `"${target}" is a website source — website caching not yet implemented for --all. ` +
-          `Run \`akm update ${target}\` to re-mirror this source individually.`,
+          `Run \`akm bundle update ${target}\` to re-mirror this source individually.`,
         "TARGET_NOT_UPDATABLE",
       );
     }

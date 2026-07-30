@@ -306,7 +306,7 @@ akm proposal show <id>
 akm proposal accept <id>
 
 # Define and run a task
-akm tasks run daily-code-review
+akm tasks run daily-code-review  # doclint:ignore (historical — akm 0.8.0 release announcement; `tasks` renamed `task` in 0.9.0)
 
 # Run improve with a specific profile (reflect mode comes from the profile)
 akm improve memory:my-note --profile fast-llm  # doclint:ignore (historical — akm 0.8.0 release announcement; `--profile` renamed `--strategy` in 0.9.0)

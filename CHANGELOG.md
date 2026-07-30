@@ -599,6 +599,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `akm disable` aliases were already removed in 0.9.0. Use
   `akm registry add|remove`.
 
+- **BREAKING: `akm mv` is removed.** No alias, no stub — `akm mv …` fails with
+  the standard unknown-command error. It claimed to preserve identity across a
+  rename, but its inbound-ref rewrite matched bare conceptIds rather than the
+  anchored `bundle//conceptId` prose form, so it could rewrite ordinary prose
+  while leaving real refs dangling. Renames are delete + create per
+  `STABILITY.md`: move the file, `akm index`, `akm lint`. The one capability
+  nothing else covered — carrying an asset's earned signal across the rename —
+  moves to `bun scripts/rekey-asset-ref.ts <old-ref> <new-ref>` (maintainer
+  tooling, `--dry-run` supported, idempotent), which re-keys the index
+  `entries` row in place plus the `asset_salience` / `asset_outcome` /
+  `usage_events` rows. The `mv` event type and output shape are gone; the
+  script emits a `rekey` event instead. A leftover `kind:"mv"` transaction
+  journal from an rc build is now swept by the recovery scanner rather than
+  failing it — an unregistered journal kind no longer bricks index refresh or
+  proposal accept/reject.
+
 - **The CHURN alert class is removed from the collapse detector.** Its input was
   a hard-coded `0` from the 0.9.0 confidence-gate deletion onward, so the alert
   could never fire. The other three alert classes are unaffected. The

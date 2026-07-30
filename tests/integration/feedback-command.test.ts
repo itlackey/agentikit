@@ -11,7 +11,7 @@ import { runCliCapture } from "../_helpers/cli";
 import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 // Migrated from spawnSync("bun", [CLI, ...]) to the shared in-process harness
-// (tests/_helpers/cli.ts). beforeEach already sandboxes AKM_STASH_DIR and the
+// (tests/_helpers/cli.ts). beforeEach already sandboxes AKM_BUNDLE_DIR and the
 // XDG dirs on process.env via the allowlisted sandbox helpers; the harness
 // re-reads config from that env per call, so feedback events land in the same
 // sandboxed stash/DB the test then asserts on. `feedback` is not

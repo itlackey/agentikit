@@ -45,8 +45,8 @@ binaries are runtime-free.
 
 ```sh
 akm setup                         # Guided setup: configure, initialize, and index
-akm tasks doctor                  # Verify scheduler and installed runtime
-akm add github:owner/repo         # Add a stash from GitHub
+akm task doctor                    # Verify scheduler and installed runtime
+akm bundle add github:owner/repo         # Add a bundle from GitHub
 akm search "deploy"               # Find assets across all sources
 akm show scripts/deploy.sh        # View details and run command
 ```
@@ -58,31 +58,28 @@ Non-interactive setup never activates schedules.
 ```sh
 akm setup                 # Review definitions, schedules, and enabled state
 # Confirm scheduler activation only after reviewing the complete task summary.
-akm tasks doctor          # Verify backend, runtime, task state, and warnings
+akm task doctor           # Verify backend, runtime, task state, and warnings
 ```
 
-Setup shows the complete task review before asking one explicit question about
-changing task files and the OS scheduler. Only confirmation prepares the
-definitions and syncs the scheduler. Declining, or running setup
-non-interactively, leaves both unchanged. A scheduled entry captures
-the installed akm runtime used during activation. Ordinary `akm tasks sync`
-preserves that runtime; after moving or replacing the installation, use
-`akm tasks sync --rebind` explicitly to migrate or repair scheduler entries, then
-run `akm tasks doctor` again.
+Setup shows the complete task review — both the general-purpose core
+templates and the maintainer-oriented improve cadence — before asking one
+explicit question about changing task files and the OS scheduler. Only
+confirmation prepares the definitions and syncs the scheduler. Declining, or
+running setup non-interactively, leaves both unchanged. A scheduled entry
+captures the installed akm runtime used during activation. Ordinary
+`akm task sync` preserves that runtime; after moving or replacing the
+installation, use `akm task sync --rebind` explicitly to migrate or repair
+scheduler entries, then run `akm task doctor` again.
 
 Rerunning setup preserves existing scheduler bindings. If setup changes the AKM
 storage path, or the installed runtime path changes, run
-`akm tasks sync --rebind` explicitly. Fresh setup offers the core task templates;
-it does not register the separate maintainer-oriented improve cadence. That
-automation remains an explicit `akm tasks init` operation, which creates missing
-definitions and immediately installs enabled schedules. Inspect its documented
-task set and options before running it.
+`akm task sync --rebind` explicitly.
 
 ## Why akm?
 
 - **Works with any AI agent** -- No plugins or SDKs required. Any model that can run shell commands can use `akm`.
-- **One command to search everything** -- Local stash, registries, and community skills from [skills.sh](https://skills.sh) in a single query.
-- **Install stashes from anywhere** -- npm, GitHub, GitLab, local directories.
+- **One command to search everything** -- Local bundle, registries, and community skills from [skills.sh](https://skills.sh) in a single query.
+- **Install bundles from anywhere** -- npm, GitHub, GitLab, local directories.
 - **Semantic search** -- Optional local embeddings (via Ollama or HuggingFace) for finding assets by meaning, not just keywords.
 - **Private registries** -- Host your own registry for team or enterprise use.
 
@@ -98,18 +95,18 @@ knowledge, memories, workflows, wikis, env files, secrets, lessons, and schedule
 via the `akm` CLI. Use `akm -h` for details.
 ```
 
-## Install Stashes from Anywhere
+## Install Bundles from Anywhere
 
 ```sh
-akm add @scope/my-stash                     # npm
-akm add github:owner/repo#v1.2.3            # GitHub with tag
-akm add git+https://gitlab.com/org/stash    # Any git repo
-akm add ./path/to/local/stash               # Local directory
+akm bundle add @scope/pkg                          # npm
+akm bundle add github:owner/repo#v1.2.3            # GitHub with tag
+akm bundle add git+https://gitlab.com/org/repo     # Any git repo
+akm bundle add ./path/to/local/dir                 # Local directory
 ```
 
-Manage stashes with `akm list`, `akm update --all`, and `akm remove`.
+Manage bundles with `akm bundle list`, `akm bundle update --all`, and `akm bundle remove`.
 
-## Publish Your Own Stash
+## Publish Your Own Bundle
 
 1. Organize your assets into a directory
 2. Add `"akm"` to `keywords` in `package.json`
@@ -123,7 +120,7 @@ Full docs, CLI reference, and guides are available on [GitHub](https://github.co
 - [Getting Started](https://github.com/itlackey/akm/blob/main/docs/guides/getting-started.md)
 - [CLI Reference](https://github.com/itlackey/akm/blob/main/docs/reference/cli.md)
 - [Configuration](https://github.com/itlackey/akm/blob/main/docs/reference/configuration.md)
-- [Stash Maker's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/stash-makers.md)
+- [Bundle Maker's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/stash-makers.md)
 - [Registry](https://github.com/itlackey/akm/blob/main/docs/reference/registry.md)
 
 ## License

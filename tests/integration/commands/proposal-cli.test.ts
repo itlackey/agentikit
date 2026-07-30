@@ -13,8 +13,8 @@ import { makeSandboxDir, type SandboxedDir, withEnv, writeSandboxConfig } from "
 // Migrated from per-test spawnSync("bun", [cliPath, ...]) to the in-process
 // harness (tests/_helpers/cli.ts). Proposals are seeded in-process via
 // createProposal() against an isolated stash dir; the CLI then reads that stash
-// back through AKM_STASH_DIR. The preload (tests/_preload.ts) sandboxes
-// HOME / XDG dirs per test, so runCli only needs to point AKM_STASH_DIR at the
+// back through AKM_BUNDLE_DIR. The preload (tests/_preload.ts) sandboxes
+// HOME / XDG dirs per test, so runCli only needs to point AKM_BUNDLE_DIR at the
 // seeded stash for the duration of the call (via the allowlisted withEnv
 // wrapper). The spawn version set cwd: repoRoot, which is already the in-process
 // cwd — no chdir needed — so every test migrates cleanly.
@@ -49,8 +49,9 @@ async function runCli(
   args: string[],
   options: { stashDir: string; env?: Record<string, string | undefined> } = { stashDir: "" },
 ): Promise<{ stdout: string; stderr: string; status: number }> {
-  const { code, stdout, stderr } = await withEnv({ AKM_STASH_DIR: options.stashDir || undefined, ...options.env }, () =>
-    runCliCapture(args),
+  const { code, stdout, stderr } = await withEnv(
+    { AKM_BUNDLE_DIR: options.stashDir || undefined, ...options.env },
+    () => runCliCapture(args),
   );
   return { stdout, stderr, status: code };
 }
@@ -260,6 +261,27 @@ describe("accept/reject --generator flag (WS3)", () => {
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout).rejected).toBe(1);
     expect(result.stderr).not.toContain("deprecated");
+  });
+
+  test("proposal accept rejects the retired --source flag (renamed to --generator in 0.9)", async () => {
+    const stash = makeStashDir();
+    seedProposal(stash);
+    const result = await runCli(["proposal", "accept", "--source", "reflect", "--yes", "--format=json"], {
+      stashDir: stash,
+    });
+    expect(result.status).toBe(2);
+    expect(JSON.parse(result.stderr).code).toBe("INVALID_FLAG_VALUE");
+  });
+
+  test("proposal reject rejects the retired --source flag (renamed to --generator in 0.9)", async () => {
+    const stash = makeStashDir();
+    seedProposal(stash);
+    const result = await runCli(
+      ["proposal", "reject", "--source", "reflect", "--reason", "dup", "--yes", "--format=json"],
+      { stashDir: stash },
+    );
+    expect(result.status).toBe(2);
+    expect(JSON.parse(result.stderr).code).toBe("INVALID_FLAG_VALUE");
   });
 });
 
@@ -514,13 +536,13 @@ describe("akm proposal multi-bundle queues", () => {
   });
 });
 
-describe("akm propose (CLI)", () => {
+describe("akm proposal new (CLI)", () => {
   test("--task and --file are mutually exclusive", async () => {
     const stash = makeStashDir();
     const promptFile = path.join(makeTempDir("akm-proposal-prompt-"), "prompt.md");
     fs.writeFileSync(promptFile, "author a lesson", "utf8");
     const result = await runCli(
-      ["propose", "lesson", "rg-over-grep", "--task", "inline", "--file", promptFile, "--format=json"],
+      ["proposal", "new", "lesson", "rg-over-grep", "--task", "inline", "--file", promptFile, "--format=json"],
       { stashDir: stash },
     );
     expect(result.status).toBe(2);

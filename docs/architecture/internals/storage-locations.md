@@ -12,7 +12,7 @@ All paths below use these resolved base directories:
 | `$CACHE` | `~/.cache/akm` | `%LOCALAPPDATA%\akm` | `AKM_CACHE_DIR` |
 | `$DATA` | `~/.local/share/akm` | `%LOCALAPPDATA%\akm\data` | `AKM_DATA_DIR` |
 | `$STATE` | `~/.local/state/akm` | `%LOCALAPPDATA%\akm\state` | `AKM_STATE_DIR` |
-| `$STASH` | `~/akm` | `%USERPROFILE%\Documents\akm` | `AKM_STASH_DIR` |
+| `$STASH` | `~/akm` | `%USERPROFILE%\Documents\akm` | `AKM_BUNDLE_DIR` |
 
 akm uses four XDG-compliant directories. Durable data (`index.db`, `state.db`, `akm.lock`) lives in `$DATA`; the event log is stored in the `events` table in `state.db`.
 
@@ -365,9 +365,9 @@ The JSONL file at `$CACHE/events.jsonl` is no longer written by akm. Existing fi
 
 | `eventType` | Emitted by | Key `metadata` fields |
 |---|---|---|
-| `add` | `akm add` | `target`, `provider`, `name`, `writable` |
-| `remove` | `akm remove` | `target`, `ref` |
-| `update` | `akm update` | `target`, `all`, `processed` |
+| `add` | `akm bundle add` | `target`, `provider`, `name`, `writable` |
+| `remove` | `akm bundle remove` | `target`, `ref` |
+| `update` | `akm bundle update` | `target`, `all`, `processed` |
 | `remember` | `akm remember` | `path`, `force`, `tagCount`, `enriched`, `auto`, `scope` |
 | `import` | `akm import` | `source`, `path`, `force` |
 | `save` | `akm sync` | `name`, `message`, `ok` |
@@ -375,7 +375,7 @@ The JSONL file at `$CACHE/events.jsonl` is no longer written by akm. Existing fi
 | `promoted` | `akm proposal accept` | `proposalId`, `source`, `assetPath` |
 | `rejected` | `akm proposal reject` | `proposalId`, `source`, `reason` |
 | `reflect_invoked` | reflect pass inside `akm improve` | `task`, `engine`, `eligibilitySource` |
-| `propose_invoked` | `akm propose` | `type`, `name`, `task`, `engine` |
+| `propose_invoked` | `akm proposal new` | `type`, `name`, `task`, `engine` |
 | `distill_invoked` | distill pass inside `akm improve` | `outcome` (queued\|skipped\|validation_failed\|quality_rejected), `lessonRef`, `score`, `reason` |
 | `search` | `akm search` | `query`, `hitCount`, `resultRefs[]`, `mode` (semantic\|keyword) |
 | `show` | `akm show` | `type`, `name` |
@@ -404,8 +404,8 @@ The JSONL file at `$CACHE/events.jsonl` is no longer written by akm. Existing fi
 | `akm improve` (distill pass) | `feedback` per ref | Builds LLM prompt context (last 20 events) |
 | `akm improve` (reflect pass) | `feedback` per ref | Builds agent prompt context (last 10 per-ref / 20 global) |
 | `akm show` | `show` per ref | Loop detection: warns at 3+ repeated shows |
-| `akm history` | `promoted`, `rejected` | Unified lifecycle trail |
-| `akm log` | user-supplied | Direct inspection / tail |
+| `akm log --type promoted\|rejected` | `promoted`, `rejected` | Proposal lifecycle trail (0.9.0: `akm history --include-proposals` was removed; this is the surviving read path) |
+| `akm log` | user-supplied | Direct inspection |
 
 ---
 
@@ -429,7 +429,7 @@ One line per memory belief-state transition: `{ appliedAt, ref, parentRef, fromS
 | `<cwd>/.akm/config.json` | Project-scoped config overrides. Walked up to filesystem root; all ancestors merged. | Manual |
 | `$CACHE/config-backups/config-<ISO-ts>.json` | Pre-save snapshot of `config.json`, written by `backupExistingConfig()` in `src/core/config/config-io.ts` before each config write. `config.latest.json` is a second copy (not a symlink) always overwritten with the newest snapshot. Dir created/chmod'd `0700`; both the timestamped file and `config.latest.json` are chmod'd `0600` (08-F4, mirroring the env-cli write-mode convention). This is the only live backup location — legacy `$DATA/config-backups/` and `$CONFIG/config-backups/` write paths have been removed. | Capped at `MAX_CONFIG_BACKUPS = 5` most-recent timestamped snapshots; `pruneOldBackups()` deletes the rest on every write |
 | `$CONFIG/akm.lock` | Legacy location. Removed in v0.8.0 — akm reads ONLY from `$DATA/akm.lock`. Run the migration script to copy this file to `$DATA/akm.lock` before upgrading. | Legacy |
-| `$DATA/akm.lock` | Installed stash lockfile (moved from `$CONFIG`). Application-managed install state. Same format as `$CONFIG/akm.lock`. | Managed by `akm add/remove` |
+| `$DATA/akm.lock` | Installed stash lockfile (moved from `$CONFIG`). Application-managed install state. Same format as `$CONFIG/akm.lock`. | Managed by `akm bundle add`/`akm bundle remove` |
 | `$CACHE/semantic-status.json` | Embedding provider health: `status` (pending/ready-js/ready-vec/blocked), `reason`, `providerFingerprint`, `lastCheckedAt`, `entryCount`, `embeddingCount`. Blocked status auto-expires after 24h. | Reset on `akm index --full` |
 | `$CACHE/registry-index/<slug>.json` | Removed in v0.8.0 — data now stored in `registry_index_cache` table in `$DATA/index.db`. Delete these files after running the migration script. | — |
 | `$CACHE/registry-index/skills-sh-search-<md5>.json` | Skills.sh search result cache. Fresh 15min; stale 1d. Key = MD5 of `url + query + limit`. | TTL |
@@ -525,7 +525,7 @@ indexed like a local filesystem bundle.
 
 ### macOS (launchd)
 
-**Plist:** `~/Library/LaunchAgents/com.akm.task.<id>.plist` — XML plist. Contains label, `ProgramArguments` (`akm tasks run <id>`), `StandardOutPath`, `StandardErrorPath`, trigger (`StartInterval` or `StartCalendarInterval`), and `EnvironmentVariables` (PATH captured at install time).
+**Plist:** `~/Library/LaunchAgents/com.akm.task.<id>.plist` — XML plist. Contains label, `ProgramArguments` (`akm task run <id>`), `StandardOutPath`, `StandardErrorPath`, trigger (`StartInterval` or `StartCalendarInterval`), and `EnvironmentVariables` (PATH captured at install time).
 
 Registered via `launchctl bootstrap gui/<uid> <plist>`.
 
@@ -535,7 +535,7 @@ No files written. User crontab edited in-place via `crontab -l` / `crontab -`. E
 
 ```
 # akm:task <id> BEGIN
-<cronexpr> /abs/akm tasks run <id> >> ~/.cache/akm/tasks/logs/<id>.log 2>&1
+<cronexpr> /abs/akm task run <id> >> ~/.cache/akm/tasks/logs/<id>.log 2>&1
 # akm:task <id> END
 ```
 
@@ -653,7 +653,7 @@ not affect ranking, salience, real-query labels, or GRR.
 | 20 | `$STASH/.akm/memory-cleanup/archive/<ts>-<ref>/` | Markdown | Belief-state archived memories |
 | 21 | `$STASH/.akm/distill-rejected/<ts>-<ref>.md` | FM+Markdown | Quality-gate rejected lessons |
 | 22 | `$STASH/.akm/improve.lock` | JSON | Improve run mutex |
-| 23 | `$STASH/{skills,commands,agents,...}/` | FM+Markdown | Asset files (working stash) |
+| 23 | `$STASH/{skills,commands,agents,...}/` | FM+Markdown | Asset files (working bundle) |
 | 24 | `$STASH/wikis/<name>/` | Markdown | `llm-wiki`-adapter bundle content (schema/index/log + `raw/` + `pages/`) |
 | 25 | `<dir>/.stash.json` | JSON | Legacy metadata (read-only) |
 | 26 | `$STASH/memories/MEMORY.md` | Markdown | Memory index (user-maintained, read-only for akm) |

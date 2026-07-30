@@ -68,7 +68,7 @@ time**: a bundle component whose root holds a `schema.md` plus a
 ## Working with a wiki
 
 ```sh
-akm add github:team/research-wiki        # install a wiki bundle (or point at a local dir)
+akm bundle add github:team/research-wiki        # install a wiki bundle (or point at a local dir)
 akm search "attention"                   # pages rank alongside all other indexed content
 akm show research-wiki//pages/attention  # read a page by ref
 akm show research-wiki//pages/attention#history

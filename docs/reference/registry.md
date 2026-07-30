@@ -31,7 +31,7 @@ skills, commands, knowledge, workflows, and a librarian subagent for
 working with akm itself. Install it with:
 
 ```bash
-akm add github:itlackey/akm-stash
+akm bundle add github:itlackey/akm-stash
 akm index
 akm show skills/akm-quickstart
 ```
@@ -86,16 +86,13 @@ Search registries alongside or instead of the local stash:
 
 ```bash
 # Search registries only
-akm search "deploy" --source registry
+akm search "deploy" --from registry
 
 # Search both local stash and registries
-akm search "deploy" --source both
-
-# Search registries directly via the registry subcommand
-akm registry search "deploy"
+akm search "deploy" --from all
 
 # Include asset-level results from v3 indexes
-akm registry search "deploy" --assets
+akm search "deploy" --from registry --assets
 ```
 
 ### Search Results
@@ -108,19 +105,19 @@ Each registry hit includes:
 | `name` | Stash display name |
 | `id` | Unique identifier (e.g. `npm:@scope/stash`) |
 | `description` | Summary from the registry |
-| `action` | Ready-to-run next step such as `akm add ... -> then search again` |
+| `action` | Ready-to-run next step such as `akm bundle add ... -> then search again` |
 | `quality` | Optional provenance marker — `"generated"`, `"curated"`, or `"proposed"`. Replaces the legacy `curated` boolean removed in 0.7.0 |
 
 Use `--detail full` to include ranking metadata like `score`.
 
 ### The `--assets` Flag
 
-When a registry publishes a v3 index (see below), `akm registry search` can
-return individual asset-level hits in addition to stash-level hits. Pass
-`--assets` to enable this:
+When a registry publishes a v3 index (see below), `akm search --from
+registry` can return individual asset-level hits in addition to stash-level
+hits. Pass `--assets` to enable this:
 
 ```bash
-akm registry search "code review" --assets
+akm search "code review" --from registry --assets
 ```
 
 Asset hits include `assetType`, `assetName`, `description`, and the parent
@@ -156,36 +153,36 @@ For GitHub repos, add topics via the repository settings page or the
 
 ## Installing
 
-Install a stash with `akm add` using any supported ref format:
+Install a stash with `akm bundle add` using any supported ref format:
 
 ```bash
 # npm package
-akm add npm:@scope/my-stash
+akm bundle add npm:@scope/my-stash
 
 # npm package (shorthand)
-akm add @scope/my-stash
+akm bundle add @scope/my-stash
 
 # GitHub repo
-akm add github:owner/repo
+akm bundle add github:owner/repo
 
 # GitHub repo at a specific tag or branch
-akm add github:owner/repo#v1.2.0
+akm bundle add github:owner/repo#v1.2.0
 
 # GitHub URL
-akm add https://github.com/owner/repo
+akm bundle add https://github.com/owner/repo
 
 # Any git repo (GitLab, Bitbucket, Gitea, self-hosted, etc.)
-akm add git+https://gitlab.com/org/stash
-akm add git+https://gitlab.com/org/stash#v1.0
-akm add git+ssh://git@gitlab.com/org/stash.git
+akm bundle add git+https://gitlab.com/org/stash
+akm bundle add git+https://gitlab.com/org/stash#v1.0
+akm bundle add git+ssh://git@gitlab.com/org/stash.git
 
 # Non-GitHub https URLs are automatically treated as git repos
-akm add https://gitlab.com/org/my-stash
+akm bundle add https://gitlab.com/org/my-stash
 
 # Local directory (path or file: URI)
-akm add ./path/to/local/stash
-akm add file:../relative/stash
-akm add file:///absolute/path/to/stash
+akm bundle add ./path/to/local/stash
+akm bundle add file:../relative/stash
+akm bundle add file:///absolute/path/to/stash
 ```
 
 ### What Happens During Install
@@ -204,7 +201,7 @@ akm add file:///absolute/path/to/stash
    (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, ...), `PATH`, shell/runtime startup
    hooks (`BASH_ENV`, `PROMPT_COMMAND`, `NODE_OPTIONS`, `PYTHONSTARTUP`, ...),
    and interactive-tool overrides (`EDITOR`, `PAGER`, `GIT_SSH_COMMAND`, ...).
-   `akm add` **blocks the install** when a dangerous key is present unless
+   `akm bundle add` **blocks the install** when a dangerous key is present unless
    `--allow-insecure` is set (or you confirm at an interactive prompt).
    This is a **key-name audit only** (plus the path-traversal rejection in step
    3) -- akm does **not** scan source files, prompts, metadata, or install
@@ -249,26 +246,26 @@ always excluded.
 
 ```bash
 # List all managed sources with their status
-akm list
+akm bundle list
 
 # Update a specific stash to its latest version
-akm update npm:@scope/my-stash
+akm bundle update npm:@scope/my-stash
 
 # Update all managed sources
-akm update --all
+akm bundle update --all
 
 # Force fresh download even if version is unchanged
-akm update npm:@scope/my-stash --force
-akm update --all --force
+akm bundle update npm:@scope/my-stash --force
+akm bundle update --all --force
 
 # Remove a stash
-akm remove npm:@scope/my-stash
+akm bundle remove npm:@scope/my-stash
 ```
 
 ### Cloning Assets
 
-Managed sources are cache-managed and may be overwritten by `akm update`.
-To edit an asset from a managed source, clone it into the working stash:
+Managed sources are cache-managed and may be overwritten by `akm bundle update`.
+To edit an asset from a managed source, clone it into the working bundle:
 
 ```bash
 akm clone "npm:@scope/my-stash//scripts/deploy.sh"
@@ -277,10 +274,10 @@ akm clone "npm:@scope/my-stash//scripts/deploy.sh"
 akm clone "npm:@scope/my-stash//scripts/deploy.sh" --name my-deploy.sh
 ```
 
-The cloned asset lives in the working stash and takes priority over the
+The cloned asset lives in the working bundle and takes priority over the
 installed version in search and show.
 
-Use `--dest` to clone to a custom directory instead of the working stash:
+Use `--dest` to clone to a custom directory instead of the working bundle:
 
 ```bash
 # Deploy a script directly into a project's .claude directory
@@ -292,7 +289,7 @@ so the example above produces `./project/.claude/scripts/deploy.sh`.
 
 **Remote clone without install:** If the origin in the ref points to a
 package that is not yet installed, `akm clone` fetches it to the cache
-automatically. Unlike `akm add`, this does **not** register the package as
+automatically. Unlike `akm bundle add`, this does **not** register the package as
 a managed source -- it only extracts the single requested asset.
 
 ## Search Priority
@@ -303,9 +300,9 @@ results are ranked by relevance and utility, and precedence is expressed
 through ranking rather than a per-source fan-out (see
 [concepts.md](../guides/concepts.md#search-priority)).
 
-When two sources contain an asset with the same name, the working stash
+When two sources contain an asset with the same name, the working bundle
 typically wins by convention because its files are usually more recent.
-Use `akm clone` to copy an asset into your working stash for local
+Use `akm clone` to copy an asset into your working bundle for local
 editing — your edits then override the upstream copy in subsequent
 searches.
 
@@ -356,10 +353,10 @@ Key behaviors:
 - Toggle on/off via `akm registry add https://skills.sh --name skills.sh --provider skills-sh` / `akm registry remove skills.sh` (the bare `akm enable` / `akm disable` aliases and `akm config enable|disable` were removed in 0.9.0 — use `akm registry add|remove`, the general mechanism)
 
 To install a skill found via skills.sh, use the `ref` field (GitHub
-`owner/repo`) with `akm add`:
+`owner/repo`) with `akm bundle add`:
 
 ```bash
-akm add vercel-labs/agent-skills
+akm bundle add vercel-labs/agent-skills
 ```
 
 ## Hosting Your Own Registry

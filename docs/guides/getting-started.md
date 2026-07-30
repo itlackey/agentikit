@@ -62,7 +62,7 @@ For a guided first run, start with:
 akm setup
 ```
 
-`akm setup` walks through stash location, embedding/LLM settings, semantic
+`akm setup` walks through bundle location, embedding/LLM settings, semantic
 search asset preparation, registries, sources, and task definitions. Before any
 OS scheduler change, it shows every reviewed task's schedule and enabled state
 and asks one explicit activation question. Confirming runs the scheduler sync;
@@ -71,17 +71,17 @@ declining leaves both task files and scheduler state unchanged.
 Verify the resulting setup with:
 
 ```sh
-akm tasks doctor
+akm task doctor
 ```
 
-## Initialize Your Working Stash
+## Initialize Your Working Bundle
 
-For non-interactive use, run `akm setup --yes` to create your working stash —
+For non-interactive use, run `akm setup --yes` to create your working bundle —
 the primary directory where your personal assets live:
 
 ```sh
 akm setup --yes
-akm setup --dir ~/custom-stash
+akm setup --dir ~/custom-bundle
 ```
 
 This creates `~/akm` with subdirectories for each asset type: `scripts/`,
@@ -100,35 +100,31 @@ only if the schedules and enabled flags are correct:
 
 ```sh
 akm setup
-akm tasks doctor
+akm task doctor
 ```
 
-Task definitions live under `<stash>/tasks/`; scheduler entries are separate OS
+Task definitions live under `<bundle>/tasks/`; scheduler entries are separate OS
 state. Activation captures the installed akm runtime so scheduled execution does
 not silently switch to a different checkout or package. Editing definitions and
-running ordinary `akm tasks sync` preserves that captured runtime. If akm was
+running ordinary `akm task sync` preserves that captured runtime. If akm was
 moved, reinstalled under a different package prefix, or repaired after an
 installation problem, migrate scheduler entries deliberately:
 
 ```sh
-akm tasks sync --rebind
-akm tasks doctor
+akm task sync --rebind
+akm task doctor
 ```
 
 Use `--rebind` only for that explicit runtime migration or repair.
 
 Rerunning `akm setup` preserves existing scheduler bindings by design. If you
 change the AKM storage path during reconfiguration, or move/install akm at a new
-runtime path, follow setup with `akm tasks sync --rebind`; setup never silently
+runtime path, follow setup with `akm task sync --rebind`; setup never silently
 rebinds existing entries.
 
-Fresh setup offers the small core task-template set shown in its review. It no
-longer registers the separate maintainer-oriented multi-cadence improve task set.
-`akm tasks init` is the explicit maintainer opt-in, but it is not a preview or
-preparation command: it creates missing definitions and immediately installs all
-enabled schedules. Inspect the documented default task set and the `--server`,
-`--laptop`, and `--rebind` options in the [tasks CLI reference](../reference/cli.md#tasks)
-before running it.
+Setup's review covers both the general-purpose core task-template set and the
+maintainer-oriented multi-cadence improve task set in one pass — see the
+[task CLI reference](../reference/cli.md#task) for the full template list.
 
 ## Add Your First Asset
 
@@ -144,7 +140,7 @@ chmod +x ~/akm/scripts/hello.sh
 ```
 
 Any file with a known extension (`.sh`, `.ts`, `.py`, etc.) placed in your
-working stash is automatically recognized. The `scripts/` directory is not
+working bundle is automatically recognized. The `scripts/` directory is not
 required -- it just increases classification confidence. See
 [concepts.md](concepts.md) for how classification works.
 
@@ -161,14 +157,14 @@ Build the search index so your assets are discoverable:
 akm index
 ```
 
-**`setup` vs `index`:** `akm setup` creates your working stash directory (run
+**`setup` vs `index`:** `akm setup` creates your working bundle directory (run
 once). `akm index` scans all sources, then builds the
 search database (run whenever you add or change assets). They are separate
-steps — `setup` creates the stash, `index` makes its contents searchable.
+steps — `setup` creates the bundle, `index` makes its contents searchable.
 
 Run `akm index --full` to force a complete rebuild instead of an incremental
 update. If a workflow file is malformed, akm now skips that asset, continues
-indexing the rest of the stash, and reports the skipped file in `warnings`.
+indexing the rest of the bundle, and reports the skipped file in `warnings`.
 
 ## Search
 
@@ -208,20 +204,20 @@ Add any source — a local directory, a GitHub repo, an npm package, or a websit
 Every source materialises files to a directory; akm indexes them locally:
 
 ```sh
-akm add ~/.claude/skills              # Your Claude Code skills
-akm add github:owner/repo             # A team's shared stash
-akm add @scope/my-stash                 # An npm package
-akm add https://docs.example.com --name docs  # A documentation site
+akm bundle add ~/.claude/skills              # Your Claude Code skills
+akm bundle add github:owner/repo             # A team's shared bundle
+akm bundle add @scope/my-bundle                 # An npm package
+akm bundle add https://docs.example.com --name docs  # A documentation site
 ```
 
-All become searchable immediately. Use `akm list` to see your sources and
-`akm update --all` to keep managed sources current.
+All become searchable immediately. Use `akm bundle list` to see your sources and
+`akm bundle update --all` to keep managed sources current.
 
 Website sources are crawled and converted to markdown knowledge assets. Control
 the crawl with `--max-pages` and `--max-depth`:
 
 ```sh
-akm add https://www.agentic-patterns.com/ --name agent-patterns --max-pages 100
+akm bundle add https://www.agentic-patterns.com/ --name agent-patterns --max-pages 100
 ```
 
 See [registry.md](../reference/registry.md) for the full install flow and supported
@@ -230,8 +226,8 @@ ref formats.
 ## Isolated Sandbox Workflow
 
 When testing agent behavior, authoring new assets, or reproducing an issue,
-you often want a clean stash that does not touch your real one. Every akm
-command honours the standard XDG env vars plus `AKM_STASH_DIR`, so you can
+you often want a clean bundle that does not touch your real one. Every akm
+command honours the standard XDG env vars plus `AKM_BUNDLE_DIR`, so you can
 spin up a disposable environment in a single terminal:
 
 ```bash
@@ -240,9 +236,9 @@ export HOME="$SANDBOX"
 export XDG_CONFIG_HOME="$SANDBOX/config"
 export XDG_DATA_HOME="$SANDBOX/data"
 export XDG_CACHE_HOME="$SANDBOX/cache"
-export AKM_STASH_DIR="$SANDBOX/stash"
+export AKM_BUNDLE_DIR="$SANDBOX/bundle"
 
-akm setup --yes                 # initialize the sandbox stash
+akm setup --yes                 # initialize the sandbox bundle
 akm index --full                # empty but valid index
 akm workflow create demo        # create a template-backed workflow asset
 akm workflow start workflows/demo
@@ -251,21 +247,21 @@ akm workflow start workflows/demo
 rm -rf "$SANDBOX"               # tear down when done
 ```
 
-Nothing written to `$SANDBOX` ever reaches your default stash, so this
+Nothing written to `$SANDBOX` ever reaches your default bundle, so this
 pattern is safe to script into CI or agent test harnesses.
 
 ## Next Steps
 
-- [Concepts](concepts.md) -- Asset types, classification, and the stash
+- [Concepts](concepts.md) -- Asset types, classification, and the bundle
 - [CLI Reference](../reference/cli.md) -- All commands and flags
 - [Ref Format](../architecture/specs/ref.md) -- How asset references work
-- [Stash Maker's Guide](stash-makers.md) -- Build and share your own stashes
+- [Bundle Maker's Guide](stash-makers.md) -- Build and share your own bundles
 
 ## Official akm Repos
 
 If you want the rest of the official akm ecosystem after first-time setup:
 
-- [itlackey/akm-stash](https://github.com/itlackey/akm-stash) -- install the official onboarding stash with `akm add github:itlackey/akm-stash`
+- [itlackey/akm-stash](https://github.com/itlackey/akm-stash) -- install the official onboarding bundle with `akm bundle add github:itlackey/akm-stash`
 - [itlackey/akm-registry](https://github.com/itlackey/akm-registry) -- browse the official registry source that ships with akm
 - [itlackey/akm-plugins](https://github.com/itlackey/akm-plugins) -- optional integrations for editors and agent tools
 - [itlackey/akm-bench](https://github.com/itlackey/akm-bench) -- benchmark and evaluation tooling for measuring akm-assisted agent runs

@@ -31,7 +31,7 @@ describe("env run dangerous-key blocking", () => {
 
     const result = await withEnv(
       {
-        AKM_STASH_DIR: makeTempStash(),
+        AKM_BUNDLE_DIR: makeTempStash(),
         HOME: makeTempDir("akm-env-run-home-"),
         XDG_CONFIG_HOME: makeTempDir("akm-env-run-config-"),
         XDG_CACHE_HOME: makeTempDir("akm-env-run-cache-"),

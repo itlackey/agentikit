@@ -50,7 +50,7 @@ function akmWithStdin(args: string[], input: string): { status: number | null; s
   const result = spawnSync("bun", [CLI_PATH, ...args], {
     input,
     encoding: "utf8",
-    // The sandboxed AKM_STASH_DIR / XDG_* vars are already in process.env
+    // The sandboxed AKM_BUNDLE_DIR / XDG_* vars are already in process.env
     // (set by the preload + sandbox helpers above).
     env: process.env,
   });

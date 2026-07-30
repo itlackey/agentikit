@@ -134,7 +134,7 @@ async function buildFixture(): Promise<void> {
 }
 
 async function runCli(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
-  return withEnv({ AKM_STASH_DIR: stashDir }, async () => {
+  return withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
     resetConfigCache();
     return runCliCapture(args);
   });

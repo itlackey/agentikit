@@ -68,7 +68,7 @@ function resolveAndValidateTypeRoot(root: string, type: string, name: string): s
       `Asset directory for ${type} assets is not accessible — got a file where a directory was expected for ref: ${conceptIdFromTypeName(type, name)}. ` +
         "Run `akm index` to rebuild the index, or check your source configuration.",
       "ASSET_NOT_FOUND",
-      "Run `akm list` to see your configured sources and verify the source path exists.",
+      "Run `akm bundle list` to see your configured sources and verify the source path exists.",
     );
   }
   return fs.realpathSync(root);
@@ -82,7 +82,7 @@ function readTypeRootStat(root: string, type: string, name: string): fs.Stats {
       throw new NotFoundError(
         `Asset not found for ref: ${conceptIdFromTypeName(type, name)}. No ${type} assets are present in the configured source.`,
         "ASSET_NOT_FOUND",
-        "Run `akm list` to see your configured sources, or `akm index` to rebuild the search index.",
+        "Run `akm bundle list` to see your configured sources, or `akm index` to rebuild the search index.",
       );
     }
     throw error;

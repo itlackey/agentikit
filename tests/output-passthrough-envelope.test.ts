@@ -71,8 +71,8 @@ describe("passthrough envelope stamping (#484)", () => {
     expect(nullish).toBeNull();
   });
 
-  // Stable-keys regression net for the four workflow driver-protocol envelopes
-  // that scripts pin (`workflow brief`/`report`/`run`/`watch`): the stamp is
+  // Stable-keys regression net for the three workflow driver-protocol
+  // envelopes that scripts pin (`workflow brief`/`report`/`run`): the stamp is
   // purely additive (adds shape + schemaVersion, preserves the `ok` flag), and
   // the full top-level key set is frozen so a rename/drop is caught here.
   it("workflow-brief: preserves ok + all top-level keys; adds shape + schemaVersion", () => {
@@ -154,24 +154,6 @@ describe("passthrough envelope stamping (#484)", () => {
     expect(shaped.shape).toBe("workflow-run");
     expect(shaped.schemaVersion).toBe(1);
     expect(Object.keys(shaped).sort()).toEqual(["executed", "run", "schemaVersion", "shape"].sort());
-  });
-
-  it("workflow-watch: preserves ok + all top-level keys; adds shape + schemaVersion", () => {
-    const watch = {
-      ok: true,
-      runId: "r1",
-      status: "completed",
-      eventCount: 3,
-      lastEventId: 42,
-      streamed: false,
-    };
-    const shaped = shapeForCommand("workflow-watch", watch, "normal") as Record<string, unknown>;
-    expect(shaped.ok).toBe(true);
-    expect(shaped.shape).toBe("workflow-watch");
-    expect(shaped.schemaVersion).toBe(1);
-    expect(Object.keys(shaped).sort()).toEqual(
-      ["eventCount", "lastEventId", "ok", "runId", "schemaVersion", "shape", "status", "streamed"].sort(),
-    );
   });
 
   it("does NOT change shaped commands' brief-detail contract", () => {

@@ -11,26 +11,6 @@
  * formatters from other domains).
  */
 
-export function formatWorkflowValidatePlain(r: Record<string, unknown>): string {
-  const ok = r.ok !== false;
-  const pathValue = String(r.path ?? "?");
-  if (!ok) return `workflow validate: failed (${pathValue})`;
-  const title = typeof r.title === "string" ? r.title : "";
-  const stepCount = typeof r.stepCount === "number" ? r.stepCount : 0;
-  const lines = [`workflow validate: ok — ${title || pathValue} (${stepCount} step(s))`];
-  // Non-fatal advisories: clearly marked, printed after the ok line so `ok`
-  // is never in doubt. Absent/empty for markdown and fully-typed programs.
-  const warnings = Array.isArray(r.warnings) ? (r.warnings as Array<Record<string, unknown>>) : [];
-  if (warnings.length > 0) {
-    lines.push(`  ${warnings.length} warning(s):`);
-    for (const w of warnings) {
-      const line = typeof w.line === "number" ? w.line : "?";
-      lines.push(`    warning: ${pathValue}:${line} — ${String(w.message ?? "")}`);
-    }
-  }
-  return lines.join("\n");
-}
-
 /**
  * Plain-text rendering for a step-completion that was rejected by the
  * summary-validation gate (#506): the step stays pending and the agent gets
@@ -363,6 +343,9 @@ export function formatWorkflowBriefPlain(result: Record<string, unknown>): strin
 }
 
 export function formatWorkflowCreatePlain(r: Record<string, unknown>): string | null {
+  // `workflow create --print`: no file is written, just the template text
+  // (dropped `workflow template`'s output, moved onto this shape).
+  if (typeof r.template === "string") return r.template;
   if (r.ref && r.path) {
     return `Created ${String(r.ref)} at ${String(r.path)}`;
   }

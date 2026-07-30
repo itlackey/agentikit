@@ -11,7 +11,7 @@
  *
  *   let cleanup: () => void;
  *   beforeEach(() => {
- *     cleanup = sandboxStashDir();           // sets process.env.AKM_STASH_DIR
+ *     cleanup = sandboxStashDir();           // sets process.env.AKM_BUNDLE_DIR
  *     sandboxXdgConfigHome(cleanup);         // sets process.env.XDG_CONFIG_HOME
  *   });
  *   afterEach(() => cleanup());
@@ -68,7 +68,7 @@ let sandboxCounter = 0;
  * Lives here (in the allowlisted sandbox helper) rather than inline in test
  * files so the test-isolation lint stays satisfied: tests mutate env only
  * through this restoring wrapper. Used by the in-process CLI harness call sites
- * that need a per-call env override (e.g. a populated `AKM_STASH_DIR`).
+ * that need a per-call env override (e.g. a populated `AKM_BUNDLE_DIR`).
  *
  * `timeoutMs` is an optional safety net for callers whose `fn()` can hang —
  * e.g. it shells out to a subprocess or makes a network call with no bound
@@ -163,7 +163,7 @@ export function withEnvSync<T>(overrides: Record<string, string | undefined>, fn
 /**
  * Create an isolated, asset-typed stash directory (with the standard subdirs an
  * initialized stash has) and return its path plus a disposer. The directory is
- * NOT wired into `process.env` — callers pass it to `withEnv({ AKM_STASH_DIR })`
+ * NOT wired into `process.env` — callers pass it to `withEnv({ AKM_BUNDLE_DIR })`
  * or to a subprocess env. Registering cleanup here keeps `fs.mkdtempSync` out of
  * test files (which the isolation lint flags).
  */
@@ -223,12 +223,12 @@ export function sandboxEnvDir(prefix: string, envVar: string, chain?: Cleanup): 
 // ── Named helpers ────────────────────────────────────────────────────────────
 
 /**
- * Sandbox `AKM_STASH_DIR`.  Returns `{ dir, cleanup }` where `dir` is the new
+ * Sandbox `AKM_BUNDLE_DIR`.  Returns `{ dir, cleanup }` where `dir` is the new
  * stash root.  The standard stash subdirs (skills, commands, agents, knowledge,
  * scripts, memories, lessons) are created automatically.
  */
 export function sandboxStashDir(chain?: Cleanup): { dir: string; cleanup: Cleanup } {
-  const result = sandboxEnvDir("akm-sb-stash-", "AKM_STASH_DIR", chain);
+  const result = sandboxEnvDir("akm-sb-stash-", "AKM_BUNDLE_DIR", chain);
   for (const sub of STASH_SKELETON_SUBDIRS) {
     fs.mkdirSync(path.join(result.dir, sub), { recursive: true });
   }
@@ -281,7 +281,7 @@ export function sandboxXdgStateHome(chain?: Cleanup): { dir: string; cleanup: Cl
  * already exists on disk under a single per-call temp root.
  */
 export interface IsolatedAkmStorage {
-  /** Isolated stash root (`AKM_STASH_DIR`), scaffolded with the standard subdirs. */
+  /** Isolated stash root (`AKM_BUNDLE_DIR`), scaffolded with the standard subdirs. */
   readonly stashDir: string;
   /** Isolated data dir (`XDG_DATA_HOME`). */
   readonly dataDir: string;
@@ -308,7 +308,7 @@ export interface IsolatedAkmStorage {
  *   - creates `stash/`, `data/`, `cache/`, `config/`, `state/` subdirs under it
  *     (the stash scaffolded with {@link STASH_SKELETON_SUBDIRS}, the config with
  *     an `akm/` subdir),
- *   - points `AKM_STASH_DIR`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`,
+ *   - points `AKM_BUNDLE_DIR`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`,
  *     `XDG_CONFIG_HOME`, `XDG_STATE_HOME` at them, snapshotting each prior value,
  *   - returns the resolved {@link IsolatedAkmStorage} context plus a single
  *     `cleanup()` that restores every env var and removes the temp root.
@@ -349,7 +349,7 @@ export function withIsolatedAkmStorage(overrides?: Record<string, string | undef
   fs.mkdirSync(sessionLogsDir, { recursive: true });
 
   const env: Record<string, string> = {
-    AKM_STASH_DIR: stashDir,
+    AKM_BUNDLE_DIR: stashDir,
     XDG_DATA_HOME: dataDir,
     XDG_CACHE_HOME: cacheDir,
     XDG_CONFIG_HOME: configDir,

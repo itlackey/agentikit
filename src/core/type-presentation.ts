@@ -107,7 +107,8 @@ export const TYPE_PRESENTATION: Record<KnownType, Presentation> = {
   task: {
     label: "Task",
     renderer: "task-yaml",
-    action: (ref) => `akm show ${ref} -> inspect; akm tasks run <id> -> run now; akm tasks disable <id> -> unschedule`,
+    action: (ref) =>
+      `akm show ${ref} -> inspect; akm task run <id> -> run now; edit the file + akm task sync -> unschedule`,
   },
   session: {
     label: "Session",

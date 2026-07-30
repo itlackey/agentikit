@@ -152,7 +152,7 @@ tested adapter-local folds, not durable behavior.
 ## 5. Initialize Container-Local AKM State
 
 ```bash
-docker exec "$AKM_OKF_CONTAINER" akm init \
+docker exec "$AKM_OKF_CONTAINER" akm bundle create \
   --dir /tmp/akm-home/akm \
   --set-default
 ```
@@ -165,11 +165,11 @@ path.
 Add and fully index the real producer output:
 
 ```bash
-docker exec "$AKM_OKF_CONTAINER" akm add \
+docker exec "$AKM_OKF_CONTAINER" akm bundle add \
   /tmp/kc/okf/bundles/ga4 \
   --name okf-ga4
 docker exec "$AKM_OKF_CONTAINER" akm index --full
-docker exec "$AKM_OKF_CONTAINER" akm list
+docker exec "$AKM_OKF_CONTAINER" akm bundle list
 docker exec "$AKM_OKF_CONTAINER" akm search orders \
   --format json --detail full --limit 100 --no-project-context
 docker exec "$AKM_OKF_CONTAINER" akm search events \
@@ -378,13 +378,13 @@ docker exec "$AKM_OKF_CONTAINER" bun /tmp/create-okf-fixtures.mjs
 Add the bundles and rebuild:
 
 ```bash
-docker exec "$AKM_OKF_CONTAINER" akm add \
+docker exec "$AKM_OKF_CONTAINER" akm bundle add \
   /tmp/okf-adversarial --name adversarial
-docker exec "$AKM_OKF_CONTAINER" akm add \
+docker exec "$AKM_OKF_CONTAINER" akm bundle add \
   /tmp/okf-no-index --name noindex
-docker exec "$AKM_OKF_CONTAINER" akm add \
+docker exec "$AKM_OKF_CONTAINER" akm bundle add \
   /tmp/okf-wiki-overlap --name overlap
-docker exec "$AKM_OKF_CONTAINER" akm add \
+docker exec "$AKM_OKF_CONTAINER" akm bundle add \
   /tmp/okf-lint-dangling --name lint-dangling
 docker exec "$AKM_OKF_CONTAINER" akm index --full
 ```
@@ -496,7 +496,7 @@ set +e
 docker exec "$AKM_OKF_CONTAINER" akm remember \
   'Correction written during OKF conformance evaluation' \
   --name correction \
-  --target adversarial \
+  --bundle adversarial \
   --supersedes adversarial//knowledge/roundtrip
 export OKF_WRITE_STATUS=$?
 set -e
@@ -543,10 +543,10 @@ source is generally writable or consumer-only:
 RESERVED_BEFORE=$(docker exec "$AKM_OKF_CONTAINER" sh -lc 'find /tmp/okf-adversarial -type f \( -iname "index.md" -o -iname "log.md" \) -exec sha256sum {} + | sort | sha256sum')
 set +e
 docker exec "$AKM_OKF_CONTAINER" akm remember \
-  'Reserved index payload' --name index --target adversarial
+  'Reserved index payload' --name index --bundle adversarial
 INDEX_WRITE_STATUS=$?
 docker exec "$AKM_OKF_CONTAINER" akm remember \
-  'Reserved log payload' --name log --target adversarial
+  'Reserved log payload' --name log --bundle adversarial
 LOG_WRITE_STATUS=$?
 set -e
 test "$INDEX_WRITE_STATUS" -ne 0

@@ -176,7 +176,7 @@ filesystem, git, website, npm — are materialised to local directories and
 indexed together. The indexer holds every searchable asset, so source results
 do not need cross-merging.
 
-### Source + registry results (`--source both`)
+### Source + registry results (`--from all`)
 
 When registry results (static-index, skills.sh) are included:
 

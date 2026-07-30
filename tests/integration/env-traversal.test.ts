@@ -31,7 +31,7 @@ afterAll(() => {
 });
 
 async function runCli(args: string[], stashDir: string): Promise<{ stdout: string; stderr: string; status: number }> {
-  return withEnv({ AKM_STASH_DIR: stashDir, AKM_CONFIG_DIR: undefined }, async () => {
+  return withEnv({ AKM_BUNDLE_DIR: stashDir, AKM_CONFIG_DIR: undefined }, async () => {
     clearEmbeddingCache();
     resetLocalEmbedder();
     resetGraphBoostCache();

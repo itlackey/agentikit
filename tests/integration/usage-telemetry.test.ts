@@ -3,8 +3,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openStateDatabase } from "../../src/core/state-db";
-import { getUsageEvents, insertUsageEvent } from "../../src/indexer/usage/usage-events";
+import { insertUsageEvent, type UsageEventRow } from "../../src/indexer/usage/usage-events";
+import type { Database } from "../../src/storage/database";
 import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../_helpers/sandbox";
+
+/** Read back inserted rows directly — `getUsageEvents` was dropped as dead code (no production reader). */
+function readEvents(db: Database): UsageEventRow[] {
+  return db.prepare("SELECT * FROM usage_events ORDER BY id ASC").all() as UsageEventRow[];
+}
 
 // ── Temp directory management ───────────────────────────────────────────────
 
@@ -73,7 +79,7 @@ describe("Usage Telemetry", () => {
         metadata: JSON.stringify({ entry_refs: ["stash//skills/deploy", "stash//commands/rollback"] }),
       });
 
-      const events = getUsageEvents(db);
+      const events = readEvents(db);
       expect(events).toHaveLength(1);
       expect(events[0]!.event_type).toBe("search");
       expect(events[0]!.query).toBe("deploy tool");
@@ -93,7 +99,7 @@ describe("Usage Telemetry", () => {
         entry_ref: "stash//skills/deploy",
       });
 
-      const events = getUsageEvents(db);
+      const events = readEvents(db);
       expect(events).toHaveLength(1);
       expect(events[0]!.event_type).toBe("show");
       expect(events[0]!.entry_ref).toBe("stash//skills/deploy");
@@ -115,7 +121,7 @@ describe("Usage Telemetry", () => {
         metadata: JSON.stringify({ note: "Very useful skill" }),
       });
 
-      const events = getUsageEvents(db);
+      const events = readEvents(db);
       expect(events).toHaveLength(1);
       expect(events[0]!.event_type).toBe("feedback");
       expect(events[0]!.signal).toBe("positive");
@@ -135,7 +141,7 @@ describe("Usage Telemetry", () => {
         signal: "negative",
       });
 
-      const events = getUsageEvents(db);
+      const events = readEvents(db);
       expect(events).toHaveLength(1);
       expect(events[0]!.signal).toBe("negative");
     } finally {
@@ -143,59 +149,7 @@ describe("Usage Telemetry", () => {
     }
   });
 
-  // ── Test 5: getUsageEvents filters by event_type ────────────────────────
-
-  test("getUsageEvents filters by event_type", () => {
-    const dbPath = tmpDbPath();
-    const db = openStateDatabase(dbPath);
-    try {
-      insertUsageEvent(db, { event_type: "search", query: "test query" });
-      insertUsageEvent(db, { event_type: "show", entry_ref: "stash//skills/a" });
-      insertUsageEvent(db, { event_type: "feedback", entry_ref: "stash//skills/b", signal: "positive" });
-      insertUsageEvent(db, { event_type: "search", query: "another query" });
-
-      const searchEvents = getUsageEvents(db, { event_type: "search" });
-      expect(searchEvents).toHaveLength(2);
-      for (const e of searchEvents) {
-        expect(e.event_type).toBe("search");
-      }
-
-      const showEvents = getUsageEvents(db, { event_type: "show" });
-      expect(showEvents).toHaveLength(1);
-      expect(showEvents[0]!.event_type).toBe("show");
-
-      const feedbackEvents = getUsageEvents(db, { event_type: "feedback" });
-      expect(feedbackEvents).toHaveLength(1);
-      expect(feedbackEvents[0]!.event_type).toBe("feedback");
-    } finally {
-      db.close();
-    }
-  });
-
-  // ── Test 6: getUsageEvents filters by entry_ref ─────────────────────────
-
-  test("getUsageEvents filters by entry_ref", () => {
-    const dbPath = tmpDbPath();
-    const db = openStateDatabase(dbPath);
-    try {
-      insertUsageEvent(db, { event_type: "show", entry_ref: "stash//skills/deploy" });
-      insertUsageEvent(db, { event_type: "show", entry_ref: "stash//skills/test" });
-      insertUsageEvent(db, { event_type: "feedback", entry_ref: "stash//skills/deploy", signal: "positive" });
-
-      const deployEvents = getUsageEvents(db, { entry_ref: "skills/deploy" });
-      expect(deployEvents).toHaveLength(2);
-      for (const e of deployEvents) {
-        expect(e.entry_ref).toBe("stash//skills/deploy");
-      }
-
-      const testEvents = getUsageEvents(db, { entry_ref: "skills/test" });
-      expect(testEvents).toHaveLength(1);
-    } finally {
-      db.close();
-    }
-  });
-
-  // ── Test 7: Event insertion does not throw on DB errors ─────────────────
+  // ── Test 5: Event insertion does not throw on DB errors ─────────────────
 
   test("insertUsageEvent does not throw on DB errors (fire-and-forget)", () => {
     const dbPath = tmpDbPath();
@@ -213,7 +167,7 @@ describe("Usage Telemetry", () => {
     }
   });
 
-  // ── Test 8: created_at is auto-populated ────────────────────────────────
+  // ── Test 6: created_at is auto-populated ────────────────────────────────
 
   test("created_at is auto-populated", () => {
     const dbPath = tmpDbPath();
@@ -221,7 +175,7 @@ describe("Usage Telemetry", () => {
     try {
       insertUsageEvent(db, { event_type: "search", query: "auto timestamp" });
 
-      const events = getUsageEvents(db);
+      const events = readEvents(db);
       expect(events).toHaveLength(1);
       expect(events[0]!.created_at).toBeDefined();
       expect(typeof events[0]!.created_at).toBe("string");
@@ -232,7 +186,7 @@ describe("Usage Telemetry", () => {
     }
   });
 
-  // ── Test 9: metadata field stores JSON ──────────────────────────────────
+  // ── Test 7: metadata field stores JSON ──────────────────────────────────
 
   test("metadata field stores JSON and is retrievable and parseable", () => {
     const dbPath = tmpDbPath();
@@ -245,7 +199,7 @@ describe("Usage Telemetry", () => {
         metadata: JSON.stringify(meta),
       });
 
-      const events = getUsageEvents(db);
+      const events = readEvents(db);
       expect(events).toHaveLength(1);
       expect(events[0]!.metadata).toBeDefined();
       const parsed = JSON.parse(events[0]!.metadata ?? "");
@@ -256,26 +210,7 @@ describe("Usage Telemetry", () => {
     }
   });
 
-  // ── Test 10: getUsageEvents supports combined filters ───────────────────
-
-  test("getUsageEvents supports combined event_type and entry_ref filters", () => {
-    const dbPath = tmpDbPath();
-    const db = openStateDatabase(dbPath);
-    try {
-      insertUsageEvent(db, { event_type: "show", entry_ref: "stash//skills/deploy" });
-      insertUsageEvent(db, { event_type: "feedback", entry_ref: "stash//skills/deploy", signal: "positive" });
-      insertUsageEvent(db, { event_type: "show", entry_ref: "stash//skills/test" });
-
-      const filtered = getUsageEvents(db, { event_type: "show", entry_ref: "skills/deploy" });
-      expect(filtered).toHaveLength(1);
-      expect(filtered[0]!.event_type).toBe("show");
-      expect(filtered[0]!.entry_ref).toBe("stash//skills/deploy");
-    } finally {
-      db.close();
-    }
-  });
-
-  // ── Test 11: entry_id field is stored correctly ─────────────────────────
+  // ── Test 8: entry_id field is stored correctly ───────────────────────────
 
   test("entry_id field is stored correctly", () => {
     const dbPath = tmpDbPath();
@@ -287,7 +222,7 @@ describe("Usage Telemetry", () => {
         entry_ref: "stash//skills/deploy",
       });
 
-      const events = getUsageEvents(db);
+      const events = readEvents(db);
       expect(events).toHaveLength(1);
       expect(events[0]!.entry_id).toBe(42);
     } finally {

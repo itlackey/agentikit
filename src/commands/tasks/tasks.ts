@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `akm tasks` — register, inspect, run, and remove scheduled task assets.
+ * `akm task` — register, inspect, run, and remove scheduled task assets.
  *
  * Each handler exported here is a pure function that performs the real work;
  * `src/cli.ts` wraps these in citty `defineCommand`s and shapes their return
@@ -28,7 +28,6 @@ import {
   resolveWriteTarget,
   writeAssetToSource,
 } from "../../core/write-source";
-import { resolveAssetPath } from "../../sources/resolve";
 import { backendNameForPlatform, selectBackend } from "../../tasks/backends";
 import type { InstalledTaskRef, RebindTaskRef, TaskBackend } from "../../tasks/backends/types";
 import { parseTaskDocument } from "../../tasks/parser";
@@ -60,7 +59,7 @@ export interface TasksAddInput {
   /**
    * Bundle to write the task into and schedule from. Defaults to the primary /
    * default write target. Resolved via {@link resolveWriteTarget}; a non-default
-   * bundle is recorded in the scheduled invocation as `--target <bundle>`.
+   * bundle is recorded in the scheduled invocation as `--bundle <bundle>`.
    */
   target?: string;
   workflow?: string;
@@ -89,7 +88,7 @@ export interface TasksAddResult {
   id: string;
   ref: string;
   path: string;
-  stashDir: string;
+  bundleDir: string;
   schedule: string;
   enabled: boolean;
   backend: string;
@@ -154,7 +153,7 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   }
   if (fs.existsSync(assetPath) && !input.force) {
     throw new UsageError(
-      `Task "${id}" already exists. Pass --force to overwrite, or delete its file and run \`akm tasks sync\` first.`,
+      `Task "${id}" already exists. Pass --force to overwrite, or delete its file and run \`akm task sync\` first.`,
       "RESOURCE_ALREADY_EXISTS",
     );
   }
@@ -288,128 +287,12 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     id,
     ref: conceptIdFromTypeName("task", id),
     path: assetPath,
-    stashDir,
+    bundleDir: stashDir,
     schedule: task.schedule,
     enabled: task.enabled,
     backend,
     target: task.target,
   };
-}
-
-/** Minimal per-task summary for internal enumeration (setup + default-task registration). */
-export interface StashTaskSummary {
-  id: string;
-  enabled: boolean;
-}
-
-/**
- * List the task ids + enabled-state present in a stash's `tasks/` directory.
- *
- * Internal utility for the setup wizard and default-improve-task registration —
- * NOT a user-facing surface. Cross-bundle task inspection is covered by the
- * generic `akm search` / `akm show <bundle//tasks/id>` commands. Malformed
- * files are skipped because setup can only offer runnable task definitions.
- */
-export function listStashTasks(stashDir: string = resolveStashDir()): { tasks: StashTaskSummary[] } {
-  const typeRoot = path.join(stashDir, "tasks");
-  if (!fs.existsSync(typeRoot)) return { tasks: [] };
-  const tasks: StashTaskSummary[] = [];
-  for (const file of fs.readdirSync(typeRoot)) {
-    if (!file.endsWith(".yml")) continue;
-    const id = file.slice(0, -4);
-    const filePath = path.join(typeRoot, file);
-    try {
-      const task = parseTaskDocument({ yaml: fs.readFileSync(filePath, "utf8"), filePath, id });
-      tasks.push({ id: task.id, enabled: task.enabled });
-    } catch {
-      // Skip malformed files; setup cannot offer them for activation.
-    }
-  }
-  return { tasks };
-}
-
-export async function akmTasksSetEnabled(
-  id: string,
-  enabled: boolean,
-  deps: TaskMutationDeps = {},
-  bundleTarget?: string,
-): Promise<{ id: string; enabled: boolean; backend: string }> {
-  const normalised = normaliseTaskId(id);
-  const bundle = resolveTaskBundle(bundleTarget, { requireWritable: true });
-  const writeTarget = bundle.resolved;
-  const stashDir = bundle.stashDir;
-  const installOpts = bundle.installTarget !== undefined ? { target: bundle.installTarget } : undefined;
-  const filePath = await resolveAssetPath(stashDir, "task", normalised);
-  const yaml = fs.readFileSync(filePath, "utf8");
-  // Parse before writing so unsupported tasks are diagnosed without changing
-  // the source file or its installed scheduler entry.
-  const previousTask = parseTaskDocument({ yaml, filePath, id: normalised });
-  const updated = setEnabledInYaml(yaml, enabled);
-  const task = parseTaskDocument({ yaml: updated, filePath, id: normalised });
-  const ref = taskAssetRef(normalised);
-  const sched = deps.backend ?? selectBackend();
-  const writeAsset = deps.writeAsset ?? writeAssetToSource;
-  const commitBoundary = deps.commitBoundary ?? commitWriteTargetBoundary;
-  const installedEntries = await sched.list();
-  assertNoForeignSchedule(installedEntries, normalised, bundle.installTarget);
-  const wasInstalled = installedEntries.some((entry) => entry.id === normalised);
-  const installedEntry = installedEntries.find((entry) => entry.id === normalised);
-  const runtimeOpts = schedulerInstallOptions(
-    installOpts,
-    installedEntry,
-    deps,
-    false,
-    `create scheduler entry for task "${normalised}"`,
-  );
-  let sourceRestoreArmed = false;
-  let installSucceeded = false;
-  try {
-    sourceRestoreArmed = true;
-    await writeAsset(writeTarget.source, writeTarget.config, ref, updated);
-    // Reinstall from the (just-updated) definition rather than only toggling
-    // the comment. A plain toggle leaves a stale schedule in place if the
-    // .yml's `schedule:` changed while the task was disabled — re-enabling
-    // would silently keep the old cron line. install() renders the block with
-    // both the current schedule and the new enabled state, and is idempotent.
-    await sched.install(task, runtimeOpts);
-    installSucceeded = true;
-    commitBoundary(writeTarget, `Update tasks/${normalised}`);
-  } catch (err) {
-    const rollbackErrors: unknown[] = [];
-    let sourceRestored = false;
-    if (sourceRestoreArmed) {
-      try {
-        await restoreTaskSourceBytes(writeAsset, writeTarget.source, writeTarget.config, ref, filePath, yaml);
-        sourceRestored = true;
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-      }
-    }
-    if (installSucceeded) {
-      try {
-        if (wasInstalled) await sched.install(previousTask, runtimeOpts);
-        else await sched.uninstall(normalised);
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-      }
-    }
-    if (sourceRestored) {
-      try {
-        commitBoundary(writeTarget, `Restore tasks/${normalised}`);
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-      }
-    }
-    if (rollbackErrors.length > 0) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new AggregateError(
-        [err, ...rollbackErrors],
-        `${message}; rollback for task "${normalised}" was incomplete.`,
-      );
-    }
-    throw err;
-  }
-  return { id: normalised, enabled, backend: sched.name };
 }
 
 export interface TasksRunResultEnvelope {
@@ -438,7 +321,7 @@ export async function akmTasksRun(
 
   let stashDir: string;
   try {
-    // No --target uses the primary stash. With --target, resolve (read-only)
+    // No --bundle uses the primary stash. With --bundle, resolve (read-only)
     // the named bundle so the task file and
     // its relative asset refs load from that bundle's path.
     stashDir =
@@ -502,14 +385,14 @@ export interface TasksSyncResult {
  *     the signature the current definition would produce)
  *   • remove orphan scheduler entries that no longer have a backing file
  *
- * `--target <bundle>` scopes the reconciliation to that bundle: the file set is
+ * `--bundle <bundle>` scopes the reconciliation to that bundle: the file set is
  * the bundle's `tasks/*.yml` and — crucially — the scheduler entries considered
  * are ONLY those attributed to the same bundle (parsed from the installed
- * `--target` token; absent ⇒ primary). This is the security boundary that keeps
+ * `--bundle` token; absent ⇒ primary). This is the security boundary that keeps
  * "registering a bundle never activates code": a plain (primary) sync never
  * installs from, updates, or removes another bundle's entries, and sync never
- * scans all bundles. Activation happens only through explicit `enable` /
- * `add --target`.
+ * scans all bundles. Activation happens only through explicit `add --bundle`
+ * (or `sync --bundle` on a bundle whose task files are already present).
  */
 export async function akmTasksSync(
   deps: { backend?: TaskBackend; schedulerRuntime?: () => PreparedSchedulerRuntime } = {},
@@ -517,7 +400,7 @@ export async function akmTasksSync(
   options: { rebind?: boolean } = {},
 ): Promise<TasksSyncResult> {
   const stashDir = resolveTaskInspectDir(bundleTarget);
-  // Primary-bundle scheduler entries omit --target; other bundles carry it.
+  // Primary-bundle scheduler entries omit --bundle; other bundles carry it.
   const syncTarget = bundleTarget !== undefined && !isPrimaryStashPath(stashDir) ? bundleTarget : undefined;
   const typeRoot = path.join(stashDir, "tasks");
   const fileIds = fs.existsSync(typeRoot)
@@ -532,7 +415,7 @@ export async function akmTasksSync(
   const allEntries: Array<InstalledTaskRef | RebindTaskRef> =
     options.rebind && sched.listForRebind ? await sched.listForRebind() : await sched.list();
   // Attribution filter: only entries installed from THIS bundle are reconciled
-  // here. Entries carrying a `--target` for a different bundle are invisible to
+  // here. Entries carrying a `--bundle` for a different bundle are invisible to
   // this sync — never removed, never touched.
   const present = new Map(allEntries.filter((t) => sameBundle(t.target, syncTarget)).map((t) => [t.id, t] as const));
   const installed: string[] = [];
@@ -640,7 +523,7 @@ export interface TasksDoctorResult {
     taskIds: string[];
     status: string[];
   }>;
-  remediation: "akm tasks sync --rebind";
+  remediation: "akm task sync --rebind";
   logDir: string;
   historyDir: string;
   engine: { defaultEngine?: string; available: string[] };
@@ -679,7 +562,6 @@ export interface TasksDoctorResult {
 }
 
 export async function akmTasksDoctor(
-  _input: { target?: string } = {},
   deps: { backend?: TaskBackend; resolveInvocation?: typeof resolveAkmInvocation } = {},
 ): Promise<TasksDoctorResult> {
   const warnings: string[] = [];
@@ -753,7 +635,7 @@ export async function akmTasksDoctor(
     akm: invocation,
     caller: invocation,
     bindings,
-    remediation: "akm tasks sync --rebind",
+    remediation: "akm task sync --rebind",
     logDir: getTaskLogDir(),
     historyDir: getTaskHistoryDir(),
     engine: { defaultEngine, available: engines },
@@ -789,7 +671,7 @@ function schedulerInstallOptions(
   // per sync run rather than silently writing a mutable/unproven binary into cron.
   if (explicitRebind && runtime.eligible === false && warnings.length === 0) {
     warnings.push(
-      `--rebind bound scheduled tasks to an ineligible ${runtime.kind ?? "unknown"} invocation (${runtime.binding.join(" ")}); scheduled runs will invoke a mutable, unproven binary. Install akm via \`npm install --global akm-cli\` or a standalone release, then re-run \`akm tasks sync --rebind\`.`,
+      `--rebind bound scheduled tasks to an ineligible ${runtime.kind ?? "unknown"} invocation (${runtime.binding.join(" ")}); scheduled runs will invoke a mutable, unproven binary. Install akm via \`npm install --global akm-cli\` or a standalone release, then re-run \`akm task sync --rebind\`.`,
     );
   }
   return { ...base, binding: runtime.binding, contextPath: runtime.contextPath };
@@ -894,7 +776,7 @@ async function restoreTaskSourceBytes(
 
 /**
  * Resolve the bundle a mutating/run task command targets. Returns the resolved
- * write/read target, its stash path, and the `--target <bundle>` token to embed
+ * write/read target, its stash path, and the `--bundle <bundle>` token to embed
  * in scheduled invocations. The primary bundle uses the target-less form.
  */
 function resolveTaskBundle(
@@ -910,7 +792,7 @@ function resolveTaskBundle(
 
 /**
  * Resolve the tasks/ directory a read/inspect command operates on. No
- * `--target` uses the primary stash; `--target X` resolves bundle X read-only.
+ * `--bundle` uses the primary stash; `--bundle X` resolves bundle X read-only.
  */
 function resolveTaskInspectDir(target: string | undefined): string {
   if (target === undefined) return resolveStashDir();
@@ -1033,7 +915,7 @@ export function setEnabledInYaml(yaml: string, enabled: boolean): string {
 // Re-exported so tests can verify the validator path directly.
 // Re-export error classes consumed by callers that want to instanceof-check.
 // Re-export this so the CLI can decide what process exit code to use after
-// `akm tasks run` completes.
+// `akm task run` completes.
 export { ConfigError, exitCodeForStatus, NotFoundError, parseTaskDocument, UsageError };
 
 // Accept a bare task id or the canonical `[bundle//]tasks/<id>` ref.

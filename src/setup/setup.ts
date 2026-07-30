@@ -97,7 +97,7 @@ import { stepScheduledTasks } from "./steps/tasks";
  *
  * Escape hatch: set `AKM_FORCE_SETUP_TMP_STASH=1` to override. When the
  * escape hatch is on, `applyStashIsolationToEnv` below also pre-sets
- * `AKM_STASH_DIR` so that the `getConfigDir` / `getCacheDir` isolation
+ * `AKM_BUNDLE_DIR` so that the `getConfigDir` / `getCacheDir` isolation
  * rules fire and config + cache writes route into `$stashDir/.akm/`
  * instead of the user's host `~/.config/akm`.
  */
@@ -118,26 +118,26 @@ function assertSetupSandbox(stashDir: string, dirExplicitlyProvided: boolean): v
  * Propagate the explicit `--dir <stashDir>` choice to the env so that the
  * `getConfigDir` / `getCacheDir` isolation rules in `src/core/paths.ts`
  * actually fire for the duration of this setup run. Without this, a CLI
- * caller who passes `--dir /tmp/X` but doesn't pre-export `AKM_STASH_DIR`
+ * caller who passes `--dir /tmp/X` but doesn't pre-export `AKM_BUNDLE_DIR`
  * would still write config to the host `~/.config/akm/config.json`. We
  * only set the env var when:
  *   - `--dir` was explicitly provided (we have an operator-stated stash), AND
- *   - `AKM_STASH_DIR` is not already set (caller's explicit env wins).
+ *   - `AKM_BUNDLE_DIR` is not already set (caller's explicit env wins).
  * The set is process-wide; for the CLI that's the right scope (the process
  * is about to do all its work against this stash). For tests, each test
  * already isolates env via beforeEach/afterEach so there is no leak.
  */
 function applyStashIsolationToEnv(stashDir: string, dirExplicitlyProvided: boolean): void {
   if (!dirExplicitlyProvided) return;
-  if (process.env.AKM_STASH_DIR?.trim()) return;
-  process.env.AKM_STASH_DIR = stashDir;
+  if (process.env.AKM_BUNDLE_DIR?.trim()) return;
+  process.env.AKM_BUNDLE_DIR = stashDir;
 }
 
 // ── Interfaces ──────────────────────────────────────────────────────────────
 
 export interface SetupSummary {
   configPath: string;
-  stashDir: string;
+  bundleDir: string;
   stashCreated: boolean;
   written: boolean;
   fields: string[];
@@ -433,7 +433,7 @@ export function buildSetupSteps(options: {
   const steps: SetupStep[] = [
     {
       id: "stash-dir",
-      label: "Stash Directory",
+      label: "Bundle Directory",
       nonInteractive: true,
       async run(ctx) {
         const stashDir = await stepStashDir(ctx.config, {
@@ -488,7 +488,7 @@ export function buildSetupSteps(options: {
     },
     {
       id: "stash-sources",
-      label: "Stash Sources",
+      label: "Bundle Sources",
       async run(ctx) {
         const stashes = await stepAddSources(ctx.config, { promptForAdditional: false });
         const platforms = await stepAgentPlatforms({ ...ctx.config, additionalSources: stashes });
@@ -572,7 +572,7 @@ export async function runSetupWizard(opts?: { dir?: string; noInit?: boolean }):
   const detection = await detectEnvironment({ existingStashDir: primaryBundlePath(current) });
   p.note(renderDetectionSummary(detection), "Detected environment");
 
-  // Interactive entry point for `--reset-recommended`: offer to apply the
+  // Interactive entry point for `runResetRecommended`: offer to apply the
   // opinionated, detection-derived defaults and skip the step-by-step wizard.
   const useRecommended = await prompt(() =>
     p.confirm({
@@ -633,12 +633,12 @@ export async function runSetupWizard(opts?: { dir?: string; noInit?: boolean }):
   const effectiveRegistries = registries ?? DEFAULT_CONFIG.registries ?? [];
   p.note(
     [
-      `Stash directory:  ${stashDir}`,
+      `Bundle directory: ${stashDir}`,
       `Embedding:        ${embedding ? `${embedding.provider ?? "remote"} / ${embedding.model}` : "built-in local"}`,
       `LLM:              ${llm ? `${llm.provider ?? "remote"} / ${llm.model}` : "disabled"}`,
       `Semantic search:  ${semanticSearchMode.mode}`,
       `Registries:       ${effectiveRegistries.filter((r) => r.enabled !== false).length} enabled`,
-      `Stash sources:    ${allStashes.length}`,
+      `Bundle sources:   ${allStashes.length}`,
       `Agent default:    ${newConfig.defaults?.engine ?? "disabled"}`,
       `Output:           ${newConfig.output?.format ?? "json"} / ${newConfig.output?.detail ?? "brief"}`,
     ].join("\n"),
@@ -748,7 +748,10 @@ export async function runSetupWizard(opts?: { dir?: string; noInit?: boolean }):
     }
   }
 
-  p.outro(`Configuration saved to ${configPath}\nNext: akm tasks doctor`);
+  p.outro(
+    `Configuration saved to ${configPath}\n` +
+      'Next: `akm bundle add <source>`, `akm index`, `akm search "<query>"`, `akm help agents`',
+  );
 }
 
 // ── Non-interactive / scripting entry points ─────────────────────────────────
@@ -848,7 +851,7 @@ export async function runSetupWithDefaults(opts: {
 
   return {
     configPath: getConfigPath(),
-    stashDir,
+    bundleDir: stashDir,
     stashCreated: initResult?.created ?? false,
     written: true,
     fields: Object.keys(finalConfig).filter((k) => finalConfig[k as keyof AkmConfig] !== undefined),
@@ -857,7 +860,7 @@ export async function runSetupWithDefaults(opts: {
 
 /**
  * Run ONLY environment detection and return the typed result. Performs no
- * config writes and shows no prompts. Backs `akm setup --detect-only`.
+ * config writes and shows no prompts.
  *
  * SAFETY: The returned object carries env var NAMES only — never any API key
  * value.
@@ -918,10 +921,10 @@ export function deriveRecommendedConfig(env: DetectedEnvironment): {
 }
 
 /**
- * `akm setup --reset-recommended`: merge opinionated, detection-derived
- * defaults into the existing config WITHOUT removing pre-existing custom keys.
- * Uses the same merge path as {@link runSetupFromConfig} so custom keys survive
- * (follows #511 semantics).
+ * Merge opinionated, detection-derived defaults into the existing config
+ * WITHOUT removing pre-existing custom keys. Backs the interactive wizard's
+ * "apply recommended defaults" prompt. Uses the same merge path as
+ * {@link runSetupFromConfig} so custom keys survive (follows #511 semantics).
  */
 export async function runResetRecommended(opts: {
   dir?: string;
@@ -1145,7 +1148,7 @@ export async function runSetupFromConfig(opts: {
 
   return {
     configPath: getConfigPath(),
-    stashDir,
+    bundleDir: stashDir,
     stashCreated: initResult?.created ?? false,
     written: true,
     fields: Object.keys(incoming).filter((k) => (incoming as Record<string, unknown>)[k] !== undefined),

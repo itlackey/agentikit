@@ -21,7 +21,7 @@
  *   - `npm install --no-save better-sqlite3`  →  native binding for Node ABI
  *
  * Coverage map — runtime-boundary branches exercised:
- *   better-sqlite3      init / remember / index / search / show / health / events
+ *   better-sqlite3      bundle create / remember / index / search / show / health / events
  *   readStdin           remember -
  *   spawnSync           setup (ripgrep download + rg --version)
  *   spawn               setup (agent-availability detection)
@@ -123,12 +123,12 @@ function setupStorage(): void {
   const storage = withIsolatedAkmStorage();
   stashDir = storage.stashDir;
   nodeEnv = {
-    AKM_STASH_DIR: storage.stashDir,
+    AKM_BUNDLE_DIR: storage.stashDir,
     XDG_CONFIG_HOME: storage.configDir,
     XDG_DATA_HOME: storage.dataDir,
     XDG_CACHE_HOME: storage.cacheDir,
     XDG_STATE_HOME: storage.stateDir,
-    // The Node child inherits BUN_TEST=1 from the bun-test parent, so init's
+    // The Node child inherits BUN_TEST=1 from the bun-test parent, so bundle create's
     // `assertInitSandbox` guard (which refuses to persist a /tmp --dir stash
     // under a test runner) fires. This suite legitimately scaffolds a stash in
     // an isolated tmp dir, so opt into the guard's documented escape hatch.
@@ -179,19 +179,19 @@ describe("version parity", () => {
   });
 });
 
-// ── init + remember + show ────────────────────────────────────────────────────
+// ── bundle create + remember + show ─────────────────────────────────────────
 
-describe("init / remember / show parity", () => {
+describe("bundle create / remember / show parity", () => {
   afterEach(() => cleanup());
 
-  test.skipIf(!ENABLED)("init creates stash on Node", () => {
+  test.skipIf(!ENABLED)("bundle create creates stash on Node", () => {
     setupStorage();
     // withIsolatedAkmStorage pre-creates `stashDir` with skeleton subdirs, so
-    // `init --dir <stashDir>` would report created:false. Point at a fresh,
-    // not-yet-existing subpath so init genuinely creates the stash.
+    // `bundle create --dir <stashDir>` would report created:false. Point at a fresh,
+    // not-yet-existing subpath so bundle create genuinely creates the stash.
     const freshDir = path.join(stashDir, "fresh");
-    const r = nodeRun(["init", "--dir", freshDir], nodeEnv);
-    assertNoBoundaryLeak(r, "init");
+    const r = nodeRun(["bundle", "create", "--dir", freshDir], nodeEnv);
+    assertNoBoundaryLeak(r, "bundle-create");
     expect(r.status).toBe(0);
     const json = parseJson(r.stdout) as { created?: boolean } | undefined;
     expect(json?.created).toBe(true);
@@ -203,7 +203,7 @@ describe("init / remember / show parity", () => {
     // Seed via Bun (in-process)
     const bunRem = await boundedWithEnv(
       {
-        AKM_STASH_DIR: stashDir,
+        AKM_BUNDLE_DIR: stashDir,
         ...nodeEnv,
         AKM_OUTPUT: "json",
         NO_COLOR: "1",
@@ -224,7 +224,7 @@ describe("init / remember / show parity", () => {
 
     // Read back via Bun in-process — same shape
     const bunShow = await boundedWithEnv(
-      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
       () => runCliCapture(["show", ref]),
     );
     expect(bunShow.code).toBe(0);
@@ -234,8 +234,8 @@ describe("init / remember / show parity", () => {
 
   test.skipIf(!ENABLED)("remember via stdin (readStdin Node branch)", () => {
     setupStorage();
-    // init first
-    nodeRun(["init", "--dir", stashDir], nodeEnv);
+    // bundle create first
+    nodeRun(["bundle", "create", "--dir", stashDir], nodeEnv);
 
     const r = nodeRun(["remember", "-"], nodeEnv, "piped stdin node compat memory content\n");
     assertNoBoundaryLeak(r, "remember-stdin");
@@ -253,7 +253,7 @@ describe("index / search parity", () => {
   test.skipIf(!ENABLED)("index runs and search finds remembered content on Node", async () => {
     setupStorage();
     // Write a memory via Bun
-    await boundedWithEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
+    await boundedWithEnv({ AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, () =>
       runCliCapture(["remember", "node-compat-index-widget searchable content"]),
     );
 
@@ -272,7 +272,7 @@ describe("index / search parity", () => {
 
     // Search via Bun — same exit code
     const bunSearch = await boundedWithEnv(
-      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
       () => runCliCapture(["search", "node-compat-index-widget"]),
     );
     expect(bunSearch.code).toBe(searchResult.status);
@@ -295,7 +295,7 @@ describe("health parity", () => {
     expect(nodeJson?.shape).toBe("health");
 
     const bunResult = await boundedWithEnv(
-      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
       () => runCliCapture(["health"]),
     );
     const bunJson = parseJson(bunResult.stdout) as { shape?: string } | undefined;
@@ -309,40 +309,38 @@ describe("health parity", () => {
 describe("env parity", () => {
   afterEach(() => cleanup());
 
-  test.skipIf(!ENABLED)("env set / list / unset roundtrip is identical on Bun and Node", async () => {
+  test.skipIf(!ENABLED)("env create / list / remove roundtrip is identical on Bun and Node", async () => {
     setupStorage();
 
-    // The real `env set` grammar is `env set <ref> <KEY>` with the VALUE read
-    // from --from-env/--from-file/STDIN — values are NEVER passed as positionals
-    // and there is no `env get` (values are deliberately never printed). Set the
-    // value through a source env var so both runtimes use identical grammar.
-    const sourceEnv = { ...nodeEnv, MY_NODE_SRC_VAL: "hello-from-bun" };
+    // `env set`/`env unset` were removed in 0.9 (akm does not edit entries —
+    // you edit the `.env` file yourself); the surviving lifecycle verbs are
+    // create/list/remove. Exercise those across both runtimes instead.
 
-    // set via Bun (in-process)
-    const bunSet = await boundedWithEnv(
-      { AKM_STASH_DIR: stashDir, ...sourceEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
-      () => runCliCapture(["env", "set", "default", "MY_NODE_VAR", "--from-env", "MY_NODE_SRC_VAL"]),
+    // create via Bun (in-process)
+    const bunCreate = await boundedWithEnv(
+      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["env", "create", "node-compat-parity"]),
     );
-    expect(bunSet.code).toBe(0);
+    expect(bunCreate.code).toBe(0);
 
-    // list via Node — must include the key NAME (never the value)
+    // list via Node — must include the env file NAME
     const nodeList = nodeRun(["env", "list"], nodeEnv);
     assertNoBoundaryLeak(nodeList, "env list");
     expect(nodeList.status).toBe(0);
-    expect(nodeList.stdout).toContain("MY_NODE_VAR");
+    expect(nodeList.stdout).toContain("node-compat-parity");
 
-    // unset via Node
-    const nodeUnset = nodeRun(["env", "unset", "default", "MY_NODE_VAR", "--yes"], nodeEnv);
-    assertNoBoundaryLeak(nodeUnset, "env unset");
-    expect(nodeUnset.status).toBe(0);
+    // remove via Node
+    const nodeRemove = nodeRun(["env", "remove", "node-compat-parity", "--yes"], nodeEnv);
+    assertNoBoundaryLeak(nodeRemove, "env remove");
+    expect(nodeRemove.status).toBe(0);
 
-    // verify gone via Bun — `env list` no longer mentions the key
+    // verify gone via Bun — `env list` no longer mentions the file
     const bunList = await boundedWithEnv(
-      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
       () => runCliCapture(["env", "list"]),
     );
     expect(bunList.code).toBe(0);
-    expect(bunList.stdout).not.toContain("MY_NODE_VAR");
+    expect(bunList.stdout).not.toContain("node-compat-parity");
   });
 });
 
@@ -360,7 +358,7 @@ describe("config path parity", () => {
     expect(nodeResult.stdout.trim()).toBeTruthy();
 
     const bunResult = await boundedWithEnv(
-      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
       () => runCliCapture(["config", "path"]),
     );
     expect(bunResult.stdout.trim()).toBe(nodeResult.stdout.trim());
@@ -369,61 +367,34 @@ describe("config path parity", () => {
 
 // ── history ───────────────────────────────────────────────────────────────────
 
-describe("history parity", () => {
-  afterEach(() => cleanup());
-
-  test.skipIf(!ENABLED)("history returns same shape on Bun and Node", async () => {
-    setupStorage();
-    // Seed a memory AND build the index so the usage_events table exists.
-    // Without `index`, `history` opens a missing index.db and the two SQLite
-    // drivers diverge (bun:sqlite "unable to open database file" exit 70 vs
-    // better-sqlite3 "no such table: usage_events"). Running `index` first makes
-    // the command SUCCEED identically on both runtimes — a real parity check,
-    // not an assertion worked around.
-    await boundedWithEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
-      await runCliCapture(["remember", "history parity test"]);
-      await runCliCapture(["index"]);
-    });
-
-    const nodeResult = nodeRun(["history"], nodeEnv);
-    assertNoBoundaryLeak(nodeResult, "history");
-    expect(nodeResult.status).toBe(0);
-
-    const bunResult = await boundedWithEnv(
-      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
-      () => runCliCapture(["history"]),
-    );
-    expect(bunResult.code).toBe(0);
-
-    const nodeJson = parseJson(nodeResult.stdout) as { shape?: string } | undefined;
-    const bunJson = parseJson(bunResult.stdout) as { shape?: string } | undefined;
-    expect(nodeJson?.shape).toBe(bunJson?.shape);
-  });
-});
+// `history` was removed in the 0.9 CLI overhaul (folded into `log`/dropped —
+// see docs/migration/v0.8-to-v0.9.md); its per-asset trail is `log --ref`,
+// the same code path "events parity" below already exercises. No replacement
+// parity test is needed.
 
 // ── events ────────────────────────────────────────────────────────────────────
 
 describe("events parity", () => {
   afterEach(() => cleanup());
 
-  test.skipIf(!ENABLED)("log list returns same shape on Bun and Node after seeding", async () => {
+  test.skipIf(!ENABLED)("log returns same shape on Bun and Node after seeding", async () => {
     setupStorage();
-    // The append-only events stream is read by `akm log list` (there is no
+    // The append-only events stream is read by `akm log` (there is no
     // top-level `events` command). Seed + index so the events table exists.
-    await boundedWithEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
+    await boundedWithEnv({ AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
       await runCliCapture(["remember", "events parity test"]);
       await runCliCapture(["index"]);
     });
 
-    const nodeResult = nodeRun(["log", "list"], nodeEnv);
-    assertNoBoundaryLeak(nodeResult, "log list");
+    const nodeResult = nodeRun(["log"], nodeEnv);
+    assertNoBoundaryLeak(nodeResult, "log");
     expect(nodeResult.status).toBe(0);
     const nodeJson = parseJson(nodeResult.stdout) as { totalCount?: number; events?: unknown[] } | undefined;
     expect(Array.isArray(nodeJson?.events)).toBe(true);
 
     const bunResult = await boundedWithEnv(
-      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
-      () => runCliCapture(["log", "list"]),
+      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["log"]),
     );
     expect(bunResult.code).toBe(0);
     const bunJson = parseJson(bunResult.stdout) as { totalCount?: number; events?: unknown[] } | undefined;
@@ -441,15 +412,15 @@ describe("sources parity", () => {
   test.skipIf(!ENABLED)("sources list output is structurally identical on Bun and Node", async () => {
     setupStorage();
 
-    // The configured-sources listing is `akm list` (there is no top-level
-    // `sources list` command). Its JSON envelope carries shape:"list".
-    const nodeResult = nodeRun(["list"], nodeEnv);
-    assertNoBoundaryLeak(nodeResult, "list");
+    // The configured-sources listing is `akm bundle list` (there is no
+    // top-level `sources list` command). Its JSON envelope carries shape:"list".
+    const nodeResult = nodeRun(["bundle", "list"], nodeEnv);
+    assertNoBoundaryLeak(nodeResult, "bundle-list");
     expect(nodeResult.status).toBe(0);
 
     const bunResult = await boundedWithEnv(
-      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
-      () => runCliCapture(["list"]),
+      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["bundle", "list"]),
     );
     const nodeJson = parseJson(nodeResult.stdout) as { shape?: string } | undefined;
     const bunJson = parseJson(bunResult.stdout) as { shape?: string } | undefined;
@@ -466,52 +437,29 @@ describe("stash parity", () => {
   test.skipIf(!ENABLED)("stash path returns same value on Bun and Node", async () => {
     setupStorage();
 
-    // No command prints the bare stash path; `config path --all` emits a JSON
-    // envelope whose `stash` field is the resolved stash dir.
+    // No command prints the bare bundle path; `config path --all` emits a JSON
+    // envelope whose `bundle` field is the resolved bundle dir.
     const nodeResult = nodeRun(["config", "path", "--all"], nodeEnv);
     assertNoBoundaryLeak(nodeResult, "config path --all");
     expect(nodeResult.status).toBe(0);
-    const nodeJson = parseJson(nodeResult.stdout) as { stash?: string } | undefined;
-    expect(nodeJson?.stash).toBe(stashDir);
+    const nodeJson = parseJson(nodeResult.stdout) as { bundle?: string } | undefined;
+    expect(nodeJson?.bundle).toBe(stashDir);
 
     const bunResult = await boundedWithEnv(
-      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
       () => runCliCapture(["config", "path", "--all"]),
     );
     expect(bunResult.code).toBe(0);
-    const bunJson = parseJson(bunResult.stdout) as { stash?: string } | undefined;
-    expect(bunJson?.stash).toBe(nodeJson?.stash);
+    const bunJson = parseJson(bunResult.stdout) as { bundle?: string } | undefined;
+    expect(bunJson?.bundle).toBe(nodeJson?.bundle);
   });
 });
 
-// ── graph ─────────────────────────────────────────────────────────────────────
-
-describe("graph parity", () => {
-  afterEach(() => cleanup());
-
-  test.skipIf(!ENABLED)("graph returns same shape on Bun and Node", async () => {
-    setupStorage();
-    // seed two memories + index so graph has something
-    await boundedWithEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
-      await runCliCapture(["remember", "node compat graph node A test"]);
-      await runCliCapture(["remember", "node compat graph node B test"]);
-      await runCliCapture(["index"]);
-    });
-
-    // `graph` is a group command (summary/entities/relations/...); `--format`
-    // is not valid on the group, so call the real `graph summary` leaf.
-    const nodeResult = nodeRun(["graph", "summary"], nodeEnv);
-    assertNoBoundaryLeak(nodeResult, "graph");
-    expect([0, 1]).toContain(nodeResult.status);
-
-    const bunResult = await boundedWithEnv(
-      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
-      () => runCliCapture(["graph", "summary"]),
-    );
-    // Both should succeed or both should have nothing (empty graph → exit 1)
-    expect(nodeResult.status).toBe(bunResult.code);
-  });
-});
+// `graph` was removed entirely in the 0.9 CLI overhaul (docs/migration/
+// v0.8-to-v0.9.md) — the extraction engine survives only via
+// `improve --strategy graph-refresh`, whose Node/Bun runtime-boundary
+// behavior is exercised by the existing "tasks parity" and "index" coverage.
+// No replacement parity test is needed.
 
 // ── import (local file) ───────────────────────────────────────────────────────
 
@@ -537,7 +485,7 @@ describe("import parity", () => {
       expect(nodeJson?.ok).toBe(true);
 
       const bunResult = await boundedWithEnv(
-        { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+        { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
         () => runCliCapture(["import", bunFile]),
       );
       expect(bunResult.code).toBe(0);
@@ -643,7 +591,7 @@ describe("output format parity", () => {
     "show --format text and --format json produce structurally same data on Bun and Node",
     async () => {
       setupStorage();
-      await boundedWithEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
+      await boundedWithEnv({ AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
         const rem = await runCliCapture(["remember", "format parity test memory"]);
         const j = parseJson(rem.stdout) as { ref?: string } | undefined;
         const ref = j?.ref as string;
@@ -672,7 +620,7 @@ describe("tasks parity", () => {
 
   test.skipIf(!ENABLED)("tasks doctor registers the supported Node wrapper", () => {
     setupStorage();
-    const result = nodeRun(["tasks", "doctor"], nodeEnv);
+    const result = nodeRun(["task", "doctor"], nodeEnv);
     assertNoBoundaryLeak(result, "tasks doctor");
     expect(result.status).toBe(0);
     const json = parseJson(result.stdout) as { akm?: { argv?: string[] } } | undefined;
@@ -751,12 +699,12 @@ describe("tasks parity", () => {
         expect(fs.readFileSync(fakeCrontab, "utf8")).toContain("node fallback crontab probe");
         fs.rmSync(fakeCrontab);
 
-        const doctor = launcherRun(["tasks", "doctor"]);
+        const doctor = launcherRun(["task", "doctor"]);
         assertNoBoundaryLeak(doctor, "Node fallback tasks doctor");
         expect(doctor.status).toBe(0);
         expect((parseJson(doctor.stdout) as { akm?: { argv?: string[] } })?.akm?.argv?.[1]).toBe(launcher);
 
-        const add = launcherRun(["tasks", "add", id, "--schedule", "@daily", "--command", "akm --version", "--rebind"]);
+        const add = launcherRun(["task", "add", id, "--schedule", "@daily", "--command", "akm --version", "--rebind"]);
         assertNoBoundaryLeak(add, "Node fallback tasks add");
         expect(add.status).toBe(0);
         taskAdded = true;
@@ -778,7 +726,7 @@ describe("tasks parity", () => {
           `generated Node scheduler command\nstdout:\n${scheduled.stdout}\nstderr:\n${scheduled.stderr}`,
         ).toBe(0);
 
-        const history = launcherRun(["tasks", "history", "--id", id, "--limit", "1"]);
+        const history = launcherRun(["task", "history", "--id", id, "--limit", "1"]);
         expect(history.status).toBe(0);
         const row = (parseJson(history.stdout) as { rows?: Array<{ status: string; log: string }> })?.rows?.[0];
         expect(row?.status).toBe("completed");
@@ -786,7 +734,7 @@ describe("tasks parity", () => {
           (JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")) as { version: string }).version,
         );
       } finally {
-        if (taskAdded) launcherRun(["tasks", "remove", id]);
+        if (taskAdded) launcherRun(["task", "remove", id]);
       }
     },
     180_000,
@@ -819,7 +767,7 @@ describe("scope flag parity", () => {
 
   test.skipIf(!ENABLED)("--scope type:memory search returns same exit on Bun and Node", async () => {
     setupStorage();
-    await boundedWithEnv({ AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
+    await boundedWithEnv({ AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
       await runCliCapture(["remember", "scope flag parity test"]);
       await runCliCapture(["index"]);
     });
@@ -829,7 +777,7 @@ describe("scope flag parity", () => {
     expect([0, 1]).toContain(nodeResult.status);
 
     const bunResult = await boundedWithEnv(
-      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
       () => runCliCapture(["search", "scope flag parity", "--scope", "type:memory"]),
     );
     expect(nodeResult.status).toBe(bunResult.code);
@@ -849,7 +797,7 @@ describe("registry parity", () => {
     expect(nodeResult.status).toBe(0);
 
     const bunResult = await boundedWithEnv(
-      { AKM_STASH_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
       () => runCliCapture(["registry", "list"]),
     );
     const nodeJson = parseJson(nodeResult.stdout) as { shape?: string } | undefined;
@@ -860,7 +808,7 @@ describe("registry parity", () => {
 
 // ── workflow smoke (better-sqlite3 workflow.db + markdown/YAML round-trip) ──────
 //
-// A minimal workflow smoke on Node: `workflow template --yaml | validate` proves
+// A minimal workflow smoke on Node: `workflow create --print --yaml | lint` proves
 // the YAML program path parses on the Node runtime, and `workflow create + start
 // + status` exercises the workflow-runs repository (workflow.db) through the
 // better-sqlite3 driver — the run-state boundary the other families never touch.
@@ -869,23 +817,30 @@ describe("registry parity", () => {
 describe("workflow smoke parity", () => {
   afterEach(() => cleanup());
 
-  test.skipIf(!ENABLED)("workflow template --yaml round-trips through validate on Node", () => {
+  test.skipIf(!ENABLED)("workflow create --print --yaml round-trips through lint on Node", () => {
     setupStorage();
-    // `workflow template --yaml` prints a YAML program straight to stdout (no
-    // envelope). Persist it and validate the file on Node — a clean round-trip.
-    const tpl = nodeRun(["workflow", "template", "--yaml"], nodeEnv);
-    assertNoBoundaryLeak(tpl, "workflow template --yaml");
+    // `workflow create <name>.yaml --print` writes the RAW YAML program
+    // template to stdout (no envelope), matching the dropped `workflow
+    // template --yaml` it replaces — `--print > starter.yaml` must yield a
+    // usable file.
+    const tpl = nodeRun(["workflow", "create", "smoke-program.yaml", "--print"], nodeEnv);
+    assertNoBoundaryLeak(tpl, "workflow create --print --yaml");
     expect(tpl.status).toBe(0);
+    expect(tpl.stdout.trimStart().startsWith("{")).toBe(false);
     expect(tpl.stdout).toContain("version:");
 
-    const file = path.join(stashDir, "smoke-program.yaml");
+    // Persist it and lint the stash on Node — a clean round-trip. 0.9.0:
+    // `workflow validate` is dropped; `akm lint --type workflows` is the
+    // structural-validation surface for both markdown and YAML programs.
+    const file = path.join(stashDir, "workflows", "smoke-program.yaml");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, tpl.stdout, "utf8");
-    const val = nodeRun(["workflow", "validate", file], nodeEnv);
-    assertNoBoundaryLeak(val, "workflow validate yaml");
+    const val = nodeRun(["lint", "--type", "workflows"], nodeEnv);
+    assertNoBoundaryLeak(val, "lint --type workflows");
     expect(val.status).toBe(0);
-    const json = parseJson(val.stdout) as { ok?: boolean; format?: string } | undefined;
+    const json = parseJson(val.stdout) as { ok?: boolean; summary?: { flagged?: number } } | undefined;
     expect(json?.ok).toBe(true);
-    expect(json?.format).toBe("program");
+    expect(json?.summary?.flagged).toBe(0);
   });
 
   test.skipIf(!ENABLED)("workflow create + start + status round-trips through workflow.db on Node", () => {

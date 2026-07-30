@@ -41,7 +41,7 @@ async function runCli(args: string[], stashDir: string): Promise<CliResult> {
   const xdgState = makeTempDir("akm-save-state-");
   return withEnv(
     {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       XDG_CACHE_HOME: xdgCache,
       XDG_CONFIG_HOME: xdgConfig,
       XDG_DATA_HOME: xdgData,
@@ -62,7 +62,7 @@ async function runCliWithEnv(
   const xdgState = makeTempDir("akm-save-state-");
   return withEnv(
     {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       XDG_CACHE_HOME: xdgCache,
       XDG_CONFIG_HOME: xdgConfig,
       XDG_DATA_HOME: xdgData,
@@ -178,7 +178,7 @@ describe("akm sync", () => {
     // withEnv scope; env is restored the moment the callback returns.
     const { syncEvents, legacyQueryEvents } = await withEnv(
       {
-        AKM_STASH_DIR: stashDir,
+        AKM_BUNDLE_DIR: stashDir,
         XDG_CACHE_HOME: xdgCache,
         XDG_CONFIG_HOME: xdgConfig,
         XDG_DATA_HOME: xdgData,
@@ -329,7 +329,7 @@ describe("akm sync", () => {
 
     const result = await withEnv(
       {
-        AKM_STASH_DIR: primaryStashDir,
+        AKM_BUNDLE_DIR: primaryStashDir,
         XDG_CACHE_HOME: xdgCacheHome,
         XDG_CONFIG_HOME: configRoot,
         XDG_DATA_HOME: makeTempDir("akm-save-data-"),
@@ -366,7 +366,7 @@ describe("akm sync", () => {
 
     const result = await withEnv(
       {
-        AKM_STASH_DIR: primaryStashDir,
+        AKM_BUNDLE_DIR: primaryStashDir,
         XDG_CONFIG_HOME: configRoot,
         XDG_CACHE_HOME: makeTempDir("akm-save-cache-installed-"),
         XDG_DATA_HOME: makeTempDir("akm-save-data-installed-"),

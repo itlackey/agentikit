@@ -19,7 +19,7 @@ function contextFor(root: string) {
   return {
     version: 1,
     environment: {
-      AKM_STASH_DIR: path.join(root, "stash"),
+      AKM_BUNDLE_DIR: path.join(root, "stash"),
       AKM_CONFIG_DIR: path.join(root, "config"),
       AKM_DATA_DIR: path.join(root, "data"),
       AKM_CACHE_DIR: path.join(root, "cache"),
@@ -70,7 +70,7 @@ describe("package scheduler context launcher", () => {
     const sandbox = makeSandboxDir("akm-scheduler-launcher-");
     try {
       const descriptor = contextFor(sandbox.dir);
-      fs.mkdirSync(descriptor.environment.AKM_STASH_DIR, { recursive: true });
+      fs.mkdirSync(descriptor.environment.AKM_BUNDLE_DIR, { recursive: true });
       const file = writeDescriptor(path.join(sandbox.dir, "context"), descriptor);
       const fixture = launcherFixture(sandbox.dir);
 
@@ -93,7 +93,7 @@ describe("package scheduler context launcher", () => {
     const sandbox = makeSandboxDir("akm-scheduler-launcher-reject-");
     try {
       const descriptor = contextFor(sandbox.dir);
-      fs.mkdirSync(descriptor.environment.AKM_STASH_DIR, { recursive: true });
+      fs.mkdirSync(descriptor.environment.AKM_BUNDLE_DIR, { recursive: true });
       const fixture = launcherFixture(sandbox.dir);
 
       const tampered = writeDescriptor(path.join(sandbox.dir, "tampered"), descriptor);
@@ -138,13 +138,13 @@ test("standalone/direct CLI bootstrap applies scheduler context before config re
   const sandbox = makeSandboxDir("akm-scheduler-direct-cli-");
   try {
     const descriptor = contextFor(sandbox.dir);
-    fs.mkdirSync(descriptor.environment.AKM_STASH_DIR, { recursive: true });
+    fs.mkdirSync(descriptor.environment.AKM_BUNDLE_DIR, { recursive: true });
     fs.mkdirSync(descriptor.environment.AKM_CONFIG_DIR, { recursive: true });
     fs.writeFileSync(
       path.join(descriptor.environment.AKM_CONFIG_DIR, "config.json"),
       `${JSON.stringify({
         configVersion: "0.9.0",
-        bundles: { stash: { path: descriptor.environment.AKM_STASH_DIR } },
+        bundles: { stash: { path: descriptor.environment.AKM_BUNDLE_DIR } },
         defaultBundle: "stash",
         semanticSearchMode: "off",
       })}\n`,
@@ -157,7 +157,7 @@ test("standalone/direct CLI bootstrap applies scheduler context before config re
 
     const result = spawnSync(
       process.execPath,
-      [path.resolve("src/cli.ts"), "--scheduler-context", file, "tasks", "doctor", "--format=json"],
+      [path.resolve("src/cli.ts"), "--scheduler-context", file, "task", "doctor", "--format=json"],
       {
         encoding: "utf8",
         env: { ...process.env, BUN_TEST: "1", AKM_CONFIG_DIR: ambientConfig },
@@ -175,7 +175,7 @@ test("standalone/direct CLI bootstrap applies scheduler context before config re
     });
     const invalidResult = spawnSync(
       process.execPath,
-      [path.resolve("src/cli.ts"), "--scheduler-context", tampered, "tasks", "doctor", "--format=json"],
+      [path.resolve("src/cli.ts"), "--scheduler-context", tampered, "task", "doctor", "--format=json"],
       {
         encoding: "utf8",
         env: { ...process.env, BUN_TEST: "1", AKM_CONFIG_DIR: ambientConfig },

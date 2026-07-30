@@ -12,17 +12,13 @@
  *   - `detectLocalServers()` tolerates every endpoint being down.
  *   - `detectEnvironment()` aggregator shape + safety invariant.
  *   - `deriveRecommendedConfig()` opinionated defaults.
- *   - `akm setup --detect-only` performs no config writes and emits JSON.
- *   - `akm setup --reset-recommended` preserves pre-existing custom keys.
+ *   - `runDetectOnly()` never returns an API key value.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createMigrationBackup } from "../../../scripts/akm-migrate/migration-backup";
-import { resetGraphBoostCache } from "../../../src/indexer/graph/graph-boost";
-import { clearEmbeddingCache, resetLocalEmbedder } from "../../../src/llm/embedder";
 import {
   detectEnvironment,
   detectLocalServers,
@@ -31,8 +27,7 @@ import {
   scanProviderEnvVars,
 } from "../../../src/setup/detect";
 import { deriveRecommendedConfig, runDetectOnly } from "../../../src/setup/setup";
-import { runCliCapture } from "../../_helpers/cli";
-import { withEnv, withMockedFetch } from "../../_helpers/sandbox";
+import { withEnv } from "../../_helpers/sandbox";
 
 // A value no test should ever surface anywhere in output.
 const SECRET_VALUE = "sk-SECRET-VALUE-MUST-NEVER-LEAK-1234567890";
@@ -257,220 +252,12 @@ describe("deriveRecommendedConfig", () => {
   });
 });
 
-// ── CLI integration ──────────────────────────────────────────────────────────
-
-async function runCli(argv: string[], env: Record<string, string | undefined> = {}) {
-  return withEnv(env, async () => {
-    clearEmbeddingCache();
-    resetLocalEmbedder();
-    resetGraphBoostCache();
-    const { stdout, stderr, code } = await runCliCapture(argv);
-    return { status: code, stdout, stderr };
-  });
-}
-
-describe("akm setup --detect-only", () => {
-  test("emits JSON, performs no config writes, shows no prompts", async () => {
-    const xdgConfig = fs.mkdtempSync(path.join(os.tmpdir(), "akm-detect-cfg-"));
-    const xdgData = fs.mkdtempSync(path.join(os.tmpdir(), "akm-detect-data-"));
-    const xdgState = fs.mkdtempSync(path.join(os.tmpdir(), "akm-detect-state-"));
-    const configPath = path.join(xdgConfig, "akm", "config.json");
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    const original = JSON.stringify(
-      {
-        configVersion: "0.9.0",
-        bundles: { stash: { path: workDir, writable: true } },
-        defaultBundle: "stash",
-        archiveRetentionDays: 42,
-      },
-      null,
-      2,
-    );
-    fs.writeFileSync(configPath, original, "utf8");
-
-    try {
-      const result = await runCli(["setup", "--detect-only", "--format", "json"], {
-        XDG_CONFIG_HOME: xdgConfig,
-        XDG_DATA_HOME: xdgData,
-        XDG_STATE_HOME: xdgState,
-        AKM_STASH_DIR: workDir,
-        // Provide a fake key var to confirm the value never reaches stdout.
-        ANTHROPIC_API_KEY: SECRET_VALUE,
-      });
-
-      expect(result.status).toBe(0);
-      // stdout parses as JSON.
-      const parsed = JSON.parse(result.stdout);
-      expect(parsed).toBeTruthy();
-      // No API key value leaked into stdout.
-      expect(result.stdout).not.toContain(SECRET_VALUE);
-      // Config file is byte-for-byte unchanged.
-      expect(fs.readFileSync(configPath, "utf8")).toBe(original);
-    } finally {
-      for (const d of [xdgConfig, xdgData, xdgState]) fs.rmSync(d, { recursive: true, force: true });
-    }
-  });
-
-  test("runDetectOnly never returns an API key value", async () => {
+describe("runDetectOnly", () => {
+  test("never returns an API key value", async () => {
     await withEnv({ ANTHROPIC_API_KEY: SECRET_VALUE }, async () => {
       const env = await runDetectOnly();
       expect(JSON.stringify(env)).not.toContain(SECRET_VALUE);
       expect(env.providers.some((p) => p.envVar === "ANTHROPIC_API_KEY")).toBe(true);
     });
-  });
-});
-
-describe("akm setup --reset-recommended", () => {
-  test("merges defaults while preserving pre-existing custom keys", async () => {
-    const xdgConfig = fs.mkdtempSync(path.join(os.tmpdir(), "akm-reset-cfg-"));
-    const xdgData = fs.mkdtempSync(path.join(os.tmpdir(), "akm-reset-data-"));
-    const xdgState = fs.mkdtempSync(path.join(os.tmpdir(), "akm-reset-state-"));
-    const configPath = path.join(xdgConfig, "akm", "config.json");
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    const setupEnv = {
-      XDG_CONFIG_HOME: xdgConfig,
-      XDG_DATA_HOME: xdgData,
-      XDG_STATE_HOME: xdgState,
-      AKM_STASH_DIR: workDir,
-      AKM_FORCE_SETUP_TMP_STASH: "1",
-      AKM_FORCE_INIT_TMP_STASH: "1",
-      ANTHROPIC_API_KEY: undefined,
-      OPENAI_API_KEY: SECRET_VALUE,
-      GEMINI_API_KEY: undefined,
-      GOOGLE_API_KEY: undefined,
-      GROQ_API_KEY: undefined,
-      AKM_LLM_API_KEY: undefined,
-    };
-    // `akm backup` was removed in 0.9.0 (R-029); create the recovery bundle
-    // via the akm-migrate library entry under the same env.
-    await withEnv(setupEnv, async () => {
-      expect(createMigrationBackup().path).toBeTruthy();
-    });
-    // Seed a config with a custom registry entry that must survive the merge.
-    fs.writeFileSync(
-      configPath,
-      JSON.stringify(
-        {
-          configVersion: "0.9.0",
-          bundles: { stash: { path: workDir, writable: true } },
-          defaultBundle: "stash",
-          // A pre-existing custom key that must survive the merge.
-          archiveRetentionDays: 7,
-          registries: [{ name: "custom-reg", url: "https://example.com/registry.json", enabled: true }],
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-
-    try {
-      let openAiRequests = 0;
-      const result = await withMockedFetch(
-        () => runCli(["setup", "--reset-recommended", "--no-init", "--format", "json"], setupEnv),
-        (input) => {
-          if (String(input).includes("api.openai.com")) openAiRequests += 1;
-          return new Response("unavailable", { status: 503 });
-        },
-      );
-
-      expect(result.status).toBe(0);
-      const written = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
-        engines?: Record<
-          string,
-          { kind?: string; provider?: string; endpoint?: string; model?: string; apiKey?: string }
-        >;
-        defaults?: { llmEngine?: string };
-        registries?: Array<{ name?: string }>;
-        archiveRetentionDays?: number;
-        setup?: unknown;
-      };
-      // The pre-existing custom keys survived.
-      expect(written.registries?.some((r) => r.name === "custom-reg")).toBe(true);
-      expect(written.archiveRetentionDays).toBe(7);
-      // Recommended setup no longer registers maintainer-specific task schedules.
-      expect(written.setup).toBeUndefined();
-      // Detection persists the recommendation without making --probe a gate.
-      expect(written.defaults?.llmEngine).toBe("openai");
-      expect(written.engines?.openai).toEqual({
-        kind: "llm",
-        provider: "openai",
-        endpoint: "https://api.openai.com/v1/chat/completions",
-        model: "gpt-4o-mini",
-        apiKey: `\${OPENAI_API_KEY}`,
-      });
-      expect(openAiRequests).toBe(0);
-    } finally {
-      for (const d of [xdgConfig, xdgData, xdgState]) fs.rmSync(d, { recursive: true, force: true });
-    }
-  });
-
-  test.each([
-    { probeStatus: 401, expectedEngine: false, expectedRequests: 1 },
-    { probeStatus: 200, expectedEngine: true, expectedRequests: 2 },
-  ])("--probe accepts or rejects the detected recommendation ($probeStatus)", async (testCase) => {
-    const xdgConfig = fs.mkdtempSync(path.join(os.tmpdir(), "akm-reset-probe-cfg-"));
-    const xdgData = fs.mkdtempSync(path.join(os.tmpdir(), "akm-reset-probe-data-"));
-    const xdgState = fs.mkdtempSync(path.join(os.tmpdir(), "akm-reset-probe-state-"));
-    const configPath = path.join(xdgConfig, "akm", "config.json");
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    const setupEnv = {
-      XDG_CONFIG_HOME: xdgConfig,
-      XDG_DATA_HOME: xdgData,
-      XDG_STATE_HOME: xdgState,
-      AKM_STASH_DIR: workDir,
-      AKM_FORCE_SETUP_TMP_STASH: "1",
-      AKM_FORCE_INIT_TMP_STASH: "1",
-      ANTHROPIC_API_KEY: undefined,
-      OPENAI_API_KEY: SECRET_VALUE,
-      GEMINI_API_KEY: undefined,
-      GOOGLE_API_KEY: undefined,
-      GROQ_API_KEY: undefined,
-      AKM_LLM_API_KEY: undefined,
-    };
-    // `akm backup` was removed in 0.9.0 (R-029); create the recovery bundle
-    // via the akm-migrate library entry under the same env.
-    await withEnv(setupEnv, async () => {
-      expect(createMigrationBackup().path).toBeTruthy();
-    });
-    fs.writeFileSync(
-      configPath,
-      JSON.stringify(
-        {
-          configVersion: "0.9.0",
-          bundles: { stash: { path: workDir, writable: true } },
-          defaultBundle: "stash",
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-
-    try {
-      let openAiRequests = 0;
-      const result = await withMockedFetch(
-        () => runCli(["setup", "--reset-recommended", "--probe", "--no-init", "--format", "json"], setupEnv),
-        (input) => {
-          if (!String(input).includes("api.openai.com")) return new Response("unavailable", { status: 503 });
-          openAiRequests += 1;
-          return new Response(
-            JSON.stringify({ choices: [{ message: { content: '{"ok":true,"ingest":true,"lint":true}' } }] }),
-            { status: testCase.probeStatus, headers: { "content-type": "application/json" } },
-          );
-        },
-      );
-
-      expect(result.status).toBe(0);
-      const written = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
-        engines?: Record<string, { kind?: string }>;
-        defaults?: { llmEngine?: string };
-      };
-      expect(written.defaults?.llmEngine === "openai").toBe(testCase.expectedEngine);
-      expect(written.engines?.openai?.kind === "llm").toBe(testCase.expectedEngine);
-      expect(openAiRequests).toBe(testCase.expectedRequests);
-    } finally {
-      for (const d of [xdgConfig, xdgData, xdgState]) fs.rmSync(d, { recursive: true, force: true });
-    }
   });
 });

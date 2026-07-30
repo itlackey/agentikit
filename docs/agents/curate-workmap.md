@@ -171,7 +171,7 @@ Current behavior:
 - curate enriches stash hits by calling `akmShowUnified({ ref })`
 - if show fails, enrichment silently degrades to raw search-hit data
 - stash follow-up remains `akm show <ref>` even for runnable scripts with a concrete `run`
-- registry follow-up uses the registry action, usually `akm add ...`
+- registry follow-up uses the registry action, usually `akm bundle add ...`
 
 Product implication:
 
@@ -235,7 +235,7 @@ Recommended first graph-aware use in curate:
 - do not use graph as a primary reranker yet
 - use graph to attach 1-2 support refs or navigation hints to a top-level curated result
 - prefer hints like `see also`, `related`, or `inspect next` over full graph payloads
-- keep full graph exploration in `akm show` or `akm graph related`
+- keep full graph exploration in `akm show`'s `related` block
 
 What not to do yet:
 

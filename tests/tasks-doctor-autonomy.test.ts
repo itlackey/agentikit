@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * D8 — `akm tasks doctor` reports the autonomy gate.
+ * D8 — `akm task doctor` reports the autonomy gate.
  *
  * `tasks doctor` is where an operator checks what a scheduled `akm improve` will
  * actually do. Two requirements follow from that:

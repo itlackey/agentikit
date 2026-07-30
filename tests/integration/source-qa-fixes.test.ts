@@ -1,12 +1,12 @@
 /**
  * Tests for QA fixes in cluster A (issues #9, #10, #11, #12, #17, #18, #19, #22, #23).
  *
- * - #9/#18/#22: `akm add <path> --name extra` persists the name for filesystem sources.
+ * - #9/#18/#22: `akm bundle add <path> --name extra` persists the name for filesystem sources.
  * - #10:        Filesystem kind reported as "filesystem", not "local".
  * - #11/#23:    Filesystem writable defaults to true in list output.
  * - #12:        `updatable` field dropped from SourceEntry.
  * - #17:        Website kind reported as "website", not "remote".
- * - #19:        akm update re-mirrors website sources via sync().
+ * - #19:        akm bundle update re-mirrors website sources via sync().
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
@@ -50,7 +50,7 @@ const originalXdgCacheHome = process.env.XDG_CACHE_HOME;
 const originalXdgDataHome = process.env.XDG_DATA_HOME;
 const originalXdgStateHome = process.env.XDG_STATE_HOME;
 const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
-const originalStashDir = process.env.AKM_STASH_DIR;
+const originalStashDir = process.env.AKM_BUNDLE_DIR;
 let testCacheDir = "";
 let testConfigDir = "";
 let testDataDir = "";
@@ -66,11 +66,11 @@ beforeEach(() => {
   makeStashDir(stashDir);
   process.env.XDG_CACHE_HOME = testCacheDir;
   process.env.XDG_CONFIG_HOME = testConfigDir;
-  // Pair AKM_STASH_DIR with XDG_DATA_HOME / XDG_STATE_HOME so the
+  // Pair AKM_BUNDLE_DIR with XDG_DATA_HOME / XDG_STATE_HOME so the
   // test-isolation guard in src/core/paths.ts stays inert.
   process.env.XDG_DATA_HOME = testDataDir;
   process.env.XDG_STATE_HOME = testStateDir;
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
 });
 
 afterEach(() => {
@@ -86,8 +86,8 @@ afterEach(() => {
   if (originalXdgStateHome === undefined) delete process.env.XDG_STATE_HOME;
   else process.env.XDG_STATE_HOME = originalXdgStateHome;
 
-  if (originalStashDir === undefined) delete process.env.AKM_STASH_DIR;
-  else process.env.AKM_STASH_DIR = originalStashDir;
+  if (originalStashDir === undefined) delete process.env.AKM_BUNDLE_DIR;
+  else process.env.AKM_BUNDLE_DIR = originalStashDir;
 
   if (testCacheDir) {
     fs.rmSync(testCacheDir, { recursive: true, force: true });
@@ -128,7 +128,7 @@ describe("issue #9: --name flag persisted for filesystem sources", () => {
     expect(added?.path).toBe(path.resolve(extraStash));
   });
 
-  test("akm remove works when source was added with --name", async () => {
+  test("akm bundle remove works when source was added with --name", async () => {
     saveConfig({ semanticSearchMode: "off" });
     const extraStash = createTmpDir("akm-qa-extra-rm-");
     makeStashDir(extraStash);
@@ -334,9 +334,9 @@ describe("issue #12: updatable field absent from SourceEntry", () => {
   });
 });
 
-// ── Issue #19: akm update syncs website sources ───────────────────────────
+// ── Issue #19: akm bundle update syncs website sources ────────────────────
 
-describe("issue #19: akm update website sources", () => {
+describe("issue #19: akm bundle update website sources", () => {
   test("website source update does not throw TARGET_NOT_UPDATABLE", async () => {
     // Use a local HTTP server to serve minimal HTML for the crawl
     const server = Bun.serve({
@@ -546,9 +546,9 @@ describe("update preserves entry.source for writable installed entries", () => {
   });
 });
 
-// ── Regression: R-015 — `akm update --all` must account for plain sources ───
+// ── Regression: R-015 — `akm bundle update --all` must account for plain sources ───
 
-describe("R-015: akm update --all with mixed plain and managed sources", () => {
+describe("R-015: akm bundle update --all with mixed plain and managed sources", () => {
   test("filters disabled managed and plain sources from --all without changing explicit targeting", async () => {
     const disabledManagedRoot = createTmpDir("akm-disabled-managed-");
     makeStashDir(disabledManagedRoot);
@@ -693,7 +693,7 @@ describe("R-015: akm update --all with mixed plain and managed sources", () => {
     expect(npmLock?.resolvedVersion).toBe("1.3.0");
   });
 
-  test("akm update <plain-npm-name> promotes it to a managed install instead of the wrong 'local directory' error", async () => {
+  test("akm bundle update <plain-npm-name> promotes it to a managed install instead of the wrong 'local directory' error", async () => {
     // Before this fix: a plain (lockless) npm bundle wasn't recognized by any
     // branch of akmUpdate's single-target dispatch, so it fell through to
     // the generic filesystem-source fallback message ("is a local directory

@@ -47,18 +47,11 @@ export type EventType =
   | "remember"
   | "import"
   /**
-   * SPEC-7 — emitted once per successful `akm mv` rename. `ref` carries the
-   * NEW ref; metadata carries `{from, to, rewroteFiles, readOnlyCiters,
-   * twinMoved}` (counts only — never file contents). A failed mv emits
-   * nothing.
-   */
-  | "mv"
-  /**
    * Emitted by `akm sync` (git-backed stash commit/push). Renamed from the
    * legacy "save" spelling in 0.9.0 to match the command name — see
-   * CHANGELOG. `readEvents`/`tailEvents` below still accept "save" as a
-   * read-only synonym so historical rows and `akm log --type save` keep
-   * working; only writes moved to "sync".
+   * CHANGELOG. `readEvents` below still accepts "save" as a read-only
+   * synonym so historical rows and `akm log --type save` keep working; only
+   * writes moved to "sync".
    */
   | "sync"
   /** @deprecated 0.9.0 — legacy spelling of {@link "sync"}. No longer written; still readable (see SAVE_SYNC_EVENT_TYPE_ALIASES). */
@@ -279,6 +272,13 @@ export interface ReadEventsOptions {
   /** Only include events whose metadata.tags contain ALL of these tags. */
   includeTags?: string[];
   /**
+   * Filter to events whose `metadata.runId` matches (the `workflow_*` event
+   * family's run-scoping field). 0.9.0 CLI overhaul (S5): `akm workflow
+   * watch <run-id>` is dropped; this is the replacement for its run-scoped
+   * filter on the general `akm log` leaf.
+   */
+  runId?: string;
+  /**
    * D-38 (`akm log list --limit`): cap the result to the MOST RECENT `limit`
    * events matching every other filter (since/type/ref AND the tag
    * post-filter below). Undefined means unlimited — the historical default,
@@ -343,7 +343,10 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
     // pre-existing behavior) and apply `limit` ourselves, below, AFTER the
     // post-filter runs.
     const needsPostFilter =
-      typeIsAliased || (options.excludeTags?.length ?? 0) > 0 || (options.includeTags?.length ?? 0) > 0;
+      typeIsAliased ||
+      (options.excludeTags?.length ?? 0) > 0 ||
+      (options.includeTags?.length ?? 0) > 0 ||
+      options.runId !== undefined;
     const pushLimitToSql = options.limit !== undefined && !needsPostFilter;
     const { events: rawEvents, nextId } = readStateEvents(db, {
       sinceId: options.sinceOffset,
@@ -355,6 +358,7 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
 
     const filtered = rawEvents.filter((envelope) => {
       if (typeIsAliased && !SAVE_SYNC_EVENT_TYPE_ALIASES.has(envelope.eventType)) return false;
+      if (options.runId !== undefined && envelope.metadata?.runId !== options.runId) return false;
       // Apply tag filters after the indexed state.db read.
       const tags = (envelope.metadata?.tags as string[] | undefined) ?? [];
       if (options.excludeTags?.some((t) => tags.includes(t))) return false;
@@ -372,126 +376,4 @@ export function readEvents(options: ReadEventsOptions = {}, ctx?: EventsContext)
   } finally {
     db.close();
   }
-}
-
-// ─── Tailing ─────────────────────────────────────────────────────────────────
-
-export interface TailOptions extends ReadEventsOptions {
-  /** Polling interval in ms (default: 75). */
-  intervalMs?: number;
-  /** Stop after this many ms (test seam). */
-  maxDurationMs?: number;
-  /** Stop after observing this many events (test seam). */
-  maxEvents?: number;
-  /**
-   * Abort signal — when triggered, the loop resolves with whatever events
-   * have been observed so far.
-   */
-  signal?: AbortSignal;
-  /** Called once per emitted event. */
-  onEvent?: (event: EventEnvelope) => void;
-}
-
-export interface TailResult {
-  events: EventEnvelope[];
-  nextOffset: number;
-  reason: "signal" | "maxEvents" | "maxDuration";
-}
-
-/**
- * Follow the events table in state.db. Polls at `intervalMs` (default 75ms)
- * and emits every new event to `onEvent`. Resolves when `signal` aborts, when
- * `maxEvents` events have been observed, or when `maxDurationMs` elapses.
- *
- * The polling cursor is a monotonic SQLite rowid so concurrent writers cannot
- * cause skips: between two reads we always pick up everything inserted since
- * the last `nextOffset`.
- */
-export async function tailEvents(options: TailOptions = {}, ctx?: EventsContext): Promise<TailResult> {
-  const intervalMs = options.intervalMs ?? 75;
-  const collected: EventEnvelope[] = [];
-  let cursor = options.sinceOffset ?? 0;
-
-  // Seed the cursor: if the caller passed --since (timestamp) but no
-  // sinceOffset, do an initial filtered read so they see history before
-  // we start polling. This matches the documented behaviour of `tail
-  // --since`: emit existing events that match, then follow.
-  if (options.sinceOffset === undefined) {
-    const initial = readEvents(
-      {
-        since: options.since,
-        type: options.type,
-        ref: options.ref,
-        excludeTags: options.excludeTags,
-        includeTags: options.includeTags,
-      },
-      ctx,
-    );
-    for (const event of initial.events) {
-      collected.push(event);
-      options.onEvent?.(event);
-      if (options.maxEvents !== undefined && collected.length >= options.maxEvents) {
-        return { events: collected, nextOffset: initial.nextOffset, reason: "maxEvents" };
-      }
-    }
-    cursor = initial.nextOffset;
-  }
-
-  const startedAt = Date.now();
-  return new Promise<TailResult>((resolve) => {
-    let resolved = false;
-    let timer: ReturnType<typeof setInterval> | undefined;
-
-    function finish(reason: TailResult["reason"]): void {
-      if (resolved) return;
-      resolved = true;
-      if (timer) clearInterval(timer);
-      resolve({ events: collected, nextOffset: cursor, reason });
-    }
-
-    function tick(): void {
-      try {
-        const result = readEvents(
-          {
-            sinceOffset: cursor,
-            type: options.type,
-            ref: options.ref,
-            excludeTags: options.excludeTags,
-            includeTags: options.includeTags,
-          },
-          ctx,
-        );
-        cursor = result.nextOffset;
-        for (const event of result.events) {
-          // Apply --since filter inside the polling loop too — the cursor is
-          // rowid-based so it can hand us events the user filtered out.
-          if (options.since && event.ts && event.ts < options.since) continue;
-          collected.push(event);
-          options.onEvent?.(event);
-          if (options.maxEvents !== undefined && collected.length >= options.maxEvents) {
-            finish("maxEvents");
-            return;
-          }
-        }
-      } catch {
-        // Non-fatal: stay in the loop.
-      }
-      if (options.maxDurationMs !== undefined && Date.now() - startedAt >= options.maxDurationMs) {
-        finish("maxDuration");
-      }
-    }
-
-    if (options.signal) {
-      if (options.signal.aborted) {
-        finish("signal");
-        return;
-      }
-      options.signal.addEventListener("abort", () => finish("signal"), { once: true });
-    }
-
-    timer = setInterval(tick, intervalMs);
-    // Run one tick immediately so callers don't have to wait an interval
-    // for events written in the same tick as the tail starts.
-    tick();
-  });
 }

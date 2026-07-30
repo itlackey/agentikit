@@ -3,7 +3,7 @@
 akm works with any AI coding assistant that can run shell commands — Claude
 Code, OpenCode, Cursor, Windsurf, Aider, and others. No plugins or SDKs are
 required for the core workflow: a three-line system prompt block plus shell
-access is all an agent needs to start using your stash.
+access is all an agent needs to start using your bundle.
 
 ## AGENTS.md / CLAUDE.md snippet
 
@@ -22,25 +22,26 @@ That is the minimum. The agent can then run `akm curate <task>` at the start
 of any complex task to pull the most relevant assets into context, and
 `akm show <ref>` to load any asset by ref.
 
-**Example: configure Claude Code to use your stash**
+**Example: configure Claude Code to use your bundle**
 
 Add the three-line block above to `~/.claude/CLAUDE.md` (global) or
 `./CLAUDE.md` (project-level). The agent will call `akm curate` and
 `akm show` automatically as it discovers it needs them.
 
-## akm hints
+## akm help agents
 
-`akm hints` prints a longer agent-facing instruction block — including usage
-patterns, flag guidance, and the full ref format — suitable for pasting
+`akm help agents` prints a longer agent-facing instruction block — including
+usage patterns, flag guidance, and the full ref format — suitable for pasting
 directly into an `AGENTS.md` file or system prompt when you want the agent to
-be more autonomous about discovery.
+be more autonomous about discovery. It prints the short guide by default;
+pass `--full` for the complete one.
 
 ```sh
-akm hints
+akm help agents
 # Prints a ready-to-paste AGENTS.md section with usage guidance
 
 # Typical use: capture into your project's AGENTS.md
-akm hints >> ./AGENTS.md
+akm help agents >> ./AGENTS.md
 ```
 
 The output is stable across patch releases and designed for agents rather than
@@ -52,7 +53,7 @@ explains how refs work.
 ```sh
 # Initialize a project AGENTS.md with akm usage guidance
 echo "# Agent Guidelines" > AGENTS.md
-akm hints >> AGENTS.md
+akm help agents >> AGENTS.md
 ```
 
 ## akm completions
@@ -108,13 +109,13 @@ akm show env/prod           # shows key names only; values never appear in outpu
 akm show ops//pages/runbook # a page in the "ops" LLM Wiki bundle
 
 # From a specific bundle (bundle-qualified ref — the bundle name is whatever
-# `akm add` registered it as, e.g. via `--name`, NOT the install source):
+# `akm bundle add` registered it as, e.g. via `--name`, NOT the install source):
 akm show "team-catalog//scripts/deploy.sh"
 akm show "personal//knowledge/guide"
 ```
 
 Note: `npm:@scope/pkg` and `github:owner/repo` are **install refs** — they
-name a source to fetch, and are only accepted by `akm add`/`akm clone`. A
+name a source to fetch, and are only accepted by `akm bundle add`/`akm clone`. A
 bundle-qualified `show`/`search` ref never contains a `:`; passing an install
 ref to `show` fails (exit 2, "A bundle slug may not contain ':'"). See
 [Concepts](../guides/concepts.md#namespacing-assets-across-projects-and-teams)
@@ -137,9 +138,9 @@ akm show workflows/deploy-to-prod
 akm feedback workflows/deploy-to-prod --positive --reason "Completed without issues"
 ```
 
-## akm agent — dispatching with a stash agent asset
+## akm agent — dispatching with a bundle agent asset
 
-`akm agent` can embody a stash agent asset (`agents/<name>`) to apply that
+`akm agent` can embody a bundle agent asset (`agents/<name>`) to apply that
 agent's system prompt, model, and tool policy to any task. Select the named
 agent engine with `--engine` and pass the asset ref positionally.
 

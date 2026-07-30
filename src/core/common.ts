@@ -168,7 +168,7 @@ export function writeFileAtomic(target: string, content: string | Buffer, mode?:
 
 /**
  * Resolve the stash directory using a three-level fallback chain:
- *   1. AKM_STASH_DIR environment variable (override for CI/scripts)
+ *   1. AKM_BUNDLE_DIR environment variable (override for CI/scripts)
  *   2. The configured default bundle path
  *   3. Platform default (~/akm or ~/Documents/akm on Windows)
  *
@@ -176,7 +176,7 @@ export function writeFileAtomic(target: string, content: string | Buffer, mode?:
  */
 export function resolveStashDir(env: NodeJS.ProcessEnv = process.env): string {
   // 1. Env var override (for CI, scripts, testing)
-  const envDir = env.AKM_STASH_DIR?.trim();
+  const envDir = env.AKM_BUNDLE_DIR?.trim();
   if (envDir) {
     return validateStashDir(envDir);
   }
@@ -192,7 +192,7 @@ export function resolveStashDir(env: NodeJS.ProcessEnv = process.env): string {
   }
 
   throw new ConfigError(
-    `No stash directory found. Run "akm init" to create one at ${defaultDir}.`,
+    `No bundle directory found. Run "akm bundle create" to create one at ${defaultDir}.`,
     "STASH_DIR_NOT_FOUND",
   );
 }
@@ -203,10 +203,10 @@ function validateStashDir(raw: string): string {
   try {
     stat = fs.statSync(stashDir);
   } catch {
-    throw new ConfigError(`Unable to read stash directory at "${stashDir}".`, "STASH_DIR_UNREADABLE");
+    throw new ConfigError(`Unable to read bundle directory at "${stashDir}".`, "STASH_DIR_UNREADABLE");
   }
   if (!stat.isDirectory()) {
-    throw new ConfigError(`Stash path must point to a directory: "${stashDir}".`, "STASH_DIR_NOT_A_DIRECTORY");
+    throw new ConfigError(`Bundle path must point to a directory: "${stashDir}".`, "STASH_DIR_NOT_A_DIRECTORY");
   }
   return stashDir;
 }

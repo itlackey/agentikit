@@ -37,7 +37,7 @@ const isolatedHome = makeTempDir();
 async function runCli(...args: string[]): Promise<{ stdout: string; stderr: string; status: number }> {
   const { stdout, stderr, code } = await withEnv(
     {
-      AKM_STASH_DIR: undefined,
+      AKM_BUNDLE_DIR: undefined,
       HOME: isolatedHome,
       XDG_CACHE_HOME: xdgCache,
       XDG_CONFIG_HOME: xdgConfig,
@@ -72,12 +72,8 @@ describe("completions command", () => {
 
   test("contains all top-level subcommands", () => {
     const expected = [
-      "init",
+      "bundle",
       "index",
-      "add",
-      "list",
-      "remove",
-      "update",
       "upgrade",
       "search",
       "curate",
@@ -88,14 +84,26 @@ describe("completions command", () => {
       "clone",
       "feedback",
       "registry",
-      "migrate",
       "config",
       "help",
-      "hints",
       "completions",
     ];
     for (const cmd of expected) {
       expect(script).toContain(cmd);
+    }
+  });
+
+  // `migrate` is `meta.hidden` (S11) — the self-update contract's internal
+  // command, not a surface end users discover by tab-completion. Still
+  // executes normally; only excluded from the completions walk.
+  test("does not suggest the hidden migrate command", () => {
+    expect(script).not.toContain('"akm migrate"');
+  });
+
+  test("contains nested bundle subcommands", () => {
+    expect(script).toContain('"akm bundle"');
+    for (const sub of ["create", "add", "list", "show", "remove", "update"]) {
+      expect(script).toContain(sub);
     }
   });
 
@@ -140,28 +148,28 @@ describe("completions command", () => {
     );
   });
 
-  test("contains flag value completions for --source", () => {
-    expect(script).toContain("--source)");
-    expect(script).toContain("stash registry both");
+  test("contains flag value completions for --from", () => {
+    expect(script).toContain("--from)");
+    expect(script).toContain("local registry all");
   });
 
-  // R-052(a): --source means a closed enum on search/curate but a free-form
-  // stash name (graph) or free-form ref/URL/path (remember) elsewhere.
-  // FLAG_VALUES used to be a flat Record keyed by flag NAME, so the enum
-  // leaked onto every command with a --source flag. The fix scopes the rule
-  // to a cmd_path match inside the --source case.
-  test("scopes --source completion to search/curate, not globally (R-052a)", () => {
-    const sourceCase = script.match(/--source\)[\s\S]*?return 0\n\s*;;/)?.[0];
+  // R-052(a): --from means a closed enum on search/curate but a free-form
+  // existing-file path (workflow create) elsewhere. FLAG_VALUES used to be a
+  // flat Record keyed by flag NAME, so the enum leaked onto every command
+  // with a --from flag. The fix scopes the rule to a cmd_path match inside
+  // the --from case.
+  test("scopes --from completion to search/curate, not globally (R-052a)", () => {
+    const sourceCase = script.match(/--from\)[\s\S]*?return 0\n\s*;;/)?.[0];
     expect(sourceCase).toBeDefined();
     // Literal bash text, not a JS template placeholder.
     // biome-ignore lint/suspicious/noTemplateCurlyInString: asserting on generated bash source, not a JS template
     expect(sourceCase).toContain('case "${cmd_path}" in');
     expect(sourceCase).toContain('"akm search"|"akm curate")');
-    expect(sourceCase).toContain("stash registry both");
-    // graph's --source (a free-form stash name) must not be lumped into the
-    // search/curate enum branch, and there must be no unscoped fallback
-    // branch re-offering the enum to every other command.
-    expect(sourceCase).not.toContain('"akm graph"');
+    expect(sourceCase).toContain("local registry all");
+    // workflow create's --from (a free-form existing-file path) must not be
+    // lumped into the search/curate enum branch, and there must be no
+    // unscoped fallback branch re-offering the enum to every other command.
+    expect(sourceCase).not.toContain('"akm workflow create"');
     expect(sourceCase).not.toMatch(/\*\)\s*\n\s*COMPREPLY/);
   });
 });

@@ -13,7 +13,7 @@
  *
  * Validation is deliberately split from parsing: callers that only inspect
  * task metadata (e.g. `akm show`) can skip these checks, while
- * `tasks add` and `tasks run` should always run them.
+ * `task add` and `task run` should always run them.
  */
 
 import fs from "node:fs";
@@ -32,7 +32,7 @@ export interface ValidateTaskOptions {
   backend: ScheduleBackend;
   /**
    * The stash directory the task's asset refs resolve against. Resolved once at
-   * the `akm tasks` command boundary (WI-9.10 CLI-wide sweep) and threaded in —
+   * the `akm task` command boundary (WI-9.10 CLI-wide sweep) and threaded in —
    * this leaf no longer reads the ambient stash-dir resolver.
    */
   stashDir: string;
@@ -61,7 +61,7 @@ export async function validateTaskDocument(task: TaskDocument, options: Validate
 
   // Prompt target. Resolve the engine unconditionally — when no engine is
   // set on the task, defaults.engine is required. Catching this at
-  // `tasks add` / `tasks sync` time is much more useful than failing only
+  // `task add` / `task sync` time is much more useful than failing only
   // when the OS scheduler fires.
   const config = loadConfig();
   const engine = task.target.engine ?? config.defaults?.engine;

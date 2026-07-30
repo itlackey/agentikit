@@ -69,7 +69,7 @@ Usage:
   akm-eval-trend [options]
 
 Options:
-  --stash <path>   Stash root (default: $AKM_STASH_DIR or ~/akm).
+  --stash <path>   Stash root (default: $AKM_BUNDLE_DIR or ~/akm).
   --suite <name>   Only include runs from this suite.
   --limit <N>      Max runs to include (default: 20). Most recent N kept.
   --metric <key>   overall | deterministic | <alias> | <dotted.path> (default: overall).

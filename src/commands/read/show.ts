@@ -147,7 +147,7 @@ async function showStashMeta(metaRef: MetaRef): Promise<ShowResponse> {
   if (metaRef.origin && sources.length === 0) {
     throw new NotFoundError(
       `Stash "${metaRef.origin}" is not installed, so its ${META_DIR}/ docs are unavailable. ` +
-        `Run: akm add ${metaRef.origin}`,
+        `Run: akm bundle add ${metaRef.origin}`,
     );
   }
 
@@ -339,7 +339,7 @@ export async function showLocal(input: {
   const displayName = indexedEntry?.name ?? assetParts?.name ?? parsed.conceptId;
 
   if (!assetPath && parsed.bundle && searchSources.length === 0) {
-    const installCmd = `akm add ${parsed.bundle}`;
+    const installCmd = `akm bundle add ${parsed.bundle}`;
     throw new NotFoundError(
       `Stash asset not found for ref: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
         `Stash "${parsed.bundle}" is not installed. Run: ${installCmd}`,
@@ -367,7 +367,7 @@ export async function showLocal(input: {
   if (!sourceStashDir) {
     throw new UsageError(
       `Could not determine stash root for asset: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
-        "Run `akm init` to create the stash directory, or check `akm list` for configured paths.",
+        "Run `akm bundle create` to create the stash directory, or check `akm bundle list` for configured paths.",
     );
   }
 

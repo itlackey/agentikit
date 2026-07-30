@@ -93,7 +93,7 @@ akm tasks add my-task \
 The second way is to write the YAML file directly into your stash's `tasks/` directory and then call:
 
 ```sh
-akm tasks sync
+akm tasks sync  # doclint:ignore (`tasks` was renamed to singular `task` in 0.9.0)
 ```
 
 `sync` reconciles all `.yml` files in `tasks/` against the OS scheduler. Any task that's `enabled: true` and not yet installed gets a scheduler entry. Any task that's `enabled: false` or missing gets its entry removed. This is the right command to run after pulling stash changes that include new or updated task files.
@@ -103,11 +103,11 @@ Other task management commands:
 ```sh
 akm search --type task                # all defined tasks (any bundle)
 akm show tasks/<id>                    # parsed YAML + scheduler state
-akm tasks run <id>                    # execute immediately
-akm tasks enable <id>                 # install the scheduler entry
-akm tasks disable <id>                # remove the scheduler entry, keep the file
-akm tasks history [--id <id>]         # recent runs from state.db
-akm tasks doctor                      # scheduler backend + cron path
+akm tasks run <id>                    # execute immediately  # doclint:ignore (`tasks` renamed `task` in 0.9.0)
+akm tasks enable <id>                 # install the scheduler entry  # doclint:ignore (`tasks enable` removed in 0.9.0; use a file edit + `task sync`)
+akm tasks disable <id>                # remove the scheduler entry, keep the file  # doclint:ignore (`tasks disable` removed in 0.9.0; use a file edit + `task sync`)
+akm tasks history [--id <id>]         # recent runs from state.db  # doclint:ignore (`tasks` renamed `task` in 0.9.0)
+akm tasks doctor                      # scheduler backend + cron path  # doclint:ignore (`tasks` renamed `task` in 0.9.0)
 ```
 
 To unschedule a task entirely, delete its `.yml` from the bundle and run `akm
@@ -168,20 +168,20 @@ The embed has three inline fields — Output (promoted refs, merged memories, me
 To register the task after writing the YAML:
 
 ```sh
-akm tasks sync
+akm tasks sync  # doclint:ignore (`tasks` was renamed to singular `task` in 0.9.0)
 # → installed: akm-health-report
 ```
 
 Run it once immediately to confirm the script works before relying on the scheduled version:
 
 ```sh
-akm tasks run akm-health-report
+akm tasks run akm-health-report  # doclint:ignore (`tasks` was renamed to singular `task` in 0.9.0)
 ```
 
 Check the result:
 
 ```sh
-akm tasks history --id akm-health-report --limit 5
+akm tasks history --id akm-health-report --limit 5  # doclint:ignore (`tasks` was renamed to singular `task` in 0.9.0)
 ```
 
 ## Logging

@@ -135,7 +135,7 @@ are applied last, so an explicit `enabled: true` still opts the selected
 strategy in.
 
 These improve-stage defaults do not gate explicit standalone extraction through
-`akm extract --type <harness>` or `akm extract --auto`. The interactive
+`akm proposal extract --type <harness>` or `akm proposal extract --auto`. The interactive
 scheduled-task step also continues to offer the bundled `core/extract` template
 as an unselected opt-in; it is not installed merely because the template is
 bundled.
@@ -159,7 +159,7 @@ embedding-based search. `"auto"` lets AKM set up embeddings (which downloads
 a local model unless you point `embedding` at a remote provider) and falls
 back to keyword-only FTS if the embedding runtime is unavailable; `"off"`
 disables semantic search outright and search is always keyword-only FTS.
-The default is `"off"` so a bare or headless install (`akm init`, `--yes`,
+The default is `"off"` so a bare or headless install (`akm bundle create`, `--yes`,
 `--config`) never silently downloads the local embedding model on first
 index.
 The interactive `akm setup` wizard pre-selects semantic search **on**
@@ -213,12 +213,13 @@ full bundle model (`path`, `git`, `website`, `npm`, `writable`, `registryId`,
 
 `defaultWriteTarget` names the bundle that write commands (`akm remember`,
 `akm env`/`secret create`, `akm improve`, etc.) fall back to when no
-explicit `--target` is given and the command isn't already scoped to a
+explicit destination flag is given and the command isn't already scoped to a
 specific source. It must name a configured bundle; setting it with no
 `bundles` configured, or naming an unconfigured bundle, is rejected at
-`config set`/`config validate` time. The full write-target resolution order
-is `--target` -> `defaultWriteTarget` -> working stash (`defaultBundle`) ->
-`ConfigError`.
+`config set` (or config load) time. The full write-target resolution order
+is the command's destination flag (`--bundle` on `remember`/`clone`/
+`improve`, `--target` on `env`/`secret create`) -> `defaultWriteTarget` ->
+working bundle (`defaultBundle`) -> `ConfigError`.
 
 ### Memory scope
 
@@ -244,7 +245,7 @@ disables expiry entirely.
 ## Registries
 
 `registries` (top-level array, distinct from `bundles`) lists remote package
-registries `akm registry`/`akm add --registry` can search and install from.
+registries `akm registry`/`akm bundle add` can search and install from.
 Each entry is `{ url, name?, enabled?, provider?, options? }`; `provider`
 defaults to `"static-index"`. See [Registries](registry.md) for the full
 field reference and provider list.
@@ -261,7 +262,7 @@ omitted. Per-command flags always override these.
 `setup` is reserved for configuration derived by `akm setup`. It currently
 holds no keys — the `setup.taskSchedules` sub-key was removed in 0.9.0 after
 nothing in the setup flow or the tasks subsystem was found to read or write
-it. Scheduling lives in the tasks subsystem (`akm tasks`).
+it. Scheduling lives in the tasks subsystem (`akm task`).
 
 ## Experimental opt-ins
 
@@ -286,11 +287,11 @@ section, an absent key, and an explicit `false` all read identically as off.
   because merge/delete/contradict operations are advisory and promotion emits a
   reviewable proposal. `sync.push` is deliberately **not** gated by this key.
 - **`experimental.workflowEngine`** — allows the native `akm workflow`
-  orchestration engine to run: `akm workflow run`/`brief`/`report`/`watch`,
+  orchestration engine to run: `akm workflow run`/`brief`/`report`,
   and authoring a YAML (`version: 2`) workflow program via `akm workflow
   create <name>.yaml`. Classic linear markdown workflows
-  (`start`/`next`/`complete`/`status`/`list`/`create` for markdown/`template`/
-  `validate`/`resume`/`abandon`) are unaffected either way. See
+  (`start`/`next`/`complete`/`status`/`list`/`create` for markdown/`resume`/
+  `abandon`) are unaffected either way. See
   [Workflows](workflows.md#enabling-the-workflow-engine-opt-in-in-090) for
   the full gate behavior and error shape.
 
@@ -302,7 +303,6 @@ akm config get engines.fast
 akm config set engines.fast '{"kind":"llm","endpoint":"http://localhost:11434/v1/chat/completions","model":"qwen3"}'
 akm config set engines.fast.apiKey '$LOCAL_LLM_API_KEY'
 akm config unset engines.old
-akm config validate
 akm migrate status
 akm migrate status --config ./prepared-0.9.json
 akm migrate apply --config ./prepared-0.9.json --dry-run
@@ -322,7 +322,7 @@ generic walker.
 | `AKM_ENGINE_<NAME>_API_KEY` | Fallback credential for LLM engine `<name>` |
 | `AKM_LLM_API_KEY` | Fallback only for the selected `defaults.llmEngine` |
 | `AKM_EMBED_API_KEY` | Embedding credential |
-| `AKM_STASH_DIR` | Override the stash directory |
+| `AKM_BUNDLE_DIR` | Override the stash directory |
 | `AKM_DATA_DIR` | Override the data directory — durable `index.db`/`workflow.db`/`state.db`, `akm.lock`, config backups (or set `XDG_DATA_HOME`) |
 | `AKM_CACHE_DIR` | Override the cache directory — regenerable caches (or set `XDG_CACHE_HOME`) |
 | `AKM_STATE_DIR` | Override the state directory — task-scheduler invocation state (or set `XDG_STATE_HOME`) |

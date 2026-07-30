@@ -11,7 +11,7 @@ describe("embedded exit-code hints", () => {
       expect(hints).toContain("| 70 | Internal / unclassified error |");
       expect(hints).toContain("Not found or command-reported failure");
       expect(hints).toContain("`env run`, `secret run`, and `migrate`");
-      expect(hints).toContain("`tasks run`");
+      expect(hints).toContain("`task run`");
       expect(hints).toContain("`agent`");
     });
   }

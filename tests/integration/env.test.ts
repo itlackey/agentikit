@@ -45,7 +45,7 @@ async function runCli(
   args: string[],
   extraEnv: Record<string, string | undefined> = {},
 ): Promise<{ stdout: string; stderr: string; status: number }> {
-  return withEnv({ AKM_STASH_DIR: undefined, AKM_CONFIG_DIR: undefined, ...extraEnv }, async () => {
+  return withEnv({ AKM_BUNDLE_DIR: undefined, AKM_CONFIG_DIR: undefined, ...extraEnv }, async () => {
     clearEmbeddingCache();
     resetLocalEmbedder();
     resetGraphBoostCache();
@@ -364,7 +364,7 @@ describe("env list", () => {
     fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
     fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "API_KEY=secret\n", "utf8");
 
-    const result = await runCli(["env", "list", "--format", "json"], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["env", "list", "--format", "json"], { AKM_BUNDLE_DIR: stashDir });
 
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout.trim());
@@ -399,7 +399,7 @@ describe("env list", () => {
     );
 
     const result = await runCli(["env", "list", "--format", "json"], {
-      AKM_STASH_DIR: primaryStash,
+      AKM_BUNDLE_DIR: primaryStash,
       AKM_CONFIG_DIR: path.join(xdgConfig, "akm"),
     });
 
@@ -418,7 +418,7 @@ describe("env list", () => {
     fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
     fs.writeFileSync(path.join(stashDir, "env", "json.env"), "# json env\nAPI_KEY=secret\nSECOND=value\n", "utf8");
 
-    const result = await runCli(["env", "list", "--format", "text"], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["env", "list", "--format", "text"], { AKM_BUNDLE_DIR: stashDir });
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("## env/json");
@@ -434,7 +434,7 @@ describe("env export / path (read-path safety)", () => {
     fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "EVIL=$(touch /tmp/shouldnothappen)\nOK=fine\n", "utf8");
     const outFile = path.join(stashDir, "out.sh");
 
-    const result = await runCli(["env", "export", "env/prod", "--out", outFile], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["env", "export", "env/prod", "--out", outFile], { AKM_BUNDLE_DIR: stashDir });
 
     expect(result.status).toBe(0);
     // Values are NEVER on stdout — only the written file path is reported.
@@ -453,7 +453,7 @@ describe("env export / path (read-path safety)", () => {
     fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
     fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "API_KEY=secret\n", "utf8");
 
-    const result = await runCli(["env", "export", "env/prod"], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["env", "export", "env/prod"], { AKM_BUNDLE_DIR: stashDir });
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("--out");
@@ -466,14 +466,14 @@ describe("env export / path (read-path safety)", () => {
     fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
     fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "API_KEY=secret\n", "utf8");
 
-    const result = await runCli(["env", "path", "env/prod"], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["env", "path", "env/prod"], { AKM_BUNDLE_DIR: stashDir });
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim().endsWith(path.join("env", "prod.env"))).toBe(true);
     expect(result.stderr).toContain("akm env run");
 
     // --quiet suppresses the warning (for the _FILE / --env-file convention).
-    const quiet = await runCli(["env", "path", "env/prod", "--quiet"], { AKM_STASH_DIR: stashDir });
+    const quiet = await runCli(["env", "path", "env/prod", "--quiet"], { AKM_BUNDLE_DIR: stashDir });
     expect(quiet.status).toBe(0);
     expect(quiet.stderr.trim()).toBe("");
   });
@@ -485,7 +485,7 @@ describe("env create --from-file / --from-stdin", () => {
     const srcFile = path.join(stashDir, "source.env");
     fs.writeFileSync(srcFile, "# seeded\nDB_URL=postgres://x\nAPI_KEY=k\n", "utf8");
 
-    const result = await runCli(["env", "create", "prod", "--from-file", srcFile], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["env", "create", "prod", "--from-file", srcFile], { AKM_BUNDLE_DIR: stashDir });
 
     expect(result.status).toBe(0);
     const dest = path.join(stashDir, "env", "prod.env");
@@ -502,7 +502,7 @@ describe("env create --from-file / --from-stdin", () => {
     const srcFile = path.join(stashDir, "source.env");
     fs.writeFileSync(srcFile, "NEW=val\n", "utf8");
 
-    const result = await runCli(["env", "create", "prod", "--from-file", srcFile], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["env", "create", "prod", "--from-file", srcFile], { AKM_BUNDLE_DIR: stashDir });
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("already exists");
@@ -520,7 +520,7 @@ describe("env remove", () => {
     fs.writeFileSync(dest, "API_KEY=secret\n", "utf8");
     fs.writeFileSync(marker, "", "utf8");
 
-    const result = await runCli(["env", "remove", "env/prod", "--yes"], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["env", "remove", "env/prod", "--yes"], { AKM_BUNDLE_DIR: stashDir });
 
     expect(result.status).toBe(0);
     expect(fs.existsSync(dest)).toBe(false);
@@ -533,7 +533,7 @@ describe("env remove", () => {
     fs.writeFileSync(path.join(stashDir, "vaults", "prod.env"), "API_KEY=secret\n", "utf8");
 
     // No env/ copy exists → remove targets env/ and reports not found, leaving vaults/ intact.
-    const result = await runCli(["env", "remove", "env/prod", "--yes"], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["env", "remove", "env/prod", "--yes"], { AKM_BUNDLE_DIR: stashDir });
 
     expect(result.status).not.toBe(0);
     expect(fs.existsSync(path.join(stashDir, "vaults", "prod.env"))).toBe(true);
@@ -546,7 +546,7 @@ describe("vault removed in 0.9.0", () => {
     fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
     fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "API_KEY=secret\n", "utf8");
 
-    const result = await runCli(["vault", "list", "--format", "json"], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["vault", "list", "--format", "json"], { AKM_BUNDLE_DIR: stashDir });
 
     // citty exits non-zero for an unknown top-level command.
     expect(result.status).not.toBe(0);
@@ -558,7 +558,7 @@ describe("vault removed in 0.9.0", () => {
     fs.writeFileSync(path.join(stashDir, "vaults", "prod.env"), "API_KEY=secret\n", "utf8");
     const outFile = path.join(stashDir, "out.sh");
 
-    const result = await runCli(["env", "export", "vault:prod", "--out", outFile], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["env", "export", "vault:prod", "--out", outFile], { AKM_BUNDLE_DIR: stashDir });
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("was removed");
@@ -575,7 +575,7 @@ describe("colon ref spelling removed (Q-08)", () => {
     fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
     fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "API_KEY=secret\n", "utf8");
 
-    const result = await runCli(["env", "path", "env:prod"], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["env", "path", "env:prod"], { AKM_BUNDLE_DIR: stashDir });
 
     expect(result.status).toBe(2);
     const parsed = JSON.parse(result.stderr.trim());
@@ -592,7 +592,7 @@ describe("colon ref spelling removed (Q-08)", () => {
     const stashDir = makeTempDir("akm-colon-removed-");
     fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
 
-    const result = await runCli(["env", "path", "environment:prod"], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["env", "path", "environment:prod"], { AKM_BUNDLE_DIR: stashDir });
 
     expect(result.status).toBe(2);
     const parsed = JSON.parse(result.stderr.trim());
@@ -607,7 +607,7 @@ describe("colon ref spelling removed (Q-08)", () => {
     const envPath = path.join(stashDir, "env", "prod.env");
     fs.writeFileSync(envPath, "API_KEY=secret\n", "utf8");
 
-    const result = await runCli(["env", "path", "env/prod", "--quiet"], { AKM_STASH_DIR: stashDir });
+    const result = await runCli(["env", "path", "env/prod", "--quiet"], { AKM_BUNDLE_DIR: stashDir });
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe(envPath);
@@ -619,7 +619,7 @@ describe("colon ref spelling removed (Q-08)", () => {
     fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "FOO=bar\n", "utf8");
 
     const result = await runCli(["env", "run", "env:prod", "--", "echo", "should-not-run"], {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
     });
 
     expect(result.status).toBe(2);

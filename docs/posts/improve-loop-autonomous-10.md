@@ -181,7 +181,7 @@ enabled: true
 Register the task:
 
 ```sh
-akm tasks sync
+akm tasks sync  # doclint:ignore (`tasks` was renamed to singular `task` in 0.9.0)
 ```
 
 After that, `akm improve` runs every 30 minutes without manual intervention. The `--limit 30` cap keeps each run predictably bounded. If there is nothing worth improving — no new feedback, no high-retrieval zero-feedback assets — the run completes quickly after selection with zero proposals generated.

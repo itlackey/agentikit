@@ -30,13 +30,13 @@ export async function stepAgentPlatforms(current: SetupDraftConfig): Promise<Sou
   const newPlatforms = platforms.filter((pl) => !existingPaths.has(pl.path));
 
   if (newPlatforms.length === 0) {
-    p.log.info(`Detected ${platforms.length} agent platform(s), all already configured as stash sources.`);
+    p.log.info(`Detected ${platforms.length} agent platform(s), all already configured as bundle sources.`);
     return [];
   }
 
   const selected = await prompt(() =>
     p.multiselect({
-      message: "Found agent platform configurations. Add as stash sources?",
+      message: "Found agent platform configurations. Add as bundle sources?",
       options: newPlatforms.map((pl) => ({
         value: pl.path,
         label: pl.name,
@@ -65,18 +65,18 @@ export async function stepAgentPlatforms(current: SetupDraftConfig): Promise<Sou
  */
 export function printCapabilitySummary(smallModelSkipped: boolean, agentConfigured: boolean): void {
   const lines: string[] = ["Setup complete. Here's what's enabled:", ""];
-  lines.push("  ✓ akm search, akm curate, akm show — always available");
+  lines.push("  ✓ akm search, akm curate, akm show, akm index, akm remember — always available");
 
   if (!smallModelSkipped) {
-    lines.push("  ✓ akm index, akm improve, akm remember — small model configured");
+    lines.push("  ✓ index metadata enhancement, akm improve, akm remember --enrich — small model configured");
   } else {
-    lines.push("  ✗ akm index, akm improve, akm remember — run `akm setup` to enable");
+    lines.push("  ✗ index metadata enhancement, akm improve, akm remember --enrich — run `akm setup` to enable");
   }
 
   if (agentConfigured) {
-    lines.push("  ✓ akm propose, akm improve, akm tasks — agent configured");
+    lines.push("  ✓ akm proposal new, akm improve, akm task — agent configured");
   } else {
-    lines.push("  ✗ akm propose, akm improve, akm tasks — run `akm setup` to enable");
+    lines.push("  ✗ akm proposal new, akm improve, akm task — run `akm setup` to enable");
   }
 
   p.note(lines.join("\n"), "Feature Summary");

@@ -13,7 +13,7 @@ import { withTestImproveLlm } from "../../_helpers/improve-config";
 
 const tempDirs: string[] = [];
 const savedEnv = {
-  AKM_STASH_DIR: process.env.AKM_STASH_DIR,
+  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
   AKM_DATA_DIR: process.env.AKM_DATA_DIR,
   XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
   XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
@@ -40,7 +40,7 @@ function configureStash(stashDir: string): void {
 }
 
 async function buildIndex(stashDir: string): Promise<void> {
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
   configureStash(stashDir);
   await akmIndex({ stashDir, full: true });
 }
@@ -57,8 +57,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (savedEnv.AKM_STASH_DIR === undefined) delete process.env.AKM_STASH_DIR;
-  else process.env.AKM_STASH_DIR = savedEnv.AKM_STASH_DIR;
+  if (savedEnv.AKM_BUNDLE_DIR === undefined) delete process.env.AKM_BUNDLE_DIR;
+  else process.env.AKM_BUNDLE_DIR = savedEnv.AKM_BUNDLE_DIR;
   if (savedEnv.AKM_DATA_DIR === undefined) delete process.env.AKM_DATA_DIR;
   else process.env.AKM_DATA_DIR = savedEnv.AKM_DATA_DIR;
   if (savedEnv.XDG_STATE_HOME === undefined) delete process.env.XDG_STATE_HOME;
@@ -590,7 +590,7 @@ describe("M-3: schema-repair routes through proposal queue (#387)", () => {
   // EVERY real invocation that reached schema repair, aborting the whole
   // improve run with an uncaught exception. This drives the real akmImprove()
   // entrypoint the same way the CLI does (no `stashDir` field in options,
-  // resolution via AKM_STASH_DIR env only) to prove the call chain no longer
+  // resolution via AKM_BUNDLE_DIR env only) to prove the call chain no longer
   // throws that error.
   test("akmImprove (no options.stashDir, matching the real CLI) does not throw 'requires stashDir' when schema repair is reached", async () => {
     const stashDir = makeTempDir("akm-m3-cli-parity-");

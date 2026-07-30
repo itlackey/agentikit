@@ -47,7 +47,7 @@ jobs:
 
       - name: Seed example-stash index
         env:
-          AKM_STASH_DIR: ${{ github.workspace }}/scripts/akm-eval/example-stash
+          AKM_BUNDLE_DIR: ${{ github.workspace }}/scripts/akm-eval/example-stash
           AKM_DATA_DIR: ${{ runner.temp }}/akm-data
           HOME: ${{ runner.temp }}/akm-home
         run: |
@@ -56,13 +56,13 @@ jobs:
 
       - name: akm-eval smoke (baseline)
         env:
-          AKM_STASH_DIR: ${{ github.workspace }}/scripts/akm-eval/example-stash
+          AKM_BUNDLE_DIR: ${{ github.workspace }}/scripts/akm-eval/example-stash
           AKM_DATA_DIR: ${{ runner.temp }}/akm-data
           HOME: ${{ runner.temp }}/akm-home
         run: |
           scripts/akm-eval/bin/akm-eval-run \
             --suite improve-smoke \
-            --stash "$AKM_STASH_DIR" \
+            --stash "$AKM_BUNDLE_DIR" \
             --akm ./dist/cli.js \
             --format json \
             --fail-below-score 0.75 \
@@ -70,18 +70,18 @@ jobs:
 
       - name: akm-eval smoke (deterministic replay)
         env:
-          AKM_STASH_DIR: ${{ github.workspace }}/scripts/akm-eval/example-stash
+          AKM_BUNDLE_DIR: ${{ github.workspace }}/scripts/akm-eval/example-stash
           AKM_DATA_DIR: ${{ runner.temp }}/akm-data
           HOME: ${{ runner.temp }}/akm-home
         run: |
           scripts/akm-eval/bin/akm-eval-run \
             --suite improve-smoke \
-            --stash "$AKM_STASH_DIR" \
+            --stash "$AKM_BUNDLE_DIR" \
             --akm ./dist/cli.js \
             --format none \
             --record
           scripts/akm-eval/bin/akm-eval-replay latest \
-            --stash "$AKM_STASH_DIR" \
+            --stash "$AKM_BUNDLE_DIR" \
             --format json \
             > /tmp/replay-summary.json
           # Fail if replay was non-deterministic.

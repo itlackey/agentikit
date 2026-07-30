@@ -29,7 +29,7 @@ export interface SelectBackendOptions {
 
 // WI-9.10e: the former `_setBackendsForTests` module-mutation seam was retired.
 // Tests inject a fake `TaskBackend` directly via the `deps.backend` parameter
-// the `akm tasks` mutation entries already accept (the backend carries its own
+// the `akm task` mutation entries already accept (the backend carries its own
 // `name`), so no module-level override binding is needed. `selectBackend`'s
 // `options.platform` covers the platform-steering the seam's second override
 // used to provide.

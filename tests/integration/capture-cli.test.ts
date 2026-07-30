@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import { runCliCapture } from "../_helpers/cli";
 import { durableItemRef } from "../_helpers/durable-ref";
-import { seedStoredGraph } from "../_helpers/graph-store";
 import { withEnv } from "../_helpers/sandbox";
 
 const CLI = path.join(__dirname, "..", "..", "src", "cli.ts");
@@ -37,13 +36,13 @@ async function runCli(
   const stashDir = options?.stashDir ?? makeTempDir("akm-capture-stash-");
   const xdgCache = makeTempDir("akm-capture-cache-");
   const xdgConfig = makeTempDir("akm-capture-config-");
-  // Pair AKM_STASH_DIR with XDG_DATA_HOME / XDG_STATE_HOME so the
+  // Pair AKM_BUNDLE_DIR with XDG_DATA_HOME / XDG_STATE_HOME so the
   // test-isolation guard in src/core/paths.ts stays inert.
   const xdgData = makeTempDir("akm-capture-data-");
   const xdgState = makeTempDir("akm-capture-state-");
   const result = await withEnv(
     {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       XDG_CACHE_HOME: xdgCache,
       XDG_CONFIG_HOME: xdgConfig,
       XDG_DATA_HOME: xdgData,
@@ -77,7 +76,7 @@ function spawnCli(
     input: options?.input,
     env: {
       ...process.env,
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       XDG_CACHE_HOME: xdgCache,
       XDG_CONFIG_HOME: xdgConfig,
       XDG_DATA_HOME: xdgData,
@@ -101,14 +100,14 @@ describe("capture commands", () => {
     const homeDir = makeTempDir("akm-init-home-");
     // Init's sandbox guard (item 6) refuses explicit --dir /tmp/... under a
     // test runner; this test legitimately exercises that flag, so opt out.
-    const { result } = await runCli(["init", "--dir", customDir], {
+    const { result } = await runCli(["bundle", "create", "--dir", customDir], {
       env: { HOME: homeDir, AKM_FORCE_INIT_TMP_STASH: "1" },
     });
     expect(result.status).toBe(0);
 
-    const json = JSON.parse(result.stdout) as { stashDir: string; configPath: string; created: boolean };
+    const json = JSON.parse(result.stdout) as { bundleDir: string; configPath: string; created: boolean };
     expect(json.created).toBe(true);
-    expect(json.stashDir).toBe(path.resolve(customDir));
+    expect(json.bundleDir).toBe(path.resolve(customDir));
     expect(fs.existsSync(path.join(customDir, "knowledge"))).toBe(true);
     expect(fs.existsSync(path.join(homeDir, "akm"))).toBe(false);
 
@@ -123,7 +122,7 @@ describe("capture commands", () => {
     expect(primary?.path).toBe(path.resolve(customDir));
   }
 
-  test("init honors --dir for a custom stash path", async () => {
+  test("bundle create honors --dir for a custom stash path", async () => {
     await expectInitUsesCustomDir();
   });
 
@@ -207,62 +206,5 @@ describe("capture commands", () => {
 
     const json = JSON.parse(result.stderr) as { error: string };
     expect(json.error).toContain("Asset name cannot be empty");
-  });
-
-  test("graph summary and entities commands return structured output", async () => {
-    const stashDir = makeTempDir("akm-capture-graph-stash-");
-    const xdgData = makeTempDir("akm-capture-graph-data-");
-    seedStoredGraph(
-      {
-        schemaVersion: 1,
-        generatedAt: "2026-05-01T00:00:00.000Z",
-        stashRoot: stashDir,
-        files: [
-          {
-            path: path.join(stashDir, "knowledge", "k1.md"),
-            type: "knowledge",
-            entities: ["alpha", "beta"],
-            relations: [{ from: "alpha", to: "beta", type: "uses" }],
-          },
-        ],
-        entities: ["alpha", "beta"],
-        relations: [{ from: "alpha", to: "beta", type: "uses" }],
-        quality: {
-          consideredFiles: 1,
-          extractedFiles: 1,
-          entityCount: 2,
-          relationCount: 1,
-          extractionCoverage: 1,
-          density: 1,
-        },
-      },
-      path.join(xdgData, "akm", "index.db"),
-    );
-
-    const summary = (
-      await runCli(["graph", "summary", "--format=json"], {
-        stashDir,
-        env: { XDG_DATA_HOME: xdgData },
-      })
-    ).result;
-    expect(summary.status).toBe(0);
-    const summaryJson = JSON.parse(summary.stdout) as { shape: string; entityCount: number; relationCount: number };
-    expect(summaryJson.shape).toBe("graph-summary");
-    expect(summaryJson.entityCount).toBe(2);
-    expect(summaryJson.relationCount).toBe(1);
-
-    const entities = (
-      await runCli(["graph", "entities", "--limit", "1", "--format=json"], {
-        stashDir,
-        env: { XDG_DATA_HOME: xdgData },
-      })
-    ).result;
-    expect(entities.status).toBe(0);
-    const entitiesJson = JSON.parse(entities.stdout) as {
-      shape: string;
-      entities: Array<{ name: string; fileCount: number }>;
-    };
-    expect(entitiesJson.shape).toBe("graph-entities");
-    expect(entitiesJson.entities).toEqual([{ name: "alpha", fileCount: 1 }]);
   });
 });

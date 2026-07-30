@@ -198,7 +198,7 @@ Key grounding corrections discovered during the survey: (1) `akm lint` ALREADY r
 
 ### SPEC-7 — akm mv: rename with inbound-xref rewrite and utility-history preservation
 
-> **AMENDED (0.9.0) — the command ships, classified Experimental.** Its
+> **AMENDED (0.9.0) — the command shipped, classified Experimental.** Its
 > inbound-ref rewriting is implemented inverted relative to the body-ref grammar
 > (it rewrites bare conceptIds, which are not refs, and matches no `bundle//`
 > form at all), and the utility-history preservation it buys is preservation of
@@ -206,6 +206,12 @@ Key grounding corrections discovered during the survey: (1) `akm lint` ALREADY r
 > is therefore delete plus create, and nothing on the contract depends on `mv`.
 > See [0.9.0-decisions.md D3](./0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-ships-experimental).
 > The text below is retained as the record of the original design.
+>
+> **Further amended 2026-07-30** — `akm mv` was removed outright before the
+> 0.9.0 release; `src/commands/mv-cli.ts` no longer exists. The rename
+> procedure is now plain filesystem move + `akm index` + `akm lint`, with
+> `bun scripts/rekey-asset-ref.ts <old-ref> <new-ref>` as the opt-in path to
+> carry utility/salience/usage history across the rename.
 
 **Priority:** P2 · **Sizing:** L — new verb, FS+DB coordination, contract/spec/doc updates, wide test matrix.
 

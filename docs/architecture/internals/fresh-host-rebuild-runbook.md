@@ -23,14 +23,14 @@ git (the 08-F1 recovery pattern — see step 3).
    placeholders; export those environment variables (or restore your env/secret
    assets) so named engines and the embedding connection resolve. Never commit
    the resolved values.
-5. **Restore the working stash.** Clone your stash git remote to the path
+5. **Restore the working bundle.** Clone your stash git remote to the path
    named by your working bundle's entry under `bundles` in the restored
    config (`defaultBundle` selects which one; default path `~/akm`). There is
    no top-level `stashDir` config key in 0.9 — it is retired and rejected at
    load. If starting clean instead, run `akm setup --yes` to scaffold it.
 6. **Re-add non-git sources.** For each managed source not carried in the stash
-   git (websites, npm packages, GitHub repos), run `akm add <ref>`. Verify the
-   full set with `akm list`.
+   git (websites, npm packages, GitHub repos), run `akm bundle add <ref>`. Verify the
+   full set with `akm bundle list`.
 7. **Rebuild the index:** `akm index --full` (forces a complete reindex rather
    than an incremental update).
 8. **Verify health:** `akm health` (checks runtime, artifacts, and improve

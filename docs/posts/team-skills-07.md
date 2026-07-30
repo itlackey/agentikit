@@ -52,7 +52,7 @@ EOF
 Each developer adds it as a source:
 
 ```sh
-akm add /mnt/shared/team-skills
+akm add /mnt/shared/team-skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
 akm search "deploy"
 ```
 
@@ -70,10 +70,10 @@ If your team is distributed, a Git repo is the natural choice. You already use G
 # Standard stash structure: skills/, commands/, knowledge/
 
 # Each developer adds it
-akm add github:your-org/team-agent-skills
+akm add github:your-org/team-agent-skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Pull latest when needed
-akm update --all
+akm update --all  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 This buys you everything Git already provides:
@@ -94,11 +94,11 @@ For larger teams or organizations that want discoverability without mandating sp
 akm registry add https://registry.internal.company.com --name team
 
 # Search — registries you've added are searched automatically
-akm search "deploy" --source registry
+akm search "deploy" --from registry
 
 # Install a specific skill from the registry (each hit's `action` field
 # prints the exact `akm add <installRef>` to run)
-akm add https://registry.internal.company.com/skills/deploy-to-k8s
+akm add https://registry.internal.company.com/skills/deploy-to-k8s  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 This makes more sense when your organization has dozens of teams, each with their own skills, and you want cross-team discovery without requiring everyone to index everything. Also handy when you need access control — some skills are sensitive.
@@ -141,9 +141,9 @@ akm setup
 **Each developer (one-time setup):**
 ```sh
 # Add team source alongside personal sources
-akm add github:your-org/team-agent-skills
-akm add ~/.claude/skills
-akm add ~/.codex/skills
+akm add github:your-org/team-agent-skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add ~/.claude/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add ~/.codex/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 **Daily workflow:**
@@ -155,7 +155,7 @@ akm search "deploy"
 # Best match wins, regardless of source
 
 # Pull team updates
-akm update --all
+akm update --all  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 **When customization is needed:**

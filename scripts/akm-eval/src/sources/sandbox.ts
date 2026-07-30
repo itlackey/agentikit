@@ -48,7 +48,7 @@ export const EVAL_STORAGE_ENV_KEYS = [
   "XDG_DATA_HOME",
   "XDG_CACHE_HOME",
   "XDG_STATE_HOME",
-  "AKM_STASH_DIR",
+  "AKM_BUNDLE_DIR",
   "AKM_CONFIG_DIR",
   "AKM_DATA_DIR",
   "AKM_CACHE_DIR",
@@ -111,7 +111,7 @@ export function createSandbox(opts: CreateSandboxOptions = {}): Sandbox {
   }
 
   const env = opts.inheritEnv ? buildEvalChildEnv() : {};
-  env.AKM_STASH_DIR = stashDir;
+  env.AKM_BUNDLE_DIR = stashDir;
   env.AKM_CONFIG_DIR = configDir;
   env.AKM_DATA_DIR = dataDir;
   env.AKM_CACHE_DIR = cacheDir;

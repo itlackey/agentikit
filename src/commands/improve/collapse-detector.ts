@@ -166,9 +166,10 @@ function newCanarySetId(): string {
  * mean the trend window never fills and recall reads as a fake 0).
  *
  * NEVER auto-refreshes: once minted the set is frozen until an explicit
- * `akm improve canary --refresh` — silent re-baselining is how a slow collapse
- * hides. Rows are read back BY OUR OWN set id (never "newest active") so a
- * concurrent mint in another process cannot relabel this run's metrics.
+ * `bun scripts/refresh-canary-set.ts --refresh` — silent re-baselining is how
+ * a slow collapse hides. Rows are read back BY OUR OWN set id (never "newest
+ * active") so a concurrent mint in another process cannot relabel this run's
+ * metrics.
  */
 export function ensureCanarySet(
   stateDb: StateDatabase,
@@ -190,11 +191,11 @@ export function ensureCanarySet(
 }
 
 /**
- * Explicit canary re-mint (the ONLY refresh path — `akm improve canary
- * --refresh`). Mint-first, deactivate-after: when the index is empty or
- * unreadable the current baseline is left untouched instead of destroyed.
- * Deactivates ALL other active sets (not just the newest) so stragglers from
- * an interrupted refresh can never resurrect.
+ * Explicit canary re-mint (the ONLY refresh path —
+ * `bun scripts/refresh-canary-set.ts --refresh`). Mint-first, deactivate-after:
+ * when the index is empty or unreadable the current baseline is left untouched
+ * instead of destroyed. Deactivates ALL other active sets (not just the
+ * newest) so stragglers from an interrupted refresh can never resurrect.
  */
 export function refreshCanarySet(
   stateDb: StateDatabase,

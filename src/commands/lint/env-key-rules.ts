@@ -12,7 +12,7 @@
  *
  * Enforcement scope:
  *   - `akm lint` reports findings as `dangerous-env-key` (non-blocking warn).
- *   - `akm add` BLOCKS install unless `--allow-insecure` is set (or, on TTY,
+ *   - `akm bundle add` BLOCKS install unless `--allow-insecure` is set (or, on TTY,
  *     the user explicitly confirms at the prompt).
  *   - Local env writes do NOT consult this list — by design, the operator may
  *     legitimately store any key locally. The gate exists only for third-party

@@ -24,7 +24,7 @@ import { copyStashSkeleton, ensureStashGitignore, scaffoldStashMeta } from "./st
  * running under a test runner AND `--dir <tempdir>` was passed explicitly.
  * This guard targets the exact agent-overreach pattern documented in
  * `memories/akm-init-persists-stashdir-warning`: an agent ran
- * `akm init --dir $(mktemp -d)` for an E2E test and silently rewrote the
+ * `akm bundle create --dir $(mktemp -d)` for an E2E test and silently rewrote the
  * developer's real config to point at a now-deleted temp dir.
  *
  * Tests that legitimately resolve a tempdir via HOME (default-path init) are
@@ -34,7 +34,7 @@ import { copyStashSkeleton, ensureStashGitignore, scaffoldStashMeta } from "./st
  *   - `BUN_TEST=1`     — explicit opt-in
  *   - `NODE_ENV=test`  — what `bun test` sets today
  *
- * Tests that genuinely need to exercise `akm init --dir /tmp/...` should set
+ * Tests that genuinely need to exercise `akm bundle create --dir /tmp/...` should set
  * `AKM_FORCE_INIT_TMP_STASH=1`.
  */
 function assertInitSandbox(stashDir: string, dirExplicitlyProvided: boolean): void {
@@ -61,7 +61,7 @@ function isUnderTestRunner(): boolean {
 }
 
 export interface InitResponse {
-  stashDir: string;
+  bundleDir: string;
   created: boolean;
   configPath: string;
   /**
@@ -69,14 +69,14 @@ export interface InitResponse {
    * the default stash pointer). False when `--dir` targeted a secondary stash
    * and the existing default was deliberately left untouched.
    */
-  defaultStashUpdated: boolean;
+  defaultBundleUpdated: boolean;
   /**
-   * The `stashDir` that was configured BEFORE this init ran, when it differs
+   * The bundle dir that was configured BEFORE this init ran, when it differs
    * from the dir we scaffolded and was left in place. Only set when a `--dir`
    * was provided, an existing default already existed, and `--set-default` was
    * NOT passed — so the CLI can tell the user their default is unchanged.
    */
-  previousStashDir?: string;
+  previousBundleDir?: string;
 }
 
 // ── Test seam ────────────────────────────────────────────────────────────────
@@ -108,8 +108,8 @@ async function akmInitReal(options?: {
   const stashDir = options?.dir ? path.resolve(options.dir) : getDefaultStashDir();
 
   // Safety check (#473): refuse stashDir at /, $HOME, /etc, ~/.config, etc.
-  // Runs BEFORE any disk write — a fat-fingered `akm init --dir /` or
-  // `akm init --dir ~` would otherwise mkdir + git-init the user's system
+  // Runs BEFORE any disk write — a fat-fingered `akm bundle create --dir /` or
+  // `akm bundle create --dir ~` would otherwise mkdir + git-init the user's system
   // root or home directory. Catastrophic-on-misuse vs. trivial-to-recover-from.
   assertSafeStashDir(stashDir);
 
@@ -139,7 +139,7 @@ async function akmInitReal(options?: {
   ensureStashGitignore(stashDir);
 
   // Run seeding UNCONDITIONALLY (not just when the stash was newly created) so
-  // re-running `akm init` on an existing stash backfills any missing skeleton
+  // re-running `akm bundle create` on an existing stash backfills any missing skeleton
   // files — the README, the per-type SOFT convention templates under
   // facts/conventions/assets/, and the `.meta/index.md` orientation doc. Both
   // helpers are absent-only: they never overwrite a file a user has edited.
@@ -147,7 +147,7 @@ async function akmInitReal(options?: {
   scaffoldStashMeta(stashDir);
 
   // Persist stashDir in config.json — but ONLY when the user is actually
-  // setting up / opting into a default. A bare `akm init --dir <secondary>`
+  // setting up / opting into a default. A bare `akm bundle create --dir <secondary>`
   // must NOT silently repoint the user's real default stash (the footgun
   // documented in memories/akm-init-persists-stashdir-warning).
   //
@@ -158,7 +158,7 @@ async function akmInitReal(options?: {
   // Otherwise (--dir + existing default + no --set-default) leave the default
   // pointer alone; the target dir is still scaffolded above.
   const configPath = getConfigPath();
-  let defaultStashUpdated = false;
+  let defaultBundleUpdated = false;
   let previousStashDir: string | undefined;
   if (options?.persistConfig !== false) {
     const result = mutateConfig((latest) => {
@@ -173,10 +173,10 @@ async function akmInitReal(options?: {
       if (currentPrimary === stashDir) return latest;
       return withPrimaryBundle(latest, stashDir);
     });
-    defaultStashUpdated = result.written;
+    defaultBundleUpdated = result.written;
   }
 
-  return { stashDir, created, configPath, defaultStashUpdated, previousStashDir };
+  return { bundleDir: stashDir, created, configPath, defaultBundleUpdated, previousBundleDir: previousStashDir };
 }
 
 /** Initialise `dir` as a git repository if it is not already one. */

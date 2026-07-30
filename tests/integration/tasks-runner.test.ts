@@ -42,7 +42,7 @@ const logDir = path.join(cacheDir, "tasks", "logs");
 const tasksDir = path.join(stashDir, "tasks");
 const configDir = path.join(tmpRoot, "cfg");
 
-const TRACKED_ENV_KEYS = ["AKM_CONFIG_DIR", "AKM_CACHE_DIR", "AKM_STASH_DIR", "AKM_DATA_DIR", "AKM_STATE_DIR"];
+const TRACKED_ENV_KEYS = ["AKM_CONFIG_DIR", "AKM_CACHE_DIR", "AKM_BUNDLE_DIR", "AKM_DATA_DIR", "AKM_STATE_DIR"];
 const PRESERVED_ENV: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -59,7 +59,7 @@ beforeEach(() => {
   process.env.AKM_DATA_DIR = dataDir;
   process.env.AKM_CONFIG_DIR = configDir;
   process.env.AKM_CACHE_DIR = cacheDir;
-  // Pair AKM_STASH_DIR with AKM_STATE_DIR so the test-isolation guard in
+  // Pair AKM_BUNDLE_DIR with AKM_STATE_DIR so the test-isolation guard in
   // src/core/paths.ts (getDataDir) stays inert.
   process.env.AKM_STATE_DIR = stateDir;
   createMigrationBackup();

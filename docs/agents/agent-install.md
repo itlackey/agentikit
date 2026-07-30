@@ -26,7 +26,7 @@ akm setup --yes
 akm config set semanticSearchMode auto
 
 # 4. Add sources (adjust paths as needed)
-# akm add ~/.claude/skills
+# akm bundle add ~/.claude/skills
 
 # 5. Build index (downloads embedding model on first run)
 akm index
@@ -231,16 +231,16 @@ Add the directories or packages that contain the agent's assets:
 
 ```sh
 # Add a local directory
-akm add /path/to/skills
+akm bundle add /path/to/skills
 
 # Add a GitHub stash
-akm add github:owner/repo
+akm bundle add github:owner/repo
 
 # Add an npm stash
-akm add @scope/my-stash
+akm bundle add @scope/my-stash
 
 # Add the current project's .claude directory (common for Claude Code)
-akm add ./.claude
+akm bundle add ./.claude
 ```
 
 ## 6. Build the Search Index
@@ -278,7 +278,7 @@ If the stash is empty, add some content first (step 5), then re-index (step 6).
 Add the following to the agent's `AGENTS.md`, `CLAUDE.md`, or system prompt:
 
 ```sh
-akm hints
+akm help agents
 ```
 
 Or add it manually:
@@ -313,7 +313,7 @@ Common reasons and fixes:
 
 ### No results from search
 
-1. Check that sources are configured: `akm list`
+1. Check that sources are configured: `akm bundle list`
 2. Check that the index is built: `akm info` → `indexStats.entryCount`
 3. Re-run `akm index` if sources were added after the last index run
 

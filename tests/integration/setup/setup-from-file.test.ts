@@ -231,7 +231,7 @@ describe("akm setup --from <file> CLI integration", () => {
         XDG_CONFIG_HOME: xdgConfig,
         XDG_DATA_HOME: xdgData,
         XDG_STATE_HOME: xdgState,
-        AKM_STASH_DIR: workDir,
+        AKM_BUNDLE_DIR: workDir,
       });
 
       expect(result.status).not.toBe(0);
@@ -253,7 +253,7 @@ describe("akm setup --from <file> CLI integration", () => {
         XDG_CONFIG_HOME: xdgConfig,
         XDG_DATA_HOME: xdgData,
         XDG_STATE_HOME: xdgState,
-        AKM_STASH_DIR: workDir,
+        AKM_BUNDLE_DIR: workDir,
       });
       expect(result.status).not.toBe(0);
       const combined = `${result.stdout}\n${result.stderr}`;

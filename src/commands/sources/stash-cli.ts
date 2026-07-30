@@ -3,14 +3,17 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Stash-lifecycle command cluster — the create/index/ingest/inspect verbs for
- * the working stash and its index database: `akm init` (create the stash +
- * persist stashDir), `akm index` (build/refresh the search index), `akm import`
- * (ingest a knowledge doc/URL), and `akm info` (system capabilities + index
- * stats).
+ * Stash-lifecycle command cluster — the index/ingest/inspect verbs for
+ * the working stash and its index database: `akm index` (build/refresh the
+ * search index), `akm import` (ingest a knowledge doc/URL), and `akm info`
+ * (system capabilities + index stats).
  * Extracted verbatim from src/cli.ts (WS6) so the God Module shrinks; the
- * `main.subCommands.{init,index,import,info}` keys and every subcommand's
+ * `main.subCommands.{index,import,info}` keys and every subcommand's
  * args/output shape stay byte-identical.
+ *
+ * 0.9 CLI overhaul (S7): `init` moved out of this cluster into the new
+ * `akm bundle create` (src/commands/sources/bundle-cli.ts) — no top-level
+ * `init` remains.
  *
  * These share no private helper with any command still inline in cli.ts — every
  * dependency is already exported from a shared module (core/paths, core/warn,
@@ -19,7 +22,7 @@
  * ./core/asset-create, ./core/common), so the cluster moves with zero hoisting.
  *
  * The leaf handlers whose body is a plain `runWithJsonErrors(...) + output(...)`
- * (`init`, `import`, `info`) are migrated onto
+ * (`import`, `info`) are migrated onto
  * `defineJsonCommand`, which emits the same JSON envelope (stdout/stderr/
  * exit-code) as the inline form. `index` keeps a plain `defineCommand` wrapping
  * `runWithJsonErrors` because its body owns a spinner, an AbortController, and
@@ -53,30 +56,6 @@ import {
   writeMarkdownAsset,
 } from "../read/knowledge";
 import { assembleInfo } from "./info";
-import { akmInit } from "./init";
-
-export const initCommand = defineJsonCommand({
-  meta: {
-    name: "init",
-    description: "Initialize akm's working stash directory and persist its bundle in config",
-  },
-  args: {
-    dir: { type: "string", description: "Custom stash directory path (default: ~/akm)" },
-    "set-default": {
-      type: "boolean",
-      description:
-        "Make --dir the default bundle. Without this, `akm init --dir X` scaffolds X but leaves your existing default bundle unchanged.",
-      default: false,
-    },
-  },
-  async run({ args }) {
-    const result = await akmInit({
-      dir: args.dir,
-      setDefault: args["set-default"],
-    });
-    output("init", result);
-  },
-});
 
 export const indexCommand = defineCommand({
   meta: { name: "index", description: "Build search index (incremental by default; --full forces full reindex)" },
@@ -98,21 +77,6 @@ export const indexCommand = defineCommand({
       description: "When combined with --clean, report stale entries without deleting them.",
       default: false,
     },
-    background: {
-      type: "boolean",
-      // R-023: the previous wording ("Run as a background process ... manages
-      // PID file") described a feature that was never implemented — this flag
-      // does not fork, detach, or return control to the shell early, and there
-      // is no PID file anywhere in its code path. It runs in the FOREGROUND
-      // exactly like a plain `akm index` and only changes two things: no
-      // spinner, and (unlike the global `--quiet`) the final JSON result is
-      // suppressed too. Kept as a headless/cron-invocation quiet mode.
-      description:
-        "Quiet mode for headless/unattended invocation (e.g. cron): suppresses the progress spinner and " +
-        "the final result output. Still runs in the foreground and blocks until indexing finishes — it does " +
-        "NOT fork a detached background process and does NOT manage a PID file.",
-      default: false,
-    },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
@@ -126,11 +90,6 @@ export const indexCommand = defineCommand({
           "`akm index --re-enrich` has been removed. Re-enrichment of index-time LLM passes is not exposed in this slice.",
         );
       }
-      // Quiet mode only (see the flag's description above) — NOT a real
-      // background/detached process. Named `isBackground` to match the
-      // `--background` flag it reads; do not read the name as a promise of
-      // actual backgrounding.
-      const isBackground = args.background === true;
       const outputMode = getOutputMode();
       const controller = new AbortController();
       const abort = (): void => controller.abort(new Error("index interrupted"));
@@ -144,7 +103,7 @@ export const indexCommand = defineCommand({
       );
       setLogFile(indexLogFile);
       const verbose = isVerbose();
-      const spin = !verbose && !isBackground && outputMode.format === "text" ? p.spinner() : null;
+      const spin = !verbose && outputMode.format === "text" ? p.spinner() : null;
       if (spin) {
         spin.start(`Building search index${args.full ? " (full rebuild)" : ""}...`);
       }
@@ -174,9 +133,7 @@ export const indexCommand = defineCommand({
         if (spin) {
           spin.stop(`Indexed ${result.totalEntries} assets.`);
         }
-        if (!isBackground) {
-          output("index", result);
-        }
+        output("index", result);
       } catch (error) {
         if (spin) {
           spin.stop(latestMessage ? `Indexing failed after: ${latestMessage}` : "Indexing failed.");
@@ -202,7 +159,7 @@ export const infoCommand = defineJsonCommand({
 export const importKnowledgeCommand = defineJsonCommand({
   meta: {
     name: "import",
-    description: "Import a knowledge document or URL into the default stash",
+    description: "Import a knowledge document or URL into the default bundle",
   },
   args: {
     source: {
@@ -228,7 +185,7 @@ export const importKnowledgeCommand = defineJsonCommand({
     target: {
       type: "string",
       description:
-        "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working stash.",
+        "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working bundle.",
     },
     xref: {
       type: "string",
@@ -238,7 +195,7 @@ export const importKnowledgeCommand = defineJsonCommand({
     supersedes: {
       type: "string",
       description:
-        "Ref of an existing asset this document corrects (repeatable: --supersedes knowledge/legacy-guide). Imports the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the import; a ref outside the write target and working stash still imports the correction but skips the demotion (reported as applied: false).",
+        "Ref of an existing asset this document corrects (repeatable: --supersedes knowledge/legacy-guide). Imports the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the import; a ref outside the write target and working bundle still imports the correction but skips the demotion (reported as applied: false).",
     },
   },
   async run({ args }) {

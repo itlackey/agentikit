@@ -22,7 +22,7 @@ import type { DetailLevel } from "../context";
 export function formatInfoPlain(r: Record<string, unknown>): string {
   const lines: string[] = [];
   if (r.version) lines.push(`version: ${String(r.version)}`);
-  if (r.stashDir) lines.push(`stashDir: ${String(r.stashDir)}`);
+  if (r.bundleDir) lines.push(`bundleDir: ${String(r.bundleDir)}`);
   if (r.configPath) lines.push(`configPath: ${String(r.configPath)}`);
   if (r.cacheDir) lines.push(`cacheDir: ${String(r.cacheDir)}`);
   if (r.dbPath) lines.push(`dbPath: ${String(r.dbPath)}`);
@@ -90,12 +90,12 @@ export function formatImportPlain(r: Record<string, unknown>): string {
 export function formatSyncPlain(r: Record<string, unknown>): string {
   if (r.ok === false) {
     const reason = typeof r.reason === "string" ? r.reason : "unknown";
-    return `save: failed (${reason})`;
+    return `sync: failed (${reason})`;
   }
-  const name = typeof r.name === "string" ? r.name : "primary stash";
+  const name = typeof r.name === "string" ? r.name : "primary bundle";
   const committed = r.committed === true;
   const pushed = r.pushed === true;
-  const parts = [`save: ${name}`];
+  const parts = [`sync: ${name}`];
   parts.push(committed ? "committed" : "no changes");
   if (pushed) parts.push("pushed");
   return parts.join(" — ");
@@ -228,44 +228,6 @@ export function formatEventLine(event: Record<string, unknown>): string {
   return head;
 }
 
-export function formatHistoryPlain(r: Record<string, unknown>): string {
-  const entries = Array.isArray(r.entries) ? (r.entries as Array<Record<string, unknown>>) : [];
-  const headerParts: string[] = [];
-  if (typeof r.ref === "string" && r.ref) headerParts.push(`ref: ${r.ref}`);
-  if (typeof r.since === "string" && r.since) headerParts.push(`since: ${r.since}`);
-  const totalCount = typeof r.totalCount === "number" ? r.totalCount : entries.length;
-  headerParts.push(`${totalCount} event(s)`);
-  // Show active event sources so operators know which streams were consulted.
-  if (Array.isArray(r.sources) && r.sources.length > 0) {
-    headerParts.push(`sources: ${(r.sources as string[]).join(", ")}`);
-  }
-  const header = headerParts.join("  ");
-
-  if (entries.length === 0) {
-    const scope = typeof r.ref === "string" && r.ref ? ` for ${r.ref}` : "";
-    return `${header}\nNo history${scope}.`;
-  }
-
-  const lines: string[] = [header, ""];
-  for (const entry of entries) {
-    const created = String(entry.createdAt ?? "?");
-    const eventType = String(entry.eventType ?? "?");
-    const ref = entry.ref ? String(entry.ref) : null;
-    const signal = entry.signal ? String(entry.signal) : null;
-    const query = entry.query ? String(entry.query) : null;
-
-    const head = ref ? `${created}  [${eventType}] ${ref}` : `${created}  [${eventType}]`;
-    lines.push(head);
-    if (signal) lines.push(`  signal: ${signal}`);
-    if (query) lines.push(`  query: ${query}`);
-    if (entry.metadata != null && entry.metadata !== "") {
-      const meta = typeof entry.metadata === "string" ? entry.metadata : JSON.stringify(entry.metadata);
-      lines.push(`  metadata: ${meta}`);
-    }
-  }
-  return lines.join("\n").trimEnd();
-}
-
 export function formatSearchPlain(r: Record<string, unknown>, detail: DetailLevel): string {
   const hits = (r.hits as Record<string, unknown>[]) ?? [];
   const registryHits = (r.registryHits as Record<string, unknown>[]) ?? [];
@@ -274,13 +236,13 @@ export function formatSearchPlain(r: Record<string, unknown>, detail: DetailLeve
   if (allHits.length === 0) {
     const warnings = Array.isArray(r.warnings) ? (r.warnings as unknown[]) : [];
     const hasSetupWarning = warnings.some(
-      (w) => String(w).toLowerCase().includes("no stash") || String(w).toLowerCase().includes("not configured"),
+      (w) => String(w).toLowerCase().includes("no bundle") || String(w).toLowerCase().includes("not configured"),
     );
     if (hasSetupWarning) {
-      return "No stash configured. Run `akm init` to create your working stash, then `akm index` to build the search index.";
+      return "No bundle configured. Run `akm bundle create` to create your working bundle, then `akm index` to build the search index.";
     }
     const base = r.tip ? String(r.tip) : "No matches found.";
-    return `${base}\nTry:\n  akm search '<broader-term>'          # fewer keywords\n  akm list                             # see all configured sources\n  akm curate '<query>'                 # let akm select the best match`;
+    return `${base}\nTry:\n  akm search '<broader-term>'          # fewer keywords\n  akm bundle list                      # see all configured sources\n  akm curate '<query>'                 # let akm select the best match`;
   }
 
   const lines: string[] = [];
@@ -440,11 +402,11 @@ export function formatCuratePlain(r: Record<string, unknown>, detail: DetailLeve
 }
 
 export function formatInitPlain(r: Record<string, unknown>): string {
-  let out = `Stash initialized at ${r.stashDir ?? "unknown"}`;
-  // When --dir scaffolded a secondary stash but the default was deliberately
+  let out = `Bundle initialized at ${r.bundleDir ?? "unknown"}`;
+  // When --dir scaffolded a secondary bundle but the default was deliberately
   // left untouched, tell the user instead of silently repointing their default.
-  if (r.defaultStashUpdated === false && typeof r.previousStashDir === "string" && r.previousStashDir) {
-    out += `\nYour default stash is unchanged (${r.previousStashDir}). Re-run with --set-default to make ${r.stashDir} the default.`;
+  if (r.defaultBundleUpdated === false && typeof r.previousBundleDir === "string" && r.previousBundleDir) {
+    out += `\nYour default bundle is unchanged (${r.previousBundleDir}). Re-run with --set-default to make ${r.bundleDir} the default.`;
   } else if (r.configPath) {
     out += `\nConfig saved to ${r.configPath}`;
   }
@@ -481,7 +443,7 @@ export function formatIndexPlain(r: Record<string, unknown>): string {
 
 export function formatListPlain(r: Record<string, unknown>): string {
   const sources = Array.isArray(r.sources) ? (r.sources as Record<string, unknown>[]) : [];
-  if (sources.length === 0) return "No sources configured. Use `akm add` to add a source.";
+  if (sources.length === 0) return "No sources configured. Use `akm bundle add` to add a source.";
   const lines: string[] = [];
   for (const src of sources) {
     const kind = typeof src.kind === "string" ? src.kind : "unknown";
@@ -499,13 +461,39 @@ export function formatListPlain(r: Record<string, unknown>): string {
   return lines.join("\n");
 }
 
+/** Render a single `SourceEntry` — `akm bundle show <name>`'s detail view of one `list` row. */
+export function formatBundleShowPlain(r: Record<string, unknown>): string {
+  const name = typeof r.name === "string" ? r.name : "unknown";
+  const kind = typeof r.kind === "string" ? r.kind : "unknown";
+  const lines = [`${name} [${kind}]`];
+  if (r.default === true) lines.push("  default: true");
+  if (r.writable === true) lines.push("  writable: true");
+  if (typeof r.version === "string") lines.push(`  version: ${r.version}`);
+  if (typeof r.provider === "string") lines.push(`  provider: ${r.provider}`);
+  if (typeof r.path === "string") lines.push(`  path: ${r.path}`);
+  if (typeof r.ref === "string") lines.push(`  ref: ${r.ref}`);
+  if (typeof r.registryId === "string") lines.push(`  registryId: ${r.registryId}`);
+  lines.push(`  items: ${typeof r.itemCount === "number" ? r.itemCount : 0}`);
+  const byType = r.byType as Record<string, number> | undefined;
+  if (byType && Object.keys(byType).length > 0) {
+    lines.push(
+      `  byType: ${Object.entries(byType)
+        .map(([t, n]) => `${t}=${n}`)
+        .join(", ")}`,
+    );
+  }
+  const status = r.status as { exists?: boolean } | undefined;
+  if (status?.exists === false) lines.push("  status: MISSING on disk");
+  return lines.join("\n");
+}
+
 export function formatAddPlain(r: Record<string, unknown>): string {
-  // `akm add <ref>` (source-add.ts `AddResponse`) and `akm add <target>
-  // --provider <kind>` (source-manage.ts `SourceAddResult`) are genuinely
-  // different operations that happen to share the "add" command name: the
-  // former eagerly fetches and indexes content, the latter only writes a
-  // desired locator to config — nothing is synced until a later `akm
-  // update`. Force-fitting the declarative shape's `added`/`entry`/`message`
+  // `akm bundle add <ref>` (source-add.ts `AddResponse`) and `akm bundle add
+  // <target> --provider <kind>` (source-manage.ts `SourceAddResult`) are
+  // genuinely different operations that happen to share the "add" command
+  // name: the former eagerly fetches and indexes content, the latter only
+  // writes a desired locator to config — nothing is synced until a later
+  // `akm bundle update`. Force-fitting the declarative shape's `added`/`entry`/`message`
   // fields into the "Installed <ref> (N scanned...)" wording produced
   // "Installed undefined (0 directories scanned...)" (R-014) because it
   // implied a sync that never happened. `AddResponse` always carries an
@@ -539,11 +527,11 @@ function formatDeclarativeAddPlain(r: Record<string, unknown>): string {
     "source";
   // A filesystem bundle reflects files already on disk — nothing to fetch,
   // just index it. Every other declarative kind (git/website/npm) is a
-  // locator only; its content is not materialized until `akm update`.
+  // locator only; its content is not materialized until `akm bundle update`.
   if (kind === "filesystem") {
     return `Added ${name} (filesystem) — run \`akm index\` to index it.`;
   }
-  return `Added ${name} (${kind}) — not yet synced; run \`akm update ${name}\` to fetch it.`;
+  return `Added ${name} (${kind}) — not yet synced; run \`akm bundle update ${name}\` to fetch it.`;
 }
 
 export function formatRemovePlain(r: Record<string, unknown>): string {

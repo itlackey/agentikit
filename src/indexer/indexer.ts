@@ -11,7 +11,6 @@ import type { BundleComponent } from "../core/adapter/types";
 import { isHttpUrl, toErrorMessage } from "../core/common";
 import { concurrentMap } from "../core/concurrent";
 import type { AkmConfig, LlmConnectionConfig } from "../core/config/config";
-import { recoverTxnsForRoot } from "../core/fs-txn";
 import { getDbPath } from "../core/paths";
 import { SCRIPT_EXTENSIONS } from "../core/recognition-util";
 import { withStateDb } from "../core/state-db";
@@ -506,7 +505,7 @@ export function reconcileBodyOpeningIndexState(
     `${flagEnabled ? "disabled" : "enabled"}. Incremental runs only re-extract changed files, so ` +
     "indexed text and embeddings are stale for unchanged entries. Run `akm index --full` to apply the new " +
     "setting everywhere (embeddings regenerate), and re-mint collapse-detector canary baselines via " +
-    "`akm improve canary --refresh` if you use them."
+    "`bun scripts/refresh-canary-set.ts --refresh` if you use them."
   );
 }
 
@@ -691,14 +690,6 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       config = detected.config;
       const persistedAdapters = detected.persistedAdapters;
       const allSourceDirs = allSourceEntries.map((s) => s.path);
-      const recoverableSourceDirs = allSourceEntries
-        .filter((source) => !source.unresolved)
-        .map((source) => source.path);
-      for (const sourceDir of new Set([stashDir, ...recoverableSourceDirs])) {
-        // Unified fs-txn engine (WI-6.3): finish/roll back interrupted mv
-        // transactions for every source root before indexing walks it.
-        await recoverTxnsForRoot(sourceDir, (journal) => journal.kind === "mv");
-      }
       onProgress({
         phase: "preflight",
         message: `Resolved ${allSourceDirs.length} stash source${allSourceDirs.length === 1 ? "" : "s"}.`,

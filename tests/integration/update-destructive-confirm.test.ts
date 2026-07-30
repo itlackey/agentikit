@@ -3,9 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Regression tests for F1/R-058: `akm update` could `rm -rf` a previous
+ * Regression tests for F1/R-058: `akm bundle update` could `rm -rf` a previous
  * install directory with NO confirmation gate and NO `--yes` flag at all,
- * while `akm remove` already refused in non-interactive mode without
+ * while `akm bundle remove` already refused in non-interactive mode without
  * `--yes`. The asymmetry: `updateManagedInstall` (installed-stashes.ts)
  * deletes `managed.localRoot` via `cleanupDirectoryBestEffort` whenever the
  * resolved content directory (`synced.contentDir`) differs from it, the
@@ -13,7 +13,7 @@
  *
  * The fix gates ONLY that branch with `confirmDestructive` (same helper
  * `remove` uses) and a new `-y/--yes` flag threaded through `akmUpdate`. A
- * normal refresh — the overwhelming majority of `akm update` invocations,
+ * normal refresh — the overwhelming majority of `akm bundle update` invocations,
  * where the resolved content directory does NOT move — must stay completely
  * unaffected: no prompt, no flag required, unchanged exit code. These tests
  * pin BOTH halves: the gated destructive path AND the untouched normal path.
@@ -110,7 +110,7 @@ function configureManagedBundle(id: string, oldRoot: string): void {
   ]);
 }
 
-describe("akm update — destructive-branch confirmation gate (F1/R-058)", () => {
+describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)", () => {
   test("resolved content dir MOVES, non-interactive, no --yes: BLOCKED, old root untouched", async () => {
     const oldRoot = createTmpDir("akm-update-confirm-old-");
     const newRoot = createTmpDir("akm-update-confirm-new-");

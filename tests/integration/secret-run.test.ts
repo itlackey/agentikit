@@ -43,7 +43,7 @@ function spawnCli(
     encoding: "utf8",
     timeout: 15_000,
     cwd: repoRoot,
-    env: { ...process.env, AKM_STASH_DIR: undefined, ...extraEnv },
+    env: { ...process.env, AKM_BUNDLE_DIR: undefined, ...extraEnv },
   });
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? 1 };
 }
@@ -56,7 +56,7 @@ describe("secret run", () => {
 
     const { stdout, status } = spawnCli(
       ["secret", "run", "secrets/demo", "TOKEN", "--", "bash", "-lc", 'printf "%s" "$TOKEN"'],
-      { AKM_STASH_DIR: stashDir },
+      { AKM_BUNDLE_DIR: stashDir },
     );
     expect(status).toBe(0);
     expect(stdout.trim()).toBe("super-secret-token");

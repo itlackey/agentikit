@@ -48,7 +48,7 @@ function writeRawConfig(contents: string): void {
 
 function capturedSchedulerContext(): Record<string, string> {
   return {
-    AKM_STASH_DIR: storage.stashDir,
+    AKM_BUNDLE_DIR: storage.stashDir,
     AKM_CONFIG_DIR: path.join(storage.configDir, "akm"),
     AKM_DATA_DIR: path.join(storage.dataDir, "akm"),
     AKM_CACHE_DIR: path.join(storage.cacheDir, "akm"),
@@ -105,7 +105,7 @@ function assertRecordedFailure(input: {
   if (row.log_path === null) throw new Error("expected a per-run log path");
   expect(fs.existsSync(row.log_path)).toBe(true);
   const fileLog = fs.readFileSync(row.log_path, "utf8");
-  const expectedLine = `[akm tasks] status=failed reason=${input.reason} code=${input.errorCode}`;
+  const expectedLine = `[akm task] status=failed reason=${input.reason} code=${input.errorCode}`;
   expect(fileLog).toBe(`${expectedLine}\n`);
 
   const logsDb = openLogsDatabase();
@@ -128,14 +128,14 @@ function assertRecordedFailure(input: {
 
 describe("tasks run attempt observability", () => {
   test("bypasses startup config only for tasks run with an id", () => {
-    expect(shouldBypassConfigStartup(["bun", "cli.ts", "tasks", "run", "nightly"])).toBe(true);
+    expect(shouldBypassConfigStartup(["bun", "cli.ts", "task", "run", "nightly"])).toBe(true);
     expect(
       shouldBypassConfigStartup(["bun", "cli.ts", "--format", "json", "task", "run", "nightly", "--scheduled"]),
     ).toBe(true);
-    expect(shouldBypassConfigStartup(["bun", "cli.ts", "tasks", "run", "--format", "md", "nightly"])).toBe(true);
+    expect(shouldBypassConfigStartup(["bun", "cli.ts", "task", "run", "--format", "md", "nightly"])).toBe(true);
 
-    expect(shouldBypassConfigStartup(["bun", "cli.ts", "tasks", "run"])).toBe(false);
-    expect(shouldBypassConfigStartup(["bun", "cli.ts", "tasks", "list"])).toBe(false);
+    expect(shouldBypassConfigStartup(["bun", "cli.ts", "task", "run"])).toBe(false);
+    expect(shouldBypassConfigStartup(["bun", "cli.ts", "task", "list"])).toBe(false);
     expect(shouldBypassConfigStartup(["bun", "cli.ts", "health"])).toBe(false);
   });
 
@@ -157,7 +157,7 @@ describe("tasks run attempt observability", () => {
       );
 
       const result = await withEnv(capturedSchedulerContext(), () =>
-        runCliCapture(["tasks", "run", "configless-command", "--scheduled"]),
+        runCliCapture(["task", "run", "configless-command", "--scheduled"]),
       );
 
       expect(result.code, result.stderr).toBe(0);
@@ -178,7 +178,7 @@ describe("tasks run attempt observability", () => {
     writeTask("config-prompt", 'version: 2\nschedule: "@daily"\nprompt: Review the task\n');
 
     const result = await withEnv(capturedSchedulerContext(), () =>
-      runCliCapture(["tasks", "run", "config-prompt", "--scheduled"]),
+      runCliCapture(["task", "run", "config-prompt", "--scheduled"]),
     );
 
     expect(result.code).toBe(78);
@@ -195,7 +195,7 @@ describe("tasks run attempt observability", () => {
     writeTask("config-workflow", 'version: 2\nschedule: "@daily"\nworkflow: workflows/config-dependent\n');
 
     const result = await withEnv(capturedSchedulerContext(), () =>
-      runCliCapture(["tasks", "run", "config-workflow", "--scheduled"]),
+      runCliCapture(["task", "run", "config-workflow", "--scheduled"]),
     );
 
     expect(result.code).toBe(78);
@@ -392,7 +392,7 @@ describe("tasks run attempt observability", () => {
     const blockedDataDir = path.join(storage.root, "blocked-data-dir");
     fs.writeFileSync(blockedDataDir, "not a directory");
     const result = await withEnv({ AKM_DATA_DIR: blockedDataDir }, () =>
-      runCliCapture(["--json", "tasks", "run", "missing-json-error"]),
+      runCliCapture(["--json", "task", "run", "missing-json-error"]),
     );
 
     expect(result.code).toBe(1);
@@ -400,7 +400,7 @@ describe("tasks run attempt observability", () => {
   });
 
   test("records a missing task file and preserves the not-found error", async () => {
-    const result = await runCliCapture(["--json", "tasks", "run", "missing-task"]);
+    const result = await runCliCapture(["--json", "task", "run", "missing-task"]);
 
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "ASSET_NOT_FOUND" });
@@ -415,7 +415,7 @@ describe("tasks run attempt observability", () => {
     const secret = "INVALID-YAML-SECRET-SENTINEL";
     writeTask("invalid-yaml", `version: 2\ncommand: [${secret}\n`);
 
-    const result = await runCliCapture(["--json", "tasks", "run", "invalid-yaml"]);
+    const result = await runCliCapture(["--json", "task", "run", "invalid-yaml"]);
 
     expect(result.code).toBe(2);
     expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
@@ -430,7 +430,7 @@ describe("tasks run attempt observability", () => {
   test("records an unsupported future schema without normalizing it", async () => {
     writeTask("future-task", 'version: 99\nschedule: "@daily"\ncommand: echo future\n');
 
-    const result = await runCliCapture(["--json", "tasks", "run", "future-task"]);
+    const result = await runCliCapture(["--json", "task", "run", "future-task"]);
 
     expect(result.code).toBe(2);
     expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "TASK_SCHEMA_VERSION_UNSUPPORTED" });
@@ -478,7 +478,7 @@ describe("tasks run attempt observability", () => {
     const targetSecret = "agents/PRE-DISPATCH-TARGET-SECRET";
     writeTask("wrong-workflow-ref", `version: 2\nschedule: "@daily"\nworkflow: ${targetSecret}\n`);
 
-    const result = await runCliCapture(["--json", "tasks", "run", "wrong-workflow-ref"]);
+    const result = await runCliCapture(["--json", "task", "run", "wrong-workflow-ref"]);
 
     expect(result.code).toBe(1);
     expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "WORKFLOW_NOT_FOUND" });
@@ -493,7 +493,7 @@ describe("tasks run attempt observability", () => {
   test("records an invalid CLI id under a safe sentinel and preserves the usage exit", async () => {
     const hostileId = "../../HOSTILE-ID-SECRET-SENTINEL";
 
-    const result = await runCliCapture(["--json", "tasks", "run", hostileId]);
+    const result = await runCliCapture(["--json", "task", "run", hostileId]);
 
     expect(result.code).toBe(2);
     expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });

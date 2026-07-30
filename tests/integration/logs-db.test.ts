@@ -90,7 +90,7 @@ describe("insertTaskLogLines / queryTaskLogs", () => {
         runId,
         ts: startedAt,
         lines: [
-          { line: "[akm tasks] task=nightly kind=command cmd=echo hi" },
+          { line: "[akm task] task=nightly kind=command cmd=echo hi" },
           { stream: "stdout", level: "info", line: "hi" },
           { stream: "stderr", level: "error", line: "boom" },
         ],
@@ -105,11 +105,7 @@ describe("insertTaskLogLines / queryTaskLogs", () => {
       });
 
       const byTask = queryTaskLogs(db, { taskId: "nightly" });
-      expect(byTask.map((row) => row.line)).toEqual([
-        "[akm tasks] task=nightly kind=command cmd=echo hi",
-        "hi",
-        "boom",
-      ]);
+      expect(byTask.map((row) => row.line)).toEqual(["[akm task] task=nightly kind=command cmd=echo hi", "hi", "boom"]);
       expect(byTask[0]!.run_id).toBe(runId);
       expect(byTask[1]!.stream).toBe("stdout");
       expect(byTask[2]!.stream).toBe("stderr");
@@ -118,7 +114,7 @@ describe("insertTaskLogLines / queryTaskLogs", () => {
       expect(queryTaskLogs(db, { runId })).toHaveLength(3);
       expect(queryTaskLogs(db, { runId, stream: "stderr" }).map((row) => row.line)).toEqual(["boom"]);
       expect(queryTaskLogs(db, { runId, limit: 1 }).map((row) => row.line)).toEqual([
-        "[akm tasks] task=nightly kind=command cmd=echo hi",
+        "[akm task] task=nightly kind=command cmd=echo hi",
       ]);
 
       // Time window: since is inclusive, until exclusive.

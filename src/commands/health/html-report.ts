@@ -407,7 +407,7 @@ function renderActionItems(vm: HealthReportViewModel): string {
       cls: "warn",
       title: "Semantic search blocked",
       descHtml: `Embedding provider unreachable. ${esc(vm.sem.detail)}. Curate falls back to keyword search — relevance scoring degraded.`,
-      remedy: "akm config show",
+      remedy: "akm config list",
     });
   }
 
@@ -489,7 +489,7 @@ function renderActionItems(vm: HealthReportViewModel): string {
       descHtml:
         "Consolidation phase wall time exceeded the total run budget on these runs. " +
         "Consider increasing the timeout or reducing the consolidation pool via strategy config.",
-      remedy: "akm config show",
+      remedy: "akm config list",
     });
   }
 

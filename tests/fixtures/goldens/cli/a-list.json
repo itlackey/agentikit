@@ -1,4 +1,11 @@
 {
   "exitCode": 0,
-  "stdoutKeys": ["defaultBundle", "schemaVersion", "shape", "sources", "stashDir", "totalSources"]
+  "stdoutKeys": [
+    "bundleDir",
+    "defaultBundle",
+    "schemaVersion",
+    "shape",
+    "sources",
+    "totalSources"
+  ]
 }

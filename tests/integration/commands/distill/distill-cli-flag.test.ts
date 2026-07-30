@@ -26,7 +26,7 @@ afterAll(() => {
 
 /**
  * Drive the CLI in-process with fresh sandboxed HOME/XDG dirs (and
- * AKM_STASH_DIR cleared), mirroring the env the old subprocess runner set.
+ * AKM_BUNDLE_DIR cleared), mirroring the env the old subprocess runner set.
  *
  * Exit-code note: the real entry point exits 2 on citty's "Unknown command"
  * (R-032, commit 96ff2fe; pinned at tests/integration/cli-errors.test.ts:383-389),
@@ -41,7 +41,7 @@ async function runCli(
 ): Promise<{ stdout: string; stderr: string; status: number }> {
   const result = await withEnv(
     {
-      AKM_STASH_DIR: undefined,
+      AKM_BUNDLE_DIR: undefined,
       HOME: makeTempDir("akm-distill-cli-home-"),
       XDG_CACHE_HOME: makeTempDir("akm-distill-cli-cache-"),
       XDG_CONFIG_HOME: makeTempDir("akm-distill-cli-config-"),

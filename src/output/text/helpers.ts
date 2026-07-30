@@ -19,6 +19,7 @@
 
 export {
   formatAddPlain,
+  formatBundleShowPlain,
   formatClonePlain,
   formatConfigPlain,
   formatCuratePlain,
@@ -31,7 +32,6 @@ export {
   formatEventLine,
   formatEventsPlain,
   formatFeedbackPlain,
-  formatHistoryPlain,
   formatImportPlain,
   formatIndexPlain,
   formatInfoPlain,
@@ -69,5 +69,4 @@ export {
   formatWorkflowResumePlain,
   formatWorkflowRunPlain,
   formatWorkflowStatusPlain,
-  formatWorkflowValidatePlain,
 } from "./workflow-format";

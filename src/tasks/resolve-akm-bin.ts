@@ -17,7 +17,7 @@
  *
  * Returns the argv array the scheduler should execute (e.g.
  * `["/usr/local/bin/node", "/repo/dist/cli-node.mjs"]`). The caller appends
- * subcommand args (`"tasks", "run", "<id>"`).
+ * subcommand args (`"task", "run", "<id>"`).
  */
 
 import { spawnSync } from "node:child_process";
@@ -30,7 +30,7 @@ import { mainPath as runtimeMainPath } from "../runtime";
 export interface ResolvedAkmInvocation {
   /** Argv prefix the OS scheduler should execute (one shell-safe path per element). */
   argv: string[];
-  /** Source of the resolution, surfaced by `tasks doctor`. */
+  /** Source of the resolution, surfaced by `task doctor`. */
   via: "npm" | "standalone" | "checkout" | "package-local";
   kind: "npm" | "standalone" | "checkout" | "package-local";
   eligible: boolean;

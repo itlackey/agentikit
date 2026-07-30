@@ -159,7 +159,7 @@ Usage:
   bun run scripts/akm-eval/src/proactive-verdict.ts [options]
 
 Options:
-  --stash <path>               Stash root (default: \$AKM_STASH_DIR or ~/akm).
+  --stash <path>               Stash root (default: \$AKM_BUNDLE_DIR or ~/akm).
   --index-db <path>            index.db (default: <dataDir>/index.db).
   --state-db <path>            state.db (default: <dataDir>/state.db).
   --baseline-run <id|latest>   Retrieval T0 baseline (default: oldest run matching current fingerprint).

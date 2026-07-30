@@ -30,7 +30,8 @@ import type { IndexDocument } from "../passes/metadata";
 // scored via FTS against it. Changing what buildSearchFields includes shifts
 // the detector's recall baseline for ALL existing canary sets — coordinate
 // with src/commands/improve/collapse-detector.ts (buildCanaryQuery) and expect
-// operators to re-mint via `akm improve canary --refresh` after such a change.
+// operators to re-mint via `bun scripts/refresh-canary-set.ts --refresh` after
+// such a change.
 export function buildSearchFields(entry: IndexDocument): {
   name: string;
   description: string;

@@ -72,7 +72,7 @@ export function assembleInfo(options?: { dbPath?: string }): InfoResponse {
   return {
     schemaVersion: 1,
     version: pkgVersion,
-    stashDir,
+    bundleDir: stashDir,
     defaultBundle,
     assetTypes,
     searchModes,

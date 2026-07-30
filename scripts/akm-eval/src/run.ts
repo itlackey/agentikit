@@ -252,7 +252,7 @@ Options:
                               baseline: read-only single pass (default).
                               akm:      single pass after akm improve (caller-driven).
                               paired:   baseline → akm improve → re-eval, with deltas.
-  --stash <path>             Stash root (default: \$AKM_STASH_DIR or ~/akm).
+  --stash <path>             Stash root (default: \$AKM_BUNDLE_DIR or ~/akm).
   --cases-dir <path>         Root containing <suite>/*.json case files
                              (default: scripts/akm-eval/cases/).
   --out <path>               Output root (default: <stash>/.akm/evals).
@@ -697,7 +697,7 @@ async function main(): Promise<number> {
       const value = process.env[key];
       if (value !== undefined) env[key] = value;
     }
-    env.AKM_STASH_DIR = activeStashRoot;
+    env.AKM_BUNDLE_DIR = activeStashRoot;
     env.AKM_DATA_DIR = activeDataDir;
   }
 

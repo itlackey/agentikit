@@ -349,7 +349,7 @@ steps:
     try {
       await withEnv(
         {
-          AKM_STASH_DIR: stash.dir,
+          AKM_BUNDLE_DIR: stash.dir,
           MANUAL_REPORT_TEST_KEY: engineSentinel,
           LLM_BASE_URL: allowlistedUrls[0],
           OPENCODE_CONFIG: allowlistedUrls[1],

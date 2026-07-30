@@ -58,13 +58,13 @@ function spawnCli(
     encoding: "utf8",
     timeout: 10_000,
     cwd: options.cwd,
-    env: { ...process.env, AKM_STASH_DIR: undefined, ...options.env },
+    env: { ...process.env, AKM_BUNDLE_DIR: undefined, ...options.env },
   });
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status ?? 1 };
 }
 
 // The default sandbox (from the preload) has no stash configured, which is what
-// the original spawn version achieved by passing AKM_STASH_DIR undefined.
+// the original spawn version achieved by passing AKM_BUNDLE_DIR undefined.
 
 // Tests.
 
@@ -72,7 +72,7 @@ describe("CLI error handling", () => {
   test("search without stash dir prints JSON error with hint", async () => {
     const { stderr, status } = await runCli("search", "test");
     expect(status).not.toBe(0);
-    expect(stderr).toContain("No stash directory found");
+    expect(stderr).toContain("No bundle directory found");
     expect(stderr).toContain("hint");
   });
 
@@ -85,8 +85,8 @@ describe("CLI error handling", () => {
     expect(parsed.code).toBe("MISSING_REQUIRED_ARGUMENT");
   });
 
-  test("search --source invalid prints hint about source", async () => {
-    const { stderr, status } = await runCli("search", "test", "--source", "invalid");
+  test("search --from invalid prints hint about source", async () => {
+    const { stderr, status } = await runCli("search", "test", "--from", "invalid");
     expect(status).not.toBe(0);
     // Named-source validation: unknown source names produce INVALID_SOURCE_VALUE
     // with a message that lists valid source names (or says none are configured).
@@ -98,7 +98,7 @@ describe("CLI error handling", () => {
   test("search --detail invalid prints hint about detail", async () => {
     const stash = makeStashDir();
     disposers.push(stash);
-    const { stderr, status } = await withEnv({ AKM_STASH_DIR: stash.dir }, () =>
+    const { stderr, status } = await withEnv({ AKM_BUNDLE_DIR: stash.dir }, () =>
       runCli("search", "test", "--detail", "invalid"),
     );
     expect(status).not.toBe(0);
@@ -182,7 +182,9 @@ describe("error class hints", () => {
   });
 
   test("UsageError derives hint from code by default", () => {
-    expect(new UsageError("bad source", "INVALID_SOURCE_VALUE").hint()).toBe("Pick one of: stash, registry, both.");
+    expect(new UsageError("bad source", "INVALID_SOURCE_VALUE").hint()).toBe(
+      "Pick one of: local, registry, all, or a configured source name.",
+    );
     expect(new UsageError("bad format", "INVALID_FORMAT_VALUE").hint()).toBe(
       "Pick one of: json, jsonl, yaml, text, md, html.",
     );
@@ -193,8 +195,8 @@ describe("error class hints", () => {
       "Pick one of: human, agent, summary (summary is only valid on `akm show`).",
     );
     expect(new UsageError("bad json", "INVALID_JSON_CONFIG_VALUE").hint()).toContain("Quote JSON values");
-    expect(new UsageError("bad target", "MISSING_OR_AMBIGUOUS_TARGET").hint()).toContain("akm update --all");
-    expect(new UsageError("not updatable", "TARGET_NOT_UPDATABLE").hint()).toContain("akm list");
+    expect(new UsageError("bad target", "MISSING_OR_AMBIGUOUS_TARGET").hint()).toContain("akm bundle update --all");
+    expect(new UsageError("not updatable", "TARGET_NOT_UPDATABLE").hint()).toContain("akm bundle list");
   });
 
   test("UsageError without a code-mapped hint returns undefined", () => {
@@ -206,7 +208,7 @@ describe("error class hints", () => {
 
   test("NotFoundError derives hint from code by default", () => {
     // Wave C #284 added canned hints for the remaining codes.
-    expect(new NotFoundError("missing source", "SOURCE_NOT_FOUND").hint()).toContain("akm list");
+    expect(new NotFoundError("missing source", "SOURCE_NOT_FOUND").hint()).toContain("akm bundle list");
     expect(new NotFoundError("missing asset", "ASSET_NOT_FOUND").hint()).toContain("akm search");
     expect(new NotFoundError("missing wf", "WORKFLOW_NOT_FOUND").hint()).toContain("akm workflow list");
     expect(new NotFoundError("missing file", "FILE_NOT_FOUND").hint()).toContain("path exists");
@@ -239,7 +241,7 @@ describe("config path subcommand", () => {
     expect(status).toBe(0);
     const parsed = JSON.parse(stdout.trim());
     expect(parsed).toHaveProperty("config");
-    expect(parsed).toHaveProperty("stash");
+    expect(parsed).toHaveProperty("bundle");
     expect(parsed).toHaveProperty("cache");
     expect(parsed).toHaveProperty("index");
   });
@@ -343,23 +345,20 @@ describe("output shape registry — every CLI verb returns a registered shape", 
   // Verbs that take no required args and are read-only against the
   // empty/isolated temp stash. Anything that requires a ref, takes interactive
   // input, mutates external state, or needs network access belongs elsewhere.
-  const READ_ONLY_VERBS: string[] = [
-    "health",
-    "lint",
-    "info",
-    "tasks",
-    "graph",
-    "db",
-    "list",
-    "config",
-    "log",
-    "history",
-    "registry",
+  const READ_ONLY_VERBS: readonly (readonly string[])[] = [
+    ["health"],
+    ["lint"],
+    ["info"],
+    ["task"],
+    ["config"],
+    ["log"],
+    ["registry"],
+    ["bundle", "list"],
   ];
 
   for (const verb of READ_ONLY_VERBS) {
-    test(`akm ${verb} --format json does not return an "output shape not registered" envelope`, async () => {
-      const { stdout } = await runCli(verb, "--format", "json");
+    test(`akm ${verb.join(" ")} --format json does not return an "output shape not registered" envelope`, async () => {
+      const { stdout } = await runCli(...verb, "--format", "json");
       // The bug class produces this exact substring. Any future verb that calls
       // output() without a registered shape will trip this.
       expect(stdout).not.toContain("output shape not registered");
@@ -431,19 +430,13 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
   // per-test budget — green locally, intermittently red under CI load, and
   // reported as a timeout that names no group. Per-group tests each carry one
   // spawn, and a failure says which group broke.
-  for (const group of [
-    "graph",
-    "migrate",
-    "registry",
-    "log",
-    "lessons",
-    "config",
-    "proposal",
-    "env",
-    "secret",
-    "tasks",
-    "workflow",
-  ]) {
+  //
+  // 0.9.0 CLI overhaul (S3): `log` and `lessons` dropped out of this list —
+  // `log` is now a terminal leaf command (bare `akm log` is a valid
+  // invocation, not a bare-group usage error; see
+  // tests/commands/observability-cli-envelope.test.ts) and `lessons` was
+  // removed entirely.
+  for (const group of ["migrate", "registry", "config", "proposal", "env", "secret", "task", "workflow"]) {
     test(`bare akm ${group} emits the canonical usage envelope and exits 2`, () => {
       const { status, stderr } = spawnCli([group], { cwd: repoRoot });
       expect(status).toBe(2);
@@ -461,6 +454,117 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
     expect(stdout).toContain("4   health warn");
     expect(stdout).toContain("70  internal / unclassified error");
     expect(stdout).toContain("1   not found / command-reported failure");
+  });
+
+  // S11 item 3: citty's CLIError is now routed through the SAME
+  // `{ok:false,error,code,hint}` envelope every other command's failure
+  // uses, instead of citty's own usage-banner + raw `console.error(message)`.
+  test("akm totally-bogus emits the standard JSON envelope with a stable code", () => {
+    const { status, stderr } = spawnCli(["totally-bogus"], { cwd: repoRoot });
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("UNKNOWN_COMMAND");
+    expect(parsed.error).toBe("Unknown command totally-bogus");
+    expect(parsed.hint).toContain("akm --help");
+  });
+
+  // S11 item 3: did-you-mean via edit distance over the sibling command set
+  // at the point of failure.
+  test("akm serach (typo of search) suggests the close sibling command", () => {
+    const { status, stderr } = spawnCli(["serach"], { cwd: repoRoot });
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.hint).toContain("Did you mean `search`?");
+  });
+
+  test("akm totally-bogus (nothing close) gets the plain pointer, no false suggestion", () => {
+    const { stderr } = spawnCli(["totally-bogus"], { cwd: repoRoot });
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.hint).not.toContain("Did you mean");
+    expect(parsed.hint).toBe("Run `akm --help` for usage.");
+  });
+
+  // Retired 0.9-overhaul spellings get their REPLACEMENT, never a
+  // did-you-mean: edit distance steers agents into the wrong command
+  // (`init`→`info`, `update`→`upgrade` — the latter replaces the binary).
+  test("retired top-level spellings hint the replacement, not did-you-mean", () => {
+    const cases: Array<[string[], string]> = [
+      [["init"], "akm bundle create"],
+      [["update"], "akm bundle update"],
+      [["tasks", "doctor"], "akm task <subcommand>"],
+      [["history"], "akm log --ref"],
+      [["hints"], "akm help agents"],
+      [["mv", "a", "b"], "rekey-asset-ref.ts"],
+      [["extract"], "akm proposal extract"],
+    ];
+    for (const [argv, expected] of cases) {
+      const { status, stderr } = spawnCli(argv, { cwd: repoRoot });
+      expect(status, argv.join(" ")).toBe(2);
+      const parsed = JSON.parse(stderr.trim());
+      expect(parsed.code, argv.join(" ")).toBe("UNKNOWN_COMMAND");
+      expect(parsed.hint, argv.join(" ")).toContain(expected);
+      expect(parsed.hint, argv.join(" ")).not.toContain("Did you mean");
+      // Every retired-spelling hint routes to the in-CLI rename table.
+      expect(parsed.hint, argv.join(" ")).toContain("akm help migrate 0.9.0");
+    }
+  });
+
+  test("retired group-scoped spellings resolve against their parent group", () => {
+    const cases: Array<[string[], string]> = [
+      [["env", "set", "prod", "KEY"], "edit the `.env` file"],
+      [["registry", "search", "x"], "akm search --from registry"],
+      [["workflow", "watch", "run-1"], "akm log --run"],
+      [["config", "show"], "akm config list"],
+      [["task", "enable", "t1"], "akm task sync"],
+      [["log", "tail"], "@offset:"],
+    ];
+    for (const [argv, expected] of cases) {
+      const { status, stderr } = spawnCli(argv, { cwd: repoRoot });
+      expect(status, argv.join(" ")).toBe(2);
+      const parsed = JSON.parse(stderr.trim());
+      expect(parsed.hint, argv.join(" ")).toContain(expected);
+    }
+  });
+});
+
+// S11 item 1/2: the sectioned root help groups top-level commands instead of
+// citty's flat alphabetical-by-declaration COMMANDS dump, and hides the
+// self-update-only `migrate` group from it (while it still executes).
+describe("S11: sectioned root help", () => {
+  test("akm --help groups commands under the four fixed sections", () => {
+    const { stdout } = spawnCli(["--help"], { cwd: repoRoot });
+    expect(stdout).toContain("AGENT LOOP");
+    expect(stdout).toContain("ASSETS");
+    expect(stdout).toContain("MANAGE");
+    expect(stdout).toContain("SYSTEM");
+    expect(stdout).toContain("agents: run `akm help agents`");
+  });
+
+  test("akm --help does not list the hidden migrate group", () => {
+    const { stdout } = spawnCli(["--help"], { cwd: repoRoot });
+    expect(stdout).not.toContain("  migrate ");
+  });
+
+  test("akm migrate status still executes despite being hidden from help", () => {
+    // Not asserting exit 0 — status depends on ambient config/DB state this
+    // suite doesn't sandbox for this one subprocess. What `hidden` must NOT
+    // do is make citty treat it as an unknown command.
+    const { stdout, stderr } = spawnCli(["migrate", "status"], { cwd: repoRoot });
+    expect(stderr).not.toContain("Unknown command");
+    expect(stdout).toContain('"status"');
+  });
+
+  test("bare akm help prints the same sectioned overview and exits 0", () => {
+    const { status, stdout } = spawnCli(["help"], { cwd: repoRoot });
+    expect(status).toBe(0);
+    expect(stdout).toContain("AGENT LOOP");
+    expect(stdout).toContain("agents: run `akm help agents`");
+  });
+
+  test("akm task run --help includes the akm prefix on nested USAGE lines", () => {
+    const { stdout } = spawnCli(["task", "run", "--help"], { cwd: repoRoot });
+    expect(stdout).toContain("akm task run");
   });
 });
 
@@ -484,7 +588,7 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
 //
 // Scope note: this walk only considers TERMINAL leaves — commands with a
 // `run` and no `subCommands` of their own. `defineGroupCommand`-based
-// dispatch groups (`akm graph`, `akm tasks`, `akm proposal`, …) also have a
+// dispatch groups (`akm graph`, `akm task`, `akm proposal`, …) also have a
 // `run` (their subcommand-routing + bare-invocation guard), but whether
 // their OWN bare-invocation behavior needs `GLOBAL_OUTPUT_ARGS` is a
 // separate, broader question this triage item didn't scope or fix. Note: as
@@ -496,7 +600,6 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
 // `defaultRun` remains an explicit override; touching those means editing
 // files this package does not own.
 describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
-  const ROOT_ONLY_OUTPUT_LEAVES = new Set(["setup"]);
   // biome-ignore lint/suspicious/noExplicitAny: walking citty's dynamically-shaped command tree
   type AnyCittyCommandForTest = Record<string, any>;
 
@@ -509,10 +612,14 @@ describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
   /**
    * Walk the full `main` command tree and collect every TERMINAL leaf — a
    * node with its own `run` and no `subCommands` of its own — at every
-   * depth. Excludes both pure routing groups with no `run` at all (e.g. `akm
-   * log`, `akm lessons`, which never render output) and `defineGroupCommand`
-   * dispatch groups that have both a `run` AND `subCommands` (out of scope —
-   * see the describe-block comment above).
+   * depth. Excludes both pure routing groups with no `run` at all (never
+   * render output on their own) and `defineGroupCommand` dispatch groups
+   * that have both a `run` AND `subCommands` (out of scope — see the
+   * describe-block comment above). 0.9.0 CLI overhaul (S3): `akm log` was
+   * one such pure routing group (`list`/`tail` subcommands); it is now
+   * itself a terminal leaf (the `tail` subcommand was dropped) and so is
+   * swept up by this walk like any other leaf. `akm lessons` (the other
+   * former example here) was dropped entirely.
    */
   function collectTerminalLeafCommands(
     cmd: AnyCittyCommandForTest,
@@ -540,7 +647,6 @@ describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
 
     const missing: string[] = [];
     for (const { path, args } of leaves) {
-      if (ROOT_ONLY_OUTPUT_LEAVES.has(path)) continue;
       const topLevel = path.split(" ")[0] ?? path;
       if (exemptCommands.includes(topLevel)) continue;
       if (exemptSubcommands.includes(path)) continue;
@@ -565,21 +671,13 @@ describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
   });
 });
 
-// R-050(b)/(c): the per-leaf `--detail`/`--shape` help strings
-// (GLOBAL_OUTPUT_ARGS in src/cli/shared.ts) used to imply uniform effect
-// everywhere. `--detail` is a genuine no-op on `info`/`list`/`remember`
-// (verified byte-identical output at every level; `show` is NOT one of
-// these — it has three distinct payloads, so the pre-existing register claim
-// "brief==normal on show" was false). `--shape summary` is a hard usage
-// error everywhere except `akm show`. Both caveats should be visible from a
-// leaf's own `--help`, not only the root's.
-describe("GLOBAL_OUTPUT_ARGS help text is scoped honestly (R-050b/c)", () => {
-  test("--detail names the commands where it has no effect", () => {
-    expect(GLOBAL_OUTPUT_ARGS.detail.description).toContain("info");
-    expect(GLOBAL_OUTPUT_ARGS.detail.description).toContain("list");
-    expect(GLOBAL_OUTPUT_ARGS.detail.description).toContain("remember");
-  });
-
+// R-050(c) (S11: R-050(b)'s own "--detail is a no-op on info/list/remember"
+// boilerplate was dropped from the canonical wording — `list` doesn't exist
+// as a bare command any more (folded into `akm bundle list`, S7), and a
+// caveat naming stale commands is worse than no caveat). `--shape summary`
+// is still a hard usage error everywhere except `akm show`, and that caveat
+// should still be visible from a leaf's own `--help`, not only the root's.
+describe("GLOBAL_OUTPUT_ARGS help text is scoped honestly (R-050c)", () => {
   test("--shape repeats the 'summary is show-only' caveat root help documents", () => {
     expect(GLOBAL_OUTPUT_ARGS.shape.description).toContain("summary");
     expect(GLOBAL_OUTPUT_ARGS.shape.description).toContain("akm show");

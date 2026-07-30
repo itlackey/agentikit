@@ -141,7 +141,7 @@ Usage:
   akm-eval-replay <eval-run-id|latest> [options]
 
 Options:
-  --stash <path>     Stash root (default: \$AKM_STASH_DIR or ~/akm).
+  --stash <path>     Stash root (default: \$AKM_BUNDLE_DIR or ~/akm).
   --out <path>       Output root (default: <stash>/.akm/evals).
   --strict           Fail (exit 1) on missing or extra cases too, not just divergences.
   --format json|md|none

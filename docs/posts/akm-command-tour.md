@@ -84,7 +84,7 @@ Real-world use: you just installed `akm` on a new laptop and want the wizard to 
 Use this when you want to skip the wizard and just create the working stash.
 
 ```sh
-akm init --dir ~/akm
+akm init --dir ~/akm  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Real-world use: you're scripting environment bootstrap for a devcontainer or CI image and want a known stash location without interactive prompts.
@@ -134,10 +134,10 @@ These commands answer two related questions:
 This is how you register a source.
 
 ```sh
-akm add ~/.claude/skills
-akm add github:your-org/team-agent-toolkit
-akm add @scope/platform-stash
-akm add https://docs.example.com --name public-docs
+akm add ~/.claude/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add github:your-org/team-agent-toolkit  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add @scope/platform-stash  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add https://docs.example.com --name public-docs  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Real-world use:
@@ -152,7 +152,7 @@ Real-world use:
 Shows what sources are already connected.
 
 ```sh
-akm list
+akm list  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Real-world use: you're debugging why a search result isn't appearing and want to verify whether the expected repo or local directory is even registered.
@@ -162,7 +162,7 @@ Real-world use: you're debugging why a search result isn't appearing and want to
 Refreshes managed sources.
 
 ```sh
-akm update --all
+akm update --all  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Real-world use: your platform team shipped an updated deployment stash and everyone pulls the latest version before a release.
@@ -172,7 +172,7 @@ Real-world use: your platform team shipped an updated deployment stash and every
 Disconnect a source you no longer want indexed.
 
 ```sh
-akm remove public-docs
+akm remove public-docs  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Real-world use: a website source became noisy or outdated and you want it out of search results.
@@ -203,7 +203,7 @@ Real-world use: your team keeps its shared stash in Git. After improving a workf
 Use registries to discover new stashes you have not installed yet.
 
 ```sh
-akm registry search "code review"
+akm search "code review" --from registry
 akm registry add https://example.com/registry/index.json --name team
 ```
 
@@ -344,25 +344,16 @@ akm feedback skills/legacy-deploy --negative --reason "Outdated after platform m
 
 Real-world use: over time, assets that consistently help rise in ranking and stale ones become easier to spot.
 
-### `akm history`
-
-Inspect the recorded state changes for an asset or the stash.
-
-```sh
-akm history --ref workflow:ship-release
-```
-
-Real-world use: you want to know whether a workflow was searched, shown, or downvoted recently while cleaning up a team's stash.
-
 ### `akm log`
 
-Read the append-only realtime event stream.
+Read the append-only realtime event stream — inspect the recorded state
+changes for an asset or the whole stash.
 
 ```sh
-akm log tail --format jsonl
+akm log --ref workflow:ship-release
 ```
 
-Real-world use: another process is watching `akm` activity and reacting when new feedback, imports, or proposals land.
+Real-world use: you want to know whether a workflow was searched, shown, or downvoted recently while cleaning up a team's stash, or another process is watching `akm` activity and reacting when new feedback, imports, or proposals land (poll `--since '@offset:<id>'` to resume without duplicates).
 
 ### `akm improve`
 
@@ -374,12 +365,12 @@ akm improve skills/code-review --task "make this stricter about test coverage"
 
 Real-world use: you have a decent review skill, but you want an agent to improve it based on how it's actually being used.
 
-### `akm propose`
+### `akm proposal new`
 
 Generate a brand-new asset proposal.
 
 ```sh
-akm propose workflow incident-rollback --task "Rollback procedure for failed production deploys"
+akm proposal new workflow incident-rollback --task "Rollback procedure for failed production deploys"
 ```
 
 Real-world use: repeated gaps in your stash show up in `history` and `log`, so you create a first draft for the missing workflow or skill.
@@ -410,12 +401,12 @@ akm help migrate latest
 
 Real-world use: you upgraded `akm` and want the release-specific migration notes without leaving the terminal.
 
-### `akm hints`
+### `akm help agents`
 
 Print instructions you can drop into `AGENTS.md` or `CLAUDE.md`.
 
 ```sh
-akm hints
+akm help agents
 ```
 
 Real-world use: you want every project to tell its coding agent how to use the local `akm` installation.
@@ -446,7 +437,7 @@ In practice, most teams live in a much smaller subset of the CLI:
 
 ```sh
 akm setup
-akm add ...
+akm add ...  # doclint:ignore (historical — pre-0.9.0 command spelling)
 akm index
 akm curate "..."
 akm show <ref>
@@ -491,8 +482,8 @@ And if you're wondering where to start, start here:
 
 ```sh
 akm setup
-akm add ~/.claude/skills
-akm add github:your-org/team-agent-toolkit
+akm add ~/.claude/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add github:your-org/team-agent-toolkit  # doclint:ignore (historical — pre-0.9.0 command spelling)
 akm index
 akm curate "code review"
 akm show skills/code-review

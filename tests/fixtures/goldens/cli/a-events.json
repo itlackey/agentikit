@@ -2,9 +2,5 @@
   "list": {
     "exitCode": 0,
     "stdoutKeys": ["events", "nextOffset", "totalCount"]
-  },
-  "tail": {
-    "exitCode": 0,
-    "stdoutKeys": ["events", "nextOffset", "reason", "totalCount"]
   }
 }

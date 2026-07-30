@@ -184,7 +184,7 @@ If a website or documentation corpus will be referenced repeatedly and the
 environment supports it, add it as an AKM website source so subsequent lookups
 are reproducible:
 
-`akm add <url> --name <short-name> --provider website`
+`akm bundle add <url> --name <short-name> --provider website`
 
 Then use `akm search` or `akm show` against the cached source instead of
 re-fetching pages ad hoc.
@@ -352,14 +352,14 @@ Resolve the target wiki:
   `raw/` directories is enough, then register it as its own bundle:
 
   ```sh
-  akm add wikis/{{ wiki_name }} --name {{ wiki_name }}
+  akm bundle add wikis/{{ wiki_name }} --name {{ wiki_name }}
   ```
 
-  Point `akm add` at the wiki's own directory, not a path nested inside the
+  Point `akm bundle add` at the wiki's own directory, not a path nested inside the
   primary AKM stash — a nested path gets claimed by the primary stash's own
   adapter instead of `llm-wiki` and loses wiki recognition.
 - If it already exists, find its registered path with
-  `akm list --format json` (the matching source's `path` field) if you do
+  `akm bundle list --format json` (the matching source's `path` field) if you do
   not already have it.
 
 There is no ingest command — copy or write the raw material straight into

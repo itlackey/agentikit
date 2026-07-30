@@ -34,7 +34,7 @@ import * as gitProvider from "../../src/sources/providers/git";
 import { NpmSourceProvider } from "../../src/sources/providers/npm";
 import * as websiteIngest from "../../src/sources/snapshot-fetchers/website-ingest";
 
-const originalStashDir = process.env.AKM_STASH_DIR;
+const originalStashDir = process.env.AKM_BUNDLE_DIR;
 const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
 const originalXdgDataHome = process.env.XDG_DATA_HOME;
 const originalXdgStateHome = process.env.XDG_STATE_HOME;
@@ -52,15 +52,15 @@ beforeEach(() => {
     fs.mkdirSync(path.join(stashDir, sub), { recursive: true });
   }
   process.env.XDG_CONFIG_HOME = testConfigDir;
-  // Pair AKM_STASH_DIR mutations with XDG_DATA_HOME / XDG_STATE_HOME so the
+  // Pair AKM_BUNDLE_DIR mutations with XDG_DATA_HOME / XDG_STATE_HOME so the
   // write-guard in src/core/paths.ts stays inert.
   process.env.XDG_DATA_HOME = testDataDir;
   process.env.XDG_STATE_HOME = testStateDir;
-  process.env.AKM_STASH_DIR = stashDir;
+  process.env.AKM_BUNDLE_DIR = stashDir;
 });
 
 afterEach(() => {
-  process.env.AKM_STASH_DIR = originalStashDir ?? undefined;
+  process.env.AKM_BUNDLE_DIR = originalStashDir ?? undefined;
   if (originalXdgConfigHome === undefined) {
     delete process.env.XDG_CONFIG_HOME;
   } else {
@@ -225,7 +225,7 @@ describe("resolveSourceEntries", () => {
     }
   });
 
-  test("keeps AKM_STASH_DIR ahead of a configured default bundle", () => {
+  test("keeps AKM_BUNDLE_DIR ahead of a configured default bundle", () => {
     const configuredDefault = fs.mkdtempSync(path.join(os.tmpdir(), "akm-configured-default-"));
     try {
       saveConfig({

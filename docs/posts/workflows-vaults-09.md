@@ -165,7 +165,7 @@ So far in this series, stashes have been read-only: you pull in a team repo or a
 When you create a stash with `--writable`, `akm save` will stage, commit, and push your changes back to the remote:
 
 ```sh
-akm add git@github.com:your-org/skills.git --provider git --name team-skills --writable
+akm add git@github.com:your-org/skills.git --provider git --name team-skills --writable  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 ```sh
@@ -302,7 +302,7 @@ The npm package requires Node.js >= 22. It prefers a working Bun >= 1.0 on
 To try workflows:
 
 ```sh
-akm workflow template
+akm workflow template  # doclint:ignore (historical — akm 0.5.0 release announcement; `template` folded into `workflow create --print` in the 0.9.0 CLI overhaul)
 # Copy the output to workflows/your-first-workflow.md and edit it
 akm workflow create your-first-workflow
 akm workflow start workflow:your-first-workflow

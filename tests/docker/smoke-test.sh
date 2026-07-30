@@ -77,7 +77,7 @@ assert_json_field() {
 STASH_DIR="$(mktemp -d)/akm-smoke"
 CONFIG_DIR="$(mktemp -d)/akm-config"
 CACHE_DIR="$(mktemp -d)/akm-cache"
-export AKM_STASH_DIR="$STASH_DIR"
+export AKM_BUNDLE_DIR="$STASH_DIR"
 export XDG_CONFIG_HOME="$CONFIG_DIR"
 export XDG_CACHE_HOME="$CACHE_DIR"
 
@@ -97,7 +97,7 @@ assert_output_contains "akm --help shows usage" "usage\|Usage\|akm" akm --help
 # ── 2. Init ──────────────────────────────────────────────────────────────────
 
 echo "--- Init ---"
-assert_exit_zero "akm init creates stash" akm init
+assert_exit_zero "akm bundle create creates stash" akm bundle create
 
 # Verify stash directory structure was created
 for subdir in scripts skills commands agents knowledge; do
@@ -232,7 +232,7 @@ assert_json_field "info has indexStats" "indexStats" akm info --format json
 
 echo "--- List ---"
 # list may return empty but should not error
-assert_exit_zero "akm list does not crash" akm list
+assert_exit_zero "akm bundle list does not crash" akm bundle list
 
 # ── 9. Re-index (incremental) ───────────────────────────────────────────────
 

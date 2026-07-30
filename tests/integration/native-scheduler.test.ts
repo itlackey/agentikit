@@ -54,7 +54,7 @@ function expectSuccess(result: RunResult, label: string): void {
 function withoutHarnessOverrides(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of [
-    "AKM_STASH_DIR",
+    "AKM_BUNDLE_DIR",
     "AKM_CONFIG_DIR",
     "AKM_DATA_DIR",
     "AKM_CACHE_DIR",
@@ -94,7 +94,7 @@ async function waitForCompletedHistory(
   const deadline = Date.now() + 60_000;
   let diagnostic = "no history response";
   while (Date.now() < deadline) {
-    const history = runCli(["tasks", "history", "--id", id, "--limit", "1"]);
+    const history = runCli(["task", "history", "--id", id, "--limit", "1"]);
     diagnostic = `${history.stdout}\n${history.stderr}`;
     if (history.status === 0) {
       const rows = (
@@ -147,7 +147,7 @@ test.skipIf(!ENABLED)(
 
     const env = withoutHarnessOverrides({
       HOME: nativeHome,
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       AKM_CONFIG_DIR: configDir,
       AKM_DATA_DIR: dataDir,
       AKM_CACHE_DIR: cacheDir,
@@ -174,21 +174,18 @@ test.skipIf(!ENABLED)(
       expectSuccess(version, "native standalone candidate --version");
       expect(version.stdout).toContain(candidateVersion as string);
 
-      const doctor = run([binary, "tasks", "doctor"], env);
+      const doctor = run([binary, "task", "doctor"], env);
       expectSuccess(doctor, "native standalone tasks doctor");
       expect(JSON.parse(doctor.stdout)).toMatchObject({ akm: { argv: [binary], via: "standalone" } });
 
-      const add = run(
-        [binary, "tasks", "add", id as string, "--schedule", "@daily", "--command", "akm --version"],
-        env,
-      );
+      const add = run([binary, "task", "add", id as string, "--schedule", "@daily", "--command", "akm --version"], env);
       expectSuccess(add, "native tasks add");
       taskAdded = true;
 
       const installedXml =
         process.platform === "win32" ? run(["schtasks", "/Query", "/TN", target, "/XML"], env) : undefined;
       if (installedXml) expectSuccess(installedXml, "schtasks query before sync");
-      const sync = run([binary, "tasks", "sync"], env);
+      const sync = run([binary, "task", "sync"], env);
       expectSuccess(sync, "native tasks sync after scheduler materialization");
       expect(JSON.parse(sync.stdout), installedXml?.stdout).toMatchObject({
         installed: [],
@@ -215,7 +212,7 @@ test.skipIf(!ENABLED)(
       expect(fs.readFileSync(row.log, "utf8")).toContain(candidateVersion as string);
       expect(fs.readFileSync(taskPath)).toEqual(originalTask);
     } finally {
-      if (taskAdded) run([binary, "tasks", "remove", id as string], env);
+      if (taskAdded) run([binary, "task", "remove", id as string], env);
       if (process.platform === "darwin") {
         run(["launchctl", "bootout", target], env);
         run(["launchctl", "enable", target], env);
@@ -267,7 +264,7 @@ test.skipIf(!ENABLED || process.platform !== "win32")(
     expect(restrictedPath.toLowerCase()).not.toContain("bun");
 
     const env = withoutHarnessOverrides({
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
       AKM_CONFIG_DIR: configDir,
       AKM_DATA_DIR: dataDir,
       AKM_CACHE_DIR: cacheDir,
@@ -303,14 +300,14 @@ test.skipIf(!ENABLED || process.platform !== "win32")(
       expectSuccess(version, "packed Node candidate --version");
       expect(version.stdout).toContain(candidateVersion as string);
 
-      const doctor = runPackedCli(["tasks", "doctor"]);
+      const doctor = runPackedCli(["task", "doctor"]);
       expectSuccess(doctor, "packed Node tasks doctor");
       const doctorJson = JSON.parse(doctor.stdout) as { akm: { argv: string[]; via: string } };
       expect(fs.realpathSync(doctorJson.akm.argv[0]!)).toBe(fs.realpathSync(nodeBinary));
       expect(doctorJson.akm.argv[1]).toEndWith("dist/akm");
       expect(doctorJson.akm).toMatchObject({ via: "npm" });
 
-      const add = runPackedCli(["tasks", "add", id as string, "--schedule", "@daily", "--command", "akm --version"]);
+      const add = runPackedCli(["task", "add", id as string, "--schedule", "@daily", "--command", "akm --version"]);
       expectSuccess(add, "packed Node tasks add");
       taskAdded = true;
 
@@ -328,7 +325,7 @@ test.skipIf(!ENABLED || process.platform !== "win32")(
       expect(fs.readFileSync(row.log, "utf8")).toContain(candidateVersion as string);
       expect(fs.readFileSync(taskPath)).toEqual(originalTask);
     } finally {
-      if (taskAdded) runPackedCli(["tasks", "remove", id as string]);
+      if (taskAdded) runPackedCli(["task", "remove", id as string]);
       run(["schtasks", "/End", "/TN", target], env);
       run(["schtasks", "/Delete", "/TN", target, "/F"], env);
       fs.rmSync(path.join(stashDir, "tasks", `${id}.yml`), { force: true });

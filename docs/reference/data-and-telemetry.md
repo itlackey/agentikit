@@ -53,7 +53,7 @@ Everything in the cache is regenerable. It is safe to delete the entire cache di
 |---|---|---|
 | `config-backups/config-<timestamp>.json` | Pre-save config snapshots (5 retained; owner-only permissions — file `0600`, dir `0700`, since 08-F4) | Yes |
 | `config-backups/config.latest.json` | Latest backup alias (owner-only `0600`) | Yes |
-| `registry/` | Downloaded registry tarballs (stash packages from npm, GitHub, etc.) | Yes — re-downloaded on next `akm add` or `akm update` |
+| `registry/` | Downloaded registry tarballs (stash packages from npm, GitHub, etc.) | Yes — re-downloaded on next `akm bundle add` or `akm bundle update` |
 | `registry-index/` | Legacy per-URL JSON cache (v0.7 artifact) | Yes — fully replaced by `index.db` in 0.8.0 |
 | `semantic-status.json` | Semantic index build status marker | Yes |
 | `bin/` | Downloaded AKM binary cache (used by `akm upgrade`) | Yes |
@@ -69,7 +69,7 @@ Override: set `AKM_CACHE_DIR` or `XDG_CACHE_HOME`.
 | `<stash>/` | All your asset files: agents, skills, commands, knowledge, instructions, workflows, scripts, memories, env files, secrets, lessons, tasks, sessions, facts, plus any bundle-adapter-owned content (e.g. `llm-wiki` bundle roots — not an AKM `PLACEMENT_SPECS` type) | **No** — this is YOUR data |
 | `<stash>/.akm/` | Hidden AKM metadata (v0.7 proposals, legacy runs) | Caution — check for pending proposals first |
 
-Override: set `AKM_STASH_DIR`, or configure `bundles`/`defaultBundle` in `config.json` (the top-level `stashDir` key from 0.8 is retired and rejected in 0.9 — see [Configuration](configuration.md#bundles-and-write-target)).
+Override: set `AKM_BUNDLE_DIR`, or configure `bundles`/`defaultBundle` in `config.json` (the top-level `stashDir` key from 0.8 is retired and rejected in 0.9 — see [Configuration](configuration.md#bundles-and-write-target)).
 
 ---
 
@@ -104,12 +104,12 @@ the set of types the code actually emits at HEAD (verified against every
 
 | Event type | When emitted | Key metadata fields |
 |---|---|---|
-| `add` | `akm add <source>` | `ref`, `provider` |
-| `remove` | `akm remove <source>` | `ref` |
-| `update` | `akm update [source]` | `ref` |
+| `add` | `akm bundle add <source>` | `ref`, `provider` |
+| `remove` | `akm bundle remove <source>` | `ref` |
+| `update` | `akm bundle update [source]` | `ref` |
 | `remember` | `akm remember <text>` | `ref` |
 | `import` | `akm import <file>` | `ref` |
-| `mv` | A successful `akm mv` rename only — nothing is emitted on failure | `ref` (the new ref); metadata `{from, to, rewroteFiles, readOnlyCiters, twinMoved}` (counts only) |
+| `rekey` | `scripts/rekey-asset-ref.ts` moved at least one row onto a renamed asset's new ref — nothing is emitted on a no-op re-run | `ref` (the new ref); metadata `{from, to, changed}` (row counts only) |
 
 *Search, retrieval, sync*
 
@@ -152,10 +152,10 @@ the set of types the code actually emits at HEAD (verified against every
 | `reflect_invoked` | Start of reflect phase in `akm improve` | `ref`, engine |
 | `reflect_completed` | Reflect phase produced a proposal | `ref` |
 | `improve_reflect_outcome` | Per-asset reflect result | `ref`, `ok`, `durationMs`, `reason` |
-| `propose_invoked` | `akm propose` | `ref` |
-| `distill_invoked` | Distill phase inside the `akm improve`/`akm propose` pipeline. **`akm distill` is not a CLI command** — there is no standalone verb by that name | `ref`, outcome |
+| `propose_invoked` | `akm proposal new` | `ref` |
+| `distill_invoked` | Distill phase inside the `akm improve`/`akm proposal new` pipeline. **`akm distill` is not a CLI command** — there is no standalone verb by that name | `ref`, outcome |
 | `consolidate_completed` | `akm improve`'s consolidate pass processed at least one memory | `ref` (`memories/_consolidation`) |
-| `extract_invoked` | `akm extract --type <harness>` / `--auto`, or improve-stage session extraction | `outcome`, `sessionId`, `harness` |
+| `extract_invoked` | `akm proposal extract --type <harness>` / `--auto`, or improve-stage session extraction | `outcome`, `sessionId`, `harness` |
 | `extract_triaged` | The pre-LLM extract triage gate evaluated at least one session | `evaluated`, `passed`, `triagedOut`, `sourceRun` (aggregated) |
 | `schema_repair_invoked` | The schema-repair pass inside `akm improve` (`runSchemaRepairPass`) attempts to patch missing frontmatter on an asset that failed schema validation. **There is no `akm lint --repair` flag** — `lint` has `--fix`/`--auto-fix`, unrelated to this event | `ref`, outcome |
 | `proactive_selected` | The proactive-maintenance selector runs (once per `akm improve` run) | `count`, `dueTotal`, `neverReflected` (aggregated) |
@@ -192,8 +192,10 @@ the set of types the code actually emits at HEAD (verified against every
 
 ### 2. Usage Events Table
 
-`usage_events` is the local analytical record behind `akm history`, utility
-ranking, retrieval-demand counts, GRR, and real-query eval generation. It stores
+`usage_events` is the local analytical record behind utility ranking,
+retrieval-demand counts, GRR, and real-query eval generation (0.9.0: its CLI
+read surface, `akm history`, was removed — the table itself and everything
+below still applies). It stores
 search/curate queries, per-entry search impressions, explicit show/curate
 engagement, feedback signals, stable refs, and timestamps. It never leaves the
 machine unless you explicitly copy the database or send derived content to a
@@ -226,15 +228,15 @@ use `control: false` and may contain:
 
 Attribution metadata contains fully-qualified refs and graph identifiers, never
 asset bodies or provenance content. It is not added to `search`, `curate`, or
-`show` result payloads, but stored metadata is visible through
-`akm history --detail full`. The full index still applies its existing
+`show` result payloads; there is no CLI surface that reads it back (0.9.0:
+`akm history` was removed). The full index still applies its existing
 higher-priority-wins `(type, entry.name)` dedup across sources: attribution
 source-qualifies every indexed row but does not invent a lower-priority row for
 an identity that production indexing omitted.
 
 ### 3. Proposals Table
 
-The proposal queue: pending, accepted, and rejected improvement proposals for your stash assets. Generated by `akm improve`, `akm propose`, and related proposal-producing flows.
+The proposal queue: pending, accepted, and rejected improvement proposals for your stash assets. Generated by `akm improve`, `akm proposal new`, and related proposal-producing flows.
 
 Contents:
 - Proposal UUID (primary key)
@@ -246,7 +248,7 @@ Contents:
 
 ### 4. Task History Table
 
-A record of scheduled task runs (from `akm tasks`):
+A record of scheduled task runs (from `akm task`):
 - Task ID, status, start/end times
 - Log file path (the log content stays in `$CACHE/tasks/logs/`)
 
@@ -258,16 +260,13 @@ A record of scheduled task runs (from `akm tasks`):
 
 ```sh
 # List recent events
-akm log list
-
-# Stream live events (tail)
-akm log tail
+akm log
 
 # Filter by type
-akm log list --type search --limit 20
+akm log --type search --limit 20
 
 # Filter by asset ref
-akm log list --ref skills/code-review
+akm log --ref skills/code-review
 ```
 
 ### Inspect proposals
@@ -323,7 +322,7 @@ You can redirect any AKM directory to a custom path:
 | `AKM_SQLITE_JOURNAL_MODE` | SQLite journal mode: `WAL` (default), `DELETE`, or `TRUNCATE`. Use `DELETE`/`TRUNCATE` on network filesystems (NFS/SMB) where WAL is impossible. When left at the `WAL` default, akm auto-detects a network FS for the data dir and falls back to `DELETE`. |
 | `AKM_STATE_DIR` | State directory (`~/.local/state/akm/`) |
 | `AKM_CACHE_DIR` | Cache directory (`~/.cache/akm/`) |
-| `AKM_STASH_DIR` | Default stash directory (`~/akm/`) |
+| `AKM_BUNDLE_DIR` | Default stash directory (`~/akm/`) |
 | `XDG_CONFIG_HOME` | XDG base — akm appends `/akm` |
 | `XDG_DATA_HOME` | XDG base — akm appends `/akm` |
 | `XDG_STATE_HOME` | XDG base — akm appends `/akm` |

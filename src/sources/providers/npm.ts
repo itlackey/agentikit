@@ -54,7 +54,7 @@ class NpmSourceProvider implements SourceProvider {
   path(): string {
     if (this.#config.path) return this.#config.path;
     throw new ConfigError(
-      `npm source "${this.name}" has no resolved content path — run \`akm update\` to sync it before indexing.`,
+      `npm source "${this.name}" has no resolved content path — run \`akm bundle update\` to sync it before indexing.`,
     );
   }
 

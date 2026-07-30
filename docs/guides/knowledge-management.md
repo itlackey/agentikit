@@ -8,7 +8,7 @@ Four surfaces cover the full capture-and-organize lifecycle.
 ## akm remember
 
 `akm remember` writes a context fragment — an observation, decision, snippet,
-or note — into the `memories/` directory of your writable stash. Pass a quoted
+or note — into the `memories/` directory of your writable bundle. Pass a quoted
 string for short notes, or pipe markdown via stdin for longer content.
 
 ```sh
@@ -27,8 +27,8 @@ akm remember "Found this snippet: curl -fsSL ... | bash" --auto
 # LLM-assisted enrichment (requires configured LLM; fails soft):
 cat long-meeting-notes.md | akm remember --name meeting-2026-05 --enrich
 
-# Route to a named writable stash:
-akm remember "Use staging cluster for blue-green" --target team-stash
+# Route to a named writable bundle:
+akm remember "Use staging cluster for blue-green" --bundle team-bundle
 ```
 
 Memories support scope flags (`--user`, `--agent`, `--run`, `--channel`) for
@@ -45,7 +45,7 @@ akm remember "Hot-fix deploys skip staging; always notify on-call first" \
 ## akm import
 
 `akm import` brings an existing document — a local file, a single URL, or
-stdin — into `knowledge/` as a searchable reference asset. Unlike `akm add`
+stdin — into `knowledge/` as a searchable reference asset. Unlike `akm bundle add`
 (which registers a persistent source), `import` is a one-shot capture.
 
 ```sh
@@ -54,8 +54,8 @@ akm import ./notes/release.txt --name release-checklist
 akm import - --name scratch-notes < notes.md
 akm import https://example.com/docs/auth
 
-# Route to a named writable stash:
-akm import ./docs/auth-flow.md --target team-stash
+# Route to a named writable bundle:
+akm import ./docs/auth-flow.md --target team-bundle
 ```
 
 URL imports fetch only the exact page you pass; they do not crawl linked
@@ -79,7 +79,7 @@ automatically at install time, and its pages are indexed like any other
 content:
 
 ```sh
-akm add github:team/research-wiki        # install a wiki bundle (or a local dir)
+akm bundle add github:team/research-wiki        # install a wiki bundle (or a local dir)
 akm search "attention mechanism"         # pages rank alongside all other assets
 akm show research-wiki//pages/attention  # read a page by bundle//conceptId ref
 ```
@@ -102,11 +102,7 @@ no `akm vault` command — use `env`/`secret`.)
 akm env create prod                       # create an empty .env group
 akm env create prod --from-file ./.env    # or ingest an existing .env
 
-# Set/unset individual keys without exposing the value on argv or stdout:
-echo -n "$VALUE" | akm env set env/prod API_URL
-akm env unset env/prod API_URL
-
-# Or edit the whole file with your own editor:
+# akm does not manage individual keys — edit the whole file with your own editor:
 $EDITOR "$(akm env path env/prod --quiet)"
 
 akm env list
@@ -120,18 +116,18 @@ akm env run env/prod -- $SHELL            # interactive session with the env loa
 printf '%s' "$TOKEN" | akm secret set secrets/deploy-token
 akm secret run secrets/deploy-token GITHUB_TOKEN -- gh release create v1.0.0
 
-# Write into a specific source instead of the working stash:
+# Write into a specific source instead of the working bundle:
 akm secret set secrets/deploy-token --target team --from-file ./token
 ```
 
-`.env` files are stored at mode 0600 under `env/` in your stash; standalone
+`.env` files are stored at mode 0600 under `env/` in your bundle; standalone
 secrets are stored at mode 0600 under `secrets/`. Values **never cross argv**
 (no `/proc/cmdline` exposure) and never appear in akm's structured output —
 only key names are shown.
 
 Env/secret **mutations** (`create`, `set`, `unset`, `remove`) choose their write
 destination like every other write command: `--target <source>` wins, else
-`defaultWriteTarget`, else the working stash; the target must be writable, and a
+`defaultWriteTarget`, else the working bundle; the target must be writable, and a
 git-backed writable target commits the change at the operation boundary. Reads
 (`list`, `show`, `path`, `run`) still span all configured sources.
 
@@ -154,7 +150,7 @@ structured output or search index, and env/secret files are stored at mode 0600.
 Values are **plaintext at rest** — protected only by filesystem permissions.
 OS-level full-disk encryption (FileVault, LUKS, BitLocker) is the recommended
 complement. env/secret files are excluded from `akm sync` git commits when
-`env/` is listed in your stash `.gitignore`.
+`env/` is listed in your bundle `.gitignore`.
 
 ### Threat model scope
 
@@ -178,7 +174,7 @@ processes.
 
 ### Rotation
 
-Editing the `.env` overwrites the live file. If the stash is git-tracked, the
+Editing the `.env` overwrites the live file. If the bundle is git-tracked, the
 old value may remain in git history — use `git filter-repo` or BFG to purge if
 a secret needs to be expunged from history.
 

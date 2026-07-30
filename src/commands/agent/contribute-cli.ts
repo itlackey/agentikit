@@ -3,39 +3,31 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Contribution command cluster (`akm agent`, `akm lint`, `akm propose`) —
- * the asset authoring / validation / proposal-creation verbs. Extracted
- * verbatim from src/cli.ts (WS6) so the God Module shrinks; the
- * `main.subCommands.{agent,lint,propose}` keys and every command's args /
- * output shape stay byte-identical.
+ * Contribution command cluster (`akm agent`, `akm lint`) — the asset
+ * authoring / validation verbs. Extracted verbatim from src/cli.ts (WS6) so
+ * the God Module shrinks; the `main.subCommands.{agent,lint}` keys and every
+ * command's args / output shape stay byte-identical.
  *
- * These three handlers each branch on the result and set a non-zero
- * `process.exitCode` conditionally (exit 1 on a failed dispatch / proposal,
- * or on `--fail-on-flagged` lint findings) rather than emitting through the
- * thrown-error path, so they keep the inline `runWithJsonErrors` form rather
- * than migrating to `defineJsonCommand` (which is reserved for plain
- * runWithJsonErrors+output handlers). `process.exitCode` (not
- * `process.exit()`) so the process still exits via natural event-loop drain
- * rather than skipping pending cleanup — see R-067 / F4.
+ * These handlers branch on the result and set a non-zero `process.exitCode`
+ * conditionally (exit 1 on a failed dispatch, or on `--fail-on-flagged` lint
+ * findings) rather than emitting through the thrown-error path, so they keep
+ * the inline `runWithJsonErrors` form rather than migrating to
+ * `defineJsonCommand` (which is reserved for plain runWithJsonErrors+output
+ * handlers). `process.exitCode` (not `process.exit()`) so the process still
+ * exits via natural event-loop drain rather than skipping pending cleanup —
+ * see R-067 / F4.
  *
- * NOTE on `propose` vs `proposal`: the proposal MANAGEMENT family
- * (list/show/accept/reject/…) lives in src/commands/proposal/proposal-cli.ts.
- * The `propose` (create) verb here is the asset-authoring entry point and
- * shares no private helper with that module — its path/name helpers come from
- * the shared src/core/asset/asset-create.ts module, imported below.
+ * NOTE: the asset-authoring `propose` verb (formerly here) moved to
+ * `akm proposal new` (0.9 CLI overhaul, S8) — see
+ * src/commands/proposal/propose-cli.ts.
  */
 
-import fs from "node:fs";
-import path from "node:path";
 import { defineCommand } from "citty";
 import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
 import { EXIT_CODES, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
-import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../../core/asset/asset-create";
 import { loadConfig } from "../../core/config/config";
-import { UsageError } from "../../core/errors";
 import { resolveUsageEventSource } from "../../indexer/usage/usage-events";
 import { akmLint } from "../lint/index";
-import { akmPropose } from "../proposal/propose";
 import { akmAgentDispatch } from "./agent-dispatch";
 
 const EXIT_GENERAL = EXIT_CODES.GENERAL;
@@ -44,14 +36,14 @@ export const agentCommand = defineCommand({
   meta: {
     name: "agent",
     description:
-      "Dispatch an agent CLI (opencode, claude, …) with an optional agent asset that provides the system prompt, model, and tool policy. Use <agent-ref> to embody a stash agent, --model to override the model, and --prompt/--command/--workflow to provide the task.",
+      "Dispatch an agent CLI (opencode, claude, …) with an optional agent asset that provides the system prompt, model, and tool policy. Use <agent-ref> to embody a bundle agent, --model to override the model, and --prompt/--command/--workflow to provide the task.",
   },
   args: {
     ...GLOBAL_OUTPUT_ARGS,
     "agent-ref": {
       type: "positional",
       description:
-        "Optional agent asset ref (e.g. agents/code-reviewer). Loads system prompt, model, and tool policy from the stash asset.",
+        "Optional agent asset ref (e.g. agents/code-reviewer). Loads system prompt, model, and tool policy from the bundle asset.",
       required: false,
     },
     prompt: { type: "string", description: "Task prompt to pass to the agent" },
@@ -148,7 +140,7 @@ export const lintCommand = defineCommand({
   meta: {
     name: "lint",
     description:
-      "Scan stash .md files for structural issues (unquoted colons, missing updated field, orphaned stubs, placeholder stubs, missing name/type, stale paths, broken refs in body text and in refs/xrefs/supersededBy/contradictedBy frontmatter). Use --fix to auto-fix Tier 1 issues. Exits 0 on success regardless of findings; use --fail-on-flagged for CI fail-on-finding behavior.",
+      "Scan bundle .md files for structural issues (unquoted colons, missing updated field, orphaned stubs, placeholder stubs, missing name/type, stale paths, broken refs in body text and in refs/xrefs/supersededBy/contradictedBy frontmatter). Use --fix to auto-fix Tier 1 issues. Exits 0 on success regardless of findings; use --fail-on-flagged for CI fail-on-finding behavior.",
   },
   args: {
     // R-051: `lint` is a raw `defineCommand` (not `defineJsonCommand`), so it
@@ -163,7 +155,7 @@ export const lintCommand = defineCommand({
       description: "Apply auto-fixes in place (alias: --auto-fix)",
       default: false,
     },
-    dir: { type: "string", description: "Override stash root directory (default: from config)" },
+    dir: { type: "string", description: "Override bundle root directory (default: from config)" },
     "fail-on-flagged": {
       type: "boolean",
       description: "Exit non-zero when summary.flagged > 0 (CI-friendly). Default: exit 0 regardless of findings.",
@@ -184,75 +176,6 @@ export const lintCommand = defineCommand({
       });
       output("lint", result);
       if (args["fail-on-flagged"] && result.summary.flagged > 0) {
-        process.exitCode = EXIT_GENERAL;
-        return;
-      }
-    });
-  },
-});
-
-export const proposeCommand = defineCommand({
-  meta: {
-    name: "propose",
-    description: "Ask the configured agent CLI to author a brand-new asset and queue it as a proposal",
-  },
-  // Raw defineCommand: declare the global output flags so their space-separated
-  // values are consumed rather than shifting the `type` / `name` positionals.
-  args: {
-    ...GLOBAL_OUTPUT_ARGS,
-    // Optional in citty so run() is invoked when omitted; we re-validate
-    // below to surface a structured UsageError (exit 2) instead of citty's
-    // default help-banner exit-0.
-    type: { type: "positional", description: "Asset type (skill, command, knowledge, lesson, ...)", required: false },
-    name: {
-      type: "positional",
-      description: "Asset name (flat, no '/'; use --path for a subdirectory)",
-      required: false,
-    },
-    path: {
-      type: "string",
-      description:
-        "Relative subdirectory under the type dir to place the proposed asset in (e.g. 'release'). The filename comes from the name.",
-    },
-    task: { type: "string", description: "Task description for the agent (what should the asset do?)" },
-    file: { type: "string", description: "Read the task or prompt text from a UTF-8 file" },
-    engine: { type: "string", description: "Engine to use (defaults to defaults.engine)" },
-    "timeout-ms": { type: "string", description: "Override the agent CLI timeout in milliseconds" },
-  },
-  async run({ args }) {
-    await runWithJsonErrors(async () => {
-      // citty silently shows help and exits 0 when required positionals are
-      // omitted. Re-validate explicitly so the exit code is 2 (USAGE) and a
-      // structured JSON error reaches scripted callers.
-      const taskFromFlag = typeof args.task === "string" ? args.task : undefined;
-      const fileFromFlag = typeof args.file === "string" ? args.file : undefined;
-      if (!args.type || !args.name || (!taskFromFlag && !fileFromFlag)) {
-        throw new UsageError(
-          "Usage: akm propose <type> <name> (--task '<task>' | --file <path>).",
-          "MISSING_REQUIRED_ARGUMENT",
-          "Provide the asset type, name, and exactly one of --task or --file.",
-        );
-      }
-      if (taskFromFlag && fileFromFlag) {
-        throw new UsageError("Pass exactly one of --task or --file.", "INVALID_FLAG_VALUE");
-      }
-      // `name` is flat; subdirectory placement is `--path`'s job.
-      assertFlatAssetName(String(args.name));
-      const proposedName = combineCreatePath(normalizeCreateSubPath(getStringArg(args, "path")), String(args.name));
-      const taskText = fileFromFlag ? fs.readFileSync(path.resolve(fileFromFlag), "utf8") : (taskFromFlag ?? "");
-      const timeoutMs = parsePositiveIntFlag(args["timeout-ms"], "--timeout-ms");
-      const result = await akmPropose({
-        type: String(args.type),
-        name: proposedName,
-        task: taskText,
-        engine: getStringArg(args, "engine"),
-        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-      });
-      output("propose", result);
-      if (result.ok === false) {
-        // Same reasoning as agentCommand above: output() already ran, this
-        // is the last statement in the handler, so process.exitCode + return
-        // is equivalent without skipping any pending cleanup.
         process.exitCode = EXIT_GENERAL;
         return;
       }

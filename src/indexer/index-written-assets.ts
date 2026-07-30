@@ -24,7 +24,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { akmAdapter } from "../core/adapter/adapters/akm-adapter";
-import { recoverTxnsForRoot } from "../core/fs-txn";
 import { getDbPath } from "../core/paths";
 import { warnVerbose } from "../core/warn";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
@@ -68,18 +67,12 @@ export async function indexWrittenAssets(
   stashDir: string,
   filePaths: string[],
   options: {
-    recoverMoves?: boolean;
     /** Configured stable identity for a managed source. */
     bundleId?: string;
   } = {},
 ): Promise<boolean> {
   try {
     return await withIndexWriterLease({ purpose: "index-written-assets" }, async () => {
-      if (options.recoverMoves !== false) {
-        // Unified fs-txn engine (WI-6.3): finish/roll back interrupted mv
-        // transactions before the targeted write-path refresh reads the tree.
-        await recoverTxnsForRoot(stashDir, (journal) => journal.kind === "mv");
-      }
       const dbPath = getDbPath();
       if (!fs.existsSync(dbPath)) return true;
 

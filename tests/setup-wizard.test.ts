@@ -174,7 +174,7 @@ describe("stepAddSources – recommended GitHub repos", () => {
 
     const result = await stepAddSources({ bundles: {} } as never);
     expect(q.multiselectConfigs).toHaveLength(1);
-    expect(q.logged.some((entry) => entry.includes("Configured stash sources"))).toBe(false);
+    expect(q.logged.some((entry) => entry.includes("Configured bundle sources"))).toBe(false);
     expect(q.multiselectConfigs[0]?.options.map((option) => option.label)).toEqual([
       "itlackey/akm-stash",
       "andrewyng/context-hub",
@@ -234,8 +234,8 @@ describe("stepAddSources – recommended GitHub repos", () => {
 
     const result = await stepAddSources(cfg as never);
     expect(q.multiselectConfigs).toHaveLength(2);
-    expect(q.logged.some((entry) => entry.includes("Configured stash sources"))).toBe(true);
-    expect(q.multiselectConfigs[0]?.message).toContain("Configured stash sources");
+    expect(q.logged.some((entry) => entry.includes("Configured bundle sources"))).toBe(true);
+    expect(q.multiselectConfigs[0]?.message).toContain("Configured bundle sources");
     expect(q.multiselectConfigs[0]?.options.map((option) => option.label)).toEqual([
       "itlackey-akm-stash",
       "custom-stash",
@@ -261,7 +261,7 @@ describe("stepAddSources – recommended GitHub repos", () => {
       bundles: { "demo-skills": { git: "https://github.com/demo/skills", registryId: "github:demo/skills" } },
     } as never);
 
-    expect(q.logged.some((entry) => entry.includes("Installed managed stashes"))).toBe(true);
+    expect(q.logged.some((entry) => entry.includes("Installed managed bundles"))).toBe(true);
     expect(q.logged.some((entry) => entry.includes("demo-skills (git)"))).toBe(true);
   });
 

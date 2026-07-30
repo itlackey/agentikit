@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Q-05 — `akm tasks doctor` reports the workflow engine gate.
+ * Q-05 — `akm task doctor` reports the workflow engine gate.
  *
  * `tasks doctor` is where an operator checks what a gated experimental surface
  * is currently doing. Before Q-05, `experimental.workflowEngine` did not exist:

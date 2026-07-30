@@ -100,7 +100,7 @@ Verify:
 ```sh
 akm info --format text            # version 0.6.x, no context-hub provider
 akm config list                   # stashes[] populated, no installed[]
-akm list                          # your sources resolve cleanly
+akm list                          # your sources resolve cleanly  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 If something looks wrong after upgrade, the guide has a [troubleshooting section](https://github.com/itlackey/akm/blob/main/docs/migration/v0.5-to-v0.6.md#troubleshooting) covering the common pitfalls (stale context-hub entries, v2 registry URLs, empty `stashes[]` after a read-only upgrade path).

@@ -29,8 +29,9 @@
  *      `--allow-insecure`). → {@link decideDangerousKeyInstall}
  *
  *   3. **Task activation** (`tasks/runner.ts`). Installing a task registers it
- *      DISABLED; the scheduler must skip it at fire time until the operator runs
- *      `akm tasks enable`. Manual runs are exempt (catch-up / testing).
+ *      DISABLED; the scheduler must skip it at fire time until the operator sets
+ *      `enabled: true` in the task file and runs `akm task sync`. Manual runs
+ *      are exempt (catch-up / testing).
  *      → {@link shouldSkipUnactivatedTask}
  *
  *   4. **Write activation** (`search/search-source.ts`, `installations.ts`). A

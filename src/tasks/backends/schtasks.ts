@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * schtasks.exe backend for `akm tasks` (Windows default).
+ * schtasks.exe backend for `akm task` (Windows default).
  *
  * Each task is registered under the `\akm\` Task Scheduler folder so the
  * backend never touches user-managed tasks. The full task definition is
@@ -205,27 +205,28 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
           ids.push(name.slice(folder.length));
         }
       }
-      return ids.map((id) => {
+      const refs: InstalledTaskRef[] = [];
+      for (const id of ids) {
         const query = runOrThrow(exec, ["schtasks", "/Query", "/TN", taskName(id), "/XML"], {
           message: (r) =>
             `schtasks /Query /XML for "${taskName(id)}" failed (exit ${r.status}): ${r.stderr || r.stdout || "no output"}.`,
         });
         const signature = installedSignature(query.stdout);
         const installed = extractSchtasksInvocation(query.stdout);
-        if (!installed) {
-          throw new ConfigError(
-            `Task Scheduler task "${taskName(id)}" does not contain a current AKM scheduler invocation.`,
-            "INVALID_CONFIG_FILE",
-          );
-        }
-        return {
+        // An invocation that no longer parses (e.g. a pre-0.9 `tasks run`
+        // entry surviving the scheduler-ABI respelling) is an orphan of its
+        // marker id, not a hard failure: omit it so `akmTasksSync` treats the
+        // id as "not present" and reinstalls it from the current task file.
+        if (!installed) continue;
+        refs.push({
           id,
           ...(signature !== undefined ? { signature } : {}),
           ...(installed.target !== undefined ? { target: installed.target } : {}),
           binding: installed.binding,
           contextPath: installed.contextPath,
-        };
-      });
+        });
+      }
+      return refs;
     },
     listForRebind() {
       const r = runOrThrow(exec, ["schtasks", "/Query", "/FO", "CSV", "/NH"], {
@@ -268,7 +269,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): TaskBack
 }
 
 /**
- * Recover the bundle name embedded as a `--target <bundle>` pair in the
+ * Recover the bundle name embedded as a `--bundle <bundle>` pair in the
  * PowerShell `<Arguments>` of an installed Task Scheduler definition. Returns
  * undefined for the primary/default form.
  */
@@ -347,7 +348,7 @@ export interface BuildSchtasksXmlOptions {
   binding?: string[];
   /** Current Windows user SID embedded in the principal. */
   userSid: string;
-  /** Non-default bundle embedded as a `--target <bundle>` token. */
+  /** Non-default bundle embedded as a `--bundle <bundle>` token. */
   target?: string;
 }
 

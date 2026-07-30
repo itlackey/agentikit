@@ -580,7 +580,7 @@ recreated at either path would inherit a stale exemption silently.
 ### ISOLATION-08: Lint coverage is narrower than the harnessed environment [Low]
 
 The isolation linter's `AKM_ENV_VARS` list is only
-`AKM_STASH_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
+`AKM_BUNDLE_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and
 `HOME` (`scripts/lint-tests-isolation.ts:81-82`). The preload contract also
 manages state/config/data directories, verbosity, LLM keys, embedding keys,
 registry URLs, and npm registry values (`AGENTS.md:30-33`). The tripwire helps

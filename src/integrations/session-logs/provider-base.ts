@@ -40,7 +40,6 @@ export abstract class AbstractSessionLogProvider implements SessionLogHarness {
   /** Root whose existence signals this harness has logs on this machine. */
   protected abstract availabilityRoot(): string;
 
-  abstract watchRoots(): string[];
   abstract readEvents(input: { sinceMs: number }): Iterable<SessionEvent>;
   abstract listSessions(input?: { sinceMs?: number; location?: string }): SessionSummary[];
   abstract readSession(ref: SessionRef): SessionData;

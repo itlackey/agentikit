@@ -35,7 +35,7 @@ function writeCurrentConfig(value: Record<string, unknown>): void {
   writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0", ...value }));
 }
 
-// XDG_* / HOME / AKM_STASH_DIR / cwd snapshot+restore is provided by
+// XDG_* / HOME / AKM_BUNDLE_DIR / cwd snapshot+restore is provided by
 // tests/_preload.ts. This block only owns the per-test tmp-dir lifecycle
 // and the production-singleton reset.
 let testConfigHome = "";
@@ -89,12 +89,12 @@ describe("getConfigPath", () => {
   test("defaults to ~/.config/akm when XDG_CONFIG_HOME is unset", () => {
     const home = makeTmpDir();
     delete process.env.XDG_CONFIG_HOME;
-    // Defense against CI environments where AKM_STASH_DIR is inherited
+    // Defense against CI environments where AKM_BUNDLE_DIR is inherited
     // from outer test isolation: if it points at a transient path,
     // getConfigDir's isolation rule fires and overrides the HOME-based
     // fallback this test is verifying (the 2026-05-23
     // setup-clobbers-user-config incident).
-    delete process.env.AKM_STASH_DIR;
+    delete process.env.AKM_BUNDLE_DIR;
     process.env.HOME = home;
 
     expect(getConfigPath()).toBe(path.join(home, ".config", "akm", "config.json"));
@@ -142,8 +142,8 @@ describe("loadConfig", () => {
     expect(loadConfig().semanticSearchMode).toBe("off");
   });
 
-  test("loads config without requiring AKM_STASH_DIR", () => {
-    delete process.env.AKM_STASH_DIR;
+  test("loads config without requiring AKM_BUNDLE_DIR", () => {
+    delete process.env.AKM_BUNDLE_DIR;
     writeCurrentConfig({ semanticSearchMode: "off" });
 
     const config = loadConfig();

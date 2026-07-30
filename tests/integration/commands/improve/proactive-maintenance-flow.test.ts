@@ -24,7 +24,7 @@ import { withIsolatedAkmStorage } from "../../../_helpers/sandbox";
 
 const cleanups: Array<() => void> = [];
 
-// Sanctioned isolation: sets AKM_STASH_DIR + all XDG_* to sandboxed temp dirs
+// Sanctioned isolation: sets AKM_BUNDLE_DIR + all XDG_* to sandboxed temp dirs
 // and returns a restoring cleanup (see tests/_helpers/sandbox.ts). Each call
 // yields a fresh isolated stash for one test case.
 function isolatedStash(): string {

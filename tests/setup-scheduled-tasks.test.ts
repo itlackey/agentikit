@@ -6,11 +6,11 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { _setClackForTests } from "../src/cli/clack";
-import { _setDefaultTasksForTests } from "../src/commands/tasks/default-tasks";
 import type { TasksSyncResult } from "../src/commands/tasks/tasks";
 import { deleteAssetFromSource, writeAssetToSource } from "../src/core/write-source";
 import { buildSetupSteps } from "../src/setup/setup";
 import {
+  _setScheduledTasksEnvForTests,
   listSetupTaskDefinitions,
   type PreparedSetupTask,
   prepareSetupTaskDefinitions,
@@ -46,7 +46,7 @@ function resetClack() {
   state.logs = [];
   state.events = [];
   state.onConfirm = undefined;
-  overrideSeam(_setDefaultTasksForTests, { isCiEnvironment: () => false });
+  overrideSeam(_setScheduledTasksEnvForTests, { isCiEnvironment: () => false, detectServerDefault: () => false });
   overrideSeam(_setClackForTests, {
     isCancel: () => false,
     cancel: () => {},
@@ -122,16 +122,28 @@ describe("stepScheduledTasks", () => {
     await stepScheduledTasks(deps);
 
     const options = state.multiselectConfig?.options ?? [];
-    expect(options).toHaveLength(5);
+    expect(options).toHaveLength(10);
     expect(options.find((option) => option.value === "backup")).toBeUndefined();
     expect(options.find((option) => option.value === "improve")?.hint).toContain("0 2 * * *");
     expect(options.find((option) => option.value === "improve")?.hint).toContain("not prepared");
+    expect(options.find((option) => option.value === "akm-improve-frequent")?.hint).toContain("40 * * * *");
     expect(state.notes).toHaveLength(1);
     expect(state.notes[0]?.title).toBe("Task Schedule Review");
-    expect(state.notes[0]?.message.split("\n")).toHaveLength(5);
+    expect(state.notes[0]?.message.split("\n")).toHaveLength(10);
     expect(state.notes[0]?.message).toContain("core/improve: disabled | 0 2 * * *");
-    expect(calls.prepared[0]).toHaveLength(5);
+    expect(state.notes[0]?.message).toContain("improve/akm-improve-frequent: disabled | 40 * * * *");
+    expect(calls.prepared[0]).toHaveLength(10);
     expect(calls.prepared[0]?.every((task) => task.enabled === false)).toBe(true);
+  });
+
+  test("preselects the server-suggested nightly sweep on a detected server install", async () => {
+    overrideSeam(_setScheduledTasksEnvForTests, { isCiEnvironment: () => false, detectServerDefault: () => true });
+    const { deps } = makeDeps([]);
+    state.confirmReturn = true;
+
+    await stepScheduledTasks(deps);
+
+    expect(state.multiselectConfig?.initialValues).toEqual(["akm-improve-nightly"]);
   });
 
   test("preserves existing schedules and includes custom definitions in the review", async () => {
@@ -199,7 +211,7 @@ describe("stepScheduledTasks", () => {
     });
     expect(state.logs.some((entry) => entry.level === "success" && entry.message.includes("activated"))).toBe(false);
     expect(state.logs.at(-1)?.message).toContain("installed `akm setup`");
-    expect(state.logs.at(-1)?.message).toContain("akm tasks sync --rebind");
+    expect(state.logs.at(-1)?.message).toContain("akm task sync --rebind");
     expect(state.logs.at(-1)?.message).toContain("activation was incomplete");
   });
 
@@ -218,7 +230,7 @@ describe("stepScheduledTasks", () => {
     expect(state.logs.filter((entry) => entry.message.includes("was not activated"))).toHaveLength(2);
     expect(state.logs.some((entry) => entry.level === "success" && entry.message.includes("activated"))).toBe(false);
     expect(state.logs.at(-1)?.message).toContain("No task schedules were activated");
-    expect(state.logs.at(-1)?.message).toContain("akm tasks sync --rebind");
+    expect(state.logs.at(-1)?.message).toContain("akm task sync --rebind");
   });
 
   test("list failures stop review before prompts or mutations", async () => {
@@ -259,7 +271,7 @@ describe("stepScheduledTasks", () => {
 
   test("CI setup neither prepares definitions nor mutates the scheduler", async () => {
     const { deps, calls } = makeDeps([]);
-    overrideSeam(_setDefaultTasksForTests, { isCiEnvironment: () => true });
+    overrideSeam(_setScheduledTasksEnvForTests, { isCiEnvironment: () => true });
 
     await stepScheduledTasks(deps);
 

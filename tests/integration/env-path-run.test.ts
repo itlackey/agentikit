@@ -68,7 +68,7 @@ describe("env path", () => {
     fs.mkdirSync(path.join(stashDir, "env"), { recursive: true });
 
     const { stdout, stderr, status } = await runCli(["env", "path", "env/does-not-exist"], {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
     });
 
     expect(status).toBe(1);
@@ -86,7 +86,7 @@ describe("env path", () => {
     fs.writeFileSync(envPath, "FOO=bar\n", "utf8");
 
     const { stdout, stderr, status } = await runCli(["env", "path", "env/myenv"], {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
     });
 
     expect(status).toBe(0);
@@ -118,7 +118,7 @@ describe("env path", () => {
     const result = spawnSync(
       "bun",
       [path.join(import.meta.dir, "..", "..", "src", "cli.ts"), "env", "path", "env/myenv", "--format", "json"],
-      { encoding: "utf8", env: { ...process.env, AKM_STASH_DIR: stashDir, AKM_CONFIG_DIR: undefined } },
+      { encoding: "utf8", env: { ...process.env, AKM_BUNDLE_DIR: stashDir, AKM_CONFIG_DIR: undefined } },
     );
 
     expect(result.status).toBe(0);
@@ -134,7 +134,7 @@ describe("env export", () => {
     fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "FOO=bar\nEVIL=$(touch /tmp/akm-nope)\n", "utf8");
     const outFile = path.join(stashDir, "out.sh");
 
-    const { stdout, status } = await runCli(["env", "export", "env/prod", "-o", outFile], { AKM_STASH_DIR: stashDir });
+    const { stdout, status } = await runCli(["env", "export", "env/prod", "-o", outFile], { AKM_BUNDLE_DIR: stashDir });
 
     expect(status).toBe(0);
     expect(stdout).not.toContain("$(touch");
@@ -153,7 +153,7 @@ describe("env run", () => {
     fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "API_KEY=${secret:absent}\n", "utf8");
 
     const { stdout, stderr, status } = await runCli(["env", "run", "env/prod", "--", "true"], {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
     });
 
     expect(status).not.toBe(0);
@@ -171,7 +171,7 @@ describe("env run", () => {
     fs.writeFileSync(path.join(stashDir, "env", "prod.env"), "FOO=bar\n", "utf8");
 
     const { stderr, status } = await runCli(["env", "run", "env/prod/FOO", "--", "true"], {
-      AKM_STASH_DIR: stashDir,
+      AKM_BUNDLE_DIR: stashDir,
     });
 
     expect(status).toBe(2);
@@ -188,7 +188,7 @@ describe("env run", () => {
     const { stderr, status } = await runCli(
       ["env", "run", "env/prod", "--only", "FOO", "--except", "BAR", "--", "true"],
       {
-        AKM_STASH_DIR: stashDir,
+        AKM_BUNDLE_DIR: stashDir,
       },
     );
 

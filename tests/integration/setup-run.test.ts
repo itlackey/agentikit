@@ -15,7 +15,7 @@ import { overrideSeam } from "../_helpers/seams";
 
 // Per-test sandbox (withIsolatedAkmStorage in beforeEach). The REAL
 // src/core/paths module resolves every path from the sandboxed env vars
-// (AKM_STASH_DIR, XDG_CONFIG_HOME, XDG_CACHE_HOME, ...), so the wizard reads
+// (AKM_BUNDLE_DIR, XDG_CONFIG_HOME, XDG_CACHE_HOME, ...), so the wizard reads
 // and writes the real config file at DEFAULT_CONFIG_PATH inside the sandbox.
 let storage: IsolatedAkmStorage;
 let DEFAULT_STASH_DIR = "";
@@ -207,7 +207,7 @@ function installSetupSeams(): void {
   overrideSeam(_setAkmInitForTests, async (options?: { dir?: string }) => {
     const dir = options?.dir ?? DEFAULT_STASH_DIR;
     setupState.initCalls.push({ dir });
-    return { stashDir: dir, created: true, configPath: DEFAULT_CONFIG_PATH, defaultStashUpdated: true };
+    return { bundleDir: dir, created: true, configPath: DEFAULT_CONFIG_PATH, defaultBundleUpdated: true };
   });
   overrideSeam(_setAkmIndexForTests, async (options) => {
     setupState.indexCalls.push({

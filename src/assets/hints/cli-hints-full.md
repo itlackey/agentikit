@@ -8,8 +8,8 @@ You have access to a searchable library of scripts, skills, commands, agents, kn
 akm search "<query>"                          # Search all sources
 akm curate "<task>"                          # Curate the best matches for a task
 akm search "<query>" --type workflow          # Filter by asset type
-akm search "<query>" --source both            # Also search registries
-akm search "<query>" --source registry        # Search registries only
+akm search "<query>" --from all                # Also search registries
+akm search "<query>" --from registry           # Search registries only
 akm search "<query>" --limit 10               # Limit results
 akm search "<query>" --detail full            # Include scores, paths, timing
 akm search "memories/projectA/"               # Enumerate a subtree (conceptId prefix; trailing slash required)
@@ -20,7 +20,7 @@ akm search "team-catalog//"                   # List every item in one bundle
 | Flag | Values | Default |
 | --- | --- | --- |
 | `--type` | free-form. Built-ins: `skill`, `command`, `agent`, `knowledge`, `workflow`, `script`, `memory`, `lesson`, `task`, `session`, `fact`, `env`, `secret`, `instruction` — plus any adapter-defined type (`website`, `wiki-source`, a wiki `pageKind`). Exact match; an unknown type returns no hits. | `any` |
-| `--source` | `stash`, `registry`, `both`, or a configured bundle name | `stash` |
+| `--from` | `local`, `registry`, `all`, or a configured bundle name | `local` |
 | `--limit` | number | `20` |
 | `--format` | `json`, `jsonl`, `text`, `yaml`, `md`, `html` | `json` |
 | `--detail` | `brief`, `normal`, `full` | `brief` |
@@ -32,6 +32,10 @@ and the same text becomes an ordinary keyword search — resolving a single asse
 by its `<subdir>/<name>` id is `akm show`'s job. Because prefixes match
 conceptIds, you can paste a ref prefix straight from search output back into a
 query.
+
+`search` and `curate` results include an additive `tip` field (a plain-text
+suggestion, e.g. "Run `akm index` to build one" or "No matching assets were
+found") whenever the result set is empty; it is omitted when there are hits.
 
 ## Curate
 
@@ -75,9 +79,9 @@ akm show knowledge/my-doc                     # Show content (local or remote)
 ## Capture Knowledge While You Work
 
 ```sh
-akm remember "Deployment needs VPN access"     # Record a memory in your stash
+akm remember "Deployment needs VPN access"     # Record a memory in your bundle
 akm remember --name release-retro < notes.md   # Save multiline memory from stdin
-akm remember "note" --target my-other-stash    # Route write to a named writable stash source
+akm remember "note" --bundle my-other-bundle    # Route write to a named writable bundle source
 akm remember "note" --xref knowledge/auth-flow # Cite provenance in frontmatter xrefs (repeatable; ref must resolve)
 akm remember "fix" --supersedes memories/old-note # Write a correction AND demote the old asset (beliefState: superseded)
 akm import ./docs/auth-flow.md                 # Import a file as knowledge
@@ -85,9 +89,9 @@ akm import ./doc.md --xref knowledge/auth-flow # Merge provenance xrefs into the
 akm import ./new.md --supersedes knowledge/old # Import a correction AND demote the doc it replaces
 akm import - --name scratch-notes < notes.md   # Import stdin as a knowledge doc
 akm import https://example.com/docs/auth       # Fetch one URL and import it as knowledge
-akm import ./doc.md --target my-other-stash    # Route import to a named writable stash source
-akm workflow create ship-release               # Create a workflow asset in the stash
-akm workflow validate workflows/foo.yaml       # Validate a YAML v2/markdown workflow or ref; lists every error
+akm import ./doc.md --target my-other-bundle    # Route import to a named writable bundle source
+akm workflow create ship-release               # Create a workflow asset in the bundle
+akm lint --type workflows                      # Validate every YAML v2/markdown workflow; lists every error
 akm workflow next workflows/ship-release       # Start or resume the next workflow step
 akm feedback skills/code-review --positive     # Record that an asset helped
 akm feedback agents/reviewer --negative        # Record that an asset missed the mark
@@ -111,10 +115,10 @@ Install one as a source, then search and read its pages with the ordinary
 commands — no wiki-specific verbs:
 
 ```sh
-akm add owner/llm-wiki-repo                    # Install an LLM Wiki bundle as a source (npm, GitHub, git, or local dir)
+akm bundle add owner/llm-wiki-repo                    # Install an LLM Wiki bundle as a source (npm, GitHub, git, or local dir)
 akm search "attention"                         # Wiki pages surface in ordinary search results
 akm show team-catalog//pages/attention          # Read a page by its bundle//conceptId ref (copy the ref from search)
-akm list                                       # Confirm the bundle is installed
+akm bundle list                                       # Confirm the bundle is installed
 ```
 
 Files under the bundle's `raw/` directory and the wiki infrastructure files
@@ -123,8 +127,8 @@ search results. No `--llm` anywhere — akm never reasons about page content.
 
 ## Env files
 
-A group of related CONFIGURATION for an app/service in one `.env` file at
-`<stash>/env/<name>.env`, sourced/injected wholesale. Key names are
+Configuration an app or service loads together, in one `.env` file at
+`<bundle>/env/<name>.env`, sourced/injected wholesale. Key names are
 discoverable; values and comment text stay on disk and never reach stdout or
 the index (comments can contain commented-out credentials). akm does not edit
 entries — you edit the file with your own editor and akm loads it.
@@ -132,7 +136,7 @@ entries — you edit the file with your own editor and akm loads it.
 ```sh
 akm env create prod                           # Create an empty env file
 akm env create prod --from-file ./.env        # Ingest an existing .env
-akm env list                                  # List all env files across stashes with key names
+akm env list                                  # List all env files across bundles with key names
 akm show env/prod                             # Inspect key names (never values or comments)
 akm env run env/prod -- ./deploy.sh           # Run a command with the whole .env injected (the safe path)
 akm env run env/prod -- $SHELL                # Open an interactive shell with values injected
@@ -144,7 +148,7 @@ akm env remove env/prod                       # Delete the env file
 ## Secrets
 
 A single sensitive value used on its own for authentication (a token, key, or
-cert) — one file = one value at `<stash>/secrets/<name>`. The ENTIRE file is
+cert) — one file = one value at `<bundle>/secrets/<name>`. The ENTIRE file is
 the value; only the name is ever surfaced.
 
 ```sh
@@ -155,18 +159,18 @@ akm secret run secrets/deploy-token GITHUB_TOKEN -- gh release create v1.0.0  # 
 
 ## Workflows
 
-Workflows live under `<stash>/workflows/` as markdown or YAML v2 (`.yaml`/`.yml`).
+Workflows live under `<bundle>/workflows/` as markdown or YAML v2 (`.yaml`/`.yml`).
 
 Ref-based workflow commands are scoped to the current project/worktree/directory,
 so one active run does not block unrelated directories from starting the same
 workflow. Direct run-id commands still target the exact run.
 
 ```sh
-akm workflow template                         # Print a starter workflow template
+akm workflow create ship-release --print     # Print a starter workflow template, without writing
 akm workflow create ship-release             # Scaffold a new workflow asset
 akm workflow start workflows/ship-release    # Start a new run in the current scope
 akm workflow next workflows/ship-release     # Advance to the next step (or auto-start) in the current scope
-akm workflow complete <run-id>               # Mark a step complete and advance
+akm workflow complete <run-id> --step <id> --summary "..."  # Mark a step complete and advance
 akm workflow status <run-id>                 # Show the exact run by id
 akm workflow resume <run-id>                 # Resume a blocked or failed run
 akm workflow list                            # List workflow runs in the current scope
@@ -174,17 +178,17 @@ akm workflow list                            # List workflow runs in the current
 
 ## Clone
 
-Copy an asset to the working stash or a custom destination for editing.
+Copy an asset to the working bundle or a custom destination for editing.
 
 ```sh
-akm clone <ref>                               # Clone to working stash
+akm clone <ref>                               # Clone to working bundle
 akm clone <ref> --name new-name               # Rename on clone
 akm clone <ref> --dest ./project/.claude       # Clone to custom location
 akm clone <ref> --force                       # Overwrite existing
 akm clone "npm:@scope/pkg//scripts/deploy.sh" # Clone from remote package
 ```
 
-When `--dest` is provided, `akm init` is not required first.
+When `--dest` is provided, `akm bundle create` is not required first.
 
 ## Move / Rename
 
@@ -204,66 +208,67 @@ A memory's `.derived.md` twin must move with its base. Moving an item between
 bundles is `akm clone` (or a copy) followed by deleting the source — both the
 bundle and the concept identity change.
 
-(`akm mv` ships, but it is **Experimental**: its ref rewrite is a
-boundary-delimited text match, not ref-aware. It rewrites both the bare
-conceptId and its `bundle//`-qualified form wherever either appears — but it
-cannot tell a real ref from a coincidental mention of the same words in
-ordinary prose, so it can rewrite text that was never meant as a ref. Use the
-procedure above if you need finer control.)
+There is no `akm mv` — the procedure above is the whole story. To carry an
+asset's earned signal (feedback, usage, salience/outcome history) across the
+rename instead of starting fresh, run `bun scripts/rekey-asset-ref.ts <old-ref>
+<new-ref>` from a source clone after the move and before `akm index`
+(`--dry-run` previews the row counts).
 
 ## Sync
 
-Commit local changes in a git-backed stash. Behaviour adapts automatically.
+Commit local changes in a git-backed bundle. Behaviour adapts automatically.
 (`akm save` was the pre-0.8 spelling; it was removed in 0.9.0 — use `akm sync`.)
 
 - **No `.git` directory** — no-op (silent skip)
-- **Git repo, no remote** — stage and commit only (the default stash always falls here)
+- **Git repo, no remote** — stage and commit only (the default bundle always falls here)
 - **Git repo, has remote, not writable** — stage and commit only
 - **Git repo, has remote, `writable: true`** — stage, commit, and push
 - **Any writable repo with `--no-push`** — stage and commit only
 
 ```sh
-akm sync                                      # Sync primary stash (timestamp message)
+akm sync                                      # Sync primary bundle (timestamp message)
 akm sync -m "Add deploy skill"               # Sync with explicit message
 akm sync --no-push                            # Commit only; never push
-akm sync my-skills                            # Sync a named writable git stash
-akm sync my-skills -m "Update patterns"      # Sync named stash with message
+akm sync my-skills                            # Sync a named writable git bundle
+akm sync my-skills -m "Update patterns"      # Sync named bundle with message
 ```
 
-`akm improve` also performs an end-of-run batch commit for git-backed stashes.
+`akm improve` also performs an end-of-run batch commit for git-backed bundles.
 The `--sync` / `--no-sync` and `--push` / `--no-push` flags control this:
 
 ```sh
-akm improve                                   # auto-sync per strategy default (default/thorough: on; quick/memory-focus: off)
+akm improve                                   # auto-sync per strategy default (most strategies: on; proactive-maintenance/reflect-distill: off)
 akm improve --no-sync                         # skip the end-of-run commit
 akm improve --no-push                         # commit but skip push for this run
 akm improve --sync                            # force sync even on strategies that disable it
 ```
 
-Strategy sync defaults: `default` and `thorough` auto-commit + push; `quick` and
-`memory-focus` skip sync entirely. Override with `--sync` / `--no-sync` flags.
+Strategy sync defaults: `catchup`, `consolidate`, `default`, `frequent`,
+`graph-refresh`, `memory-focus`, `quick`, and `thorough` auto-commit + push;
+`proactive-maintenance` and `reflect-distill` skip sync entirely. Override
+with `--sync` / `--no-sync` flags.
 
-The `--writable` flag on `akm add` opts a remote git stash into push-on-sync:
+The `--writable` flag on `akm bundle add` opts a remote git bundle into push-on-sync:
 
 ```sh
-akm add git@github.com:org/skills.git --provider git --name my-skills --writable
+akm bundle add git@github.com:org/skills.git --provider git --name my-skills --writable
 ```
 
 ## Add & Manage Sources
 
 ```sh
-akm add <ref>                                 # Add a source
-akm add @scope/stash                            # From npm (managed)
-akm add owner/repo                            # From GitHub (managed)
-akm add ./path/to/local/stash                   # Local directory
-akm add git@github.com:org/repo.git --provider git --name my-skills --writable
+akm bundle add <ref>                                 # Add a source
+akm bundle add @scope/pkg                            # From npm (managed)
+akm bundle add owner/repo                            # From GitHub (managed)
+akm bundle add ./path/to/local/bundle                   # Local directory
+akm bundle add git@github.com:org/repo.git --provider git --name my-skills --writable
 akm registry add https://skills.sh --name skills.sh --provider skills-sh  # Add the skills.sh registry
 akm registry remove skills.sh                 # Remove the skills.sh registry
-akm list                                      # List all sources
-akm list --kind managed                       # List managed sources only
-akm remove <target>                           # Remove by id, ref, path, or name
-akm update --all                              # Update all managed sources
-akm update <target> --force                   # Force re-download
+akm bundle list                                      # List all sources
+akm bundle list --kind git                           # Filter by provider (filesystem, git, npm, website)
+akm bundle remove <target>                           # Remove by id, ref, path, or name
+akm bundle update --all                              # Update all managed sources
+akm bundle update <target> --force                   # Force re-download
 ```
 
 ## Registries
@@ -274,8 +279,8 @@ akm registry add <url>                        # Add a registry
 akm registry add <url> --name my-team         # Add with label
 akm registry add <url> --provider skills-sh   # Specify provider type
 akm registry remove <url-or-name>             # Remove a registry
-akm registry search "<query>"                 # Search all registries
-akm registry search "<query>" --assets        # Include asset-level results
+akm search "<query>" --from registry          # Search all registries (registry search was folded into search)
+akm search "<query>" --from registry --assets # Include asset-level results
 ```
 
 ## Configuration
@@ -291,28 +296,28 @@ akm config path --all                         # Show all config paths
 ## Other Commands
 
 ```sh
-akm init                                      # Initialize working stash (scaffold only)
-akm setup                                     # Interactive wizard: stash + LLM/embedding + agent + registry config
-akm setup --dir ~/custom-stash                # Run the wizard against a custom stash path
+akm bundle create                                      # Initialize working bundle (scaffold only)
+akm setup                                     # Interactive wizard: bundle + LLM/embedding + agent + registry config
+akm setup --dir ~/custom-bundle                # Run the wizard against a custom bundle path
 akm setup --yes                               # Non-interactive, accepts all defaults
 akm index                                     # Rebuild search index (metadata enrichment when configured)
 akm index --full                              # Full reindex (metadata enrichment when configured)
-akm list                                      # List all sources
-akm lint                                      # Structural lint over the stash; exits 0 regardless of findings
+akm bundle list                                      # List all sources
+akm lint                                      # Structural lint over the bundle; exits 0 regardless of findings
 akm lint --fix                                # Auto-fix Tier 1 issues
 akm lint --fail-on-flagged                    # Exit non-zero when summary.flagged > 0 (CI-friendly)
 akm upgrade                                   # Upgrade akm using its install method
 akm upgrade --check                           # Check for updates
 akm help migrate 0.6.0                        # Print migration notes for a release (or: latest)
-akm hints                                     # Print this reference
+akm help agents --full                        # Print this reference
 akm completions                               # Print bash completion script
 akm completions --install                     # Install completions
 ```
 
-`akm init` only scaffolds the stash directory and registers it in config;
+`akm bundle create` only scaffolds the bundle directory and registers it in config;
 `akm setup` additionally walks through embedding/LLM connections, agent
 profiles, sources, and registries. Use `setup` for first-time onboarding,
-`init` when you just need a bare stash.
+`bundle create` when you just need a bare bundle.
 
 ## Proposals & Improvement (0.8.0+)
 
@@ -323,20 +328,64 @@ akm proposal show <id>                                  # Render the proposal bo
 akm proposal diff <ref-or-id>                           # Diff by ref, UUID, or 8-char prefix
 akm proposal diff skills/akm-dream                      # Diff by asset ref
 akm proposal accept 7c115132                            # Accept by UUID prefix
-akm proposal accept <id> --target team-stash            # Accept to a named writable stash source
+akm proposal accept <id> --target team-bundle            # Accept to a named writable bundle source
 akm proposal reject skills/my-skill --reason "not ready" # Reject by asset ref
 akm proposal reject <id> --reason "..."                 # Archive with a reason
 akm proposal revert <id>                                # Restore the pre-promotion content
+akm proposal new <type> <name> --task "..."             # Agent-author a NEW asset as a proposal
+akm proposal extract --auto                             # Mine native session files into proposals
+akm proposal extract --type claude-code                 # Restrict extraction to one harness
 ```
 
 The flat verbs `akm proposals` / `akm show proposal` / `akm accept` /
 `akm reject` / `akm diff` / `akm revert` were removed in 0.9.0 — use the
-`akm proposal <verb>` forms above.
+`akm proposal <verb>` forms above. `akm extract` and `akm propose` moved
+here as `proposal extract` / `proposal new`.
 
-Per-task `timeoutMs`: a task's `<stash>/tasks/<id>.yml` file (pure YAML) may
-set `timeoutMs: null` to disable the agent kill timer for long-running
-local-model tasks, or a number (milliseconds) to override
-`config.agent.timeoutMs` for that task only.
+## Scheduled Tasks
+
+Tasks are pure-YAML assets at `<bundle>/tasks/<id>.yml`, bound to the OS
+scheduler (cron / launchd / schtasks). The file is the source of truth:
+`task sync` reconciles files to scheduler entries, so editing or deleting a
+file plus one `sync` is a complete workflow.
+
+```sh
+akm task add nightly-improve --schedule "@daily" --command "akm improve --strategy frequent"
+akm task add briefing --schedule "0 9 * * *" --prompt agents/briefer  # Agent-target task
+akm task sync                                  # Reconcile task files with the OS scheduler
+akm task sync --rebind                         # Also re-pin the scheduler's akm binary/spelling
+akm task doctor                                # Scheduler binding + runtime eligibility diagnosis
+akm task history                               # Recent run rows (status, timing)
+akm task run <id>                              # Run one task immediately (works when disabled)
+akm search --type task                         # Enumerate task assets (there is no `task list`)
+```
+
+To disable a task, set `enabled: false` in its YAML and run `akm task sync`
+(the cron line stays, commented). To remove one, delete the YAML and run
+`akm task sync` — the scheduler entry is unbound. Per-task `timeoutMs` in
+the YAML may be `null` (disable the agent kill timer for long local-model
+runs) or a number of milliseconds overriding `config.agent.timeoutMs`.
+
+## Agent Dispatch
+
+```sh
+akm agent --prompt "summarize open proposals"   # Dispatch the configured agent CLI
+akm agent agents/architect --prompt "..."       # Embody a bundle agent asset (system prompt, model, tool policy)
+akm agent --workflow workflows/ship-release     # Load the task from a workflow asset
+akm agent --model sonnet --prompt "..."         # Model override (aliases or exact IDs)
+```
+
+## Health, Info, and the Event Log
+
+```sh
+akm info                                       # Capabilities, bundle dir, index stats, semantic-search status
+akm health                                     # Runtime diagnostics; exit 0 ok / 4 warn / 1 fail
+akm health --report                            # Adds accept-rate and graph-coverage metrics
+akm log                                        # Append-only event stream (mutations, feedback, indexing)
+akm log --ref <ref>                            # One asset's event trail
+akm log --since @offset:<id>                   # Durable row-id cursor — poll this to follow the stream
+akm log --run <run-id>                         # Events for one workflow-engine run
+```
 
 ## Output Control
 
@@ -368,12 +417,15 @@ the chunked writes without the workaround.
 ## Error Shapes and Exit Codes
 
 Every command returns JSON by default. On success, the shape is command-specific.
-On failure, every command emits:
+On failure, every command emits a JSON envelope on **stderr** (stdout is
+normally left empty):
 
 ```json
-{"ok": false, "error": "<message>", "hint": "<optional remediation hint>"}
+{"ok": false, "error": "<message>", "code": "<optional machine-readable code>", "hint": "<optional remediation hint>"}
 ```
 
+`code` is present for errors akm classifies (e.g. `INVALID_FLAG_VALUE`,
+`ASSET_NOT_FOUND`, `UNKNOWN_COMMAND`); an unexpected internal error omits it.
 The `hint` field is present only when there is an actionable next step (a
 suggested flag or alternate command).
 
@@ -399,7 +451,7 @@ the exit code is the preferred signal for shell scripts. Passthrough surfaces
 below preserve the child's own streams and status instead.
 
 `env run`, `secret run`, and `migrate` are process passthroughs and preserve
-the spawned process's exact status. `tasks run` maps task status to 0 or 1 and
+the spawned process's exact status. `task run` maps task status to 0 or 1 and
 retains a command child's exact status in `result.detail.exitCode`. `agent`
 maps a failed dispatch to 1 and retains the child status in its final result
 envelope.

@@ -38,7 +38,7 @@ const isolatedEnv = {
   AKM_CACHE_DIR: undefined,
   AKM_DATA_DIR: undefined,
   AKM_STATE_DIR: undefined,
-  AKM_STASH_DIR: undefined,
+  AKM_BUNDLE_DIR: undefined,
   HOME: SANDBOX_ROOT,
 } as const;
 

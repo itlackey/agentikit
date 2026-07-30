@@ -21,9 +21,9 @@
  * `akm secret path <ref>` and `akm secret remove <ref>` could silently name
  * two DIFFERENT files when a ref existed in more than one stash — inspect one,
  * delete the other. The owner's ruling was to drop both subcommands rather
- * than reconcile the resolvers. A ref's file lives at `<stash>/secrets/<name>`
+ * than reconcile the resolvers. A ref's file lives at `<bundle>/secrets/<name>`
  * (matching the ref exactly, e.g. `secrets/deploy-key` -> `secrets/deploy-key`
- * under a stash root — `akm sources list` prints each configured stash's root
+ * under a bundle root — `akm bundle list` prints each configured bundle's root
  * path); locate or delete it directly, or consume its value without touching
  * disk via `akm secret run <ref> <VAR> -- <command>`.
  */
@@ -88,7 +88,7 @@ function listSecretsRecursive(): Array<{ ref: string; path: string }> {
 const secretListCommand = defineJsonCommand({
   meta: {
     name: "list",
-    description: "List all secrets across all stashes by name (the file contents are never shown)",
+    description: "List all secrets across all bundles by name (the file contents are never shown)",
   },
   async run() {
     output("secret-list", { secrets: listSecretsRecursive() });
@@ -117,7 +117,7 @@ const secretSetCommand = defineJsonCommand({
     target: {
       type: "string",
       description:
-        "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working stash.",
+        "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working bundle.",
     },
   },
   async run({ args }) {
@@ -262,7 +262,8 @@ export const secretCommand = defineGroupCommand({
   meta: {
     name: "secret",
     description:
-      "Manage secrets — a single sensitive value used on its own for authentication (an API token, a PEM private key, a TLS cert), one value per file. Names are visible; the file contents are the value and never appear in structured output. For a group of related configuration loaded together, use `akm env`. `secret path` and `secret remove` were removed in 0.9.0 (D-49: they resolved a ref through different stash-selection logic, so a lookup and a deletion could silently target different files) — a ref's file lives at `<stash>/secrets/<name>` (see `akm sources list` for stash roots); locate or delete it there directly, or consume its value without touching disk via `akm secret run <ref> <VAR> -- <command>`.",
+      "Manage secrets — one standalone sensitive value per file (an API token, a PEM private key, a TLS cert).\n\n" +
+      "Names are visible; the file contents are the value and never appear in structured output. For a group of related configuration loaded together, use `akm env`. A secret's file lives at `<bundle>/secrets/<name>` (`akm bundle list` shows bundle roots) — read or delete it there directly, or consume its value without writing it anywhere via `akm secret run <ref> <VAR> -- <command>`.",
   },
   subCommands: {
     list: secretListCommand,

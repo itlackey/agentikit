@@ -5,4 +5,6 @@
 import { formatInitPlain } from "./helpers";
 import type { TextFormatterEntry } from "./registry";
 
-export const initFormatters: TextFormatterEntry[] = [{ command: "init", handler: (r) => formatInitPlain(r) }];
+export const bundleCreateFormatters: TextFormatterEntry[] = [
+  { command: "bundle-create", handler: (r) => formatInitPlain(r) },
+];

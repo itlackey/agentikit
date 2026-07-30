@@ -47,7 +47,7 @@ function writeFile(filePath: string, content = "") {
 }
 
 function tmpStash(): string {
-  // Returns the per-test sandboxed stash dir (AKM_STASH_DIR is already set).
+  // Returns the per-test sandboxed stash dir (AKM_BUNDLE_DIR is already set).
   // Subdirs are created by sandboxStashDir; this function is kept for API
   // compatibility with test bodies.
   return currentStashDir;

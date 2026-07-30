@@ -24,13 +24,13 @@ function writeRawDescriptor(dir: string, value: unknown): string {
 
 function testContext(root: string) {
   const context = {
-    AKM_STASH_DIR: path.join(root, "stash"),
+    AKM_BUNDLE_DIR: path.join(root, "stash"),
     AKM_CONFIG_DIR: path.join(root, "config"),
     AKM_DATA_DIR: path.join(root, "data"),
     AKM_CACHE_DIR: path.join(root, "cache"),
     AKM_STATE_DIR: path.join(root, "state"),
   };
-  fs.mkdirSync(context.AKM_STASH_DIR, { recursive: true });
+  fs.mkdirSync(context.AKM_BUNDLE_DIR, { recursive: true });
   return context;
 }
 
@@ -40,29 +40,47 @@ describe("scheduled task invocation", () => {
       "/opt/akm/bin/akm",
       "--scheduler-context",
       "/data/tasks/context/one.json",
-      "tasks",
+      "task",
       "run",
       "ping",
       "--scheduled",
     ]);
   });
 
-  test("embeds --target only for a non-default bundle", () => {
+  test("embeds --bundle only for a non-default bundle", () => {
     expect(buildScheduledTaskInvocation(["/opt/akm"], "ping", "/data/context.json", "work").argv).toEqual([
       "/opt/akm",
       "--scheduler-context",
       "/data/context.json",
-      "tasks",
+      "task",
       "run",
       "ping",
-      "--target",
+      "--bundle",
       "work",
       "--scheduled",
     ]);
   });
 
   test("recognizes only the current descriptor-bearing invocation shape", () => {
-    expect(parseScheduledTaskArgv(["/opt/akm", "tasks", "run", "ping", "--scheduled"])).toBeUndefined();
+    expect(parseScheduledTaskArgv(["/opt/akm", "task", "run", "ping", "--scheduled"])).toBeUndefined();
+    expect(
+      parseScheduledTaskArgv([
+        "/opt/akm",
+        "--scheduler-context",
+        "/data/context.json",
+        "task",
+        "run",
+        "ping",
+        "--scheduled",
+      ]),
+    ).toEqual({ binding: ["/opt/akm"], contextPath: "/data/context.json" });
+  });
+
+  // 0.9 scheduler ABI respelling (`tasks run` → `task run`, S6): a pre-rename
+  // installed invocation is no longer parseable — `task sync` treats it as an
+  // orphan of its marker id and reinstalls it from the current file state
+  // rather than crashing (src/tasks/backends/{cron,launchd,schtasks}.ts).
+  test("no longer recognizes the pre-rename `tasks run` spelling", () => {
     expect(
       parseScheduledTaskArgv([
         "/opt/akm",
@@ -73,7 +91,7 @@ describe("scheduled task invocation", () => {
         "ping",
         "--scheduled",
       ]),
-    ).toEqual({ binding: ["/opt/akm"], contextPath: "/data/context.json" });
+    ).toBeUndefined();
   });
 
   test("writes an immutable restrictive descriptor containing only directories and PATH", () => {
@@ -82,7 +100,7 @@ describe("scheduled task invocation", () => {
       fs.mkdirSync(path.join(sandbox.dir, "stash"));
       const context = resolveScheduledTaskContext({
         HOME: sandbox.dir,
-        AKM_STASH_DIR: path.join(sandbox.dir, "stash"),
+        AKM_BUNDLE_DIR: path.join(sandbox.dir, "stash"),
         AKM_CONFIG_DIR: path.join(sandbox.dir, "config"),
         AKM_DATA_DIR: path.join(sandbox.dir, "data"),
         AKM_CACHE_DIR: path.join(sandbox.dir, "cache"),

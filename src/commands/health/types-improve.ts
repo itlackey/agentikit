@@ -286,8 +286,17 @@ export interface ImproveHealthMetrics {
   graphExtraction: {
     ran: boolean;
     extractedFiles: number;
+    /** Files eligible for extraction in the window (denominator of `extractionCoverage`). */
+    consideredFiles: number;
     entities: number;
     relations: number;
+    /**
+     * `extractedFiles / consideredFiles`, 4dp; 0 when consideredFiles=0.
+     * Folded in from the `akm graph summary` command dropped in 0.9.0 (owner
+     * ruling 12) — same underlying quality telemetry, aggregated over the
+     * health window instead of read live off the stored graph snapshot.
+     */
+    extractionCoverage: number;
     cacheHits: number;
     cacheMisses: number;
     /** hits / (hits + misses), 4dp; 0 when both are 0. */

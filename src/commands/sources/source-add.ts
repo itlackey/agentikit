@@ -41,7 +41,7 @@ export async function akmAdd(input: {
   if (!ref)
     throw new UsageError(
       "Install ref or local directory is required. " +
-        "Examples: `akm add @scope/stash`, `akm add github:owner/repo`, `akm add ./local/path`",
+        "Examples: `akm bundle add @scope/stash`, `akm bundle add github:owner/repo`, `akm bundle add ./local/path`",
     );
 
   const stashDir = resolveStashDir();
@@ -104,7 +104,7 @@ async function addLocalSource(
 
   return {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     ref,
     sourceAdded: {
       type: "filesystem",
@@ -163,7 +163,7 @@ async function addWebsiteSource(
 
   return {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     ref,
     sourceAdded: {
       type: "website",
@@ -254,7 +254,7 @@ async function addRegistryStash(ref: string, stashDir: string, writable?: boolea
 
   return {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     ref,
     installed: {
       id: synced.id,

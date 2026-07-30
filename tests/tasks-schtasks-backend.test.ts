@@ -11,7 +11,7 @@ import {
 import type { TaskDocument } from "../src/tasks/schema";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
-  AKM_STASH_DIR: "C:\\Users\\Akm User\\O'Brien & notes",
+  AKM_BUNDLE_DIR: "C:\\Users\\Akm User\\O'Brien & notes",
   AKM_CONFIG_DIR: "C:\\Users\\Akm User\\config",
   AKM_DATA_DIR: "C:\\Users\\Akm User\\data",
   AKM_CACHE_DIR: "C:\\Users\\Akm User\\cache",
@@ -86,9 +86,9 @@ describe("buildSchtasksXml", () => {
     expect(xml).toContain("<URI>\\akm\\ping</URI>");
     expect(xml).toContain(`<UserId>${USER_SID}</UserId>`);
     expect(xml).toContain("<Command>powershell.exe</Command>");
-    expect(xml).not.toContain("$env:AKM_STASH_DIR=");
+    expect(xml).not.toContain("$env:AKM_BUNDLE_DIR=");
     expect(xml).toContain("&apos;--scheduler-context&apos;");
-    expect(xml).toContain("&apos;tasks&apos; &apos;run&apos; &apos;ping&apos; &apos;--scheduled&apos;");
+    expect(xml).toContain("&apos;task&apos; &apos;run&apos; &apos;ping&apos; &apos;--scheduled&apos;");
     expect(xml).not.toContain("AKM_LLM_API_KEY");
     expect(xml).toContain("<Enabled>true</Enabled>");
     expect(xml).not.toContain("<WorkingDirectory>");
@@ -202,7 +202,7 @@ describe("buildSchtasksXml", () => {
     expect(xml).toContain("<Command>powershell.exe</Command>");
     expect(xml).toContain("C:/Program Files/akm&amp;tools/akm.exe");
     expect(xml).toContain("C:\\bundle path\\cli.js");
-    expect(xml).toContain("&apos;tasks&apos; &apos;run&apos; &apos;ping--nightly&apos; &apos;--scheduled&apos;");
+    expect(xml).toContain("&apos;task&apos; &apos;run&apos; &apos;ping--nightly&apos; &apos;--scheduled&apos;");
     expect(xml).toContain("C:/logs&amp;archive/ping--nightly.log");
   });
 
@@ -311,7 +311,7 @@ describe("buildSchtasksXml", () => {
 });
 
 describe("schtasks bundle attribution", () => {
-  test("parses --target from the current descriptor-bearing invocation", () => {
+  test("parses --bundle from the current descriptor-bearing invocation", () => {
     const xml = buildSchtasksXml(makeTask("0 9 * * *"), ["C:\\Program Files\\O'Brien & Sons\\akm.exe"], "C:/log", {
       ...xmlOptions(),
       target: "work",
@@ -319,7 +319,11 @@ describe("schtasks bundle attribution", () => {
     expect(extractSchtasksTarget(xml)).toBe("work");
   });
 
-  test("rejects a descriptor-less installed entry", () => {
+  // 0.9 scheduler ABI respelling (S6): an installed entry whose invocation no
+  // longer parses is an orphan of its marker id, not a hard failure —
+  // `list()` omits it so `akmTasksSync` treats the id as "not present" and
+  // reinstalls it from the task file.
+  test("omits a descriptor-less installed entry", () => {
     const xml = descriptorlessTargetXml();
     const backend = SCHTASKS_BACKEND({
       exec: {
@@ -336,7 +340,7 @@ describe("schtasks bundle attribution", () => {
     });
 
     expect(extractSchtasksTarget(xml)).toBeUndefined();
-    expect(() => backend.list()).toThrow("does not contain a current AKM scheduler invocation");
+    expect(backend.list()).toEqual([]);
   });
 });
 

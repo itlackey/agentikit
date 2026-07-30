@@ -198,7 +198,7 @@ describe("#561 session indexing — round-trip", () => {
     const search = await akmSearch({
       query: "bun node compatibility runtime boundary",
       type: "session",
-      source: "stash",
+      source: "local",
       limit: 10,
     });
     const hit = search.hits.find((h) => h.type === "session");

@@ -144,7 +144,7 @@ try {
   // getDirname / package.json resolution via the boundary + text-import hook.
   step("version", ["--version"], { expect: "." });
   // better-sqlite3 open + config write.
-  step("init", ["init", "--dir", stash], { expect: '"created": true' });
+  step("init", ["bundle", "create", "--dir", stash], { expect: '"created": true' });
   // SQLite write path (was broken by the better-sqlite3 `readonly:undefined` bug).
   step("remember", ["remember", "node smoke widget memory alpha"], { expect: '"ok": true' });
   // readStdin Node branch.

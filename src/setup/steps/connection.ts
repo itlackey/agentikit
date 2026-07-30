@@ -362,7 +362,6 @@ export async function stepSmallModelConnection(current: AkmConfig): Promise<Smal
       "  • akm index           (metadata enhancement)",
       "  • akm improve         (lesson distillation)",
       "  • akm remember --enrich (memory compression)",
-      "  • akm curate --rerank   (search reranking)",
     ].join("\n"),
   );
 
@@ -421,7 +420,6 @@ export async function stepSmallModelConnection(current: AkmConfig): Promise<Smal
         "  • akm index           — metadata enhancement disabled",
         "  • akm improve         — lesson generation",
         "  • akm remember --enrich",
-        "  • akm curate --rerank",
         "",
         "You can configure this later with `akm setup`.",
       ].join("\n"),
@@ -520,9 +518,9 @@ export async function stepAgentConnection(
   p.note(
     [
       "This connection is used for agentic commands:",
-      "  • akm propose   (generate improvement proposals)",
-      "  • akm improve   (run the reflect/distill/consolidate self-improvement pipeline)",
-      "  • akm tasks run (run automated task prompts)",
+      "  • akm proposal new (generate improvement proposals)",
+      "  • akm improve       (run the reflect/distill/consolidate self-improvement pipeline)",
+      "  • akm task run     (run automated task prompts)",
     ].join("\n"),
   );
 
@@ -586,9 +584,9 @@ export async function stepAgentConnection(
     p.note(
       [
         "Agentic features disabled:",
-        '  • akm propose — will show "no agent configured" error',
+        '  • akm proposal new — will show "no agent configured" error',
         '  • akm improve — will show "no agent configured" error',
-        '  • akm tasks run — will show "no agent configured" error',
+        '  • akm task run — will show "no agent configured" error',
         "",
         "You can configure this later with `akm setup`.",
       ].join("\n"),

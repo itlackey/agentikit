@@ -13,7 +13,7 @@ import type { TaskDocument } from "../../src/tasks/schema";
 import { sandboxStashDir } from "../_helpers/sandbox";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
-  AKM_STASH_DIR: "/Users/Akm User/stash & notes",
+  AKM_BUNDLE_DIR: "/Users/Akm User/stash & notes",
   AKM_CONFIG_DIR: "/Users/Akm User/config",
   AKM_DATA_DIR: "/Users/Akm User/data",
   AKM_CACHE_DIR: "/Users/Akm User/cache",
@@ -46,13 +46,13 @@ describe("buildPlistXml", () => {
     expect(xml).toContain("<key>Minute</key><integer>45</integer>");
     expect(xml).not.toContain("<key>StartInterval</key>");
     expect(xml).toContain("<string>/abs/akm</string>");
-    expect(xml).toContain("<string>tasks</string>");
+    expect(xml).toContain("<string>task</string>");
     expect(xml).toContain("<string>run</string>");
     expect(xml).toContain("<string>ping</string>");
     expect(xml).toContain("<string>--scheduled</string>");
     expect(xml).toContain("<string>--scheduler-context</string>");
     expect(xml).toContain("/tasks/context/");
-    expect(xml).not.toContain("<key>AKM_STASH_DIR</key>");
+    expect(xml).not.toContain("<key>AKM_BUNDLE_DIR</key>");
     expect(xml).not.toContain("AKM_LLM_API_KEY");
     expect(xml).toContain("<string>/var/log/akm/ping.log</string>");
   });
@@ -491,7 +491,11 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
 });
 
 describe("LAUNCHD_BACKEND drift signatures", () => {
-  test("rejects an installed plist without the current context descriptor", () => {
+  // 0.9 scheduler ABI respelling (S6): an installed plist whose invocation no
+  // longer parses is an orphan of its marker id, not a hard failure —
+  // `list()` omits it so `akmTasksSync` treats the id as "not present" and
+  // reinstalls it from the task file.
+  test("omits an installed plist without the current context descriptor", () => {
     const { backend, fs } = makeBackend();
     backend.install(makeTask("0 9 * * *"));
     const file = "/tmp/agents/com.akm.task.ping.plist";
@@ -500,7 +504,7 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
       fs.readFile(file).replace(/\s*<string>--scheduler-context<\/string>\s*<string>[^<]+<\/string>/, ""),
     );
 
-    expect(() => backend.list()).toThrow("does not contain a current AKM scheduler invocation");
+    expect(backend.list()).toEqual([]);
   });
 
   test("no-op comparison reads a stable signature from the actual launchd enabled state", () => {

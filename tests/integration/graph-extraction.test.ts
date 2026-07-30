@@ -109,7 +109,7 @@ let tmpDataHome = "";
 let tmpStateHome = "";
 const savedXdgDataHome = process.env.XDG_DATA_HOME;
 const savedXdgStateHome = process.env.XDG_STATE_HOME;
-const savedAkmStashDir = process.env.AKM_STASH_DIR;
+const savedAkmStashDir = process.env.AKM_BUNDLE_DIR;
 
 beforeEach(() => {
   tmpStash = fs.mkdtempSync(path.join(os.tmpdir(), "akm-graph-ext-"));
@@ -119,7 +119,7 @@ beforeEach(() => {
   // production helper inside graph-db / graph-extraction that incidentally
   // calls getDbPath()/getTaskHistoryStateDir() (e.g. populating StoredGraphMeta.graphPath
   // at src/indexer/graph-db.ts:410) does not fire the test-isolation guard
-  // when a prior leaky test left process.env.AKM_STASH_DIR set.
+  // when a prior leaky test left process.env.AKM_BUNDLE_DIR set.
   tmpDataHome = fs.mkdtempSync(path.join(os.tmpdir(), "akm-graph-ext-data-"));
   tmpStateHome = fs.mkdtempSync(path.join(os.tmpdir(), "akm-graph-ext-state-"));
   process.env.XDG_DATA_HOME = tmpDataHome;
@@ -145,8 +145,8 @@ afterEach(() => {
   else process.env.XDG_DATA_HOME = savedXdgDataHome;
   if (savedXdgStateHome === undefined) delete process.env.XDG_STATE_HOME;
   else process.env.XDG_STATE_HOME = savedXdgStateHome;
-  if (savedAkmStashDir === undefined) delete process.env.AKM_STASH_DIR;
-  else process.env.AKM_STASH_DIR = savedAkmStashDir;
+  if (savedAkmStashDir === undefined) delete process.env.AKM_BUNDLE_DIR;
+  else process.env.AKM_BUNDLE_DIR = savedAkmStashDir;
 });
 
 afterAll(() => {

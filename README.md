@@ -49,8 +49,8 @@ bun run build
 
 - **Manage sources** — add local dirs, git repos, npm packages, and websites as searchable asset sources [(details)](docs/guides/sources-registries.md)
   ```sh
-  akm add github:owner/stash        # GitHub
-  akm add https://docs.example.com  # crawled website
+  akm bundle add github:owner/repo         # GitHub
+  akm bundle add https://docs.example.com  # crawled website
   ```
 - **Search a unified index** — one FTS5 index across all your sources [(details)](docs/guides/search-discovery.md)
   ```sh
@@ -83,8 +83,8 @@ bun run build
 
 ```sh
 akm setup                             # guided first-time setup
-akm tasks doctor                      # verify scheduler and installed runtime
-akm add github:itlackey/akm-stash     # install the official onboarding stash
+akm task doctor                       # verify scheduler and installed runtime
+akm bundle add github:itlackey/akm-stash     # install the official onboarding bundle
 akm index                             # build the search index
 akm curate "deploy"                   # get a curated shortlist
 akm show workflows/deploy             # load the best match
@@ -92,7 +92,7 @@ akm remember "Deployment needs VPN"  # capture a memory
 akm feedback workflows/deploy --positive
 ```
 
-For non-interactive setup: `akm setup --yes` (or `--dir ~/custom-stash` for a custom path).
+For non-interactive setup: `akm setup --yes` (or `--dir ~/custom-bundle` for a custom path).
 Non-interactive setup never activates schedules.
 
 See [docs/guides/getting-started.md](docs/guides/getting-started.md) for a full walkthrough.
@@ -112,15 +112,15 @@ See [docs/guides/getting-started.md](docs/guides/getting-started.md) for a full 
 | **lesson** | Distilled feedback insight | `lessons/prefer-dry-run` |
 | **memory** | Recalled context from a previous session | `memories/vpn-note` |
 | **task** | Scheduled prompt/command/workflow job | `tasks/nightly-review` |
-| **fact** | Durable stash-level fact (identity, conventions, stash-meta) | `facts/team/tool-stack` |
+| **fact** | Durable bundle-level fact (identity, conventions, bundle-meta) | `facts/team/tool-stack` |
 
 See [docs/guides/concepts.md](docs/guides/concepts.md) for classification rules and the ref format.
 
 ## Key workflows
 
-**Add and search a stash**
+**Add and search a bundle**
 ```sh
-akm add github:owner/team-stash
+akm bundle add github:owner/team-bundle
 akm index
 akm search "database migration" --type script
 akm show scripts/migrate.sh
@@ -128,13 +128,13 @@ akm show scripts/migrate.sh
 
 **Capture and route knowledge**
 ```sh
-akm remember "Hot-fix deploys skip staging" --target team-stash
+akm remember "Hot-fix deploys skip staging" --bundle team-bundle
 akm import ./incident-report.md
 ```
 
 **Use a living wiki (Karpathy LLM wiki pattern)**
 ```sh
-akm add github:team/research-wiki          # install an LLM-wiki bundle (schema.md + pages/ + raw/)
+akm bundle add github:team/research-wiki          # install an LLM-wiki bundle (schema.md + pages/ + raw/)
 akm search "attention"                     # its pages are indexed like any other content
 akm show research-wiki//pages/attention    # read a page by bundle//conceptId ref
 ```
@@ -160,25 +160,22 @@ akm clone workflows/ship-release --dest ./project/.claude
 ```sh
 akm setup                 # review definitions, schedules, and enabled state
 # Confirm scheduler activation only after reviewing the complete task summary.
-akm tasks doctor          # verify backend, runtime, task state, and warnings
+akm task doctor           # verify backend, runtime, task state, and warnings
 ```
 
-Setup shows the complete task review before asking one explicit question about
-changing task files and the OS scheduler. Only confirmation prepares the
-definitions and syncs the scheduler. Declining, or running setup
-non-interactively, leaves both unchanged. A scheduled entry captures
-the installed akm runtime used during activation. Ordinary `akm tasks sync`
-preserves that runtime; after moving or replacing the installation, use
-`akm tasks sync --rebind` explicitly to migrate or repair scheduler entries, then
-run `akm tasks doctor` again.
+Setup shows the complete task review — both the general-purpose core
+templates and the maintainer-oriented improve cadence — before asking one
+explicit question about changing task files and the OS scheduler. Only
+confirmation prepares the definitions and syncs the scheduler. Declining, or
+running setup non-interactively, leaves both unchanged. A scheduled entry
+captures the installed akm runtime used during activation. Ordinary
+`akm task sync` preserves that runtime; after moving or replacing the
+installation, use `akm task sync --rebind` explicitly to migrate or repair
+scheduler entries, then run `akm task doctor` again.
 
 Rerunning setup preserves existing scheduler bindings. If setup changes the AKM
 storage path, or the installed runtime path changes, run
-`akm tasks sync --rebind` explicitly. Fresh setup offers the core task templates;
-it does not register the separate maintainer-oriented improve cadence. That
-automation remains an explicit `akm tasks init` operation, which creates missing
-definitions and immediately installs enabled schedules. Inspect its documented
-task set and options before running it.
+`akm task sync --rebind` explicitly.
 
 ## The improvement loop
 
@@ -202,7 +199,7 @@ No plugins or SDKs required. Platform-specific integrations are available in [ak
 
 | Repo | What it is |
 | --- | --- |
-| [itlackey/akm-stash](https://github.com/itlackey/akm-stash) | Official stash — ready-made skills, workflows, commands, and knowledge |
+| [itlackey/akm-stash](https://github.com/itlackey/akm-stash) | Official bundle — ready-made skills, workflows, commands, and knowledge |
 | [itlackey/akm-plugins](https://github.com/itlackey/akm-plugins) | Optional editor and agent integrations (OpenCode, etc.) |
 | [itlackey/akm-registry](https://github.com/itlackey/akm-registry) | Official registry index — pre-configured in every akm install |
 | [itlackey/akm-bench](https://github.com/itlackey/akm-bench) | Benchmark harness for measuring agent performance with akm |
@@ -226,10 +223,10 @@ No plugins or SDKs required. Platform-specific integrations are available in [ak
 | Doc | Description |
 | --- | --- |
 | [Getting Started](docs/guides/getting-started.md) | Install, first-time setup, add sources, search, show |
-| [Concepts](docs/guides/concepts.md) | Sources, registries, asset types, refs, and the stash |
+| [Concepts](docs/guides/concepts.md) | Sources, registries, asset types, refs, and the bundle |
 | [CLI Reference](docs/reference/cli.md) | All commands and flags |
 | [Configuration](docs/reference/configuration.md) | Settings, providers, embedding, and Ollama setup |
-| [Stash Maker's Guide](docs/guides/stash-makers.md) | Build, publish, and share your own stashes |
+| [Bundle Maker's Guide](docs/guides/stash-makers.md) | Build, publish, and share your own bundles |
 | [Registry](docs/reference/registry.md) | Registries, the index format, and private registry setup |
 | [Wikis](docs/guides/wikis.md) | Multi-wiki knowledge bases |
 | [Release Notes — 0.9.0](docs/migration/release-notes/0.9.0.md) | Latest release notes and migration guide |

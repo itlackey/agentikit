@@ -8,7 +8,7 @@
  * rollback-vs-roll-forward dispatch at the kind's commit point, engine safety
  * fences, cleanup sweeping, and cross-namespace journal listing.
  *
- * Domain kinds (proposal accept/revert/reject, mv, consolidate) get their
+ * Domain kinds (proposal accept/revert/reject, consolidate) get their
  * semantics pinned by their own suites + the frozen outcome oracles; this
  * suite exercises the ENGINE with synthetic kinds only.
  */
@@ -25,6 +25,7 @@ import {
   listTxnJournals,
   recoverTxnsForRoot,
   registerTxnKind,
+  TXN_SWEEP_GRACE_MS,
   type Txn,
   type TxnJournal,
   txnNamespaceDir,
@@ -162,15 +163,82 @@ describe("fs-txn engine core", () => {
     cleanupTxn(dir);
   });
 
-  test("unregistered kinds are refused loudly (never silently swept)", async () => {
+  // ── unknown-kind sweep (0.9.0: `akm mv` and its `kind:"mv"` handler are
+  //    gone; an rc-era leftover journal must never brick a recovery scan) ──
+
+  /**
+   * Fabricate a journal for a kind that has NO registered handler, in `root`'s
+   * namespace. `ageMs` backdates the transaction dir so the caller can place it
+   * either side of TXN_SWEEP_GRACE_MS.
+   */
+  function fabricateUnknownKindTxnDir(root: string, kind: string, ageMs: number): string {
+    const dir = path.join(txnNamespaceDir(root), `unknown-${kind}`);
+    fs.mkdirSync(dir, { recursive: true });
+    const journal: TxnJournal<{ label: string }> = {
+      version: 1,
+      kind,
+      phase: "some-retired-phase",
+      transactionId: path.basename(dir),
+      root: path.resolve(root),
+      changes: [],
+      decidedAt: new Date().toISOString(),
+      payload: { label: "rc-era-leftover" },
+    };
+    fs.writeFileSync(path.join(dir, "journal.json"), `${JSON.stringify(journal, null, 2)}\n`);
+    const stamp = new Date(Date.now() - ageMs);
+    fs.utimesSync(dir, stamp, stamp);
+    return dir;
+  }
+
+  test("a stale journal of an UNREGISTERED kind is swept, not thrown on", async () => {
     const root = freshRoot();
-    registerRecordingKind("test-kind-known", []);
-    const txn = beginTxn({ kind: "test-kind-known", root, changes: [], payload: { label: "k" } });
-    const raw = JSON.parse(fs.readFileSync(txn.journalPath, "utf8")) as Record<string, unknown>;
-    raw.kind = "test-kind-NEVER-registered";
-    fs.writeFileSync(txn.journalPath, JSON.stringify(raw));
-    await expect(recoverTxnsForRoot(root)).rejects.toThrow(/No transaction handler registered/);
-    cleanupTxn(txn.dir);
+    const dir = fabricateUnknownKindTxnDir(root, "mv", TXN_SWEEP_GRACE_MS + 60_000);
+
+    const recovered = await recoverTxnsForRoot(root);
+    // Nothing was recovered (no handler could roll it back or forward) …
+    expect(recovered).toHaveLength(0);
+    // … and the unrecoverable directory is gone rather than fencing the scan.
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  test("an unregistered-kind journal does not block recovery of a KNOWN-kind sibling", async () => {
+    const root = freshRoot();
+    const calls: string[] = [];
+    registerRecordingKind("test-kind-sweep-sibling", calls);
+    const known = beginTxn({ kind: "test-kind-sweep-sibling", root, changes: [], payload: { label: "live" } });
+    advanceTxn(known, "files-published");
+    const stale = fabricateUnknownKindTxnDir(root, "mv", TXN_SWEEP_GRACE_MS + 60_000);
+
+    const recovered = await recoverTxnsForRoot(root);
+    expect(recovered.map((j) => j.kind)).toEqual(["test-kind-sweep-sibling"]);
+    expect(calls).toEqual(["finalize:live@files-published"]);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(known.dir)).toBe(false);
+  });
+
+  test("a FRESH unregistered-kind journal inside the grace window is left alone", async () => {
+    const root = freshRoot();
+    // A live kind whose registrar this process simply has not imported yet
+    // looks identical to a retired one; the grace period is what tells them
+    // apart, so a just-written journal must survive the scan untouched.
+    const dir = fabricateUnknownKindTxnDir(root, "not-yet-imported-kind", 0);
+
+    const recovered = await recoverTxnsForRoot(root);
+    expect(recovered).toHaveLength(0);
+    expect(fs.existsSync(path.join(dir, "journal.json"))).toBe(true);
+    cleanupTxn(dir);
+  });
+
+  test("the unknown-kind sweep runs even when a filter excludes the journal", async () => {
+    const root = freshRoot();
+    registerRecordingKind("test-kind-sweep-filtered", []);
+    const dir = fabricateUnknownKindTxnDir(root, "mv", TXN_SWEEP_GRACE_MS + 60_000);
+
+    // A narrowly-filtered caller (the shape every pre-0.9.0 mv hook used) must
+    // still clear garbage no handler can ever recover.
+    const recovered = await recoverTxnsForRoot(root, (j) => j.kind === "test-kind-sweep-filtered");
+    expect(recovered).toHaveLength(0);
+    expect(fs.existsSync(dir)).toBe(false);
   });
 
   test("directories without a journal are swept; kind-filtered listing works", async () => {

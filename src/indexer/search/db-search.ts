@@ -161,7 +161,7 @@ export async function searchLocal(input: {
   /**
    * When true, hits are restricted to entries whose file path lives under one of
    * the provided `sources`. Set by callers that narrowed `sources` via a
-   * `--source <name>` filter so the FTS index (which spans all sources) does
+   * `--from <name>` filter so the FTS index (which spans all sources) does
    * not leak hits from sources the caller did not request. Default false
    * preserves prior behavior for the unnamed default search path.
    */
@@ -755,10 +755,10 @@ function applyEntryFilters<T extends { id: number; entry: IndexDocument; filePat
   },
 ): T[] {
   const { filters } = opts;
-  // Source filter: when the caller narrowed `sources` via `--source <name>`,
+  // Source filter: when the caller narrowed `sources` via `--from <name>`,
   // drop entries whose filePath does not live under any requested source. The
   // FTS/enumerate index spans every configured source, so without this filter a
-  // narrowed --source request would still leak results from other sources.
+  // narrowed --from request would still leak results from other sources.
   const sourceFiltered = opts.restrictToSources
     ? items.filter((item) => findSourceForPath(item.filePath, opts.sources) !== undefined)
     : items;

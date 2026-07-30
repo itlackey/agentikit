@@ -6,7 +6,7 @@
  * WS6 characterization test for the `akm config` command family. Pins the full
  * JSON envelope (stdout payload shape + the {ok:false,code} error envelope on
  * stderr / exit code) for the representative subcommands
- * list/show/get/set/unset/path, proving the extraction of the family from
+ * list/get/set/unset/path, proving the extraction of the family from
  * cli.ts into src/commands/config-cli.ts is byte-identical. The leaf handlers
  * were migrated onto `defineJsonCommand`, which emits the same JSON envelope
  * (stdout/stderr/exit-code) as the inline form.
@@ -52,15 +52,6 @@ describe("akm config — JSON envelope snapshot (WS6)", () => {
     expect(env.profiles).toBeUndefined();
   });
 
-  test("config show: alias of list uses the same v2 payload shape", async () => {
-    const { stdout, status } = await runCli(["--json", "config", "show"]);
-    expect(status).toBe(0);
-    const env = JSON.parse(stdout);
-    expect(env.semanticSearchMode).toBe("off");
-    expect(env.configVersion).toBe("0.9.0");
-    expect(env.profiles).toBeUndefined();
-  });
-
   test("config get: returns the requested key value", async () => {
     const { stdout, status } = await runCli(["--json", "config", "get", "semanticSearchMode"]);
     expect(status).toBe(0);
@@ -81,19 +72,13 @@ describe("akm config — JSON envelope snapshot (WS6)", () => {
     expect(stdout.trim()).toBe("");
   });
 
-  test("config path --all: success envelope carries config/stash/cache/index paths", async () => {
+  test("config path --all: success envelope carries config/bundle/cache/index paths", async () => {
     const { stdout, status } = await runCli(["--json", "config", "path", "--all"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(typeof env.config).toBe("string");
-    expect(typeof env.stash).toBe("string");
+    expect(typeof env.bundle).toBe("string");
     expect(typeof env.cache).toBe("string");
     expect(typeof env.index).toBe("string");
-  });
-
-  // A config subcommand must not fall through to the group's default list body.
-  test("config validate: does not emit a spurious config-list dump", async () => {
-    const { stdout } = await runCli(["--json", "config", "validate"]);
-    expect(stdout).not.toContain('"semanticSearchMode"');
   });
 });

@@ -1,8 +1,8 @@
 /**
- * Regression test for `akm search --source <name>` leak bug.
+ * Regression test for `akm search --from <name>` leak bug.
  *
  * The FTS+vector index spans every configured source. Before this fix,
- * `akm search "query" --source library` would still return hits from
+ * `akm search "query" --from library` would still return hits from
  * other sources because `searchDatabase` never filtered scored items by
  * the narrowed source list — the narrowing only affected graph-context
  * loading and the per-hit ref formatting.
@@ -69,20 +69,20 @@ afterEach(() => {
 });
 
 /**
- * Drive the CLI in-process against a specific stash dir. Re-pins AKM_STASH_DIR
+ * Drive the CLI in-process against a specific stash dir. Re-pins AKM_BUNDLE_DIR
  * for the call and resets the config cache so the run re-reads against the
  * narrowed stash, mirroring what the spawned subprocess got via its env.
  */
 async function runCli(args: string[], stashDir: string): Promise<{ stdout: string; stderr: string; status: number }> {
-  return withEnv({ AKM_STASH_DIR: stashDir }, async () => {
+  return withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
     resetConfigCache();
     const res = await runCliCapture(args);
     return { stdout: res.stdout, stderr: res.stderr, status: res.code };
   });
 }
 
-describe("akm search --source <name> filters hits to that source", () => {
-  test("named --source returns only hits whose files live under that source", async () => {
+describe("akm search --from <name> filters hits to that source", () => {
+  test("named --from returns only hits whose files live under that source", async () => {
     const primary = makeTempDir("akm-src-filter-primary-");
     const library = makeTempDir("akm-src-filter-library-");
     for (const sub of ["skills", "commands", "agents", "knowledge", "scripts"]) {
@@ -100,7 +100,7 @@ describe("akm search --source <name> filters hits to that source", () => {
       "---\ndescription: shared-keyword in the library stash\ntags:\n  - shared-keyword\n---\n# Library\n",
     );
 
-    process.env.AKM_STASH_DIR = primary;
+    process.env.AKM_BUNDLE_DIR = primary;
     saveConfig({
       semanticSearchMode: "off",
       bundles: {
@@ -111,7 +111,7 @@ describe("akm search --source <name> filters hits to that source", () => {
     });
     await akmIndex({ stashDir: primary, full: true });
 
-    // Baseline: no --source filter. Both sources should contribute hits.
+    // Baseline: no --from filter. Both sources should contribute hits.
     const baseline = await runCli(["search", "shared-keyword", "--format=json"], primary);
     expect(baseline.status).toBe(0);
     const baselineHits = (JSON.parse(baseline.stdout).hits as Array<{ name: string; ref: string }>) ?? [];
@@ -119,25 +119,25 @@ describe("akm search --source <name> filters hits to that source", () => {
     expect(baselineNames).toContain("primary-skill");
     expect(baselineNames).toContain("library-skill");
 
-    // Narrowed: --source library should ONLY return hits from the library
+    // Narrowed: --from library should ONLY return hits from the library
     // source. Before this fix, primary-skill would also appear because the
     // FTS index is global across sources and the search command did not
     // post-filter by the narrowed source list.
-    const narrowed = await runCli(["search", "shared-keyword", "--source", "library", "--format=json"], primary);
+    const narrowed = await runCli(["search", "shared-keyword", "--from", "library", "--format=json"], primary);
     expect(narrowed.status).toBe(0);
     const narrowedHits = (JSON.parse(narrowed.stdout).hits as Array<{ name: string; ref: string }>) ?? [];
     const narrowedNames = narrowedHits.map((h) => h.name);
     expect(narrowedNames).toContain("library-skill");
     expect(narrowedNames).not.toContain("primary-skill");
 
-    // And vice versa — `--source primary` returns only the primary hit.
+    // And vice versa — `--from primary` returns only the primary hit.
     // Regression for a related bug: `resolveSourceEntries` injects the primary
     // stash into `sources[0]` before iterating the config sources. The dedupe
     // loop used to skip the matching config entry, so the primary stash entry
-    // never received its config name and `--source <primary-name>` matched
+    // never received its config name and `--from <primary-name>` matched
     // zero entries. addSource now enriches the existing entry with config
     // metadata when the path is already in the source list.
-    const narrowedPrimary = await runCli(["search", "shared-keyword", "--source", "primary", "--format=json"], primary);
+    const narrowedPrimary = await runCli(["search", "shared-keyword", "--from", "primary", "--format=json"], primary);
     expect(narrowedPrimary.status).toBe(0);
     const narrowedPrimaryHits = (JSON.parse(narrowedPrimary.stdout).hits as Array<{ name: string; ref: string }>) ?? [];
     const narrowedPrimaryNames = narrowedPrimaryHits.map((h) => h.name);

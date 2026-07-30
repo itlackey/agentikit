@@ -36,7 +36,7 @@ import type { readEvents } from "../../../../src/core/events";
 
 const tempDirs: string[] = [];
 const savedEnv = {
-  AKM_STASH_DIR: process.env.AKM_STASH_DIR,
+  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
   XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
   XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
   XDG_DATA_HOME: process.env.XDG_DATA_HOME,
@@ -92,8 +92,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (savedEnv.AKM_STASH_DIR === undefined) delete process.env.AKM_STASH_DIR;
-  else process.env.AKM_STASH_DIR = savedEnv.AKM_STASH_DIR;
+  if (savedEnv.AKM_BUNDLE_DIR === undefined) delete process.env.AKM_BUNDLE_DIR;
+  else process.env.AKM_BUNDLE_DIR = savedEnv.AKM_BUNDLE_DIR;
   if (savedEnv.XDG_CACHE_HOME === undefined) delete process.env.XDG_CACHE_HOME;
   else process.env.XDG_CACHE_HOME = savedEnv.XDG_CACHE_HOME;
   if (savedEnv.XDG_CONFIG_HOME === undefined) delete process.env.XDG_CONFIG_HOME;

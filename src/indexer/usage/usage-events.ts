@@ -9,10 +9,7 @@
  *   id, event_type, query, entry_id (nullable), entry_ref, signal, metadata, source, created_at
  */
 
-import { stashDirFor } from "../../core/asset/asset-placement";
-import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
-import { UsageError } from "../../core/errors";
-import type { Database, SqlValue } from "../../storage/database";
+import type { Database } from "../../storage/database";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -55,18 +52,6 @@ export interface UsageEventRow {
   metadata: string | null;
   source: string;
   created_at: string;
-}
-
-export interface UsageEventFilters {
-  event_type?: string;
-  entry_ref?: string;
-  source?: UsageEventSource;
-  /**
-   * Inclusive lower bound on `created_at` (SQLite `YYYY-MM-DD HH:MM:SS`
-   * timestamp). When set, only events with `created_at >= since` are returned.
-   * Mirrors the `--since` filter formerly hand-rolled in `akm history`.
-   */
-  since?: string;
 }
 
 // ── Schema ──────────────────────────────────────────────────────────────────
@@ -117,57 +102,6 @@ export function insertUsageEvent(db: Database, event: UsageEvent): void {
 }
 
 // ── Query ────────────────────────────────────────────────────────────────────
-
-/**
- * Retrieve usage events, optionally filtered by event_type and/or entry_ref.
- */
-export function getUsageEvents(db: Database, filters?: UsageEventFilters): UsageEventRow[] {
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-
-  if (filters?.event_type) {
-    conditions.push("event_type = ?");
-    params.push(filters.event_type);
-  }
-  if (filters?.entry_ref) {
-    const parsed = parseBundleRef(filters.entry_ref);
-    const colon = parsed.conceptId.indexOf(":");
-    if (colon > 0 && !parsed.conceptId.slice(0, colon).includes("/") && stashDirFor(parsed.conceptId.slice(0, colon))) {
-      throw new UsageError(
-        `Invalid asset ref "${filters.entry_ref}". Use [bundle//]conceptId, for example memories/note.`,
-        "INVALID_FLAG_VALUE",
-      );
-    }
-    const entryRef = makeBundleRef(parsed.bundle, parsed.conceptId);
-    if (parsed.bundle !== undefined) {
-      conditions.push("entry_ref = ?");
-      params.push(entryRef);
-    } else {
-      conditions.push("instr(entry_ref, '//') > 0 AND substr(entry_ref, instr(entry_ref, '//') + 2) = ?");
-      params.push(parsed.conceptId);
-    }
-  }
-  if (filters?.source) {
-    if (filters.source === "unknown") {
-      conditions.push("(source = 'unknown' OR source IS NULL OR source = '')");
-    } else {
-      conditions.push("source = ?");
-      params.push(filters.source);
-    }
-  }
-  if (filters?.since) {
-    conditions.push("created_at >= ?");
-    params.push(filters.since);
-  }
-
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-  const sql = `SELECT id, event_type, query, entry_id, entry_ref, signal, metadata, source, created_at
-               FROM usage_events ${where}
-               ORDER BY id ASC`;
-
-  const rows = db.prepare(sql).all(...(params as SqlValue[])) as Array<UsageEventRow & { source: string | null }>;
-  return rows.map((row) => ({ ...row, source: row.source || "unknown" }));
-}
 
 /**
  * Aggregate positive/negative feedback counts for a single entry.

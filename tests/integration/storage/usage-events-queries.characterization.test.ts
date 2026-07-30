@@ -8,8 +8,6 @@ import {
   countFeedbackSignals,
   countUsageEventsByType,
   ensureUsageEventsSchema,
-  getUsageEvents,
-  type UsageEventRow,
 } from "../../../src/indexer/usage/usage-events";
 import type { Database as AkmDatabase } from "../../../src/storage/database";
 
@@ -89,56 +87,5 @@ describe("usage_events query characterization (WS5)", () => {
     expect(countUsageEventsByType(db, "show")).toBe(2);
     expect(countUsageEventsByType(db, "feedback")).toBe(4);
     expect(countUsageEventsByType(db, "nonexistent")).toBe(0);
-  });
-
-  test("getUsageEvents with `since` matches the inline history.ts query", () => {
-    // Reproduce history.ts: filter by entry_ref + created_at >= since + source.
-    const buildExpected = (conds: string[], params: unknown[]) => {
-      const where = conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "";
-      const sql = `SELECT id, event_type, query, entry_id, entry_ref, signal, metadata, source, created_at
-                   FROM usage_events ${where}
-                   ORDER BY id ASC`;
-      return db
-        .prepare(sql)
-        .all(...(params as Array<string | number | bigint | boolean | null | Uint8Array>)) as UsageEventRow[];
-    };
-
-    // since only.
-    expect(getUsageEvents(db, { since: "2026-01-05 00:00:00" })).toEqual(
-      buildExpected(["created_at >= ?"], ["2026-01-05 00:00:00"]),
-    );
-    // A short current ref matches qualified suffixes, not bare stored rows.
-    expect(
-      getUsageEvents(db, { since: "2026-01-04 00:00:00", entry_ref: "lessons/a" }).map((row) => row.entry_ref),
-    ).toEqual(["stash//lessons/a", "stash//lessons/a", "stash//lessons/a", "team//lessons/a"]);
-    // since + source.
-    expect(getUsageEvents(db, { since: "2026-01-01 00:00:00", source: "improve" })).toEqual(
-      buildExpected(["created_at >= ?", "source = ?"], ["2026-01-01 00:00:00", "improve"]),
-    );
-    // A qualified entry_ref preserves exact source identity.
-    expect(getUsageEvents(db, { entry_ref: "stash//lessons/a" }).map((row) => row.entry_ref)).toEqual(
-      Array(5).fill("stash//lessons/a"),
-    );
-    // Concept IDs remain adapter-owned; the history query does not require an
-    // AKM type-directory prefix.
-    expect(getUsageEvents(db, { entry_ref: "pages/runbook" }).map((row) => row.entry_ref)).toEqual([
-      "team//pages/runbook",
-    ]);
-    expect(getUsageEvents(db, { entry_ref: "team//pages/runbook" }).map((row) => row.entry_ref)).toEqual([
-      "team//pages/runbook",
-    ]);
-  });
-
-  test("getUsageEvents fully materialises results (survive db.close)", () => {
-    const local = new Database(":memory:") as unknown as AkmDatabase;
-    ensureUsageEventsSchema(local);
-    local
-      .prepare("INSERT INTO usage_events (event_type, entry_ref, source) VALUES (?, ?, ?)")
-      .run("search", "stash//lessons/x", "user");
-    const rows = getUsageEvents(local, {});
-    local.close();
-    // Array is a plain materialised copy — readable after the connection closes.
-    expect(rows.length).toBe(1);
-    expect(rows[0]?.entry_ref).toBe("stash//lessons/x");
   });
 });

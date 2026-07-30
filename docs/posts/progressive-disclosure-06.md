@@ -74,10 +74,10 @@ Every platform implements this pattern within its own silo. `akm` implements it 
 
 ```sh
 # One-time setup: point akm at everything
-akm add ~/.claude/skills
-akm add ~/.codex/skills
-akm add .cursor/rules
-akm add github:your-org/team-skills
+akm add ~/.claude/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add ~/.codex/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add .cursor/rules  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add github:your-org/team-skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Every search hits all sources
 akm search "database migration"

@@ -15,23 +15,22 @@ type AnyCmd = Record<string, any>;
 /**
  * A completion rule for one flag, optionally scoped to a set of exact
  * command paths (the same `"<root> <subcommand...>"` shape `walkCommandTree`
- * produces below, e.g. `"akm search"`, `"akm graph summary"`). Most flags
+ * produces below, e.g. `"akm search"`, `"akm curate"`). Most flags
  * (`--format`, `--detail`, `--shape`, `--type`, `--shell`) mean the same
  * thing on every command that declares them, so they're declared with no
  * `paths` (global — the rule applies wherever the flag appears).
  *
- * `--source` does NOT: it's a closed `stash|registry|both` enum on
- * `search`/`curate` (src/commands/read/search-cli.ts), but a free-form
- * stash name/path on every `graph` subcommand
- * (src/commands/graph/graph-cli.ts) and a free-form URL/ref/path on
- * `remember` (src/commands/read/remember-cli.ts). Before this fix (R-052a)
- * `FLAG_VALUES` was a flat `Record` keyed by flag NAME ONLY, so `akm graph
- * --source <TAB>` wrongly suggested `stash registry both` — search's enum,
+ * `--from` does NOT: it's a closed `local|registry|all` enum on
+ * `search`/`curate` (src/commands/read/search-cli.ts, renamed from `--source`
+ * in the 0.9 CLI overhaul, S8), but a free-form existing-file path on
+ * `workflow create` (src/commands/workflow-cli.ts). `FLAG_VALUES` is a flat
+ * `Record` keyed by flag NAME ONLY, so without scoping `akm workflow create
+ * --from <TAB>` would wrongly suggest `local registry all` — search's enum,
  * tagged onto every occurrence of the flag name regardless of which command
- * it belonged to. Scoping the rule to `paths` keeps the suggestion where
- * it's actually correct; every other command path with that flag gets no
- * suggestion (falls through to bash's default filename completion) rather
- * than an incorrect one.
+ * it belonged to (R-052a). Scoping the rule to `paths` keeps the suggestion
+ * where it's actually correct; every other command path with that flag gets
+ * no suggestion (falls through to bash's default filename completion)
+ * rather than an incorrect one.
  */
 interface FlagValueRule {
   /** Exact command paths this rule applies to. Omit for every path with no more specific rule for this flag. */
@@ -45,7 +44,7 @@ const FLAG_VALUES: Record<string, FlagValueRule[]> = {
   "--shape": [{ values: ["human", "agent", "summary"] }],
   "--type": [{ values: () => [...placementTypes(), "any"] }],
   "--shell": [{ values: ["bash"] }],
-  "--source": [{ paths: ["akm search", "akm curate"], values: ["stash", "registry", "both"] }],
+  "--from": [{ paths: ["akm search", "akm curate"], values: ["local", "registry", "all"] }],
 };
 
 function resolveRuleValues(rule: FlagValueRule): string[] {
@@ -55,7 +54,7 @@ function resolveRuleValues(rule: FlagValueRule): string[] {
 /**
  * Build the `${prev}`-case body for one flag. When the flag has no
  * path-scoped rules, every command shares one value set (unchanged from
- * before R-052a). When it does (currently only `--source`), nest a
+ * before R-052a). When it does (currently only `--from`), nest a
  * `${cmd_path}` match inside the flag's case so the suggestion depends on
  * which command is being completed — with a `*)` fallback to any
  * unscoped/global rule declared alongside the scoped ones, or no suggestion
@@ -101,7 +100,13 @@ function walkCommandTree(cmd: AnyCmd, parentPath = ""): CommandInfo[] {
   const currentPath = parentPath ? `${parentPath} ${name}` : name;
   const result: CommandInfo[] = [];
 
-  const subcommands = Object.keys(cmd.subCommands ?? {});
+  // `meta.hidden` (e.g. `migrate`, S11) is excluded from completion the same
+  // way citty's own `renderUsage` excludes it from a rendered COMMANDS list —
+  // a hidden command still runs, it just isn't suggested.
+  const visibleSubEntries = Object.entries((cmd.subCommands ?? {}) as Record<string, AnyCmd>).filter(
+    ([, sub]) => !sub.meta?.hidden,
+  );
+  const subcommands = visibleSubEntries.map(([key]) => key);
   const flags: string[] = [];
 
   if (cmd.args) {
@@ -113,10 +118,8 @@ function walkCommandTree(cmd: AnyCmd, parentPath = ""): CommandInfo[] {
 
   result.push({ path: currentPath, subcommands, flags });
 
-  if (cmd.subCommands) {
-    for (const sub of Object.values(cmd.subCommands as Record<string, AnyCmd>)) {
-      result.push(...walkCommandTree(sub, currentPath));
-    }
+  for (const [, sub] of visibleSubEntries) {
+    result.push(...walkCommandTree(sub, currentPath));
   }
 
   return result;
@@ -179,7 +182,7 @@ _${rootName}() {
   fi
 
   # Build the command path from COMP_WORDS (computed BEFORE flag-value
-  # completion below, so a path-scoped rule — e.g. --source — can match on it)
+  # completion below, so a path-scoped rule — e.g. --from — can match on it)
   local cmd_path="${rootName}"
   for (( i=1; i < cword; i++ )); do
     case "\${words[i]}" in

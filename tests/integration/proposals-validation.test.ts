@@ -36,7 +36,7 @@ function durableRef(stashDir: string, type: string, name: string): string {
 
 const tempDirs: string[] = [];
 const savedEnv: Record<string, string | undefined> = {
-  AKM_STASH_DIR: process.env.AKM_STASH_DIR,
+  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
   AKM_DATA_DIR: process.env.AKM_DATA_DIR,
   AKM_STATE_DIR: process.env.AKM_STATE_DIR,
   XDG_DATA_HOME: process.env.XDG_DATA_HOME,
@@ -52,7 +52,7 @@ function makeStashDir(): string {
 beforeEach(() => {
   process.env.AKM_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "akm-proposal-validation-data-"));
   tempDirs.push(process.env.AKM_DATA_DIR);
-  // Pair AKM_STASH_DIR with AKM_STATE_DIR so the test-isolation guard in
+  // Pair AKM_BUNDLE_DIR with AKM_STATE_DIR so the test-isolation guard in
   // src/core/paths.ts stays inert for getDataDir.
   process.env.AKM_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "akm-proposal-validation-state-"));
   tempDirs.push(process.env.AKM_STATE_DIR);

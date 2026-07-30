@@ -53,7 +53,7 @@ export function collectStashExposureAdvisory(
       `${trackedFiles.length} env/secret file(s) are git-tracked AND a remote is configured — ` +
       `a 'git push' can leak tokens/keys (${preview}). ` +
       "Run 'git rm --cached' on them (a .gitignore rule alone does NOT untrack already-tracked " +
-      "files) and then add env/+secrets/ to .gitignore to prevent recurrence (akm init scaffolds it).",
+      "files) and then add env/+secrets/ to .gitignore to prevent recurrence (akm bundle create scaffolds it).",
     evidence: { trackedSecretFiles: trackedFiles },
   };
 }

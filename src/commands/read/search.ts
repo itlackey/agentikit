@@ -9,7 +9,7 @@
  * because there is one data store. Provider fan-out is gone.
  *
  * The orchestration here is thin: build the FTS query, optionally interleave
- * a registry search behind `--source registry|both`, and log a usage event.
+ * a registry search behind `--from registry|all`, and log a usage event.
  * Provider `search()` methods do not exist.
  */
 
@@ -106,30 +106,44 @@ export async function akmSearch(input: {
   eventSource?: UsageEventSource;
   /** Internal projection used only to decide whether derived surface content was emitted. */
   attributionProjection?: AttributionProjection;
+  /**
+   * Include asset-level search results from registry providers (only
+   * meaningful when `source` is `registry` or `all`). Folded in from the
+   * retired `akm registry search --assets` flag (0.9.0 CLI overhaul, S8).
+   */
+  assets?: boolean;
 }): Promise<SearchResponse> {
   const t0 = Date.now();
   const query = input.query.trim();
   const normalizedQuery = query.toLowerCase();
   const searchType = input.type ?? "any";
   const limit = normalizeLimit(input.limit);
-  const parsedSource = parseSearchSource(input.source ?? "stash");
+  const parsedSource = parseSearchSource(input.source ?? "local");
   const config = loadConfig();
 
-  // Named-source filter: when --source is not a standard enum value, treat it
+  // Named-source filter: when --from is not a standard enum value, treat it
   // as a named source (a `bundles` key). Validated early (before
   // resolveSourceEntries, which can throw STASH_DIR_NOT_FOUND) so that a bad
-  // --source name always produces INVALID_SOURCE_VALUE regardless of stash state.
+  // --from name always produces INVALID_SOURCE_VALUE regardless of stash state.
   let namedSourceName: string | undefined;
   let source: SearchSource;
-  if (parsedSource !== "stash" && parsedSource !== "registry" && parsedSource !== "both") {
+  if (parsedSource !== "local" && parsedSource !== "registry" && parsedSource !== "all") {
     namedSourceName = parsedSource as string;
     assertNamedSourceExists(config, namedSourceName);
-    source = "stash";
+    source = "local";
   } else {
     source = parsedSource as SearchSource;
   }
 
-  let allSources = resolveReadSources(undefined, config).sources;
+  // A pure `--from registry` search needs no local stash at all (this is the
+  // one path folded in from the retired `akm registry search`, which never
+  // touched local source/stash resolution either) — only resolve local
+  // sources when local hits are actually needed, or a named source narrows
+  // to a local bundle. Without this, `resolveReadSources` (which can throw
+  // STASH_DIR_NOT_FOUND via `resolveStashDir()`) would make registry-only
+  // search fail on a machine with no stash ever configured.
+  const needsLocalSources = source !== "registry" || namedSourceName !== undefined;
+  let allSources = needsLocalSources ? resolveReadSources(undefined, config).sources : [];
 
   // When a named source was requested, narrow the sources list to just that entry.
   // `resolveSourceEntries` sets `registryId` to `entry.name` for each config source.
@@ -141,23 +155,24 @@ export async function akmSearch(input: {
     // zero-sources guard below which emits a friendly warning.
   }
 
-  if (allSources.length === 0) {
+  if (needsLocalSources && allSources.length === 0) {
     // stashDir: "" is a safe sentinel here — the response carries zero hits
     // and a warning, so no downstream code will try to use the empty path.
     const response: SearchResponse = {
       schemaVersion: 1,
-      stashDir: "",
+      bundleDir: "",
       source,
       hits: [],
-      warnings: ["No stashes configured. Run `akm init` to create your working stash."],
+      warnings: ["No bundles configured. Run `akm bundle create` to create your working bundle."],
       timing: { totalMs: Date.now() - t0 },
     };
     maybeLogSearchEvent(input, query, response);
     return response;
   }
   // Primary stash directory — used for DB path lookups and as the default
-  // stash root. Safe because the empty-sources case is handled above.
-  const stashDir = allSources[0]!.path;
+  // stash root. Empty when a pure registry search skipped local resolution
+  // entirely (safe: registry-only responses never read `stashDir`).
+  const stashDir = allSources[0]?.path ?? "";
   // Expose the filtered source list to downstream search calls.
   const sources = allSources;
 
@@ -177,7 +192,7 @@ export async function akmSearch(input: {
           filters,
           includeProposed,
           beliefFilter: belief,
-          // When `--source <name>` narrowed the source list above, propagate
+          // When `--from <name>` narrowed the source list above, propagate
           // that intent down to the database layer so FTS/vector hits from
           // sources outside the narrowed set are filtered out post-ranking.
           // Without this, the index (which spans every configured source)
@@ -189,14 +204,16 @@ export async function akmSearch(input: {
         });
 
   const registryResult =
-    source === "stash" ? undefined : await searchRegistry(query, { limit, registries: config.registries });
+    source === "local"
+      ? undefined
+      : await searchRegistry(query, { limit, includeAssets: input.assets === true, registries: config.registries });
 
-  if (source === "stash") {
+  if (source === "local") {
     const localHits = localResult?.hits ?? [];
     const hasResults = localHits.length > 0;
     const response: SearchResponse = {
       schemaVersion: 1,
-      stashDir,
+      bundleDir: stashDir,
       source,
       hits: localHits,
       tip: hasResults ? undefined : localResult?.tip,
@@ -215,7 +232,7 @@ export async function akmSearch(input: {
       name: hit.title,
       id: hit.id,
       description: hit.description,
-      action: `akm add ${installRef} -> then search again`,
+      action: `akm bundle add ${installRef} -> then search again`,
       score: hit.score,
       registryName: hit.registryName,
       ...(hit.warnings && hit.warnings.length > 0 ? { warnings: hit.warnings } : {}),
@@ -227,7 +244,7 @@ export async function akmSearch(input: {
     const hasResults = slicedRegistryHits.length > 0;
     const response: SearchResponse = {
       schemaVersion: 1,
-      stashDir,
+      bundleDir: stashDir,
       source,
       hits: [],
       registryHits: slicedRegistryHits,
@@ -239,14 +256,14 @@ export async function akmSearch(input: {
     return response;
   }
 
-  // source === "both"
+  // source === "all"
   const allStashHits = (localResult?.hits ?? []).slice(0, limit);
   const warnings = [...(localResult?.warnings ?? []), ...(registryResult?.warnings ?? [])];
   const hasResults = allStashHits.length > 0 || registryHits.length > 0;
 
   const response: SearchResponse = {
     schemaVersion: 1,
-    stashDir,
+    bundleDir: stashDir,
     source,
     hits: allStashHits,
     registryHits,
@@ -310,7 +327,7 @@ function resolveEntryIds(
  *   - `stashHitCount`: number of local stash hits (response.hits, source-only
  *     entries). Always 0 for registry-only searches.
  *   - `registryHitCount`: number of registry hits (response.registryHits).
- *     Only non-zero when source is "registry" or "both".
+ *     Only non-zero when source is "registry" or "all".
  *   - `resultCount`: total across both pools so telemetry reflects the actual
  *     number of results the user saw, regardless of source mode.
  *
@@ -384,7 +401,7 @@ function logSearchEvent(
         if (resolvedIds.length > 0) {
           let scopeKey: string | undefined;
           try {
-            const stashPath = response.stashDir;
+            const stashPath = response.bundleDir;
             const disabled = disableScopedUtility || (stashPath && isTransientStashPath(stashPath));
             scopeKey = disabled ? undefined : getCurrentWorkflowScopeKey();
           } catch {
@@ -404,7 +421,7 @@ function logSearchEvent(
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Validate a named `--source` against the bundle-derived source list (0.9.0
+ * Validate a named `--from` against the bundle-derived source list (0.9.0
  * spec §10.1: a named source is a `bundles` key, matched via its derived
  * source entry's `name`, or an exact path). Throws INVALID_SOURCE_VALUE with
  * the known names before any stash access can fail differently.
@@ -418,7 +435,7 @@ function assertNamedSourceExists(config: AkmConfig, namedSourceName: string): vo
     const hint =
       validNames.length > 0
         ? `Known source names: ${validNames.join(", ")}`
-        : "No named sources are configured. Run `akm list` to see installed stashes.";
+        : "No named sources are configured. Run `akm bundle list` to see installed bundles.";
     throw new UsageError(`Unknown source name: "${namedSourceName}". ${hint}`, "INVALID_SOURCE_VALUE");
   }
 }
@@ -431,13 +448,12 @@ function normalizeLimit(limit?: number): number {
 }
 
 /**
- * Parse the `--source` flag value.
+ * Parse the `--from` flag value.
  *
  * Accepts:
- *   - `stash` (default) — search the local stash index only
+ *   - `local` (default) — search the local stash index only
  *   - `registry`        — search remote registries only
- *   - `both`            — search stash and registries
- *   - `local`           — alias for `stash`
+ *   - `all`             — search local and registries
  *   - Any named source from `config.sources[].name` — filters stash results to
  *     that single source only. The named-source path is detected and resolved
  *     inside `akmSearch`; this function returns the raw name so the caller can
@@ -449,10 +465,19 @@ function normalizeLimit(limit?: number): number {
  * at parse time.
  */
 export function parseSearchSource(source: SearchSource | string | undefined): SearchSource | string {
-  if (source === "stash" || source === "registry" || source === "both") return source;
-  // Accept "local" as alias for "stash"
-  if (source === "local") return "stash";
-  if (typeof source === "undefined") return "stash";
+  if (source === "local" || source === "registry" || source === "all") return source;
+  if (typeof source === "undefined") return "local";
+  // 0.9.0 (S8): `--source stash`/`--source both` renamed to `--from
+  // local`/`--from all`. Reject the retired values explicitly — otherwise
+  // they fall through to the named-source lookup below and surface as a
+  // misleading "no source named stash/both" error instead of naming the
+  // rename.
+  if (source === "stash") {
+    throw new UsageError('"stash" was renamed to "local" in 0.9. Use `--from local` instead.', "INVALID_FLAG_VALUE");
+  }
+  if (source === "both") {
+    throw new UsageError('"both" was renamed to "all" in 0.9. Use `--from all` instead.', "INVALID_FLAG_VALUE");
+  }
   // Pass through unknown strings — they may be valid named sources.
   // `akmSearch` will validate against config.sources and throw a UsageError
   // with a helpful message if the name isn't found.

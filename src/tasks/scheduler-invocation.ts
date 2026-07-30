@@ -10,7 +10,7 @@ import { ConfigError } from "../core/errors";
 import { getCacheDir, getConfigDir, getDataDir, getTaskContextDir } from "../core/paths";
 
 export const SCHEDULED_TASK_CONTEXT_KEYS = [
-  "AKM_STASH_DIR",
+  "AKM_BUNDLE_DIR",
   "AKM_CONFIG_DIR",
   "AKM_DATA_DIR",
   "AKM_CACHE_DIR",
@@ -38,7 +38,7 @@ export function resolveScheduledTaskContext(
   platform: NodeJS.Platform = process.platform,
 ): ScheduledTaskContext {
   return canonicalContext({
-    AKM_STASH_DIR: path.resolve(resolveStashDir(env)),
+    AKM_BUNDLE_DIR: path.resolve(resolveStashDir(env)),
     AKM_CONFIG_DIR: path.resolve(getConfigDir(env, platform)),
     AKM_DATA_DIR: path.resolve(getDataDir(env, platform)),
     AKM_CACHE_DIR: path.resolve(getCacheDir(env)),
@@ -50,8 +50,8 @@ export function resolveScheduledTaskContext(
 /**
  * Build the one scheduler-generated argv shape consumed by all backends.
  *
- * `target` records the bundle a non-primary task lives in as a `--target
- * <bundle>` token so the scheduled `akm tasks run` resolves the task (and its
+ * `target` records the bundle a non-primary task lives in as a `--bundle
+ * <bundle>` token so the scheduled `akm task run` resolves the task (and its
  * relative asset refs) from that bundle. It is emitted ONLY when supplied and
  * non-empty — callers pass it exclusively for a non-default bundle, so a
  * primary-bundle (or default) task omits the target pair.
@@ -62,13 +62,13 @@ export function buildScheduledTaskInvocation(
   contextPath: string,
   target?: string,
 ): ScheduledTaskInvocation {
-  const targetArgs = target !== undefined && target !== "" ? ["--target", target] : [];
+  const targetArgs = target !== undefined && target !== "" ? ["--bundle", target] : [];
   return {
     argv: [
       ...akmArgv,
       SCHEDULER_CONTEXT_ARG,
       assertAbsolutePath(contextPath),
-      "tasks",
+      "task",
       "run",
       id,
       ...targetArgs,
@@ -206,13 +206,13 @@ export function parseScheduledTaskArgv(argv: readonly string[]):
   if (contextIndex < 1 || argv.indexOf(SCHEDULER_CONTEXT_ARG, contextIndex + 1) !== -1) return undefined;
   const contextPath = argv[contextIndex + 1];
   const tasksIndex = contextIndex + 2;
-  if (!contextPath || argv[tasksIndex] !== "tasks" || argv[tasksIndex + 1] !== "run" || !argv[tasksIndex + 2]) {
+  if (!contextPath || argv[tasksIndex] !== "task" || argv[tasksIndex + 1] !== "run" || !argv[tasksIndex + 2]) {
     return undefined;
   }
 
   let index = tasksIndex + 3;
   let target: string | undefined;
-  if (argv[index] === "--target") {
+  if (argv[index] === "--bundle") {
     target = argv[index + 1];
     if (!target) return undefined;
     index += 2;

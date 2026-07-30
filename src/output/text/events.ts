@@ -2,17 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// Output text formatters for `akm log list` / `akm log tail` (#204).
-// Both share a renderer; `log tail` is also called per-event by the streaming
-// code path via `formatEventLine`.
+// Output text formatter for `akm log` (#204).
 //
-// R-060: renamed from `events-list`/`events-tail` to `log-list`/`log-tail` —
-// see src/output/shapes/events.ts for the full rationale.
+// R-060: renamed from `events-list` to `log-list` — see
+// src/output/shapes/events.ts for the full rationale.
+//
+// 0.9.0 CLI overhaul (S3): `log tail` (and its `log-tail` formatter entry)
+// was dropped along with the command.
 
 import { formatEventsPlain } from "./helpers";
 import type { TextFormatterEntry } from "./registry";
 
-export const eventsFormatters: TextFormatterEntry[] = [
-  { command: "log-list", handler: (r) => formatEventsPlain(r) },
-  { command: "log-tail", handler: (r) => formatEventsPlain(r) },
-];
+export const eventsFormatters: TextFormatterEntry[] = [{ command: "log-list", handler: (r) => formatEventsPlain(r) }];

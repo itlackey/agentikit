@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { getParsedInvocation } from "../../cli/invocation";
 import { getStringArg } from "../../cli/parse-args";
 import { defineJsonCommand, output, parseAllFlagValues } from "../../cli/shared";
 import { UsageError } from "../../core/errors";
@@ -47,12 +48,26 @@ async function fetchSimilarMemories(
   }
 }
 
+/**
+ * `--target` was renamed to `--bundle` on `remember` in 0.9 (S8). citty is
+ * non-strict, so the retired spelling is silently absorbed rather than
+ * rejected — the memory then lands in the default bundle instead of the one
+ * the caller named, with exit 0 and no error. Reject it explicitly instead.
+ */
+function rejectRetiredTargetFlag(): void {
+  if (!getParsedInvocation().hasFlag("--target")) return;
+  throw new UsageError(
+    "`akm remember --target` was renamed to `--bundle` in 0.9. Use `--bundle <name>` instead.",
+    "INVALID_FLAG_VALUE",
+  );
+}
+
 // ── Command definition ────────────────────────────────────────────────────────
 
 export const rememberCommand = defineJsonCommand({
   meta: {
     name: "remember",
-    description: "Record a memory in the default stash",
+    description: "Record a memory in the default bundle",
   },
   args: {
     content: {
@@ -98,7 +113,7 @@ export const rememberCommand = defineJsonCommand({
     supersedes: {
       type: "string",
       description:
-        "Ref of an existing asset this memory corrects (repeatable: --supersedes memories/projectA/old-note). Writes the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the write; a ref outside the write target and working stash still writes the correction but skips the demotion (reported as applied: false).",
+        "Ref of an existing asset this memory corrects (repeatable: --supersedes memories/projectA/old-note). Writes the correction with an xref to the old asset AND demotes the old asset (`beliefState: superseded` + `supersededBy`, a metadata-only edit) so ranking prefers the correction and `--belief current` hides the stale version. An unresolvable or self-referencing ref aborts the write; a ref outside the write target and working bundle still writes the correction but skips the demotion (reported as applied: false).",
     },
     auto: {
       type: "boolean",
@@ -110,10 +125,10 @@ export const rememberCommand = defineJsonCommand({
       description: "Call the configured LLM to propose tags and description (requires LLM config)",
       default: false,
     },
-    target: {
+    bundle: {
       type: "string",
       description:
-        "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working stash.",
+        "Override the write destination. Accepts a source name from your config; falls back to defaultWriteTarget then the working bundle.",
     },
     user: {
       type: "string",
@@ -146,6 +161,7 @@ export const rememberCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    rejectRetiredTargetFlag();
     const body = readMemoryContent(args.content);
     const eventSource = resolveUsageEventSource();
 
@@ -163,7 +179,7 @@ export const rememberCommand = defineJsonCommand({
     // untouched. Refs resolvable only in a configured extra stash source are
     // accepted (cross-stash provenance).
     const rawSupersedes = parseAllFlagValues("--supersedes");
-    const writeTarget = resolveSupersedesWriteTarget(rawSupersedes, args.target);
+    const writeTarget = resolveSupersedesWriteTarget(rawSupersedes, args.bundle);
     const xrefs = resolveXrefsForWrite(parseAllFlagValues("--xref"), writeTarget);
 
     // Collect and validate --supersedes occurrences (repeatable). Same

@@ -592,7 +592,7 @@ function noteRegistryIndexCache(ctx: MigrationContext): StepResult {
     console.log(
       `\n  Note: found ${legacyFiles.length} old registry-index JSON file(s) in ${src}.` +
         `\n        These are ignored in v0.9 — data is now stored in the registry_index_cache` +
-        `\n        table in $DATA/index.db and will be rebuilt on next 'akm registry search'.` +
+        `\n        table in $DATA/index.db and will be rebuilt on next 'akm search --from registry'.` +
         `\n        You may safely delete these files after migration:\n` +
         legacyFiles.map((f) => `          ${path.join(src, f)}`).join("\n"),
     );
@@ -603,7 +603,7 @@ function noteRegistryIndexCache(ctx: MigrationContext): StepResult {
     status: "success",
     detail:
       `${legacyFiles.length} old file(s) noted at ${src} — registry index cache will be rebuilt on next ` +
-      `'akm registry search'. Safe to delete: ${src}/*.json`,
+      `'akm search --from registry'. Safe to delete: ${src}/*.json`,
   };
 }
 

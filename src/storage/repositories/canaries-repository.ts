@@ -117,7 +117,7 @@ export function listActiveCanarySetIds(db: Database): string[] {
 /**
  * Deactivate every canary row in a set. Rows are RETAINED (active = 0) so
  * historical improve_cycle_metrics rows keyed on the old canary_set_id stay
- * interpretable; only `akm improve canary --refresh` calls this.
+ * interpretable; only `bun scripts/refresh-canary-set.ts --refresh` calls this.
  */
 export function deactivateCanarySet(db: Database, canarySetId: string): number {
   const result = db

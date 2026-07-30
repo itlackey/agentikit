@@ -2,24 +2,27 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { akmEventsList, akmEventsTail } from "../../../src/commands/events";
+import { akmEventsList } from "../../../src/commands/log";
 import { saveConfig } from "../../../src/core/config/config";
-import { appendEvent, readEvents, tailEvents } from "../../../src/core/events";
+import { appendEvent, readEvents } from "../../../src/core/events";
 import { getStateDbPath } from "../../../src/core/state-db";
 import { runCliCapture } from "../../_helpers/cli";
 import { type Cleanup, sandboxStashDir, sandboxXdgDataHome } from "../../_helpers/sandbox";
 
 // Migrated from per-test spawnSync("bun", [CLI, ...]) to the in-process harness
 // (tests/_helpers/cli.ts) where faithful. The pure appendEvent/readEvents/
-// tailEvents/akmEventsList/akmEventsTail tests use an explicit dbPath ctx and
-// are untouched. The "akm CLI mutation events" and "events tail (streaming
-// trailer)" tests now drive the CLI in-process: they seed state.db at the
-// sandboxed getDbPath() and the harness captures the streamed stdout/stderr
-// trailer.
+// akmEventsList tests use an explicit dbPath ctx and are untouched. The
+// "akm CLI mutation events" tests now drive the CLI in-process: they seed
+// state.db at the sandboxed getDbPath() and the harness captures stdout/stderr.
 //
-// The one test whose contract is a real exec boundary ("log list --since
+// The one test whose contract is a real exec boundary ("log --since
 // @offset:N resumes across a real process boundary") lives in
 // tests/integration/events-offset-crossproc.test.ts.
+//
+// 0.9.0 CLI overhaul (S3): `log tail` (and `akmEventsTail`/`tailEvents`) was
+// dropped — a foreground polling daemon in a one-shot CLI. `log` is now a
+// leaf command (this file's `["log", ...]` invocations no longer pass a
+// `list` subcommand token).
 
 const tempDirs: string[] = [];
 let stashCleanup: Cleanup = () => {};
@@ -44,7 +47,7 @@ function sandboxStash(): string {
 /**
  * Like {@link sandboxStash}, but also isolates `XDG_DATA_HOME` (and so
  * `state.db`, per `src/core/paths.ts`'s `getDataDir`). `sandboxStash` alone
- * only sandboxes `AKM_STASH_DIR`, so the tests above that use it tolerate
+ * only sandboxes `AKM_BUNDLE_DIR`, so the tests above that use it tolerate
  * events accumulating across tests in this file (they assert `.toContain(...)`
  * / `>= 1`, never exact counts). The `--limit` tests below assert EXACT
  * counts and exact "most recent N" contents, so they need a state.db that
@@ -196,8 +199,8 @@ describe("appendEvent / readEvents", () => {
   // the real fix at every layer that plumbs it: `readStateEvents` (SQL
   // LIMIT), `readEvents` (the tag-post-filter interaction), and
   // `akmEventsList` (the CLI-facing option). CLI-level coverage (the actual
-  // `akm log list --limit` invocation, and the stale doc-comment this closes)
-  // lives in the "log list --limit (D-38)" describe block below.
+  // `akm log --limit` invocation, and the stale doc-comment this closes)
+  // lives in the "log --limit (D-38)" describe block below.
   test("--limit returns the MOST RECENT N events, not the first N", () => {
     const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
     const ctx = { dbPath };
@@ -302,62 +305,6 @@ describe("appendEvent / readEvents", () => {
   });
 });
 
-describe("tailEvents", () => {
-  test("emits historical events, then follows new appends until maxEvents", async () => {
-    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
-    const ctx = { dbPath };
-    appendEvent({ eventType: "remember", ref: "memory:1" }, ctx);
-
-    const tailPromise = tailEvents({ intervalMs: 25, maxEvents: 3, maxDurationMs: 2_000 }, ctx);
-    // Give the tail loop a chance to start polling
-    await new Promise((r) => setTimeout(r, 50));
-    appendEvent({ eventType: "remember", ref: "memory:2" }, ctx);
-    await new Promise((r) => setTimeout(r, 50));
-    appendEvent({ eventType: "remember", ref: "memory:3" }, ctx);
-
-    const result = await tailPromise;
-    expect(result.events.map((e) => e.ref)).toEqual(["memory:1", "memory:2", "memory:3"]);
-    expect(result.reason).toBe("maxEvents");
-  });
-
-  test("tail keeps up with a concurrent writer without losing events", async () => {
-    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
-    const ctx = { dbPath };
-    const TOTAL = 50;
-
-    // Writer: append TOTAL events with small jitter so the tail polling
-    // intervals span multiple writes. Run concurrently with the tail.
-    const writerPromise = (async () => {
-      for (let i = 0; i < TOTAL; i += 1) {
-        appendEvent({ eventType: "remember", ref: `memory:${i}`, metadata: { i } }, ctx);
-        if (i % 5 === 0) await new Promise((r) => setTimeout(r, 5));
-      }
-    })();
-
-    // Tail with maxEvents = TOTAL so we resolve as soon as we've seen
-    // every event the writer produced.
-    const tailPromise = tailEvents({ intervalMs: 20, maxEvents: TOTAL, maxDurationMs: 5_000 }, ctx);
-
-    await writerPromise;
-    const result = await tailPromise;
-
-    expect(result.events).toHaveLength(TOTAL);
-    // Event order matches write order (each event has a unique `i`).
-    const indices = result.events.map((e) => (e.metadata as { i: number } | undefined)?.i);
-    expect(indices).toEqual(Array.from({ length: TOTAL }, (_, idx) => idx));
-    expect(result.reason).toBe("maxEvents");
-  });
-
-  test("tail terminates on AbortSignal", async () => {
-    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
-    const ctx = { dbPath };
-    const ac = new AbortController();
-    setTimeout(() => ac.abort(), 80);
-    const result = await tailEvents({ intervalMs: 20, signal: ac.signal, maxDurationMs: 1_000 }, ctx);
-    expect(result.reason).toBe("signal");
-  });
-});
-
 describe("akm CLI mutation events", () => {
   test("remember, feedback, and add each emit an event to state.db", async () => {
     sandboxStash();
@@ -374,14 +321,14 @@ describe("akm CLI mutation events", () => {
     const feedback = await runCli(["feedback", "memories/alpha", "--positive", "--format=json"]);
     expect(feedback.status).toBe(0);
 
-    // ─ add (local directory source) ──────────────────────────────────────
+    // ─ bundle add (local directory source) ────────────────────────────────
     const localSource = makeTempDir("akm-events-local-");
     writeFile(path.join(localSource, "skills", "demo.md"), "# demo\n\nA demo skill.\n");
-    const add = await runCli(["add", localSource, "--format=json"]);
+    const add = await runCli(["bundle", "add", localSource, "--format=json"]);
     expect(add.status).toBe(0);
 
     // Confirm events are in state.db by querying through the CLI.
-    const list = await runCli(["log", "list", "--format=json"]);
+    const list = await runCli(["log", "--format=json"]);
     expect(list.status).toBe(0);
     const parsed = JSON.parse(list.stdout) as { events: Array<{ eventType: string }> };
     const types = parsed.events.map((e) => e.eventType);
@@ -390,14 +337,14 @@ describe("akm CLI mutation events", () => {
     expect(types).toContain("add");
   });
 
-  test("`akm log list` returns the captured events in JSON envelope shape", async () => {
+  test("`akm log` returns the captured events in JSON envelope shape", async () => {
     sandboxStash();
 
     // Create a remember event via the CLI so state.db gets populated.
     const remember = await runCli(["remember", "another event captured", "--name", "beta", "--format=json"]);
     expect(remember.status).toBe(0);
 
-    const list = await runCli(["log", "list", "--format=json"]);
+    const list = await runCli(["log", "--format=json"]);
     expect(list.status).toBe(0);
     const parsed = JSON.parse(list.stdout) as Record<string, unknown>;
     expect(parsed.totalCount).toBeGreaterThanOrEqual(1);
@@ -413,17 +360,17 @@ describe("akm CLI mutation events", () => {
     expect(remember.status).toBe(0);
 
     // 0.9.0: `log` is primary; the old `events` command was removed.
-    const list = await runCli(["log", "list", "--format=json"]);
+    const list = await runCli(["log", "--format=json"]);
     expect(list.status).toBe(0);
     const parsed = JSON.parse(list.stdout) as { events: Array<{ eventType: string }> };
     expect(parsed.events.some((e) => e.eventType === "remember")).toBe(true);
 
     // `akm events` is no longer a registered command.
-    const removed = await runCli(["events", "list", "--format=json"]);
+    const removed = await runCli(["events", "--format=json"]);
     expect(removed.status).not.toBe(0);
   });
 
-  test("`akm log list --type feedback` filters by event type", async () => {
+  test("`akm log --type feedback` filters by event type", async () => {
     sandboxStash();
 
     const remember = await runCli(["remember", "filter test", "--name", "gamma", "--format=json"]);
@@ -431,7 +378,7 @@ describe("akm CLI mutation events", () => {
     await runCli(["index", "--full", "--format=json"]);
     await runCli(["feedback", "memories/gamma", "--positive", "--format=json"]);
 
-    const filtered = await runCli(["log", "list", "--type", "feedback", "--format=json"]);
+    const filtered = await runCli(["log", "--type", "feedback", "--format=json"]);
     expect(filtered.status).toBe(0);
     const parsed = JSON.parse(filtered.stdout) as Record<string, unknown>;
     const events = parsed.events as Array<Record<string, unknown>>;
@@ -440,13 +387,13 @@ describe("akm CLI mutation events", () => {
   });
 });
 
-describe("log list --limit (D-38)", () => {
-  // The verified-live repro this closes: 26 events seeded, `akm log list
-  // --limit 5 --format json` used to return all 26 — citty silently swallows
-  // an unrecognized flag, and there was no limiting mechanism in the read
-  // path at all (docs/reference/data-and-telemetry.md:267 documented
-  // `--limit` for years while the CLI ignored it).
-  test("`akm log list --limit 5` with 26 events returns exactly 5, the most recent", async () => {
+describe("log --limit (D-38)", () => {
+  // The verified-live repro this closes: 26 events seeded, `akm log --limit 5
+  // --format json` used to return all 26 — citty silently swallows an
+  // unrecognized flag, and there was no limiting mechanism in the read path
+  // at all (docs/reference/data-and-telemetry.md:267 documented `--limit`
+  // for years while the CLI ignored it).
+  test("`akm log --limit 5` with 26 events returns exactly 5, the most recent", async () => {
     sandboxIsolatedStash();
     const dbPath = getStateDbPath();
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -455,7 +402,7 @@ describe("log list --limit (D-38)", () => {
       appendEvent({ eventType: "remember", ref: `memory:${i}` }, ctx);
     }
 
-    const result = await runCli(["log", "list", "--limit", "5", "--format=json"]);
+    const result = await runCli(["log", "--limit", "5", "--format=json"]);
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout) as { events: Array<{ ref?: string }>; totalCount: number; limit: number };
     expect(parsed.events).toHaveLength(5);
@@ -474,7 +421,7 @@ describe("log list --limit (D-38)", () => {
       appendEvent({ eventType: "remember", ref: `memory:${i}` }, ctx);
     }
 
-    const result = await runCli(["log", "list", "--format=json"]);
+    const result = await runCli(["log", "--format=json"]);
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout) as { events: unknown[]; limit?: number };
     expect(parsed.events).toHaveLength(26);
@@ -484,97 +431,12 @@ describe("log list --limit (D-38)", () => {
   test("`--limit 0` and `--limit -1` are rejected as usage errors, matching every other --limit flag", async () => {
     sandboxStash();
 
-    const zero = await runCli(["log", "list", "--limit", "0", "--format=json"]);
+    const zero = await runCli(["log", "--limit", "0", "--format=json"]);
     expect(zero.status).toBe(2);
     expect(JSON.parse(zero.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
 
-    const negative = await runCli(["log", "list", "--limit", "-1", "--format=json"]);
+    const negative = await runCli(["log", "--limit", "-1", "--format=json"]);
     expect(negative.status).toBe(2);
     expect(JSON.parse(negative.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
-  });
-});
-
-describe("akmEventsTail", () => {
-  test("--since timestamp emits only events at or after the cutoff", async () => {
-    const dbPath = path.join(makeTempDir("akm-events-"), "state.db");
-    let now = 1_700_000_000_000;
-    const ctx = { dbPath, now: () => now };
-
-    appendEvent({ eventType: "remember", ref: "memory:before" }, ctx);
-    const cutoff = new Date(now + 500).toISOString();
-    now += 1000;
-    appendEvent({ eventType: "remember", ref: "memory:after" }, ctx);
-
-    const result = await akmEventsTail({
-      since: cutoff,
-      ctx,
-      intervalMs: 20,
-      maxEvents: 1,
-      maxDurationMs: 500,
-    });
-    expect(result.events).toHaveLength(1);
-    expect(result.events[0]?.ref).toBe("memory:after");
-  });
-});
-
-describe("akm log tail (streaming trailer)", () => {
-  // Blocker fix: `--format text|jsonl` previously dropped the resumable
-  // cursor entirely. After the streaming loop ends we must emit a single
-  // trailer line so callers can resume from `nextOffset`.
-
-  test("--format jsonl writes a discriminated trailer row to stdout", async () => {
-    // Seed events into the same state.db the in-process CLI will read from
-    // (getStateDbPath() resolves to <sandboxed XDG_DATA_HOME>/akm/state.db).
-    const dbPath = getStateDbPath();
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    const ctx = { dbPath };
-    appendEvent({ eventType: "remember", ref: "memory:t1" }, ctx);
-    appendEvent({ eventType: "remember", ref: "memory:t2" }, ctx);
-
-    const child = await runCli([
-      "log",
-      "tail",
-      "--format=jsonl",
-      "--max-events",
-      "2",
-      "--max-duration-ms",
-      "2000",
-      "--interval-ms",
-      "20",
-    ]);
-    expect(child.status).toBe(0);
-    const lines = child.stdout.trim().split("\n").filter(Boolean);
-    expect(lines.length).toBeGreaterThanOrEqual(3); // 2 events + trailer
-    const last = JSON.parse(lines[lines.length - 1] as string) as Record<string, unknown>;
-    expect(last._kind).toBe("trailer");
-    expect(last.schemaVersion).toBe(1);
-    expect(typeof last.nextOffset).toBe("number");
-    expect(last.totalCount).toBe(2);
-    expect(["maxEvents", "signal", "maxDuration"]).toContain(last.reason as string);
-  });
-
-  test("--format text writes a trailer line to stderr (stdout stays pristine)", async () => {
-    // Seed events into the same state.db the in-process CLI will read from.
-    const dbPath = getStateDbPath();
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    const ctx = { dbPath };
-    appendEvent({ eventType: "remember", ref: "memory:tx1" }, ctx);
-
-    const child = await runCli([
-      "log",
-      "tail",
-      "--format=text",
-      "--max-events",
-      "1",
-      "--max-duration-ms",
-      "2000",
-      "--interval-ms",
-      "20",
-    ]);
-    expect(child.status).toBe(0);
-    // stdout: pristine event lines, no trailer mixed in.
-    expect(child.stdout).not.toContain("[events-tail]");
-    // stderr: the trailer with reason + nextOffset + total.
-    expect(child.stderr).toMatch(/\[events-tail\] reason=\S+ nextOffset=\d+ total=\d+/);
   });
 });

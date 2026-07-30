@@ -296,7 +296,7 @@ describe.skipIf(!SEMANTIC_TESTS)("Semantic search end-to-end (real embeddings)",
 
     // Create test stash with semantically distinct assets
     stashDir = createTestStash();
-    process.env.AKM_STASH_DIR = stashDir;
+    process.env.AKM_BUNDLE_DIR = stashDir;
 
     // Write config with semantic search enabled (default behavior)
     resetConfigCache();
@@ -327,7 +327,7 @@ describe.skipIf(!SEMANTIC_TESTS)("Semantic search end-to-end (real embeddings)",
   beforeEach(() => {
     process.env.XDG_CACHE_HOME = savedCacheDir;
     process.env.XDG_CONFIG_HOME = savedConfigDir;
-    process.env.AKM_STASH_DIR = stashDir;
+    process.env.AKM_BUNDLE_DIR = stashDir;
     resetConfigCache();
   });
 
@@ -555,13 +555,13 @@ describe("Semantic search graceful degradation", () => {
       "---\ndescription: A simple hello world greeting skill\ntags:\n  - hello\n  - greeting\nquality: curated\n---\n# Hello Skill\n\nA simple hello world greeting skill.\n",
     );
 
-    process.env.AKM_STASH_DIR = stashDir;
+    process.env.AKM_BUNDLE_DIR = stashDir;
   });
 
   beforeEach(() => {
     process.env.XDG_CACHE_HOME = degradationCacheDir;
     process.env.XDG_CONFIG_HOME = degradationConfigDir;
-    process.env.AKM_STASH_DIR = stashDir;
+    process.env.AKM_BUNDLE_DIR = stashDir;
     resetConfigCache();
   });
 

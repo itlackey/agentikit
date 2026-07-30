@@ -7,7 +7,7 @@
  *   - `--include-proposed` retains it in the hits list.
  *
  * Migrated from per-test spawnSync("bun", [CLI, ...]) to the in-process
- * harness (tests/_helpers/cli.ts). Each runCli call re-pins AKM_STASH_DIR for
+ * harness (tests/_helpers/cli.ts). Each runCli call re-pins AKM_BUNDLE_DIR for
  * the indexed stash and resets the config cache before the in-process run,
  * restoring env in finally — so the freshly indexed stash is read back without
  * subprocess startup cost.
@@ -43,7 +43,7 @@ function writeFile(filePath: string, content: string): void {
 }
 
 async function runCli(args: string[], stashDir: string): Promise<{ stdout: string; stderr: string; status: number }> {
-  return withEnv({ AKM_STASH_DIR: stashDir }, async () => {
+  return withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
     resetConfigCache();
     const res = await runCliCapture(args);
     return { stdout: res.stdout, stderr: res.stderr, status: res.code };
@@ -86,7 +86,7 @@ describe("akm search --include-proposed (CLI)", () => {
       "---\ndescription: deploy widgets experimentally\ntags:\n  - deploy\nquality: proposed\n---\n# Proposed deploy\n",
     );
 
-    process.env.AKM_STASH_DIR = stash;
+    process.env.AKM_BUNDLE_DIR = stash;
     saveConfig({ semanticSearchMode: "off" });
     await akmIndex({ stashDir: stash, full: true });
 

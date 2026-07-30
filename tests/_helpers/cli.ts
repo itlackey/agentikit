@@ -129,7 +129,7 @@ const joinParts = (parts: unknown[]): string => parts.map((p) => (typeof p === "
  * Run the `akm` CLI in-process and capture its stdout, stderr, and exit code.
  *
  * @param args CLI argument vector WITHOUT the leading `["bun", "cli.ts"]`
- *   (e.g. `["search", "test", "--source", "invalid"]`).
+ *   (e.g. `["search", "test", "--from", "invalid"]`).
  */
 export async function runCliCapture(args: string[]): Promise<CliResult> {
   // Reset module-level singletons so this run re-reads the (sandboxed) env,

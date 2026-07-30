@@ -3,46 +3,64 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `akm tasks` command family. Extracted verbatim from src/cli.ts (WS6) so the
- * God Module shrinks; the `main.subCommands.tasks` key and every subcommand's
+ * `akm task` command family. Extracted verbatim from src/cli.ts (WS6) so the
+ * God Module shrinks; the `main.subCommands.task` key and every subcommand's
  * args/output shape are byte-identical. Handlers whose body is a plain
  * `runWithJsonErrors(...) + output(...)` are migrated to `defineJsonCommand`,
  * which emits the same JSON envelope (stdout/stderr/exit-code) as the inline
- * form. `tasks run` keeps a plain `defineCommand` because it forwards the
+ * form. `task run` keeps a plain `defineCommand` because it forwards the
  * task's own exit code via `process.exitCode` (F4: not `process.exit()` —
- * that would skip pending cleanup). The private helper
- * `makeTasksToggleCommand` and the `TASKS_SUBCOMMAND_SET` routing constant move
- * with the family.
+ * that would skip pending cleanup).
+ *
+ * 0.9 CLI overhaul (S6): the group was renamed from the plural `tasks` to the
+ * singular `task` — hard break, no alias. `init`/`enable`/`disable` are
+ * dropped: the default improve-schedule task set now ships as embedded
+ * templates under src/assets/tasks/improve/ (see src/tasks/embedded.ts),
+ * seeded through the interactive `akm setup` task-review step instead of a
+ * separate CLI command, and toggling a task's enabled state is a file edit +
+ * `task sync` (tasks-sync.test.ts already proves the flip path). Every
+ * subcommand (`add`/`run`/`history`/`sync`) shares one `--bundle <bundle>`
+ * axis (S8.4 ratified `task add`'s `--target` → `--bundle`; a later Gate-1
+ * fix reverted it to match `import`/`proposal accept`, splitting the
+ * write-target axis three-vs-one against `remember`/`clone`/`improve` — the
+ * final review re-applied the ratified rename here).
  */
 
 import { defineCommand } from "citty";
+import { getParsedInvocation } from "../../cli/invocation";
 import { parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
-import { detectServerDefault, registerDefaultTasks } from "./default-tasks";
-import {
-  akmTasksAdd,
-  akmTasksDoctor,
-  akmTasksHistory,
-  akmTasksRun,
-  akmTasksSetEnabled,
-  akmTasksSync,
-  parseTaskRef,
-} from "./tasks";
+import { UsageError } from "../../core/errors";
+import { akmTasksAdd, akmTasksDoctor, akmTasksHistory, akmTasksRun, akmTasksSync } from "./tasks";
 
-/** Shared `--target <bundle>` arg wired onto every bundle-resolving subcommand. */
-const targetArg = {
-  target: {
+/** Shared `--bundle <bundle>` arg wired onto every task subcommand. */
+const bundleArg = {
+  bundle: {
     type: "string",
     description: "Bundle to operate on (defaults to the primary/default bundle)",
   },
 } as const;
+
+/**
+ * `--target` was renamed to `--bundle` on `task` in 0.9 (S8.4). citty is
+ * non-strict, so the retired spelling is silently absorbed rather than
+ * rejected — reject it explicitly instead (mirrors improve-cli.ts /
+ * remember-cli.ts).
+ */
+function rejectRetiredTaskTargetFlag(): void {
+  if (!getParsedInvocation().hasFlag("--target")) return;
+  throw new UsageError(
+    "`akm task --target` was renamed to `--bundle` in 0.9. Use `--bundle <name>` instead.",
+    "INVALID_FLAG_VALUE",
+  );
+}
 
 const tasksAddCommand = defineJsonCommand({
   meta: { name: "add", description: "Register a new scheduled task and install it in the OS scheduler" },
   args: {
     id: { type: "positional", description: "Task id (used as filename and scheduler entry)", required: true },
     schedule: { type: "string", description: 'Cron-style schedule, e.g. "0 9 * * *" or "@daily"', required: true },
-    ...targetArg,
+    ...bundleArg,
     workflow: { type: "string", description: "Workflow ref to invoke (e.g. workflows/my-flow)" },
     prompt: {
       type: "string",
@@ -70,10 +88,11 @@ const tasksAddCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    rejectRetiredTaskTargetFlag();
     const result = await akmTasksAdd({
       id: args.id,
       schedule: args.schedule,
-      target: args.target,
+      target: args.bundle,
       workflow: args.workflow,
       prompt: args.prompt,
       command: args.command,
@@ -94,55 +113,9 @@ const tasksAddCommand = defineJsonCommand({
       force: args.force === true,
       rebind: args.rebind === true,
     });
-    output("tasks-add", result);
+    output("task-add", result);
   },
 });
-
-const tasksInitCommand = defineJsonCommand({
-  meta: {
-    name: "init",
-    description: "Idempotently register the default improve task set (skips when CI=true)",
-  },
-  args: {
-    server: {
-      type: "boolean",
-      description: "Treat this as a server install (enables the nightly sweep). Defaults to platform detection.",
-    },
-    laptop: {
-      type: "boolean",
-      description: "Treat this as a laptop install (leaves the nightly sweep disabled).",
-    },
-    rebind: {
-      type: "boolean",
-      description: "Explicitly permit scheduler creation from this ineligible local invocation",
-      default: false,
-    },
-  },
-  async run({ args }) {
-    const serverInstall = args.server === true ? true : args.laptop === true ? false : detectServerDefault();
-    const result = await registerDefaultTasks({ serverInstall, rebind: args.rebind === true });
-    output("tasks-init", result);
-  },
-});
-
-function makeTasksToggleCommand(enabled: boolean) {
-  const verb = enabled ? "enable" : "disable";
-  const description = enabled
-    ? "Enable a previously-disabled task"
-    : "Disable a task in the OS scheduler without removing the file";
-  return defineJsonCommand({
-    meta: { name: verb, description },
-    args: { id: { type: "positional", description: "Task id", required: true }, ...targetArg },
-    async run({ args }) {
-      const { id } = parseTaskRef(args.id);
-      const result = await akmTasksSetEnabled(id, enabled, {}, args.target);
-      output(`tasks-${verb}`, result);
-    },
-  });
-}
-
-const tasksEnableCommand = makeTasksToggleCommand(true);
-const tasksDisableCommand = makeTasksToggleCommand(false);
 
 const tasksRunCommand = defineCommand({
   meta: {
@@ -154,16 +127,17 @@ const tasksRunCommand = defineCommand({
   args: {
     ...GLOBAL_OUTPUT_ARGS,
     id: { type: "positional", description: "Task id", required: true },
-    ...targetArg,
+    ...bundleArg,
     scheduled: { type: "boolean", description: "Internal marker for scheduler-generated runs", default: false },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
+      rejectRetiredTaskTargetFlag();
       const envelope = await akmTasksRun(args.id, {
         scheduled: args.scheduled === true,
-        ...(args.target !== undefined ? { target: args.target } : {}),
+        ...(args.bundle !== undefined ? { target: args.bundle } : {}),
       });
-      output("tasks-run", envelope);
+      output("task-run", envelope);
       // F4: was `process.exit(envelope.exitCode)`, terminating synchronously
       // and skipping any pending cleanup (this command forwards a run task's
       // own exit code, so it can be any value, not just 0/1). output() has
@@ -179,12 +153,13 @@ const tasksHistoryCommand = defineJsonCommand({
   args: {
     id: { type: "string", description: "Filter to one task id" },
     limit: { type: "string", description: "Maximum rows to return (default 50)" },
-    ...targetArg,
+    ...bundleArg,
   },
   async run({ args }) {
+    rejectRetiredTaskTargetFlag();
     const limit = parsePositiveIntFlag(args.limit ?? undefined);
-    const result = await akmTasksHistory({ id: args.id, limit, target: args.target });
-    output("tasks-history", result);
+    const result = await akmTasksHistory({ id: args.id, limit, target: args.bundle });
+    output("task-history", result);
   },
 });
 
@@ -194,7 +169,7 @@ const tasksSyncCommand = defineJsonCommand({
     description: "Reconcile the on-disk task files of a bundle with the OS scheduler",
   },
   args: {
-    ...targetArg,
+    ...bundleArg,
     rebind: {
       type: "boolean",
       description: "Replace installed bindings with the current invocation",
@@ -202,8 +177,9 @@ const tasksSyncCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
-    const result = await akmTasksSync({}, args.target, { rebind: args.rebind === true });
-    output("tasks-sync", result);
+    rejectRetiredTaskTargetFlag();
+    const result = await akmTasksSync({}, args.bundle, { rebind: args.rebind === true });
+    output("task-sync", result);
   },
 });
 
@@ -212,33 +188,29 @@ const tasksDoctorCommand = defineJsonCommand({
     name: "doctor",
     description: "Report the active scheduler backend, akm bin path, log dir, and supported schedule subset",
   },
-  args: { ...targetArg },
-  async run({ args }) {
-    const result = await akmTasksDoctor({ target: args.target });
-    output("tasks-doctor", result);
+  args: {},
+  async run() {
+    const result = await akmTasksDoctor();
+    output("task-doctor", result);
   },
 });
 
-export const tasksCommand = defineGroupCommand({
+export const taskCommand = defineGroupCommand({
   meta: {
-    name: "tasks",
-    alias: "task",
+    name: "task",
     description:
-      "Schedule version-2 workflows, prompts, or commands via the OS-native scheduler (cron / launchd / schtasks)",
+      "Schedule recurring commands, prompts, and workflows through the OS scheduler (cron / launchd / schtasks)",
   },
   subCommands: {
     add: tasksAddCommand,
-    init: tasksInitCommand,
-    enable: tasksEnableCommand,
-    disable: tasksDisableCommand,
     run: tasksRunCommand,
     history: tasksHistoryCommand,
     sync: tasksSyncCommand,
     doctor: tasksDoctorCommand,
   },
-  // Bare `akm tasks` reports scheduler diagnostics. Inspection of individual
+  // Bare `akm task` reports scheduler diagnostics. Inspection of individual
   // tasks moved to the generic `akm search` / `akm show <bundle//tasks/id>`.
-  // No `defaultRun`: bare `akm tasks` is a usage error (exit 2), the canonical
-  // bare-group behavior — owner ruling 12. Run `akm tasks doctor` for what the
+  // No `defaultRun`: bare `akm task` is a usage error (exit 2), the canonical
+  // bare-group behavior — owner ruling 12. Run `akm task doctor` for what the
   // bare form used to run.
 });

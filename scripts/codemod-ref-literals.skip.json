@@ -3,7 +3,6 @@
   "skip": [
     "tests/akm-eval-consolidation-fidelity.test.ts",
     "tests/integration/indexer/durable-state-survival.test.ts",
-    "tests/integration/lint-mv-ref-dual-grammar.test.ts",
     "tests/authoring-rules-injection.test.ts",
     "tests/commands/consolidate/consolidate-wave2-d.test.ts",
     "tests/commands/distill/promotion-policy-corpus.ts",
@@ -45,7 +44,6 @@
     "tests/integration/graph-boost-ranking.test.ts",
     "tests/integration/indexer/relink-usage-events.test.ts",
     "tests/integration/memory-inference.test.ts",
-    "tests/integration/mv-durable-recovery.test.ts",
     "tests/integration/proposal-storage-sqlite.test.ts",
     "tests/integration/proposal-stuck-repair.test.ts",
     "tests/integration/proposals-validation.test.ts",

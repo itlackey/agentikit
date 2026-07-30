@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `akm tasks run <id>` — what cron / launchd / schtasks invoke at the
+ * `akm task run <id>` — what cron / launchd / schtasks invoke at the
  * scheduled moment.
  *
  * Responsibilities:
@@ -101,7 +101,7 @@ export interface TaskRunResult {
 export interface RunTaskOptions {
   /**
    * The stash directory the task asset resolves against. Resolved once at the
-   * `akm tasks run` command boundary (WI-9.10 CLI-wide sweep) and threaded in —
+   * `akm task run` command boundary (WI-9.10 CLI-wide sweep) and threaded in —
    * this runner no longer reads the ambient stash-dir resolver.
    */
   stashDir: string;
@@ -184,7 +184,7 @@ export async function runTask(id: string, options: RunTaskOptions): Promise<Task
         log: logPath,
         target: disabledTarget,
       };
-      const disabledLine = `[akm tasks] task "${id}" is disabled — skipping run.`;
+      const disabledLine = `[akm task] task "${id}" is disabled — skipping run.`;
       persistRunLog({
         taskId: id,
         startedAtIso: startedIso,
@@ -265,7 +265,7 @@ async function runCommandTask(input: {
 
   const timeoutMs: number | null = task.timeoutMs !== undefined ? task.timeoutMs : null;
 
-  const header = `[akm tasks] task=${task.id} kind=command cmd=${cmd.join(" ")}`;
+  const header = `[akm task] task=${task.id} kind=command cmd=${cmd.join(" ")}`;
   const logLines: string[] = [header];
   const dbLines: TaskLogLineInput[] = [{ line: header }];
 
@@ -442,7 +442,7 @@ function mapWorkflowStatus(status: WorkflowRunStatus | undefined): TaskRunStatus
 
 function renderWorkflowLog(input: { task: TaskDocument; detail?: WorkflowRunDetail; error?: Error }): RunLogContent {
   const dbLines: TaskLogLineInput[] = [
-    { line: `[akm tasks] task=${input.task.id} kind=workflow ref=${(input.task.target as { ref: string }).ref}` },
+    { line: `[akm task] task=${input.task.id} kind=workflow ref=${(input.task.target as { ref: string }).ref}` },
   ];
   if (input.detail) {
     dbLines.push({ line: `run_id=${input.detail.run.id} status=${input.detail.run.status}` });
@@ -594,7 +594,7 @@ async function resolvePromptText(task: TaskDocument, stashDir: string): Promise<
 function renderPromptLog(input: { task: TaskDocument; engineName: string; result: AgentRunResult }): RunLogContent {
   const lines: string[] = [];
   const dbLines: TaskLogLineInput[] = [];
-  const header = `[akm tasks] task=${input.task.id} kind=prompt engine=${input.engineName}`;
+  const header = `[akm task] task=${input.task.id} kind=prompt engine=${input.engineName}`;
   const summary = `ok=${input.result.ok} exit_code=${input.result.exitCode ?? "null"} duration_ms=${input.result.durationMs}`;
   lines.push(header, summary);
   dbLines.push({ line: header }, { level: input.result.ok ? "info" : "error", line: summary });
@@ -785,7 +785,7 @@ export function recordTaskAttemptFailure(input: {
   const finishedAtIso = finishedAt.toISOString();
   const errorCode = safeTaskAttemptErrorCode(input.failure);
   const logPath = resolveTaskLogPath(input.logDir, taskId, startedAtIso);
-  const line = `[akm tasks] status=failed reason=${input.reason} code=${errorCode}`;
+  const line = `[akm task] status=failed reason=${input.reason} code=${errorCode}`;
   const result: TaskRunResult = {
     id: taskId,
     status: "failed",

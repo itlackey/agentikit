@@ -45,7 +45,7 @@ version drops, `akm upgrade` handles it in place.
 akm setup
 ```
 
-This creates `~/akm` with subdirectories for each asset type: `scripts/`, `skills/`, `commands/`, `agents/`, `knowledge/`, and `memories/`. If you want to put it somewhere else, set `AKM_STASH_DIR` before you run setup.
+This creates `~/akm` with subdirectories for each asset type: `scripts/`, `skills/`, `commands/`, `agents/`, `knowledge/`, and `memories/`. If you want to put it somewhere else, set `AKM_BUNDLE_DIR` before you run setup.
 
 But the real power move isn't putting everything in one folder. It's telling `akm` where your stuff already lives.
 
@@ -54,9 +54,9 @@ But the real power move isn't putting everything in one folder. It's telling `ak
 Here's what most people's machines actually look like. You've got Claude Code skills in one place, OpenCode assets in another, maybe some Cursor rules in a third. Instead of copying files around or choosing a winner, just add them as sources.
 
 ```bash
-akm add ~/.claude/skills
-akm add ./my-project/.opencode/skills
-akm add ./.cursor/rules
+akm add ~/.claude/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add ./my-project/.opencode/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add ./.cursor/rules  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 One command per directory. Each `akm add` registers the path, and the search index picks it up on the next build. No JSON editing, no manual config files. Your files stay exactly where they are — `akm` just knows about them now.
@@ -64,14 +64,14 @@ One command per directory. Each `akm add` registers the path, and the search ind
 You can name sources to keep track of what's what:
 
 ```bash
-akm add ~/.claude/skills --name "claude-skills"
-akm add ./team-shared --name "team"
+akm add ~/.claude/skills --name "claude-skills"  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add ./team-shared --name "team"  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 And see everything at a glance:
 
 ```bash
-akm list
+akm list  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 That shows your primary stash, all the directories you've added, and any managed sources — in priority order. Need to remove one? `akm remove` takes a path or a name.
@@ -80,13 +80,13 @@ For assets that live in a git repo or an npm package, `akm add` handles installa
 
 ```bash
 # A team repo full of shared skills
-akm add github:your-org/team-agent-toolkit
+akm add github:your-org/team-agent-toolkit  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # An npm stash
-akm add @scope/deploy-skills
+akm add @scope/deploy-skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # A local git directory
-akm add ./path/to/my-opencode-skills
+akm add ./path/to/my-opencode-skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Every `akm add` registers the stash, caches the assets, and triggers an incremental index build.
@@ -130,13 +130,13 @@ Your agent gets the full SKILL.md content, ready to use. For scripts, it gets a 
 Want to search the community registries too? `akm` ships with [skills.sh](https://skills.sh) built in:
 
 ```bash
-akm search "code review" --source both
+akm search "code review" --from all
 ```
 
 Now you're searching your local stash and community registries in one shot. Found something useful? Install it:
 
 ```bash
-akm add github:someone/great-stash
+akm add github:someone/great-stash  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Or if you just want one asset from a stash without installing the whole thing:
@@ -175,10 +175,10 @@ After setup:
 
 ```bash
 akm setup
-akm add ~/.claude/skills
-akm add .opencode/skills
-akm add .cursor/rules
-akm add github:your-org/team-agent-toolkit
+akm add ~/.claude/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add .opencode/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add .cursor/rules  # doclint:ignore (historical — pre-0.9.0 command spelling)
+akm add github:your-org/team-agent-toolkit  # doclint:ignore (historical — pre-0.9.0 command spelling)
 akm index
 ```
 
@@ -199,7 +199,7 @@ You can either manage that by hand — maintaining parallel copies, forgetting w
 ```bash
 curl -fsSL https://raw.githubusercontent.com/itlackey/akm/main/install.sh | bash
 akm setup
-akm add ~/.claude/skills
+akm add ~/.claude/skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
 akm index
 akm search "whatever you need"
 ```

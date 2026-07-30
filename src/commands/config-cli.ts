@@ -71,9 +71,9 @@ export const configCommand = defineGroupCommand({
   meta: { name: "config", description: "Show and manage configuration" },
   subCommands: {
     path: defineJsonCommand({
-      meta: { name: "path", description: "Show paths to config, stash, cache, and index" },
+      meta: { name: "path", description: "Show paths to config, bundle, cache, and index" },
       args: {
-        all: { type: "boolean", description: "Show all paths (config, stash, cache, index)", default: false },
+        all: { type: "boolean", description: "Show all paths (config, bundle, cache, index)", default: false },
       },
       run({ args }) {
         const configPath = getConfigPath();
@@ -87,7 +87,7 @@ export const configCommand = defineGroupCommand({
           const cacheDir = getCacheDir();
           const result = {
             config: configPath,
-            stash: stashDir,
+            bundle: stashDir,
             cache: cacheDir,
             index: getDbPath(),
           };
@@ -99,12 +99,6 @@ export const configCommand = defineGroupCommand({
     }),
     list: defineJsonCommand({
       meta: { name: "list", description: "List current configuration" },
-      run() {
-        output("config", listConfig(loadConfig()));
-      },
-    }),
-    show: defineJsonCommand({
-      meta: { name: "show", description: "Alias for `akm config list` — list current configuration" },
       run() {
         output("config", listConfig(loadConfig()));
       },
@@ -160,16 +154,6 @@ export const configCommand = defineGroupCommand({
         if (!args.silent) {
           output("config", listConfig(updated));
         }
-      },
-    }),
-    validate: defineJsonCommand({
-      meta: {
-        name: "validate",
-        description: "Validate the on-disk config file against the schema. Exits non-zero on errors.",
-      },
-      async run() {
-        const { runConfigValidate } = await import("../cli/config-validate.js");
-        await runConfigValidate();
       },
     }),
   },

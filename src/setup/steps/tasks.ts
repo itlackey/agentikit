@@ -5,10 +5,10 @@
 /** Setup wizard step for reviewing task definitions and activating schedules. */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 import * as p from "../../cli/clack";
-import { isCiEnvironment } from "../../commands/tasks/default-tasks";
 import { akmTasksSync, setEnabledInYaml } from "../../commands/tasks/tasks";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
@@ -24,6 +24,67 @@ import { type EmbeddedTask, listEmbeddedTasks } from "../../tasks/embedded";
 import { parseTaskDocument } from "../../tasks/parser";
 import { parseSchedule } from "../../tasks/schedule";
 import { prompt } from "../prompt";
+
+/**
+ * A scheduled server-only nightly full sweep exists among the embedded
+ * improve-schedule templates (folded in from the retired
+ * `registerDefaultTasks`/`akm tasks init` path in 0.9, S6). This id is
+ * preselected in the review multiselect on a detected server install — the
+ * "battery heuristic" {@link detectServerDefault} preserved from that path.
+ */
+const SERVER_SUGGESTED_TASK_ID = "akm-improve-nightly";
+
+// ── Test seam ────────────────────────────────────────────────────────────────
+// Swap-and-restore override for the two environment probes below. Inert in
+// production; only tests call the setter.
+
+interface ScheduledTasksEnvOverridesForTests {
+  isCiEnvironment?: typeof isCiEnvironment;
+  detectServerDefault?: typeof detectServerDefault;
+}
+
+let scheduledTasksEnvOverrides: ScheduledTasksEnvOverridesForTests | undefined;
+
+/** TEST-ONLY. Swap the CI/server-detection probes; pass undefined to restore. */
+export function _setScheduledTasksEnvForTests(fakes?: ScheduledTasksEnvOverridesForTests): void {
+  scheduledTasksEnvOverrides = fakes;
+}
+
+/**
+ * Decide whether `akm setup` is running in a CI environment, where it must
+ * register NO scheduled tasks. Mirrors the common `CI=true` convention used by
+ * GitHub Actions, GitLab CI, CircleCI, etc.
+ */
+export function isCiEnvironment(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (scheduledTasksEnvOverrides?.isCiEnvironment) return scheduledTasksEnvOverrides.isCiEnvironment(env);
+  const ci = env.CI;
+  if (ci === undefined || ci === null) return false;
+  const v = String(ci).trim().toLowerCase();
+  return v !== "" && v !== "0" && v !== "false";
+}
+
+/**
+ * Platform-appropriate default for "Is this a server install?":
+ *  - Linux without a battery → `true` (server).
+ *  - macOS / any host with a battery (laptop) → `false`.
+ * Used to preselect {@link SERVER_SUGGESTED_TASK_ID} in the task-review
+ * multiselect.
+ */
+export function detectServerDefault(): boolean {
+  if (scheduledTasksEnvOverrides?.detectServerDefault) return scheduledTasksEnvOverrides.detectServerDefault();
+  if (os.platform() !== "linux") return false;
+  // A laptop exposes a battery under /sys/class/power_supply/BAT*. Absence of
+  // any battery is our heuristic for "server / desktop".
+  try {
+    const entries = fs.readdirSync("/sys/class/power_supply");
+    const hasBattery = entries.some((e) => /^BAT/i.test(e));
+    return !hasBattery;
+  } catch {
+    // If we cannot read power-supply info, prefer the safe server default on
+    // Linux (the nightly sweep is low-impact and re-runnable).
+    return true;
+  }
+}
 
 function normaliseTaskIdForMatch(raw: string): string {
   return raw.trim().replace(/\.(yml|md)$/, "");
@@ -169,7 +230,12 @@ export async function stepScheduledTasks(
     return;
   }
 
-  const embedded = listEmbeddedTasks().filter((task) => task.enabled);
+  // ALL templates are offered, including ships-disabled ones (e.g. the
+  // manual-recovery catchup task): an unselected template is still PREPARED
+  // with `enabled: false`, so its YAML exists for `akm task run <id>` while
+  // nothing lands in the scheduler uncommented. Filtering on `task.enabled`
+  // here would make ships-disabled templates invisible and unpreparable.
+  const embedded = listEmbeddedTasks();
   if (embedded.length === 0) return;
 
   const installed = await deps.list();
@@ -177,9 +243,21 @@ export async function stepScheduledTasks(
   for (const task of installed) byId.set(normaliseTaskIdForMatch(task.id), task);
 
   const preChecked = embedded.filter((task) => byId.get(task.id)?.enabled === true).map((task) => task.id);
+  // Battery heuristic preserved from the retired `registerDefaultTasks` path
+  // (S6): suggest the nightly full sweep on a detected server install, same
+  // as every other embedded template, still gated behind the confirmation
+  // below.
+  if (
+    !byId.has(SERVER_SUGGESTED_TASK_ID) &&
+    !preChecked.includes(SERVER_SUGGESTED_TASK_ID) &&
+    embedded.some((task) => task.id === SERVER_SUGGESTED_TASK_ID) &&
+    detectServerDefault()
+  ) {
+    preChecked.push(SERVER_SUGGESTED_TASK_ID);
+  }
   const selected = await prompt(() =>
     p.multiselect({
-      message: "Which core task definitions should be enabled? (scheduler activation is confirmed separately)",
+      message: "Which task definitions should be enabled? (scheduler activation is confirmed separately)",
       required: false,
       initialValues: preChecked,
       options: embedded.map((task) => {
@@ -264,9 +342,9 @@ export async function stepScheduledTasks(
     p.log.warn(
       `${activeCount === 0 ? "No task schedules were activated." : "Task schedule activation was incomplete."} ` +
         "If you are running AKM from source, run the installed `akm setup`. " +
-        "To migrate or repair existing scheduler bindings explicitly, run `akm tasks sync --rebind`.",
+        "To migrate or repair existing scheduler bindings explicitly, run `akm task sync --rebind`.",
     );
     return;
   }
-  p.log.success("Task schedules activated. Verify them with `akm tasks doctor`.");
+  p.log.success("Task schedules activated. Verify them with `akm task doctor`.");
 }

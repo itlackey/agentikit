@@ -159,7 +159,7 @@ Notes:
   cross-references, and page-kind hints
 - `content` is primarily TOC headings plus parameter names/descriptions
 - registry results live in `registryHits`, never in `hits`
-- `--source both` keeps registry results in `registryHits` — they are not
+- `--from all` keeps registry results in `registryHits` — they are not
   rank-merged with source hits
 
 `akm search` is implemented in `src/commands/read/search.ts` and queries the
@@ -241,22 +241,25 @@ schema (`src/core/config/schema/sources-bundles.ts`).
 `npm` is rejected at config load — `sync()` would clobber edits on the next
 refresh.
 
-Write-target resolution (`resolveWriteTarget`) follows: explicit `--target` ->
-`config.defaultWriteTarget` -> working stash (`defaultBundle`) -> `ConfigError`.
-The resolved target keeps the optional configured selector separate from the
-stable `source.name`: APIs that must re-resolve a destination use the selector,
-while durable refs and state rows always use `source.name`. The implicit working
-stash therefore has no selector but has durable identity `stash`.
+Write-target resolution (`resolveWriteTarget`) follows: an explicit
+destination flag (`--bundle` on `remember`/`clone`/`improve`, `--target` on
+`import`/env/secret mutations) -> `config.defaultWriteTarget` -> working
+stash (`defaultBundle`) -> `ConfigError`. The resolved target keeps the
+optional configured selector separate from the stable `source.name`: APIs
+that must re-resolve a destination use the selector, while durable refs and
+state rows always use `source.name`. The implicit working bundle therefore has
+no selector but has durable identity `stash`.
 
-On mutation surfaces that accept asset refs, a qualified ref implies its bundle
-as the write target. A matching `--target` is allowed; a different explicit
-target is a usage error. This applies, for example, to env/secret mutations,
-ref-scoped improve, and qualified `--supersedes` refs on remember/import.
+On mutation surfaces that accept asset refs, a qualified ref implies its
+bundle as the write target. A matching explicit destination flag is allowed;
+a different one is a usage error. This applies, for example, to env/secret
+mutations, ref-scoped improve, and qualified `--supersedes` refs on
+remember/import.
 
-`akm clone` uses the same managed write-target fallback and accepts `--target`
-for an explicit managed destination. `--dest` is the unmanaged path escape
-hatch: it bypasses managed target resolution and cannot be combined with
-`--target`.
+`akm clone` uses the same managed write-target fallback and accepts
+`--bundle` for an explicit managed destination. `--dest` is the unmanaged
+path escape hatch: it bypasses managed target resolution and cannot be
+combined with `--bundle`.
 
 ### Improve durable-state transition
 
