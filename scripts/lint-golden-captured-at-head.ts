@@ -76,6 +76,25 @@ function git(args: string[]): { ok: boolean; stdout: string } {
   return { ok: result.status === 0, stdout: (result.stdout ?? "").trim() };
 }
 
+/**
+ * True when this clone lacks full history, which makes a MISSING commit object
+ * inconclusive rather than a finding.
+ *
+ * CI runs `actions/checkout` with the default `fetch-depth: 1`, so nearly every
+ * historical pin is absent there — and a shallow clone genuinely cannot tell
+ * "garbage-collected / orphaned" (the bug class this guards) apart from "simply
+ * never fetched" (normal and fine). Treating absence as a failure there fails
+ * ~every golden in the repo, including ones the change never touched, which is
+ * exactly what happened when this guard first ran in CI.
+ *
+ * Note this is NOT a wholesale skip: the second, sharper check — object
+ * EXISTS but is unreachable from every branch — is conclusive regardless of
+ * shallowness (a present object is a present object), and that is precisely
+ * the #730 bug class. It stays blocking everywhere. Only the inconclusive
+ * "object absent" case softens to a warning.
+ */
+const HISTORY_INCOMPLETE = git(["rev-parse", "--is-shallow-repository"]).stdout === "true";
+
 async function findGoldenFiles(): Promise<string[]> {
   const files: string[] = [];
   for (const root of GOLDEN_ROOTS) {
@@ -92,6 +111,7 @@ async function findGoldenFiles(): Promise<string[]> {
 const failures: string[] = [];
 const warnings: string[] = [];
 let checked = 0;
+let inconclusive = 0;
 
 for (const rel of await findGoldenFiles()) {
   const abs = path.join(REPO_ROOT, rel);
@@ -116,6 +136,11 @@ for (const rel of await findGoldenFiles()) {
   } else {
     const cat = git(["cat-file", "-t", sha]);
     if (!cat.ok || cat.stdout !== "commit") {
+      // Absence is only a finding when this clone HAS the history to judge it.
+      if (HISTORY_INCOMPLETE) {
+        inconclusive++;
+        continue;
+      }
       problem = `capturedAtHead ${sha} does not resolve to an existing commit object in this clone`;
     } else {
       const contains = git(["branch", "-a", "--contains", sha]);
@@ -153,7 +178,18 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
+// Report what was NOT judged, so a shallow run never reads as full coverage.
+if (inconclusive > 0) {
+  console.warn(
+    `lint-golden-captured-at-head: ${inconclusive} pin(s) not judged — their commit object is absent and this clone ` +
+      "is shallow, so absence cannot be distinguished from never-fetched. Run in a full clone " +
+      "(`git fetch --unshallow`) to check them.",
+  );
+}
+
 console.log(
-  `lint-golden-captured-at-head: OK — ${checked} capturedAtHead pin(s) checked across ${GOLDEN_ROOTS.length} golden ` +
-    `root(s), all resolve to a real, reachable commit${warnings.length > 0 ? ` (${warnings.length} pre-existing warning(s) above)` : ""}.`,
+  `lint-golden-captured-at-head: OK — ${checked - inconclusive} of ${checked} capturedAtHead pin(s) checked across ` +
+    `${GOLDEN_ROOTS.length} golden root(s), all judged pins resolve to a real, reachable commit` +
+    `${warnings.length > 0 ? ` (${warnings.length} pre-existing warning(s) above)` : ""}` +
+    `${inconclusive > 0 ? `; ${inconclusive} unjudged (shallow clone)` : ""}.`,
 );
