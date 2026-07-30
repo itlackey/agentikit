@@ -10,7 +10,7 @@ import { computeStepWorkList } from "../../src/workflows/exec/step-work";
 import { compileResolveFreezeWorkflow } from "../../src/workflows/ir/freeze";
 import { canonicalPlanJson, computePlanHash } from "../../src/workflows/ir/plan-hash";
 import { decodeWorkflowPlanV3, type WorkflowPlanGraph } from "../../src/workflows/ir/schema";
-import { parseWorkflowProgram } from "../../src/workflows/program/parser";
+import { parseWorkflow } from "../../src/workflows/parser";
 import {
   jsonBytes,
   utf8Bytes,
@@ -130,16 +130,21 @@ function planAtBytes(limit: number): WorkflowPlanGraph {
 }
 
 describe("workflow engine v3 contracts", () => {
-  test("YAML v2 accepts engine and rejects retired selectors", () => {
-    const parsed = parseWorkflowProgram(
-      "version: 2\nname: review\ndefaults: { engine: reviewer }\nsteps:\n  - id: review\n    unit: { engine: fast, instructions: Review }\n",
+  test("unified frontmatter accepts defaults.engine and rejects unsupported keys", () => {
+    // Ported from a pre-unification YAML-program test asserting the same
+    // property against retired program-format selectors ("runner"/"profile").
+    // Those selectors never existed in the unified frontmatter grammar, so
+    // the equivalent proof is: `defaults.engine` / per-unit `engine` are
+    // accepted, and an unknown key at either level is rejected by name.
+    const accepted = parseWorkflow(
+      "---\ntype: workflow\ndefaults: { engine: fast }\nsteps:\n  - id: review\n---\n\n## review\n\nReview\n",
       SOURCE,
     );
-    expect(parsed.ok).toBe(true);
-    if (parsed.ok) expect(parsed.program.steps[0]?.unit?.engine).toBe("fast");
+    expect(accepted.ok).toBe(true);
+    if (accepted.ok) expect(accepted.document.defaults?.engine).toBe("fast");
 
-    const retired = parseWorkflowProgram(
-      "version: 2\nname: review\ndefaults: { runner: llm }\nsteps:\n  - id: review\n    unit: { profile: fast, instructions: Review }\n",
+    const retired = parseWorkflow(
+      "---\ntype: workflow\ndefaults: { runner: llm }\nsteps:\n  - id: review\n    unit: { profile: fast }\n---\n\n## review\n\nReview\n",
       SOURCE,
     );
     expect(retired.ok).toBe(false);
@@ -182,8 +187,8 @@ describe("workflow engine v3 contracts", () => {
   });
 
   test("freeze resolves an engine once and keeps only symbolic credentials", () => {
-    const parsed = parseWorkflowProgram(
-      "version: 2\nname: review\ndefaults: { engine: fast }\nsteps:\n  - id: review\n    unit: { instructions: Review }\n",
+    const parsed = parseWorkflow(
+      "---\ntype: workflow\ndefaults: { engine: fast }\nsteps:\n  - id: review\n---\n\n## review\n\nReview\n",
       SOURCE,
     );
     if (!parsed.ok) throw new Error("fixture must parse");
@@ -193,8 +198,8 @@ describe("workflow engine v3 contracts", () => {
         path: SOURCE.path,
         sourcePath: "/tmp",
         title: "review",
-        steps: [{ id: "review", title: "review", instructions: "Review", sequenceIndex: 0 }],
-        program: parsed.program,
+        steps: [],
+        document: parsed.document,
       },
       {
         configVersion: "0.9.0",
@@ -289,10 +294,24 @@ describe("workflow engine v3 contracts", () => {
     if (badReason.steps[0]?.root?.kind === "unit") badReason.steps[0].root.retry = { max: 1, on: ["bogus"] };
     invalid.push(badReason);
 
+    // SEMANTIC CHANGE (workflow-format-unification, spec §2.3): the
+    // pre-unification "self-referential expression" candidate embedded
+    // `${{ steps.review.output }}` in INSTRUCTIONS text with `templating:
+    // "expressions"`. Instructions are byte-exact prose now and are never
+    // parsed/validated as a reference regardless of `templating` — so that
+    // candidate no longer fails decode. Ported onto a map step whose `over`
+    // self-references its own step (still validated: `map.over` is one of
+    // the two positions the closed reference grammar occupies).
     const selfExpression = frozenPlan();
-    if (selfExpression.steps[0]?.root?.kind === "unit") {
-      selfExpression.steps[0].root.instructions = `\${{ steps.review.output }}`;
-      selfExpression.steps[0].root.templating = "expressions";
+    const selfExpressionUnit = selfExpression.steps[0]?.root;
+    if (selfExpressionUnit?.kind === "unit") {
+      selfExpression.steps[0]!.root = {
+        kind: "map",
+        id: "review.map",
+        over: "steps.review.output",
+        reducer: "collect",
+        template: { ...selfExpressionUnit, id: "review.unit" },
+      };
     }
     invalid.push(selfExpression);
 
@@ -303,13 +322,13 @@ describe("workflow engine v3 contracts", () => {
     const backwardRoute = secondStep(frozenPlan());
     const backwardRouteStep = stepAt(backwardRoute, 1);
     delete backwardRouteStep.root;
-    backwardRouteStep.route = { input: `\${{ steps.review.output }}`, when: { pass: "review" } };
+    backwardRouteStep.route = { input: "steps.review.output", when: { pass: "review" } };
     invalid.push(backwardRoute);
 
     const routeUnknownKey = secondStep(frozenPlan());
     const routeUnknownStep = stepAt(routeUnknownKey, 0);
     delete routeUnknownStep.root;
-    routeUnknownStep.route = { input: `\${{ params.mode }}`, when: { pass: "second" } };
+    routeUnknownStep.route = { input: "params.mode", when: { pass: "second" } };
     Object.assign(routeUnknownStep.route, { surprise: true });
     invalid.push(routeUnknownKey);
 
@@ -343,8 +362,8 @@ describe("workflow engine v3 contracts", () => {
   });
 
   test("freeze captures canonical platform lowering including builder identity", () => {
-    const parsed = parseWorkflowProgram(
-      "version: 2\nname: review\ndefaults: { engine: shell }\nsteps:\n  - id: review\n    unit: { instructions: Review }\n",
+    const parsed = parseWorkflow(
+      "---\ntype: workflow\ndefaults: { engine: shell }\nsteps:\n  - id: review\n---\n\n## review\n\nReview\n",
       SOURCE,
     );
     if (!parsed.ok) throw new Error("fixture must parse");
@@ -355,7 +374,7 @@ describe("workflow engine v3 contracts", () => {
         sourcePath: "/tmp",
         title: "review",
         steps: [],
-        program: parsed.program,
+        document: parsed.document,
       },
       {
         configVersion: "0.9.0",
@@ -384,8 +403,12 @@ describe("workflow engine v3 contracts", () => {
   });
 
   test("freeze resolves exact SDK, fallback, and gate models with null timeouts", () => {
-    const parsed = parseWorkflowProgram(
-      "version: 2\nname: review\ndefaults: { engine: sdk }\nsteps:\n  - id: review\n    unit: { instructions: Review }\n    gate: { criteria: [approved] }\n",
+    // Gate CONTROL fields stay in frontmatter; the rubric moves to the body
+    // "### gate" sub-section (spec §2.4) — its text becomes the ONE criterion
+    // string (`gate.criteria`), replacing the pre-unification `gate: {
+    // criteria: [approved] }`.
+    const parsed = parseWorkflow(
+      "---\ntype: workflow\ndefaults: { engine: sdk }\nsteps:\n  - id: review\n---\n\n## review\n\nReview\n\n### gate\n\napproved\n",
       SOURCE,
     );
     if (!parsed.ok) throw new Error("fixture must parse");
@@ -396,7 +419,7 @@ describe("workflow engine v3 contracts", () => {
         sourcePath: "/tmp",
         title: "review",
         steps: [],
-        program: parsed.program,
+        document: parsed.document,
       },
       {
         configVersion: "0.9.0",
@@ -430,8 +453,8 @@ describe("workflow engine v3 contracts", () => {
   });
 
   test("SDK engines without a model freeze their effective fallback model into the invocation", () => {
-    const parsed = parseWorkflowProgram(
-      "version: 2\nname: review\ndefaults: { engine: sdk }\nsteps:\n  - id: review\n    unit: { instructions: Review }\n",
+    const parsed = parseWorkflow(
+      "---\ntype: workflow\ndefaults: { engine: sdk }\nsteps:\n  - id: review\n---\n\n## review\n\nReview\n",
       SOURCE,
     );
     if (!parsed.ok) throw new Error("fixture must parse");
@@ -442,7 +465,7 @@ describe("workflow engine v3 contracts", () => {
         sourcePath: "/tmp",
         title: "review",
         steps: [],
-        program: parsed.program,
+        document: parsed.document,
       },
       {
         configVersion: "0.9.0",
@@ -471,8 +494,8 @@ describe("workflow engine v3 contracts", () => {
   });
 
   test("direct and frozen fallback paths use the shared llm alias tier with exact attribution", () => {
-    const parsed = parseWorkflowProgram(
-      "version: 2\nname: review\ndefaults: { engine: sdk }\nsteps:\n  - id: review\n    unit: { instructions: Review }\n",
+    const parsed = parseWorkflow(
+      "---\ntype: workflow\ndefaults: { engine: sdk }\nsteps:\n  - id: review\n---\n\n## review\n\nReview\n",
       SOURCE,
     );
     if (!parsed.ok) throw new Error("fixture must parse");
@@ -483,7 +506,7 @@ describe("workflow engine v3 contracts", () => {
         sourcePath: "/tmp",
         title: "review",
         steps: [],
-        program: parsed.program,
+        document: parsed.document,
       },
       {
         configVersion: "0.9.0",
@@ -507,8 +530,8 @@ describe("workflow engine v3 contracts", () => {
   });
 
   test("freeze preserves merged per-invocation LLM settings and explicit null timeout", () => {
-    const parsed = parseWorkflowProgram(
-      "version: 2\nname: direct\ndefaults:\n  engine: direct\n  timeout: none\n  llm: { temperature: 0.2, extra_params: { seed: 7 } }\nsteps:\n  - id: review\n    unit:\n      instructions: Review\n      llm: { max_tokens: 77, enable_thinking: true }\n",
+    const parsed = parseWorkflow(
+      "---\ntype: workflow\ndefaults: { engine: direct, timeout: none, llm: { temperature: 0.2, extra_params: { seed: 7 } } }\nsteps:\n  - id: review\n    unit: { llm: { max_tokens: 77, enable_thinking: true } }\n---\n\n## review\n\nReview\n",
       SOURCE,
     );
     if (!parsed.ok) throw new Error("fixture must parse");
@@ -519,7 +542,7 @@ describe("workflow engine v3 contracts", () => {
         sourcePath: "/tmp",
         title: "direct",
         steps: [],
-        program: parsed.program,
+        document: parsed.document,
       },
       {
         configVersion: "0.9.0",
@@ -545,11 +568,16 @@ describe("workflow engine v3 contracts", () => {
   });
 
   test("source and frozen plan byte limits accept the exact boundary and reject one byte over", () => {
-    const sourceBase = "version: 2\nname: bounded\nsteps:\n  - id: work\n    unit: { instructions: Work }\n";
-    const exactSource = `${sourceBase}#${"x".repeat(WORKFLOW_MAX_SOURCE_BYTES - utf8Bytes(sourceBase) - 1)}`;
+    // Padding lives in the free PREAMBLE (before the first "## <id>" heading)
+    // rather than inside a step's instructions — the per-step instructions
+    // block has its own 256 KiB cap (WORKFLOW_MAX_INSTRUCTION_BYTES),
+    // independent of the whole-source 1 MiB cap this test targets.
+    const template = (pad: string) => `---\ntype: workflow\nsteps:\n  - id: work\n---\n\n${pad}\n\n## work\n\nWork\n`;
+    const sourceBase = template("");
+    const exactSource = template("x".repeat(WORKFLOW_MAX_SOURCE_BYTES - utf8Bytes(sourceBase)));
     expect(utf8Bytes(exactSource)).toBe(WORKFLOW_MAX_SOURCE_BYTES);
-    expect(parseWorkflowProgram(exactSource, SOURCE).ok).toBe(true);
-    const oversizedSource = parseWorkflowProgram(`${exactSource}x`, SOURCE);
+    expect(parseWorkflow(exactSource, SOURCE).ok).toBe(true);
+    const oversizedSource = parseWorkflow(`${exactSource}x`, SOURCE);
     expect(oversizedSource.ok).toBe(false);
     if (!oversizedSource.ok) expect(oversizedSource.errors[0]?.message).toContain("1 MiB");
 
@@ -593,7 +621,7 @@ describe("workflow engine v3 contracts", () => {
     const routeStep = stepAt(route, 0);
     delete routeStep.root;
     routeStep.route = {
-      input: `\${{ params.mode }}`,
+      input: "params.mode",
       when: Object.fromEntries(Array.from({ length: 256 }, (_, index) => [`match-${index}`, "second"])),
     };
     expect(() => decodeWorkflowPlanV3(route)).not.toThrow();
@@ -694,7 +722,7 @@ describe("workflow engine v3 contracts", () => {
       stepAt(plan, 0).root = {
         kind: "map",
         id: "review.map",
-        over: `\${{ params.items }}`,
+        over: "params.items",
         template: { ...root, id: "review.unit" },
         concurrency: 1,
         reducer: "collect",
