@@ -3,6 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
 import { compileWorkflowPlan, type WorkflowPlanDraft } from "../../src/workflows/ir/compile";
 import { computePlanHash } from "../../src/workflows/ir/plan-hash";
 import { WORKFLOW_IR_VERSION, type WorkflowPlanGraph } from "../../src/workflows/ir/schema";
@@ -206,6 +208,14 @@ Rework it.
 `;
 
 describe("compileWorkflowPlan — full-vocabulary golden", () => {
+  test("the canonical workflow-format example parses and compiles", () => {
+    const specPath = path.resolve(import.meta.dir, "../../docs/architecture/specs/workflow-format-unification.md");
+    const spec = fs.readFileSync(specPath, "utf8");
+    const example = spec.match(/### 2\.2 The format\n\n````markdown\n([\s\S]*?)\n````/);
+    if (!example?.[1]) throw new Error("canonical workflow example not found");
+    expect(compileOk(example[1], "github-issues", specPath).steps).toHaveLength(6);
+  });
+
   test("compiles the structural plan without executable engine fields", () => {
     const plan = compileOk(FULL_WF, "review-changes", "workflows/test.yaml");
     expect(plan.title).toBe("review-changes");

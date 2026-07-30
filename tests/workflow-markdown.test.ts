@@ -103,6 +103,44 @@ Do the one thing.
     }
   });
 
+  test("accepts actor stamps in every form allowed by the shared envelope", () => {
+    for (const stamps of [
+      'generated: { by: " ", at: "" }\nverified: { by: human:reviewer, at: "2026-07-30" }\n',
+      "generated: { by: process:builder }\nverified:\n  - { by: human:first }\n  - { by: process:second, at: now }\n",
+      "generated: { by: process:builder }\nverified: []\n",
+    ]) {
+      expect(parse(VALID_WORKFLOW.replace("params:\n", `${stamps}params:\n`)).ok).toBe(true);
+    }
+  });
+
+  test("rejects unknown actor stamp properties", () => {
+    for (const stamps of [
+      "generated: { by: process:builder, model: gpt-5 }\n",
+      "verified: { by: human:reviewer, note: approved }\n",
+      "verified:\n  - { by: human:reviewer, extra: true }\n",
+    ]) {
+      const result = parse(VALID_WORKFLOW.replace("params:\n", `${stamps}params:\n`));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.errors.some((error) => error.message.includes("actor stamp key"))).toBe(true);
+    }
+  });
+
+  test("rejects actor stamps with invalid forms or field types", () => {
+    for (const stamps of [
+      "generated: [{ by: process:builder }]\n",
+      "generated: { by: process:builder, at: 42 }\n",
+      'generated: { by: "" }\n',
+      "verified: human:reviewer\n",
+      "verified:\n  - { at: now }\n",
+      "verified:\n  - { by: 42 }\n",
+      "verified:\n  - { by: human:reviewer, at: false }\n",
+    ]) {
+      const result = parse(VALID_WORKFLOW.replace("params:\n", `${stamps}params:\n`));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.errors.some((error) => /generated|verified/.test(error.message))).toBe(true);
+    }
+  });
+
   test("attaches accurate SourceRef line spans to steps and instructions", () => {
     const result = parse(VALID_WORKFLOW);
     expectOk(result);
@@ -112,6 +150,53 @@ Do the one thing.
     expect(first!.instructions!.source.end).toBeLessThan(first!.gateRubric!.source.start);
     expect(first!.gateRubric!.source.start).toBeGreaterThan(first!.instructions!.source.end);
     expect(second!.instructions!.source.start).toBeGreaterThan(first!.gateRubric!.source.end);
+  });
+
+  test("preserves instruction indentation and trailing Markdown hard-break spaces", () => {
+    const hardBreak = "  ";
+    const markdown = `---
+type: workflow
+steps:
+  - id: only
+---
+
+## only
+
+    Keep this first-line indentation.
+Keep this hard break.${hardBreak}
+And this line.
+`;
+    const result = parse(markdown);
+    expectOk(result);
+
+    expect(result.document.steps[0]!.instructions?.text).toBe(
+      `    Keep this first-line indentation.\nKeep this hard break.${hardBreak}\nAnd this line.`,
+    );
+  });
+
+  test("a gate rubric includes later H3/H4 content through the next H2", () => {
+    const markdown = VALID_WORKFLOW.replace(
+      "- Release notes reviewed\n- Version matches tag",
+      "- Release notes reviewed  \n### Evidence\nKeep the report.\n#### Details\n  Preserve this indentation.",
+    );
+    const result = parse(markdown);
+    expectOk(result);
+
+    expect(result.document.steps[0]!.gateRubric?.text).toBe(
+      "- Release notes reviewed  \n### Evidence\nKeep the report.\n#### Details\n  Preserve this indentation.",
+    );
+  });
+
+  test("rejects duplicate ### gate headings even after another nested H3", () => {
+    const markdown = VALID_WORKFLOW.replace(
+      "- Release notes reviewed\n- Version matches tag",
+      "First rubric.\n\n### Evidence\nKeep the report.\n\n### gate\n\nSecond rubric.",
+    );
+    const result = parse(markdown);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(result.errors.some((error) => error.message.includes('more than one "### gate"'))).toBe(true);
   });
 
   test("rejects duplicate step ids", () => {

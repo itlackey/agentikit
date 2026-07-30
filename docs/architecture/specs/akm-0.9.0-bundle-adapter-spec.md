@@ -390,7 +390,7 @@ their own format rules. Presentation is keyed on `type` via
 | skill | yes | `SKILL.md`; item = the dir (item-scoped incrementality, §4) | `missing-skill-md` **+ NEW** Agent Skills contract — hard: name 1–64 (`^[a-z0-9]+(-[a-z0-9]+)*$`, NFKC, == parent dir name), description 1–1024, `compatibility` ≤500, `metadata` string→string map, YAML-mapping frontmatter; soft (warnings): body <500 lines / instructions <5k tokens, lowercase `skill.md` filename, `allowed-tools` portability. Strictness is per-adapter: `agent-skills` errors on unknown frontmatter (skills-ref behavior); `claude` allows Claude Code's documented extension fields |
 | memory | yes | `.md` under `memories/` | `orphaned-stub` (delete fix); memory-lifecycle (§ normative 25) |
 | lesson/fact/session/instruction | yes | `lessons/`/`facts/`/`sessions/`/`CLAUDE.md`·`AGENTS.md` | base (+`missing-category` for fact) |
-| workflow | ext | `.md`/`.yaml`/`.yml` workflow; markdown≈OKF, YAML program is an AKM extension | `placeholder-stub`, `invalid-workflow-structure` |
+| workflow | ext | unified `.md` workflow; orchestration in frontmatter, prose in the body | `placeholder-stub`, `invalid-workflow-structure` |
 | task | AKM ext | `.yml` under `tasks/` (not OKF markdown) | `invalid-task-yaml`: schedule+enabled+one target |
 | env | AKM ext | `.env`/`*.env` under `env/` — **key NAMES only, values never indexed** | dangerous-key warn scan |
 | secret | AKM ext | any file under `secrets/` minus `.lock`/`.sensitive` — **filename only** | dangerous-key scan; `classifyBySmartMd` bails on `secrets/` |

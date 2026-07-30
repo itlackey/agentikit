@@ -438,8 +438,8 @@ export const akmAdapter: BundleAdapter = {
   id: "akm",
   version: "0.9.0",
   // Recognized-extension HINT, derived from what the matchers accept (§6):
-  // `.md` (markdown types + skill), `.yaml`/`.yml` (workflow programs,
-  // task YAML), `.env` (env files), and the 16 SCRIPT_EXTENSIONS. This is a
+  // `.md` (markdown types + skill), `.yaml`/`.yml` (task YAML), `.env` (env
+  // files), and the 16 SCRIPT_EXTENSIONS. This is a
   // NON-EXHAUSTIVE hint for the akm adapter: recognition is directory-driven
   // via `recognize()` (e.g. a bare `secrets/<anything>` file with no extension
   // is a `secret`), so `recognize()` — not this list — is the source of truth.

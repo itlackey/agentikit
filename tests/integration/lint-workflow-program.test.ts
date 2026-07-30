@@ -14,20 +14,9 @@
  * malformed" left to pin. Surviving coverage (clean workflow → no findings;
  * a structurally-broken workflow → a parse-stage finding; independence
  * across files in the same stash) is folded into unified-format markdown
- * fixtures below. Two cases from the original file have no home under the
- * new format and are intentionally NOT re-created (see comments at each
- * former test's slot):
- *
- *   - "a program referencing a nonexistent step output is a compile-stage
- *     finding" — reference resolution (`inputs:`/`map.over`/`route.input`
- *     pointing at a step that doesn't exist) is a `compileWorkflowPlan`
- *     (ir/compile.ts) error, not a `parseWorkflow` one. `akm lint`'s workflow
- *     check (`workflowStructureDiagnostics` in
- *     src/core/adapter/adapters/akm-lint.ts) calls only `parseWorkflow` —
- *     it never runs the compile stage. So a dangling reference in a
- *     workflow's frontmatter is INVISIBLE to `akm lint --type workflows`
- *     under the unified format; this is a real coverage gap, reported as src
- *     feedback rather than papered over with an assertion that cannot pass.
+ * fixtures below. The former compile-stage reference case is restored against
+ * the unified markdown format. One case from the original file has no home
+ * under the new format and is intentionally NOT re-created:
  *   - "a markdown workflow alongside a broken program: each is checked
  *     independently" — folded below as two markdown files (one clean, one
  *     broken) instead of markdown-vs-YAML, since YAML is no longer part of
@@ -64,6 +53,7 @@ const CLEAN_WORKFLOW = [
   "---",
   "type: workflow",
   "description: Clean workflow",
+  "updated: 2026-07-30",
   "steps:",
   "  - id: only",
   "---",
@@ -75,14 +65,13 @@ const CLEAN_WORKFLOW = [
 ].join("\n");
 
 describe("akm lint --type workflows", () => {
-  test("a well-formed unified workflow produces no invalid-workflow-structure findings", () => {
+  test("a well-formed unified workflow produces no findings", () => {
     const stashDir = makeTempStash();
     writeWorkflowFile(stashDir, "clean.md", CLEAN_WORKFLOW);
 
     const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
 
-    const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
-    expect(structural).toHaveLength(0);
+    expect(result.flagged).toHaveLength(0);
   });
 
   test("a workflow missing the required `steps` list is a parse-stage finding", () => {
@@ -99,6 +88,95 @@ describe("akm lint --type workflows", () => {
     expect(structural).toHaveLength(1);
     expect(structural[0]!.file).toContain("no-steps.md");
     expect(structural[0]!.detail).toContain('"steps" is required');
+  });
+
+  test("a reference to a missing step is a compile-stage finding", () => {
+    const stashDir = makeTempStash();
+    writeWorkflowFile(
+      stashDir,
+      "missing-step.md",
+      [
+        "---",
+        "type: workflow",
+        "updated: 2026-07-30",
+        "steps:",
+        "  - id: consume",
+        "    inputs: [steps.ghost.output]",
+        "---",
+        "",
+        "## consume",
+        "",
+        "Use it.",
+        "",
+      ].join("\n"),
+    );
+
+    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+
+    const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
+    expect(structural).toHaveLength(1);
+    expect(structural[0]?.detail).toContain('"ghost" is not a step in this workflow');
+  });
+
+  test("a reference to a later step is a compile-stage finding", () => {
+    const stashDir = makeTempStash();
+    writeWorkflowFile(
+      stashDir,
+      "later-step.md",
+      [
+        "---",
+        "type: workflow",
+        "updated: 2026-07-30",
+        "steps:",
+        "  - id: first",
+        "    inputs: [steps.second.output]",
+        "  - id: second",
+        "---",
+        "",
+        "## first",
+        "",
+        "Use it.",
+        "",
+        "## second",
+        "",
+        "Produce it.",
+        "",
+      ].join("\n"),
+    );
+
+    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+
+    const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
+    expect(structural).toHaveLength(1);
+    expect(structural[0]?.detail).toContain("does not come before this step");
+  });
+
+  test("a param declared as a step input is a compile-stage finding", () => {
+    const stashDir = makeTempStash();
+    writeWorkflowFile(
+      stashDir,
+      "param-input.md",
+      [
+        "---",
+        "type: workflow",
+        "updated: 2026-07-30",
+        "steps:",
+        "  - id: consume",
+        "    inputs: [params.payload]",
+        "---",
+        "",
+        "## consume",
+        "",
+        "Use it.",
+        "",
+      ].join("\n"),
+    );
+
+    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+
+    const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
+    expect(structural).toHaveLength(1);
+    expect(structural[0]?.detail).toContain("names a param, not a step output");
   });
 
   test("a clean workflow alongside a structurally-broken one: each is checked independently", () => {

@@ -91,7 +91,7 @@ akm import - --name scratch-notes < notes.md   # Import stdin as a knowledge doc
 akm import https://example.com/docs/auth       # Fetch one URL and import it as knowledge
 akm import ./doc.md --target my-other-bundle    # Route import to a named writable bundle source
 akm workflow create ship-release               # Create a workflow asset in the bundle
-akm lint --type workflows                      # Validate every YAML v2/markdown workflow; lists every error
+akm lint --type workflows                      # Parse and compile every unified markdown workflow; list every error
 akm workflow next workflows/ship-release       # Start or resume the next workflow step
 akm feedback skills/code-review --positive     # Record that an asset helped
 akm feedback agents/reviewer --negative        # Record that an asset missed the mark
@@ -159,7 +159,7 @@ akm secret run secrets/deploy-token GITHUB_TOKEN -- gh release create v1.0.0  # 
 
 ## Workflows
 
-Workflows live under `<bundle>/workflows/` as markdown or YAML v2 (`.yaml`/`.yml`).
+Workflows live under `<bundle>/workflows/` as unified markdown assets.
 
 Ref-based workflow commands are scoped to the current project/worktree/directory,
 so one active run does not block unrelated directories from starting the same

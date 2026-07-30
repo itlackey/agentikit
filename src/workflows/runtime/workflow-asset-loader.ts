@@ -20,7 +20,7 @@ import type { WorkflowParameter, WorkflowStepDefinition } from "../../sources/ty
 import { withIndexDb } from "../../storage/repositories/index-db";
 import { formatWorkflowErrors } from "../authoring/authoring";
 import { parseWorkflow } from "../parser";
-import type { WorkflowDocument } from "../schema";
+import { WORKFLOW_SCHEMA_VERSION, type WorkflowDocument } from "../schema";
 
 /**
  * A workflow asset projected from its on-disk (or index-cached) document into
@@ -314,14 +314,14 @@ function readWorkflowDocumentFromIndex(sourcePath: string, ref: string, adapterI
   return withIndexDb((db) => {
     const row = db
       .prepare(
-        `SELECT wd.document_json AS document_json
+        `SELECT wd.document_json AS document_json, wd.schema_version AS schema_version
            FROM workflow_documents wd
            JOIN entries e ON e.id = wd.entry_id
           WHERE e.entry_type = 'workflow' AND e.entry_key = ?
           LIMIT 1`,
       )
-      .get(entryKey) as { document_json: string } | undefined;
-    if (!row) return null;
+      .get(entryKey) as { document_json: string; schema_version: number } | undefined;
+    if (!row || row.schema_version !== WORKFLOW_SCHEMA_VERSION) return null;
     try {
       return JSON.parse(row.document_json) as WorkflowDocument;
     } catch {

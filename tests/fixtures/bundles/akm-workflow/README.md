@@ -12,4 +12,4 @@ program form (an AKM extension). Both emit `type=workflow`.
 - **Grounding:** existing akm workflow codec (`src/workflows/`) + the frozen
   `all-types` workflow fixtures.
 
-Files: `release.md` (markdown workflow), `deploy.yaml` (YAML program).
+Files: `release.md` (unified markdown workflow).

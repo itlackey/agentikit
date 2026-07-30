@@ -16,16 +16,14 @@
  *    via the renderer contributor's throw → metadata-pass skip-with-warning; the
  *    `akm` adapter's synchronous `foldRecognizedMetadata` SWALLOWS the parse
  *    error, so a broken workflow would otherwise silently index. We re-run
- *    `parseWorkflow` / `parseWorkflowProgram` on drained workflow docs and DROP
+ *    `parseWorkflow` on drained workflow docs and DROP
  *    the entry with the same `Skipped workflow …` warning
  *    ({@link buildMetadataSkipWarning}), so the workflow-skip summary counts it.
  *  - **Workflow-document side-table (workflow-md only).** The valid parsed
  *    `WorkflowDocument` is handed to the persist layer through the same
  *    `document-cache` side channel the live renderer contributor used, keyed by
  *    the reconstructed entry — so `takeWorkflowDocument(entry)` in the persist
- *    loop writes the `workflow_documents` row exactly as before. YAML programs
- *    are re-parsed from disk by the runtime loader, so they carry no cache row
- *    (mirrors the live path).
+ *    loop writes the `workflow_documents` row exactly as before.
  *
  * `doc.hash` (= sha256 of the file content) is surfaced per recognized file so
  * the persist layer can populate the `content_hash` column (item 2). It is keyed

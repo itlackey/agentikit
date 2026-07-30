@@ -33,15 +33,13 @@ export const ExperimentalConfigSchema = z
      * Allow the `akm workflow` native engine to run (Q-05).
      *
      * OFF by default. Gates `akm workflow run` (the native step-execution
-     * engine), `akm workflow brief`/`report` (the harness-neutral driver
-     * protocol), and creating a YAML (`version: 2`) workflow *program* via
-     * `akm workflow create <name>.yaml` — the format the engine executes.
+     * engine) and `akm workflow brief`/`report` (the harness-neutral driver
+     * protocol).
      *
-     * Deliberately NOT gated: the classic linear-markdown workflow CLI
-     * contract (`start`/`next`/`complete`/`status`/`list`/`create` for a
-     * markdown document/`resume`/`abandon`) is unchanged and stable
-     * regardless of this key — it progresses a run by hand (or from any
-     * agent already) and predates the native engine.
+     * Deliberately NOT gated: authoring/linting the unified markdown format
+     * and the manual workflow CLI contract (`start`/`next`/`complete`/
+     * `status`/`list`/`create`/`resume`/`abandon`) remain stable regardless of
+     * this key.
      *
      * Unlike `improveAutonomy`, a gated call here REFUSES outright rather than
      * degrading: a workflow step either executes or it does not, so there is

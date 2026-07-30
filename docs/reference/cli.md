@@ -531,10 +531,8 @@ Author, inspect, and execute structured workflow assets.
 
 ```sh
 akm workflow create ship-release --print
-akm workflow create review.yaml --print       # Print a YAML v2 program starter, without writing
 akm workflow create ship-release
 akm workflow create ship-release --from ./ship-release.md
-akm workflow create review.yaml --from ./review.yaml
 akm workflow start workflows/ship-release --params '{"version":"1.2.3"}'
 akm workflow next workflows/ship-release
 akm workflow next workflows/ship-release --params '{"version":"1.2.3"}'
@@ -553,10 +551,10 @@ Subcommands:
 
 | Subcommand | Description |
 | --- | --- |
-| `create <name>` | Validate and write markdown (`<name>`) or YAML v2 (`<name>.yaml` / `.yml`) under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites; `--print` prints the template that would be written instead of writing it |
+| `create <name>` | Validate and write a unified markdown workflow under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites; `--print` prints the template that would be written instead of writing it |
 | `start <ref>` | Create a new persisted workflow run. `--params <json>` supplies parameters; `--force` allows a parallel run when an active run already exists in this scope |
 | `next <run-id\|ref>` | Return the current actionable step; resumes active runs and starts a new run when the ref has no active run |
-| `complete <run-id> --step <step-id>` | Update the current pending step on an active run and persist status, notes, and evidence. `--summary` is **required** and validated against completion criteria; `--evidence <json>` attaches structured evidence |
+| `complete <run-id> --step <step-id>` | Update the current pending step on an active run and persist status, notes, and evidence. `--summary` is **required** and is optionally validated against the step's gate rubric; `--evidence <json>` attaches structured evidence |
 | `status <run-id\|ref>` | Show the full run state, including all step statuses. `--units` also lists per-unit rows from the run journal (diagnostics only) |
 | `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`) |
 | `resume <run-id>` | Flip a `blocked` or `failed` run back to `active`. Completed runs cannot be resumed |
@@ -568,16 +566,16 @@ Subcommands:
 There is no `akm workflow template` or `akm workflow validate` either (0.9.0:
 dropped). `akm workflow create --print` prints the template `template` used
 to; `akm lint --type workflows` structurally validates both markdown workflow
-documents and YAML v2 programs. There is no `akm workflow watch` either —
+frontmatter and body prose. There is no `akm workflow watch` either —
 poll `akm log --since '@offset:<id>' --run <run-id>` instead (see the [`log`
 section](#log)).
 
-#### The experimental workflow engine (`run`/`brief`/`report`, and `create <name>.yaml`)
+#### The experimental workflow engine (`run`/`brief`/`report`)
 
-`akm workflow run`, `brief`, and `report` — plus `akm workflow create
-<name>.yaml`/`.yml` (authoring a YAML v2 workflow *program*, the format the
-engine executes) — are gated behind the `experimental.workflowEngine` config
-key. Until it is set, every one of these refuses with a `ConfigError`
+`akm workflow run`, `brief`, and `report` are gated behind the
+`experimental.workflowEngine` config key. Authoring and linting the unified
+markdown format are not gated. Until the engine is enabled, those three
+execution commands refuse with a `ConfigError`
 (**exit 78**) instead of running:
 
 ```sh
@@ -592,11 +590,10 @@ $ akm workflow run <run-id>
 akm config set experimental.workflowEngine true   # opt in
 ```
 
-The classic linear-markdown workflow CLI contract — `start`, `next`,
-`complete`, `status`, `list`, `create` (markdown), `resume`, `abandon` — is
-**not** gated and is stable per STABILITY.md; those verbs progress a run by
-hand (or from any agent already) regardless of whether the underlying asset
-is markdown or a YAML program.
+The manual workflow CLI contract — `start`, `next`, `complete`, `status`,
+`list`, `create`, `resume`, `abandon` — is **not** gated and is stable per
+STABILITY.md; those verbs author or progress the same unified markdown asset
+without invoking the native engine.
 
 ```sh
 akm workflow run workflows/ship-release --max-steps 3
@@ -635,16 +632,15 @@ akm workflow create ship-release --from ./ship-release.md
 akm workflow create ship-release --from ./ship-release.md --force
 akm workflow create ship-release --force --reset
 akm workflow create ship --path release          # writes workflows/release/ship.md
-akm workflow create release.yaml --path deploy   # writes workflows/deploy/release.yaml (gated, see above)
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--path <dir>` | Relative subdirectory under `workflows/` to place the workflow in. The filename comes from `<name>`. |
-| `--from <file>` | Import and validate content from an existing file, parsed per the destination extension |
+| `--from <file>` | Import and validate a unified markdown workflow from an existing file |
 | `--force` | Overwrite an existing workflow. Requires `--from` or `--reset`. |
 | `--reset` | Explicitly replace an existing workflow with a fresh template (use with `--force`) |
-| `--print` | Print the template that would be written (markdown, or a YAML v2 program with a `.yaml`/`.yml` name) without creating anything |
+| `--print` | Print the unified markdown template without creating anything |
 
 `--force` requires either `--from <file>` (replace from a source file) or
 `--reset` (explicitly acknowledge you are overwriting in place). Without one of
@@ -715,7 +711,7 @@ akm workflow complete <run-id> --step <step-id> --evidence '{"testsPassed": true
 | --- | --- |
 | `--step <id>` | Workflow step id (required) |
 | `--state` | Step state. One of: `completed`, `blocked`, `failed`, `skipped`. Default: `completed`. |
-| `--summary` | Summary of work done — **required when completing a step** (i.e. when `--state` resolves to `completed`); validated against the step's completion criteria. A summary that fails validation returns a `workflow-complete-rejected` result (the step stays pending) rather than throwing. |
+| `--summary` | Summary of work done — **required when completing a step** (i.e. when `--state` resolves to `completed`); optionally validated against the step's gate rubric. A well-formed rejection returns a `workflow-complete-rejected` result (the step stays pending) rather than throwing. |
 | `--notes` | Free-text notes for the step |
 | `--evidence` | Evidence JSON object for the step |
 
@@ -747,15 +743,14 @@ resumed. Use `workflow list` to find runs by status.
 
 Workflow markdown contract:
 
-- Optional frontmatter only supports `description`, `tags`, and `params`.
-- `tags` may be a string or an array of non-empty strings.
-- `params` must be a mapping of parameter names to non-empty string descriptions.
-- The document must contain exactly one `# Workflow: <title>` heading.
-- Each step must be a `## Step: <title>` section.
-- Each step must include exactly one `Step ID: <id>` line. IDs must start with a letter or number and then use only letters, numbers, `.`, `_`, or `-`.
-- Each step must include exactly one `### Instructions` section with non-empty text.
-- `### Completion Criteria` is optional, but when present it must contain at least one non-empty item. Each non-empty line is treated as one criterion, with an optional leading `-` or `*` removed.
-- No other frontmatter keys, top-level headings, or step subsections are accepted.
+- Frontmatter carries the asset envelope and orchestration graph (`params`,
+  `steps`, `defaults`, and `budget`).
+- Every `## <step-id>` heading must name a declared step exactly. Unit and map
+  steps require a section; route-only steps may omit one.
+- An optional `### gate` inside a step section carries its gate rubric. Omitted
+  or empty rubric text skips validation.
+
+See [Workflows](workflows.md) for the complete authoring contract.
 
 ### How `bundle add` works
 
@@ -1859,11 +1854,10 @@ stale paths, and broken refs — in body text and in
 `refs`/`xrefs`/`supersededBy`/`contradictedBy` frontmatter. Also reports
 `dangerous-env-key` findings for env files (the same key set `akm bundle add`
 enforces — see [Dangerous env key audit](#dangerous-env-key-audit) — but
-non-blocking here; `lint` only warns). `--type workflows` also structurally
-validates YAML v2 workflow *programs* (`.yaml`/`.yml`) — parse and compile
-errors surface as `invalid-workflow-structure` findings alongside the
-markdown-workflow checks (0.9.0: this is the only structural-validation
-surface now that `akm workflow validate` is gone).
+non-blocking here; `lint` only warns). `--type workflows` structurally parses
+and compiles unified markdown workflows; errors surface as
+`invalid-workflow-structure` findings (0.9.0: this is the only
+structural-validation surface now that `akm workflow validate` is gone).
 
 ```sh
 akm lint                        # Report findings; exits 0 regardless

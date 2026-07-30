@@ -23,16 +23,10 @@
  *  - `akm workflow run`    — the native step-execution engine
  *  - `akm workflow brief`  — the harness-neutral driver protocol (read half)
  *  - `akm workflow report` — the harness-neutral driver protocol (write half)
- *  - `akm workflow create <name>.yaml` — authoring a YAML (`version: 2`)
- *    workflow *program*, the format the engine executes
  *
- * Deliberately NOT gated — the classic linear-markdown workflow CLI contract
- * is unaffected and stable per STABILITY.md: `start`, `next`, `complete`,
- * `status`, `list`, `create` (markdown), `resume`, `abandon`. Those verbs
- * progress a run by hand (or drive it from any agent already) regardless of
- * whether the underlying asset is markdown or a YAML program. `akm lint
- * --type workflows` (0.9.0: the `workflow validate` replacement) is likewise
- * ungated — it only type-checks a program file without executing anything.
+ * Deliberately NOT gated: authoring/linting the unified markdown format and
+ * the manual workflow CLI contract (`start`, `next`, `complete`, `status`,
+ * `list`, `create`, `resume`, `abandon`) remain stable per STABILITY.md.
  */
 
 import { ConfigError } from "../../core/errors";

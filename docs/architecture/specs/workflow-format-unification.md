@@ -167,7 +167,17 @@ of passing and failing artifacts. The judge receives this whole section.
 - Every issue in the working set has a mergeable PR or a recorded blocker.
 - No PR was opened against a branch other than the declared base.
 
-## done
+## verdict
+
+Inspect the implementation results and report whether the batch is clean or
+needs escalation.
+
+## escalate
+
+Escalate blockers from the verdict, with the verdict artifact attached as
+context (declared via `inputs:` above).
+
+## announce
 
 Post the summary. The `implement` step's artifact is attached as context
 (declared via `inputs:` above).

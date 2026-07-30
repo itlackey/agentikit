@@ -531,7 +531,7 @@ const SUPERSEDE_REJECTED_TYPES: ReadonlySet<string> = new Set(["secret", "env", 
  * Because the demotion PREPENDS a YAML frontmatter block when the target file
  * has none, only markdown assets may be demoted: refs of a raw asset type
  * ({@link SUPERSEDE_REJECTED_TYPES}) and refs resolving to any non-`.md` file
- * (e.g. a YAML workflow program) are rejected with {@link UsageError} BEFORE
+ * (for example a task YAML file) are rejected with {@link UsageError} BEFORE
  * any write — never silently corrupted.
  *
  * Demotion targets must live under the resolved write target's source path or
@@ -590,9 +590,8 @@ export function resolveSupersedesForWrite(rawRefs: string[], target?: string): S
       continue;
     }
     // Belt-and-suspenders for the same corruption class: whatever the type,
-    // the demotion may only touch a markdown file. Rejects e.g. a YAML
-    // workflow program (`workflows/deploy` resolving to workflows/deploy.yaml,
-    // or the explicit `workflows/deploy.yaml` spelling).
+    // the demotion may only touch a markdown file. Rejects, for example, a task
+    // YAML file reached through a malformed or stale ref.
     if (!located.filePath.toLowerCase().endsWith(".md")) {
       throw new UsageError(
         `--supersedes ${parsed.ref} resolves to a non-markdown file (${located.filePath}) — the demotion writes YAML frontmatter and would corrupt it.`,

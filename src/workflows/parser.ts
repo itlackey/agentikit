@@ -110,6 +110,7 @@ const ROUTE_KEYS = ["input", "when", "default"];
 const RETRY_KEYS = ["max", "on"];
 const GATE_KEYS = ["max_loops"];
 const ROUTE_BRANCH_KEYS = ["match", "step"];
+const ACTOR_STAMP_KEYS = ["by", "at"];
 
 const TIMEOUT_VALUE = /^(\d+)(ms|s|m)?$/;
 const TIMEOUT_HINT = `Use "<n>ms", "<n>s", "<n>m" (e.g. "10m"), or "none"`;
@@ -378,14 +379,14 @@ function bindStepSections(
     const sectionEnd = findNextHeadingAtOrAboveLevel(headings, i, 2, totalLines);
     const gate = findGateSubsection(headings, i, sectionEnd, path, h.text, errors);
     const instructionsEnd = gate ? gate.headingLine - 1 : sectionEnd;
-    const instructionsText = sliceLines(lines, h.line + 1, instructionsEnd).trim();
+    const instructionsText = sliceProseLines(lines, h.line + 1, instructionsEnd);
 
     const section: StepSection = { headingLine: h.line };
     if (instructionsText) {
       section.instructions = { text: instructionsText, source: { path, start: h.line + 1, end: instructionsEnd } };
     }
     if (gate) {
-      const gateText = sliceLines(lines, gate.bodyStart, gate.bodyEnd).trim();
+      const gateText = sliceProseLines(lines, gate.bodyStart, gate.bodyEnd);
       if (gateText) {
         section.gateRubric = { text: gateText, source: { path, start: gate.bodyStart, end: gate.bodyEnd } };
       }
@@ -418,9 +419,7 @@ function findGateSubsection(
       });
       continue;
     }
-    const next = headings.find((candidate) => candidate.line > h.line && candidate.level <= 3);
-    const bodyEnd = next ? Math.min(next.line - 1, sectionEnd) : sectionEnd;
-    found = { headingLine: h.line, bodyStart: h.line + 1, bodyEnd };
+    found = { headingLine: h.line, bodyStart: h.line + 1, bodyEnd: sectionEnd };
   }
   void path;
   return found;
@@ -443,6 +442,14 @@ function sliceLines(lines: string[], startLineInclusive: number, endLineInclusiv
   const s = Math.max(1, startLineInclusive);
   const e = Math.min(endLineInclusive, lines.length);
   return lines.slice(s - 1, e).join("\n");
+}
+
+function sliceProseLines(lines: string[], startLineInclusive: number, endLineInclusive: number): string {
+  let start = Math.max(1, startLineInclusive);
+  let end = Math.min(endLineInclusive, lines.length);
+  while (start <= end && /^\s*$/.test(lines[start - 1]!)) start++;
+  while (end >= start && /^\s*$/.test(lines[end - 1]!)) end--;
+  return sliceLines(lines, start, end);
 }
 
 // ---------------------------------------------------------------------------
@@ -468,10 +475,13 @@ function checkEnvelopeFields(ctx: Ctx, root: Record<string, unknown>, fmEndLine:
   }
   checkActorStamp(ctx, root.generated, ["generated"], `"generated"`);
   if (root.verified !== undefined) {
-    const entries = Array.isArray(root.verified) ? root.verified : [root.verified];
-    entries.forEach((entry, i) => {
-      checkActorStamp(ctx, entry, ["verified", i], `"verified"`);
-    });
+    if (Array.isArray(root.verified)) {
+      root.verified.forEach((entry, i) => {
+        checkActorStamp(ctx, entry, ["verified", i], `"verified"`);
+      });
+    } else {
+      checkActorStamp(ctx, root.verified, ["verified"], `"verified"`);
+    }
   }
   if (root.provenance !== undefined && !isPlainRecord(root.provenance)) {
     ctx.err(["provenance"], `Workflow frontmatter "provenance" must be a mapping.`);
@@ -486,8 +496,16 @@ function checkEnvelopeFields(ctx: Ctx, root: Record<string, unknown>, fmEndLine:
 
 function checkActorStamp(ctx: Ctx, value: unknown, path: Path, label: string): void {
   if (value === undefined) return;
-  if (!isPlainRecord(value) || typeof value.by !== "string" || !value.by.trim()) {
+  if (!isPlainRecord(value)) {
     ctx.err(path, `Workflow frontmatter ${label} must be a mapping with a non-empty "by".`);
+    return;
+  }
+  checkUnknownKeys(ctx, value, path, ACTOR_STAMP_KEYS, `${label} actor stamp`);
+  if (typeof value.by !== "string" || value.by.length === 0) {
+    ctx.err([...path, "by"], `Workflow frontmatter ${label} must be a mapping with a non-empty "by".`);
+  }
+  if (value.at !== undefined && typeof value.at !== "string") {
+    ctx.err([...path, "at"], `Workflow frontmatter ${label} actor stamp "at" must be a string.`);
   }
 }
 
