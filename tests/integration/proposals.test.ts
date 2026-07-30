@@ -29,11 +29,13 @@ import { validateProposal } from "../../src/commands/proposal/validators/proposa
 import type { AkmConfig } from "../../src/core/config/config";
 import { UsageError } from "../../src/core/errors";
 import { readEvents } from "../../src/core/events";
+import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import { getDbPath, getIndexWriterLockPath } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
 import { indexWrittenAssets } from "../../src/indexer/index-written-assets";
 import { akmIndex } from "../../src/indexer/indexer";
 import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
+import { pkgVersion } from "../../src/version";
 import { makeConfig } from "../_helpers/factories";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
@@ -1435,6 +1437,183 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     const e = thrown as Error & { code?: string; name: string };
     expect(e.name).toBe("NotFoundError");
     expect(e.code).toBe("FILE_NOT_FOUND");
+  });
+});
+
+// ── D2 (#730) — promoteProposal stamps OKF v0.2 provenance on AKM-native writes ─
+//
+// generated.by actor convention (documented judgment call, see PR body):
+//   - the SOURCE that produced the content decides `generated.by`: an
+//     AUTOMATED_PROPOSAL_SOURCES proposal (reflect/distill/consolidate/
+//     extract/improve/schema-repair) stamps `akm/<pkgVersion>`; a
+//     human-initiated source (propose/remember/import) stamps
+//     `human:<actorId>`.
+//   - the ACCEPTANCE event (independent of content origin) decides
+//     `verified[0].by`: a `gateDecision` passed to promoteProposal (the
+//     automated drain/triage path) stamps `akm/<pkgVersion>`; its absence
+//     (a human explicitly ran `akm proposal accept`) stamps
+//     `human:<actorId>`.
+// `ctx.actorId` is a new ProposalsContext test seam (mirrors the existing
+// `now`/`randomUUID` seams) so these assertions never depend on the real
+// OS username of whatever machine runs the suite.
+describe("D2 (#730): promoteProposal stamps OKF v0.2 provenance onto AKM-native writes", () => {
+  function readWrittenProvenance(assetPath: string): {
+    generatedBy?: string;
+    generatedAt?: string;
+    verified?: Array<{ by: string; at?: string }>;
+    sources?: Array<{ resource: string }>;
+  } {
+    const raw = fs.readFileSync(assetPath, "utf8");
+    const fm = parseFrontmatter(raw).data as Record<string, unknown>;
+    return (fm.provenance ?? {}) as ReturnType<typeof readWrittenProvenance>;
+  }
+
+  test("automated source (distill) + human accept (no gateDecision): generated.by=akm/<version>, verified.by=human:<actorId>", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const created = createProposal(stash, {
+      ref: "lessons/provenance-distill-human-accept",
+      source: "distill",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({
+      stashDir: stash,
+      id: created.id,
+      config,
+      ctx: { actorId: () => "test-human" },
+    });
+
+    const provenance = readWrittenProvenance(result.assetPath);
+    expect(provenance.generatedBy).toBe(`akm/${pkgVersion}`);
+    expect(typeof provenance.generatedAt).toBe("string");
+    expect(new Date(provenance.generatedAt as string).toString()).not.toBe("Invalid Date");
+    expect(provenance.verified).toHaveLength(1);
+    expect(provenance.verified?.[0]?.by).toBe("human:test-human");
+    expect(typeof provenance.verified?.[0]?.at).toBe("string");
+  });
+
+  test("automated source (distill) auto-accepted via a gate decision: BOTH generated.by and verified.by are akm/<version>", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const created = createProposal(stash, {
+      ref: "lessons/provenance-distill-gate-accept",
+      source: "distill",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({
+      stashDir: stash,
+      id: created.id,
+      config,
+      ctx: { actorId: () => "should-not-be-used" },
+      gateDecision: {
+        outcome: "auto-accepted",
+        reason: "policy-accept",
+        gate: "test-gate",
+        decidedAt: "2026-07-01T00:00:00.000Z",
+      },
+    });
+
+    const provenance = readWrittenProvenance(result.assetPath);
+    expect(provenance.generatedBy).toBe(`akm/${pkgVersion}`);
+    expect(provenance.verified).toEqual([{ by: `akm/${pkgVersion}`, at: "2026-07-01T00:00:00.000Z" }]);
+  });
+
+  test("human-initiated source (propose) accepted directly: generated.by=human:<actorId>, verified.by=human:<actorId>", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const created = createProposal(stash, {
+      ref: "lessons/provenance-human-source",
+      source: "propose",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({
+      stashDir: stash,
+      id: created.id,
+      config,
+      ctx: { actorId: () => "test-human-2" },
+    });
+
+    const provenance = readWrittenProvenance(result.assetPath);
+    expect(provenance.generatedBy).toBe("human:test-human-2");
+    expect(provenance.verified).toEqual([
+      { by: "human:test-human-2", at: expect.any(String) as unknown as string },
+    ]);
+  });
+
+  test("evidenceSources on the promoted content project as provenance.sources ({resource} minimum)", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const contentWithEvidence =
+      "---\ndescription: Use ripgrep before grep\nwhen_to_use: Searching large repos for patterns\n" +
+      "evidenceSources:\n  - knowledge/some-ref\n  - knowledge/other-ref\n---\n\n" +
+      "Prefer rg over grep when scanning large code repos.\n";
+    const created = createProposal(stash, {
+      ref: "lessons/provenance-evidence-sources",
+      source: "distill",
+      force: true,
+      payload: { content: contentWithEvidence },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({ stashDir: stash, id: created.id, config });
+
+    const provenance = readWrittenProvenance(result.assetPath);
+    expect(provenance.sources).toEqual([{ resource: "knowledge/some-ref" }, { resource: "knowledge/other-ref" }]);
+    // The original AKM-native `evidenceSources:` key is left untouched (dual-write, not a rename).
+    const fm = parseFrontmatter(fs.readFileSync(result.assetPath, "utf8")).data as Record<string, unknown>;
+    expect(fm.evidenceSources).toEqual(["knowledge/some-ref", "knowledge/other-ref"]);
+  });
+
+  test("a non-markdown promotion target (task YAML) is never stamped with frontmatter", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const taskContent = 'version: 2\nschedule: "0 2 * * *"\nenabled: true\ncommand: ["akm", "index"]\n';
+    const created = createProposal(stash, {
+      ref: "tasks/provenance-not-applicable",
+      source: "distill",
+      force: true,
+      payload: { content: taskContent },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({ stashDir: stash, id: created.id, config });
+    expect(fs.readFileSync(result.assetPath, "utf8")).toBe(taskContent);
+  });
+
+  test("the promoted asset re-indexes with provenance surfaced via documentJson (akm's own adapter rereads what it wrote)", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    fs.writeFileSync(path.join(stash, "memories", "index-seed.md"), "Index seed.\n", "utf8");
+    await akmIndex({ stashDir: stash });
+    const created = createProposal(stash, {
+      ref: "lessons/provenance-reindex-roundtrip",
+      source: "distill",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({
+      stashDir: stash,
+      id: created.id,
+      config,
+      ctx: { actorId: () => "test-human-3" },
+    });
+
+    const entry = indexedEntry(result.assetPath) as { documentJson?: { provenance?: Record<string, unknown> } };
+    expect(entry?.documentJson?.provenance).toBeDefined();
+    const provenance = entry?.documentJson?.provenance as { generatedBy?: string; verified?: unknown[] };
+    expect(provenance.generatedBy).toBe(`akm/${pkgVersion}`);
+    expect(provenance.verified).toHaveLength(1);
   });
 });
 
