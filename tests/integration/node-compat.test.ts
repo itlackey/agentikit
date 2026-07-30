@@ -309,40 +309,38 @@ describe("health parity", () => {
 describe("env parity", () => {
   afterEach(() => cleanup());
 
-  test.skipIf(!ENABLED)("env set / list / unset roundtrip is identical on Bun and Node", async () => {
+  test.skipIf(!ENABLED)("env create / list / remove roundtrip is identical on Bun and Node", async () => {
     setupStorage();
 
-    // The real `env set` grammar is `env set <ref> <KEY>` with the VALUE read
-    // from --from-env/--from-file/STDIN — values are NEVER passed as positionals
-    // and there is no `env get` (values are deliberately never printed). Set the
-    // value through a source env var so both runtimes use identical grammar.
-    const sourceEnv = { ...nodeEnv, MY_NODE_SRC_VAL: "hello-from-bun" };
+    // `env set`/`env unset` were removed in 0.9 (akm does not edit entries —
+    // you edit the `.env` file yourself); the surviving lifecycle verbs are
+    // create/list/remove. Exercise those across both runtimes instead.
 
-    // set via Bun (in-process)
-    const bunSet = await boundedWithEnv(
-      { AKM_BUNDLE_DIR: stashDir, ...sourceEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
-      () => runCliCapture(["env", "set", "default", "MY_NODE_VAR", "--from-env", "MY_NODE_SRC_VAL"]),
+    // create via Bun (in-process)
+    const bunCreate = await boundedWithEnv(
+      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
+      () => runCliCapture(["env", "create", "node-compat-parity"]),
     );
-    expect(bunSet.code).toBe(0);
+    expect(bunCreate.code).toBe(0);
 
-    // list via Node — must include the key NAME (never the value)
+    // list via Node — must include the env file NAME
     const nodeList = nodeRun(["env", "list"], nodeEnv);
     assertNoBoundaryLeak(nodeList, "env list");
     expect(nodeList.status).toBe(0);
-    expect(nodeList.stdout).toContain("MY_NODE_VAR");
+    expect(nodeList.stdout).toContain("node-compat-parity");
 
-    // unset via Node
-    const nodeUnset = nodeRun(["env", "unset", "default", "MY_NODE_VAR", "--yes"], nodeEnv);
-    assertNoBoundaryLeak(nodeUnset, "env unset");
-    expect(nodeUnset.status).toBe(0);
+    // remove via Node
+    const nodeRemove = nodeRun(["env", "remove", "node-compat-parity", "--yes"], nodeEnv);
+    assertNoBoundaryLeak(nodeRemove, "env remove");
+    expect(nodeRemove.status).toBe(0);
 
-    // verify gone via Bun — `env list` no longer mentions the key
+    // verify gone via Bun — `env list` no longer mentions the file
     const bunList = await boundedWithEnv(
       { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
       () => runCliCapture(["env", "list"]),
     );
     expect(bunList.code).toBe(0);
-    expect(bunList.stdout).not.toContain("MY_NODE_VAR");
+    expect(bunList.stdout).not.toContain("node-compat-parity");
   });
 });
 
@@ -369,37 +367,10 @@ describe("config path parity", () => {
 
 // ── history ───────────────────────────────────────────────────────────────────
 
-describe("history parity", () => {
-  afterEach(() => cleanup());
-
-  test.skipIf(!ENABLED)("history returns same shape on Bun and Node", async () => {
-    setupStorage();
-    // Seed a memory AND build the index so the usage_events table exists.
-    // Without `index`, `history` opens a missing index.db and the two SQLite
-    // drivers diverge (bun:sqlite "unable to open database file" exit 70 vs
-    // better-sqlite3 "no such table: usage_events"). Running `index` first makes
-    // the command SUCCEED identically on both runtimes — a real parity check,
-    // not an assertion worked around.
-    await boundedWithEnv({ AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
-      await runCliCapture(["remember", "history parity test"]);
-      await runCliCapture(["index"]);
-    });
-
-    const nodeResult = nodeRun(["history"], nodeEnv);
-    assertNoBoundaryLeak(nodeResult, "history");
-    expect(nodeResult.status).toBe(0);
-
-    const bunResult = await boundedWithEnv(
-      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
-      () => runCliCapture(["history"]),
-    );
-    expect(bunResult.code).toBe(0);
-
-    const nodeJson = parseJson(nodeResult.stdout) as { shape?: string } | undefined;
-    const bunJson = parseJson(bunResult.stdout) as { shape?: string } | undefined;
-    expect(nodeJson?.shape).toBe(bunJson?.shape);
-  });
-});
+// `history` was removed in the 0.9 CLI overhaul (folded into `log`/dropped —
+// see docs/migration/v0.8-to-v0.9.md); its per-asset trail is `log --ref`,
+// the same code path "events parity" below already exercises. No replacement
+// parity test is needed.
 
 // ── events ────────────────────────────────────────────────────────────────────
 
@@ -466,52 +437,29 @@ describe("stash parity", () => {
   test.skipIf(!ENABLED)("stash path returns same value on Bun and Node", async () => {
     setupStorage();
 
-    // No command prints the bare stash path; `config path --all` emits a JSON
-    // envelope whose `stash` field is the resolved stash dir.
+    // No command prints the bare bundle path; `config path --all` emits a JSON
+    // envelope whose `bundle` field is the resolved bundle dir.
     const nodeResult = nodeRun(["config", "path", "--all"], nodeEnv);
     assertNoBoundaryLeak(nodeResult, "config path --all");
     expect(nodeResult.status).toBe(0);
-    const nodeJson = parseJson(nodeResult.stdout) as { stash?: string } | undefined;
-    expect(nodeJson?.stash).toBe(stashDir);
+    const nodeJson = parseJson(nodeResult.stdout) as { bundle?: string } | undefined;
+    expect(nodeJson?.bundle).toBe(stashDir);
 
     const bunResult = await boundedWithEnv(
       { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
       () => runCliCapture(["config", "path", "--all"]),
     );
     expect(bunResult.code).toBe(0);
-    const bunJson = parseJson(bunResult.stdout) as { stash?: string } | undefined;
-    expect(bunJson?.stash).toBe(nodeJson?.stash);
+    const bunJson = parseJson(bunResult.stdout) as { bundle?: string } | undefined;
+    expect(bunJson?.bundle).toBe(nodeJson?.bundle);
   });
 });
 
-// ── graph ─────────────────────────────────────────────────────────────────────
-
-describe("graph parity", () => {
-  afterEach(() => cleanup());
-
-  test.skipIf(!ENABLED)("graph returns same shape on Bun and Node", async () => {
-    setupStorage();
-    // seed two memories + index so graph has something
-    await boundedWithEnv({ AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
-      await runCliCapture(["remember", "node compat graph node A test"]);
-      await runCliCapture(["remember", "node compat graph node B test"]);
-      await runCliCapture(["index"]);
-    });
-
-    // `graph` is a group command (summary/entities/relations/...); `--format`
-    // is not valid on the group, so call the real `graph summary` leaf.
-    const nodeResult = nodeRun(["graph", "summary"], nodeEnv);
-    assertNoBoundaryLeak(nodeResult, "graph");
-    expect([0, 1]).toContain(nodeResult.status);
-
-    const bunResult = await boundedWithEnv(
-      { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
-      () => runCliCapture(["graph", "summary"]),
-    );
-    // Both should succeed or both should have nothing (empty graph → exit 1)
-    expect(nodeResult.status).toBe(bunResult.code);
-  });
-});
+// `graph` was removed entirely in the 0.9 CLI overhaul (docs/migration/
+// v0.8-to-v0.9.md) — the extraction engine survives only via
+// `improve --strategy graph-refresh`, whose Node/Bun runtime-boundary
+// behavior is exercised by the existing "tasks parity" and "index" coverage.
+// No replacement parity test is needed.
 
 // ── import (local file) ───────────────────────────────────────────────────────
 
