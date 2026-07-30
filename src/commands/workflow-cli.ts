@@ -216,7 +216,7 @@ const workflowCreateCommand = defineJsonCommand({
     print: {
       type: "boolean",
       description:
-        "Print the template that would be written (markdown, or YAML with a .yaml/.yml name) without creating anything",
+        "Print the RAW template that would be written (markdown, or YAML with a .yaml/.yml name) to stdout without creating anything — pipe it to a file as a starter document",
       default: false,
     },
   },
@@ -231,12 +231,11 @@ const workflowCreateCommand = defineJsonCommand({
       );
     }
     if (args.print) {
+      // Raw document, not an envelope — the retired `workflow template` was
+      // format-exempt for the same reason: `--print > starter.md` must yield
+      // a usable starter file, not `{ok,template,kind}` JSON.
       const isProgram = isWorkflowProgramPath(effectiveName);
-      output("workflow-create", {
-        ok: true,
-        template: isProgram ? getWorkflowProgramTemplate() : getWorkflowTemplate(),
-        kind: isProgram ? "program" : "markdown",
-      });
+      process.stdout.write(isProgram ? getWorkflowProgramTemplate() : getWorkflowTemplate());
       return;
     }
     if (args.force && !args.from && !args.reset) {

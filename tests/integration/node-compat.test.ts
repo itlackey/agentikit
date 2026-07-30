@@ -819,23 +819,22 @@ describe("workflow smoke parity", () => {
 
   test.skipIf(!ENABLED)("workflow create --print --yaml round-trips through lint on Node", () => {
     setupStorage();
-    // `workflow create <name>.yaml --print` emits a JSON envelope carrying the
-    // YAML program template text (0.9.0: replaces the dropped `workflow
-    // template --yaml`, which wrote it straight to stdout with no envelope).
+    // `workflow create <name>.yaml --print` writes the RAW YAML program
+    // template to stdout (no envelope), matching the dropped `workflow
+    // template --yaml` it replaces — `--print > starter.yaml` must yield a
+    // usable file.
     const tpl = nodeRun(["workflow", "create", "smoke-program.yaml", "--print"], nodeEnv);
     assertNoBoundaryLeak(tpl, "workflow create --print --yaml");
     expect(tpl.status).toBe(0);
-    const tplJson = parseJson(tpl.stdout) as { ok?: boolean; kind?: string; template?: string } | undefined;
-    expect(tplJson?.ok).toBe(true);
-    expect(tplJson?.kind).toBe("program");
-    expect(tplJson?.template).toContain("version:");
+    expect(tpl.stdout.trimStart().startsWith("{")).toBe(false);
+    expect(tpl.stdout).toContain("version:");
 
     // Persist it and lint the stash on Node — a clean round-trip. 0.9.0:
     // `workflow validate` is dropped; `akm lint --type workflows` is the
     // structural-validation surface for both markdown and YAML programs.
     const file = path.join(stashDir, "workflows", "smoke-program.yaml");
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, tplJson?.template ?? "", "utf8");
+    fs.writeFileSync(file, tpl.stdout, "utf8");
     const val = nodeRun(["lint", "--type", "workflows"], nodeEnv);
     assertNoBoundaryLeak(val, "lint --type workflows");
     expect(val.status).toBe(0);

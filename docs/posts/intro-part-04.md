@@ -124,9 +124,7 @@ The default `akm add context-hub` points at Andrew Ng's repository, but you're n
 Say your organization maintains an internal knowledge base for agent context — API references, architecture decisions, coding standards:
 
 ```bash
-akm add https://github.com/your-org/team-knowledge \  # doclint:ignore (historical — pre-0.9.0 command spelling)
-  --provider git \
-  --name "team-knowledge"
+akm add https://github.com/your-org/team-knowledge --provider git --name "team-knowledge"  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Now `akm search` queries your team's knowledge base alongside the public Context Hub and your local stash. All in one search. You can add as many git sources as you want — each gets its own cache and index.
@@ -134,9 +132,7 @@ Now `akm search` queries your team's knowledge base alongside the public Context
 Need a specific branch instead of `main`?
 
 ```bash
-akm add https://github.com/your-org/team-knowledge/tree/staging \  # doclint:ignore (historical — pre-0.9.0 command spelling)
-  --provider git \
-  --name "team-staging"
+akm add https://github.com/your-org/team-knowledge/tree/staging --provider git --name "team-staging"  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 The provider parses the GitHub URL and pulls the right branch automatically.
@@ -182,15 +178,10 @@ akm add @scope/deploy-skills  # doclint:ignore (historical — pre-0.9.0 command
 akm add context-hub  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Team knowledge (any git repo works)
-akm add https://github.com/your-org/team-knowledge \  # doclint:ignore (historical — pre-0.9.0 command spelling)
-  --provider git \
-  --name team-knowledge
+akm add https://github.com/your-org/team-knowledge --provider git --name team-knowledge  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Remote context server
-akm add https://your-viking.internal:1933 \  # doclint:ignore (historical — pre-0.9.0 command spelling)
-  --provider openviking \
-  --name team-context \
-  --options '{"apiKey":"..."}'
+akm add https://your-viking.internal:1933 --provider openviking --name team-context --options '{"apiKey":"..."}'  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Build the local index
 akm index

@@ -796,7 +796,9 @@ async function renderSectionedRootHelp(): Promise<string> {
   const head = (cutIndex === -1 ? base : base.slice(0, cutIndex)).replace(/\n+$/, "");
   const epilogue = [
     'A "bundle" is your managed directory of assets (skills, agents, memories, workflows, ...). Refs use the ' +
-      "grammar [bundle//]type/name — e.g. `akm show skills/deploy`, or `akm show work//skills/deploy` for a named bundle.",
+      "grammar [bundle//]conceptId[#fragment], where the concept id is the bundle's own path for the asset — " +
+      "e.g. `akm show skills/deploy`, or `akm show work//skills/deploy` for a named bundle. Copy ids from " +
+      "`akm search` output rather than synthesizing them.",
     "",
     "Run `akm <command> --help` for details on any command.",
     "agents: run `akm help agents`",

@@ -44,18 +44,13 @@ That registers the server as a source. From that point on, `akm search` queries 
 If your server requires authentication:
 
 ```bash
-akm add http://localhost:1933 \  # doclint:ignore (historical — pre-0.9.0 command spelling)
-  --provider openviking \
-  --options '{"apiKey":"your-api-key"}'
+akm add http://localhost:1933 --provider openviking --options '{"apiKey":"your-api-key"}'  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Give it a name to keep things tidy:
 
 ```bash
-akm add http://localhost:1933 \  # doclint:ignore (historical — pre-0.9.0 command spelling)
-  --provider openviking \
-  --name "team-context" \
-  --options '{"apiKey":"your-api-key"}'
+akm add http://localhost:1933 --provider openviking --name "team-context" --options '{"apiKey":"your-api-key"}'  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Verify it's registered:
@@ -85,9 +80,7 @@ That fetches the content — from the local index if available, or from the Open
 By default, OpenViking search uses semantic matching (via `POST /api/v1/search/find`). If you prefer text search for exact matching, configure the provider with:
 
 ```bash
-akm add http://localhost:1933 \  # doclint:ignore (historical — pre-0.9.0 command spelling)
-  --provider openviking \
-  --options '{"apiKey":"your-key","searchType":"text"}'
+akm add http://localhost:1933 --provider openviking --options '{"apiKey":"your-key","searchType":"text"}'  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 Text search uses OpenViking's grep endpoint, which deduplicates results by URI and ranks them by match frequency.
@@ -112,10 +105,7 @@ The seed script loads a handful of test documents — project architecture notes
 Now register it:
 
 ```bash
-akm add http://localhost:1933 \  # doclint:ignore (historical — pre-0.9.0 command spelling)
-  --provider openviking \
-  --name openviking \
-  --options '{"apiKey":"akm-test-key"}'
+akm add http://localhost:1933 --provider openviking --name openviking --options '{"apiKey":"akm-test-key"}'  # doclint:ignore (historical — pre-0.9.0 command spelling)
 ```
 
 And test:
@@ -168,10 +158,7 @@ akm add github:your-org/team-agent-toolkit  # doclint:ignore (historical — pre
 akm add @scope/deploy-skills  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Remote context server
-akm add https://your-viking.internal:1933 \  # doclint:ignore (historical — pre-0.9.0 command spelling)
-  --provider openviking \
-  --name team-context \
-  --options '{"apiKey":"..."}'
+akm add https://your-viking.internal:1933 --provider openviking --name team-context --options '{"apiKey":"..."}'  # doclint:ignore (historical — pre-0.9.0 command spelling)
 
 # Build the index
 akm index

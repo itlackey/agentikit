@@ -241,9 +241,10 @@ describe("workflow CLI", async () => {
     const result = await runCli(["workflow", "create", "print-test", "--print"], env);
 
     expect(result.status).toBe(0);
-    const { template, kind } = JSON.parse(result.stdout) as { template: string; kind: string };
-    expect(kind).toBe("markdown");
-    const parsed = parseWorkflow(template, { path: "<template>" });
+    // Raw document on stdout — no JSON envelope — so `--print > starter.md`
+    // yields a usable file (parity with the removed `workflow template`).
+    expect(result.stdout.trimStart().startsWith("{")).toBe(false);
+    const parsed = parseWorkflow(result.stdout, { path: "<template>" });
     if (!parsed.ok) {
       throw new Error(`template did not parse: ${parsed.errors.map((e) => e.message).join("; ")}`);
     }

@@ -112,15 +112,16 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
     expect(Array.isArray(statusEnv.workflow.steps)).toBe(true);
   });
 
-  test("workflow create --print: envelope carries the markdown template and writes nothing", async () => {
+  test("workflow create --print: raw template on stdout (no envelope), writes nothing", async () => {
     const stash = makeStashDir();
     const { stdout, status } = await runCli(["--json", "workflow", "create", "print-flow", "--print"], stash);
     expect(status).toBe(0);
-    const env = JSON.parse(stdout);
-    expect(env.ok).toBe(true);
-    expect(env.kind).toBe("markdown");
-    expect(env.template).toContain("# Workflow:");
-    expect(env.template).toContain("Step ID:");
+    // Deliberately NOT an envelope even under --json: --print's contract is a
+    // pipeable raw starter document (parity with the removed `workflow
+    // template`, which was format-exempt for the same reason).
+    expect(stdout.trimStart().startsWith("{")).toBe(false);
+    expect(stdout).toContain("# Workflow:");
+    expect(stdout).toContain("Step ID:");
     expect(fs.existsSync(path.join(stash, "workflows", "print-flow.md"))).toBe(false);
   });
 
