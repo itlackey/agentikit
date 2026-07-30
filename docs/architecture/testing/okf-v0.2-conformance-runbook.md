@@ -1,4 +1,4 @@
-# OKF v0.1 Conformance Re-Evaluation Runbook
+# OKF v0.2 Conformance Re-Evaluation Runbook
 
 Use this runbook after changing AKM's adapters, indexing, refs, writes, or lint
 behavior. It is the acceptance procedure for
@@ -9,6 +9,17 @@ or index.
 The runbook deliberately tests observable behavior in addition to unit tests.
 Passing adapter-local tests is not enough: the original failures happened
 between recognition, persistence, search output, and command ref parsing.
+
+**v0.2 update (#730):** upstream OKF minor-versioned to v0.2 (trust/provenance
+family `generated`/`verified`/`sources`; lifecycle family `status`/
+`stale_after`; an actor convention; `timestamp` superseded by `generated.at`
+with a permitted fallback). Rules 1-9, Producer, and Lint below are unchanged
+and still gate v0.1-only bundles; Rules 10-14 are new v0.2-specific gates. The
+`okf` adapter stays **consumer-only** for both spec versions — see
+`okf-support.md`'s v0.2 note for why AKM's own provenance *writes* go through
+the proposal path onto AKM-native assets instead, and are out of this
+runbook's scope (which evaluates the `okf` adapter's read/consumer behavior
+against third-party and reference OKF bundles).
 
 ## Success Criteria
 
@@ -25,6 +36,11 @@ The evaluation passes only when all applicable statements are true:
 | 7 | Index synthesis is optional. Record whether it exists; do not fail solely because it does not. |
 | 8 | Missing optional fields, unknown type, unknown keys, dangling links, and missing index files do not cause OKF semantics to be abandoned. |
 | 9 | An unknown `okf_version` receives best-effort consumption. |
+| 10 | `generated.at`, when present, takes precedence over legacy `timestamp` for the freshness/`updated` field; `timestamp` alone remains a fully valid fallback reading; neither present is not an AKM freshness error. |
+| 11 | `verified` is read in both its list form and its v0.2-permitted single-mapping (no list dash) form; each entry survives as a durable `{by, at?}` pair; a malformed entry is dropped, never rejecting the document. |
+| 12 | `sources` as a v0.2 object list (`resource` required; `id`/`title`/`author`/`usage_count`/`last_modified` optional) survives intact and distinctly from any pre-existing AKM `sources` convention — it must never be silently coerced into a bare string list (which would drop every entry). |
+| 13 | `status` (`draft`/`stable`/`deprecated`) and `stale_after` are read verbatim when present; an unrecognized `status` value is ignored rather than guessed at, and neither field's absence is an error. |
+| 14 | If AKM's own accepted-proposal writes stamp OKF v0.2 provenance onto AKM-native assets, record what is stamped and confirm it never applies to an OKF-adapter target (Rule 5 / runbook §10's write-rejection contract must stay intact). If AKM has no such write path, record this rule as not applicable. |
 | Producer | If AKM claims to produce OKF, every emitted non-reserved Markdown file has parseable mapping frontmatter with a non-empty type, and reserved files have structural content. Otherwise record AKM as consumer-only. |
 | Lint | `--fail-on-flagged` does not turn a dangling OKF body link into a failing exit status. |
 
@@ -54,12 +70,27 @@ audit:
 ```bash
 export AKM_OKF_IMAGE="akm-okf-eval:local"
 export AKM_OKF_CONTAINER="akm-okf-eval"
-export KC_REF="d44368c15e38e7c92481c5992e4f9b5b421a801d"
+export KC_REF="3fcbb9f828c2f23d109c855ee403c3a4c81f3a96"
 export AKM_SUBJECT="$(git rev-parse HEAD)$(test -n "$(git status --porcelain)" && printf '%s' '-dirty')"
 ```
 
 If intentionally updating the OKF reference revision, inspect the upstream
 `okf/SPEC.md` diff first. Do not silently compare AKM against a changed spec.
+
+**2026-07-30 bump (#730):** `KC_REF` was moved from `d44368c15e38e7c92481c5992e4f9b5b421a801d`
+(the v0.1 baseline) to `3fcbb9f828c2f23d109c855ee403c3a4c81f3a96`, obtained via
+`git ls-remote https://github.com/GoogleCloudPlatform/knowledge-catalog.git HEAD`
+and cross-checked against `git ls-remote ... refs/heads/main` (both resolved to
+the same commit) — a real, verified upstream commit, not an invented one. The
+`okf/SPEC.md` content at that exact commit was fetched and confirmed to state
+"This document specifies OKF version 0.2" with the `generated`/`verified`
+field definitions this update implements against. This runbook update was done
+without Docker access to actually run the container-based evaluation in
+this session; §§2-13 below are updated to describe the v0.2 procedure a
+maintainer should run, but have not been re-executed end-to-end against a
+live container since this bump. Treat the `KC_REF` bump and the procedural
+updates as reviewed-but-unexecuted until a maintainer runs this runbook for
+real.
 
 ## 2. Build The Isolated AKM Image
 
@@ -130,6 +161,16 @@ docker exec "$AKM_OKF_CONTAINER" bun test \
   tests/integration/reserved-filename-conformance.test.ts
 ```
 
+v0.2 update (#730): also run the promotion-path provenance-stamping coverage
+(D2 — write side, AKM-native assets only, not the `okf` adapter itself) and
+the OKF format-family golden:
+
+```bash
+docker exec "$AKM_OKF_CONTAINER" bun test \
+  tests/integration/proposals.test.ts \
+  tests/core/adapter/okf-adapter.test.ts
+```
+
 After implementing fixes, the repository should also contain focused
 end-to-end tests for these behaviors:
 
@@ -139,6 +180,11 @@ end-to-end tests for these behaviors:
 | Identity | Same type/title at two paths produces two refs and two rows. |
 | Search/show | Search ref is `<bundle>//<path-minus-.md>` and `show` accepts it. |
 | Missing index | Explicitly configured or otherwise recognized OKF still uses OKF semantics. |
+| v0.2 `generated`/`timestamp` | `generated.at` wins when both are present; `timestamp` alone still satisfies freshness; neither present is not an error. |
+| v0.2 `verified` | Both the list form and the single-mapping form persist as a non-empty `{by, at?}` array. |
+| v0.2 `sources` | An object list survives intact and distinctly from the bare AKM `sources: string[]` convention. |
+| v0.2 `status`/`stale_after` | Both read verbatim when present; an unrecognized `status` is ignored, not guessed at. |
+| D2 promotion-path stamping | An accepted AKM-native proposal's written frontmatter carries `generated`/`verified` (and `sources` when `evidenceSources` was present); an OKF-adapter target is still rejected before any write (Rule 5 / write-rejection contract unchanged). |
 | Links | Root-relative, relative, reference-style, and dangling links survive persistence. |
 | Unknown values | Unknown type/version/key never rejects the bundle. |
 | Writes | OKF writes are either blocked or produce conformant documents through adapter-owned placement. |
@@ -341,6 +387,49 @@ vendor_meta:
 
 Round-trip body marker.
 `);
+// v0.2 update (#730): the full trust/provenance/lifecycle family in one
+// concept — generated (supersedes legacy timestamp), verified (list form),
+// object-list sources, status, stale_after.
+write(root, "knowledge/v2-full.md", `---
+type: Some Vendor Thing
+title: V0.2 Full Family
+generated:
+  by: reference_agent/gemini-2.5-pro
+  at: 2026-06-20T22:53:05Z
+verified:
+  - by: human:ahormati
+    at: 2026-06-25T09:00:00Z
+  - by: process:finance-nightly
+    at: 2026-06-26T03:00:00Z
+sources:
+  - resource: https://example.com/data/export.csv
+    id: main-dataset
+    title: Example export
+    author: human:jdoe
+    usage_count: 3
+    last_modified: "2026-06-01"
+  - resource: gs://acme-bucket/raw.parquet
+status: stable
+stale_after: "2026-12-31"
+---
+
+V0.2 full-family body marker.
+`);
+// v0.2 update (#730): verified SINGLE-MAPPING form (no list dash) + draft status.
+write(root, "knowledge/v2-verified-single.md", `---
+type: Some Vendor Thing
+title: V0.2 Verified Single Mapping
+generated:
+  by: human:ahormati
+  at: 2026-06-18T00:00:00Z
+verified:
+  by: human:ahormati
+  at: 2026-06-18T00:05:00Z
+status: draft
+---
+
+V0.2 single-mapping verified body marker.
+`);
 
 const noIndex = "/tmp/okf-no-index";
 write(noIndex, "vendor.md", `---
@@ -422,6 +511,41 @@ The plain and missing-type rows are printed for observation but are not gates:
 those files are nonconformant producers, and OKF does not require a consumer to
 accept a concept whose required `type` is absent.
 
+v0.2 update (#730) — assert the trust/provenance/lifecycle family on the two
+new fixtures (Rules 10-13):
+
+```bash
+docker exec "$AKM_OKF_CONTAINER" sh -lc '
+set -eu
+db=/tmp/akm-home/.local/share/akm/index.db
+
+full=$(sqlite3 "$db" "SELECT entry_json FROM entries WHERE item_ref='"'"'adversarial//knowledge/v2-full'"'"';")
+bun -e '\''
+const e = JSON.parse(process.argv[1]);
+if (e.updated !== "2026-06-20T22:53:05Z") throw new Error(`generated.at not preferred: ${e.updated}`);
+if (e.provenance?.generatedBy !== "reference_agent/gemini-2.5-pro") throw new Error("generatedBy missing");
+if (!Array.isArray(e.provenance?.verified) || e.provenance.verified.length !== 2) throw new Error("verified list wrong length");
+if (!Array.isArray(e.provenance?.sources) || e.provenance.sources.length !== 2) throw new Error("sources object-list wrong length");
+if (e.provenance.sources[0].resource !== "https://example.com/data/export.csv") throw new Error("sources[0].resource wrong");
+if (e.lifecycleStatus !== "stable") throw new Error(`lifecycleStatus wrong: ${e.lifecycleStatus}`);
+if (e.staleAfter !== "2026-12-31") throw new Error(`staleAfter wrong: ${e.staleAfter}`);
+// The pre-existing AKM-native sources:string[] field (wiki citations) must
+// NEVER be populated by the okf adapter -- it is a completely different field.
+if (e.sources !== undefined) throw new Error("bare sources field must stay unset for okf-adapter documents");
+'\'' "$full"
+
+single=$(sqlite3 "$db" "SELECT entry_json FROM entries WHERE item_ref='"'"'adversarial//knowledge/v2-verified-single'"'"';")
+bun -e '\''
+const e = JSON.parse(process.argv[1]);
+if (!Array.isArray(e.provenance?.verified) || e.provenance.verified.length !== 1) throw new Error("single-mapping verified did not normalize to a one-element array");
+if (e.provenance.verified[0].by !== "human:ahormati") throw new Error("verified[0].by wrong");
+if (e.lifecycleStatus !== "draft") throw new Error(`lifecycleStatus wrong: ${e.lifecycleStatus}`);
+'\'' "$single"
+'
+```
+
+Pass condition: both `bun -e` checks above exit zero (no thrown error).
+
 Verify unknown type filtering and path-based show:
 
 ```bash
@@ -488,6 +612,21 @@ the consumer-only policy:
 |---|---|
 | Consumer-only/read-only | The write command fails before creating or changing a file. |
 | Writable OKF | Placement is adapter-owned, every new concept is conformant, and metadata-only edits preserve unknown keys and body bytes. |
+
+**v0.2 update (#730) — Rule 14 scope note:** the assertions below are entirely
+about writes *targeting an OKF-adapter bundle* (`adversarial`), and that
+policy is unchanged by the v0.2 update — the write command below must still
+fail before touching disk. AKM's new v0.2 provenance-stamping behavior (D2)
+is a completely separate code path: accepting a proposal stamps
+`generated`/`verified` frontmatter onto an **AKM-native** target through
+`promoteProposal`, never through the `okf` adapter — it is orthogonal to
+every assertion in this section. This runbook does not script a manual D2
+spot-check (the `akm proposal`/`akm remember` CLI surface for driving one
+deterministically end-to-end was not re-verified against this container in
+this update); `tests/integration/proposals.test.ts`'s `"D2 (#730): ..."`
+suite is the authoritative, already-passing coverage for Rule 14 — rerun it
+if you need to re-confirm this specific behavior:
+`bun test tests/integration/proposals.test.ts -t D2`.
 
 Attempt a superseding write while recording its exit status:
 
@@ -701,7 +840,7 @@ Create a result record containing:
 ```text
 AKM commit and dirty state:
 AKM version:
-OKF repository commit:
+OKF repository commit (KC_REF):
 Docker base image:
 Focused tests:
 Full check:
@@ -722,6 +861,12 @@ Unknown-key round-trip result or N/A:
 Reserved concept-write result:
 Producer result or consumer-only:
 Lint --fail-on-flagged result:
+v0.2 generated.at precedence result:
+v0.2 verified (list form) result:
+v0.2 verified (single-mapping form) result:
+v0.2 sources (object list) result:
+v0.2 status/stale_after result:
+D2 promotion-path provenance-stamping result or N/A:
 Rule 1 verdict:
 Rule 2 verdict:
 Rule 3 verdict:
@@ -731,13 +876,23 @@ Rule 6 verdict:
 Rule 7 verdict:
 Rule 8 verdict:
 Rule 9 verdict:
+Rule 10 verdict:
+Rule 11 verdict:
+Rule 12 verdict:
+Rule 13 verdict:
+Rule 14 verdict:
 Remaining deviations:
 Remaining undetermined items:
 ```
 
 Do not mark a rule satisfied from a direct adapter unit test if the durable or
 CLI path still loses the behavior. Do not mark Rule 5 satisfied merely because
-unknown keys did not cause a parse error.
+unknown keys did not cause a parse error. Likewise, do not mark Rules 10-13
+satisfied from `tests/core/adapter/okf-adapter.test.ts` alone if the durable
+persist path (`indexer/scan/doc-to-entry.ts`) or the `show`/`search` output
+loses a field — this repo has a documented history (D1's own GREEN commit) of
+`recognize()` returning a field correctly while a separate persistence-layer
+reconstruction step silently dropped it before it ever reached `entry_json`.
 
 ## 15. Cleanup
 

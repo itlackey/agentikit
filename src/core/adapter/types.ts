@@ -287,12 +287,81 @@ export interface IndexDocument {
 
   // ── IndexDocument-native extras (no IndexDocument equivalent) ──
   pinned?: boolean;
-  /** ← OKF `timestamp`. */
+  /** ← OKF `timestamp` (v0.1) — v0.2 prefers `generated.at` when present; see `updated`'s derivation note below. */
   updated?: string;
   /** Resolved native links = relationships (§9); navigation/lint, NOT graph boost. */
   links?: string[];
+  /**
+   * OKF v0.2 trust/provenance family ← frontmatter `generated`/`verified`/`sources`.
+   * This TypeScript field is NAMESPACED to avoid colliding with the
+   * pre-existing `sources?: string[]` (wiki citations), `generation?: number`
+   * (consolidation depth), and `quality: "generated"` (enum value) fields
+   * above — see the file-level note ahead of {@link OkfProvenance}. The
+   * ON-DISK spelling is a separate, deliberately hybrid decision (#730
+   * review): `okf` (D1) parses third-party OKF v0.2 bundles' bare top-level
+   * `generated:`/`verified:`/`sources:`; `promoteProposal` (D2) additionally
+   * *writes* AKM-native assets it promotes, stamping `generated:`/`verified:`
+   * bare at the top level (matching OKF v0.2's own spelling exactly — neither
+   * key collides with an existing AKM field) while keeping only `sources`
+   * namespaced under `provenance:` (a bare `sources:` would collide with the
+   * wiki-citation convention). Both read paths fold onto this SAME TypeScript
+   * shape, and the `akm` adapter rereads what it wrote.
+   */
+  provenance?: OkfProvenance;
+  /** OKF v0.2 lifecycle ← frontmatter `status`. Upstream defaults absence to "stable"; left `undefined` here (not defaulted) so callers can distinguish "undeclared" from "explicitly stable." */
+  lifecycleStatus?: "draft" | "stable" | "deprecated";
+  /** OKF v0.2 lifecycle ← frontmatter `stale_after` (nominally `YYYY-MM-DD`, read verbatim/untyped). Read-only in 0.9.0 — no re-verification or trust-tier ranking is driven off it (0.9.x improve-tuning track). */
+  staleAfter?: string;
+  /** ← frontmatter `okf_version`. Upstream declares this only on the bundle-root reserved structural listing file (itself never indexed as a concept, §5); read defensively from ANY concept's frontmatter, best-effort (conformance Rule 9 — an unknown/foreign value is never rejected). */
+  okfVersion?: string;
   /** Opaque adapter extras ONLY (arbitrary OKF frontmatter keys); not FTS, never parsed by core. */
   documentJson?: unknown;
+}
+
+// ── OKF v0.2 trust/provenance/lifecycle family (okf-support.md v0.2 note) ───
+//
+// Landed under NEW, NAMESPACED names — never overloading the three AKM-native
+// fields that already occupy adjacent names on this interface:
+//   - `sources?: string[]`   (above) — wiki citation strings (llm-wiki adapter,
+//     `indexer/passes/metadata.ts#applyWikiFrontmatter`); a v0.2 `sources:`
+//     frontmatter block is a list of OBJECTS (`{resource, id?, title?, …}`),
+//     an incompatible shape that would silently drop to `[]` if folded onto
+//     this field (the exact collision this namespacing avoids).
+//   - `generation?: number`  (below) — consolidation merge-depth counter; NOT
+//     the OKF v0.2 `generated: {by, at}` provenance mapping.
+//   - `quality: "generated"` (above) — an existing enum VALUE, unrelated.
+// See D1.3 (`docs/architecture/specs/akm-0.9.0-bundle-adapter-spec.md` §0.1)
+// and `docs/architecture/specs/okf-support.md`'s v0.2 note.
+
+/** One `sources:` entry (OKF v0.2). Only `resource` is required upstream; the rest are optional credibility signals, read verbatim and never validated/scored. */
+export interface OkfSourceEntry {
+  resource: string;
+  id?: string;
+  title?: string;
+  author?: string;
+  usage_count?: number;
+  last_modified?: string;
+}
+
+/** One `verified:` entry (OKF v0.2). `at` is optional — a bare `by` is tolerated. */
+export interface OkfVerifiedEntry {
+  by: string;
+  at?: string;
+}
+
+/**
+ * OKF v0.2 trust/provenance family, parsed from the frontmatter `generated:`
+ * (`{by, at}`) / `verified:` (a list, OR — v0.2's permitted shorthand — a
+ * single mapping without the list dash) / `sources:` (object list) keys.
+ * Present only when at least one sub-field parsed; every sub-field is
+ * independently optional (never rejects a document for a missing/malformed
+ * one — OKF conformance leniency).
+ */
+export interface OkfProvenance {
+  sources?: OkfSourceEntry[];
+  generatedBy?: string;
+  generatedAt?: string;
+  verified?: OkfVerifiedEntry[];
 }
 
 // ── §12.1 (normative) — ValidateContext ─────────────────────────────────────

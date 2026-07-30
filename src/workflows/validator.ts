@@ -26,6 +26,14 @@ const ALLOWED_FRONTMATTER_KEYS = new Set([
   "updated",
   "when_to_use",
   "xrefs",
+  // OKF v0.2 provenance stamped by `promoteProposal` (#730 D2). Workflow is the
+  // only asset type with a closed frontmatter allowlist, so without these three
+  // it would be the sole type silently promoted UNSTAMPED — an undocumented
+  // hole in provenance coverage. `generated`/`verified` are bare per the hybrid
+  // on-disk shape; `provenance` carries namespaced `sources`.
+  "generated",
+  "verified",
+  "provenance",
 ]);
 
 export function runSemanticChecks(

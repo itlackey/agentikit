@@ -26,6 +26,7 @@ import {
   resolveProposalId,
 } from "../../src/commands/proposal/repository";
 import { validateProposal } from "../../src/commands/proposal/validators/proposals";
+import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";
 import { UsageError } from "../../src/core/errors";
 import { readEvents } from "../../src/core/events";
@@ -34,6 +35,7 @@ import { openStateDatabase } from "../../src/core/state-db";
 import { indexWrittenAssets } from "../../src/indexer/index-written-assets";
 import { akmIndex } from "../../src/indexer/indexer";
 import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
+import { pkgVersion } from "../../src/version";
 import { makeConfig } from "../_helpers/factories";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
@@ -88,6 +90,11 @@ afterEach(() => {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 const VALID_LESSON = `---\ndescription: Use ripgrep before grep\nwhen_to_use: Searching large repos for patterns\n---\n\nPrefer rg over grep when scanning large code repos.\n`;
+// A structurally-valid markdown workflow. Carries frontmatter deliberately:
+// `workflow` is the only type whose frontmatter is checked against a CLOSED
+// allowlist, which is what makes it the interesting case for #730's provenance
+// stamping (see the workflow-stamping test below).
+const VALID_WORKFLOW = `---\ndescription: Validate a specification before shipping\n---\n\n# Workflow: Provenance Workflow Stamped\n\n## Step: Validate inputs\nStep ID: validate\n\n### Instructions\nValidate the specification.\n`;
 
 function indexedEntry(filePath: string): Record<string, unknown> | undefined {
   const db = openExistingDatabase(getDbPath());
@@ -1297,11 +1304,18 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     });
     if (isProposalSkipped(proposalB)) throw new Error("unexpected skip");
     await akmProposalAccept({ stashDir: stash, id: proposalB.id, config });
+    // D2 (#730): promotion stamps OKF v0.2 provenance (generated/verified) onto
+    // the written frontmatter, so the on-disk bytes are no longer expected to be
+    // byte-identical to the pre-stamp `proposalB.payload.content` — snapshot what
+    // accept ACTUALLY wrote and assert the refused revert leaves THAT untouched.
+    const afterBAccept = fs.readFileSync(assetPath, "utf8");
+    expect(afterBAccept).toContain("Proposal B accepted content");
+    expect(afterBAccept).toContain("PROPOSAL B.");
 
     await expect(akmProposalRevert({ stashDir: stash, id: proposalA.id, config })).rejects.toThrow(
       /changed|hash|content/i,
     );
-    expect(fs.readFileSync(assetPath, "utf8")).toBe(proposalB.payload.content);
+    expect(fs.readFileSync(assetPath, "utf8")).toBe(afterBAccept);
     expect(getProposal(stash, proposalA.id).status).toBe("accepted");
   });
 
@@ -1320,6 +1334,12 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     });
     if (isProposalSkipped(created)) throw new Error("unexpected skip");
     await akmProposalAccept({ stashDir: stash, id: created.id, config });
+    // D2 (#730): promotion stamps OKF v0.2 provenance onto the written
+    // frontmatter — snapshot what accept ACTUALLY wrote (rather than assuming
+    // byte-identity with the pre-stamp `created.payload.content`) and assert
+    // the refused revert below leaves THAT untouched.
+    const afterAccept = fs.readFileSync(assetPath, "utf8");
+    expect(afterAccept).toContain("Prefer rg over grep");
 
     const state = openStateDatabase();
     const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
@@ -1333,7 +1353,7 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     await expect(akmProposalRevert({ stashDir: stash, id: created.id, config })).rejects.toThrow(
       /has no recorded target/i,
     );
-    expect(fs.readFileSync(assetPath, "utf8")).toBe(created.payload.content);
+    expect(fs.readFileSync(assetPath, "utf8")).toBe(afterAccept);
     expect(getProposal(stash, created.id).acceptedTarget).toBeUndefined();
   });
 
@@ -1435,6 +1455,235 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     const e = thrown as Error & { code?: string; name: string };
     expect(e.name).toBe("NotFoundError");
     expect(e.code).toBe("FILE_NOT_FOUND");
+  });
+});
+
+// ── D2 (#730) — promoteProposal stamps OKF v0.2 provenance on AKM-native writes ─
+//
+// generated.by actor convention (documented judgment call, see PR body):
+//   - the SOURCE that produced the content decides `generated.by`: an
+//     AUTOMATED_PROPOSAL_SOURCES proposal (reflect/distill/consolidate/
+//     extract/improve/schema-repair) stamps `akm/<pkgVersion>`; a
+//     human-initiated source (propose/remember/import) stamps
+//     `human:<actorId>`.
+//   - the ACCEPTANCE event (independent of content origin) decides
+//     `verified[0].by`: a `gateDecision` passed to promoteProposal (the
+//     automated drain/triage path) stamps `akm/<pkgVersion>`; its absence
+//     (a human explicitly ran `akm proposal accept`) stamps
+//     `human:<actorId>`.
+// `ctx.actorId` is a new ProposalsContext test seam (mirrors the existing
+// `now`/`randomUUID` seams) so these assertions never depend on the real
+// OS username of whatever machine runs the suite.
+describe("D2 (#730): promoteProposal stamps OKF v0.2 provenance onto AKM-native writes", () => {
+  // Reads the HYBRID on-disk shape settled by the #730 review: `generated:` and
+  // `verified:` are stamped BARE at the top level (OKF v0.2's own spelling, so a
+  // third-party OKF reader sees conformant trust metadata), while `sources`
+  // alone stays namespaced under `provenance:` because a bare top-level
+  // `sources:` collides with the wiki citation-string convention. Flattened
+  // here so the assertions below read the same either way.
+  function readWrittenProvenance(assetPath: string): {
+    generatedBy?: string;
+    generatedAt?: string;
+    verified?: Array<{ by: string; at?: string }>;
+    sources?: Array<{ resource: string }>;
+  } {
+    const raw = fs.readFileSync(assetPath, "utf8");
+    const fm = parseFrontmatter(raw).data as Record<string, unknown>;
+    const generated = (fm.generated ?? {}) as { by?: string; at?: string };
+    const nested = (fm.provenance ?? {}) as { sources?: Array<{ resource: string }> };
+    return {
+      ...(generated.by !== undefined ? { generatedBy: generated.by } : {}),
+      ...(generated.at !== undefined ? { generatedAt: generated.at } : {}),
+      ...(Array.isArray(fm.verified) ? { verified: fm.verified as Array<{ by: string; at?: string }> } : {}),
+      ...(nested.sources !== undefined ? { sources: nested.sources } : {}),
+    };
+  }
+
+  // Pins the on-disk spelling itself, not just the flattened projection — the
+  // whole point of the hybrid shape is WHERE these keys live.
+  function readRawFrontmatter(assetPath: string): Record<string, unknown> {
+    return parseFrontmatter(fs.readFileSync(assetPath, "utf8")).data as Record<string, unknown>;
+  }
+
+  test("automated source (distill) + human accept (no gateDecision): generated.by=akm/<version>, verified.by=human:<actorId>", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const created = createProposal(stash, {
+      ref: "lessons/provenance-distill-human-accept",
+      source: "distill",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({
+      stashDir: stash,
+      id: created.id,
+      config,
+      ctx: { actorId: () => "test-human" },
+    });
+
+    const provenance = readWrittenProvenance(result.assetPath);
+    expect(provenance.generatedBy).toBe(`akm/${pkgVersion}`);
+    expect(typeof provenance.generatedAt).toBe("string");
+    expect(new Date(provenance.generatedAt as string).toString()).not.toBe("Invalid Date");
+    expect(provenance.verified).toHaveLength(1);
+    expect(provenance.verified?.[0]?.by).toBe("human:test-human");
+    expect(typeof provenance.verified?.[0]?.at).toBe("string");
+
+    // The hybrid shape itself: `generated`/`verified` bare at the top level in
+    // OKF v0.2's own spelling, and NOT nested under `provenance:`. A regression
+    // to the fully-nested shape would silently break third-party OKF readers,
+    // which is the entire reason this shape was chosen.
+    const fm = readRawFrontmatter(result.assetPath);
+    expect(fm.generated).toMatchObject({ by: `akm/${pkgVersion}` });
+    expect(Array.isArray(fm.verified)).toBe(true);
+    expect(fm.provenance).toBeUndefined();
+  });
+
+  test("workflow — the one closed-allowlist type — is stamped, not silently skipped", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const created = createProposal(stash, {
+      ref: "workflows/provenance-workflow-stamped",
+      source: "distill",
+      force: true,
+      payload: { content: VALID_WORKFLOW },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({
+      stashDir: stash,
+      id: created.id,
+      config,
+      ctx: { actorId: () => "test-human" },
+    });
+
+    // `workflow` is the only type whose frontmatter is parsed against a closed
+    // allowlist. Before #730's allowlist update it was the sole type that
+    // promoted UNSTAMPED via the re-validation fallback — an undocumented hole.
+    const provenance = readWrittenProvenance(result.assetPath);
+    expect(provenance.generatedBy).toBe(`akm/${pkgVersion}`);
+    expect(provenance.verified?.[0]?.by).toBe("human:test-human");
+  });
+
+  test("automated source (distill) auto-accepted via a gate decision: BOTH generated.by and verified.by are akm/<version>", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const created = createProposal(stash, {
+      ref: "lessons/provenance-distill-gate-accept",
+      source: "distill",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({
+      stashDir: stash,
+      id: created.id,
+      config,
+      ctx: { actorId: () => "should-not-be-used" },
+      gateDecision: {
+        outcome: "auto-accepted",
+        reason: "policy-accept",
+        gate: "test-gate",
+        decidedAt: "2026-07-01T00:00:00.000Z",
+      },
+    });
+
+    const provenance = readWrittenProvenance(result.assetPath);
+    expect(provenance.generatedBy).toBe(`akm/${pkgVersion}`);
+    expect(provenance.verified).toEqual([{ by: `akm/${pkgVersion}`, at: "2026-07-01T00:00:00.000Z" }]);
+  });
+
+  test("human-initiated source (propose) accepted directly: generated.by=human:<actorId>, verified.by=human:<actorId>", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const created = createProposal(stash, {
+      ref: "lessons/provenance-human-source",
+      source: "propose",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({
+      stashDir: stash,
+      id: created.id,
+      config,
+      ctx: { actorId: () => "test-human-2" },
+    });
+
+    const provenance = readWrittenProvenance(result.assetPath);
+    expect(provenance.generatedBy).toBe("human:test-human-2");
+    expect(provenance.verified).toEqual([{ by: "human:test-human-2", at: expect.any(String) as unknown as string }]);
+  });
+
+  test("evidenceSources on the promoted content project as provenance.sources ({resource} minimum)", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const contentWithEvidence =
+      "---\ndescription: Use ripgrep before grep\nwhen_to_use: Searching large repos for patterns\n" +
+      "evidenceSources:\n  - knowledge/some-ref\n  - knowledge/other-ref\n---\n\n" +
+      "Prefer rg over grep when scanning large code repos.\n";
+    const created = createProposal(stash, {
+      ref: "lessons/provenance-evidence-sources",
+      source: "distill",
+      force: true,
+      payload: { content: contentWithEvidence },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({ stashDir: stash, id: created.id, config });
+
+    const provenance = readWrittenProvenance(result.assetPath);
+    expect(provenance.sources).toEqual([{ resource: "knowledge/some-ref" }, { resource: "knowledge/other-ref" }]);
+    // The original AKM-native `evidenceSources:` key is left untouched (dual-write, not a rename).
+    const fm = parseFrontmatter(fs.readFileSync(result.assetPath, "utf8")).data as Record<string, unknown>;
+    expect(fm.evidenceSources).toEqual(["knowledge/some-ref", "knowledge/other-ref"]);
+  });
+
+  test("a non-markdown promotion target (task YAML) is never stamped with frontmatter", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const taskContent = 'version: 2\nschedule: "0 2 * * *"\nenabled: true\ncommand: ["akm", "index"]\n';
+    const created = createProposal(stash, {
+      ref: "tasks/provenance-not-applicable",
+      source: "distill",
+      force: true,
+      payload: { content: taskContent },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({ stashDir: stash, id: created.id, config });
+    expect(fs.readFileSync(result.assetPath, "utf8")).toBe(taskContent);
+  });
+
+  test("the promoted asset re-indexes with provenance surfaced on the persisted entry (akm's own adapter rereads what it wrote via DOCUMENT_JSON_CARRIED_FIELDS)", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    fs.writeFileSync(path.join(stash, "memories", "index-seed.md"), "Index seed.\n", "utf8");
+    await akmIndex({ stashDir: stash });
+    const created = createProposal(stash, {
+      ref: "lessons/provenance-reindex-roundtrip",
+      source: "distill",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({
+      stashDir: stash,
+      id: created.id,
+      config,
+      ctx: { actorId: () => "test-human-3" },
+    });
+
+    const entry = indexedEntry(result.assetPath) as { provenance?: Record<string, unknown> };
+    expect(entry?.provenance).toBeDefined();
+    const provenance = entry?.provenance as { generatedBy?: string; verified?: unknown[] };
+    expect(provenance.generatedBy).toBe(`akm/${pkgVersion}`);
+    expect(provenance.verified).toHaveLength(1);
   });
 });
 
