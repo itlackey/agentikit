@@ -362,7 +362,6 @@ export async function stepSmallModelConnection(current: AkmConfig): Promise<Smal
       "  • akm index           (metadata enhancement)",
       "  • akm improve         (lesson distillation)",
       "  • akm remember --enrich (memory compression)",
-      "  • akm curate --rerank   (search reranking)",
     ].join("\n"),
   );
 
@@ -421,7 +420,6 @@ export async function stepSmallModelConnection(current: AkmConfig): Promise<Smal
         "  • akm index           — metadata enhancement disabled",
         "  • akm improve         — lesson generation",
         "  • akm remember --enrich",
-        "  • akm curate --rerank",
         "",
         "You can configure this later with `akm setup`.",
       ].join("\n"),

@@ -748,7 +748,10 @@ export async function runSetupWizard(opts?: { dir?: string; noInit?: boolean }):
     }
   }
 
-  p.outro(`Configuration saved to ${configPath}\nNext: akm task doctor`);
+  p.outro(
+    `Configuration saved to ${configPath}\n` +
+      'Next: `akm bundle add <source>`, `akm index`, `akm search "<query>"`, `akm help agents`',
+  );
 }
 
 // ── Non-interactive / scripting entry points ─────────────────────────────────

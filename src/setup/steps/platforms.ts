@@ -65,12 +65,12 @@ export async function stepAgentPlatforms(current: SetupDraftConfig): Promise<Sou
  */
 export function printCapabilitySummary(smallModelSkipped: boolean, agentConfigured: boolean): void {
   const lines: string[] = ["Setup complete. Here's what's enabled:", ""];
-  lines.push("  ✓ akm search, akm curate, akm show — always available");
+  lines.push("  ✓ akm search, akm curate, akm show, akm index, akm remember — always available");
 
   if (!smallModelSkipped) {
-    lines.push("  ✓ akm index, akm improve, akm remember — small model configured");
+    lines.push("  ✓ index metadata enhancement, akm improve, akm remember --enrich — small model configured");
   } else {
-    lines.push("  ✗ akm index, akm improve, akm remember — run `akm setup` to enable");
+    lines.push("  ✗ index metadata enhancement, akm improve, akm remember --enrich — run `akm setup` to enable");
   }
 
   if (agentConfigured) {

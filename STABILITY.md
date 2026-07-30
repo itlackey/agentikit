@@ -63,7 +63,7 @@ please file it.
 - **Read commands** — `akm search`, `akm show`, `akm bundle list`, `akm curate`,
   `akm info`, `akm config get`, `akm config list`, `akm config path`,
   `akm env list`, `akm secret list`, `akm proposal list` (list filters),
-  `akm help`, `akm hints`, `akm completions`.
+  `akm help`, `akm help agents`, `akm completions`.
 - **Write commands core surface** — `akm bundle add`, `akm bundle update`,
   `akm bundle remove`, `akm clone`, `akm import`, `akm sync`, `akm index`,
   `akm bundle create`, `akm setup`, `akm remember`, `akm feedback`,
@@ -104,7 +104,7 @@ please file it.
   child-process passthrough in `env run` / `secret run` / `migrate` (`status`
   and `apply` both spawn the
   standalone `akm-migrate` tool), a bare-path payload from `env path`, and
-  document payloads from `help migrate` / `hints`. The
+  document payloads from `help` (bare, `help agents`, and `help migrate`). The
   set is declared in
   `src/output/format-exempt.ts`, and
   passing `--format` to one of them warns rather than silently doing something
@@ -304,7 +304,7 @@ review-first config correctly shows `queue`.
 | --- | --- | --- |
 | `memoryInference` | Writes `.derived.md` children and rewrites parent frontmatter | disabled |
 | memory cleanup | Belief-state frontmatter rewrites, archive moves | analyzed but not applied |
-| `triage` `applyMode: "promote"` | Auto-accepts queued proposals into the stash | downgraded to `queue` — triage still runs, it just does not auto-accept |
+| `triage` `applyMode: "promote"` | Auto-accepts queued proposals into the bundle | downgraded to `queue` — triage still runs, it just does not auto-accept |
 
 Consolidation remains enabled with autonomy off because merge, delete, and
 contradiction operations are advisory; promotion only emits a reviewable
@@ -364,7 +364,7 @@ on them.
 | `AKM_SQLITE_JOURNAL_MODE` | SQLite journal mode (network filesystems) |
 | `AKM_BIN` | Absolute `akm` path for scheduler registration |
 | `AKM_INSTALL_DIR` | Install-script prefix |
-| `AKM_FORCE_SETUP_TMP_STASH` | Documented escape hatch for intentional temp-directory stashes |
+| `AKM_FORCE_SETUP_TMP_STASH` | Documented escape hatch for intentional temp-directory bundles |
 | `AKM_UPGRADE_SKIP_CHECKSUM` | Recovery hatch for a broken upgrade checksum |
 
 **Internal** — no compatibility guarantee, may vanish without notice:

@@ -46,7 +46,7 @@ binaries are runtime-free.
 ```sh
 akm setup                         # Guided setup: configure, initialize, and index
 akm task doctor                    # Verify scheduler and installed runtime
-akm bundle add github:owner/repo         # Add a stash from GitHub
+akm bundle add github:owner/repo         # Add a bundle from GitHub
 akm search "deploy"               # Find assets across all sources
 akm show scripts/deploy.sh        # View details and run command
 ```
@@ -78,8 +78,8 @@ storage path, or the installed runtime path changes, run
 ## Why akm?
 
 - **Works with any AI agent** -- No plugins or SDKs required. Any model that can run shell commands can use `akm`.
-- **One command to search everything** -- Local stash, registries, and community skills from [skills.sh](https://skills.sh) in a single query.
-- **Install stashes from anywhere** -- npm, GitHub, GitLab, local directories.
+- **One command to search everything** -- Local bundle, registries, and community skills from [skills.sh](https://skills.sh) in a single query.
+- **Install bundles from anywhere** -- npm, GitHub, GitLab, local directories.
 - **Semantic search** -- Optional local embeddings (via Ollama or HuggingFace) for finding assets by meaning, not just keywords.
 - **Private registries** -- Host your own registry for team or enterprise use.
 
@@ -95,18 +95,18 @@ knowledge, memories, workflows, wikis, env files, secrets, lessons, and schedule
 via the `akm` CLI. Use `akm -h` for details.
 ```
 
-## Install Stashes from Anywhere
+## Install Bundles from Anywhere
 
 ```sh
-akm bundle add @scope/my-stash                     # npm
+akm bundle add @scope/pkg                          # npm
 akm bundle add github:owner/repo#v1.2.3            # GitHub with tag
-akm bundle add git+https://gitlab.com/org/stash    # Any git repo
-akm bundle add ./path/to/local/stash               # Local directory
+akm bundle add git+https://gitlab.com/org/repo     # Any git repo
+akm bundle add ./path/to/local/dir                 # Local directory
 ```
 
-Manage stashes with `akm bundle list`, `akm bundle update --all`, and `akm bundle remove`.
+Manage bundles with `akm bundle list`, `akm bundle update --all`, and `akm bundle remove`.
 
-## Publish Your Own Stash
+## Publish Your Own Bundle
 
 1. Organize your assets into a directory
 2. Add `"akm"` to `keywords` in `package.json`

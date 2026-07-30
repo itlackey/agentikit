@@ -68,7 +68,7 @@ import type { ArgDef, ArgsDef, CommandMeta } from "citty";
 import { main } from "../src/cli";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..");
-const DOC_ROOTS = ["docs"];
+const DOC_ROOTS = ["docs", "src/assets/hints"];
 const DOC_FILES = ["README.md", "AGENTS.md", "STABILITY.md"];
 
 /** Per-instance skip marker — see module doc. Grep-discoverable, one line. */

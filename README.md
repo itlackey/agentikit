@@ -49,7 +49,7 @@ bun run build
 
 - **Manage sources** — add local dirs, git repos, npm packages, and websites as searchable asset sources [(details)](docs/guides/sources-registries.md)
   ```sh
-  akm bundle add github:owner/stash        # GitHub
+  akm bundle add github:owner/repo         # GitHub
   akm bundle add https://docs.example.com  # crawled website
   ```
 - **Search a unified index** — one FTS5 index across all your sources [(details)](docs/guides/search-discovery.md)
@@ -84,7 +84,7 @@ bun run build
 ```sh
 akm setup                             # guided first-time setup
 akm task doctor                       # verify scheduler and installed runtime
-akm bundle add github:itlackey/akm-stash     # install the official onboarding stash
+akm bundle add github:itlackey/akm-stash     # install the official onboarding bundle
 akm index                             # build the search index
 akm curate "deploy"                   # get a curated shortlist
 akm show workflows/deploy             # load the best match
@@ -92,7 +92,7 @@ akm remember "Deployment needs VPN"  # capture a memory
 akm feedback workflows/deploy --positive
 ```
 
-For non-interactive setup: `akm setup --yes` (or `--dir ~/custom-stash` for a custom path).
+For non-interactive setup: `akm setup --yes` (or `--dir ~/custom-bundle` for a custom path).
 Non-interactive setup never activates schedules.
 
 See [docs/guides/getting-started.md](docs/guides/getting-started.md) for a full walkthrough.
@@ -112,15 +112,15 @@ See [docs/guides/getting-started.md](docs/guides/getting-started.md) for a full 
 | **lesson** | Distilled feedback insight | `lessons/prefer-dry-run` |
 | **memory** | Recalled context from a previous session | `memories/vpn-note` |
 | **task** | Scheduled prompt/command/workflow job | `tasks/nightly-review` |
-| **fact** | Durable stash-level fact (identity, conventions, stash-meta) | `facts/team/tool-stack` |
+| **fact** | Durable bundle-level fact (identity, conventions, bundle-meta) | `facts/team/tool-stack` |
 
 See [docs/guides/concepts.md](docs/guides/concepts.md) for classification rules and the ref format.
 
 ## Key workflows
 
-**Add and search a stash**
+**Add and search a bundle**
 ```sh
-akm bundle add github:owner/team-stash
+akm bundle add github:owner/team-bundle
 akm index
 akm search "database migration" --type script
 akm show scripts/migrate.sh
@@ -128,7 +128,7 @@ akm show scripts/migrate.sh
 
 **Capture and route knowledge**
 ```sh
-akm remember "Hot-fix deploys skip staging" --bundle team-stash
+akm remember "Hot-fix deploys skip staging" --bundle team-bundle
 akm import ./incident-report.md
 ```
 
@@ -199,7 +199,7 @@ No plugins or SDKs required. Platform-specific integrations are available in [ak
 
 | Repo | What it is |
 | --- | --- |
-| [itlackey/akm-stash](https://github.com/itlackey/akm-stash) | Official stash — ready-made skills, workflows, commands, and knowledge |
+| [itlackey/akm-stash](https://github.com/itlackey/akm-stash) | Official bundle — ready-made skills, workflows, commands, and knowledge |
 | [itlackey/akm-plugins](https://github.com/itlackey/akm-plugins) | Optional editor and agent integrations (OpenCode, etc.) |
 | [itlackey/akm-registry](https://github.com/itlackey/akm-registry) | Official registry index — pre-configured in every akm install |
 | [itlackey/akm-bench](https://github.com/itlackey/akm-bench) | Benchmark harness for measuring agent performance with akm |
@@ -223,7 +223,7 @@ No plugins or SDKs required. Platform-specific integrations are available in [ak
 | Doc | Description |
 | --- | --- |
 | [Getting Started](docs/guides/getting-started.md) | Install, first-time setup, add sources, search, show |
-| [Concepts](docs/guides/concepts.md) | Sources, registries, asset types, refs, and the stash |
+| [Concepts](docs/guides/concepts.md) | Sources, registries, asset types, refs, and the bundle |
 | [CLI Reference](docs/reference/cli.md) | All commands and flags |
 | [Configuration](docs/reference/configuration.md) | Settings, providers, embedding, and Ollama setup |
 | [Stash Maker's Guide](docs/guides/stash-makers.md) | Build, publish, and share your own stashes |

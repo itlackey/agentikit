@@ -29,19 +29,19 @@ akm search "memories/projectA/"               # List a subtree (conceptId prefix
 akm search "<query>" --from all               # Also search registries
 akm show <ref>                                # View asset details
 akm workflow next <ref>                       # Start or resume a workflow
-akm remember "Deployment needs VPN access"    # Record a memory in your stash
-akm remember "note" --bundle my-stash         # Route write to a named writable stash source
+akm remember "Deployment needs VPN access"    # Record a memory in your bundle
+akm remember "note" --bundle my-bundle         # Route write to a named writable bundle source
 akm remember "note" --xref knowledge/auth-flow # Cite provenance in frontmatter xrefs (repeatable)
 akm remember "fix" --supersedes memories/old-note # Write a correction AND demote the superseded asset
-akm import ./notes/release-checklist.md       # Import a knowledge doc into your stash
-akm import ./doc.md --target my-stash         # Route import to a named writable stash source
+akm import ./notes/release-checklist.md       # Import a knowledge doc into your bundle
+akm import ./doc.md --target my-bundle         # Route import to a named writable bundle source
 akm proposal diff skills/akm-dream            # Diff proposal by ref, UUID, or 8-char prefix
 akm proposal accept 7c115132                  # Accept by UUID prefix
 akm proposal reject skills/my-skill --reason "..."  # Reject by ref
 akm feedback <ref> --positive|--negative      # Record whether an asset helped
 akm bundle add <ref>                                 # Add a source (npm, GitHub, git, local dir)
 akm clone <ref>                               # Copy an asset to the working bundle (optional --dest arg to clone to specific location)
-akm sync                                      # Commit (and push if writable remote) changes in the primary stash (--no-push to commit only)
+akm sync                                      # Commit (and push if writable remote) changes in the primary bundle (--no-push to commit only)
 akm improve --no-sync                         # Run improve without the end-of-run auto-commit
 akm improve --no-push                         # Auto-commit but skip push for this run
 akm search "<query>" --from registry          # Search all registries (registry search was folded into search)
@@ -67,10 +67,11 @@ future search ranking can learn from real usage.
 
 ## Error Shapes and Exit Codes
 
-Every command returns JSON by default. On failure, the shape is always:
+Every command returns JSON by default. On failure, the shape is always
+emitted on **stderr** (stdout is normally left empty):
 
 ```json
-{"ok": false, "error": "<message>", "hint": "<optional remediation hint>"}
+{"ok": false, "error": "<message>", "code": "<optional machine-readable code>", "hint": "<optional remediation hint>"}
 ```
 
 Exit codes:
@@ -85,7 +86,9 @@ Exit codes:
 | 78 | Configuration error |
 
 Check `ok === false` or a non-zero exit code to detect failure. The `hint`
-field, when present, describes a corrective action.
+field, when present, describes a corrective action. `search`/`curate`
+success results also carry an additive `tip` field (a plain-text suggestion)
+when the result set is empty.
 
 `env run`, `secret run`, and `migrate` preserve the spawned process's exact
 status. `task run` and `agent` map a failed result to exit 1 while retaining
@@ -104,7 +107,7 @@ akm lint --fail-on-flagged && deploy          # exit 1 if any flagged issues
 
 `akm` ships a proposal queue so reflective edits, new asset drafts, and
 feedback-distilled lessons land out-of-band before they touch the live
-stash. None of these commands mutate stash content directly — they always
+bundle. None of these commands mutate bundle content directly — they always
 go through `akm proposal accept`.
 
 ```sh

@@ -28,8 +28,8 @@ action view, `summary` for capability discovery).
 
 ### `--format jsonl`
 
-Outputs one JSON object per line. For `search` and `registry search`, each hit
-is a separate line. For other commands, the entire result is a single line.
+Outputs one JSON object per line. For `search` (including `--from registry`),
+each hit is a separate line. For other commands, the entire result is a single line.
 Useful for streaming consumption by scripts or agents.
 
 ### `--format md` and `--format html`
@@ -52,7 +52,7 @@ A small set of commands is **format-exempt** because their output is not a
 result envelope at all — `completions`, child-process passthrough (`env run`,
 `secret run`, and `migrate`
 `status`/`apply`, which spawn the standalone migration tool and print its
-fixed JSON verbatim), document payloads (`hints`,
+fixed JSON verbatim), document payloads (`help`,
 `help migrate`), and `env path` (a bare filesystem path is the payload, the
 documented shell-substitution primitive — wrapping it in an envelope would
 break `$(akm env path <ref>)` substitutions). Passing `--format` to one of
@@ -122,35 +122,35 @@ retaining the child status in its formatted result envelope.
 
 > **Note:** `akm setup` is the recommended entry point — it runs the same directory initialization plus guides you through AI connection configuration. `akm bundle create` remains available as a low-level building block.
 
-Create the stash directory structure and persist the working stash path in
+Create the bundle directory structure and persist the working bundle path in
 config.
 
 ```sh
-akm setup                        # Interactive setup wizard (creates stash + configures connections)
-akm setup --dir ~/custom-stash   # Initialize at a custom location
+akm setup                        # Interactive setup wizard (creates bundle + configures connections)
+akm setup --dir ~/custom-bundle   # Initialize at a custom location
 akm setup --yes                  # Non-interactive, accepts all defaults
 ```
 
-Creates one subdirectory per asset type under the stash path — currently
+Creates one subdirectory per asset type under the bundle path — currently
 `scripts/`, `skills/`, `commands/`, `agents/`, `knowledge/`, `workflows/`,
 `memories/`, `env/`, `secrets/`, and `lessons/`. See
 [technical/filesystem.md](../architecture/internals/storage-locations.md) for config file locations.
 
 ```sh
-akm bundle create                              # Initialize the default stash (~/akm) and set it as default
-akm bundle create --dir ~/scratch-stash        # Scaffold a secondary stash WITHOUT changing your default
-akm bundle create --dir ~/scratch-stash --set-default  # Scaffold AND make it the default stash
+akm bundle create                              # Initialize the default bundle (~/akm) and set it as default
+akm bundle create --dir ~/scratch-bundle        # Scaffold a secondary bundle WITHOUT changing your default
+akm bundle create --dir ~/scratch-bundle --set-default  # Scaffold AND make it the default bundle
 ```
 
 **`--dir <path>`** scaffolds (and backfills) the target directory. By design it
-does **not** change your configured default stash unless you ask: `bundle
+does **not** change your configured default bundle unless you ask: `bundle
 create` updates the primary `bundles` entry and `defaultBundle` in
 `config.json` only when (a) no `--dir` is given, (b) no default is configured
 yet (first-time bootstrap), or (c) you pass **`--set-default`**. When a `--dir`
 is given and a default already exists without `--set-default`, your default
-stash pointer is left untouched and `bundle create` prints a note telling you
+bundle pointer is left untouched and `bundle create` prints a note telling you
 so. This prevents `akm bundle create --dir /tmp/throwaway` from silently
-hijacking your real default stash.
+hijacking your real default bundle.
 
 ### setup
 
@@ -177,8 +177,8 @@ Options:
 
 A feature capability summary is shown at the end of setup.
 
-The wizard also lets you choose a stash directory, review registries, and add stash
-sources. When you save, akm writes the config file, initializes the stash directory,
+The wizard also lets you choose a bundle directory, review registries, and add bundle
+sources. When you save, akm writes the config file, initializes the bundle directory,
 and builds the search index.
 
 ### index
@@ -202,7 +202,7 @@ warnings instead of aborting the full run.
 
 **`--clean` flag:** After indexing completes, verifies every indexed entry's source
 file still exists on disk. Removes any entries whose file is missing (for local
-stash sources only; remote entries are skipped). Returns a `clean` block in the
+bundle sources only; remote entries are skipped). Returns a `clean` block in the
 JSON result with `checked`, `removed`, `removedRefs` arrays, and `dryRun` flag.
 Use `--clean` to resolve the edge case where a deleted file in an unchanged
 directory lingers in the index across incremental runs. With `--dry-run`, reports
@@ -227,7 +227,7 @@ Returns a JSON object with:
 | Field | Description |
 | --- | --- |
 | `version` | Current akm version |
-| `stashDir` | Primary stash directory — same resolution `akm sources list` uses |
+| `bundleDir` | Primary bundle directory — same resolution `akm bundle list` uses |
 | `defaultBundle` | Name of the primary bundle from config, or `null` when none is configured |
 | `assetTypes` | List of recognized asset types |
 | `searchModes` | Active search modes (`fts`, optionally `semantic` and `hybrid`) |
@@ -293,7 +293,7 @@ generated across five or more scanned sessions. The `session-log-failures` advis
 is informational only and never triggers `warn` — it reports raw keyword matches,
 not LLM-validated extraction outcomes.
 
-The indexed entity graph (entities/relations extracted from stash assets) has
+The indexed entity graph (entities/relations extracted from bundle assets) has
 no dedicated inspection command; its summary counts surface as an info-level
 metric in `akm health`. Graph data is automatically re-extracted on the first
 `akm improve` cycle after a `DB_VERSION` upgrade, and search ranking can
@@ -303,7 +303,7 @@ optionally use graph-derived confidence-weighted boosts — tune
 
 ### search
 
-Search stash assets, registry stashes, or both.
+Search bundle assets, registries, or both.
 
 ```sh
 akm search "deploy"
@@ -378,20 +378,20 @@ availability:
   `team//scripts/deploy.sh`); present at `brief`, `full`, and `agent` for local
   hits
 - **`name`** -- The asset's filename or identifier; present at all levels
-- **`origin`** -- The source stash (e.g. `npm:@scope/pkg`), present only for
+- **`origin`** -- The source bundle (e.g. `npm:@scope/pkg`), present only for
   managed source assets; surfaced at `full` only
-- **`id`** -- Registry-level stash identifier (registry hits only)
+- **`id`** -- Registry-level identifier (registry hits only)
 
 The default brief shape is intentionally small. The exact field set per
 detail level (and per `--shape`) is authoritative in
 `src/output/shapes/helpers.ts` (`shapeSearchHit` / `shapeSearchHitForAgent`),
 assembled into the shape registry by the `src/output/shapes.ts` barrel:
 
-| Level | Local stash hits | Registry hits |
+| Level | Local bundle hits | Registry hits |
 | --- | --- | --- |
 | `brief` (default) | `type`, `name`, `ref`, `action`, `estimatedTokens` | `name`, `installRef`, `score` |
 | `normal` | `type`, `name`, `description`, `action`, `score`, `estimatedTokens`, optional `warnings`/`quality`/`keys` | `name`, `description`, `action`, `installRef`, `score`, optional `warnings` |
-| `full` | full hit object (includes `ref`, `origin`, `tags`, `whyMatched`, optional `warnings`, optional `quality`, timings, stash metadata) | full hit object |
+| `full` | full hit object (includes `ref`, `origin`, `tags`, `whyMatched`, optional `warnings`, optional `quality`, timings, bundle metadata) | full hit object |
 | `--shape agent` | `name`, `ref`, `type`, `path`, `editable`, conditional `editHint`, `description`, `action`, `score`, optional `estimatedTokens`/`keys` | no local access fields |
 
 `--shape summary` is **not valid on `search`** — see
@@ -435,7 +435,7 @@ akm curate "learn the release workflow" --from all --format text
 strongest search hits first, uses only small type-aware nudges for close-score
 ties, can collapse obvious root/reference families into one top-level result,
 and falls back to token searches when the phrase result set is weak. Curate
-includes direct follow-up commands such as `akm show <ref>` or `akm bundle add <stash>`
+includes direct follow-up commands such as `akm show <ref>` or `akm bundle add <ref>`
 so you can immediately inspect or install what it found.
 `--detail` and `--shape agent` both work on curate output; `--shape summary`
 does not.
@@ -461,11 +461,11 @@ akm show knowledge/guide                 # the whole document
 akm show knowledge/guide#authentication  # just that section
 akm show knowledge/guide#nope            # lists the available fragment slugs
 
-# Stash .meta/ orientation docs — direct-read, not indexed:
-akm show meta                       # working stash's .meta/index.md
-akm show meta:about                 # working stash's .meta/about.md
-akm show akm//meta                  # the primary stash explicitly
-akm show github:owner/repo//meta    # an installed stash's .meta/index.md
+# Bundle .meta/ orientation docs — direct-read, not indexed:
+akm show meta                       # working bundle's .meta/index.md
+akm show meta:about                 # working bundle's .meta/about.md
+akm show akm//meta                  # the primary bundle explicitly
+akm show github:owner/repo//meta    # an installed bundle's .meta/index.md
 
 # Multi-tenant scope filtering:
 akm show memories/retro --filter user=alice
@@ -473,7 +473,7 @@ akm show memories/retro --filter user=alice --filter agent=claude
 ```
 
 `meta` is not an asset type — `[<origin>//]meta[:<name>]` direct-reads a
-human-authored orientation doc from a stash's optional `.meta/` directory
+human-authored orientation doc from a bundle's optional `.meta/` directory
 (`<name>` defaults to `index`; `.meta/<name>.md` is tried before an
 extensionless `.meta/<name>`). These files are never indexed, so they do not
 appear in `akm search`. See [concepts.md](../guides/concepts.md#stash-orientation-the-meta-convention)
@@ -620,7 +620,7 @@ akm workflow report <run-id> --settle           # advance a route-only/empty ste
 
 Workflow runs are scoped to the current working context, not globally across all
 repos or directories. akm resolves that context from the nearest `.akm/config.json`
-ancestor when present, otherwise the nearest git root, otherwise the stash root
+ancestor when present, otherwise the nearest git root, otherwise the bundle root
 when the cwd is inside it, otherwise the cwd itself. In practice this means:
 
 - `workflow next workflows/<name>` resumes the active run for the current project/worktree/directory only.
@@ -766,7 +766,7 @@ Workflow markdown contract:
 | --- | --- |
 | `akm bundle add ~/.claude/skills` | Registers a local directory as a `filesystem` source |
 | `akm bundle add github:owner/repo` | Clones the repo into akm's cache as a `git` source |
-| `akm bundle add @scope/stash` | Installs the npm package as a `git`/`npm` source |
+| `akm bundle add @scope/pkg` | Installs the npm package as a `git`/`npm` source |
 | `akm bundle add https://docs.example.com` | Crawls and caches a website as a `website` source |
 | `akm registry add <url>` | Adds a discovery registry (separate concept) |
 
@@ -780,13 +780,13 @@ Add a source — a local directory, npm package, GitHub repo, git URL, or websit
 
 ```sh
 akm bundle add ~/.claude/skills              # Local directory
-akm bundle add @scope/stash                    # npm package
-akm bundle add npm:@scope/stash@latest         # npm with version
+akm bundle add @scope/pkg                    # npm package
+akm bundle add npm:@scope/pkg@latest         # npm with version
 akm bundle add github:owner/repo#v1.2.3     # GitHub with tag
 akm bundle add https://github.com/owner/repo
-akm bundle add git+https://gitlab.com/org/stash
-akm bundle add ./path/to/local/stash
-akm bundle add github:andrewyng/context-hub --name context-hub  # context-hub as a git stash
+akm bundle add git+https://gitlab.com/org/bundle
+akm bundle add ./path/to/local/bundle
+akm bundle add github:andrewyng/context-hub --name context-hub  # context-hub as a git bundle
 akm bundle add https://docs.example.com --name docs              # Website
 akm bundle add https://docs.example.com --max-pages 100 --max-depth 5
 ```
@@ -797,13 +797,13 @@ akm bundle add https://docs.example.com --max-pages 100 --max-depth 5
 | `--provider` | Provider type (e.g. `website`, `npm`). Required for URL sources where inference would be ambiguous |
 | `--writable` | Mark a git source as writable so `akm sync` also pushes (default: false) |
 | `--options` | Provider options as JSON (e.g. `'{"ref":"main"}'`) |
-| `--allow-insecure` | Bypass plain-HTTP source rejection **and** dangerous env key blocking. Accepts two risks: (1) plain-HTTP download without TLS, (2) env keys that can hijack process execution. Use only after reviewing the stash manually |
+| `--allow-insecure` | Bypass plain-HTTP source rejection **and** dangerous env key blocking. Accepts two risks: (1) plain-HTTP download without TLS, (2) env keys that can hijack process execution. Use only after reviewing the bundle manually |
 | `--max-pages` | Maximum pages to crawl for website sources (default: 50) |
 | `--max-depth` | Maximum crawl depth for website sources (default: 3) |
 
 #### Dangerous env key audit
 
-When `akm bundle add` installs a stash that contains env files, it recursively scans
+When `akm bundle add` installs a bundle that contains env files, it recursively scans
 every `.env`-suffixed file under `env/` (the same "real env file" test used
 everywhere else — a bare `.env` or any name ending `.env`, at any depth) for
 environment variable names that can be used for process-execution hijacking. A
@@ -826,7 +826,7 @@ config override injection).
 When dangerous keys are found, `akm bundle add` pauses and prompts for
 confirmation (default: No). In non-interactive mode (CI, scripts) the
 install fails with **exit 1** unless `--allow-insecure` is passed, and the
-freshly-installed stash is rolled back before the process exits.
+freshly-installed bundle is rolled back before the process exits.
 
 ```sh
 # Interactive: prompts before continuing
@@ -836,7 +836,7 @@ akm bundle add github:owner/repo-with-sensitive-env
 akm bundle add github:owner/repo-with-sensitive-env --allow-insecure
 ```
 
-Stash publishers: see the [Stash Maker's Guide](../guides/stash-makers.md#env-security)
+Bundle publishers: see the [Stash Maker's Guide](../guides/stash-makers.md#env-security)
 for guidance on env files that legitimately need these keys.
 
 #### Website sources
@@ -861,8 +861,8 @@ config so subsequent re-indexes use the same limits.
 See [registry.md](registry.md) for the full install flow for managed sources.
 
 > **Note:** there is no `akm bundle add context-hub` convenience alias or `akm
-> enable`/`disable context-hub` command — add it explicitly as a git stash:
-> `akm bundle add github:andrewyng/context-hub --name context-hub`. A stash *type*
+> enable`/`disable context-hub` command — add it explicitly as a git bundle:
+> `akm bundle add github:andrewyng/context-hub --name context-hub`. A bundle *type*
 > string of `"context-hub"` in an existing config still normalizes to
 > `"git"` at load time, so you don't need to edit your config files.
 
@@ -888,7 +888,7 @@ akm bundle list --kind filesystem,git      # Multiple kinds (comma-separated)
 Remove a source by id, ref, path, URL, or name and reindex.
 
 ```sh
-akm bundle remove npm:@scope/stash           # Managed source by id
+akm bundle remove npm:@scope/pkg           # Managed source by id
 akm bundle remove owner/repo               # Managed source by ref
 akm bundle remove ~/.claude/skills         # Local source by path
 akm bundle remove my-provider              # Any source by name
@@ -905,7 +905,7 @@ Update one or all managed sources to the latest available version. Local and
 remote sources are not updatable — akm explains why if you target one.
 
 ```sh
-akm bundle update npm:@scope/stash
+akm bundle update npm:@scope/pkg
 akm bundle update --all
 akm bundle update --all --force   # Force fresh download even if version is unchanged
 akm bundle update --all --yes     # Skip confirmation when an update needs to delete a moved install dir
@@ -979,7 +979,7 @@ akm clone scripts/deploy.sh
 akm clone "npm:@scope/pkg//scripts/deploy.sh"
 akm clone scripts/deploy.sh --name my-deploy.sh
 akm clone scripts/deploy.sh --force
-akm clone scripts/deploy.sh --bundle team-stash
+akm clone scripts/deploy.sh --bundle team-bundle
 akm clone scripts/deploy.sh --dest ./project/.claude
 akm clone "npm:@scope/pkg//scripts/deploy.sh" --dest /tmp/preview
 ```
@@ -988,27 +988,27 @@ akm clone "npm:@scope/pkg//scripts/deploy.sh" --dest /tmp/preview
 | --- | --- |
 | `--name` | New name for the cloned asset |
 | `--force` | Overwrite if the asset already exists at the destination |
-| `--bundle <name>` | Managed destination bundle. When omitted, clone falls back to `defaultWriteTarget`, then the working stash |
+| `--bundle <name>` | Managed destination bundle. When omitted, clone falls back to `defaultWriteTarget`, then the working bundle |
 | `--dest <path>` | Unmanaged destination directory. Bypasses managed target resolution and cannot be combined with `--bundle`; the type subdirectory is appended automatically |
 
 Skills (directories) are copied recursively. Other types copy a single file.
 
 **Remote clone:** When the origin in the ref points to a package that is not
-installed locally (e.g. an npm package or local path not in your stash
+installed locally (e.g. an npm package or local path not in your bundle
 sources), akm fetches it to the cache automatically and extracts the
 requested asset. The package is **not** registered as a managed source --
 use `akm bundle add` for that.
 
 ```sh
-# Clone a single script from a remote package without installing the full stash
+# Clone a single script from a remote package without installing the full bundle
 akm clone "npm:@scope/pkg//scripts/deploy.sh"
 
 # Clone from a local directory that isn't configured as a search path
-akm clone "/path/to/stash//skills/code-review" --dest ./project/.claude
+akm clone "/path/to/bundle//skills/code-review" --dest ./project/.claude
 ```
 
 Without `--dest`, clone uses normal write-target resolution: explicit
-`--bundle` -> `defaultWriteTarget` -> working stash. Managed clones use the
+`--bundle` -> `defaultWriteTarget` -> working bundle. Managed clones use the
 destination bundle's canonical ref and are indexed immediately. When `--dest`
 is provided, no managed write target is required, which keeps clone usable in
 CI or fresh environments without running `akm setup` first.
@@ -1023,10 +1023,10 @@ CI or fresh environments without running `akm setup` first.
 > a plain filesystem move plus `akm index` and `akm lint` (see
 > [`ref.md` § Renames and moves](../architecture/specs/ref.md#renames-and-moves)).
 
-Rename an asset **within its type directory** in the primary writable stash.
-`akm mv` is the CLI half of the stash conventions' forced-rename procedure
+Rename an asset **within its type directory** in the primary writable bundle.
+`akm mv` is the CLI half of the bundle conventions' forced-rename procedure
 ("grep and fix inbound xrefs in the same pass"): it moves the file, rewrites
-inbound refs across the writable stash, re-keys the search-index row **in
+inbound refs across the writable bundle, re-keys the search-index row **in
 place** (the row id survives, and the row's usage-event history is re-pointed
 at the new ref so it survives even a later `akm index --full`), and re-keys
 the `state.db` salience/outcome rows — the asset's accumulated usage-ranking
@@ -1062,7 +1062,7 @@ What it does, in order (designed to be safely re-runnable if interrupted):
    (flat-markdown layouts; multi-file `skill` directories are out of scope
    for now).
 2. **Plans the inbound-ref rewrite** across every markdown file in the
-   writable stash plus `.yml`/`.yaml` files under `tasks/` (task YAML
+   writable bundle plus `.yml`/`.yaml` files under `tasks/` (task YAML
    carries refs in `workflow:`/`prompt:` keys) and under `workflows/`
    (workflow YAML programs carry refs in their step/instructions text;
    workflows are rewritten as *citers* even though `workflow:` refs cannot
@@ -1108,30 +1108,30 @@ Listed as **Experimental** in `STABILITY.md`.
 
 ### sync
 
-Stage and commit local changes in a git-backed stash. If the stash has a
+Stage and commit local changes in a git-backed bundle. If the bundle has a
 remote configured and is marked `writable: true`, the commit is also pushed.
 
 > **Note:** there is no `akm save` command — use `akm sync`.
 
 ```sh
-akm sync                            # Sync primary stash (auto timestamp message)
+akm sync                            # Sync primary bundle (auto timestamp message)
 akm sync -m "Add deploy skill"     # Sync with custom message
 akm sync --no-push                  # Commit only; never push even when writable
 akm sync --format json             # Explicit format (both --format json and --format=json work)
-akm sync my-skills                  # Sync a named writable git stash
+akm sync my-skills                  # Sync a named writable git bundle
 akm sync team/core -m "Update"    # Slash-containing source names are valid selectors
-akm sync my-skills -m "Update"     # Sync named stash with message
+akm sync my-skills -m "Update"     # Sync named bundle with message
 ```
 
 | Argument / Flag | Description |
 | --- | --- |
-| `[name]` | Optional git-backed stash selector. Matches the configured source name exactly and also accepts canonical GitHub aliases such as `owner/repo`, `github:owner/repo`, and branch-ref forms like `github:owner/repo#branch`. Forward slashes are allowed. Defaults to the primary stash |
+| `[name]` | Optional git-backed bundle selector. Matches the configured source name exactly and also accepts canonical GitHub aliases such as `owner/repo`, `github:owner/repo`, and branch-ref forms like `github:owner/repo#branch`. Forward slashes are allowed. Defaults to the primary bundle |
 | `-m`, `--message` | Commit message. Defaults to `akm save <timestamp>` |
-| `--no-push` | Commit only; never push even when the stash is writable with a remote configured |
+| `--no-push` | Commit only; never push even when the bundle is writable with a remote configured |
 | `--format` | Output format (any of the six global values). Both `--format json` and `--format=json` are accepted |
 
 If no positional selector is provided, `akm sync --format json` still targets
-the primary stash. If a positional selector is provided, it wins even when the
+the primary bundle. If a positional selector is provided, it wins even when the
 value also looks like a format token.
 
 **Behaviour by repo state:**
@@ -1144,9 +1144,9 @@ value also looks like a format token.
 | Git repo, has remote, `writable: true` | Stage, commit, and push |
 | Any writable repo with `--no-push` | Stage and commit only (push suppressed) |
 
-**Primary stash writable config:**
+**Primary bundle writable config:**
 
-To make the primary stash push on sync, set `writable: true` on its `bundles`
+To make the primary bundle push on sync, set `writable: true` on its `bundles`
 entry in your config file (`~/.config/akm/config.json` or the path shown by
 `akm config path`):
 
@@ -1157,15 +1157,15 @@ entry in your config file (`~/.config/akm/config.json` or the path shown by
 }
 ```
 
-When `writable: true` is set and the primary stash has a git remote configured,
+When `writable: true` is set and the primary bundle has a git remote configured,
 `akm sync` will stage, commit, and push.
 
-When `akm setup` successfully initializes the default stash as a local git repo
+When `akm setup` successfully initializes the default bundle as a local git repo
 (requires `git` to be installed), `akm sync` will commit there safely without
-pushing. If git is unavailable, the stash will not be a git repo and sync will
+pushing. If git is unavailable, the bundle will not be a git repo and sync will
 return a skipped result.
 
-To make a named remote git stash writable, pass `--writable` when adding it:
+To make a named remote git bundle writable, pass `--writable` when adding it:
 
 ```sh
 akm bundle add git@github.com:org/skills.git --provider git --name my-skills --writable
@@ -1176,10 +1176,10 @@ akm bundle add git@github.com:org/skills.git --provider git --name my-skills --w
 Record a memory. This writes a markdown file into `memories/` in the configured
 write target and returns the resulting ref.
 
-**Write target resolution:** the destination is the working stash
+**Write target resolution:** the destination is the working bundle
 (`defaultBundle`) unless `defaultWriteTarget` is set in config, which
 overrides it to a named source. An explicit `--bundle <name>` flag overrides
-both. The full order is `--bundle` → `defaultWriteTarget` → working stash →
+both. The full order is `--bundle` → `defaultWriteTarget` → working bundle →
 `ConfigError`. See [Configuration](configuration.md#bundles-and-write-target) for
 details.
 
@@ -1219,8 +1219,8 @@ akm remember "The token rotation quirk applies to staging too" \
 akm remember "Staging now uses the new gateway endpoint" \
   --name new-endpoint --supersedes memories/projectA/old-endpoint
 
-# Route the write to a specific writable stash:
-akm remember "Deployment needs VPN access" --bundle team-stash
+# Route the write to a specific writable bundle:
+akm remember "Deployment needs VPN access" --bundle team-bundle
 ```
 
 | Flag | Description |
@@ -1232,14 +1232,14 @@ akm remember "Deployment needs VPN access" --bundle team-stash
 | `--expires <dur>` | Expiry shorthand (`30d`, `12h`, `6m`). Resolved to an ISO date |
 | `--source <s>` | Free-form source reference — URL, asset ref, file path, or any string |
 | `--xref <ref>` | Cross-reference ref recorded in the memory's `xrefs:` frontmatter list. Repeatable: `--xref knowledge/auth-flow --xref memories/vpn-note`. Each ref must resolve in the write target or a configured source (read-only sources count); an unresolvable ref fails with exit 2 before anything is written. More than 5 refs warns (soft cap) but still writes. Does not trigger the tags-required check. |
-| `--supersedes <ref>` | Ref of an existing asset this memory corrects. Repeatable. Writes the correction with the old ref folded into its `xrefs:` (correction provenance) AND demotes the old asset — `beliefState: superseded` + `supersededBy: [<new ref>]`, a metadata-only frontmatter edit that preserves every other key and the body — then reindexes it so ranking prefers the correction and `--belief current` hides the stale version immediately. An unresolvable ref fails with exit 2 before anything is written or demoted; so does a ref naming the asset being written itself (a correction cannot supersede itself, e.g. `--force` overwriting the same name). A ref that resolves only outside the write target and the working stash still writes the correction but skips the demotion: stderr warns and the JSON output reports `superseded: [{ref, applied: false, reason}]` — the reason names the `--bundle` remedy when the old asset lives in a configured writable source. An old asset whose existing frontmatter is not parseable YAML is skipped the same way (`applied: false`) instead of being rewritten lossily. Re-running the same correction is idempotent. On a git write target the correction and the demoted old asset land in the same single boundary commit. |
+| `--supersedes <ref>` | Ref of an existing asset this memory corrects. Repeatable. Writes the correction with the old ref folded into its `xrefs:` (correction provenance) AND demotes the old asset — `beliefState: superseded` + `supersededBy: [<new ref>]`, a metadata-only frontmatter edit that preserves every other key and the body — then reindexes it so ranking prefers the correction and `--belief current` hides the stale version immediately. An unresolvable ref fails with exit 2 before anything is written or demoted; so does a ref naming the asset being written itself (a correction cannot supersede itself, e.g. `--force` overwriting the same name). A ref that resolves only outside the write target and the working bundle still writes the correction but skips the demotion: stderr warns and the JSON output reports `superseded: [{ref, applied: false, reason}]` — the reason names the `--bundle` remedy when the old asset lives in a configured writable source. An old asset whose existing frontmatter is not parseable YAML is skipped the same way (`applied: false`) instead of being rewritten lossily. Re-running the same correction is idempotent. On a git write target the correction and the demoted old asset land in the same single boundary commit. |
 | `--auto` | Apply heuristic tagging from the body (opt-in, zero-latency, pure TS) |
 | `--enrich` | Call the configured LLM for tag/description proposals (opt-in, 10s timeout, fails soft) |
 | `--user <id>` | Scope this memory to a user id. Persisted as the canonical `scope_user` frontmatter key. |
 | `--agent <id>` | Scope this memory to an agent id. Persisted as `scope_agent`. |
 | `--run <id>` | Scope this memory to a run id. Persisted as `scope_run`. |
 | `--channel <name>` | Scope this memory to a channel name. Persisted as `scope_channel`. |
-| `--bundle <name>` | Override the write destination. Accepts a source name from your config; falls back to `defaultWriteTarget` then the working stash. |
+| `--bundle <name>` | Override the write destination. Accepts a source name from your config; falls back to `defaultWriteTarget` then the working bundle. |
 
 Pass the content as a quoted positional argument for short notes, or pipe
 markdown into stdin for longer memories.
@@ -1258,15 +1258,15 @@ and a memory with only scope flags is valid (no tags required). Scope is the
 multi-tenant / multi-agent contract; the same shape is read back by
 `akm search --filter` and `akm show --filter`.
 
-**Cross-references** (`--xref`) implement the stash back-linking conventions'
+**Cross-references** (`--xref`) implement the bundle back-linking conventions'
 provenance channel: the refs land in the memory's `xrefs:` frontmatter list,
 which the indexer folds into the asset's search hints, so the new memory is
 findable from searches for its source. Refs are validated before anything is
 written — against the write target plus every configured source, including
-read-only cross-stash sources — so a typo'd ref fails fast (exit 2) instead
+read-only cross-bundle sources — so a typo'd ref fails fast (exit 2) instead
 of becoming permanent silent noise. When a write lands at the type root (no
-`--path`, flat name) in a stash that carries convention facts, the JSON output
-includes an additive `hint` key pointing at the stash's placement conventions.
+`--path`, flat name) in a bundle that carries convention facts, the JSON output
+includes an additive `hint` key pointing at the bundle's placement conventions.
 
 **Corrections** (`--supersedes`) implement the conventions' two-write
 corrections pattern in one command: the new asset is written with an xref to
@@ -1275,7 +1275,7 @@ what it corrects, and the old asset gets a metadata-only demotion
 reindexes immediately. A qualified superseded ref selects that bundle as the
 write target. Same-bundle frontmatter edges remain short; cross-bundle edges stay
 qualified. The old asset is demoted only when it lives in the
-write target or the working stash — a match in any other configured source
+write target or the working bundle — a match in any other configured source
 (read-only, or writable but not this write's target) is reported as
 `applied: false` (with a stderr warning) while the correction still writes;
 so is an old asset whose existing frontmatter is not parseable YAML, which a
@@ -1289,10 +1289,10 @@ Import a knowledge document. This writes a markdown file into `knowledge/` in
 the configured write target and returns the resulting ref. The source may be a
 file path, a single HTTP/HTTPS URL, or `-` for stdin.
 
-**Write target resolution:** the destination is the working stash
+**Write target resolution:** the destination is the working bundle
 (`defaultBundle`) unless `defaultWriteTarget` is set in config, which
 overrides it to a named source. An explicit `--target <name>` flag overrides
-both. The full order is `--target` → `defaultWriteTarget` → working stash →
+both. The full order is `--target` → `defaultWriteTarget` → working bundle →
 `ConfigError`. See [Configuration](configuration.md#bundles-and-write-target) for
 details.
 
@@ -1308,15 +1308,15 @@ akm import ./notes/oauth-quirks.md --xref knowledge/auth/vendor-x-token-api
 # Import a corrected doc AND demote the one it replaces (in one step):
 akm import ./notes/modern-guide.md --supersedes knowledge/legacy-guide
 
-# Route the write to a specific writable stash:
-akm import ./docs/auth-flow.md --target team-stash
+# Route the write to a specific writable bundle:
+akm import ./docs/auth-flow.md --target team-bundle
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--name` | Optional knowledge name. Defaults to the source filename, URL path, or a slug from stdin content |
 | `--force` | Overwrite an existing knowledge document with the same name |
-| `--target <name>` | Override the write destination. Accepts a source name from your config; falls back to `defaultWriteTarget` then the working stash. |
+| `--target <name>` | Override the write destination. Accepts a source name from your config; falls back to `defaultWriteTarget` then the working bundle. |
 | `--xref <ref>` | Cross-reference ref merged into the document's `xrefs:` frontmatter list. Repeatable. A document without frontmatter gains a block; a document with valid frontmatter keeps every existing key and value and gets the refs dedupe-appended (never a nested second block). Each ref must resolve in the write target or a configured source; an unresolvable ref fails with exit 2 before anything is written. If the document's existing frontmatter is not a parseable YAML mapping, the import fails (exit 2) rather than rewriting the block lossily — fix the frontmatter or import without `--xref`, which preserves the file verbatim. |
 | `--supersedes <ref>` | Ref of an existing asset this document corrects. Repeatable. Imports the correction with the old ref merged into its `xrefs:` AND demotes the old asset (`beliefState: superseded` + `supersededBy: [<new ref>]`, a metadata-only frontmatter edit), then reindexes it. Same validation (including the self-supersede rejection), skipped-demotion (`applied: false`), idempotence, and git-boundary-commit behaviour as on `remember` (see above). |
 
@@ -1339,7 +1339,7 @@ preserves it byte-for-byte.
 
 ### feedback
 
-Record positive or negative feedback for any indexed stash asset. Feedback
+Record positive or negative feedback for any indexed bundle asset. Feedback
 influences utility scores during the next index run, causing highly-rated
 assets to rank higher in search results over time.
 
@@ -1415,7 +1415,7 @@ cooperating processes, set those env vars consistently across them.
 
 ### registry
 
-Manage stash registries. The `registry` command has three subcommands: `list`,
+Manage bundle registries. The `registry` command has three subcommands: `list`,
 `add`, and `remove`. Searching registries is `akm search --from registry`
 (0.9.0: `registry search` was dropped in favor of it — see [search](#search)).
 
@@ -1507,7 +1507,7 @@ Subcommands:
 | `list` | List current configuration |
 | `set <key> <value>` | Set one config key |
 | `unset <key>` | Unset an optional key, or a whole `embedding`/engine section |
-| `path` | Show paths to config, stash, cache, and index. `--all` prints every path; without it, just the config path. Load-bearing: `config path` is the one subcommand the CLI still allows to run when the on-disk config itself fails to load, so you always have a way to locate a broken config. |
+| `path` | Show paths to config, bundle, cache, and index. `--all` prints every path; without it, just the config path. Load-bearing: `config path` is the one subcommand the CLI still allows to run when the on-disk config itself fails to load, so you always have a way to locate a broken config. |
 
 `set` and `unset` accept `--silent` to suppress the post-write config dump on
 stdout (the write still happens and errors still print) — use it from hooks
@@ -1522,16 +1522,21 @@ See [configuration.md](configuration.md) for details.
 
 ### help
 
-Print focused help topics. Currently the only subcommand is `migrate`, which
-prints release notes and migration guidance for a specific version so you can
-review what changed — and what to do about it — without leaving the terminal.
+Print focused help topics: the sectioned command overview, agent usage
+instructions, or a release's migration guidance.
 
 ```sh
+akm help                       # Sectioned command overview (same as `akm --help`)
+akm help agents                # Agent-facing usage instructions
 akm help migrate 0.6.0         # Notes for a specific release
 akm help migrate v0.6.0        # v-prefix accepted
 akm help migrate v0.6.0-rc1    # Prereleases normalize to the stable note
 akm help migrate latest        # Resolve against the most recent CHANGELOG entry
 ```
+
+Bare `akm help` prints the same sectioned overview as `akm --help` and exits
+`0` — this is the one group where a bare invocation is a complete request,
+not the canonical bare-group usage error.
 
 Migration notes live as one markdown file per release in
 [`docs/migration/release-notes/`](../migration/release-notes/). Adding notes for a
@@ -1577,7 +1582,7 @@ service's config; reach for `secret` when one value *is* an auth credential.
 Manage `.env`-backed **environment files** — a group of related **configuration**
 for an app or service (URLs, feature flags, and any credentials it needs),
 loaded together. Each `env` asset is an entire `.env` file stored under `env/`
-in your stash (mode 0600). Values may or may not be sensitive; **akm protects
+in your bundle (mode 0600). Values may or may not be sensitive; **akm protects
 them all the same** — key *names* are discoverable; values and comment text
 never appear in structured output (comments routinely contain commented-out
 credentials, so they are treated like values). akm does **not** manage
@@ -1602,11 +1607,11 @@ akm does not manage individual keys — edit the `.env` file directly (`$EDITOR
 
 Env mutations (`create`, `remove`) pick their write destination the same way
 every other write command does: an explicit `--target <source>` wins, else
-`defaultWriteTarget`, else the working stash. The chosen source must be
+`defaultWriteTarget`, else the working bundle. The chosen source must be
 writable — a non-writable `--target`/`defaultWriteTarget` fails with a
 `ConfigError` before anything is written — and on a git-backed writable target
 the mutation lands in a single boundary commit (filesystem targets are
-committed by `akm sync`; `env/` stays out of git when your stash `.gitignore`
+committed by `akm sync`; `env/` stays out of git when your bundle `.gitignore`
 excludes it). Reads (`list`, `path`, `run`, `export`) still span all configured
 sources and are unchanged.
 
@@ -1614,7 +1619,7 @@ Subcommands:
 
 | Subcommand | Description |
 | --- | --- |
-| `list` | List all env files across all stashes with key names only |
+| `list` | List all env files across all bundles with key names only |
 | `run <ref> -- <command>` | Run a command with the env injected. `--only` / `--except` filter which keys are injected; `--clean` starts from a minimal inherited environment |
 | `create <name>` | Create an env file. Empty by default; seed with `--from-file <path>` or `--from-stdin` |
 | `path <ref>` | Print the absolute env file path (Docker `_FILE` / `--env-file` / direct editing). `--quiet` suppresses the warning |
@@ -1645,7 +1650,7 @@ environment (PATH/HOME/locale/terminal basics) instead of inheriting the full
 parent environment; use `--inherit KEY1,KEY2` to pass specific parent vars
 through in clean mode. Before spawning, the injected key names are scanned for
 known process-hijacking variables (`LD_PRELOAD`, `PATH`, `GIT_CONFIG_*`, ...):
-a first-party stash warns and proceeds; a third-party-sourced stash is refused.
+a first-party bundle warns and proceeds; a third-party-sourced bundle is refused.
 
 > The single-key `run <ref>/KEY` form was removed. To inject one value, store it
 > as a [secret](#secret) and use `akm secret run secrets/<name> <VAR> -- …`, or
@@ -1674,7 +1679,7 @@ akm env create prod --target team         # write to the `team` source
 | `--from-file <path>` | Seed the env file from an existing `.env` at this path |
 | `--from-stdin` | Seed the env file from stdin |
 | `--sensitive` | Exclude this env file from `env list` output and the search index |
-| `--target <source>` | Override the write destination (falls back to `defaultWriteTarget` then the working stash) |
+| `--target <source>` | Override the write destination (falls back to `defaultWriteTarget` then the working bundle) |
 
 Creates `env/prod.env` with mode 0600. Empty `create` is a no-op if the file
 exists; `--from-file`/`--from-stdin` **refuse to clobber** an existing env (remove
@@ -1686,7 +1691,7 @@ it first). `--sensitive` hides the file from `env list` and the search index.
 akm env list
 ```
 
-One entry per env file across all configured stashes. The structured shape is
+One entry per env file across all configured bundles. The structured shape is
 `envs: [{ ref, keys }]` — values are never included and the absolute `path` is
 omitted from JSON output. Text output uses Markdown sections:
 
@@ -1735,7 +1740,7 @@ Manage **secrets** — a single sensitive value used on its own for
 service-account JSON. Where an [env](#env) file holds a *group* of related
 configuration and exposes key *names*, a secret is *one* value and its **entire
 file is the value**, so only the secret's *name* is ever surfaced. Each secret
-is a mode-0600 file under `secrets/` in your stash.
+is a mode-0600 file under `secrets/` in your bundle.
 
 This mirrors Docker's secret model (one value per file, mounted at
 `/run/secrets/<name>`, read at runtime, never baked into the image or env at
@@ -1756,17 +1761,17 @@ Subcommands:
 
 | Subcommand | Description |
 | --- | --- |
-| `list` | List all secrets across all stashes by name (contents never shown) |
+| `list` | List all secrets across all bundles by name (contents never shown) |
 | `set <ref>` | Create/overwrite a secret — value from stdin (default), `--from-file`, or `--from-env` |
 | `run <ref> <VAR> -- <command>` | Run a command with the secret value injected into `$VAR` in the child only |
 
 > **Removed in 0.9.0: `secret path` and `secret remove`.** The two resolved a
-> ref through *different* stash-selection logic — `path` through the read-side,
+> ref through *different* bundle-selection logic — `path` through the read-side,
 > all-sources resolver and `remove` through the write-target resolver — so for a
-> ref present in more than one stash they could silently name different files:
+> ref present in more than one bundle they could silently name different files:
 > you could inspect one secret and delete another. Both now exit 2 with
-> `Unknown command`. A ref's file lives at `<stash>/secrets/<name>` (run
-> `akm sources list` for stash roots); locate or delete it there directly, or
+> `Unknown command`. A ref's file lives at `<bundle>/secrets/<name>` (run
+> `akm bundle list` for bundle roots); locate or delete it there directly, or
 > use `akm secret run` to consume the value without touching disk.
 
 #### secret set
@@ -1790,7 +1795,7 @@ of multi-line material. Writes are atomic (mode 0600) under an exclusive
 
 `secret set` selects its write destination like every other write command: an
 explicit `--target <source>` wins, else `defaultWriteTarget`, else the working
-stash. The chosen source must be writable (a non-writable target fails with a
+bundle. The chosen source must be writable (a non-writable target fails with a
 `ConfigError`), and on a git-backed writable target the mutation lands in a
 single boundary commit. Reads (`list`, `run`) still span all configured sources.
 
@@ -1812,7 +1817,7 @@ through in clean mode.
 > Secrets injected via `secret run` live in the child process environment for
 > its entire lifetime and are visible to all subprocesses it spawns. For
 > long-lived daemons, point the process at the secret file directly
-> (`<stash>/secrets/<name>`) so the value never sits in an environment
+> (`<bundle>/secrets/<name>`) so the value never sits in an environment
 > variable. Avoid commands that print the environment in agent contexts unless
 > you explicitly intend to expose the child environment.
 
@@ -1878,7 +1883,7 @@ These commands define the self-improvement and agent-dispatch surface.
 
 ### agent
 
-Dispatch a configured agent engine, optionally embodying a stash agent asset.
+Dispatch a configured agent engine, optionally embodying a bundle agent asset.
 
 ```sh
 akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [--command <ref>] [--workflow <ref>] [--timeout-ms <ms>] [--cwd <path>]
@@ -1886,7 +1891,7 @@ akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [-
 
 | Argument / Flag | Description |
 | --- | --- |
-| `<agent-ref>` | Optional agent asset ref (e.g. `agents/code-reviewer`). Loads system prompt, model, and tool policy from the stash asset. |
+| `<agent-ref>` | Optional agent asset ref (e.g. `agents/code-reviewer`). Loads system prompt, model, and tool policy from the bundle asset. |
 | `--engine <name>` | Agent engine to use; defaults to `defaults.engine` |
 | `--prompt <text>` | Task prompt to pass to the agent |
 | `--model <model>` | Model override. Accepts aliases (`opus`, `sonnet`, `haiku`) or exact platform model IDs. Overrides the model in the agent asset. Resolved per platform: `opencode/claude-opus-4-7` for opencode, `claude-opus-4-7` for claude. |
@@ -1895,7 +1900,7 @@ akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [-
 | `--timeout-ms <ms>` | Override the agent CLI timeout in milliseconds |
 | `--cwd <path>` | Working directory for the spawned agent (defaults to the current directory) |
 
-When `<agent-ref>` is provided, akm loads the stash agent asset and extracts
+When `<agent-ref>` is provided, akm loads the bundle agent asset and extracts
 its system prompt, `modelHint`, and `toolPolicy`. The `--model` flag wins
 over any model specified in the asset.
 
@@ -1923,7 +1928,7 @@ akm agent --engine opencode
 # Dispatch with a prompt only:
 akm agent --engine claude --prompt "summarize recent changes"
 
-# Embody a stash agent asset:
+# Embody a bundle agent asset:
 akm agent agents/code-reviewer --engine opencode --prompt "review src/"
 
 # Model override with alias:
@@ -1942,7 +1947,7 @@ when one exists.
 
 ### lint
 
-Scan stash markdown files for structural issues: unquoted colons, missing
+Scan bundle markdown files for structural issues: unquoted colons, missing
 `updated` field, orphaned stubs, placeholder stubs, missing `name`/`type`,
 stale paths, and broken refs — in body text and in
 `refs`/`xrefs`/`supersededBy`/`contradictedBy` frontmatter. Also reports
@@ -1958,14 +1963,14 @@ surface now that `akm workflow validate` is gone).
 akm lint                        # Report findings; exits 0 regardless
 akm lint --fix                  # Auto-fix Tier-1 issues in place
 akm lint --type workflows       # Only lint one asset type
-akm lint --dir ~/other-stash    # Override the stash root (default: from config)
+akm lint --dir ~/other-bundle    # Override the bundle root (default: from config)
 akm lint --fail-on-flagged      # CI-friendly: exit non-zero when summary.flagged > 0
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--fix` (alias `--auto-fix`) | Apply auto-fixes in place |
-| `--dir` | Override the stash root directory (default: from config) |
+| `--dir` | Override the bundle root directory (default: from config) |
 | `--type` | Only lint assets of this type (e.g. `workflows`, `tasks`, `memories`) |
 | `--fail-on-flagged` | Exit non-zero when `summary.flagged > 0`. Default: exit 0 regardless of findings. |
 
@@ -1983,14 +1988,14 @@ akm improve memory
 akm improve skills/code-review
 akm improve workflows/release-checklist --task "reduce duplication"
 akm improve --skip-if-locked           # for high-frequency scheduled runs: skip (exit 0) if a run is already in progress
-akm improve --no-sync                  # skip the end-of-run git commit entirely (default: on for git-backed stashes)
+akm improve --no-sync                  # skip the end-of-run git commit entirely (default: on for git-backed bundles)
 akm improve --sync --no-push           # commit only, skip the push after it
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--task` | Optional extra guidance for this improvement pass |
-| `--dry-run` | Show the schema-v2 result on stdout without creating config, data, state, cache, stash, log, or result artifacts. Dry-run results are never persisted, including on errors or signals. |
+| `--dry-run` | Show the schema-v2 result on stdout without creating config, data, state, cache, bundle, log, or result artifacts. Dry-run results are never persisted, including on errors or signals. |
 | `--bundle` | Select the proposal/write target; when the ref scope is bundle-qualified, it must name the same bundle |
 | `--limit <n>` | Maximum number of assets to process (highest utility first) |
 | `--timeout-ms <ms>` | Wall-clock budget for the run (default: `7200000` = 2 hours) |
@@ -1998,10 +2003,10 @@ akm improve --sync --no-push           # commit only, skip the push after it
 | `--strategy <name>` | Override the active improve strategy (a built-in or entry under `improve.strategies`) |
 | `--json-to-stdout` | Also emit the full persisted JSON result on stdout for a live run. Without this flag, stdout stays empty. Dry-runs always emit their result and are never persisted. |
 | `--skip-if-locked` | If another improve run already holds the lock, skip gracefully (exit 0) instead of failing with "already running" (exit 78). Use for high-frequency scheduled runs so they don't pile up failures while a longer run is in progress. |
-| `--sync` / `--no-sync` | Commit (and optionally push) the git-backed primary stash when the run finishes. Default: on for git-backed stashes (per profile config). |
+| `--sync` / `--no-sync` | Commit (and optionally push) the git-backed primary bundle when the run finishes. Default: on for git-backed bundles (per profile config). |
 | `--push` / `--no-push` | Push after the end-of-run sync commit when writable with a remote configured. `--no-push` commits only, skipping the push. Default: per profile config (`true`). `sync.push` stays outside the autonomy gate — this is a per-run opt-out, not a default change. |
 
-`akm improve` is the public entrypoint for whole-stash, type-scoped, and
+`akm improve` is the public entrypoint for whole-bundle, type-scoped, and
 ref-scoped improvement. It owns the memory-cleanup and lesson-distillation
 flow. A qualified scope such as `team//skills/code-review` selects that bundle;
 a different explicit `--bundle` is a usage error. Inspecting or re-minting the
@@ -2140,7 +2145,7 @@ List proposal queue entries.
 
 ```sh
 akm proposal list
-akm proposal list --queue team-stash
+akm proposal list --queue team-bundle
 akm proposal list --status pending|accepted|rejected|reverted
 akm proposal list --ref skills/deploy
 ```
@@ -2165,7 +2170,7 @@ Inspect a queued proposal and its validation findings.
 
 ```sh
 akm proposal show <id>
-akm proposal show <id> --queue team-stash
+akm proposal show <id> --queue team-bundle
 ```
 
 #### proposal accept
@@ -2177,8 +2182,8 @@ UUID, an 8-character UUID prefix, or an asset ref.
 akm proposal accept <id>
 akm proposal accept 7c115132                  # 8-char UUID prefix
 akm proposal accept skills/akm-dream           # Asset ref
-akm proposal accept <id> --queue team-stash
-akm proposal accept <id> --target team-stash  # Must match a recorded target
+akm proposal accept <id> --queue team-bundle
+akm proposal accept <id> --target team-bundle  # Must match a recorded target
 akm proposal accept --generator reflect -y    # Bulk-accept by generator (requires -y)
 akm proposal accept --generator reflect --max-diff-lines 50 -y    # ...only if <= 50 lines
 akm proposal accept --generator reflect --older-than 7 --dry-run  # Preview a bulk accept
@@ -2205,7 +2210,7 @@ UUID prefix, or an asset ref.
 
 ```sh
 akm proposal reject <id> --reason "duplicates existing workflow"
-akm proposal reject <id> --queue team-stash --reason "duplicates existing workflow"
+akm proposal reject <id> --queue team-bundle --reason "duplicates existing workflow"
 akm proposal reject 7c115132 --reason "not ready"      # 8-char UUID prefix
 akm proposal reject skills/my-skill --reason "not ready" # Asset ref
 akm proposal reject --generator reflect --reason "noisy" -y  # Bulk-reject by generator
@@ -2235,8 +2240,8 @@ to `reverted` and appends a `proposal_reverted` event to the audit log.
 ```sh
 akm proposal revert <id>
 akm proposal revert skills/akm-dream           # Asset ref
-akm proposal revert <id> --queue team-stash
-akm proposal revert <id> --target team-stash  # Must match a recorded target
+akm proposal revert <id> --queue team-bundle
+akm proposal revert <id> --target team-bundle  # Must match a recorded target
 ```
 
 | Flag | Description |
@@ -2258,8 +2263,8 @@ Preview the proposed change against the live asset. Accepts a full UUID, an
 akm proposal diff <id>
 akm proposal diff skills/akm-dream             # Asset ref form
 akm proposal diff 7c115132                    # 8-char UUID prefix
-akm proposal diff <id> --queue team-stash
-akm proposal diff <id> --target team-stash    # Must match a recorded target
+akm proposal diff <id> --queue team-bundle
+akm proposal diff <id> --target team-bundle    # Must match a recorded target
 ```
 
 | Flag | Description |
@@ -2307,7 +2312,7 @@ prompts. Negative feedback requires a reason by default.
 
 `akm task` is the scheduling surface for workflows, agent prompts, and
 shell commands. It manages on-disk task definitions under
-`<stash>/tasks/<id>.yml` and reconciles them with the OS-native scheduler
+`<bundle>/tasks/<id>.yml` and reconciles them with the OS-native scheduler
 (cron / launchd / schtasks). Only version-2 task YAML is discovered. The
 group is `add | run | sync | doctor | history` — there is no `list` or
 `remove`; use `akm search --type task` / `akm show tasks/<id>` to inspect,
@@ -2356,13 +2361,14 @@ the AKM storage path or installed runtime path therefore requires an explicit
 `akm task sync --rebind`; setup does not silently migrate those entries.
 
 **Bundle targeting (`--target <bundle>`).** By default every subcommand
-operates on the primary/default bundle. `add`, `history`, `sync`, `doctor`,
-and `run` all accept `--target <bundle>` to schedule and reconcile tasks that
-live in another configured bundle:
+operates on the primary/default bundle. `add`, `history`, `sync`, and `run`
+all accept `--target <bundle>` to schedule and reconcile tasks that live in
+another configured bundle (`doctor` reports scheduler-wide state and takes no
+`--target`):
 
 ```sh
-akm task add nightly --schedule "@daily" --command "akm improve" --target team-stash
-akm task sync --target team-stash              # reconcile only that bundle
+akm task add nightly --schedule "@daily" --command "akm improve" --target team-bundle
+akm task sync --target team-bundle             # reconcile only that bundle
 ```
 
 A non-default bundle is recorded in the installed scheduler entry as a

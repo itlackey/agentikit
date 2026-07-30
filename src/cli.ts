@@ -162,7 +162,7 @@ function printSetupTtyHint(result: { bundleDir?: string; configPath?: string }):
   console.error(
     plainize(
       `\n✓ Bundle created at ${result.bundleDir}\n` +
-        `  Next: \`akm bundle add github:itlackey/akm-stash\` then \`akm index\` to populate the bundle.`,
+        '  Next: `akm bundle add <source>`, `akm index`, `akm search "<query>"`, `akm help agents`',
     ),
   );
 }
