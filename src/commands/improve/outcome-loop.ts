@@ -65,6 +65,13 @@
  */
 
 import type { Database } from "../../storage/database";
+import {
+  type AssetOutcomeRow,
+  getAllAssetOutcomes,
+  getAssetOutcome,
+  getOutcomeScoresByRef,
+  upsertAssetOutcome,
+} from "../../storage/repositories/outcome-repository";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -115,17 +122,14 @@ export const OUTCOME_SCORE_MAX = 1.5;
 export const DIVERSITY_FLOOR_FRACTION = 0.1;
 
 // ── Row shape ─────────────────────────────────────────────────────────────────
+//
+// AssetOutcomeRow moved verbatim to storage/repositories/outcome-repository.ts
+// (#672 part 2) — re-exported here so existing importers of this module
+// resolve unchanged (see that file's module-level note for why the row type
+// lives there rather than here: it keeps the repository free of any import
+// back into this file, avoiding a 2-node import cycle).
 
-export interface AssetOutcomeRow {
-  asset_ref: string;
-  last_retrieved_at: number;
-  retrieval_count: number;
-  expected_retrieval_rate: number;
-  negative_feedback_count: number;
-  accepted_change_count: number;
-  outcome_score: number;
-  updated_at: number;
-}
+export type { AssetOutcomeRow };
 
 // ── Writer ────────────────────────────────────────────────────────────────────
 
@@ -237,90 +241,31 @@ export function updateAssetOutcome(db: Database, inputs: OutcomeUpdateInputs): O
     outcomeScore = Math.min(OUTCOME_SCORE_MAX, Math.max(OUTCOME_SCORE_MIN, newScore));
   }
 
-  // Upsert the row. `review_pressure` is intentionally omitted from both the
-  // INSERT column list and the ON CONFLICT SET clause: the column's DEFAULT 0
-  // seeds fresh rows, and omitting it from SET leaves an existing row's value
-  // untouched on update (never written going forward). The column itself is
-  // dropped in migration 018.
-  db.prepare(
-    `INSERT INTO asset_outcome
-       (asset_ref, last_retrieved_at, retrieval_count, expected_retrieval_rate,
-        negative_feedback_count, accepted_change_count,
-        outcome_score, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(asset_ref) DO UPDATE SET
-       last_retrieved_at      = excluded.last_retrieved_at,
-       retrieval_count        = excluded.retrieval_count,
-       expected_retrieval_rate= excluded.expected_retrieval_rate,
-       negative_feedback_count= excluded.negative_feedback_count,
-       accepted_change_count  = excluded.accepted_change_count,
-       outcome_score          = excluded.outcome_score,
-       updated_at             = excluded.updated_at`,
-  ).run(
-    inputs.ref,
-    inputs.lastRetrievedAt,
-    inputs.currentRetrievalCount,
+  // Upsert the row. See `upsertAssetOutcome` in
+  // storage/repositories/outcome-repository.ts (#672 part 2) for the SQL text
+  // and the `review_pressure` omission rationale — this call site is
+  // unchanged in intent, just no longer inline.
+  upsertAssetOutcome(db, {
+    ref: inputs.ref,
+    lastRetrievedAt: inputs.lastRetrievedAt,
+    retrievalCount: inputs.currentRetrievalCount,
     expectedRetrievalRate,
-    inputs.negativeFeedbackCount,
-    inputs.acceptedChangeCount,
+    negativeFeedbackCount: inputs.negativeFeedbackCount,
+    acceptedChangeCount: inputs.acceptedChangeCount,
     outcomeScore,
-    now,
-  );
+    updatedAt: now,
+  });
 
   return { outcomeScore, isNewRow };
 }
 
 // ── Reader ────────────────────────────────────────────────────────────────────
+//
+// getAssetOutcome / getAllAssetOutcomes / getOutcomeScoresByRef moved verbatim
+// to storage/repositories/outcome-repository.ts (#672 part 2) — re-exported
+// here so existing importers of this module resolve unchanged.
 
-/**
- * Load the outcome row for one asset, or `undefined` if not yet written.
- */
-export function getAssetOutcome(db: Database, ref: string): AssetOutcomeRow | undefined {
-  const row = db
-    .prepare(
-      `SELECT asset_ref, last_retrieved_at, retrieval_count, expected_retrieval_rate,
-              negative_feedback_count, accepted_change_count,
-              outcome_score, updated_at
-       FROM asset_outcome WHERE asset_ref = ?`,
-    )
-    .get(ref);
-  return row == null ? undefined : (row as AssetOutcomeRow);
-}
-
-/**
- * Load ALL asset_outcome rows. Used for the proxy-adequacy tripwire computation.
- */
-export function getAllAssetOutcomes(db: Database): AssetOutcomeRow[] {
-  return db
-    .prepare(
-      `SELECT asset_ref, last_retrieved_at, retrieval_count, expected_retrieval_rate,
-              negative_feedback_count, accepted_change_count,
-              outcome_score, updated_at
-       FROM asset_outcome ORDER BY asset_ref`,
-    )
-    .all() as AssetOutcomeRow[];
-}
-
-/**
- * Build a Map<ref, outcome_score> for a set of refs in one query.
- * Used by `salience.ts` to populate `outcomeSalience`.
- */
-export function getOutcomeScoresByRef(db: Database, refs: string[]): Map<string, number> {
-  const result = new Map<string, number>();
-  if (refs.length === 0) return result;
-  const CHUNK = 500;
-  for (let i = 0; i < refs.length; i += CHUNK) {
-    const chunk = refs.slice(i, i + CHUNK);
-    const placeholders = chunk.map(() => "?").join(",");
-    const rows = db
-      .prepare(`SELECT asset_ref, outcome_score FROM asset_outcome WHERE asset_ref IN (${placeholders})`)
-      .all(...chunk) as Array<{ asset_ref: string; outcome_score: number }>;
-    for (const row of rows) {
-      result.set(row.asset_ref, row.outcome_score);
-    }
-  }
-  return result;
-}
+export { getAllAssetOutcomes, getAssetOutcome, getOutcomeScoresByRef };
 
 // ── outcomeSalience projection ────────────────────────────────────────────────
 

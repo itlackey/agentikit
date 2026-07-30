@@ -373,6 +373,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   removed. The contributor stays in the codebase (unwired) for a future
   gated, outcome-backed experiment.
 
+- **Internal: `asset_salience` / `asset_outcome` state.db access moved behind
+  `src/storage/repositories/{salience,outcome}-repository.ts`** (#672 part 2).
+  Mirrors the existing state.db repository precedents
+  (`proposals-repository.ts`, `improve-runs-repository.ts`,
+  `events-repository.ts`): the raw SQL, row-mapping, and the #644
+  encoding-provenance CASE guards are extracted verbatim, only relocated —
+  `commands/improve/salience.ts` and `outcome-loop.ts` re-export the moved
+  functions, so no importer or test churns. A new `state-table-sql` rule in
+  `scripts/lint-repository-sql.ts` now fails the build if raw
+  `asset_salience`/`asset_outcome` SQL reappears outside the repository
+  directory (or `core/state/migrations.ts`). Not a user-visible behavior
+  change: `rank_score`, `outcome_score`, and everything `improve`/`health`
+  compute from them are identical.
+
 ### Fixed
 
 - **The compiled standalone binary can run `akm migrate`.** Release binaries
