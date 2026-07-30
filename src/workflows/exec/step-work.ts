@@ -260,6 +260,21 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
   // collide on identity — an authoring error caught HERE, deterministically.
   const unitIds = items.map((item) => unitIdFor(template.id, item, isFanOut));
   if (isFanOut) {
+    // A null/undefined fan-out item is producer garbage — there is nothing to
+    // hand the unit as its work item. The pre-unification format rejected it
+    // incidentally (substituting `${{ item }}` failed); with items attached as
+    // context instead of spliced, nothing would stop a unit from being
+    // dispatched with "Item: null", so the rejection is now explicit. Same
+    // fail-before-dispatch posture as the duplicate check below.
+    const nullIndex = items.findIndex((item) => item === null || item === undefined);
+    if (nullIndex !== -1) {
+      return {
+        ok: false,
+        error:
+          `Step "${plan.stepId}" fan-out list contains a null item (index ${nullIndex}). ` +
+          `Every item must be a concrete value — fix the producing step's output.`,
+      };
+    }
     const firstIndexByCanonical = new Map<string, number>();
     for (let i = 0; i < items.length; i++) {
       const canonical = canonicalJson(items[i]) ?? "null";
@@ -338,6 +353,14 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
     // re-dispatch and step-level failure reduction, not a COMPLETED unit's
     // inputs/output, so a completed row stays valid across policy changes.
     //
+    // `gateFeedback` IS included (conditionally, so a no-feedback unit's
+    // preimage is byte-identical to before): it is appended to the prompt by
+    // `buildUnitPrompt`, so a gate loop's retry is materially a different ask
+    // than the rejected attempt — omitting it made loop 1 and loop 2 journal
+    // identical hashes for different prompts, breaking the "changed inputs ⇒
+    // changed hash" audit contract. Replay-safe: feedback is re-derived from
+    // the journaled gate decision, so a resumed retry re-hashes identically.
+    //
     // Ambient config is DELIBERATELY excluded — the model-alias table, the
     // resolved backend/connection, and the working directory (`ctx.workDir` /
     // process.cwd()) are NOT plan-frozen. The frozen plan is the identity
@@ -357,6 +380,7 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
           schema: template.schema ?? null,
           env: template.env ?? null,
           isolation: template.isolation ?? "none",
+          ...(input.gateFeedback ? { gateFeedback: input.gateFeedback } : {}),
         }),
       )
       .digest("hex");

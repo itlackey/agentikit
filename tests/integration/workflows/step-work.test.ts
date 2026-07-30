@@ -359,19 +359,12 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
     }
   });
 
-  test("gate feedback changes the prompt (SUSPECTED SRC BUG: it does NOT change the input hash)", () => {
-    // SUSPECTED SRC BUG: `computeStepWorkList`'s hashVersion 4 hashes the
-    // STRUCTURAL inputs (template bytes/item/inputs/params/dispatch/
-    // invocation/schema/env/isolation) rather than the resolved prompt
-    // string, and does not fold `gateFeedback` into that hashed envelope —
-    // unlike the pre-unification hashVersion 3, which hashed the fully
-    // resolved prompt (feedback included) directly. The prompt genuinely
-    // differs between loop 1 and loop 2 (asserted below); the input hash does
-    // not, even though re-dispatch still happens correctly in practice
-    // (loop >= 2 journals under a DIFFERENT journal key, `<unitId>~l<loop>`,
-    // so it never collides with loop 1's row regardless of hash equality).
-    // Reported to the orchestrating agent, not fixed here (out of scope for a
-    // test port) — see the identical note in `gate-artifacts.test.ts`.
+  test("gate feedback changes the prompt AND the input hash", () => {
+    // `gateFeedback` is folded into the hashed envelope (conditionally, so a
+    // no-feedback unit's preimage is unchanged): the feedback is appended to
+    // the prompt, so a gate loop's retry is materially a different ask than
+    // the rejected attempt — "changed inputs ⇒ changed hash". Replay-safe
+    // because feedback is re-derived from the journaled gate decision.
     const step = soloStep("Do the work.");
     const base = { runId: "r", params: {}, stepOutputs: {}, engines: FROZEN_ENGINES };
     const loop1 = computeStepWorkList(step, base);
@@ -392,7 +385,7 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
       expect(u2.resolved.prompt).toContain("Add analysis.");
       expect(u2.resolved.prompt).toContain("- thoroughness");
       expect(u1.resolved.prompt).not.toContain("Add analysis.");
-      expect(u2.resolved.inputHash).toBe(u1.resolved.inputHash);
+      expect(u2.resolved.inputHash).not.toBe(u1.resolved.inputHash);
     }
   });
 });

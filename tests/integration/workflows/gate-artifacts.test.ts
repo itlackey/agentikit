@@ -413,20 +413,13 @@ describe("gate max_loops — evaluator-optimizer re-execution with feedback", ()
       const second = byId.get("work:solo~l2");
       expect(first?.status).toBe("completed");
       expect(second?.status).toBe("completed");
-      // Re-dispatch here is driven by the journal KEY changing (loop >= 2
-      // journals under `<unitId>~l<loop>`, a distinct row from the base
-      // attempt), not by the input hash — see the SUSPECTED SRC BUG note
-      // below: this used to also be hash-driven (pre-unification hashVersion
-      // 3 hashed the fully-resolved prompt string, which embeds the gate
-      // feedback), but computeStepWorkList's hashVersion 4 hashes the
-      // STRUCTURAL inputs (template bytes/item/inputs/params/dispatch/
-      // invocation/schema/env/isolation) and does not include gateFeedback,
-      // so loop 1 and loop 2 now journal the SAME input_hash despite a
-      // materially different prompt. Reported, not fixed (out of scope for a
-      // test port) — flagged to the orchestrating agent.
+      // Loop 2 is a materially different ask (the prompt carries the gate
+      // feedback), and the hashed envelope folds gateFeedback in — so the
+      // journal shows BOTH a distinct key (~l2) and a distinct hash:
+      // "changed inputs => changed hash" holds across gate loops.
       expect(first?.input_hash).toBeTruthy();
       expect(second?.input_hash).toBeTruthy();
-      expect(second?.input_hash).toBe(first?.input_hash);
+      expect(second?.input_hash).not.toBe(first?.input_hash);
       // Both gate evaluations journaled with their verdicts.
       expect(JSON.parse(byId.get("work.gate:l1")?.result_json ?? "null")).toEqual({
         complete: false,
@@ -474,15 +467,13 @@ describe("gate max_loops — evaluator-optimizer re-execution with feedback", ()
     // `${{ … }}` — no re-resolution, no leak of a resolved value.
     expect(prompts[1]).toContain("Now handle ${{ params.secret }} and ${{ steps.nope.output }}.");
     expect(prompts[1]).toContain("- reference ${{ params.secret }} directly");
-    // Re-dispatch is journal-KEY-driven (the ~l2 suffix), not hash-driven —
-    // SUSPECTED SRC BUG (see the identical note above): computeStepWorkList's
-    // hashVersion 4 does not fold gateFeedback into the input hash, so loop 1
-    // and loop 2 journal the SAME input_hash despite different prompts.
+    // The retry differs from the rejected attempt in both journal key (~l2)
+    // and input hash — gateFeedback is part of the hashed envelope.
     await withWorkflowRunsRepo((repo) => {
       const rows = repo.getUnitsForStep(RUN_ID, "work");
       const byId = new Map(rows.map((r) => [r.unit_id, r]));
       expect(byId.get("work:solo~l2")?.input_hash).toBeTruthy();
-      expect(byId.get("work:solo~l2")?.input_hash).toBe(byId.get("work:solo")?.input_hash);
+      expect(byId.get("work:solo~l2")?.input_hash).not.toBe(byId.get("work:solo")?.input_hash);
     });
   });
 
@@ -784,14 +775,11 @@ describe("gate max_loops — crash-resume seeds the loop from the journal", () =
       const l2 = byId.get("work:solo~l2");
       expect(l2?.status).toBe("completed");
       expect(l2?.input_hash).toBe(expected.inputHash);
-      // SUSPECTED SRC BUG (see the module-level note in the earlier describe
-      // block): computeStepWorkList's hashVersion 4 does not fold
-      // gateFeedback into the input hash, so loop 2's hash is IDENTICAL to
-      // loop 1's here despite the different (feedback-carrying) prompt — both
-      // this engine-driven value and `expected.inputHash` (the brief/report
-      // computation) agree on that same hash, which is the cross-surface
-      // parity property this test otherwise pins.
-      expect(l2?.input_hash).toBe(beforeUnit?.input_hash);
+      // gateFeedback is folded into the hashed envelope, so loop 2's hash
+      // differs from loop 1's — and the cross-surface parity property above
+      // (`expected.inputHash`, the brief/report computation, === the
+      // engine-journaled value) is pinned on the feedback-carrying hash.
+      expect(l2?.input_hash).not.toBe(beforeUnit?.input_hash);
 
       // gate:l2 journaled complete.
       expect(JSON.parse(byId.get("work.gate:l2")?.result_json ?? "null")).toEqual({ complete: true, missing: [] });
@@ -992,17 +980,15 @@ describe("typed artifacts + gate max_loops — schema mismatches are retryable b
     await withWorkflowRunsRepo((repo) => {
       const byId = new Map(repo.getUnitsForStep(RUN_ID, "work").map((r) => [r.unit_id, r]));
       // Loop 2 journals under ~l2 (a distinct journal key) — loop 1's row is
-      // never clobbered. SUSPECTED SRC BUG (see the earlier describe block's
-      // note): computeStepWorkList's hashVersion 4 does not fold gateFeedback
-      // into the input hash, so the two attempts journal the SAME input_hash
-      // despite the feedback-carrying prompt differing.
+      // never clobbered — and carries a distinct hash, since the schema
+      // failure's gate feedback is folded into the hashed envelope.
       const first = byId.get("work:solo");
       const second = byId.get("work:solo~l2");
       expect(first?.status).toBe("completed");
       expect(second?.status).toBe("completed");
       expect(first?.input_hash).toBeTruthy();
       expect(second?.input_hash).toBeTruthy();
-      expect(second?.input_hash).toBe(first?.input_hash);
+      expect(second?.input_hash).not.toBe(first?.input_hash);
       // No judge ran on the schema-failed loop — the ONLY gate unit row is
       // loop 2's, where the artifact finally reached the judge.
       const gateIds = [...byId.keys()].filter((id) => id.startsWith("work.gate:")).sort();

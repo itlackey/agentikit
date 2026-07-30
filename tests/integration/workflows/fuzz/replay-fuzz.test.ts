@@ -154,6 +154,38 @@ describe("replay fuzz — duplicate canonical items fail before dispatch", () =>
   });
 });
 
+describe("replay fuzz — null fan-out items fail before dispatch", () => {
+  const seeds = fuzzSeeds(200);
+  test("a list containing null fails the work-list, naming the index", () => {
+    // Explicit work-list rejection (same posture as the duplicate check): the
+    // pre-unification format rejected a null item incidentally at `${{ item }}`
+    // resolution; with items attached as context there is nothing left to fail
+    // later, so computeStepWorkList names the producer bug up front.
+    for (const seed of seeds) {
+      withSeed(seed, () => {
+        const rng = new Rng(seed);
+        const base = distinctJsonValues(rng, rng.range(1, 6));
+        const nullIndex = rng.int(base.length + 1);
+        const withNull = [...base];
+        withNull.splice(nullIndex, 0, null);
+
+        const result = computeStepWorkList(STEP, {
+          runId: "r",
+          params: { items: withNull },
+          stepOutputs: {},
+          engines: ENGINES,
+        });
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error).toContain("null item");
+          expect(result.error).toContain(`index ${nullIndex}`);
+        }
+      });
+    }
+    expect(seeds.length).toBeGreaterThan(0);
+  });
+});
+
 // ── Executor-backed properties (isolated sqlite per iteration) ────────────────
 
 /** Seed a run + one pending step so the executor's journal has FK targets. */

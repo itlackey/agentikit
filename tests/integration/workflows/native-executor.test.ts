@@ -394,34 +394,31 @@ describe("executeStepPlan — fan-out item shapes (edge cases)", () => {
     });
   });
 
-  test("a null item is attached as literal `null` context and dispatches normally (SEMANTIC CHANGE)", async () => {
-    // SEMANTIC CHANGE (spec §2.3): the pre-unification version of this test
-    // asserted that a null item resolved `${{ item }}` to null and produced a
-    // deterministic `expression_error` that failed the step BEFORE dispatch.
-    // Item substitution is gone — the item is attached as structured context
-    // (`safeJson(null)` = `"null"`), never resolved as a reference, so there
-    // is nothing left to fail on. A null item now dispatches exactly like any
-    // other item. This is a behavioral REVERSAL worth flagging explicitly:
-    // previously "workflow fans out over a null item" was a hard failure;
-    // now it is a normal (if unusual) unit.
+  test("a null fan-out item fails the work-list BEFORE any dispatch", async () => {
+    // The pre-unification format rejected a null item incidentally (resolving
+    // `${{ item }}` failed). With items attached as context instead of
+    // spliced, the refactor briefly made a null item dispatch as a normal
+    // unit ("Item: null") — an accidental behavioral reversal. The rejection
+    // is now EXPLICIT in computeStepWorkList, same fail-before-dispatch
+    // posture as the duplicate-item check: a null item is producer garbage
+    // and names the producing step instead of burning an agent run on it.
     seedRun({ params: { files: [null] }, steps: [{ id: "review", title: "Review files" }] });
     const stepPlan = plan(FAN_OUT_WF).steps[0]!;
     let dispatches = 0;
-    const prompts: string[] = [];
     const result = await executeStepPlan(stepPlan, {
       runId: RUN_ID,
       workflowRef: "workflows/demo",
       params: { files: [null] },
       evidence: {},
-      dispatcher: async (req) => {
+      dispatcher: async () => {
         dispatches++;
-        prompts.push(req.prompt);
-        return { ok: true, text: "handled null" };
+        return { ok: true, text: "must never run" };
       },
     });
-    expect(dispatches).toBe(1);
-    expect(result.ok).toBe(true);
-    expect(prompts[0]).toContain("fan-out list:\nnull");
+    expect(dispatches).toBe(0);
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("null item");
+    expect(result.summary).toContain("index 0");
   });
 });
 
