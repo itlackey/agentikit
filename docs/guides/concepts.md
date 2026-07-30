@@ -277,10 +277,12 @@ akm lint          # confirms nothing dangles
 ```
 
 Moving an item between bundles is copy/import followed by deletion from the
-source — both the bundle and the concept identity change. (The `akm mv` command
-promises identity-preserving renames, but it implements prose-ref rewriting
-inverted, so 0.9.0 classifies it **Experimental** and outside the stability
-contract; the procedure above is the recommended one. See
+source — both the bundle and the concept identity change. (0.9.0 removed the
+`akm mv` command, which promised identity-preserving renames but implemented
+prose-ref rewriting inverted; the procedure above is the only one. To carry an
+asset's earned signal across a rename, the maintainer script
+`scripts/rekey-asset-ref.ts` re-keys its salience/outcome/usage rows onto the
+new ref. See
 [the decision record](../architecture/specs/0.9.0-decisions.md#d3--renames-are-delete--create-akm-mv-ships-experimental).)
 
 **Which subdirectory?** Choose the partition axis by asset **type**:

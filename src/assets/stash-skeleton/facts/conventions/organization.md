@@ -107,24 +107,22 @@ cross-project reuse.
   while the dead ref string keeps scoring in FTS, and a renamed file
   is a new index entry, so the asset's accumulated usage-ranking history
   resets.
-- **A plain `mv` is delete plus create.** Moving the file yourself strands
-  every inbound ref and resets the asset's usage-ranking history. If a rename
-  is truly unavoidable, use `akm mv`, which renames within the type directory
-  and does the rest in the same pass:
+- **A rename is delete plus create, and you do it by hand.** There is no
+  `akm mv` — moving the file strands every inbound ref and gives the
+  destination a fresh identity. If a rename is truly unavoidable:
 
   ```sh
-  akm mv memories/old-note new-note
+  mv memories/old-note.md memories/new-note.md
+  # update any intentional refs (fully qualified: bundle//memories/old-note)
+  akm index
   akm lint          # confirms nothing dangles
   ```
 
-  It rewrites inbound refs across the writable stash (body prose, frontmatter
-  ref lists, fenced examples, task and workflow files), re-keys the search-index
-  row in place along with its usage-event history and the state.db
-  salience/outcome rows, and moves a memory's `.derived.md` twin with its base.
-  `akm mv` is **Experimental** — outside the 0.9 stability contract. It operates
-  on the primary writable stash only; citing files in read-only sources cannot
-  be fixed and are reported as manual follow-ups. That last part is another
-  reason not to rename.
+  A memory's `.derived.md` twin must move with its base. Citing files in
+  read-only sources cannot be fixed at all — another reason not to rename. The
+  asset's accumulated usage-ranking history resets unless you carry it over
+  with `bun scripts/rekey-asset-ref.ts <old-ref> <new-ref>` (a maintainer
+  script, run from a source clone after the move and before `akm index`).
 - When a project-scoped note turns out to be domain-general, **append, don't
   promote**: write a new `knowledge/<domain>/…` asset that xrefs the originating
   memory. Never rename the memory up a rung — that breaks its ref. The atomic

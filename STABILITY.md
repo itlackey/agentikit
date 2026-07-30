@@ -72,7 +72,6 @@ enumeration of the whole `proposal` noun group.
 | `akm import` | Stable | |
 | `akm sync` | Stable | |
 | `akm clone` | Stable | |
-| `akm mv` | Experimental | Not covered by the identity-preservation contract; prefer a filesystem move plus `akm index`/`akm lint`. |
 | `akm registry list` | Evolving | |
 | `akm registry add` | Evolving | |
 | `akm registry remove` | Evolving | |
@@ -160,11 +159,15 @@ enumeration of the whole `proposal` noun group.
   `akm config set`, `akm config unset`.
 - **Renames are delete + create** — moving or renaming an item gives it a new
   identity; learned state does not follow it. Cross-bundle movement is
-  copy/import plus delete. `akm mv` still ships and claims to preserve identity
-  across a rename, but it is **Experimental and not covered by this contract**:
-  its inbound-ref rewriting targets bare conceptIds rather than the anchored
-  `bundle//conceptId` prose form, so it can rewrite non-refs while leaving real
-  refs dangling. Prefer a plain filesystem move plus `akm index` and `akm lint`.
+  copy/import plus delete. The procedure is a plain filesystem move, then
+  `akm index`, then `akm lint` to catch inbound refs the move left dangling.
+  `akm mv` was **removed in 0.9.0**: it claimed to preserve identity across a
+  rename, but its inbound-ref rewriting targeted bare conceptIds rather than
+  the anchored `bundle//conceptId` prose form, so it could rewrite non-refs
+  while leaving real refs dangling. To carry an asset's earned signal
+  (feedback, usage, salience/outcome history) across a rename, the maintainer
+  script `scripts/rekey-asset-ref.ts` re-keys those rows old -> new; it is
+  Internal tooling, not a supported command surface.
 - **Asset `type` is a free-form, open string** — `--type` filtering is an
   exact match against an open set and is deliberately **not validated**: an
   unrecognized type returns zero hits, not an error. Adapters emit types
@@ -496,8 +499,9 @@ gone — `#fragment` is the only section selector), **D4** (conceptId /
 set at runtime), **D7** (all six `--format` values everywhere), **D8** (the
 `experimental.improveAutonomy` gate), **D9** (`--auto-accept` warn-and-ignore),
 and partially **D10** (an `akm-migrate` binary now exists, though the code still
-lives in this repo). **D3** is not on this list: `akm mv` ships in 0.9.0 as an
-Experimental surface (see the Renames bullet above), and no removal is planned.
+lives in this repo). **D3** shipped too, in the end: `akm mv` was removed in
+0.9.0 (see the Renames bullet above), with `scripts/rekey-asset-ref.ts` as the
+Internal replacement for the one capability nothing else covered.
 
 - **0.10 — migration extraction.** The migration machinery leaves the CLI for
   a separately published `akm-migrate` package (see Internal above).

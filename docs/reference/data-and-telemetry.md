@@ -109,7 +109,7 @@ the set of types the code actually emits at HEAD (verified against every
 | `update` | `akm bundle update [source]` | `ref` |
 | `remember` | `akm remember <text>` | `ref` |
 | `import` | `akm import <file>` | `ref` |
-| `mv` | A successful `akm mv` rename only — nothing is emitted on failure | `ref` (the new ref); metadata `{from, to, rewroteFiles, readOnlyCiters, twinMoved}` (counts only) |
+| `rekey` | `scripts/rekey-asset-ref.ts` moved at least one row onto a renamed asset's new ref — nothing is emitted on a no-op re-run | `ref` (the new ref); metadata `{from, to, changed}` (row counts only) |
 
 *Search, retrieval, sync*
 
