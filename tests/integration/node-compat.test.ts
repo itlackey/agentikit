@@ -806,33 +806,36 @@ describe("registry parity", () => {
   });
 });
 
-// ── workflow smoke (better-sqlite3 workflow.db + markdown/YAML round-trip) ──────
+// ── workflow smoke (better-sqlite3 workflow.db + markdown round-trip) ──────────
 //
-// A minimal workflow smoke on Node: `workflow create --print --yaml | lint` proves
-// the YAML program path parses on the Node runtime, and `workflow create + start
-// + status` exercises the workflow-runs repository (workflow.db) through the
-// better-sqlite3 driver — the run-state boundary the other families never touch.
-// Both stay within the dist-artifact skip gate (AKM_NODE_COMPAT_TESTS=1).
+// A minimal workflow smoke on Node: `workflow create --print | lint` proves the
+// unified markdown format (workflow-format-unification) parses on the Node
+// runtime, and `workflow create + start + status` exercises the workflow-runs
+// repository (workflow.db) through the better-sqlite3 driver — the run-state
+// boundary the other families never touch. Both stay within the dist-artifact
+// skip gate (AKM_NODE_COMPAT_TESTS=1).
 
 describe("workflow smoke parity", () => {
   afterEach(() => cleanup());
 
-  test.skipIf(!ENABLED)("workflow create --print --yaml round-trips through lint on Node", () => {
+  test.skipIf(!ENABLED)("workflow create --print round-trips through lint on Node", () => {
     setupStorage();
-    // `workflow create <name>.yaml --print` writes the RAW YAML program
-    // template to stdout (no envelope), matching the dropped `workflow
-    // template --yaml` it replaces — `--print > starter.yaml` must yield a
-    // usable file.
-    const tpl = nodeRun(["workflow", "create", "smoke-program.yaml", "--print"], nodeEnv);
-    assertNoBoundaryLeak(tpl, "workflow create --print --yaml");
+    // `workflow create <name> --print` writes the RAW markdown template to
+    // stdout (no envelope) — matching the dropped `workflow template` it
+    // replaces — `--print > starter.md` must yield a usable file. There is
+    // one workflow format now (workflow-format-unification); a `.yaml` name
+    // is a usage error, not a second template shape, so this smoke uses a
+    // plain name.
+    const tpl = nodeRun(["workflow", "create", "smoke-program", "--print"], nodeEnv);
+    assertNoBoundaryLeak(tpl, "workflow create --print");
     expect(tpl.status).toBe(0);
     expect(tpl.stdout.trimStart().startsWith("{")).toBe(false);
-    expect(tpl.stdout).toContain("version:");
+    expect(tpl.stdout).toContain("type: workflow");
 
     // Persist it and lint the stash on Node — a clean round-trip. 0.9.0:
     // `workflow validate` is dropped; `akm lint --type workflows` is the
-    // structural-validation surface for both markdown and YAML programs.
-    const file = path.join(stashDir, "workflows", "smoke-program.yaml");
+    // structural-validation surface.
+    const file = path.join(stashDir, "workflows", "smoke-program.md");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, tpl.stdout, "utf8");
     const val = nodeRun(["lint", "--type", "workflows"], nodeEnv);
@@ -892,22 +895,31 @@ function configureDeadLlm(): void {
   );
 }
 
-/** Write a one-step workflow WITH completion criteria so the summary judge fires. */
+/**
+ * Write a one-step workflow WITH a gate rubric so the summary judge fires.
+ * Unified format (workflow-format-unification): frontmatter graph + `##
+ * <step-id>` body section + `### gate` rubric.
+ */
 function writeJudgeWorkflow(name: string): void {
   const file = path.join(stashDir, "workflows", `${name}.md`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(
     file,
     [
-      `# Workflow: ${name}`,
+      "---",
+      "type: workflow",
+      "description: Node-compat smoke workflow.",
+      "steps:",
+      "  - id: only-step",
+      "    gate: {}",
+      "---",
       "",
-      "## Step: Only Step",
-      "Step ID: only-step",
+      "## only-step",
       "",
-      "### Instructions",
       "Do the smoke work.",
       "",
-      "### Completion Criteria",
+      "### gate",
+      "",
       "- the work is done",
       "",
     ].join("\n"),

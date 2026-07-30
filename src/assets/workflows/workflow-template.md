@@ -1,6 +1,7 @@
 ---
 type: workflow
-description: Describe what this workflow accomplishes
+description: One-sentence summary of what this workflow accomplishes.
+updated: 2026-01-01
 tags: [example]
 params:
   example_param: { type: string, description: Explain this parameter }

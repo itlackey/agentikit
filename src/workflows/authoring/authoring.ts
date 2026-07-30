@@ -18,7 +18,7 @@ import { compileWorkflowPlan } from "../ir/compile";
 import { parseWorkflow } from "../parser";
 import type { WorkflowError } from "../schema";
 
-const DEFAULT_WORKFLOW_TEMPLATE = renderWorkflowTemplate("Example Workflow");
+const DEFAULT_WORKFLOW_TEMPLATE = renderWorkflowTemplate("New Workflow");
 
 export function getWorkflowTemplate(): string {
   return DEFAULT_WORKFLOW_TEMPLATE;
@@ -182,7 +182,7 @@ function humanizeWorkflowName(name: string): string {
       .pop()
       ?.replace(/[-_]+/g, " ")
       .replace(/\b\w/g, (match) => match.toUpperCase())
-      .trim() || "Example Workflow"
+      .trim() || "New Workflow"
   );
 }
 
