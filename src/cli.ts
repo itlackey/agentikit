@@ -765,9 +765,32 @@ const HELP_SECTIONS: ReadonlyArray<{ readonly title: string; readonly commands: 
   { title: "SYSTEM", commands: ["agent", "setup", "health", "info", "log", "upgrade", "help", "completions"] },
 ];
 
+/** Abbreviations whose trailing period does not end a sentence. */
+const NON_TERMINAL_ABBREVIATIONS = ["e.g.", "i.e.", "etc.", "vs."];
+
+/**
+ * First sentence of a description, for the root command list.
+ *
+ * Several commands carry multi-paragraph descriptions that are correct on
+ * `akm <cmd> --help` but turn the root listing back into the undifferentiated
+ * wall this section replaced (`mv` alone was 1.1k characters on one row).
+ */
+function firstSentence(text: string): string {
+  const line = text.split("\n", 1)[0]?.trim() ?? "";
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] !== "." && line[i] !== "!" && line[i] !== "?") continue;
+    const candidate = line.slice(0, i + 1);
+    const next = line[i + 1];
+    if (next !== undefined && next !== " ") continue;
+    if (NON_TERMINAL_ABBREVIATIONS.some((abbr) => candidate.toLowerCase().endsWith(abbr))) continue;
+    return candidate;
+  }
+  return line;
+}
+
 function topLevelCommandDescription(name: string): string {
   const sub = (main.subCommands as Record<string, AnyCittyCommand> | undefined)?.[name];
-  return (sub?.meta as { description?: string } | undefined)?.description ?? "";
+  return firstSentence((sub?.meta as { description?: string } | undefined)?.description ?? "");
 }
 
 function formatCommandRows(names: readonly string[]): string {
