@@ -37,6 +37,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { akmProposalAccept, akmProposalReject, akmProposalRevert } from "../../src/commands/proposal/proposal";
 import { createProposal, getProposal, isProposalSkipped } from "../../src/commands/proposal/repository";
+import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import { readEvents } from "../../src/core/events";
 import { expectGolden } from "../_helpers/golden";
 import {
@@ -133,6 +134,21 @@ function seedProposal(name: string): { id: string; assetPath: string; original: 
   return { id: proposal.id, assetPath, original, content: proposal.payload.content };
 }
 
+/**
+ * D2 (#730): promotion now stamps OKF v0.2 provenance (`generated`/`verified`)
+ * onto the written frontmatter, so an accepted asset's on-disk bytes are no
+ * longer expected to be byte-identical to the pre-stamp proposed content.
+ * Compares the parts these crash-recovery goldens actually care about —
+ * frontmatter fields and body — surviving the crash/recovery untouched.
+ */
+function contentMatchesAccepted(actual: string, proposedContent: string): boolean {
+  const a = parseFrontmatter(actual);
+  const p = parseFrontmatter(proposedContent);
+  return (
+    a.data.description === p.data.description && a.data.when_to_use === p.data.when_to_use && a.content === p.content
+  );
+}
+
 /** Count of events matching {type, ref}, plus the distinct-idempotency-key shape (brief §3.2). */
 function eventOutcome(type: string, ref: string): { matchingCount: number; distinctIdempotencyKeyCount: number } {
   const events = readEvents({ type, ref }).events;
@@ -158,7 +174,7 @@ describe("goldens: proposal accept crash recovery (WI-03, R3, integration)", () 
 
       const result = await akmProposalAccept({ stashDir: storage.stashDir, id: seeded.id });
       expect(result.ok).toBe(true);
-      expect(fs.readFileSync(seeded.assetPath, "utf8")).toBe(seeded.content);
+      expect(contentMatchesAccepted(fs.readFileSync(seeded.assetPath, "utf8"), seeded.content)).toBe(true);
       const proposal = getProposal(storage.stashDir, seeded.id);
       expect(proposal.status).toBe("accepted");
       expect(proposal.backupContent).toBe(seeded.original);
@@ -229,7 +245,7 @@ describe("goldens: proposal reject crash recovery (WI-03, R3, integration)", () 
     // interrupted accept was already rolled forward to "accepted" by the time
     // the reject's own status guard fired.
     expect(getProposal(storage.stashDir, seeded.id).status).toBe("accepted");
-    expect(fs.readFileSync(seeded.assetPath, "utf8")).toBe(seeded.content);
+    expect(contentMatchesAccepted(fs.readFileSync(seeded.assetPath, "utf8"), seeded.content)).toBe(true);
   });
 });
 
@@ -248,7 +264,7 @@ describe("golden fixture: serialize proposal crash recovery outcomes (WI-03, R3)
         status: proposal.status,
         backupContentMatchesOriginal: proposal.backupContent === seeded.original,
         acceptedTargetHashPresent: proposal.acceptedTarget?.contentHash !== undefined,
-        assetContentMatchesProposal: fs.readFileSync(seeded.assetPath, "utf8") === seeded.content,
+        assetContentMatchesProposal: contentMatchesAccepted(fs.readFileSync(seeded.assetPath, "utf8"), seeded.content),
         promotedEvent: eventOutcome("promoted", lessonDurableRef(name)),
         journalPhasesObserved: [phase],
       };
@@ -301,7 +317,7 @@ describe("golden fixture: serialize proposal crash recovery outcomes (WI-03, R3)
       return {
         rejectThrewNotPending: errorMessageMatchesNotPending,
         recoveredAcceptStatus: getProposal(storage.stashDir, seeded.id).status,
-        assetContentMatchesAccepted: fs.readFileSync(seeded.assetPath, "utf8") === seeded.content,
+        assetContentMatchesAccepted: contentMatchesAccepted(fs.readFileSync(seeded.assetPath, "utf8"), seeded.content),
       };
     })();
 

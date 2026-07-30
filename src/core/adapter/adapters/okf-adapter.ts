@@ -36,8 +36,103 @@ import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
-import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
+import type {
+  BundleComponent,
+  Diagnostic,
+  IndexDocument,
+  OkfSourceEntry,
+  OkfVerifiedEntry,
+  ValidateContext,
+} from "../types";
 import { hashContent, nonEmptyString, readTags, runBaseValidateChecks } from "./shared";
+
+/** v0.2 frontmatter keys consumed into first-class fields below (§0.1) — excluded from the generic `documentJson` extras fold alongside the v0.1 five, so nothing is duplicated between a first-class field and the opaque extras bag. */
+const CONSUMED_FRONTMATTER_KEYS = [
+  "type",
+  "title",
+  "description",
+  "tags",
+  "timestamp",
+  "generated",
+  "verified",
+  "sources",
+  "status",
+  "stale_after",
+  "okf_version",
+];
+
+/** True for a plain (non-null, non-array) object — the shape every v0.2 mapping (`generated`, one `verified`/`sources` entry) must have. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Parse one `verified:` actor mapping (`{by, at?}`). Tolerant: a missing/blank
+ * `by` yields `undefined` (the entry is dropped, never rejecting the document
+ * — OKF conformance leniency); `at` is independently optional.
+ */
+function parseActorMapping(value: unknown): OkfVerifiedEntry | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const by = nonEmptyString(value.by);
+  if (by === undefined) return undefined;
+  const at = nonEmptyString(value.at);
+  return at !== undefined ? { by, at } : { by };
+}
+
+/**
+ * Parse the `verified:` family. v0.2 permits EITHER a list of `{by, at?}`
+ * mappings OR a single mapping written without the list dash (the shorthand
+ * form) — both normalize to a non-empty array here. Malformed entries are
+ * dropped individually; an entirely-empty/malformed result is `undefined`
+ * rather than `[]` (mirrors every other optional-field convention on this
+ * adapter: absent, not empty).
+ */
+function parseVerified(value: unknown): OkfVerifiedEntry[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  const candidates = Array.isArray(value) ? value : [value];
+  const out: OkfVerifiedEntry[] = [];
+  for (const candidate of candidates) {
+    const parsed = parseActorMapping(candidate);
+    if (parsed) out.push(parsed);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/**
+ * Parse the `sources:` object-list family. Each entry needs at minimum a
+ * non-empty `resource`; entries failing that are dropped individually (never
+ * rejects the document). This is a DIFFERENT shape from the AKM-native
+ * `IndexDocument.sources: string[]` (wiki citations) — the two are never
+ * mixed, hence the caller lands this under `provenance.sources` instead.
+ */
+function parseOkfSources(value: unknown): OkfSourceEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: OkfSourceEntry[] = [];
+  for (const item of value) {
+    if (!isPlainObject(item)) continue;
+    const resource = nonEmptyString(item.resource);
+    if (resource === undefined) continue;
+    const entry: OkfSourceEntry = { resource };
+    const id = nonEmptyString(item.id);
+    if (id !== undefined) entry.id = id;
+    const title = nonEmptyString(item.title);
+    if (title !== undefined) entry.title = title;
+    const author = nonEmptyString(item.author);
+    if (author !== undefined) entry.author = author;
+    if (typeof item.usage_count === "number" && Number.isFinite(item.usage_count)) {
+      entry.usage_count = item.usage_count;
+    }
+    const lastModified = nonEmptyString(item.last_modified);
+    if (lastModified !== undefined) entry.last_modified = lastModified;
+    out.push(entry);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** Parse the `status:` lifecycle field — a strict whitelist; any other value (including a foreign/future status) is left unset rather than guessed at. */
+function parseLifecycleStatus(value: unknown): "draft" | "stable" | "deprecated" | undefined {
+  return value === "draft" || value === "stable" || value === "deprecated" ? value : undefined;
+}
 
 /** Reserved OKF files (case-insensitive) — recognized, never indexed as concepts (§5, OKF §1.4). */
 const RESERVED_FILES = new Set(["index.md", "log.md"]);
@@ -141,8 +236,36 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   const name = nonEmptyString(data.title) ?? lastSegment;
   const description = nonEmptyString(data.description);
   const tags = readTags(data.tags);
-  const updated = nonEmptyString(data.timestamp);
   const links = resolveOkfLinks(body, file.relPath);
+
+  // v0.2 trust/provenance/lifecycle families (§0.1, okf-support.md v0.2 note).
+  // `generated.at` — v0.2's replacement for `timestamp` — takes precedence;
+  // `timestamp` remains a fully valid fallback (the v0.2-permitted legacy
+  // reading, not merely tolerated). Both stay fully optional (never rejects).
+  const generatedMapping = isPlainObject(data.generated) ? data.generated : undefined;
+  const generatedAt = generatedMapping ? nonEmptyString(generatedMapping.at) : undefined;
+  const generatedBy = generatedMapping ? nonEmptyString(generatedMapping.by) : undefined;
+  const legacyTimestamp = nonEmptyString(data.timestamp);
+  const updated = generatedAt ?? legacyTimestamp;
+
+  const verified = parseVerified(data.verified);
+  const okfSources = parseOkfSources(data.sources);
+  const provenance: IndexDocument["provenance"] =
+    generatedBy !== undefined || generatedAt !== undefined || verified !== undefined || okfSources !== undefined
+      ? {
+          ...(generatedBy !== undefined ? { generatedBy } : {}),
+          ...(generatedAt !== undefined ? { generatedAt } : {}),
+          ...(verified !== undefined ? { verified } : {}),
+          ...(okfSources !== undefined ? { sources: okfSources } : {}),
+        }
+      : undefined;
+  const lifecycleStatus = parseLifecycleStatus(data.status);
+  const staleAfter = nonEmptyString(data.stale_after);
+  // `okf_version` is upstream-declared only on a bundle-root `index.md` (never
+  // indexed as a concept, §5) — read defensively from any concept anyway
+  // (best-effort, conformance Rule 9); a producer that also tags ordinary
+  // concepts with it is neither rejected nor silently ignored.
+  const okfVersion = nonEmptyString(data.okf_version);
 
   const doc: IndexDocument = {
     ref: `${c.id}//${conceptId}`,
@@ -163,9 +286,11 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   if (tags !== undefined) doc.tags = tags;
   if (updated !== undefined) doc.updated = updated;
   if (links.length > 0) doc.links = links;
-  const extras = Object.fromEntries(
-    Object.entries(data).filter(([key]) => !["type", "title", "description", "tags", "timestamp"].includes(key)),
-  );
+  if (provenance !== undefined) doc.provenance = provenance;
+  if (lifecycleStatus !== undefined) doc.lifecycleStatus = lifecycleStatus;
+  if (staleAfter !== undefined) doc.staleAfter = staleAfter;
+  if (okfVersion !== undefined) doc.okfVersion = okfVersion;
+  const extras = Object.fromEntries(Object.entries(data).filter(([key]) => !CONSUMED_FRONTMATTER_KEYS.includes(key)));
   if (Object.keys(extras).length > 0) doc.documentJson = extras;
   return doc;
 }

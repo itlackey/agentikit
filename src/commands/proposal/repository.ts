@@ -36,11 +36,13 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { ensureAkmMarkdownType } from "../../core/asset/akm-markdown";
 import { assetPathForName, placementTypes, stashDirFor } from "../../core/asset/asset-placement";
 import { isBundleSlug, parseBundleRef } from "../../core/asset/asset-ref";
+import { assembleAsset, serializeFrontmatter } from "../../core/asset/asset-serialize";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import { isWithin } from "../../core/common";
@@ -95,6 +97,7 @@ import {
   listStateProposals,
   upsertProposal,
 } from "../../storage/repositories/proposals-repository";
+import { pkgVersion } from "../../version";
 import { runBaseChecks } from "../lint/base-linter";
 import type { LintIssue, LintIssueType } from "../lint/types";
 import { formatNewAssetDiff, formatUnifiedDiff } from "./diff-format";
@@ -209,6 +212,15 @@ export interface ProposalsContext {
   randomUUID?: () => string;
   /** Test seam — override the state.db path (mirrors `EventsContext.dbPath`). */
   dbPath?: string;
+  /**
+   * Test seam — defaults to the OS username (`os.userInfo().username`,
+   * falling back to `"local"`). Used ONLY as the `<id>` in the v0.2
+   * `human:<id>` actor convention when {@link promoteProposal} stamps
+   * provenance onto a human-attributed promotion (#730 D2). AKM has no
+   * multi-user identity system; the OS account is the least-surprising
+   * stand-in for "the human at this keyboard."
+   */
+  actorId?: () => string;
 }
 
 export interface CreateProposalInput {
@@ -1920,6 +1932,139 @@ function resolveProposalWriteTarget(
   return resolveRecordedProposalTarget(config, proposal.id, proposal.proposedTarget, explicitTarget);
 }
 
+// ── D2 (#730) — OKF v0.2 provenance stamping on promotion ───────────────────
+//
+// The proposals system already tracks exactly what OKF v0.2 wants on disk —
+// `source`/`sourceRun` (PROV-DM modeled, `proposal-types.ts` §80-120),
+// `gateDecision` (`:200-237`), `review` (`:170-174`) — but none of it leaves
+// state.db. This section projects it onto the written asset's frontmatter at
+// promotion time, AKM-native assets only (an OKF-adapter target never reaches
+// this function — `assertAkmAssetWrite` rejects it earlier in
+// `promoteProposalWithLease`, before any of this runs).
+//
+// Two DISTINCT actors, deliberately not conflated (documented judgment call —
+// see the PR body for the alternative considered and rejected):
+//   - `generated.by` answers "what produced the CONTENT" — keyed on
+//     `isAutomatedProposalSource(proposal.source)`: an automated pipeline
+//     (reflect/distill/consolidate/extract/improve/schema-repair) stamps
+//     `akm/<pkgVersion>`; a human-initiated source (propose/remember/import)
+//     or the semi-automated `feedback` source stamps `human:<actorId>`.
+//   - `verified[0].by` answers "what accepted/reviewed THIS promotion" —
+//     keyed on whether a `gateDecision` was supplied to THIS call: present
+//     (the automated drain/triage path decided) stamps `akm/<pkgVersion>`;
+//     absent (a human explicitly ran `akm proposal accept`) stamps
+//     `human:<actorId>`. Every promotion reaches this function via exactly
+//     one of those two paths, so `verified` is always stamped — there is no
+//     third, unreviewed path to disk.
+
+/** Resolve the `human:<id>` actor id — the OS account, the least-surprising stand-in for "the human at this keyboard" in a system with no multi-user identity. */
+function resolveActorId(ctx?: ProposalsContext): string {
+  if (ctx?.actorId) return ctx.actorId();
+  try {
+    const username = os.userInfo().username?.trim();
+    return username ? username : "local";
+  } catch {
+    return "local";
+  }
+}
+
+/** `generated.by` — keyed on the SOURCE that produced the content (see file-header note above). */
+function generatedByActor(proposal: Proposal, ctx?: ProposalsContext): string {
+  return isAutomatedProposalSource(proposal.source) ? `akm/${pkgVersion}` : `human:${resolveActorId(ctx)}`;
+}
+
+/** `verified[0].by` — keyed on whether THIS promotion was gated (automated) or a direct human accept (see file-header note above). */
+function verifiedByActor(
+  gateDecision: (Omit<ProposalGateDecision, "decidedAt"> & { decidedAt?: string }) | undefined,
+  ctx?: ProposalsContext,
+): string {
+  return gateDecision !== undefined ? `akm/${pkgVersion}` : `human:${resolveActorId(ctx)}`;
+}
+
+/** True for a plain (non-null, non-array) object. */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Stamp OKF v0.2 provenance onto ONE promoted asset's frontmatter (D2.1/D2.2/
+ * D2.3), in the **hybrid** on-disk shape settled by the #730 review:
+ *
+ * - `generated: {by, at}` and `verified: [{by, at}]` are written **bare at the
+ *   top level**, exactly as OKF v0.2 spells them (SPEC §5.2/§5.3). Neither key
+ *   has any pre-existing AKM consumer, so spelling them the spec's way costs
+ *   nothing and makes `okf-support.md`'s "AKM Markdown is an OKF-compatible
+ *   superset" positioning actually true for trust metadata: a third-party OKF
+ *   v0.2 reader pointed at an AKM stash sees conformant provenance.
+ * - `sources` stays namespaced under `provenance:`, because a bare top-level
+ *   `sources:` genuinely collides with the pre-existing AKM-native wiki
+ *   citation-**string** convention
+ *   (`indexer/passes/metadata.ts#applyWikiFrontmatter`, which silently drops
+ *   non-strings) on a promoted wiki page.
+ *
+ * The read side back into `IndexDocument.provenance` is
+ * `metadata.ts#applyProvenanceFrontmatter` (which accepts both this shape and
+ * the older fully-nested one), carried through `akm-adapter.ts`'s
+ * `DOCUMENT_JSON_CARRIED_FIELDS` (D2.4).
+ *
+ * A no-op frontmatter mutation preserves the existing frontmatter block's raw
+ * body bytes (mirrors `frontmatter.ts#mutateFrontmatter`'s documented
+ * contract) rather than reshaping via `assembleAsset`, which would strip
+ * leading body blank lines / force a trailing newline. A file with no
+ * frontmatter block at all (non-conformant input) gains one via
+ * `assembleAsset`, exactly as any other first-frontmatter write would.
+ */
+function stampProposalProvenance(
+  content: string,
+  proposal: Proposal,
+  gateDecision: (Omit<ProposalGateDecision, "decidedAt"> & { decidedAt?: string }) | undefined,
+  ctx: ProposalsContext | undefined,
+  nowIsoStr: string,
+): string {
+  const parsed = parseFrontmatter(content);
+  const fm: Record<string, unknown> = { ...parsed.data };
+  const existingProvenance = isPlainRecord(fm.provenance) ? fm.provenance : {};
+
+  // Bare `generated:` — OKF v0.2's replacement for `timestamp` (SPEC §13).
+  fm.generated = { by: generatedByActor(proposal, ctx), at: nowIsoStr };
+
+  // Bare `verified:` — append, so independent confirmations accumulate rather
+  // than the newest overwriting the record. Both the bare list and the older
+  // nested spelling are absorbed, so a re-promotion never loses history.
+  const priorVerified = Array.isArray(fm.verified)
+    ? fm.verified
+    : Array.isArray(existingProvenance.verified)
+      ? existingProvenance.verified
+      : [];
+  fm.verified = [
+    ...priorVerified,
+    { by: verifiedByActor(gateDecision, ctx), at: gateDecision?.decidedAt ?? nowIsoStr },
+  ];
+
+  // `sources` alone stays namespaced — bare `sources:` is the wiki
+  // citation-string convention. Drop the nested provenance block entirely when
+  // it would otherwise be empty, so unrelated assets gain no dead key.
+  const provenance: Record<string, unknown> = { ...existingProvenance };
+  delete provenance.generatedBy;
+  delete provenance.generatedAt;
+  delete provenance.verified;
+
+  const evidenceSources = fm.evidenceSources;
+  if (Array.isArray(evidenceSources)) {
+    const sources = evidenceSources
+      .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+      .map((resource) => ({ resource: resource.trim() }));
+    if (sources.length > 0) provenance.sources = sources;
+  }
+
+  if (Object.keys(provenance).length > 0) fm.provenance = provenance;
+  else delete fm.provenance;
+
+  return parsed.frontmatter !== null
+    ? `---\n${serializeFrontmatter(fm)}\n---\n${parsed.content}`
+    : assembleAsset(fm, parsed.content);
+}
+
 /**
  * Validate a proposal, then promote it through the canonical
  * {@link writeAssetToSource} dispatch (the single place that branches on
@@ -2099,7 +2244,45 @@ async function promoteProposalWithLease(
     );
   }
   assertAkmAssetWrite(mutationTarget.source);
-  const lintBlockers = promotionLintBlockers(repairedContent, assetPath, mutationTarget.source.path, ref.type, config);
+  // D2 (#730): stamp OKF v0.2 provenance onto the promoted content BEFORE
+  // lint/write — reaching this point already proves the target is AKM-native
+  // (assertAkmAssetWrite above rejects an OKF-adapter target first), so the
+  // OKF write-rejection contract (runbook §10) is untouched: this code never
+  // runs for it. Markdown-only: a task/env/script/other non-markdown target
+  // has no frontmatter block to stamp into.
+  //
+  // `workflow` is the ONLY asset type whose frontmatter is parsed against a
+  // CLOSED allowlist (`src/workflows/validator.ts`); command/agent/skill get
+  // only the generic + quality validators and tolerate extra keys, as do
+  // knowledge/lesson/memory/fact/session/instruction. That allowlist now admits
+  // the stamped keys, so every AKM-native markdown type is stamped and this
+  // fallback should never fire — it is retained purely as a backstop so a
+  // future closed-allowlist type cannot turn an otherwise-valid promotion into
+  // a rejected one. The stamped content is re-validated
+  // through the SAME canonical per-type validator dispatch
+  // (`validateProposal`) already used above; a type whose validator rejects
+  // the ADDED `provenance:` key falls back to the unstamped content instead of
+  // failing the promotion or silently writing an unindexable asset.
+  let stampedContent = repairedContent;
+  if (assetPath.toLowerCase().endsWith(".md")) {
+    const candidate = stampProposalProvenance(
+      repairedContent,
+      proposalToValidate,
+      options.gateDecision,
+      ctx,
+      nowIso(ctx),
+    );
+    const candidateReport = validateProposal(withProposalContent(proposalToValidate, candidate));
+    if (candidateReport.ok) {
+      stampedContent = candidate;
+    } else {
+      warn(
+        `[proposal] ${id}: OKF v0.2 provenance stamping rejected by the ${ref.type} validator ` +
+          `(${candidateReport.findings.map((f) => f.kind).join(", ")}); promoting unstamped content instead.`,
+      );
+    }
+  }
+  const lintBlockers = promotionLintBlockers(stampedContent, assetPath, mutationTarget.source.path, ref.type, config);
   if (lintBlockers.length > 0) {
     const message = lintBlockers.map((finding) => `[${finding.issue}] ${finding.detail}`).join("\n");
     throw new UsageError(
@@ -2118,7 +2301,7 @@ async function promoteProposalWithLease(
     mutationTarget,
     proposalForMutation,
     ref,
-    repairedContent,
+    stampedContent,
     {
       operation: "accept",
       originalHash: backup ? proposalHash(backup) : null,

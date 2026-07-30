@@ -25,6 +25,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The `okf` adapter reads OKF v0.2's trust/provenance and lifecycle
+  frontmatter families.** `generated: {by, at}` (with `generated.at` taking
+  precedence over the legacy `timestamp` field, which remains a valid
+  fallback), `verified` (a list, or v0.2's permitted single-mapping
+  shorthand), `sources` (an object list — `resource` required; `id`/`title`/
+  `author`/`usage_count`/`last_modified` optional), `status`
+  (`draft`/`stable`/`deprecated`), and `stale_after` are now parsed leniently
+  from any OKF concept's frontmatter and surfaced on new, namespaced
+  `IndexDocument` fields (`provenance`, `lifecycleStatus`, `staleAfter`,
+  `okfVersion`) that never overload the pre-existing AKM-native `sources`
+  (wiki citation strings), `generation` (consolidation depth), or `quality`
+  fields. As with every other optional OKF field, a missing or malformed
+  value never rejects the document. The `okf` adapter remains consumer-only.
+
+- **Accepting a proposal now stamps OKF v0.2 provenance onto the written
+  asset's frontmatter**, for AKM-native writes only (never through the `okf`
+  adapter, which stays consumer-only and unaffected by this). `promoteProposal`
+  projects the proposal system's own `source`/`sourceRun`/`gateDecision`/
+  `review` bookkeeping — already tracked in `state.db` but previously never
+  written to disk. `generated: {by, at}` and `verified: [{by, at}]` are written
+  **bare at the top level**, exactly as OKF v0.2 spells them, so a third-party
+  OKF v0.2 reader pointed at an AKM stash sees conformant trust metadata;
+  `sources` alone is namespaced as `provenance: {sources}`, because a bare
+  `sources:` collides with the pre-existing wiki citation-string convention.
+  `generated.by` records whether the content came from an automated pipeline
+  (`akm/<version>`) or a human-initiated source (`human:<id>`); `verified`
+  records whether the promotion itself was an automated gate decision or a
+  direct human accept, and accumulates rather than overwriting across
+  re-promotions; `evidenceSources`, when present, projects as
+  `provenance.sources`. AKM's own adapter rereads what it wrote, so `akm show`
+  surfaces it. Every AKM-native markdown type is stamped, `workflow` included.
+
+  Two consequences worth knowing: promotion re-serializes the whole frontmatter
+  block, so YAML **comments** in a hand-written proposal's frontmatter are not
+  preserved (values and body bytes are); and for a human-attributed promotion
+  with no configured actor id, `by` falls back to `human:<OS username>`, which
+  puts that username into content you may later commit and share.
+
+- **Internal: a `capturedAtHead` integrity guard**
+  (`scripts/lint-golden-captured-at-head.ts`, wired into `bun run lint`) now
+  checks every golden fixture's recorded `capturedAtHead` commit SHA — it must
+  exist in the local object database and be reachable from at least one known
+  branch. Post-hoc review of this PR found all four new OKF format-family
+  goldens pointed at a commit that existed locally but was unreachable from
+  any ref (a pre-amend duplicate left behind by an interrupted git operation),
+  which would have 404'd on GitHub and vanished under a local `git gc`; a
+  human fixed that one by hand because nothing caught it. This guard is that
+  catch, going forward. In CI's shallow (`fetch-depth: 1`) checkout, a merely
+  *absent* commit object is inconclusive (indistinguishable from "just not
+  fetched") and only warns; a commit that *exists but is unreachable from any
+  branch* — the actual bug class above — still fails there too, since a
+  shallow clone can tell presence apart from absence just fine.
+
 - **`akm log list --limit <n>`** returns the most recent N events. The flag was
   documented but silently ignored, and there was no limiting mechanism at all
   in the read path — the command returned the entire events table regardless of

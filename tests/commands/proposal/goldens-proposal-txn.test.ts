@@ -76,6 +76,7 @@ import {
   type Proposal,
 } from "../../../src/commands/proposal/repository";
 import { ensureAkmMarkdownType } from "../../../src/core/asset/akm-markdown";
+import { parseFrontmatter } from "../../../src/core/asset/frontmatter";
 import { UsageError } from "../../../src/core/errors";
 import { readEvents } from "../../../src/core/events";
 import { expectGolden, fileTreeManifest } from "../../_helpers/golden";
@@ -152,6 +153,30 @@ function transactionsRootIsClean(dataDir: string): boolean {
   return fs.readdirSync(root).length === 0;
 }
 
+/**
+ * D2 (#730): promotion now stamps OKF v0.2 provenance (`generated`/`verified`)
+ * onto the written frontmatter, so an accepted asset's on-disk bytes are no
+ * longer expected to be byte-identical to the pre-stamp `ensureAkmMarkdownType`
+ * content. Compares the parts this suite actually cares about — type,
+ * description, when_to_use, and body — surviving the accept/revert round trip
+ * untouched; used both as a direct assertion and as the boolean the golden
+ * fixture below records.
+ */
+function contentMatchesAccepted(actual: string, proposedRawContent: string, type: string): boolean {
+  const a = parseFrontmatter(actual);
+  const p = parseFrontmatter(ensureAkmMarkdownType(proposedRawContent, type));
+  return (
+    a.data.type === p.data.type &&
+    a.data.description === p.data.description &&
+    a.data.when_to_use === p.data.when_to_use &&
+    a.content === p.content
+  );
+}
+
+function expectAcceptedContent(actual: string, proposedRawContent: string, type: string): void {
+  expect(contentMatchesAccepted(actual, proposedRawContent, type)).toBe(true);
+}
+
 /** Count of events matching {type, ref}, plus the distinct-idempotency-key shape (brief §3.2). */
 function eventOutcome(type: string, ref: string): { matchingCount: number; distinctIdempotencyKeyCount: number } {
   const events = readEvents({ type, ref }).events;
@@ -170,7 +195,7 @@ describe("goldens: proposal accept engine round-trip (WI-03, R3)", () => {
 
       const result = await akmProposalAccept({ stashDir: storage.stashDir, id: created.id });
       expect(result.ok).toBe(true);
-      expect(fs.readFileSync(result.assetPath, "utf8")).toBe(ensureAkmMarkdownType(content, "lesson"));
+      expectAcceptedContent(fs.readFileSync(result.assetPath, "utf8"), content, "lesson");
 
       const accepted = getProposal(storage.stashDir, created.id);
       expect(accepted.status).toBe("accepted");
@@ -203,7 +228,7 @@ describe("goldens: proposal accept engine round-trip (WI-03, R3)", () => {
       if (isProposalSkipped(created)) throw new Error("unexpected skip");
 
       const result = await akmProposalAccept({ stashDir: storage.stashDir, id: created.id });
-      expect(fs.readFileSync(result.assetPath, "utf8")).toBe(ensureAkmMarkdownType(proposed, "lesson"));
+      expectAcceptedContent(fs.readFileSync(result.assetPath, "utf8"), proposed, "lesson");
 
       const accepted = getProposal(storage.stashDir, created.id);
       expect(accepted.status).toBe("accepted");
@@ -316,7 +341,7 @@ describe("goldens: proposal revert engine round-trip (WI-03, R3)", () => {
       });
       if (isProposalSkipped(created)) throw new Error("unexpected skip");
       await akmProposalAccept({ stashDir: storage.stashDir, id: created.id });
-      expect(fs.readFileSync(assetPath, "utf8")).toBe(ensureAkmMarkdownType(proposed, "lesson"));
+      expectAcceptedContent(fs.readFileSync(assetPath, "utf8"), proposed, "lesson");
 
       const result = await akmProposalRevert({ stashDir: storage.stashDir, id: created.id });
       expect(result.ok).toBe(true);
@@ -366,7 +391,7 @@ describe("goldens: proposal revert engine round-trip (WI-03, R3)", () => {
       }
       expect(caught).toBeInstanceOf(UsageError);
       expect((caught as UsageError).code).toBe("INVALID_FLAG_VALUE");
-      expect(fs.readFileSync(assetPath, "utf8")).toBe(ensureAkmMarkdownType(bContent, "lesson"));
+      expectAcceptedContent(fs.readFileSync(assetPath, "utf8"), bContent, "lesson");
       expect(getProposal(storage.stashDir, proposalA.id).status).toBe("accepted");
     } finally {
       storage.cleanup();
@@ -622,6 +647,15 @@ describe("goldens: createProposal skip-record shapes (WI-6.4 fingerprints, re-ba
 // Re-runs a representative slice of the scenarios above (fresh sandboxes) to
 // assemble the committed golden fixture, kept independent of the assertion
 // tests so capture never depends on bun:test's within-file execution order.
+// D2 (#730): promotion stamps `generated.at`/`verified[].at` (wall-clock) and
+// `verified[].by` (falls back to the real OS username when unset) into the
+// accepted asset's frontmatter. A `fileTree` SHA256 entry hashes those exact
+// bytes, so — unlike the other capture scenarios below, which never depend on
+// wall-clock time or machine identity — the two `fileTree`-bearing captures
+// MUST pin both `now` and `actorId` or this golden would be irreproducible
+// across runs/environments/machines.
+const GOLDEN_CAPTURE_CTX = { now: () => Date.parse("2026-01-01T00:00:00.000Z"), actorId: () => "golden-capture" };
+
 describe("golden fixture: serialize proposal transaction outcomes (WI-03, R3)", () => {
   test("golden fixture: proposal-txn.json", async () => {
     // -- accept: new-asset --
@@ -637,7 +671,7 @@ describe("golden fixture: serialize proposal transaction outcomes (WI-03, R3)", 
           payload: { content },
         });
         if (isProposalSkipped(created)) throw new Error("unexpected skip");
-        await akmProposalAccept({ stashDir: storage.stashDir, id: created.id });
+        await akmProposalAccept({ stashDir: storage.stashDir, id: created.id, ctx: GOLDEN_CAPTURE_CTX });
         const accepted = getProposal(storage.stashDir, created.id);
         return {
           fileTree: fileTreeManifest(storage.stashDir),
@@ -667,7 +701,7 @@ describe("golden fixture: serialize proposal transaction outcomes (WI-03, R3)", 
           payload: { content: proposed },
         });
         if (isProposalSkipped(created)) throw new Error("unexpected skip");
-        await akmProposalAccept({ stashDir: storage.stashDir, id: created.id });
+        await akmProposalAccept({ stashDir: storage.stashDir, id: created.id, ctx: GOLDEN_CAPTURE_CTX });
         const accepted = getProposal(storage.stashDir, created.id);
         return {
           fileTree: fileTreeManifest(storage.stashDir),
@@ -826,7 +860,7 @@ describe("golden fixture: serialize proposal transaction outcomes (WI-03, R3)", 
         }
         return {
           errorCode,
-          bContentSurvives: fs.readFileSync(assetPath, "utf8") === ensureAkmMarkdownType(bContent, "lesson"),
+          bContentSurvives: contentMatchesAccepted(fs.readFileSync(assetPath, "utf8"), bContent, "lesson"),
           proposalAStatus: getProposal(storage.stashDir, proposalA.id).status,
         };
       } finally {
