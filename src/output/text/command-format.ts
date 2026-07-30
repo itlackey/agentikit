@@ -90,12 +90,12 @@ export function formatImportPlain(r: Record<string, unknown>): string {
 export function formatSyncPlain(r: Record<string, unknown>): string {
   if (r.ok === false) {
     const reason = typeof r.reason === "string" ? r.reason : "unknown";
-    return `save: failed (${reason})`;
+    return `sync: failed (${reason})`;
   }
-  const name = typeof r.name === "string" ? r.name : "primary stash";
+  const name = typeof r.name === "string" ? r.name : "primary bundle";
   const committed = r.committed === true;
   const pushed = r.pushed === true;
-  const parts = [`save: ${name}`];
+  const parts = [`sync: ${name}`];
   parts.push(committed ? "committed" : "no changes");
   if (pushed) parts.push("pushed");
   return parts.join(" — ");

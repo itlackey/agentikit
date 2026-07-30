@@ -420,6 +420,6 @@ function warnIfSourceUnavailableForRead(entry: SourceConfigEntry, providerName: 
   if (dir && isMaterializedDir(dir)) return;
   warn(
     `Warning: source "${providerName}" is not materialized locally; skipping it for this read. ` +
-      "Run `akm index` (or `akm update`) to fetch it.",
+      "Run `akm index` (or `akm bundle update`) to fetch it.",
   );
 }

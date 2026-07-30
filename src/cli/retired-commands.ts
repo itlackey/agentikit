@@ -52,7 +52,8 @@ const RETIRED_COMMAND_HINTS: Record<string, string> = {
   "registry build-index":
     "`akm registry build-index` moved in 0.9 — maintainers run `bun scripts/build-registry-index.ts`.",
   "workflow template": "`akm workflow template` was folded into `akm workflow create --print` in 0.9.",
-  "workflow validate": "`akm workflow validate` was folded into `akm lint --type workflow` in 0.9.",
+  "workflow validate":
+    "`akm workflow validate` was folded into `akm lint --type workflows` in 0.9 (add `--fail-on-flagged` for CI gates).",
   "workflow watch": "`akm workflow watch` was removed in 0.9 — use `akm log --run <run-id>`.",
   "config show": "`akm config show` was removed in 0.9 — use `akm config list`.",
   "config validate": "`akm config validate` was removed in 0.9 — the config file is validated on every load.",

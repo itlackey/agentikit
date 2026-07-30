@@ -290,17 +290,44 @@ export function rekeyAssetRef(
   // state.db FIRST: the index re-key below rewrites `usage_events` itself, so
   // running it after would report those rows as its own and double-count them.
   const state = rekeyStateDb(oldRef, newRef, dryRun);
-  const indexEntries = rekeyIndexEntry({
-    sourceName,
-    sourceRoot,
-    oldType: from.type,
-    oldName: from.name,
-    newName: to.name,
-    oldConceptId,
-    newConceptId,
-    newFilePath: newPath,
-    dryRun,
-  });
+  let indexEntries: number;
+  try {
+    indexEntries = rekeyIndexEntry({
+      sourceName,
+      sourceRoot,
+      oldType: from.type,
+      oldName: from.name,
+      newName: to.name,
+      oldConceptId,
+      newConceptId,
+      newFilePath: newPath,
+      dryRun,
+    });
+  } catch (indexError) {
+    // The state.db updates above are already committed (separate database,
+    // separate transactions). Leaving them in place would split identity:
+    // state.db on the new ref, index.db on the old. Compensate by re-keying
+    // state.db straight back, so a failed run changes nothing and is safely
+    // re-runnable after the index problem is fixed.
+    if (!dryRun) {
+      try {
+        rekeyStateDb(newRef, oldRef, false);
+      } catch (compensationError) {
+        fail(
+          `Index re-key failed (${indexError instanceof Error ? indexError.message : String(indexError)}) AND ` +
+            `rolling state.db back failed (${compensationError instanceof Error ? compensationError.message : String(compensationError)}). ` +
+            `state.db now points at "${newRef}" while the index still points at "${oldRef}" — ` +
+            `re-run this script after fixing the index error to finish the move, or run it with the refs ` +
+            "swapped to restore the old identity.",
+        );
+      }
+    }
+    fail(
+      `Index re-key failed: ${indexError instanceof Error ? indexError.message : String(indexError)}. ` +
+        "state.db changes were rolled back — nothing was re-keyed. Fix the index error " +
+        "(often: run `akm index` first) and re-run.",
+    );
+  }
 
   const changed = {
     indexEntries,

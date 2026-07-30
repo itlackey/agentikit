@@ -13,7 +13,7 @@ For any task, follow this loop:
 For workflow tasks:
 1. `akm workflow next workflows/<name>` — get current step instructions
 2. Do the step work in your workspace
-3. `akm workflow complete <run-id> --step <step-id>` — mark done, get next step
+3. `akm workflow complete <run-id> --step <step-id> --summary "what was done"` — mark done, get next step
 
 Workflow runs are scoped to your current project/worktree/directory. Ref-based
 commands like `workflow next workflows/<name>`, `workflow status workflows/<name>`,

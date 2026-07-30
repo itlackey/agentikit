@@ -33,7 +33,7 @@ const EXPECTED = [
   { id: "akm-improve-frequent", category: "improve", schedule: "40 * * * *", enabled: true },
   { id: "akm-improve-consolidate", category: "improve", schedule: "20 */4 * * *", enabled: true },
   { id: "akm-improve-nightly", category: "improve", schedule: "15 2 * * *", enabled: true },
-  { id: "akm-improve-catchup", category: "improve", schedule: "0 4 * * *", enabled: true },
+  { id: "akm-improve-catchup", category: "improve", schedule: "0 4 * * *", enabled: false },
   { id: "akm-graph-refresh-weekly", category: "improve", schedule: "10 3 * * 0", enabled: true },
 ] as const;
 

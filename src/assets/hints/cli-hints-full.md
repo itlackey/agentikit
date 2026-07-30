@@ -170,7 +170,7 @@ akm workflow create ship-release --print     # Print a starter workflow template
 akm workflow create ship-release             # Scaffold a new workflow asset
 akm workflow start workflows/ship-release    # Start a new run in the current scope
 akm workflow next workflows/ship-release     # Advance to the next step (or auto-start) in the current scope
-akm workflow complete <run-id>               # Mark a step complete and advance
+akm workflow complete <run-id> --step <id> --summary "..."  # Mark a step complete and advance
 akm workflow status <run-id>                 # Show the exact run by id
 akm workflow resume <run-id>                 # Resume a blocked or failed run
 akm workflow list                            # List workflow runs in the current scope
@@ -332,16 +332,60 @@ akm proposal accept <id> --target team-bundle            # Accept to a named wri
 akm proposal reject skills/my-skill --reason "not ready" # Reject by asset ref
 akm proposal reject <id> --reason "..."                 # Archive with a reason
 akm proposal revert <id>                                # Restore the pre-promotion content
+akm proposal new <type> <name> --task "..."             # Agent-author a NEW asset as a proposal
+akm proposal extract --auto                             # Mine native session files into proposals
+akm proposal extract --type claude-code                 # Restrict extraction to one harness
 ```
 
 The flat verbs `akm proposals` / `akm show proposal` / `akm accept` /
 `akm reject` / `akm diff` / `akm revert` were removed in 0.9.0 — use the
-`akm proposal <verb>` forms above.
+`akm proposal <verb>` forms above. `akm extract` and `akm propose` moved
+here as `proposal extract` / `proposal new`.
 
-Per-task `timeoutMs`: a task's `<bundle>/tasks/<id>.yml` file (pure YAML) may
-set `timeoutMs: null` to disable the agent kill timer for long-running
-local-model tasks, or a number (milliseconds) to override
-`config.agent.timeoutMs` for that task only.
+## Scheduled Tasks
+
+Tasks are pure-YAML assets at `<bundle>/tasks/<id>.yml`, bound to the OS
+scheduler (cron / launchd / schtasks). The file is the source of truth:
+`task sync` reconciles files to scheduler entries, so editing or deleting a
+file plus one `sync` is a complete workflow.
+
+```sh
+akm task add nightly-improve --schedule "@daily" --command "akm improve --strategy frequent"
+akm task add briefing --schedule "0 9 * * *" --prompt agents/briefer  # Agent-target task
+akm task sync                                  # Reconcile task files with the OS scheduler
+akm task sync --rebind                         # Also re-pin the scheduler's akm binary/spelling
+akm task doctor                                # Scheduler binding + runtime eligibility diagnosis
+akm task history                               # Recent run rows (status, timing)
+akm task run <id>                              # Run one task immediately (works when disabled)
+akm search --type task                         # Enumerate task assets (there is no `task list`)
+```
+
+To disable a task, set `enabled: false` in its YAML and run `akm task sync`
+(the cron line stays, commented). To remove one, delete the YAML and run
+`akm task sync` — the scheduler entry is unbound. Per-task `timeoutMs` in
+the YAML may be `null` (disable the agent kill timer for long local-model
+runs) or a number of milliseconds overriding `config.agent.timeoutMs`.
+
+## Agent Dispatch
+
+```sh
+akm agent --prompt "summarize open proposals"   # Dispatch the configured agent CLI
+akm agent agents/architect --prompt "..."       # Embody a bundle agent asset (system prompt, model, tool policy)
+akm agent --workflow workflows/ship-release     # Load the task from a workflow asset
+akm agent --model sonnet --prompt "..."         # Model override (aliases or exact IDs)
+```
+
+## Health, Info, and the Event Log
+
+```sh
+akm info                                       # Capabilities, bundle dir, index stats, semantic-search status
+akm health                                     # Runtime diagnostics; exit 0 ok / 4 warn / 1 fail
+akm health --report                            # Adds accept-rate and graph-coverage metrics
+akm log                                        # Append-only event stream (mutations, feedback, indexing)
+akm log --ref <ref>                            # One asset's event trail
+akm log --since @offset:<id>                   # Durable row-id cursor — poll this to follow the stream
+akm log --run <run-id>                         # Events for one workflow-engine run
+```
 
 ## Output Control
 
