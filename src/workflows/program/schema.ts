@@ -3,24 +3,28 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Parsed shape of a YAML workflow *program* (redesign addendum, R1).
- *
- * `parseWorkflowProgram` (parser.ts) converts a YAML program file under
- * `workflows/` into a `WorkflowProgram` plus accumulated `WorkflowError`s.
- * The types mirror the YAML surface pinned by the addendum and the published
- * JSON Schema (`schemas/akm-workflow.json`); the compiler lowers this shape
- * into the plan-graph IR. Enum vocabularies here are the single TypeScript
- * source of truth — `tests/integration/workflows/program-parser.test.ts` pins
- * the JSON Schema's enums against these constants so the two cannot drift.
+ * The orchestration-graph vocabulary shared by the unified workflow frontmatter
+ * parser (`../parser.ts`) and compiler (`../ir/compile.ts`) — adopted from the
+ * pre-unification YAML program's vocabulary (workflow-format-unification, spec
+ * §2.2) with these changes: `version`/`name` are gone (identity is the ref);
+ * `instructions:` is gone from `ProgramUnit` (prose lives only in the markdown
+ * body, bound by step id); `gate.criteria` is gone (the rubric lives in the
+ * body under a `### gate` sub-heading); no `title` anywhere (a step is its
+ * id). `ProgramStep` gained `inputs` — prior-step artifacts a unit/map step
+ * declares as reference strings (§2.3).
  *
  * Naming: YAML keys are snake_case (`on_error`, `max_loops`); the parsed
  * document uses the repo's camelCase convention (`onError`, `maxLoops`).
  * `timeout` strings ("10m", "30s", "500ms", "none") are parsed into
  * `timeoutMs` (`null` = explicitly no timeout) — the same representation the
- * existing IR uses.
+ * IR uses.
+ *
+ * Enum vocabularies here are the single TypeScript source of truth —
+ * `tests/integration/workflows/program-parser.test.ts` pins the JSON Schema's
+ * enums against these constants so the two cannot drift.
  */
 
-import type { SourceRef, WorkflowError } from "../schema";
+import type { SourceRef } from "../schema";
 
 // LlmInvocationOverrides / AgentFailureReason referenced via inline
 // `import("...")` TYPE QUERIES (WI-9.8 KILL 3) rather than top-level
@@ -28,15 +32,9 @@ import type { SourceRef, WorkflowError } from "../schema";
 // living in the (heavy) agent-runtime modules, and this file is reached from
 // `output/renderers.ts` (via `workflows/renderer.ts`) — a top-level import
 // here would route the renderers hub straight back into the agent-runtime /
-// harness-barrel cluster KILL 3 severs. Same pattern as `core/config`'s
-// `typeof import("./config-schema")` and `spawn.ts`'s
-// `import("./builders").AgentCommandBuilder`: erased at compile time, so it
-// carries zero runtime footprint and is invisible to the static import graph
-// (unlike `import type`, which the cycle ratchet DOES count — see trap list).
+// harness-barrel cluster KILL 3 severs.
 type LlmInvocationOverrides = import("../../integrations/agent/engine-resolution").LlmInvocationOverrides;
 type AgentFailureReason = import("../../integrations/agent/spawn").AgentFailureReason;
-
-export const WORKFLOW_PROGRAM_VERSION = 2;
 
 /** How a map step folds its per-item unit results into the step artifact. */
 export const PROGRAM_REDUCERS = ["collect", "vote"] as const;
@@ -46,7 +44,7 @@ export type ProgramReducer = (typeof PROGRAM_REDUCERS)[number];
 export const PROGRAM_ON_ERROR = ["fail", "continue"] as const;
 export type ProgramOnError = (typeof PROGRAM_ON_ERROR)[number];
 
-/** Filesystem isolation for file-mutating units (enforcement is R2). */
+/** Filesystem isolation for file-mutating units. */
 export const PROGRAM_ISOLATION_KINDS = ["none", "worktree"] as const;
 export type ProgramIsolation = (typeof PROGRAM_ISOLATION_KINDS)[number];
 
@@ -74,15 +72,15 @@ const RETRY_REASON_SET = {
 export const PROGRAM_RETRY_REASONS = Object.keys(RETRY_REASON_SET) as readonly AgentFailureReason[];
 
 /**
- * Step ids: `[A-Za-z_][A-Za-z0-9_-]*` (also pinned in the JSON Schema).
- *
- * This is EXACTLY the `<ident>` grammar `readIdent` accepts in
- * `program/expressions.ts` for `${{ steps.<id>.output }}` references: a
+ * Step ids: `[A-Za-z_][A-Za-z0-9_-]*` (also pinned in the JSON Schema) — the
+ * ONE id grammar for the unified format (workflow-format-unification, spec
+ * §2.2). This is EXACTLY the `<ident>` grammar `readIdent` accepts in
+ * `program/expressions.ts` for `steps.<id>.output` references: a
  * letter/underscore first char, then letters/digits/underscores/dashes, and
  * NO dots (the expression parser treats `.` as the `.output` path separator,
  * so a dotted id could never be addressed). Keeping step ids inside the
  * addressable grammar guarantees every step can be referenced from map
- * inputs, routes, and unit templates without renaming.
+ * inputs, routes, and `inputs:` without renaming.
  *
  * Forbidding dots additionally keeps the engine's internal gate-row node id
  * `<stepId>.gate` collision-free: no user step id can contain a dot, so it can
@@ -91,7 +89,7 @@ export const PROGRAM_RETRY_REASONS = Object.keys(RETRY_REASON_SET) as readonly A
 export const PROGRAM_STEP_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 
 /**
- * Param names must be `${{ params.<ident> }}`-addressable, so they are plain
+ * Param names must be `params.<ident>`-addressable, so they are plain
  * identifiers (no dots/dashes).
  */
 export const PROGRAM_PARAM_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -102,7 +100,11 @@ export interface ProgramRetry {
   on: AgentFailureReason[];
 }
 
-/** A single dispatchable unit: instructions plus dispatch overrides. */
+/**
+ * The optional dispatch-override bag for a unit/map step. Absent entirely
+ * (bare `{ id: validate }`) means the step still IS a unit step — it just
+ * carries the run's engine/model/timeout defaults verbatim.
+ */
 export interface ProgramUnit {
   /** Named engine override. Absent = workflow then config default. */
   engine?: string;
@@ -114,31 +116,29 @@ export interface ProgramUnit {
   timeoutMs?: number | null;
   retry?: ProgramRetry;
   onError?: ProgramOnError;
-  /** Instruction template. `${{ … }}` segments are parsed, never re-scanned. */
-  instructions: string;
   /** JSON Schema the unit's structured result must validate against. */
   output?: Record<string, unknown>;
   /** Env asset refs injected into the dispatched unit env. */
   env?: string[];
   /**
-   * Worktree isolation (addendum R2). Carried through the IR here; the
-   * native executor (`src/workflows/exec/native-executor.ts`) runs each
-   * journaled attempt of an isolated agent/sdk unit in a fresh detached git
-   * worktree and rejects the pairing outright for llm units.
+   * Worktree isolation. The native executor (`src/workflows/exec/native-executor.ts`)
+   * runs each journaled attempt of an isolated agent/sdk unit in a fresh
+   * detached git worktree and rejects the pairing outright for llm units.
    */
   isolation?: ProgramIsolation;
   source: SourceRef;
 }
 
-/** Fan the unit template out over an expression-addressed list. */
+/** Fan the step out over a reference-addressed list. */
 export interface ProgramMap {
-  /** `${{ … }}` expression naming the producer of the item list. */
+  /** Reference string naming the producer of the item list (e.g. `steps.discover.output.files`). */
   over: string;
   /** Max concurrent units for this step; capped by the engine's global limit. */
   concurrency?: number;
   /** Result reducer. Default: collect. */
   reducer?: ProgramReducer;
-  unit: ProgramUnit;
+  /** Optional per-item dispatch-override bag. */
+  unit?: ProgramUnit;
 }
 
 /** One `when` branch: match value → target step id. */
@@ -147,7 +147,7 @@ export interface ProgramRouteBranch {
   stepId: string;
 }
 
-/** Route on an explicit `${{ … }}` input to a later step. */
+/** Route on an explicit reference input to a later step. */
 export interface ProgramRoute {
   input: string;
   branches: ProgramRouteBranch[];
@@ -155,44 +155,43 @@ export interface ProgramRoute {
 }
 
 /**
- * Completion gate criteria (addendum R2). Artifact-judging gates and
- * `max_loops` execution are implemented by the native executor
- * (`src/workflows/exec/native-executor.ts`'s bounded gate loop, `report.ts`'s
- * / `run-workflow.ts`'s `frozenSummaryJudge`); the parser here only parses
- * and carries the declaration through to the frozen plan.
+ * Gate CONTROL fields only (workflow-format-unification, spec §2.4) — the
+ * rubric lives in the markdown body under a `### gate` sub-heading inside the
+ * step's section, bound to this step by id at parse time.
  */
 export interface ProgramGate {
-  criteria: string[];
   maxLoops?: number;
   /**
-   * Reviewer #18: `gate.required: true` — the gate must be judged. With no judge
-   * available (offline / misconfigured LLM) the step BLOCKS for a human rather
-   * than failing open. Absent = fail-open default.
+   * `gate.required: true` — the gate must be judged. With no judge available
+   * (offline / misconfigured LLM) the step BLOCKS for a human rather than
+   * failing open. Absent = fail-open default.
    */
   required?: boolean;
 }
 
-/** One step of the gated spine. Exactly one of unit | map | route is set. */
+/** One step of the gated spine. At most one of map | route. */
 export interface ProgramStep {
   id: string;
-  title?: string;
+  /** Optional dispatch-override bag; present on unit/map steps only. */
   unit?: ProgramUnit;
   map?: ProgramMap;
   route?: ProgramRoute;
   /**
-   * Step artifact schema (JSON Schema, addendum R2). Validation of the
-   * reducer result against this schema is implemented by the native executor
-   * (`src/workflows/exec/native-executor.ts`, `artifactSchemaFailure`); the
-   * parser here only carries the declaration through.
+   * Prior-step artifacts this unit/map step declares as reference strings
+   * (sub-paths legal). Attached to the dispatched unit as structured
+   * context; replaces prose splicing and gives replay hashing its exact
+   * input set (workflow-format-unification, spec §2.3).
    */
+  inputs?: string[];
+  /** Step artifact schema (JSON Schema). */
   output?: Record<string, unknown>;
   gate?: ProgramGate;
   source: SourceRef;
 }
 
 /**
- * Run-level budget ceilings (YAML `budget:` block). Enforced by the engine
- * per run: `maxUnits` caps total dispatched units (journal-seeded), and
+ * Run-level budget ceilings (frontmatter `budget:` block). Enforced by the
+ * engine per run: `maxUnits` caps total dispatched units (journal-seeded), and
  * `maxTokens` caps total reported token usage (journal-seeded from
  * `workflow_run_units.tokens`). Hitting a ceiling fails the step hard,
  * regardless of `on_error`.
@@ -211,20 +210,3 @@ export interface ProgramDefaults {
   timeoutMs?: number | null;
   onError?: ProgramOnError;
 }
-
-export interface WorkflowProgram {
-  version: typeof WORKFLOW_PROGRAM_VERSION;
-  name: string;
-  description?: string;
-  /** Param name → JSON-Schema-ish declaration (validated as a schema in R1 compile). */
-  params?: Record<string, Record<string, unknown>>;
-  defaults?: ProgramDefaults;
-  /** Run-level budget ceilings (see {@link ProgramBudget}). */
-  budget?: ProgramBudget;
-  steps: ProgramStep[];
-  source: { path: string };
-}
-
-export type WorkflowProgramParseResult =
-  | { ok: true; program: WorkflowProgram }
-  | { ok: false; errors: WorkflowError[] };

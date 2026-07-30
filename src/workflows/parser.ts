@@ -3,68 +3,157 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Workflow markdown → WorkflowDocument JSON.
+ * Unified workflow markdown parser (workflow-format-unification).
  *
- * Composition over invention: frontmatter is parsed with the `yaml` package and
- * heading discovery with `parseMarkdownToc` — both already in the codebase. The
- * parser walks the heading list once to assemble a `WorkflowDocument` with
- * `SourceRef` line spans, accumulating `WorkflowError`s rather than throwing.
+ * One frontmatter+body parser replaces the two prior format grammars: the
+ * classic `# Workflow:` / `## Step:` markdown parser, and the YAML program's
+ * field validator. Composition over invention: the frontmatter block is
+ * parsed with the `yaml` package's `parseDocument` + `LineCounter` (best-effort
+ * per-key line anchoring), the body's heading list with `parseMarkdownToc`
+ * (already fence-aware) — both already in the codebase. The parser
+ * accumulates `WorkflowError`s rather than throwing.
+ *
+ * Frontmatter carries the orchestration graph (params/defaults/budget/steps);
+ * the body carries per-step prose, joined to the graph by step id. Body rules
+ * (spec §2.2), exactly three:
+ *
+ *   1. Every level-2 heading must be `## <step-id>` for a DECLARED step,
+ *      exactly (fenced code blocks are skipped when scanning for headings).
+ *   2. A unit/map step MUST have a section (its instructions, byte-exact to
+ *      the next H2 or EOF); a route step MAY. Everything before the first H2
+ *      is free preamble.
+ *   3. Inside a step section, an optional `### gate` sub-heading starts the
+ *      step's gate rubric (to the section end) — the format's single
+ *      reserved marker. Frontmatter `gate:` without a `### gate` rubric is a
+ *      lint error; a `### gate` rubric alone declares a default gate
+ *      (fail-open, unbounded loops).
+ *
+ * Prose (instructions, gate rubrics, preamble) is NEVER templated or scanned
+ * for reference syntax — it reaches the dispatched unit byte-exact. Only
+ * three whole-value frontmatter positions carry the closed reference grammar
+ * (`program/expressions.ts`): `map.over`, `route.input`, `inputs[]`.
  */
 
-import { parse as yamlParse } from "yaml";
+import { LineCounter, parseDocument } from "yaml";
 import { parseFrontmatterBlock } from "../core/asset/frontmatter";
 import { parseMarkdownToc } from "../core/asset/markdown";
-import { utf8Bytes, WORKFLOW_MAX_SOURCE_BYTES } from "./resource-limits";
+import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
+import { parseReference } from "./program/expressions";
+import {
+  PROGRAM_ISOLATION_KINDS,
+  PROGRAM_ON_ERROR,
+  PROGRAM_PARAM_NAME_PATTERN,
+  PROGRAM_REDUCERS,
+  PROGRAM_RETRY_REASONS,
+  PROGRAM_STEP_ID_PATTERN,
+  type ProgramBudget,
+  type ProgramDefaults,
+  type ProgramGate,
+  type ProgramIsolation,
+  type ProgramMap,
+  type ProgramOnError,
+  type ProgramReducer,
+  type ProgramRetry,
+  type ProgramRoute,
+  type ProgramStep,
+  type ProgramUnit,
+} from "./program/schema";
+import {
+  jsonBytes,
+  utf8Bytes,
+  WORKFLOW_MAX_EXTRA_PARAMS_BYTES,
+  WORKFLOW_MAX_INPUTS,
+  WORKFLOW_MAX_MAP_EXPANSION,
+  WORKFLOW_MAX_PARAMS,
+  WORKFLOW_MAX_ROUTE_BRANCHES,
+  WORKFLOW_MAX_SCHEMA_BYTES,
+  WORKFLOW_MAX_SOURCE_BYTES,
+  WORKFLOW_MAX_STEPS,
+} from "./resource-limits";
 import {
   type SourceRef,
   WORKFLOW_SCHEMA_VERSION,
-  type WorkflowCompletionCriterion,
   type WorkflowDocument,
   type WorkflowError,
   type WorkflowInstructionBlock,
-  type WorkflowParameter,
   type WorkflowParseResult,
   type WorkflowStep,
 } from "./schema";
 import { runSemanticChecks } from "./validator";
 
-const WORKFLOW_TITLE_PREFIX = "Workflow:";
-const STEP_PREFIX = "Step:";
-const STEP_ID_LINE = /^Step ID:\s+(.+?)\s*$/;
-const BULLET_LINE = /^[-*]\s+(.+)$/;
-const SUBSECTION_INSTRUCTIONS = "Instructions";
-const SUBSECTION_COMPLETION_CRITERIA = "Completion Criteria";
+// LlmInvocationOverrides referenced via an inline `import("...")` TYPE QUERY,
+// same rationale as program/schema.ts / program/parser.ts's identical query
+// (this file is reached from `output/renderers.ts` via `workflows/renderer.ts`).
+type LlmInvocationOverrides = import("../integrations/agent/engine-resolution").LlmInvocationOverrides;
+
+/** Envelope keys every AKM markdown asset carries ($ref'd from schemas/akm-asset-envelope.json). */
+const ENVELOPE_KEYS = [
+  "type",
+  "description",
+  "tags",
+  "when_to_use",
+  "xrefs",
+  "updated",
+  "timestamp",
+  "generated",
+  "verified",
+  "provenance",
+  "status",
+  "stale_after",
+];
+const WORKFLOW_KEYS = ["params", "defaults", "budget", "steps"];
+const TOP_LEVEL_KEYS = [...ENVELOPE_KEYS, ...WORKFLOW_KEYS];
+const DEFAULTS_KEYS = ["engine", "model", "timeout", "on_error", "llm"];
+const BUDGET_KEYS = ["max_tokens", "max_units"];
+const STEP_KEYS = ["id", "unit", "map", "route", "inputs", "output", "gate"];
+const UNIT_KEYS = ["engine", "model", "llm", "timeout", "retry", "on_error", "output", "env", "isolation"];
+const MAP_KEYS = ["over", "concurrency", "reducer", "unit"];
+const ROUTE_KEYS = ["input", "when", "default"];
+const RETRY_KEYS = ["max", "on"];
+const GATE_KEYS = ["max_loops", "required"];
+const ROUTE_BRANCH_KEYS = ["match", "step"];
+
+const TIMEOUT_VALUE = /^(\d+)(ms|s|m)?$/;
+const TIMEOUT_HINT = `Use "<n>ms", "<n>s", "<n>m" (e.g. "10m"), or "none"`;
+const LIFECYCLE_STATUSES = new Set(["draft", "stable", "deprecated"]);
 
 /**
- * Cheap structural probe for the matcher. Returns true if the body has the
- * unmistakable shape of a workflow file. Used in `src/indexer/matchers.ts` so
- * the matcher and parser cannot drift.
+ * Cheap structural probe retained ONLY for callers that still need a fast
+ * "is this workflow-shaped" content check without touching the filesystem's
+ * directory. Recognition itself no longer sniffs content (spec §2.5) — this
+ * is a best-effort convenience for content-only contexts (e.g. a proposal
+ * whose ref carries no path). It looks for `type: workflow` in frontmatter.
  */
-export function looksLikeWorkflow(body: string): boolean {
-  const structuralBody = stripFencedCodeBlocks(body);
-  return (
-    /^#\s+Workflow:\s+/m.test(structuralBody) &&
-    /^##\s+Step:\s+/m.test(structuralBody) &&
-    /^Step ID:\s+/m.test(structuralBody) &&
-    /^###\s+Instructions\s*$/m.test(structuralBody)
-  );
+export function looksLikeWorkflow(raw: string): boolean {
+  const fmBlock = parseFrontmatterBlock(raw);
+  if (!fmBlock) return false;
+  return /^type:\s*['"]?workflow['"]?\s*(#.*)?$/m.test(fmBlock.frontmatter);
 }
 
-function stripFencedCodeBlocks(body: string): string {
-  let inFence = false;
-  const lines = body.split(/\r?\n/);
-  const stripped: string[] = [];
+type Path = Array<string | number>;
 
-  for (const line of lines) {
-    if (/^\s*```/.test(line) || /^\s*~~~/.test(line)) {
-      inFence = !inFence;
-      stripped.push("");
-      continue;
-    }
-    stripped.push(inFence ? "" : line);
-  }
+/** Yaml AST node surface we rely on for line anchoring (best-effort). */
+interface RangedNode {
+  range?: [number, number, number] | null;
+}
 
-  return stripped.join("\n");
+interface Ctx {
+  readonly filePath: string;
+  readonly errors: WorkflowError[];
+  lineAt(path: Path): number;
+  lineAtOffset(offset: number): number;
+  refAt(path: Path): SourceRef;
+  nodeAt(path: Path): unknown;
+  err(path: Path, message: string): void;
+  errAtLine(line: number, message: string): void;
+}
+
+/** Route branch bookkeeping for the post-pass (targets need all step ids). */
+interface RouteCheck {
+  stepIndex: number;
+  stepLabel: string;
+  branches: Array<{ match: string; stepId: string; line: number }>;
+  defaultTarget?: { stepId: string; line: number };
 }
 
 export function parseWorkflow(markdown: string, source: { path: string }): WorkflowParseResult {
@@ -74,323 +163,280 @@ export function parseWorkflow(markdown: string, source: { path: string }): Workf
       errors: [{ line: 1, message: "Workflow source exceeds the 1 MiB resource limit." }],
     };
   }
+
   const errors: WorkflowError[] = [];
   const path = source.path;
   const lines = markdown.split(/\r?\n/);
   const totalLines = lines.length;
 
   const fmBlock = parseFrontmatterBlock(markdown);
-  const frontmatterEndLine = fmBlock ? Math.max(1, fmBlock.bodyStartLine - 1) : 1;
-  const fmData = readFrontmatter(fmBlock?.frontmatter, errors);
-
-  const description = readDescription(fmData);
-  const tags = readTags(fmData, errors, frontmatterEndLine);
-  const parameters = readParameters(fmData, errors, frontmatterEndLine, path);
-
-  const toc = parseMarkdownToc(markdown);
-
-  const { title, titleLine } = extractTitle(toc.headings, errors);
-
-  // Disallow stray level-1 and non-Step level-2 headings.
-  for (const h of toc.headings) {
-    if (h.level === 1 && !h.text.startsWith(WORKFLOW_TITLE_PREFIX)) {
-      errors.push({
-        line: h.line,
-        message: `Unexpected top-level heading "# ${h.text}" on line ${h.line}. A workflow file may only contain one "# Workflow: <title>" heading.`,
-      });
-    }
-    if (h.level === 2 && !h.text.startsWith(STEP_PREFIX)) {
-      errors.push({
-        line: h.line,
-        message: `Unexpected level-2 heading "## ${h.text}" on line ${h.line}. Only "## Step: <title>" sections are allowed.`,
-      });
-    }
+  if (!fmBlock) {
+    return {
+      ok: false,
+      errors: [
+        {
+          line: 1,
+          message:
+            `Workflow markdown must start with a YAML frontmatter block ("---" ... "---") declaring at least ` +
+            `a non-empty "steps" list.`,
+        },
+      ],
+    };
   }
 
-  const steps = extractSteps(toc.headings, lines, totalLines, path, errors);
+  // The frontmatter substring always starts right after the opening "---"
+  // line (exactly one line), so a yaml LineCounter position over just this
+  // substring is always exactly one less than the real file line.
+  const lineOffset = 1;
+  const frontmatterEndLine = Math.max(1, fmBlock.bodyStartLine - 1);
 
-  if (steps.length === 0 && titleLine > 0) {
+  const lineCounter = new LineCounter();
+  let doc: ReturnType<typeof parseDocument>;
+  try {
+    doc = parseDocument(fmBlock.frontmatter, { lineCounter });
+  } catch (cause) {
+    return {
+      ok: false,
+      errors: [{ line: 2, message: `Workflow frontmatter is not valid YAML: ${describeError(cause)}` }],
+    };
+  }
+  for (const problem of doc.errors) {
+    const offset = Array.isArray(problem.pos) ? problem.pos[0] : 0;
     errors.push({
-      line: titleLine,
-      message: `Workflow has no "## Step: <title>" sections. Add at least one step.`,
+      line: Math.max(1, lineCounter.linePos(offset).line + lineOffset),
+      message: yamlErrorMessage(problem.message),
     });
   }
+  if (errors.length > 0) return { ok: false, errors };
+
+  let root: unknown;
+  try {
+    root = doc.toJS();
+  } catch (cause) {
+    return { ok: false, errors: [{ line: 2, message: `YAML expansion failed: ${describeError(cause)}` }] };
+  }
+
+  const lineAt = (p: Path): number => {
+    for (let depth = p.length; depth >= 0; depth--) {
+      const node = depth === 0 ? doc.contents : doc.getIn(p.slice(0, depth), true);
+      const range = (node as RangedNode | null | undefined)?.range;
+      if (range) return Math.max(1, lineCounter.linePos(range[0]).line + lineOffset);
+    }
+    return 2;
+  };
+
+  const ctx: Ctx = {
+    filePath: path,
+    errors,
+    lineAt,
+    lineAtOffset: (offset) => Math.max(1, lineCounter.linePos(offset).line + lineOffset),
+    nodeAt: (p) => (p.length === 0 ? doc.contents : doc.getIn(p, true)),
+    refAt: (p) => {
+      for (let depth = p.length; depth >= 0; depth--) {
+        const node = depth === 0 ? doc.contents : doc.getIn(p.slice(0, depth), true);
+        const range = (node as RangedNode | null | undefined)?.range;
+        if (range) {
+          const start = Math.max(1, lineCounter.linePos(range[0]).line + lineOffset);
+          const end = Math.max(start, lineCounter.linePos(Math.max(range[0], range[1] - 1)).line + lineOffset);
+          return { path, start, end };
+        }
+      }
+      return { path, start: frontmatterEndLine, end: frontmatterEndLine };
+    },
+    err: (p, message) => errors.push({ line: lineAt(p), message }),
+    errAtLine: (line, message) => errors.push({ line, message }),
+  };
+
+  if (root === null || root === undefined) root = {};
+  if (!isPlainRecord(root)) {
+    return {
+      ok: false,
+      errors: [{ line: 2, message: `Workflow frontmatter must be a YAML mapping (key: value pairs).` }],
+    };
+  }
+
+  checkUnknownKeys(ctx, root, [], TOP_LEVEL_KEYS, "workflow frontmatter");
+  checkEnvelopeFields(ctx, root, frontmatterEndLine);
+
+  const description = typeof root.description === "string" ? root.description : undefined;
+  const tags = readTags(ctx, root.tags, frontmatterEndLine);
+  const params = parseParams(ctx, root.params);
+  const defaults = parseDefaults(ctx, root.defaults);
+  const budget = parseBudget(ctx, root.budget);
+  const { steps: parsedSteps, gateKeyPresent } = parseSteps(ctx, root.steps);
+
+  // ── Body binding ────────────────────────────────────────────────────────
+  const toc = parseMarkdownToc(markdown);
+  const declaredIds = new Set(parsedSteps.map((s) => s.id));
+  const { sections, preamble } = bindStepSections(toc.headings, lines, totalLines, path, declaredIds, errors);
+
+  const steps: WorkflowStep[] = parsedSteps.map((step, index) => {
+    const section = sections.get(step.id);
+    const hasGateKey = gateKeyPresent.has(step.id);
+
+    if (!section) {
+      if (step.route === undefined) {
+        errors.push({
+          line: step.source.start,
+          message: `Step "${step.id}" is a unit/map step and must have a "## ${step.id}" body section with its instructions.`,
+        });
+      }
+    } else {
+      if (step.route === undefined && !section.instructions) {
+        errors.push({
+          line: section.headingLine,
+          message: `Step "${step.id}" section ("## ${step.id}") is empty. Add the step's instructions below the heading.`,
+        });
+      }
+      if (hasGateKey && !section.gateRubric) {
+        errors.push({
+          line: section.headingLine,
+          message:
+            `Step "${step.id}" declares frontmatter "gate:" but its "## ${step.id}" section has no "### gate" ` +
+            `rubric. Add a "### gate" sub-heading with the completion rubric, or remove "gate:".`,
+        });
+      }
+    }
+
+    const gate: ProgramGate | undefined = step.gate ?? (section?.gateRubric ? {} : undefined);
+
+    const out: WorkflowStep = {
+      id: step.id,
+      sequenceIndex: index,
+      ...(step.unit ? { unit: step.unit } : {}),
+      ...(step.map ? { map: step.map } : {}),
+      ...(step.route ? { route: step.route } : {}),
+      ...(step.inputs ? { inputs: step.inputs } : {}),
+      ...(step.output !== undefined ? { output: step.output } : {}),
+      ...(gate ? { gate } : {}),
+      ...(section?.instructions ? { instructions: section.instructions } : {}),
+      ...(section?.gateRubric ? { gateRubric: section.gateRubric } : {}),
+      source: step.source,
+    };
+    return out;
+  });
 
   const draft: WorkflowDocument = {
     schemaVersion: WORKFLOW_SCHEMA_VERSION,
-    title,
     ...(description ? { description } : {}),
     ...(tags ? { tags } : {}),
-    ...(parameters ? { parameters } : {}),
+    ...(params ? { params } : {}),
+    ...(defaults ? { defaults } : {}),
+    ...(budget ? { budget } : {}),
     steps,
+    ...(preamble ? { preamble } : {}),
     source: { path, lineCount: totalLines },
   };
 
-  runSemanticChecks(draft, fmData, frontmatterEndLine, errors);
+  runSemanticChecks(draft, root, frontmatterEndLine, errors);
 
-  if (errors.length > 0) {
-    return { ok: false, errors: sortErrors(errors) };
-  }
+  if (errors.length > 0) return { ok: false, errors: sortErrors(errors) };
   return { ok: true, document: draft };
 }
 
-// ── Title ───────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Body binding
+// ---------------------------------------------------------------------------
 
-function extractTitle(
-  headings: { level: number; text: string; line: number }[],
-  errors: WorkflowError[],
-): { title: string; titleLine: number } {
-  const titleHeadings = headings.filter((h) => h.level === 1 && h.text.startsWith(WORKFLOW_TITLE_PREFIX));
-
-  if (titleHeadings.length === 0) {
-    errors.push({
-      line: 1,
-      message: `Workflow markdown must start with a "# Workflow: <title>" heading. Add one at the top of the file.`,
-    });
-    return { title: "", titleLine: 0 };
-  }
-
-  if (titleHeadings.length > 1) {
-    for (const extra of titleHeadings.slice(1)) {
-      errors.push({
-        line: extra.line,
-        message: `Found a second "# Workflow:" heading on line ${extra.line}. A workflow file must contain exactly one.`,
-      });
-    }
-  }
-
-  const first = titleHeadings[0]!;
-  const title = first.text.slice(WORKFLOW_TITLE_PREFIX.length).trim();
-  if (!title) {
-    errors.push({
-      line: first.line,
-      message: `The "# Workflow:" heading on line ${first.line} is missing a title. Use "# Workflow: <title>".`,
-    });
-  }
-  return { title, titleLine: first.line };
+interface StepSection {
+  headingLine: number;
+  instructions?: WorkflowInstructionBlock;
+  gateRubric?: WorkflowInstructionBlock;
 }
 
-// ── Steps ───────────────────────────────────────────────────────────────────
-
-function extractSteps(
+function bindStepSections(
   headings: { level: number; text: string; line: number }[],
   lines: string[],
   totalLines: number,
   path: string,
+  declaredIds: Set<string>,
   errors: WorkflowError[],
-): WorkflowStep[] {
-  const steps: WorkflowStep[] = [];
-  let sequenceIndex = 0;
+): { sections: Map<string, StepSection>; preamble?: string } {
+  const sections = new Map<string, StepSection>();
+  const h2s = headings.filter((h) => h.level === 2);
+  const firstH2Line = h2s[0]?.line;
+  const preambleRaw = firstH2Line
+    ? sliceLines(lines, 1, firstH2Line - 1).trim()
+    : sliceLines(lines, 1, totalLines).trim();
 
   for (let i = 0; i < headings.length; i++) {
     const h = headings[i]!;
-    if (h.level !== 2 || !h.text.startsWith(STEP_PREFIX)) continue;
+    if (h.level !== 2) continue;
 
-    const stepTitle = h.text.slice(STEP_PREFIX.length).trim();
-    if (!stepTitle) {
+    if (!declaredIds.has(h.text)) {
       errors.push({
         line: h.line,
-        message: `The "## Step:" heading on line ${h.line} is missing a title. Use "## Step: <title>".`,
+        message: `Unexpected level-2 heading "## ${h.text}" on line ${h.line} — no step "${h.text}" is declared in frontmatter "steps:". Level-2 headings must exactly match a declared step id.`,
+      });
+      continue;
+    }
+    if (sections.has(h.text)) {
+      errors.push({
+        line: h.line,
+        message: `Step "${h.text}" has more than one "## ${h.text}" section (first on line ${sections.get(h.text)!.headingLine}). Keep only one.`,
       });
       continue;
     }
 
-    const stepEnd = Math.min(findNextSiblingOrParentLine(headings, i, 2) - 1, totalLines);
-    const stepSource: SourceRef = { path, start: h.line, end: stepEnd };
+    const sectionEnd = findNextHeadingAtOrAboveLevel(headings, i, 2, totalLines);
+    const gate = findGateSubsection(headings, i, sectionEnd, path, h.text, errors);
+    const instructionsEnd = gate ? gate.headingLine - 1 : sectionEnd;
+    const instructionsText = sliceLines(lines, h.line + 1, instructionsEnd).trim();
 
-    const subsections = collectSubsections(headings, i, stepEnd);
-    const stepIdSearchEnd = subsections.length > 0 ? subsections[0]!.headingLine - 1 : stepEnd;
-    const stepId = scanStepId(lines, h.line + 1, stepIdSearchEnd, stepTitle, errors);
-
-    const { instructions, completionCriteria } = collectStepBody(subsections, lines, path, stepTitle, errors);
-
-    if (!stepId) continue; // scanStepId already pushed the missing-id error
-    if (!instructions) {
-      errors.push({
-        line: h.line,
-        message: `Step "${stepTitle}" is missing the required "### Instructions" section. Add one under the step.`,
-      });
-      continue;
+    const section: StepSection = { headingLine: h.line };
+    if (instructionsText) {
+      section.instructions = { text: instructionsText, source: { path, start: h.line + 1, end: instructionsEnd } };
     }
-
-    steps.push({
-      id: stepId,
-      title: stepTitle,
-      sequenceIndex: sequenceIndex++,
-      instructions,
-      ...(completionCriteria ? { completionCriteria } : {}),
-      source: stepSource,
-    });
+    if (gate) {
+      const gateText = sliceLines(lines, gate.bodyStart, gate.bodyEnd).trim();
+      section.gateRubric = { text: gateText, source: { path, start: gate.bodyStart, end: gate.bodyEnd } };
+    }
+    sections.set(h.text, section);
   }
 
-  return steps;
+  return { sections, preamble: preambleRaw || undefined };
 }
 
-interface Subsection {
-  name: string;
-  headingLine: number;
-  bodyStart: number;
-  bodyEnd: number;
-}
-
-function collectSubsections(
+/** Find a step section's `### gate` sub-heading, if any — the format's single reserved marker. */
+function findGateSubsection(
   headings: { level: number; text: string; line: number }[],
-  stepIndex: number,
-  stepEnd: number,
-): Subsection[] {
-  const subs: Subsection[] = [];
-  for (let j = stepIndex + 1; j < headings.length; j++) {
-    const sub = headings[j]!;
-    if (sub.level <= 2) break;
-    if (sub.level !== 3) continue;
-    const next = headings[j + 1];
-    const rawEnd = next ? next.line - 1 : stepEnd;
-    subs.push({
-      name: sub.text,
-      headingLine: sub.line,
-      bodyStart: sub.line + 1,
-      bodyEnd: Math.min(rawEnd, stepEnd),
-    });
-  }
-  return subs;
-}
-
-function collectStepBody(
-  subsections: Subsection[],
-  lines: string[],
+  stepHeadingIndex: number,
+  sectionEnd: number,
   path: string,
-  stepTitle: string,
+  stepId: string,
   errors: WorkflowError[],
-): {
-  instructions?: WorkflowInstructionBlock;
-  completionCriteria?: WorkflowCompletionCriterion[];
-} {
-  let instructions: WorkflowInstructionBlock | undefined;
-  let completionCriteria: WorkflowCompletionCriterion[] | undefined;
-
-  for (const sub of subsections) {
-    if (sub.name === SUBSECTION_INSTRUCTIONS) {
-      if (instructions) {
-        errors.push({
-          line: sub.headingLine,
-          message: `Step "${stepTitle}" has more than one "### Instructions" section (line ${sub.headingLine}). Keep only one.`,
-        });
-        continue;
-      }
-      const text = sliceLines(lines, sub.bodyStart, sub.bodyEnd).trim();
-      if (!text) {
-        errors.push({
-          line: sub.headingLine,
-          message: `Step "${stepTitle}" has an empty "### Instructions" section. Add the instructions text below the heading.`,
-        });
-        continue;
-      }
-      instructions = {
-        text,
-        source: { path, start: sub.bodyStart, end: sub.bodyEnd },
-      };
-      continue;
-    }
-
-    if (sub.name === SUBSECTION_COMPLETION_CRITERIA) {
-      if (completionCriteria) {
-        errors.push({
-          line: sub.headingLine,
-          message: `Step "${stepTitle}" has more than one "### Completion Criteria" section (line ${sub.headingLine}). Keep only one.`,
-        });
-        continue;
-      }
-      const items = collectBullets(lines, sub.bodyStart, sub.bodyEnd, path);
-      if (items.length === 0) {
-        errors.push({
-          line: sub.headingLine,
-          message: `Step "${stepTitle}" has an empty "### Completion Criteria" section. Add at least one "- criterion" bullet.`,
-        });
-        continue;
-      }
-      completionCriteria = items;
-      continue;
-    }
-
-    errors.push({
-      line: sub.headingLine,
-      message:
-        `Step "${stepTitle}" has an unknown "### ${sub.name}" section. Supported sections: ` +
-        `"### Instructions", "### Completion Criteria". For orchestrated workflows (runners, ` +
-        `fan-out, routing), author a YAML workflow program instead — see \`akm workflow create <name>.yaml --print\`.`,
-    });
-  }
-
-  return {
-    ...(instructions ? { instructions } : {}),
-    ...(completionCriteria ? { completionCriteria } : {}),
-  };
-}
-
-function scanStepId(
-  lines: string[],
-  startLineInclusive: number,
-  endLineInclusive: number,
-  stepTitle: string,
-  errors: WorkflowError[],
-): string | undefined {
-  let foundId: string | undefined;
-  let foundLine = -1;
-
-  for (let lineNum = startLineInclusive; lineNum <= endLineInclusive; lineNum++) {
-    const trimmed = (lines[lineNum - 1] ?? "").trim();
-    if (!trimmed) continue;
-    const match = trimmed.match(STEP_ID_LINE);
-    if (!match) continue;
-    if (foundId !== undefined) {
+): { headingLine: number; bodyStart: number; bodyEnd: number } | undefined {
+  let found: { headingLine: number; bodyStart: number; bodyEnd: number } | undefined;
+  for (let j = stepHeadingIndex + 1; j < headings.length; j++) {
+    const h = headings[j]!;
+    if (h.line > sectionEnd) break;
+    if (h.level <= 2) break; // next step / preamble heading — section already bounded here
+    if (h.level !== 3 || h.text !== "gate") continue;
+    if (found) {
       errors.push({
-        line: lineNum,
-        message: `Step "${stepTitle}" has more than one "Step ID:" line (first on line ${foundLine}). Keep only one.`,
+        line: h.line,
+        message: `Step "${stepId}" has more than one "### gate" sub-heading (first on line ${found.headingLine}). Keep only one.`,
       });
       continue;
     }
-    foundId = match[1]!.trim();
-    foundLine = lineNum;
+    const next = headings.find((candidate) => candidate.line > h.line && candidate.level <= 3);
+    const bodyEnd = next ? Math.min(next.line - 1, sectionEnd) : sectionEnd;
+    found = { headingLine: h.line, bodyStart: h.line + 1, bodyEnd };
   }
-
-  if (!foundId) {
-    errors.push({
-      line: startLineInclusive,
-      message: `Step "${stepTitle}" is missing a "Step ID: <id>" line. Add one between the step heading and its subsections.`,
-    });
-  }
-  return foundId;
+  void path;
+  return found;
 }
 
-function collectBullets(
-  lines: string[],
-  startLineInclusive: number,
-  endLineInclusive: number,
-  path: string,
-): WorkflowCompletionCriterion[] {
-  const items: WorkflowCompletionCriterion[] = [];
-  for (let lineNum = startLineInclusive; lineNum <= endLineInclusive; lineNum++) {
-    const trimmed = (lines[lineNum - 1] ?? "").trim();
-    if (!trimmed) continue;
-    const match = trimmed.match(BULLET_LINE);
-    if (!match) continue;
-    items.push({
-      text: match[1]!.trim(),
-      source: { path, start: lineNum, end: lineNum },
-    });
-  }
-  return items;
-}
-
-function findNextSiblingOrParentLine(
+function findNextHeadingAtOrAboveLevel(
   headings: { level: number; line: number }[],
   fromIndex: number,
   level: number,
+  totalLines: number,
 ): number {
   for (let i = fromIndex + 1; i < headings.length; i++) {
-    if (headings[i]!.level <= level) return headings[i]!.line;
+    if (headings[i]!.level <= level) return headings[i]!.line - 1;
   }
-  return Number.MAX_SAFE_INTEGER;
+  return totalLines;
 }
 
 function sliceLines(lines: string[], startLineInclusive: number, endLineInclusive: number): string {
@@ -400,105 +446,699 @@ function sliceLines(lines: string[], startLineInclusive: number, endLineInclusiv
   return lines.slice(s - 1, e).join("\n");
 }
 
-// ── Frontmatter ─────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Envelope fields
+// ---------------------------------------------------------------------------
 
-function readFrontmatter(frontmatter: string | undefined, errors: WorkflowError[]): Record<string, unknown> {
-  if (!frontmatter) return {};
-  let parsed: unknown;
-  try {
-    parsed = yamlParse(frontmatter);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    errors.push({
-      line: 1,
-      message: `Workflow frontmatter is not valid YAML: ${msg}`,
-    });
-    return {};
+function checkEnvelopeFields(ctx: Ctx, root: Record<string, unknown>, fmEndLine: number): void {
+  if (root.type !== undefined && root.type !== "workflow") {
+    ctx.err(["type"], `Workflow frontmatter "type" must be "workflow" (got ${JSON.stringify(root.type)}).`);
   }
-  if (parsed === null || parsed === undefined) return {};
-  if (typeof parsed !== "object" || Array.isArray(parsed)) {
-    errors.push({
-      line: 1,
-      message: `Workflow frontmatter must be a YAML mapping (key: value pairs). Use "key: value" lines between the --- markers.`,
-    });
-    return {};
+  if (root.when_to_use !== undefined && typeof root.when_to_use !== "string") {
+    ctx.err(["when_to_use"], `Workflow frontmatter "when_to_use" must be a string.`);
   }
-  return parsed as Record<string, unknown>;
+  if (root.description !== undefined && typeof root.description !== "string") {
+    ctx.err(["description"], `Workflow frontmatter "description" must be a string.`);
+  }
+  checkXrefs(ctx, root.xrefs, fmEndLine);
+  if (root.updated !== undefined && typeof root.updated !== "string") {
+    ctx.err(["updated"], `Workflow frontmatter "updated" must be a string.`);
+  }
+  if (root.timestamp !== undefined && typeof root.timestamp !== "string") {
+    ctx.err(["timestamp"], `Workflow frontmatter "timestamp" must be a string.`);
+  }
+  checkActorStamp(ctx, root.generated, ["generated"], `"generated"`);
+  if (root.verified !== undefined) {
+    const entries = Array.isArray(root.verified) ? root.verified : [root.verified];
+    entries.forEach((entry, i) => {
+      checkActorStamp(ctx, entry, ["verified", i], `"verified"`);
+    });
+  }
+  if (root.provenance !== undefined && !isPlainRecord(root.provenance)) {
+    ctx.err(["provenance"], `Workflow frontmatter "provenance" must be a mapping.`);
+  }
+  if (root.status !== undefined && (typeof root.status !== "string" || !LIFECYCLE_STATUSES.has(root.status))) {
+    ctx.err(["status"], `Workflow frontmatter "status" must be one of: draft, stable, deprecated.`);
+  }
+  if (root.stale_after !== undefined && typeof root.stale_after !== "string") {
+    ctx.err(["stale_after"], `Workflow frontmatter "stale_after" must be a string.`);
+  }
 }
 
-function readDescription(data: Record<string, unknown>): string | undefined {
-  const v = data.description;
-  if (typeof v !== "string") return undefined;
-  const trimmed = v.trim();
-  return trimmed || undefined;
+function checkActorStamp(ctx: Ctx, value: unknown, path: Path, label: string): void {
+  if (value === undefined) return;
+  if (!isPlainRecord(value) || typeof value.by !== "string" || !value.by.trim()) {
+    ctx.err(path, `Workflow frontmatter ${label} must be a mapping with a non-empty "by".`);
+  }
 }
 
-function readTags(data: Record<string, unknown>, errors: WorkflowError[], fmEndLine: number): string[] | undefined {
-  const v = data.tags;
-  if (v === undefined || v === null) return undefined;
-  if (typeof v === "string") {
-    const t = v.trim();
-    return t ? [t] : undefined;
-  }
-  if (!Array.isArray(v) || !v.every((tag) => typeof tag === "string" && tag.trim().length > 0)) {
-    errors.push({
-      line: fmEndLine,
-      message: `Workflow frontmatter "tags" must be a string or a list of non-empty strings.`,
-    });
+function readTags(ctx: Ctx, value: unknown, fmEndLine: number): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || !value.every((tag) => typeof tag === "string" && tag.trim().length > 0)) {
+    ctx.errAtLine(fmEndLine, `Workflow frontmatter "tags" must be an array of non-empty strings.`);
     return undefined;
   }
-  return v.map((tag) => (tag as string).trim());
+  return value.map((tag) => (tag as string).trim());
 }
 
-function readParameters(
-  data: Record<string, unknown>,
-  errors: WorkflowError[],
-  fmEndLine: number,
-  path: string,
-): WorkflowParameter[] | undefined {
-  const v = data.params;
-  if (v === undefined || v === null) return undefined;
-  if (typeof v !== "object" || Array.isArray(v)) {
-    errors.push({
-      line: fmEndLine,
-      message: `Workflow frontmatter "params" must be a mapping of parameter names to descriptions.`,
-    });
+function checkXrefs(ctx: Ctx, value: unknown, fmEndLine: number): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || !value.every((ref) => typeof ref === "string")) {
+    ctx.errAtLine(fmEndLine, `Workflow frontmatter "xrefs" must be an array of canonical asset refs.`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Top-level sections (frontmatter graph)
+// ---------------------------------------------------------------------------
+
+function parseParams(ctx: Ctx, raw: unknown): Record<string, Record<string, unknown>> | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainRecord(raw)) {
+    ctx.err(
+      ["params"],
+      `"params" must be a mapping of param name to a JSON Schema object (e.g. changed_files: { type: array }).`,
+    );
     return undefined;
   }
-
-  const entries = Object.entries(v as Record<string, unknown>);
-  if (entries.length === 0) return undefined;
-
-  const out: WorkflowParameter[] = [];
-  for (const [name, desc] of entries) {
-    const trimmedName = name.trim();
-    if (!trimmedName) {
-      errors.push({
-        line: fmEndLine,
-        message: `Workflow parameter names must be non-empty.`,
-      });
+  if (Object.keys(raw).length > WORKFLOW_MAX_PARAMS) {
+    ctx.err(["params"], `"params" must contain at most ${WORKFLOW_MAX_PARAMS} entries.`);
+  }
+  const params: Record<string, Record<string, unknown>> = {};
+  for (const [paramName, value] of Object.entries(raw)) {
+    if (!PROGRAM_PARAM_NAME_PATTERN.test(paramName)) {
+      ctx.err(
+        ["params", paramName],
+        `Param name "${paramName}" is invalid. Use letters, digits, and underscores, starting with a letter or underscore, so "params.${paramName}" can address it.`,
+      );
       continue;
     }
-    if (typeof desc !== "string" || !desc.trim()) {
-      errors.push({
-        line: fmEndLine,
-        message: `Workflow parameter "${trimmedName}" must have a non-empty string description in frontmatter "params".`,
-      });
+    if (!isPlainRecord(value)) {
+      ctx.err(["params", paramName], `Param "${paramName}" must be a JSON Schema object (e.g. { type: string }).`);
       continue;
     }
-    out.push({
-      name: trimmedName,
-      description: desc.trim(),
-      // The frontmatter parser doesn't track per-key line numbers; anchor to the
-      // frontmatter block end so editors land somewhere sensible.
-      source: { path, start: 1, end: fmEndLine },
+    params[paramName] = value;
+  }
+  return Object.keys(params).length > 0 ? params : undefined;
+}
+
+function parseDefaults(ctx: Ctx, raw: unknown): ProgramDefaults | undefined {
+  if (raw === undefined) return undefined;
+  const path: Path = ["defaults"];
+  if (!isPlainRecord(raw)) {
+    ctx.err(path, `"defaults" must be a mapping with any of: ${DEFAULTS_KEYS.join(", ")}.`);
+    return undefined;
+  }
+  checkUnknownKeys(ctx, raw, path, DEFAULTS_KEYS, `"defaults"`);
+  const defaults: ProgramDefaults = {};
+  if (raw.engine !== undefined) {
+    if (typeof raw.engine === "string" && raw.engine.trim() !== "") defaults.engine = raw.engine.trim();
+    else ctx.err([...path, "engine"], `"defaults.engine" must be a non-empty engine name.`);
+  }
+  if (raw.model !== undefined) {
+    if (typeof raw.model === "string" && raw.model.trim() !== "") defaults.model = raw.model.trim();
+    else ctx.err([...path, "model"], `"defaults.model" must be a non-empty string (a model alias or exact id).`);
+  }
+  const timeoutMs = parseTimeoutField(ctx, raw.timeout, [...path, "timeout"], `"defaults.timeout"`);
+  if (timeoutMs !== undefined) defaults.timeoutMs = timeoutMs;
+  const onError = parseEnumField(ctx, raw.on_error, [...path, "on_error"], `"defaults.on_error"`, PROGRAM_ON_ERROR);
+  if (onError !== undefined) defaults.onError = onError as ProgramOnError;
+  const llm = parseLlmOverrides(ctx, raw.llm, [...path, "llm"], `"defaults.llm"`);
+  if (llm !== undefined) defaults.llm = llm;
+  return Object.keys(defaults).length > 0 ? defaults : undefined;
+}
+
+function parseBudget(ctx: Ctx, raw: unknown): ProgramBudget | undefined {
+  if (raw === undefined) return undefined;
+  const path: Path = ["budget"];
+  if (!isPlainRecord(raw)) {
+    ctx.err(path, `"budget" must be a mapping with any of: ${BUDGET_KEYS.join(", ")}.`);
+    return undefined;
+  }
+  checkUnknownKeys(ctx, raw, path, BUDGET_KEYS, `"budget"`);
+  const budget: ProgramBudget = {};
+  if (raw.max_tokens !== undefined) {
+    if (typeof raw.max_tokens === "number" && Number.isInteger(raw.max_tokens) && raw.max_tokens >= 1) {
+      budget.maxTokens = raw.max_tokens;
+    } else {
+      ctx.err([...path, "max_tokens"], `"budget.max_tokens" must be an integer >= 1.`);
+    }
+  }
+  if (raw.max_units !== undefined) {
+    if (
+      typeof raw.max_units === "number" &&
+      Number.isInteger(raw.max_units) &&
+      raw.max_units >= 1 &&
+      raw.max_units <= WORKFLOW_MAX_MAP_EXPANSION
+    ) {
+      budget.maxUnits = raw.max_units;
+    } else {
+      ctx.err(
+        [...path, "max_units"],
+        `"budget.max_units" must be an integer from 1 through ${WORKFLOW_MAX_MAP_EXPANSION}.`,
+      );
+    }
+  }
+  return Object.keys(budget).length > 0 ? budget : undefined;
+}
+
+function parseSteps(ctx: Ctx, raw: unknown): { steps: ProgramStep[]; gateKeyPresent: Set<string> } {
+  const gateKeyPresent = new Set<string>();
+  if (!Array.isArray(raw) || raw.length === 0) {
+    ctx.err(["steps"], `"steps" is required and must be a list with at least one step.`);
+    return { steps: [], gateKeyPresent };
+  }
+  if (raw.length > WORKFLOW_MAX_STEPS) {
+    ctx.err(["steps"], `"steps" must contain at most ${WORKFLOW_MAX_STEPS} entries.`);
+  }
+
+  // First pass: collect ids so route targets can be checked against ALL steps
+  // (including ones that fail their own validation).
+  const idIndex = new Map<string, number>();
+  raw.forEach((rawStep, index) => {
+    if (isPlainRecord(rawStep) && typeof rawStep.id === "string" && !idIndex.has(rawStep.id)) {
+      idIndex.set(rawStep.id, index);
+    }
+  });
+
+  const steps: ProgramStep[] = [];
+  const seenIds = new Map<string, number>();
+  const routeChecks: RouteCheck[] = [];
+
+  raw.forEach((rawStep, index) => {
+    const path: Path = ["steps", index];
+    if (!isPlainRecord(rawStep)) {
+      ctx.err(path, `Step ${index + 1} must be a mapping with an "id".`);
+      return;
+    }
+    const label = typeof rawStep.id === "string" && rawStep.id !== "" ? `Step "${rawStep.id}"` : `Step ${index + 1}`;
+    checkUnknownKeys(ctx, rawStep, path, STEP_KEYS, label);
+
+    let id = "";
+    if (typeof rawStep.id !== "string" || rawStep.id === "") {
+      ctx.err([...path, "id"], `${label} requires a non-empty string "id".`);
+    } else if (!PROGRAM_STEP_ID_PATTERN.test(rawStep.id)) {
+      ctx.err(
+        [...path, "id"],
+        `${label} has an invalid id "${rawStep.id}". A step id cannot be referenced from steps.${rawStep.id}.output ` +
+          `unless it matches [A-Za-z_][A-Za-z0-9_-]* (a letter or underscore first, then letters, digits, ` +
+          `underscores, or dashes; no dots, no leading digit).`,
+      );
+    } else {
+      id = rawStep.id;
+      const firstIndex = seenIds.get(id);
+      if (firstIndex !== undefined) {
+        ctx.err(
+          [...path, "id"],
+          `Duplicate step id "${id}" (first used by step ${firstIndex + 1}). Step ids must be unique.`,
+        );
+      } else {
+        seenIds.set(id, index);
+      }
+    }
+
+    const declaredKinds = (["map", "route"] as const).filter((kind) => rawStep[kind] !== undefined);
+    if (declaredKinds.length > 1) {
+      ctx.err(path, `${label} must declare at most one of "map" or "route" (found ${declaredKinds.join(" + ")}).`);
+    }
+    const isRoute = rawStep.route !== undefined;
+    const isMapStep = rawStep.map !== undefined;
+    if (isRoute && rawStep.unit !== undefined) {
+      ctx.err(path, `${label} is a route step and cannot also declare "unit" (route steps dispatch no unit).`);
+    }
+    if (isMapStep && rawStep.unit !== undefined) {
+      ctx.err(
+        path,
+        `${label} is a map step; the per-item dispatch-override bag belongs at "map.unit", not top-level "unit".`,
+      );
+    }
+    if (isRoute && rawStep.inputs !== undefined) {
+      ctx.err(path, `${label} is a route step and cannot declare "inputs" (route steps dispatch no unit).`);
+    }
+
+    if (rawStep.gate !== undefined && id) gateKeyPresent.add(id);
+
+    const unit =
+      rawStep.unit !== undefined && !isRoute && !isMapStep
+        ? parseUnit(ctx, rawStep.unit, [...path, "unit"], label)
+        : undefined;
+    const map = isMapStep ? parseMap(ctx, rawStep.map, [...path, "map"], label) : undefined;
+    const route = isRoute ? parseRoute(ctx, rawStep.route, [...path, "route"], label, index, routeChecks) : undefined;
+    const inputs = !isRoute ? parseInputs(ctx, rawStep.inputs, [...path, "inputs"], label) : undefined;
+
+    const output = parseSchemaObject(ctx, rawStep.output, [...path, "output"], `${label} "output"`);
+    const gate = rawStep.gate !== undefined ? parseGate(ctx, rawStep.gate, [...path, "gate"], label) : undefined;
+
+    const step: ProgramStep = { id, source: ctx.refAt(path) };
+    if (unit) step.unit = unit;
+    if (map) step.map = map;
+    if (route) step.route = route;
+    if (inputs) step.inputs = inputs;
+    if (output !== undefined) step.output = output;
+    if (gate !== undefined) step.gate = gate;
+    steps.push(step);
+  });
+
+  // Route target post-pass: targets exist, come after the routing step, and
+  // never point back at it.
+  for (const check of routeChecks) {
+    const targets = [...check.branches.map((b) => ({ stepId: b.stepId, line: b.line }))];
+    if (check.defaultTarget) targets.push(check.defaultTarget);
+    for (const target of targets) {
+      const targetIndex = idIndex.get(target.stepId);
+      if (targetIndex === undefined) {
+        ctx.errAtLine(
+          target.line,
+          `${check.stepLabel} routes to unknown step "${target.stepId}". Route targets must name a step id in this workflow.`,
+        );
+      } else if (targetIndex === check.stepIndex) {
+        ctx.errAtLine(target.line, `${check.stepLabel} must not route to itself.`);
+      } else if (targetIndex < check.stepIndex) {
+        ctx.errAtLine(
+          target.line,
+          `${check.stepLabel} routes backward to "${target.stepId}" (step ${targetIndex + 1}). Route targets must come after the routing step.`,
+        );
+      }
+    }
+  }
+
+  return { steps, gateKeyPresent };
+}
+
+// ---------------------------------------------------------------------------
+// Step blocks
+// ---------------------------------------------------------------------------
+
+function parseUnit(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramUnit | undefined {
+  if (!isPlainRecord(raw)) {
+    ctx.err(path, `${stepLabel} "unit" must be a mapping (a dispatch-override bag).`);
+    return undefined;
+  }
+  checkUnknownKeys(ctx, raw, path, UNIT_KEYS, `${stepLabel} "unit"`);
+
+  const unit: ProgramUnit = { source: ctx.refAt(path) };
+
+  if (raw.engine !== undefined) {
+    if (typeof raw.engine === "string" && raw.engine.trim() !== "") unit.engine = raw.engine.trim();
+    else ctx.err([...path, "engine"], `${stepLabel} "engine" must be a non-empty engine name.`);
+  }
+  if (raw.model !== undefined) {
+    if (typeof raw.model === "string" && raw.model.trim() !== "") unit.model = raw.model.trim();
+    else ctx.err([...path, "model"], `${stepLabel} "model" must be a non-empty string (a model alias or exact id).`);
+  }
+  const llm = parseLlmOverrides(ctx, raw.llm, [...path, "llm"], `${stepLabel} "llm"`);
+  if (llm !== undefined) unit.llm = llm;
+
+  const timeoutMs = parseTimeoutField(ctx, raw.timeout, [...path, "timeout"], `${stepLabel} "timeout"`);
+  if (timeoutMs !== undefined) unit.timeoutMs = timeoutMs;
+
+  const retry = parseRetry(ctx, raw.retry, [...path, "retry"], stepLabel);
+  if (retry !== undefined) unit.retry = retry;
+
+  const onError = parseEnumField(ctx, raw.on_error, [...path, "on_error"], `${stepLabel} "on_error"`, PROGRAM_ON_ERROR);
+  if (onError !== undefined) unit.onError = onError as ProgramOnError;
+
+  const output = parseSchemaObject(ctx, raw.output, [...path, "output"], `${stepLabel} unit "output"`);
+  if (output !== undefined) unit.output = output;
+
+  if (raw.env !== undefined) {
+    if (Array.isArray(raw.env) && raw.env.every((entry) => typeof entry === "string" && entry.trim() !== "")) {
+      unit.env = raw.env.map((entry) => (entry as string).trim());
+    } else {
+      ctx.err([...path, "env"], `${stepLabel} "env" must be a list of non-empty env asset refs.`);
+    }
+  }
+
+  const isolation = parseEnumField(
+    ctx,
+    raw.isolation,
+    [...path, "isolation"],
+    `${stepLabel} "isolation"`,
+    PROGRAM_ISOLATION_KINDS,
+  );
+  if (isolation !== undefined) unit.isolation = isolation as ProgramIsolation;
+
+  return unit;
+}
+
+function parseMap(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramMap | undefined {
+  if (!isPlainRecord(raw)) {
+    ctx.err(path, `${stepLabel} "map" must be a mapping with an "over" key.`);
+    return undefined;
+  }
+  checkUnknownKeys(ctx, raw, path, MAP_KEYS, `${stepLabel} "map"`);
+
+  let over = "";
+  if (typeof raw.over === "string" && raw.over.trim() !== "") {
+    over = raw.over.trim();
+    checkReferenceSyntax(ctx, over, [...path, "over"], `${stepLabel} "over"`);
+  } else {
+    ctx.err(
+      [...path, "over"],
+      `${stepLabel} "map" requires "over": a reference naming the item list (e.g. steps.discover.output.files).`,
+    );
+  }
+
+  let concurrency: number | undefined;
+  if (raw.concurrency !== undefined) {
+    if (typeof raw.concurrency === "number" && Number.isInteger(raw.concurrency) && raw.concurrency > 0) {
+      concurrency = raw.concurrency;
+    } else {
+      ctx.err([...path, "concurrency"], `${stepLabel} "concurrency" must be a positive integer.`);
+    }
+  }
+
+  const reducer = parseEnumField(ctx, raw.reducer, [...path, "reducer"], `${stepLabel} "reducer"`, PROGRAM_REDUCERS);
+  const unit = raw.unit !== undefined ? parseUnit(ctx, raw.unit, [...path, "unit"], stepLabel) : undefined;
+
+  const map: ProgramMap = { over };
+  if (concurrency !== undefined) map.concurrency = concurrency;
+  if (reducer !== undefined) map.reducer = reducer as ProgramReducer;
+  if (unit !== undefined) map.unit = unit;
+  return map;
+}
+
+function parseRoute(
+  ctx: Ctx,
+  raw: unknown,
+  path: Path,
+  stepLabel: string,
+  stepIndex: number,
+  routeChecks: RouteCheck[],
+): ProgramRoute | undefined {
+  if (!isPlainRecord(raw)) {
+    ctx.err(path, `${stepLabel} "route" must be a mapping with "input" and "when" keys.`);
+    return undefined;
+  }
+  checkUnknownKeys(ctx, raw, path, ROUTE_KEYS, `${stepLabel} "route"`);
+
+  let input = "";
+  if (typeof raw.input === "string" && raw.input.trim() !== "") {
+    input = raw.input.trim();
+    checkReferenceSyntax(ctx, input, [...path, "input"], `${stepLabel} "route.input"`);
+  } else {
+    ctx.err([...path, "input"], `${stepLabel} "route" requires "input": a reference naming the value to route on.`);
+  }
+
+  const check: RouteCheck = { stepIndex, stepLabel, branches: [] };
+  const whenPath: Path = [...path, "when"];
+
+  if (!Array.isArray(raw.when) || raw.when.length === 0) {
+    ctx.err(
+      whenPath,
+      `${stepLabel} "route" requires "when": a non-empty list of { match, step } branches (e.g. when: [{ match: pass, step: ship }]).`,
+    );
+  } else {
+    if (raw.when.length > WORKFLOW_MAX_ROUTE_BRANCHES) {
+      ctx.err(whenPath, `${stepLabel} "when" must contain at most ${WORKFLOW_MAX_ROUTE_BRANCHES} branches.`);
+    }
+    const seenMatches = new Map<string, number>();
+    raw.when.forEach((branch: unknown, i: number) => {
+      const branchPath: Path = [...whenPath, i];
+      if (!isPlainRecord(branch)) {
+        ctx.err(branchPath, `${stepLabel} "when[${i}]" must be a mapping: { match, step }.`);
+        return;
+      }
+      checkUnknownKeys(ctx, branch, branchPath, ROUTE_BRANCH_KEYS, `${stepLabel} "when[${i}]"`);
+      const matchLine = ctx.lineAt([...branchPath, "match"]);
+      if (
+        branch.match === undefined ||
+        (typeof branch.match !== "string" && typeof branch.match !== "number" && typeof branch.match !== "boolean")
+      ) {
+        ctx.err([...branchPath, "match"], `${stepLabel} "when[${i}].match" must be a string, number, or boolean.`);
+        return;
+      }
+      const match = String(branch.match);
+      if (typeof branch.step !== "string" || branch.step.trim() === "") {
+        ctx.err([...branchPath, "step"], `${stepLabel} "when[${i}].step" must be a step id string.`);
+        return;
+      }
+      const stepId = branch.step.trim();
+      const stepLine = ctx.lineAt([...branchPath, "step"]);
+      const firstLine = seenMatches.get(match);
+      if (firstLine !== undefined) {
+        ctx.errAtLine(
+          matchLine,
+          `${stepLabel} has a duplicate "when" match "${match}" (first declared on line ${firstLine}). Matches must be unique.`,
+        );
+        return;
+      }
+      seenMatches.set(match, matchLine);
+      check.branches.push({ match, stepId, line: stepLine });
     });
   }
 
+  let defaultStepId: string | undefined;
+  if (raw.default !== undefined) {
+    if (typeof raw.default === "string" && raw.default.trim() !== "") {
+      defaultStepId = raw.default.trim();
+      check.defaultTarget = { stepId: defaultStepId, line: ctx.lineAt([...path, "default"]) };
+    } else {
+      ctx.err([...path, "default"], `${stepLabel} "route.default" must be a step id string.`);
+    }
+  }
+
+  routeChecks.push(check);
+
+  const route: ProgramRoute = { input, branches: check.branches.map(({ match, stepId }) => ({ match, stepId })) };
+  if (defaultStepId !== undefined) route.defaultStepId = defaultStepId;
+  return route;
+}
+
+function parseInputs(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    ctx.err(path, `${stepLabel} "inputs" must be a non-empty list of reference strings.`);
+    return undefined;
+  }
+  if (raw.length > WORKFLOW_MAX_INPUTS) {
+    ctx.err(path, `${stepLabel} "inputs" must contain at most ${WORKFLOW_MAX_INPUTS} entries.`);
+  }
+  const out: string[] = [];
+  raw.forEach((entry, i) => {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      ctx.err([...path, i], `${stepLabel} "inputs[${i}]" must be a non-empty reference string.`);
+      return;
+    }
+    const value = entry.trim();
+    checkReferenceSyntax(ctx, value, [...path, i], `${stepLabel} "inputs[${i}]"`);
+    out.push(value);
+  });
   return out.length > 0 ? out : undefined;
 }
 
-// ── Error sorting ───────────────────────────────────────────────────────────
+function parseGate(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramGate | undefined {
+  if (!isPlainRecord(raw)) {
+    ctx.err(path, `${stepLabel} "gate" must be a mapping with any of: ${GATE_KEYS.join(", ")}.`);
+    return undefined;
+  }
+  checkUnknownKeys(ctx, raw, path, GATE_KEYS, `${stepLabel} "gate"`);
+
+  const gate: ProgramGate = {};
+  if (raw.max_loops !== undefined) {
+    if (typeof raw.max_loops === "number" && Number.isInteger(raw.max_loops) && raw.max_loops >= 1) {
+      gate.maxLoops = raw.max_loops;
+    } else {
+      ctx.err([...path, "max_loops"], `${stepLabel} "gate.max_loops" must be an integer >= 1.`);
+    }
+  }
+  if (raw.required !== undefined) {
+    if (typeof raw.required === "boolean") {
+      gate.required = raw.required;
+    } else {
+      ctx.err([...path, "required"], `${stepLabel} "gate.required" must be a boolean (true or false).`);
+    }
+  }
+  return gate;
+}
+
+// ---------------------------------------------------------------------------
+// Field helpers
+// ---------------------------------------------------------------------------
+
+function parseRetry(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramRetry | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainRecord(raw)) {
+    ctx.err(path, `${stepLabel} "retry" must be a mapping: { max: <n>, on: [<failure_reason>, …] }.`);
+    return undefined;
+  }
+  checkUnknownKeys(ctx, raw, path, RETRY_KEYS, `${stepLabel} "retry"`);
+
+  let ok = true;
+  if (!(typeof raw.max === "number" && Number.isInteger(raw.max) && raw.max >= 0)) {
+    ctx.err([...path, "max"], `${stepLabel} "retry.max" is required and must be a non-negative integer.`);
+    ok = false;
+  }
+  const on: ProgramRetry["on"] = [];
+  if (Array.isArray(raw.on) && raw.on.length > 0) {
+    raw.on.forEach((reason, i) => {
+      if (typeof reason === "string" && (PROGRAM_RETRY_REASONS as readonly string[]).includes(reason)) {
+        on.push(reason as ProgramRetry["on"][number]);
+      } else {
+        ctx.err(
+          [...path, "on", i],
+          `${stepLabel} "retry.on" has unknown failure reason ${JSON.stringify(reason)}. Valid reasons: ${PROGRAM_RETRY_REASONS.join(", ")}.`,
+        );
+        ok = false;
+      }
+    });
+  } else {
+    ctx.err(
+      [...path, "on"],
+      `${stepLabel} "retry.on" is required and must be a non-empty list of failure reasons (${PROGRAM_RETRY_REASONS.join(", ")}).`,
+    );
+    ok = false;
+  }
+  return ok ? { max: raw.max as number, on } : undefined;
+}
+
+function parseTimeoutField(ctx: Ctx, raw: unknown, path: Path, label: string): number | null | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw === "number") {
+    if (Number.isInteger(raw) && raw > 0) return raw;
+    ctx.err(path, `${label} has a non-positive timeout ${JSON.stringify(raw)}. ${TIMEOUT_HINT}.`);
+    return undefined;
+  }
+  if (typeof raw !== "string") {
+    ctx.err(path, `${label} must be a duration string. ${TIMEOUT_HINT}.`);
+    return undefined;
+  }
+  const value = raw.trim().toLowerCase();
+  if (value === "none") return null;
+  const match = value.match(TIMEOUT_VALUE);
+  if (!match) {
+    ctx.err(path, `${label} has an invalid timeout "${raw}". ${TIMEOUT_HINT}.`);
+    return undefined;
+  }
+  const n = Number.parseInt(match[1]!, 10);
+  const unit = match[2] ?? "ms";
+  const timeoutMs = unit === "m" ? n * 60_000 : unit === "s" ? n * 1_000 : n;
+  if (timeoutMs <= 0) {
+    ctx.err(path, `${label} has a non-positive timeout "${raw}". Use a positive duration or "none".`);
+    return undefined;
+  }
+  return timeoutMs;
+}
+
+function parseEnumField(
+  ctx: Ctx,
+  raw: unknown,
+  path: Path,
+  label: string,
+  allowed: readonly string[],
+): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw === "string" && allowed.includes(raw)) return raw;
+  ctx.err(path, `${label} must be one of: ${allowed.join(" | ")} (got ${JSON.stringify(raw)}).`);
+  return undefined;
+}
+
+/** Parse only invocation tuning. Connection identity belongs to a named engine. */
+function parseLlmOverrides(ctx: Ctx, raw: unknown, path: Path, label: string): LlmInvocationOverrides | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainRecord(raw)) {
+    ctx.err(path, `${label} must be a mapping of LLM invocation overrides.`);
+    return undefined;
+  }
+  const keys = [
+    "temperature",
+    "max_tokens",
+    "supports_json_schema",
+    "extra_params",
+    "context_length",
+    "enable_thinking",
+  ];
+  checkUnknownKeys(ctx, raw, path, keys, label);
+  const result: LlmInvocationOverrides = {};
+  if (raw.temperature !== undefined) {
+    if (typeof raw.temperature === "number" && Number.isFinite(raw.temperature)) result.temperature = raw.temperature;
+    else ctx.err([...path, "temperature"], `${label}.temperature must be a finite number.`);
+  }
+  if (raw.max_tokens !== undefined) {
+    if (typeof raw.max_tokens === "number" && Number.isInteger(raw.max_tokens) && raw.max_tokens > 0) {
+      result.maxTokens = raw.max_tokens;
+    } else ctx.err([...path, "max_tokens"], `${label}.max_tokens must be a positive integer.`);
+  }
+  if (raw.supports_json_schema !== undefined) {
+    if (typeof raw.supports_json_schema === "boolean") result.supportsJsonSchema = raw.supports_json_schema;
+    else ctx.err([...path, "supports_json_schema"], `${label}.supports_json_schema must be a boolean.`);
+  }
+  if (raw.extra_params !== undefined) {
+    if (!isPlainRecord(raw.extra_params)) {
+      ctx.err([...path, "extra_params"], `${label}.extra_params must be a JSON object.`);
+    } else {
+      const issues = validateExtraParams(raw.extra_params);
+      for (const issue of issues) {
+        ctx.err([...path, "extra_params", ...issue.path], `${formatExtraParamsIssue(`${label}.extra_params`, issue)}.`);
+      }
+      if (jsonBytes(raw.extra_params) > WORKFLOW_MAX_EXTRA_PARAMS_BYTES) {
+        ctx.err([...path, "extra_params"], `${label}.extra_params exceeds the 64 KiB resource limit.`);
+      }
+      if (issues.length === 0 && jsonBytes(raw.extra_params) <= WORKFLOW_MAX_EXTRA_PARAMS_BYTES) {
+        result.extraParams = raw.extra_params;
+      }
+    }
+  }
+  if (raw.context_length !== undefined) {
+    if (typeof raw.context_length === "number" && Number.isInteger(raw.context_length) && raw.context_length > 0) {
+      result.contextLength = raw.context_length;
+    } else ctx.err([...path, "context_length"], `${label}.context_length must be a positive integer.`);
+  }
+  if (raw.enable_thinking !== undefined) {
+    if (typeof raw.enable_thinking === "boolean") result.enableThinking = raw.enable_thinking;
+    else ctx.err([...path, "enable_thinking"], `${label}.enable_thinking must be a boolean.`);
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseSchemaObject(ctx: Ctx, raw: unknown, path: Path, label: string): Record<string, unknown> | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainRecord(raw)) {
+    ctx.err(path, `${label} must be a JSON Schema object (e.g. { type: object, properties: { … } }).`);
+    return undefined;
+  }
+  if (jsonBytes(raw) > WORKFLOW_MAX_SCHEMA_BYTES) {
+    ctx.err(path, `${label} exceeds the 256 KiB resource limit.`);
+  }
+  return raw;
+}
+
+function checkReferenceSyntax(ctx: Ctx, text: string, path: Path, label: string): void {
+  const result = parseReference(text);
+  if (!result.ok) ctx.err(path, `${label}: ${result.message}`);
+}
+
+function checkUnknownKeys(
+  ctx: Ctx,
+  obj: Record<string, unknown>,
+  path: Path,
+  allowed: readonly string[],
+  label: string,
+): void {
+  for (const key of Object.keys(obj)) {
+    if (!allowed.includes(key)) {
+      ctx.err([...path, key], `Unknown ${label} key "${key}". Allowed keys: ${allowed.join(", ")}.`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function describeError(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+/** Strip the yaml package's multi-line code frame down to the first line. */
+function yamlErrorMessage(message: string): string {
+  const first = message.split("\n", 1)[0] ?? message;
+  return first.replace(/ at line \d+, column \d+:?\s*$/, "").trim();
+}
 
 function sortErrors(errors: WorkflowError[]): WorkflowError[] {
   return [...errors].sort((a, b) => a.line - b.line);
