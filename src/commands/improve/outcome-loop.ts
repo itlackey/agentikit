@@ -66,6 +66,7 @@
 
 import type { Database } from "../../storage/database";
 import {
+  type AssetOutcomeRow,
   getAllAssetOutcomes,
   getAssetOutcome,
   getOutcomeScoresByRef,
@@ -121,17 +122,14 @@ export const OUTCOME_SCORE_MAX = 1.5;
 export const DIVERSITY_FLOOR_FRACTION = 0.1;
 
 // ── Row shape ─────────────────────────────────────────────────────────────────
+//
+// AssetOutcomeRow moved verbatim to storage/repositories/outcome-repository.ts
+// (#672 part 2) — re-exported here so existing importers of this module
+// resolve unchanged (see that file's module-level note for why the row type
+// lives there rather than here: it keeps the repository free of any import
+// back into this file, avoiding a 2-node import cycle).
 
-export interface AssetOutcomeRow {
-  asset_ref: string;
-  last_retrieved_at: number;
-  retrieval_count: number;
-  expected_retrieval_rate: number;
-  negative_feedback_count: number;
-  accepted_change_count: number;
-  outcome_score: number;
-  updated_at: number;
-}
+export type { AssetOutcomeRow };
 
 // ── Writer ────────────────────────────────────────────────────────────────────
 

@@ -11,10 +11,22 @@
  * `getTopRetrievalSalience` is new behavior added here (not a move): it
  * absorbs the health read formerly inlined in commands/health/metrics.ts.
  *
+ * This file deliberately imports NOTHING from commands/improve/salience.ts.
+ * salience.ts re-exports this module's functions (a mandatory edge in that
+ * direction), so an import back from here would form a 2-node cycle —
+ * `tests/architecture/import-cycle-ratchet.test.ts` enforces a zero-tolerance,
+ * shrink-only baseline (currently empty) over the whole `src/` import graph,
+ * counting type-only imports as graph edges same as value imports. The two
+ * places that would otherwise need `SalienceVector` / `EncodingSource` from
+ * salience.ts instead use a structurally-equivalent local shape: the literal
+ * union `"content" | "type-stub"` and the {@link SalienceVectorLike}
+ * interface below. Both are call-site compatible with the real domain types
+ * (any `SalienceVector` value satisfies `SalienceVectorLike`) — this is a
+ * type-shape adjustment only, not a behavior change.
+ *
  * @module salience-repository
  */
 
-import type { EncodingSource, SalienceVector } from "../../commands/improve/salience";
 import type { Database } from "../database";
 
 /**
@@ -31,8 +43,24 @@ export interface AssetSalienceRow {
   /**
    * Provenance of `encoding_salience` (#644). `"content"` = real content-derived
    * score; `"type-stub"` = type-weight fallback; `null` = unknown provenance.
+   * Structurally identical to (but not imported from) salience.ts's
+   * `EncodingSource` — see the module-level note on the import-cycle ratchet.
    */
-  encoding_source: EncodingSource | null;
+  encoding_source: "content" | "type-stub" | null;
+}
+
+/**
+ * Structural mirror of `SalienceVector` (commands/improve/salience.ts), used
+ * instead of importing that type — see the module-level note on the
+ * import-cycle ratchet. Any real `SalienceVector` value is assignable here;
+ * this interface only lists the fields {@link upsertAssetSalience} reads.
+ */
+interface SalienceVectorLike {
+  encoding: number;
+  outcome: number;
+  retrieval: number;
+  rankScore: number;
+  encodingSource?: "content" | "type-stub";
 }
 
 /**
@@ -56,7 +84,7 @@ export interface AssetSalienceRow {
  * stored content score back in as `inputs.encodingSalience` to `computeSalience`
  * — which the improve loop does. The guard here is the defensive backstop.
  */
-export function upsertAssetSalience(db: Database, ref: string, vector: SalienceVector, now?: number): void {
+export function upsertAssetSalience(db: Database, ref: string, vector: SalienceVectorLike, now?: number): void {
   const ts = now ?? Date.now();
   db.prepare(
     `INSERT INTO asset_salience

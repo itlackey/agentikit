@@ -12,11 +12,34 @@
  * score clipping) stays in outcome-loop.ts's `updateAssetOutcome` — only the
  * upsert SQL that function issued moves here, as `upsertAssetOutcome`.
  *
+ * `AssetOutcomeRow` lives here (not in outcome-loop.ts) so this file imports
+ * NOTHING from commands/improve/outcome-loop.ts: outcome-loop.ts re-exports
+ * this module's functions (a mandatory edge in that direction), so an import
+ * back from here would form a 2-node cycle —
+ * `tests/architecture/import-cycle-ratchet.test.ts` enforces a zero-tolerance,
+ * shrink-only baseline (currently empty) over the whole `src/` import graph,
+ * counting type-only imports as graph edges same as value imports.
+ * outcome-loop.ts imports `AssetOutcomeRow` back from here (one direction
+ * only) and re-exports it, so external importers are unaffected.
+ *
  * @module outcome-repository
  */
 
-import type { AssetOutcomeRow } from "../../commands/improve/outcome-loop";
 import type { Database } from "../database";
+
+/**
+ * Raw SQLite row shape for the `asset_outcome` table.
+ */
+export interface AssetOutcomeRow {
+  asset_ref: string;
+  last_retrieved_at: number;
+  retrieval_count: number;
+  expected_retrieval_rate: number;
+  negative_feedback_count: number;
+  accepted_change_count: number;
+  outcome_score: number;
+  updated_at: number;
+}
 
 /**
  * Column values for one `asset_outcome` upsert. Mirrors the INSERT column
