@@ -48,10 +48,10 @@ beforeEach(() => {
 
 afterEach(() => storage.cleanup());
 
-function writeProgram(name: string, yamlText: string): void {
-  const file = path.join(storage.stashDir, "workflows", `${name}.yaml`);
+function writeProgram(name: string, markdown: string): void {
+  const file = path.join(storage.stashDir, "workflows", `${name}.md`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, yamlText, "utf8");
+  fs.writeFileSync(file, markdown, "utf8");
 }
 
 /** Direct-SQL escape hatch for planting journaled token spend. */
@@ -64,32 +64,51 @@ function execOnWorkflowDb(sql: string, ...params: Array<string | number>): void 
   }
 }
 
-const FAN_OUT_3 = (budgetYaml: string, unitExtra = ""): string => `version: 2
-name: budgeted
-params:
-  files: { type: array, items: { type: string } }
-${budgetYaml}
-steps:
-  - id: review
-    title: Review files
-    map:
-      over: \${{ params.files }}
-      unit:
-        instructions: Review \${{ item }} carefully.
-${unitExtra}
-`;
+// Unified-format fixtures (frontmatter graph + `## <step-id>` body — spec
+// §2.2). Map units never splice the item into prose (§2.3): "Review the
+// assigned item carefully." is dispatched with the item attached as
+// structured context (a `## Item (index N)` JSON block), not interpolated —
+// callers that need to distinguish units by item value match that JSON block
+// instead of a spliced instruction string.
+const FAN_OUT_3 = (budgetYaml: string, onError = ""): string =>
+  [
+    "---",
+    "type: workflow",
+    "params:",
+    "  files: { type: array, items: { type: string } }",
+    ...(budgetYaml ? [budgetYaml] : []),
+    "steps:",
+    "  - id: review",
+    "    map:",
+    "      over: params.files",
+    ...(onError ? [`      unit: { on_error: ${onError} }`] : []),
+    "---",
+    "",
+    "## review",
+    "",
+    "Review the assigned item carefully.",
+    "",
+  ].join("\n");
 
-const TWO_STEPS = (budgetYaml: string): string => `version: 2
-name: two-steps
-${budgetYaml}
-steps:
-  - id: one
-    unit:
-      instructions: Do step one.
-  - id: two
-    unit:
-      instructions: Do step two.
-`;
+const TWO_STEPS = (budgetYaml: string): string =>
+  [
+    "---",
+    "type: workflow",
+    budgetYaml,
+    "steps:",
+    "  - id: one",
+    "  - id: two",
+    "---",
+    "",
+    "## one",
+    "",
+    "Do step one.",
+    "",
+    "## two",
+    "",
+    "Do step two.",
+    "",
+  ].join("\n");
 
 describe("budget.max_units", () => {
   test("the budget freezes onto plan_json and dispatching stops at the ceiling with a hard step failure", async () => {
@@ -131,19 +150,28 @@ describe("budget.max_units", () => {
     // with "budget exceeded" while the identical uninterrupted run passed.
     writeProgram(
       "gate-seeded",
-      `version: 2
-name: gate-seeded
-budget: { max_units: 2 }
-steps:
-  - id: one
-    unit:
-      instructions: Do step one.
-    gate:
-      criteria: [step one produced output]
-  - id: two
-    unit:
-      instructions: Do step two.
-`,
+      [
+        "---",
+        "type: workflow",
+        "budget: { max_units: 2 }",
+        "steps:",
+        "  - id: one",
+        "  - id: two",
+        "---",
+        "",
+        "## one",
+        "",
+        "Do step one.",
+        "",
+        "### gate",
+        "",
+        "- step one produced output",
+        "",
+        "## two",
+        "",
+        "Do step two.",
+        "",
+      ].join("\n"),
     );
     const started = await startWorkflowRun("workflows/gate-seeded", {});
 
@@ -193,14 +221,19 @@ steps:
     // the ceiling: the third invocation must be REFUSED before dispatching.
     writeProgram(
       "crash-budget",
-      `version: 2
-name: crash-budget
-budget: { max_units: 2 }
-steps:
-  - id: build
-    unit:
-      instructions: Build it.
-`,
+      [
+        "---",
+        "type: workflow",
+        "budget: { max_units: 2 }",
+        "steps:",
+        "  - id: build",
+        "---",
+        "",
+        "## build",
+        "",
+        "Build it.",
+        "",
+      ].join("\n"),
     );
     const started = await startWorkflowRun("workflows/crash-budget", {});
     const runId = started.run.id;
@@ -334,19 +367,24 @@ describe("budget.max_tokens", () => {
     });
     writeProgram(
       "tokens-abort",
-      `version: 2
-name: tokens-abort
-params:
-  files: { type: array, items: { type: string } }
-budget: { max_tokens: 50 }
-steps:
-  - id: review
-    map:
-      over: \${{ params.files }}
-      concurrency: 2
-      unit:
-        instructions: Review \${{ item }} carefully.
-`,
+      [
+        "---",
+        "type: workflow",
+        "params:",
+        "  files: { type: array, items: { type: string } }",
+        "budget: { max_tokens: 50 }",
+        "steps:",
+        "  - id: review",
+        "    map:",
+        "      over: params.files",
+        "      concurrency: 2",
+        "---",
+        "",
+        "## review",
+        "",
+        "Review the assigned item carefully.",
+        "",
+      ].join("\n"),
     );
     const started = await startWorkflowRun("workflows/tokens-abort", { files: ["fast.ts", "slow.ts"] });
 
@@ -362,9 +400,13 @@ steps:
       target: started.run.id,
       summaryJudge: null,
       dispatcher: async (req: UnitDispatchRequest): Promise<UnitDispatchResult> => {
-        // Match the resolved instruction line — the preamble embeds the full
-        // params JSON, so a bare "fast.ts" check would match BOTH prompts.
-        if (req.prompt.includes("Review fast.ts")) {
+        // Instructions are never interpolated (spec §2.3): the item reaches
+        // the unit as attached JSON context (`## Item (index N)`), not a
+        // spliced instruction string. The preamble also embeds the FULL
+        // `params.files` JSON (both filenames), so a bare `"fast.ts"` check
+        // would match every prompt — anchor on the unit's own Item block
+        // instead (fan-out preserves array order: index 0 is fast.ts).
+        if (req.prompt.includes("(index 0)") && req.prompt.includes('"fast.ts"')) {
           await slowReady;
           // Crossing the ceiling must abort the still-running sibling.
           return { ok: true, text: "reviewed fast", usage: { inputTokens: 60 } };
@@ -454,7 +496,7 @@ describe("budget interactions", () => {
   });
 
   test("budget + on_error: continue still fails the step hard, naming the ceiling", async () => {
-    writeProgram("continue-capped", FAN_OUT_3("budget: { max_units: 1 }", "        on_error: continue"));
+    writeProgram("continue-capped", FAN_OUT_3("budget: { max_units: 1 }", "continue"));
     const started = await startWorkflowRun("workflows/continue-capped", { files: ["a.ts", "b.ts"] });
 
     let dispatches = 0;
@@ -486,18 +528,26 @@ describe("budget interactions", () => {
  * `on_error`.
  */
 describe("budget × gate loops", () => {
-  const GATE_LOOP_WF = (budgetLine: string, unitExtra = ""): string => `version: 2
-name: gate-budget
-${budgetLine}
-steps:
-  - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-${unitExtra}    gate:
-      criteria: [the work is thorough]
-      max_loops: 3
-`;
+  const GATE_LOOP_WF = (budgetLine: string, onError = ""): string =>
+    [
+      "---",
+      "type: workflow",
+      budgetLine,
+      "steps:",
+      "  - id: work",
+      ...(onError ? [`    unit: { on_error: ${onError} }`] : []),
+      "    gate: { max_loops: 3 }",
+      "---",
+      "",
+      "## work",
+      "",
+      "Do the work.",
+      "",
+      "### gate",
+      "",
+      "- the work is thorough",
+      "",
+    ].join("\n");
 
   const rejectJudge = async () =>
     JSON.stringify({ complete: false, missing: ["the work is thorough"], feedback: "Go deeper." });
@@ -540,7 +590,7 @@ ${unitExtra}    gate:
   });
 
   test("budget + on_error: continue during a gate loop STILL fails hard, naming the ceiling", async () => {
-    writeProgram("gate-continue-capped", GATE_LOOP_WF("budget: { max_units: 2 }", "      on_error: continue\n"));
+    writeProgram("gate-continue-capped", GATE_LOOP_WF("budget: { max_units: 2 }", "continue"));
     const started = await startWorkflowRun("workflows/gate-continue-capped", {});
 
     let dispatches = 0;

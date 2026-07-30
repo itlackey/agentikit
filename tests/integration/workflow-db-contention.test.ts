@@ -49,21 +49,24 @@ beforeEach(() => {
 
 afterEach(() => storage.cleanup());
 
-const WIDE_FANOUT_WF = `version: 2
-name: db-contention
-defaults: { engine: test-agent }
-params:
-  files: { type: array, items: { type: string } }
-steps:
-  - id: review
-    title: Review
-    map:
-      over: \${{ params.files }}
-      concurrency: 8
-      reducer: collect
-      unit:
-        instructions: Review \${{ item }} now.
-`;
+const WIDE_FANOUT_WF = [
+  "---",
+  "type: workflow",
+  "defaults: { engine: test-agent }",
+  "params:",
+  "  files: { type: array, items: { type: string } }",
+  "steps:",
+  "  - id: review",
+  "    map:",
+  "      over: params.files",
+  "      concurrency: 8",
+  "---",
+  "",
+  "## review",
+  "",
+  "Review the assigned item now.",
+  "",
+].join("\n");
 
 describe.skipIf(!BUN)("cross-process reader vs fan-out writer", () => {
   test("concurrent status/journal reads during a wide fan-out never observe corruption; the final journal is complete + terminal", async () => {

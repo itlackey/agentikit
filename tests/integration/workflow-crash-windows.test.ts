@@ -67,27 +67,38 @@ beforeEach(() => {
 
 afterEach(() => storage.cleanup());
 
-const SOLO_WF = `version: 2
-name: crash-solo
-defaults: { engine: test-agent }
-steps:
-  - id: work
-    title: Work
-    unit:
-      instructions: Do the work now.
-`;
+const SOLO_WF = [
+  "---",
+  "type: workflow",
+  "defaults: { engine: test-agent }",
+  "steps:",
+  "  - id: work",
+  "---",
+  "",
+  "## work",
+  "",
+  "Do the work now.",
+  "",
+].join("\n");
 
-const GATE_WF = `version: 2
-name: crash-gate
-defaults: { engine: test-agent }
-steps:
-  - id: work
-    title: Work
-    unit:
-      instructions: Do the work now.
-    gate:
-      criteria: [the work is thorough]
-`;
+const GATE_WF = [
+  "---",
+  "type: workflow",
+  "defaults: { engine: test-agent }",
+  "steps:",
+  "  - id: work",
+  "    gate: {}",
+  "---",
+  "",
+  "## work",
+  "",
+  "Do the work now.",
+  "",
+  "### gate",
+  "",
+  "- the work is thorough",
+  "",
+].join("\n");
 
 describe.skipIf(!BUN)("multi-process crash windows", () => {
   test("Window A: SIGKILL after the unit row is running but before finish → resume re-dispatches it exactly once and completes", async () => {
