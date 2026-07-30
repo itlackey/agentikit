@@ -4,16 +4,13 @@
 
 /**
  * WS6 characterization test for the observability command cluster
- * (`akm log`, `akm hints`). Pins the JSON envelope (stdout payload shape, the
+ * (`akm log`). Pins the JSON envelope (stdout payload shape, the
  * {ok:false,code} error envelope on stderr, and exit codes) for representative
  * subcommands, proving the extraction from cli.ts into
  * src/commands/observability-cli.ts is byte-identical.
  *
  * `log` was migrated onto `defineJsonCommand`, which emits the same JSON
- * envelope (stdout/stderr/exit-code) as the inline form. `hints` keeps a
- * plain `defineCommand` wrapping `runWithJsonErrors` because it writes the
- * guide directly to stdout; its --detail validation still emits the structured
- * usage envelope.
+ * envelope (stdout/stderr/exit-code) as the inline form.
  *
  * 0.9.0 CLI overhaul (S3): `log` was a group with `list`/`tail` subcommands;
  * `tail` is dropped and `log` is now the leaf command (today's `list`
@@ -23,6 +20,10 @@
  * `log tail` was intentionally not exercised here — it followed the events
  * table via a polling loop and would have made this snapshot
  * non-deterministic.
+ *
+ * 0.9.0 CLI overhaul (S11): the top-level `akm hints` command is REMOVED
+ * (hard break) — its guide payload moved to `akm help agents` (src/cli.ts),
+ * short by default with `--full` for the long one. Covered below.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -62,19 +63,17 @@ describe("akm observability cluster — JSON envelope snapshot (WS6)", () => {
     expect(typeof env.nextOffset).toBe("number");
   });
 
-  test("hints: prints the embedded AGENTS guide to stdout (exit 0)", async () => {
-    const { stdout, status } = await runCli(["hints"]);
+  test("help agents: prints the short embedded guide to stdout (exit 0)", async () => {
+    const { stdout, status } = await runCli(["help", "agents"]);
     expect(status).toBe(0);
     expect(stdout.length).toBeGreaterThan(0);
     expect(stdout).toMatch(/akm/i);
   });
 
-  test("hints --detail <bogus>: parseDetailLevel → {ok:false} usage envelope on stderr (exit 2)", async () => {
-    const { stderr, status } = await runCli(["--json", "hints", "--detail", "bogus"]);
-    expect(status).toBe(2);
-    const env = JSON.parse(stderr);
-    expect(env.ok).toBe(false);
-    expect(env.code).toBe("INVALID_DETAIL_VALUE");
-    expect(env.error).toMatch(/Invalid value for --detail/);
+  test("help agents --full: prints the complete guide, longer than the short one (exit 0)", async () => {
+    const short = await runCli(["help", "agents"]);
+    const full = await runCli(["help", "agents", "--full"]);
+    expect(full.status).toBe(0);
+    expect(full.stdout.length).toBeGreaterThan(short.stdout.length);
   });
 });

@@ -278,7 +278,7 @@ If the stash is empty, add some content first (step 5), then re-index (step 6).
 Add the following to the agent's `AGENTS.md`, `CLAUDE.md`, or system prompt:
 
 ```sh
-akm hints
+akm help agents
 ```
 
 Or add it manually:

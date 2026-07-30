@@ -80,8 +80,6 @@ export const searchCommand = defineJsonCommand({
         "Memory belief filter: all|current|historical. current keeps active memory beliefs; historical keeps contradicted/superseded/archived memory beliefs.",
       default: "all",
     },
-    format: { type: "string", description: "Output format (json|jsonl|yaml|text|md|html)" },
-    detail: { type: "string", description: "Detail level (brief|normal|full)" },
     // Declared as the POSITIVE name with `default: true` so citty's native
     // `--no-<name>` negation (it strips a leading `--no-` from ANY token and
     // negates the remainder BEFORE consulting the declared-args table — see
@@ -168,12 +166,6 @@ export const curateCommand = defineJsonCommand({
     },
     limit: { type: "string", description: "Maximum number of curated results", default: "4" },
     from: { type: "string", description: "Search source (local|registry|all)", default: "local" },
-    // Output-contract flags. The active values are read from the process-level
-    // singleton (parsed from argv at startup); these declarations make them
-    // visible in `akm curate --help` and document the supported axes.
-    format: { type: "string", description: "Output format (json|jsonl|yaml|text|md|html)" },
-    detail: { type: "string", description: "Detail level (brief|normal|full)" },
-    shape: { type: "string", description: "Output projection (human|agent)" },
     // Declared as the POSITIVE name with `default: true` — see the
     // `project-context` comment on `searchCommand` above for why a flag NAME
     // must never start with `no-`.
@@ -294,9 +286,6 @@ export const showCommand = defineJsonCommand({
         "Asset ref ([bundle//]conceptId[#fragment]). On a markdown document `#fragment` selects one section by heading slug, and an unmatched fragment lists the available slugs. Example: `akm show knowledge/guide.md#auth`.",
       required: true,
     },
-    format: { type: "string", description: "Output format (json|jsonl|yaml|text|md|html)" },
-    detail: { type: "string", description: "Detail level (brief|normal|full)" },
-    shape: { type: "string", description: "Output projection (human|agent|summary)" },
     filter: {
       type: "string",
       description:

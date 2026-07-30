@@ -100,7 +100,13 @@ function walkCommandTree(cmd: AnyCmd, parentPath = ""): CommandInfo[] {
   const currentPath = parentPath ? `${parentPath} ${name}` : name;
   const result: CommandInfo[] = [];
 
-  const subcommands = Object.keys(cmd.subCommands ?? {});
+  // `meta.hidden` (e.g. `migrate`, S11) is excluded from completion the same
+  // way citty's own `renderUsage` excludes it from a rendered COMMANDS list —
+  // a hidden command still runs, it just isn't suggested.
+  const visibleSubEntries = Object.entries((cmd.subCommands ?? {}) as Record<string, AnyCmd>).filter(
+    ([, sub]) => !sub.meta?.hidden,
+  );
+  const subcommands = visibleSubEntries.map(([key]) => key);
   const flags: string[] = [];
 
   if (cmd.args) {
@@ -112,10 +118,8 @@ function walkCommandTree(cmd: AnyCmd, parentPath = ""): CommandInfo[] {
 
   result.push({ path: currentPath, subcommands, flags });
 
-  if (cmd.subCommands) {
-    for (const sub of Object.values(cmd.subCommands as Record<string, AnyCmd>)) {
-      result.push(...walkCommandTree(sub, currentPath));
-    }
+  for (const [, sub] of visibleSubEntries) {
+    result.push(...walkCommandTree(sub, currentPath));
   }
 
   return result;

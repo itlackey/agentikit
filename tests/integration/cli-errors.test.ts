@@ -453,6 +453,75 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
     expect(stdout).toContain("70  internal / unclassified error");
     expect(stdout).toContain("1   not found / command-reported failure");
   });
+
+  // S11 item 3: citty's CLIError is now routed through the SAME
+  // `{ok:false,error,code,hint}` envelope every other command's failure
+  // uses, instead of citty's own usage-banner + raw `console.error(message)`.
+  test("akm totally-bogus emits the standard JSON envelope with a stable code", () => {
+    const { status, stderr } = spawnCli(["totally-bogus"], { cwd: repoRoot });
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("UNKNOWN_COMMAND");
+    expect(parsed.error).toContain("Unknown command");
+    expect(parsed.hint).toContain("akm --help");
+  });
+
+  // S11 item 3: did-you-mean via edit distance over the sibling command set
+  // at the point of failure.
+  test("akm serach (typo of search) suggests the close sibling command", () => {
+    const { status, stderr } = spawnCli(["serach"], { cwd: repoRoot });
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.hint).toContain("Did you mean `search`?");
+  });
+
+  test("akm totally-bogus (nothing close) gets the plain pointer, no false suggestion", () => {
+    const { stderr } = spawnCli(["totally-bogus"], { cwd: repoRoot });
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.hint).not.toContain("Did you mean");
+    expect(parsed.hint).toBe("Run `akm --help` for usage.");
+  });
+});
+
+// S11 item 1/2: the sectioned root help groups top-level commands instead of
+// citty's flat alphabetical-by-declaration COMMANDS dump, and hides the
+// self-update-only `migrate` group from it (while it still executes).
+describe("S11: sectioned root help", () => {
+  test("akm --help groups commands under the four fixed sections", () => {
+    const { stdout } = spawnCli(["--help"], { cwd: repoRoot });
+    expect(stdout).toContain("AGENT LOOP");
+    expect(stdout).toContain("ASSETS");
+    expect(stdout).toContain("MANAGE");
+    expect(stdout).toContain("SYSTEM");
+    expect(stdout).toContain("agents: run `akm help agents`");
+  });
+
+  test("akm --help does not list the hidden migrate group", () => {
+    const { stdout } = spawnCli(["--help"], { cwd: repoRoot });
+    expect(stdout).not.toContain("  migrate ");
+  });
+
+  test("akm migrate status still executes despite being hidden from help", () => {
+    // Not asserting exit 0 — status depends on ambient config/DB state this
+    // suite doesn't sandbox for this one subprocess. What `hidden` must NOT
+    // do is make citty treat it as an unknown command.
+    const { stdout, stderr } = spawnCli(["migrate", "status"], { cwd: repoRoot });
+    expect(stderr).not.toContain("Unknown command");
+    expect(stdout).toContain('"status"');
+  });
+
+  test("bare akm help prints the same sectioned overview and exits 0", () => {
+    const { status, stdout } = spawnCli(["help"], { cwd: repoRoot });
+    expect(status).toBe(0);
+    expect(stdout).toContain("AGENT LOOP");
+    expect(stdout).toContain("agents: run `akm help agents`");
+  });
+
+  test("akm task run --help includes the akm prefix on nested USAGE lines", () => {
+    const { stdout } = spawnCli(["task", "run", "--help"], { cwd: repoRoot });
+    expect(stdout).toContain("akm task run");
+  });
 });
 
 // R-051: five non-exempt TERMINAL leaf commands (akm health, akm index, akm
@@ -487,7 +556,6 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
 // `defaultRun` remains an explicit override; touching those means editing
 // files this package does not own.
 describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
-  const ROOT_ONLY_OUTPUT_LEAVES = new Set(["setup"]);
   // biome-ignore lint/suspicious/noExplicitAny: walking citty's dynamically-shaped command tree
   type AnyCittyCommandForTest = Record<string, any>;
 
@@ -535,7 +603,6 @@ describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
 
     const missing: string[] = [];
     for (const { path, args } of leaves) {
-      if (ROOT_ONLY_OUTPUT_LEAVES.has(path)) continue;
       const topLevel = path.split(" ")[0] ?? path;
       if (exemptCommands.includes(topLevel)) continue;
       if (exemptSubcommands.includes(path)) continue;
@@ -560,21 +627,13 @@ describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
   });
 });
 
-// R-050(b)/(c): the per-leaf `--detail`/`--shape` help strings
-// (GLOBAL_OUTPUT_ARGS in src/cli/shared.ts) used to imply uniform effect
-// everywhere. `--detail` is a genuine no-op on `info`/`list`/`remember`
-// (verified byte-identical output at every level; `show` is NOT one of
-// these — it has three distinct payloads, so the pre-existing register claim
-// "brief==normal on show" was false). `--shape summary` is a hard usage
-// error everywhere except `akm show`. Both caveats should be visible from a
-// leaf's own `--help`, not only the root's.
-describe("GLOBAL_OUTPUT_ARGS help text is scoped honestly (R-050b/c)", () => {
-  test("--detail names the commands where it has no effect", () => {
-    expect(GLOBAL_OUTPUT_ARGS.detail.description).toContain("info");
-    expect(GLOBAL_OUTPUT_ARGS.detail.description).toContain("list");
-    expect(GLOBAL_OUTPUT_ARGS.detail.description).toContain("remember");
-  });
-
+// R-050(c) (S11: R-050(b)'s own "--detail is a no-op on info/list/remember"
+// boilerplate was dropped from the canonical wording — `list` doesn't exist
+// as a bare command any more (folded into `akm bundle list`, S7), and a
+// caveat naming stale commands is worse than no caveat). `--shape summary`
+// is still a hard usage error everywhere except `akm show`, and that caveat
+// should still be visible from a leaf's own `--help`, not only the root's.
+describe("GLOBAL_OUTPUT_ARGS help text is scoped honestly (R-050c)", () => {
   test("--shape repeats the 'summary is show-only' caveat root help documents", () => {
     expect(GLOBAL_OUTPUT_ARGS.shape.description).toContain("summary");
     expect(GLOBAL_OUTPUT_ARGS.shape.description).toContain("akm show");

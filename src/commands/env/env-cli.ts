@@ -192,7 +192,7 @@ const envPathCommand = defineJsonCommand({
     // shell substitution (`$(akm env path <ref>)`, Docker `_FILE` /
     // `--env-file`) — not a field inside a result envelope. `env path` is
     // now declared format-exempt (src/output/format-exempt.ts, same
-    // classification as `env run`/`secret run`/`hints`), so `--format`
+    // classification as `env run`/`secret run`/`help`), so `--format`
     // WARNS rather than doing anything to this write (src/cli.ts's startup
     // `isFormatExemptCommand` check). An earlier version of this fix routed
     // this through `output()` with a `{ path }` envelope so `--format`

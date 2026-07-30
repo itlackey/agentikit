@@ -84,15 +84,20 @@ describe("completions command", () => {
       "clone",
       "feedback",
       "registry",
-      "migrate",
       "config",
       "help",
-      "hints",
       "completions",
     ];
     for (const cmd of expected) {
       expect(script).toContain(cmd);
     }
+  });
+
+  // `migrate` is `meta.hidden` (S11) — the self-update contract's internal
+  // command, not a surface end users discover by tab-completion. Still
+  // executes normally; only excluded from the completions walk.
+  test("does not suggest the hidden migrate command", () => {
+    expect(script).not.toContain('"akm migrate"');
   });
 
   test("contains nested bundle subcommands", () => {

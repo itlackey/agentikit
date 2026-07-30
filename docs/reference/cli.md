@@ -1540,14 +1540,15 @@ unknown version prints the list of bundled notes so you can pick one that
 exists. See [`CONTRIBUTING.md`](../../.github/CONTRIBUTING.md#shipping-a-release--migration-notes)
 for the per-release workflow.
 
-### hints
+### help agents
 
 Print agent-facing instructions for using `akm`. Add this output to your
 `AGENTS.md`, `CLAUDE.md`, or system prompt so your agent knows how to use
-the CLI.
+the CLI. Prints the short guide by default; pass `--full` for the complete
+one.
 
 ```sh
-akm hints
+akm help agents
 ```
 
 ### env vs secret — which do I use?

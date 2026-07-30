@@ -28,19 +28,20 @@ Add the three-line block above to `~/.claude/CLAUDE.md` (global) or
 `./CLAUDE.md` (project-level). The agent will call `akm curate` and
 `akm show` automatically as it discovers it needs them.
 
-## akm hints
+## akm help agents
 
-`akm hints` prints a longer agent-facing instruction block — including usage
-patterns, flag guidance, and the full ref format — suitable for pasting
+`akm help agents` prints a longer agent-facing instruction block — including
+usage patterns, flag guidance, and the full ref format — suitable for pasting
 directly into an `AGENTS.md` file or system prompt when you want the agent to
-be more autonomous about discovery.
+be more autonomous about discovery. It prints the short guide by default;
+pass `--full` for the complete one.
 
 ```sh
-akm hints
+akm help agents
 # Prints a ready-to-paste AGENTS.md section with usage guidance
 
 # Typical use: capture into your project's AGENTS.md
-akm hints >> ./AGENTS.md
+akm help agents >> ./AGENTS.md
 ```
 
 The output is stable across patch releases and designed for agents rather than
@@ -52,7 +53,7 @@ explains how refs work.
 ```sh
 # Initialize a project AGENTS.md with akm usage guidance
 echo "# Agent Guidelines" > AGENTS.md
-akm hints >> AGENTS.md
+akm help agents >> AGENTS.md
 ```
 
 ## akm completions

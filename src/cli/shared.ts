@@ -155,16 +155,9 @@ export type JsonCommandDef<T extends ArgsDef = ArgsDef> = Omit<CommandDef<T>, "r
  */
 export const GLOBAL_OUTPUT_ARGS = {
   format: { type: "string", description: "Output format: json|jsonl|yaml|text|md|html (global flag)" },
-  // R-050(b): `--detail` genuinely changes the payload on most commands
-  // (e.g. `show` has three distinct brief/normal/full payloads), but is a
-  // verified no-op — byte-identical output at every level — on `info`,
-  // `list`, and `remember` specifically. Naming that here rather than
-  // implying uniform effect everywhere.
   detail: {
     type: "string",
-    description:
-      "Output detail: brief|normal|full (global flag). No effect on `info`, `list`, or `remember` — " +
-      "their payload is identical at every level.",
+    description: "Output detail: brief|normal|full (global flag).",
   },
   // R-050(c): mirrors the root command's own `--shape` help
   // (`main.args.shape` in src/cli.ts) so the caveat is visible from every
@@ -178,6 +171,23 @@ export const GLOBAL_OUTPUT_ARGS = {
       "(a usage error, exit 2, everywhere else).",
   },
   output: { type: "string", description: "Write rendered output to a file instead of stdout (global flag)" },
+  // S11: surfaced at every leaf (not just the root) so `akm <command> --help`
+  // documents them too — they already apply globally, parsed from raw argv
+  // by `applyEarlyStderrFlags` in src/cli.ts before citty ever sees them, so
+  // declaring them here is documentation, not new parsing behavior. A
+  // command with its own same-named arg (e.g. `env path --quiet`) wins the
+  // merge in `defineJsonCommand` as usual.
+  quiet: {
+    type: "boolean",
+    alias: "q",
+    description: "Suppress non-essential stderr output (global flag).",
+    default: false,
+  },
+  verbose: {
+    type: "boolean",
+    description: "Print per-spec diagnostics to stderr (global flag).",
+    default: false,
+  },
 } as const satisfies ArgsDef;
 
 /**
@@ -189,8 +199,8 @@ export const GLOBAL_OUTPUT_ARGS = {
  *
  * Every command defined here also accepts the {@link GLOBAL_OUTPUT_ARGS} so
  * their values are parsed rather than mis-captured as positionals; a command
- * declaring its own arg of the same name wins (e.g. `hints` has its own
- * `detail`).
+ * declaring its own arg of the same name wins (e.g. `env path` has its own
+ * `quiet`).
  */
 export function defineJsonCommand<const T extends ArgsDef = ArgsDef>(def: JsonCommandDef<T>): CommandDef<T> {
   const { run, ...rest } = def;

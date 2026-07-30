@@ -76,7 +76,11 @@ export type UsageErrorCode =
   | "TASK_SCHEMA_VERSION_UNSUPPORTED"
   | "WORKFLOW_IR_VERSION_UNSUPPORTED"
   | "INVALID_PROPOSAL"
-  | "NON_INTERACTIVE_REQUIRES_YES";
+  | "NON_INTERACTIVE_REQUIRES_YES"
+  // citty's own CLIError (unknown top-level command or subcommand), reclassified
+  // by src/cli.ts so it flows through the same JSON envelope as every other
+  // usage error instead of citty's raw usage-banner + console.error path.
+  | "UNKNOWN_COMMAND";
 
 /** Stable, machine-readable codes for NotFoundError. */
 export type NotFoundErrorCode =
@@ -123,6 +127,7 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   TARGET_NOT_UPDATABLE: "Run `akm bundle list` to view your sources, then retry with one of those values.",
   MISSING_REQUIRED_ARGUMENT:
     "Refs use the form [bundle//]conceptId, e.g. `akm show knowledge/guide.md` or `akm show skills/deploy`.",
+  UNKNOWN_COMMAND: "Run `akm --help` to see available commands.",
 };
 
 /** Default hint for each NotFoundError code. */
