@@ -230,7 +230,12 @@ export async function stepScheduledTasks(
     return;
   }
 
-  const embedded = listEmbeddedTasks().filter((task) => task.enabled);
+  // ALL templates are offered, including ships-disabled ones (e.g. the
+  // manual-recovery catchup task): an unselected template is still PREPARED
+  // with `enabled: false`, so its YAML exists for `akm task run <id>` while
+  // nothing lands in the scheduler uncommented. Filtering on `task.enabled`
+  // here would make ships-disabled templates invisible and unpreparable.
+  const embedded = listEmbeddedTasks();
   if (embedded.length === 0) return;
 
   const installed = await deps.list();
