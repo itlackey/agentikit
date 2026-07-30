@@ -2,9 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// biome-ignore-all lint/suspicious/noTemplateCurlyInString: `\${{ … }}` is the
-// workflow expression grammar under test, not a JS template literal.
-
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
@@ -22,7 +19,7 @@ import { frozenStepRows } from "../../../src/workflows/runtime/plan-classifier";
 import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
 import type { SummaryJudge } from "../../../src/workflows/validate-summary";
 import { makeStashDir, withEnv } from "../../_helpers/sandbox";
-import { freezeWorkflowProgram } from "../../_helpers/workflow";
+import { freezeWorkflow } from "../../_helpers/workflow";
 
 /**
  * `akm workflow report` (redesign addendum R3, task step 3). Proves report:
@@ -36,6 +33,12 @@ import { freezeWorkflowProgram } from "../../_helpers/workflow";
  *   - --status running claims/heartbeats a unit and stale claims surface in brief;
  *   - refuses under a live engine lease and when a budget ceiling is reached;
  *   - two concurrent reports for the same unit cannot corrupt state.
+ *
+ * Ported to the unified workflow markdown format (workflow-format-
+ * unification): every fixture below is frontmatter graph + `## <step-id>`
+ * body prose, no `${{ }}` syntax anywhere, `freezeWorkflow` (one frontend)
+ * replaces the old `freezeWorkflowProgram` YAML-program helper. Assertions
+ * are unchanged in substance — only fixture syntax changed.
  */
 
 let tmpDir = "";
@@ -46,8 +49,8 @@ function dbPath(): string {
   return path.join(tmpDir, "state.db");
 }
 
-function plan(yamlText: string): WorkflowPlanGraph {
-  return freezeWorkflowProgram(yamlText);
+function plan(markdown: string): WorkflowPlanGraph {
+  return freezeWorkflow(markdown);
 }
 
 interface SeedStep {
@@ -191,16 +194,15 @@ afterEach(() => {
 
 // ── Workflows ────────────────────────────────────────────────────────────────
 
-const TWO_STEP_WF = `version: 2
-name: TwoStep
+const TWO_STEP_WF = `---
+type: workflow
+params:
+  files: { type: array }
 steps:
   - id: review
-    title: Review
     map:
-      over: \${{ params.files }}
-      reducer: collect
+      over: params.files
       unit:
-        instructions: Review \${{ item }}.
         output:
           type: object
           properties: { verdict: { type: string } }
@@ -209,24 +211,36 @@ steps:
       type: array
       items: { type: object, properties: { verdict: { type: string } }, required: [verdict] }
       minItems: 1
-    gate:
-      criteria: [every file was reviewed]
   - id: summarize
-    title: Summarize
-    unit:
-      instructions: Summarize the review.
+---
+
+## review
+
+Review the assigned file (attached as this unit's item).
+
+### gate
+
+Every file was reviewed.
+
+## summarize
+
+Summarize the review.
 `;
 
-const LOOP_WF = `version: 2
-name: Loop
+const LOOP_WF = `---
+type: workflow
 steps:
   - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-    gate:
-      criteria: [the work is thorough]
-      max_loops: 3
+    gate: { max_loops: 3 }
+---
+
+## work
+
+Do the work.
+
+### gate
+
+The work is thorough.
 `;
 
 // ── Happy path: 2-step fan-out driven to completion via report ───────────────
@@ -328,14 +342,17 @@ describe("workflow report — sensitive output", () => {
       path.join(stash.dir, "env", "report.env"),
       `PLAIN=${envSentinel}\nTOKEN=\${secret:report-token}\n`,
     );
-    const p = plan(`version: 2
-name: ManualRedaction
+    const p = plan(`---
+type: workflow
 steps:
   - id: work
-    title: Work
     unit:
       env: [env/report]
-      instructions: Do the work.
+---
+
+## work
+
+Do the work.
 `);
     const fallback = p.execution?.engines["test-llm"];
     if (!fallback || fallback.kind !== "llm") throw new Error("expected frozen fallback LLM");
@@ -417,17 +434,21 @@ describe("workflow report — gate rejection with loops remaining", () => {
 
 // ── on_error: continue vs fail ───────────────────────────────────────────────
 
-const ONERROR_WF = (mode: "fail" | "continue") => `version: 2
-name: OnError
+const ONERROR_WF = (mode: "fail" | "continue") => `---
+type: workflow
+params:
+  files: { type: array }
 steps:
   - id: review
-    title: Review
     map:
-      over: \${{ params.files }}
-      reducer: collect
+      over: params.files
       unit:
-        instructions: Review \${{ item }}.
         on_error: ${mode}
+---
+
+## review
+
+Review the assigned file.
 `;
 
 describe("workflow report — on_error policy", () => {
@@ -662,18 +683,20 @@ describe("workflow report — refusals", () => {
     ).rejects.toThrow(/failed validation against its declared output schema/);
   });
 
-  const BUDGET_MAX_UNITS_WF = `version: 2
-name: Budget
-budget:
-  max_units: 2
+  const BUDGET_MAX_UNITS_WF = `---
+type: workflow
+params:
+  files: { type: array }
+budget: { max_units: 2 }
 steps:
   - id: review
-    title: Review
     map:
-      over: \${{ params.files }}
-      reducer: collect
-      unit:
-        instructions: Review \${{ item }}.
+      over: params.files
+---
+
+## review
+
+Review the assigned file.
 `;
 
   test("a budget max_units ceiling FAILS the step (engine parity), not a stuck run, when a prior report crosses it", async () => {
@@ -754,15 +777,16 @@ steps:
     // Peer review R3, finding 1: a unit's OWN reported tokens crossing the
     // ceiling fails the step on the engine (DispatchBudget.addTokens). The report
     // path journaled the unit then silently completed the step — it must fail it.
-    const BUDGET_TOKENS_WF = `version: 2
-name: BudgetTokens
-budget:
-  max_tokens: 100
+    const BUDGET_TOKENS_WF = `---
+type: workflow
+budget: { max_tokens: 100 }
 steps:
   - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
+---
+
+## work
+
+Do the work.
 `;
     const p = plan(BUDGET_TOKENS_WF);
     seedRun({ plan: p, steps: [{ id: "work" }] });
@@ -793,20 +817,21 @@ steps:
     // The unit is free text but the STEP declares an output schema + max_loops:
     // the engine would gate-loop-retry, but report cannot recover the (un-
     // journaled) schema feedback across invocations, so it fails the step.
-    const SCHEMA_LOOP_WF = `version: 2
-name: SchemaLoop
+    const SCHEMA_LOOP_WF = `---
+type: workflow
 steps:
   - id: discover
-    title: Discover
-    unit:
-      instructions: Find files.
-    output:
-      type: object
-      properties: { files: { type: array } }
-      required: [files]
-    gate:
-      criteria: [files were found]
-      max_loops: 3
+    output: { type: object, properties: { files: { type: array } }, required: [files] }
+    gate: { max_loops: 3 }
+---
+
+## discover
+
+Find files.
+
+### gate
+
+Files were found.
 `;
     const p = plan(SCHEMA_LOOP_WF);
     seedRun({ plan: p, steps: [{ id: "discover", criteria: ["files were found"] }] });
@@ -847,27 +872,29 @@ steps:
 // ── Non-dispatching steps auto-advance (no stuck runs) ───────────────────────
 
 describe("workflow report — steps with no reportable units auto-advance (engine parity)", () => {
-  const EMPTY_DOWNSTREAM_WF = `version: 2
-name: EmptyDownstream
+  const EMPTY_DOWNSTREAM_WF = `---
+type: workflow
 steps:
   - id: discover
-    title: Discover
     unit:
-      instructions: Find files.
-      output:
-        type: array
-        items: { type: string }
+      output: { type: array, items: { type: string } }
   - id: review
-    title: Review
     map:
-      over: \${{ steps.discover.output }}
-      reducer: collect
-      unit:
-        instructions: Review \${{ item }}.
+      over: steps.discover.output
   - id: summarize
-    title: Summarize
-    unit:
-      instructions: Summarize.
+---
+
+## discover
+
+Find files.
+
+## review
+
+Review the assigned file.
+
+## summarize
+
+Summarize.
 `;
 
   test("a downstream empty fan-out (over: []) auto-completes when the prior report reaches it", async () => {
@@ -924,44 +951,21 @@ steps:
     expect(status.workflow.steps[2]!.status).toBe("completed"); // summarize recorded
   });
 
-  test("a step whose every unit is unresolvable FAILS the run (engine expression_error + on_error: fail)", async () => {
-    // A unit that references a param absent at runtime resolves for none of the
-    // fan-out items: the engine fails each unit with expression_error and
-    // (on_error: fail) fails the step. No `report --unit` can advance such units,
-    // so the report path settles it to the SAME failed terminal state instead of
-    // leaving the run stuck.
-    const ALL_UNRESOLVABLE_WF = `version: 2
-name: AllUnresolvable
-steps:
-  - id: review
-    title: Review
-    map:
-      over: \${{ params.files }}
-      reducer: collect
-      unit:
-        instructions: Review \${{ params.absent }} for \${{ item }}.
-`;
-    const p = plan(ALL_UNRESOLVABLE_WF);
-    const params = { files: ["a.ts", "b.ts"] };
-    seedRun({ plan: p, params, steps: [{ id: "review" }] });
-    // brief surfaces the units as unresolvable; a driver reporting one of them
-    // triggers the settle, which fails the run.
-    const brief = await buildWorkflowBrief(RUN_ID);
-    expect(brief.workList.units.every((u) => u.resolved.ok === false)).toBe(true);
-
-    const r = await reportWorkflowUnit({
-      target: RUN_ID,
-      unitId: brief.workList.units[0]!.unitId,
-      status: "completed",
-      resultRaw: "ignored",
-      summaryJudge: null,
-    });
-    expect(r.stepOutcome?.kind).toBe("failed");
-    expect(r.runStatus).toBe("failed");
-    expect(r.recorded).toBe("not-recorded");
-    const status = await getWorkflowStatus(RUN_ID);
-    expect(status.workflow.steps[0]!.status).toBe("failed");
-  });
+  // NOTE (workflow-format-unification): the pre-unification test in this slot
+  // ("a step whose every unit is unresolvable FAILS the run") exercised
+  // `${{ params.absent }}` interpolated PER-UNIT into a map unit's prose,
+  // which failed each fan-out unit independently with `resolved.ok === false`
+  // (the engine's `expression_error`). Under the unified format prose is
+  // NEVER scanned for references (spec §2.3) — only `map.over`/`route.input`/
+  // `inputs:` carry the reference grammar, and `computeStepWorkList` resolves
+  // ALL of those ONCE, for the WHOLE step, before the per-unit loop runs
+  // (`src/workflows/exec/step-work.ts`). Concretely, every unit's `resolved`
+  // field is now unconditionally `{ ok: true, ... }` — there is no remaining
+  // code path that produces a per-unit `resolved.ok === false`, so this
+  // scenario is unportable as originally written. Flagged as src feedback
+  // (a stale doc comment + dead `{ ok: false }` per-unit branch in
+  // `computeStepWorkList`'s return type) rather than silently dropped —
+  // see the port's final report.
 });
 
 // ── Concurrency honesty ──────────────────────────────────────────────────────
@@ -1197,19 +1201,22 @@ describe("workflow report — a FAILED row is idempotence-protected (--rerun for
 // ── Budget admission counts the overwritten row's attempts (review round 2, #4) ─
 
 describe("workflow report — budget admission counts a re-dispatched unit's prior attempts", () => {
-  const BUDGET_WF = `version: 2
-name: Budget
-budget:
-  max_units: 2
+  const BUDGET_WF = `---
+type: workflow
+params:
+  files: { type: array }
+budget: { max_units: 2 }
 steps:
   - id: review
-    title: Review
     map:
-      over: \${{ params.files }}
-      reducer: collect
+      over: params.files
       unit:
-        instructions: Review \${{ item }}.
         on_error: continue
+---
+
+## review
+
+Review the assigned file.
 `;
 
   test("a --rerun over a FAILED row that would push total attempts past max_units FAILS the step (not silently admitted)", async () => {
@@ -1415,19 +1422,22 @@ describe("workflow report — failure-reason normalization (#16)", () => {
 // ── Codex round-3 finding A: run-lifetime token accounting across --rerun ─────
 
 describe("workflow report — a --rerun's tokens accumulate onto the failed attempt's spend (finding A)", () => {
-  const TOKENS_WF = `version: 2
-name: TokenBudget
-budget:
-  max_tokens: 100
+  const TOKENS_WF = `---
+type: workflow
+params:
+  files: { type: array }
+budget: { max_tokens: 100 }
 steps:
   - id: review
-    title: Review
     map:
-      over: \${{ params.files }}
-      reducer: collect
+      over: params.files
       unit:
-        instructions: Review \${{ item }}.
         on_error: continue
+---
+
+## review
+
+Review the assigned file.
 `;
 
   test("80 tokens on a failed report + a 30-token --rerun crosses max_tokens: 100 (prior spend stays charged)", async () => {
@@ -1539,18 +1549,22 @@ describe("workflow report — a failed unit fails the step immediately under on_
     // A failure whose reason is in retry.on with attempt budget remaining is not
     // yet terminal (the engine would re-dispatch `~r1`; the driver `--rerun`s), so
     // the step stays active and waits — consistent with what brief advertises.
-    const RETRY_WF = `version: 2
-name: RetryFail
+    const RETRY_WF = `---
+type: workflow
+params:
+  files: { type: array }
 steps:
   - id: review
-    title: Review
     map:
-      over: \${{ params.files }}
-      reducer: collect
+      over: params.files
       unit:
-        instructions: Review \${{ item }}.
         on_error: fail
         retry: { max: 1, on: [timeout] }
+---
+
+## review
+
+Review the assigned file.
 `;
     const p = plan(RETRY_WF);
     const params = { files: ["a.ts", "b.ts"] };
@@ -1574,18 +1588,22 @@ steps:
   });
 
   test("a failure whose reason is OUTSIDE retry.on fails-fast even when retry is declared", async () => {
-    const RETRY_WF = `version: 2
-name: RetryFail
+    const RETRY_WF = `---
+type: workflow
+params:
+  files: { type: array }
 steps:
   - id: review
-    title: Review
     map:
-      over: \${{ params.files }}
-      reducer: collect
+      over: params.files
       unit:
-        instructions: Review \${{ item }}.
         on_error: fail
         retry: { max: 1, on: [llm_rate_limit] }
+---
+
+## review
+
+Review the assigned file.
 `;
     const p = plan(RETRY_WF);
     const params = { files: ["a.ts", "b.ts"] };
@@ -1607,24 +1625,26 @@ steps:
 
 // ── The --settle verb (Codex round-3 finding D) ──────────────────────────────
 
-const ROUTE_FIRST_WF = `version: 2
-name: RouteFirst
+const ROUTE_FIRST_WF = `---
+type: workflow
 params:
   mode: { type: string }
 steps:
   - id: triage
-    title: Triage
     route:
-      input: \${{ params.mode }}
-      when: { ship: ship, rework: rework }
+      input: params.mode
+      when: [{ match: ship, step: ship }, { match: rework, step: rework }]
   - id: ship
-    title: Ship
-    unit:
-      instructions: Ship it.
   - id: rework
-    title: Rework
-    unit:
-      instructions: Rework it.
+---
+
+## ship
+
+Ship it.
+
+## rework
+
+Rework it.
 `;
 
 describe("report --settle advances a run parked on a non-dispatching step", () => {
@@ -1700,16 +1720,20 @@ describe("report --settle advances a run parked on a non-dispatching step", () =
 
 // ── --settle finalizes a fully-terminal but un-advanced step (owner finding 3) ──
 
-const REQUIRED_GATE_WF = `version: 2
-name: ReqGate
+const REQUIRED_GATE_WF = `---
+type: workflow
 steps:
   - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-    gate:
-      criteria: [the work is thorough]
-      required: true
+    gate: { required: true }
+---
+
+## work
+
+Do the work.
+
+### gate
+
+The work is thorough.
 `;
 
 describe("report --settle finalizes a fully-terminal step still needing completion", () => {
@@ -1778,17 +1802,22 @@ describe("report --settle finalizes a fully-terminal step still needing completi
   });
 
   test("--settle still refuses a step with a retry-eligible FAILED unit (re-run work remains)", async () => {
-    const RETRY_WF = `version: 2
-name: RetryGate
+    const RETRY_WF = `---
+type: workflow
 steps:
   - id: work
-    title: Work
     unit:
-      instructions: Do the work.
       retry: { max: 2, on: [timeout] }
-    gate:
-      criteria: [the work is thorough]
-      required: true
+    gate: { required: true }
+---
+
+## work
+
+Do the work.
+
+### gate
+
+The work is thorough.
 `;
     const p = plan(RETRY_WF);
     const [unit] = unitIds(p, 0, {}) as [string];

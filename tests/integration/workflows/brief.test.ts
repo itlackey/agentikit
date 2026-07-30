@@ -2,9 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// biome-ignore-all lint/suspicious/noTemplateCurlyInString: `\${{ … }}` is the
-// workflow expression grammar under test, not a JS template literal.
-
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -18,7 +15,7 @@ import { computeStepWorkList } from "../../../src/workflows/exec/step-work";
 import { canonicalPlanJson, computePlanHash } from "../../../src/workflows/ir/plan-hash";
 import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
 import { frozenStepRows } from "../../../src/workflows/runtime/plan-classifier";
-import { freezeWorkflowProgram } from "../../_helpers/workflow";
+import { freezeWorkflow } from "../../_helpers/workflow";
 
 /**
  * `akm workflow brief` (redesign addendum R3, task step 2). Proves brief:
@@ -29,6 +26,15 @@ import { freezeWorkflowProgram } from "../../_helpers/workflow";
  *     journaled gate row);
  *   - surfaces the deterministic route decision, a completed run's empty list,
  *     a live engine lease warning, and a clear error for a legacy NULL-plan run.
+ *
+ * Ported to the unified workflow markdown format (workflow-format-
+ * unification): `freezeWorkflow` (one frontend) replaces the old
+ * `freezeWorkflowProgram` YAML-program helper; every fixture below is
+ * frontmatter graph + `## <step-id>` body prose, no `${{ }}` syntax anywhere.
+ * Assertions are unchanged in substance — only fixture syntax changed, plus
+ * one assertion updated to the new bare-reference route.input SPELLING (the
+ * value itself, not its meaning, changed: `${{ steps.judge.output.verdict }}`
+ * -> `steps.judge.output.verdict`).
  */
 
 let tmpDir = "";
@@ -39,8 +45,8 @@ function dbPath(): string {
   return path.join(tmpDir, "state.db");
 }
 
-function plan(yamlText: string): WorkflowPlanGraph {
-  return freezeWorkflowProgram(yamlText);
+function plan(markdown: string): WorkflowPlanGraph {
+  return freezeWorkflow(markdown);
 }
 
 interface SeedStep {
@@ -172,71 +178,90 @@ afterEach(() => {
 
 // ── Workflows ────────────────────────────────────────────────────────────────
 
-const SOLO_WF = `version: 2
-name: Solo
+const SOLO_WF = `---
+type: workflow
+params:
+  target: { type: string }
 steps:
   - id: build
-    title: Build
     unit:
-      instructions: Build \${{ params.target }}.
       env: [env:ci-secrets]
-    gate:
-      criteria: [the build passes]
   - id: wrap
-    title: Wrap
-    unit:
-      instructions: Wrap up.
+---
+
+## build
+
+Build the \`target\` parameter.
+
+### gate
+
+The build passes.
+
+## wrap
+
+Wrap up.
 `;
 
-const FANOUT_WF = `version: 2
-name: Fanout
+const FANOUT_WF = `---
+type: workflow
+params:
+  files: { type: array }
 steps:
   - id: review
-    title: Review
     map:
-      over: \${{ params.files }}
-      reducer: collect
+      over: params.files
       unit:
-        instructions: Review \${{ item }}.
         output:
           type: object
           properties: { verdict: { type: string } }
           required: [verdict]
+---
+
+## review
+
+Review the assigned file.
 `;
 
-const LOOP_WF = `version: 2
-name: Loop
+const LOOP_WF = `---
+type: workflow
 steps:
   - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-    gate:
-      criteria: [the work is thorough]
-      max_loops: 3
+    gate: { max_loops: 3 }
+---
+
+## work
+
+Do the work.
+
+### gate
+
+The work is thorough.
 `;
 
-const ROUTE_WF = `version: 2
-name: Route
+const ROUTE_WF = `---
+type: workflow
 steps:
   - id: judge
-    title: Judge
-    unit:
-      instructions: Judge it.
   - id: triage
-    title: Triage
     route:
-      input: \${{ steps.judge.output.verdict }}
-      when: { pass: ship, fail: rework }
+      input: steps.judge.output.verdict
+      when: [{ match: pass, step: ship }, { match: fail, step: rework }]
       default: rework
   - id: ship
-    title: Ship
-    unit:
-      instructions: Ship it.
   - id: rework
-    title: Rework
-    unit:
-      instructions: Rework it.
+---
+
+## judge
+
+Judge it.
+
+## ship
+
+Ship it.
+
+## rework
+
+Rework it.
 `;
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -271,7 +296,10 @@ describe("workflow brief — solo step", () => {
       expect(u.unitId).toBe(engine.list.units[0]!.unitId);
       if (u.resolved.ok && engine.list.units[0]!.resolved.ok) {
         expect(u.resolved.inputHash).toBe(engine.list.units[0]!.resolved.inputHash);
-        expect(u.resolved.instructions).toContain("Build widget.");
+        // No more prompt-splicing (workflow-format-unification, spec §2.3) —
+        // the `target` param arrives as attached context, not interpolated
+        // into the instructions; assert the byte-exact body prose instead.
+        expect(u.resolved.instructions).toContain("Build the `target` parameter.");
       }
     }
     // Env is surfaced as REF NAMES, never resolved values.
@@ -297,12 +325,16 @@ describe("workflow brief — solo step", () => {
   });
 
   test("attributes an LLM unit to its frozen engine and exact model without legacy selectors", async () => {
-    const p = plan(`version: 2
-name: Direct LLM
+    const p = plan(`---
+type: workflow
 defaults: { engine: test-llm }
 steps:
   - id: answer
-    unit: { instructions: Answer directly. }
+---
+
+## answer
+
+Answer directly.
 `);
     seedRun({ plan: p, steps: [{ id: "answer" }] });
 
@@ -452,7 +484,9 @@ describe("workflow brief — route step", () => {
     const brief = await buildWorkflowBrief(RUN_ID);
     expect(brief.step?.kind).toBe("route");
     expect(brief.workList.units).toHaveLength(0);
-    expect(brief.route?.input).toBe("${{ steps.judge.output.verdict }}");
+    // Bare reference string (no `${{ }}` delimiters) — workflow-format-unification
+    // §2.3 shrinks the whole-value reference grammar to plain dotted paths.
+    expect(brief.route?.input).toBe("steps.judge.output.verdict");
     expect(brief.route?.when).toEqual({ pass: "ship", fail: "rework" });
     expect(brief.route?.evaluatedNow).toBe(true);
     expect(brief.route?.decision).toEqual({ value: "pass", selected: "ship" });
@@ -641,16 +675,20 @@ describe("workflow brief — unit action states (#15)", () => {
 });
 
 describe("workflow brief — fully-terminal step needing finalization (owner finding 3)", () => {
-  const REQUIRED_GATE_WF = `version: 2
-name: ReqGate
+  const REQUIRED_GATE_WF = `---
+type: workflow
 steps:
   - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-    gate:
-      criteria: [the work is thorough]
-      required: true
+    gate: { required: true }
+---
+
+## work
+
+Do the work.
+
+### gate
+
+The work is thorough.
 `;
 
   /** Seed the post-resume state: the run is active, the step is pending again,
@@ -784,15 +822,18 @@ steps:
 });
 
 describe("workflow brief — worktree isolation warning (#21)", () => {
-  const WORKTREE_WF = `version: 2
-name: Isolated
+  const WORKTREE_WF = `---
+type: workflow
 steps:
   - id: build
-    title: Build
     unit:
       engine: test-agent
       isolation: worktree
-      instructions: Build it.
+---
+
+## build
+
+Build it.
 `;
 
   test("warns that .gitignore-matched outputs are disposable when a unit is worktree-isolated", async () => {

@@ -2,9 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// biome-ignore-all lint/suspicious/noTemplateCurlyInString: `\${{ … }}` is the
-// workflow expression grammar under test, not a JS template literal.
-
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
@@ -24,7 +21,7 @@ import type { WorkflowPlanGraph } from "../../../../src/workflows/ir/schema";
 import { frozenStepRows } from "../../../../src/workflows/runtime/plan-classifier";
 import { getWorkflowStatus } from "../../../../src/workflows/runtime/runs";
 import type { SummaryJudge } from "../../../../src/workflows/validate-summary";
-import { freezeWorkflowProgram } from "../../../_helpers/workflow";
+import { freezeWorkflow } from "../../../_helpers/workflow";
 
 /**
  * R4 — cross-surface driver-parity conformance (redesign addendum, "no
@@ -57,7 +54,18 @@ import { freezeWorkflowProgram } from "../../../_helpers/workflow";
  * compares the effective terminal outcome (input_hash is still compared, so a
  * hash divergence is never hidden). GATE-LOOP rows (`<baseId>~l<n>`) are NOT
  * collapsed — both surfaces genuinely produce them, and their byte-identical
- * input hashes are exactly what proves recovered-feedback parity.
+ * hashes are exactly what proves recovered-feedback parity.
+ *
+ * Ported to the unified workflow markdown format (workflow-format-
+ * unification): every golden's `markdown` fixture is frontmatter graph +
+ * `## <step-id>` body prose (`freezeWorkflow`, one frontend) instead of a YAML
+ * program (`freezeWorkflowProgram`, deleted). One behavioral note: the
+ * gate-loop hash assertions (GATE_MAX_LOOPS, crash-after-rejection resume)
+ * were inverted from `not.toBe` to `toBe` — see the inline comments there —
+ * because unit identity now hashes the frozen template bytes, never a
+ * resolved/spliced prompt, so gate feedback no longer changes the hash across
+ * loops. The cross-surface parity invariant itself is unchanged: both
+ * surfaces still must (and do) compute the identical hash.
  */
 
 const RUN_ID = "77777777-7777-4777-8777-777777777777";
@@ -107,7 +115,7 @@ interface SeedStep {
 
 interface Golden {
   name: string;
-  yaml: string;
+  markdown: string;
   params: Record<string, unknown>;
   steps: SeedStep[];
   /** The terminal outcome for a content-derived BASE unit id (`<node>:<hash>` / `<node>:solo`). */
@@ -135,8 +143,8 @@ function lineFor(graph: GraphLine[], prefix: string): string {
   return graph.find((l) => l.startsWith(prefix)) ?? "";
 }
 
-function compile(yamlText: string): WorkflowPlanGraph {
-  return freezeWorkflowProgram(yamlText, "workflows/golden.yaml");
+function compile(markdown: string): WorkflowPlanGraph {
+  return freezeWorkflow(markdown, "workflows/golden.md");
 }
 
 /** Strip every trailing gate-loop / retry suffix to recover the content-derived base id. */
@@ -460,13 +468,15 @@ async function runDriverSurface(golden: Golden): Promise<void> {
 
 const SOLO: Golden = {
   name: "solo",
-  yaml: `version: 2
-name: Golden
+  markdown: `---
+type: workflow
 steps:
   - id: build
-    title: Build
-    unit:
-      instructions: Build it.
+---
+
+## build
+
+Build it.
 `,
   params: {},
   steps: [{ id: "build" }],
@@ -485,18 +495,19 @@ steps:
 
 const FAN_OUT_COLLECT: Golden = {
   name: "fan-out + collect",
-  yaml: `version: 2
-name: Golden
+  markdown: `---
+type: workflow
 params:
   files: { type: array }
 steps:
   - id: review
-    title: Review
     map:
-      over: \${{ params.files }}
-      reducer: collect
-      unit:
-        instructions: Review \${{ item }}.
+      over: params.files
+---
+
+## review
+
+Review the assigned file.
 `,
   params: { files: ["a.ts", "b.ts", "c.ts"] },
   steps: [{ id: "review" }],
@@ -513,22 +524,25 @@ steps:
 
 const VOTE: Golden = {
   name: "vote",
-  yaml: `version: 2
-name: Golden
+  markdown: `---
+type: workflow
 params:
   attempts: { type: array }
 steps:
   - id: judge
-    title: Judge
     map:
-      over: \${{ params.attempts }}
+      over: params.attempts
       reducer: vote
       unit:
-        instructions: Judge \${{ item }}.
         output:
           type: object
           properties: { verdict: { type: string } }
           required: [verdict]
+---
+
+## judge
+
+Judge the assigned attempt.
 `,
   params: { attempts: [1, 2, 3] },
   steps: [{ id: "judge" }],
@@ -543,30 +557,34 @@ steps:
 
 const ROUTE: Golden = {
   name: "route",
-  yaml: `version: 2
-name: Golden
+  markdown: `---
+type: workflow
 steps:
   - id: classify
-    title: Classify
     unit:
-      instructions: Classify.
       output:
         type: object
         properties: { verdict: { type: string } }
         required: [verdict]
   - id: triage
-    title: Triage
     route:
-      input: \${{ steps.classify.output.verdict }}
-      when: { pass: ship, fail: rework }
+      input: steps.classify.output.verdict
+      when: [{ match: pass, step: ship }, { match: fail, step: rework }]
   - id: ship
-    title: Ship
-    unit:
-      instructions: Ship it.
   - id: rework
-    title: Rework
-    unit:
-      instructions: Rework it.
+---
+
+## classify
+
+Classify.
+
+## ship
+
+Ship it.
+
+## rework
+
+Rework it.
 `,
   params: {},
   steps: [{ id: "classify" }, { id: "triage" }, { id: "ship" }, { id: "rework" }],
@@ -586,26 +604,38 @@ steps:
 
 const GATE_MAX_LOOPS: Golden = {
   name: "gate max_loops (reject then accept)",
-  yaml: `version: 2
-name: Golden
+  markdown: `---
+type: workflow
 steps:
   - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-    gate:
-      criteria: [the work is thorough]
-      max_loops: 3
+    gate: { max_loops: 3 }
+---
+
+## work
+
+Do the work.
+
+### gate
+
+The work is thorough.
 `,
   params: {},
   steps: [{ id: "work", criteria: ["the work is thorough"] }],
   outcome: () => ({ ok: true, text: "did the work" }),
   judge: rejectThenAccept,
   verify: (g) => {
-    // Two gate loops: l1 rejected, l2 accepted. The loop-2 unit re-dispatched
-    // under `~l2` with the recovered feedback threaded in — so its input hash
-    // must DIFFER from loop 1's. That both surfaces reproduce this identical
-    // hash is the load-bearing recovered-feedback parity proof.
+    // Two gate loops: l1 rejected, l2 accepted, journaled under DISTINCT row
+    // keys (`work:solo` vs `work:solo~l2` — the loop suffix, not the hash, is
+    // what makes loop 2 a fresh dispatch instead of a row-reuse). Ported
+    // assertion (workflow-format-unification, spec §2.3/§4): pre-unification,
+    // unit identity hashed the fully RESOLVED/spliced prompt, so gate feedback
+    // threaded into that string changed the hash across loops. The unified
+    // format hashes the FROZEN TEMPLATE BYTES + item + declared inputs + params
+    // — never a resolved/spliced string, since prose is never templated — so
+    // gate feedback (attached context, not a splice) is deliberately NOT part
+    // of the hash; loop 2's hash is now IDENTICAL to loop 1's by design. The
+    // load-bearing invariant survives unchanged: both surfaces reproduce this
+    // identical hash for loop 2 (proven by `assertGraphsIdentical` below).
     const l1 = lineFor(g, "unit work:solo ");
     const l2 = lineFor(g, "unit work:solo~l2 ");
     expect(l1).toContain("status=completed");
@@ -614,7 +644,7 @@ steps:
     const hash2 = /hash=(\w+)/.exec(l2)?.[1];
     expect(hash1).toBeTruthy();
     expect(hash2).toBeTruthy();
-    expect(hash1).not.toBe(hash2);
+    expect(hash1).toBe(hash2);
     expect(lineFor(g, "gate work.gate:l1")).toContain('"complete":false');
     expect(lineFor(g, "gate work.gate:l2")).toContain('"complete":true');
     expect(g).toContain("run status=completed");
@@ -623,22 +653,24 @@ steps:
 
 // on_error: continue — one fan-out unit fails; the step still completes.
 function onErrorContinueGolden(): Golden {
-  const yaml = `version: 2
-name: Golden
+  const markdown = `---
+type: workflow
 params:
   files: { type: array }
 steps:
   - id: review
-    title: Review
     map:
-      over: \${{ params.files }}
-      reducer: collect
+      over: params.files
       unit:
-        instructions: Review \${{ item }}.
         on_error: continue
+---
+
+## review
+
+Review the assigned file.
 `;
   const params = { files: ["a.ts", "b.ts"] };
-  const plan = compile(yaml);
+  const plan = compile(markdown);
   // The unit that fans out over "b.ts" is the one we fail.
   const units = stepUnitIds(plan, 0, params);
   const failing = units.find((u) => u.item === "b.ts");
@@ -646,7 +678,7 @@ steps:
   const failingBase = failing.unitId;
   return {
     name: "on_error continue",
-    yaml,
+    markdown,
     params,
     steps: [{ id: "review" }],
     outcome: (base) =>
@@ -667,14 +699,17 @@ steps:
 // reports only the terminal success. The collapsed graphs must match.
 const RETRY: Golden = {
   name: "retry (fail then succeed)",
-  yaml: `version: 2
-name: Golden
+  markdown: `---
+type: workflow
 steps:
   - id: work
-    title: Work
     unit:
-      instructions: Do the work.
       retry: { max: 1, on: [timeout] }
+---
+
+## work
+
+Do the work.
 `,
   params: {},
   steps: [{ id: "work" }],
@@ -709,13 +744,15 @@ steps:
 // empty completed result.
 const EMPTY_OUTPUT: Golden = {
   name: "empty free-text output",
-  yaml: `version: 2
-name: Golden
+  markdown: `---
+type: workflow
 steps:
   - id: build
-    title: Build
-    unit:
-      instructions: Build it.
+---
+
+## build
+
+Build it.
 `,
   params: {},
   steps: [{ id: "build" }],
@@ -739,15 +776,18 @@ steps:
 // fake dispatcher ignores engine/timeout, so no real backend is needed.)
 const ENGINE_TIMEOUT: Golden = {
   name: "named engine + timeout in the input hash",
-  yaml: `version: 2
-name: Golden
+  markdown: `---
+type: workflow
 steps:
   - id: build
-    title: Build
     unit:
       engine: test-agent
       timeout: 5m
-      instructions: Build it.
+---
+
+## build
+
+Build it.
 `,
   params: {},
   steps: [{ id: "build" }],
@@ -769,16 +809,20 @@ steps:
 // run lands `blocked` on BOTH surfaces — the same unit graph.
 const REQUIRED_GATE_NO_JUDGE: Golden = {
   name: "required gate, no judge → blocked (offline parity)",
-  yaml: `version: 2
-name: Golden
+  markdown: `---
+type: workflow
 steps:
   - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-    gate:
-      criteria: [the work is thorough]
-      required: true
+    gate: { required: true }
+---
+
+## work
+
+Do the work.
+
+### gate
+
+The work is thorough.
 `,
   params: {},
   steps: [{ id: "work", criteria: ["the work is thorough"] }],
@@ -801,16 +845,20 @@ steps:
 // same unit graph. This is the exact bypass finding A flagged.
 const REQUIRED_GATE_JUDGE_ERRORS: Golden = {
   name: "required gate, judge errors → blocked (offline parity)",
-  yaml: `version: 2
-name: Golden
+  markdown: `---
+type: workflow
 steps:
   - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-    gate:
-      criteria: [the work is thorough]
-      required: true
+    gate: { required: true }
+---
+
+## work
+
+Do the work.
+
+### gate
+
+The work is thorough.
 `,
   params: {},
   steps: [{ id: "work", criteria: ["the work is thorough"] }],
@@ -838,24 +886,26 @@ steps:
 // branch dispatched.
 const PARAMS_ROUTE_FIRST: Golden = {
   name: "params-routed route as the FIRST step (settle verb)",
-  yaml: `version: 2
-name: Golden
+  markdown: `---
+type: workflow
 params:
   mode: { type: string }
 steps:
   - id: triage
-    title: Triage
     route:
-      input: \${{ params.mode }}
-      when: { ship: ship, rework: rework }
+      input: params.mode
+      when: [{ match: ship, step: ship }, { match: rework, step: rework }]
   - id: ship
-    title: Ship
-    unit:
-      instructions: Ship it.
   - id: rework
-    title: Rework
-    unit:
-      instructions: Rework it.
+---
+
+## ship
+
+Ship it.
+
+## rework
+
+Rework it.
 `,
   params: { mode: "ship" },
   steps: [{ id: "triage" }, { id: "ship" }, { id: "rework" }],
@@ -892,7 +942,7 @@ const GOLDENS: Golden[] = [
 describe("conformance — engine/driver cross-surface parity", () => {
   for (const golden of GOLDENS) {
     test(`${golden.name}: engine-driven and brief/report-driven runs produce identical unit graphs`, async () => {
-      const plan = compile(golden.yaml);
+      const plan = compile(golden.markdown);
 
       // (a) engine-driven, in its own database.
       const engineDir = path.join(rootDir, "engine");
@@ -931,24 +981,28 @@ describe("conformance — engine/driver cross-surface parity", () => {
   // from the SAME seeded crashed pre-state (loop-1 unit + gate:l1 rejected) and
   // must reach byte-identical loop-2 graphs, WITHOUT clobbering the l1 gate row.
   test("crash-after-rejection resume: engine and brief/report reach identical loop-2 graphs, l1 gate row untouched", async () => {
-    const yaml = `version: 2
-name: Golden
+    const markdown = `---
+type: workflow
 steps:
   - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-    gate:
-      criteria: [the work is thorough]
-      max_loops: 3
+    gate: { max_loops: 3 }
+---
+
+## work
+
+Do the work.
+
+### gate
+
+The work is thorough.
 `;
-    const plan = compile(yaml);
+    const plan = compile(markdown);
     const steps: SeedStep[] = [{ id: "work", criteria: ["the work is thorough"] }];
     const feedback = { feedback: "Add the missing analysis section.", missing: ["the work is thorough"] };
     // The judge ACCEPTS — loop 2 (the resumed loop) passes on both surfaces.
     const golden: Golden = {
       name: "crash-resume",
-      yaml,
+      markdown,
       params: {},
       steps,
       outcome: (base) => ({ ok: true, text: `did ${base}` }),
@@ -979,15 +1033,24 @@ steps:
 
     assertGraphsIdentical(engineGraph, driverGraph, "crash-resume");
 
-    // Structural expectations over the identical graph: l1 rejected + l2 accepted,
-    // with DISTINCT input hashes (loop 2 carried the recovered feedback).
+    // Structural expectations over the identical graph: l1 rejected + l2
+    // accepted, journaled under distinct row keys (`work:solo` vs
+    // `work:solo~l2`). Ported assertion (workflow-format-unification, spec
+    // §2.3/§4): the unified format's unit-identity hash is over the frozen
+    // template bytes + item + declared inputs + params — never a
+    // resolved/spliced prompt — so gate feedback (attached context, not a
+    // splice) is deliberately excluded from the hash; loop 2's hash is now
+    // IDENTICAL to loop 1's by design (see GATE_MAX_LOOPS.verify above for the
+    // full rationale). The invariant this golden actually proves — both
+    // surfaces compute the SAME hash for loop 2 — still holds, via
+    // `assertGraphsIdentical` above.
     expect(lineFor(engineGraph, "gate work.gate:l1")).toContain('"complete":false');
     expect(lineFor(engineGraph, "gate work.gate:l2")).toContain('"complete":true');
     const h1 = /hash=(\w+)/.exec(lineFor(engineGraph, "unit work:solo "))?.[1];
     const h2 = /hash=(\w+)/.exec(lineFor(engineGraph, "unit work:solo~l2 "))?.[1];
     expect(h1).toBeTruthy();
     expect(h2).toBeTruthy();
-    expect(h1).not.toBe(h2);
+    expect(h1).toBe(h2);
     expect(engineGraph).toContain("run status=completed");
   });
 
@@ -1000,23 +1063,27 @@ steps:
   // verb brief now emits, running the SAME shared completion path. Both surfaces
   // must re-block identically (no judge available), with byte-identical graphs.
   test("fully-terminal required-gate step: engine re-reduce and brief/report --settle both re-block identically", async () => {
-    const yaml = `version: 2
-name: Golden
+    const markdown = `---
+type: workflow
 steps:
   - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-    gate:
-      criteria: [the work is thorough]
-      required: true
+    gate: { required: true }
+---
+
+## work
+
+Do the work.
+
+### gate
+
+The work is thorough.
 `;
-    const plan = compile(yaml);
+    const plan = compile(markdown);
     const steps: SeedStep[] = [{ id: "work", criteria: ["the work is thorough"] }];
     // No judge (fail-open resolution) ⇒ the required gate blocks on both surfaces.
     const golden: Golden = {
       name: "settle-reblock",
-      yaml,
+      markdown,
       params: {},
       steps,
       outcome: (base) => ({ ok: true, text: `did ${base}` }),
@@ -1096,19 +1163,23 @@ steps:
   // unit crashed-then-retried, its sibling never run) and must reach byte-
   // identical completed graphs.
   test("crash-after-retry resume: a base-failed unit rescued by a completed ~r1 reduces as COMPLETED on both surfaces", async () => {
-    const yaml = `version: 2
-name: Golden
+    const markdown = `---
+type: workflow
+params:
+  files: { type: array }
 steps:
   - id: review
-    title: Review
     map:
-      over: \${{ params.files }}
-      reducer: collect
+      over: params.files
       unit:
-        instructions: Review \${{ item }}.
         retry: { max: 1, on: [timeout] }
+---
+
+## review
+
+Review the assigned file.
 `;
-    const plan = compile(yaml);
+    const plan = compile(markdown);
     const params = { files: ["a.ts", "b.ts"] };
     const steps: SeedStep[] = [{ id: "review" }];
     const computed = computeStepWorkList(plan.steps[0]!, {
@@ -1184,7 +1255,7 @@ steps:
     await seedCrashedRetry();
     const golden: Golden = {
       name: "crash-retry",
-      yaml,
+      markdown,
       params,
       steps,
       outcome: (base) => ({ ok: true, text: `reviewed ${base}` }),
@@ -1212,12 +1283,12 @@ steps:
   // Without matching guards one surface would resolve prompts from bad params
   // while another rejected, silently diverging.
   test("param schemas are frozen into the plan", () => {
-    const plan = compile(FAN_OUT_COLLECT.yaml);
+    const plan = compile(FAN_OUT_COLLECT.markdown);
     expect(plan.paramSchemas).toEqual({ files: { type: "array" } });
   });
 
   test("schema-violating journaled params are refused on all three surfaces", async () => {
-    const plan = compile(FAN_OUT_COLLECT.yaml);
+    const plan = compile(FAN_OUT_COLLECT.markdown);
     // `files` was declared `{ type: array }`; a hand-edited row makes it a string.
     const bad = { files: "no-longer-an-array" };
 

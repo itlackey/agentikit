@@ -13,20 +13,34 @@ import { runWorkflowSteps } from "../../../../src/workflows/exec/run-workflow";
 import type { WorkflowPlanGraph } from "../../../../src/workflows/ir/schema";
 import { frozenStepRows } from "../../../../src/workflows/runtime/plan-classifier";
 import { getWorkflowStatus } from "../../../../src/workflows/runtime/runs";
-import { freezeMarkdownWorkflow, freezeWorkflowProgram, storeFrozenWorkflowPlan } from "../../../_helpers/workflow";
+import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../../_helpers/workflow";
 
 /**
  * Conformance suite (orchestration plan, §Anti-drift; conformance goldens
- * rewritten against YAML program sources per the R1 redesign addendum):
- * golden workflows run through every execution backend with mocked runners;
- * the suite asserts an identical compiled plan and an identical per-unit
- * graph. Today the native executor is the only backend — when the R3 driver
- * protocol lands, brief/report-driven runs plug into `BACKENDS` below and
- * every golden workflow must produce the same unit graph on each.
+ * ported to the unified workflow markdown format per the workflow-format-
+ * unification redesign): golden workflows run through every execution
+ * backend with mocked runners; the suite asserts an identical compiled plan
+ * and an identical per-unit graph. Today the native executor is the only
+ * backend — when the R3 driver protocol lands, brief/report-driven runs plug
+ * into `BACKENDS` below and every golden workflow must produce the same unit
+ * graph on each.
  *
  * The golden plans are EXPLICIT expected structures, not snapshots: a change
  * that alters the compiled IR or the executed unit graph must edit this file
  * knowingly.
+ *
+ * ## One frontend now
+ *
+ * Pre-unification this suite compiled each golden through TWO frontends —
+ * the YAML program (`freezeWorkflowProgram`, `templating: "expressions"`) and
+ * the classic linear markdown (`freezeMarkdownWorkflow`, `templating:
+ * "verbatim"`) — to prove they produced the same IR shape. Both helpers, and
+ * the whole classic markdown grammar (`# Workflow:` / `## Step:` / `Step
+ * ID:`), are deleted (spec §3): there is exactly one frontend
+ * (`freezeWorkflow`) and exactly one `templating` value (`"verbatim"` — the
+ * unified format never interpolates prose, spec §2.3). The former "Golden 1b:
+ * classic linear markdown" duplicate golden is gone with it; Golden 1 below
+ * is the sole linear golden.
  */
 
 let tmpDir = "";
@@ -50,14 +64,9 @@ afterEach(() => {
   }
 });
 
-/** Compile a golden YAML program source (the orchestrated frontend). */
-function compile(yamlText: string): WorkflowPlanGraph {
-  return freezeWorkflowProgram(yamlText, "workflows/golden.yaml");
-}
-
-/** Compile a golden classic markdown source (the stable linear contract). */
-function compileMarkdown(markdown: string): WorkflowPlanGraph {
-  return freezeMarkdownWorkflow(markdown, "workflows/golden.md");
+/** Compile a golden unified workflow markdown source. */
+function compile(markdown: string): WorkflowPlanGraph {
+  return freezeWorkflow(markdown, "workflows/golden.md");
 }
 
 function seedRun(plan: WorkflowPlanGraph, params: Record<string, unknown>): void {
@@ -141,15 +150,15 @@ const FROZEN_EXECUTION: NonNullable<WorkflowPlanGraph["execution"]> = {
   },
 };
 
+/** Golden 1's expected plan (one frontend, one `templating: "verbatim"` value). */
 function linearGolden(
-  templating: "expressions" | "verbatim",
   sources: [{ path: string; start: number; end: number }, { path: string; start: number; end: number }],
 ): WorkflowPlanGraph {
   const unit = (id: string, instructions: string, source: (typeof sources)[number]) => ({
     kind: "unit" as const,
     id,
     instructions,
-    templating,
+    templating: "verbatim" as const,
     invocation: { engine: "test-agent", model: "test-model", timeoutMs: 600_000 },
     onError: "fail" as const,
     isolation: "none" as const,
@@ -157,19 +166,19 @@ function linearGolden(
   });
   return {
     irVersion: 3,
-    title: "Golden",
+    title: "golden",
     execution: FROZEN_EXECUTION,
     steps: [
       {
         stepId: "build",
-        title: "Build",
+        title: "build",
         sequenceIndex: 0,
         root: unit("build", "Build it.", sources[0]),
         gate: {
           kind: "gate",
           id: "build.gate",
           stepId: "build",
-          criteria: ["artifact exists"],
+          criteria: ["Artifact exists."],
           maxLoops: 1,
           required: false,
           judge: { engine: "test-llm", model: "test-model", timeoutMs: 600_000 },
@@ -177,7 +186,7 @@ function linearGolden(
       },
       {
         stepId: "deploy",
-        title: "Deploy",
+        title: "deploy",
         sequenceIndex: 1,
         root: unit("deploy", "Deploy it.", sources[1]),
         gate: {
@@ -194,29 +203,34 @@ function linearGolden(
   };
 }
 
-// ── Golden 1: linear program (behavior identical to the classic step loop) ──
+// ── Golden 1: linear workflow (behavior identical to the classic step loop) ──
 
-const LINEAR = `version: 2
-name: Golden
+const LINEAR = `---
+type: workflow
 steps:
   - id: build
-    title: Build
-    unit:
-      instructions: Build it.
-    gate:
-      criteria: [artifact exists]
   - id: deploy
-    title: Deploy
-    unit:
-      instructions: Deploy it.
+---
+
+## build
+
+Build it.
+
+### gate
+
+Artifact exists.
+
+## deploy
+
+Deploy it.
 `;
 
 describe("conformance — linear workflow", () => {
   test("compiles to the golden plan", () => {
     expect(compile(LINEAR)).toEqual(
-      linearGolden("expressions", [
-        { path: "workflows/golden.yaml", start: 7, end: 7 },
-        { path: "workflows/golden.yaml", start: 13, end: 13 },
+      linearGolden([
+        { path: "workflows/golden.md", start: 9, end: 11 },
+        { path: "workflows/golden.md", start: 17, end: 19 },
       ]),
     );
   });
@@ -236,69 +250,28 @@ describe("conformance — linear workflow", () => {
   }
 });
 
-// ── Golden 1b: classic linear markdown (the stable CLI contract) ────────────
-
-const LINEAR_MD = `# Workflow: Golden
-
-## Step: Build
-Step ID: build
-
-### Instructions
-Build it.
-
-### Completion Criteria
-- artifact exists
-
-## Step: Deploy
-Step ID: deploy
-
-### Instructions
-Deploy it.
-`;
-
-describe("conformance — classic linear markdown (stable contract)", () => {
-  test("compiles to the same golden plan shape as the linear program", () => {
-    expect(compileMarkdown(LINEAR_MD)).toEqual(
-      linearGolden("verbatim", [
-        { path: "workflows/golden.md", start: 7, end: 8 },
-        { path: "workflows/golden.md", start: 16, end: 17 },
-      ]),
-    );
-  });
-
-  for (const backend of BACKENDS) {
-    test(`${backend.name}: executes the golden unit graph`, async () => {
-      const plan = compileMarkdown(LINEAR_MD);
-      seedRun(plan, {});
-      const result = await backend.run(plan);
-      expect(result.done).toBe(true);
-      expect(await unitGraph()).toEqual([
-        ["build:solo", "build", null, "completed"],
-        ["deploy:solo", "deploy", null, "completed"],
-      ]);
-    });
-  }
-});
-
 // ── Golden 2: fan-out + schema + vote reducer ────────────────────────────────
 
-const FAN_OUT_VOTE = `version: 2
-name: Golden
+const FAN_OUT_VOTE = `---
+type: workflow
 params:
   attempts: { type: array }
 steps:
   - id: judge
-    title: Judge
     map:
-      over: \${{ params.attempts }}
+      over: params.attempts
       concurrency: 2
       reducer: vote
       unit:
-        instructions: Judge \${{ item }}.
         output:
           type: object
           properties: { verdict: { type: string } }
           required: [verdict]
+---
+
+## judge
+
+Judge the assigned attempt.
 `;
 
 describe("conformance — fan-out + schema + vote", () => {
@@ -308,26 +281,26 @@ describe("conformance — fan-out + schema + vote", () => {
     expect(plan.steps).toHaveLength(1);
     expect(plan.steps[0]).toEqual({
       stepId: "judge",
-      title: "Judge",
+      title: "judge",
       sequenceIndex: 0,
       root: {
         kind: "map",
         id: "judge.map",
-        over: "${{ params.attempts }}",
+        over: "params.attempts",
         template: {
           kind: "unit",
           id: "judge.unit",
-          instructions: "Judge ${{ item }}.",
-          templating: "expressions",
+          instructions: "Judge the assigned attempt.",
+          templating: "verbatim",
           invocation: { engine: "test-agent", model: "test-model", timeoutMs: 600_000 },
           onError: "fail",
           isolation: "none",
           schema: { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"] },
-          source: { path: "workflows/golden.yaml", start: 13, end: 17 },
+          source: { path: "workflows/golden.md", start: 6, end: 15 },
         },
         concurrency: 2,
         reducer: "vote",
-        source: { path: "workflows/golden.yaml", start: 6, end: 17 },
+        source: { path: "workflows/golden.md", start: 6, end: 15 },
       },
       gate: {
         kind: "gate",
@@ -361,7 +334,7 @@ describe("conformance — fan-out + schema + vote", () => {
         total: 3,
       });
       // The promoted step artifact of a vote step IS the winner — what
-      // `${{ steps.judge.output }}` resolves to downstream.
+      // `steps.judge.output` resolves to downstream.
       expect(status.workflow.steps[0]!.evidence?.output).toEqual({ verdict: "pass" });
     });
   }
@@ -369,30 +342,34 @@ describe("conformance — fan-out + schema + vote", () => {
 
 // ── Golden 3: routed workflow (route-only step, explicit input) ─────────────
 
-const ROUTED = `version: 2
-name: Golden
+const ROUTED = `---
+type: workflow
 steps:
   - id: classify
-    title: Classify
     unit:
-      instructions: Classify.
       output:
         type: object
         properties: { verdict: { type: string } }
         required: [verdict]
   - id: triage
-    title: Triage
     route:
-      input: \${{ steps.classify.output.verdict }}
-      when: { pass: ship, fail: rework }
+      input: steps.classify.output.verdict
+      when: [{ match: pass, step: ship }, { match: fail, step: rework }]
   - id: ship
-    title: Ship
-    unit:
-      instructions: Ship it.
   - id: rework
-    title: Rework
-    unit:
-      instructions: Rework it.
+---
+
+## classify
+
+Classify.
+
+## ship
+
+Ship it.
+
+## rework
+
+Rework it.
 `;
 
 describe("conformance — routed workflow", () => {
@@ -400,10 +377,10 @@ describe("conformance — routed workflow", () => {
     const plan = compile(ROUTED);
     expect(plan.steps[1]).toEqual({
       stepId: "triage",
-      title: "Triage",
+      title: "triage",
       sequenceIndex: 1,
       route: {
-        input: "${{ steps.classify.output.verdict }}",
+        input: "steps.classify.output.verdict",
         when: { pass: "ship", fail: "rework" },
       },
       gate: {
