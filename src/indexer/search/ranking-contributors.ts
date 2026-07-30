@@ -60,13 +60,19 @@ const UTILITY_WEIGHT = 0.5;
 const UTILITY_MAX_BOOST = 1.5;
 
 /**
- * R2 — weight of the improve
- * loop's `asset_salience.rank_score` in user-facing ranking. Bounded well
- * below the utility boost so the composed signal refines, never dominates,
- * lexical/semantic relevance. rank_score ∈ [0,1] → boost ∈ [1, 1.2].
+ * R2 / #692 — weight of the improve loop's `asset_salience.rank_score`.
+ * rank_score ∈ [0,1] → boost ∈ [1, 1.2]. Bounded well below the utility boost
+ * so the composed signal would refine, never dominate, lexical/semantic
+ * relevance.
+ *
+ * As of #692 this is NOT wired into default user-facing ranking — see
+ * {@link salienceRankingContributor}'s doc comment. Kept exported (with the
+ * contributor) for a future gated experiment; do not reintroduce it into
+ * {@link defaultUtilityRankingContributors} without a measured
+ * curate-golden-bench delta and an explicit config gate.
  */
-const SALIENCE_WEIGHT = 0.2;
-const SALIENCE_MAX_BOOST = 1.2;
+export const SALIENCE_WEIGHT = 0.2;
+export const SALIENCE_MAX_BOOST = 1.2;
 
 /**
  * Phase 2A / Rec 5: default recency half-life (days) used when no
@@ -527,15 +533,31 @@ export const defaultRankingContributors: RankingContributor[] = [
 ];
 
 /**
- * R2 — compose the improve loop's salience core into user-facing ranking.
+ * R2 — the improve loop's salience core, as a bounded multiplicative ranking
+ * boost. `asset_salience.rank_score` (encoding + outcome + retrieval
+ * projection, maintained every improve run) otherwise drives only improve's
+ * INTERNAL maintenance selection.
  *
- * `asset_salience.rank_score` (encoding + outcome + retrieval projection,
- * maintained every improve run) previously drove only improve's INTERNAL
- * maintenance selection — the "better assets surface more" loop ran solely
- * through the utility EMA. This bounded multiplicative boost closes the outer
- * loop: usage/outcome-reinforced assets rank higher in `search`/`curate`.
+ * **#692 — NOT in {@link defaultUtilityRankingContributors}.** Removed from
+ * default user-facing ranking (search/curate): the boost was
+ * retrieval-dominated (`w_r = 0.60` in salience.ts, with no source filter, so
+ * it double-counted the same `usage_events` the utility EMA contributor
+ * already reinforces), warm-started non-zero with no outcome evidence, had
+ * zero pack coverage (favoring only self-generated personal assets), and
+ * measured as noise on live data (max observed multiplier ×1.071). Removing
+ * its default state.db load also deleted a confirmed hot-path defect — see
+ * the now-deleted `loadSalienceRankScores` in `ranking.ts` git history.
+ *
+ * `rank_score` itself is UNCHANGED as improve's internal selection signal.
+ * This contributor, and its weight/cap constants, stay exported so a FUTURE
+ * gated experiment (config-gated, outcome-gated) can wire it back in
+ * explicitly — see `RankEntriesOptions.salienceRankScores`'s doc comment in
+ * `ranking.ts`. Reachable today only via explicit contributor-list injection
+ * (tests / eval harnesses calling `applyUtilityContributors` directly with a
+ * list that includes it) — never through `applyRankingRules` / `akm search` /
+ * `akm curate`.
  */
-const salienceRankingContributor: UtilityRankingContributor = {
+export const salienceRankingContributor: UtilityRankingContributor = {
   name: "salience-ranking",
   appliesTo(item, ctx) {
     const rank = ctx.salienceRankScores?.get(item.id);
@@ -548,10 +570,10 @@ const salienceRankingContributor: UtilityRankingContributor = {
   },
 };
 
-export const defaultUtilityRankingContributors: UtilityRankingContributor[] = [
-  utilityRankingContributor,
-  salienceRankingContributor,
-];
+// #692 — salienceRankingContributor deliberately excluded; see its doc
+// comment. Do not add it back here without a config gate + a measured
+// curate-golden-bench delta justifying it.
+export const defaultUtilityRankingContributors: UtilityRankingContributor[] = [utilityRankingContributor];
 
 /**
  * EVAL/DEBUG ONLY — remove named ranking contributors from a list.

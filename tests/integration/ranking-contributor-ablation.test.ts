@@ -15,6 +15,7 @@ import {
   defaultRankingContributors,
   defaultUtilityRankingContributors,
   type RankingContext,
+  salienceRankingContributor,
   typeBoostFor,
 } from "../../src/indexer/search/ranking-contributors";
 import type { RankedEntryInput } from "../../src/indexer/search/ranking-types";
@@ -48,8 +49,25 @@ describe("applyContributorAblation (eval-only AKM_ABLATE_CONTRIBUTORS filter)", 
     expect(out.length).toBe(all.length - 2);
   });
 
-  test("works on the utility contributor list too (salience/utility)", () => {
-    const out = applyContributorAblation(defaultUtilityRankingContributors, "salience-ranking");
+  // #692 — `salience-ranking` was dropped from `defaultUtilityRankingContributors`
+  // (the R2 salience boost is no longer part of default user-facing ranking;
+  // `rank_score` keeps its improve-internal role unchanged). The contributor
+  // itself stays exported, unwired, for a future gated experiment.
+  test("defaultUtilityRankingContributors is the one-entry post-#692 list — salience is not in it", () => {
+    expect(defaultUtilityRankingContributors.length).toBe(1);
+    expect(defaultUtilityRankingContributors.map((c) => c.name)).toEqual(["utility-ranking"]);
+  });
+
+  test("ablation of 'salience-ranking' still works against an explicitly supplied list containing it", () => {
+    // Proves the ablation MECHANISM still works for a contributor no longer in
+    // the default list — e.g. a future gated experiment that re-adds
+    // `salienceRankingContributor` to a custom list would still be ablatable.
+    // Asserting against the (now salience-free) default list alone would be
+    // vacuous: "salience-ranking" would already be absent with or without
+    // ablation working correctly.
+    const explicitList = [...defaultUtilityRankingContributors, salienceRankingContributor];
+    const out = applyContributorAblation(explicitList, "salience-ranking");
+    expect(out.length).toBe(explicitList.length - 1);
     expect(out.some((c) => c.name === "salience-ranking")).toBe(false);
     expect(out.some((c) => c.name === "utility-ranking")).toBe(true);
   });

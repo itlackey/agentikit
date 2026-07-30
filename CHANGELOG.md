@@ -350,6 +350,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   installed scheduler entries are byte-identical to before, so upgrading shows no
   spurious drift.
 
+- **The R2 salience ranking boost no longer applies to default `search`/`curate`
+  ranking** (#692). `asset_salience.rank_score` (an encoding + outcome +
+  retrieval projection, recomputed every `improve` run) previously composed
+  into every default search as a bounded multiplicative boost
+  (`salience-ranking`, ×[1.0–1.2]), loaded best-effort from `state.db` on the
+  hot path. On live data it measured as noise (max observed multiplier
+  ×1.071, mean ×1.016): the boost was retrieval-dominated with no source
+  filter — double-counting the same `usage_events` the utility-score
+  contributor already reinforces — warm-started non-zero with no outcome
+  evidence, and had zero pack coverage, so it could only ever favor
+  self-generated personal assets over an equally-relevant pack asset.
+  Removing the default `state.db` load also fixes a confirmed hot-path
+  defect: whenever `state.db` already existed, every default search
+  synchronously waited on the maintenance-activity barrier before ranking
+  could even start — up to a 5-second stall on a blocking wait loop, plus a
+  lock-file create, before the load's own 250ms SQLite `busy_timeout` ever
+  applied. No config gate was added: a key for a term being removed would be
+  dead surface for the upcoming 1.0 contract freeze to carry forever.
+  `rank_score` itself, and everything `improve` computes and does with it
+  internally, are unchanged — only its promotion into user-facing ranking is
+  removed. The contributor stays in the codebase (unwired) for a future
+  gated, outcome-backed experiment.
+
 ### Fixed
 
 - **The compiled standalone binary can run `akm migrate`.** Release binaries
