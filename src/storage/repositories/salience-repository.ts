@@ -247,7 +247,7 @@ export function stampAssetSalienceMissing(db: Database, refs: readonly string[],
   if (refs.length === 0) return 0;
   const stmt = db.prepare(`UPDATE asset_salience SET missing_since = ? WHERE asset_ref = ? AND missing_since IS NULL`);
   let changed = 0;
-  for (const ref of refs) changed += stmt.run(now, ref).changes;
+  for (const ref of refs) changed += Number(stmt.run(now, ref).changes);
   return changed;
 }
 
@@ -261,7 +261,7 @@ export function clearAssetSalienceMissing(db: Database, refs: readonly string[])
     `UPDATE asset_salience SET missing_since = NULL WHERE asset_ref = ? AND missing_since IS NOT NULL`,
   );
   let changed = 0;
-  for (const ref of refs) changed += stmt.run(ref).changes;
+  for (const ref of refs) changed += Number(stmt.run(ref).changes);
   return changed;
 }
 
@@ -271,9 +271,10 @@ export function clearAssetSalienceMissing(db: Database, refs: readonly string[])
  * Returns the number of rows deleted.
  */
 export function deleteAssetSalienceMissingBefore(db: Database, cutoffMs: number): number {
-  return db
-    .prepare(`DELETE FROM asset_salience WHERE missing_since IS NOT NULL AND missing_since < ?`)
-    .run(cutoffMs).changes;
+  return Number(
+    db.prepare(`DELETE FROM asset_salience WHERE missing_since IS NOT NULL AND missing_since < ?`).run(cutoffMs)
+      .changes,
+  );
 }
 
 /** Count `asset_salience` rows currently marked missing (the live backlog size). */

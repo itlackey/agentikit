@@ -608,8 +608,12 @@ describe("WI-8.2 (a) — rc-train FROM-state round-trip", () => {
 
     const db = readState();
     try {
-      // Ledger at 020.
-      expect(ledgerIds(db).at(-1)).toBe("020-three-db-cutover");
+      // The cutover ran (this suite's actual subject) — asserted independently of
+      // ordering so a future migration cannot mask its absence — and the ledger
+      // head is the newest shipped migration. The head pin moves with each new
+      // migration; #733 added 021-asset-state-missing-since.
+      expect(ledgerIds(db)).toContain("020-three-db-cutover");
+      expect(ledgerIds(db).at(-1)).toBe("021-asset-state-missing-since");
 
       // Workflow rows carried bit-exact.
       const run = db.query("SELECT * FROM workflow_runs WHERE id = 'run-1'").get() as Record<string, unknown>;
@@ -804,7 +808,8 @@ describe("WI-8.2 (c) — fresh install records complete without ATTACH", () => {
 
     const db = readState();
     try {
-      expect(ledgerIds(db).at(-1)).toBe("020-three-db-cutover");
+      expect(ledgerIds(db)).toContain("020-three-db-cutover");
+      expect(ledgerIds(db).at(-1)).toBe("021-asset-state-missing-since");
       for (const table of [
         "workflow_runs",
         "workflow_run_steps",

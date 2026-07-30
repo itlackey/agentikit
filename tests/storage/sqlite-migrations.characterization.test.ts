@@ -102,6 +102,9 @@ describe("SQLite migration runner characterization", () => {
         // Chunk 8, WI-8.2: the three-DB cutover baseline DDL (pure additive
         // CREATE TABLE IF NOT EXISTS — the merge-target tables at final shape).
         "020-three-db-cutover",
+        // #733 (Workstream C): additive ADD COLUMN missing_since on both
+        // asset_salience and asset_outcome — the orphan-GC grace clock.
+        "021-asset-state-missing-since",
       ]);
 
       // The set of durable objects the migrations create.

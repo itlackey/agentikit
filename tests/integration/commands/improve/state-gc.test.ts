@@ -40,10 +40,7 @@ import { getDbPath } from "../../../../src/core/paths";
 import { getStateDbPath, openStateDatabase, withStateDb } from "../../../../src/core/state-db";
 import type { Database } from "../../../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../../../src/storage/repositories/index-connection";
-import {
-  countAssetOutcomeMissing,
-  upsertAssetOutcome,
-} from "../../../../src/storage/repositories/outcome-repository";
+import { countAssetOutcomeMissing, upsertAssetOutcome } from "../../../../src/storage/repositories/outcome-repository";
 import {
   countAssetSalienceMissing,
   listAssetSalienceMissingState,
@@ -79,20 +76,36 @@ function fixtureOutcomeValues(ref: string) {
   };
 }
 
+/** Bundle used to qualify bare fixture refs into durable `item_ref` spellings. */
+const FIXTURE_BUNDLE = "fixture";
+
 /**
- * Insert a bare `entries` row directly — models "this ref resolves against
- * entries.item_ref" without needing a real markdown file or a full
- * `akmIndex` run. This is deliberately the ONLY thing the pass's resolution
- * predicate cares about: whether the indexer preserved/produced the row is
- * out of scope here (indexer.ts ~1195-1199 owns that guarantee).
+ * Insert a live `entries` row. A bare `conceptId` is bundle-qualified first,
+ * because `item_ref` is the DURABLE, fully-qualified identity
+ * (`<bundle>//<conceptId>`, spec §11.1 D-R3) — production never stores a bare
+ * non-null `item_ref`, and `findEntryIdByBundleRef` resolves a bare lookup key
+ * by `//conceptId` SUFFIX match, which cannot match an unqualified stored
+ * value. Storing a bare `item_ref` here would make the fixture unresolvable in
+ * a way no real index row is. Callers that pass an already-qualified ref (the
+ * legacy-spelling case) get it through verbatim.
  */
 function insertLiveEntry(indexDb: Database, itemRef: string): void {
+  const storedRef = itemRef.includes("//") ? itemRef : `${FIXTURE_BUNDLE}//${itemRef}`;
   indexDb
     .prepare(
       `INSERT INTO entries (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type, item_ref)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(itemRef, "/fixture/dir", `/fixture/dir/${itemRef}.md`, "/fixture/stash", "{}", itemRef, "memory", itemRef);
+    .run(
+      storedRef,
+      "/fixture/dir",
+      `/fixture/dir/${itemRef}.md`,
+      "/fixture/stash",
+      "{}",
+      storedRef,
+      "memory",
+      storedRef,
+    );
 }
 
 function openIndex(): Database {
@@ -248,7 +261,7 @@ describe("runOrphanStateGcPass", () => {
 
     const indexDb = openIndex();
     try {
-      insertLiveEntry(indexDb, ref); // the asset is live again this run
+      insertLiveEntry(indexDb, ref); // the asset is live again this run — auto-qualified to a durable item_ref
 
       const out = runOrphanStateGcPass(ctxWithCollect(true), { current: indexDb });
       expect(out.pending).toBe(0);
@@ -368,14 +381,14 @@ describe("asset_state_gc event", () => {
 
       const { events } = readEvents({ type: "asset_state_gc" }, { dbPath: getStateDbPath() });
       expect(events).toHaveLength(1);
-      const evt = events[0]!;
-      expect(evt.ref).toBe("asset_state/_gc");
-      expect(evt.metadata?.pending).toBe(1);
-      expect(evt.metadata?.collected).toBe(0);
-      expect(evt.metadata?.byTable).toBeDefined();
-      const byTable = evt.metadata?.byTable as Record<string, { pending: number; collected: number }>;
-      expect(byTable.asset_salience?.pending).toBe(1);
-      expect(byTable.asset_outcome?.pending).toBe(0);
+      const evt = events.at(0);
+      expect(evt?.ref).toBe("asset_state/_gc");
+      expect(evt?.metadata?.pending).toBe(1);
+      expect(evt?.metadata?.collected).toBe(0);
+      expect(evt?.metadata?.byTable).toBeDefined();
+      const byTable = evt?.metadata?.byTable as Record<string, { pending: number; collected: number }>;
+      expect(byTable.salience?.pending).toBe(1);
+      expect(byTable.outcome?.pending).toBe(0);
     } finally {
       closeDatabase(indexDb);
     }

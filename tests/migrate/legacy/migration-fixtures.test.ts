@@ -90,9 +90,14 @@ describe("WI-0b.6a — orphan-bearing state.db builder", () => {
     // open, minting `legacy_state` and shifting the ceiling off the FROM-state.
     const db = openDatabase(dbPath, { readonly: true });
     try {
-      // Gate 3 "loads": the DB is a valid pre-cutover FROM-state, pinned one
-      // migration behind the live tip (the tip is now the cutover, 020).
-      expect(currentMigrationCeiling(db)).toBe(STATE_MIGRATIONS.at(-2)?.id);
+      // Gate 3 "loads": the DB is a valid pre-cutover FROM-state, pinned at
+      // the frozen historical ceiling (019-proposal-fingerprints) — that's
+      // PRE_CUTOVER_STATE_CEILING, the stable comparison below. The relative
+      // `.at(-N)` cross-check is N migrations behind the live tip and shifts
+      // by one every time a migration is appended; #733 appended
+      // 021-asset-state-missing-since after the cutover (020), so 019 is now
+      // two behind the tip (`.at(-3)`), not one (`.at(-2)`).
+      expect(currentMigrationCeiling(db)).toBe(STATE_MIGRATIONS.at(-3)?.id);
       expect(currentMigrationCeiling(db)).toBe(PRE_CUTOVER_STATE_CEILING);
 
       const salienceRefs = readRefs(db, "asset_salience").map((r) => r.asset_ref);
@@ -167,10 +172,13 @@ describe("WI-0b.6b — rc-train FROM-state builder", () => {
     expect(fs.existsSync(stateDbPath)).toBe(true);
     expect(fs.existsSync(workflowDbPath)).toBe(true);
 
-    // Migration ceiling: the FROM-state is pinned one migration behind the live
-    // tip — the tip is now the WI-8.2 cutover (020), so the pre-cutover ceiling
-    // is at(-2). The literal is kept and cross-checked both ways.
-    expect(RC_TRAIN_MIGRATION_CEILING).toBe(STATE_MIGRATIONS.at(-2)?.id as string);
+    // Migration ceiling: the FROM-state is pinned at the frozen historical
+    // ceiling (019-proposal-fingerprints, one migration behind the WI-8.2
+    // cutover 020). The literal is kept and cross-checked both ways; the
+    // relative `.at(-N)` cross-check shifts by one on every migration append
+    // — #733 appended 021-asset-state-missing-since after 020, so 019 is now
+    // two behind the live tip (`.at(-3)`), not one (`.at(-2)`).
+    expect(RC_TRAIN_MIGRATION_CEILING).toBe(STATE_MIGRATIONS.at(-3)?.id as string);
     expect(RC_TRAIN_MIGRATION_CEILING).toBe("019-proposal-fingerprints");
     expect(PRE_CUTOVER_STATE_CEILING).toBe("019-proposal-fingerprints");
 
