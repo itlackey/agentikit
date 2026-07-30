@@ -60,11 +60,6 @@
       "specificity": 15,
       "type": "task"
     },
-    "workflows/all-types-workflow-program.yaml": {
-      "renderer": "workflow-program-yaml",
-      "specificity": 15,
-      "type": "workflow"
-    },
     "workflows/all-types-workflow.md": {
       "renderer": "workflow-md",
       "specificity": 19,
@@ -74,7 +69,8 @@
   "capturedAtHead": "ff7ee5975e915c11d3799cdf5454c8bc494a304b",
   "notes": [
     "Keyed by stash-relative POSIX relPath (never an absolute path). Walked via walkStashFlat, the same git-ls-files-based walker the real indexer uses; MANIFEST.json (fixture metadata, not an asset) is excluded. Values are the raw MatchResult ({type, specificity, renderer, meta?}) runMatchers returns, or null if no matcher claims the file (does not occur for any file in this fixture).",
-    "FROZEN behavior-parity oracle (D0b-1/D0b-3): Chunk 2's format adapters must reproduce this classification byte-for-byte. anchors.md Section B.3 confirms zero prior recognition golden coverage existed before this capture -- greenfield, not a re-baseline."
+    "Behavior-parity oracle (D0b-1/D0b-3): Chunk 2's format adapters must reproduce this classification byte-for-byte.",
+    "RE-BASELINED for workflow-format-unification: the fixture stash's workflows/ now holds ONE file (all-types-workflow.md, converted to the unified frontmatter+body format; all-types-workflow-program.yaml deleted, spec §3) instead of two, so the workflows/all-types-workflow-program.yaml entry (renderer: workflow-program-yaml) is gone. Every other captured value is unchanged."
   ],
-  "scenario": "runMatchers(buildFileContext(...)) recognition result for every asset in tests/fixtures/stashes/all-types/ (WI-0b.3a, all 14 ASSET_SPECS_INTERNAL types + the workflow-program-yaml renderer form)"
+  "scenario": "runMatchers(buildFileContext(...)) recognition result for every asset in tests/fixtures/stashes/all-types/ (WI-0b.3a, all 14 ASSET_SPECS_INTERNAL types, workflow now a single form)"
 }

@@ -91,8 +91,10 @@ describe("akm adapter — metadata (§7)", () => {
 describe("akm adapter — recognize reproduces runMatchers classification (§5.1 BINDING)", () => {
   test("every fixture file recognizes as its golden type + carries its golden renderer", () => {
     const contexts = allTypesContexts();
-    // 14 assets: 13 types (wiki retired in chunk 4) + the extra workflow-program-yaml renderer form.
-    expect(contexts.length).toBe(14);
+    // 13 assets: 13 types (wiki retired in chunk 4; workflow-format-unification
+    // collapsed workflow to a single .md form, so the fixture stash is back to
+    // exactly one file per type).
+    expect(contexts.length).toBe(13);
 
     let asserted = 0;
     for (const ctx of contexts) {
@@ -191,11 +193,12 @@ describe("akm adapter — placeNew reproduces resolveAssetPathFromName placement
     expect(relFromRoot(akmAdapter.placeNew?.(component(), "loose-note") as string)).toBe("loose-note.md");
   });
 
-  test("workflow placement probes .md/.yaml/.yml and finds the real .yaml-only fixture", () => {
-    expect(relFromRoot(akmAdapter.placeNew?.(component(), "workflows/all-types-workflow-program") as string)).toBe(
-      "workflows/all-types-workflow-program.yaml",
-    );
-  });
+  // NOTE (workflow-format-unification): the old "workflow placement probes
+  // .md/.yaml/.yml and finds the real .yaml-only fixture" test is gone —
+  // `WORKFLOW_EXTENSIONS` collapsed to `[".md"]` only (spec §3: "the
+  // extension-collapse logic beyond .md" is deleted) and its fixture
+  // (`all-types-workflow-program.yaml`) was deleted with it, so there is no
+  // remaining multi-extension probe branch to exercise.
 });
 
 // ── 3b. recognize folds the 11 metadata contributors (§2) ────────────────────
@@ -236,11 +239,13 @@ describe("akm adapter — recognize folds the index-time metadata contributors (
     "tasks/all-types-task.yml": {
       searchHints: ["schedule:@daily", "prompt:Say hello from the all-types fixture task."],
     },
-    "workflows/all-types-workflow-program.yaml": {
-      searchHints: ["all-types-workflow-program", "announce", "Print a single fixture line and stop."],
-    },
+    // workflow-format-unification: no more title/H1 in the fold surface (the
+    // unified format carries no authored titles anywhere — a step IS its id,
+    // spec §2.2) — just each step's id + body prose (akm-metadata.ts's
+    // "workflow-md" contributor). The second workflow-program-yaml fixture
+    // form is gone (deleted with the YAML program format, spec §3).
     "workflows/all-types-workflow.md": {
-      searchHints: ["All Types Fixture", "Announce", "announce", "Print a single fixture line and stop."],
+      searchHints: ["announce", "Print a single fixture line and stop."],
     },
   };
   // mtime-derived observed_at hint — pinned by shape below, not in EXPECTED_FOLDS.
@@ -276,7 +281,7 @@ describe("akm adapter — recognize folds the index-time metadata contributors (
       expect(extras.parameters, `parameters for ${ctx.relPath}`).toEqual(expected.parameters);
       asserted += 1;
     }
-    expect(asserted).toBe(14);
+    expect(asserted).toBe(13);
   });
 
   test("the winning renderer is still carried on documentJson.renderer (WI-B contract intact)", () => {

@@ -92,22 +92,6 @@
       "path": "<STASH>/tasks/all-types-task.yml",
       "type": "task"
     },
-    "workflows/all-types-workflow-program.yaml": {
-      "action": "Resume the active run or start a new run with `akm workflow next 'workflows/all-types-workflow-program'`.",
-      "description": "Minimal YAML workflow program fixture used by the all-types parity stash",
-      "name": "all-types-workflow-program",
-      "path": "<STASH>/workflows/all-types-workflow-program.yaml",
-      "steps": [
-        {
-          "id": "announce",
-          "instructions": "Print a single fixture line and stop.",
-          "sequenceIndex": 0,
-          "title": "announce"
-        }
-      ],
-      "type": "workflow",
-      "workflowTitle": "all-types-workflow-program"
-    },
     "workflows/all-types-workflow.md": {
       "action": "Resume the active run or start a new run with `akm workflow next 'workflows/all-types-workflow'`.",
       "description": "Minimal linear workflow fixture used by the all-types parity stash",
@@ -118,19 +102,20 @@
           "id": "announce",
           "instructions": "Print a single fixture line and stop.",
           "sequenceIndex": 0,
-          "title": "Announce"
+          "title": "announce"
         }
       ],
       "type": "workflow",
-      "workflowTitle": "All Types Fixture"
+      "workflowTitle": "all-types-workflow"
     }
   },
   "capturedAtHead": "25df0a859ebb0094c1b2f4e5e0c3071864d20e85",
   "notes": [
-    "Keyed by stash-relative POSIX relPath (never an absolute path) -- the same 15-key set as tests/fixtures/goldens/recognition/all-types.json. match.meta.name is injected per-file using the SAME canonical name tests/fixtures/goldens/placement/all-types.json's byType round-trip uses, mirroring show.ts's `match.meta = { ...match.meta, name: displayName }`. The capture stops at the renderer's own buildShowResponse output -- it does not include showLocal's post-processing (related/editable/editHint/activeRun/toolPolicy ceiling), which is CLI composition, not renderer behavior, and depends on index/db state this suite does not stand up.",
-    "NORMALIZATION: every renderer's `path` field is `ctx.absPath` -- an absolute filesystem path, the ONLY non-deterministic value any of the 14 renderers emit (verified by reading every implementation in src/output/renderers.ts and src/workflows/renderer.ts). expectGolden's roots:{stash:STASH_ROOT} substitutes the literal fixture-stash absolute prefix with the placeholder \"<STASH>\" (see tests/_helpers/golden.ts) so the golden is byte-stable across checkouts. No other field required normalization: content/description/action/steps/keys/run/workflowTitle are all derived purely from the fixture's committed bytes plus the injected canonical name.",
-    "Two documented asymmetries this golden PINS byte-for-byte (not fixed, per capture-only scope): (1) skill/command/agent/lesson/fact/session renderers return frontmatter-STRIPPED content (via parseFrontmatter(ctx.content()).content), while memory-md AND knowledge-md/wiki-md's default \"full\" view return the RAW content INCLUDING the frontmatter fence (memory-md's buildShowResponse returns ctx.content() directly; buildMarkdownViewResponse's default branch does the same for knowledge/wiki) -- Chunk 2's memory/knowledge/wiki adapters must reproduce this, not silently \"fix\" it. (2) workflow-md derives a step's displayed title from its parsed heading (\"Announce\"), while workflow-program-yaml falls back to the step id when no `title` key is set (\"announce\") -- same fixture semantics, different renderer, different title casing.",
-    "FROZEN behavior-parity oracle (D0b-1/D0b-3): Chunk 2's format adapters must reproduce every renderer's output byte-for-byte. anchors.md Section B.3 confirms zero prior renderer golden coverage existed before this capture -- greenfield, not a re-baseline. Sibling of WI-0b.3's recognition/placement/minting goldens; this is WI-0b.4a."
+    "Keyed by stash-relative POSIX relPath (never an absolute path) -- the same 13-key set as tests/fixtures/goldens/recognition/all-types.json. match.meta.name is injected per-file using the SAME canonical name tests/fixtures/goldens/placement/all-types.json's byType round-trip uses, mirroring show.ts's `match.meta = { ...match.meta, name: displayName }`. The capture stops at the renderer's own buildShowResponse output -- it does not include showLocal's post-processing (related/editable/editHint/activeRun/toolPolicy ceiling), which is CLI composition, not renderer behavior, and depends on index/db state this suite does not stand up.",
+    "NORMALIZATION: every renderer's `path` field is `ctx.absPath` -- an absolute filesystem path, the ONLY non-deterministic value any of the 13 renderers emit (verified by reading every implementation in src/output/renderers.ts and src/workflows/renderer.ts). expectGolden's roots:{stash:STASH_ROOT} substitutes the literal fixture-stash absolute prefix with the placeholder \"<STASH>\" (see tests/_helpers/golden.ts) so the golden is byte-stable across checkouts. No other field required normalization: content/description/action/steps/keys/run/workflowTitle are all derived purely from the fixture's committed bytes plus the injected canonical name.",
+    "A documented asymmetry this golden PINS byte-for-byte (not fixed, per capture-only scope): skill/command/agent/lesson/fact/session renderers return frontmatter-STRIPPED content (via parseFrontmatter(ctx.content()).content), while memory-md AND knowledge-md/wiki-md's default \"full\" view return the RAW content INCLUDING the frontmatter fence (memory-md's buildShowResponse returns ctx.content() directly; buildMarkdownViewResponse's default branch does the same for knowledge/wiki) -- Chunk 2's memory/knowledge/wiki adapters must reproduce this, not silently \"fix\" it.",
+    "RE-BASELINED for workflow-format-unification: workflow used to have TWO renderer forms (workflow-md/workflow-program-yaml) whose title derivation disagreed (a parsed heading vs a step-id fallback); the YAML program format (and its fixture, all-types-workflow-program.yaml) is deleted (spec §3), and the unified format carries no titles anywhere (spec §2.2: \"a step is its id\") -- workflowTitle is now always the asset's canonical name, and every step's title equals its id. workflow is now an ordinary single perRelPath entry like every other type. Every other captured value is unchanged.",
+    "Behavior-parity oracle (D0b-1/D0b-3): Chunk 2's format adapters must reproduce every renderer's output byte-for-byte. Sibling of WI-0b.3's recognition/placement/minting goldens; this is WI-0b.4a."
   ],
-  "scenario": "AssetRenderer.buildShowResponse(renderCtx) output for every asset in tests/fixtures/stashes/all-types/ (WI-0b.4a, all 14 ASSET_SPECS_INTERNAL types + the workflow-program-yaml renderer form), invoked via the same buildFileContext -> runMatchers -> getRenderer -> buildRenderContext call shape src/commands/read/show.ts's showLocal uses"
+  "scenario": "AssetRenderer.buildShowResponse(renderCtx) output for every asset in tests/fixtures/stashes/all-types/ (WI-0b.4a, all 14 ASSET_SPECS_INTERNAL types, workflow now a single form), invoked via the same buildFileContext -> runMatchers -> getRenderer -> buildRenderContext call shape src/commands/read/show.ts's showLocal uses"
 }
