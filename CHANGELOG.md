@@ -25,6 +25,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The `okf` adapter reads OKF v0.2's trust/provenance and lifecycle
+  frontmatter families.** `generated: {by, at}` (with `generated.at` taking
+  precedence over the legacy `timestamp` field, which remains a valid
+  fallback), `verified` (a list, or v0.2's permitted single-mapping
+  shorthand), `sources` (an object list — `resource` required; `id`/`title`/
+  `author`/`usage_count`/`last_modified` optional), `status`
+  (`draft`/`stable`/`deprecated`), and `stale_after` are now parsed leniently
+  from any OKF concept's frontmatter and surfaced on new, namespaced
+  `IndexDocument` fields (`provenance`, `lifecycleStatus`, `staleAfter`,
+  `okfVersion`) that never overload the pre-existing AKM-native `sources`
+  (wiki citation strings), `generation` (consolidation depth), or `quality`
+  fields. As with every other optional OKF field, a missing or malformed
+  value never rejects the document. The `okf` adapter remains consumer-only.
+
+- **Accepting a proposal now stamps OKF v0.2 provenance onto the written
+  asset's frontmatter**, for AKM-native writes only (never through the `okf`
+  adapter, which stays consumer-only and unaffected by this). `promoteProposal`
+  projects the proposal system's own `source`/`sourceRun`/`gateDecision`/
+  `review` bookkeeping — already tracked in `state.db` but previously never
+  written to disk — into a namespaced `provenance: {generatedBy, generatedAt,
+  verified, sources}` frontmatter block: `generated.by` records whether the
+  content came from an automated pipeline (`akm/<version>`) or a
+  human-initiated source (`human:<id>`); `verified` records whether the
+  promotion itself was an automated gate decision or a direct human accept;
+  `evidenceSources`, when present, projects as `provenance.sources`. AKM's
+  own adapter rereads what it wrote, so `akm show` surfaces it.
+
 - **`akm log list --limit <n>`** returns the most recent N events. The flag was
   documented but silently ignored, and there was no limiting mechanism at all
   in the read path — the command returned the entire events table regardless of

@@ -21,10 +21,16 @@ import path from "node:path";
 import { okfAdapter, resolveOkfLinks } from "../../../src/core/adapter/adapters/okf-adapter";
 import type { BundleComponent, Diagnostic, ValidateContext } from "../../../src/core/adapter/types";
 import type { FileChange } from "../../../src/core/file-change";
+import { presentationFor } from "../../../src/core/type-presentation";
 import { buildFileContext, type FileContext } from "../../../src/indexer/walk/file-context";
 
 const FIXTURE_ROOT = path.join(import.meta.dir, "../../fixtures/bundles/okf-sample");
+const GOLDENS_ROOT = path.join(import.meta.dir, "../../fixtures/format-family-goldens/okf");
 const BUNDLE_ID = "okf-sample";
+
+function loadGolden(name: string): Record<string, unknown> {
+  return JSON.parse(fs.readFileSync(path.join(GOLDENS_ROOT, `${name}.json`), "utf8"));
+}
 
 function component(overrides: Partial<BundleComponent> = {}): BundleComponent {
   return { id: BUNDLE_ID, adapter: "okf", root: FIXTURE_ROOT, writable: true, ...overrides };
@@ -632,5 +638,100 @@ describe("okf adapter — validate is LENIENT (§5)", () => {
       makeValidateContext({ resolveRef: async () => ({ exists: false }) }),
     );
     expect(diags.some((d) => d.issue === "missing-type")).toBe(false);
+  });
+});
+
+// ── Format-family goldens (#730 D3.3) ───────────────────────────────────────
+//
+// OKF was the only BUILTIN_ADAPTERS entry without a
+// tests/fixtures/format-family-goldens/<family>/ directory (scripts/lint-
+// goldens-presence.ts triage). Mirrors the shape the other nine families use
+// (recognition/placement/renderer/lint.json), driven off the SAME frozen
+// tests/fixtures/bundles/okf-sample/ fixture the tests above already use —
+// unlike those nine (authored ahead of their adapters as spec-authored
+// targets), this golden captures the OKF adapter's REAL, already-shipped
+// output (`specificationGolden: false`, a real `capturedAtHead`).
+
+describe("okf adapter — recognition golden", () => {
+  const golden = loadGolden("recognition");
+  const byRelPath = golden.byRelPath as Record<string, Record<string, unknown>>;
+
+  for (const [relPath, expected] of Object.entries(byRelPath)) {
+    test(`recognize(${relPath})`, () => {
+      const doc = okfAdapter.recognize(component(), fc(relPath));
+      if (expected.recognized === false) {
+        expect(doc, `${relPath} must NOT be recognized (reserved)`).toBeNull();
+        return;
+      }
+      expect(doc, `${relPath} must be recognized`).not.toBeNull();
+      if (!doc) throw new Error("unreachable");
+      expect(doc.adapterId).toBe(expected.adapterId as string);
+      expect(doc.component).toBe(expected.component as string);
+      expect(doc.type).toBe(expected.type as string);
+      expect(doc.conceptId).toBe(expected.conceptId as string);
+      expect(doc.ref).toBe(expected.ref as string);
+      expect(doc.name).toBe(expected.name as string);
+      expect(doc.description).toBe(expected.description as string | undefined);
+      expect(doc.tags).toEqual(expected.tags as string[] | undefined);
+      expect(doc.updated).toBe(expected.updated as string | undefined);
+      expect(doc.links).toEqual(expected.links as string[] | undefined);
+    });
+  }
+});
+
+describe("okf adapter — placement golden (consumer-only, no placeNew)", () => {
+  test("placeNew is undefined for every type — the adapter never places a new concept", () => {
+    const golden = loadGolden("placement");
+    const byType = golden.byType as Record<string, { readOnly: boolean; placeNew: null }>;
+    expect(byType["*"]?.readOnly).toBe(true);
+    expect(byType["*"]?.placeNew).toBeNull();
+    expect(okfAdapter.placeNew).toBeUndefined();
+  });
+});
+
+describe("okf adapter — renderer golden (presentationFor is adapter-agnostic, keyed on the open type string)", () => {
+  const golden = loadGolden("renderer");
+  const byType = golden.byType as Record<string, { label: string; renderer: string | null }>;
+
+  for (const [type, expected] of Object.entries(byType)) {
+    test(`presentationFor(${JSON.stringify(type)})`, () => {
+      const p = presentationFor(type);
+      expect(p.label).toBe(expected.label);
+      expect(p.renderer ?? null).toBe(expected.renderer);
+    });
+  }
+
+  test("every type recognized in the golden fixture is covered above", () => {
+    const seen = new Set<string>();
+    for (const relPath of Object.keys((loadGolden("recognition").byRelPath as Record<string, unknown>) ?? {})) {
+      const doc = okfAdapter.recognize(component(), fc(relPath));
+      if (doc) seen.add(doc.type);
+    }
+    expect([...seen].sort()).toEqual(Object.keys(byType).sort());
+  });
+});
+
+describe("okf adapter — lint golden", () => {
+  const golden = loadGolden("lint");
+  const perType = golden.perType as Record<string, { relPath: string; issues: Diagnostic[] }>;
+
+  test("each fixture file validates to exactly the golden's issue list", async () => {
+    const changes: FileChange[] = Object.values(perType).map((e) => ({
+      path: e.relPath,
+      op: "update" as const,
+      after: readFixture(e.relPath),
+    }));
+    const diags = await okfAdapter.validate(
+      component(),
+      changes,
+      makeValidateContext({
+        resolveRef: async (ref) => ({ exists: fs.existsSync(path.join(FIXTURE_ROOT, `${ref}.md`)) }),
+      }),
+    );
+    const byFile = new Map<string, Diagnostic[]>();
+    for (const d of diags) byFile.set(d.file, [...(byFile.get(d.file) ?? []), d]);
+    for (const entry of Object.values(perType)) {
+      expect(byFile.get(entry.relPath) ?? [], entry.relPath).toEqual(entry.issues ?? []);
+    }
   });
 });

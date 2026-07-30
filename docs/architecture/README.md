@@ -47,4 +47,4 @@ Current-truth subsystem references.
 
 - [Testing Workflow](testing/testing-workflow.md) -- End-to-end, Docker, deployment, and upgrade validation, plus the coverage gap guide
 - [Manual Testing Checklist](testing/manual-testing-checklist.md) -- Pre-release manual QA checklist
-- [OKF v0.1 Conformance Re-Evaluation Runbook](testing/okf-v0.1-conformance-runbook.md) -- Acceptance procedure to re-run after changing adapters, indexing, refs, writes, or lint behavior
+- [OKF v0.2 Conformance Re-Evaluation Runbook](testing/okf-v0.2-conformance-runbook.md) -- Acceptance procedure to re-run after changing adapters, indexing, refs, writes, or lint behavior

@@ -11,7 +11,7 @@ OKF is AKM's least-common-denominator format for Markdown concepts and generic
 read behavior. AKM can install, recognize, index, search, and show conformant
 OKF bundles without converting them to an AKM-native layout. OKF support is
 held to the observable conformance contract in the
-[OKF v0.1 conformance runbook](../testing/okf-v0.1-conformance-runbook.md).
+[OKF v0.2 conformance runbook](../testing/okf-v0.2-conformance-runbook.md).
 
 That baseline does not make OKF AKM's database schema or force non-Markdown
 formats through Markdown. In particular, OKF is **not**:
@@ -82,6 +82,47 @@ recognized as OKF.
 The normalized `IndexDocument` is the additive cross-format projection. Its
 basic Markdown fields align with OKF, while adapters may project additional
 metadata and capabilities without changing identity.
+
+## v0.2 update (#730)
+
+OKF v0.2 (Google Cloud) adds a trust/provenance frontmatter family
+(`generated`/`verified`/`sources`) and a lifecycle family
+(`status`/`stale_after`), standardizes an actor convention
+(`<producer>/<version>` / `human:<id>` / `process:<id>`), and makes one
+breaking-with-fallback change: `timestamp` is superseded by `generated.at`,
+with consumers permitted (and expected) to fall back to the legacy
+`timestamp` field when `generated`/`generated.at` is absent. The decision
+above is unchanged by this update — the `okf` adapter remains **consumer-only**
+and the read/write split stays exactly where §5/§5.1 already drew it:
+
+- **Read side (any OKF bundle, third-party or AKM-authored):** the `okf`
+  adapter parses the full v0.2 family — `generated.at` (with the `timestamp`
+  fallback), `verified` (a list, or v0.2's permitted single-mapping
+  shorthand), `sources` (an object list), `status`, `stale_after`, and
+  `okf_version` — leniently, exactly like every other optional OKF field
+  (missing, malformed, or foreign values never reject a document). These land
+  on new, NAMESPACED `IndexDocument` fields (`provenance`, `lifecycleStatus`,
+  `staleAfter`, `okfVersion`) rather than overloading the three AKM-native
+  fields that already occupy adjacent names: `sources?: string[]` (wiki
+  citation strings), `generation?: number` (consolidation merge depth), and
+  the existing `quality: "generated"` enum value. See
+  `akm-0.9.0-bundle-adapter-spec.md` §0.1 for the full mapping.
+- **Write side (AKM-native assets only, through the proposal path):** since
+  AKM Markdown is already an OKF-compatible superset (the progressive-
+  enhancement contract above), the new provenance fields are *written* only
+  to AKM-native assets, at proposal-promotion time (`promoteProposal`) —
+  never through the `okf` adapter, which stays consumer-only. Accepting a
+  proposal stamps a namespaced `provenance:` frontmatter block (the v0.2
+  `generated`/`verified`/`sources` shape, under a distinct top-level key to
+  avoid the same wiki-`sources` collision noted above) using the existing
+  `source`/`sourceRun`/`gateDecision`/`review` provenance the proposals system
+  already tracks in `state.db`. `stale_after`-driven re-verification and
+  trust-tier ranking are explicitly out of scope for 0.9.0 (an 0.9.x
+  improve-tuning track).
+
+OKF is a month-old, single-vendor **Draft** with no governance body; AKM
+vendors a frozen copy of the spec rules it implements rather than tracking
+upstream live. See the conformance runbook for the pinned upstream reference.
 
 ## See also
 

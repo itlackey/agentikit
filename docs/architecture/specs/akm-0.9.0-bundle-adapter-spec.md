@@ -17,6 +17,19 @@
 
 OKF v0.1 (Google Cloud, June 2026 — [SPEC](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)) defines a bundle as a directory tree of markdown "concept" files (`--- frontmatter ---` + body) where **the file path is the concept's identity** and the only required field is an open **`type`**. AKM supports that format directly through the built-in `okf` adapter. An OKF bundle indexes without conversion. OKF is the generic Markdown behavior floor, not AKM's database representation or a serialization imposed on non-Markdown formats.
 
+**v0.2 update (#730):** upstream OKF minor-versioned to v0.2, adding a trust/
+provenance frontmatter family (`generated`/`verified`/`sources`), a lifecycle
+family (`status`/`stale_after`), and an actor convention
+(`<producer>/<version>` / `human:<id>` / `process:<id>`), with one
+breaking-with-fallback change: `timestamp` is superseded by `generated.at`,
+and consumers are expected to fall back to `timestamp` when absent. The `okf`
+adapter parses the full v0.2 family (§0.1 below); it remains **consumer-only**
+— see `okf-support.md`'s v0.2 note for the read/write split and the
+namespacing rationale (`provenance`/`lifecycleStatus`/`staleAfter`/
+`okfVersion`, chosen to avoid overloading the three AKM-native fields that
+already occupy adjacent names: `sources?: string[]`, `generation?: number`,
+`quality: "generated"`).
+
 ### 0.1 OKF support mapping
 
 | OKF v0.1 | AKM | Note |
@@ -27,12 +40,18 @@ OKF v0.1 (Google Cloud, June 2026 — [SPEC](https://github.com/GoogleCloudPlatf
 | **`title`** | `name` (FTS 10) — read `title` first; write `title` | OKF-compat output |
 | **`description`** | `description` (FTS 5) | direct |
 | **`tags`** | `tags` (FTS 3) | direct |
-| Optional **`timestamp`** | `updated` when present | absence is not an AKM freshness error |
+| Optional **`timestamp`** (v0.1) | `updated` when present | absence is not an AKM freshness error; v0.2's `generated.at` takes precedence when present (see below) |
 | **`resource`** (URI) | provenance (`sourceRef`) | carried |
 | Reserved **`index.md`**/**`log.md`** | reserved, not indexed as concepts (§5) | |
 | bundle-relative links = relationship | deterministic native link graph (§9) | replaces LLM graph extraction for OKF content |
-| **`okf_version`** | OKF bundle version | The OKF adapter may emit it for OKF bundles it creates |
+| **`okf_version`** | `IndexDocument.okfVersion` | Upstream declares it only on a bundle-root `index.md` (never indexed as a concept); read defensively from any concept's frontmatter, best-effort |
 | consumers MUST tolerate unknown fields + broken links | `okf` adapter `validate` is **lenient** (§5) | interop guarantee |
+| **`generated`** (v0.2: `{by, at}`) | `IndexDocument.updated` ← `generated.at` (precedence over `timestamp`); `IndexDocument.provenance.generatedBy`/`.generatedAt` | breaking-with-fallback: `timestamp` remains a valid legacy reading when `generated`/`generated.at` is absent |
+| **`verified`** (v0.2: a list, or a single mapping without the list dash) | `IndexDocument.provenance.verified: Array<{by, at?}>` | both forms normalize to a non-empty array; a malformed entry is dropped, never rejecting the document |
+| **`sources`** (v0.2: object list — `resource` required, `id`/`title`/`author`/`usage_count`/`last_modified` optional) | `IndexDocument.provenance.sources` | NAMESPACED — landed under `provenance.sources`, never the bare `IndexDocument.sources: string[]` field (wiki citation strings; a naive fold would silently drop every object entry as non-string) |
+| **`status`** (v0.2: `draft`\|`stable`\|`deprecated`) | `IndexDocument.lifecycleStatus` | strict whitelist; any other value is left unset, never guessed at |
+| **`stale_after`** (v0.2: `YYYY-MM-DD`) | `IndexDocument.staleAfter` | read verbatim; read-only in 0.9.0 — no re-verification/trust-tier ranking is driven off it (0.9.x improve-tuning track) |
+| AKM-native writes (proposal-path provenance stamping, D2) | `promoteProposal` stamps a namespaced `provenance:` frontmatter block (same shape as `IndexDocument.provenance`) onto accepted AKM-native assets | write-only path is proposal-mediated, never through the `okf` adapter (which stays consumer-only); projects the proposals system's own `source`/`sourceRun`/`gateDecision`/`review` provenance and `evidenceSources` |
 
 ### 0.2 The clean taxonomy — identity / type / adapter / component
 
@@ -477,6 +496,6 @@ The lifecycle state model — operational states, water-marks/backpressure, clai
 
 ## References / Citations
 
-- **OKF v0.1** — [`GoogleCloudPlatform/knowledge-catalog` `okf/SPEC.md`](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md); [Google Cloud announcement (2026-06-12)](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/). Concept identity = path − `.md`; required open `type`; recommended `title`/`description`/`resource`/`tags`/`timestamp`; reserved `index.md`/`log.md` at every level (both optional); TWO link forms (`/`-rooted and relative, §5); `okf_version` optional, root-index only (even Google's reference bundles omit it — probes must not require it); consumers MUST NOT reject on unknown types/fields/broken links (the `okf` adapter's leniency is a conformance requirement, not a courtesy). Caveats absorbed into this spec: OKF is a month-old single-vendor **Draft** with no governance body — AKM **vendors a frozen copy of the spec rules it implements** and treats `okf_version` handling as best-effort; manifests, versioning, dependencies, integrity, and components are AKM extensions layered around OKF, not OKF features.
+- **OKF v0.1 → v0.2** — [`GoogleCloudPlatform/knowledge-catalog` `okf/SPEC.md`](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md); [Google Cloud announcement (2026-06-12)](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing/). Concept identity = path − `.md`; required open `type`; recommended `title`/`description`/`resource`/`tags`; reserved `index.md`/`log.md` at every level (both optional); TWO link forms (`/`-rooted and relative, §5); `okf_version` optional, root-index only (even Google's reference bundles omit it — probes must not require it); consumers MUST NOT reject on unknown types/fields/broken links (the `okf` adapter's leniency is a conformance requirement, not a courtesy). **v0.2 (#730)** adds the trust/provenance family (`generated`/`verified`/`sources`), the lifecycle family (`status`/`stale_after`), and the actor convention (`<producer>/<version>` / `human:<id>` / `process:<id>`); `timestamp` is superseded by `generated.at` but remains a valid fallback reading — see §0.1 above for the full mapping and the [conformance runbook](../testing/okf-v0.2-conformance-runbook.md) for the pinned upstream commit (`KC_REF`). Caveats absorbed into this spec: OKF is a young single-vendor **Draft** with no governance body — AKM **vendors a frozen copy of the spec rules it implements** and treats `okf_version` handling as best-effort; manifests, versioning, dependencies, integrity, and components are AKM extensions layered around OKF, not OKF features.
 - **Agent Skills** — the `SKILL.md` contract: hard limits name 1–64 (charset `^[a-z0-9]+(-[a-z0-9]+)*$`, must equal the parent dir name) and description 1–1024; `compatibility` ≤500; body <500 lines is *guidance*, not a rule; progressive disclosure = metadata / instructions / resources (akm's L0/L1/L2 retrieval levels are akm-internal naming, not the upstream terms). Spec: [agentskills.io/specification](https://agentskills.io/specification) (Anthropic-originated open standard; **unversioned, no tags/changelog — pin behavior by vendoring the `skills-ref` validator rules**, currently 0.1.0); Anthropic docs now live at platform.claude.com (API) and code.claude.com (Claude Code). Claude Code *extends* the standard (~13 extra frontmatter fields, all-optional metadata), so `.claude/skills` compatibility is one-way: validation strictness is per-adapter (§6).
 - **AKM normative** — `akm-format-neutral-bundle-workspace-spec.md` (bindings §18, improve §24, memory §25), `akm-architecture-decision-history.md` (D1–D26), and the `akm-0.9.0-*` companions in this directory; `file:line` refs are to the current tree.

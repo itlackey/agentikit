@@ -1,0 +1,59 @@
+{
+  "scenario": "okf adapter validate(component, changes, ctx) for every non-reserved file in tests/fixtures/bundles/okf-sample/, with every OKF link resolved against the real fixture tree (no dangling links in this bundle -- see tests/fixtures/bundles/okf-sample-v2/ and tests/integration/okf-conformance.test.ts's adversarial bundle for dangling-link coverage). validate is LENIENT (§5): unknown frontmatter never fails, missing-type is INFO, missing-ref on an OKF link is a non-blocking WARNING.",
+  "specificationGolden": false,
+  "capturedAtHead": "250f91bcd76635c10227fea8ef33b75830f11143",
+  "adapterStatus": "IMPLEMENTED — src/core/adapter/adapters/okf-adapter.ts#validate.",
+  "specSource": "docs/architecture/specs/akm-0.9.0-bundle-adapter-spec.md §5 ('validate (LENIENT): unknown frontmatter and absent optional timestamp never fail; missing-ref on OKF links is a warning; missing-type is info').",
+  "realWorldSource": [
+    "tests/fixtures/bundles/okf-sample/ -- the same fixture the recognition/renderer goldens use"
+  ],
+  "notes": [
+    "guides/onboarding.md is the only file in this fixture with no type: frontmatter field, producing exactly one INFO diagnostic ('missing-type') that never blocks (fixed: false, detail prefixed 'info:'). Every other file carries a type and produces no missing-type diagnostic.",
+    "No file in this fixture has a dangling link -- every /-rooted and relative OKF link resolves to a real concept in the same bundle (guides/onboarding.md -> tables/orders + tables/customers; tables/orders.md -> tables/customers + metrics/wau; tables/customers.md -> tables/orders; metrics/wau.md -> tables/orders), so this golden's perType issue lists are ALL EMPTY except onboarding.md's. Dangling-link tolerance (missing-ref as a non-blocking warning) is exercised instead by the adversarial bundle in tests/integration/okf-conformance.test.ts and by tests/core/adapter/okf-adapter.test.ts's synthetic broken-link cases -- this golden pins the OTHER, equally load-bearing half: a fully-resolved bundle must NOT spuriously report missing-ref.",
+    "Reserved files (index.md, log.md, tables/index.md) are excluded before validation reaches the type/link checks -- they are not concepts, so they get no missing-type diagnostic even though none of them carry a type: field either. Base checks (unquoted-colon, missing-updated, stale-path, missing-ref in frontmatter list keys) still run against reserved files' own content, but this fixture's reserved files are well-formed and free of AKM stash-path references, so their issue lists are also empty."
+  ],
+  "perType": {
+    "reservedIndex": {
+      "relPath": "index.md",
+      "issues": [],
+      "note": "reserved (excluded from concept-level type/link checks); well-formed, no base-check issues either"
+    },
+    "reservedLog": {
+      "relPath": "log.md",
+      "issues": [],
+      "note": "reserved; well-formed"
+    },
+    "reservedNestedIndex": {
+      "relPath": "tables/index.md",
+      "issues": [],
+      "note": "reserved at a nested depth; well-formed"
+    },
+    "onboardingMissingType": {
+      "relPath": "guides/onboarding.md",
+      "issues": [
+        {
+          "file": "guides/onboarding.md",
+          "issue": "missing-type",
+          "detail": "info: no frontmatter `type`; defaults to `knowledge` (OKF leniency, non-blocking)",
+          "fixed": false
+        }
+      ],
+      "note": "the only file in this fixture missing a type: field"
+    },
+    "metric": {
+      "relPath": "metrics/wau.md",
+      "issues": [],
+      "note": "typed, all links resolve"
+    },
+    "customers": {
+      "relPath": "tables/customers.md",
+      "issues": [],
+      "note": "typed, all links resolve"
+    },
+    "orders": {
+      "relPath": "tables/orders.md",
+      "issues": [],
+      "note": "typed, all links resolve (including a deduped double-reference to tables/customers)"
+    }
+  }
+}
