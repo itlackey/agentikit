@@ -112,13 +112,29 @@ and the read/write split stays exactly where §5/§5.1 already drew it:
   enhancement contract above), the new provenance fields are *written* only
   to AKM-native assets, at proposal-promotion time (`promoteProposal`) —
   never through the `okf` adapter, which stays consumer-only. Accepting a
-  proposal stamps a namespaced `provenance:` frontmatter block (the v0.2
-  `generated`/`verified`/`sources` shape, under a distinct top-level key to
-  avoid the same wiki-`sources` collision noted above) using the existing
+  proposal stamps the v0.2 families using the existing
   `source`/`sourceRun`/`gateDecision`/`review` provenance the proposals system
-  already tracks in `state.db`. `stale_after`-driven re-verification and
-  trust-tier ranking are explicitly out of scope for 0.9.0 (an 0.9.x
-  improve-tuning track).
+  already tracks in `state.db`.
+
+  The on-disk shape is deliberately **hybrid**:
+
+  - `generated: {by, at}` and `verified: [{by, at}]` are written **bare at the
+    top level**, exactly as OKF v0.2 spells them. Neither key has any
+    pre-existing AKM consumer, so spelling them the spec's way costs nothing
+    and makes the OKF-superset claim above true *for trust metadata* — a
+    third-party OKF v0.2 reader pointed at an AKM stash sees conformant
+    provenance rather than one unrecognized `provenance:` key.
+  - `sources` alone stays namespaced as `provenance: {sources: [...]}`,
+    because a bare top-level `sources:` genuinely collides with the
+    pre-existing wiki citation-**string** convention noted above.
+
+  Every AKM-native markdown type is stamped. `workflow` is the only type whose
+  frontmatter is parsed against a closed allowlist, and that allowlist admits
+  these keys; a re-validation fallback (promote unstamped, warn) is retained
+  only as a backstop should a future type add a closed allowlist.
+
+  `stale_after`-driven re-verification and trust-tier ranking are explicitly
+  out of scope for 0.9.0 (an 0.9.x improve-tuning track).
 
 OKF is a month-old, single-vendor **Draft** with no governance body; AKM
 vendors a frozen copy of the spec rules it implements rather than tracking

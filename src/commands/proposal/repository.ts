@@ -1988,15 +1988,24 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Stamp OKF v0.2 provenance onto ONE promoted asset's frontmatter (D2.1/D2.2/
- * D2.3). Namespaced under a `provenance:` frontmatter key — the SAME shape
- * `IndexDocument.provenance` uses (D1.3) — rather than OKF's own bare
- * top-level `generated:`/`verified:`/`sources:` keys, because a bare
- * top-level `sources:` would collide with the pre-existing AKM-native wiki
- * citation-string convention (`indexer/passes/metadata.ts#applyWikiFrontmatter`)
- * on disk for a wiki-page promotion. AKM-native assets are read exclusively by
- * the `akm` adapter (never by `okf`, which is consumer-only, D1), so this
- * namespacing costs nothing: `akm-adapter.ts`'s `DOCUMENT_JSON_CARRIED_FIELDS`
- * (D2.4) is what rereads it back.
+ * D2.3), in the **hybrid** on-disk shape settled by the #730 review:
+ *
+ * - `generated: {by, at}` and `verified: [{by, at}]` are written **bare at the
+ *   top level**, exactly as OKF v0.2 spells them (SPEC §5.2/§5.3). Neither key
+ *   has any pre-existing AKM consumer, so spelling them the spec's way costs
+ *   nothing and makes `okf-support.md`'s "AKM Markdown is an OKF-compatible
+ *   superset" positioning actually true for trust metadata: a third-party OKF
+ *   v0.2 reader pointed at an AKM stash sees conformant provenance.
+ * - `sources` stays namespaced under `provenance:`, because a bare top-level
+ *   `sources:` genuinely collides with the pre-existing AKM-native wiki
+ *   citation-**string** convention
+ *   (`indexer/passes/metadata.ts#applyWikiFrontmatter`, which silently drops
+ *   non-strings) on a promoted wiki page.
+ *
+ * The read side back into `IndexDocument.provenance` is
+ * `metadata.ts#applyProvenanceFrontmatter` (which accepts both this shape and
+ * the older fully-nested one), carried through `akm-adapter.ts`'s
+ * `DOCUMENT_JSON_CARRIED_FIELDS` (D2.4).
  *
  * A no-op frontmatter mutation preserves the existing frontmatter block's raw
  * body bytes (mirrors `frontmatter.ts#mutateFrontmatter`'s documented
@@ -2016,11 +2025,29 @@ function stampProposalProvenance(
   const fm: Record<string, unknown> = { ...parsed.data };
   const existingProvenance = isPlainRecord(fm.provenance) ? fm.provenance : {};
 
-  const provenance: Record<string, unknown> = {
-    ...existingProvenance,
-    generatedBy: generatedByActor(proposal, ctx),
-    generatedAt: nowIsoStr,
-  };
+  // Bare `generated:` — OKF v0.2's replacement for `timestamp` (SPEC §13).
+  fm.generated = { by: generatedByActor(proposal, ctx), at: nowIsoStr };
+
+  // Bare `verified:` — append, so independent confirmations accumulate rather
+  // than the newest overwriting the record. Both the bare list and the older
+  // nested spelling are absorbed, so a re-promotion never loses history.
+  const priorVerified = Array.isArray(fm.verified)
+    ? fm.verified
+    : Array.isArray(existingProvenance.verified)
+      ? existingProvenance.verified
+      : [];
+  fm.verified = [
+    ...priorVerified,
+    { by: verifiedByActor(gateDecision, ctx), at: gateDecision?.decidedAt ?? nowIsoStr },
+  ];
+
+  // `sources` alone stays namespaced — bare `sources:` is the wiki
+  // citation-string convention. Drop the nested provenance block entirely when
+  // it would otherwise be empty, so unrelated assets gain no dead key.
+  const provenance: Record<string, unknown> = { ...existingProvenance };
+  delete provenance.generatedBy;
+  delete provenance.generatedAt;
+  delete provenance.verified;
 
   const evidenceSources = fm.evidenceSources;
   if (Array.isArray(evidenceSources)) {
@@ -2030,13 +2057,8 @@ function stampProposalProvenance(
     if (sources.length > 0) provenance.sources = sources;
   }
 
-  const existingVerified = Array.isArray(existingProvenance.verified) ? existingProvenance.verified : [];
-  provenance.verified = [
-    ...existingVerified,
-    { by: verifiedByActor(gateDecision, ctx), at: gateDecision?.decidedAt ?? nowIsoStr },
-  ];
-
-  fm.provenance = provenance;
+  if (Object.keys(provenance).length > 0) fm.provenance = provenance;
+  else delete fm.provenance;
 
   return parsed.frontmatter !== null
     ? `---\n${serializeFrontmatter(fm)}\n---\n${parsed.content}`
@@ -2229,12 +2251,14 @@ async function promoteProposalWithLease(
   // runs for it. Markdown-only: a task/env/script/other non-markdown target
   // has no frontmatter block to stamp into.
   //
-  // Some AKM markdown types (workflow confirmed; command/agent/skill are
-  // structurally similar and share the same closed-frontmatter posture) parse
-  // their frontmatter against a CLOSED allowlist and reject any unrecognized
-  // key outright — unlike knowledge/lesson/memory/fact/session, which tolerate
-  // arbitrary extra frontmatter. Stamping must never turn an otherwise-valid
-  // promotion into a rejected one, so the stamped content is re-validated
+  // `workflow` is the ONLY asset type whose frontmatter is parsed against a
+  // CLOSED allowlist (`src/workflows/validator.ts`); command/agent/skill get
+  // only the generic + quality validators and tolerate extra keys, as do
+  // knowledge/lesson/memory/fact/session/instruction. That allowlist now admits
+  // the stamped keys, so every AKM-native markdown type is stamped and this
+  // fallback should never fire — it is retained purely as a backstop so a
+  // future closed-allowlist type cannot turn an otherwise-valid promotion into
+  // a rejected one. The stamped content is re-validated
   // through the SAME canonical per-type validator dispatch
   // (`validateProposal`) already used above; a type whose validator rejects
   // the ADDED `provenance:` key falls back to the unstamped content instead of

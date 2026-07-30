@@ -90,6 +90,11 @@ afterEach(() => {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 const VALID_LESSON = `---\ndescription: Use ripgrep before grep\nwhen_to_use: Searching large repos for patterns\n---\n\nPrefer rg over grep when scanning large code repos.\n`;
+// A structurally-valid markdown workflow. Carries frontmatter deliberately:
+// `workflow` is the only type whose frontmatter is checked against a CLOSED
+// allowlist, which is what makes it the interesting case for #730's provenance
+// stamping (see the workflow-stamping test below).
+const VALID_WORKFLOW = `---\ndescription: Validate a specification before shipping\n---\n\n# Workflow: Provenance Workflow Stamped\n\n## Step: Validate inputs\nStep ID: validate\n\n### Instructions\nValidate the specification.\n`;
 
 function indexedEntry(filePath: string): Record<string, unknown> | undefined {
   const db = openExistingDatabase(getDbPath());
@@ -1470,6 +1475,12 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
 // `now`/`randomUUID` seams) so these assertions never depend on the real
 // OS username of whatever machine runs the suite.
 describe("D2 (#730): promoteProposal stamps OKF v0.2 provenance onto AKM-native writes", () => {
+  // Reads the HYBRID on-disk shape settled by the #730 review: `generated:` and
+  // `verified:` are stamped BARE at the top level (OKF v0.2's own spelling, so a
+  // third-party OKF reader sees conformant trust metadata), while `sources`
+  // alone stays namespaced under `provenance:` because a bare top-level
+  // `sources:` collides with the wiki citation-string convention. Flattened
+  // here so the assertions below read the same either way.
   function readWrittenProvenance(assetPath: string): {
     generatedBy?: string;
     generatedAt?: string;
@@ -1478,7 +1489,20 @@ describe("D2 (#730): promoteProposal stamps OKF v0.2 provenance onto AKM-native 
   } {
     const raw = fs.readFileSync(assetPath, "utf8");
     const fm = parseFrontmatter(raw).data as Record<string, unknown>;
-    return (fm.provenance ?? {}) as ReturnType<typeof readWrittenProvenance>;
+    const generated = (fm.generated ?? {}) as { by?: string; at?: string };
+    const nested = (fm.provenance ?? {}) as { sources?: Array<{ resource: string }> };
+    return {
+      ...(generated.by !== undefined ? { generatedBy: generated.by } : {}),
+      ...(generated.at !== undefined ? { generatedAt: generated.at } : {}),
+      ...(Array.isArray(fm.verified) ? { verified: fm.verified as Array<{ by: string; at?: string }> } : {}),
+      ...(nested.sources !== undefined ? { sources: nested.sources } : {}),
+    };
+  }
+
+  // Pins the on-disk spelling itself, not just the flattened projection — the
+  // whole point of the hybrid shape is WHERE these keys live.
+  function readRawFrontmatter(assetPath: string): Record<string, unknown> {
+    return parseFrontmatter(fs.readFileSync(assetPath, "utf8")).data as Record<string, unknown>;
   }
 
   test("automated source (distill) + human accept (no gateDecision): generated.by=akm/<version>, verified.by=human:<actorId>", async () => {
@@ -1506,6 +1530,41 @@ describe("D2 (#730): promoteProposal stamps OKF v0.2 provenance onto AKM-native 
     expect(provenance.verified).toHaveLength(1);
     expect(provenance.verified?.[0]?.by).toBe("human:test-human");
     expect(typeof provenance.verified?.[0]?.at).toBe("string");
+
+    // The hybrid shape itself: `generated`/`verified` bare at the top level in
+    // OKF v0.2's own spelling, and NOT nested under `provenance:`. A regression
+    // to the fully-nested shape would silently break third-party OKF readers,
+    // which is the entire reason this shape was chosen.
+    const fm = readRawFrontmatter(result.assetPath);
+    expect(fm.generated).toMatchObject({ by: `akm/${pkgVersion}` });
+    expect(Array.isArray(fm.verified)).toBe(true);
+    expect(fm.provenance).toBeUndefined();
+  });
+
+  test("workflow — the one closed-allowlist type — is stamped, not silently skipped", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+    const created = createProposal(stash, {
+      ref: "workflows/provenance-workflow-stamped",
+      source: "distill",
+      force: true,
+      payload: { content: VALID_WORKFLOW },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    const result = await akmProposalAccept({
+      stashDir: stash,
+      id: created.id,
+      config,
+      ctx: { actorId: () => "test-human" },
+    });
+
+    // `workflow` is the only type whose frontmatter is parsed against a closed
+    // allowlist. Before #730's allowlist update it was the sole type that
+    // promoted UNSTAMPED via the re-validation fallback — an undocumented hole.
+    const provenance = readWrittenProvenance(result.assetPath);
+    expect(provenance.generatedBy).toBe(`akm/${pkgVersion}`);
+    expect(provenance.verified?.[0]?.by).toBe("human:test-human");
   });
 
   test("automated source (distill) auto-accepted via a gate decision: BOTH generated.by and verified.by are akm/<version>", async () => {

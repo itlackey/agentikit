@@ -491,40 +491,70 @@ export function applyWikiFrontmatter(entry: IndexDocument, fmData: Record<string
 }
 
 /**
- * Extract the AKM-write-side namespaced `provenance:` frontmatter block (D2 —
- * `promoteProposal` stamps this on accepted proposals, #730) and apply it to
- * the entry unchanged. Distinct from {@link applyWikiFrontmatter}'s bare
- * `sources: string[]` above — `provenance:` is a nested object under its own
- * top-level key, so the two never collide on disk even on a promoted wiki
- * page. Tolerant: any malformed sub-field is dropped individually rather than
- * rejecting the whole block.
+ * Parse one `verified:` family value into the `IndexDocument.provenance` shape.
+ * Accepts OKF v0.2's list form and its documented single-mapping shorthand
+ * ("consumers MUST treat a bare mapping as a one-element list", SPEC §5.2).
+ * Tolerant: an entry without a usable `by` is dropped individually.
+ */
+function parseVerifiedFamily(value: unknown): { by: string; at?: string }[] {
+  const entries = Array.isArray(value) ? value : [value];
+  return entries
+    .filter((v): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v))
+    .map((v) => {
+      const by = asNonEmptyString(v.by);
+      if (!by) return undefined;
+      const at = asNonEmptyString(v.at);
+      return at ? { by, at } : { by };
+    })
+    .filter((v): v is { by: string; at?: string } => v !== undefined);
+}
+
+/**
+ * Extract the OKF v0.2 provenance families that `promoteProposal` stamps onto
+ * accepted AKM-native proposals (D2, #730), and apply them to the entry.
+ *
+ * The on-disk shape is deliberately **hybrid** (owner decision, #730 review):
+ * `generated:` and `verified:` are stamped BARE at the top level, exactly as
+ * OKF v0.2 spells them, because neither has any pre-existing AKM consumer — so
+ * a third-party OKF v0.2 reader treating an AKM stash as an OKF bundle sees
+ * spec-conformant trust metadata, which is what `okf-support.md`'s
+ * "AKM Markdown is an OKF-compatible superset" positioning promises. Only
+ * `sources` stays namespaced under `provenance:`, because a bare top-level
+ * `sources:` genuinely collides with {@link applyWikiFrontmatter}'s
+ * pre-existing citation-**string** convention (which silently drops
+ * non-strings).
+ *
+ * The nested `provenance.generatedBy` / `.generatedAt` / `.verified` spellings
+ * are still read as a fallback so assets stamped by an earlier build of this
+ * branch keep resolving. Tolerant throughout: any malformed sub-field is
+ * dropped individually rather than rejecting the whole block.
  */
 export function applyProvenanceFrontmatter(entry: IndexDocument, fmData: Record<string, unknown>): void {
   const provenance = fmData.provenance;
-  if (provenance === null || typeof provenance !== "object" || Array.isArray(provenance)) return;
-  const obj = provenance as Record<string, unknown>;
+  const nested: Record<string, unknown> =
+    provenance !== null && typeof provenance === "object" && !Array.isArray(provenance)
+      ? (provenance as Record<string, unknown>)
+      : {};
   const result: NonNullable<IndexDocument["provenance"]> = {};
 
-  const generatedBy = asNonEmptyString(obj.generatedBy);
+  // Bare `generated: {by, at}` (OKF v0.2 §5.3) wins; nested is the fallback.
+  const generatedMapping =
+    fmData.generated !== null && typeof fmData.generated === "object" && !Array.isArray(fmData.generated)
+      ? (fmData.generated as Record<string, unknown>)
+      : undefined;
+  const generatedBy = asNonEmptyString(generatedMapping?.by) ?? asNonEmptyString(nested.generatedBy);
   if (generatedBy) result.generatedBy = generatedBy;
-  const generatedAt = asNonEmptyString(obj.generatedAt);
+  const generatedAt = asNonEmptyString(generatedMapping?.at) ?? asNonEmptyString(nested.generatedAt);
   if (generatedAt) result.generatedAt = generatedAt;
 
-  if (Array.isArray(obj.verified)) {
-    const verified = obj.verified
-      .filter((v): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v))
-      .map((v) => {
-        const by = asNonEmptyString(v.by);
-        if (!by) return undefined;
-        const at = asNonEmptyString(v.at);
-        return at ? { by, at } : { by };
-      })
-      .filter((v): v is { by: string; at?: string } => v !== undefined);
-    if (verified.length > 0) result.verified = verified;
-  }
+  // Bare `verified:` (list or single mapping) wins; nested is the fallback.
+  const verified =
+    fmData.verified !== undefined ? parseVerifiedFamily(fmData.verified) : parseVerifiedFamily(nested.verified);
+  if (verified.length > 0) result.verified = verified;
 
-  if (Array.isArray(obj.sources)) {
-    const sources = obj.sources
+  // `sources` is namespaced-only — see the collision note above.
+  if (Array.isArray(nested.sources)) {
+    const sources = nested.sources
       .filter((s): s is Record<string, unknown> => s !== null && typeof s === "object" && !Array.isArray(s))
       .map((s) => {
         const resource = asNonEmptyString(s.resource);

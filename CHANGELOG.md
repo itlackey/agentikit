@@ -44,13 +44,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   adapter, which stays consumer-only and unaffected by this). `promoteProposal`
   projects the proposal system's own `source`/`sourceRun`/`gateDecision`/
   `review` bookkeeping — already tracked in `state.db` but previously never
-  written to disk — into a namespaced `provenance: {generatedBy, generatedAt,
-  verified, sources}` frontmatter block: `generated.by` records whether the
-  content came from an automated pipeline (`akm/<version>`) or a
-  human-initiated source (`human:<id>`); `verified` records whether the
-  promotion itself was an automated gate decision or a direct human accept;
-  `evidenceSources`, when present, projects as `provenance.sources`. AKM's
-  own adapter rereads what it wrote, so `akm show` surfaces it.
+  written to disk. `generated: {by, at}` and `verified: [{by, at}]` are written
+  **bare at the top level**, exactly as OKF v0.2 spells them, so a third-party
+  OKF v0.2 reader pointed at an AKM stash sees conformant trust metadata;
+  `sources` alone is namespaced as `provenance: {sources}`, because a bare
+  `sources:` collides with the pre-existing wiki citation-string convention.
+  `generated.by` records whether the content came from an automated pipeline
+  (`akm/<version>`) or a human-initiated source (`human:<id>`); `verified`
+  records whether the promotion itself was an automated gate decision or a
+  direct human accept, and accumulates rather than overwriting across
+  re-promotions; `evidenceSources`, when present, projects as
+  `provenance.sources`. AKM's own adapter rereads what it wrote, so `akm show`
+  surfaces it. Every AKM-native markdown type is stamped, `workflow` included.
+
+  Two consequences worth knowing: promotion re-serializes the whole frontmatter
+  block, so YAML **comments** in a hand-written proposal's frontmatter are not
+  preserved (values and body bytes are); and for a human-attributed promotion
+  with no configured actor id, `by` falls back to `human:<OS username>`, which
+  puts that username into content you may later commit and share.
 
 - **`akm log list --limit <n>`** returns the most recent N events. The flag was
   documented but silently ignored, and there was no limiting mechanism at all
