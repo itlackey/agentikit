@@ -610,12 +610,15 @@ describe("Renderer", () => {
     expect(response.action).toContain("#fragment");
   });
 
-  test("getAllRenderers() returns all 14 built-in renderers", async () => {
+  test("getAllRenderers() returns all 13 built-in renderers", async () => {
     const all = await getAllRenderers();
-    expect(all).toHaveLength(14);
+    expect(all).toHaveLength(13);
 
     const names = all.map((r) => r.name).sort();
     // `wiki-md` was removed in chunk 4 (the wiki asset-type is retired).
+    // `workflow-program-yaml` is removed by workflow-format-unification
+    // (spec §3): the YAML workflow *program* is deleted as a distinct
+    // on-disk format — one workflow renderer (`workflow-md`) now.
     expect(names).toEqual([
       "agent-md",
       "command-md",
@@ -630,7 +633,6 @@ describe("Renderer", () => {
       "skill-md",
       "task-yaml",
       "workflow-md",
-      "workflow-program-yaml", // redesign addendum R1
     ]);
   });
 
@@ -645,14 +647,16 @@ describe("Renderer", () => {
       filePath,
       [
         "---",
+        "type: workflow",
         "description: Ship a release safely",
+        "steps:",
+        "  - id: validate",
         "---",
-        "# Workflow: Release Flow",
         "",
-        "## Step: Validate",
-        "Step ID: validate",
+        "# Release Flow",
         "",
-        "### Instructions",
+        "## validate",
+        "",
         "Check inputs.",
       ].join("\n"),
     );

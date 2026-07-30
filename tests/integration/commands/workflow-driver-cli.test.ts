@@ -48,7 +48,10 @@ beforeEach(() => {
 
 afterEach(() => storage.cleanup());
 
-/** Write a single-step workflow markdown into a stash's `workflows/` dir. */
+/**
+ * Write a single-step unified-format workflow (frontmatter graph + `## <id>`
+ * body — spec §2.2) into a stash's `workflows/` dir.
+ */
 function writeSingleStepWorkflow(stashDir: string, name: string): void {
   const file = path.join(stashDir, "workflows", `${name}.md`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -56,15 +59,16 @@ function writeSingleStepWorkflow(stashDir: string, name: string): void {
     file,
     [
       "---",
+      "type: workflow",
       "description: Driver CLI test workflow",
+      "steps:",
+      "  - id: only-step",
       "---",
       "",
-      `# Workflow: ${name}`,
+      `# ${name}`,
       "",
-      "## Step: Only Step",
-      "Step ID: only-step",
+      "## only-step",
       "",
-      "### Instructions",
       "Do the watched thing.",
       "",
     ].join("\n"),
@@ -130,21 +134,35 @@ describe("akm workflow refs — unknown bundles fail consistently", () => {
 });
 
 describe("akm workflow start — surfaces program warnings on stderr", () => {
-  /** Write a YAML program that trips both warnings: undeclared param + untyped step. */
+  /**
+   * Write a unified-format workflow that trips both non-fatal warnings
+   * (`collectWorkflowWarnings`, ir/compile.ts): a map step with no `output:`
+   * schema (untyped-artifact warning), whose `map.over` references
+   * `params.changed_file` — a typo of the declared `params.changed_files` —
+   * (undeclared-param warning). Prose is never scanned for references
+   * (spec §2.3), so this warning's only surface now is `map.over`/
+   * `route.input`.
+   */
   function writeWarnyProgram(stashDir: string, name: string): string {
-    const file = path.join(stashDir, "workflows", `${name}.yaml`);
+    const file = path.join(stashDir, "workflows", `${name}.md`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(
       file,
       [
-        "version: 2",
-        `name: ${name}`,
+        "---",
+        "type: workflow",
+        "description: Warny driver workflow",
         "params:",
         "  changed_files: { type: array }",
         "steps:",
         "  - id: review",
-        "    unit:",
-        `      instructions: Review \${{ params.changed_file }}.`,
+        "    map:",
+        "      over: params.changed_file",
+        "---",
+        "",
+        "## review",
+        "",
+        "Review the changed files given by the map item.",
         "",
       ].join("\n"),
       "utf8",
