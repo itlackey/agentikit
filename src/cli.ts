@@ -101,7 +101,6 @@ import type { WindowSpec } from "./commands/health/types";
 import { parseWindowSpec } from "./commands/health/windows";
 import { improveCommand } from "./commands/improve/improve-cli";
 import { migrateCommand } from "./commands/migrate-cli";
-import { mvCommand } from "./commands/mv-cli";
 import { logCommand } from "./commands/observability-cli";
 import { proposalCommand } from "./commands/proposal/proposal-cli";
 import { rememberCommand } from "./commands/read/remember-cli";
@@ -555,7 +554,6 @@ export const main = defineCommand({
     import: importKnowledgeCommand,
     sync: syncCommand,
     clone: cloneCommand,
-    mv: mvCommand,
     registry: registryCommand,
     migrate: migrateCommand,
     config: configCommand,
@@ -736,7 +734,7 @@ const HELP_SECTIONS: ReadonlyArray<{ readonly title: string; readonly commands: 
     title: "AGENT LOOP",
     commands: ["search", "curate", "show", "remember", "import", "feedback", "sync", "index", "improve"],
   },
-  { title: "ASSETS", commands: ["clone", "mv", "lint"] },
+  { title: "ASSETS", commands: ["clone", "lint"] },
   { title: "MANAGE", commands: ["bundle", "proposal", "task", "workflow", "env", "secret", "registry", "config"] },
   { title: "SYSTEM", commands: ["agent", "setup", "health", "info", "log", "upgrade", "help", "completions"] },
 ];
@@ -749,7 +747,8 @@ const NON_TERMINAL_ABBREVIATIONS = ["e.g.", "i.e.", "etc.", "vs."];
  *
  * Several commands carry multi-paragraph descriptions that are correct on
  * `akm <cmd> --help` but turn the root listing back into the undifferentiated
- * wall this section replaced (`mv` alone was 1.1k characters on one row).
+ * wall this section replaced (a single command's description ran past 1k
+ * characters on one row).
  */
 function firstSentence(text: string): string {
   const line = text.split("\n", 1)[0]?.trim() ?? "";

@@ -65,7 +65,7 @@ export interface JournaledFileChange {
 
 export interface TxnJournal<P = unknown> {
   version: 1;
-  /** Registered transaction kind (e.g. `proposal-accept`, `mv`). */
+  /** Registered transaction kind (e.g. `proposal`, `proposal-reject`). */
   kind: string;
   phase: string;
   transactionId: string;
@@ -123,6 +123,11 @@ function requireKind(kind: string): TxnKindHandler<never> {
   const handler = kinds.get(kind);
   if (!handler) throw new Error(`No transaction handler registered for kind "${kind}".`);
   return handler;
+}
+
+/** True when `kind` has a registered handler (see {@link recoverTxnsForRoot}). */
+function hasKind(kind: string): boolean {
+  return kinds.has(kind);
 }
 
 // ── Test seam ────────────────────────────────────────────────────────────────
@@ -286,17 +291,20 @@ export function cleanupTxn(dir: string): string | null {
  * Grace period (ms) before a transaction directory/journal with no other
  * evidence of activity is treated as stale rather than possibly belonging to
  * a still-running operation. Shared by {@link sweepJournallessTxnDir} (racing
- * a sibling's mkdir→journal window) and by read-only reporting such as `akm
+ * a sibling's mkdir→journal window, and the unknown-kind sweep in
+ * {@link recoverTxnsForRoot}) and by read-only reporting such as `akm
  * health`'s stale-journal advisory (see {@link listTxnJournalsTolerant}).
  */
 export const TXN_SWEEP_GRACE_MS = 300_000;
 
 /**
- * Sweep a transaction directory that has NO journal — but only when it is
- * demonstrably stale. All kinds share one namespace per root, so a scanner
- * may encounter a SIBLING transaction inside `beginTxn`'s mkdir→journal
- * window; a grace period keeps the sweep from racing it. Returns true when
- * the directory was removed.
+ * Sweep a transaction directory that cannot be recovered — it has NO journal,
+ * or (from {@link recoverTxnsForRoot}) a journal whose kind has no registered
+ * handler — but only when it is demonstrably stale. All kinds share one
+ * namespace per root, so a scanner may encounter a SIBLING transaction inside
+ * `beginTxn`'s mkdir→journal window, or one whose registrar this process
+ * simply has not imported yet; a grace period keeps the sweep from racing
+ * either. Returns true when the directory was removed.
  */
 export function sweepJournallessTxnDir(dir: string, graceMs = TXN_SWEEP_GRACE_MS): boolean {
   try {
@@ -359,7 +367,20 @@ export function isCommittedPhase(journal: TxnJournal<unknown>): boolean {
  * the kind's `finalize`. Fully-finalized directories are swept. The domain
  * registrar (which registers the kinds) must be imported by the caller.
  *
- * `filter` optionally narrows recovery (e.g. one kind, one proposal id).
+ * A journal whose `kind` has NO registered handler is SWEPT (same stale-dir
+ * grace period as {@link sweepJournallessTxnDir}) rather than thrown on. A
+ * kind can disappear for good — 0.9.0 deleted `akm mv` and with it the
+ * `kind:"mv"` handler — and an unrecoverable leftover journal must never
+ * brick every later recovery scan (index refresh, proposal accept/reject) run
+ * against the same root. Kinds that ARE registered keep failing LOUDLY on any
+ * fence violation: those journals may fence an interrupted, irreversible
+ * mutation. The grace period also covers the transient case where the caller
+ * has not imported a live kind's registrar yet.
+ *
+ * `filter` optionally narrows recovery (e.g. one kind, one proposal id). The
+ * unknown-kind sweep runs BEFORE the filter: such a journal is garbage no
+ * matter what the caller asked to recover, and leaving it behind is what
+ * bricks the next scan.
  */
 export async function recoverTxnsForRoot(
   root: string,
@@ -377,6 +398,12 @@ export async function recoverTxnsForRoot(
       continue;
     }
     const journal = readJournal(journalPath);
+    if (!hasKind(journal.kind)) {
+      if (sweepJournallessTxnDir(dir)) {
+        warn(`[txn] swept unrecoverable journal of unregistered kind "${journal.kind}" at ${journalPath}.`);
+      }
+      continue;
+    }
     if (filter && !filter(journal)) continue;
     fenceJournal(journal, dir, root, journalPath);
     const handler = requireKind(journal.kind);

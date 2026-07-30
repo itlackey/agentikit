@@ -47,13 +47,6 @@ export type EventType =
   | "remember"
   | "import"
   /**
-   * SPEC-7 — emitted once per successful `akm mv` rename. `ref` carries the
-   * NEW ref; metadata carries `{from, to, rewroteFiles, readOnlyCiters,
-   * twinMoved}` (counts only — never file contents). A failed mv emits
-   * nothing.
-   */
-  | "mv"
-  /**
    * Emitted by `akm sync` (git-backed stash commit/push). Renamed from the
    * legacy "save" spelling in 0.9.0 to match the command name — see
    * CHANGELOG. `readEvents` below still accepts "save" as a read-only
