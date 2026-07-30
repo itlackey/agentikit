@@ -185,12 +185,56 @@ export type ComputeWorkListResult = { ok: true; list: StepWorkList } | { ok: fal
  * schema directive), and hash the resolved input. Same inputs ⇒ byte-identical
  * ids/hashes/prompts — the invariant `brief` relies on to predict the engine.
  *
- * Whole-list failures (missing subgraph, template parse error, unresolvable /
- * non-array `over`, duplicate fan-out items) return `{ ok: false }`; a per-unit
- * expression-resolution failure is carried on that unit's `resolved` field so
- * the caller fails just that unit (mirroring the engine's `expression_error`
- * outcome), never the whole step.
+ * Whole-list failures (missing subgraph, unresolvable / non-array `over`,
+ * null or duplicate fan-out items) return `{ ok: false }`. The per-unit
+ * `resolved: { ok: false }` branch is STRUCTURALLY UNREACHABLE in the unified
+ * format — prose is never scanned for references, and everything that CAN
+ * fail (map.over / route.input / inputs:) resolves once per step, failing the
+ * whole list above. The branch is retained because brief/report/executor all
+ * share the shape and defensively handle it; if a future unit kind
+ * reintroduces per-unit resolution (e.g. an exec/shell unit with real
+ * substitution), the cross-surface failure plumbing is already in place.
  */
+/**
+ * Validate a fan-out item list BEFORE any identity/dispatch work: expansion
+ * within the resource limit, no null/undefined items, no canonical duplicates.
+ * Returns the failure message, or undefined when the list is dispatchable.
+ *
+ * Null items: producer garbage — there is nothing to hand the unit as its work
+ * item. The pre-unification format rejected them incidentally (substituting
+ * `${{ item }}` failed); with items attached as context instead of spliced,
+ * nothing later would stop a unit from being dispatched with "Item: null", so
+ * the rejection is explicit here. Duplicates: content-derived unit identity
+ * makes canonical duplicates collide on id — an authoring error caught
+ * deterministically, before dispatch.
+ */
+function validateFanOutItems(stepId: string, items: unknown[]): string | undefined {
+  if (items.length > WORKFLOW_MAX_MAP_EXPANSION) {
+    return `Step "${stepId}" fan-out expands to ${items.length} units, exceeding the ${WORKFLOW_MAX_MAP_EXPANSION}-unit resource limit.`;
+  }
+  const nullIndex = items.findIndex((item) => item === null || item === undefined);
+  if (nullIndex !== -1) {
+    return (
+      `Step "${stepId}" fan-out list contains a null item (index ${nullIndex}). ` +
+      `Every item must be a concrete value — fix the producing step's output.`
+    );
+  }
+  const firstIndexByCanonical = new Map<string, number>();
+  for (let i = 0; i < items.length; i++) {
+    const canonical = canonicalJson(items[i]) ?? "null";
+    const firstIndex = firstIndexByCanonical.get(canonical);
+    if (firstIndex !== undefined) {
+      return (
+        `Step "${stepId}" fan-out list contains duplicate items (indices ${firstIndex} and ${i}: ` +
+        `${clip(canonical, 200)}). Content-derived unit identity requires distinct items — ` +
+        `deduplicate the list this workflow fans out over.`
+      );
+    }
+    firstIndexByCanonical.set(canonical, i);
+  }
+  return undefined;
+}
+
 export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): ComputeWorkListResult {
   const root = plan.root;
   // Route-only steps (YAML `route:`) carry no execution subgraph.
@@ -249,48 +293,12 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
   }
 
   const isFanOut = root.kind === "map";
-  if (isFanOut && items.length > WORKFLOW_MAX_MAP_EXPANSION) {
-    return {
-      ok: false,
-      error: `Step "${plan.stepId}" fan-out expands to ${items.length} units, exceeding the ${WORKFLOW_MAX_MAP_EXPANSION}-unit resource limit.`,
-    };
-  }
+  const fanOutProblem = isFanOut ? validateFanOutItems(plan.stepId, items) : undefined;
+  if (fanOutProblem) return { ok: false, error: fanOutProblem };
 
-  // Content-derived unit identity: compute every id up front. Duplicate items
-  // collide on identity — an authoring error caught HERE, deterministically.
+  // Content-derived unit identity: compute every id up front (duplicate items
+  // were rejected above — identity requires distinct items).
   const unitIds = items.map((item) => unitIdFor(template.id, item, isFanOut));
-  if (isFanOut) {
-    // A null/undefined fan-out item is producer garbage — there is nothing to
-    // hand the unit as its work item. The pre-unification format rejected it
-    // incidentally (substituting `${{ item }}` failed); with items attached as
-    // context instead of spliced, nothing would stop a unit from being
-    // dispatched with "Item: null", so the rejection is now explicit. Same
-    // fail-before-dispatch posture as the duplicate check below.
-    const nullIndex = items.findIndex((item) => item === null || item === undefined);
-    if (nullIndex !== -1) {
-      return {
-        ok: false,
-        error:
-          `Step "${plan.stepId}" fan-out list contains a null item (index ${nullIndex}). ` +
-          `Every item must be a concrete value — fix the producing step's output.`,
-      };
-    }
-    const firstIndexByCanonical = new Map<string, number>();
-    for (let i = 0; i < items.length; i++) {
-      const canonical = canonicalJson(items[i]) ?? "null";
-      const firstIndex = firstIndexByCanonical.get(canonical);
-      if (firstIndex !== undefined) {
-        return {
-          ok: false,
-          error:
-            `Step "${plan.stepId}" fan-out list contains duplicate items (indices ${firstIndex} and ${i}: ` +
-            `${clip(canonical, 200)}). Content-derived unit identity requires distinct items — ` +
-            `deduplicate the list this workflow fans out over.`,
-        };
-      }
-      firstIndexByCanonical.set(canonical, i);
-    }
-  }
 
   const gateLoop = input.gateLoop ?? 1;
   const frozenInvocation = template.invocation;
@@ -838,8 +846,8 @@ export function isRetryEligibleFailure(
  * it)? True for a unit with no terminal row (pending), a still-`running` row (a
  * live/stale claim another driver holds), or a FAILED row that is still
  * retry-eligible. False for a COMPLETED row, a terminal non-retry-eligible
- * FAILURE, or an UNRESOLVABLE unit (the engine's immediate `expression_error` —
- * never reportable). The best terminal attempt (base + `~r<n>` retries) is the
+ * FAILURE, or an UNRESOLVABLE unit (a currently-unreachable defensive branch —
+ * see the computeStepWorkList doc — never reportable). The best terminal attempt (base + `~r<n>` retries) is the
  * one consulted, the SAME reuse the engine and reducer apply.
  */
 export function unitStillNeedsReport(workUnit: StepWorkUnit, dispatchRows: Map<string, WorkflowRunUnitRow>): boolean {

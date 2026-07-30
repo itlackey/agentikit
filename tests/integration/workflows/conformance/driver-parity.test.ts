@@ -59,13 +59,13 @@ import { freezeWorkflow } from "../../../_helpers/workflow";
  * Ported to the unified workflow markdown format (workflow-format-
  * unification): every golden's `markdown` fixture is frontmatter graph +
  * `## <step-id>` body prose (`freezeWorkflow`, one frontend) instead of a YAML
- * program (`freezeWorkflowProgram`, deleted). One behavioral note: the
- * gate-loop hash assertions (GATE_MAX_LOOPS, crash-after-rejection resume)
- * were inverted from `not.toBe` to `toBe` — see the inline comments there —
- * because unit identity now hashes the frozen template bytes, never a
- * resolved/spliced prompt, so gate feedback no longer changes the hash across
- * loops. The cross-surface parity invariant itself is unchanged: both
- * surfaces still must (and do) compute the identical hash.
+ * program (`freezeWorkflowProgram`, deleted). Gate-loop note: unit identity
+ * hashes the frozen template bytes plus the structured dispatch envelope —
+ * which INCLUDES gateFeedback — so a feedback-carrying retry hashes
+ * differently from the rejected attempt ("changed inputs => changed hash"),
+ * exactly as the resolved-prompt hash behaved pre-unification. The
+ * cross-surface parity invariant is unchanged: both surfaces must (and do)
+ * compute the identical hash for the same loop.
  */
 
 const RUN_ID = "77777777-7777-4777-8777-777777777777";
@@ -627,15 +627,14 @@ The work is thorough.
     // Two gate loops: l1 rejected, l2 accepted, journaled under DISTINCT row
     // keys (`work:solo` vs `work:solo~l2` — the loop suffix, not the hash, is
     // what makes loop 2 a fresh dispatch instead of a row-reuse). Ported
-    // assertion (workflow-format-unification, spec §2.3/§4): pre-unification,
-    // unit identity hashed the fully RESOLVED/spliced prompt, so gate feedback
-    // threaded into that string changed the hash across loops. The unified
-    // format hashes the FROZEN TEMPLATE BYTES + item + declared inputs + params
-    // — never a resolved/spliced string, since prose is never templated — so
-    // gate feedback (attached context, not a splice) is deliberately NOT part
-    // of the hash; loop 2's hash is now IDENTICAL to loop 1's by design. The
-    // load-bearing invariant survives unchanged: both surfaces reproduce this
-    // identical hash for loop 2 (proven by `assertGraphsIdentical` below).
+    // assertion (workflow-format-unification, spec §2.3/§4): the unified
+    // format hashes the FROZEN TEMPLATE BYTES + item + declared inputs +
+    // params + gateFeedback — never a resolved/spliced string. gateFeedback
+    // is part of the hashed envelope because buildUnitPrompt appends it, so
+    // the retry is materially a different ask: loop 2's hash DIFFERS from
+    // loop 1's, matching the pre-unification resolved-prompt behavior. The
+    // load-bearing invariant survives unchanged: both surfaces reproduce the
+    // identical per-loop hashes (proven by `assertGraphsIdentical` below).
     const l1 = lineFor(g, "unit work:solo ");
     const l2 = lineFor(g, "unit work:solo~l2 ");
     expect(l1).toContain("status=completed");
@@ -644,7 +643,7 @@ The work is thorough.
     const hash2 = /hash=(\w+)/.exec(l2)?.[1];
     expect(hash1).toBeTruthy();
     expect(hash2).toBeTruthy();
-    expect(hash1).toBe(hash2);
+    expect(hash1).not.toBe(hash2);
     expect(lineFor(g, "gate work.gate:l1")).toContain('"complete":false');
     expect(lineFor(g, "gate work.gate:l2")).toContain('"complete":true');
     expect(g).toContain("run status=completed");
@@ -1035,22 +1034,20 @@ The work is thorough.
 
     // Structural expectations over the identical graph: l1 rejected + l2
     // accepted, journaled under distinct row keys (`work:solo` vs
-    // `work:solo~l2`). Ported assertion (workflow-format-unification, spec
-    // §2.3/§4): the unified format's unit-identity hash is over the frozen
-    // template bytes + item + declared inputs + params — never a
-    // resolved/spliced prompt — so gate feedback (attached context, not a
-    // splice) is deliberately excluded from the hash; loop 2's hash is now
-    // IDENTICAL to loop 1's by design (see GATE_MAX_LOOPS.verify above for the
-    // full rationale). The invariant this golden actually proves — both
-    // surfaces compute the SAME hash for loop 2 — still holds, via
-    // `assertGraphsIdentical` above.
+    // `work:solo~l2`) AND distinct hashes — gateFeedback is part of the
+    // hashed envelope (see GATE_MAX_LOOPS.verify above), so the recovered
+    // feedback's retry hashes differently from the rejected attempt. The
+    // invariant this golden actually proves — both surfaces recover the SAME
+    // feedback from the journal and therefore compute the SAME loop-2 hash —
+    // holds via `assertGraphsIdentical` above; a surface that lost or
+    // reworded the recovered feedback would diverge on this hash.
     expect(lineFor(engineGraph, "gate work.gate:l1")).toContain('"complete":false');
     expect(lineFor(engineGraph, "gate work.gate:l2")).toContain('"complete":true');
     const h1 = /hash=(\w+)/.exec(lineFor(engineGraph, "unit work:solo "))?.[1];
     const h2 = /hash=(\w+)/.exec(lineFor(engineGraph, "unit work:solo~l2 "))?.[1];
     expect(h1).toBeTruthy();
     expect(h2).toBeTruthy();
-    expect(h1).toBe(h2);
+    expect(h1).not.toBe(h2);
     expect(engineGraph).toContain("run status=completed");
   });
 

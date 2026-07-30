@@ -102,9 +102,11 @@ describe("akm adapter — validate reproduces the lint golden perType (clean, §
       }
       asserted += 1;
     }
-    // All 14 perType keys (13 types + workflowProgramYaml; wiki retired in chunk 4) exercised.
+    // All 13 perType keys exercised (wiki retired in chunk 4; the separate
+    // workflowProgramYaml entry collapsed into the one workflow entry when the
+    // YAML program format was unified away — workflow-format-unification §3).
     expect(asserted).toBe(Object.keys(LINT_GOLDEN.perType).length);
-    expect(asserted).toBe(14);
+    expect(asserted).toBe(13);
   });
 
   test("the DefaultLinter-only types (script/secret/session/lesson) are clean via base checks only", async () => {

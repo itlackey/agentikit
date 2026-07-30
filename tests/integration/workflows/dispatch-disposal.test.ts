@@ -56,24 +56,30 @@ afterEach(() => {
   storage.cleanup();
 });
 
-function writeProgram(name: string, yamlText: string): void {
-  const file = path.join(storage.stashDir, "workflows", `${name}.yaml`);
+function writeProgram(name: string, markdown: string): void {
+  const file = path.join(storage.stashDir, "workflows", `${name}.md`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, yamlText, "utf8");
+  fs.writeFileSync(file, markdown, "utf8");
 }
 
-const oneStep = (name: string, withGate = false): string =>
+// Unified-format one-step workflow (frontmatter graph + `## <id>` body; gate
+// rubric in the body's `### gate`, control key in frontmatter — spec §2.2/§2.4).
+const oneStep = (_name: string, withGate = false): string =>
   [
-    "version: 2",
-    `name: ${name}`,
+    "---",
+    "type: workflow",
+    "description: Dispatch-disposal fixture.",
     "defaults:",
     "  engine: test-agent",
     "steps:",
     "  - id: only",
-    "    title: Only",
-    "    unit:",
-    "      instructions: Do the thing.",
-    ...(withGate ? ["    gate:", "      criteria: [the thing is complete]"] : []),
+    ...(withGate ? ["    gate: { max_loops: 2 }"] : []),
+    "---",
+    "",
+    "## only",
+    "",
+    "Do the thing.",
+    ...(withGate ? ["", "### gate", "", "- the thing is complete"] : []),
     "",
   ].join("\n");
 

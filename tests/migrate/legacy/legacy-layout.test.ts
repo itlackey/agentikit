@@ -259,8 +259,8 @@ describe("legacy-layout.ts — faithfulness: deriveCanonicalAssetNameFromStashRo
     ["skill", "tools/agents/svelte-file-editor/SKILL.md"],
     ["command", "commands/example-command.md"],
     ["command", "tools/commands/example-command.md"],
-    ["workflow", "workflows/example-workflow.yaml"],
-    ["workflow", "installed/workflows/example-workflow.yaml"],
+    ["workflow", "workflows/example-workflow.md"],
+    ["workflow", "installed/workflows/example-workflow.md"],
     ["env", "env/.env"],
     ["env", "env/staging.env"],
     ["env", "tools/env/.env"],
@@ -277,6 +277,29 @@ describe("legacy-layout.ts — faithfulness: deriveCanonicalAssetNameFromStashRo
       expect(frozenDeriveCanonicalAssetNameFromStashRoot(type, SYNTHETIC_STASH_ROOT, filePath)).toBe(
         deriveCanonicalAssetNameFromStashRoot(type, SYNTHETIC_STASH_ROOT, filePath),
       );
+    });
+  }
+
+  // Post-unification divergence, pinned rather than papered over: the frozen
+  // migration copy strips `.yaml`/`.yml` from workflow names (the legacy
+  // WORKFLOW_EXTENSIONS it froze), while the LIVE derivation no longer does —
+  // the unified format is `.md`-only, so to current code `foo.yaml` is not a
+  // workflow spelling at all. Frozen must keep the legacy behavior verbatim
+  // (it exists to migrate old on-disk layouts); live equality is asserted
+  // against the literal it now produces instead.
+  const FROZEN_ERA_YAML_CASES: Array<[relFilePath: string, frozenName: string, liveName: string]> = [
+    ["workflows/example-workflow.yaml", "example-workflow", "example-workflow.yaml"],
+    [
+      "installed/workflows/example-workflow.yaml",
+      "installed/workflows/example-workflow",
+      "installed/workflows/example-workflow.yaml",
+    ],
+  ];
+  for (const [relFilePath, frozenName, liveName] of FROZEN_ERA_YAML_CASES) {
+    test(`workflow (frozen-era .yaml): ${relFilePath}`, () => {
+      const filePath = `${SYNTHETIC_STASH_ROOT}/${relFilePath}`;
+      expect(frozenDeriveCanonicalAssetNameFromStashRoot("workflow", SYNTHETIC_STASH_ROOT, filePath)).toBe(frozenName);
+      expect(deriveCanonicalAssetNameFromStashRoot("workflow", SYNTHETIC_STASH_ROOT, filePath)).toBe(liveName);
     });
   }
 
