@@ -293,13 +293,19 @@ export interface IndexDocument {
   links?: string[];
   /**
    * OKF v0.2 trust/provenance family ← frontmatter `generated`/`verified`/`sources`.
-   * NAMESPACED to avoid colliding with the pre-existing `sources?: string[]`
-   * (wiki citations), `generation?: number` (consolidation depth), and
-   * `quality: "generated"` (enum value) fields above — see the file-level note
-   * ahead of {@link OkfProvenance}. Read-only in 0.9.0: `okf` (D1) parses it from
-   * third-party OKF v0.2 bundles; `promoteProposal` (D2) additionally *writes*
-   * it (under this same shape, nested under a `provenance:` frontmatter key) on
-   * AKM-native assets it promotes, and the `akm` adapter rereads it back.
+   * This TypeScript field is NAMESPACED to avoid colliding with the
+   * pre-existing `sources?: string[]` (wiki citations), `generation?: number`
+   * (consolidation depth), and `quality: "generated"` (enum value) fields
+   * above — see the file-level note ahead of {@link OkfProvenance}. The
+   * ON-DISK spelling is a separate, deliberately hybrid decision (#730
+   * review): `okf` (D1) parses third-party OKF v0.2 bundles' bare top-level
+   * `generated:`/`verified:`/`sources:`; `promoteProposal` (D2) additionally
+   * *writes* AKM-native assets it promotes, stamping `generated:`/`verified:`
+   * bare at the top level (matching OKF v0.2's own spelling exactly — neither
+   * key collides with an existing AKM field) while keeping only `sources`
+   * namespaced under `provenance:` (a bare `sources:` would collide with the
+   * wiki-citation convention). Both read paths fold onto this SAME TypeScript
+   * shape, and the `akm` adapter rereads what it wrote.
    */
   provenance?: OkfProvenance;
   /** OKF v0.2 lifecycle ← frontmatter `status`. Upstream defaults absence to "stable"; left `undefined` here (not defaulted) so callers can distinguish "undeclared" from "explicitly stable." */
