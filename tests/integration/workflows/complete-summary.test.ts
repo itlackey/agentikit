@@ -15,7 +15,7 @@ import {
   getWorkflowStatus,
   type SummaryValidationFailure,
 } from "../../../src/workflows/runtime/runs";
-import { freezeWorkflowProgram, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
+import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
 /**
  * In-process tests for summary capture + the completion-criteria validation
@@ -28,15 +28,21 @@ let tmpDir = "";
 let prevDataDir: string | undefined;
 
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
-const PLAN = freezeWorkflowProgram(`version: 2
-name: Demo
+// Unified format: the gate CONTROL fields (none needed here — default fail-open)
+// live in frontmatter; the rubric lives in the body under "### gate" (spec §2.4).
+const PLAN = freezeWorkflow(`---
+type: workflow
 steps:
   - id: step-1
-    title: Do the thing
-    unit:
-      instructions: instructions
-    gate:
-      criteria: [Thing is done, Tests pass]
+---
+
+## step-1
+
+instructions
+
+### gate
+
+Thing is done, Tests pass
 `);
 
 function seedRun(dbPath: string): void {
