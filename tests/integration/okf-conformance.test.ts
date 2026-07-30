@@ -15,11 +15,7 @@ import { akmIndex } from "../../src/indexer/indexer";
 import { resolveSourceEntries } from "../../src/indexer/search/search-source";
 import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEmbedding } from "../../src/storage/repositories/index-vec-repository";
-import {
-  createWorkflowAsset,
-  getWorkflowProgramTemplate,
-  getWorkflowTemplate,
-} from "../../src/workflows/authoring/authoring";
+import { createWorkflowAsset, getWorkflowTemplate } from "../../src/workflows/authoring/authoring";
 import { resolveRunId } from "../../src/workflows/exec/brief";
 import { getNextWorkflowStep, listWorkflowRuns } from "../../src/workflows/runtime/runs";
 import { loadWorkflowAsset } from "../../src/workflows/runtime/workflow-asset-loader";
@@ -635,12 +631,8 @@ describe("OKF first-class conformance", () => {
 
   test("OKF concepts cannot be executed as native workflows", async () => {
     write(okfRoot, "workflows/foreign.md", getWorkflowTemplate());
-    write(okfRoot, "workflows/foreign-program.yaml", getWorkflowProgramTemplate());
 
     await expect(loadWorkflowAsset("adversarial//workflows/foreign")).rejects.toThrow(
-      /adapter "okf".*does not support native workflow execution/i,
-    );
-    await expect(loadWorkflowAsset("adversarial//workflows/foreign-program")).rejects.toThrow(
       /adapter "okf".*does not support native workflow execution/i,
     );
   });

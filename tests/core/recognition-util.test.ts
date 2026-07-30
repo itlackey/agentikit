@@ -54,14 +54,12 @@ describe("recognition-util — relocated symbol values (behavior-preserving move
     }
   });
 
-  test("WORKFLOW_EXTENSIONS is the readonly [.md, .yaml, .yml] tuple, .md first", () => {
-    expect(WORKFLOW_EXTENSIONS).toEqual([".md", ".yaml", ".yml"]);
+  test("WORKFLOW_EXTENSIONS is the readonly [.md] tuple (workflow-format-unification)", () => {
+    expect(WORKFLOW_EXTENSIONS).toEqual([".md"]);
   });
 
-  test("canonicalizeWorkflowName strips a recognized workflow extension, else passes through", () => {
+  test("canonicalizeWorkflowName strips the recognized workflow extension, else passes through", () => {
     expect(canonicalizeWorkflowName("foo.md")).toBe("foo");
-    expect(canonicalizeWorkflowName("foo.yaml")).toBe("foo");
-    expect(canonicalizeWorkflowName("foo.yml")).toBe("foo");
     expect(canonicalizeWorkflowName("foo")).toBe("foo");
     expect(canonicalizeWorkflowName("foo.FOO")).toBe("foo.FOO");
   });

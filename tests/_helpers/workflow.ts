@@ -3,7 +3,6 @@ import { compileResolveFreezeWorkflow } from "../../src/workflows/ir/freeze";
 import { canonicalPlanJson, computePlanHash } from "../../src/workflows/ir/plan-hash";
 import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
 import { parseWorkflow } from "../../src/workflows/parser";
-import { parseWorkflowProgram } from "../../src/workflows/program/parser";
 import { frozenStepRows } from "../../src/workflows/runtime/plan-classifier";
 
 export const WORKFLOW_TEST_CONFIG = {
@@ -20,37 +19,25 @@ export const WORKFLOW_TEST_CONFIG = {
   defaults: { engine: "test-agent", llmEngine: "test-llm" },
 } as const satisfies AkmConfig;
 
-export function freezeWorkflowProgram(yamlText: string, sourcePath = "workflows/demo.yaml"): WorkflowPlanGraph {
-  const parsed = parseWorkflowProgram(yamlText, { path: sourcePath });
-  if (!parsed.ok) throw new Error(parsed.errors.map((error) => `${error.line}: ${error.message}`).join(" | "));
-  return compileResolveFreezeWorkflow(
-    {
-      ref: `workflows/${parsed.program.name}`,
-      path: sourcePath,
-      sourcePath: "/tmp",
-      title: parsed.program.name,
-      steps: [],
-      program: parsed.program,
-    },
-    WORKFLOW_TEST_CONFIG,
-  ).plan;
-}
-
-export function freezeMarkdownWorkflow(markdown: string, sourcePath = "workflows/demo.md"): WorkflowPlanGraph {
+/**
+ * Parse + compile + freeze a unified workflow markdown document (workflow-
+ * format-unification). Replaces the pre-unification `freezeWorkflowProgram`
+ * (YAML program) / `freezeMarkdownWorkflow` (classic linear markdown) split —
+ * one frontend now.
+ */
+export function freezeWorkflow(markdown: string, sourcePath = "workflows/demo.md"): WorkflowPlanGraph {
   const parsed = parseWorkflow(markdown, { path: sourcePath });
-  if (!parsed.ok) throw new Error(parsed.errors.map((error) => error.message).join(" | "));
+  if (!parsed.ok) {
+    throw new Error(parsed.errors.map((error) => `${error.line}: ${error.message}`).join(" | "));
+  }
+  const title = sourcePath.split("/").pop()?.replace(/\.md$/i, "") || "demo";
   return compileResolveFreezeWorkflow(
     {
-      ref: `workflows/${parsed.document.title}`,
+      ref: `workflows/${title}`,
       path: sourcePath,
       sourcePath: "/tmp",
-      title: parsed.document.title,
-      steps: parsed.document.steps.map((step) => ({
-        id: step.id,
-        title: step.title,
-        instructions: step.instructions.text,
-        sequenceIndex: step.sequenceIndex,
-      })),
+      title,
+      steps: [],
       document: parsed.document,
     },
     WORKFLOW_TEST_CONFIG,

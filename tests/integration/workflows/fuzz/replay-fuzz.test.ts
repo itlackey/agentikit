@@ -11,7 +11,7 @@ import {
 } from "../../../../src/workflows/exec/native-executor";
 import { canonicalJson, computeStepWorkList, unitIdFor } from "../../../../src/workflows/exec/step-work";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../../_helpers/sandbox";
-import { freezeWorkflowProgram } from "../../../_helpers/workflow";
+import { freezeWorkflow } from "../../../_helpers/workflow";
 import { distinctJsonValues, randomJsonValue, reorderKeys } from "../../../workflows/fuzz/_gen";
 import { fuzzSeeds, Rng, withSeed } from "../../../workflows/fuzz/_rng";
 
@@ -37,19 +37,23 @@ import { fuzzSeeds, Rng, withSeed } from "../../../workflows/fuzz/_rng";
  * whole `fuzz/` directory in the fast tier.
  */
 
-const MAP_WF = `version: 2
-name: f
-params: { items: { type: array } }
+const MAP_WF = `---
+type: workflow
+params:
+  items: { type: array }
 steps:
   - id: work
     map:
-      over: \${{ params.items }}
-      unit:
-        on_error: continue
-        instructions: Do \${{ item }}.
+      over: params.items
+      unit: { on_error: continue }
+---
+
+## work
+
+Do the assigned item.
 `;
 
-const PLAN = freezeWorkflowProgram(MAP_WF, "workflows/f.yaml");
+const PLAN = freezeWorkflow(MAP_WF, "workflows/f.md");
 const STEP = PLAN.steps[0]!;
 const ENGINES = PLAN.execution.engines;
 const NODE_ID = "work.unit"; // STEP.root (map).template.id

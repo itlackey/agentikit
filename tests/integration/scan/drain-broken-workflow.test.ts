@@ -35,27 +35,30 @@ beforeAll(() => {
   registerBuiltinAdapters();
 });
 
-const VALID_WORKFLOW = `# Workflow: Ship Release
+const VALID_WORKFLOW = `---
+type: workflow
+steps:
+  - id: validate
+---
 
-## Step: Validate
-Step ID: validate
+# Ship Release
 
-### Instructions
+## validate
+
 Confirm release notes are present.
 `;
 
 // Duplicate step ID ("first") — a parse error the workflow validator rejects.
-const BROKEN_WORKFLOW = `# Workflow: Bad
+const BROKEN_WORKFLOW = `---
+type: workflow
+steps:
+  - id: first
+  - id: first
+---
 
-## Step: First
-Step ID: first
-### Instructions
+## first
+
 do A
-
-## Step: Second
-Step ID: first
-### Instructions
-do B
 `;
 
 function makeStash(): { stashDir: string; goodPath: string; badPath: string } {
@@ -101,7 +104,7 @@ describe("drain-layer broken-workflow drop (F4a M-core-2 item 3)", () => {
     expect(warning!.startsWith("Skipped workflow ")).toBe(true);
     expect(warning).toContain(badPath);
     // Its concrete parse error (duplicate step id) is carried in the detail.
-    expect(warning).toMatch(/already used|Step ID/);
+    expect(warning).toMatch(/Duplicate step id/);
 
     // The valid workflow's hash is surfaced (content_hash source), the broken
     // one's is not (it never became an entry).
@@ -112,6 +115,6 @@ describe("drain-layer broken-workflow drop (F4a M-core-2 item 3)", () => {
     // workflow_documents write (same side channel the live contributor used).
     const cached = takeWorkflowDocument(drained.entries[0]!);
     expect(cached).toBeDefined();
-    expect(cached?.title).toBe("Ship Release");
+    expect(cached?.steps.map((s) => s.id)).toEqual(["validate"]);
   });
 });

@@ -90,11 +90,11 @@ afterEach(() => {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 const VALID_LESSON = `---\ndescription: Use ripgrep before grep\nwhen_to_use: Searching large repos for patterns\n---\n\nPrefer rg over grep when scanning large code repos.\n`;
-// A structurally-valid markdown workflow. Carries frontmatter deliberately:
-// `workflow` is the only type whose frontmatter is checked against a CLOSED
-// allowlist, which is what makes it the interesting case for #730's provenance
-// stamping (see the workflow-stamping test below).
-const VALID_WORKFLOW = `---\ndescription: Validate a specification before shipping\n---\n\n# Workflow: Provenance Workflow Stamped\n\n## Step: Validate inputs\nStep ID: validate\n\n### Instructions\nValidate the specification.\n`;
+// A structurally-valid unified workflow (workflow-format-unification): the
+// orchestration graph is closed-schema-validated (schemas/akm-workflow.json,
+// envelope ∪ workflow-keys), which is what makes it the interesting case for
+// #730's provenance stamping (see the workflow-stamping test below).
+const VALID_WORKFLOW = `---\ntype: workflow\ndescription: Validate a specification before shipping\nsteps:\n  - id: validate\n---\n\n# Provenance Workflow Stamped\n\n## validate\n\nValidate the specification.\n`;
 
 function indexedEntry(filePath: string): Record<string, unknown> | undefined {
   const db = openExistingDatabase(getDbPath());
@@ -471,15 +471,17 @@ describe("validation failure", () => {
     expect(code).toBe("INVALID_PROPOSAL");
   });
 
-  test("queued workflow with numbered step headings cannot replace an indexed workflow", async () => {
+  test("queued workflow with an unbound heading cannot replace an indexed workflow", async () => {
     const stash = makeStashDir();
     const config = makeConfig(stash);
     const workflowDir = path.join(stash, "workflows");
     fs.mkdirSync(workflowDir, { recursive: true });
     const workflowPath = path.join(workflowDir, "ship-feature-from-spec.md");
     const original =
-      "# Workflow: Ship Feature From Spec\n\n## Step: Validate inputs\nStep ID: validate\n\n### Instructions\nValidate the specification.\n";
-    const invalid = original.replace("## Step: Validate inputs", "## Step 1: Validate inputs");
+      "---\ntype: workflow\nsteps:\n  - id: validate\n---\n\n# Ship Feature From Spec\n\n## validate\n\nValidate the specification.\n";
+    // A level-2 heading that does not exactly match a declared step id — the
+    // body-binder's rule 1 violation (workflow-format-unification).
+    const invalid = original.replace("## validate", "## Validate Inputs");
     fs.writeFileSync(workflowPath, original, "utf8");
     await akmIndex({ stashDir: stash });
     expect(indexedEntry(workflowPath)).toBeDefined();
@@ -1180,7 +1182,7 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
       force: true,
       payload: {
         content:
-          "---\ndescription: Valid accepted workflow\n---\n\n# Workflow: Accepted\n\n## Step: First\nStep ID: first\n\n### Instructions\nRun.\n",
+          "---\ntype: workflow\ndescription: Valid accepted workflow\nsteps:\n  - id: first\n---\n\n# Accepted\n\n## first\n\nRun.\n",
       },
     });
     if (isProposalSkipped(created)) throw new Error("unexpected skip");
