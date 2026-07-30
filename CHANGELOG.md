@@ -63,6 +63,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with no configured actor id, `by` falls back to `human:<OS username>`, which
   puts that username into content you may later commit and share.
 
+- **Internal: a `capturedAtHead` integrity guard**
+  (`scripts/lint-golden-captured-at-head.ts`, wired into `bun run lint`) now
+  checks every golden fixture's recorded `capturedAtHead` commit SHA — it must
+  exist in the local object database and be reachable from at least one known
+  branch. Post-hoc review of this PR found all four new OKF format-family
+  goldens pointed at a commit that existed locally but was unreachable from
+  any ref (a pre-amend duplicate left behind by an interrupted git operation),
+  which would have 404'd on GitHub and vanished under a local `git gc`; a
+  human fixed that one by hand because nothing caught it. This guard is that
+  catch, going forward.
+
 - **`akm log list --limit <n>`** returns the most recent N events. The flag was
   documented but silently ignored, and there was no limiting mechanism at all
   in the read path — the command returned the entire events table regardless of

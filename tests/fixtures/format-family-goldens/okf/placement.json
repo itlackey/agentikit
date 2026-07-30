@@ -1,7 +1,7 @@
 {
   "scenario": "okf adapter placement -- the adapter is CONSUMER-ONLY in 0.9.0 (§5), so it has no placeNew. Mirrors placement/all-types.json's envelope with a read-only marker, matching the website-snapshot family's shape for the same reason (no adapter-owned placement).",
   "specificationGolden": false,
-  "capturedAtHead": "15a1b3754e6c38d055b50c897680a701708a4067",
+  "capturedAtHead": "23ccdbde4add0b115313e99eea38f24b9209f70e",
   "adapterStatus": "IMPLEMENTED — src/core/adapter/adapters/okf-adapter.ts. Authoring/placement is deliberately absent (§5: 'authoring: consumer-only in 0.9.0. AKM-specific write commands fail before touching an OKF target.').",
   "specSource": "docs/architecture/specs/akm-0.9.0-bundle-adapter-spec.md §5 ('authoring: consumer-only in 0.9.0'), §2 (placeNew is OPTIONAL on BundleAdapter), §7 (okf adapter row: 'writable: yes' at the BUNDLE level, meaning an OKF *source* CAN be configured writable=true, but the adapter itself never places a new concept -- AKM-native write commands are rejected before touching disk regardless of the source's writable flag; see the runbook's §10 write-rejection contract).",
   "realWorldSource": [

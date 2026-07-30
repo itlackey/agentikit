@@ -1,7 +1,7 @@
 {
   "scenario": "presentationFor(type) for every DISTINCT open type value recognize() emits across tests/fixtures/bundles/okf-sample/. presentationFor is adapter-agnostic (keyed purely on the open type string, spec §2/§3.4), so an OKF concept's type can coincide with an AKM KNOWN_TYPE and pick up its presentation, or -- for a genuinely foreign vendor type -- fall through to the generic DEFAULT_PRESENTATION.",
   "specificationGolden": false,
-  "capturedAtHead": "15a1b3754e6c38d055b50c897680a701708a4067",
+  "capturedAtHead": "23ccdbde4add0b115313e99eea38f24b9209f70e",
   "adapterStatus": "IMPLEMENTED — src/core/adapter/adapters/okf-adapter.ts (doc.ownsPresentation = true, per its own file header: 'the owning adapter provides the complete generic presentation projection'). presentationFor itself lives in src/core/type-presentation.ts and is shared across every adapter.",
   "specSource": "docs/architecture/specs/akm-0.9.0-bundle-adapter-spec.md §2 ('Renderer/action = data table keyed on the open type ... lookup stays open-string with a generic fallback'), §3.4 ('No closed set replaces AkmAssetType ... any other type renders generically and stays searchable').",
   "realWorldSource": [
