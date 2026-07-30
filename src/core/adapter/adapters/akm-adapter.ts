@@ -210,6 +210,11 @@ const DOCUMENT_JSON_CARRIED_FIELDS = [
   "sources",
   "generation",
   "evidenceSources",
+  // D2 (#730): the OKF v0.2 provenance `promoteProposal` stamps onto AKM-native
+  // writes (generated/verified/sources, namespaced — see `types.ts`'s
+  // `OkfProvenance` doc). Carried so the akm adapter rereads what it wrote and
+  // `akm show` surfaces it, exactly like every other field in this list.
+  "provenance",
 ] as const satisfies readonly (keyof IndexDocument)[];
 
 /**

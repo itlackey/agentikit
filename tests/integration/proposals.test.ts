@@ -26,10 +26,10 @@ import {
   resolveProposalId,
 } from "../../src/commands/proposal/repository";
 import { validateProposal } from "../../src/commands/proposal/validators/proposals";
+import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";
 import { UsageError } from "../../src/core/errors";
 import { readEvents } from "../../src/core/events";
-import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import { getDbPath, getIndexWriterLockPath } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
 import { indexWrittenAssets } from "../../src/indexer/index-written-assets";
@@ -1299,11 +1299,18 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     });
     if (isProposalSkipped(proposalB)) throw new Error("unexpected skip");
     await akmProposalAccept({ stashDir: stash, id: proposalB.id, config });
+    // D2 (#730): promotion stamps OKF v0.2 provenance (generated/verified) onto
+    // the written frontmatter, so the on-disk bytes are no longer expected to be
+    // byte-identical to the pre-stamp `proposalB.payload.content` — snapshot what
+    // accept ACTUALLY wrote and assert the refused revert leaves THAT untouched.
+    const afterBAccept = fs.readFileSync(assetPath, "utf8");
+    expect(afterBAccept).toContain("Proposal B accepted content");
+    expect(afterBAccept).toContain("PROPOSAL B.");
 
     await expect(akmProposalRevert({ stashDir: stash, id: proposalA.id, config })).rejects.toThrow(
       /changed|hash|content/i,
     );
-    expect(fs.readFileSync(assetPath, "utf8")).toBe(proposalB.payload.content);
+    expect(fs.readFileSync(assetPath, "utf8")).toBe(afterBAccept);
     expect(getProposal(stash, proposalA.id).status).toBe("accepted");
   });
 
@@ -1322,6 +1329,12 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     });
     if (isProposalSkipped(created)) throw new Error("unexpected skip");
     await akmProposalAccept({ stashDir: stash, id: created.id, config });
+    // D2 (#730): promotion stamps OKF v0.2 provenance onto the written
+    // frontmatter — snapshot what accept ACTUALLY wrote (rather than assuming
+    // byte-identity with the pre-stamp `created.payload.content`) and assert
+    // the refused revert below leaves THAT untouched.
+    const afterAccept = fs.readFileSync(assetPath, "utf8");
+    expect(afterAccept).toContain("Prefer rg over grep");
 
     const state = openStateDatabase();
     const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
@@ -1335,7 +1348,7 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
     await expect(akmProposalRevert({ stashDir: stash, id: created.id, config })).rejects.toThrow(
       /has no recorded target/i,
     );
-    expect(fs.readFileSync(assetPath, "utf8")).toBe(created.payload.content);
+    expect(fs.readFileSync(assetPath, "utf8")).toBe(afterAccept);
     expect(getProposal(stash, created.id).acceptedTarget).toBeUndefined();
   });
 
@@ -1544,9 +1557,7 @@ describe("D2 (#730): promoteProposal stamps OKF v0.2 provenance onto AKM-native 
 
     const provenance = readWrittenProvenance(result.assetPath);
     expect(provenance.generatedBy).toBe("human:test-human-2");
-    expect(provenance.verified).toEqual([
-      { by: "human:test-human-2", at: expect.any(String) as unknown as string },
-    ]);
+    expect(provenance.verified).toEqual([{ by: "human:test-human-2", at: expect.any(String) as unknown as string }]);
   });
 
   test("evidenceSources on the promoted content project as provenance.sources ({resource} minimum)", async () => {
@@ -1589,7 +1600,7 @@ describe("D2 (#730): promoteProposal stamps OKF v0.2 provenance onto AKM-native 
     expect(fs.readFileSync(result.assetPath, "utf8")).toBe(taskContent);
   });
 
-  test("the promoted asset re-indexes with provenance surfaced via documentJson (akm's own adapter rereads what it wrote)", async () => {
+  test("the promoted asset re-indexes with provenance surfaced on the persisted entry (akm's own adapter rereads what it wrote via DOCUMENT_JSON_CARRIED_FIELDS)", async () => {
     const stash = makeStashDir();
     const config = makeConfig(stash);
     fs.writeFileSync(path.join(stash, "memories", "index-seed.md"), "Index seed.\n", "utf8");
@@ -1609,9 +1620,9 @@ describe("D2 (#730): promoteProposal stamps OKF v0.2 provenance onto AKM-native 
       ctx: { actorId: () => "test-human-3" },
     });
 
-    const entry = indexedEntry(result.assetPath) as { documentJson?: { provenance?: Record<string, unknown> } };
-    expect(entry?.documentJson?.provenance).toBeDefined();
-    const provenance = entry?.documentJson?.provenance as { generatedBy?: string; verified?: unknown[] };
+    const entry = indexedEntry(result.assetPath) as { provenance?: Record<string, unknown> };
+    expect(entry?.provenance).toBeDefined();
+    const provenance = entry?.provenance as { generatedBy?: string; verified?: unknown[] };
     expect(provenance.generatedBy).toBe(`akm/${pkgVersion}`);
     expect(provenance.verified).toHaveLength(1);
   });

@@ -490,6 +490,53 @@ export function applyWikiFrontmatter(entry: IndexDocument, fmData: Record<string
   }
 }
 
+/**
+ * Extract the AKM-write-side namespaced `provenance:` frontmatter block (D2 —
+ * `promoteProposal` stamps this on accepted proposals, #730) and apply it to
+ * the entry unchanged. Distinct from {@link applyWikiFrontmatter}'s bare
+ * `sources: string[]` above — `provenance:` is a nested object under its own
+ * top-level key, so the two never collide on disk even on a promoted wiki
+ * page. Tolerant: any malformed sub-field is dropped individually rather than
+ * rejecting the whole block.
+ */
+export function applyProvenanceFrontmatter(entry: IndexDocument, fmData: Record<string, unknown>): void {
+  const provenance = fmData.provenance;
+  if (provenance === null || typeof provenance !== "object" || Array.isArray(provenance)) return;
+  const obj = provenance as Record<string, unknown>;
+  const result: NonNullable<IndexDocument["provenance"]> = {};
+
+  const generatedBy = asNonEmptyString(obj.generatedBy);
+  if (generatedBy) result.generatedBy = generatedBy;
+  const generatedAt = asNonEmptyString(obj.generatedAt);
+  if (generatedAt) result.generatedAt = generatedAt;
+
+  if (Array.isArray(obj.verified)) {
+    const verified = obj.verified
+      .filter((v): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v))
+      .map((v) => {
+        const by = asNonEmptyString(v.by);
+        if (!by) return undefined;
+        const at = asNonEmptyString(v.at);
+        return at ? { by, at } : { by };
+      })
+      .filter((v): v is { by: string; at?: string } => v !== undefined);
+    if (verified.length > 0) result.verified = verified;
+  }
+
+  if (Array.isArray(obj.sources)) {
+    const sources = obj.sources
+      .filter((s): s is Record<string, unknown> => s !== null && typeof s === "object" && !Array.isArray(s))
+      .map((s) => {
+        const resource = asNonEmptyString(s.resource);
+        return resource ? { resource } : undefined;
+      })
+      .filter((s): s is { resource: string } => s !== undefined);
+    if (sources.length > 0) result.sources = sources;
+  }
+
+  if (Object.keys(result).length > 0) entry.provenance = result;
+}
+
 // AKM-stash indexing policy (env/vaults/secrets sensitive-marker + wiki-infra
 // exclusions) moved to the `akm` adapter's `recognize` as path/stat-based
 // abstention (owner ruling 2026-07-21 — adapter-owned filtering). See
@@ -1022,6 +1069,8 @@ export function applyPreContributorFields(
     if (fmParams) entry.parameters = fmParams;
     // Pass wiki-pattern frontmatter through onto the entry
     applyWikiFrontmatter(entry, parsed.data);
+    // D2 (#730): reread the namespaced `provenance:` block promoteProposal stamps.
+    applyProvenanceFrontmatter(entry, parsed.data);
     // Stash-organization conventions (SPEC-8): config-gated capture of the
     // self-situating body opening. Default off — enabling it changes indexed
     // text (collapse-detector canary baselines shift, and embeddings for

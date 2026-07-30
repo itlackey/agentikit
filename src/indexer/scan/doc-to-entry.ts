@@ -117,6 +117,12 @@ export function indexDocumentToStashEntry(doc: IndexDocument): IndexDocument {
   assignStringList(entry, "sources", dj.sources);
   if (typeof dj.generation === "number") entry.generation = dj.generation;
   assignStringList(entry, "evidenceSources", dj.evidenceSources);
+  // D2 (#730): OKF v0.2 provenance promoteProposal stamps onto AKM-native
+  // writes, carried via DOCUMENT_JSON_CARRIED_FIELDS (akm-adapter.ts) —
+  // unpacked back to a first-class member here exactly like `sources`/
+  // `generation`/`evidenceSources` above, so it round-trips to the top level
+  // of the persisted entry rather than staying nested under `documentJson`.
+  if (dj.provenance !== undefined) entry.provenance = dj.provenance as IndexDocument["provenance"];
 
   return entry;
 }
