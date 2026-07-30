@@ -415,8 +415,9 @@ ranking.
 
 ### curate
 
-Curate the best matching assets for a task or prompt by combining search with a
-compact, follow-up-friendly summary.
+Pick the assets worth loading for a task. Unlike `akm search`, curate reranks by
+intent, attaches a preview and run details per hit, adds related support refs,
+and summarizes the set — the usual starting point for an agent.
 
 ```sh
 akm curate "plan a release"

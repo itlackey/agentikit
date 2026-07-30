@@ -127,7 +127,7 @@ search results. No `--llm` anywhere — akm never reasons about page content.
 
 ## Env files
 
-A group of related CONFIGURATION for an app/service in one `.env` file at
+Configuration an app or service loads together, in one `.env` file at
 `<bundle>/env/<name>.env`, sourced/injected wholesale. Key names are
 discoverable; values and comment text stay on disk and never reach stdout or
 the index (comments can contain commented-out credentials). akm does not edit

@@ -199,7 +199,7 @@ export const taskCommand = defineGroupCommand({
   meta: {
     name: "task",
     description:
-      "Schedule version-2 workflows, prompts, or commands via the OS-native scheduler (cron / launchd / schtasks)",
+      "Schedule recurring commands, prompts, and workflows through the OS scheduler (cron / launchd / schtasks)",
   },
   subCommands: {
     add: tasksAddCommand,

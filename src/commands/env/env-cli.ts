@@ -417,7 +417,8 @@ export const envCommand = defineGroupCommand({
   meta: {
     name: "env",
     description:
-      "Manage `.env` files — a group of related CONFIGURATION values for an app or service (URLs, flags, plus any credentials it needs), loaded together. Values may or may not be sensitive; akm protects them all the same (key names visible, values never in structured output). For a single sensitive value used on its own (an auth token, key, or cert), use `akm secret`.",
+      "Manage `.env` files — configuration values an app loads together (URLs, flags, and any credentials it needs).\n\n" +
+      "Values may or may not be sensitive; akm protects them all the same way — key names are visible, values never appear in structured output. For a single sensitive value used on its own (an auth token, key, or cert), use `akm secret`.",
   },
   subCommands: {
     list: envListCommand,

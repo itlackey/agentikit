@@ -262,7 +262,8 @@ export const secretCommand = defineGroupCommand({
   meta: {
     name: "secret",
     description:
-      "Manage secrets — a single sensitive value used on its own for authentication (an API token, a PEM private key, a TLS cert), one value per file. Names are visible; the file contents are the value and never appear in structured output. For a group of related configuration loaded together, use `akm env`. `secret path` and `secret remove` were removed in 0.9.0 (D-49: they resolved a ref through different bundle-selection logic, so a lookup and a deletion could silently target different files) — a ref's file lives at `<bundle>/secrets/<name>` (see `akm bundle list` for bundle roots); locate or delete it there directly, or consume its value without touching disk via `akm secret run <ref> <VAR> -- <command>`.",
+      "Manage secrets — one standalone sensitive value per file (an API token, a PEM private key, a TLS cert).\n\n" +
+      "Names are visible; the file contents are the value and never appear in structured output. For a group of related configuration loaded together, use `akm env`. A secret's file lives at `<bundle>/secrets/<name>` (`akm bundle list` shows bundle roots) — read or delete it there directly, or consume its value without writing it anywhere via `akm secret run <ref> <VAR> -- <command>`.",
   },
   subCommands: {
     list: secretListCommand,
