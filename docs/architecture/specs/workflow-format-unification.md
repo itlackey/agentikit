@@ -1,8 +1,12 @@
 # Workflow Format Unification
 
-Status: PROPOSAL — owner review requested
+Status: PROPOSAL v2 — owner decisions from review round 1 applied
 Date: 2026-07-30
 Supersedes: the dual markdown/YAML-program authoring surface (both unreleased)
+
+Owner decisions incorporated in v2: no interpolation syntax in prose (§2.3),
+gate rubrics live in the body (§2.4), steps have no titles — bare ids only
+(§2.2).
 
 ## 0. Why now
 
@@ -18,64 +22,31 @@ is the moment to unify: nothing on disk to migrate, no users to break.
 
 ### 1.1 Format A — markdown workflow (`src/workflows/parser.ts`, ~500 lines)
 
-```markdown
----
-description: Ship a tagged release
-params:
-  version: The semver version string to release   # name → description string
----
-
-# Workflow: Ship Release
-
-## Step: Validate inputs
-Step ID: validate
-
-### Instructions
-Check that `version` follows semver.
-
-### Completion Criteria
-- Tag does not already exist
-```
-
 A bespoke prose grammar: one magic `# Workflow:` H1, magic `## Step:` H2s, a
 magic `Step ID:` body line, magic `### Instructions` / `### Completion
-Criteria` subsection names. Capabilities: **linear steps only**. No routing,
-fan-out, retry, timeout, engine/model selection, output schemas, or budgets —
-the compile path (`ir/compile.ts` `compileWorkflowPlan`) lowers every step to
-one fail-fast unit node.
+Criteria` subsection names. Capabilities: **linear steps only** — no routing,
+fan-out, retry, timeout, engine/model selection, output schemas, or budgets.
+The compile path (`ir/compile.ts` `compileWorkflowPlan`) lowers every step to
+one fail-fast unit node with verbatim instructions.
 
 ### 1.2 Format B — YAML program (`src/workflows/program/*`, ~1,300 lines)
 
-```yaml
-version: 2
-name: example-workflow
-params:
-  example_param: { type: string, description: ... }   # name → JSON Schema
-defaults: { timeout: 10m, on_error: fail }
-steps:
-  - id: first-step
-    unit:
-      instructions: |
-        Do the thing. Reference ${{ params.example_param }}.
-    gate:
-      criteria: [Confirm the first step is complete]
-```
-
 The full orchestration surface: `unit | map | route` steps, `${{ … }}`
-expressions, retries keyed on the failure taxonomy, timeouts, per-unit
-engine/model/llm overrides, JSON-Schema-typed params and step outputs, gates
-with `max_loops`/`required`, budgets, worktree isolation.
+template expressions, retries keyed on the failure taxonomy, timeouts,
+per-unit engine/model/llm overrides, JSON-Schema-typed params and step
+outputs, gates with `max_loops`/`required`, budgets, worktree isolation.
+Instructions are embedded YAML block scalars.
 
 ### 1.3 The divergences (each one is a standing cost)
 
 | Concern | Markdown | YAML program |
 |---|---|---|
-| Step id grammar | `[A-Za-z0-9][A-Za-z0-9._-]*` — dots allowed | `[A-Za-z_][A-Za-z0-9_-]*` — dots forbidden (expression/`.gate` safety) |
+| Step id grammar | `[A-Za-z0-9][A-Za-z0-9._-]*` — dots allowed | `[A-Za-z_][A-Za-z0-9_-]*` — dots forbidden |
 | Params | name → description string, untyped | name → JSON Schema |
 | Templating | **none** — instructions verbatim | `${{ … }}` expressions, real substitution |
-| Gate | `### Completion Criteria` bullets; no `max_loops`, no `required` | `gate:` with criteria/max_loops/required |
+| Gate | `### Completion Criteria` bullets; no `max_loops`/`required` | `gate:` with criteria/max_loops/required |
 | Capabilities | linear only | full orchestration |
-| Frontmatter validation | closed hand-maintained allowlist (`validator.ts`) | closed key lists per level, JSON Schema published |
+| Frontmatter validation | closed hand-maintained allowlist | closed key lists, JSON Schema published |
 | Title | required `# Workflow:` H1 prefix | `name:` field duplicating the filename |
 | Version | internal `schemaVersion 1` | `version: 2` (IR is v3) |
 
@@ -84,10 +55,9 @@ Beyond the table, four structural costs:
 1. **The fake templating trap.** Every shipped example workflow
    (`scripts/akm-eval/example-stash/workflows/*.md`) uses `{{ repo }}`-style
    moustaches that **the engine never substitutes** — markdown instructions
-   are compiled `templating: "verbatim"`. The YAML format substitutes
-   `${{ … }}` for real. Two syntaxes; one is decorative and exists only as a
-   convention the executing agent is hoped to honor. This is the single worst
-   authoring trap in the feature.
+   compile `templating: "verbatim"`. The YAML format substitutes `${{ … }}`
+   for real. Two syntaxes; one is decorative and exists only as a convention
+   the executing agent is hoped to honor.
 2. **Content sniffing everywhere.** Two structural probes
    (`looksLikeWorkflow`, `looksLikeWorkflowProgram`) consulted by the indexer
    matchers, the workflow adapter (`recognize()` returns `"markdown" |
@@ -99,8 +69,8 @@ Beyond the table, four structural costs:
    type validating frontmatter against a closed hand-maintained key set. It
    is why #730's provenance stamping needed a re-validation fallback in the
    promotion path, why the allowlist had to learn `generated`/`verified`/
-   `provenance` by name, and why its error message is now stale (it still
-   enumerates the pre-#730 keys — `validator.ts:94`). Every future
+   `provenance` by name, and why its error message is now stale
+   (`validator.ts:94` still enumerates the pre-#730 keys). Every future
    machine-stamped key repeats this.
 4. **Double everything.** Two parsers, two templates, two doc sections, two
    test suites, two JSON representations feeding one `WorkflowPlanDraft`.
@@ -111,30 +81,27 @@ Beyond the table, four structural costs:
 - **The IR and engine.** Both frontends compile to one `WorkflowPlanDraft` →
   frozen IR v3. Deterministic replay, journaled units, leases, brief/report —
   none of that is format-coupled. This proposal changes **frontends only**.
-- **The closed expression grammar** (`program/expressions.ts`): four roots,
-  parse-once, substituted-content-never-rescanned. Keep verbatim.
-- **The program vocabulary** (unit/map/route, gate, retry taxonomy, budgets,
-  defaults): well-designed, schema-validated, keep nearly verbatim.
+- **The closed reference grammar** (`program/expressions.ts`) — though in v2
+  of this proposal it *shrinks* from a template language to a bare reference
+  string format (§2.3).
+- **The program vocabulary** (unit/map/route, gate control, retry taxonomy,
+  budgets, defaults): well-designed, schema-validated, kept nearly verbatim.
 - **Markdown prose as the instruction medium.** The example workflows prove
   the point: real instructions are long structured prose with code fences,
-  sub-headings, and lists. YAML block scalars are a hostile medium for that;
-  markdown is the native one. Any unification that abandons markdown bodies
-  loses search quality, wiki cohesion, and authorability.
+  sub-headings, and lists. Markdown is their native medium.
 
 ## 2. Design
 
 ### 2.1 Principle
 
 > **One file. Machine surface in frontmatter, prose surface in the body,
-> joined by step id. The body rule fits in two sentences.**
+> joined by step id. Prose is never templated — data reaches units as
+> attached context, not string splices.**
 
 A workflow is an ordinary AKM markdown asset — same envelope as every other
 type, OKF-conformant frontmatter + body — whose frontmatter carries the
-entire orchestration graph (the YAML program vocabulary, minus embedded
-prose) and whose body carries the per-step instructions under plain headings.
-
-This is not a third format. It is the YAML program with its `instructions:`
-strings lifted out into a markdown body, wearing the standard asset envelope.
+entire orchestration graph and whose body carries per-step instructions and
+gate rubrics under plain headings.
 
 ### 2.2 The format
 
@@ -142,32 +109,27 @@ strings lifted out into a markdown body, wearing the standard asset envelope.
 ---
 type: workflow
 description: Drive a batch of GitHub issues to merged PRs.
-tags: [github, multi-agent]
 params:
   repo:   { type: string, description: Target repository owner/name }
   issues: { type: array,  description: Issue numbers to implement }
-defaults:
-  timeout: 10m
-  on_error: fail
+defaults: { timeout: 10m, on_error: fail }
 budget: { max_units: 60 }
 steps:
   - id: intake
   - id: implement
     map:
-      over: ${{ steps.intake.output.issues }}
+      over: steps.intake.output.issues
       concurrency: 3
       unit: { isolation: worktree, retry: { max: 2, on: [timeout] } }
-    output: { type: object }             # JSON Schema for the step artifact
-    gate:
-      criteria: [Every issue has a mergeable PR or a recorded blocker]
-      required: true
-      max_loops: 2
+    output: { type: object }
+    gate: { required: true, max_loops: 2 }
   - id: verdict
     route:
-      input: ${{ steps.implement.output.status }}
+      input: steps.implement.output.status
       when: [{ match: clean, step: done }]
       default: intake
   - id: done
+    inputs: [steps.implement.output]
 ---
 
 # GitHub Issues Parallel Implementer
@@ -175,86 +137,141 @@ steps:
 Free preamble prose. Indexed for search, shown in `akm show`, never
 dispatched. Any headings except level-2 are fine here.
 
-## intake: Intake and validate
+## intake
 
 Everything under this heading, byte-exact, is the step's instructions —
-sub-headings, fences, lists, all of it. `${{ params.repo }}` is a real
-substitution here, same grammar as frontmatter expressions.
+sub-headings, fences, lists, all of it. The run's params arrive as attached
+context; refer to them by name in prose ("clone the `repo` parameter's
+repository").
 
-## implement: Implement one issue
+## implement
 
-This section is the **map unit template** — instantiated per item.
-Work on issue `${{ item }}` (position ${{ item_index }}).
+This section is the **map unit template**. The engine attaches each unit's
+item (and its index) as context; the prose says "the issue you were given."
 
-## done: Wrap up
+### gate
 
-Post the summary comment.
+The gate rubric — as long as it needs to be. Full prose, bullets, examples
+of passing and failing artifacts. The judge receives this whole section.
+
+- Every issue in the working set has a mergeable PR or a recorded blocker.
+- No PR was opened against a branch other than the declared base.
+
+## done
+
+Post the summary. The `implement` step's artifact is attached as context
+(declared via `inputs:` above).
 ````
 
 **Frontmatter** (validated by one published JSON Schema):
 
-- The standard AKM asset envelope — `type`, `title`, `description`, `tags`,
+- The standard AKM asset envelope — `type`, `description`, `tags`,
   `when_to_use`, `xrefs`, `updated`/`timestamp`, and the OKF v0.2 families
   (`generated`, `verified`, `provenance`, `status`, `stale_after`) — via a
-  shared `$ref`'d envelope definition (see §2.5).
+  shared `$ref`'d envelope definition (§2.5).
 - The orchestration keys, adopted from program v2 with these changes:
-  - `version:` and `name:` are **dropped**. Identity is the ref (like every
-    asset); the frozen plan already versions execution semantics (IR v3), and
-    the authoring schema evolves additively like every other asset type.
-  - `steps[].unit.instructions` / `steps[].map.unit.instructions` are
-    **removed** — instructions live only in the body.
-  - A step with no `map:` and no `route:` **is** a unit step; a bare
+  - `version:` and `name:` **dropped**. Identity is the ref; the frozen plan
+    already versions execution semantics (IR v3); the authoring schema
+    evolves additively like every other asset type.
+  - `instructions:` keys **removed** — prose lives only in the body.
+  - `gate.criteria` **removed** — rubrics live in the body (§2.4). `gate:`
+    retains only the control fields: `required`, `max_loops`.
+  - **No titles anywhere.** No step `title:` key, no display-title heading
+    suffix. A step is its id; the asset's human name is its `description`
+    and H1 like any other asset.
+  - New `inputs:` key on unit/map steps: the prior-step artifacts this step
+    consumes, as bare reference strings (§2.3). Replaces prose splicing as
+    the way a step sees upstream data, and gives replay hashing its exact
+    input set.
+  - A step with no `map:` and no `route:` **is** a unit step; bare
     `- id: validate` is the complete minimal declaration. `unit:` remains as
-    the optional bag of dispatch overrides (engine/model/llm/timeout/retry/
-    on_error/env/isolation/output).
-  - One id grammar everywhere: the program's `[A-Za-z_][A-Za-z0-9_-]*`
-    (expression-addressable, `.gate`-collision-free). The markdown grammar's
-    dotted ids die.
-  - Keys stay snake_case (`on_error`, `max_loops`, `stale_after`) — the
-    existing AKM/OKF frontmatter convention (`when_to_use`).
+    the optional dispatch-override bag (engine/model/llm/timeout/retry/
+    on_error/env/isolation).
+  - One id grammar everywhere: `[A-Za-z_][A-Za-z0-9_-]*`.
+  - Keys stay snake_case (`on_error`, `max_loops`) — the existing AKM/OKF
+    frontmatter convention.
 
-**Body** (two rules):
+**Body** (three rules):
 
-1. Every level-2 heading must be `## <step-id>` or `## <step-id>: <display
-   title>`, where `<step-id>` is a declared step. (The id grammar contains no
-   `:`, so the split is unambiguous. Fenced code blocks are skipped when
-   scanning for headings, as `looksLikeWorkflow` already does.)
+1. Every level-2 heading must be `## <step-id>` for a declared step, exactly.
+   (Fenced code blocks are skipped when scanning for headings.)
 2. A unit or map step **must** have a section (its instructions / per-item
-   template, taken byte-exact to the next H2 or EOF). A route step **may**
-   have one (documentation only — routes dispatch nothing). Everything before
-   the first H2 is free preamble.
+   template, byte-exact to the next H2 or EOF). A route step **may** have one
+   (documentation, plus a gate rubric if gated). Everything before the first
+   H2 is free preamble.
+3. Inside a step section, an optional `### gate` sub-heading starts the
+   step's gate rubric (running to the section end). It is the format's
+   **single reserved marker**. Frontmatter `gate:` without a `### gate`
+   rubric is a lint error; a `### gate` rubric alone declares a default gate
+   (fail-open, unbounded loops — tune with the frontmatter key).
 
-Nothing else. No `Step ID:` lines, no `# Workflow:` prefix, no reserved H3
-names. H1 and all H3+ headings are ordinary content.
+No `Step ID:` lines, no `# Workflow:` prefix, no reserved H3s beyond `gate`.
 
-### 2.3 Semantics: nothing below the frontend changes
+### 2.3 No interpolation syntax — references and attached context
 
-Compilation targets the existing `WorkflowPlanDraft` exactly as
-`compileWorkflowProgram` does today, with instructions supplied from body
-sections (as `SourceRef`-spanned text, which the markdown parser already
-produces). Freeze, engine, journal, classic `start`/`next`/`complete` driver,
-brief/report, leases, budgets: untouched. The classic human-driven mode reads
-the same compiled plan it reads today.
+v1 of this proposal kept `${{ … }}` templating in prose and added a `$${{`
+escape. The owner asked the right question — *why have the syntax at all?* —
+and the answer is that only the **engine** ever needed deterministic value
+resolution, and the engine only reads **whole-value frontmatter positions**:
 
-Two deliberate behavior changes, both fixing traps:
+- `map.over` — the list to fan out over.
+- `route.input` — the value routing matches on.
+- `inputs:` — the artifacts a step consumes (new, replacing prose splicing).
 
-- **Templating is real everywhere.** Body instructions are `${{ … }}`
-  templates (parse-once, closed grammar). The fake `{{ … }}` convention dies
-  with the format that hosted it.
-- **Escape syntax.** Because prose bodies legitimately contain literal
-  `${{` (e.g. a workflow *about* GitHub Actions), the expression grammar
-  gains its first escape: `$${{` → literal `${{`. Single-pass, deterministic,
-  and closes the "no way to write a literal opener" gap the program format
-  shipped with. (Open question §5.1 if the owner prefers to keep the v1
-  no-escape stance.)
+Whole-value positions need no delimiters. These become **bare reference
+strings** with the same closed grammar, shrunk from four roots to two:
 
-### 2.4 Gate criteria stay in frontmatter
+    params.<name>
+    steps.<id>.output( .<ident> | [<int>] )*
 
-Criteria are part of the control contract (judged, `max_loops`-bounded,
-`required`-blocking), so they live with the graph. The markdown format's
-`### Completion Criteria` magic subsection dies. This is the one place prose
-moves *into* frontmatter; criteria are short judge-facing strings, not
-documents.
+`item` and `item_index` are **deleted from the language**: with no splicing
+there is nothing to substitute — the engine attaches each map unit's item and
+index as context alongside the prompt.
+
+**Prose is never templated.** Each dispatched unit receives, as structured
+attached context: the run params (params are run-scoped and documented
+non-secret), its item + index (map units), and the artifacts named by its
+step's `inputs:`. Instructions refer to these in plain language — which is
+exactly how the classic driver and all nine example workflows already
+functioned, since their moustaches were never substituted.
+
+What this buys:
+
+- The escape-syntax question evaporates — there are no delimiters in prose.
+- The P1 injection class dies at the root: data never enters the instruction
+  string at all, spliced or otherwise.
+- `program/expressions.ts` shrinks from a template parser (segments,
+  literals, offsets) to a small reference-string parser.
+- Bodies are pure markdown — cohesive with every other asset, no syntax an
+  OKF reader or a human editor has to know about.
+
+Determinism and replay identity are preserved: unit identity hashes the
+frozen template bytes + canonical item JSON + declared-input artifact hashes
++ the params snapshot — the same inputs the journal's replay machinery keys
+on today, minus the string splice. `inputs:` gives the hash its exact
+upstream set, so a step re-dispatches only when data it actually consumes
+changes (the precision splicing used to provide implicitly).
+
+The honest trade-off: prose can no longer compose a value mid-string with
+engine-guaranteed fidelity ("run `git checkout <item>`") — the executing
+agent performs that mapping from attached context. Every current executor is
+an agent/LLM engine, so this is the same trust the instructions already
+extend everywhere else. If a non-agent unit kind (raw shell/exec) is ever
+added, *that unit kind* reintroduces substitution as its own need — scoped
+there, not in prose.
+
+### 2.4 Gates: control in frontmatter, rubric in the body
+
+Owner decision: rubrics are often long — real rubric documents, not
+one-liners — and belong in the body. The split:
+
+- **Frontmatter `gate:`** carries only machine control: `required` (block
+  for a human when no judge is available — never silently bypassed) and
+  `max_loops`. Optional when rubric defaults suffice.
+- **Body `### gate`** (inside the step's section) carries the rubric: full
+  prose, bullets, worked examples. The judge receives the whole section
+  byte-exact. This replaces both the markdown format's `### Completion
+  Criteria` bullets and the program's `gate.criteria` string list.
 
 ### 2.5 Validation model — and the end of the allowlist special case
 
@@ -268,88 +285,100 @@ machine-stamped OKF families. Consequences:
   defined in one place.
 - A future machine-stamped key is added to the envelope definition **once**,
   and every schema-validated type inherits it — the #730 fallback dance and
-  the stale hand-written "Use only: …" message become structurally
-  impossible. The promotion-path re-validation backstop can be deleted.
-- Editors get frontmatter completion/validation for free via the published
-  schema (yaml-language-server association), which no bespoke markdown
-  grammar can offer.
+  the stale hand-written key-list message become structurally impossible.
+  The promotion-path re-validation backstop is deleted.
+- Editors get frontmatter completion/validation via the published schema
+  (yaml-language-server association) — tooling no bespoke markdown grammar
+  can offer.
 
-Semantic passes the schema cannot express keep their existing implementations
-from the program parser, retargeted at frontmatter: duplicate ids, route
-targets exist / are forward-only / are unique, expression references resolve
-to earlier steps, timeout format, retry-reason taxonomy, resource limits.
-Body checks are the two rules of §2.2 plus template parsing.
+Semantic passes keep their existing implementations from the program parser,
+retargeted at frontmatter: duplicate ids, route targets exist / are
+forward-only / are unique, reference strings resolve to earlier steps,
+timeout format, retry-reason taxonomy, resource limits. Body checks are the
+three rules of §2.2.
 
 Recognition simplifies to: frontmatter `type: workflow`, or residence under
 `workflows/` — no content sniffing. `WORKFLOW_EXTENSIONS` shrinks to `.md`.
 
 ### 2.6 OKF cohesion
 
-The unified asset **is** an OKF-shaped document: frontmatter + markdown body.
-Provenance stamping applies with zero special-casing. A third-party OKF
-reader sees a normal document — title, prose overview, step sections —
-degrading gracefully to readable procedure documentation, which is exactly
-the right fallback for a workflow. `status: draft` / `stale_after` become
-meaningful on workflows for free (e.g. a future rule that draft workflows
-refuse `run` — noted, not proposed here).
+The unified asset **is** an OKF-shaped document: frontmatter + markdown
+body, no inline syntax. Provenance stamping applies with zero
+special-casing. A third-party OKF reader sees a normal document — prose
+overview, sections per step — degrading gracefully to readable procedure
+documentation. `status: draft` / `stale_after` become meaningful on
+workflows for free (e.g. a future rule that draft workflows refuse `run` —
+noted, not proposed here).
 
 ## 3. What gets deleted
 
 - `src/workflows/parser.ts`'s grammar: `# Workflow:` / `## Step:` /
-  `Step ID:` / reserved H3s (the frontmatter/toc plumbing is reused by the
-  new body binder).
+  `Step ID:` / reserved-H3 subsections (frontmatter/toc plumbing is reused
+  by the new body binder).
 - `looksLikeWorkflow` / `looksLikeWorkflowProgram` sniffing and the
   `"markdown" | "yaml-program"` mode split in the adapter, matchers, loader,
   and proposal validator.
-- The YAML program as a distinct on-disk format: `program/parser.ts`'s
-  field-validation logic survives as the frontmatter semantic passes; its
-  file-level concerns (version key, name key, `.yaml` handling) die.
+- The YAML program as a distinct on-disk format; its field validation
+  survives as the frontmatter semantic passes.
+- **The template expression language**: `${{ … }}` delimiters, segment
+  parsing, `item`/`item_index` roots, and the escape question — replaced by
+  bare reference strings in three frontmatter positions plus context
+  attachment.
 - The workflow-only closed frontmatter allowlist and its hand-maintained
-  error string (`src/workflows/validator.ts`), replaced by the schema.
-- The `#730` promotion-path re-validation fallback for closed-allowlist
-  types.
+  error string, replaced by the schema.
+- The #730 promotion-path re-validation fallback.
+- Step titles in all forms; the `name:` and `version:` keys.
 - One of the two authoring templates, one of the two doc sections, the
   extension-collapse logic beyond `.md`, `isWorkflowProgramPath`.
-- The markdown formats' divergent id grammar and untyped `params:` shape.
 
 Net: two formats' worth of parsing/dispatch (~1,800 lines) replaced by one
-frontmatter schema + semantic passes + a two-rule body binder, with the IR,
-engine, and expression language reused unchanged.
+frontmatter schema + semantic passes + a three-rule body binder, with the
+IR, engine, and journal reused unchanged — and the template language itself
+reduced to a reference-string parser.
 
 ## 4. Blast radius (all unreleased surfaces)
 
-- **Templates**: `src/assets/workflows/workflow-template.md` and
-  `workflow-program-template.yaml` → one new template.
-- **Examples**: 9 example-stash markdown workflows rewritten (their `{{ … }}`
-  moustaches become real `${{ … }}` expressions — an upgrade, not a port).
-- **Fixtures/goldens**: `format-family-goldens/`, `all-types` stash fixtures,
-  workflow parser/program test suites (program-parser tests largely port —
-  same vocabulary, new host).
-- **Docs**: `docs/reference/workflows.md` collapses its two format sections
-  into one; the "Writing a workflow" section shrinks.
+- **Engine seam (the one non-frontend change):** unit dispatch gains context
+  attachment (params / item / declared inputs) and unit-identity hashing
+  keys on (template, item, input hashes, params) instead of instantiated
+  strings. Journal shape is already compatible; freeze pins the plan either
+  way.
+- **Templates**: both authoring templates → one.
+- **Examples**: 9 example-stash workflows rewritten; their fake moustaches
+  become plain prose references to attached context — which is how they
+  already behaved in practice.
+- **Fixtures/goldens**: `format-family-goldens/`, `all-types` fixtures,
+  parser/program suites (program-parser tests largely port).
+- **Docs**: `docs/reference/workflows.md` collapses its two format sections;
+  the expression-language section shrinks to the reference grammar.
 - **Index cache**: `workflow_documents` re-derives on reindex (unreleased).
 - **CLI**: `akm workflow create` emits the unified template; `create
   <name>.yaml` dies.
 
-## 5. Open questions for the owner
+## 5. Decision log and remaining questions
 
-1. **`$${{` escape** — adopt now (recommended: prose bodies make literal
-   `${{` a real need) or keep the v1 no-escape stance and accept the lint
-   error as the answer?
-2. **Gate criteria in frontmatter** (recommended, §2.4) vs body bullets under
-   a reserved subsection — the latter reads better in rendered markdown but
-   reintroduces exactly one magic H3, and splits the gate contract across two
-   surfaces.
-3. **Route-step display titles** — via optional doc-only body sections
-   (recommended) or a `title:` key on route steps only?
-4. **Step heading form** — `## <id>: <title>` (recommended) vs `## <id>`
-   only. The former keeps rendered docs human-titled without a frontmatter
-   duplicate.
+Resolved by owner (review round 1):
+
+1. ~~Escape syntax~~ — **moot**: no interpolation in prose at all (§2.3).
+2. ~~Gate criteria location~~ — **body**, under the single reserved
+   `### gate` marker; control fields stay in frontmatter (§2.4).
+3. ~~Step titles~~ — **none**; a step is its id.
+4. ~~Heading form~~ — **bare `## <id>`**.
+
+Remaining (small):
+
+1. `inputs:` granularity — whole artifacts only (`steps.x.output`), or
+   sub-paths too (`steps.x.output.issues`)? Recommend allowing sub-paths:
+   the reference grammar already parses them, and narrower inputs mean
+   narrower replay hashes.
+2. Params attachment — all run params to every unit (recommended; params are
+   run-scoped and documented non-secret) vs a per-step declaration.
 
 ## 6. Non-goals
 
-- No engine, IR, freeze, journal, lease, or brief/report changes.
+- No engine, IR, freeze, journal, lease, or brief/report changes beyond the
+  dispatch-context seam noted in §4.
 - No new orchestration capabilities (no new step kinds, reducers, or
-  expression roots).
+  reference roots).
 - No change to task/env/script/secret formats; task remains a YAML type —
-  tasks are machine schedules, not prose procedures, and their format fits.
+  tasks are machine schedules, not prose procedures.
