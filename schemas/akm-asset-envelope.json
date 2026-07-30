@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://itlackey.github.io/akm/schemas/akm-asset-envelope.json",
+  "title": "AKM Markdown Asset Envelope",
+  "description": "The common frontmatter envelope every AKM markdown asset type carries: type/description/tags/when_to_use/xrefs/updated/timestamp, plus the OKF v0.2 machine-stamped families (generated/verified/provenance/status/stale_after). Per-type schemas (e.g. akm-workflow.json) $ref these definitions individually into their own top-level `properties` so `additionalProperties: false` still sees them declared locally (JSON Schema does not merge `allOf` siblings' properties for that check). This file has no `properties`/`required` of its own — it is a definitions-only library.",
+  "definitions": {
+    "type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The asset's type token (e.g. \"workflow\"). Drives recognition alongside directory residence."
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable summary of the asset."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Free-form search/classification tags."
+    },
+    "when_to_use": {
+      "type": "string",
+      "description": "Guidance on when this asset should be applied/selected."
+    },
+    "xrefs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Canonical asset refs this asset cross-references. Ref canonicality is checked by semantic validation, not this schema."
+    },
+    "updated": {
+      "type": "string",
+      "description": "Last-updated timestamp (author-maintained)."
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "Legacy creation/authoring timestamp, pre-dating OKF v0.2's `generated:`."
+    },
+    "actorStamp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["by"],
+      "properties": {
+        "by": { "type": "string", "minLength": 1 },
+        "at": { "type": "string" }
+      },
+      "description": "One OKF v0.2 actor stamp: who (by) and, usually, when (at)."
+    },
+    "generated": {
+      "$ref": "#/definitions/actorStamp",
+      "description": "OKF v0.2 machine-stamped authorship — the replacement for the legacy `timestamp` key."
+    },
+    "verified": {
+      "anyOf": [
+        { "$ref": "#/definitions/actorStamp" },
+        { "type": "array", "items": { "$ref": "#/definitions/actorStamp" } }
+      ],
+      "description": "OKF v0.2 machine-stamped verification(s). A bare mapping or a list of them; independent confirmations accumulate."
+    },
+    "provenanceSource": {
+      "type": "object",
+      "required": ["resource"],
+      "additionalProperties": true,
+      "properties": {
+        "resource": { "type": "string", "minLength": 1 },
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "author": { "type": "string" },
+        "usage_count": { "type": "number" },
+        "last_modified": { "type": "string" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/provenanceSource" }
+        }
+      },
+      "description": "Namespaced OKF v0.2 provenance (kept nested because a bare top-level `sources:` collides with the AKM-native wiki citation-string convention)."
+    },
+    "status": {
+      "enum": ["draft", "stable", "deprecated"],
+      "description": "OKF v0.2 lifecycle status."
+    },
+    "stale_after": {
+      "type": "string",
+      "minLength": 1,
+      "description": "OKF v0.2 staleness horizon (a date or duration, author-maintained)."
+    }
+  }
+}

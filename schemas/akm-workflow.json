@@ -1,29 +1,28 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://itlackey.github.io/akm/schemas/akm-workflow.json",
-  "title": "AKM Workflow Program",
-  "description": "YAML workflow program for the akm CLI (Agent Knowledge Management). Files live under workflows/ with extension .yaml or .yml. Hand-authored alongside src/workflows/program/schema.ts; the enum vocabularies and patterns here are pinned against the TypeScript constants by tests/workflows/program-parser.test.ts — update both together.",
+  "title": "AKM Workflow",
+  "description": "Unified akm workflow frontmatter (workflow-format-unification). One markdown asset: the standard AKM asset envelope (type/description/tags/when_to_use/xrefs/updated/timestamp + the OKF v0.2 machine-stamped families) plus the orchestration graph. Per-step prose instructions and gate rubrics live in the markdown body, joined to this graph by step id — see docs/reference/workflows.md. Hand-authored alongside src/workflows/program/schema.ts; the enum vocabularies and patterns here are pinned against the TypeScript constants by tests/integration/workflows/program-parser.test.ts.",
   "type": "object",
-  "required": ["version", "name", "steps"],
+  "required": ["steps"],
   "additionalProperties": false,
   "properties": {
-    "version": {
-      "const": 2,
-      "description": "Workflow program format version. Only 2 is valid."
-    },
-    "name": {
-      "type": "string",
-      "minLength": 1,
-      "description": "Workflow name."
-    },
-    "description": {
-      "type": "string",
-      "description": "Optional human-readable description."
-    },
+    "type": { "$ref": "akm-asset-envelope.json#/definitions/type" },
+    "description": { "$ref": "akm-asset-envelope.json#/definitions/description" },
+    "tags": { "$ref": "akm-asset-envelope.json#/definitions/tags" },
+    "when_to_use": { "$ref": "akm-asset-envelope.json#/definitions/when_to_use" },
+    "xrefs": { "$ref": "akm-asset-envelope.json#/definitions/xrefs" },
+    "updated": { "$ref": "akm-asset-envelope.json#/definitions/updated" },
+    "timestamp": { "$ref": "akm-asset-envelope.json#/definitions/timestamp" },
+    "generated": { "$ref": "akm-asset-envelope.json#/definitions/generated" },
+    "verified": { "$ref": "akm-asset-envelope.json#/definitions/verified" },
+    "provenance": { "$ref": "akm-asset-envelope.json#/definitions/provenance" },
+    "status": { "$ref": "akm-asset-envelope.json#/definitions/status" },
+    "stale_after": { "$ref": "akm-asset-envelope.json#/definitions/stale_after" },
     "params": {
       "type": "object",
       "maxProperties": 128,
-      "description": "Run parameters: param name -> JSON Schema declaration. Names must be ${{ params.<name> }}-addressable identifiers.",
+      "description": "Run parameters: param name -> JSON Schema declaration. Names must be params.<name>-addressable identifiers.",
       "propertyNames": {
         "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
       },
@@ -50,7 +49,12 @@
     "identifier": {
       "type": "string",
       "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$",
-      "description": "Step id: a letter or underscore first, then letters, digits, underscores, or dashes (no dots, no leading digit). This is exactly the ${{ steps.<id>.output }}-addressable grammar; dots are reserved for the .output path separator and the engine's internal <stepId>.gate node id."
+      "description": "Step id: a letter or underscore first, then letters, digits, underscores, or dashes (no dots, no leading digit). This is exactly the steps.<id>.output-addressable grammar; dots are reserved for the .output path separator and the engine's internal <stepId>.gate node id."
+    },
+    "reference": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A bare reference string: params.<name> or steps.<id>.output(.<ident>|[<int>])*. No ${{ }} delimiters — every position this appears in is a whole-value frontmatter field. Full grammar validation happens at compile time, not here."
     },
     "timeout": {
       "description": "Duration: \"<n>ms\" | \"<n>s\" | \"<n>m\" | \"none\" (bare integers are milliseconds).",
@@ -114,7 +118,7 @@
       "enum": ["collect", "vote"]
     },
     "isolation": {
-      "description": "Filesystem isolation for file-mutating units (enforcement lands in R2).",
+      "description": "Filesystem isolation for file-mutating units.",
       "enum": ["none", "worktree"]
     },
     "failureReason": {
@@ -203,8 +207,7 @@
     },
     "unit": {
       "type": "object",
-      "description": "A single dispatchable unit: instructions plus dispatch overrides.",
-      "required": ["instructions"],
+      "description": "Optional dispatch-override bag for a unit/map step. A step with none of these carries the run's engine/model/timeout defaults verbatim.",
       "additionalProperties": false,
       "properties": {
         "engine": {
@@ -228,11 +231,6 @@
         "on_error": {
           "$ref": "#/definitions/onError"
         },
-        "instructions": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Instruction template. ${{ … }} expressions are parsed against the closed grammar: params.<name> | steps.<id>.output.<path> | item | item_index."
-        },
         "output": {
           "$ref": "#/definitions/jsonSchemaObject"
         },
@@ -251,14 +249,13 @@
     },
     "map": {
       "type": "object",
-      "description": "Fan the unit template out over an expression-addressed item list.",
-      "required": ["over", "unit"],
+      "description": "Fan the step out over a reference-addressed item list.",
+      "required": ["over"],
       "additionalProperties": false,
       "properties": {
         "over": {
-          "type": "string",
-          "minLength": 1,
-          "description": "${{ … }} expression naming the producer of the item list (e.g. ${{ steps.discover.output.files }})."
+          "$ref": "#/definitions/reference",
+          "description": "Reference naming the producer of the item list (e.g. steps.discover.output.files)."
         },
         "concurrency": {
           "type": "integer",
@@ -273,24 +270,35 @@
         }
       }
     },
+    "routeBranch": {
+      "type": "object",
+      "required": ["match", "step"],
+      "additionalProperties": false,
+      "properties": {
+        "match": {
+          "type": ["string", "number", "boolean"]
+        },
+        "step": {
+          "$ref": "#/definitions/identifier"
+        }
+      }
+    },
     "route": {
       "type": "object",
-      "description": "Route on an explicit ${{ … }} input to a LATER step. Targets must come after the routing step.",
+      "description": "Route on an explicit reference input to a LATER step. Targets must come after the routing step.",
       "required": ["input", "when"],
       "additionalProperties": false,
       "properties": {
         "input": {
-          "type": "string",
-          "minLength": 1,
-          "description": "${{ … }} expression naming the value to route on."
+          "$ref": "#/definitions/reference",
+          "description": "Reference naming the value to route on."
         },
         "when": {
-          "type": "object",
-          "minProperties": 1,
-          "maxProperties": 256,
-          "description": "Match value -> target step id.",
-          "additionalProperties": {
-            "$ref": "#/definitions/identifier"
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/definitions/routeBranch"
           }
         },
         "default": {
@@ -300,41 +308,37 @@
     },
     "gate": {
       "type": "object",
-      "description": "Completion gate criteria judged against the step artifact.",
-      "required": ["criteria"],
+      "description": "Gate CONTROL fields only. The rubric itself lives in the body under a `### gate` sub-heading inside the step's section.",
       "additionalProperties": false,
       "properties": {
-        "criteria": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
         "max_loops": {
           "type": "integer",
           "minimum": 1,
-          "description": "Evaluator-optimizer loop bound (execution lands in R2)."
+          "description": "Evaluator-optimizer loop bound."
         },
         "required": {
           "type": "boolean",
-          "description": "When true, the gate must be judged: if no summary-validation judge is available (offline / misconfigured LLM), the step BLOCKS for a human instead of failing open and silently passing. Absent = fail-open default. The engine's --require-gates flag applies this to every criteria-bearing gate for one invocation."
+          "description": "When true, the gate must be judged: if no summary-validation judge is available (offline / misconfigured LLM), the step BLOCKS for a human instead of failing open and silently passing. Absent = fail-open default. The engine's --require-gates flag applies this to every gated step for one invocation."
         }
       }
     },
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/definitions/reference"
+      },
+      "description": "Prior-step artifacts this unit/map step consumes, as reference strings (sub-paths legal). Attached to the dispatched unit as structured context; never spliced into instructions."
+    },
     "step": {
       "type": "object",
-      "description": "One step of the gated spine. Exactly one of unit | map | route.",
+      "description": "One step of the gated spine. A step with no map/route is a unit step (bare `{id: ...}` is the complete minimal declaration). At most one of map/route.",
       "required": ["id"],
       "additionalProperties": false,
       "properties": {
         "id": {
           "$ref": "#/definitions/identifier"
-        },
-        "title": {
-          "type": "string",
-          "minLength": 1
         },
         "unit": {
           "$ref": "#/definitions/unit"
@@ -345,6 +349,9 @@
         "route": {
           "$ref": "#/definitions/route"
         },
+        "inputs": {
+          "$ref": "#/definitions/inputs"
+        },
         "output": {
           "$ref": "#/definitions/jsonSchemaObject"
         },
@@ -354,17 +361,15 @@
       },
       "allOf": [
         {
-          "oneOf": [
-            {
-              "required": ["unit"]
-            },
-            {
-              "required": ["map"]
-            },
-            {
-              "required": ["route"]
-            }
-          ]
+          "not": { "required": ["map", "route"] }
+        },
+        {
+          "if": { "required": ["route"] },
+          "then": { "not": { "anyOf": [{ "required": ["unit"] }, { "required": ["map"] }, { "required": ["inputs"] }] } }
+        },
+        {
+          "if": { "required": ["map"] },
+          "then": { "not": { "required": ["unit"] } }
         }
       ]
     }

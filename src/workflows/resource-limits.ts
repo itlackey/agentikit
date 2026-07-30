@@ -13,6 +13,8 @@ export const WORKFLOW_MAX_SCHEMA_BYTES = 256 * 1024;
 export const WORKFLOW_MAX_EXTRA_PARAMS_BYTES = 64 * 1024;
 export const WORKFLOW_MAX_JSON_DEPTH = 64;
 export const WORKFLOW_MAX_MAP_EXPANSION = 10_000;
+/** Max declared `inputs:` reference strings on one unit/map step. */
+export const WORKFLOW_MAX_INPUTS = 64;
 
 export function utf8Bytes(value: string): number {
   return Buffer.byteLength(value, "utf8");
