@@ -99,6 +99,28 @@ const ASSET_OUTCOME_010_DDL = `
   CREATE INDEX idx_asset_outcome_score ON asset_outcome(outcome_score DESC);
 `;
 
+// The physical shape asset_salience has by ledger checkpoint 016 — migration
+// 009's base CREATE plus the two ADD COLUMNs from 011 (homeostatic_demoted_at)
+// and 015 (encoding_source), both marked applied in STATE_PRE_CUTOVER_IDS.
+// Same rationale as ASSET_OUTCOME_010_DDL above: #733's migration 021
+// (`ALTER TABLE asset_salience ADD COLUMN missing_since`) is now in the
+// replayed 017-021 range and fails with "no such table" unless this fixture
+// materializes the table it alters.
+const ASSET_SALIENCE_016_DDL = `
+  CREATE TABLE asset_salience (
+    asset_ref              TEXT    PRIMARY KEY,
+    encoding_salience       REAL    NOT NULL DEFAULT 0.5,
+    outcome_salience        REAL    NOT NULL DEFAULT 0.0,
+    retrieval_salience      REAL    NOT NULL DEFAULT 0.0,
+    rank_score              REAL    NOT NULL DEFAULT 0.0,
+    consecutive_no_ops      INTEGER NOT NULL DEFAULT 0,
+    updated_at               INTEGER NOT NULL DEFAULT 0,
+    homeostatic_demoted_at  INTEGER DEFAULT NULL,
+    encoding_source         TEXT DEFAULT NULL
+  );
+  CREATE INDEX idx_asset_salience_rank ON asset_salience(rank_score DESC);
+`;
+
 let cleanup: Cleanup | undefined;
 
 beforeEach(() => {
@@ -132,6 +154,7 @@ function seedPreCutoverState(value = "before"): void {
     CREATE TABLE durable(value TEXT);
     INSERT INTO durable VALUES ('${value}');
     ${ASSET_OUTCOME_010_DDL}
+    ${ASSET_SALIENCE_016_DDL}
   `);
   seedLedger(db, STATE_PRE_CUTOVER_IDS);
   db.close();
@@ -378,7 +401,12 @@ function seedInterruptedApplyJournal(
   runStateMigrations(state);
   if (options?.failingCutover) {
     state.exec(`
-      CREATE TABLE asset_salience(asset_ref TEXT PRIMARY KEY, updated_at INTEGER NOT NULL DEFAULT 0);
+      -- #733: asset_salience now physically exists after runStateMigrations
+      -- replays migration 021 (missing_since ADD COLUMN) — seedPreCutoverState
+      -- materializes the table (ASSET_SALIENCE_016_DDL) so that migration
+      -- does not fail with "no such table". Insert the malformed ref into
+      -- the now-real table (every other column defaults) instead of
+      -- hand-rolling a narrower CREATE TABLE, which would now collide.
       INSERT INTO asset_salience(asset_ref) VALUES (':bad');
     `);
   }
@@ -889,7 +917,12 @@ describe("migration lifecycle regressions", () => {
     const state = openDatabaseFinalizing(getStateDbPathInDataDir());
     runStateMigrations(state);
     state.exec(`
-      CREATE TABLE asset_salience(asset_ref TEXT PRIMARY KEY, updated_at INTEGER NOT NULL DEFAULT 0);
+      -- #733: asset_salience now physically exists after runStateMigrations
+      -- replays migration 021 (missing_since ADD COLUMN) — seedPreCutoverState
+      -- materializes the table (ASSET_SALIENCE_016_DDL) so that migration
+      -- does not fail with "no such table". Insert the malformed ref into
+      -- the now-real table (every other column defaults) instead of
+      -- hand-rolling a narrower CREATE TABLE, which would now collide.
       INSERT INTO asset_salience(asset_ref) VALUES (':bad');
     `);
     state.exec("PRAGMA journal_mode=WAL");
