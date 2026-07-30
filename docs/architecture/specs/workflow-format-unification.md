@@ -182,7 +182,9 @@ Post the summary. The `implement` step's artifact is attached as context
   - New `inputs:` key on unit/map steps: the prior-step artifacts this step
     consumes, as bare reference strings (§2.3). Replaces prose splicing as
     the way a step sees upstream data, and gives replay hashing its exact
-    input set.
+    input set. Sub-paths are legal (`steps.x.output.issues`, not just
+    `steps.x.output`) so a step re-dispatches only when the slice it
+    consumes changes.
   - A step with no `map:` and no `route:` **is** a unit step; bare
     `- id: validate` is the complete minimal declaration. `unit:` remains as
     the optional dispatch-override bag (engine/model/llm/timeout/retry/
@@ -365,14 +367,21 @@ Resolved by owner (review round 1):
 3. ~~Step titles~~ — **none**; a step is its id.
 4. ~~Heading form~~ — **bare `## <id>`**.
 
-Remaining (small):
+Resolved by owner (review round 2):
 
-1. `inputs:` granularity — whole artifacts only (`steps.x.output`), or
-   sub-paths too (`steps.x.output.issues`)? Recommend allowing sub-paths:
-   the reference grammar already parses them, and narrower inputs mean
-   narrower replay hashes.
-2. Params attachment — all run params to every unit (recommended; params are
-   run-scoped and documented non-secret) vs a per-step declaration.
+5. **`inputs:` accepts sub-paths.** `steps.x.output` and
+   `steps.x.output.issues` are both legal — the reference grammar already
+   parses the path form, and a narrower declared input means a narrower
+   replay hash, so a step re-dispatches only when the slice it actually
+   consumes changes.
+6. **All run params attach to every unit.** No per-step params declaration.
+   Params are run-scoped and documented non-secret (`docs/reference/
+   workflows.md`, "Params are not secret"); secrets travel as `env:` refs,
+   which remain per-unit. This keeps the attachment model uniform: every
+   unit receives params, its item + index if it is a map unit, and the
+   artifacts its step's `inputs:` names.
+
+No open questions remain. This proposal is ready to implement.
 
 ## 6. Non-goals
 
