@@ -100,14 +100,13 @@ export function compileResolveFreezeWorkflow(asset: WorkflowAsset, config: AkmCo
         : freezeUnit(step.root, sourceUnit)
       : undefined;
     const criteria = step.gate.criteria;
-    const judge = criteria.length === 0 ? null : freezeGateJudge(config, engines, step.gate.required === true);
+    const judge = criteria.length === 0 ? null : freezeGateJudge(config, engines);
     const gate: IrGateNode = {
       kind: "gate",
       id: `${step.stepId}.gate`,
       stepId: step.stepId,
       criteria,
       maxLoops: step.gate.maxLoops ?? 1,
-      required: step.gate.required === true,
       judge,
     };
     return {
@@ -255,17 +254,9 @@ function addSnapshot(config: AkmConfig, name: string, target: Record<string, Fro
   target[name] = snapshot;
 }
 
-function freezeGateJudge(
-  config: AkmConfig,
-  engines: Record<string, FrozenEngineSnapshot>,
-  required: boolean,
-): IrInvocation | null {
+function freezeGateJudge(config: AkmConfig, engines: Record<string, FrozenEngineSnapshot>): IrInvocation | null {
   const resolved = resolveLlmEngineUse(config, [], { optional: true });
-  if (!resolved) {
-    if (required)
-      throw new ConfigError("A required workflow gate needs defaults.llmEngine at start.", "LLM_NOT_CONFIGURED");
-    return null;
-  }
+  if (!resolved) return null;
   addSnapshot(config, resolved.engine, engines);
   return {
     engine: resolved.engine,

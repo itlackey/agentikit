@@ -675,11 +675,10 @@ describe("workflow brief — unit action states (#15)", () => {
 });
 
 describe("workflow brief — fully-terminal step needing finalization (owner finding 3)", () => {
-  const REQUIRED_GATE_WF = `---
+  const GATED_WF = `---
 type: workflow
 steps:
   - id: work
-    gate: { required: true }
 ---
 
 ## work
@@ -693,7 +692,7 @@ The work is thorough.
 
   /** Seed the post-resume state: the run is active, the step is pending again,
    *  but its only unit already ran to completion — the fully-terminal recovery
-   *  state a required-gate block + resume (or a crash before completion) leaves. */
+   *  state a crash before completion can leave. */
   function seedResumedFullyTerminal(p: WorkflowPlanGraph): { unitId: string; nodeId: string } {
     const engine = computeStepWorkList(p.steps[0]!, {
       runId: RUN_ID,
@@ -722,7 +721,7 @@ The work is thorough.
   }
 
   test("the completed unit is `done` with no report command, yet a settle command IS emitted", async () => {
-    const p = plan(REQUIRED_GATE_WF);
+    const p = plan(GATED_WF);
     seedResumedFullyTerminal(p);
     const brief = await buildWorkflowBrief(RUN_ID);
     expect(brief.active).toBe(true);
@@ -734,19 +733,18 @@ The work is thorough.
     expect(brief.settleCommand).toContain("--expect-step work");
   });
 
-  test("the message no longer says 'Execute them' and explains the required-gate re-block", async () => {
-    const p = plan(REQUIRED_GATE_WF);
+  test("the message no longer says 'Execute them' and points to settlement", async () => {
+    const p = plan(GATED_WF);
     seedResumedFullyTerminal(p);
     const brief = await buildWorkflowBrief(RUN_ID);
     expect(brief.message).not.toContain("Execute them");
     expect(brief.message).toContain("terminal state");
     expect(brief.message).toContain("--settle");
-    // A required gate with no judge available re-blocks — the message says so.
-    expect(brief.message).toMatch(/re-block/i);
+    expect(brief.message).not.toMatch(/re-block/i);
   });
 
-  test("a non-required fully-terminal gate omits the re-block note but still emits settle", async () => {
-    const p = plan(LOOP_WF); // gate criteria, not `required`
+  test("another fully-terminal gate also emits settle", async () => {
+    const p = plan(LOOP_WF);
     const engine = computeStepWorkList(p.steps[0]!, {
       runId: RUN_ID,
       params: {},
@@ -777,7 +775,7 @@ The work is thorough.
   });
 
   test("a still-pending unit keeps the normal per-unit report path (no settle command)", async () => {
-    const p = plan(REQUIRED_GATE_WF);
+    const p = plan(GATED_WF);
     seedRun({
       plan: p,
       currentStepId: "work",
@@ -791,7 +789,7 @@ The work is thorough.
   });
 
   test("a live engine lease suppresses the settle command even on a fully-terminal list", async () => {
-    const p = plan(REQUIRED_GATE_WF);
+    const p = plan(GATED_WF);
     const engine = computeStepWorkList(p.steps[0]!, {
       runId: RUN_ID,
       params: {},

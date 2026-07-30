@@ -312,6 +312,7 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
         if (!result.ok) return out;
         const doc = result.document;
         const hints = new Set<string>();
+        if (doc.preamble) hints.add(doc.preamble);
         for (const step of doc.steps) {
           hints.add(step.id);
           if (step.instructions) hints.add(step.instructions.text);

@@ -130,6 +130,17 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
     expect(fs.existsSync(path.join(stash, "workflows", "print-flow.md"))).toBe(false);
   });
 
+  test("workflow create YAML --print is a usage error", async () => {
+    const stash = makeStashDir();
+    const { stdout, stderr, status } = await runCli(
+      ["--json", "workflow", "create", "print-flow.yaml", "--print"],
+      stash,
+    );
+    expect(status).toBe(2);
+    expect(stdout).toBe("");
+    expect(JSON.parse(stderr).error).toContain("markdown-only");
+  });
+
   test("workflow status: unknown run → byte-identical {ok:false} not-found envelope on stderr", async () => {
     const stash = makeStashDir();
     const { stderr, status } = await runCli(

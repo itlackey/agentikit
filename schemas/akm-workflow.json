@@ -308,17 +308,13 @@
     },
     "gate": {
       "type": "object",
-      "description": "Gate CONTROL fields only. The rubric itself lives in the body under a `### gate` sub-heading inside the step's section.",
+      "description": "Optional validation-loop configuration. The rubric itself lives in the body under a `### gate` sub-heading inside the step's section; omitted or empty rubric text skips validation.",
       "additionalProperties": false,
       "properties": {
         "max_loops": {
           "type": "integer",
           "minimum": 1,
           "description": "Evaluator-optimizer loop bound."
-        },
-        "required": {
-          "type": "boolean",
-          "description": "When true, the gate must be judged: if no summary-validation judge is available (offline / misconfigured LLM), the step BLOCKS for a human instead of failing open and silently passing. Absent = fail-open default. The engine's --require-gates flag applies this to every gated step for one invocation."
         }
       }
     },

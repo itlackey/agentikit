@@ -162,6 +162,8 @@ describe("renderer parity: all 14 all-types fixture assets render via their docu
     // heading and workflow-program-yaml fell back to the step id.
     expect(mdResponse.workflowTitle).toBe("all-types-workflow");
     expect(mdResponse.steps?.[0]?.title).toBe("announce");
+    expect(mdResponse.content).toBe("# All Types Fixture");
+    expect(mdResponse.content).not.toContain("type: workflow");
   });
 
   test("env-file renderer surfaces key NAMES only, never values or comment text", async () => {

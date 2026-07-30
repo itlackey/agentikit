@@ -1071,10 +1071,7 @@ export async function journalGateEvaluationStart(gate: GateUnitRef): Promise<voi
  * Finish the gate-evaluation unit row with the verdict as observed from the
  * completion outcome: a rejection journals `{ complete: false, missing,
  * feedback }`; a pass journals `{ complete: true, missing: [] }`; a judge that
- * threw (or, on a required gate, returned an unparseable verdict) journals a
- * failed row with a NULL verdict. A NON-required errored gate then fails OPEN
- * inside `validateStepSummary`; a REQUIRED errored gate BLOCKS the step
- * (`finalizeExecutedStep`, Codex round-3 finding A).
+ * threw journals a failed row with a NULL verdict and validation is skipped.
  */
 export async function journalGateEvaluationFinish(
   gate: GateUnitRef,
@@ -1344,13 +1341,6 @@ export interface FinalizeStepInput {
    * both mean no judge; live configuration is never consulted here.
    */
   summaryJudge: SummaryJudge | null | undefined;
-  /**
-   * Reviewer #18: treat EVERY criteria-bearing gate as required for this
-   * completion (the engine's `--require-gates` run-wide override). A per-step
-   * `gate.required: true` in the frozen plan has the same effect and rides both
-   * surfaces; this flag is the engine-invocation-scoped override on top of it.
-   */
-  requireGates?: boolean;
   /** Engine run-lease holder (engine path only); absent on the manual/report path. */
   leaseHolder?: string;
 }
@@ -1359,9 +1349,7 @@ export type FinalizeStepResult =
   | { kind: "advanced"; summaryOverride?: string }
   | { kind: "failed"; summary: string; routeFailure?: true }
   | { kind: "retry"; gateFeedback: GateFeedback }
-  | { kind: "gate-exhausted"; gateRejection: { stepId: string; missing: string[]; feedback: string } }
-  /** Reviewer #18: a required gate with no judge available — the step is BLOCKED for a human. */
-  | { kind: "blocked"; summary: string };
+  | { kind: "gate-exhausted"; gateRejection: { stepId: string; missing: string[]; feedback: string } };
 
 /**
  * Perform ONE completion attempt for an executed step:
@@ -1408,25 +1396,6 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   // A frozen plan either supplies its judge at the dispatch boundary or has no
   // judge. Re-selecting defaults here would let config drift change a run.
   const innerJudge = input.summaryJudge ?? null;
-
-  // Reviewer #18: a REQUIRED completion gate must actually be judged. When the
-  // gate carries criteria but no judge is available, `validateStepSummary` would
-  // fail OPEN and silently pass the gate — exactly the offline/misconfigured
-  // bypass a required gate exists to prevent. BLOCK the step instead (a human
-  // resolves it via the documented manual path), rather than advance the spine
-  // on an unjudged gate. `gate.required` rides the frozen plan (both surfaces);
-  // `requireGates` is the engine's run-wide `--require-gates` override. Checked
-  // BEFORE route evaluation so a blocked step journals no route decision.
-  const gateRequired = stepPlan.gate.required === true || input.requireGates === true;
-  if (gateRequired && completionCriteria.length > 0 && innerJudge === null) {
-    const notes =
-      `Step "${stepId}" has a REQUIRED completion gate but no summary-validation judge is available ` +
-      `(no LLM is configured, or default LLM resolution failed). A required gate must be judged — refusing to fail ` +
-      `open and silently pass it. The step is BLOCKED: configure an LLM, then \`akm workflow resume ${runId}\` to ` +
-      `re-evaluate the gate, or advance the step manually with \`akm workflow complete\`.`;
-    await completeWorkflowStep({ runId, stepId, status: "blocked", notes, evidence: result.evidence, ...lease });
-    return { kind: "blocked", summary: notes };
-  }
 
   // Route evaluation BEFORE completion: an unroutable value is an
   // authoring/config failure that must fail the step deterministically.
@@ -1509,8 +1478,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   // Reviewer #6: once the judge is invoked, its gate row is journaled `running`
   // (journalGateEvaluationStart) and MUST be finished on every exit. The
   // already-fixed window is the judge itself throwing (caught inside
-  // validateStepSummary — `judgeState.errored` records it; a non-required gate
-  // fails open, a required gate blocks below). The remaining
+  // validateStepSummary — `judgeState.errored` records it). The remaining
   // window is `completeWorkflowStep` throwing AFTER the judge ran — a stolen
   // lease, a concurrent state change, a DB error — which would otherwise skip the
   // finish and strand the gate row in `running`. Finish it as an errored row (the
@@ -1524,10 +1492,6 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
       summary,
       evidence: result.evidence,
       summaryJudge,
-      // Codex round-3 finding A: mark this completion's gate REQUIRED so
-      // `validateStepSummary` does NOT fail open when the judge throws / is
-      // unreachable / returns garbage — it flags `errored` and we block below.
-      ...(gateRequired ? { requireGate: true } : {}),
       ...lease,
     });
   } catch (err) {
@@ -1537,27 +1501,8 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   const rejection =
     "ok" in completion && completion.ok === false ? (completion as SummaryValidationFailure) : undefined;
 
-  // A required gate whose judge could not be evaluated is an errored gate, not a
-  // real rejection: journal the gate row as errored (verdict null) so the
-  // observed outcome is honest, driven by EITHER the wrapper catching a throw OR
-  // validateStepSummary flagging an unparseable verdict.
-  const gateErrored = judgeState.errored || rejection?.errored === true;
   if (gateUnit) {
-    await journalGateEvaluationFinish(gateUnit, gateErrored, rejection);
-  }
-
-  // Codex round-3 finding A: a REQUIRED gate that could not be judged (the judge
-  // threw, was unreachable, or returned an unparseable verdict) must NOT fail
-  // open and advance. The gate row is journaled errored above; BLOCK the step (a
-  // human resolves it) instead of silently passing an unjudged required gate.
-  if (rejection?.errored) {
-    const notes =
-      `Step "${stepId}" has a REQUIRED completion gate but its summary-validation judge failed to return a verdict ` +
-      `(the LLM threw, was unreachable, or returned an unparseable response). A required gate must be judged — refusing ` +
-      `to fail open and silently pass it. The step is BLOCKED: fix the LLM/connection, then \`akm workflow resume ${runId}\` ` +
-      `to re-evaluate the gate, or advance the step manually with \`akm workflow complete\`.`;
-    await completeWorkflowStep({ runId, stepId, status: "blocked", notes, evidence: result.evidence, ...lease });
-    return { kind: "blocked", summary: notes };
+    await journalGateEvaluationFinish(gateUnit, judgeState.errored, rejection);
   }
 
   if (!rejection) {

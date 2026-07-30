@@ -1720,11 +1720,10 @@ describe("report --settle advances a run parked on a non-dispatching step", () =
 
 // ── --settle finalizes a fully-terminal but un-advanced step (owner finding 3) ──
 
-const REQUIRED_GATE_WF = `---
+const GATED_WF = `---
 type: workflow
 steps:
   - id: work
-    gate: { required: true }
 ---
 
 ## work
@@ -1758,8 +1757,8 @@ describe("report --settle finalizes a fully-terminal step still needing completi
     return unit;
   }
 
-  test("brief points at --settle for the fully-terminal step, and --settle re-blocks under a required gate with no judge", async () => {
-    const p = plan(REQUIRED_GATE_WF);
+  test("brief points at --settle and --settle skips validation when no judge is available", async () => {
+    const p = plan(GATED_WF);
     seedResumedFullyTerminal(p);
 
     // brief surfaces the settle command (not a per-unit report) — the recovery
@@ -1769,18 +1768,17 @@ describe("report --settle finalizes a fully-terminal step still needing completi
     expect(brief.workList.units[0]!.report).toBeUndefined();
     expect(brief.settleCommand).toContain("--settle");
 
-    // --settle runs the shared completion path; a required gate with no judge
-    // BLOCKS (correct behavior), it does not silently pass.
+    // --settle runs the shared completion path; no judge means validation is skipped.
     const settled = await settleWorkflowSpine({ target: RUN_ID, expectStep: "work", summaryJudge: null });
-    expect(settled.stepOutcome?.kind).toBe("blocked");
-    expect(settled.runStatus).toBe("blocked");
+    expect(settled.stepOutcome?.kind).toBe("advanced");
+    expect(settled.runStatus).toBe("completed");
     expect(settled.recorded).toBe("not-recorded");
     const status = await getWorkflowStatus(RUN_ID);
-    expect(status.workflow.steps[0]!.status).toBe("blocked");
+    expect(status.workflow.steps[0]!.status).toBe("completed");
   });
 
   test("--settle completes the fully-terminal step under a passing judge", async () => {
-    const p = plan(REQUIRED_GATE_WF);
+    const p = plan(GATED_WF);
     seedResumedFullyTerminal(p);
     const settled = await settleWorkflowSpine({ target: RUN_ID, expectStep: "work", summaryJudge: acceptJudge });
     expect(settled.stepOutcome?.kind).toBe("advanced");
@@ -1790,7 +1788,7 @@ describe("report --settle finalizes a fully-terminal step still needing completi
   });
 
   test("--settle still refuses a step whose unit is genuinely PENDING (nothing terminal yet)", async () => {
-    const p = plan(REQUIRED_GATE_WF);
+    const p = plan(GATED_WF);
     seedRun({
       plan: p,
       currentStepId: "work",
@@ -1808,7 +1806,6 @@ steps:
   - id: work
     unit:
       retry: { max: 2, on: [timeout] }
-    gate: { required: true }
 ---
 
 ## work

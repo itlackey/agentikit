@@ -600,7 +600,6 @@ is markdown or a YAML program.
 
 ```sh
 akm workflow run workflows/ship-release --max-steps 3
-akm workflow run <run-id> --require-gates       # block instead of failing open when no LLM judge is available
 akm workflow brief <run-id>                     # per-unit instructions, output schema, env bindings
 akm workflow report <run-id> --unit <unit-id> --status completed --result '{"ok":true}'
 akm workflow report <run-id> --unit <unit-id> --status running --note "still working"
@@ -610,7 +609,6 @@ akm workflow report <run-id> --settle           # advance a route-only/empty ste
 | Flag | Applies to | Description |
 | --- | --- | --- |
 | `--max-steps <n>` | `run` | Stop after executing this many steps |
-| `--require-gates` | `run` | Treat every criteria-bearing completion gate as required: BLOCK the step (for `workflow resume`) instead of failing open when no LLM judge is available |
 | `--unit <id>` | `report` | Content-derived unit id from `workflow brief` (copy verbatim). Omit with `--settle`. |
 | `--settle` | `report` | Advance/finalize a run whose active step has no unit left to report. Mutually exclusive with `--unit`. |
 | `--expect-step <id>` | `report` | Guard: refuse if the run's active step has moved since you briefed against it |

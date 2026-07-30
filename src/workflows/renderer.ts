@@ -125,7 +125,7 @@ function projectStepDefinitions(document: WorkflowDocument): WorkflowStepDefinit
       // No titles anywhere in the unified format — a step IS its id.
       title: step.id,
       instructions: stepInstructions(step),
-      ...(step.gateRubric ? { completionCriteria: [step.gateRubric.text] } : {}),
+      ...(step.gateRubric?.text.trim() ? { completionCriteria: [step.gateRubric.text] } : {}),
       sequenceIndex: step.sequenceIndex,
       ...(orchestration ? { orchestration } : {}),
     };
@@ -150,6 +150,7 @@ export const workflowMdRenderer: AssetRenderer = {
       name,
       path: ctx.absPath,
       action: buildWorkflowAction(ref),
+      ...(doc.preamble ? { content: doc.preamble } : {}),
       description: doc.description,
       // No authored title in the unified format — the asset's human name is
       // its `description`/H1 like any other asset; this is its canonical name.

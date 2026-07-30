@@ -257,6 +257,15 @@ describe("workflow CLI", async () => {
     expect(fs.existsSync(path.join(env.AKM_BUNDLE_DIR as string, "workflows", "print-test.md"))).toBe(false);
   });
 
+  test("create --print rejects retired YAML workflow names", async () => {
+    const env = createWorkflowEnv();
+    const result = await runCli(["workflow", "create", "print-test.yaml", "--print"], env);
+
+    expect(result.status).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("markdown-only");
+  });
+
   test("create writes a workflow and show returns structured step data", async () => {
     const env = createWorkflowEnv();
     const result = await runCli(["workflow", "create", "release-flow"], env);
@@ -270,6 +279,7 @@ describe("workflow CLI", async () => {
     expect(shown.status).toBe(0);
     const json = JSON.parse(shown.stdout) as {
       type: string;
+      content: string;
       workflowTitle: string;
       steps: Array<{ id: string; title: string }>;
     };
@@ -278,6 +288,8 @@ describe("workflow CLI", async () => {
     // response's `workflowTitle` is the asset's canonical name, and a step's
     // `title` is just its id.
     expect(json.workflowTitle).toBe("release-flow");
+    expect(json.content).toContain("# Release Flow");
+    expect(json.content).not.toContain("type: workflow");
     expect(json.steps[0]?.id).toBe("first-step");
     expect(json.steps[0]?.title).toBe("first-step");
   });

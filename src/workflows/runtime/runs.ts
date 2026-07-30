@@ -207,16 +207,6 @@ export interface CompleteWorkflowStepInput {
    * until the lease is released or expires (R2 single-driver enforcement).
    */
   leaseHolder?: string;
-  /**
-   * Engine/report finalize only (Codex round-3 finding A): this completion's gate
-   * is REQUIRED. A required gate whose judge cannot produce a verdict (throws /
-   * unreachable / unparseable) must NOT fail open — {@link validateStepSummary}
-   * flags it `errored` and the returned {@link SummaryValidationFailure} carries
-   * `errored: true`, so `finalizeExecutedStep` BLOCKS the step instead of
-   * advancing. The manual `akm workflow complete` path never sets this, so its
-   * fail-open behavior is unchanged.
-   */
-  requireGate?: boolean;
 }
 
 /**
@@ -229,13 +219,6 @@ export interface SummaryValidationFailure {
   stepId: string;
   missing: string[];
   feedback: string;
-  /**
-   * Set when a REQUIRED gate could not be judged (Codex round-3 finding A): the
-   * judge threw / was unreachable / returned an unparseable verdict. The caller
-   * (`finalizeExecutedStep`) BLOCKS the step rather than treating this as a
-   * normal (retryable) gate rejection.
-   */
-  errored?: true;
 }
 
 export async function startWorkflowRun(
@@ -623,7 +606,6 @@ export async function completeWorkflowStep(
     const verdict = await validateStepSummary(
       { stepTitle: preflight.stepPlan.title, completionCriteria: criteria, summary },
       judge ?? undefined,
-      { required: input.requireGate === true },
     );
     if (!verdict.complete) {
       // Re-arm the check-in so a subsequent stall is still nudged, but leave the
@@ -637,9 +619,6 @@ export async function completeWorkflowStep(
         stepId: input.stepId,
         missing: verdict.missing,
         feedback: verdict.feedback ?? "The summary does not satisfy the step's completion criteria.",
-        // A REQUIRED gate that could not be judged (finding A): the caller BLOCKS
-        // rather than treating this as a normal, retryable gate rejection.
-        ...(verdict.errored ? { errored: true as const } : {}),
       };
     }
   }

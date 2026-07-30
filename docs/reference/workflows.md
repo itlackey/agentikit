@@ -182,10 +182,9 @@ attached to this unit as input. Fix any failures before proceeding.
 3. Inside a step's section, an optional `### gate` sub-heading starts that
    step's gate rubric, running to the section end — the format's **single
    reserved marker**. The judge that evaluates the step receives this whole
-   section byte-exact. Frontmatter `gate:` without a `### gate` rubric is a
-   lint error; a `### gate` rubric alone declares a default gate (fail-open,
-   unbounded loops — tune with the frontmatter key, see *Required gates*
-   below).
+   section byte-exact. An omitted or empty `### gate` section skips
+   validation. A non-empty rubric enables optional validation; frontmatter
+   `gate:` only tunes its retry bound.
 
 Prose is never templated — see [The reference grammar](#the-reference-grammar)
 for how a step's instructions refer to run params, upstream artifacts, and a
@@ -215,10 +214,10 @@ OKF v0.2 trust/lifecycle families) plus the orchestration keys:
   input set — a step re-dispatches only when the slice it actually consumes
   changes.
 - `output` — a JSON Schema for the step's promoted artifact.
-- `gate` — control only: `required` (never silently bypassed — see
-  *Required gates*) and `max_loops` (bounded evaluator-optimizer retry, see
-  *Gates judge the artifact*). The rubric itself lives in the body's
-  `### gate` section.
+- `gate` — optional validation-loop configuration: `max_loops` bounds
+  evaluator-optimizer retries (see *Gates judge the artifact*). The rubric
+  itself lives in the body's `### gate` section. Without non-empty rubric
+  text, the configuration is inert.
 
 No `version:`/`name:` keys — identity is the ref, and the frozen plan already
 versions execution semantics — and no step titles anywhere: a step is its id,
@@ -529,8 +528,7 @@ artifact as canonical JSON (clipped at 4000 characters) alongside the
 `### gate` section byte-exact, so the gate evaluates real results rather
 than a machine summary like "Executed 3 units". Each engine-driven gate
 evaluation is itself an LLM call and is journaled as a unit row
-(`<step-id>.gate:l<loop>`); human approvals are never cached — a blocked
-gate stays blocked until a human acts.
+(`<step-id>.gate:l<loop>`).
 
 `gate.max_loops: <n>` (frontmatter) turns the gate into a bounded
 evaluator-optimizer loop: on a rejection (or a typed-artifact schema
@@ -540,51 +538,17 @@ context. The feedback changes each unit's inputs, so the re-run naturally
 dispatches fresh units instead of replaying journaled results. When the loop
 budget is spent, the rejection stands exactly as in the one-shot case.
 
-## Required gates (never silently bypassed)
+## Optional validation
 
-By default a completion gate is **fail-open**: with no `### gate` rubric, or
-when no LLM judge is available (offline, or the default LLM cannot be
-resolved), the step completes without judging. That keeps offline use
-working, but it means a workflow that relies on a gate can be silently
-bypassed in a misconfigured environment.
+Workflow gates are always optional validation. With no non-empty `### gate`
+rubric, no validation runs. When a rubric exists but no LLM judge is available,
+the judge throws, or its response is malformed, validation is skipped and the
+step completes. Only a well-formed `complete: false` verdict rejects the step
+and can trigger another `max_loops` attempt.
 
-`gate.required: true` closes that hole for a specific step:
-
-```markdown
----
-steps:
-  - id: ship
-    gate: { required: true }
----
-...
-## ship
-
-Ship the release.
-
-### gate
-
-- The changelog is updated.
-- The version is bumped.
-```
-
-When a **required** gate carries a rubric but no judge is available, the step
-does **not** fail open — it is **BLOCKED** (the run goes to `blocked`) with a
-message telling you to configure an LLM. Nothing is silently passed. A human
-resolves it via the documented manual path: `akm workflow resume <run-id>`
-(re-evaluate the gate once an LLM is configured) or
-`akm workflow complete`/`abandon`. A required gate that *does* have a judge
-behaves exactly like a normal gate — it only diverges when a judge is missing.
-
-`gate.required` rides the frozen plan, so **both** surfaces enforce it
-identically: `akm workflow run` (the engine) and `akm workflow report` (any
-external driver) block the step the same way.
-
-`akm workflow run --require-gates` is the run-wide override: it treats
-**every** rubric-bearing gate in the run as required for that invocation,
-without editing the workflow. Use it in CI or any environment where an
-unjudged gate must never pass. (The flag applies to the engine invocation; a
-per-step `gate.required: true` is the portable form that also governs the
-`report` driver path.)
+This behavior is identical under `akm workflow run`, manual completion, and
+the `akm workflow report` driver path. Use explicit workflow steps or external
+CI checks for validation that must be mandatory.
 
 ## Budget ceilings
 
@@ -731,19 +695,17 @@ akm workflow report <run> --settle --expect-step <activeStep>
    Nothing was ever dispatchable.
 2. **Fully-terminal step still needing finalization** — every unit already ran
    to a terminal state (they show as `done`/`failed` with **no** report
-   command), but the step never advanced. This is the recovery state after a
-   **required-gate block was resumed** (`akm workflow resume` reopens the step,
-   but the gate still needs judging) or a crash between the last unit write and
-   the step's completion. The work is done; only the gate/finalize remains.
+   command), but the step never advanced. This can happen after a crash between
+   the last unit write and the step's completion. The work is done; only the
+   gate/finalize remains.
 
 `report --settle` takes **no** `--unit`/`--status` — it runs the same
 deterministic completion path the engine runs (reduce → promote/validate the
 typed artifact → judge the gate → `completeWorkflowStep`), advancing the spine
 past every step that has no `report --unit` a driver could ever send, until it
 reaches a step with real work (or the run terminates). For the fully-terminal
-case it finalizes the resting step in place: it **advances** if the gate passes,
-or — for a **required gate with no judge available** — correctly **re-blocks**
-the run, pending a configured judge or a manual `akm workflow complete`. It is
+case it finalizes the resting step in place: it advances when validation passes
+or is skipped, and retains a genuine judge rejection. It is
 **refused if the step still has genuinely pending units** (anything to execute,
 in-flight, or a retry-eligible failure — `report --unit`/`--rerun` those
 instead) and, like every mutating verb, refused under a live engine lease. It

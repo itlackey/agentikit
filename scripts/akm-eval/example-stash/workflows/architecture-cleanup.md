@@ -21,7 +21,6 @@ steps:
     inputs: [steps.establish-parity.output]
   - id: verify-parity
     inputs: [steps.adapt-first.output]
-    gate: { required: true }
   - id: capture-decision
     inputs: [steps.verify-parity.output]
 ---

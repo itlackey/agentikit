@@ -74,7 +74,6 @@ function frozenPlan(): WorkflowPlanGraph {
           stepId: "review",
           criteria: [],
           maxLoops: 1,
-          required: false,
           judge: null,
         },
       },

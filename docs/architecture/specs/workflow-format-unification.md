@@ -34,7 +34,7 @@ one fail-fast unit node with verbatim instructions.
 The full orchestration surface: `unit | map | route` steps, `${{ … }}`
 template expressions, retries keyed on the failure taxonomy, timeouts,
 per-unit engine/model/llm overrides, JSON-Schema-typed params and step
-outputs, gates with `max_loops`/`required`, budgets, worktree isolation.
+outputs, gates with `max_loops`, budgets, worktree isolation.
 Instructions are embedded YAML block scalars.
 
 ### 1.3 The divergences (each one is a standing cost)
@@ -44,7 +44,7 @@ Instructions are embedded YAML block scalars.
 | Step id grammar | `[A-Za-z0-9][A-Za-z0-9._-]*` — dots allowed | `[A-Za-z_][A-Za-z0-9_-]*` — dots forbidden |
 | Params | name → description string, untyped | name → JSON Schema |
 | Templating | **none** — instructions verbatim | `${{ … }}` expressions, real substitution |
-| Gate | `### Completion Criteria` bullets; no `max_loops`/`required` | `gate:` with criteria/max_loops/required |
+| Gate | `### Completion Criteria` bullets; no `max_loops` | `gate:` with criteria/max_loops |
 | Capabilities | linear only | full orchestration |
 | Frontmatter validation | closed hand-maintained allowlist | closed key lists, JSON Schema published |
 | Title | required `# Workflow:` H1 prefix | `name:` field duplicating the filename |
@@ -127,7 +127,7 @@ steps:
     output: { type: array }
     # Retry lives here, not in a backward route: a failed gate re-runs this
     # step with the judge's feedback, bounded by max_loops.
-    gate: { required: true, max_loops: 2 }
+    gate: { max_loops: 2 }
   - id: verdict
     inputs: [steps.implement.output]
     output: { type: object }
@@ -185,7 +185,7 @@ Post the summary. The `implement` step's artifact is attached as context
     evolves additively like every other asset type.
   - `instructions:` keys **removed** — prose lives only in the body.
   - `gate.criteria` **removed** — rubrics live in the body (§2.4). `gate:`
-    retains only the control fields: `required`, `max_loops`.
+    retains only the optional `max_loops` configuration.
   - **No titles anywhere.** No step `title:` key, no display-title heading
     suffix. A step is its id; the asset's human name is its `description`
     and H1 like any other asset.
@@ -213,9 +213,9 @@ Post the summary. The `implement` step's artifact is attached as context
    H2 is free preamble.
 3. Inside a step section, an optional `### gate` sub-heading starts the
    step's gate rubric (running to the section end). It is the format's
-   **single reserved marker**. Frontmatter `gate:` without a `### gate`
-   rubric is a lint error; a `### gate` rubric alone declares a default gate
-   (fail-open, unbounded loops — tune with the frontmatter key).
+   **single reserved marker**. Omitted or empty rubric text skips validation;
+   a non-empty rubric enables optional validation. Frontmatter `gate:` without
+   a rubric is valid but inert.
 
 No `Step ID:` lines, no `# Workflow:` prefix, no reserved H3s beyond `gate`.
 
@@ -301,13 +301,13 @@ per-item results into an **array**, so a collected map step's schema is
 Owner decision: rubrics are often long — real rubric documents, not
 one-liners — and belong in the body. The split:
 
-- **Frontmatter `gate:`** carries only machine control: `required` (block
-  for a human when no judge is available — never silently bypassed) and
-  `max_loops`. Optional when rubric defaults suffice.
+- **Frontmatter `gate:`** optionally carries `max_loops`. It does not enable
+  validation by itself; without a non-empty body rubric it is inert.
 - **Body `### gate`** (inside the step's section) carries the rubric: full
   prose, bullets, worked examples. The judge receives the whole section
-  byte-exact. This replaces both the markdown format's `### Completion
-  Criteria` bullets and the program's `gate.criteria` string list.
+  byte-exact. Omitted or empty text skips validation. This replaces both the
+  markdown format's `### Completion Criteria` bullets and the program's
+  `gate.criteria` string list.
 
 ### 2.5 Validation model — and the end of the allowlist special case
 

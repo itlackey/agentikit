@@ -24,9 +24,7 @@
  *      is free preamble.
  *   3. Inside a step section, an optional `### gate` sub-heading starts the
  *      step's gate rubric (to the section end) — the format's single
- *      reserved marker. Frontmatter `gate:` without a `### gate` rubric is a
- *      lint error; a `### gate` rubric alone declares a default gate
- *      (fail-open, unbounded loops).
+ *      reserved marker. Omitted or empty rubric text skips validation.
  *
  * Prose (instructions, gate rubrics, preamble) is NEVER templated or scanned
  * for reference syntax — it reaches the dispatched unit byte-exact. Only
@@ -110,7 +108,7 @@ const UNIT_KEYS = ["engine", "model", "llm", "timeout", "retry", "on_error", "ou
 const MAP_KEYS = ["over", "concurrency", "reducer", "unit"];
 const ROUTE_KEYS = ["input", "when", "default"];
 const RETRY_KEYS = ["max", "on"];
-const GATE_KEYS = ["max_loops", "required"];
+const GATE_KEYS = ["max_loops"];
 const ROUTE_BRANCH_KEYS = ["match", "step"];
 
 const TIMEOUT_VALUE = /^(\d+)(ms|s|m)?$/;
@@ -263,17 +261,23 @@ export function parseWorkflow(markdown: string, source: { path: string }): Workf
   const params = parseParams(ctx, root.params);
   const defaults = parseDefaults(ctx, root.defaults);
   const budget = parseBudget(ctx, root.budget);
-  const { steps: parsedSteps, gateKeyPresent } = parseSteps(ctx, root.steps);
+  const parsedSteps = parseSteps(ctx, root.steps);
 
   // ── Body binding ────────────────────────────────────────────────────────
   const toc = parseMarkdownToc(markdown);
   const declaredIds = new Set(parsedSteps.map((s) => s.id));
-  const { sections, preamble } = bindStepSections(toc.headings, lines, totalLines, path, declaredIds, errors);
+  const { sections, preamble } = bindStepSections(
+    toc.headings,
+    lines,
+    fmBlock.bodyStartLine,
+    totalLines,
+    path,
+    declaredIds,
+    errors,
+  );
 
   const steps: WorkflowStep[] = parsedSteps.map((step, index) => {
     const section = sections.get(step.id);
-    const hasGateKey = gateKeyPresent.has(step.id);
-
     if (!section) {
       if (step.route === undefined) {
         errors.push({
@@ -286,14 +290,6 @@ export function parseWorkflow(markdown: string, source: { path: string }): Workf
         errors.push({
           line: section.headingLine,
           message: `Step "${step.id}" section ("## ${step.id}") is empty. Add the step's instructions below the heading.`,
-        });
-      }
-      if (hasGateKey && !section.gateRubric) {
-        errors.push({
-          line: section.headingLine,
-          message:
-            `Step "${step.id}" declares frontmatter "gate:" but its "## ${step.id}" section has no "### gate" ` +
-            `rubric. Add a "### gate" sub-heading with the completion rubric, or remove "gate:".`,
         });
       }
     }
@@ -347,6 +343,7 @@ interface StepSection {
 function bindStepSections(
   headings: { level: number; text: string; line: number }[],
   lines: string[],
+  bodyStartLine: number,
   totalLines: number,
   path: string,
   declaredIds: Set<string>,
@@ -356,8 +353,8 @@ function bindStepSections(
   const h2s = headings.filter((h) => h.level === 2);
   const firstH2Line = h2s[0]?.line;
   const preambleRaw = firstH2Line
-    ? sliceLines(lines, 1, firstH2Line - 1).trim()
-    : sliceLines(lines, 1, totalLines).trim();
+    ? sliceLines(lines, bodyStartLine, firstH2Line - 1).trim()
+    : sliceLines(lines, bodyStartLine, totalLines).trim();
 
   for (let i = 0; i < headings.length; i++) {
     const h = headings[i]!;
@@ -389,7 +386,9 @@ function bindStepSections(
     }
     if (gate) {
       const gateText = sliceLines(lines, gate.bodyStart, gate.bodyEnd).trim();
-      section.gateRubric = { text: gateText, source: { path, start: gate.bodyStart, end: gate.bodyEnd } };
+      if (gateText) {
+        section.gateRubric = { text: gateText, source: { path, start: gate.bodyStart, end: gate.bodyEnd } };
+      }
     }
     sections.set(h.text, section);
   }
@@ -602,11 +601,10 @@ function parseBudget(ctx: Ctx, raw: unknown): ProgramBudget | undefined {
   return Object.keys(budget).length > 0 ? budget : undefined;
 }
 
-function parseSteps(ctx: Ctx, raw: unknown): { steps: ProgramStep[]; gateKeyPresent: Set<string> } {
-  const gateKeyPresent = new Set<string>();
+function parseSteps(ctx: Ctx, raw: unknown): ProgramStep[] {
   if (!Array.isArray(raw) || raw.length === 0) {
     ctx.err(["steps"], `"steps" is required and must be a list with at least one step.`);
-    return { steps: [], gateKeyPresent };
+    return [];
   }
   if (raw.length > WORKFLOW_MAX_STEPS) {
     ctx.err(["steps"], `"steps" must contain at most ${WORKFLOW_MAX_STEPS} entries.`);
@@ -676,8 +674,6 @@ function parseSteps(ctx: Ctx, raw: unknown): { steps: ProgramStep[]; gateKeyPres
       ctx.err(path, `${label} is a route step and cannot declare "inputs" (route steps dispatch no unit).`);
     }
 
-    if (rawStep.gate !== undefined && id) gateKeyPresent.add(id);
-
     const unit =
       rawStep.unit !== undefined && !isRoute && !isMapStep
         ? parseUnit(ctx, rawStep.unit, [...path, "unit"], label)
@@ -722,7 +718,7 @@ function parseSteps(ctx: Ctx, raw: unknown): { steps: ProgramStep[]; gateKeyPres
     }
   }
 
-  return { steps, gateKeyPresent };
+  return steps;
 }
 
 // ---------------------------------------------------------------------------
@@ -940,13 +936,6 @@ function parseGate(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
       gate.maxLoops = raw.max_loops;
     } else {
       ctx.err([...path, "max_loops"], `${stepLabel} "gate.max_loops" must be an integer >= 1.`);
-    }
-  }
-  if (raw.required !== undefined) {
-    if (typeof raw.required === "boolean") {
-      gate.required = raw.required;
-    } else {
-      ctx.err([...path, "required"], `${stepLabel} "gate.required" must be a boolean (true or false).`);
     }
   }
   return gate;

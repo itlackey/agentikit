@@ -32,8 +32,9 @@ first step's attached artifact."
 ### gate
 
 A `### gate` sub-heading is the step's completion rubric: the judge
-receives this whole section, byte-exact, before the step is allowed to
-complete. It can be as short or as long as it needs to be.
+receives this whole section byte-exact when validation is available. Omit
+the heading or leave its text empty to skip validation. An unavailable or
+malformed judge also skips validation.
 
 - Confirm the step accomplished what it set out to do.
 - Confirm nothing required was silently skipped.

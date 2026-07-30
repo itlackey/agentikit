@@ -332,8 +332,8 @@ runner (`llm`, `agent`, or `sdk`), with:
   a `vote` fan-out's majority winner) before the step can complete.
 - **Gates that judge the artifact**, with `gate.max_loops` turning a rejection
   into a bounded evaluator-optimizer loop (re-run with the judge's feedback
-  threaded into every unit prompt), and `gate.required: true` to make a
-  gate `BLOCKED` rather than fail-open when no judge is configured.
+  threaded into every unit prompt). Omitted or empty rubrics skip validation;
+  unavailable or malformed judges fail open.
 - **Budget ceilings** (`budget.max_units`/`max_tokens`), enforced across
   resumes because both counters are seeded from the unit journal.
 
@@ -395,11 +395,11 @@ criterion, fail-open (no criteria/no judge/an errored verdict all let the
 step complete). `blocked` status still models human-review gates;
 `akm workflow resume` still flips a `blocked`/`failed` run back to `active`.
 
-The engine-driven gate (B.4) is stricter and judges different material: it
+The engine-driven gate (B.4) judges different material: it
 evaluates the step's **promoted artifact** (real JSON data, clipped at 4000
-chars) against the criteria, not a machine-generated prose summary — and
-`gate.required: true` closes the fail-open hole for a specific step. Both
-gates are LLM calls; both are journaled.
+chars) against the criteria, not a machine-generated prose summary. Both
+gates are optional LLM calls and fail open when no valid verdict is available;
+invoked engine gates are journaled.
 
 ### B.8 Check-in: stall nudging without a daemon
 
@@ -457,7 +457,7 @@ both formats agree.
 | **Progress model** | Push: live `/workflows` tree + `task-notification` | Pull: poll `workflow next`/`status`, JSON envelopes | Pull, but near-live: `akm log --run <id> --since '@offset:<id>'` polls and tails `workflow_*` events as NDJSON with no daemon |
 | **Resume** | Prefix-cache replay keyed on `runId` (needs determinism) | Re-read durable rows; `resume` reopens blocked/failed | Journaled replay keyed on content-derived unit identity; a completed unit with matching inputs is reused, a mismatched one is a hard "replay divergence" error |
 | **Determinism constraint** | `Date.now`/`random`/`new Date()` forbidden | None — it advances rows, it doesn't replay a script | None on the plan itself, but a unit's *recorded inputs* must reproduce under its content-derived identity or replay fails loudly |
-| **Quality gates** | Agent-authored (adversarial verify, judge panels, schemas) | Built-in LLM summary judge (fail-open) + `blocked` human gates | LLM judge over the step's **typed artifact** (not prose), with `gate.max_loops` (bounded retry) and `gate.required` (closes the fail-open hole) |
+| **Quality gates** | Agent-authored (adversarial verify, judge panels, schemas) | Built-in optional LLM summary validation (fail-open) + `blocked` human states | Optional LLM validation over the step's **typed artifact** (not prose), with `gate.max_loops` for bounded retries after a real rejection |
 | **Sandbox / trust** | Restricted JS interpreter, no FS; subagents use tools | No sandbox — steps run in the user's full shell | Same trust model for shell-capable units; adds opt-in `isolation: worktree` (a fresh detached git worktree per unit, not a security sandbox) |
 | **Identity** | `runId`, token budget | `agent_harness` + `agent_session_id`, check-in timestamp | Same, plus `engine_lease_holder`/`engine_lease_until` (run) and `claim_holder`/`claim_expires_at` (unit) |
 | **Nesting** | `workflow()`, one level deep, sharing the parent's concurrency cap/budget | None built-in — a step could shell out to another `akm workflow` | Same — no built-in nesting |

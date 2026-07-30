@@ -52,6 +52,8 @@ describe("parseWorkflow", () => {
     expect(doc.description).toBe("Ship a release with validation checks");
     expect(doc.tags).toEqual(["release", "deploy"]);
     expect(doc.params).toEqual({ version: { type: "string", description: "Version being released" } });
+    expect(doc.preamble).toBe("# Ship Release");
+    expect(doc.preamble).not.toContain("type: workflow");
     expect(doc.steps).toHaveLength(2);
     expect(doc.steps[0]!.id).toBe("validate");
     expect(doc.steps[0]!.instructions?.text).toBe("Confirm release notes, tag, and version are present.");
@@ -166,25 +168,45 @@ Post the summary.
     expect(result.errors.some((e) => e.message.includes('Unexpected level-2 heading "## deployment"'))).toBe(true);
   });
 
-  test("frontmatter gate: without a ### gate rubric is a lint error", () => {
-    const invalid = VALID_WORKFLOW.replace("- id: deploy\n", "- id: deploy\n    gate: { required: true }\n");
-    const result = parse(invalid);
+  test("frontmatter gate configuration without a rubric is inert", () => {
+    const configured = VALID_WORKFLOW.replace("- id: deploy\n", "- id: deploy\n    gate: { max_loops: 2 }\n");
+    const result = parse(configured);
+    expectOk(result);
+    const deploy = result.document.steps.find((step) => step.id === "deploy")!;
+    expect(deploy.gate).toEqual({ maxLoops: 2 });
+    expect(deploy.gateRubric).toBeUndefined();
+  });
+
+  test("gate.required is not part of the workflow format", () => {
+    const result = parse(VALID_WORKFLOW.replace("- id: deploy\n", "- id: deploy\n    gate: { required: true }\n"));
     expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(
-      result.errors.some((e) => e.message.includes('declares frontmatter "gate:"') && e.message.includes("### gate")),
-    ).toBe(true);
+    if (!result.ok)
+      expect(result.errors.some((error) => error.message.includes('Unknown Step "deploy" "gate" key'))).toBe(true);
+  });
+
+  test("an empty or whitespace-only ### gate section skips validation", () => {
+    for (const rubric of ["", "   \n\t"]) {
+      const markdown = VALID_WORKFLOW.replace(
+        "### gate\n\n- Release notes reviewed\n- Version matches tag",
+        `### gate\n${rubric}`,
+      );
+      const result = parse(markdown);
+      expectOk(result);
+      const validate = result.document.steps.find((step) => step.id === "validate")!;
+      expect(validate.gate).toBeUndefined();
+      expect(validate.gateRubric).toBeUndefined();
+    }
   });
 
   test("a ### gate rubric alone (no frontmatter gate:) declares a default gate", () => {
     // VALID_WORKFLOW's "validate" step already has a "### gate" rubric with no
-    // frontmatter `gate:` block — this is the documented default (fail-open,
-    // unbounded loops), not an error.
+    // frontmatter `gate:` block — this enables optional validation with the
+    // default single attempt.
     const result = parse(VALID_WORKFLOW);
     expectOk(result);
     const validate = result.document.steps.find((s) => s.id === "validate")!;
     // The rubric's presence alone declares the gate; the frontmatter control
-    // object defaults to `{}` (fail-open, unbounded loops).
+    // object defaults to `{}`.
     expect(validate.gate).toEqual({});
     expect(validate.gateRubric).toBeDefined();
   });

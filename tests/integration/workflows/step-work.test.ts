@@ -966,7 +966,7 @@ describe("reviewer #7 — a tampered route selection fails loudly on every surfa
 // ── Reviewer #6 — the gate row is finalized when completeWorkflowStep throws ───
 
 /** A solo executing step plan whose gate carries criteria (so the judge runs). */
-function gatedStep(required = false): IrStepPlan {
+function gatedStep(): IrStepPlan {
   return {
     stepId: "work",
     title: "Work",
@@ -984,7 +984,6 @@ function gatedStep(required = false): IrStepPlan {
       id: "work.gate",
       stepId: "work",
       criteria: ["the work is thorough"],
-      ...(required ? { required: true } : {}),
     },
   };
 }
@@ -1015,7 +1014,7 @@ function finalizeArgs(overrides: Record<string, unknown>) {
 
 describe("reviewer #6 — the gate-evaluation row is finalized even when completeWorkflowStep throws", () => {
   test("a lease stolen DURING the judge finishes the gate row (failed), never strands it in running", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
+    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
     // The judge steals the run lease as a side effect, so completeWorkflowStep's
     // write transaction throws AFTER the judge ran (the exact reviewer-#6 window).
     const judge: SummaryJudge = async () => {
@@ -1040,9 +1039,9 @@ describe("reviewer #6 — the gate-evaluation row is finalized even when complet
   });
 });
 
-// ── Reviewer #18 — a required gate with no judge blocks the step ──────────────
+// ── Optional validation gates fail open when no verdict is available ─────────
 
-const REQ_WF = `---
+const GATED_WF = `---
 type: workflow
 steps:
   - id: work
@@ -1057,90 +1056,51 @@ Do the work.
 the work is thorough
 `;
 
-describe("reviewer #18 — a required gate with no judge available blocks the step", () => {
-  test("finalizeExecutedStep BLOCKS (not fail-open) when gate.required and no judge is available", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
-    const fin = await finalizeExecutedStep(finalizeArgs({ stepPlan: gatedStep(true), summaryJudge: null }));
-    expect(fin.kind).toBe("blocked");
-
-    const status = await getWorkflowStatus(RUN_ID);
-    expect(status.workflow.steps.find((s) => s.id === "work")?.status).toBe("blocked");
-    expect(status.run.status).toBe("blocked");
-    // The judge was never invoked, so no gate row was journaled.
+describe("optional validation gates", () => {
+  test("no judge skips validation and advances without journaling a gate row", async () => {
+    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
+    const fin = await finalizeExecutedStep(finalizeArgs({ summaryJudge: null }));
+    expect(fin.kind).toBe("advanced");
+    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("completed");
     const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(RUN_ID, "work"));
-    expect(rows.some((r) => r.unit_id === "work.gate:l1")).toBe(false);
+    expect(rows.some((row) => row.unit_id === "work.gate:l1")).toBe(false);
   });
 
-  test("a required gate WITH a judge available completes normally (no block)", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
+  test("a passing judge completes normally", async () => {
+    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
     const judge: SummaryJudge = async () => '{"complete": true, "missing": []}';
-    const fin = await finalizeExecutedStep(finalizeArgs({ stepPlan: gatedStep(true), summaryJudge: judge }));
+    const fin = await finalizeExecutedStep(finalizeArgs({ summaryJudge: judge }));
     expect(fin.kind).toBe("advanced");
     expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("completed");
   });
 
-  // ── Codex round-3 finding A — a required gate whose judge ERRORS must BLOCK,
-  //    never fail open (the offline/misconfigured-judge bypass required gates exist
-  //    to prevent). A CONFIGURED judge that throws is NOT the no-judge case above.
-  test("finding A: required gate + a judge that THROWS blocks the step (does not fail open)", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
+  test("a judge that throws skips validation and advances", async () => {
+    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
     const judge: SummaryJudge = async () => {
       throw new Error("LLM unreachable");
     };
-    const fin = await finalizeExecutedStep(finalizeArgs({ stepPlan: gatedStep(true), summaryJudge: judge }));
-    expect(fin.kind).toBe("blocked");
-    if (fin.kind === "blocked") expect(fin.summary).toContain("REQUIRED completion gate");
-
-    const status = await getWorkflowStatus(RUN_ID);
-    expect(status.workflow.steps.find((s) => s.id === "work")?.status).toBe("blocked");
-    expect(status.run.status).toBe("blocked");
-    // The judge WAS invoked, so the gate row exists — but finished ERRORED
-    // (status failed, NULL verdict), not passed.
+    const fin = await finalizeExecutedStep(finalizeArgs({ summaryJudge: judge }));
+    expect(fin.kind).toBe("advanced");
+    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("completed");
     const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(RUN_ID, "work"));
     const gate = rows.find((r) => r.unit_id === "work.gate:l1");
     expect(gate?.status).toBe("failed");
     expect(gate?.result_json).toBeNull();
   });
 
-  test("finding A: required gate + a judge that returns an UNPARSEABLE verdict blocks the step", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
+  test("an unparseable verdict skips validation and advances", async () => {
+    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
     const judge: SummaryJudge = async () => "not json at all";
-    const fin = await finalizeExecutedStep(finalizeArgs({ stepPlan: gatedStep(true), summaryJudge: judge }));
-    expect(fin.kind).toBe("blocked");
-    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("blocked");
-    const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(RUN_ID, "work"));
-    expect(rows.find((r) => r.unit_id === "work.gate:l1")?.status).toBe("failed");
-  });
-
-  test("finding A: a NON-required gate whose judge throws still fails OPEN (documented offline behavior)", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
-    const judge: SummaryJudge = async () => {
-      throw new Error("LLM unreachable");
-    };
-    const fin = await finalizeExecutedStep(finalizeArgs({ stepPlan: gatedStep(false), summaryJudge: judge }));
+    const fin = await finalizeExecutedStep(finalizeArgs({ summaryJudge: judge }));
     expect(fin.kind).toBe("advanced");
     expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("completed");
   });
 
-  test("engine --require-gates blocks a NON-required criteria gate with no judge (run-wide override)", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
+  test("the engine also skips validation when no judge is configured", async () => {
+    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
     const result = await runWorkflowSteps({
       target: RUN_ID,
-      loadPlan: async () => plan(REQ_WF),
-      dispatcher: async () => ({ ok: true, text: "did the work" }),
-      summaryJudge: null,
-      requireGates: true,
-    });
-    expect(result.run.status).toBe("blocked");
-    expect(result.done).toBeUndefined();
-    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("blocked");
-  });
-
-  test("without --require-gates, a non-required gate with no judge still fails OPEN (offline behavior unchanged)", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
-    const result = await runWorkflowSteps({
-      target: RUN_ID,
-      loadPlan: async () => plan(REQ_WF),
+      loadPlan: async () => plan(GATED_WF),
       dispatcher: async () => ({ ok: true, text: "did the work" }),
       summaryJudge: null,
     });

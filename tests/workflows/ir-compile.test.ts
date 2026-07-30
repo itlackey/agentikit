@@ -136,6 +136,13 @@ describe("compileWorkflowPlan — structural golden", () => {
     const doc = parseMarkdown(LINEAR_MD);
     expect(compileWorkflowPlan(doc, "Ship it")).toEqual(compileWorkflowPlan(doc, "Ship it"));
   });
+
+  test("an empty gate section compiles with no validation criteria", () => {
+    const emptyGate = LINEAR_MD.replace("### gate\n\n- artifact exists", "### gate\n");
+    const result = compileWorkflowPlan(parseMarkdown(emptyGate), "Ship it");
+    if (!result.ok) throw new Error("expected ok compile");
+    expect(result.plan.steps[0]?.gate.criteria).toEqual([]);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

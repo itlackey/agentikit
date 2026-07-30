@@ -22,7 +22,7 @@ steps:
     # Retry lives here, not in a backward route: a gap found during
     # integration is fixed and re-verified inside this same step, re-run
     # (with the judge's feedback) up to 3 times by the gate below.
-    gate: { required: true, max_loops: 3 }
+    gate: { max_loops: 3 }
   - id: open-pr-and-document
     inputs: [steps.verify-integration.output]
 ---

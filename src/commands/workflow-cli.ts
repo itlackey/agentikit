@@ -25,7 +25,7 @@ import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "
 import { loadConfig } from "../core/config/config";
 import { NotFoundError, UsageError } from "../core/errors";
 import { akmIndex } from "../indexer/indexer";
-import { createWorkflowAsset, getWorkflowTemplate } from "../workflows/authoring/authoring";
+import { assertWorkflowMarkdownName, createWorkflowAsset, getWorkflowTemplate } from "../workflows/authoring/authoring";
 import { parseWorkflowJsonObject, parseWorkflowStepState, WORKFLOW_STEP_STATES } from "../workflows/cli";
 import { requireWorkflowEngineEnabled } from "../workflows/exec/workflow-engine-gate";
 import {
@@ -227,6 +227,7 @@ const workflowCreateCommand = defineJsonCommand({
         "Workflow name must start with a lowercase letter or digit and contain only lowercase letters, digits, hyphens, dots, underscores, and slashes.",
       );
     }
+    assertWorkflowMarkdownName(effectiveName);
     if (args.print) {
       // Raw document, not an envelope — the retired `workflow template` was
       // format-exempt for the same reason: `--print > starter.md` must yield
@@ -264,14 +265,6 @@ const workflowRunCommand = defineJsonCommand({
     target: { type: "positional", description: "Workflow run id or workflow ref (auto-starts a run)", required: true },
     params: { type: "string", description: "Workflow parameters as a JSON object (only for auto-started runs)" },
     "max-steps": { type: "string", description: "Stop after executing this many steps" },
-    "require-gates": {
-      type: "boolean",
-      description:
-        "Treat every criteria-bearing completion gate as required: if no LLM judge is available, BLOCK the step " +
-        "(for a human to resolve via `akm workflow resume`) instead of failing open. A per-step `gate.required: true` " +
-        "in the workflow does the same on every surface; this is the run-wide override.",
-      default: false,
-    },
   },
   async run({ args }) {
     requireWorkflowEngineEnabled(loadConfig(), "run");
@@ -288,7 +281,6 @@ const workflowRunCommand = defineJsonCommand({
       target: args.target,
       ...(args.params ? { params: parseWorkflowJsonObject(args.params, "--params") } : {}),
       ...(maxSteps !== undefined ? { maxSteps } : {}),
-      ...(args["require-gates"] === true ? { requireGates: true } : {}),
     });
     output("workflow-run", result);
   },

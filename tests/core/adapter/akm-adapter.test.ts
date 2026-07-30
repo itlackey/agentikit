@@ -245,7 +245,7 @@ describe("akm adapter — recognize folds the index-time metadata contributors (
     // "workflow-md" contributor). The second workflow-program-yaml fixture
     // form is gone (deleted with the YAML program format, spec §3).
     "workflows/all-types-workflow.md": {
-      searchHints: ["announce", "Print a single fixture line and stop."],
+      searchHints: ["# All Types Fixture", "announce", "Print a single fixture line and stop."],
     },
   };
   // mtime-derived observed_at hint — pinned by shape below, not in EXPECTED_FOLDS.

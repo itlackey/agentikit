@@ -22,7 +22,6 @@ steps:
     map:
       over: steps.cut-release-branch.output.in_scope_prs
       concurrency: 3
-    gate: { required: true }
   - id: tag-deploy-announce
     inputs: [steps.nested-pr-reviews.output]
   - id: nested-retrospective

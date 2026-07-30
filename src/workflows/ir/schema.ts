@@ -117,7 +117,6 @@ export interface IrGateNode {
   stepId: string;
   criteria: string[];
   maxLoops?: number;
-  required?: boolean;
   judge?: IrInvocation | null;
 }
 
@@ -466,15 +465,13 @@ function validateGate(
     !gate.criteria.every((x) => typeof x === "string" && x.length > 0 && x.length <= MAX_STRING_LENGTH) ||
     !Number.isInteger(gate.maxLoops) ||
     (gate.maxLoops as number) < 1 ||
-    (gate.maxLoops as number) > WORKFLOW_MAX_GATE_LOOPS ||
-    typeof gate.required !== "boolean"
+    (gate.maxLoops as number) > WORKFLOW_MAX_GATE_LOOPS
   )
     fail(`gate for step ${stepId} is invalid`);
   if (nodeIds.has(gate.id)) fail(`gate id ${gate.id} collides with a node`);
-  assertKeys(gate, ["kind", "id", "stepId", "criteria", "maxLoops", "required", "judge"], `gate ${stepId}`);
+  assertKeys(gate, ["kind", "id", "stepId", "criteria", "maxLoops", "judge"], `gate ${stepId}`);
   nodeIds.add(gate.id);
   if (gate.criteria.length === 0 && gate.judge !== null) fail(`gate ${gate.id} without criteria cannot have a judge`);
-  if (gate.required && gate.criteria.length === 0) fail(`gate ${gate.id} cannot be required without criteria`);
   if (gate.judge !== null) validateInvocation(gate.judge, references, hooks);
 }
 

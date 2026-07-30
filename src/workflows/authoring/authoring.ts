@@ -52,17 +52,20 @@ function validateWorkflowContent(content: string, sourcePath: string): void {
 /** Recognized workflow-program suffixes — creating one is a lint-time usage error (workflow-format-unification). */
 const YAML_SUFFIX_RE = /\.ya?ml$/i;
 
+export function assertWorkflowMarkdownName(name: string): void {
+  if (!YAML_SUFFIX_RE.test(name.trim())) return;
+  throw new UsageError(
+    `Workflows are markdown-only now (workflow-format-unification) — "${name}" cannot be created. ` +
+      `Use a plain name (no ".yaml"/".yml" suffix); the orchestration graph lives in the ".md" file's frontmatter.`,
+  );
+}
+
 export function createWorkflowAsset(input: { name: string; content?: string; from?: string; force?: boolean }): {
   ref: string;
   path: string;
   stashDir: string;
 } {
-  if (YAML_SUFFIX_RE.test(input.name.trim())) {
-    throw new UsageError(
-      `Workflows are markdown-only now (workflow-format-unification) — "${input.name}" cannot be created. ` +
-        `Use a plain name (no ".yaml"/".yml" suffix); the orchestration graph lives in the ".md" file's frontmatter.`,
-    );
-  }
+  assertWorkflowMarkdownName(input.name);
 
   const config = loadConfig();
   const resolvedTarget = resolveWriteTarget(config);

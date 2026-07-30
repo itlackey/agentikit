@@ -65,6 +65,8 @@ describe("schemas/akm-workflow.json stays in sync with the TS vocabulary", () =>
       (schema.definitions.gate as { properties?: Record<string, unknown> }).properties ?? {},
     );
     expect(gateKeys).not.toContain("criteria");
+    expect(gateKeys).not.toContain("required");
+    expect(gateKeys).toEqual(["max_loops"]);
     expect(stepKeys).toContain("inputs");
   });
 

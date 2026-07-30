@@ -180,7 +180,6 @@ function linearGolden(
           stepId: "build",
           criteria: ["Artifact exists."],
           maxLoops: 1,
-          required: false,
           judge: { engine: "test-llm", model: "test-model", timeoutMs: 600_000 },
         },
       },
@@ -195,7 +194,6 @@ function linearGolden(
           stepId: "deploy",
           criteria: [],
           maxLoops: 1,
-          required: false,
           judge: null,
         },
       },
@@ -308,7 +306,6 @@ describe("conformance — fan-out + schema + vote", () => {
         stepId: "judge",
         criteria: [],
         maxLoops: 1,
-        required: false,
         judge: null,
       },
     });
@@ -389,7 +386,6 @@ describe("conformance — routed workflow", () => {
         stepId: "triage",
         criteria: [],
         maxLoops: 1,
-        required: false,
         judge: null,
       },
     });

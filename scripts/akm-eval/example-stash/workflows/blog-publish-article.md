@@ -30,7 +30,7 @@ steps:
     # parameter's default). If it still isn't ship-ready after that, the
     # step — and the run — fails; a human decides whether the draft needs
     # a fresh `akm workflow start` from `draft` or just another look.
-    gate: { required: true, max_loops: 4 }
+    gate: { max_loops: 4 }
   - id: publish-draft
     inputs: [steps.edit.output]
   - id: notify

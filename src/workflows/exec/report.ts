@@ -877,11 +877,11 @@ async function settleWorkflowSpineWithBarrier(input: {
 
   // A step with resolvable units is settled ONLY when its work-list is FULLY
   // TERMINAL — every resolvable unit run to a terminal state, nothing left to
-  // `report --unit` — yet still un-finalized (a required-gate block that was
-  // resumed, or a crash between the last unit write and completion; owner
-  // manual-validation finding 3). Such a list has no pending unit to report, so
+  // `report --unit` — yet still un-finalized (for example, after a crash between
+  // the last unit write and completion; owner manual-validation finding 3).
+  // Such a list has no pending unit to report, so
   // `--settle` runs the SAME shared completion path a report would
-  // (reducer → gate → advance / re-block). A step with GENUINELY PENDING units
+  // (reducer → optional validation → advance/reject). A step with GENUINELY PENDING units
   // (pending, in-flight, or retry-eligible failed) is still refused — those
   // advance via `report --unit`.
   const ctx = buildStepContext(runId, plan, next, units);
@@ -1054,9 +1054,7 @@ function buildStepContext(
 type StepCompletion =
   | { kind: "advanced" }
   | { kind: "failed"; summary: string }
-  | { kind: "gate-rejected"; loopsRemaining: boolean; missing: string[]; feedback: string }
-  /** Reviewer #18: a required gate with no judge available — the step is BLOCKED for a human. */
-  | { kind: "blocked"; summary: string };
+  | { kind: "gate-rejected"; loopsRemaining: boolean; missing: string[]; feedback: string };
 
 /**
  * Rebuild a step's unit outcomes from the journal and reduce them through the
@@ -1178,11 +1176,6 @@ async function runStepCompletion(args: {
   }
   if (finalize.kind === "failed") {
     return { kind: "failed", summary: finalize.summary };
-  }
-  if (finalize.kind === "blocked") {
-    // Reviewer #18: a required gate with no judge available. The frozen plan's
-    // `gate.required` rides both surfaces, so the report path blocks identically.
-    return { kind: "blocked", summary: finalize.summary };
   }
   return { kind: "advanced" };
 }
@@ -1322,22 +1315,6 @@ async function finalizeStep(args: {
       state.run.status,
       { kind: "failed", summary: completion.summary },
       `Step "${stepState.id}" failed: ${completion.summary}`,
-      recorded,
-    );
-  }
-
-  if (completion.kind === "blocked") {
-    // Reviewer #18: a required gate with no judge available blocked the step.
-    // The run is now `blocked`; a human resolves it via `akm workflow resume`.
-    const state = await getNextWorkflowStep(runId);
-    return reportResult(
-      runId,
-      stepState.id,
-      args.written,
-      gateLoop,
-      state.run.status,
-      { kind: "blocked", summary: completion.summary },
-      `Step "${stepState.id}" is BLOCKED: ${completion.summary}`,
       recorded,
     );
   }

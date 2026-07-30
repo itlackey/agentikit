@@ -38,8 +38,8 @@ import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow
  * All dispatch goes through an injected fake dispatcher; the judge is the
  * `summaryJudge` seam on RunWorkflowOptions. Sandboxed workflow.db via
  * AKM_DATA_DIR. Fixtures are unified workflow markdown (frontmatter graph +
- * body prose/rubric) frozen via `freezeWorkflow` — the gate's CONTROL fields
- * (`required`/`max_loops`) live in frontmatter `gate:`, the rubric lives in
+ * body prose/rubric) frozen via `freezeWorkflow` — optional `max_loops`
+ * configuration lives in frontmatter `gate:`, while the rubric lives in
  * the body under a "### gate" sub-heading (workflow-format-unification,
  * spec §2.4); the rubric's raw text becomes the ONE `gate.criteria` string.
  */

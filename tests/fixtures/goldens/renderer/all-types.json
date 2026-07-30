@@ -94,6 +94,7 @@
     },
     "workflows/all-types-workflow.md": {
       "action": "Resume the active run or start a new run with `akm workflow next 'workflows/all-types-workflow'`.",
+      "content": "# All Types Fixture",
       "description": "Minimal linear workflow fixture used by the all-types parity stash",
       "name": "all-types-workflow",
       "path": "<STASH>/workflows/all-types-workflow.md",

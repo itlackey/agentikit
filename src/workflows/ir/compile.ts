@@ -64,7 +64,6 @@ export interface WorkflowGateDraft {
   stepId: string;
   criteria: string[];
   maxLoops?: number;
-  required?: boolean;
 }
 
 export interface WorkflowStepDraft {
@@ -166,9 +165,8 @@ function compileStep(
     // The body `### gate` rubric is carried through as the ONE criterion string
     // — the judge receives the whole section byte-exact (spec §2.4). A step
     // with no rubric has no gate at all (fail-open, criteria: []).
-    criteria: step.gateRubric ? [step.gateRubric.text] : [],
+    criteria: step.gateRubric?.text.trim() ? [step.gateRubric.text] : [],
     ...(step.gate?.maxLoops !== undefined ? { maxLoops: step.gate.maxLoops } : {}),
-    ...(step.gate?.required !== undefined ? { required: step.gate.required } : {}),
   };
 
   let root: WorkflowUnitDraft | WorkflowMapDraft | undefined;

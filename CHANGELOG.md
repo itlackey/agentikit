@@ -169,9 +169,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer a frontmatter `gate.criteria` list or a `### Completion Criteria`
   bullet section — they live under a step's `### gate` sub-heading, the
   format's one reserved marker, as full prose a judge receives byte-exact.
-  Frontmatter `gate:` now carries only control fields (`required`,
-  `max_loops`); a `### gate` rubric alone declares a default, fail-open,
-  unbounded-loop gate.
+  Frontmatter `gate:` now carries only optional `max_loops` configuration.
+  Omitted or empty rubric text skips validation; a non-empty rubric enables
+  fail-open validation, and unavailable or malformed judges are skipped.
 
   This is a **pre-1.0 change to an unshipped, opt-in feature** —
   `experimental.workflowEngine` has never been enabled by default, and no
@@ -948,9 +948,9 @@ See `docs/migration/v0.8-to-v0.9.md` and
     criteria-bearing gate judges that **artifact** (canonical JSON, clipped)
     rather than machine prose, and each engine-driven evaluation is journaled
     as a gate unit row. `gate.max_loops` bounds an evaluator-optimizer retry
-    loop (feedback threaded into re-dispatched unit prompts); `gate.required`
-    (or the run-wide `--require-gates`) makes a gate with no available judge
-    **block** for a human instead of failing open.
+    loop (feedback threaded into re-dispatched unit prompts). Gates are
+    optional validation: omitted/empty rubrics and unavailable or malformed
+    judges skip validation.
   - **Failure policy.** Per-unit `on_error: fail | continue` (fail-fast
     default) plus bounded `retry: { max, on: [<failure_reason>…] }` keyed on
     the persisted failure taxonomy.

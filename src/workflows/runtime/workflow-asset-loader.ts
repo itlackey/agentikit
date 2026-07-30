@@ -367,7 +367,7 @@ function projectAsset(
       id: s.id,
       title: s.id,
       instructions: s.instructions?.text ?? stepFallbackInstructions(s),
-      ...(s.gateRubric ? { completionCriteria: [s.gateRubric.text] } : {}),
+      ...(s.gateRubric?.text.trim() ? { completionCriteria: [s.gateRubric.text] } : {}),
       sequenceIndex: s.sequenceIndex,
     })),
     document: doc,

@@ -800,19 +800,14 @@ Build it.
   },
 };
 
-// required gate + no judge → BLOCKED (reviewer #18). A criteria-bearing gate
-// marked `required: true` must be JUDGED; with no judge available (the parity
-// harness omits the judge ⇒ null on both surfaces), the engine and the report
-// path must BLOCK the step identically instead of failing open. The unit still
-// completes, no gate row is journaled (the judge was never invoked), and the
-// run lands `blocked` on BOTH surfaces — the same unit graph.
-const REQUIRED_GATE_NO_JUDGE: Golden = {
-  name: "required gate, no judge → blocked (offline parity)",
+// A rubric with no judge skips validation on both surfaces. The unit completes,
+// no gate row is journaled, and both surfaces advance identically.
+const OPTIONAL_GATE_NO_JUDGE: Golden = {
+  name: "optional gate, no judge → skipped (offline parity)",
   markdown: `---
 type: workflow
 steps:
   - id: work
-    gate: { required: true }
 ---
 
 ## work
@@ -826,29 +821,24 @@ The work is thorough.
   params: {},
   steps: [{ id: "work", criteria: ["the work is thorough"] }],
   outcome: () => ({ ok: true, text: "did the work" }),
-  // judge omitted ⇒ null on both surfaces ⇒ the required gate blocks.
+  // judge omitted ⇒ null on both surfaces ⇒ validation is skipped.
   verify: (g) => {
     expect(lineFor(g, "unit work:solo")).toContain("status=completed");
     // The judge is never invoked, so no `<step>.gate:l<n>` row exists on either surface.
     expect(countLines(g, "gate ")).toBe(0);
-    expect(lineFor(g, "step work")).toContain("status=blocked");
-    expect(g).toContain("run status=blocked");
+    expect(lineFor(g, "step work")).toContain("status=completed");
+    expect(g).toContain("run status=completed");
   },
 };
 
-// required gate + a judge that ERRORS → BLOCKED (Codex round-3 finding A). Unlike
-// the no-judge golden above, a judge IS configured — it just THROWS (a transient
-// LLM outage). A required gate must not fail open on that: both surfaces INVOKE
-// the judge (so the `<step>.gate:l1` row IS journaled), finish it as an errored
-// evaluation (status=failed, NULL verdict), and BLOCK the step identically — the
-// same unit graph. This is the exact bypass finding A flagged.
-const REQUIRED_GATE_JUDGE_ERRORS: Golden = {
-  name: "required gate, judge errors → blocked (offline parity)",
+// A judge error also skips validation on both surfaces. The attempted judge call
+// is journaled as failed, while the workflow itself advances.
+const OPTIONAL_GATE_JUDGE_ERRORS: Golden = {
+  name: "optional gate, judge errors → skipped (offline parity)",
   markdown: `---
 type: workflow
 steps:
   - id: work
-    gate: { required: true }
 ---
 
 ## work
@@ -872,8 +862,8 @@ The work is thorough.
     expect(countLines(g, "gate ")).toBe(1);
     expect(lineFor(g, "gate work.gate:l1")).toContain("status=failed");
     expect(lineFor(g, "gate work.gate:l1")).toContain("verdict=-");
-    expect(lineFor(g, "step work")).toContain("status=blocked");
-    expect(g).toContain("run status=blocked");
+    expect(lineFor(g, "step work")).toContain("status=completed");
+    expect(g).toContain("run status=completed");
   },
 };
 
@@ -931,8 +921,8 @@ const GOLDENS: Golden[] = [
   RETRY,
   EMPTY_OUTPUT,
   ENGINE_TIMEOUT,
-  REQUIRED_GATE_NO_JUDGE,
-  REQUIRED_GATE_JUDGE_ERRORS,
+  OPTIONAL_GATE_NO_JUDGE,
+  OPTIONAL_GATE_JUDGE_ERRORS,
   PARAMS_ROUTE_FIRST,
 ];
 
@@ -1051,20 +1041,19 @@ The work is thorough.
     expect(engineGraph).toContain("run status=completed");
   });
 
-  // Owner manual-validation finding 3 parity extension: a required-gate step
-  // whose only unit already COMPLETED but whose gate never got judged (a
-  // required-gate BLOCK that was resumed, or a crash before finalization) is a
+  // Owner manual-validation finding 3 parity extension: a gated step whose only
+  // unit already COMPLETED but whose gate never got judged (for example, a crash
+  // before finalization) is a
   // FULLY-TERMINAL work-list on a still-active step. The engine re-reduces the
-  // completed unit and re-blocks the required gate; the brief/report driver has
+  // completed unit and skips unavailable validation; the brief/report driver has
   // no `report --unit` to run (the unit is `done`) and must use the `--settle`
   // verb brief now emits, running the SAME shared completion path. Both surfaces
-  // must re-block identically (no judge available), with byte-identical graphs.
-  test("fully-terminal required-gate step: engine re-reduce and brief/report --settle both re-block identically", async () => {
+  // must advance identically (no judge available), with byte-identical graphs.
+  test("fully-terminal gated step: engine re-reduce and brief/report --settle both advance identically", async () => {
     const markdown = `---
 type: workflow
 steps:
   - id: work
-    gate: { required: true }
 ---
 
 ## work
@@ -1077,9 +1066,9 @@ The work is thorough.
 `;
     const plan = compile(markdown);
     const steps: SeedStep[] = [{ id: "work", criteria: ["the work is thorough"] }];
-    // No judge (fail-open resolution) ⇒ the required gate blocks on both surfaces.
+    // No judge means validation is skipped on both surfaces.
     const golden: Golden = {
-      name: "settle-reblock",
+      name: "settle-skip-validation",
       markdown,
       params: {},
       steps,
@@ -1144,10 +1133,10 @@ The work is thorough.
     await runDriverSurface(golden);
     const driverGraph = await canonicalGraph();
 
-    assertGraphsIdentical(engineGraph, driverGraph, "settle-reblock");
+    assertGraphsIdentical(engineGraph, driverGraph, "settle-skip-validation");
     expect(lineFor(engineGraph, "unit work:solo ")).toContain("status=completed");
-    expect(lineFor(engineGraph, "step work")).toContain("status=blocked");
-    expect(engineGraph).toContain("run status=blocked");
+    expect(lineFor(engineGraph, "step work")).toContain("status=completed");
+    expect(engineGraph).toContain("run status=completed");
   });
 
   // Codex round-3 finding C parity extension: an engine crash AFTER a unit's

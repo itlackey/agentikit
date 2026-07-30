@@ -17,7 +17,6 @@ steps:
     inputs: [steps.inventory.output]
   - id: land-green
     inputs: [steps.classify.output]
-    gate: { required: true }
   - id: queue-review
     inputs: [steps.land-green.output]
 ---

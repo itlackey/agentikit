@@ -34,7 +34,7 @@ steps:
     # fails — the escalation the original design wanted is exactly what a
     # failed/blocked run already is: a human resolves it via
     # `akm workflow resume`/`complete`/`abandon`.
-    gate: { required: true, max_loops: 8 }
+    gate: { max_loops: 8 }
   - id: integrate
     inputs: [steps.implement.output]
   - id: open-prs

@@ -55,7 +55,7 @@ export interface WorkflowStep {
   inputs?: string[];
   /** Step artifact JSON Schema. */
   output?: Record<string, unknown>;
-  /** Gate CONTROL fields from frontmatter (required/maxLoops); the rubric lives in `gateRubric`. */
+  /** Optional gate loop configuration from frontmatter; the rubric lives in `gateRubric`. */
   gate?: ProgramGate;
   /**
    * The step's markdown body section — byte-exact from its `## <id>` heading
@@ -66,9 +66,8 @@ export interface WorkflowStep {
   instructions?: WorkflowInstructionBlock;
   /**
    * The step's `### gate` sub-section, if present — the completion-gate
-   * rubric, full prose, running to the section end (spec §2.4). A `### gate`
-   * rubric alone declares a default gate (fail-open, unbounded loops); a
-   * frontmatter `gate:` with no rubric is a lint error.
+   * rubric, full prose, running to the section end (spec §2.4). Omitted or
+   * empty rubric text skips validation.
    */
   gateRubric?: WorkflowInstructionBlock;
   /** The step's frontmatter declaration (YAML-anchored, best-effort line span). */
