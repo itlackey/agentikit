@@ -15,6 +15,7 @@ import type { Database } from "../../storage/database";
 import { insertEvent } from "../../storage/repositories/events-repository";
 import { queryImproveRuns } from "../../storage/repositories/improve-runs-repository";
 import { listStateProposals } from "../../storage/repositories/proposals-repository";
+import { getTopRetrievalSalience } from "../../storage/repositories/salience-repository";
 import { roundRate, toFiniteNumber } from "./improve-metrics";
 import {
   ENRICHMENT_LANES,
@@ -243,12 +244,10 @@ export function computeDegradationMetrics(
   let entrenchmentFlagged: boolean | undefined;
   let salienceUniformityFlagged: boolean | undefined;
   try {
-    const rows = db
-      .prepare(
-        `SELECT retrieval_salience FROM asset_salience
-         ORDER BY rank_score DESC LIMIT 100`,
-      )
-      .all() as Array<{ retrieval_salience: number }>;
+    // Fail-open: the asset_salience table may not exist yet (pre-WS-1 install).
+    // getTopRetrievalSalience (storage/repositories/salience-repository.ts,
+    // #672 part 2) owns the raw SQL; this call site's try/catch is unchanged.
+    const rows = getTopRetrievalSalience(db, 100);
     if (rows.length >= 5) {
       const vals = rows.map((r) => r.retrieval_salience).sort((a, b) => a - b);
       const n = vals.length;
