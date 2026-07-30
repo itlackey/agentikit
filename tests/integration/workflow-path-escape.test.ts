@@ -112,21 +112,24 @@ describe("createWorkflowAsset — clean stash (issue #157)", () => {
     process.env.AKM_BUNDLE_DIR = stashDir;
 
     const srcPath = path.join(srcDir, "release.md");
+    // Unified-format fixture (frontmatter graph + `## <id>` body — spec §2.2).
     const content = `---
+type: workflow
 description: A release workflow
 tags:
   - release
+steps:
+  - id: validate
 ---
 
-# Workflow: Release
+# Release
 
-## Step: Validate
-Step ID: validate
+## validate
 
-### Instructions
 Check all inputs.
 
-### Completion Criteria
+### gate
+
 - Inputs confirmed
 `;
     fs.writeFileSync(srcPath, content, "utf8");
@@ -135,7 +138,7 @@ Check all inputs.
 
     expect(result.ref).toBe(durableItemRef(stashDir, "workflow", "release"));
     expect(fs.existsSync(result.path)).toBe(true);
-    expect(fs.readFileSync(result.path, "utf8")).toContain("# Workflow: Release");
+    expect(fs.readFileSync(result.path, "utf8")).toContain("# Release");
   });
 });
 

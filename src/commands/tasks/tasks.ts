@@ -551,9 +551,8 @@ export interface TasksDoctorResult {
   };
   /**
    * Q-05 — the workflow engine gate's state. `akm workflow run`/`brief`/
-   * `report`/`watch`, and creating a YAML workflow program, all refuse until
-   * `experimental.workflowEngine` is set; this is where an operator confirms
-   * why (or whether) those surfaces are available.
+   * `report` refuse until `experimental.workflowEngine` is set; this is where
+   * an operator confirms why (or whether) those surfaces are available.
    */
   workflowEngine: {
     enabled: boolean;

@@ -36,7 +36,7 @@ import {
 import { isGitAvailable, runWorktreeRoot } from "../../src/workflows/exec/worktree";
 import { compileResolveFreezeWorkflow } from "../../src/workflows/ir/freeze";
 import type { FrozenAgentEngine, FrozenLlmEngine, WorkflowPlanGraph } from "../../src/workflows/ir/schema";
-import { parseWorkflowProgram } from "../../src/workflows/program/parser";
+import { parseWorkflow } from "../../src/workflows/parser";
 import { makeSandboxDir, withEnv, writeSandboxConfig } from "../_helpers/sandbox";
 
 const GIT = isGitAvailable();
@@ -109,17 +109,17 @@ function seedRun(steps: Array<{ id: string; title: string }>, params: Record<str
   }
 }
 
-function plan(yamlText: string): WorkflowPlanGraph {
-  const parsed = parseWorkflowProgram(yamlText, { path: "workflows/demo.yaml" });
+function plan(markdown: string): WorkflowPlanGraph {
+  const parsed = parseWorkflow(markdown, { path: "workflows/demo.md" });
   if (!parsed.ok) throw new Error(parsed.errors.map((e) => `${e.line}: ${e.message}`).join(" | "));
   return compileResolveFreezeWorkflow(
     {
       ref: "workflows/demo",
-      path: "workflows/demo.yaml",
+      path: "workflows/demo.md",
       sourcePath: "/tmp",
-      title: parsed.program.name,
+      title: "demo",
       steps: [],
-      program: parsed.program,
+      document: parsed.document,
     },
     {
       configVersion: "0.9.0",
@@ -132,31 +132,37 @@ function plan(yamlText: string): WorkflowPlanGraph {
   ).plan;
 }
 
-const SOLO_ISOLATED_WF = `version: 2
-name: Isolated
+const SOLO_ISOLATED_WF = `---
+type: workflow
 defaults: { engine: test-agent }
 steps:
   - id: work
-    title: Work
     unit:
       isolation: worktree
-      instructions: Do the work.
+---
+
+## work
+
+Do the work.
 `;
 
-const FAN_OUT_ISOLATED_WF = `version: 2
-name: Isolated fan-out
+const FAN_OUT_ISOLATED_WF = `---
+type: workflow
 defaults: { engine: test-agent }
 params:
   files: { type: array }
 steps:
   - id: work
-    title: Work
     map:
-      over: \${{ params.files }}
+      over: params.files
       concurrency: 2
       unit:
         isolation: worktree
-        instructions: Edit \${{ item }}.
+---
+
+## work
+
+Edit the assigned item.
 `;
 
 describe.skipIf(!GIT)("executeStepPlan — isolation: worktree", () => {
@@ -303,15 +309,18 @@ describe.skipIf(!GIT)("executeStepPlan — isolation: worktree", () => {
 // The llm guard is git-independent (it rejects before touching git at all),
 // so it runs even where git is unavailable.
 describe("frozen plan — isolation: worktree on the llm runner", () => {
-  const LLM_ISOLATED_WF = `version: 2
-name: Bad isolation
+  const LLM_ISOLATED_WF = `---
+type: workflow
 defaults: { engine: test-llm }
 steps:
   - id: work
-    title: Work
     unit:
       isolation: worktree
-      instructions: Do the work.
+---
+
+## work
+
+Do the work.
 `;
 
   test("rejects before persistence or dispatch — the llm runner has no working directory to isolate", () => {

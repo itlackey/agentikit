@@ -189,8 +189,6 @@ export interface WorkflowBriefStep {
     currentLoop: number;
     /** True when the gate judges the promoted artifact (criteria declared on an executing step). */
     judgesArtifact: boolean;
-    /** Reviewer #18: `gate.required` — with no judge available the step BLOCKS instead of failing open. */
-    required: boolean;
   };
   outputSchema?: Record<string, unknown>;
 }
@@ -411,7 +409,6 @@ export async function buildWorkflowBrief(target: string): Promise<WorkflowBrief>
       maxLoops: Math.max(1, stepPlan.gate.maxLoops ?? 1),
       currentLoop: gateLoop,
       judgesArtifact: !isRouteOnly && criteria.length > 0,
-      required: stepPlan.gate.required === true,
     },
     ...(stepPlan.outputSchema ? { outputSchema: stepPlan.outputSchema } : {}),
   };
@@ -692,16 +689,11 @@ function buildMessage(
   if (settleState === "finalize") {
     // Fully-terminal work-list on a still-active step: everything ran, nothing
     // remains to execute — the step only needs finalization (the run was
-    // gate-blocked then resumed, or a crash interrupted completion). A required
-    // gate with no judge available will re-block, which is correct behavior.
-    const gateNote =
-      step.gate.required && step.gate.criteria.length > 0
-        ? " If this step's REQUIRED gate has no judge available it will re-block, pending a configured judge or a manual `akm workflow complete`."
-        : "";
+    // gate-rejected then resumed, or a crash interrupted completion).
     return (
       `Active step "${step.stepId}" has run all ${n} unit(s) to a terminal state${loopNote} — nothing remains to ` +
       `execute or report. Finalize it with \`akm workflow report --settle\` (see settleCommand): the gate is judged ` +
-      `and the step advances.${gateNote}`
+      "and the step advances."
     );
   }
   if (settleState === "non-dispatching") {

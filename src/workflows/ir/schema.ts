@@ -7,12 +7,13 @@ import { UsageError } from "../../core/errors";
 import { formatExtraParamsIssue, validateExtraParams } from "../../core/extra-params";
 import type { LlmInvocationOverrides } from "../../integrations/agent/engine-resolution";
 import { HARNESS_BY_ID } from "../../integrations/harnesses";
-import { listReferences, parseTemplate } from "../program/expressions";
+import { parseReference } from "../program/expressions";
 import { PROGRAM_PARAM_NAME_PATTERN, PROGRAM_RETRY_REASONS, PROGRAM_STEP_ID_PATTERN } from "../program/schema";
 import {
   jsonBytes,
   WORKFLOW_MAX_ENGINES,
   WORKFLOW_MAX_EXTRA_PARAMS_BYTES,
+  WORKFLOW_MAX_INPUTS,
   WORKFLOW_MAX_INSTRUCTION_BYTES,
   WORKFLOW_MAX_JSON_DEPTH,
   WORKFLOW_MAX_MAP_EXPANSION,
@@ -87,6 +88,8 @@ export interface IrUnitNode {
   id: string;
   instructions: string;
   templating?: IrInstructionTemplating;
+  /** Prior-step artifacts attached to this unit as structured context (reference strings). */
+  inputs?: string[];
   invocation: IrInvocation;
   schema?: Record<string, unknown>;
   retry?: IrRetry;
@@ -114,7 +117,6 @@ export interface IrGateNode {
   stepId: string;
   criteria: string[];
   maxLoops?: number;
-  required?: boolean;
   judge?: IrInvocation | null;
 }
 
@@ -416,6 +418,7 @@ function validateNode(
       "id",
       "instructions",
       "templating",
+      "inputs",
       "invocation",
       "schema",
       "retry",
@@ -440,6 +443,7 @@ function validateNode(
   if (node.schema !== undefined) validateSchema(node.schema, `unit ${node.id} schema`);
   validateRetry(node.retry, node.id);
   validateStringArray(node.env, `unit ${node.id} env`, MAX_LIST_ITEMS, true);
+  validateStringArray(node.inputs, `unit ${node.id} inputs`, WORKFLOW_MAX_INPUTS, true);
   validateSource(node.source, `unit ${node.id} source`);
   validateInvocation(node.invocation, references, hooks);
 }
@@ -461,15 +465,13 @@ function validateGate(
     !gate.criteria.every((x) => typeof x === "string" && x.length > 0 && x.length <= MAX_STRING_LENGTH) ||
     !Number.isInteger(gate.maxLoops) ||
     (gate.maxLoops as number) < 1 ||
-    (gate.maxLoops as number) > WORKFLOW_MAX_GATE_LOOPS ||
-    typeof gate.required !== "boolean"
+    (gate.maxLoops as number) > WORKFLOW_MAX_GATE_LOOPS
   )
     fail(`gate for step ${stepId} is invalid`);
   if (nodeIds.has(gate.id)) fail(`gate id ${gate.id} collides with a node`);
-  assertKeys(gate, ["kind", "id", "stepId", "criteria", "maxLoops", "required", "judge"], `gate ${stepId}`);
+  assertKeys(gate, ["kind", "id", "stepId", "criteria", "maxLoops", "judge"], `gate ${stepId}`);
   nodeIds.add(gate.id);
   if (gate.criteria.length === 0 && gate.judge !== null) fail(`gate ${gate.id} without criteria cannot have a judge`);
-  if (gate.required && gate.criteria.length === 0) fail(`gate ${gate.id} cannot be required without criteria`);
   if (gate.judge !== null) validateInvocation(gate.judge, references, hooks);
 }
 
@@ -637,27 +639,21 @@ function validateExtraParamsValue(value: unknown, label: string, hooks: Workflow
 }
 
 function validateStepExpressions(step: IrStepPlan, index: number, steps: Map<string, number>): void {
-  const validateReferences = (text: string, label: string, itemAllowed: boolean, wholeValue: boolean): void => {
-    const parsed = parseTemplate(text);
-    if (!parsed.ok) fail(`${label} contains an invalid expression`);
-    if (wholeValue && (parsed.segments.length !== 1 || parsed.segments[0]?.kind !== "reference"))
-      fail(`${label} must be one whole-value expression`);
-    for (const reference of listReferences(parsed.segments)) {
-      if ((reference.kind === "item" || reference.kind === "itemIndex") && !itemAllowed)
-        fail(`${label} uses item outside a map unit`);
-      if (reference.kind === "stepOutput") {
-        const referenced = steps.get(reference.stepId);
-        if (referenced === undefined || referenced >= index) fail(`${label} references a non-earlier step`);
-      }
+  const validateReference = (text: string, label: string, paramsAllowed: boolean): void => {
+    const parsed = parseReference(text);
+    if (!parsed.ok) fail(`${label} contains an invalid reference`);
+    if (parsed.expr.kind === "param" && !paramsAllowed) fail(`${label} must reference a step output`);
+    if (parsed.expr.kind === "stepOutput") {
+      const referenced = steps.get(parsed.expr.stepId);
+      if (referenced === undefined || referenced >= index) fail(`${label} references a non-earlier step`);
     }
   };
   if (step.root) {
     const unit = step.root.kind === "map" ? step.root.template : step.root;
-    if (step.root.kind === "map") validateReferences(step.root.over, `map ${step.root.id} over`, false, true);
-    if (unit.templating === "expressions")
-      validateReferences(unit.instructions, `unit ${unit.id} instructions`, step.root.kind === "map", false);
+    if (step.root.kind === "map") validateReference(step.root.over, `map ${step.root.id} over`, true);
+    for (const reference of unit.inputs ?? []) validateReference(reference, `unit ${unit.id} inputs`, false);
   }
-  if (step.route) validateReferences(step.route.input, `route ${step.stepId} input`, false, true);
+  if (step.route) validateReference(step.route.input, `route ${step.stepId} input`, true);
 }
 
 function validateSource(value: unknown, label: string): void {

@@ -11,7 +11,7 @@ import {
 } from "../../../../src/workflows/exec/native-executor";
 import { canonicalJson, computeStepWorkList, unitIdFor } from "../../../../src/workflows/exec/step-work";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../../_helpers/sandbox";
-import { freezeWorkflowProgram } from "../../../_helpers/workflow";
+import { freezeWorkflow } from "../../../_helpers/workflow";
 import { distinctJsonValues, randomJsonValue, reorderKeys } from "../../../workflows/fuzz/_gen";
 import { fuzzSeeds, Rng, withSeed } from "../../../workflows/fuzz/_rng";
 
@@ -37,19 +37,23 @@ import { fuzzSeeds, Rng, withSeed } from "../../../workflows/fuzz/_rng";
  * whole `fuzz/` directory in the fast tier.
  */
 
-const MAP_WF = `version: 2
-name: f
-params: { items: { type: array } }
+const MAP_WF = `---
+type: workflow
+params:
+  items: { type: array }
 steps:
   - id: work
     map:
-      over: \${{ params.items }}
-      unit:
-        on_error: continue
-        instructions: Do \${{ item }}.
+      over: params.items
+      unit: { on_error: continue }
+---
+
+## work
+
+Do the assigned item.
 `;
 
-const PLAN = freezeWorkflowProgram(MAP_WF, "workflows/f.yaml");
+const PLAN = freezeWorkflow(MAP_WF, "workflows/f.md");
 const STEP = PLAN.steps[0]!;
 const ENGINES = PLAN.execution.engines;
 const NODE_ID = "work.unit"; // STEP.root (map).template.id
@@ -144,6 +148,38 @@ describe("replay fuzz — duplicate canonical items fail before dispatch", () =>
         });
         expect(result.ok).toBe(false);
         if (!result.ok) expect(result.error).toContain("duplicate items");
+      });
+    }
+    expect(seeds.length).toBeGreaterThan(0);
+  });
+});
+
+describe("replay fuzz — null fan-out items fail before dispatch", () => {
+  const seeds = fuzzSeeds(200);
+  test("a list containing null fails the work-list, naming the index", () => {
+    // Explicit work-list rejection (same posture as the duplicate check): the
+    // pre-unification format rejected a null item incidentally at `${{ item }}`
+    // resolution; with items attached as context there is nothing left to fail
+    // later, so computeStepWorkList names the producer bug up front.
+    for (const seed of seeds) {
+      withSeed(seed, () => {
+        const rng = new Rng(seed);
+        const base = distinctJsonValues(rng, rng.range(1, 6));
+        const nullIndex = rng.int(base.length + 1);
+        const withNull = [...base];
+        withNull.splice(nullIndex, 0, null);
+
+        const result = computeStepWorkList(STEP, {
+          runId: "r",
+          params: { items: withNull },
+          stepOutputs: {},
+          engines: ENGINES,
+        });
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error).toContain("null item");
+          expect(result.error).toContain(`index ${nullIndex}`);
+        }
       });
     }
     expect(seeds.length).toBeGreaterThan(0);

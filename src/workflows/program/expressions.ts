@@ -3,65 +3,39 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * The deterministic expression language for YAML orchestration programs
- * (R1 redesign addendum). `${{ ... }}` delimits references; everything else
- * is literal text that passes through byte-exact.
- *
- * The grammar is CLOSED — exactly four roots, nothing else parses:
+ * The deterministic reference-string grammar for workflow frontmatter
+ * (workflow-format-unification, spec §2.3). There is no template/interpolation
+ * language any more — `${{ … }}` is gone. What remains is a bare
+ * reference-string parser with exactly TWO roots:
  *
  *   params.<ident>
  *   steps.<ident>.output( .<ident> | [<non-negative int>] )*
- *   item
- *   item_index
  *
  * where <ident> is `[A-Za-z_][A-Za-z0-9_-]*`. No functions, no clock, no
- * randomness, no ambient lookup — orchestration decisions stay pure
- * functions of (frozen plan, params, journaled unit results).
+ * randomness, no ambient lookup — orchestration decisions stay pure functions
+ * of (frozen plan, params, journaled unit results).
  *
- * Templates are parsed ONCE into literal/reference segments; resolution is a
- * single pass over that AST. Substituted content is data, never re-scanned,
- * so a value containing `${{ params.x }}` is inserted literally — the P1
- * re-scan injection bug class is structurally impossible.
+ * `item`/`item_index` are deleted from the language: with no splicing there is
+ * nothing to substitute — the engine attaches each map unit's item and index as
+ * structured context alongside the prompt instead (see `exec/step-work.ts`).
  *
- * There is deliberately NO escape syntax in v1: a literal `${{` cannot
- * appear in instructions. Authors who write one get a parse error from the
- * validator (unterminated or invalid reference) telling them so.
+ * Used in exactly three frontmatter positions, all whole-value (no
+ * delimiters needed): `map.over`, `route.input`, `inputs[]`. Prose bodies are
+ * NEVER templated or scanned for this syntax.
  *
  * Pure module: no IO, no engine imports.
  */
-
-const OPEN = "${{";
-const CLOSE = "}}";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export type ExpressionAst =
   | { kind: "param"; name: string }
-  | { kind: "stepOutput"; stepId: string; path: Array<string | number> }
-  | { kind: "item" }
-  | { kind: "itemIndex" };
-
-export type TemplateSegment =
-  | { kind: "literal"; text: string }
-  /** `raw` is the full `${{ ... }}` source text; `index` its offset in the template. */
-  | { kind: "reference"; expr: ExpressionAst; raw: string; index: number };
-
-export interface TemplateParseError {
-  /** Character offset in the template where the problem starts (the offending opener). */
-  index: number;
-  message: string;
-}
-
-export type ParseTemplateResult =
-  | { ok: true; segments: TemplateSegment[] }
-  | { ok: false; errors: TemplateParseError[] };
+  | { kind: "stepOutput"; stepId: string; path: Array<string | number> };
 
 export interface ExpressionScope {
   params: Record<string, unknown>;
   /** Step artifacts keyed by step id; each value is that step's `output`. */
   stepOutputs: Record<string, unknown>;
-  item?: unknown;
-  itemIndex?: number;
 }
 
 export interface ResolutionError {
@@ -70,90 +44,24 @@ export interface ResolutionError {
   message: string;
 }
 
-export type ResolveTemplateResult = { ok: true; text: string } | { ok: false; errors: ResolutionError[] };
-
 export type ResolveReferenceResult = { ok: true; value: unknown } | { ok: false; error: ResolutionError };
 
-// ── Template parsing ─────────────────────────────────────────────────────────
+const GRAMMAR_HINT = "allowed forms: params.<name>, steps.<id>.output(.<ident>|[<int>])*";
 
 /**
- * Split a template into literal and reference segments. Literal text passes
- * through byte-exact, including `$`, `{`, `}`, `${`, `{{`, and `}}` sequences
- * that do not form the exact `${{` opener. Errors are returned, not thrown.
+ * Parse a bare reference string (a whole-value frontmatter field, already
+ * delimiter-free: `map.over`, `route.input`, or one entry of `inputs[]`).
  */
-export function parseTemplate(template: string): ParseTemplateResult {
-  const segments: TemplateSegment[] = [];
-  const errors: TemplateParseError[] = [];
-  let cursor = 0;
-
-  while (cursor < template.length) {
-    const open = template.indexOf(OPEN, cursor);
-    if (open === -1) break;
-    if (open > cursor) segments.push({ kind: "literal", text: template.slice(cursor, open) });
-
-    const close = template.indexOf(CLOSE, open + OPEN.length);
-    const nested = template.indexOf(OPEN, open + OPEN.length);
-    if (close === -1) {
-      errors.push({
-        index: open,
-        message:
-          `Unterminated ${OPEN} reference (no matching ${CLOSE}). ` +
-          `Note: there is no escape syntax — a literal ${OPEN} cannot appear in this text.`,
-      });
-      cursor = template.length;
-      break;
-    }
-    if (nested !== -1 && nested < close) {
-      errors.push({
-        index: nested,
-        message: `Nested ${OPEN} inside a reference — references cannot contain other references.`,
-      });
-      cursor = close + CLOSE.length;
-      continue;
-    }
-
-    const inner = template.slice(open + OPEN.length, close);
-    const parsed = parseExpression(inner);
-    if (parsed.ok) {
-      segments.push({
-        kind: "reference",
-        expr: parsed.expr,
-        raw: template.slice(open, close + CLOSE.length),
-        index: open,
-      });
-    } else {
-      errors.push({ index: open, message: parsed.message });
-    }
-    cursor = close + CLOSE.length;
-  }
-
-  if (cursor < template.length) segments.push({ kind: "literal", text: template.slice(cursor) });
-  return errors.length > 0 ? { ok: false, errors } : { ok: true, segments };
-}
-
-const GRAMMAR_HINT = "allowed forms: params.<name>, steps.<id>.output[...], item, item_index";
-
-/**
- * Parse a single expression (the text between `${{` and `}}`, or a bare
- * whole-value field such as `map.over` after delimiter stripping).
- */
-export function parseExpression(source: string): { ok: true; expr: ExpressionAst } | { ok: false; message: string } {
+export function parseReference(source: string): { ok: true; expr: ExpressionAst } | { ok: false; message: string } {
   const text = source.trim();
-  if (text === "") return { ok: false, message: `Empty expression inside ${OPEN} ${CLOSE}; ${GRAMMAR_HINT}.` };
+  if (text === "") return { ok: false, message: `Empty reference; ${GRAMMAR_HINT}.` };
 
   const root = readIdent(text, 0);
   if (!root) {
-    return { ok: false, message: `Invalid expression "${text}" — must start with an identifier; ${GRAMMAR_HINT}.` };
+    return { ok: false, message: `Invalid reference "${text}" — must start with an identifier; ${GRAMMAR_HINT}.` };
   }
 
   switch (root.name) {
-    case "item":
-    case "item_index": {
-      if (root.end !== text.length) {
-        return { ok: false, message: `"${root.name}" takes no path — found trailing "${text.slice(root.end)}".` };
-      }
-      return { ok: true, expr: root.name === "item" ? { kind: "item" } : { kind: "itemIndex" } };
-    }
     case "params": {
       if (text[root.end] !== ".") {
         return { ok: false, message: `"params" requires a name: params.<name> (got "${text}").` };
@@ -239,77 +147,9 @@ function parsePath(
 // ── Resolution ───────────────────────────────────────────────────────────────
 
 /**
- * Resolve parsed segments against a scope in a SINGLE pass — resolved values
- * are concatenated as data and never re-scanned for further references.
- * Strings insert verbatim; numbers/booleans via String(); objects/arrays as
- * canonical JSON (recursively sorted keys); null/undefined/missing paths are
- * resolution errors naming the reference.
- */
-export function resolveTemplate(segments: TemplateSegment[], scope: ExpressionScope): ResolveTemplateResult {
-  const parts: string[] = [];
-  const errors: ResolutionError[] = [];
-  for (const segment of segments) {
-    if (segment.kind === "literal") {
-      parts.push(segment.text);
-      continue;
-    }
-    const resolved = resolveReference(segment.expr, scope);
-    if (!resolved.ok) {
-      errors.push(resolved.error);
-      continue;
-    }
-    const value = resolved.value;
-    if (typeof value === "string") {
-      parts.push(value);
-    } else if (typeof value === "number" || typeof value === "boolean") {
-      parts.push(String(value));
-    } else if (typeof value === "object" && value !== null) {
-      parts.push(canonicalJson(value));
-    } else {
-      errors.push({
-        reference: formatReference(segment.expr),
-        message: `${formatReference(segment.expr)} resolved to an unsupported value type (${typeof value}).`,
-      });
-    }
-  }
-  return errors.length > 0 ? { ok: false, errors } : { ok: true, text: parts.join("") };
-}
-
-/**
- * Resolve a whole-value field (`map.over`, `route.input`) from its RAW
- * template string: the text must be exactly one `${{ … }}` reference with no
- * surrounding literal text (the compiler enforces this for YAML programs;
- * frozen plans are re-checked here so a tampered plan fails loudly
- * instead of string-splicing). The reference resolves to its RAW value —
- * arrays stay arrays, objects stay objects.
- */
-export function resolveWholeValue(template: string, scope: ExpressionScope): ResolveReferenceResult {
-  const parsed = parseTemplate(template);
-  if (!parsed.ok) {
-    return {
-      ok: false,
-      error: { reference: template, message: parsed.errors.map((e) => e.message).join(" ") },
-    };
-  }
-  const [first] = parsed.segments;
-  if (parsed.segments.length !== 1 || first?.kind !== "reference") {
-    return {
-      ok: false,
-      error: {
-        reference: template,
-        message:
-          `expected a single whole-value \${{ … }} reference with no surrounding text ` +
-          `(e.g. "\${{ steps.discover.output.files }}"), got ${JSON.stringify(template)}.`,
-      },
-    };
-  }
-  return resolveReference(first.expr, scope);
-}
-
-/**
  * Resolve a single reference to its RAW value for whole-value contexts
- * (`map.over`, `route.input`): arrays stay arrays, objects stay objects.
- * null/undefined values and missing paths are errors, same as in templates.
+ * (`map.over`, `route.input`, `inputs[]`): arrays stay arrays, objects stay
+ * objects. null/undefined values and missing paths are errors.
  */
 export function resolveReference(expr: ExpressionAst, scope: ExpressionScope): ResolveReferenceResult {
   const reference = formatReference(expr);
@@ -321,14 +161,6 @@ export function resolveReference(expr: ExpressionAst, scope: ExpressionScope): R
         return fail(`${reference} is not defined in the run's params.`);
       }
       return finish(scope.params[expr.name], reference, fail);
-    }
-    case "item": {
-      if (scope.item === undefined) return fail("item is only available inside a map unit.");
-      return finish(scope.item, reference, fail);
-    }
-    case "itemIndex": {
-      if (typeof scope.itemIndex !== "number") return fail("item_index is only available inside a map unit.");
-      return { ok: true, value: scope.itemIndex };
     }
     case "stepOutput": {
       if (!Object.hasOwn(scope.stepOutputs, expr.stepId)) {
@@ -362,6 +194,19 @@ export function resolveReference(expr: ExpressionAst, scope: ExpressionScope): R
   }
 }
 
+/**
+ * Resolve a bare reference STRING directly (parse + resolve in one call) —
+ * the shape every whole-value frontmatter position (`map.over`, `route.input`,
+ * one entry of `inputs[]`) actually needs.
+ */
+export function resolveReferenceString(text: string, scope: ExpressionScope): ResolveReferenceResult {
+  const parsed = parseReference(text);
+  if (!parsed.ok) {
+    return { ok: false, error: { reference: text, message: parsed.message } };
+  }
+  return resolveReference(parsed.expr, scope);
+}
+
 function finish(
   value: unknown,
   reference: string,
@@ -374,24 +219,11 @@ function finish(
 
 // ── Introspection helpers ────────────────────────────────────────────────────
 
-/** The reference ASTs of a parsed template, in document order — for validator edge checking. */
-export function listReferences(segments: TemplateSegment[]): ExpressionAst[] {
-  const references: ExpressionAst[] = [];
-  for (const segment of segments) {
-    if (segment.kind === "reference") references.push(segment.expr);
-  }
-  return references;
-}
-
 /** Canonical source spelling of a reference, e.g. `steps.review.output.files[2].name`. */
 export function formatReference(expr: ExpressionAst): string {
   switch (expr.kind) {
     case "param":
       return `params.${expr.name}`;
-    case "item":
-      return "item";
-    case "itemIndex":
-      return "item_index";
     case "stepOutput": {
       let text = `steps.${expr.stepId}.output`;
       for (const segment of expr.path) {
@@ -407,9 +239,10 @@ export function formatReference(expr: ExpressionAst): string {
 /**
  * Stable stringify with recursively sorted object keys, so equal values
  * render identically regardless of key insertion order. Same pattern as the
- * module-private helper in exec/native-executor.ts (not exported there).
+ * module-private helper in exec/step-work.ts / ir/plan-hash.ts (not exported
+ * there).
  */
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   return JSON.stringify(sortKeys(value));
 }
 

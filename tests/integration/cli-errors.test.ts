@@ -532,12 +532,29 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
 // citty's flat alphabetical-by-declaration COMMANDS dump, and hides the
 // self-update-only `migrate` group from it (while it still executes).
 describe("S11: sectioned root help", () => {
-  test("akm --help groups commands under the four fixed sections", () => {
+  test("akm --help pins section order and command membership", () => {
     const { stdout } = spawnCli(["--help"], { cwd: repoRoot });
-    expect(stdout).toContain("AGENT LOOP");
-    expect(stdout).toContain("ASSETS");
-    expect(stdout).toContain("MANAGE");
-    expect(stdout).toContain("SYSTEM");
+    const headings = ["AGENT LOOP", "ASSETS", "AUTOMATIONS", "MANAGE", "SYSTEM"];
+    const sections = Object.fromEntries(
+      headings.map((heading, index) => {
+        const start = stdout.indexOf(`${heading}\n`);
+        const end = index + 1 < headings.length ? stdout.indexOf(`\n${headings[index + 1]}\n`, start) : stdout.length;
+        expect(start).toBeGreaterThanOrEqual(0);
+        expect(end).toBeGreaterThan(start);
+        const commands = stdout
+          .slice(start + heading.length + 1, end)
+          .split("\n")
+          .flatMap((line) => line.match(/^ {2}(\S+)\s{2,}/)?.[1] ?? []);
+        return [heading, commands];
+      }),
+    );
+    expect(sections).toEqual({
+      "AGENT LOOP": ["search", "curate", "show", "remember", "import", "feedback", "sync", "index", "improve"],
+      ASSETS: ["clone", "lint"],
+      AUTOMATIONS: ["agent", "workflow", "task"],
+      MANAGE: ["bundle", "proposal", "env", "secret", "registry", "config"],
+      SYSTEM: ["setup", "health", "info", "log", "upgrade", "help", "completions"],
+    });
     expect(stdout).toContain("agents: run `akm help agents`");
   });
 

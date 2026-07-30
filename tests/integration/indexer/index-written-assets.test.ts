@@ -129,15 +129,16 @@ describe("indexWrittenAssets", () => {
       filePath,
       [
         "---",
+        "type: workflow",
         "description: workflow citing a moved xylophone memory",
+        "steps:",
+        "  - id: first",
         "---",
         "",
-        "# Workflow: Rewritten Citer",
+        "# Rewritten Citer",
         "",
-        "## Step: First",
-        "Step ID: first",
+        "## first",
         "",
-        "### Instructions",
         "Read memory:xylophone-note and act.",
         "",
       ].join("\n"),
@@ -181,13 +182,20 @@ describe("indexWrittenAssets", () => {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(
       filePath,
-      "---\ndescription: Valid workflow\n---\n\n# Workflow: Valid\n\n## Step: First\nStep ID: first\n\n### Instructions\nRun.\n",
+      "---\ntype: workflow\ndescription: Valid workflow\nsteps:\n  - id: first\n---\n\n## first\n\nRun.\n",
       "utf8",
     );
     await indexWrittenAssets(stashDir, [filePath]);
     expect(indexedFileCount(filePath)).toBe(1);
 
-    fs.writeFileSync(filePath, "---\ndescription: Broken workflow\n---\n\nNo workflow heading.\n", "utf8");
+    // Broken: no "steps" list at all — parseWorkflow rejects it, so a
+    // workflow-typed file (recognized by residence under workflows/,
+    // spec §2.5) becomes wholly unindexable rather than partially indexed.
+    fs.writeFileSync(
+      filePath,
+      "---\ntype: workflow\ndescription: Broken workflow\n---\n\nNo steps declared.\n",
+      "utf8",
+    );
     await indexWrittenAssets(stashDir, [filePath]);
     expect(indexedFileCount(filePath)).toBe(0);
   });

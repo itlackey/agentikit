@@ -24,26 +24,22 @@
  */
 
 import type { AssetMatcher, FileContext, MatchResult } from "../../indexer/walk/file-context";
-import {
-  directoryMatcher,
-  extensionMatcher,
-  parentDirHintMatcher,
-  smartMdMatcher,
-  workflowProgramMatcher,
-} from "../../indexer/walk/matchers";
+import { directoryMatcher, extensionMatcher, parentDirHintMatcher, smartMdMatcher } from "../../indexer/walk/matchers";
 
 /**
- * The five builtin matchers, in registration order. The array index IS the
+ * The four builtin matchers, in registration order. The array index IS the
  * registration index `runMatchers` uses for tie-breaking. (The `wiki` matcher
  * was removed in chunk 4 — the wiki asset-type is retired; LLM Wiki content is
- * served by the first-class `llm-wiki` adapter, not the akm adapter.)
+ * served by the first-class `llm-wiki` adapter, not the akm adapter. The YAML
+ * workflow-program matcher was removed by workflow-format-unification — one
+ * workflow format now, recognized by frontmatter `type: workflow` or
+ * residence under `workflows/`, both already covered by the remaining four.)
  */
 const AKM_MATCHERS: readonly AssetMatcher[] = [
   extensionMatcher,
   directoryMatcher,
   parentDirHintMatcher,
   smartMdMatcher,
-  workflowProgramMatcher,
 ];
 
 /**

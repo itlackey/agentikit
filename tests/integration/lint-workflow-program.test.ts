@@ -3,12 +3,24 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `akm lint --type workflows` structural coverage for YAML workflow *programs*
- * (`.yaml`/`.yml`), closing the gap left by dropping `workflow validate`
- * (0.9.0 CLI overhaul, S5): lint used to scan only markdown workflow
- * documents (`collectMarkdownFiles` filters `.md`), so a YAML program's
- * parse/compile errors were invisible to `akm lint` — the only surface that
- * caught them was the now-removed `workflow validate <path|ref>` command.
+ * `akm lint --type workflows` structural coverage.
+ *
+ * Ported for workflow-format-unification: the YAML workflow *program*
+ * (`.yaml`/`.yml`) this file originally covered is deleted as a distinct
+ * on-disk format (spec §3). `akm commands/lint/index.ts` now collects only
+ * `.md` files for the `workflows` subdir ("workflows, one markdown format
+ * now, is .md") — a stray `.yaml`/`.yml` file under `workflows/` is not
+ * scanned at all, so there is no lint-time equivalent of "a YAML program is
+ * malformed" left to pin. Surviving coverage (clean workflow → no findings;
+ * a structurally-broken workflow → a parse-stage finding; independence
+ * across files in the same stash) is folded into unified-format markdown
+ * fixtures below. The former compile-stage reference case is restored against
+ * the unified markdown format. One case from the original file has no home
+ * under the new format and is intentionally NOT re-created:
+ *   - "a markdown workflow alongside a broken program: each is checked
+ *     independently" — folded below as two markdown files (one clean, one
+ *     broken) instead of markdown-vs-YAML, since YAML is no longer part of
+ *     the surface at all.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -20,7 +32,7 @@ import { akmLint } from "../../src/commands/lint/index";
 const tempDirs: string[] = [];
 
 function makeTempStash(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-lint-workflow-program-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-lint-workflow-"));
   tempDirs.push(dir);
   return dir;
 }
@@ -37,45 +49,65 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe("akm lint --type workflows — YAML workflow programs", () => {
-  test("a well-formed program produces no invalid-workflow-structure findings", () => {
+const CLEAN_WORKFLOW = [
+  "---",
+  "type: workflow",
+  "description: Clean workflow",
+  "updated: 2026-07-30",
+  "steps:",
+  "  - id: only",
+  "---",
+  "",
+  "## only",
+  "",
+  "Do it.",
+  "",
+].join("\n");
+
+describe("akm lint --type workflows", () => {
+  test("a well-formed unified workflow produces no findings", () => {
+    const stashDir = makeTempStash();
+    writeWorkflowFile(stashDir, "clean.md", CLEAN_WORKFLOW);
+
+    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+
+    expect(result.flagged).toHaveLength(0);
+  });
+
+  test("a workflow missing the required `steps` list is a parse-stage finding", () => {
     const stashDir = makeTempStash();
     writeWorkflowFile(
       stashDir,
-      "clean.yaml",
-      ["version: 2", "name: clean", "steps:", "  - id: only", "    unit:", "      instructions: Do it."].join("\n"),
+      "no-steps.md",
+      ["---", "type: workflow", "description: No steps", "---", ""].join("\n"),
     );
 
     const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
 
     const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
-    expect(structural).toHaveLength(0);
-  });
-
-  test("a program missing the required `steps` list is a parse-stage finding", () => {
-    const stashDir = makeTempStash();
-    writeWorkflowFile(stashDir, "no-steps.yaml", "version: 2\nname: no-steps\n");
-
-    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
-
-    const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
     expect(structural).toHaveLength(1);
-    expect(structural[0]!.file).toContain("no-steps.yaml");
+    expect(structural[0]!.file).toContain("no-steps.md");
     expect(structural[0]!.detail).toContain('"steps" is required');
   });
 
-  test("a program referencing a nonexistent step output is a compile-stage finding", () => {
+  test("a reference to a missing step is a compile-stage finding", () => {
     const stashDir = makeTempStash();
     writeWorkflowFile(
       stashDir,
-      "bad-ref.yaml",
+      "missing-step.md",
       [
-        "version: 2",
-        "name: bad-ref",
+        "---",
+        "type: workflow",
+        "updated: 2026-07-30",
         "steps:",
-        "  - id: only",
-        "    unit:",
-        "      instructions: Review ${{ steps.nope.output.files }}.",
+        "  - id: consume",
+        "    inputs: [steps.ghost.output]",
+        "---",
+        "",
+        "## consume",
+        "",
+        "Use it.",
+        "",
       ].join("\n"),
     );
 
@@ -83,35 +115,79 @@ describe("akm lint --type workflows — YAML workflow programs", () => {
 
     const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
     expect(structural).toHaveLength(1);
-    expect(structural[0]!.detail).toContain("cannot be resolved");
+    expect(structural[0]?.detail).toContain('"ghost" is not a step in this workflow');
   });
 
-  test("a markdown workflow alongside a broken program: each is checked independently", () => {
+  test("a reference to a later step is a compile-stage finding", () => {
     const stashDir = makeTempStash();
     writeWorkflowFile(
       stashDir,
-      "release.md",
+      "later-step.md",
       [
         "---",
-        "description: Release workflow",
+        "type: workflow",
+        "updated: 2026-07-30",
+        "steps:",
+        "  - id: first",
+        "    inputs: [steps.second.output]",
+        "  - id: second",
         "---",
         "",
-        "# Workflow: Release",
+        "## first",
         "",
-        "## Step: Only Step",
-        "Step ID: only-step",
+        "Use it.",
         "",
-        "### Instructions",
-        "Ship it.",
+        "## second",
+        "",
+        "Produce it.",
         "",
       ].join("\n"),
     );
-    writeWorkflowFile(stashDir, "broken.yaml", "version: 2\nname: broken\n");
 
     const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
 
     const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
     expect(structural).toHaveLength(1);
-    expect(structural[0]!.file).toContain("broken.yaml");
+    expect(structural[0]?.detail).toContain("does not come before this step");
+  });
+
+  test("a param declared as a step input is a compile-stage finding", () => {
+    const stashDir = makeTempStash();
+    writeWorkflowFile(
+      stashDir,
+      "param-input.md",
+      [
+        "---",
+        "type: workflow",
+        "updated: 2026-07-30",
+        "steps:",
+        "  - id: consume",
+        "    inputs: [params.payload]",
+        "---",
+        "",
+        "## consume",
+        "",
+        "Use it.",
+        "",
+      ].join("\n"),
+    );
+
+    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+
+    const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
+    expect(structural).toHaveLength(1);
+    expect(structural[0]?.detail).toContain("names a param, not a step output");
+  });
+
+  test("a clean workflow alongside a structurally-broken one: each is checked independently", () => {
+    const stashDir = makeTempStash();
+    writeWorkflowFile(stashDir, "release.md", CLEAN_WORKFLOW);
+    writeWorkflowFile(stashDir, "broken.md", ["---", "type: workflow", "description: Broken", "---", ""].join("\n"));
+
+    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+
+    const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
+    expect(structural).toHaveLength(1);
+    expect(structural[0]!.file).toContain("broken.md");
   });
 });

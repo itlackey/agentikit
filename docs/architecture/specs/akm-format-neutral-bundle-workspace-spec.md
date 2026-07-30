@@ -348,7 +348,7 @@ A bundle maps to exactly **one component**, owned by exactly **one adapter**. Th
 
 Because a bundle has one component, every physical file in the walked tree is owned by that one component; refs are bundle-relative and unique. The persisted ref column is UNIQUE.
 
-Within the component, two files reducing to the same conceptId (for example `release.md` and `release.yaml` under a workflow root) are a `duplicate-concept-id` validation diagnostic naming both paths. The adapter MUST declare a deterministic extension priority to pick the indexed winner, and the loser's path MUST be recorded so that deleting the winner later resets, rather than inherits, the ref's durable state history.
+Within a component that supports multiple extensions, two files reducing to the same conceptId are a `duplicate-concept-id` validation diagnostic naming both paths. The adapter MUST declare a deterministic extension priority to pick the indexed winner, and the loser's path MUST be recorded so that deleting the winner later resets, rather than inherits, the ref's durable state history.
 
 ### 9.4 Adapter detection
 

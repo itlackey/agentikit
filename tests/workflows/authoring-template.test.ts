@@ -3,34 +3,32 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Pins that the shipped YAML workflow-program template
- * (`src/workflows/authoring/workflow-program-template.yaml`, printed by
- * `akm workflow create <name>.yaml --print`) actually parses AND compiles.
+ * Pins that the shipped workflow template
+ * (`src/assets/workflows/workflow-template.md`, printed by `akm workflow
+ * create <name> --print`) actually parses AND compiles under the unified
+ * workflow format (workflow-format-unification). One template now — the
+ * pre-unification YAML-program template test is gone along with the format.
  *
- * This used to be asserted only by
- * `tests/integration/node-compat.test.ts` ("workflow create --print --yaml
- * round-trips through lint on Node"), which is gated behind
- * `AKM_NODE_COMPAT_TESTS=1` and does not run in `bun run check` or default CI
- * — so nothing actually pinned the template in the normal test run. This
- * in-process test runs unconditionally and is cheap (no subprocess, no
- * `dist/` build) so a broken template fails fast.
+ * NOTE: `src/assets/workflows/workflow-template.md` is owned by a parallel
+ * agent updating it to the unified format; until that lands this test is
+ * expected to fail (the file still uses the pre-unification grammar).
  */
 
 import { describe, expect, test } from "bun:test";
-import { getWorkflowProgramTemplate } from "../../src/workflows/authoring/authoring";
-import { compileWorkflowProgram } from "../../src/workflows/ir/compile";
-import { parseWorkflowProgram } from "../../src/workflows/program/parser";
+import { getWorkflowTemplate } from "../../src/workflows/authoring/authoring";
+import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
+import { parseWorkflow } from "../../src/workflows/parser";
 
-describe("shipped workflow program template", () => {
+describe("shipped workflow template", () => {
   test("parses and compiles cleanly", () => {
-    const yamlText = getWorkflowProgramTemplate();
+    const markdown = getWorkflowTemplate();
 
-    const parsed = parseWorkflowProgram(yamlText, { path: "workflows/template.yaml" });
+    const parsed = parseWorkflow(markdown, { path: "workflows/template.md" });
     if (!parsed.ok) {
       throw new Error(`template parse failed: ${parsed.errors.map((e) => `${e.line}: ${e.message}`).join(" | ")}`);
     }
 
-    const compiled = compileWorkflowProgram(parsed.program);
+    const compiled = compileWorkflowPlan(parsed.document, "template");
     if (!compiled.ok) {
       throw new Error(`template compile failed: ${compiled.errors.map((e) => `${e.line}: ${e.message}`).join(" | ")}`);
     }

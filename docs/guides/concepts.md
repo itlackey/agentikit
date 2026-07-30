@@ -79,7 +79,7 @@ my-bundle/
   knowledge/      # Reference documents (.md)
   env/            # Environment files (.env) — groups of related config, loaded whole
   secrets/        # Secrets — one sensitive value per file (auth tokens, keys, certs)
-  workflows/      # Workflow documents (.md) and YAML v2 programs (.yaml/.yml)
+  workflows/      # Unified workflow assets (.md)
   lessons/        # Distilled lessons (.md, see akm improve / proposals)
   memories/       # Recalled context fragments (.md)
   facts/          # Durable bundle-level facts (.md, see "Asset Types" below)

@@ -1,17 +1,18 @@
 ---
-description: A minimal linear release workflow (markdown form ≈ OKF concept).
+type: workflow
+description: A minimal linear release workflow.
 updated: 2026-07-17
+steps:
+  - id: tag
+  - id: publish
 ---
-# Workflow: Release
 
-## Step: Tag
-Step ID: tag
+# Release
 
-### Instructions
+## tag
+
 Create an annotated git tag for the release version.
 
-## Step: Publish
-Step ID: publish
+## publish
 
-### Instructions
 Publish the tagged build and announce it.

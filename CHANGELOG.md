@@ -140,6 +140,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The two workflow authoring formats — markdown documents and YAML
+  orchestration programs — are unified into one format**, per
+  `docs/architecture/specs/workflow-format-unification.md`. A workflow is
+  now always a single markdown asset: the standard AKM frontmatter envelope
+  carries the whole orchestration graph (`params`, `steps` with
+  `unit`/`map`/`route`, `inputs`, `output`, `gate`, `defaults`, `budget`),
+  and the body carries each step's instructions under a bare `## <step-id>`
+  heading, joined to the frontmatter by step id. `.yaml`/`.yml` workflow
+  files, the `# Workflow:` / `## Step:` / `Step ID:` markdown headings, and
+  `akm workflow create <name>.yaml` are all gone; `akm workflow create`
+  always writes the one unified template
+  (`src/assets/workflows/workflow-template.md`).
+
+  **Prose is never interpolated.** The YAML program's `${{ … }}` template
+  language, and the markdown format's decorative — and never
+  substituted — `{{ … }}` moustaches, are both removed. Data reaches a
+  dispatched unit as *attached context* instead: the run's params, its
+  item and index for a map unit, and the artifacts its step's new
+  `inputs:` key declares. Instructions refer to that context in plain
+  language ("clone the repository named by the `repo` parameter") rather
+  than splicing a value into the instruction string. Bare reference
+  strings (two roots, `params.<name>` and `steps.<id>.output…`) now appear
+  only in three frontmatter positions: `map.over`, `route.input`, and
+  `inputs:`.
+
+  **Gate rubrics move to the body.** A step's completion criteria are no
+  longer a frontmatter `gate.criteria` list or a `### Completion Criteria`
+  bullet section — they live under a step's `### gate` sub-heading, the
+  format's one reserved marker, as full prose a judge receives byte-exact.
+  Frontmatter `gate:` now carries only optional `max_loops` configuration.
+  Omitted or empty rubric text skips validation; a non-empty rubric enables
+  fail-open validation, and unavailable or malformed judges are skipped.
+
+  This is a **pre-1.0 change to an unshipped, opt-in feature** —
+  `experimental.workflowEngine` has never been enabled by default, and no
+  workflow asset has shipped outside the ten example workflows under
+  `scripts/akm-eval/example-stash/workflows/`, all rewritten to the
+  unified format in this change. There is nothing on disk to migrate and
+  no users to break.
+
 - **akm is described as a knowledge toolkit, not a package manager** (R-048).
   The npm one-liner, the README lede, and the `concepts.md` opener all led with
   "a package manager for AI agent capabilities", which misstates the product to
@@ -205,14 +245,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   headless or CI install, set `semanticSearchMode: "auto"` explicitly, or point
   `embedding.endpoint` at a remote embedder.
 
-- **BREAKING: `akm workflow run|watch|brief|report|create <name>.yaml` refuse to
-  run until `experimental.workflowEngine` is set** (0.9.0 decision Q-05). The
-  native workflow executor — the fan-out scheduler, worktree isolation, and the
-  YAML v2 program format — is experimental, and shipping it enabled by default
-  would have made an unreviewed execution engine reachable from a plain `akm
-  workflow run`. The gated surfaces now exit `78` with a `ConfigError` naming
-  the exact key, and `akm tasks doctor` reports the gate's state. Every other
-  `akm workflow` subcommand (the document-oriented ones) is unaffected.
+- **BREAKING: `akm workflow run|brief|report` refuse to run until
+  `experimental.workflowEngine` is set** (0.9.0 decision Q-05). The native
+  workflow executor — including fan-out scheduling and worktree isolation —
+  is experimental, and shipping it enabled by default would have made an
+  unreviewed execution engine reachable from a plain `akm workflow run`. The
+  gated surfaces now exit `78` with a `ConfigError` naming the exact key, and
+  `akm task doctor` reports the gate's state. Authoring and linting the unified
+  markdown format, along with every other `akm workflow` subcommand, remain
+  ungated.
 
   Migration: `akm config set experimental.workflowEngine true`.
 
@@ -858,25 +899,17 @@ See `docs/migration/v0.8-to-v0.9.md` and
   Routine reads and current database opens no longer depend on a historical
   cutover bundle. See `docs/migration/release-notes/0.9.0.md`.
 - **Workflow orchestration engine (experimental).** akm can now execute
-  multi-step workflows as deterministic **YAML programs**, driven either by a
-  native engine or by any agent session. This is a new, self-contained
-  surface; classic linear **markdown workflows and the stable workflow CLI
-  contract (`start`/`next`/`complete`/`status`/`list`) are unchanged**. What
-  ships:
-  - **Authoring.** Orchestrated workflows are YAML programs
-    (`workflows/*.yaml`, `version: 2`) validated against a published JSON
-    Schema (`schemas/akm-workflow.json`) by `akm workflow validate`; scaffold
-    one with `akm workflow template --yaml` or `akm workflow create
-    <name>.yaml`. A closed `${{ … }}` expression language (exactly
-    `params.<name>`, `steps.<id>.output.<path>`, `item`, `item_index`, parsed
-    once into an AST) wires steps together. `validate` also surfaces non-fatal
-    **warnings** (a step with no typed `output:` schema; a `${{ params.<name> }}`
-    reference to a param the declared `params:` block omits) that never change
-    the frozen plan or its hash. Creating a workflow whose canonical name
-    collides with an existing asset of a **different** extension (`foo.yaml`
-    while `foo.md` exists, or vice-versa) is refused, since the two would
-    silently shadow each other.
-  - **Compilation + frozen plans.** `akm workflow start` compiles the program
+  multi-step workflows through a native engine or any agent session. Workflow
+  assets use the unified markdown format described above; the stable manual
+  CLI contract (`start`/`next`/`complete`/`status`/`list`) and the experimental
+  engine consume the same asset. What ships:
+  - **Authoring.** A workflow is a markdown asset whose frontmatter graph is
+    validated against `schemas/akm-workflow.json` and whose `## <step-id>` body
+    sections carry instructions and gate rubrics. `akm workflow create`
+    scaffolds that format; `akm lint --type workflows` parses and compiles it.
+    Bare references (`params.<name>` and `steps.<id>.output.<path>`) wire
+    `map.over`, `route.input`, and `inputs`; prose is never interpolated.
+  - **Compilation + frozen plans.** `akm workflow start` compiles the workflow
     into a backend-agnostic Workflow Plan Graph IR (`src/workflows/ir/`) and
     freezes it on the run row (`plan_json` + `plan_hash`); a run executes the
     plan compiled at start, and edits to the source file require a new run.
@@ -885,8 +918,7 @@ See `docs/migration/v0.8-to-v0.9.md` and
     reducer), a typed `output` JSON Schema (validated via a `runStructured`
     retry-with-feedback loop), `env` bindings (resolved through the existing
     `akm env run` machinery — secret tokens, dangerous-key policy, keys-only
-    audit events), classify-and-dispatch `route` steps, and `depends_on`
-    ordering.
+    audit events), and classify-and-dispatch `route` steps.
   - **Determinism + replay.** Journaled unit identity is content-derived
     (`<step>:<sha256(item)[:12]>`, `:solo` for a single unit), so cached
     results survive item-list reordering; a completed unit whose recorded
@@ -908,9 +940,9 @@ See `docs/migration/v0.8-to-v0.9.md` and
     criteria-bearing gate judges that **artifact** (canonical JSON, clipped)
     rather than machine prose, and each engine-driven evaluation is journaled
     as a gate unit row. `gate.max_loops` bounds an evaluator-optimizer retry
-    loop (feedback threaded into re-dispatched unit prompts); `gate.required`
-    (or the run-wide `--require-gates`) makes a gate with no available judge
-    **block** for a human instead of failing open.
+    loop (feedback threaded into re-dispatched unit prompts). Gates are
+    optional validation: omitted/empty rubrics and unavailable or malformed
+    judges skip validation.
   - **Failure policy.** Per-unit `on_error: fail | continue` (fail-fast
     default) plus bounded `retry: { max, on: [<failure_reason>…] }` keyed on
     the persisted failure taxonomy.

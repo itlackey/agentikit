@@ -328,10 +328,10 @@ describe("--xref root set and resolver parity", () => {
     expect((JSON.parse(ghost.stderr) as { error: string }).error).toContain(missingRef);
   });
 
-  test("workflow refs resolve YAML workflow programs against the stash roots, not the cwd", async () => {
+  test("workflow refs resolve against the stash roots, not the cwd", async () => {
     // The cwd here is the repo root, NOT the stash root — the old cwd-relative
     // `workflowSpec.toAssetPath` probe made this exit 2 from any other cwd.
-    seedAsset(stashDir, "workflows/deploy.yaml", "steps:\n  - run: echo hi\n");
+    seedAsset(stashDir, "workflows/deploy.md", "---\ntype: workflow\nsteps:\n  - id: run\n---\n\n## run\n\necho hi\n");
     const deployRef = stashRef("workflow", "deploy");
 
     const { code, stdout } = await runCliCapture(["remember", "Deploy workflow tip", "--xref", deployRef]);

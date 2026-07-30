@@ -12,9 +12,6 @@
 
 import { SCRIPT_EXTENSIONS } from "../../core/recognition-util";
 import { presentationFor } from "../../core/type-presentation";
-import { looksLikeWorkflow } from "../../workflows/parser";
-import { looksLikeWorkflowProgram } from "../../workflows/program/parser";
-import { WORKFLOW_PROGRAM_RENDERER_NAME } from "../../workflows/program/project";
 import type { FileContext, MatchResult } from "./file-context";
 
 // ---------------------------------------------------------------------------
@@ -216,11 +213,16 @@ function classifyBySmartMd(ctx: FileContext): MatchFact | null {
   }
 
   const body = ctx.content();
-  if (looksLikeWorkflow(body)) {
+  const fm = ctx.frontmatter();
+
+  // Recognition is frontmatter `type: workflow` or residence under `workflows/`
+  // (workflow-format-unification, spec §2.5) — no content sniffing. The
+  // directory rule is `classifyByDirectory`/`classifyByParentDirHint`'s job;
+  // this only catches a workflow living OUTSIDE `workflows/` that still
+  // declares its type explicitly.
+  if (fm && fm.type === "workflow") {
     return { type: "workflow", specificity: 19 };
   }
-
-  const fm = ctx.frontmatter();
 
   if (fm) {
     if ("toolPolicy" in fm || "tools" in fm) {
@@ -241,34 +243,6 @@ function classifyBySmartMd(ctx: FileContext): MatchFact | null {
   }
 
   return { type: "knowledge", specificity: 5 };
-}
-
-/** YAML workflow *programs* (redesign addendum, R1): `.yaml`/`.yml` files. */
-const WORKFLOW_PROGRAM_EXTENSIONS = new Set([".yaml", ".yml"]);
-
-/**
- * Classify YAML workflow programs. Two claims, mirroring the markdown rules:
- *
- *   - any `.yaml`/`.yml` under a `workflows/` dir (the directory rule —
- *     specificity 15 when `workflows` is the immediate parent, 10 for a
- *     deeper ancestor, same ladder as `matchDirectoryHint`);
- *   - anywhere else, a content probe via `looksLikeWorkflowProgram`
- *     (`version: 1` + `steps:` at column 0) at specificity 19, the same
- *     level as `classifyBySmartMd`'s `looksLikeWorkflow` claim.
- *
- * The fact does NOT go through `toMatchResult` — the workflow TYPE maps to
- * the markdown renderer by default, so this classifier names the
- * `workflow-program-yaml` renderer on its result directly.
- */
-function classifyByWorkflowProgram(ctx: FileContext): MatchFact | null {
-  if (!WORKFLOW_PROGRAM_EXTENSIONS.has(ctx.ext)) return null;
-  if (isTypedDirDocFile(ctx.fileName)) return null;
-  if (!isNestedSkillResource(ctx)) {
-    if (ctx.parentDir === "workflows") return { type: "workflow", specificity: 15 };
-    if (ctx.ancestorDirs.includes("workflows")) return { type: "workflow", specificity: 10 };
-  }
-  if (looksLikeWorkflowProgram(ctx.content())) return { type: "workflow", specificity: 19 };
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,14 +285,7 @@ export function smartMdMatcher(ctx: FileContext): MatchResult | null {
   return toMatchResult(ctx, classifyBySmartMd);
 }
 
-export function workflowProgramMatcher(ctx: FileContext): MatchResult | null {
-  const fact = classifyByWorkflowProgram(ctx);
-  if (!fact) return null;
-  // Named directly (not via rendererNameFor) — see classifyByWorkflowProgram.
-  return { type: fact.type, specificity: fact.specificity, renderer: WORKFLOW_PROGRAM_RENDERER_NAME };
-}
-
-// The five matcher functions above are consumed directly by the akm adapter's
+// The four matcher functions above are consumed directly by the akm adapter's
 // synchronous `recognizeMatch()` (`core/adapter/adapters/akm-adapter.ts`, which
 // holds the same registration-order array for tie-breaking). The chunk-3 cutover
 // removed the file-context matcher registry, so there is no `registerBuiltinMatchers`

@@ -8,7 +8,6 @@ import { proposalContent } from "../../../core/file-change";
 import { lintLessonContent } from "../../../core/lesson-lint";
 import { parseTaskDocument } from "../../../tasks/parser";
 import { parseWorkflow } from "../../../workflows/parser";
-import { looksLikeWorkflowProgram, parseWorkflowProgram } from "../../../workflows/program/parser";
 import type {
   Proposal,
   ProposalValidationContext,
@@ -86,10 +85,7 @@ const canonicalProposalValidators: Readonly<Record<string, CanonicalProposalVali
     if (!content.trim()) return [];
 
     const changePath = proposal.changes[0]?.path ?? "";
-    const isYamlProgram = /\.ya?ml$/i.test(changePath) || (changePath === "" && looksLikeWorkflowProgram(content));
-    const result = isYamlProgram
-      ? parseWorkflowProgram(content, { path: changePath || proposal.ref })
-      : parseWorkflow(content, { path: changePath || proposal.ref });
+    const result = parseWorkflow(content, { path: changePath || proposal.ref });
     if (result.ok) return [];
 
     return result.errors.map((error) => ({

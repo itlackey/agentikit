@@ -27,7 +27,7 @@ function writeWorkflow(name: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(
     file,
-    `---\ndescription: cross-process start\n---\n\n# Workflow: ${name}\n\n## Step: Work\nStep ID: work\n\n### Instructions\nWork.\n`,
+    "---\ntype: workflow\ndescription: cross-process start\nsteps:\n  - id: work\n---\n\n## work\n\nWork.\n",
   );
 }
 

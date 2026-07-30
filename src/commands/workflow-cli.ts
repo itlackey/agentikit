@@ -11,11 +11,11 @@
  * form.
  *
  * 0.9.0 CLI overhaul (S5): `workflow template` is dropped — `workflow create
- * --print` prints the same content (markdown, or a YAML program with a
- * .yaml/.yml name) without writing. `workflow validate` is dropped — `akm
- * lint --type workflows` covers structural validation of both markdown
- * documents and YAML programs. `workflow watch` is dropped — poll `akm log
- * --since '@offset:<id>' --run <run-id>` instead.
+ * --print` prints the same content without writing. `workflow validate` is
+ * dropped — `akm lint --type workflows` covers structural validation.
+ * `workflow watch` is dropped — poll `akm log --since '@offset:<id>' --run
+ * <run-id>` instead. Workflows are markdown-only (workflow-format-
+ * unification) — `workflow create <name>.yaml` is a usage error.
  */
 
 import { getParsedInvocation } from "../cli/invocation";
@@ -25,10 +25,9 @@ import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "
 import { loadConfig } from "../core/config/config";
 import { NotFoundError, UsageError } from "../core/errors";
 import { akmIndex } from "../indexer/indexer";
-import { createWorkflowAsset, getWorkflowProgramTemplate, getWorkflowTemplate } from "../workflows/authoring/authoring";
+import { assertWorkflowMarkdownName, createWorkflowAsset, getWorkflowTemplate } from "../workflows/authoring/authoring";
 import { parseWorkflowJsonObject, parseWorkflowStepState, WORKFLOW_STEP_STATES } from "../workflows/cli";
 import { requireWorkflowEngineEnabled } from "../workflows/exec/workflow-engine-gate";
-import { isWorkflowProgramPath } from "../workflows/program/project";
 import {
   abandonWorkflowRun,
   completeWorkflowStep,
@@ -184,14 +183,12 @@ const workflowListCommand = defineJsonCommand({
 const workflowCreateCommand = defineJsonCommand({
   meta: {
     name: "create",
-    description:
-      "Create a workflow in the working bundle (markdown document by default; a .yaml/.yml name writes a YAML program)",
+    description: "Create a workflow (markdown document) in the working bundle",
   },
   args: {
     name: {
       type: "positional",
-      description:
-        "Workflow name (flat, no '/'; use --path for a subdirectory). A .yaml/.yml suffix creates a YAML program.",
+      description: "Workflow name (flat, no '/'; use --path for a subdirectory).",
       required: true,
     },
     path: {
@@ -201,7 +198,7 @@ const workflowCreateCommand = defineJsonCommand({
     },
     from: {
       type: "string",
-      description: "Import and validate content from an existing file (parsed per the destination extension)",
+      description: "Import and validate content from an existing file",
     },
     force: {
       type: "boolean",
@@ -216,7 +213,7 @@ const workflowCreateCommand = defineJsonCommand({
     print: {
       type: "boolean",
       description:
-        "Print the RAW template that would be written (markdown, or YAML with a .yaml/.yml name) to stdout without creating anything — pipe it to a file as a starter document",
+        "Print the RAW template that would be written to stdout without creating anything — pipe it to a file as a starter document",
       default: false,
     },
   },
@@ -230,24 +227,18 @@ const workflowCreateCommand = defineJsonCommand({
         "Workflow name must start with a lowercase letter or digit and contain only lowercase letters, digits, hyphens, dots, underscores, and slashes.",
       );
     }
+    assertWorkflowMarkdownName(effectiveName);
     if (args.print) {
       // Raw document, not an envelope — the retired `workflow template` was
       // format-exempt for the same reason: `--print > starter.md` must yield
       // a usable starter file, not `{ok,template,kind}` JSON.
-      const isProgram = isWorkflowProgramPath(effectiveName);
-      process.stdout.write(isProgram ? getWorkflowProgramTemplate() : getWorkflowTemplate());
+      process.stdout.write(getWorkflowTemplate());
       return;
     }
     if (args.force && !args.from && !args.reset) {
       throw new UsageError(
         "Refusing to overwrite with template: pass --from <file> to replace content, or --reset to explicitly replace with a fresh template.",
       );
-    }
-    // Q-05: a `.yaml`/`.yml` name authors a YAML *program* — the format the
-    // native engine executes — so it is gated the same as running one.
-    // Markdown workflows (the default) are unaffected.
-    if (isWorkflowProgramPath(effectiveName)) {
-      requireWorkflowEngineEnabled(loadConfig(), `create ${effectiveName}`);
     }
     const result = createWorkflowAsset({
       name: effectiveName,
@@ -274,14 +265,6 @@ const workflowRunCommand = defineJsonCommand({
     target: { type: "positional", description: "Workflow run id or workflow ref (auto-starts a run)", required: true },
     params: { type: "string", description: "Workflow parameters as a JSON object (only for auto-started runs)" },
     "max-steps": { type: "string", description: "Stop after executing this many steps" },
-    "require-gates": {
-      type: "boolean",
-      description:
-        "Treat every criteria-bearing completion gate as required: if no LLM judge is available, BLOCK the step " +
-        "(for a human to resolve via `akm workflow resume`) instead of failing open. A per-step `gate.required: true` " +
-        "in the workflow does the same on every surface; this is the run-wide override.",
-      default: false,
-    },
   },
   async run({ args }) {
     requireWorkflowEngineEnabled(loadConfig(), "run");
@@ -298,7 +281,6 @@ const workflowRunCommand = defineJsonCommand({
       target: args.target,
       ...(args.params ? { params: parseWorkflowJsonObject(args.params, "--params") } : {}),
       ...(maxSteps !== undefined ? { maxSteps } : {}),
-      ...(args["require-gates"] === true ? { requireGates: true } : {}),
     });
     output("workflow-run", result);
   },

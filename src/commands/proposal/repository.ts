@@ -2251,37 +2251,18 @@ async function promoteProposalWithLease(
   // runs for it. Markdown-only: a task/env/script/other non-markdown target
   // has no frontmatter block to stamp into.
   //
-  // `workflow` is the ONLY asset type whose frontmatter is parsed against a
-  // CLOSED allowlist (`src/workflows/validator.ts`); command/agent/skill get
-  // only the generic + quality validators and tolerate extra keys, as do
-  // knowledge/lesson/memory/fact/session/instruction. That allowlist now admits
-  // the stamped keys, so every AKM-native markdown type is stamped and this
-  // fallback should never fire — it is retained purely as a backstop so a
-  // future closed-allowlist type cannot turn an otherwise-valid promotion into
-  // a rejected one. The stamped content is re-validated
-  // through the SAME canonical per-type validator dispatch
-  // (`validateProposal`) already used above; a type whose validator rejects
-  // the ADDED `provenance:` key falls back to the unstamped content instead of
-  // failing the promotion or silently writing an unindexable asset.
-  let stampedContent = repairedContent;
-  if (assetPath.toLowerCase().endsWith(".md")) {
-    const candidate = stampProposalProvenance(
-      repairedContent,
-      proposalToValidate,
-      options.gateDecision,
-      ctx,
-      nowIso(ctx),
-    );
-    const candidateReport = validateProposal(withProposalContent(proposalToValidate, candidate));
-    if (candidateReport.ok) {
-      stampedContent = candidate;
-    } else {
-      warn(
-        `[proposal] ${id}: OKF v0.2 provenance stamping rejected by the ${ref.type} validator ` +
-          `(${candidateReport.findings.map((f) => f.kind).join(", ")}); promoting unstamped content instead.`,
-      );
-    }
-  }
+  // workflow-format-unification removed the re-validation fallback that used
+  // to live here: every AKM-native markdown type (workflow included) now
+  // validates its frontmatter against a schema whose closed key set is
+  // `envelope ∪ type-keys` (`schemas/akm-workflow.json` $ref's
+  // `schemas/akm-asset-envelope.json`, which already admits `generated`/
+  // `verified`/`provenance`/`status`/`stale_after`). A validator rejecting the
+  // machine-stamped keys it is contractually required to admit is structurally
+  // impossible now, so falling back to unstamped content on rejection would
+  // only silently hide a real regression instead of promoting stamped content.
+  const stampedContent = assetPath.toLowerCase().endsWith(".md")
+    ? stampProposalProvenance(repairedContent, proposalToValidate, options.gateDecision, ctx, nowIso(ctx))
+    : repairedContent;
   const lintBlockers = promotionLintBlockers(stampedContent, assetPath, mutationTarget.source.path, ref.type, config);
   if (lintBlockers.length > 0) {
     const message = lintBlockers.map((finding) => `[${finding.issue}] ${finding.detail}`).join("\n");

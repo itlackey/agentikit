@@ -63,6 +63,11 @@ export function randomJsonValue(rng: Rng, depth = 3): unknown {
  * Used wherever a fan-out item list must be dedup-free (unit identity requires
  * distinct items). May return fewer than `count` if the RNG keeps colliding,
  * but always at least one.
+ *
+ * Never yields a TOP-LEVEL null: `computeStepWorkList` rejects a null fan-out
+ * item before dispatch (same posture as the duplicate check), so null is not a
+ * valid identity input for these properties. Nested nulls remain in play —
+ * they are legitimate JSON content inside an item.
  */
 export function distinctJsonValues(rng: Rng, count: number): unknown[] {
   const seen = new Set<string>();
@@ -70,6 +75,7 @@ export function distinctJsonValues(rng: Rng, count: number): unknown[] {
   let guard = 0;
   while (values.length < count && guard++ < count * 20) {
     const value = randomJsonValue(rng, 3);
+    if (value === null || value === undefined) continue;
     const key = canonicalJson(value) ?? "null";
     if (seen.has(key)) continue;
     seen.add(key);

@@ -25,8 +25,7 @@ for await (const src of assetGlob.scan(".")) {
   await Bun.write(dest, Bun.file(src));
 }
 
-// Module-local YAML templates (e.g. src/workflows/authoring/
-// workflow-program-template.yaml) are imported `with { type: "text" }` and
+// Module-local YAML templates may be imported `with { type: "text" }` and
 // live NEXT TO the module that uses them rather than under src/assets/.
 // tsc only emits .ts sources, so mirror them into dist/ at the same relative
 // path the compiled importer expects.

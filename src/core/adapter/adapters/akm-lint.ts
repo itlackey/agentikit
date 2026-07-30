@@ -54,6 +54,7 @@
 
 import path from "node:path";
 import { isDangerousEnvKey } from "../../../commands/lint/env-key-rules";
+import { compileWorkflowPlan } from "../../../workflows/ir/compile";
 import { parseWorkflow } from "../../../workflows/parser";
 import type { BundleComponent, Diagnostic, ValidateContext } from "../types";
 
@@ -252,10 +253,7 @@ export async function perTypeValidateChecks(args: PerTypeCheckArgs): Promise<Dia
     case "task":
       return taskDiagnostics(relPath, data);
     case "workflow":
-      // WorkflowLinter only ever sees `.md` in production (collectMarkdownFiles
-      // filters `.md`); YAML programs are not a lint path (lint golden pins the
-      // workflow-program via parseWorkflowProgram, not a linter). So the extra
-      // checks apply to markdown workflows only.
+      // Unified workflows are markdown-only; other extensions are not a lint path.
       return ext === ".md" ? workflowDiagnostics(relPath, raw, body) : [];
     case "memory":
       return memoryDiagnostics(relPath, data, body, ctx);
@@ -331,8 +329,9 @@ export function matchWorkflowPlaceholder(body: string): string | null {
 
 /**
  * WorkflowLinter's `invalid-workflow-structure` check (`workflow-linter.ts:48-77`):
- * re-parse via `parseWorkflow` and surface every structural error, skipping the
- * read-only `/.cache/`+`/registry/` cached copies. Shared with the live linter;
+ * parse and compile through the unified workflow frontend, surfacing every
+ * structural or semantic error and skipping the read-only `/.cache/`+`/registry/`
+ * cached copies. Shared with the live linter;
  * `parsePath` is the path handed to `parseWorkflow` (the adapter passes the
  * change relPath, the CLI passes the absolute filePath — matching each caller's
  * legacy behavior). NEVER writes.
@@ -351,6 +350,18 @@ export function workflowStructureDiagnostics(relPath: string, raw: string, parse
           fixed: false,
         });
       }
+      return diagnostics;
+    }
+    const compiled = compileWorkflowPlan(result.document, path.basename(parsePath, path.extname(parsePath)));
+    if (!compiled.ok) {
+      for (const err of compiled.errors) {
+        diagnostics.push({
+          file: relPath,
+          issue: "invalid-workflow-structure",
+          detail: err.message,
+          fixed: false,
+        });
+      }
     }
   } catch (e) {
     diagnostics.push({
@@ -366,8 +377,8 @@ export function workflowStructureDiagnostics(relPath: string, raw: string, parse
 /**
  * WorkflowLinter extra checks (`workflow-linter.ts:22-79`), READ-ONLY:
  * `placeholder-stub` is NEVER deleted here (validate MUST NOT write) — emitted
- * as a non-fixable Diagnostic. `invalid-workflow-structure` re-parses via
- * `parseWorkflow` over the whole `raw` (mirroring `parseWorkflow(ctx.raw, …)`).
+ * as a non-fixable Diagnostic. `invalid-workflow-structure` parses and compiles
+ * the whole `raw` through the unified workflow frontend.
  */
 function workflowDiagnostics(relPath: string, raw: string, body: string): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];

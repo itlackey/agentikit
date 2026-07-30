@@ -15,11 +15,7 @@ import { akmIndex } from "../../src/indexer/indexer";
 import { resolveSourceEntries } from "../../src/indexer/search/search-source";
 import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEmbedding } from "../../src/storage/repositories/index-vec-repository";
-import {
-  createWorkflowAsset,
-  getWorkflowProgramTemplate,
-  getWorkflowTemplate,
-} from "../../src/workflows/authoring/authoring";
+import { createWorkflowAsset, getWorkflowTemplate } from "../../src/workflows/authoring/authoring";
 import { resolveRunId } from "../../src/workflows/exec/brief";
 import { getNextWorkflowStep, listWorkflowRuns } from "../../src/workflows/runtime/runs";
 import { loadWorkflowAsset } from "../../src/workflows/runtime/workflow-asset-loader";
@@ -635,12 +631,8 @@ describe("OKF first-class conformance", () => {
 
   test("OKF concepts cannot be executed as native workflows", async () => {
     write(okfRoot, "workflows/foreign.md", getWorkflowTemplate());
-    write(okfRoot, "workflows/foreign-program.yaml", getWorkflowProgramTemplate());
 
     await expect(loadWorkflowAsset("adversarial//workflows/foreign")).rejects.toThrow(
-      /adapter "okf".*does not support native workflow execution/i,
-    );
-    await expect(loadWorkflowAsset("adversarial//workflows/foreign-program")).rejects.toThrow(
       /adapter "okf".*does not support native workflow execution/i,
     );
   });
@@ -740,6 +732,20 @@ describe("OKF first-class conformance", () => {
       await expect(loadWorkflowAsset("native//duplicate")).rejects.toMatchObject({
         code: "RESOURCE_ALREADY_EXISTS",
       });
+      // SRC BUG (reported, not fixed — src is frozen for this port):
+      // `createWorkflowAsset`'s cross-name-collision guard
+      // (`findExistingWorkflowPaths`, pre-unification) was deleted in the
+      // workflow-format-unification refactor along with the (correctly
+      // removed) cross-FORMAT `.md` vs `.yaml`/`.yml` shadowing check it was
+      // bundled with — but no narrower same-extension-different-case guard
+      // was preserved for the now markdown-only surface. `createWorkflowAsset`
+      // resolves its target path with an exact-case `fs.existsSync` and no
+      // longer probes for a same-canonical-name file differing only in
+      // extension case, so creating "upper" here (when "upper.MD" already
+      // exists in the same directory) no longer throws — it silently writes
+      // a second file ("upper.md") that `loadWorkflowAsset`'s case-insensitive
+      // lookup can then resolve ambiguously. Left as the real, unweakened
+      // intended behavior; it fails today on this gap.
       expect(() => createWorkflowAsset({ name: "upper" })).toThrow(/already exists as/i);
     },
   );
@@ -847,9 +853,15 @@ describe("OKF first-class conformance", () => {
       expect(() => createWorkflowAsset({ name: "blocked" })).toThrow(
         /adapter "okf".*does not support AKM asset writes/i,
       );
-      expect(() => createWorkflowAsset({ name: "blocked.yaml" })).toThrow(
-        /adapter "okf".*does not support AKM asset writes/i,
-      );
+      // workflow-format-unification (spec §3): `createWorkflowAsset` now
+      // rejects a ".yaml"/".yml" name UNCONDITIONALLY (workflows are
+      // markdown-only) — that check runs before the write-target/adapter is
+      // even resolved, so it fires regardless of which adapter owns the
+      // configured write target. The write-rejection block above (a plain
+      // ".md" name against the OKF adapter) stays byte-equivalent; this
+      // second sub-check now pins the (adapter-independent) markdown-only
+      // rejection instead of the no-longer-reachable OKF-write-target path.
+      expect(() => createWorkflowAsset({ name: "blocked.yaml" })).toThrow(/markdown-only/i);
       expect(fs.existsSync(path.join(okfRoot, "workflows"))).toBe(false);
     });
   });

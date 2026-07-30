@@ -9,13 +9,11 @@
  * producer table — and `tests/fixtures/stashes/all-types/` (WI-0b.2's
  * 14-type parity substrate, MANIFEST.json).
  *
- * FROZEN behavior-parity oracle: Chunk 2's format adapters must reproduce
+ * Behavior-parity oracle: Chunk 2's format adapters must reproduce
  * `runMatchers`'s classification (type/specificity/renderer/meta) and
  * `ASSET_SPECS[type].toAssetPath`'s placement byte-for-byte. This suite is
  * capture-only (no `src/` changes) — it snapshots PRODUCTION classification
- * and placement logic against the greenfield `all-types` fixture stash (no
- * pre-existing golden to re-baseline; anchors.md B.3 confirms zero prior
- * recognition/placement coverage).
+ * and placement logic against the `all-types` fixture stash.
  *
  * ## Recognition (WI-0b.3a)
  *
@@ -32,15 +30,17 @@
  * for the SAME canonical name the `all-types` fixture already uses on disk
  * (a placement round-trip against real, committed fixture bytes) plus a set
  * of documented edge-case branches: the `env` `"default"` alias, the
- * `workflow` multi-extension probe-fallback (when no candidate file exists)
- * and probe-hit (`all-types-workflow-program`, whose only on-disk form is
- * `.yaml` — pins the priority-ordered `fs.existsSync` probe actually finding
- * a non-`.md` candidate), the `task`/`command`/`env` already-suffixed-name
- * idempotent aliases, and a nested `secret` name. `typeRoot` is always
- * computed under the real `all-types` stash root so the `workflow` spec's
- * `fs.existsSync` probes observe real (committed, stable) files rather than
- * depending on `process.cwd()` — this keeps the capture deterministic
- * regardless of the invoking shell's working directory.
+ * `workflow` extension short-circuit (an explicit `.md` extension skips the
+ * `fs.existsSync` probe) and its no-candidate-exists fallback to `.md`, the
+ * `task`/`command`/`env` already-suffixed-name idempotent aliases, and a
+ * nested `secret` name. `typeRoot` is always computed under the real
+ * `all-types` stash root so the `workflow` spec's `fs.existsSync` probe
+ * observes real (committed, stable) files rather than depending on
+ * `process.cwd()` — this keeps the capture deterministic regardless of the
+ * invoking shell's working directory. (Workflow-format-unification, spec §3:
+ * `WORKFLOW_EXTENSIONS` collapsed to `[".md"]` only — the pre-unification
+ * `.yaml`/`.yml` probe-priority and its real-`.yaml`-candidate probe-hit
+ * scenario no longer exist; see the re-baseline note below.)
  *
  * Byte-for-byte pure-path goldens: no timestamps/ids/durations appear in
  * either fixture, so `expectGolden`'s placeholder normalization is a no-op
@@ -48,9 +48,17 @@
  * Every path stored is stash-relative POSIX (never absolute — hard
  * constraint per the WI-0b.3 brief).
  *
- * Designation: `frozen-migration-input` (`DESIGNATIONS.json`) for both
+ * Designation: `re-baseline` (`DESIGNATIONS.json`) for both
  * `tests/fixtures/goldens/recognition/all-types.json` and
- * `tests/fixtures/goldens/placement/all-types.json`.
+ * `tests/fixtures/goldens/placement/all-types.json`. RE-BASELINED for
+ * workflow-format-unification: the fixture stash's `workflows/` now holds one
+ * file (`all-types-workflow.md`, converted to the unified format;
+ * `all-types-workflow-program.yaml` deleted) instead of two, so both goldens
+ * lose their `workflows/all-types-workflow-program.yaml` recognition entry
+ * and their `workflowProbeFindsYamlOnlyCandidateBeforeDefaultingToMd`
+ * placement edge case; `workflowExplicitExtensionSkipsProbe` now exercises
+ * the (only remaining) `.md` extension short-circuit instead of `.yaml`.
+ * Every other captured value is unchanged.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -91,7 +99,6 @@ const EXPECTED_TYPE_BY_REL_PATH: Record<string, string> = {
   "sessions/all-types-harness/all-types-session.md": "session",
   "skills/all-types-skill/SKILL.md": "skill",
   "tasks/all-types-task.yml": "task",
-  "workflows/all-types-workflow-program.yaml": "workflow",
   "workflows/all-types-workflow.md": "workflow",
 };
 
@@ -109,8 +116,10 @@ function relFromStash(absPath: string): string {
 describe("recognition parity: all 14 all-types fixture assets classify as documented (WI-0b.3a)", () => {
   test("every fixture file (except MANIFEST.json) recognizes as its documented type", async () => {
     const contexts = allTypesFileContexts();
-    // 14 assets: 13 types (wiki retired in chunk 4) + the extra workflow-program-yaml renderer form.
-    expect(contexts.length).toBe(14);
+    // 13 assets: 13 types (wiki retired in chunk 4; workflow-format-unification
+    // collapsed workflow to a single .md form, so the fixture stash is back to
+    // exactly one file per type).
+    expect(contexts.length).toBe(13);
 
     for (const ctx of contexts) {
       const expectedType = EXPECTED_TYPE_BY_REL_PATH[ctx.relPath];
@@ -121,18 +130,11 @@ describe("recognition parity: all 14 all-types fixture assets classify as docume
     }
   });
 
-  test("the two workflow renderer forms resolve to distinct renderers", async () => {
-    const contexts = allTypesFileContexts();
-    const md = contexts.find((c) => c.relPath === "workflows/all-types-workflow.md");
-    const yaml = contexts.find((c) => c.relPath === "workflows/all-types-workflow-program.yaml");
-    expect(md).toBeDefined();
-    expect(yaml).toBeDefined();
-    if (!md || !yaml) throw new Error("unreachable: asserted defined above");
-    const mdResult = recognizeMatch(md);
-    const yamlResult = recognizeMatch(yaml);
-    expect(mdResult?.renderer).toBe("workflow-md");
-    expect(yamlResult?.renderer).toBe("workflow-program-yaml");
-  });
+  // NOTE (workflow-format-unification): the old "the two workflow renderer
+  // forms resolve to distinct renderers" test is gone — there is exactly one
+  // workflow renderer now (`workflow-md`, `type-presentation.ts`), and its
+  // `workflow-program-yaml` fixture form was deleted along with the YAML
+  // program format (spec §3).
 });
 
 // ── 2. Placement assertions (WI-0b.3b, pre-capture sanity) ─────────────────
@@ -162,14 +164,11 @@ describe("placement parity: toAssetPath round-trips onto the real all-types fixt
     }
   });
 
-  test("workflow toAssetPath probes candidates in .md/.yaml/.yml priority order and finds the real .yaml-only fixture", () => {
-    const spec = ASSET_SPECS.workflow;
-    const typeRoot = path.join(STASH_ROOT, spec!.stashDir);
-    // all-types-workflow-program.yaml has no .md sibling with the same stem —
-    // the probe must skip the (non-existent) .md candidate and hit .yaml.
-    const assetPath = spec!.toAssetPath(typeRoot, "all-types-workflow-program");
-    expect(relFromStash(assetPath)).toBe("workflows/all-types-workflow-program.yaml");
-  });
+  // NOTE (workflow-format-unification): the old "workflow toAssetPath probes
+  // candidates in .md/.yaml/.yml priority order and finds the real .yaml-only
+  // fixture" test is gone — `WORKFLOW_EXTENSIONS` collapsed to `[".md"]` only
+  // (spec §3), and its fixture (`all-types-workflow-program.yaml`) was
+  // deleted with it, so there is no remaining multi-extension probe branch.
 
   test("workflow toAssetPath falls back to the default .md path when no candidate exists", () => {
     const spec = ASSET_SPECS.workflow;
@@ -202,16 +201,20 @@ describe("golden fixture: recognition + placement parity (WI-0b.3a/b)", () => {
 
     expectGolden(RECOGNITION_GOLDEN_PATH, {
       scenario:
-        "runMatchers(buildFileContext(...)) recognition result for every asset in tests/fixtures/stashes/all-types/ (WI-0b.3a, all 14 ASSET_SPECS_INTERNAL types + the workflow-program-yaml renderer form)",
+        "runMatchers(buildFileContext(...)) recognition result for every asset in tests/fixtures/stashes/all-types/ (WI-0b.3a, all 14 ASSET_SPECS_INTERNAL types, workflow now a single form)",
       capturedAtHead: HEAD_SHA,
       notes: [
         "Keyed by stash-relative POSIX relPath (never an absolute path). Walked via walkStashFlat, the same " +
           "git-ls-files-based walker the real indexer uses; MANIFEST.json (fixture metadata, not an asset) is " +
           "excluded. Values are the raw MatchResult ({type, specificity, renderer, meta?}) runMatchers returns, or " +
           "null if no matcher claims the file (does not occur for any file in this fixture).",
-        "FROZEN behavior-parity oracle (D0b-1/D0b-3): Chunk 2's format adapters must reproduce this classification " +
-          "byte-for-byte. anchors.md Section B.3 confirms zero prior recognition golden coverage existed before " +
-          "this capture -- greenfield, not a re-baseline.",
+        "Behavior-parity oracle (D0b-1/D0b-3): Chunk 2's format adapters must reproduce this classification " +
+          "byte-for-byte.",
+        "RE-BASELINED for workflow-format-unification: the fixture stash's workflows/ now holds ONE file " +
+          "(all-types-workflow.md, converted to the unified frontmatter+body format; " +
+          "all-types-workflow-program.yaml deleted, spec §3) instead of two, so the " +
+          "workflows/all-types-workflow-program.yaml entry (renderer: workflow-program-yaml) is gone. Every other " +
+          "captured value is unchanged.",
       ],
       byRelPath,
     });
@@ -268,20 +271,23 @@ describe("golden fixture: recognition + placement parity (WI-0b.3a/b)", () => {
         name: "all-types-env.env",
         assetPath: relFromStash(envSpec!.toAssetPath(envTypeRoot, "all-types-env.env")),
       },
+      // workflow-format-unification: WORKFLOW_EXTENSIONS collapsed to [".md"]
+      // only (spec §3), so the explicit-extension short-circuit and the
+      // no-candidate-exists probe fallback now both resolve to the SAME .md
+      // path family — there is no other recognized workflow extension left to
+      // short-circuit on, and the old real .yaml-only-candidate probe-hit
+      // scenario (workflowProbeFindsYamlOnlyCandidateBeforeDefaultingToMd) has
+      // no fixture left to exercise it (all-types-workflow-program.yaml was
+      // deleted) and is removed.
       workflowExplicitExtensionSkipsProbe: {
         type: "workflow",
-        name: "totally-nonexistent.yaml",
-        assetPath: relFromStash(workflowSpec!.toAssetPath(workflowTypeRoot, "totally-nonexistent.yaml")),
+        name: "totally-nonexistent.md",
+        assetPath: relFromStash(workflowSpec!.toAssetPath(workflowTypeRoot, "totally-nonexistent.md")),
       },
       workflowProbeFallbackToMdWhenNoCandidateExists: {
         type: "workflow",
         name: "totally-nonexistent-workflow",
         assetPath: relFromStash(workflowSpec!.toAssetPath(workflowTypeRoot, "totally-nonexistent-workflow")),
-      },
-      workflowProbeFindsYamlOnlyCandidateBeforeDefaultingToMd: {
-        type: "workflow",
-        name: "all-types-workflow-program",
-        assetPath: relFromStash(workflowSpec!.toAssetPath(workflowTypeRoot, "all-types-workflow-program")),
       },
       taskAlreadySuffixedNameIsIdempotent: {
         type: "task",
@@ -311,12 +317,17 @@ describe("golden fixture: recognition + placement parity (WI-0b.3a/b)", () => {
           "workflow spec's fs.existsSync probe observes real files instead of depending on process.cwd().",
         "edgeCases pins branches that byType's round-trip names don't exercise: the env \"default\" alias (bare " +
           ".env), the already-suffixed-name idempotent alias shared by env/task/markdownSpec-family toAssetPath " +
-          "implementations, the workflow multi-extension fs.existsSync probe's explicit-extension short-circuit " +
-          "(skips the probe entirely), its no-candidate-exists fallback to .md, and its probe finding a real " +
-          "YAML-only candidate (all-types-workflow-program.yaml has no .md sibling) before ever reaching the .md " +
-          "default -- and a nested secret name (identity join, no extension logic).",
+          "implementations, the workflow extension short-circuit (an explicit .md extension skips the probe), its " +
+          "no-candidate-exists fallback to .md, and a nested secret name (identity join, no extension logic).",
+        'RE-BASELINED for workflow-format-unification: WORKFLOW_EXTENSIONS collapsed to [".md"] only (spec §3 ' +
+          'deletes "the extension-collapse logic beyond .md"), so the workflow probe\'s multi-extension priority ' +
+          "order (.md/.yaml/.yml) and its real .yaml-only-candidate probe-hit scenario " +
+          "(workflowProbeFindsYamlOnlyCandidateBeforeDefaultingToMd, whose fixture -- " +
+          "all-types-workflow-program.yaml -- was deleted) no longer exist; workflowExplicitExtensionSkipsProbe now " +
+          "exercises the (only remaining) .md short-circuit instead of .yaml. Every OTHER captured value is " +
+          "unchanged.",
         "All paths are stash-relative POSIX strings (never absolute) -- hard constraint per the WI-0b.3 brief.",
-        "FROZEN behavior-parity oracle (D0b-1/D0b-3): Chunk 2's format adapters must reproduce this placement " +
+        "Behavior-parity oracle (D0b-1/D0b-3): Chunk 2's format adapters must reproduce this placement " +
           "mapping byte-for-byte.",
       ],
       byType,

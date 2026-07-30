@@ -60,13 +60,7 @@ import type {
   IrUnitNode,
   WorkflowPlanGraph,
 } from "../ir/schema";
-import {
-  type ExpressionScope,
-  parseTemplate,
-  resolveTemplate,
-  resolveWholeValue,
-  type TemplateSegment,
-} from "../program/expressions";
+import { type ExpressionScope, resolveReferenceString } from "../program/expressions";
 import { WORKFLOW_MAX_MAP_EXPANSION } from "../resource-limits";
 import { requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
 import { completeWorkflowStep, type SummaryValidationFailure, type WorkflowNextResult } from "../runtime/runs";
@@ -191,12 +185,56 @@ export type ComputeWorkListResult = { ok: true; list: StepWorkList } | { ok: fal
  * schema directive), and hash the resolved input. Same inputs ⇒ byte-identical
  * ids/hashes/prompts — the invariant `brief` relies on to predict the engine.
  *
- * Whole-list failures (missing subgraph, template parse error, unresolvable /
- * non-array `over`, duplicate fan-out items) return `{ ok: false }`; a per-unit
- * expression-resolution failure is carried on that unit's `resolved` field so
- * the caller fails just that unit (mirroring the engine's `expression_error`
- * outcome), never the whole step.
+ * Whole-list failures (missing subgraph, unresolvable / non-array `over`,
+ * null or duplicate fan-out items) return `{ ok: false }`. The per-unit
+ * `resolved: { ok: false }` branch is STRUCTURALLY UNREACHABLE in the unified
+ * format — prose is never scanned for references, and everything that CAN
+ * fail (map.over / route.input / inputs:) resolves once per step, failing the
+ * whole list above. The branch is retained because brief/report/executor all
+ * share the shape and defensively handle it; if a future unit kind
+ * reintroduces per-unit resolution (e.g. an exec/shell unit with real
+ * substitution), the cross-surface failure plumbing is already in place.
  */
+/**
+ * Validate a fan-out item list BEFORE any identity/dispatch work: expansion
+ * within the resource limit, no null/undefined items, no canonical duplicates.
+ * Returns the failure message, or undefined when the list is dispatchable.
+ *
+ * Null items: producer garbage — there is nothing to hand the unit as its work
+ * item. The pre-unification format rejected them incidentally (substituting
+ * `${{ item }}` failed); with items attached as context instead of spliced,
+ * nothing later would stop a unit from being dispatched with "Item: null", so
+ * the rejection is explicit here. Duplicates: content-derived unit identity
+ * makes canonical duplicates collide on id — an authoring error caught
+ * deterministically, before dispatch.
+ */
+function validateFanOutItems(stepId: string, items: unknown[]): string | undefined {
+  if (items.length > WORKFLOW_MAX_MAP_EXPANSION) {
+    return `Step "${stepId}" fan-out expands to ${items.length} units, exceeding the ${WORKFLOW_MAX_MAP_EXPANSION}-unit resource limit.`;
+  }
+  const nullIndex = items.findIndex((item) => item === null || item === undefined);
+  if (nullIndex !== -1) {
+    return (
+      `Step "${stepId}" fan-out list contains a null item (index ${nullIndex}). ` +
+      `Every item must be a concrete value — fix the producing step's output.`
+    );
+  }
+  const firstIndexByCanonical = new Map<string, number>();
+  for (let i = 0; i < items.length; i++) {
+    const canonical = canonicalJson(items[i]) ?? "null";
+    const firstIndex = firstIndexByCanonical.get(canonical);
+    if (firstIndex !== undefined) {
+      return (
+        `Step "${stepId}" fan-out list contains duplicate items (indices ${firstIndex} and ${i}: ` +
+        `${clip(canonical, 200)}). Content-derived unit identity requires distinct items — ` +
+        `deduplicate the list this workflow fans out over.`
+      );
+    }
+    firstIndexByCanonical.set(canonical, i);
+  }
+  return undefined;
+}
+
 export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): ComputeWorkListResult {
   const root = plan.root;
   // Route-only steps (YAML `route:`) carry no execution subgraph.
@@ -212,31 +250,31 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
 
   const scope: ExpressionScope = { params: input.params, stepOutputs: input.stepOutputs };
 
-  // Parse the instruction template ONCE (deterministic; resolution is a single
-  // pass per unit — substituted content is never re-scanned). Only nodes the
-  // frontend marked `templating: "expressions"` carry the `${{ … }}` grammar;
-  // classic linear markdown is opaque verbatim text.
-  let instructionSegments: TemplateSegment[];
-  if (template.templating === "expressions") {
-    const parsedInstructions = parseTemplate(template.instructions);
-    if (!parsedInstructions.ok) {
+  // Instructions are ALWAYS the step's body prose, byte-exact — never
+  // templated, never scanned for reference syntax (workflow-format-
+  // unification, spec §2.3). Only `map.over` / `route.input` / `inputs[]`
+  // carry the closed reference grammar.
+
+  // Resolve the step's declared `inputs:` ONCE (shared by every unit in this
+  // step — map items differ, declared inputs do not): prior-step artifacts
+  // attached to every dispatched unit as structured context.
+  const resolvedInputs: Array<{ reference: string; value: unknown }> = [];
+  for (const reference of template.inputs ?? []) {
+    const resolved = resolveReferenceString(reference, scope);
+    if (!resolved.ok) {
       return {
         ok: false,
-        error:
-          `Step "${plan.stepId}" instructions template failed to parse: ` +
-          parsedInstructions.errors.map((e) => e.message).join(" "),
+        error: `Step "${plan.stepId}" declared input "${reference}" failed to resolve: ${resolved.error.message}`,
       };
     }
-    instructionSegments = parsedInstructions.segments;
-  } else {
-    instructionSegments = [{ kind: "literal", text: template.instructions }];
+    resolvedInputs.push({ reference, value: resolved.value });
   }
 
-  // Resolve fan-out items: `over` is a single whole-value `${{ … }}` reference
-  // naming its producer explicitly — no ambient key search.
+  // Resolve fan-out items: `over` is a single whole-value reference naming
+  // its producer explicitly — no ambient key search.
   let items: unknown[];
   if (root.kind === "map") {
-    const source = resolveWholeValue(root.over, scope);
+    const source = resolveReferenceString(root.over, scope);
     if (!source.ok) {
       return {
         ok: false,
@@ -255,33 +293,12 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
   }
 
   const isFanOut = root.kind === "map";
-  if (isFanOut && items.length > WORKFLOW_MAX_MAP_EXPANSION) {
-    return {
-      ok: false,
-      error: `Step "${plan.stepId}" fan-out expands to ${items.length} units, exceeding the ${WORKFLOW_MAX_MAP_EXPANSION}-unit resource limit.`,
-    };
-  }
+  const fanOutProblem = isFanOut ? validateFanOutItems(plan.stepId, items) : undefined;
+  if (fanOutProblem) return { ok: false, error: fanOutProblem };
 
-  // Content-derived unit identity: compute every id up front. Duplicate items
-  // collide on identity — an authoring error caught HERE, deterministically.
+  // Content-derived unit identity: compute every id up front (duplicate items
+  // were rejected above — identity requires distinct items).
   const unitIds = items.map((item) => unitIdFor(template.id, item, isFanOut));
-  if (isFanOut) {
-    const firstIndexByCanonical = new Map<string, number>();
-    for (let i = 0; i < items.length; i++) {
-      const canonical = canonicalJson(items[i]) ?? "null";
-      const firstIndex = firstIndexByCanonical.get(canonical);
-      if (firstIndex !== undefined) {
-        return {
-          ok: false,
-          error:
-            `Step "${plan.stepId}" fan-out list contains duplicate items (indices ${firstIndex} and ${i}: ` +
-            `${clip(canonical, 200)}). Content-derived unit identity requires distinct items — ` +
-            `deduplicate the list this workflow fans out over.`,
-        };
-      }
-      firstIndexByCanonical.set(canonical, i);
-    }
-  }
 
   const gateLoop = input.gateLoop ?? 1;
   const frozenInvocation = template.invocation;
@@ -300,68 +317,82 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
     // {{UNIT_ID}}) stays the base id.
     const journalBaseId = gateLoop > 1 ? `${unitId}~l${gateLoop}` : unitId;
 
-    // Single-pass resolution of the pre-parsed template against this unit's
-    // scope. A resolution failure is deterministic authoring/data breakage.
-    const unitScope: ExpressionScope = isFanOut ? { ...scope, item, itemIndex: index } : scope;
-    const resolvedInstr = resolveTemplate(instructionSegments, unitScope);
-
-    let resolved: StepWorkUnit["resolved"];
-    if (!resolvedInstr.ok) {
-      resolved = {
-        ok: false,
-        error: `instructions failed to resolve: ${resolvedInstr.errors.map((e) => e.message).join(" ")}`,
-      };
-    } else {
-      const prompt = buildUnitPrompt({
-        runId: input.runId,
-        stepId: plan.stepId,
-        unitId,
-        params: input.params,
-        ...(input.gateFeedback ? { gateFeedback: input.gateFeedback } : {}),
-        ...(template.schema ? { schema: template.schema } : {}),
-        instructions: resolvedInstr.text,
-      });
-      // Canonical dispatch-input envelope (reviewer finding #1). Every field
-      // here is a PLAN-FROZEN input that changes what the backend is actually
-      // asked to do, so a completed unit is reused ONLY when all of them match;
-      // a change to any of them re-dispatches. Key order is FIXED — it is the
-      // hash preimage (JSON.stringify preserves insertion order) — and shared
-      // by ALL surfaces, since this is the ONE place a unit's inputHash is
-      // computed (engine, brief, and report all call computeStepWorkList), so
-      // the byte-identical hash across surfaces is structural, not coincidental.
-      //
-      // Included beyond the R4 baseline (prompt/runner/model/schema): resolved
-      // timeoutMs, the env asset ref NAMES, and isolation — each
-      // reaches dispatch (native-executor's UnitDispatchRequest) and a changed
-      // one yields a materially different call. `env` carries NAMES ONLY, never
-      // resolved values: hashing a resolved secret would leak it into a
-      // durable hash oracle and would spuriously re-dispatch on every secret
-      // rotation. `retry`/`onError` are DELIBERATELY excluded — they govern
-      // failed-unit re-dispatch and step-level failure reduction, not a
-      // COMPLETED unit's inputs/output, so a completed row stays valid across
-      // policy changes.
-      //
-      // Ambient config is DELIBERATELY excluded — the model-alias table, the
-      // resolved backend/connection, and the working directory (`ctx.workDir` /
-      // process.cwd()) are NOT plan-frozen. The frozen plan is the identity
-      // boundary (redesign addendum determinism bar #2): config drift under an
-      // in-flight run is out of scope by design.
-      const dispatch = transitiveDispatchSnapshot(frozenEngine, input.engines ?? {});
-      const inputHash = createHash("sha256")
-        .update(
-          canonicalJsonString({
-            hashVersion: 3,
-            prompt,
-            dispatch,
-            invocation: frozenInvocation,
-            schema: template.schema ?? null,
-            env: template.env ?? null,
-            isolation: template.isolation ?? "none",
-          }),
-        )
-        .digest("hex");
-      resolved = { ok: true, prompt, inputHash };
-    }
+    // Context attachment (workflow-format-unification, spec §4): every unit
+    // receives the run params (already in the preamble), its item + index if
+    // it is a map unit, and the artifacts named by its step's `inputs:`.
+    // Instructions reach the unit byte-exact — never interpolated.
+    const prompt = buildUnitPrompt({
+      runId: input.runId,
+      stepId: plan.stepId,
+      unitId,
+      params: input.params,
+      ...(isFanOut ? { item, itemIndex: index } : {}),
+      ...(resolvedInputs.length > 0 ? { inputs: resolvedInputs } : {}),
+      ...(input.gateFeedback ? { gateFeedback: input.gateFeedback } : {}),
+      ...(template.schema ? { schema: template.schema } : {}),
+      instructions: template.instructions,
+    });
+    // Canonical dispatch-input envelope (reviewer finding #1). Every field
+    // here is a PLAN-FROZEN input that changes what the backend is actually
+    // asked to do, so a completed unit is reused ONLY when all of them match;
+    // a change to any of them re-dispatches. Key order is FIXED — it is the
+    // hash preimage (JSON.stringify preserves insertion order) — and shared
+    // by ALL surfaces, since this is the ONE place a unit's inputHash is
+    // computed (engine, brief, and report all call computeStepWorkList), so
+    // the byte-identical hash across surfaces is structural, not coincidental.
+    //
+    // Unit identity (workflow-format-unification, spec §2.3/§4) hashes the
+    // FROZEN TEMPLATE BYTES (`template.instructions`, byte-exact, never an
+    // instantiated/interpolated string) + the canonical item JSON + the
+    // declared-input artifact hashes + the params snapshot — instead of a
+    // resolved/spliced prompt string, since there is no more splicing. The
+    // assembled `prompt` above is what the harness SEES; the hash is over the
+    // plan-frozen INPUTS that determine it, which is the same replay contract
+    // the old resolved-prompt hash gave (same inputs ⇒ same hash) with the
+    // interpolation step removed.
+    //
+    // Included beyond the R4 baseline (template/runner/model/schema): resolved
+    // timeoutMs, the env asset ref NAMES, and isolation — each reaches
+    // dispatch (native-executor's UnitDispatchRequest) and a changed one
+    // yields a materially different call. `env` carries NAMES ONLY, never
+    // resolved values: hashing a resolved secret would leak it into a durable
+    // hash oracle and would spuriously re-dispatch on every secret rotation.
+    // `retry`/`onError` are DELIBERATELY excluded — they govern failed-unit
+    // re-dispatch and step-level failure reduction, not a COMPLETED unit's
+    // inputs/output, so a completed row stays valid across policy changes.
+    //
+    // `gateFeedback` IS included (conditionally, so a no-feedback unit's
+    // preimage is byte-identical to before): it is appended to the prompt by
+    // `buildUnitPrompt`, so a gate loop's retry is materially a different ask
+    // than the rejected attempt — omitting it made loop 1 and loop 2 journal
+    // identical hashes for different prompts, breaking the "changed inputs ⇒
+    // changed hash" audit contract. Replay-safe: feedback is re-derived from
+    // the journaled gate decision, so a resumed retry re-hashes identically.
+    //
+    // Ambient config is DELIBERATELY excluded — the model-alias table, the
+    // resolved backend/connection, and the working directory (`ctx.workDir` /
+    // process.cwd()) are NOT plan-frozen. The frozen plan is the identity
+    // boundary (redesign addendum determinism bar #2): config drift under an
+    // in-flight run is out of scope by design.
+    const dispatch = transitiveDispatchSnapshot(frozenEngine, input.engines ?? {});
+    const inputHash = createHash("sha256")
+      .update(
+        canonicalJsonString({
+          hashVersion: 4,
+          template: template.instructions,
+          item: isFanOut ? (item ?? null) : null,
+          inputs: resolvedInputs,
+          params: input.params,
+          dispatch,
+          invocation: frozenInvocation,
+          schema: template.schema ?? null,
+          env: template.env ?? null,
+          isolation: template.isolation ?? "none",
+          ...(input.gateFeedback ? { gateFeedback: input.gateFeedback } : {}),
+        }),
+      )
+      .digest("hex");
+    const resolved: StepWorkUnit["resolved"] = { ok: true, prompt, inputHash };
 
     return {
       unitId,
@@ -408,20 +439,28 @@ export interface BuildUnitPromptInput {
   stepId: string;
   unitId: string;
   params: Record<string, unknown>;
+  /** Present for a map unit — the item it was given + its 0-based index. */
+  item?: unknown;
+  itemIndex?: number;
+  /** Resolved artifacts named by the step's `inputs:`, in declaration order. */
+  inputs?: Array<{ reference: string; value: unknown }>;
   gateFeedback?: GateFeedback;
   schema?: Record<string, unknown>;
-  /** Instructions with every `${{ … }}` reference already resolved (single pass). */
+  /** The step's body prose, byte-exact — never interpolated. */
   instructions: string;
 }
 
 /**
- * Assemble the final prompt: engine preamble + resolved instructions
- * (+ gate feedback on loop re-executions, + schema directive). Workflow-
- * authored interpolation happened upstream via the expression module; only
- * the ENGINE's own preamble placeholders are substituted here.
+ * Assemble the final prompt: engine preamble (run params + item/index +
+ * declared-input artifacts, all as structured JSON context) + the step's
+ * BYTE-EXACT prose instructions (+ gate feedback on loop re-executions, +
+ * schema directive). Instructions are NEVER interpolated (workflow-format-
+ * unification, spec §2.3) — data reaches the unit as attached context, not
+ * string splices; only the ENGINE's own preamble placeholders are substituted
+ * here.
  */
 export function buildUnitPrompt(input: BuildUnitPromptInput): string {
-  const { runId, stepId, unitId, params, gateFeedback, schema, instructions } = input;
+  const { runId, stepId, unitId, params, itemIndex, item, inputs, gateFeedback, schema, instructions } = input;
   // Function replacements throughout: a string replacement would interpret
   // GetSubstitution patterns ($&, $$, $', $`) inside VALUES and silently
   // corrupt the prompt (e.g. a param value containing "$&").
@@ -430,6 +469,19 @@ export function buildUnitPrompt(input: BuildUnitPromptInput): string {
     .replaceAll("{{STEP_ID}}", () => stepId)
     .replaceAll("{{UNIT_ID}}", () => unitId)
     .replaceAll("{{PARAMS_JSON}}", () => safeJson(params));
+
+  // Map-unit context: the item this unit was given, plus its index. Attached
+  // as structured JSON — the engine never splices it into the instructions.
+  const itemBlock =
+    itemIndex !== undefined
+      ? `\n\n## Item (index ${itemIndex})\nYou were given this item from the fan-out list:\n${safeJson(item)}`
+      : "";
+
+  // Declared `inputs:` context: the prior-step artifacts this step named.
+  const inputsBlock =
+    inputs && inputs.length > 0
+      ? `\n\n## Declared inputs\n${inputs.map((i) => `### ${i.reference}\n${safeJson(i.value)}`).join("\n\n")}`
+      : "";
 
   // Gate-loop feedback (R2 max_loops): the judge's rejection is appended so
   // the re-executed unit can address it — and so the input hash changes,
@@ -447,7 +499,7 @@ export function buildUnitPrompt(input: BuildUnitPromptInput): string {
     ? `\n\nRespond with ONLY a JSON value matching this JSON Schema (no prose, no code fences):\n${safeJson(schema)}`
     : "";
 
-  return `${preamble}\n${instructions}${gateBlock}${schemaDirective}`;
+  return `${preamble}\n${instructions}${itemBlock}${inputsBlock}${gateBlock}${schemaDirective}`;
 }
 
 /**
@@ -794,8 +846,8 @@ export function isRetryEligibleFailure(
  * it)? True for a unit with no terminal row (pending), a still-`running` row (a
  * live/stale claim another driver holds), or a FAILED row that is still
  * retry-eligible. False for a COMPLETED row, a terminal non-retry-eligible
- * FAILURE, or an UNRESOLVABLE unit (the engine's immediate `expression_error` —
- * never reportable). The best terminal attempt (base + `~r<n>` retries) is the
+ * FAILURE, or an UNRESOLVABLE unit (a currently-unreachable defensive branch —
+ * see the computeStepWorkList doc — never reportable). The best terminal attempt (base + `~r<n>` retries) is the
  * one consulted, the SAME reuse the engine and reducer apply.
  */
 export function unitStillNeedsReport(workUnit: StepWorkUnit, dispatchRows: Map<string, WorkflowRunUnitRow>): boolean {
@@ -1019,10 +1071,7 @@ export async function journalGateEvaluationStart(gate: GateUnitRef): Promise<voi
  * Finish the gate-evaluation unit row with the verdict as observed from the
  * completion outcome: a rejection journals `{ complete: false, missing,
  * feedback }`; a pass journals `{ complete: true, missing: [] }`; a judge that
- * threw (or, on a required gate, returned an unparseable verdict) journals a
- * failed row with a NULL verdict. A NON-required errored gate then fails OPEN
- * inside `validateStepSummary`; a REQUIRED errored gate BLOCKS the step
- * (`finalizeExecutedStep`, Codex round-3 finding A).
+ * threw journals a failed row with a NULL verdict and validation is skipped.
  */
 export async function journalGateEvaluationFinish(
   gate: GateUnitRef,
@@ -1069,7 +1118,7 @@ export type RouteSkipInfo = { router: string; selected: string | null };
  * comparison is exact string equality against the declared `when:` matches.
  */
 export function evaluateRoute(route: IrRouteSpec, scope: ExpressionScope): RouteDecision {
-  const resolved = resolveWholeValue(route.input, scope);
+  const resolved = resolveReferenceString(route.input, scope);
   if (!resolved.ok) {
     return { ok: false, error: `route input ${route.input} failed to resolve: ${resolved.error.message}` };
   }
@@ -1292,13 +1341,6 @@ export interface FinalizeStepInput {
    * both mean no judge; live configuration is never consulted here.
    */
   summaryJudge: SummaryJudge | null | undefined;
-  /**
-   * Reviewer #18: treat EVERY criteria-bearing gate as required for this
-   * completion (the engine's `--require-gates` run-wide override). A per-step
-   * `gate.required: true` in the frozen plan has the same effect and rides both
-   * surfaces; this flag is the engine-invocation-scoped override on top of it.
-   */
-  requireGates?: boolean;
   /** Engine run-lease holder (engine path only); absent on the manual/report path. */
   leaseHolder?: string;
 }
@@ -1307,9 +1349,7 @@ export type FinalizeStepResult =
   | { kind: "advanced"; summaryOverride?: string }
   | { kind: "failed"; summary: string; routeFailure?: true }
   | { kind: "retry"; gateFeedback: GateFeedback }
-  | { kind: "gate-exhausted"; gateRejection: { stepId: string; missing: string[]; feedback: string } }
-  /** Reviewer #18: a required gate with no judge available — the step is BLOCKED for a human. */
-  | { kind: "blocked"; summary: string };
+  | { kind: "gate-exhausted"; gateRejection: { stepId: string; missing: string[]; feedback: string } };
 
 /**
  * Perform ONE completion attempt for an executed step:
@@ -1356,25 +1396,6 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   // A frozen plan either supplies its judge at the dispatch boundary or has no
   // judge. Re-selecting defaults here would let config drift change a run.
   const innerJudge = input.summaryJudge ?? null;
-
-  // Reviewer #18: a REQUIRED completion gate must actually be judged. When the
-  // gate carries criteria but no judge is available, `validateStepSummary` would
-  // fail OPEN and silently pass the gate — exactly the offline/misconfigured
-  // bypass a required gate exists to prevent. BLOCK the step instead (a human
-  // resolves it via the documented manual path), rather than advance the spine
-  // on an unjudged gate. `gate.required` rides the frozen plan (both surfaces);
-  // `requireGates` is the engine's run-wide `--require-gates` override. Checked
-  // BEFORE route evaluation so a blocked step journals no route decision.
-  const gateRequired = stepPlan.gate.required === true || input.requireGates === true;
-  if (gateRequired && completionCriteria.length > 0 && innerJudge === null) {
-    const notes =
-      `Step "${stepId}" has a REQUIRED completion gate but no summary-validation judge is available ` +
-      `(no LLM is configured, or default LLM resolution failed). A required gate must be judged — refusing to fail ` +
-      `open and silently pass it. The step is BLOCKED: configure an LLM, then \`akm workflow resume ${runId}\` to ` +
-      `re-evaluate the gate, or advance the step manually with \`akm workflow complete\`.`;
-    await completeWorkflowStep({ runId, stepId, status: "blocked", notes, evidence: result.evidence, ...lease });
-    return { kind: "blocked", summary: notes };
-  }
 
   // Route evaluation BEFORE completion: an unroutable value is an
   // authoring/config failure that must fail the step deterministically.
@@ -1457,8 +1478,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   // Reviewer #6: once the judge is invoked, its gate row is journaled `running`
   // (journalGateEvaluationStart) and MUST be finished on every exit. The
   // already-fixed window is the judge itself throwing (caught inside
-  // validateStepSummary — `judgeState.errored` records it; a non-required gate
-  // fails open, a required gate blocks below). The remaining
+  // validateStepSummary — `judgeState.errored` records it). The remaining
   // window is `completeWorkflowStep` throwing AFTER the judge ran — a stolen
   // lease, a concurrent state change, a DB error — which would otherwise skip the
   // finish and strand the gate row in `running`. Finish it as an errored row (the
@@ -1472,10 +1492,6 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
       summary,
       evidence: result.evidence,
       summaryJudge,
-      // Codex round-3 finding A: mark this completion's gate REQUIRED so
-      // `validateStepSummary` does NOT fail open when the judge throws / is
-      // unreachable / returns garbage — it flags `errored` and we block below.
-      ...(gateRequired ? { requireGate: true } : {}),
       ...lease,
     });
   } catch (err) {
@@ -1485,27 +1501,8 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   const rejection =
     "ok" in completion && completion.ok === false ? (completion as SummaryValidationFailure) : undefined;
 
-  // A required gate whose judge could not be evaluated is an errored gate, not a
-  // real rejection: journal the gate row as errored (verdict null) so the
-  // observed outcome is honest, driven by EITHER the wrapper catching a throw OR
-  // validateStepSummary flagging an unparseable verdict.
-  const gateErrored = judgeState.errored || rejection?.errored === true;
   if (gateUnit) {
-    await journalGateEvaluationFinish(gateUnit, gateErrored, rejection);
-  }
-
-  // Codex round-3 finding A: a REQUIRED gate that could not be judged (the judge
-  // threw, was unreachable, or returned an unparseable verdict) must NOT fail
-  // open and advance. The gate row is journaled errored above; BLOCK the step (a
-  // human resolves it) instead of silently passing an unjudged required gate.
-  if (rejection?.errored) {
-    const notes =
-      `Step "${stepId}" has a REQUIRED completion gate but its summary-validation judge failed to return a verdict ` +
-      `(the LLM threw, was unreachable, or returned an unparseable response). A required gate must be judged — refusing ` +
-      `to fail open and silently pass it. The step is BLOCKED: fix the LLM/connection, then \`akm workflow resume ${runId}\` ` +
-      `to re-evaluate the gate, or advance the step manually with \`akm workflow complete\`.`;
-    await completeWorkflowStep({ runId, stepId, status: "blocked", notes, evidence: result.evidence, ...lease });
-    return { kind: "blocked", summary: notes };
+    await journalGateEvaluationFinish(gateUnit, judgeState.errored, rejection);
   }
 
   if (!rejection) {

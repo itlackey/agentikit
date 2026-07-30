@@ -18,13 +18,7 @@ import { HARNESS_BY_ID } from "../../integrations/harnesses";
 import { workflowMaxConcurrency } from "../concurrency-policy";
 import type { ProgramUnit } from "../program/schema";
 import type { WorkflowAsset } from "../runtime/workflow-asset-loader";
-import {
-  compileWorkflowPlan,
-  compileWorkflowProgram,
-  type WorkflowPlanDraft,
-  type WorkflowProgramCompileResult,
-  type WorkflowUnitDraft,
-} from "./compile";
+import { compileWorkflowPlan, type WorkflowPlanDraft, type WorkflowUnitDraft } from "./compile";
 import type {
   FrozenAgentEngine,
   FrozenEngineSnapshot,
@@ -47,13 +41,13 @@ export interface FrozenWorkflow {
  * selection and every dispatch-significant setting are resolved here once.
  */
 export function compileResolveFreezeWorkflow(asset: WorkflowAsset, config: AkmConfig): FrozenWorkflow {
-  const preliminary = asset.program ? compileProgram(asset) : compileMarkdown(asset);
+  const preliminary = compilePlan(asset);
   const engines: Record<string, FrozenEngineSnapshot> = {};
   const maxConcurrency = frozenConcurrency(config);
-  const programDefaults = asset.program?.defaults;
+  const documentDefaults = asset.document.defaults;
 
   const freezeInvocation = (unit: ProgramUnit | undefined): IrInvocation => {
-    const layers: EngineUseConfig[] = [...(programDefaults ? [programDefaults] : []), ...(unit ? [unit] : [])];
+    const layers: EngineUseConfig[] = [...(documentDefaults ? [documentDefaults] : []), ...(unit ? [unit] : [])];
     const name = selectedEngine(config, layers);
     if (!name)
       throw new ConfigError(
@@ -79,6 +73,7 @@ export function compileResolveFreezeWorkflow(asset: WorkflowAsset, config: AkmCo
     id: node.id,
     instructions: node.instructions,
     templating: node.templating ?? "verbatim",
+    ...(node.inputs && node.inputs.length > 0 ? { inputs: node.inputs } : {}),
     invocation: freezeInvocation(unit),
     ...(node.schema ? { schema: node.schema } : {}),
     ...(node.retry ? { retry: node.retry } : {}),
@@ -89,8 +84,8 @@ export function compileResolveFreezeWorkflow(asset: WorkflowAsset, config: AkmCo
   });
 
   const steps: IrStepPlan[] = preliminary.steps.map((step, index) => {
-    const sourceStep = asset.program?.steps[index];
-    const sourceUnit = sourceStep?.unit ?? sourceStep?.map?.unit;
+    const sourceStep = asset.document.steps[index];
+    const sourceUnit = sourceStep?.map ? sourceStep.map.unit : sourceStep?.unit;
     const root = step.root
       ? step.root.kind === "map"
         ? {
@@ -105,14 +100,13 @@ export function compileResolveFreezeWorkflow(asset: WorkflowAsset, config: AkmCo
         : freezeUnit(step.root, sourceUnit)
       : undefined;
     const criteria = step.gate.criteria;
-    const judge = criteria.length === 0 ? null : freezeGateJudge(config, engines, step.gate.required === true);
+    const judge = criteria.length === 0 ? null : freezeGateJudge(config, engines);
     const gate: IrGateNode = {
       kind: "gate",
       id: `${step.stepId}.gate`,
       stepId: step.stepId,
       criteria,
       maxLoops: step.gate.maxLoops ?? 1,
-      required: step.gate.required === true,
       judge,
     };
     return {
@@ -136,22 +130,16 @@ export function compileResolveFreezeWorkflow(asset: WorkflowAsset, config: AkmCo
     steps,
   });
   return {
-    warnings: asset.program ? preliminary.warnings : [],
+    warnings: preliminary.warnings,
     plan,
   };
 }
 
-function compileProgram(asset: WorkflowAsset): WorkflowPlanDraft & { warnings: import("../schema").WorkflowError[] } {
-  if (!asset.program) throw new UsageError(`Workflow asset ${asset.ref} has no YAML program.`);
-  const compiled: WorkflowProgramCompileResult = compileWorkflowProgram(asset.program);
+function compilePlan(asset: WorkflowAsset): WorkflowPlanDraft & { warnings: import("../schema").WorkflowError[] } {
+  const compiled = compileWorkflowPlan(asset.document, asset.title);
   if (!compiled.ok)
     throw new UsageError(compiled.errors.map((error) => `${asset.path}:${error.line}: ${error.message}`).join("\n"));
   return { ...compiled.plan, warnings: compiled.warnings };
-}
-
-function compileMarkdown(asset: WorkflowAsset): WorkflowPlanDraft & { warnings: import("../schema").WorkflowError[] } {
-  if (!asset.document) throw new UsageError(`Workflow asset ${asset.ref} has no source document.`);
-  return { ...compileWorkflowPlan(asset.document), warnings: [] };
 }
 
 function selectedEngine(config: AkmConfig, layers: readonly EngineUseConfig[]): string | undefined {
@@ -266,17 +254,9 @@ function addSnapshot(config: AkmConfig, name: string, target: Record<string, Fro
   target[name] = snapshot;
 }
 
-function freezeGateJudge(
-  config: AkmConfig,
-  engines: Record<string, FrozenEngineSnapshot>,
-  required: boolean,
-): IrInvocation | null {
+function freezeGateJudge(config: AkmConfig, engines: Record<string, FrozenEngineSnapshot>): IrInvocation | null {
   const resolved = resolveLlmEngineUse(config, [], { optional: true });
-  if (!resolved) {
-    if (required)
-      throw new ConfigError("A required workflow gate needs defaults.llmEngine at start.", "LLM_NOT_CONFIGURED");
-    return null;
-  }
+  if (!resolved) return null;
   addSnapshot(config, resolved.engine, engines);
   return {
     engine: resolved.engine,

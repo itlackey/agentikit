@@ -17,9 +17,9 @@
  *
  * `file-context.ts#runMatchers` (`:242-265`) is async ONLY because of its lazy
  * `ensureBuiltinsRegistered()` dynamic import; its ARBITRATION is pure and
- * synchronous. We reproduce it here by importing the SAME five builtin matcher
+ * synchronous. We reproduce it here by importing the SAME four builtin matcher
  * functions (`matchers.ts` `extensionMatcher` / `directoryMatcher` /
- * `parentDirHintMatcher` / `smartMdMatcher` / `workflowProgramMatcher`) in the
+ * `parentDirHintMatcher` / `smartMdMatcher`) in the
  * SAME order they are registered, collecting every non-null
  * `MatchResult` and picking the winner by **specificity descending, ties broken
  * by later-registered (higher index) winning** — byte-identical to
@@ -438,8 +438,8 @@ export const akmAdapter: BundleAdapter = {
   id: "akm",
   version: "0.9.0",
   // Recognized-extension HINT, derived from what the matchers accept (§6):
-  // `.md` (markdown types + skill), `.yaml`/`.yml` (workflow programs,
-  // task YAML), `.env` (env files), and the 16 SCRIPT_EXTENSIONS. This is a
+  // `.md` (markdown types + skill), `.yaml`/`.yml` (task YAML), `.env` (env
+  // files), and the 16 SCRIPT_EXTENSIONS. This is a
   // NON-EXHAUSTIVE hint for the akm adapter: recognition is directory-driven
   // via `recognize()` (e.g. a bare `secrets/<anything>` file with no extension
   // is a `secret`), so `recognize()` — not this list — is the source of truth.

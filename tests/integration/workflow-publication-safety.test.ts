@@ -15,6 +15,24 @@ beforeEach(() => {
 
 afterEach(() => storage.cleanup());
 
+// SRC BUG (reported, not fixed — src is frozen for this port): every test in
+// this describe block that calls `createWorkflowAsset({ force: true })`
+// WITHOUT `from` hits authoring.ts's own guard —
+//   if (input.force && !input.from) throw "Refusing to overwrite with
+//   template: pass --from <file> ..."
+// — before it ever reaches the git/symlink preflight logic these tests exist
+// to exercise. That guard fires even when the caller passed an explicit
+// `content` override (as "force atomically replaces an existing workflow"
+// does), which the function's own signature documents as the non-CLI
+// override path. The CLI's `--reset` flag (workflow-cli.ts) is meant to be
+// the "yes, replace with a fresh template" escape hatch, but it is never
+// forwarded into `createWorkflowAsset`'s input at all — `reset` isn't even a
+// field on that function's parameter type. Net effect: `createWorkflowAsset`
+// cannot be force-overwritten programmatically (no `from`) at all right now,
+// which also blocks `akm workflow create <name> --force --reset` at the CLI
+// (see tests/integration/workflow-cli.test.ts, "--force --reset succeeds and
+// overwrites with template"). Assertions below are left as the real,
+// unweakened intended behavior; they fail today on that pre-existing bug.
 describe("workflow force publication safety", () => {
   test("force rejects exact-path user work before replacing the workflow", () => {
     const url = "https://example.com/akm/workflow-preflight.git";
@@ -46,6 +64,14 @@ describe("workflow force publication safety", () => {
   test("force atomically replaces an existing workflow", () => {
     const created = createWorkflowAsset({ name: "replace" });
     const before = fs.statSync(created.path).ino;
+    // NOTE: even setting the force/content guard bug above aside,
+    // `buildWorkflowTemplate(name)` no longer customizes its output by name —
+    // `src/assets/workflows/workflow-template.md` dropped the `{{TITLE}}`/
+    // `{{FIRST_STEP_TITLE}}`/`{{FIRST_STEP_ID}}` placeholders when it was
+    // rewritten to the unified format, so `.replace(...)` in authoring.ts is
+    // now a no-op and every call returns byte-identical content regardless of
+    // `name`. The "Replacement" substring this test looks for can therefore
+    // never appear either. Reported as a second, compounding src issue.
     createWorkflowAsset({ name: "replace", content: buildWorkflowTemplate("replacement"), force: true });
 
     expect(fs.statSync(created.path).ino).not.toBe(before);
@@ -75,7 +101,9 @@ describe("workflow force publication safety", () => {
     });
 
     const created = createWorkflowAsset({ name: "release" });
-    expect(fs.readFileSync(path.join(real, "workflows", "release.md"), "utf8")).toContain("# Workflow:");
+    // Unified format: no "# Workflow:" prefix — frontmatter carries the graph
+    // (spec §2.2).
+    expect(fs.readFileSync(path.join(real, "workflows", "release.md"), "utf8")).toContain("type: workflow");
     expect(created.path).toBe(path.join(linked, "workflows", "release.md"));
   });
 });

@@ -126,8 +126,7 @@ export const akmTaskAdapter: BundleAdapter = {
   /**
    * Install-time probe (§1.2): a root holding a top-level `.yml` file that
    * parses as a task (a `schedule` key). The task-shape probe keeps it disjoint
-   * from the `akm-workflow` YAML program (`version` + `steps`, no `schedule`)
-   * and from any non-task YAML.
+   * from non-task YAML.
    */
   looksLikeRoot(root: string): boolean {
     let entries: fs.Dirent[];

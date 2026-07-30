@@ -3,35 +3,26 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Show + indexing renderers for workflow assets.
- *
- * Two formats, one asset type:
- *
- *   - `workflow-md` — reads the classic linear markdown via `parseWorkflow`
- *     and projects the validated `WorkflowDocument` down to the public
- *     `ShowResponse` shape and into search hints for the indexer.
- *   - `workflow-program-yaml` — reads a YAML workflow *program* (redesign
- *     addendum, R1) via `parseWorkflowProgram` and projects it through
- *     `program/project.ts`, including a compact orchestration summary per
- *     step (engine/model, `fanOut.over` expression, route table).
+ * Show + indexing renderer for the unified workflow asset (workflow-format-
+ * unification). One format now: reads the frontmatter+body document via
+ * `parseWorkflow` and projects the validated `WorkflowDocument` down to the
+ * public `ShowResponse` shape and into search hints for the indexer,
+ * including a compact per-step orchestration summary (engine/model,
+ * `map.over` reference, route table) when the step declares one.
  */
 
 import { displayRef } from "../core/asset/resolve-ref";
 import { UsageError } from "../core/errors";
 import type { AssetRenderer, RenderContext } from "../indexer/walk/file-context";
-import type { ShowResponse } from "../sources/types";
+import type {
+  ShowResponse,
+  WorkflowParameter,
+  WorkflowStepDefinition,
+  WorkflowStepOrchestrationSummary,
+} from "../sources/types";
 import { parseWorkflow } from "./parser";
-import { parseWorkflowProgram } from "./program/parser";
-import {
-  programStepInstructions,
-  projectProgramParameters,
-  summarizeProgramStepOrchestration,
-  WORKFLOW_PROGRAM_RENDERER_NAME,
-} from "./program/project";
-import type { WorkflowProgram } from "./program/schema";
-import type { WorkflowDocument } from "./schema";
-
-export { WORKFLOW_PROGRAM_RENDERER_NAME };
+import type { ProgramDefaults } from "./program/schema";
+import type { WorkflowDocument, WorkflowStep } from "./schema";
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -55,6 +46,92 @@ function loadDocument(ctx: RenderContext): WorkflowDocument {
   throw new UsageError(`Workflow has errors:\n${summary}`);
 }
 
+/**
+ * The instruction text a step contributes to the flat step projection. A
+ * route step has no body requirement, so a deterministic description of the
+ * routing table stands in when it declares no section (the spine still needs
+ * a non-empty instructions string).
+ */
+function stepInstructions(step: WorkflowStep): string {
+  if (step.instructions) return step.instructions.text;
+  if (step.route) {
+    const branches = step.route.branches.map((b) => `"${b.match}" -> ${b.stepId}`);
+    if (step.route.defaultStepId !== undefined) branches.push(`default -> ${step.route.defaultStepId}`);
+    return `Route on ${step.route.input}: ${branches.join(", ")}.`;
+  }
+  return "";
+}
+
+/** Project the `params` block into the flat `WorkflowParameter` list. */
+function projectParameters(document: WorkflowDocument): WorkflowParameter[] | undefined {
+  if (!document.params) return undefined;
+  const parameters = Object.entries(document.params).map(([name, schema]) => {
+    const description = schema.description;
+    return { name, ...(typeof description === "string" && description !== "" ? { description } : {}) };
+  });
+  return parameters.length > 0 ? parameters : undefined;
+}
+
+/**
+ * Compact, show-facing orchestration summary for one step. Field mapping:
+ * `engine`/`model`/`timeoutMs` merge the run-level `defaults` exactly like the
+ * compiler does (per-unit override wins), `fanOut.over` carries the raw
+ * reference string, and `route` carries the explicit input + branch table.
+ * Returns undefined when the step declares nothing worth summarizing.
+ */
+function summarizeStepOrchestration(
+  step: WorkflowStep,
+  defaults: ProgramDefaults | undefined,
+): WorkflowStepOrchestrationSummary | undefined {
+  const unit = step.unit ?? step.map?.unit;
+  const engine = unit?.engine ?? defaults?.engine;
+  const model = unit?.model ?? defaults?.model;
+  const timeoutMs = unit?.timeoutMs !== undefined ? unit.timeoutMs : defaults?.timeoutMs;
+
+  const summary: WorkflowStepOrchestrationSummary = {
+    ...(engine !== undefined ? { engine } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(step.map
+      ? {
+          fanOut: {
+            over: step.map.over,
+            ...(step.map.concurrency !== undefined ? { concurrency: step.map.concurrency } : {}),
+            reducer: step.map.reducer ?? "collect",
+          },
+        }
+      : {}),
+    ...(unit?.output !== undefined || step.output !== undefined ? { hasSchema: true } : {}),
+    ...(unit?.env !== undefined ? { env: [...unit.env] } : {}),
+    ...(step.route
+      ? {
+          route: {
+            input: step.route.input,
+            branches: step.route.branches.map((b) => ({ match: b.match, stepId: b.stepId })),
+            ...(step.route.defaultStepId !== undefined ? { defaultStepId: step.route.defaultStepId } : {}),
+          },
+        }
+      : {}),
+  };
+
+  return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
+function projectStepDefinitions(document: WorkflowDocument): WorkflowStepDefinition[] {
+  return document.steps.map((step) => {
+    const orchestration = summarizeStepOrchestration(step, document.defaults);
+    return {
+      id: step.id,
+      // No titles anywhere in the unified format — a step IS its id.
+      title: step.id,
+      instructions: stepInstructions(step),
+      ...(step.gateRubric?.text.trim() ? { completionCriteria: [step.gateRubric.text] } : {}),
+      sequenceIndex: step.sequenceIndex,
+      ...(orchestration ? { orchestration } : {}),
+    };
+  });
+}
+
 export const workflowMdRenderer: AssetRenderer = {
   name: "workflow-md",
 
@@ -67,64 +144,19 @@ export const workflowMdRenderer: AssetRenderer = {
     // (`workflows/<name>`); a named source qualifies it as
     // (`<bundle>//workflows/<name>`).
     const ref = displayRef({ type: "workflow", name, bundleId: ctx.origin }, ctx.defaultBundle);
+    const parameters = projectParameters(doc);
     return {
       type: "workflow",
       name,
       path: ctx.absPath,
       action: buildWorkflowAction(ref),
+      ...(doc.preamble ? { content: doc.preamble } : {}),
       description: doc.description,
-      workflowTitle: doc.title,
-      parameters: doc.parameters?.map((p) => p.name),
-      workflowParameters: doc.parameters?.map((p) => ({ name: p.name, description: p.description })),
-      steps: doc.steps.map((s) => ({
-        id: s.id,
-        title: s.title,
-        instructions: s.instructions.text,
-        ...(s.completionCriteria ? { completionCriteria: s.completionCriteria.map((c) => c.text) } : {}),
-        sequenceIndex: s.sequenceIndex,
-      })),
-    };
-  },
-};
-
-function loadProgram(ctx: RenderContext): WorkflowProgram {
-  const result = parseWorkflowProgram(ctx.content(), { path: ctx.relPath });
-  if (result.ok) return result.program;
-  const summary = result.errors.map((e) => `${ctx.relPath}:${e.line} — ${e.message}`).join("\n");
-  throw new UsageError(`Workflow has errors:\n${summary}`);
-}
-
-/** Show renderer for YAML workflow programs — mirrors `workflowMdRenderer`. */
-export const workflowProgramRenderer: AssetRenderer = {
-  name: WORKFLOW_PROGRAM_RENDERER_NAME,
-
-  buildShowResponse(ctx: RenderContext): ShowResponse {
-    const name = deriveName(ctx);
-    const program = loadProgram(ctx);
-    // WI-8.5b (display flip): the `akm workflow next <ref>` action is DISPLAY
-    // output — its spelling follows the D-R5 display rule (`displayRef`), mirroring
-    // workflowMdRenderer above.
-    const ref = displayRef({ type: "workflow", name, bundleId: ctx.origin }, ctx.defaultBundle);
-    const parameters = projectProgramParameters(program);
-    return {
-      type: "workflow",
-      name,
-      path: ctx.absPath,
-      action: buildWorkflowAction(ref),
-      description: program.description,
-      workflowTitle: program.name,
+      // No authored title in the unified format — the asset's human name is
+      // its `description`/H1 like any other asset; this is its canonical name.
+      workflowTitle: name,
       ...(parameters ? { parameters: parameters.map((p) => p.name), workflowParameters: parameters } : {}),
-      steps: program.steps.map((step, index) => {
-        const orchestration = summarizeProgramStepOrchestration(step, program.defaults);
-        return {
-          id: step.id,
-          title: step.title ?? step.id,
-          instructions: programStepInstructions(step),
-          ...(step.gate ? { completionCriteria: [...step.gate.criteria] } : {}),
-          sequenceIndex: index,
-          ...(orchestration ? { orchestration } : {}),
-        };
-      }),
+      steps: projectStepDefinitions(doc),
     };
   },
 };

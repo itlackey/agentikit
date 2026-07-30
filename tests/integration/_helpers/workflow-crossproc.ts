@@ -163,9 +163,9 @@ export async function unitIds(runId: string, params: Record<string, unknown>, st
   return computed.list.units.map((u) => u.journalBaseId);
 }
 
-/** Write a workflow program YAML into the isolated stash. */
-export function writeProgram(stashDir: string, name: string, yamlText: string): void {
-  const file = path.join(stashDir, "workflows", `${name}.yaml`);
+/** Write a unified-format workflow markdown asset into the isolated stash. */
+export function writeProgram(stashDir: string, name: string, markdown: string): void {
+  const file = path.join(stashDir, "workflows", `${name}.md`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, yamlText, "utf8");
+  fs.writeFileSync(file, markdown, "utf8");
 }

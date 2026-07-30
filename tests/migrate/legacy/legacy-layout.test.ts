@@ -259,8 +259,8 @@ describe("legacy-layout.ts — faithfulness: deriveCanonicalAssetNameFromStashRo
     ["skill", "tools/agents/svelte-file-editor/SKILL.md"],
     ["command", "commands/example-command.md"],
     ["command", "tools/commands/example-command.md"],
-    ["workflow", "workflows/example-workflow.yaml"],
-    ["workflow", "installed/workflows/example-workflow.yaml"],
+    ["workflow", "workflows/example-workflow.md"],
+    ["workflow", "installed/workflows/example-workflow.md"],
     ["env", "env/.env"],
     ["env", "env/staging.env"],
     ["env", "tools/env/.env"],
@@ -280,6 +280,44 @@ describe("legacy-layout.ts — faithfulness: deriveCanonicalAssetNameFromStashRo
     });
   }
 
+  // Post-unification divergence, pinned rather than papered over: the frozen
+  // migration copy strips `.yaml`/`.yml` from workflow names (the legacy
+  // WORKFLOW_EXTENSIONS it froze), while the LIVE derivation no longer does —
+  // the unified format is `.md`-only, so to current code `foo.yaml` is not a
+  // workflow spelling at all. Frozen must keep the legacy behavior verbatim
+  // (it exists to migrate old on-disk layouts); live equality is asserted
+  // against the literal it now produces instead.
+  const FROZEN_ERA_YAML_CASES: Array<[relFilePath: string, frozenName: string, liveName: string]> = [
+    ["workflows/example-workflow.yaml", "example-workflow", "example-workflow.yaml"],
+    [
+      "installed/workflows/example-workflow.yaml",
+      "installed/workflows/example-workflow",
+      "installed/workflows/example-workflow.yaml",
+    ],
+  ];
+  for (const [relFilePath, frozenName, liveName] of FROZEN_ERA_YAML_CASES) {
+    test(`workflow (frozen-era .yaml): ${relFilePath}`, () => {
+      const filePath = `${SYNTHETIC_STASH_ROOT}/${relFilePath}`;
+      expect(frozenDeriveCanonicalAssetNameFromStashRoot("workflow", SYNTHETIC_STASH_ROOT, filePath)).toBe(frozenName);
+      expect(deriveCanonicalAssetNameFromStashRoot("workflow", SYNTHETIC_STASH_ROOT, filePath)).toBe(liveName);
+    });
+  }
+
+  // Golden entries whose recorded `name` is post-unification LIVE behavior
+  // (`deriveCanonicalAssetNameFromStashRoot`, WORKFLOW_EXTENSIONS now `.md`-only)
+  // and therefore CANNOT also equal the FROZEN function's output — the frozen
+  // copy is an immutable snapshot of pre-unification behavior (still stripping
+  // `.yaml`/`.yml`), by design never updated. `minting/oracle.json` is captured
+  // straight from the live function (`goldens-minting-oracle.test.ts`), so once
+  // live and frozen diverge for a case, one shared JSON value cannot satisfy an
+  // equality check against both. These two labels are that divergence; the
+  // FROZEN_ERA_YAML_CASES cases above already assert the correct frozen (and
+  // live) values for exactly this input, with the right function on each side.
+  const FROZEN_LIVE_DIVERGED_LABELS = new Set([
+    "workflow/canonicalNonMdExtensionKept",
+    "workflow/fallbackNonMdExtensionKept",
+  ]);
+
   test("cross-checked against the frozen WI-0b.3 minting-oracle golden (tests/fixtures/goldens/minting/oracle.json)", () => {
     const golden = loadGolden<{
       pureFunction: Record<string, Record<string, { relFilePath: string; name: string | undefined }>>;
@@ -290,11 +328,20 @@ describe("legacy-layout.ts — faithfulness: deriveCanonicalAssetNameFromStashRo
       for (const [label, { relFilePath, name }] of Object.entries(byLabel)) {
         const filePath = `${SYNTHETIC_STASH_ROOT}/${relFilePath}`;
         const got = frozenDeriveCanonicalAssetNameFromStashRoot(type, SYNTHETIC_STASH_ROOT, filePath);
-        expect(got, `golden ${type}/${label}: ${relFilePath}`).toBe(name);
+        if (FROZEN_LIVE_DIVERGED_LABELS.has(`${type}/${label}`)) {
+          // Known divergence (see comment above): assert the frozen function
+          // still behaves as FROZEN_ERA_YAML_CASES pins, NOT that it matches
+          // this golden's (live) recorded name.
+          expect(got, `golden ${type}/${label}: ${relFilePath} (frozen, not live, expected)`).not.toBe(name);
+        } else {
+          expect(got, `golden ${type}/${label}: ${relFilePath}`).toBe(name);
+        }
         checked++;
       }
     }
-    // 14 types x >=2 branches (canonical + fallback) each = at least 28 cases.
+    // 13 types x >=2 branches (canonical + fallback) each, plus workflow's two
+    // extra .yaml-extension branches = at least 28 cases (wiki retired in
+    // chunk 4, no longer a minted placement type).
     expect(checked).toBeGreaterThanOrEqual(28);
   });
 

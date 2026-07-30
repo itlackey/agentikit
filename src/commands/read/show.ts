@@ -64,7 +64,7 @@ import { computeBodyHash } from "../../storage/repositories/index-llm-cache-repo
 import "../../sources/providers/index";
 import type { ShowDetailLevel, ShowResponse } from "../../sources/types";
 import { getCurrentWorkflowScopeKey } from "../../workflows/authoring/scope-key";
-import { buildWorkflowAction, WORKFLOW_PROGRAM_RENDERER_NAME } from "../../workflows/renderer";
+import { buildWorkflowAction } from "../../workflows/renderer";
 import { getActiveWorkflowRun } from "../../workflows/runtime/runs";
 
 /**
@@ -585,7 +585,7 @@ function throwIndexedPathNotFound(error: unknown, ref: string): never {
 type IndexedEntry = NonNullable<Awaited<ReturnType<typeof lookupBundleRef>>>;
 
 /** `null` selects adapter-owned projection; a string selects a core renderer. */
-function rendererForIndexedEntry(entry: IndexedEntry, file: FileContext): string | null | undefined {
+function rendererForIndexedEntry(entry: IndexedEntry, _file: FileContext): string | null | undefined {
   if (entry.document?.ownsPresentation === true) return null;
   switch (entry.adapterId) {
     case null:
@@ -593,7 +593,7 @@ function rendererForIndexedEntry(entry: IndexedEntry, file: FileContext): string
     case "akm":
       return undefined;
     case "akm-workflow":
-      return file.ext === ".yaml" || file.ext === ".yml" ? WORKFLOW_PROGRAM_RENDERER_NAME : "workflow-md";
+      return "workflow-md";
     default:
       return presentationFor(entry.type).renderer;
   }

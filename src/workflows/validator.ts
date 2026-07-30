@@ -3,38 +3,23 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Cross-cutting semantic checks over an assembled WorkflowDocument draft.
+ * Cross-cutting semantic checks over an assembled `WorkflowDocument` draft
+ * that need the whole document (not just one frontmatter key) at once.
  *
- * The parser handles per-line shape checks; this module runs rules that need
- * the whole document or the raw frontmatter at once: duplicate step IDs,
- * step-id format, and the frontmatter key whitelist.
+ * Per-key structural checks (unknown keys, id/param-name patterns, timeout
+ * format, retry taxonomy, route target ordering, duplicate ids, gate/body
+ * binding) all live in `parser.ts`, where line-anchored errors are cheapest to
+ * produce. The workflow-only closed frontmatter allowlist that used to live
+ * here (`ALLOWED_FRONTMATTER_KEYS`/`checkFrontmatterKeys`) is GONE —
+ * `schemas/akm-workflow.json` (`additionalProperties: false` over the shared
+ * asset envelope ∪ the workflow keys) is the closed-key authority now; this
+ * module only runs checks the schema cannot express (canonical xref shape,
+ * resource limits).
  */
 
 import { bundleRefToString, parseBundleRef } from "../core/asset/asset-ref";
 import { utf8Bytes, WORKFLOW_MAX_INSTRUCTION_BYTES, WORKFLOW_MAX_PARAMS, WORKFLOW_MAX_STEPS } from "./resource-limits";
 import type { WorkflowDocument, WorkflowError } from "./schema";
-
-const STEP_ID_REGEX = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const ALLOWED_FRONTMATTER_KEYS = new Set([
-  "type",
-  "title",
-  "description",
-  "tags",
-  "params",
-  "name",
-  "timestamp",
-  "updated",
-  "when_to_use",
-  "xrefs",
-  // OKF v0.2 provenance stamped by `promoteProposal` (#730 D2). Workflow is the
-  // only asset type with a closed frontmatter allowlist, so without these three
-  // it would be the sole type silently promoted UNSTAMPED — an undocumented
-  // hole in provenance coverage. `generated`/`verified` are bare per the hybrid
-  // on-disk shape; `provenance` carries namespaced `sources`.
-  "generated",
-  "verified",
-  "provenance",
-]);
 
 export function runSemanticChecks(
   draft: WorkflowDocument,
@@ -42,19 +27,13 @@ export function runSemanticChecks(
   frontmatterEndLine: number,
   errors: WorkflowError[],
 ): void {
-  checkFrontmatterKeys(frontmatterData, frontmatterEndLine, errors);
   checkXrefs(frontmatterData.xrefs, frontmatterEndLine, errors);
-  checkStepIdFormat(draft, errors);
-  checkDuplicateStepIds(draft, errors);
   checkResourceLimits(draft, errors);
 }
 
 function checkXrefs(value: unknown, line: number, errors: WorkflowError[]): void {
   if (value === undefined) return;
-  if (!Array.isArray(value)) {
-    errors.push({ line, message: 'Workflow frontmatter "xrefs" must be an array of canonical asset refs.' });
-    return;
-  }
+  if (!Array.isArray(value)) return; // shape already flagged by parser.ts's checkXrefs
   for (const ref of value) {
     try {
       if (typeof ref !== "string") throw new Error("non-canonical ref");
@@ -73,50 +52,21 @@ function checkResourceLimits(draft: WorkflowDocument, errors: WorkflowError[]): 
   if (draft.steps.length > WORKFLOW_MAX_STEPS) {
     errors.push({ line: 1, message: `Workflow must contain at most ${WORKFLOW_MAX_STEPS} steps.` });
   }
-  if ((draft.parameters?.length ?? 0) > WORKFLOW_MAX_PARAMS) {
+  if (Object.keys(draft.params ?? {}).length > WORKFLOW_MAX_PARAMS) {
     errors.push({ line: 1, message: `Workflow must contain at most ${WORKFLOW_MAX_PARAMS} parameters.` });
   }
   for (const step of draft.steps) {
-    if (utf8Bytes(step.instructions.text) > WORKFLOW_MAX_INSTRUCTION_BYTES) {
+    if (step.instructions && utf8Bytes(step.instructions.text) > WORKFLOW_MAX_INSTRUCTION_BYTES) {
       errors.push({
         line: step.instructions.source.start,
         message: `Step "${step.id}" instructions exceed the 256 KiB resource limit.`,
       });
     }
-  }
-}
-
-function checkFrontmatterKeys(data: Record<string, unknown>, fmEndLine: number, errors: WorkflowError[]): void {
-  for (const key of Object.keys(data)) {
-    if (ALLOWED_FRONTMATTER_KEYS.has(key)) continue;
-    errors.push({
-      line: fmEndLine,
-      message: `Workflow frontmatter "${key}" is not supported. Use only: type, title, description, tags, params, name, timestamp, updated, when_to_use, xrefs.`,
-    });
-  }
-}
-
-function checkStepIdFormat(draft: WorkflowDocument, errors: WorkflowError[]): void {
-  for (const step of draft.steps) {
-    if (STEP_ID_REGEX.test(step.id)) continue;
-    errors.push({
-      line: step.source.start,
-      message: `Step ID "${step.id}" is invalid. Use letters, numbers, ".", "_" or "-" (e.g. "deploy-job").`,
-    });
-  }
-}
-
-function checkDuplicateStepIds(draft: WorkflowDocument, errors: WorkflowError[]): void {
-  const firstSeenLine = new Map<string, number>();
-  for (const step of draft.steps) {
-    const previous = firstSeenLine.get(step.id);
-    if (previous !== undefined) {
+    if (step.gateRubric && utf8Bytes(step.gateRubric.text) > WORKFLOW_MAX_INSTRUCTION_BYTES) {
       errors.push({
-        line: step.source.start,
-        message: `Step ID "${step.id}" is already used on line ${previous}. Step IDs must be unique within a workflow.`,
+        line: step.gateRubric.source.start,
+        message: `Step "${step.id}" gate rubric exceeds the 256 KiB resource limit.`,
       });
-      continue;
     }
-    firstSeenLine.set(step.id, step.source.start);
   }
 }

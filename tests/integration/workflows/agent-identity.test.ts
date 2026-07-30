@@ -148,19 +148,15 @@ describe("workflow run agent identity persistence", () => {
   function writeWorkflow(name: string): void {
     const content = [
       "---",
+      "type: workflow",
       "description: Test workflow for agent identity persistence",
+      "steps:",
+      "  - id: first-step",
       "---",
       "",
-      `# Workflow: ${name}`,
+      "## first-step",
       "",
-      "## Step: First Step",
-      "Step ID: first-step",
-      "",
-      "### Instructions",
       "Do the first thing.",
-      "",
-      "### Completion Criteria",
-      "- Confirm the first step is complete",
       "",
     ].join("\n");
     fs.writeFileSync(path.join(stashDir, "workflows", `${name}.md`), content, "utf8");

@@ -5,27 +5,20 @@
 /**
  * The `akm-workflow` adapter — akm 0.9.0 format-family work item (#46).
  *
- * A native akm workflow bundle (spec §6/§7). Both workflow forms derive
- * `type: workflow`:
- *   - MARKDOWN (`.md`, ≈ an OKF concept) — the classic linear workflow
- *     (`# Workflow:` / `## Step:` / `Step ID:` / `### Instructions`), detected
- *     by the shared `looksLikeWorkflow` probe so the matcher and parser cannot
- *     drift;
- *   - YAML PROGRAM (`.yaml`/`.yml`, an AKM extension) — `version` + `steps`,
- *     detected by `looksLikeWorkflowProgram`.
- * conceptId strips the recognized workflow extension (`.md`/`.yaml`/`.yml`). A
- * plain `.md` that is NOT workflow-shaped (a README, an OKF reserved listing/log
- * file) is abstained on — the content probe subsumes the D-R6 reserved-file
- * exclusion, so no reserved-basename literal is needed here.
+ * A native akm workflow bundle (spec §6/§7). One format now (workflow-format-
+ * unification): `.md` files, orchestration graph in frontmatter, per-step
+ * prose in the body. Recognition is frontmatter `type: workflow`, or — since
+ * this adapter's whole domain IS workflows — simply residing under this
+ * bundle's root; no content sniffing. conceptId strips the `.md` extension. A
+ * plain `.md` that opts out via an explicit non-workflow `type:` frontmatter
+ * key is abstained on.
  *
  * ── validate (spec §6 workflow row) ──
  *
  * Reuses the akm adapter's per-type workflow checks (shared base checks +
- * `placeholder-stub` + `invalid-workflow-structure`, markdown only — the YAML
- * program's correctness is `parseWorkflowProgram`'s own result, not a
- * markdown-lint path). Delegates to the SAME `perTypeValidateChecks` /
- * `runBaseValidateChecks` the `akm` adapter uses, so workflow validation has
- * one home.
+ * `placeholder-stub` + `invalid-workflow-structure`). Delegates to the SAME
+ * `perTypeValidateChecks` / `runBaseValidateChecks` the `akm` adapter uses, so
+ * workflow validation has one home.
  *
  * Conformance oracle (authored, DO NOT modify): fixture
  * `tests/fixtures/bundles/akm-workflow/` + goldens
@@ -34,10 +27,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parse as parseYaml } from "yaml";
 import type { FileContext } from "../../../indexer/walk/file-context";
-import { looksLikeWorkflow } from "../../../workflows/parser";
-import { looksLikeWorkflowProgram } from "../../../workflows/program/parser";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
@@ -47,8 +37,8 @@ import { hashContent, nonEmptyString, type ParsedForValidate, readTags, runBaseV
 
 /** A native workflow bundle is single-component; its one component is `main`. */
 const COMPONENT_ID = "main";
-/** Recognized workflow extensions (matcher parity with recognition-util WORKFLOW_EXTENSIONS). */
-const WORKFLOW_EXTS = new Set([".md", ".yaml", ".yml"]);
+/** One recognized workflow extension now (workflow-format-unification): `.md`. */
+const WORKFLOW_EXTS = new Set([".md"]);
 /** Upper bound on the bounded `content` FTS field (mirrors okf-adapter). */
 const MAX_CONTENT_CHARS = 100_000;
 
@@ -56,45 +46,41 @@ function toPosix(p: string): string {
   return p.replace(/\\/g, "/");
 }
 
-/** Strip a recognized workflow extension from a component-root-relative path → conceptId. */
+/** Strip the recognized workflow extension from a component-root-relative path → conceptId. */
 function conceptIdOf(relPath: string): string {
-  return toPosix(relPath).replace(/\.(md|ya?ml)$/i, "");
+  return toPosix(relPath).replace(/\.md$/i, "");
 }
 
-type WorkflowForm = "markdown" | "yaml-program";
-
-/** Which workflow form (if any) `file` is — the recognition gate. */
-function workflowForm(ext: string, raw: string): WorkflowForm | null {
-  if (ext === ".md") return looksLikeWorkflow(parseFrontmatter(raw).content) ? "markdown" : null;
-  if (ext === ".yaml" || ext === ".yml") return looksLikeWorkflowProgram(raw) ? "yaml-program" : null;
-  return null;
+/** `README.md` (case-insensitive) is documentation, never the typed asset — mirrors the akm matcher stack's D-R6 reserved-file exclusion (`TYPED_DIR_DOC_FILES`). */
+function isReservedDocFile(fileName: string): boolean {
+  return fileName.toLowerCase() === "readme.md";
 }
 
-/** The workflow's projected `description` — frontmatter for markdown, the program `description:` for YAML. */
-function workflowDescription(form: WorkflowForm, raw: string): string | undefined {
-  if (form === "markdown") return nonEmptyString(parseFrontmatter(raw).data.description);
-  try {
-    const doc = parseYaml(raw);
-    if (doc && typeof doc === "object" && !Array.isArray(doc)) {
-      return nonEmptyString((doc as Record<string, unknown>).description);
-    }
-  } catch {
-    // malformed YAML — no description
-  }
-  return undefined;
+/**
+ * Recognition gate: any `.md` file in this bundle IS a workflow (this
+ * adapter's entire domain is workflows — spec §2.5, "residence under
+ * workflows/"), UNLESS its frontmatter declares a DIFFERENT non-empty
+ * `type:` (an explicit opt-out, e.g. a README-shaped doc that wants to be
+ * something else). No content sniffing.
+ */
+function isWorkflowFile(raw: string): boolean {
+  const data = parseFrontmatter(raw).data;
+  const type = data.type;
+  return type === undefined || type === "workflow";
 }
 
 function recognize(c: BundleComponent, file: FileContext): IndexDocument | null {
   if (!WORKFLOW_EXTS.has(file.ext)) return null;
+  if (isReservedDocFile(file.fileName)) return null;
   const raw = file.content();
-  const form = workflowForm(file.ext, raw);
-  if (form === null) return null;
+  if (!isWorkflowFile(raw)) return null;
 
   const conceptId = conceptIdOf(file.relPath);
   const name = conceptId.split("/").pop() ?? conceptId;
-  const description = workflowDescription(form, raw);
-  const body = form === "markdown" ? parseFrontmatter(raw).content : raw;
-  const tags = readTags(parseFrontmatter(raw).data.tags);
+  const parsed = parseFrontmatter(raw);
+  const description = nonEmptyString(parsed.data.description);
+  const body = parsed.content;
+  const tags = readTags(parsed.data.tags);
 
   const doc: IndexDocument = {
     ref: `${c.id}//${conceptId}`,
@@ -120,17 +106,11 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
     const raw = change.after ?? (await ctx.readFile(change.path));
     if (typeof raw !== "string") continue;
     const ext = path.extname(change.path).toLowerCase();
-    if (!WORKFLOW_EXTS.has(ext) || workflowForm(ext, raw) === null) continue;
+    if (!WORKFLOW_EXTS.has(ext) || isReservedDocFile(path.basename(change.path)) || !isWorkflowFile(raw)) continue;
 
     const relPath = toPosix(change.path);
-    // Markdown workflows parse via frontmatter; YAML programs are pure YAML (no frontmatter).
-    let parsed: ParsedForValidate;
-    if (ext === ".md") {
-      const p = parseFrontmatter(raw);
-      parsed = { data: p.data, content: p.content, frontmatter: p.frontmatter };
-    } else {
-      parsed = { data: {}, content: raw, frontmatter: null };
-    }
+    const p = parseFrontmatter(raw);
+    const parsed: ParsedForValidate = { data: p.data, content: p.content, frontmatter: p.frontmatter };
     diagnostics.push(...(await runBaseValidateChecks(relPath, parsed, c.root, ctx)));
     diagnostics.push(
       ...(await perTypeValidateChecks({
@@ -148,19 +128,28 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
   return diagnostics;
 }
 
-/** True when a top-level file in `root` is workflow-shaped (used by looksLikeRoot). */
+/**
+ * True when a top-level file in `root` is workflow-shaped (used by
+ * looksLikeRoot). Unlike `isWorkflowFile` (which admits an absent `type:` —
+ * the lenient default ONCE a source is already known to be this bundle),
+ * this requires an EXPLICIT `type: workflow` — the install-time probe is
+ * choosing WHICH adapter owns an unconfigured root among several candidates
+ * (spec §1.2), and an incidental `.md` with no frontmatter type at all
+ * (common in an OKF or llm-wiki bundle) must not misclassify that root as
+ * akm-workflow's.
+ */
 function hasTopLevelWorkflowFile(root: string, entries: fs.Dirent[]): boolean {
   for (const entry of entries) {
     if (!entry.isFile()) continue;
     const ext = path.extname(entry.name).toLowerCase();
-    if (!WORKFLOW_EXTS.has(ext)) continue;
+    if (!WORKFLOW_EXTS.has(ext) || isReservedDocFile(entry.name)) continue;
     let raw: string;
     try {
       raw = fs.readFileSync(path.join(root, entry.name), "utf8");
     } catch {
       continue;
     }
-    if (workflowForm(ext, raw) !== null) return true;
+    if (parseFrontmatter(raw).data.type === "workflow") return true;
   }
   return false;
 }
@@ -168,15 +157,15 @@ function hasTopLevelWorkflowFile(root: string, entries: fs.Dirent[]): boolean {
 export const akmWorkflowAdapter: BundleAdapter = {
   id: "akm-workflow",
   version: "0.9.0",
-  extensions: [".md", ".yaml", ".yml"],
+  extensions: [".md"],
 
   recognize,
   validate,
 
-  /** Default markdown placement; an explicit `.yaml`/`.yml`/`.md` conceptId short-circuits to that extension. */
+  /** Markdown placement; an explicit `.md` conceptId short-circuits to that extension. */
   placeNew(c: BundleComponent, conceptId: string): string {
     const posix = toPosix(conceptId);
-    if (/\.(md|ya?ml)$/i.test(posix)) return path.join(c.root, posix);
+    if (/\.md$/i.test(posix)) return path.join(c.root, posix);
     return path.join(c.root, `${posix}.md`);
   },
 
@@ -186,11 +175,8 @@ export const akmWorkflowAdapter: BundleAdapter = {
   },
 
   /**
-   * Install-time probe (§1.2): a root holding a workflow file at top level — a
-   * `.yaml`/`.yml` program (`version` + `steps`) or a workflow-shaped `.md`. The
-   * content probe means an okf reserved listing, a wiki `schema.md`, or a README
-   * never trips it, so the probe stays disjoint from the other adapters' roots
-   * without any structural exclusion.
+   * Install-time probe (§1.2): a root holding a workflow-shaped `.md` file at
+   * top level (frontmatter `type: workflow` or no `type:` at all).
    */
   looksLikeRoot(root: string): boolean {
     let entries: fs.Dirent[];

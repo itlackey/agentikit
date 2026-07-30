@@ -51,15 +51,14 @@ function writeWorkflow(name: string, instructions: string): string {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const content = [
     "---",
+    "type: workflow",
     "description: Frozen-plan test workflow",
+    "steps:",
+    "  - id: only-step",
     "---",
     "",
-    `# Workflow: ${name}`,
+    "## only-step",
     "",
-    "## Step: Only Step",
-    "Step ID: only-step",
-    "",
-    "### Instructions",
     instructions,
     "",
   ].join("\n");
@@ -122,11 +121,13 @@ describe("plan freezing at workflow start (migration 006)", () => {
     expect(prompts[0]).not.toContain("Do the EDITED thing.");
   });
 
-  test(`linear markdown instructions containing literal \${{ … }} pass through verbatim (stable contract)`, async () => {
-    // Peer-review regression: classic markdown is a stable CLI contract — its
-    // instructions are opaque data, never `${{ … }}` grammar. A literal
-    // `${{ github.sha }}` (GitHub Actions syntax, or docs of the YAML format)
-    // used to fail parseTemplate at execution and permanently fail the step.
+  test(`body instructions containing literal \${{ … }} pass through verbatim (stable contract)`, async () => {
+    // Peer-review regression, preserved under the unified format: body prose is
+    // opaque data, never scanned for `${{ … }}` grammar — only frontmatter
+    // whole-value positions (map.over/route.input/inputs) carry the reference
+    // grammar (spec §2.3). A literal `${{ github.sha }}` (GitHub Actions
+    // syntax) in a step's instructions must dispatch byte-exact, never parsed
+    // or substituted.
     writeWorkflow(
       "gha-doc",
       `Deploy the build for commit \${{ github.sha }}. Do not resolve \${{ params.tag }} either.`,

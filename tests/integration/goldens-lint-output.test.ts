@@ -48,58 +48,39 @@
  *      directory-level `missing-skill-md` check `akmLint()` runs once per
  *      subdirectory before the per-file loop.
  *
- * ## The workflow two-form split (WI-0b.2 finding, cited by the WI-0b.4
- * brief)
+ * ## RE-BASELINED for workflow-format-unification (one workflow form now)
  *
- * ### RE-BASELINED for the 0.9.0 CLI overhaul (S5)
- *
- * `akm workflow validate` (the CLI's only structural check for YAML workflow
- * *programs*) was dropped; closing that gap moved onto `akm lint` (plan §S5.2
- * "close any gap inside lint, not with a second command"). `collectMarkdownFiles
- * (workflows/)` still picks up only `.md`, but `akmLint()`'s workflows walk now
- * ALSO collects `.yaml`/`.yml` program files (`collectWorkflowProgramFiles`),
- * and `appendWorkflowIssues` branches on `isWorkflowProgramPath` to dispatch a
- * YAML program through `workflowProgramDiagnostics` (parse via
- * `parseWorkflowProgram`, then — parse permitting — compile via
- * `compileWorkflowProgram`) instead of the markdown placeholder-stub +
- * `parseWorkflow` checks. `workflow-program-yaml` is therefore NO LONGER
- * invisible to `akmLint()`'s real sweep — it is now a genuine second lint
- * path, dispatched through the SAME `lintAssetFile(ctx, "workflows")` entry
- * point as the markdown form (still a distinct `ctx`: no frontmatter, `data`
- * is best-effort parsed YAML, `body === raw`, matching the `tasks` subdir's
- * pre-existing treatment). This fixture's `.yaml` program is lint-clean, so
- * every captured value below is UNCHANGED (still `[]`/`{ok:true,...}`) — only
- * the reachability claim changes, from "unreached" to "reached, no findings."
- *
- * The `.yaml` form's correctness is therefore captured TWICE, deliberately:
- * `parseWorkflowProgram`'s own raw result (unchanged from before this
- * re-baseline — still the module `workflowProgramRenderer` relies on for
- * indexing, see `src/workflows/renderer.ts`'s `loadProgram`) AND the NEW
- * `lintAssetFile` dispatch result (the CLI-facing surface this re-baseline
- * adds). This suite captures TWO SEPARATE `perType` entries, not one:
- *
- *   - `perType.workflowMd` — `lintAssetFile(ctx, "workflows")` against
- *     `workflows/all-types-workflow.md` (a real lint path, issues: []).
- *   - `perType.workflowProgramYaml` — BOTH `parseWorkflowProgram(raw, { path:
- *     relPath })`'s raw result (`result`, `{ ok, program | errors }`) AND
- *     `lintAssetFile(ctx, "workflows")`'s dispatch (`lintIssues`, a real lint
- *     path as of this re-baseline) against
- *     `workflows/all-types-workflow-program.yaml`.
+ * The two-workflow-form split this golden used to capture — `workflowMd`
+ * (a real `lintAssetFile` dispatch) vs `workflowProgramYaml` (a SEPARATE
+ * `parseWorkflowProgram` correctness check, since the CLI's markdown-specific
+ * lint dispatch never saw `.yaml` files) — is gone along with the YAML
+ * program format itself (spec §3: "the YAML program as a distinct on-disk
+ * format" is deleted; `src/workflows/program/parser.ts` and
+ * `isWorkflowProgramPath` no longer exist). `WORKFLOW_EXTENSIONS` shrinks to
+ * `.md` (`src/core/recognition-util.ts`), and `akmLint()`'s workflows walk
+ * collects only `.md` files (`lint/index.ts`: "workflows, one markdown format
+ * now, is .md"). `tests/fixtures/stashes/all-types/workflows/` now holds a
+ * single fixture (`all-types-workflow.md`, converted to the unified
+ * frontmatter+body format; `all-types-workflow-program.yaml` deleted), and
+ * `workflow` is captured as an ordinary `perType` entry alongside the other 13
+ * types — no more special-cased `LintContext` construction, no more second
+ * `result`/`correctnessCheck` field. The `perType` key set shrinks from 14
+ * (with the workflow split counted as 2) to 13 real types +
+ * `lintDirectoryIssues` on `skill`; the fixture stash itself shrinks from 15
+ * files to 14 (one per `ASSET_SPECS_INTERNAL` type).
  *
  * ## Determinism
  *
- * `LintIssue.file` is always `ctx.relPath` (never `ctx.filePath`/absPath), and
- * `parseWorkflowProgram` is invoked with `{ path: relPath }` (mirroring
- * `src/workflows/renderer.ts`'s `loadProgram`, never `ctx.absPath`) so its
- * `source.path` fields are stash-relative too. No absolute path appears
- * anywhere in this golden's captured values — normalization is a no-op. Every
- * fixture is lint-clean by construction (WI-0b.2's `all-types` stash notes), so
- * every `issues`/`flagged`/`fixed` array below is expected to be empty — this
- * golden still pins the actual structured shape (dispatch reachability,
- * full-sweep reachability), not just "zero issues".
+ * `LintIssue.file` is always `ctx.relPath` (never `ctx.filePath`/absPath). No
+ * absolute path appears anywhere in this golden's captured values —
+ * normalization is a no-op. Every fixture is lint-clean by construction
+ * (WI-0b.2's `all-types` stash notes), so every `issues`/`flagged`/`fixed`
+ * array below is expected to be empty — this golden still pins the actual
+ * structured shape (dispatch reachability, full-sweep reachability), not just
+ * "zero issues".
  *
- * Designation: `re-baseline @ 3`, re-baselined again at S5 (`DESIGNATIONS.json`)
- * for `tests/fixtures/goldens/lint/all-types.json`.
+ * Designation: `re-baseline` (`DESIGNATIONS.json`) for
+ * `tests/fixtures/goldens/lint/all-types.json`.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -109,20 +90,19 @@ import { parse as parseYaml } from "yaml";
 import { type AkmLintResult, akmLint, lintAssetFile, lintSkillDirectory } from "../../src/commands/lint/index";
 import type { LintContext, LintIssue } from "../../src/commands/lint/types";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
-import { parseWorkflowProgram } from "../../src/workflows/program/parser";
-import { isWorkflowProgramPath } from "../../src/workflows/program/project";
 import { expectGolden } from "../_helpers/golden";
 
 const STASH_ROOT = path.resolve(__dirname, "../fixtures/stashes/all-types");
 const LINT_GOLDEN_PATH = "tests/fixtures/goldens/lint/all-types.json";
 const HEAD_SHA = "cd94d26c6de251fa5dcadd9e9e40f6991bf87eb5";
 
-/** [type key, stash subdir, relPath] for the 12 non-workflow types (workflow is split, see below). */
-const NON_WORKFLOW_CASES: Array<[type: string, subdir: string, relPath: string]> = [
+/** [type key, stash subdir, relPath] for all 14 `ASSET_SPECS_INTERNAL` types (workflow is one form now). */
+const ALL_TYPE_CASES: Array<[type: string, subdir: string, relPath: string]> = [
   ["skill", "skills", "skills/all-types-skill/SKILL.md"],
   ["command", "commands", "commands/all-types-command.md"],
   ["agent", "agents", "agents/all-types-agent.md"],
   ["knowledge", "knowledge", "knowledge/all-types-knowledge.md"],
+  ["workflow", "workflows", "workflows/all-types-workflow.md"],
   ["script", "scripts", "scripts/all-types-script.sh"],
   ["memory", "memories", "memories/all-types-memory.md"],
   ["env", "env", "env/all-types-env.env"],
@@ -133,14 +113,11 @@ const NON_WORKFLOW_CASES: Array<[type: string, subdir: string, relPath: string]>
   ["fact", "facts", "facts/all-types-fact.md"],
 ];
 
-const WORKFLOW_MD_REL_PATH = "workflows/all-types-workflow.md";
-const WORKFLOW_YAML_REL_PATH = "workflows/all-types-workflow-program.yaml";
-
 /**
  * Build a `LintContext` for `relPath`, using the EXACT construction
- * `src/commands/lint/index.ts`'s `akmLint()` per-file loop uses: tasks and
- * workflow YAML *programs* (S5 re-baseline) are parsed as plain YAML (no
- * frontmatter fence), everything else via `parseFrontmatter`. `fix` is always
+ * `src/commands/lint/index.ts`'s `akmLint()` per-file loop uses: `tasks` is
+ * parsed as plain YAML (no frontmatter fence), everything else (workflows
+ * included — one markdown format now) via `parseFrontmatter`. `fix` is always
  * `false` — this suite never mutates the fixture stash.
  */
 function buildLintContext(subdir: string, relPath: string): LintContext {
@@ -149,7 +126,7 @@ function buildLintContext(subdir: string, relPath: string): LintContext {
   let data: Record<string, unknown>;
   let body: string;
   let frontmatter: string | null;
-  if (subdir === "tasks" || (subdir === "workflows" && isWorkflowProgramPath(filePath))) {
+  if (subdir === "tasks") {
     try {
       const parsed: unknown = parseYaml(raw);
       data = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
@@ -172,8 +149,8 @@ function lintOneType(subdir: string, relPath: string): { issues: LintIssue[] } {
 // ── 1. Lint dispatch assertions (pre-capture sanity) ────────────────────────
 
 describe("lint parity: all 14 all-types fixture assets lint clean via the consolidated dispatch (WI-0b.4b)", () => {
-  test("every non-workflow type lints clean via lintAssetFile", () => {
-    for (const [, subdir, relPath] of NON_WORKFLOW_CASES) {
+  test("every type lints clean via lintAssetFile", () => {
+    for (const [, subdir, relPath] of ALL_TYPE_CASES) {
       const { issues } = lintOneType(subdir, relPath);
       expect(issues, `issues for ${relPath}`).toEqual([]);
     }
@@ -183,7 +160,7 @@ describe("lint parity: all 14 all-types fixture assets lint clean via the consol
     // Post-consolidation there is no dispatch table: these subdirs simply add
     // no per-type findings on top of runBaseChecks, so a clean fixture is [].
     for (const subdir of ["scripts", "env", "secrets", "sessions", "lessons", "knowledge"]) {
-      const [, , relPath] = NON_WORKFLOW_CASES.find(([, s]) => s === subdir) ?? [];
+      const [, , relPath] = ALL_TYPE_CASES.find(([, s]) => s === subdir) ?? [];
       if (!relPath) continue;
       expect(lintAssetFile(buildLintContext(subdir, relPath), subdir), subdir).toEqual([]);
     }
@@ -194,19 +171,8 @@ describe("lint parity: all 14 all-types fixture assets lint clean via the consol
     expect(issues).toEqual([]);
   });
 
-  test("workflow-md lints clean; workflow-program-yaml is invisible to the markdown-specific lint dispatch", () => {
-    const { issues } = lintOneType("workflows", WORKFLOW_MD_REL_PATH);
-    expect(issues).toEqual([]);
-  });
-
-  test("workflow-program-yaml's raw parseWorkflowProgram result succeeds for the fixture", () => {
-    const raw = fs.readFileSync(path.join(STASH_ROOT, WORKFLOW_YAML_REL_PATH), "utf8");
-    const result = parseWorkflowProgram(raw, { path: WORKFLOW_YAML_REL_PATH });
-    expect(result.ok).toBe(true);
-  });
-
-  test("workflow-program-yaml also lints clean via lintAssetFile (S5: now a real lint path)", () => {
-    const { issues } = lintOneType("workflows", WORKFLOW_YAML_REL_PATH);
+  test("workflow lints clean via the CLI's real dispatch (one markdown form now)", () => {
+    const { issues } = lintOneType("workflows", "workflows/all-types-workflow.md");
     expect(issues).toEqual([]);
   });
 
@@ -227,32 +193,13 @@ describe("golden fixture: lint output parity (WI-0b.4b)", () => {
   test("golden fixture: lint/all-types.json", () => {
     const perType: Record<string, unknown> = {};
 
-    for (const [type, subdir, relPath] of NON_WORKFLOW_CASES) {
+    for (const [type, subdir, relPath] of ALL_TYPE_CASES) {
       const { issues } = lintOneType(subdir, relPath);
       perType[type] = { subdir, relPath, issues };
     }
 
-    const workflowMd = lintOneType("workflows", WORKFLOW_MD_REL_PATH);
-    perType.workflowMd = {
-      subdir: "workflows",
-      relPath: WORKFLOW_MD_REL_PATH,
-      issues: workflowMd.issues,
-    };
-
     const skillDirIssues = lintSkillDirectory(path.join(STASH_ROOT, "skills/all-types-skill"), STASH_ROOT);
     (perType.skill as { lintDirectoryIssues?: LintIssue[] }).lintDirectoryIssues = skillDirIssues;
-
-    const yamlRaw = fs.readFileSync(path.join(STASH_ROOT, WORKFLOW_YAML_REL_PATH), "utf8");
-    const programResult = parseWorkflowProgram(yamlRaw, { path: WORKFLOW_YAML_REL_PATH });
-    const workflowProgramLint = lintOneType("workflows", WORKFLOW_YAML_REL_PATH);
-    perType.workflowProgramYaml = {
-      subdir: "workflows",
-      relPath: WORKFLOW_YAML_REL_PATH,
-      correctnessCheck: "parseWorkflowProgram",
-      result: programResult,
-      // S5 re-baseline: now ALSO a real lintAssetFile dispatch (workflowProgramDiagnostics).
-      lintIssues: workflowProgramLint.issues,
-    };
 
     const akmLintFullSweep: AkmLintResult = akmLint({ dir: STASH_ROOT });
 
@@ -266,16 +213,22 @@ describe("golden fixture: lint output parity (WI-0b.4b)", () => {
           "(core/adapter/adapters/akm-lint.ts), reached by the CLI through lintAssetFile(ctx, subdir). The former " +
           "`linterUsed` (dispatched class name) field is GONE — no classes remain. Every finding is byte-identical " +
           "(all fixtures still lint clean; akmLintFullSweep unchanged).",
-        "perType: one entry per type (workflow split into workflowMd + workflowProgramYaml, so 14 keys mapping to " +
-          "15 fixture files' worth of coverage -- see module docstring for the split rationale). Each non-workflow " +
-          "entry is {subdir, relPath, issues (LintIssue[] from a direct lintAssetFile(ctx, subdir) call, ctx built " +
-          "via the exact LintContext construction lint/index.ts's per-file loop uses)}. `skill` additionally " +
-          "carries `lintDirectoryIssues` (the directory-level missing-skill-md check, lintSkillDirectory). " +
-          "`workflowMd` is a real lint path. `workflowProgramYaml` carries BOTH `result` (parseWorkflowProgram's " +
-          'own {ok, program|errors}, `correctnessCheck: "parseWorkflowProgram"`) AND, as of the S5 re-baseline, ' +
-          '`lintIssues` (LintIssue[] from a real lintAssetFile(ctx, "workflows") dispatch -- the CLI\'s `.yaml`/' +
-          "`.yml` workflow-program branch, workflowProgramDiagnostics, added to close the gap left by dropping " +
-          "`akm workflow validate`).",
+        "RE-BASELINED for workflow-format-unification: the two-workflow-form split (workflowMd vs " +
+          "workflowProgramYaml, the latter carrying a raw parseWorkflowProgram({ok, program|errors}) correctness " +
+          "check alongside its own lintIssues) is GONE along with the YAML program format itself (spec §3) — " +
+          "src/workflows/program/parser.ts and isWorkflowProgramPath no longer exist, WORKFLOW_EXTENSIONS is " +
+          "['.md'] only (src/core/recognition-util.ts), and akmLint()'s workflows walk collects only .md files. " +
+          "tests/fixtures/stashes/all-types/workflows/ now holds ONE fixture (all-types-workflow.md, converted to " +
+          "the unified frontmatter+body format; all-types-workflow-program.yaml deleted). `workflow` is now an " +
+          "ordinary perType entry ({subdir, relPath, issues}) exactly like every other type — no special-cased " +
+          "LintContext construction, no second result/correctnessCheck field. perType now has exactly 13 keys " +
+          "(skill additionally carries lintDirectoryIssues); the fixture stash shrank from 15 files to 14 (one per " +
+          "ASSET_SPECS_INTERNAL type). Every finding is still empty (the converted fixture is lint-clean); " +
+          "akmLintFullSweep's flagged/fixed stay empty too.",
+        "perType: one entry per type (13 keys — see the note above on the workflow-format-unification re-baseline). " +
+          "Each entry is {subdir, relPath, issues (LintIssue[] from a direct lintAssetFile(ctx, subdir) call, ctx " +
+          "built via the exact LintContext construction lint/index.ts's per-file loop uses)}. `skill` additionally " +
+          "carries `lintDirectoryIssues` (the directory-level missing-skill-md check, lintSkillDirectory).",
         "akmLintFullSweep: the real akmLint({dir: STASH_ROOT}) result ({ok, fixed, flagged, summary}), pinning " +
           "the CLI entry point's ACTUAL reachable surface for this fixture stash. akmLint()'s STASH_SUBDIRS walk " +
           'list (lint/index.ts) is ["agents","commands","memories","skills","workflows","lessons",' +
@@ -284,11 +237,8 @@ describe("golden fixture: lint output parity (WI-0b.4b)", () => {
           "env/ and secrets/, but only .env-suffixed filenames (collectEnvFiles) -- it reaches " +
           "env/all-types-env.env (matches) but NOT secrets/all-types-secret (bare filename, no .env suffix). Net " +
           "result for this fixture stash: script, secret, wiki, and session are 100% unreached by akmLint() in " +
-          "production; workflows/all-types-workflow-program.yaml IS reached as of the S5 re-baseline (its .md " +
-          "sibling always was) -- this fixture's program is lint-clean, so the reachability change adds no " +
-          "findings and `flagged`/`fixed` stay unchanged.",
-        "Determinism: LintIssue.file is always ctx.relPath (never absPath), and parseWorkflowProgram is invoked " +
-          "with {path: relPath} (mirroring src/workflows/renderer.ts's loadProgram). No absolute path appears " +
+          "production; workflows/all-types-workflow.md IS reached (it always was, being the only form now).",
+        "Determinism: LintIssue.file is always ctx.relPath (never absPath). No absolute path appears " +
           "anywhere in this golden -- normalization is a no-op.",
         "Behavior-parity oracle: the format adapters + the CLI lint sweep must reproduce this lint dispatch " +
           "byte-for-byte. Sibling of WI-0b.4a's renderer/all-types.json.",

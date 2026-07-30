@@ -1,25 +1,40 @@
 ---
 type: workflow
-description: Describe what this workflow accomplishes
-tags:
-  - example
+description: One-sentence summary of what this workflow accomplishes.
+updated: 2026-01-01
+tags: [example]
 params:
-  example_param: Explain this parameter
+  example_param: { type: string, description: Explain this parameter }
+steps:
+  - id: first-step
+  - id: second-step
+    inputs: [steps.first-step.output]
 ---
 
-# Workflow: {{TITLE}}
+# {{TITLE}}
 
-## Step: {{FIRST_STEP_TITLE}}
-Step ID: {{FIRST_STEP_ID}}
+Free preamble prose describing what this workflow does. It is indexed for
+search and shown in `akm show`, but it is never dispatched to a step.
 
-### Instructions
-Describe what to do in this step.
+## first-step
 
-### Completion Criteria
-- Confirm the first step is complete
+Describe what to do in this step. Refer to run parameters in plain
+language — for example, "read the value given by the `example_param`
+parameter" — never as a template expression like `{{ example_param }}`.
 
-## Step: Second Step
-Step ID: second-step
+## second-step
 
-### Instructions
-Describe what happens next.
+Describe what happens next, using the first step's artifact — attached to
+this unit as context because this step declares
+`inputs: [steps.first-step.output]` above — referred to in prose as "the
+first step's attached artifact."
+
+### gate
+
+A `### gate` sub-heading is the step's completion rubric: the judge
+receives this whole section byte-exact when validation is available. Omit
+the heading or leave its text empty to skip validation. An unavailable or
+malformed judge also skips validation.
+
+- Confirm the step accomplished what it set out to do.
+- Confirm nothing required was silently skipped.

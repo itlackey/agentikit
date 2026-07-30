@@ -61,20 +61,23 @@ beforeEach(() => {
 
 afterEach(() => storage.cleanup());
 
-const FANOUT_WF = `version: 2
-name: lease-xproc
-defaults: { engine: test-agent }
-params:
-  files: { type: array, items: { type: string } }
-steps:
-  - id: review
-    title: Review
-    map:
-      over: \${{ params.files }}
-      reducer: collect
-      unit:
-        instructions: Review \${{ item }} now.
-`;
+const FANOUT_WF = [
+  "---",
+  "type: workflow",
+  "defaults: { engine: test-agent }",
+  "params:",
+  "  files: { type: array, items: { type: string } }",
+  "steps:",
+  "  - id: review",
+  "    map:",
+  "      over: params.files",
+  "---",
+  "",
+  "## review",
+  "",
+  "Review the assigned item now.",
+  "",
+].join("\n");
 
 describe.skipIf(!BUN)("multi-process run lease (single driver + crash reclaim)", () => {
   test("one process drives while a second is refused naming the holder; a SIGKILLed winner's run is reclaimed and its completed units are reused", async () => {
@@ -92,7 +95,11 @@ describe.skipIf(!BUN)("multi-process run lease (single driver + crash reclaim)",
       CHAOS_RUN_ID: runId,
       CHAOS_MARKER_DIR: markerDir,
       CHAOS_MAX_CONCURRENCY: "1",
-      CHAOS_HOLD_MATCH: "Review c.ts now",
+      // Instructions are never interpolated (spec §2.3): the item reaches the
+      // unit as attached JSON context, not spliced into the prose. Concurrency
+      // 1 with `files: [a,b,c,d]` makes fan-out order deterministic, so c.ts
+      // is always index 2 — match its own Item block, not a resolved phrase.
+      CHAOS_HOLD_MATCH: "## Item (index 2)",
     });
 
     // Wait until the winner has journaled a.ts + b.ts completed AND is parked

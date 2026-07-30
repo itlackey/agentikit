@@ -31,22 +31,28 @@ beforeEach(() => {
 
 afterEach(() => storage.cleanup());
 
-const PARAM_GUARD_WF = `version: 2
-name: param-guard
+// Unified-format fixture (frontmatter graph + `## <id>` body — spec §2.2).
+// Prose is never templated (spec §2.3): the review step refers to the
+// `files`/`mode` params in plain language rather than a template expression.
+const PARAM_GUARD_WF = `---
+type: workflow
+description: Param guard test
 params:
   files: { type: array }
   mode: { type: string, enum: [fast, slow] }
 steps:
   - id: review
-    title: Review
-    unit:
-      instructions: Review \${{ params.files }} in \${{ params.mode }} mode.
+---
+
+## review
+
+Review the files given by the \`files\` parameter, in the mode given by the \`mode\` parameter.
 `;
 
-function writeProgram(name: string, yamlText: string): void {
-  const file = path.join(storage.stashDir, "workflows", `${name}.yaml`);
+function writeProgram(name: string, markdown: string): void {
+  const file = path.join(storage.stashDir, "workflows", `${name}.md`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, yamlText, "utf8");
+  fs.writeFileSync(file, markdown, "utf8");
 }
 
 /** Direct-SQL escape hatch for simulating a hand-edited params row. */

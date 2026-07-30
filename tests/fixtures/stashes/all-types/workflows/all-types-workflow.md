@@ -1,11 +1,13 @@
 ---
+type: workflow
 description: Minimal linear workflow fixture used by the all-types parity stash
 updated: 2025-06-01
+steps:
+  - id: announce
 ---
-# Workflow: All Types Fixture
 
-## Step: Announce
-Step ID: announce
+# All Types Fixture
 
-### Instructions
+## announce
+
 Print a single fixture line and stop.

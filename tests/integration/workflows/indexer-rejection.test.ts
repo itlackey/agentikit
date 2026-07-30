@@ -50,26 +50,30 @@ function writeWorkflow(stashDir: string, name: string, content: string): string 
   return file;
 }
 
-const VALID_WORKFLOW = `# Workflow: Ship Release
+// Unified-format fixtures (frontmatter graph + `## <id>` body — spec §2.2).
+const VALID_WORKFLOW = `---
+type: workflow
+description: Ship Release
+steps:
+  - id: validate
+---
 
-## Step: Validate
-Step ID: validate
+## validate
 
-### Instructions
 Confirm release notes are present.
 `;
 
-const BROKEN_WORKFLOW = `# Workflow: Bad
+const BROKEN_WORKFLOW = `---
+type: workflow
+description: Bad
+steps:
+  - id: first
+  - id: first
+---
 
-## Step: First
-Step ID: first
-### Instructions
+## first
+
 do A
-
-## Step: Second
-Step ID: first
-### Instructions
-do B
 `;
 
 test("indexer admits valid workflows and writes their JSON to workflow_documents", async () => {
@@ -93,10 +97,13 @@ test("indexer admits valid workflows and writes their JSON to workflow_documents
       | undefined;
     expect(row).toBeDefined();
     if (!row) return;
-    expect(row.schema_version).toBe(1);
+    // WORKFLOW_SCHEMA_VERSION bumped 1 -> 2 for the unified format (spec §2.2).
+    expect(row.schema_version).toBe(2);
     expect(row.source_path).toContain("good.md");
     const doc = JSON.parse(row.document_json);
-    expect(doc.title).toBe("Ship Release");
+    // No titles anywhere in the unified format (spec §2.2) — the asset's
+    // human name is its `description`, not a parsed H1.
+    expect(doc.description).toBe("Ship Release");
     expect(doc.steps).toHaveLength(1);
     expect(doc.steps[0].instructions.text).toContain("Confirm release notes");
     expect(doc.steps[0].source.start).toBeGreaterThan(0);
@@ -121,7 +128,7 @@ test("indexer rejects broken workflows and surfaces every error in IndexResponse
   // mention the file and at least one of its errors.
   const brokenWarning = warnings.find((w) => w.includes(brokenPath));
   expect(brokenWarning).toBeDefined();
-  expect(brokenWarning).toMatch(/already used|Step ID/);
+  expect(brokenWarning).toMatch(/Duplicate step id/);
 
   const db = openIndexDatabase();
   try {

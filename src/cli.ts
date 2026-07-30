@@ -725,7 +725,7 @@ function buildUsageParentForPath(path: readonly string[]): AnyCittyCommand {
 //
 // citty's own generated COMMANDS list is a flat, unordered dump of every
 // top-level command — fine for a handful of commands, not for the ~28 this
-// CLI has grown to. Groups them instead under four fixed sections mirroring
+// CLI has grown to. Groups them instead under fixed sections mirroring
 // how they're actually used, reusing citty's own `renderUsage` for the
 // banner/USAGE/OPTIONS portion (so it stays byte-identical to every
 // subcommand's own `--help`) and replacing only the COMMANDS section.
@@ -736,8 +736,9 @@ const HELP_SECTIONS: ReadonlyArray<{ readonly title: string; readonly commands: 
     commands: ["search", "curate", "show", "remember", "import", "feedback", "sync", "index", "improve"],
   },
   { title: "ASSETS", commands: ["clone", "lint"] },
-  { title: "MANAGE", commands: ["bundle", "proposal", "task", "workflow", "env", "secret", "registry", "config"] },
-  { title: "SYSTEM", commands: ["agent", "setup", "health", "info", "log", "upgrade", "help", "completions"] },
+  { title: "AUTOMATIONS", commands: ["agent", "workflow", "task"] },
+  { title: "MANAGE", commands: ["bundle", "proposal", "env", "secret", "registry", "config"] },
+  { title: "SYSTEM", commands: ["setup", "health", "info", "log", "upgrade", "help", "completions"] },
 ];
 
 /** Abbreviations whose trailing period does not end a sentence. */

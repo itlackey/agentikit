@@ -2,8 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// biome-ignore-all lint/suspicious/noTemplateCurlyInString: `${{ … }}` is the
-// workflow expression grammar under test, not a JS template literal.
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: `${{ … }}`-looking
+// strings appear here as literal instructions/reference content under test
+// (proving they are never parsed as the old template grammar), not JS
+// template interpolation.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -43,7 +45,7 @@ import type {
 import type { ExpressionScope } from "../../../src/workflows/program/expressions";
 import { getWorkflowStatus, type WorkflowNextResult } from "../../../src/workflows/runtime/runs";
 import type { SummaryJudge } from "../../../src/workflows/validate-summary";
-import { freezeWorkflowProgram, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
+import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
 /**
  * The shared step-semantics core (redesign addendum R3, task step 1). Proves:
@@ -56,6 +58,10 @@ import { freezeWorkflowProgram, storeFrozenWorkflowPlan } from "../../_helpers/w
  *      proof — recomputing a gate loop's work-list from the journal-recovered
  *      feedback reproduces the engine's ACTUAL loop-2 prompt + input hash
  *      byte-for-byte.
+ *
+ * Fixtures are hand-built `IrStepPlan` objects (the frozen IR the unified
+ * frontend compiles TO) except where noted; end-to-end fixtures are unified
+ * workflow markdown, frozen via `freezeWorkflow`.
  */
 
 // ── Hand-built plans for the pure work-list tests ────────────────────────────
@@ -96,17 +102,24 @@ const FROZEN_ENGINES: Record<string, FrozenEngineSnapshot> = {
 
 const SDK_INVOCATION: IrInvocation = { engine: "sdk", model: null, timeoutMs: 600_000 };
 
-function soloStep(instructions: string, templating: "expressions" | "verbatim" = "expressions"): IrStepPlan {
+function soloStep(instructions: string): IrStepPlan {
   return {
     stepId: "s1",
     title: "S1",
     sequenceIndex: 0,
-    root: { kind: "unit", id: "s1", instructions, templating, invocation: SDK_INVOCATION, onError: "fail" },
+    root: {
+      kind: "unit",
+      id: "s1",
+      instructions,
+      templating: "verbatim",
+      invocation: SDK_INVOCATION,
+      onError: "fail",
+    },
     gate: { kind: "gate", id: "s1.gate", stepId: "s1", criteria: [] },
   };
 }
 
-function mapStep(instructions: string, over = "${{ params.files }}"): IrStepPlan {
+function mapStep(instructions: string, over = "params.files", inputs?: string[]): IrStepPlan {
   return {
     stepId: "review",
     title: "Review",
@@ -120,9 +133,10 @@ function mapStep(instructions: string, over = "${{ params.files }}"): IrStepPlan
         kind: "unit",
         id: "review",
         instructions,
-        templating: "expressions",
+        templating: "verbatim",
         invocation: SDK_INVOCATION,
         onError: "fail",
+        ...(inputs ? { inputs } : {}),
       },
     },
     gate: { kind: "gate", id: "review.gate", stepId: "review", criteria: [] },
@@ -130,8 +144,8 @@ function mapStep(instructions: string, over = "${{ params.files }}"): IrStepPlan
 }
 
 describe("computeStepWorkList — dispatch-input hash envelope (reviewer finding #1)", () => {
-  // A verbatim solo step so the prompt is fixed and only the varied field moves
-  // the hash. Every field below reaches dispatch (native-executor's
+  // A fixed-instructions solo step so the prompt is fixed and only the varied
+  // field moves the hash. Every field below reaches dispatch (native-executor's
   // UnitDispatchRequest), so a change to any of them must re-dispatch.
   const base: IrStepPlan = {
     stepId: "s1",
@@ -210,7 +224,13 @@ describe("computeStepWorkList — dispatch-input hash envelope (reviewer finding
 
 describe("computeStepWorkList — purity + content-derived identity", () => {
   test("same inputs ⇒ byte-identical unit ids, input hashes, and prompts", () => {
-    const step = soloStep("Do ${{ params.x }} for ${{ params.y }}.");
+    // SEMANTIC CHANGE (workflow-format-unification, spec §2.3): instructions
+    // are byte-exact prose now — there is no more `${{ params.x }}`
+    // substitution to prove. The purity property (same inputs ⇒ identical
+    // ids/hashes/prompts) still holds; what changes is WHAT reaches the
+    // prompt: params attach as structured JSON context in the preamble
+    // (`buildUnitPrompt`), never spliced into the instructions text.
+    const step = soloStep("Do the assigned work.");
     const input = { runId: "run-1", params: { x: "alpha", y: "beta" }, stepOutputs: {}, engines: FROZEN_ENGINES };
 
     const a = computeStepWorkList(step, input);
@@ -226,14 +246,18 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
     expect(u.unitId).toBe("s1:solo");
     expect(u.resolved.ok).toBe(true);
     if (u.resolved.ok) {
-      expect(u.resolved.prompt).toContain("Do alpha for beta.");
+      // Instructions reach the unit byte-exact.
+      expect(u.resolved.prompt).toContain("Do the assigned work.");
+      // Params attach as structured JSON context (never interpolated into text).
+      expect(u.resolved.prompt).toContain('"x":"alpha"');
+      expect(u.resolved.prompt).toContain('"y":"beta"');
       // 64-hex sha256.
       expect(u.resolved.inputHash).toMatch(/^[0-9a-f]{64}$/);
     }
   });
 
   test("fan-out identity is content-derived — independent of item order", () => {
-    const step = mapStep("Review ${{ item }}.");
+    const step = mapStep("Review the assigned item.");
     const forward = computeStepWorkList(step, {
       runId: "r",
       params: { files: ["a.ts", "b.ts"] },
@@ -257,10 +281,13 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
     expect(fwdA?.unitId).toBe(revA?.unitId);
     expect(fwdA?.unitId).toMatch(/^review:[0-9a-f]{12}$/);
     expect(fwdA?.resolved.ok).toBe(true);
+    // The item reaches the unit as ATTACHED CONTEXT (never resolved/spliced) —
+    // the "## Item (index N)" block `buildUnitPrompt` emits.
+    if (fwdA?.resolved.ok) expect(fwdA.resolved.prompt).toContain("## Item (index 0)\nYou were given this item");
   });
 
   test("duplicate fan-out items are a whole-list failure naming the collision", () => {
-    const step = mapStep("Review ${{ item }}.");
+    const step = mapStep("Review the assigned item.");
     const result = computeStepWorkList(step, {
       runId: "r",
       params: { files: ["dup", "dup"] },
@@ -272,7 +299,7 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
   });
 
   test("a non-array `over` is a whole-list failure", () => {
-    const step = mapStep("Review ${{ item }}.");
+    const step = mapStep("Review the assigned item.");
     const result = computeStepWorkList(step, {
       runId: "r",
       params: { files: "not-a-list" },
@@ -283,37 +310,61 @@ describe("computeStepWorkList — purity + content-derived identity", () => {
     if (!result.ok) expect(result.error).toContain("not an array");
   });
 
-  test("a resolution error is carried on the unit's `resolved`, not a whole-list failure", () => {
-    // The template parses (valid `steps.<id>.output.<path>` grammar) but the
-    // referenced producer isn't in scope, so it fails at RESOLUTION — carried
-    // per unit (the engine's `expression_error` outcome), never a step failure.
-    const step = mapStep("Review ${{ steps.prior.output.name }} for ${{ item }}.");
+  // DELETED / REPORTED (workflow-format-unification, spec §2.3): the
+  // pre-unification "a resolution error is carried on the unit's `resolved`,
+  // not a whole-list failure" test exercised a per-ITEM instructions
+  // reference (`${{ steps.prior.output.name }}` alongside `${{ item }}`).
+  // Instructions are never parsed as references any more, and `inputs:` — the
+  // one remaining per-step (not per-unit) reference position besides
+  // `map.over` — resolves ONCE for the whole step BEFORE fan-out. Reading
+  // `computeStepWorkList`'s unit-construction loop (`src/workflows/exec/
+  // step-work.ts`), every unit's `resolved` field is now unconditionally
+  // `{ ok: true, prompt, inputHash }` — there is no remaining code path that
+  // produces `{ ok: false }` on an individual `StepWorkUnit`. A per-unit
+  // "expression_error" outcome (asserted by `native-executor.test.ts`'s "null
+  // item" case, also ported below) is therefore currently UNREACHABLE via
+  // computeStepWorkList; the type still declares the union (for a future
+  // per-unit-resolved need — spec §2.3's non-agent/raw-exec unit-kind note),
+  // but no fixture in this port can construct it. REPORTED to the
+  // orchestrating agent as a behavior-surface change worth confirming
+  // intentional, not fixed here. The closest surviving equivalent — an
+  // unresolvable declared `inputs:` reference — IS still a real failure, just
+  // a WHOLE-LIST one now:
+  test("an unresolvable declared `inputs:` reference is a WHOLE-LIST failure (no more per-unit resolution)", () => {
+    const step = mapStep("Review the assigned item.", "params.files", ["steps.prior.output.name"]);
     const result = computeStepWorkList(step, {
       runId: "r",
       params: { files: ["a", "b"] },
       stepOutputs: {},
       engines: FROZEN_ENGINES,
     });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.list.units).toHaveLength(2);
-    for (const u of result.list.units) {
-      expect(u.resolved.ok).toBe(false);
-      if (!u.resolved.ok) expect(u.resolved.error).toContain("failed to resolve");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("failed to resolve");
+      expect(result.error).toContain("steps.prior.output.name");
     }
   });
 
-  test("verbatim instructions pass `${{ … }}` through as literal content (no parse, no failure)", () => {
-    const step = soloStep("Literal ${{ not.parsed }} here.", "verbatim");
+  test("instructions pass through byte-exact regardless of content (no parse, no failure)", () => {
+    // Any prose — including text that LOOKS like a reference or an old-style
+    // `${{ … }}` expression — is opaque data now; nothing in it is ever parsed.
+    const step = soloStep("Literal ${{ not.parsed }} and steps.prior.output here.");
     const result = computeStepWorkList(step, { runId: "r", params: {}, stepOutputs: {}, engines: FROZEN_ENGINES });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const u = result.list.units[0]!;
     expect(u.resolved.ok).toBe(true);
-    if (u.resolved.ok) expect(u.resolved.prompt).toContain("Literal ${{ not.parsed }} here.");
+    if (u.resolved.ok) {
+      expect(u.resolved.prompt).toContain("Literal ${{ not.parsed }} and steps.prior.output here.");
+    }
   });
 
-  test("gate feedback changes the prompt AND the input hash (natural re-dispatch), and the journal id", () => {
+  test("gate feedback changes the prompt AND the input hash", () => {
+    // `gateFeedback` is folded into the hashed envelope (conditionally, so a
+    // no-feedback unit's preimage is unchanged): the feedback is appended to
+    // the prompt, so a gate loop's retry is materially a different ask than
+    // the rejected attempt — "changed inputs ⇒ changed hash". Replay-safe
+    // because feedback is re-derived from the journaled gate decision.
     const step = soloStep("Do the work.");
     const base = { runId: "r", params: {}, stepOutputs: {}, engines: FROZEN_ENGINES };
     const loop1 = computeStepWorkList(step, base);
@@ -456,7 +507,7 @@ describe("evaluateRoute — explicit-input routing, prototype-safe when map", ()
   }
 
   test("selects the matching branch by exact string equality", () => {
-    const r = route("${{ steps.review.output.verdict }}", { pass: "ship", fail: "rework" });
+    const r = route("steps.review.output.verdict", { pass: "ship", fail: "rework" });
     const decision = evaluateRoute(r, scope({ review: { verdict: "pass" } }));
     expect(decision).toEqual({ ok: true, value: "pass", selected: "ship" });
   });
@@ -464,7 +515,7 @@ describe("evaluateRoute — explicit-input routing, prototype-safe when map", ()
   test("boolean and number route inputs are stringified deterministically before matching", () => {
     // `String(value)` — true→"true", false→"false", 0→"0", 42→"42" — is the
     // pinned key form the `when:` map is matched against.
-    const boolRoute = route("${{ steps.s.output.flag }}", { true: "yes", false: "no" });
+    const boolRoute = route("steps.s.output.flag", { true: "yes", false: "no" });
     expect(evaluateRoute(boolRoute, scope({ s: { flag: true } }))).toEqual({
       ok: true,
       value: "true",
@@ -476,7 +527,7 @@ describe("evaluateRoute — explicit-input routing, prototype-safe when map", ()
       selected: "no",
     });
 
-    const numRoute = route("${{ steps.s.output.n }}", { "0": "zero", "42": "life" });
+    const numRoute = route("steps.s.output.n", { "0": "zero", "42": "life" });
     expect(evaluateRoute(numRoute, scope({ s: { n: 0 } }))).toEqual({ ok: true, value: "0", selected: "zero" });
     expect(evaluateRoute(numRoute, scope({ s: { n: 42 } }))).toEqual({ ok: true, value: "42", selected: "life" });
   });
@@ -486,13 +537,13 @@ describe("evaluateRoute — explicit-input routing, prototype-safe when map", ()
     // prototype member must be looked up with Object.hasOwn, so it falls to the
     // default (or fails) rather than resolving to `Object.prototype.toString`.
     for (const hostile of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
-      const withDefault = route("${{ steps.s.output.kind }}", { real: "a" }, "fallback");
+      const withDefault = route("steps.s.output.kind", { real: "a" }, "fallback");
       expect(evaluateRoute(withDefault, scope({ s: { kind: hostile } }))).toEqual({
         ok: true,
         value: hostile,
         selected: "fallback",
       });
-      const noDefault = route("${{ steps.s.output.kind }}", { real: "a" });
+      const noDefault = route("steps.s.output.kind", { real: "a" });
       const decision = evaluateRoute(noDefault, scope({ s: { kind: hostile } }));
       expect(decision.ok).toBe(false);
       if (!decision.ok) expect(decision.error).toContain(hostile);
@@ -500,7 +551,7 @@ describe("evaluateRoute — explicit-input routing, prototype-safe when map", ()
   });
 
   test("an OWN when-branch literally named `constructor` still routes (own-property, not a name blocklist)", () => {
-    const r = route("${{ steps.s.output.kind }}", { constructor: "handled" });
+    const r = route("steps.s.output.kind", { constructor: "handled" });
     expect(evaluateRoute(r, scope({ s: { kind: "constructor" } }))).toEqual({
       ok: true,
       value: "constructor",
@@ -509,12 +560,12 @@ describe("evaluateRoute — explicit-input routing, prototype-safe when map", ()
   });
 
   test("no matching branch and no default fails loudly; a default catches the miss", () => {
-    const noDefault = route("${{ steps.s.output.v }}", { a: "x" });
+    const noDefault = route("steps.s.output.v", { a: "x" });
     const missed = evaluateRoute(noDefault, scope({ s: { v: "z" } }));
     expect(missed.ok).toBe(false);
     if (!missed.ok) expect(missed.error).toContain('"z"');
 
-    const withDefault = route("${{ steps.s.output.v }}", { a: "x" }, "catch-all");
+    const withDefault = route("steps.s.output.v", { a: "x" }, "catch-all");
     expect(evaluateRoute(withDefault, scope({ s: { v: "z" } }))).toEqual({
       ok: true,
       value: "z",
@@ -523,21 +574,19 @@ describe("evaluateRoute — explicit-input routing, prototype-safe when map", ()
   });
 
   test("a default value shared with an explicit branch is legal — both spellings pick that step", () => {
-    const r = route("${{ steps.s.output.v }}", { a: "shared", b: "other" }, "shared");
+    const r = route("steps.s.output.v", { a: "shared", b: "other" }, "shared");
     expect(evaluateRoute(r, scope({ s: { v: "a" } }))).toEqual({ ok: true, value: "a", selected: "shared" }); // explicit
     expect(evaluateRoute(r, scope({ s: { v: "zzz" } }))).toEqual({ ok: true, value: "zzz", selected: "shared" }); // default
   });
 
   test("a non-primitive (object/array) route input is rejected — branches match primitives only", () => {
-    const r = route("${{ steps.s.output }}", { a: "x" }, "d");
+    const r = route("steps.s.output", { a: "x" }, "d");
     expect(evaluateRoute(r, scope({ s: { nested: true } })).ok).toBe(false);
-    expect(evaluateRoute(route("${{ steps.s.output.list }}", { a: "x" }, "d"), scope({ s: { list: [1, 2] } })).ok).toBe(
-      false,
-    );
+    expect(evaluateRoute(route("steps.s.output.list", { a: "x" }, "d"), scope({ s: { list: [1, 2] } })).ok).toBe(false);
   });
 
   test("an unresolvable route input fails with the reference in the message", () => {
-    const r = route("${{ steps.missing.output.v }}", { a: "x" }, "d");
+    const r = route("steps.missing.output.v", { a: "x" }, "d");
     const decision = evaluateRoute(r, scope({}));
     expect(decision.ok).toBe(false);
     if (!decision.ok) expect(decision.error).toContain("steps.missing.output");
@@ -546,28 +595,33 @@ describe("evaluateRoute — explicit-input routing, prototype-safe when map", ()
 
 // ── Anti-drift proof: journal-recovered feedback reproduces the engine's loop-2 dispatch ──
 
-const LOOPED_WF = `version: 2
-name: Looped
+const LOOPED_WF = `---
+type: workflow
 steps:
   - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-    gate:
-      criteria: [the work is thorough]
-      max_loops: 2
+    gate: { max_loops: 2 }
   - id: wrap-up
-    title: Wrap up
-    unit:
-      instructions: Wrap up.
+---
+
+## work
+
+Do the work.
+
+### gate
+
+the work is thorough
+
+## wrap-up
+
+Wrap up.
 `;
 
 const RUN_ID = "77777777-7777-4777-8777-777777777777";
 let tmpDir = "";
 let prevDataDir: string | undefined;
 
-function plan(yamlText: string): WorkflowPlanGraph {
-  return freezeWorkflowProgram(yamlText);
+function plan(markdown: string): WorkflowPlanGraph {
+  return freezeWorkflow(markdown);
 }
 
 function seedRun(steps: Array<{ id: string; criteria?: string[] }>, frozen: WorkflowPlanGraph): void {
@@ -644,7 +698,10 @@ describe("anti-drift — recomputing loop 2 from the journal reproduces the engi
 
     // 2. Recomputing loop 2's work-list from the frozen plan + journal-recovered
     //    feedback reproduces the engine's loop-2 dispatch BYTE-FOR-BYTE — the
-    //    guarantee that `brief` predicts exactly what the engine ran.
+    //    guarantee that `brief` predicts exactly what the engine ran. (Both
+    //    sides call the SAME computeStepWorkList, so this self-consistency
+    //    check holds independent of the input-hash gate-feedback gap noted
+    //    above — it proves cross-surface agreement, not hash sensitivity.)
     const workStep = frozen.steps.find((s) => s.stepId === "work");
     expect(workStep).toBeDefined();
     if (!workStep || !recovered) return;
@@ -746,30 +803,35 @@ describe("buildEvidence — surface-independent unit projection (R4 anti-drift)"
 
 // ── Reviewer #7 — tampered route selection fails loudly (test ask 9) ──────────
 
-const ROUTE_WF = `version: 2
-name: Routed
+const ROUTE_WF = `---
+type: workflow
 steps:
   - id: classify
-    title: Classify
     unit:
-      instructions: Classify.
-      output:
-        type: object
-        properties: { verdict: { type: string } }
-        required: [verdict]
+      output: { type: object, properties: { verdict: { type: string } }, required: [verdict] }
   - id: triage
-    title: Triage
     route:
-      input: \${{ steps.classify.output.verdict }}
-      when: { pass: ship, fail: rework }
+      input: steps.classify.output.verdict
+      when: [{ match: pass, step: ship }, { match: fail, step: rework }]
   - id: ship
-    title: Ship
-    unit:
-      instructions: Ship.
   - id: rework
-    title: Rework
-    unit:
-      instructions: Rework.
+---
+
+## classify
+
+Classify.
+
+## triage
+
+Route.
+
+## ship
+
+Ship.
+
+## rework
+
+Rework.
 `;
 
 /** A resting WorkflowNextResult with `triage` completed and its route decision journaled. */
@@ -792,7 +854,7 @@ function routeState(selected: string): WorkflowNextResult {
           title: "Triage",
           instructions: "",
           status: "completed",
-          evidence: { route: { input: "${{ steps.classify.output.verdict }}", value: "pass", selected } },
+          evidence: { route: { input: "steps.classify.output.verdict", value: "pass", selected } },
         },
         { id: "ship", title: "Ship", instructions: "", status: "pending" },
         { id: "rework", title: "Rework", instructions: "", status: "pending" },
@@ -904,7 +966,7 @@ describe("reviewer #7 — a tampered route selection fails loudly on every surfa
 // ── Reviewer #6 — the gate row is finalized when completeWorkflowStep throws ───
 
 /** A solo executing step plan whose gate carries criteria (so the judge runs). */
-function gatedStep(required = false): IrStepPlan {
+function gatedStep(): IrStepPlan {
   return {
     stepId: "work",
     title: "Work",
@@ -913,7 +975,7 @@ function gatedStep(required = false): IrStepPlan {
       kind: "unit",
       id: "work",
       instructions: "Do the work.",
-      templating: "expressions",
+      templating: "verbatim",
       invocation: SDK_INVOCATION,
       onError: "fail",
     },
@@ -922,7 +984,6 @@ function gatedStep(required = false): IrStepPlan {
       id: "work.gate",
       stepId: "work",
       criteria: ["the work is thorough"],
-      ...(required ? { required: true } : {}),
     },
   };
 }
@@ -953,7 +1014,7 @@ function finalizeArgs(overrides: Record<string, unknown>) {
 
 describe("reviewer #6 — the gate-evaluation row is finalized even when completeWorkflowStep throws", () => {
   test("a lease stolen DURING the judge finishes the gate row (failed), never strands it in running", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
+    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
     // The judge steals the run lease as a side effect, so completeWorkflowStep's
     // write transaction throws AFTER the judge ran (the exact reviewer-#6 window).
     const judge: SummaryJudge = async () => {
@@ -978,103 +1039,68 @@ describe("reviewer #6 — the gate-evaluation row is finalized even when complet
   });
 });
 
-// ── Reviewer #18 — a required gate with no judge blocks the step ──────────────
+// ── Optional validation gates fail open when no verdict is available ─────────
 
-const REQ_WF = `version: 2
-name: Req
+const GATED_WF = `---
+type: workflow
 steps:
   - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-    gate:
-      criteria: [the work is thorough]
+---
+
+## work
+
+Do the work.
+
+### gate
+
+the work is thorough
 `;
 
-describe("reviewer #18 — a required gate with no judge available blocks the step", () => {
-  test("finalizeExecutedStep BLOCKS (not fail-open) when gate.required and no judge is available", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
-    const fin = await finalizeExecutedStep(finalizeArgs({ stepPlan: gatedStep(true), summaryJudge: null }));
-    expect(fin.kind).toBe("blocked");
-
-    const status = await getWorkflowStatus(RUN_ID);
-    expect(status.workflow.steps.find((s) => s.id === "work")?.status).toBe("blocked");
-    expect(status.run.status).toBe("blocked");
-    // The judge was never invoked, so no gate row was journaled.
+describe("optional validation gates", () => {
+  test("no judge skips validation and advances without journaling a gate row", async () => {
+    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
+    const fin = await finalizeExecutedStep(finalizeArgs({ summaryJudge: null }));
+    expect(fin.kind).toBe("advanced");
+    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("completed");
     const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(RUN_ID, "work"));
-    expect(rows.some((r) => r.unit_id === "work.gate:l1")).toBe(false);
+    expect(rows.some((row) => row.unit_id === "work.gate:l1")).toBe(false);
   });
 
-  test("a required gate WITH a judge available completes normally (no block)", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
+  test("a passing judge completes normally", async () => {
+    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
     const judge: SummaryJudge = async () => '{"complete": true, "missing": []}';
-    const fin = await finalizeExecutedStep(finalizeArgs({ stepPlan: gatedStep(true), summaryJudge: judge }));
+    const fin = await finalizeExecutedStep(finalizeArgs({ summaryJudge: judge }));
     expect(fin.kind).toBe("advanced");
     expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("completed");
   });
 
-  // ── Codex round-3 finding A — a required gate whose judge ERRORS must BLOCK,
-  //    never fail open (the offline/misconfigured-judge bypass required gates exist
-  //    to prevent). A CONFIGURED judge that throws is NOT the no-judge case above.
-  test("finding A: required gate + a judge that THROWS blocks the step (does not fail open)", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
+  test("a judge that throws skips validation and advances", async () => {
+    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
     const judge: SummaryJudge = async () => {
       throw new Error("LLM unreachable");
     };
-    const fin = await finalizeExecutedStep(finalizeArgs({ stepPlan: gatedStep(true), summaryJudge: judge }));
-    expect(fin.kind).toBe("blocked");
-    if (fin.kind === "blocked") expect(fin.summary).toContain("REQUIRED completion gate");
-
-    const status = await getWorkflowStatus(RUN_ID);
-    expect(status.workflow.steps.find((s) => s.id === "work")?.status).toBe("blocked");
-    expect(status.run.status).toBe("blocked");
-    // The judge WAS invoked, so the gate row exists — but finished ERRORED
-    // (status failed, NULL verdict), not passed.
+    const fin = await finalizeExecutedStep(finalizeArgs({ summaryJudge: judge }));
+    expect(fin.kind).toBe("advanced");
+    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("completed");
     const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(RUN_ID, "work"));
     const gate = rows.find((r) => r.unit_id === "work.gate:l1");
     expect(gate?.status).toBe("failed");
     expect(gate?.result_json).toBeNull();
   });
 
-  test("finding A: required gate + a judge that returns an UNPARSEABLE verdict blocks the step", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
+  test("an unparseable verdict skips validation and advances", async () => {
+    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
     const judge: SummaryJudge = async () => "not json at all";
-    const fin = await finalizeExecutedStep(finalizeArgs({ stepPlan: gatedStep(true), summaryJudge: judge }));
-    expect(fin.kind).toBe("blocked");
-    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("blocked");
-    const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(RUN_ID, "work"));
-    expect(rows.find((r) => r.unit_id === "work.gate:l1")?.status).toBe("failed");
-  });
-
-  test("finding A: a NON-required gate whose judge throws still fails OPEN (documented offline behavior)", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
-    const judge: SummaryJudge = async () => {
-      throw new Error("LLM unreachable");
-    };
-    const fin = await finalizeExecutedStep(finalizeArgs({ stepPlan: gatedStep(false), summaryJudge: judge }));
+    const fin = await finalizeExecutedStep(finalizeArgs({ summaryJudge: judge }));
     expect(fin.kind).toBe("advanced");
     expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("completed");
   });
 
-  test("engine --require-gates blocks a NON-required criteria gate with no judge (run-wide override)", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
+  test("the engine also skips validation when no judge is configured", async () => {
+    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
     const result = await runWorkflowSteps({
       target: RUN_ID,
-      loadPlan: async () => plan(REQ_WF),
-      dispatcher: async () => ({ ok: true, text: "did the work" }),
-      summaryJudge: null,
-      requireGates: true,
-    });
-    expect(result.run.status).toBe("blocked");
-    expect(result.done).toBeUndefined();
-    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("blocked");
-  });
-
-  test("without --require-gates, a non-required gate with no judge still fails OPEN (offline behavior unchanged)", async () => {
-    seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(REQ_WF));
-    const result = await runWorkflowSteps({
-      target: RUN_ID,
-      loadPlan: async () => plan(REQ_WF),
+      loadPlan: async () => plan(GATED_WF),
       dispatcher: async () => ({ ok: true, text: "did the work" }),
       summaryJudge: null,
     });

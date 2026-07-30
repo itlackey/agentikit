@@ -11,12 +11,7 @@ import {
   getAllRenderers,
   getRenderer,
 } from "../../src/indexer/walk/file-context";
-import {
-  directoryMatcher,
-  parentDirHintMatcher,
-  smartMdMatcher,
-  workflowProgramMatcher,
-} from "../../src/indexer/walk/matchers";
+import { directoryMatcher, parentDirHintMatcher, smartMdMatcher } from "../../src/indexer/walk/matchers";
 import { walkStashFlat } from "../../src/indexer/walk/walker";
 
 // ── Temp directory helpers ──────────────────────────────────────────────────
@@ -191,16 +186,12 @@ describe("recognizeMatch", () => {
   test("nested skill references are not classified by typed ancestor directories", () => {
     const root = tmpDir();
     const markdownPath = path.join(root, "skills", "cloudflare", "references", "workflows", "api.md");
-    const yamlPath = path.join(root, "skills", "cloudflare", "references", "workflows", "api.yml");
     writeFile(markdownPath, "# Workflow API reference\nDocumentation only.\n");
-    writeFile(yamlPath, "title: Workflow API reference\n");
 
     const markdown = buildFileContext(root, markdownPath);
-    const yaml = buildFileContext(root, yamlPath);
 
     expect(directoryMatcher(markdown)).toBeNull();
     expect(parentDirHintMatcher(markdown)).toBeNull();
-    expect(workflowProgramMatcher(yaml)).toBeNull();
   });
 
   test("direct markdown files under skills remain skill assets", () => {
@@ -619,12 +610,15 @@ describe("Renderer", () => {
     expect(response.action).toContain("#fragment");
   });
 
-  test("getAllRenderers() returns all 14 built-in renderers", async () => {
+  test("getAllRenderers() returns all 13 built-in renderers", async () => {
     const all = await getAllRenderers();
-    expect(all).toHaveLength(14);
+    expect(all).toHaveLength(13);
 
     const names = all.map((r) => r.name).sort();
     // `wiki-md` was removed in chunk 4 (the wiki asset-type is retired).
+    // `workflow-program-yaml` is removed by workflow-format-unification
+    // (spec §3): the YAML workflow *program* is deleted as a distinct
+    // on-disk format — one workflow renderer (`workflow-md`) now.
     expect(names).toEqual([
       "agent-md",
       "command-md",
@@ -639,7 +633,6 @@ describe("Renderer", () => {
       "skill-md",
       "task-yaml",
       "workflow-md",
-      "workflow-program-yaml", // redesign addendum R1
     ]);
   });
 
@@ -654,14 +647,16 @@ describe("Renderer", () => {
       filePath,
       [
         "---",
+        "type: workflow",
         "description: Ship a release safely",
+        "steps:",
+        "  - id: validate",
         "---",
-        "# Workflow: Release Flow",
         "",
-        "## Step: Validate",
-        "Step ID: validate",
+        "# Release Flow",
         "",
-        "### Instructions",
+        "## validate",
+        "",
         "Check inputs.",
       ].join("\n"),
     );

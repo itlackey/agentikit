@@ -28,20 +28,31 @@ import type { FrozenAgentEngine, IrStepPlan, WorkflowPlanGraph } from "../../../
 import { PROGRAM_RETRY_REASONS } from "../../../src/workflows/program/schema";
 import { completeWorkflowStep, getWorkflowStatus } from "../../../src/workflows/runtime/runs";
 import { makeSandboxDir, withEnv, withMockedFetch, writeSandboxConfig } from "../../_helpers/sandbox";
-import { freezeWorkflowProgram, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
+import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
 /**
- * Native executor over frozen IR v3: fan-out via `${{ … }}`
- * expressions through the scheduler, schema-validated structured output with
- * retry, the explicit failure policy (`on_error` / `retry`), per-unit
- * persistence, and the engine loop that advances the gated step spine
- * strictly through `completeWorkflowStep`.
+ * Native executor over frozen IR v3: fan-out through the scheduler,
+ * schema-validated structured output with retry, the explicit failure policy
+ * (`on_error` / `retry`), per-unit persistence, and the engine loop that
+ * advances the gated step spine strictly through `completeWorkflowStep`.
  *
  * All dispatch goes through an injected fake dispatcher — no agent binaries,
  * no LLM. The workflow DB is a sandboxed tmp dir via AKM_DATA_DIR. Plans come
- * from YAML workflow-program sources (parseWorkflowProgram +
- * compileWorkflowProgram), the only orchestrated frontend after the P1
- * markdown grammar removal.
+ * from unified workflow markdown sources (`parseWorkflow` + `compileWorkflowPlan`
+ * via the `freezeWorkflow` helper), the only frontend after the
+ * workflow-format-unification (classic markdown + YAML program are both gone).
+ *
+ * SEMANTIC CHANGE (workflow-format-unification, spec §2.3): instructions are
+ * byte-exact prose everywhere now — there is no more `${{ item }}` / `${{
+ * params.x }}` substitution INTO the instructions text. A map unit's item +
+ * index reach it as ATTACHED CONTEXT instead (a "## Item (index N)" block
+ * `buildUnitPrompt` appends, `src/workflows/exec/step-work.ts`), addressed by
+ * its canonical JSON — never spliced into prose. Tests that used to assert a
+ * SUBSTITUTED prompt string (`"Review a.ts carefully."`) now assert the
+ * canonical-JSON item block instead (`'"a.ts"'`), with a comment marking the
+ * change; a couple of tests whose entire premise was substitution-only are
+ * replaced with the closest equivalent and reported where none exists (see
+ * inline SUSPECTED SRC BEHAVIOR / DELETED notes below).
  */
 
 let tmpDir = "";
@@ -71,8 +82,8 @@ function seedRun(opts: { params?: Record<string, unknown>; steps: Array<{ id: st
   }
 }
 
-function plan(yamlText: string): WorkflowPlanGraph {
-  const frozen = freezeWorkflowProgram(yamlText);
+function plan(markdown: string): WorkflowPlanGraph {
+  const frozen = freezeWorkflow(markdown);
   for (const step of frozen.steps) catalogs.set(step, frozen.execution?.engines ?? {});
   return frozen;
 }
@@ -83,8 +94,8 @@ function executeStepPlan(step: IrStepPlan, ctx: StepExecutionContext): Promise<S
   return executeFrozenStepPlan(step, { ...ctx, engines: ctx.engines ?? catalogs.get(step) });
 }
 
-function usePlan(yamlText: string): () => Promise<WorkflowPlanGraph> {
-  return useFrozenPlan(plan(yamlText));
+function usePlan(markdown: string): () => Promise<WorkflowPlanGraph> {
+  return useFrozenPlan(plan(markdown));
 }
 
 function useFrozenPlan(frozen: WorkflowPlanGraph): () => Promise<WorkflowPlanGraph> {
@@ -113,18 +124,20 @@ afterEach(() => {
   }
 });
 
-const FAN_OUT_WF = `version: 2
-name: Review
+const FAN_OUT_WF = `---
+type: workflow
 params:
   files: { type: array }
 steps:
   - id: review
-    title: Review files
     map:
-      over: \${{ params.files }}
+      over: params.files
       concurrency: 4
-      unit:
-        instructions: Review \${{ item }} carefully.
+---
+
+## review
+
+Review the assigned item carefully.
 `;
 
 describe("executeStepPlan — fan-out", () => {
@@ -153,7 +166,7 @@ describe("executeStepPlan — fan-out", () => {
     expect(peak).toBe(1);
   });
 
-  test("dispatches one unit per item over ${{ params.files }}, resolves ${{ item }}, persists unit rows", async () => {
+  test("dispatches one unit per item over params.files, attaches the item as context, persists unit rows", async () => {
     seedRun({ params: { files: ["a.ts", "b.ts", "c.ts"] }, steps: [{ id: "review", title: "Review files" }] });
     const prompts: string[] = [];
     const dispatcher = async (req: UnitDispatchRequest): Promise<UnitDispatchResult> => {
@@ -172,8 +185,11 @@ describe("executeStepPlan — fan-out", () => {
 
     expect(result.ok).toBe(true);
     expect(result.units).toHaveLength(3);
-    expect(prompts.some((p) => p.includes("Review a.ts carefully."))).toBe(true);
+    // Item reaches the unit as ATTACHED CONTEXT (canonical JSON), never
+    // spliced into the instructions text.
+    expect(prompts.some((p) => p.includes('"a.ts"'))).toBe(true);
     expect(prompts.every((p) => p.includes(RUN_ID))).toBe(true); // preamble carries the run id
+    expect(prompts.every((p) => p.includes("Review the assigned item carefully."))).toBe(true);
 
     await withWorkflowRunsRepo((repo) => {
       const rows = repo.getUnitsForStep(RUN_ID, "review");
@@ -190,11 +206,20 @@ describe("executeStepPlan — fan-out", () => {
     });
   });
 
-  test("hostile item content is data: $-patterns and ${{ … }} in values insert verbatim, never re-scanned", async () => {
-    // Single-pass proof at the engine level: templates are parsed once into
-    // literal/reference segments; substituted CONTENT is data. An item that
-    // itself looks like an expression must appear literally, and must never
-    // resolve against params — the P1 re-scan injection class.
+  test("hostile item content is data: $-patterns and expression-looking values render verbatim as canonical JSON, never re-scanned", async () => {
+    // SEMANTIC CHANGE (spec §2.3): the pre-unification version of this test
+    // proved the OLD splice mechanism's single-pass guarantee (an item
+    // containing "$&"/"${{ … }}" had to survive a String.prototype.replace
+    // substitution unmangled). There is no more splicing — an item is
+    // attached as its own canonical-JSON context block via plain string
+    // concatenation (never `.replace`), so the entire GetSubstitution-pattern
+    // injection class is moot by construction, not merely "closed". What
+    // still matters, and is proved below: (1) hostile item content appears
+    // verbatim in its JSON context block, (2) it is NEVER resolved against
+    // params (there is no resolution of items at all any more), and (3) the
+    // preamble's `{{PARAMS_JSON}}` substitution — which DOES use
+    // `.replaceAll` — still uses the function-replacer form, so a param value
+    // containing "$&" survives unmangled too.
     const items = ["src/a$&b.ts", "Makefile uses $$(CC)", "${{ params.secret }}"];
     seedRun({ params: { files: items }, steps: [{ id: "review", title: "Review files" }] });
     const prompts: string[] = [];
@@ -210,25 +235,30 @@ describe("executeStepPlan — fan-out", () => {
       },
     });
     expect(result.ok).toBe(true);
-    expect(prompts.some((p) => p.includes("Review src/a$&b.ts carefully."))).toBe(true);
-    expect(prompts.some((p) => p.includes("Review Makefile uses $$(CC) carefully."))).toBe(true);
-    // The expression-looking item is inserted literally — single pass, no re-scan.
-    expect(prompts.some((p) => p.includes("Review ${{ params.secret }} carefully."))).toBe(true);
-    expect(prompts.every((p) => !p.includes("Review LEAKED-SECRET carefully."))).toBe(true);
+    expect(prompts.some((p) => p.includes('fan-out list:\n"src/a$&b.ts"'))).toBe(true);
+    expect(prompts.some((p) => p.includes('fan-out list:\n"Makefile uses $$(CC)"'))).toBe(true);
+    // The expression-looking item is inserted literally — never re-resolved.
+    // (params.secret legitimately appears elsewhere in the prompt, in the
+    // preamble's own params JSON block — params are documented non-secret and
+    // attach to every unit, spec §2.3 — so the assertion that matters is that
+    // the ITEM block specifically was never resolved/substituted.)
+    expect(prompts.some((p) => p.includes('fan-out list:\n"${{ params.secret }}"'))).toBe(true);
+    expect(prompts.every((p) => !p.includes('fan-out list:\n"LEAKED-SECRET"'))).toBe(true);
     // Preamble params JSON must also survive $-patterns un-mangled.
     expect(prompts.every((p) => p.includes("cost is $& today"))).toBe(true);
     expect(prompts.every((p) => !p.includes("{{PARAMS_JSON}}"))).toBe(true);
   });
 
-  test("items can come from a prior step's output via ${{ steps.discover.output.files }}", async () => {
+  test("items can come from a prior step's output via steps.discover.output.files", async () => {
     seedRun({ steps: [{ id: "review", title: "Review files" }] });
-    const EVIDENCE_WF = FAN_OUT_WF.replace("${{ params.files }}", "${{ steps.discover.output.files }}").replace(
-      "steps:",
-      `steps:
+    const EVIDENCE_WF = FAN_OUT_WF.replace("over: params.files", "over: steps.discover.output.files")
+      .replace(
+        "steps:",
+        `steps:
   - id: discover
-    unit:
-      instructions: Find files.`,
-    );
+`,
+      )
+      .replace("## review", "## discover\n\nFind files.\n\n## review");
     const dispatcher = async (): Promise<UnitDispatchResult> => ({ ok: true, text: "done" });
     const stepPlan = plan(EVIDENCE_WF).steps.find((s) => s.stepId === "review")!;
     if (!stepPlan) throw new Error("missing review step");
@@ -246,13 +276,14 @@ describe("executeStepPlan — fan-out", () => {
 
   test("step-output references never resolve from Object.prototype (own properties only)", async () => {
     seedRun({ steps: [{ id: "review", title: "Review files" }] });
-    const TOSTRING_WF = FAN_OUT_WF.replace("${{ params.files }}", "${{ steps.prior.output.toString }}").replace(
-      "steps:",
-      `steps:
+    const TOSTRING_WF = FAN_OUT_WF.replace("over: params.files", "over: steps.prior.output.toString")
+      .replace(
+        "steps:",
+        `steps:
   - id: prior
-    unit:
-      instructions: Prior.`,
-    );
+`,
+      )
+      .replace("## review", "## prior\n\nPrior.\n\n## review");
     const stepPlan = plan(TOSTRING_WF).steps.find((s) => s.stepId === "review")!;
     if (!stepPlan) throw new Error("missing review step");
     const result = await executeStepPlan(stepPlan, {
@@ -284,7 +315,7 @@ describe("executeStepPlan — fan-out", () => {
   test("unit failures are recorded with their failure reason and fail the step (fail-fast default)", async () => {
     seedRun({ params: { files: ["a", "b"] }, steps: [{ id: "review", title: "Review files" }] });
     const dispatcher = async (req: UnitDispatchRequest): Promise<UnitDispatchResult> =>
-      req.prompt.includes("Review a")
+      req.prompt.includes('fan-out list:\n"a"')
         ? { ok: true, text: "fine" }
         : { ok: false, text: "", failureReason: "timeout", error: "timed out" };
 
@@ -330,10 +361,12 @@ describe("executeStepPlan — fan-out item shapes (edge cases)", () => {
     expect(result.evidence.itemCount).toBe(1);
   });
 
-  test("items of every JSON type each become their own unit; objects/arrays render as canonical JSON", async () => {
-    // Numbers/booleans stringify, strings pass through, objects/arrays render as
-    // canonical JSON in the `${{ item }}` prompt — one distinct content-derived
-    // unit per item.
+  test("items of every JSON type each become their own unit; objects/arrays render as JSON in the item context block", async () => {
+    // Numbers/booleans/strings pass through their `JSON.stringify` rendering;
+    // objects/arrays render with THEIR OWN key insertion order (the item
+    // context block is `JSON.stringify`, not canonically sorted — sorting is
+    // reserved for content-derived unit IDENTITY, a separate concern) — one
+    // distinct content-derived unit per item either way.
     const items = [1, true, "str", { b: 2, a: 1 }, [3, 4]];
     seedRun({ params: { files: items }, steps: [{ id: "review", title: "Review files" }] });
     const prompts: string[] = [];
@@ -350,18 +383,25 @@ describe("executeStepPlan — fan-out item shapes (edge cases)", () => {
     });
     expect(result.ok).toBe(true);
     expect(result.units).toHaveLength(5);
-    expect(prompts.some((p) => p.includes("Review 1 carefully."))).toBe(true);
-    expect(prompts.some((p) => p.includes("Review true carefully."))).toBe(true);
-    expect(prompts.some((p) => p.includes("Review str carefully."))).toBe(true);
-    expect(prompts.some((p) => p.includes('Review {"a":1,"b":2} carefully.'))).toBe(true);
-    expect(prompts.some((p) => p.includes("Review [3,4] carefully."))).toBe(true);
+    expect(prompts.some((p) => p.includes("fan-out list:\n1"))).toBe(true);
+    expect(prompts.some((p) => p.includes("fan-out list:\ntrue"))).toBe(true);
+    expect(prompts.some((p) => p.includes('fan-out list:\n"str"'))).toBe(true);
+    expect(prompts.some((p) => p.includes('fan-out list:\n{"b":2,"a":1}'))).toBe(true);
+    expect(prompts.some((p) => p.includes("fan-out list:\n[3,4]"))).toBe(true);
     await withWorkflowRunsRepo((repo) => {
       // Five distinct content-derived unit ids — one per item.
       expect(new Set(repo.getUnitsForStep(RUN_ID, "review").map((r) => r.unit_id)).size).toBe(5);
     });
   });
 
-  test("a null item resolves `${{ item }}` to null → an expression_error unit that fails the step under the default policy", async () => {
+  test("a null fan-out item fails the work-list BEFORE any dispatch", async () => {
+    // The pre-unification format rejected a null item incidentally (resolving
+    // `${{ item }}` failed). With items attached as context instead of
+    // spliced, the refactor briefly made a null item dispatch as a normal
+    // unit ("Item: null") — an accidental behavioral reversal. The rejection
+    // is now EXPLICIT in computeStepWorkList, same fail-before-dispatch
+    // posture as the duplicate-item check: a null item is producer garbage
+    // and names the producing step instead of burning an agent run on it.
     seedRun({ params: { files: [null] }, steps: [{ id: "review", title: "Review files" }] });
     const stepPlan = plan(FAN_OUT_WF).steps[0]!;
     let dispatches = 0;
@@ -372,14 +412,13 @@ describe("executeStepPlan — fan-out item shapes (edge cases)", () => {
       evidence: {},
       dispatcher: async () => {
         dispatches++;
-        return { ok: true, text: "must not run" };
+        return { ok: true, text: "must never run" };
       },
     });
-    // `${{ item }}` over a null item is a deterministic resolution failure — the
-    // unit never dispatches, and fail-fast fails the step.
     expect(dispatches).toBe(0);
     expect(result.ok).toBe(false);
-    expect(result.units[0]!.failureReason).toBe("expression_error");
+    expect(result.summary).toContain("null item");
+    expect(result.summary).toContain("index 0");
   });
 });
 
@@ -479,17 +518,17 @@ describe("executeStepPlan — persistence edge cases (corrupt / missing journal 
   });
 });
 
-const SCHEMA_WF = `version: 2
-name: Extract
+const SCHEMA_WF = `---
+type: workflow
 steps:
   - id: extract
-    title: Extract facts
     unit:
-      instructions: Extract facts.
-      output:
-        type: object
-        properties: { fact: { type: string } }
-        required: [fact]
+      output: { type: object, properties: { fact: { type: string } }, required: [fact] }
+---
+
+## extract
+
+Extract facts.
 `;
 
 describe("executeStepPlan — structured output", () => {
@@ -553,26 +592,32 @@ describe("executeStepPlan — structured output", () => {
 // (the EMPTY_OUTPUT driver-parity golden pins the cross-surface identity).
 // These engine-side tests lock the three consequences the module doc states.
 
-const EMPTY_WF = `version: 2
-name: Build
+const EMPTY_WF = `---
+type: workflow
 steps:
   - id: build
-    title: Build
-    unit:
-      instructions: Build it.
+---
+
+## build
+
+Build it.
 `;
 
-const EMPTY_DOWNSTREAM_WF = `version: 2
-name: Empty downstream
+const EMPTY_DOWNSTREAM_WF = `---
+type: workflow
 steps:
   - id: build
-    title: Build
-    unit:
-      instructions: Build it.
   - id: consume
-    title: Consume
-    unit:
-      instructions: "Use the previous output: \${{ steps.build.output }}."
+    inputs: [steps.build.output]
+---
+
+## build
+
+Build it.
+
+## consume
+
+Use the previous output (declared as this step's input).
 `;
 
 describe("executeStepPlan — empty free-text output is 'no output' (PR #714 comment B)", () => {
@@ -616,7 +661,21 @@ describe("executeStepPlan — empty free-text output is 'no output' (PR #714 com
     expect(result.units[0]!.failureReason).toBe("parse_error");
   });
 
-  test("a downstream ${{ steps.build.output }} of an empty-output step fails deterministically (resolved to null)", async () => {
+  test("a downstream declared input of an empty-output step fails the WHOLE STEP deterministically (resolved to null)", async () => {
+    // SEMANTIC CHANGE (spec §2.3): the pre-unification version referenced
+    // `${{ steps.build.output }}` inside `consume`'s INSTRUCTIONS, which
+    // failed as a PER-UNIT `expression_error` (carried on `result.units[0]`,
+    // never dispatching). The unified format's equivalent surface is
+    // `consume`'s declared `inputs: [steps.build.output]` — but `inputs:` is
+    // resolved ONCE for the WHOLE STEP, before any unit is constructed
+    // (`computeStepWorkList`, `src/workflows/exec/step-work.ts`), so an
+    // unresolvable declared input is now a WHOLE-STEP failure (`result.units`
+    // is empty), not a per-unit one. Reading `computeStepWorkList`'s
+    // unit-construction loop confirms there is no remaining code path that
+    // produces a per-unit `resolved: { ok: false }` — reported to the
+    // orchestrating agent (see the identical note in `step-work.test.ts`).
+    // The still-true parts of the original narrative — deterministic failure,
+    // "resolved to null" in the message, zero dispatch — are preserved below.
     seedRun({
       steps: [
         { id: "build", title: "Build" },
@@ -648,33 +707,34 @@ describe("executeStepPlan — empty free-text output is 'no output' (PR #714 com
       },
     });
 
-    // Referencing a null artifact is a deterministic expression failure — the
-    // unit never dispatches. Same on both surfaces: the artifact (null) is
-    // surface-identical (EMPTY_OUTPUT golden) and the work-list is the one
-    // shared pure function, so this resolution error is reproduced identically.
+    // Referencing a null artifact is a deterministic resolution failure — the
+    // WHOLE STEP fails before any unit dispatches. Same on both surfaces: the
+    // artifact (null) is surface-identical (EMPTY_OUTPUT golden) and the
+    // work-list is the one shared pure function, so this resolution error is
+    // reproduced identically.
     expect(consume.ok).toBe(false);
     expect(dispatched).toBe(0);
-    expect(consume.units[0]!.failureReason).toBe("expression_error");
-    expect(consume.units[0]!.error).toContain("resolved to null");
+    expect(consume.units).toHaveLength(0);
+    expect(consume.summary).toContain("resolved to null");
   });
 });
 
-const VOTE_WF = `version: 2
-name: Vote
+const VOTE_WF = `---
+type: workflow
 params:
   attempts: { type: array }
 steps:
   - id: judge
-    title: Judge
     map:
-      over: \${{ params.attempts }}
+      over: params.attempts
       reducer: vote
       unit:
-        instructions: Judge attempt \${{ item }} (#\${{ item_index }}).
-        output:
-          type: object
-          properties: { verdict: { type: string } }
-          required: [verdict]
+        output: { type: object, properties: { verdict: { type: string } }, required: [verdict] }
+---
+
+## judge
+
+Judge the assigned attempt.
 `;
 
 describe("executeStepPlan — vote reducer", () => {
@@ -700,24 +760,26 @@ describe("executeStepPlan — vote reducer", () => {
 });
 
 describe("executeStepPlan — failure policy (IR v3)", () => {
-  const CONTINUE_WF = `version: 2
-name: Review
+  const CONTINUE_WF = `---
+type: workflow
 params:
   files: { type: array }
 steps:
   - id: review
-    title: Review files
     map:
-      over: \${{ params.files }}
-      unit:
-        on_error: continue
-        instructions: Review \${{ item }} carefully.
+      over: params.files
+      unit: { on_error: continue }
+---
+
+## review
+
+Review the assigned item carefully.
 `;
 
   test("on_error: continue records unit failures without failing the step", async () => {
     seedRun({ params: { files: ["a", "b"] }, steps: [{ id: "review", title: "Review files" }] });
     const dispatcher = async (req: UnitDispatchRequest): Promise<UnitDispatchResult> =>
-      req.prompt.includes("Review a")
+      req.prompt.includes('fan-out list:\n"a"')
         ? { ok: true, text: "fine" }
         : { ok: false, text: "", failureReason: "timeout", error: "timed out" };
 
@@ -740,14 +802,17 @@ steps:
     });
   });
 
-  const RETRY_WF = `version: 2
-name: Flaky
+  const RETRY_WF = `---
+type: workflow
 steps:
   - id: fetch
-    title: Fetch
     unit:
       retry: { max: 2, on: [timeout] }
-      instructions: Fetch the thing.
+---
+
+## fetch
+
+Fetch the thing.
 `;
 
   test("retry-on-timeout re-dispatches up to max, journaling each attempt under <unitId>~r<n>", async () => {
@@ -985,18 +1050,22 @@ describe("executeStepPlan — content-derived unit identity (R2)", () => {
   // between invocations without touching params (params are frozen per run
   // and appear in the unit preamble — changing them changes every input
   // hash, which is the replay-divergence case below, not the reorder case).
-  const REORDER_WF = `version: 2
-name: Review
+  const REORDER_WF = `---
+type: workflow
 steps:
   - id: discover
-    unit:
-      instructions: Find files.
   - id: review
-    title: Review files
     map:
-      over: \${{ steps.discover.output.files }}
-      unit:
-        instructions: Review \${{ item }} carefully.
+      over: steps.discover.output.files
+---
+
+## discover
+
+Find files.
+
+## review
+
+Review the assigned item carefully.
 `;
 
   test("identity survives item-list reordering: a reshuffled producer output reuses every journaled result", async () => {
@@ -1063,18 +1132,20 @@ steps:
     });
   });
 
-  const DIVERGENCE_WF = `version: 2
-name: Review
+  const DIVERGENCE_WF = `---
+type: workflow
 params:
   files: { type: array }
 steps:
   - id: review
-    title: Review files
     map:
-      over: \${{ params.files }}
-      unit:
-        on_error: continue
-        instructions: Review \${{ item }} carefully.
+      over: params.files
+      unit: { on_error: continue }
+---
+
+## review
+
+Review the assigned item carefully.
 `;
 
   test("replay divergence: a journaled COMPLETED row with matching id but different input_hash fails the step hard — even under on_error: continue", async () => {
@@ -1191,7 +1262,7 @@ describe("executeStepPlan — lifetime unit cap counts actual dispatches only (p
     const first = await executeStepPlan(stepPlan, {
       ...ctx,
       dispatcher: async (req) =>
-        req.prompt.includes("Review f7.ts")
+        req.prompt.includes('fan-out list:\n"f7.ts"')
           ? { ok: false, text: "", failureReason: "timeout", error: "timed out" }
           : { ok: true, text: `done ${req.unitId}` },
     });
@@ -1239,35 +1310,41 @@ describe("executeStepPlan — lifetime unit cap counts actual dispatches only (p
   });
 });
 
-describe("step output promotion — ${{ steps.<id>.output }} addresses real results (peer review R1)", () => {
-  const DOCS_SHAPE_WF = `version: 2
-name: Review
+describe("step output promotion — steps.<id>.output addresses real results (peer review R1)", () => {
+  const DOCS_SHAPE_WF = `---
+type: workflow
 steps:
   - id: discover
-    title: Discover
     unit:
-      instructions: List files.
-      output:
-        type: object
-        properties: { files: { type: array, items: { type: string } } }
-        required: [files]
+      output: { type: object, properties: { files: { type: array, items: { type: string } } }, required: [files] }
   - id: review
-    title: Review
     map:
-      over: \${{ steps.discover.output.files }}
-      unit:
-        instructions: Review \${{ item }}.
+      over: steps.discover.output.files
   - id: summarize
-    title: Summarize
-    unit:
-      instructions: "All: \${{ steps.review.output }} First: \${{ steps.review.output[0] }}"
+    inputs: ["steps.review.output", "steps.review.output[0]"]
+---
+
+## discover
+
+List files.
+
+## review
+
+Review the assigned item.
+
+## summarize
+
+Summarize the reviews (declared inputs above carry the full array and its first element).
 `;
 
   test("the documented addressing works end-to-end: solo result feeds map.over, collect array feeds a later unit", async () => {
     // The flagship docs example shape (docs/reference/workflows.md): a solo
     // unit's structured result is the step output — NOT the internal
     // evidence envelope {units, itemCount} — and a collect fan-out's output
-    // is the array of per-item results in item order.
+    // is the array of per-item results in item order. `summarize` addresses
+    // both the whole array and its first element via TWO declared `inputs:`
+    // entries (spec §2.3's sub-path support), attached as separate "###
+    // <reference>" context blocks rather than spliced into prose.
     seedRun({
       steps: [
         { id: "discover", title: "Discover" },
@@ -1289,43 +1366,50 @@ steps:
     expect(result.done).toBe(true);
     expect(result.executed.map((s) => s.stepId)).toEqual(["discover", "review", "summarize"]);
     // map.over resolved the solo unit's structured result — one unit per file.
-    expect(prompts.filter((p) => p.includes("Review a.ts.") || p.includes("Review b.ts.")).length).toBe(2);
-    // The collect artifact is the per-item value array (canonical JSON in
-    // templates); [0] addresses the first item's result.
-    const summarizePrompt = prompts[prompts.length - 1];
-    expect(summarizePrompt).toContain('All: ["verdict:review.unit:8b3148685648","verdict:review.unit:630647ca5751"]');
-    expect(summarizePrompt).toContain("First: verdict:review.unit:8b3148685648");
+    expect(prompts.filter((p) => p.includes('"a.ts"') || p.includes('"b.ts"')).length).toBe(2);
+    // The collect artifact is the per-item value array; declared inputs carry
+    // it (and its [0] sub-path) as separate context blocks.
+    const summarizePrompt = prompts[prompts.length - 1]!;
+    expect(summarizePrompt).toContain("### steps.review.output\n");
+    expect(summarizePrompt).toContain('["verdict:review.unit:8b3148685648","verdict:review.unit:630647ca5751"]');
+    expect(summarizePrompt).toContain("### steps.review.output[0]\n");
+    expect(summarizePrompt).toContain('"verdict:review.unit:8b3148685648"');
   });
 
-  const VOTE_ROUTE_WF = `version: 2
-name: VoteRoute
+  const VOTE_ROUTE_WF = `---
+type: workflow
 params:
   attempts: { type: array }
 steps:
   - id: judge
-    title: Judge
     map:
-      over: \${{ params.attempts }}
+      over: params.attempts
       reducer: vote
       unit:
-        instructions: Judge \${{ item }}.
-        output:
-          type: object
-          properties: { verdict: { type: string } }
-          required: [verdict]
+        output: { type: object, properties: { verdict: { type: string } }, required: [verdict] }
   - id: triage
-    title: Triage
     route:
-      input: \${{ steps.judge.output.verdict }}
-      when: { pass: ship, fail: rework }
+      input: steps.judge.output.verdict
+      when: [{ match: pass, step: ship }, { match: fail, step: rework }]
   - id: ship
-    title: Ship
-    unit:
-      instructions: Ship it.
   - id: rework
-    title: Rework
-    unit:
-      instructions: Rework it.
+---
+
+## judge
+
+Judge the assigned attempt.
+
+## triage
+
+Triage.
+
+## ship
+
+Ship it.
+
+## rework
+
+Rework it.
 `;
 
   test("a vote step's output is the winner — routes address it directly", async () => {
@@ -1357,19 +1441,22 @@ steps:
 });
 
 describe("runWorkflowSteps — engine loop over the gated spine", () => {
-  const TWO_STEP_WF = `version: 2
-name: Demo
+  const TWO_STEP_WF = `---
+type: workflow
 params:
   flavor: { type: string }
 steps:
   - id: first
-    title: First
-    unit:
-      instructions: Do first.
   - id: second
-    title: Second
-    unit:
-      instructions: Do second with \${{ params.flavor }}.
+---
+
+## first
+
+Do first.
+
+## second
+
+Do second.
 `;
 
   test("executes every step through completeWorkflowStep until the run completes", async () => {
@@ -1392,7 +1479,9 @@ steps:
 
     expect(result.executed.map((s) => s.stepId)).toEqual(["first", "second"]);
     expect(result.done).toBe(true);
-    expect(prompts[1]).toContain("vanilla");
+    // Params attach as structured JSON context to EVERY unit (spec §2.3),
+    // never spliced into instructions.
+    expect(prompts[1]).toContain('"flavor":"vanilla"');
 
     const status = await getWorkflowStatus(RUN_ID);
     expect(status.run.status).toBe("completed");
@@ -1517,34 +1606,40 @@ steps:
     // file directly got a false red.
   }, 30_000);
 
-  const ROUTED_WF = `version: 2
-name: Router
+  const ROUTED_WF = `---
+type: workflow
 steps:
   - id: classify
-    title: Classify
     unit:
-      instructions: Classify.
-      output:
-        type: object
-        properties: { kind: { type: string } }
-        required: [kind]
+      output: { type: object, properties: { kind: { type: string } }, required: [kind] }
   - id: triage
-    title: Triage
     route:
-      input: \${{ steps.classify.output.kind }}
-      when: { bug: fix-bug, feature: build-feature }
+      input: steps.classify.output.kind
+      when: [{ match: bug, step: fix-bug }, { match: feature, step: build-feature }]
   - id: fix-bug
-    title: Fix bug
-    unit:
-      instructions: Fix it.
   - id: build-feature
-    title: Build feature
-    unit:
-      instructions: Build it.
   - id: wrap-up
-    title: Wrap up
-    unit:
-      instructions: Wrap up.
+---
+
+## classify
+
+Classify.
+
+## triage
+
+Triage.
+
+## fix-bug
+
+Fix it.
+
+## build-feature
+
+Build it.
+
+## wrap-up
+
+Wrap up.
 `;
 
   test("routing: the selected branch runs, unselected targets are auto-skipped", async () => {
@@ -1580,38 +1675,43 @@ steps:
     expect(byId.get("wrap-up")?.status).toBe("completed");
     // The route step's evidence records the decision.
     expect(byId.get("triage")?.evidence?.route).toEqual({
-      input: "${{ steps.classify.output.kind }}",
+      input: "steps.classify.output.kind",
       value: "bug",
       selected: "fix-bug",
     });
   });
 
   test("routing: falls back to default, and an unroutable value fails the step", async () => {
-    const DEFAULTED_WF = `version: 2
-name: Router
+    const DEFAULTED_WF = `---
+type: workflow
 steps:
   - id: classify
-    title: Classify
     unit:
-      instructions: Classify.
-      output:
-        type: object
-        properties: { kind: { type: string } }
-        required: [kind]
+      output: { type: object, properties: { kind: { type: string } }, required: [kind] }
   - id: triage
-    title: Triage
     route:
-      input: \${{ steps.classify.output.kind }}
-      when: { bug: fix-bug }
+      input: steps.classify.output.kind
+      when: [{ match: bug, step: fix-bug }]
       default: manual-triage
   - id: fix-bug
-    title: Fix bug
-    unit:
-      instructions: Fix it.
   - id: manual-triage
-    title: Manual triage
-    unit:
-      instructions: Triage it.
+---
+
+## classify
+
+Classify.
+
+## triage
+
+Triage.
+
+## fix-bug
+
+Fix it.
+
+## manual-triage
+
+Triage it.
 `;
 
     // Default fallback: "question" matches no branch → manual-triage runs, fix-bug skipped.
@@ -1636,10 +1736,31 @@ steps:
     expect(byId.get("manual-triage")?.status).toBe("completed");
 
     // Unroutable: no matching branch and no default → the route step fails.
-    const NO_DEFAULT_WF = DEFAULTED_WF.replace("      default: manual-triage\n", "").replace(
-      /^ {2}- id: manual-triage[\s\S]*$/m,
-      "",
-    );
+    const NO_DEFAULT_WF = `---
+type: workflow
+steps:
+  - id: classify
+    unit:
+      output: { type: object, properties: { kind: { type: string } }, required: [kind] }
+  - id: triage
+    route:
+      input: steps.classify.output.kind
+      when: [{ match: bug, step: fix-bug }]
+  - id: fix-bug
+---
+
+## classify
+
+Classify.
+
+## triage
+
+Triage.
+
+## fix-bug
+
+Fix it.
+`;
     fs.rmSync(tmpDir, { recursive: true, force: true });
     fs.mkdirSync(tmpDir, { recursive: true });
     seedRun({
@@ -1776,34 +1897,44 @@ steps:
     expect(dispatches).toBe(0);
   });
 
-  const CASCADE_WF = `version: 2
-name: Cascade
+  const CASCADE_WF = `---
+type: workflow
 params:
   pick: { type: string }
   branch: { type: string }
 steps:
   - id: classify
-    title: Classify
     route:
-      input: \${{ params.pick }}
-      when: { left: branch-router, right: safe }
+      input: params.pick
+      when: [{ match: left, step: branch-router }, { match: right, step: safe }]
   - id: branch-router
-    title: Branch router
     route:
-      input: \${{ params.branch }}
-      when: { m: c1, n: c2 }
+      input: params.branch
+      when: [{ match: m, step: c1 }, { match: n, step: c2 }]
   - id: safe
-    title: Safe
-    unit:
-      instructions: Safe path.
   - id: c1
-    title: C1
-    unit:
-      instructions: Branch c1.
   - id: c2
-    title: C2
-    unit:
-      instructions: Branch c2.
+---
+
+## classify
+
+Classify.
+
+## branch-router
+
+Branch router.
+
+## safe
+
+Safe path.
+
+## c1
+
+Branch c1.
+
+## c2
+
+Branch c2.
 `;
 
   const CASCADE_STEPS = [
@@ -1883,7 +2014,7 @@ steps:
     const failing = await runWorkflowSteps({
       target: RUN_ID,
       dispatcher: async (req) =>
-        req.prompt.includes("Review f3")
+        req.prompt.includes('fan-out list:\n"f3"')
           ? { ok: false, text: "", failureReason: "timeout", error: "timed out" }
           : { ok: true, text: "done" },
       loadPlan: usePlan(FAN_OUT_WF),
@@ -1953,16 +2084,19 @@ describe("defaultUnitDispatcher — llm failures map into the retry taxonomy (pe
     }
   });
 
-  const LLM_RETRY_WF = `version: 2
-name: Flaky
+  const LLM_RETRY_WF = `---
+type: workflow
 defaults:
   engine: test-llm
 steps:
   - id: fetch
-    title: Fetch
     unit:
       retry: { max: 1, on: [llm_rate_limit] }
-      instructions: Fetch the thing.
+---
+
+## fetch
+
+Fetch the thing.
 `;
 
   test("an HTTP 429 journals llm_rate_limit and `retry: { on: [llm_rate_limit] }` re-dispatches", async () => {
@@ -2155,53 +2289,61 @@ describe("buildAgentDispatchRequest — schema reaches the harness structured-ou
 // seams (`resolveEnv` / `preflightWorktree`) so the conditions are simulated
 // deterministically, git-independently.
 describe("executeStepPlan — dispatch prerequisites gated on actual dispatch (reviewer finding #2)", () => {
-  const ENV_SOLO_WF = `version: 2
-name: Env
+  const ENV_SOLO_WF = `---
+type: workflow
 steps:
   - id: build
-    title: Build
     unit:
       engine: test-agent
       env: [env:secrets]
-      instructions: Build it.
+---
+
+## build
+
+Build it.
 `;
-  const ENV_FANOUT_WF = `version: 2
-name: Env fan-out
+  const ENV_FANOUT_WF = `---
+type: workflow
 params:
   files: { type: array }
 steps:
   - id: build
-    title: Build
     map:
-      over: \${{ params.files }}
-      unit:
-        engine: test-agent
-        env: [env:secrets]
-        instructions: Build \${{ item }}.
+      over: params.files
+      unit: { engine: test-agent, env: [env:secrets] }
+---
+
+## build
+
+Build the assigned item.
 `;
-  const ISO_SOLO_WF = `version: 2
-name: Iso
+  const ISO_SOLO_WF = `---
+type: workflow
 steps:
   - id: build
-    title: Build
     unit:
       engine: test-agent
       isolation: worktree
-      instructions: Build it.
+---
+
+## build
+
+Build it.
 `;
-  const ISO_FANOUT_WF = `version: 2
-name: Iso fan-out
+  const ISO_FANOUT_WF = `---
+type: workflow
 params:
   files: { type: array }
 steps:
   - id: build
-    title: Build
     map:
-      over: \${{ params.files }}
-      unit:
-        engine: test-agent
-        isolation: worktree
-        instructions: Build \${{ item }}.
+      over: params.files
+      unit: { engine: test-agent, isolation: worktree }
+---
+
+## build
+
+Build the assigned item.
 `;
 
   /** Seed a COMPLETED row (matching the canonical input hash) for `count` of the

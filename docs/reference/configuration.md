@@ -287,11 +287,10 @@ section, an absent key, and an explicit `false` all read identically as off.
   because merge/delete/contradict operations are advisory and promotion emits a
   reviewable proposal. `sync.push` is deliberately **not** gated by this key.
 - **`experimental.workflowEngine`** — allows the native `akm workflow`
-  orchestration engine to run: `akm workflow run`/`brief`/`report`,
-  and authoring a YAML (`version: 2`) workflow program via `akm workflow
-  create <name>.yaml`. Classic linear markdown workflows
-  (`start`/`next`/`complete`/`status`/`list`/`create` for markdown/`resume`/
-  `abandon`) are unaffected either way. See
+  orchestration engine to run through `akm workflow run`/`brief`/`report`.
+  Authoring and linting the unified markdown workflow format, plus the manual
+  `start`/`next`/`complete`/`status`/`list`/`create`/`resume`/`abandon`
+  contract, are unaffected either way. See
   [Workflows](workflows.md#enabling-the-workflow-engine-opt-in-in-090) for
   the full gate behavior and error shape.
 

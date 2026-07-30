@@ -2,8 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// biome-ignore-all lint/suspicious/noTemplateCurlyInString: `\${{ … }}` is the
-// workflow expression grammar under test, not a JS template literal.
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: `\${{ … }}` is
+// tested here as literal, hostile PROSE content (never workflow expression
+// grammar — the unified format has none in the body, spec §2.3).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -59,10 +60,10 @@ afterEach(() => storage.cleanup());
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function writeProgram(name: string, yamlText: string): void {
-  const file = path.join(storage.stashDir, "workflows", `${name}.yaml`);
+function writeProgram(name: string, markdown: string): void {
+  const file = path.join(storage.stashDir, "workflows", `${name}.md`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, yamlText, "utf8");
+  fs.writeFileSync(file, markdown, "utf8");
 }
 
 /** Direct-SQL escape hatch for planting / tampering journal rows (crash sim). */
@@ -142,20 +143,23 @@ const FAKE_SECRET = "SUPER-SEKRET-VALUE-9f8e7d6c";
 // 1. Crash / resume
 // ═══════════════════════════════════════════════════════════════════════════
 
-const FANOUT_FAIL_WF = `version: 2
-name: crash-resume
-params:
-  files: { type: array, items: { type: string } }
-steps:
-  - id: review
-    title: Review files
-    map:
-      over: \${{ params.files }}
-      reducer: collect
-      unit:
-        instructions: Review \${{ item }} carefully.
-        on_error: fail
-`;
+const FANOUT_FAIL_WF = [
+  "---",
+  "type: workflow",
+  "params:",
+  "  files: { type: array, items: { type: string } }",
+  "steps:",
+  "  - id: review",
+  "    map:",
+  "      over: params.files",
+  "      unit: { on_error: fail }",
+  "---",
+  "",
+  "## review",
+  "",
+  "Review the assigned item carefully.",
+  "",
+].join("\n");
 
 describe("chaos: crash / resume (durable-row)", () => {
   test("a mid-step dispatcher failure fails the run; resume re-dispatches ONLY incomplete units", async () => {
@@ -173,9 +177,12 @@ describe("chaos: crash / resume (durable-row)", () => {
       maxConcurrency: 1,
       summaryJudge: null,
       dispatcher: async (req: UnitDispatchRequest): Promise<UnitDispatchResult> => {
-        // Match the INSTRUCTION line, not the whole prompt: the preamble echoes
-        // params.files (which contains "c.ts") into every unit's prompt.
-        if (req.prompt.includes("Review c.ts carefully.")) throw new Error("harness exploded on c.ts");
+        // Instructions are never interpolated (spec §2.3): the item reaches
+        // the unit as attached JSON context, and the preamble ALSO echoes the
+        // full params.files list (which contains "c.ts") into every unit's
+        // prompt — so match the unit's OWN item block (fan-out preserves
+        // array order: index 2 is "c.ts"), not a bare substring.
+        if (req.prompt.includes("## Item (index 2)")) throw new Error("harness exploded on c.ts");
         return { ok: true, text: `reviewed ${req.unitId}` };
       },
     });
@@ -220,29 +227,32 @@ describe("chaos: crash / resume (durable-row)", () => {
   });
 });
 
-const FANOUT_GATE_WF = `version: 2
-name: crash-completion
-params:
-  files: { type: array, items: { type: string } }
-steps:
-  - id: review
-    title: Review files
-    map:
-      over: \${{ params.files }}
-      reducer: collect
-      unit:
-        instructions: Review \${{ item }}.
-        output:
-          type: object
-          properties: { verdict: { type: string } }
-          required: [verdict]
-    output:
-      type: array
-      items: { type: object, properties: { verdict: { type: string } }, required: [verdict] }
-      minItems: 1
-    gate:
-      criteria: [every file was reviewed]
-`;
+const FANOUT_GATE_WF = [
+  "---",
+  "type: workflow",
+  "params:",
+  "  files: { type: array, items: { type: string } }",
+  "steps:",
+  "  - id: review",
+  "    map:",
+  "      over: params.files",
+  "      unit: { output: { type: object, properties: { verdict: { type: string } }, required: [verdict] } }",
+  "    output:",
+  "      type: array",
+  "      items: { type: object, properties: { verdict: { type: string } }, required: [verdict] }",
+  "      minItems: 1",
+  "    gate: {}",
+  "---",
+  "",
+  "## review",
+  "",
+  "Review the assigned item.",
+  "",
+  "### gate",
+  "",
+  "- every file was reviewed",
+  "",
+].join("\n");
 
 describe("chaos: crash INSIDE the completion path", () => {
   test("units done + no gate row yet (crash before the judge): resume promotes once, exactly one gate row", async () => {
@@ -401,28 +411,35 @@ describe("chaos: crash INSIDE the completion path", () => {
 // 2. Lease contention
 // ═══════════════════════════════════════════════════════════════════════════
 
-const SOLO_WF = `version: 2
-name: leased
-steps:
-  - id: only
-    title: Only step
-    unit:
-      instructions: Do the leased thing.
-`;
+const SOLO_WF = [
+  "---",
+  "type: workflow",
+  "steps:",
+  "  - id: only",
+  "---",
+  "",
+  "## only",
+  "",
+  "Do the leased thing.",
+  "",
+].join("\n");
 
-const SOLO_FANOUT_WF = `version: 2
-name: leased-fanout
-params:
-  files: { type: array, items: { type: string } }
-steps:
-  - id: review
-    title: Review
-    map:
-      over: \${{ params.files }}
-      reducer: collect
-      unit:
-        instructions: Review \${{ item }}.
-`;
+const SOLO_FANOUT_WF = [
+  "---",
+  "type: workflow",
+  "params:",
+  "  files: { type: array, items: { type: string } }",
+  "steps:",
+  "  - id: review",
+  "    map:",
+  "      over: params.files",
+  "---",
+  "",
+  "## review",
+  "",
+  "Review the assigned item.",
+  "",
+].join("\n");
 
 describe("chaos: lease contention", () => {
   test("two concurrent engine invocations race: exactly one drives, the loser is refused naming holder + expiry", async () => {
@@ -568,27 +585,30 @@ describe("chaos: lease contention", () => {
 // 3. Hostile content
 // ═══════════════════════════════════════════════════════════════════════════
 
-const PRODUCER_CONSUMER_WF = `version: 2
-name: hostile-flow
-params:
-  secret: { type: string }
-steps:
-  - id: discover
-    title: Discover
-    unit:
-      instructions: Discover a token.
-      output:
-        type: object
-        properties: { token: { type: string } }
-        required: [token]
-  - id: use
-    title: Use
-    unit:
-      instructions: "Use token \${{ steps.discover.output.token }} to proceed."
-`;
+const PRODUCER_CONSUMER_WF = [
+  "---",
+  "type: workflow",
+  "params:",
+  "  secret: { type: string }",
+  "steps:",
+  "  - id: discover",
+  "    unit: { output: { type: object, properties: { token: { type: string } }, required: [token] } }",
+  "  - id: use",
+  "    inputs: [steps.discover.output.token]",
+  "---",
+  "",
+  "## discover",
+  "",
+  "Discover a token.",
+  "",
+  "## use",
+  "",
+  "Use the discovered token (see the declared inputs) to proceed.",
+  "",
+].join("\n");
 
 describe("chaos: hostile content — single-pass resolution", () => {
-  test("a unit result containing ${{ … }} stays LITERAL in downstream prompts and artifacts — never re-resolved", async () => {
+  test("a unit result containing ${{ … }} stays LITERAL in downstream attached context — never re-resolved", async () => {
     writeProgram("hostile-flow", PRODUCER_CONSUMER_WF);
     const params = { secret: "LEAKED-PARAM-VALUE" };
     const started = await startWorkflowRun("workflows/hostile-flow", params);
@@ -609,12 +629,16 @@ describe("chaos: hostile content — single-pass resolution", () => {
     });
     expect(result.done).toBe(true);
 
-    // The downstream instruction carries the token LITERALLY. A second
-    // resolution pass would have produced "Use token LEAKED-PARAM-VALUE" — it
-    // must not. (The preamble legitimately echoes run params; the injection
-    // class is the INSTRUCTION being re-resolved, which is what we assert on.)
-    expect(usePrompt).toContain("Use token ${{ params.secret }} to proceed.");
-    expect(usePrompt).not.toContain("Use token LEAKED-PARAM-VALUE");
+    // Body prose is never templated (spec §2.3): `discover`'s output reaches
+    // `use` as ATTACHED JSON context (its `inputs:` declaration), never
+    // spliced into the instructions. Scope the assertion to that declared-
+    // inputs block — the preamble legitimately echoes the run's `secret`
+    // param elsewhere, so a bare "LEAKED-PARAM-VALUE" substring check would
+    // false-positive; the injection class under test is the ATTACHED VALUE
+    // being re-resolved, which is what this narrows to.
+    const inputsBlock = usePrompt.slice(usePrompt.indexOf("## Declared inputs"));
+    expect(inputsBlock).toContain(HOSTILE_TOKEN);
+    expect(inputsBlock).not.toContain("LEAKED-PARAM-VALUE");
 
     // The promoted artifact is the literal hostile string — stored as data.
     const status = await getWorkflowStatus(runId);
@@ -622,22 +646,28 @@ describe("chaos: hostile content — single-pass resolution", () => {
   });
 });
 
-const HOSTILE_FANOUT_WF = `version: 2
-name: hostile-fanout
-params:
-  files: { type: array, items: { type: string } }
-  secret: { type: string }
-steps:
-  - id: review
-    title: Review
-    map:
-      over: \${{ params.files }}
-      reducer: collect
-      unit:
-        instructions: Review \${{ item }}.
-    gate:
-      criteria: [every file reviewed]
-`;
+const HOSTILE_FANOUT_WF = [
+  "---",
+  "type: workflow",
+  "params:",
+  "  files: { type: array, items: { type: string } }",
+  "  secret: { type: string }",
+  "steps:",
+  "  - id: review",
+  "    map:",
+  "      over: params.files",
+  "    gate: {}",
+  "---",
+  "",
+  "## review",
+  "",
+  "Review the assigned item.",
+  "",
+  "### gate",
+  "",
+  "- every file reviewed",
+  "",
+].join("\n");
 
 const HOSTILE_ITEMS = [
   "${{ params.secret }}",
@@ -685,7 +715,11 @@ describe("chaos: hostile content — events, clipping, brief safety", () => {
     expect(eventsDump).not.toContain("HEADmarker");
     expect(eventsDump).not.toContain("akm-report-contract");
     expect(eventsDump).not.toContain(HOSTILE_SECRET);
-    expect(eventsDump).not.toContain("Review normal.ts");
+    // Instructions are never interpolated (spec §2.3) so no resolved "Review
+    // <item>" phrase is ever produced; assert directly on the fan-out ITEM
+    // VALUE itself (attached as context, never spliced) to keep this a real
+    // check rather than a vacuous one under the new format.
+    expect(eventsDump).not.toContain("normal.ts");
 
     // The gate artifact is clipped at the documented 4000-char bound even
     // though each unit returned a 100KB result.
@@ -702,17 +736,23 @@ describe("chaos: hostile content — events, clipping, brief safety", () => {
   });
 
   test("brief JSON stays well-formed with hostile journaled gate feedback recovered from the journal", async () => {
-    const LOOP_WF = `version: 2
-name: hostile-loop
-steps:
-  - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-    gate:
-      criteria: [the work is thorough]
-      max_loops: 3
-`;
+    const LOOP_WF = [
+      "---",
+      "type: workflow",
+      "steps:",
+      "  - id: work",
+      "    gate: { max_loops: 3 }",
+      "---",
+      "",
+      "## work",
+      "",
+      "Do the work.",
+      "",
+      "### gate",
+      "",
+      "- the work is thorough",
+      "",
+    ].join("\n");
     writeProgram("hostile-loop", LOOP_WF);
     const started = await startWorkflowRun("workflows/hostile-loop", {});
     const runId = started.run.id;
@@ -754,23 +794,31 @@ steps:
   });
 });
 
-const ENV_SOLO_WF = `version: 2
-name: env-bound
-defaults:
-  engine: test-agent
-steps:
-  - id: build
-    title: Build
-    unit:
-      instructions: Build it.
-      env: [env/leak]
-    gate:
-      criteria: [the build passes]
-  - id: wrap
-    title: Wrap
-    unit:
-      instructions: Wrap up.
-`;
+const ENV_SOLO_WF = [
+  "---",
+  "type: workflow",
+  "defaults:",
+  "  engine: test-agent",
+  "steps:",
+  "  - id: build",
+  "    unit: { env: [env/leak] }",
+  "    gate: {}",
+  "  - id: wrap",
+  "---",
+  "",
+  "## build",
+  "",
+  "Build it.",
+  "",
+  "### gate",
+  "",
+  "- the build passes",
+  "",
+  "## wrap",
+  "",
+  "Wrap up.",
+  "",
+].join("\n");
 
 describe("chaos: hostile content — secret env VALUES never reach a durable surface", () => {
   test("a bound secret value reaches the child env but appears in NO brief / report / events output", async () => {
@@ -897,16 +945,24 @@ describe("chaos: replay divergence under a tampered journal", () => {
 // loudly (naming the unit) on both the engine resume and the report surface,
 // never silently re-dispatch — exactly like a tampered journal row.
 
-const PARAM_SOLO_WF = `version: 2
-name: param-tamper
-params:
-  mode: { type: string }
-steps:
-  - id: work
-    title: Work
-    unit:
-      instructions: Do \${{ params.mode }} work.
-`;
+const PARAM_SOLO_WF = [
+  "---",
+  "type: workflow",
+  "params:",
+  "  mode: { type: string }",
+  "steps:",
+  "  - id: work",
+  "---",
+  "",
+  "## work",
+  "",
+  // Body prose is never templated (spec §2.3); the run's FULL params object is
+  // always part of the unit's input hash preimage regardless (step-work.ts),
+  // so a "mode" param change still diverges the hash without needing to
+  // splice it into the instructions.
+  "Do the work.",
+  "",
+].join("\n");
 
 describe("chaos: replay divergence via a tampered params row (plan_hash does not cover params)", () => {
   /** Seed a completed loop-1 row (engine's own hash under the ORIGINAL params), then tamper params. */
@@ -975,16 +1031,23 @@ describe("chaos: replay divergence via a tampered params row (plan_hash does not
 // on a judge throw / unparseable verdict (offline-safe), and only a well-formed
 // `complete: false` blocks completion.
 
-const JUDGE_GATE_WF = `version: 2
-name: judge-gate
-steps:
-  - id: work
-    title: Work
-    unit:
-      instructions: Do the work.
-    gate:
-      criteria: [the work is thorough]
-`;
+const JUDGE_GATE_WF = [
+  "---",
+  "type: workflow",
+  "steps:",
+  "  - id: work",
+  "    gate: {}",
+  "---",
+  "",
+  "## work",
+  "",
+  "Do the work.",
+  "",
+  "### gate",
+  "",
+  "- the work is thorough",
+  "",
+].join("\n");
 
 describe("chaos: gate judge failures journal a terminal gate row on both surfaces", () => {
   const throwingJudge: SummaryJudge = async () => {
