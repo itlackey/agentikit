@@ -2,10 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import fs from "node:fs";
-import { acquireMaintenanceActivitySync } from "../../core/maintenance-barrier";
-import { getStateDbPath } from "../../core/state-db";
-import { type Database, openDatabase } from "../../storage/database";
+import type { Database } from "../../storage/database";
 import type { DbSearchResult } from "../../storage/repositories/index-entry-types";
 import { getUtilityScoresByIds } from "../../storage/repositories/index-utility-repository";
 import type { GraphBoostContext } from "../graph/graph-boost";
@@ -56,10 +53,17 @@ export interface RankEntriesOptions {
    */
   scopeKey?: string;
   /**
-   * R2 — improve-loop salience scores (`asset_salience.rank_score`) keyed by
-   * entry id. `undefined` (default) = load best-effort from state.db;
-   * `null` = explicitly disabled; a Map = injected (tests / callers that
-   * already hold the data).
+   * R2 / #692 — improve-loop salience scores (`asset_salience.rank_score`)
+   * keyed by entry id. `salience-ranking` is NOT in
+   * `defaultUtilityRankingContributors` (#692 removed it from default
+   * user-facing ranking — see that contributor's doc comment), so this field
+   * is consumed only by a caller that explicitly builds its own
+   * utility-contributor list including it: `undefined`/`null` (default) mean
+   * no data / off; a `Map` is the injected input (tests / a future gated
+   * experiment). There is no state.db fallback load anymore — the prior
+   * best-effort `loadSalienceRankScores` was deleted outright, along with the
+   * hot-path defect it caused (a synchronous wait on the maintenance-activity
+   * barrier, up to 5s, before the SQLite `busy_timeout` even applied).
    */
   salienceRankScores?: Map<number, number> | null;
   /**
@@ -79,63 +83,6 @@ export interface RankEntriesOptions {
    * fallback so this field is the only path.
    */
   ablateContributors?: string;
-}
-
-/**
- * R2 — best-effort load of `asset_salience.rank_score` from state.db for the
- * ranked items. Fail-open: any error (state.db locked by a concurrent improve
- * run, missing table, unreadable path) returns an empty map, which makes the
- * salience contributor a no-op — byte-identical to pre-R2 ranking.
- *
- * Deliberately NOT `openStateDatabase()`: that helper runs migrations and sets
- * a 30 s busy timeout — too heavy for a search hot path. This opens read-only,
- * never creates or migrates state.db (missing file / missing table = empty
- * map), and caps lock waits at 250 ms so a concurrent improve run can only
- * ever cost the search a quarter second, not a stall.
- */
-export function loadSalienceRankScores(items: RankedEntryInput[]): Map<number, number> {
-  const result = new Map<number, number>();
-  if (items.length === 0) return result;
-  try {
-    const dbPath = getStateDbPath();
-    if (!fs.existsSync(dbPath)) return result; // improve loop has never run here
-    const releaseActivity = acquireMaintenanceActivitySync("state-db");
-    const idByRef = new Map<string, number>();
-    try {
-      for (const item of items) {
-        if (item.itemRef) idByRef.set(item.itemRef, item.id);
-      }
-      if (idByRef.size === 0) return result;
-      const stateDb = openDatabase(dbPath, { readonly: true });
-      try {
-        try {
-          stateDb.exec("PRAGMA busy_timeout = 250");
-        } catch {
-          // pragma failure on a readonly handle is fine — default timeout applies
-        }
-        const refs = [...idByRef.keys()];
-        const CHUNK = 500;
-        for (let i = 0; i < refs.length; i += CHUNK) {
-          const chunk = refs.slice(i, i + CHUNK);
-          const placeholders = chunk.map(() => "?").join(",");
-          const rows = stateDb
-            .prepare(`SELECT asset_ref, rank_score FROM asset_salience WHERE asset_ref IN (${placeholders})`)
-            .all(...chunk) as Array<{ asset_ref: string; rank_score: number }>;
-          for (const row of rows) {
-            const id = idByRef.get(row.asset_ref);
-            if (id !== undefined) result.set(id, row.rank_score);
-          }
-        }
-      } finally {
-        stateDb.close();
-      }
-    } finally {
-      releaseActivity();
-    }
-  } catch {
-    // Fail open — search must never break because state.db is unavailable.
-  }
-  return result;
 }
 
 export function normalizeFtsScores(results: DbSearchResult[]): Map<number, { score: number; result: DbSearchResult }> {
@@ -255,12 +202,12 @@ export function applyRankingRules(options: RankEntriesOptions): RankedEntryInput
     options.items.map((item) => item.id),
     options.scopeKey,
   );
-  // R2 — compose the improve loop's salience into user-facing ranking.
-  // undefined = load from state.db (default); null = explicitly disabled.
-  const salienceRankScores =
-    options.salienceRankScores === null
-      ? new Map<number, number>()
-      : (options.salienceRankScores ?? loadSalienceRankScores(options.items));
+  // R2 / #692 — salience-ranking is not in defaultUtilityRankingContributors
+  // (see ranking-contributors.ts), so this is never consumed by the default
+  // ranking path below; it exists only for a caller that explicitly builds a
+  // contributor list including salienceRankingContributor. undefined/null
+  // both normalize to "no data" — there is no state.db fallback load.
+  const salienceRankScores = options.salienceRankScores ?? new Map<number, number>();
   const utilityContext = {
     ...rankingContext,
     utilityScores: utilScoresMap,
