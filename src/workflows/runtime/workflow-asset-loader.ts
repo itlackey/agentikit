@@ -20,9 +20,6 @@ import type { WorkflowParameter, WorkflowStepDefinition } from "../../sources/ty
 import { withIndexDb } from "../../storage/repositories/index-db";
 import { formatWorkflowErrors } from "../authoring/authoring";
 import { parseWorkflow } from "../parser";
-import { parseWorkflowProgram } from "../program/parser";
-import { isWorkflowProgramPath, projectProgramParameters, projectProgramStepDefinitions } from "../program/project";
-import type { WorkflowProgram } from "../program/schema";
 import type { WorkflowDocument } from "../schema";
 
 /**
@@ -34,22 +31,21 @@ export type WorkflowAsset = {
   path: string;
   sourcePath: string;
   adapterId?: string;
+  /**
+   * Run-level display title. The unified format carries no authored title
+   * (workflow-format-unification, spec §2.2) — a step is its id, and the
+   * asset's human name is its `description`/H1 like any other asset. This is
+   * the asset's canonical name (the file-derived slug), used only for the
+   * `workflow_runs.workflow_title` display column (unchanged journal shape).
+   */
   title: string;
   parameters?: WorkflowParameter[];
   steps: WorkflowStepDefinition[];
   /**
    * The full parsed document, retained so the run engine can compile the
-   * plan-graph IR (`workflows/ir/compile.ts`). Present for MARKDOWN
-   * workflows only; YAML programs carry `program` instead.
+   * plan-graph IR (`workflows/ir/compile.ts`).
    */
-  document?: WorkflowDocument;
-  /**
-   * Parsed YAML workflow *program* (redesign addendum, R1). Present when the
-   * asset is a YAML orchestration program under `workflows/`; undefined for
-   * markdown workflows. The freeze boundary compiles and resolves it when a
-   * run starts.
-   */
-  program?: WorkflowProgram;
+  document: WorkflowDocument;
 };
 
 /**
@@ -152,27 +148,17 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
   }
 
   const resolvedSourcePath = sourcePath as string;
-  // Canonicalize the stored ref: `workflows/foo.yaml` and `workflows/foo`
-  // resolve to the same file, so they MUST share one run identity. The raw
-  // `workflowName` (with any extension) is what drives file resolution above;
-  // only the persisted/queried ref is collapsed (matches the index entry key,
-  // which is keyed by the extension-stripped canonical name).
+  // Canonicalize the stored ref: `workflows/foo.md` and `workflows/foo` resolve
+  // to the same file, so they MUST share one run identity.
   const canonicalName = canonicalizeWorkflowName(workflowName as string);
   const fullRef =
     workflowAdapterId === "akm-workflow"
       ? makeBundleRef(sourceBundleId, canonicalName)
       : canonicalWorkflowRunRef(sourceBundleId, canonicalName);
 
-  // Format detection by extension: `.yaml`/`.yml` is a YAML workflow program
-  // (redesign addendum, R1); everything else is the markdown document format.
-  if (isWorkflowProgramPath(assetPath)) {
-    const program = loadWorkflowProgramFromDisk(assetPath);
-    return projectProgramAsset(program, fullRef, assetPath, resolvedSourcePath, workflowAdapterId as string);
-  }
-
   const cached = readWorkflowDocumentFromIndex(resolvedSourcePath, fullRef, workflowAdapterId as string);
   const document = cached ?? loadWorkflowDocumentFromDisk(assetPath);
-  return projectAsset(document, fullRef, assetPath, resolvedSourcePath, workflowAdapterId as string);
+  return projectAsset(document, fullRef, assetPath, resolvedSourcePath, workflowAdapterId as string, canonicalName);
 }
 
 function ownsNativeWorkflowRuntime(source: SearchSource): boolean {
@@ -312,15 +298,6 @@ export function resolveWorkflowEntryId(sourcePath: string, ref: string, adapterI
   });
 }
 
-function loadWorkflowProgramFromDisk(assetPath: string): WorkflowProgram {
-  const content = fs.readFileSync(assetPath, "utf8");
-  const result = parseWorkflowProgram(content, { path: assetPath });
-  if (!result.ok) {
-    throw new UsageError(formatWorkflowErrors(assetPath, result.errors));
-  }
-  return result.program;
-}
-
 function loadWorkflowDocumentFromDisk(assetPath: string): WorkflowDocument {
   const content = fs.readFileSync(assetPath, "utf8");
   const result = parseWorkflow(content, { path: assetPath });
@@ -369,53 +346,38 @@ function projectAsset(
   assetPath: string,
   sourcePath: string,
   adapterId: string,
+  canonicalName: string,
 ): WorkflowAsset {
+  const title = canonicalName.split("/").pop() || canonicalName;
   return {
     ref,
     path: assetPath,
     sourcePath,
     adapterId,
-    title: doc.title,
-    ...(doc.parameters
+    title,
+    ...(doc.params
       ? {
-          parameters: doc.parameters.map((p) => ({
-            name: p.name,
-            ...(p.description ? { description: p.description } : {}),
-          })),
+          parameters: Object.entries(doc.params).map(([name, schema]) => {
+            const description = schema.description;
+            return { name, ...(typeof description === "string" && description ? { description } : {}) };
+          }),
         }
       : {}),
     steps: doc.steps.map((s) => ({
       id: s.id,
-      title: s.title,
-      instructions: s.instructions.text,
-      ...(s.completionCriteria ? { completionCriteria: s.completionCriteria.map((c) => c.text) } : {}),
+      title: s.id,
+      instructions: s.instructions?.text ?? stepFallbackInstructions(s),
+      ...(s.gateRubric ? { completionCriteria: [s.gateRubric.text] } : {}),
       sequenceIndex: s.sequenceIndex,
     })),
     document: doc,
   };
 }
 
-/**
- * Project a parsed YAML program into the run-repository asset shape. Step
- * instructions carry the RAW `${{ … }}` templates — resolution happens in
- * the engine against the frozen plan, never here.
- */
-function projectProgramAsset(
-  program: WorkflowProgram,
-  ref: string,
-  assetPath: string,
-  sourcePath: string,
-  adapterId: string,
-): WorkflowAsset {
-  const parameters = projectProgramParameters(program);
-  return {
-    ref,
-    path: assetPath,
-    sourcePath,
-    adapterId,
-    title: program.name,
-    ...(parameters ? { parameters } : {}),
-    steps: projectProgramStepDefinitions(program),
-    program,
-  };
+/** A route-only step with no body section still needs a non-empty spine instructions string. */
+function stepFallbackInstructions(step: WorkflowDocument["steps"][number]): string {
+  if (!step.route) return "";
+  const branches = step.route.branches.map((b) => `"${b.match}" -> ${b.stepId}`);
+  if (step.route.defaultStepId !== undefined) branches.push(`default -> ${step.route.defaultStepId}`);
+  return `Route on ${step.route.input}: ${branches.join(", ")}.`;
 }

@@ -60,13 +60,7 @@ import type {
   IrUnitNode,
   WorkflowPlanGraph,
 } from "../ir/schema";
-import {
-  type ExpressionScope,
-  parseTemplate,
-  resolveTemplate,
-  resolveWholeValue,
-  type TemplateSegment,
-} from "../program/expressions";
+import { type ExpressionScope, resolveReferenceString } from "../program/expressions";
 import { WORKFLOW_MAX_MAP_EXPANSION } from "../resource-limits";
 import { requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
 import { completeWorkflowStep, type SummaryValidationFailure, type WorkflowNextResult } from "../runtime/runs";
@@ -212,31 +206,31 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
 
   const scope: ExpressionScope = { params: input.params, stepOutputs: input.stepOutputs };
 
-  // Parse the instruction template ONCE (deterministic; resolution is a single
-  // pass per unit — substituted content is never re-scanned). Only nodes the
-  // frontend marked `templating: "expressions"` carry the `${{ … }}` grammar;
-  // classic linear markdown is opaque verbatim text.
-  let instructionSegments: TemplateSegment[];
-  if (template.templating === "expressions") {
-    const parsedInstructions = parseTemplate(template.instructions);
-    if (!parsedInstructions.ok) {
+  // Instructions are ALWAYS the step's body prose, byte-exact — never
+  // templated, never scanned for reference syntax (workflow-format-
+  // unification, spec §2.3). Only `map.over` / `route.input` / `inputs[]`
+  // carry the closed reference grammar.
+
+  // Resolve the step's declared `inputs:` ONCE (shared by every unit in this
+  // step — map items differ, declared inputs do not): prior-step artifacts
+  // attached to every dispatched unit as structured context.
+  const resolvedInputs: Array<{ reference: string; value: unknown }> = [];
+  for (const reference of template.inputs ?? []) {
+    const resolved = resolveReferenceString(reference, scope);
+    if (!resolved.ok) {
       return {
         ok: false,
-        error:
-          `Step "${plan.stepId}" instructions template failed to parse: ` +
-          parsedInstructions.errors.map((e) => e.message).join(" "),
+        error: `Step "${plan.stepId}" declared input "${reference}" failed to resolve: ${resolved.error.message}`,
       };
     }
-    instructionSegments = parsedInstructions.segments;
-  } else {
-    instructionSegments = [{ kind: "literal", text: template.instructions }];
+    resolvedInputs.push({ reference, value: resolved.value });
   }
 
-  // Resolve fan-out items: `over` is a single whole-value `${{ … }}` reference
-  // naming its producer explicitly — no ambient key search.
+  // Resolve fan-out items: `over` is a single whole-value reference naming
+  // its producer explicitly — no ambient key search.
   let items: unknown[];
   if (root.kind === "map") {
-    const source = resolveWholeValue(root.over, scope);
+    const source = resolveReferenceString(root.over, scope);
     if (!source.ok) {
       return {
         ok: false,
@@ -300,68 +294,73 @@ export function computeStepWorkList(plan: IrStepPlan, input: WorkListInput): Com
     // {{UNIT_ID}}) stays the base id.
     const journalBaseId = gateLoop > 1 ? `${unitId}~l${gateLoop}` : unitId;
 
-    // Single-pass resolution of the pre-parsed template against this unit's
-    // scope. A resolution failure is deterministic authoring/data breakage.
-    const unitScope: ExpressionScope = isFanOut ? { ...scope, item, itemIndex: index } : scope;
-    const resolvedInstr = resolveTemplate(instructionSegments, unitScope);
-
-    let resolved: StepWorkUnit["resolved"];
-    if (!resolvedInstr.ok) {
-      resolved = {
-        ok: false,
-        error: `instructions failed to resolve: ${resolvedInstr.errors.map((e) => e.message).join(" ")}`,
-      };
-    } else {
-      const prompt = buildUnitPrompt({
-        runId: input.runId,
-        stepId: plan.stepId,
-        unitId,
-        params: input.params,
-        ...(input.gateFeedback ? { gateFeedback: input.gateFeedback } : {}),
-        ...(template.schema ? { schema: template.schema } : {}),
-        instructions: resolvedInstr.text,
-      });
-      // Canonical dispatch-input envelope (reviewer finding #1). Every field
-      // here is a PLAN-FROZEN input that changes what the backend is actually
-      // asked to do, so a completed unit is reused ONLY when all of them match;
-      // a change to any of them re-dispatches. Key order is FIXED — it is the
-      // hash preimage (JSON.stringify preserves insertion order) — and shared
-      // by ALL surfaces, since this is the ONE place a unit's inputHash is
-      // computed (engine, brief, and report all call computeStepWorkList), so
-      // the byte-identical hash across surfaces is structural, not coincidental.
-      //
-      // Included beyond the R4 baseline (prompt/runner/model/schema): resolved
-      // timeoutMs, the env asset ref NAMES, and isolation — each
-      // reaches dispatch (native-executor's UnitDispatchRequest) and a changed
-      // one yields a materially different call. `env` carries NAMES ONLY, never
-      // resolved values: hashing a resolved secret would leak it into a
-      // durable hash oracle and would spuriously re-dispatch on every secret
-      // rotation. `retry`/`onError` are DELIBERATELY excluded — they govern
-      // failed-unit re-dispatch and step-level failure reduction, not a
-      // COMPLETED unit's inputs/output, so a completed row stays valid across
-      // policy changes.
-      //
-      // Ambient config is DELIBERATELY excluded — the model-alias table, the
-      // resolved backend/connection, and the working directory (`ctx.workDir` /
-      // process.cwd()) are NOT plan-frozen. The frozen plan is the identity
-      // boundary (redesign addendum determinism bar #2): config drift under an
-      // in-flight run is out of scope by design.
-      const dispatch = transitiveDispatchSnapshot(frozenEngine, input.engines ?? {});
-      const inputHash = createHash("sha256")
-        .update(
-          canonicalJsonString({
-            hashVersion: 3,
-            prompt,
-            dispatch,
-            invocation: frozenInvocation,
-            schema: template.schema ?? null,
-            env: template.env ?? null,
-            isolation: template.isolation ?? "none",
-          }),
-        )
-        .digest("hex");
-      resolved = { ok: true, prompt, inputHash };
-    }
+    // Context attachment (workflow-format-unification, spec §4): every unit
+    // receives the run params (already in the preamble), its item + index if
+    // it is a map unit, and the artifacts named by its step's `inputs:`.
+    // Instructions reach the unit byte-exact — never interpolated.
+    const prompt = buildUnitPrompt({
+      runId: input.runId,
+      stepId: plan.stepId,
+      unitId,
+      params: input.params,
+      ...(isFanOut ? { item, itemIndex: index } : {}),
+      ...(resolvedInputs.length > 0 ? { inputs: resolvedInputs } : {}),
+      ...(input.gateFeedback ? { gateFeedback: input.gateFeedback } : {}),
+      ...(template.schema ? { schema: template.schema } : {}),
+      instructions: template.instructions,
+    });
+    // Canonical dispatch-input envelope (reviewer finding #1). Every field
+    // here is a PLAN-FROZEN input that changes what the backend is actually
+    // asked to do, so a completed unit is reused ONLY when all of them match;
+    // a change to any of them re-dispatches. Key order is FIXED — it is the
+    // hash preimage (JSON.stringify preserves insertion order) — and shared
+    // by ALL surfaces, since this is the ONE place a unit's inputHash is
+    // computed (engine, brief, and report all call computeStepWorkList), so
+    // the byte-identical hash across surfaces is structural, not coincidental.
+    //
+    // Unit identity (workflow-format-unification, spec §2.3/§4) hashes the
+    // FROZEN TEMPLATE BYTES (`template.instructions`, byte-exact, never an
+    // instantiated/interpolated string) + the canonical item JSON + the
+    // declared-input artifact hashes + the params snapshot — instead of a
+    // resolved/spliced prompt string, since there is no more splicing. The
+    // assembled `prompt` above is what the harness SEES; the hash is over the
+    // plan-frozen INPUTS that determine it, which is the same replay contract
+    // the old resolved-prompt hash gave (same inputs ⇒ same hash) with the
+    // interpolation step removed.
+    //
+    // Included beyond the R4 baseline (template/runner/model/schema): resolved
+    // timeoutMs, the env asset ref NAMES, and isolation — each reaches
+    // dispatch (native-executor's UnitDispatchRequest) and a changed one
+    // yields a materially different call. `env` carries NAMES ONLY, never
+    // resolved values: hashing a resolved secret would leak it into a durable
+    // hash oracle and would spuriously re-dispatch on every secret rotation.
+    // `retry`/`onError` are DELIBERATELY excluded — they govern failed-unit
+    // re-dispatch and step-level failure reduction, not a COMPLETED unit's
+    // inputs/output, so a completed row stays valid across policy changes.
+    //
+    // Ambient config is DELIBERATELY excluded — the model-alias table, the
+    // resolved backend/connection, and the working directory (`ctx.workDir` /
+    // process.cwd()) are NOT plan-frozen. The frozen plan is the identity
+    // boundary (redesign addendum determinism bar #2): config drift under an
+    // in-flight run is out of scope by design.
+    const dispatch = transitiveDispatchSnapshot(frozenEngine, input.engines ?? {});
+    const inputHash = createHash("sha256")
+      .update(
+        canonicalJsonString({
+          hashVersion: 4,
+          template: template.instructions,
+          item: isFanOut ? (item ?? null) : null,
+          inputs: resolvedInputs,
+          params: input.params,
+          dispatch,
+          invocation: frozenInvocation,
+          schema: template.schema ?? null,
+          env: template.env ?? null,
+          isolation: template.isolation ?? "none",
+        }),
+      )
+      .digest("hex");
+    const resolved: StepWorkUnit["resolved"] = { ok: true, prompt, inputHash };
 
     return {
       unitId,
@@ -408,20 +407,28 @@ export interface BuildUnitPromptInput {
   stepId: string;
   unitId: string;
   params: Record<string, unknown>;
+  /** Present for a map unit — the item it was given + its 0-based index. */
+  item?: unknown;
+  itemIndex?: number;
+  /** Resolved artifacts named by the step's `inputs:`, in declaration order. */
+  inputs?: Array<{ reference: string; value: unknown }>;
   gateFeedback?: GateFeedback;
   schema?: Record<string, unknown>;
-  /** Instructions with every `${{ … }}` reference already resolved (single pass). */
+  /** The step's body prose, byte-exact — never interpolated. */
   instructions: string;
 }
 
 /**
- * Assemble the final prompt: engine preamble + resolved instructions
- * (+ gate feedback on loop re-executions, + schema directive). Workflow-
- * authored interpolation happened upstream via the expression module; only
- * the ENGINE's own preamble placeholders are substituted here.
+ * Assemble the final prompt: engine preamble (run params + item/index +
+ * declared-input artifacts, all as structured JSON context) + the step's
+ * BYTE-EXACT prose instructions (+ gate feedback on loop re-executions, +
+ * schema directive). Instructions are NEVER interpolated (workflow-format-
+ * unification, spec §2.3) — data reaches the unit as attached context, not
+ * string splices; only the ENGINE's own preamble placeholders are substituted
+ * here.
  */
 export function buildUnitPrompt(input: BuildUnitPromptInput): string {
-  const { runId, stepId, unitId, params, gateFeedback, schema, instructions } = input;
+  const { runId, stepId, unitId, params, itemIndex, item, inputs, gateFeedback, schema, instructions } = input;
   // Function replacements throughout: a string replacement would interpret
   // GetSubstitution patterns ($&, $$, $', $`) inside VALUES and silently
   // corrupt the prompt (e.g. a param value containing "$&").
@@ -430,6 +437,19 @@ export function buildUnitPrompt(input: BuildUnitPromptInput): string {
     .replaceAll("{{STEP_ID}}", () => stepId)
     .replaceAll("{{UNIT_ID}}", () => unitId)
     .replaceAll("{{PARAMS_JSON}}", () => safeJson(params));
+
+  // Map-unit context: the item this unit was given, plus its index. Attached
+  // as structured JSON — the engine never splices it into the instructions.
+  const itemBlock =
+    itemIndex !== undefined
+      ? `\n\n## Item (index ${itemIndex})\nYou were given this item from the fan-out list:\n${safeJson(item)}`
+      : "";
+
+  // Declared `inputs:` context: the prior-step artifacts this step named.
+  const inputsBlock =
+    inputs && inputs.length > 0
+      ? `\n\n## Declared inputs\n${inputs.map((i) => `### ${i.reference}\n${safeJson(i.value)}`).join("\n\n")}`
+      : "";
 
   // Gate-loop feedback (R2 max_loops): the judge's rejection is appended so
   // the re-executed unit can address it — and so the input hash changes,
@@ -447,7 +467,7 @@ export function buildUnitPrompt(input: BuildUnitPromptInput): string {
     ? `\n\nRespond with ONLY a JSON value matching this JSON Schema (no prose, no code fences):\n${safeJson(schema)}`
     : "";
 
-  return `${preamble}\n${instructions}${gateBlock}${schemaDirective}`;
+  return `${preamble}\n${instructions}${itemBlock}${inputsBlock}${gateBlock}${schemaDirective}`;
 }
 
 /**
@@ -1069,7 +1089,7 @@ export type RouteSkipInfo = { router: string; selected: string | null };
  * comparison is exact string equality against the declared `when:` matches.
  */
 export function evaluateRoute(route: IrRouteSpec, scope: ExpressionScope): RouteDecision {
-  const resolved = resolveWholeValue(route.input, scope);
+  const resolved = resolveReferenceString(route.input, scope);
   if (!resolved.ok) {
     return { ok: false, error: `route input ${route.input} failed to resolve: ${resolved.error.message}` };
   }

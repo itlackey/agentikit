@@ -26,7 +26,7 @@ import {
 import { getCurrentWorkflowScopeKey } from "../authoring/scope-key";
 import { frozenSummaryJudge } from "../exec/frozen-judge";
 import { detectSecretShapedParams } from "../exec/param-secrets";
-import { collectProgramWarnings } from "../ir/compile";
+import { collectWorkflowWarnings } from "../ir/compile";
 import { compileResolveFreezeWorkflow } from "../ir/freeze";
 import { validateWorkflowParams } from "../ir/params";
 import { canonicalPlanJson, computePlanHash } from "../ir/plan-hash";
@@ -249,14 +249,11 @@ export async function startWorkflowRun(
   // later invocation executes this snapshot — the asset file is never re-read
   // for an in-flight run; re-planning is an explicit new run.
   const plan = decodeWorkflowPlanV3(compileResolveFreezeWorkflow(asset, loadConfig()).plan);
-  // Non-fatal WARNINGS (redesign addendum): a YAML program's untyped-step and
-  // undeclared-param advisories surface as `warn()` lines at start (stderr,
-  // consistent with the repo's other author-facing warnings) without blocking
-  // the run. Markdown workflows carry no `program` and warn about nothing.
-  if (asset.program) {
-    for (const w of collectProgramWarnings(asset.program)) {
-      warn(`workflow start: ${asset.path}:${w.line} — ${w.message}`);
-    }
+  // Non-fatal WARNINGS: untyped-step and undeclared-param advisories surface
+  // as `warn()` lines at start (stderr, consistent with the repo's other
+  // author-facing warnings) without blocking the run.
+  for (const w of collectWorkflowWarnings(asset.document)) {
+    warn(`workflow start: ${asset.path}:${w.line} — ${w.message}`);
   }
   // Reviewer #12: validate supplied `--params` against the frozen param
   // schemas BEFORE creating the run, so a type-mismatched param (e.g. a string

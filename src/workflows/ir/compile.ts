@@ -3,37 +3,43 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Frontends -> unresolved workflow plan compilers.
+ * Frontend -> unresolved workflow plan compiler (workflow-format-unification).
  *
- * Two frontends, one source-plan shape. Engine resolution in `freeze.ts`
- * lowers this shape into the only executable format, workflow IR v3.
+ * ONE frontend now: {@link compileWorkflowPlan} lowers a parsed unified
+ * `WorkflowDocument` (`../parser.ts`) into the same `WorkflowPlanDraft` shape
+ * IR v3 has always consumed — the pre-unification split between a linear
+ * markdown compiler and a YAML-program compiler is gone. This pass owns the
+ * semantic rules the parser deliberately does not check:
  *
- *   - {@link compileWorkflowProgram} — YAML orchestration programs
- *     (`program/parser.ts`). Pure and deterministic; performs FULL expression
- *     validation (closed `${{ … }}` grammar, earlier-step references,
- *     whole-value contexts, `item`/`item_index` scoping) and MERGES the
- *     Returns accumulated `WorkflowError`s rather than throwing.
- *   - {@link compileWorkflowPlan} — classic LINEAR markdown workflows
- *     (`parser.ts`), the stable CLI contract: one unit node per step with the
- *     fail-fast default. The P1
- *     markdown orchestration grammar is gone — this path is linear-only.
+ *   - every reference string (`map.over` / `route.input` / `inputs[]`) parses
+ *     against the CLOSED two-root grammar (`program/expressions.ts`);
+ *   - `steps.<id>` references name an EARLIER step (a producer that has
+ *     already run when the reference resolves);
+ *   - `inputs:` entries must reference a STEP OUTPUT, never `params.*` — params
+ *     are already attached to every unit unconditionally, so naming one as a
+ *     declared input would be redundant.
  *
  * Node-id convention (stable, unique within a plan):
- *   step root  → `<stepId>`          (agent) or `<stepId>.map` (map)
+ *   step root  → `<stepId>`          (unit) or `<stepId>.map` (map)
  *   map unit   → `<stepId>.unit`     (template instantiated per item)
  *   gate       → `<stepId>.gate`
+ *
+ * Returns accumulated `WorkflowError`s rather than throwing. Pure and
+ * deterministic: the same document always compiles to the same plan.
  */
 
-import { type ExpressionAst, formatReference, listReferences, parseTemplate } from "../program/expressions";
-import type { ProgramDefaults, ProgramStep, ProgramUnit, WorkflowProgram } from "../program/schema";
-import type { WorkflowDocument, WorkflowError, WorkflowStep } from "../schema";
+import { formatReference, parseReference } from "../program/expressions";
+import type { ProgramDefaults, ProgramUnit } from "../program/schema";
+import type { WorkflowDocument, WorkflowError } from "../schema";
 import type { IrIsolation, IrMapReducer, IrOnError, IrRetry, IrRouteSpec } from "./schema";
 
 export interface WorkflowUnitDraft {
   kind: "unit";
   id: string;
   instructions: string;
-  templating: "expressions" | "verbatim";
+  templating: "verbatim";
+  /** Prior-step artifacts this unit consumes, as reference strings (compile-time validated). */
+  inputs?: string[];
   schema?: Record<string, unknown>;
   retry?: IrRetry;
   onError: IrOnError;
@@ -63,6 +69,7 @@ export interface WorkflowGateDraft {
 
 export interface WorkflowStepDraft {
   stepId: string;
+  /** Always the step id — the unified format has no titles anywhere (a step IS its id). */
   title: string;
   sequenceIndex: number;
   root?: WorkflowUnitDraft | WorkflowMapDraft;
@@ -72,6 +79,7 @@ export interface WorkflowStepDraft {
 }
 
 export interface WorkflowPlanDraft {
+  /** Run-level display title. Derived from the asset's canonical name — never authored. */
   title: string;
   params?: string[];
   paramSchemas?: Record<string, Record<string, unknown>>;
@@ -79,93 +87,62 @@ export interface WorkflowPlanDraft {
   steps: WorkflowStepDraft[];
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Frontend A — YAML workflow program
-// ─────────────────────────────────────────────────────────────────────────────
-
-export type WorkflowProgramCompileResult =
+export type WorkflowPlanCompileResult =
   | { ok: true; plan: WorkflowPlanDraft; warnings: WorkflowError[] }
   | { ok: false; errors: WorkflowError[] };
 
 /**
- * Compile a parsed YAML program into a frozen-plan-ready graph. Assumes the
- * program came out of `parseWorkflowProgram` ok (structure already valid);
- * this pass owns the expression-language rules the parser deliberately does
- * not check:
- *
- *   - every `${{ … }}` in instructions / `map.over` / `route.input` parses
- *     against the CLOSED grammar;
- *   - `steps.<id>` references name an EARLIER step (a producer that has
- *     already run when the reference resolves);
- *   - `map.over` and `route.input` are single whole-value references — a bare
- *     `${{ … }}` with no surrounding text;
- *   - `item` / `item_index` appear only inside a map unit's instructions.
+ * Compile a parsed unified workflow document into a frozen-plan-ready graph.
+ * `title` is the run-level display title (the asset's canonical name — the
+ * format carries no authored title). Assumes the document came out of
+ * `parseWorkflow` ok (structure already valid).
  */
-export function compileWorkflowProgram(program: WorkflowProgram): WorkflowProgramCompileResult {
+export function compileWorkflowPlan(document: WorkflowDocument, title: string): WorkflowPlanCompileResult {
   const errors: WorkflowError[] = [];
-  const allStepIds = new Set(program.steps.map((s) => s.id));
+  const allStepIds = new Set(document.steps.map((s) => s.id));
   const earlierStepIds = new Set<string>();
   const steps: WorkflowStepDraft[] = [];
 
-  program.steps.forEach((step, index) => {
+  document.steps.forEach((step) => {
     const check = { allStepIds, earlierStepIds, errors };
 
-    if (step.unit) {
-      checkTemplateExpressions(step.unit.instructions, {
-        ...check,
-        line: step.unit.source.start,
-        label: `Step "${step.id}" instructions`,
-        inMapUnit: false,
-      });
-    }
     if (step.map) {
-      checkWholeValueExpression(step.map.over, {
-        ...check,
-        line: step.source.start,
-        label: `Step "${step.id}" map.over`,
-      });
-      checkTemplateExpressions(step.map.unit.instructions, {
-        ...check,
-        line: step.map.unit.source.start,
-        label: `Step "${step.id}" instructions`,
-        inMapUnit: true,
-      });
+      checkReferenceField(step.map.over, { ...check, line: step.source.start, label: `Step "${step.id}" map.over` });
     }
     if (step.route) {
-      checkWholeValueExpression(step.route.input, {
+      checkReferenceField(step.route.input, {
         ...check,
         line: step.source.start,
         label: `Step "${step.id}" route.input`,
       });
     }
+    for (const [index, reference] of (step.inputs ?? []).entries()) {
+      checkInputReference(reference, index, {
+        ...check,
+        line: step.source.start,
+        label: `Step "${step.id}" inputs`,
+      });
+    }
 
-    steps.push(compileProgramStep(step, index, program.defaults));
+    steps.push(compileStep(step, defaultsOf(document)));
     earlierStepIds.add(step.id);
   });
 
   if (errors.length > 0) return { ok: false, errors };
 
-  const paramNames = program.params ? Object.keys(program.params) : [];
+  const paramNames = document.params ? Object.keys(document.params) : [];
   return {
     ok: true,
-    // Non-fatal advisories (redesign addendum). Warnings NEVER change the plan
-    // or its hash — they are computed alongside the frozen plan and surfaced by
-    // `workflow validate` / `workflow start`, never persisted onto the run row.
-    warnings: collectProgramWarnings(program),
+    warnings: collectWorkflowWarnings(document),
     plan: {
-      title: program.name,
+      title,
       ...(paramNames.length > 0 ? { params: paramNames } : {}),
-      // Reviewer #12: freeze the per-param schemas into the plan so `--params`
-      // can be validated at start and re-asserted at brief/report against the
-      // exact schemas the run was created with (the plan hash covers them).
-      ...(program.params && paramNames.length > 0 ? { paramSchemas: program.params } : {}),
-      // Budget ceilings (addendum R2): frozen onto the plan so enforcement is
-      // a pure function of (frozen plan, journal) — never the live asset.
-      ...(program.budget
+      ...(document.params && paramNames.length > 0 ? { paramSchemas: document.params } : {}),
+      ...(document.budget
         ? {
             budget: {
-              ...(program.budget.maxTokens !== undefined ? { maxTokens: program.budget.maxTokens } : {}),
-              ...(program.budget.maxUnits !== undefined ? { maxUnits: program.budget.maxUnits } : {}),
+              ...(document.budget.maxTokens !== undefined ? { maxTokens: document.budget.maxTokens } : {}),
+              ...(document.budget.maxUnits !== undefined ? { maxUnits: document.budget.maxUnits } : {}),
             },
           }
         : {}),
@@ -174,45 +151,48 @@ export function compileWorkflowProgram(program: WorkflowProgram): WorkflowProgra
   };
 }
 
-function compileProgramStep(
-  step: ProgramStep,
-  index: number,
+function defaultsOf(document: WorkflowDocument): ProgramDefaults | undefined {
+  return document.defaults;
+}
+
+function compileStep(
+  step: WorkflowDocument["steps"][number],
   defaults: ProgramDefaults | undefined,
 ): WorkflowStepDraft {
   const gate: WorkflowGateDraft = {
     kind: "gate",
     id: `${step.id}.gate`,
     stepId: step.id,
-    criteria: step.gate?.criteria ?? [],
-    // maxLoops (bounded evaluator-optimizer gate loop, addendum R2) is
-    // carried through the frozen plan here; the native executor
-    // (`src/workflows/exec/native-executor.ts`) is what actually runs the
-    // bounded re-execution loop on an `artifactSchemaFailure`.
+    // The body `### gate` rubric is carried through as the ONE criterion string
+    // — the judge receives the whole section byte-exact (spec §2.4). A step
+    // with no rubric has no gate at all (fail-open, criteria: []).
+    criteria: step.gateRubric ? [step.gateRubric.text] : [],
     ...(step.gate?.maxLoops !== undefined ? { maxLoops: step.gate.maxLoops } : {}),
-    // Reviewer #18: a required gate rides the frozen plan so BOTH surfaces
-    // (engine + report) enforce it identically.
     ...(step.gate?.required !== undefined ? { required: step.gate.required } : {}),
   };
 
   let root: WorkflowUnitDraft | WorkflowMapDraft | undefined;
-  if (step.unit) {
-    root = compileProgramUnit(step.unit, step.id, defaults);
-  } else if (step.map) {
-    root = {
-      kind: "map",
-      id: `${step.id}.map`,
-      over: step.map.over,
-      template: compileProgramUnit(step.map.unit, `${step.id}.unit`, defaults),
-      ...(step.map.concurrency !== undefined ? { concurrency: step.map.concurrency } : {}),
-      reducer: step.map.reducer ?? "collect",
-      source: step.source,
-    };
+  if (step.route === undefined) {
+    const instructionsText = step.instructions?.text ?? "";
+    if (step.map) {
+      root = {
+        kind: "map",
+        id: `${step.id}.map`,
+        over: step.map.over,
+        template: compileUnit(step.map.unit, `${step.id}.unit`, instructionsText, defaults, step.inputs, step.source),
+        ...(step.map.concurrency !== undefined ? { concurrency: step.map.concurrency } : {}),
+        reducer: step.map.reducer ?? "collect",
+        source: step.source,
+      };
+    } else {
+      root = compileUnit(step.unit, step.id, instructionsText, defaults, step.inputs, step.instructions?.source);
+    }
   }
 
   return {
     stepId: step.id,
-    title: step.title ?? step.id,
-    sequenceIndex: index,
+    title: step.id,
+    sequenceIndex: step.sequenceIndex,
     ...(root ? { root } : {}),
     ...(step.route
       ? {
@@ -223,43 +203,45 @@ function compileProgramStep(
           },
         }
       : {}),
-    // Typed step artifacts (addendum R2): this schema is carried through the
-    // frozen plan here; the native executor validates the promoted artifact
-    // against it before the step can complete (`artifactSchemaFailure`).
     ...(step.output !== undefined ? { outputSchema: step.output } : {}),
     gate,
   };
 }
 
 /**
- * Lower one source unit into the unresolved structural plan. Engine/model/time
- * settings remain on the parsed source until the single freeze boundary.
+ * Lower one source unit into the unresolved structural plan. Instructions are
+ * ALWAYS the step's body prose, byte-exact — never templated, never scanned
+ * for reference syntax. Engine/model/timeout settings remain on the parsed
+ * override bag until the single freeze boundary.
  */
-function compileProgramUnit(unit: ProgramUnit, id: string, defaults: ProgramDefaults | undefined): WorkflowUnitDraft {
+function compileUnit(
+  unit: ProgramUnit | undefined,
+  id: string,
+  instructions: string,
+  defaults: ProgramDefaults | undefined,
+  inputs: string[] | undefined,
+  source: import("../schema").SourceRef | undefined,
+): WorkflowUnitDraft {
   return {
     kind: "unit",
     id,
-    instructions: unit.instructions,
-    // YAML program instructions are `${{ … }}` templates (validated above);
-    // the executor resolves them per unit.
-    templating: "expressions",
-    ...(unit.output !== undefined ? { schema: unit.output } : {}),
-    // retry (addendum R2) is carried through the frozen plan here; the
-    // native executor re-dispatches a failed unit up to `max` times when its
-    // `failureReason` is in `on`, each attempt journaled under its own row.
-    ...(unit.retry ? { retry: { max: unit.retry.max, on: [...unit.retry.on] } } : {}),
-    onError: unit.onError ?? defaults?.onError ?? "fail",
-    ...(unit.env ? { env: [...unit.env] } : {}),
-    ...(unit.isolation !== undefined ? { isolation: unit.isolation } : {}),
-    source: unit.source,
+    instructions,
+    templating: "verbatim",
+    ...(inputs && inputs.length > 0 ? { inputs: [...inputs] } : {}),
+    ...(unit?.output !== undefined ? { schema: unit.output } : {}),
+    ...(unit?.retry ? { retry: { max: unit.retry.max, on: [...unit.retry.on] } } : {}),
+    onError: unit?.onError ?? defaults?.onError ?? "fail",
+    ...(unit?.env ? { env: [...unit.env] } : {}),
+    ...(unit?.isolation !== undefined ? { isolation: unit.isolation } : {}),
+    ...(source ? { source } : {}),
   };
 }
 
-// ── Expression validation ────────────────────────────────────────────────────
+// ── Reference validation ─────────────────────────────────────────────────────
 
-interface ExpressionCheck {
+interface ReferenceCheck {
   errors: WorkflowError[];
-  /** Every step id in the program (to tell "later step" from "no such step"). */
+  /** Every step id in the document (to tell "later step" from "no such step"). */
   allStepIds: Set<string>;
   /** Ids of steps declared BEFORE the one being checked. */
   earlierStepIds: Set<string>;
@@ -267,125 +249,73 @@ interface ExpressionCheck {
   label: string;
 }
 
-/** Validate every `${{ … }}` in a free-text template (instructions). */
-function checkTemplateExpressions(text: string, check: ExpressionCheck & { inMapUnit: boolean }): void {
-  const parsed = parseTemplate(text);
+/** Validate a whole-value reference field (`map.over`, `route.input`). */
+function checkReferenceField(text: string, check: ReferenceCheck): void {
+  const parsed = parseReference(text);
   if (!parsed.ok) {
-    for (const err of parsed.errors) {
-      check.errors.push({ line: check.line, message: `${check.label}: ${err.message}` });
-    }
+    check.errors.push({ line: check.line, message: `${check.label}: ${parsed.message}` });
     return;
   }
-  for (const ref of listReferences(parsed.segments)) {
-    checkReference(ref, check, check.inMapUnit);
+  if (parsed.expr.kind === "stepOutput" && !check.earlierStepIds.has(parsed.expr.stepId)) {
+    const why = check.allStepIds.has(parsed.expr.stepId)
+      ? `step "${parsed.expr.stepId}" does not come before this step — references must name an earlier step (a producer that has already run)`
+      : `"${parsed.expr.stepId}" is not a step in this workflow`;
+    check.errors.push({
+      line: check.line,
+      message: `${check.label}: "${formatReference(parsed.expr)}" cannot be resolved — ${why}.`,
+    });
   }
 }
 
-/**
- * Validate a whole-value field (`map.over`, `route.input`): the text must be
- * exactly one `${{ … }}` reference with no surrounding literal text, so the
- * engine can resolve it to a RAW value (array/object), never a string splice.
- */
-function checkWholeValueExpression(text: string, check: ExpressionCheck): void {
-  const parsed = parseTemplate(text);
+/** Validate one `inputs[]` entry: must be a step-output reference to an earlier step. */
+function checkInputReference(text: string, index: number, check: ReferenceCheck): void {
+  const parsed = parseReference(text);
   if (!parsed.ok) {
-    for (const err of parsed.errors) {
-      check.errors.push({ line: check.line, message: `${check.label}: ${err.message}` });
-    }
+    check.errors.push({ line: check.line, message: `${check.label}[${index}]: ${parsed.message}` });
     return;
   }
-  const [first] = parsed.segments;
-  if (parsed.segments.length !== 1 || first?.kind !== "reference") {
+  if (parsed.expr.kind === "param") {
     check.errors.push({
       line: check.line,
       message:
-        `${check.label} must be a single whole-value \${{ … }} reference with no surrounding text ` +
-        `(e.g. "\${{ steps.discover.output.files }}"), got ${JSON.stringify(text)}.`,
+        `${check.label}[${index}]: "${formatReference(parsed.expr)}" names a param, not a step output — ` +
+        `params are already attached to every unit, so declaring one as an input is redundant. "inputs:" only ` +
+        `names step outputs (steps.<id>.output...).`,
     });
     return;
   }
-  // `item`/`item_index` never exist where a whole-value field resolves (the
-  // item list itself, or a spine route input), so inMapUnit is always false.
-  checkReference(first.expr, check, false);
-}
-
-function checkReference(ref: ExpressionAst, check: ExpressionCheck, inMapUnit: boolean): void {
-  switch (ref.kind) {
-    case "item":
-    case "itemIndex": {
-      if (!inMapUnit) {
-        check.errors.push({
-          line: check.line,
-          message: `${check.label}: "\${{ ${formatReference(ref)} }}" is only valid inside a map unit's instructions.`,
-        });
-      }
-      return;
-    }
-    case "stepOutput": {
-      if (!check.earlierStepIds.has(ref.stepId)) {
-        const why = check.allStepIds.has(ref.stepId)
-          ? `step "${ref.stepId}" does not come before this step — references must name an earlier step (a producer that has already run)`
-          : `"${ref.stepId}" is not a step in this workflow`;
-        check.errors.push({
-          line: check.line,
-          message: `${check.label}: "\${{ ${formatReference(ref)} }}" cannot be resolved — ${why}.`,
-        });
-      }
-      return;
-    }
-    case "param": {
-      // Param presence is a RUN-SCOPE concern, never a compile-time one. A
-      // declared `params:` block is NOT a closed set of legal references: the
-      // runtime resolves any param SUPPLIED at start (`resolveReference`), and
-      // `validateWorkflowParams` documents that undeclared params are permitted
-      // — so `${{ params.mode }}` with `mode` passed via `--params` runs fine
-      // even when only `files` is declared. At compile time an undeclared
-      // reference is indistinguishable from that legitimate start-supplied
-      // extra, so treating the block as closed would reject a runtime-supported
-      // authoring pattern and put the two layers in disagreement. A genuine typo
-      // (`params.changed_file` for `changed_files`) surfaces at run time with a
-      // precise "is not defined in the run's params" error instead. As a lint-time
-      // heads-up short of rejection, `collectProgramWarnings` (below) emits a
-      // non-fatal WARNING for an undeclared reference when a `params:` block is
-      // declared — never an error, so the runtime-supported pattern still compiles.
-      return;
-    }
+  if (!check.earlierStepIds.has(parsed.expr.stepId)) {
+    const why = check.allStepIds.has(parsed.expr.stepId)
+      ? `step "${parsed.expr.stepId}" does not come before this step — references must name an earlier step (a producer that has already run)`
+      : `"${parsed.expr.stepId}" is not a step in this workflow`;
+    check.errors.push({
+      line: check.line,
+      message: `${check.label}[${index}]: "${formatReference(parsed.expr)}" cannot be resolved — ${why}.`,
+    });
   }
 }
 
 // ── Non-fatal warnings ───────────────────────────────────────────────────────
 
 /**
- * Collect the program's non-fatal WARNINGS — advisories that never fail
+ * Collect the document's non-fatal WARNINGS — advisories that never fail
  * compilation, never change the frozen plan or its hash, and are surfaced by
  * `workflow validate` (human + JSON) and as `warn()` lines at `workflow start`.
  *
- * Two promised-but-previously-missing warnings (redesign addendum):
- *
  *   A. A unit/map step with NO step-level `output:` schema carries its units'
- *      raw results as an untyped artifact — permitted, but the addendum says
- *      "the validator warns". Anchored on the STEP's `output` (the reducer /
- *      step-artifact schema); a per-unit `output:` types the unit result but
- *      leaves the step artifact untyped.
- *   B. A `${{ params.<name> }}` reference to an UNDECLARED param, but ONLY when
- *      the program declares a `params:` block. Compile-time REJECTION was tried
- *      and reverted (see the `case "param"` note above): the runtime legitimately
- *      resolves any param supplied at start, declared or not. The agreed middle
- *      ground is a warning — a likely typo (`changed_file` for `changed_files`)
- *      surfaces at lint time, while a genuinely start-supplied extra still runs.
- *      With no `params:` block there is nothing to compare against, so B is silent.
- *
- * Pure and deterministic; the returned order is document order per step
- * (warning A, then each undeclared-param reference in field/document order).
- * Only called on an OK compile, so every template here already parsed cleanly.
+ *      raw results as an untyped artifact — permitted, but worth flagging.
+ *   B. A `params.<name>` reference (in `map.over`/`route.input`) to an
+ *      UNDECLARED param, but ONLY when the document declares a `params:`
+ *      block — a likely typo. Prose can no longer carry param references at
+ *      all (it is never scanned), so this warning's surface shrinks to the
+ *      two whole-value fields that can legally contain one.
  */
-export function collectProgramWarnings(program: WorkflowProgram): WorkflowError[] {
+export function collectWorkflowWarnings(document: WorkflowDocument): WorkflowError[] {
   const warnings: WorkflowError[] = [];
-  const declaredParams = program.params ? new Set(Object.keys(program.params)) : undefined;
+  const declaredParams = document.params ? new Set(Object.keys(document.params)) : undefined;
 
-  for (const step of program.steps) {
-    // Warning A — a unit/map step with no step-level output schema.
-    if ((step.unit || step.map) && step.output === undefined) {
+  for (const step of document.steps) {
+    if ((step.map || step.route === undefined) && step.output === undefined) {
       warnings.push({
         line: step.source.start,
         message:
@@ -394,86 +324,24 @@ export function collectProgramWarnings(program: WorkflowProgram): WorkflowError[
       });
     }
 
-    // Warning B — references to a param the declared `params:` block omits.
-    if (declaredParams) collectUndeclaredParamWarnings(step, declaredParams, warnings);
+    if (declaredParams) {
+      const declaredList = [...declaredParams].join(", ");
+      const scan = (text: string | undefined, label: string): void => {
+        if (!text) return;
+        const parsed = parseReference(text);
+        if (!parsed.ok || parsed.expr.kind !== "param" || declaredParams.has(parsed.expr.name)) return;
+        warnings.push({
+          line: step.source.start,
+          message:
+            `${label}: "${formatReference(parsed.expr)}" references a param not declared in \`params:\` ` +
+            `(declared: ${declaredList || "none"}) — likely a typo. An undeclared param supplied at start still ` +
+            `resolves at run time.`,
+        });
+      };
+      if (step.map) scan(step.map.over, `Step "${step.id}" map.over`);
+      if (step.route) scan(step.route.input, `Step "${step.id}" route.input`);
+    }
   }
 
   return warnings;
-}
-
-/**
- * Push a warning for every `${{ params.<name> }}` reference in `step` whose
- * name is not in the declared param set. Walks the same template-bearing
- * fields the compiler validates (unit / map.over + map unit / route.input) so
- * the step + field context in the message matches the error labels.
- */
-function collectUndeclaredParamWarnings(step: ProgramStep, declared: Set<string>, warnings: WorkflowError[]): void {
-  const declaredList = [...declared].join(", ");
-  const scan = (text: string, line: number, label: string): void => {
-    const parsed = parseTemplate(text);
-    if (!parsed.ok) return; // OK compile guarantees this parses; defensive only.
-    for (const ref of listReferences(parsed.segments)) {
-      if (ref.kind !== "param" || declared.has(ref.name)) continue;
-      warnings.push({
-        line,
-        message:
-          `${label}: "\${{ ${formatReference(ref)} }}" references a param not declared in \`params:\` ` +
-          `(declared: ${declaredList || "none"}) — likely a typo. An undeclared param supplied at start still ` +
-          `resolves at run time.`,
-      });
-    }
-  };
-
-  if (step.unit) scan(step.unit.instructions, step.unit.source.start, `Step "${step.id}" instructions`);
-  if (step.map) {
-    scan(step.map.over, step.source.start, `Step "${step.id}" map.over`);
-    scan(step.map.unit.instructions, step.map.unit.source.start, `Step "${step.id}" instructions`);
-  }
-  if (step.route) scan(step.route.input, step.source.start, `Step "${step.id}" route.input`);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Frontend B — classic markdown workflow
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Compile a markdown `WorkflowDocument` to an unresolved structural plan. Pure
- * and deterministic: the same document always compiles to the same plan.
- * Linear workflows produce one fail-fast unit per step guarded by its gate.
- */
-export function compileWorkflowPlan(document: WorkflowDocument): WorkflowPlanDraft {
-  const params = document.parameters?.map((p) => p.name);
-  return {
-    title: document.title,
-    ...(params && params.length > 0 ? { params } : {}),
-    steps: document.steps.map(compileMarkdownStep),
-  };
-}
-
-function compileMarkdownStep(step: WorkflowStep): WorkflowStepDraft {
-  const gate: WorkflowGateDraft = {
-    kind: "gate",
-    id: `${step.id}.gate`,
-    stepId: step.id,
-    criteria: step.completionCriteria?.map((c) => c.text) ?? [],
-  };
-
-  return {
-    stepId: step.id,
-    title: step.title,
-    sequenceIndex: step.sequenceIndex,
-    root: {
-      kind: "unit",
-      id: step.id,
-      instructions: step.instructions.text,
-      // Stable contract: markdown instructions are opaque data, passed to the
-      // agent byte-exact. A literal `${{ … }}` (GitHub Actions syntax, docs of
-      // the YAML format) is content here, never expression grammar.
-      templating: "verbatim",
-      // Markdown has no failure-policy surface; the fail-fast default applies.
-      onError: "fail",
-      source: step.instructions.source,
-    },
-    gate,
-  };
 }
