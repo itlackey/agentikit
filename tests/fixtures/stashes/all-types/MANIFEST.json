@@ -1,13 +1,13 @@
 {
   "name": "all-types",
-  "description": "One minimal, valid asset per ASSET_SPECS_INTERNAL type (all 14), plus a second workflow-program-yaml fixture so both workflow renderer forms (workflow-md and workflow-program-yaml) are represented.",
-  "purpose": "Parity substrate for chunk-0b recognition/placement/renderer/lint goldens (WI-0b.3/WI-0b.4). Every file is placed at its type's canonical stashDir/placement path (asset-spec.ts toAssetPath) and carries the minimal frontmatter its dedicated linter (or DefaultLinter fallthrough) requires. 15 files total: one per of the 14 ASSET_SPECS_INTERNAL types (skill, command, agent, knowledge, workflow, script, memory, env, secret, wiki, lesson, task, session, fact) plus workflows/all-types-workflow-program.yaml (the workflow-program-yaml renderer form).",
+  "description": "One minimal, valid asset per ASSET_SPECS_INTERNAL type (all 14).",
+  "purpose": "Parity substrate for chunk-0b recognition/placement/renderer/lint goldens (WI-0b.3/WI-0b.4). Every file is placed at its type's canonical stashDir/placement path (asset-spec.ts toAssetPath) and carries the minimal frontmatter its dedicated linter (or DefaultLinter fallthrough) requires. 14 files total: one per of the 14 ASSET_SPECS_INTERNAL types (skill, command, agent, knowledge, workflow, script, memory, env, secret, wiki, lesson, task, session, fact).",
   "assets": {
     "skill": 1,
     "command": 1,
     "agent": 1,
     "knowledge": 1,
-    "workflow": 2,
+    "workflow": 1,
     "script": 1,
     "memory": 1,
     "env": 1,
@@ -19,7 +19,7 @@
     "fact": 1
   },
   "notes": [
-    "workflow count is 2: workflows/all-types-workflow.md (workflow-md renderer) and workflows/all-types-workflow-program.yaml (workflow-program-yaml renderer).",
+    "RE-BASELINED for workflow-format-unification: workflow used to have TWO on-disk forms (workflows/all-types-workflow.md, the workflow-md renderer, and workflows/all-types-workflow-program.yaml, the workflow-program-yaml renderer) to exercise both authoring surfaces. The YAML program format is deleted (docs/architecture/specs/workflow-format-unification.md §3) — one frontend, one on-disk form — so all-types-workflow-program.yaml was deleted and workflow count dropped back to 1 (workflows/all-types-workflow.md, converted to the unified frontmatter+body format: `type: workflow` + `steps:` graph in frontmatter, `## <step-id>` body prose). The fixture stash is back to exactly one file per ASSET_SPECS_INTERNAL type (14 total).",
     "tasks/all-types-task.yml is placed per asset-spec.ts's task placement rule (<stashDir>/<name>.yml) and recognizes as type \"task\" (renderer task-yaml) via runMatchers(). Prior to WI-0b.1 (chunk-0b) it did NOT recognize — DIR_TYPE_MAP's \"tasks\" dir rule (src/indexer/walk/matchers.ts) tested `ext === \".md\"` instead of `\".yml\"`, a stale rule left over from the pre-0.8.0 markdown task format (see tests/integration/tasks-legacy-md-warning.test.ts). WI-0b.1 fixed the rule to test `\".yml\"`; this note is updated to reflect the fixed state. See the chunk-0b WI-0b.2 report for the original capture and the WI-0b.1 fix for detail."
   ],
   "consumers": ["future WI-0b.3/WI-0b.4 recognition/placement/renderer/lint parity goldens"]
