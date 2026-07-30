@@ -140,6 +140,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The two workflow authoring formats — markdown documents and YAML
+  orchestration programs — are unified into one format**, per
+  `docs/architecture/specs/workflow-format-unification.md`. A workflow is
+  now always a single markdown asset: the standard AKM frontmatter envelope
+  carries the whole orchestration graph (`params`, `steps` with
+  `unit`/`map`/`route`, `inputs`, `output`, `gate`, `defaults`, `budget`),
+  and the body carries each step's instructions under a bare `## <step-id>`
+  heading, joined to the frontmatter by step id. `.yaml`/`.yml` workflow
+  files, the `# Workflow:` / `## Step:` / `Step ID:` markdown headings, and
+  `akm workflow create <name>.yaml` are all gone; `akm workflow create`
+  always writes the one unified template
+  (`src/assets/workflows/workflow-template.md`).
+
+  **Prose is never interpolated.** The YAML program's `${{ … }}` template
+  language, and the markdown format's decorative — and never
+  substituted — `{{ … }}` moustaches, are both removed. Data reaches a
+  dispatched unit as *attached context* instead: the run's params, its
+  item and index for a map unit, and the artifacts its step's new
+  `inputs:` key declares. Instructions refer to that context in plain
+  language ("clone the repository named by the `repo` parameter") rather
+  than splicing a value into the instruction string. Bare reference
+  strings (two roots, `params.<name>` and `steps.<id>.output…`) now appear
+  only in three frontmatter positions: `map.over`, `route.input`, and
+  `inputs:`.
+
+  **Gate rubrics move to the body.** A step's completion criteria are no
+  longer a frontmatter `gate.criteria` list or a `### Completion Criteria`
+  bullet section — they live under a step's `### gate` sub-heading, the
+  format's one reserved marker, as full prose a judge receives byte-exact.
+  Frontmatter `gate:` now carries only control fields (`required`,
+  `max_loops`); a `### gate` rubric alone declares a default, fail-open,
+  unbounded-loop gate.
+
+  This is a **pre-1.0 change to an unshipped, opt-in feature** —
+  `experimental.workflowEngine` has never been enabled by default, and no
+  workflow asset has shipped outside the ten example workflows under
+  `scripts/akm-eval/example-stash/workflows/`, all rewritten to the
+  unified format in this change. There is nothing on disk to migrate and
+  no users to break.
+
 - **akm is described as a knowledge toolkit, not a package manager** (R-048).
   The npm one-liner, the README lede, and the `concepts.md` opener all led with
   "a package manager for AI agent capabilities", which misstates the product to
