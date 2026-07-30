@@ -10,7 +10,7 @@ steps:
     inputs: [steps.first-step.output]
 ---
 
-# Workflow Title
+# {{TITLE}}
 
 Free preamble prose describing what this workflow does. It is indexed for
 search and shown in `akm show`, but it is never dispatched to a step.

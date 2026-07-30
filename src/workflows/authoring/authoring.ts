@@ -11,18 +11,14 @@ import { isWithin, writeFileAtomic } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { defaultBundleForTarget } from "../../core/mutation-target";
-import { canonicalizeWorkflowName } from "../../core/recognition-util";
+import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../../core/recognition-util";
 import { warn } from "../../core/warn";
 import { prepareWriteTargetForMutation, resolveWriteTarget, withWriteTargetMutation } from "../../core/write-source";
 import { compileWorkflowPlan } from "../ir/compile";
 import { parseWorkflow } from "../parser";
 import type { WorkflowError } from "../schema";
 
-const DEFAULT_WORKFLOW_TEMPLATE = renderWorkflowTemplate({
-  title: "Example Workflow",
-  firstStepTitle: "First Step",
-  firstStepId: "first-step",
-});
+const DEFAULT_WORKFLOW_TEMPLATE = renderWorkflowTemplate("Example Workflow");
 
 export function getWorkflowTemplate(): string {
   return DEFAULT_WORKFLOW_TEMPLATE;
@@ -31,13 +27,12 @@ export function getWorkflowTemplate(): string {
 export function buildWorkflowTemplate(name?: string): string {
   if (!name) return DEFAULT_WORKFLOW_TEMPLATE;
 
-  const title = humanizeWorkflowName(name);
-  const stepId = slugifyWorkflowStepId(name);
-  const customized = renderWorkflowTemplate({
-    title,
-    firstStepTitle: `${title} Setup`,
-    firstStepId: `${stepId}-setup`,
-  });
+  // Only the H1 is customized. Step ids are STRUCTURAL under the unified format
+  // — each appears in `steps[].id`, as a body `## <id>` heading, and possibly in
+  // another step's `inputs:` — so rewriting them from a name would have to patch
+  // three places consistently to stay parseable. Generic `first-step`/
+  // `second-step` are the author's to rename.
+  const customized = renderWorkflowTemplate(humanizeWorkflowName(name));
   validateWorkflowContent(customized, `<template:${name}>`);
   return customized;
 }
@@ -87,15 +82,24 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
   ) {
     throw new UsageError(`Resolved workflow path escapes the bundle: "${normalizedName}"`, "PATH_ESCAPE_VIOLATION");
   }
+  // A file whose canonical name matches but whose PATH differs can only be a
+  // case variant now (`upper.MD` vs `upper.md`) — the cross-EXTENSION case this
+  // guard also covered is gone with the unified `.md`-only format. It still
+  // matters: on a case-insensitive filesystem the two spellings are one file,
+  // so writing the target would silently clobber or shadow the existing asset.
+  const shadowing = findExistingWorkflowPaths(typeRoot, normalizedName).find((p) => p !== assetPath);
+  if (shadowing !== undefined) {
+    throw new UsageError(
+      `Workflow "${normalizedName}" already exists as ${path.relative(stashDir, shadowing)} — the ` +
+        `\`${conceptId}\` ref resolves to that file, so creating this one would shadow it. ` +
+        `Remove or rename the existing file first, or create the workflow under a different name.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
   if (fs.existsSync(assetPath) && !input.force) {
     throw new UsageError(
       `Workflow "${normalizedName}" already exists. Re-run with --force to overwrite it.`,
       "RESOURCE_ALREADY_EXISTS",
-    );
-  }
-  if (input.force && !input.from) {
-    throw new UsageError(
-      "Refusing to overwrite with template: pass --from <file> to replace content, or omit --force to create a new workflow.",
     );
   }
 
@@ -219,9 +223,33 @@ export function validateWorkflowSource(target: string): {
   return { path: target, parse: parseWorkflow(content, { path: target }) };
 }
 
-function renderWorkflowTemplate(input: { title: string; firstStepTitle: string; firstStepId: string }): string {
-  return workflowTemplate
-    .replace("{{TITLE}}", input.title)
-    .replace("{{FIRST_STEP_TITLE}}", input.firstStepTitle)
-    .replace("{{FIRST_STEP_ID}}", input.firstStepId);
+/**
+ * Every file under `typeRoot` whose canonical workflow name equals
+ * `normalizedName`. Extension matching is case-INSENSITIVE, so `foo.MD` and
+ * `foo.md` both match — the case-variant collision the create path must refuse
+ * rather than silently clobber on a case-insensitive filesystem.
+ */
+function findExistingWorkflowPaths(typeRoot: string, normalizedName: string): string[] {
+  const parent = path.join(typeRoot, path.dirname(normalizedName));
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(parent, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const basename = path.basename(normalizedName);
+  return WORKFLOW_EXTENSIONS.flatMap((extension) =>
+    entries
+      .filter((entry) => {
+        if (!entry.isFile() && !entry.isSymbolicLink()) return false;
+        const entryExtension = path.extname(entry.name);
+        return entryExtension.toLowerCase() === extension && entry.name.slice(0, -entryExtension.length) === basename;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((entry) => path.join(parent, entry.name)),
+  );
+}
+
+function renderWorkflowTemplate(title: string): string {
+  return workflowTemplate.replace("{{TITLE}}", title);
 }
