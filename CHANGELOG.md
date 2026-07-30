@@ -72,7 +72,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   any ref (a pre-amend duplicate left behind by an interrupted git operation),
   which would have 404'd on GitHub and vanished under a local `git gc`; a
   human fixed that one by hand because nothing caught it. This guard is that
-  catch, going forward.
+  catch, going forward. In CI's shallow (`fetch-depth: 1`) checkout, a merely
+  *absent* commit object is inconclusive (indistinguishable from "just not
+  fetched") and only warns; a commit that *exists but is unreachable from any
+  branch* — the actual bug class above — still fails there too, since a
+  shallow clone can tell presence apart from absence just fine.
 
 - **`akm log list --limit <n>`** returns the most recent N events. The flag was
   documented but silently ignored, and there was no limiting mechanism at all
