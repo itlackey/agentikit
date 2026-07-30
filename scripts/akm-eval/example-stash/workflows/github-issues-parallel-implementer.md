@@ -13,22 +13,28 @@ params:
 defaults: { on_error: fail }
 steps:
   - id: intake
+    output: { type: object }
   - id: plan-and-order
     inputs: [steps.intake.output]
+    output: { type: object }
   - id: prepare-worktrees
     inputs: [steps.plan-and-order.output]
   - id: implement
+    inputs: [steps.prepare-worktrees.output]
     map:
       over: steps.plan-and-order.output.ordered_issues
       concurrency: 3
       unit: { isolation: worktree, retry: { max: 2, on: [timeout] } }
-    output: { type: object }
+    # `output` describes the REDUCER RESULT: the default `collect` reducer
+    # folds per-issue unit results into an array, one entry per issue.
+    output: { type: array }
+    # Retry lives here, not in a backward route: a rejected gate re-runs
+    # THIS step's units with the judge's feedback, bounded by max_loops. If
+    # the batch still isn't clean after 8 loops, the step (and the run)
+    # fails — the escalation the original design wanted is exactly what a
+    # failed/blocked run already is: a human resolves it via
+    # `akm workflow resume`/`complete`/`abandon`.
     gate: { required: true, max_loops: 8 }
-  - id: verdict
-    route:
-      input: steps.implement.output.status
-      when: [{ match: clean, step: integrate }]
-      default: prepare-worktrees
   - id: integrate
     inputs: [steps.implement.output]
   - id: open-prs
@@ -43,11 +49,12 @@ steps:
 
 This workflow drives a batch of GitHub issues to merged PRs. `implement` fans
 out one unit per issue — each running in its own isolated git worktree, up to
-3 at a time — and the workflow re-visits `prepare-worktrees` for any issue
-that did not come out of `implement` clean, so the batch keeps cycling until
-every issue is accepted or escalated to a human. Adjust the `implement`
-step's `concurrency` in this file's frontmatter to change how many issues run
-in parallel.
+3 at a time. `implement`'s own gate re-runs the step (with the judge's
+feedback) up to 8 times when the batch is not yet clean; if it still isn't
+clean after that, the step — and the run — fails, and a human resolves it
+via `akm workflow resume`/`complete`/`abandon`, which is the escalation the
+original design wanted. Adjust the `implement` step's `concurrency` in this
+file's frontmatter to change how many issues run in parallel.
 
 ## intake
 
@@ -172,13 +179,13 @@ can resume from this artefact alone.
 
 ## prepare-worktrees
 
-Create one git worktree per still-outstanding issue so implementation
+Create one git worktree per issue in the working set so implementation
 agents are fully isolated, using the plan from `plan-and-order`, attached to
-this unit as input. This step re-runs each time `verdict` sends the batch
-back for another pass, so only issues that are not yet accepted need a
-(re-)prepared worktree.
+this unit as input. `implement`'s own gate re-runs its units (with fresh
+per-attempt isolation) when the batch isn't yet clean, so this step runs
+once per run — it does not need to be repeated for a retry pass.
 
-### For every outstanding issue
+### For every issue in the working set
 
 1. Derive a branch name from the issue: `agents/<run-id>/issue-<n>-<slug>`
    where `<run-id>` is this run's id and `<slug>` is a kebab-cased,
@@ -198,7 +205,7 @@ back for another pass, so only issues that are not yet accepted need a
 - If bootstrap or the baseline test run fails on an untouched worktree, the
   issue is marked `blocked` with the failing output in notes. The workflow
   does not pretend a broken baseline is acceptable.
-- If a worktree already exists from a previous pass, reuse it only after
+- If a worktree already exists from a previous run, reuse it only after
   running `git worktree prune` and confirming the branch head matches the
   expected commit. Otherwise remove and re-create it.
 
@@ -268,7 +275,8 @@ trivial.
 
 ### Reporting your result
 
-Report a structured result with a `status` field:
+Report a structured result for the issue you were given, with at least a
+`status` field:
 
 - `"clean"` — every reviewer in `reviewers` approved, every check in
   `required_checks` is green against the head commit, the diff is focused
@@ -278,35 +286,37 @@ Report a structured result with a `status` field:
   clean state this round; include the last round's artefacts and the reason
   in the summary.
 
+Every unit's result becomes one entry of `steps.implement.output`, the
+array `integrate` and `open-prs` read below.
+
 If a reviewer posts `block` (as opposed to `request_changes`), report
 `blocked` immediately — a `block` verdict means the approach itself is
-wrong and more iteration will not fix it. The gate above bounds this to 8
-loops per issue; on the ninth attempt the issue is marked `blocked` and
-escalated to the user regardless.
+wrong and more iteration will not fix it. The gate on this step bounds
+retries to 8 loops for the whole batch; if the batch still isn't clean
+after that, this step (and the run) fails rather than shipping a partial
+result — a human resolves it via `akm workflow resume`, which is the
+escalation the original design wanted.
 
 ### gate
 
-- Every reviewer in `reviewers` returned `approve`.
-- Every check in `required_checks` is green against the head commit of the
-  issue's branch.
-- The diff is focused on the brief — unrelated files are reverted.
-- A short implementer summary, the reviewer verdicts, and the tester log
-  are written to the run's scratch directory.
+This gate judges the whole batch's array of per-issue results, not one
+issue in isolation — so it can pass a batch that is a legitimate mix of
+accepted and explicitly-blocked issues, and only rejects (triggering a
+retry of the batch) when an issue was left in an indeterminate state.
 
-## verdict
-
-Reads the `status` `implement` reported for this pass. A `clean` result
-means every issue in `ordered_issues` came out of `implement` accepted, so
-the run proceeds to `integrate`. Anything else sends the run back to
-`prepare-worktrees` — issues already accepted are left alone (their
-worktrees are simply not re-created), while blocked or unfinished issues get
-a fresh pass.
+- Every issue in the batch reached a terminal `status`: `"clean"` (every
+  listed reviewer approved, every required check is green) or explicitly
+  `"blocked"` with a reason — none left in-progress.
+- Every accepted issue has a diff focused on the brief (unrelated files
+  reverted) and a short implementer summary, reviewer verdicts, and tester
+  log written to the run's scratch directory.
 
 ## integrate
 
 Accepted issue branches may still conflict when combined. This step merges
 them in a controlled order and re-validates the combined result, using the
-outcome of `implement`, attached to this unit as input.
+per-issue results from `implement`, attached to this unit as input (an
+array with one entry per issue).
 
 ### Determine integration mode
 
@@ -323,9 +333,9 @@ outcome of `implement`, attached to this unit as input.
 2. For each accepted issue, in plan order:
    - Merge with `git merge --no-ff` to preserve per-issue history.
    - Run the full `required_checks` suite after each merge. A failure
-     triggers a rollback of just that merge (`git reset --hard HEAD~1`), an
-     entry in notes, and the issue is sent back through `prepare-worktrees`
-     with a conflict-aware brief.
+     triggers a rollback of just that merge (`git reset --hard HEAD~1`) and
+     an entry in notes; mark that issue `blocked` with a conflict-aware
+     brief for a follow-up run rather than reworking it inside this one.
 3. After all merges land, run the test suite one more time from a clean
    install to catch caching or lockfile drift.
 4. Generate a combined diff summary and feed it to one **integration
@@ -415,10 +425,12 @@ working from the PRs opened by `open-prs`, attached to this unit as input.
   Do not sleep-poll from the agent loop — use the CI provider's
   webhook/subscription when available and fall back to timed polling with
   exponential backoff.
-- On a red check, fetch the failing job logs, produce a minimal
-  reproduction, and hand the issue back through `prepare-worktrees` with a
-  `ci-regression` brief. Do not patch the red check in isolation — the full
-  implement loop must run again so the fix is reviewed and re-tested.
+- On a red check, fetch the failing job logs and produce a minimal
+  reproduction. Do not patch the red check in isolation on this branch —
+  file a `ci-regression` brief and drive the fix through a fresh
+  `akm workflow start` of this workflow (scoped to just that issue) so the
+  fix goes through the full implement/review/test loop again, rather than
+  landing unreviewed.
 
 ### Review feedback
 

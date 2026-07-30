@@ -242,8 +242,17 @@ steps:
     map:
       over: steps.discover.output.files
       concurrency: 8
-      unit: { engine: reviewer, model: deep, timeout: 5m, retry: { max: 1, on: [timeout, llm_rate_limit] }, on_error: continue, isolation: worktree }
-    output: { type: object, properties: { file: { type: string }, verdict: { type: string } }, required: [file, verdict] }
+      unit:
+        engine: reviewer
+        model: deep
+        timeout: 5m
+        retry: { max: 1, on: [timeout, llm_rate_limit] }
+        on_error: continue
+        isolation: worktree
+        output: { type: object, properties: { file: { type: string }, verdict: { type: string } }, required: [file, verdict] }
+    # `output` here describes the REDUCER RESULT, not one unit's result: the
+    # default `collect` reducer folds per-item unit results into an array.
+    output: { type: array }
     gate: { max_loops: 2 }
   - id: aggregate
     inputs: [steps.review.output]
@@ -297,7 +306,8 @@ Ship the change.
 
 ## rework
 
-Address the review findings, then re-run the review.
+Address the review findings. Confirming the fix is a fresh `akm workflow
+start` of this workflow, not a step this run routes back to.
 
 ## manual-triage
 
@@ -480,11 +490,21 @@ failed.
 A `route` step makes classify-and-dispatch first-class: the engine resolves
 the explicit `input:` expression, selects the matching `when:` branch (or
 `default:`), and auto-skips the unselected branch targets as the spine
-reaches them. A target must be a step declared in the workflow; an
+reaches them. **Routes are forward-only**: every target (each `when.step`
+and `default`) must be a step declared *later* in the workflow than the
+routing step, and a step never routes to itself — this keeps the plan a DAG,
+so termination is structural rather than a runtime budget's job. A
+`default:` that names an earlier step is a lint error, not a loop. An
 unroutable value with no `default` fails the step rather than letting every
-branch run. A target may name a step earlier in the frontmatter list — the
-GitHub Issues Parallel Implementer example workflow uses this to loop a
-batch back through `prepare-worktrees` until every issue clears its gate.
+branch run.
+
+**"Go back and fix it" is a gate, not a backward route.** A failed gate
+re-runs its *own* step with the judge's feedback, bounded by `gate.max_loops`
+— and a declared `output:` schema the promoted artifact fails is specifically
+the error a gate loop retries through. A workflow that used to describe "loop
+back to an earlier step until this passes" expresses that as a bounded gate
+on the step doing the work, not as routing.
+
 Route decisions are journaled, so a resumed run replays the same choice.
 Skips cascade: when a route step is itself skipped (it was the unselected
 target of an earlier route), its own branch targets are skipped too — a

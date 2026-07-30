@@ -24,16 +24,15 @@ steps:
     inputs: [steps.seo-voice-plan.output]
   - id: edit
     inputs: [steps.draft.output]
-  - id: quality-gate
-    inputs: [steps.edit.output]
-    output: { type: object, properties: { status: { type: string } }, required: [status] }
-  - id: quality-triage
-    route:
-      input: steps.quality-gate.output.status
-      when: [{ match: pass, step: publish-draft }, { match: structural, step: draft }]
-      default: edit
+    # Retry lives here, not in a backward route: a rejected gate re-runs
+    # THIS step (review board + quality checklist) with the judge's
+    # feedback, bounded by max_loops (mirrors the `max_review_rounds`
+    # parameter's default). If it still isn't ship-ready after that, the
+    # step — and the run — fails; a human decides whether the draft needs
+    # a fresh `akm workflow start` from `draft` or just another look.
+    gate: { required: true, max_loops: 4 }
   - id: publish-draft
-    inputs: [steps.quality-gate.output]
+    inputs: [steps.edit.output]
   - id: notify
     inputs: [steps.publish-draft.output]
   - id: report
@@ -52,7 +51,7 @@ references when richer context is needed.
 Pipeline summary:
 
 ```
-LOAD-CONFIG → SELECT-TOPIC (direct or swarm) → RESEARCH → SEO-VOICE-PLAN → DRAFT → EDIT (review board loop) → QUALITY-GATE → PUBLISH-DRAFT → NOTIFY → REPORT
+LOAD-CONFIG → SELECT-TOPIC (direct or swarm) → RESEARCH → SEO-VOICE-PLAN → DRAFT → EDIT (review board + quality-gate loop) → PUBLISH-DRAFT → NOTIFY → REPORT
 ```
 
 Hard rules that apply to every step:
@@ -439,35 +438,27 @@ Round protocol:
 3. The writer revises the draft using that list and records what changed.
 4. Re-run the full review board on the revised draft.
 
-Stop conditions:
+Stop conditions, all evaluated inside this same step — there is no separate
+step to route to:
 
-- **ship** — every reviewer returns `approve` in the same round.
-- **loopback** — one or more reviewers return `request_changes`; run
-  another round within this step.
+- **ship** — every reviewer returns `approve` in the same round *and* every
+  non-negotiable below holds. Report the draft as done.
+- **loopback** — one or more reviewers return `request_changes`, or a
+  non-negotiable below still fails; run another round within this step
+  (the gate below re-runs this step, with the judge's feedback, up to
+  `max_review_rounds` times — keep the two numbers in sync if you change
+  one).
 - **kill** — any reviewer returns `block` for fabricated claims, unsafe
   technical content, wrong pillar fit, derivative writing, or no original
-  angle.
-- **escalate** — `max_review_rounds` reached without unanimous approval.
+  angle, or a non-negotiable reveals the draft needs restructuring rather
+  than editing. Report this rather than silently looping — if the gate's
+  loop budget is then exhausted (or immediately, for a `kill`), the step
+  fails and a human decides whether the article needs a fresh
+  `akm workflow start` from `draft`.
 
-### gate
-
-- Review-board decision is `ship` (otherwise loop within this step, stop, or
-  escalate).
-- Every reviewer approved in the same final round.
-- Edited draft saved at `<slug>.md`.
-- Review logs and per-round fix lists exist.
-- Changelog produced citing the rule each change enforces (e.g.
-  `[voice.banned_phrases]`, `[seo.min_internal_links_per_1000_words]`).
-
-## quality-gate
-
-Re-check the final draft against every non-negotiable below, using the
-edited draft from `edit`, attached to this unit as input. All must pass
-before publishing — even if the editor returned `ship`, this step is the
-last guardrail. Report a structured result with a `status` field: `"pass"`
-when every non-negotiable holds, `"structural"` when the gap requires
-returning to `draft` (not just another edit pass), or any other value
-(e.g. `"needs-edit"`) when another `edit` round would fix it.
+Re-check the final draft against every one of these non-negotiables on
+every round, even once the review board says `ship` — this is the last
+guardrail before publishing:
 
 1. Topic fits at least one pillar in `brand.yaml`.
 2. No banned phrase from `voice.banned_phrases` is present.
@@ -483,29 +474,27 @@ returning to `draft` (not just another edit pass), or any other value
 8. Title ≤ 65 chars and includes the primary keyword.
 9. Meta description 105–160 chars and includes the primary keyword.
 10. Frontmatter has `published: false`.
-11. Every reviewer from `edit` approved in the final round.
+11. Every reviewer approved in the final round.
 12. If `literary_voice` was provided, the final draft uses the approved
     stylistic guidance without drifting into imitation or gimmickry.
 
 ### gate
 
-- All twelve non-negotiables pass.
+- Review-board decision is `ship` (every reviewer approved in the same
+  final round).
+- All twelve non-negotiables above pass.
+- Edited draft saved at `<slug>.md`.
+- Review logs and per-round fix lists exist.
+- Changelog produced citing the rule each change enforces (e.g.
+  `[voice.banned_phrases]`, `[seo.min_internal_links_per_1000_words]`).
 - Final word count, internal link count, and primary-keyword placements
   recorded for the report.
-- Final review round count and reviewer approvals recorded for the report.
-
-## quality-triage
-
-Routes on the `status` reported by `quality-gate`: `pass` proceeds to
-`publish-draft`; `structural` sends the run back to `draft` for a rewrite;
-anything else (a fixable non-negotiable) sends it back to `edit` for
-another review round.
 
 ## publish-draft
 
 Run the dev.to CLI from the blog-writing skill to create the article with
 `published: false` and `canonical_url` pointed at the product blog, once
-`quality-gate` has passed (attached to this unit as input):
+`edit` has shipped the draft (attached to this unit as input):
 
 ```bash
 bun skills/blog-writing/scripts/devto-cli.ts draft \

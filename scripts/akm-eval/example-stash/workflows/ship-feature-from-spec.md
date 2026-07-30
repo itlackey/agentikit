@@ -19,12 +19,10 @@ steps:
     inputs: [steps.implement.output]
   - id: verify-integration
     inputs: [steps.tidy.output]
-    output: { type: object, properties: { status: { type: string } }, required: [status] }
-  - id: triage-integration
-    route:
-      input: steps.verify-integration.output.status
-      when: [{ match: clean, step: open-pr-and-document }]
-      default: failing-test
+    # Retry lives here, not in a backward route: a gap found during
+    # integration is fixed and re-verified inside this same step, re-run
+    # (with the judge's feedback) up to 3 times by the gate below.
+    gate: { required: true, max_loops: 3 }
   - id: open-pr-and-document
     inputs: [steps.verify-integration.output]
 ---
@@ -159,9 +157,7 @@ attached to this unit as input.
 
 Unit tests are necessary, not sufficient. Exercise the change through the
 real entry points before opening the PR, using the tidied diff from `tidy`,
-attached to this unit as input. Report a structured result with a `status`
-field of `clean` (nothing further to fix) or `gap` (integration surfaced a
-missing behaviour).
+attached to this unit as input.
 
 1. If the change has a CLI surface, run it end-to-end with realistic
    inputs and capture the transcripts to `integration.log`.
@@ -176,23 +172,20 @@ missing behaviour).
     ```
 
    The credentials must never appear in `integration.log`.
-4. If integration uncovers a gap, report `status: gap` — the workflow
-   routes back to `failing-test` with a new test for the missing behaviour.
-   Otherwise report `status: clean`.
+4. If integration uncovers a gap, do not report it and move on: add the
+   missing test right here (next to the others from `failing-test`), watch
+   it fail, implement the fix, tidy it, and re-run this step's checks
+   before reporting again. If you are re-entering this step because the
+   gate below rejected a previous attempt, its feedback names exactly what
+   was missing — close that gap specifically rather than re-verifying from
+   scratch.
 
 ### gate
 
 - `integration.log` shows the change exercised through realistic entry
-  points.
+  points, with no known gap left unaddressed.
 - Any UI changes were verified manually and that verification is recorded.
 - Credentials never appear in any artefact written to the workspace.
-
-## triage-integration
-
-Routes on the `status` reported by `verify-integration`: a `clean` result
-proceeds to `open-pr-and-document`; anything else (including a reported
-`gap`) sends the run back to `failing-test` to add the missing test before
-trying again.
 
 ## open-pr-and-document
 
