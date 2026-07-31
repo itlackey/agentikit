@@ -92,10 +92,26 @@ describe("akm bundle add website", () => {
         `${JSON.stringify({ configVersion: "0.9.0", semanticSearchMode: "off" }, null, 2)}\n`,
       );
 
-      const child = spawn("bun", [CLI, "bundle", "add", websiteUrl, "--name", "docs-site", "--format=json"], {
-        stdio: ["ignore", "pipe", "pipe"],
-        env,
-      });
+      const child = spawn(
+        "bun",
+        [
+          CLI,
+          "bundle",
+          "add",
+          websiteUrl,
+          "--name",
+          "docs-site",
+          "--max-pages",
+          "2",
+          "--max-depth",
+          "1",
+          "--format=json",
+        ],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          env,
+        },
+      );
 
       let stdout = "";
       let stderr = "";
@@ -139,13 +155,15 @@ describe("akm bundle add website", () => {
         bundles?: Record<
           string,
           {
-            website?: { url?: string };
+            website?: { url?: string; maxPages?: number; maxDepth?: number };
             components?: { main?: { root?: string; adapter?: string; writable?: boolean } };
           }
         >;
       };
       // #37: the add flow persists a bundles entry keyed by --name.
       expect(config.bundles?.["docs-site"]?.website?.url).toBe(normalizedWebsiteUrl);
+      expect(config.bundles?.["docs-site"]?.website?.maxPages).toBe(2);
+      expect(config.bundles?.["docs-site"]?.website?.maxDepth).toBe(1);
       expect(config.bundles?.["docs-site"]?.components?.main).toEqual({
         root: ".",
         adapter: "website-snapshot",

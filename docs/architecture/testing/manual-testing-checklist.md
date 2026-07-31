@@ -17,10 +17,11 @@ cover:
 Time budget:
 
 - ~35 minutes for the core offline/local pass
+- +20 to 30 minutes for the extended current-surface pass in section 17
 - +10 to 15 minutes for network-backed source and registry checks
 - +10 to 15 minutes for optional agent/LLM-backed `0.9.x` flows
 
-This document was rebuilt against current `0.9.x` behavior on 2026-07-08.
+This document was audited against current `0.9.x` behavior on 2026-07-31.
 
 ---
 
@@ -85,6 +86,25 @@ akm config path --all
 - [ ] `akm config path --all` reports config, stash, cache, and index/data paths
       under `$AKM_SANDBOX`.
 
+### 2.5 Evidence and execution gates
+
+Record the commit, CLI version, OS/architecture, Bun/Node versions, command,
+exit code, and the relevant stdout/stderr or file diff for each failed check.
+Do not mark a gated check as passed based only on an automated test or another
+platform's prior result.
+
+- [ ] Record `git rev-parse HEAD`, `bun --version`, `node --version`, and
+      `uname -a` (or the native Windows equivalent) with the run.
+- [ ] Mark a check `N/A` with its missing prerequisite rather than silently
+      skipping it.
+- [ ] Network checks require a disposable remote or local fixture server.
+- [ ] Agent/LLM checks require a configured engine, disposable credentials,
+      and an endpoint that permits test traffic.
+- [ ] Scheduler checks require the native backend (`cron`, `launchd`, or
+      `schtasks`) and a disposable OS account/container/VM.
+- [ ] Crash/recovery checks require a disposable process or VM where `SIGKILL`
+      and partial-file injection cannot affect real state.
+
 ---
 
 ## 3. Fixtures
@@ -93,7 +113,7 @@ The repo ships pre-built ranking fixtures at `tests/fixtures/stashes/ranking-bas
 Use them as a synthetic stash so search/show output is deterministic.
 
 ```sh
-# 2.1 Mirror the fixture stash into the sandbox
+# 3.1 Mirror the fixture stash into the sandbox
 cp -r tests/fixtures/stashes/ranking-baseline/* "$AKM_BUNDLE_DIR/"
 ls "$AKM_BUNDLE_DIR"
 ```
@@ -119,8 +139,8 @@ Fixture refs worth using throughout this doc:
       `defaultBundle`, `assetTypes`, `searchModes`, `semanticSearch`,
       `registries`, `sourceProviders`, and `indexStats` (incl. `byType`, a
       per-asset-type breakdown of `entryCount`).
-- [ ] `akm config list` emits `sources`, not legacy `stashes`, for current
-      persisted config.
+- [ ] `akm config list` emits the `bundles` map and `defaultBundle`; it does not
+      emit retired `stashDir`, `sources`, `stashes`, or `installed` config keys.
 - [ ] `akm config path --all` returns sandbox-local paths only.
 - [ ] `akm help agents` prints non-empty text.
 - [ ] `akm help agents --full` prints the extended hint text.
@@ -287,8 +307,8 @@ These cover the shared write-target path and git-backed save behavior.
 - [ ] `echo "stdin body" | akm remember --name from-stdin` reads from stdin.
 - [ ] `akm remember "vpn note" --name expiring --tag ops --expires 30d --source "skills/k8s-deploy"`
       persists frontmatter with `tags`, `expires`, and `source`.
-- [ ] `akm remember "Found curl pipe" --name auto-note --auto` succeeds only if
-      heuristic tagging derives tags; written frontmatter includes derived data.
+- [ ] `akm remember "Found curl pipe" --name auto-note --auto` succeeds;
+      heuristic tags may be absent when no signal is found.
 - [ ] `akm remember "Long meeting notes" --name enrich-note --enrich` either
       enriches successfully when LLM config exists or fails in a documented,
       structured way without a stack trace.
@@ -394,9 +414,10 @@ isolated working directory with disposable output paths.
 Workflows now include authoring, validation, execution, and recovery flows.
 
 - [ ] `akm workflow list` is empty in a fresh sandbox.
-- [ ] `akm workflow create test --print > "$AKM_BUNDLE_DIR/workflows/test.md"` prints a valid
-      starter document, without creating the workflow.
-- [ ] Insert one short paragraph between `# Workflow:` and the first `## Step:`.
+- [ ] `akm workflow create test --print > "$AKM_BUNDLE_DIR/workflows/test.md"`
+      prints a valid starter document without creating the workflow; the raw
+      template includes `steps` frontmatter, an H1, preamble prose, and matching
+      `## first-step` / `## second-step` sections.
 - [ ] `akm workflow create test-created --from "$AKM_BUNDLE_DIR/workflows/test.md"`
       writes and indexes the workflow, confirming intro prose is accepted.
 - [ ] `akm lint --type workflows` reports no `invalid-workflow-structure`
@@ -411,7 +432,7 @@ Workflows now include authoring, validation, execution, and recovery flows.
 - [ ] `akm workflow complete <run-id> --step <step-id> --state blocked --notes "waiting"`
       marks the step blocked.
 - [ ] `akm workflow resume <run-id>` flips the blocked run back to active.
-- [ ] `akm workflow complete <run-id> --step <step-id> --state completed --notes "done"`
+- [ ] `akm workflow complete <run-id> --step <step-id> --state completed --summary "work completed" --notes "done"`
       succeeds after resume.
 - [ ] `akm workflow create bad-name!` fails with a structured usage error.
 - [ ] `akm workflow create test-created --force` fails unless paired with
@@ -458,7 +479,8 @@ Confirm that guarantee carefully.
 - [ ] `akm env list` is empty initially.
 - [ ] `akm env create test-env` creates `env/test-env.env`.
 - [ ] Edit the file directly: `printf 'API_KEY=secret-value\n' >> "$AKM_BUNDLE_DIR/env/test-env.env"`.
-- [ ] `akm show env/test-env` lists keys/comments only.
+- [ ] `akm show env/test-env` lists key names only; it exposes neither values
+      nor comment text.
 - [ ] `akm env list --format json` contains the env under `envs[]` with
       `keys` and no secret values.
 - [ ] `akm env path env/test-env` prints the absolute env file path and not the
@@ -517,7 +539,7 @@ Run only inside the sandbox.
 - [ ] `akm improve skills/k8s-deploy --task "tighten the description"` either
       queues a proposal successfully or fails with a structured config/usage
       envelope if no engine is configured.
-- [ ] `akm improve skill qa-generated-skill --task "simple review helper"`
+- [ ] `akm proposal new skill qa-generated-skill --task "simple review helper"`
       either queues a proposal successfully or fails structurally if the agent
       runtime is not configured.
 - [ ] Any successful `improve` emits a `improve_invoked` event.
@@ -527,10 +549,10 @@ Run only inside the sandbox.
 - [ ] `akm improve skills/k8s-deploy` returns `outcome: "skipped"` when
       `improve.strategies.default.processes.distill.enabled` is
       `false`, or queues a lesson proposal when enabled.
-- [ ] `akm improve skills/k8s-deploy --exclude-feedback-from "memories/test-memory"`
-      accepts valid refs.
-- [ ] `akm improve skills/k8s-deploy --exclude-feedback-from "not-a-ref"` fails
-      with `INVALID_FLAG_VALUE`.
+- [ ] `akm improve skills/k8s-deploy --dry-run --strategy quick --limit 1`
+      returns a plan without modifying bundle files or queue entries.
+- [ ] `akm improve skills/k8s-deploy --target nonexistent --dry-run` fails with
+      `INVALID_FLAG_VALUE` and points to the renamed `--bundle` flag.
 - [ ] Any successful `improve` emits a `improve_invoked` event.
 
 ---
@@ -555,15 +577,16 @@ Run only inside the sandbox.
 
 - [ ] Replace `$XDG_CONFIG_HOME/akm/config.json` with one using legacy
       `stashes[]`.
-- [ ] `akm bundle list` fails with a structured `INVALID_CONFIG_FILE` error telling you
-      to rename `stashes[]` to `sources`.
+- [ ] `akm bundle list` fails with a structured `INVALID_CONFIG_FILE` error
+      directing the operator to migrate the retired shape to `bundles`.
 - [ ] Restore a valid config before continuing.
 
-### 16.2 OpenViking rejection
+### 16.2 Retired provider rejection
 
-- [ ] Inject an `openviking` source into `sources[]`.
-- [ ] `akm bundle list` fails with a structured `ConfigError` that points at migration
-      guidance.
+- [ ] Inject a bundle entry with an `openviking` descriptor instead of exactly
+      one supported descriptor (`path`, `git`, `website`, or `npm`).
+- [ ] `akm bundle list` fails with a structured `INVALID_CONFIG_FILE` error;
+      OpenViking is not accepted as a source provider.
 - [ ] Remove it; normal commands work again.
 
 ### 16.3 New 0.8.0 surfaces
@@ -575,8 +598,9 @@ checklist did not exercise.
 
 - [ ] `akm health` on a healthy install exits 0 and emits a JSON envelope with
       `ok: true`.
-- [ ] `akm health` on an install with a missing `state.db` exits non-zero and
-      reports the missing artifact with a structured envelope.
+- [ ] Point `AKM_DATA_DIR` at a fresh sandbox directory and run `akm health`;
+      it initializes `state.db`, performs schema/round-trip checks, and does not
+      report the initially absent database as corruption.
 - [ ] `akm health --since 24h` filters telemetry to the last 24 hours.
 
 #### `akm migrate` recovery
@@ -644,8 +668,10 @@ checklist did not exercise.
 - [ ] `akm show tasks/<id>.md` strips the suffix and resolves to the `.yml`
       file; missing `.yml` yields a structured "task not found", not a parse
       error.
-- [ ] `akm task add` writes a new `.yml` and refuses to overwrite an existing
-      `.md` without `--force`.
+- [ ] With `<stash>/tasks/legacy-check.md` present,
+      `akm task add legacy-check --schedule '@daily' --command 'true' --disabled`
+      fails with `RESOURCE_ALREADY_EXISTS`, writes no `.yml`, and makes no
+      scheduler change; adding `--force` is required to proceed.
 
 #### secret set --from-env / stdin behavior
 
@@ -654,9 +680,9 @@ edit the `.env` file directly and akm loads it; see the env-cli.ts model
 statement). `secret set` still writes one secret at a time and keeps its
 --from-env / stdin surface:
 
-- [ ] `printf '%s' "secret" | akm secret set secrets/prod SECRET_TOKEN` writes via
+- [ ] `printf '%s' "secret" | akm secret set secrets/prod` writes via
       stdin.
-- [ ] `AKM_VAL=secret akm secret set secrets/prod SECRET_TOKEN --from-env AKM_VAL`
+- [ ] `AKM_VAL=secret akm secret set secrets/prod --from-env AKM_VAL`
       writes from the named env var; unset var exits with code 2.
 - [ ] Piping a payload > 5 MB to `akm secret set` is rejected with a
       `UsageError`.
@@ -677,7 +703,191 @@ statement). `secret set` still writes one secret at a time and keeps its
 
 ---
 
-## 17. Error Handling
+## 17. Extended Current-Surface Pass
+
+These checks cover current behavior that the original core pass did not reach.
+They are deterministic and Linux-safe in the sandbox unless a check is
+explicitly marked as gated.
+
+### 17.1 Bundle identity and precedence
+
+- [ ] Add two writable filesystem bundles named `precedence-a` and
+      `precedence-b`, then write `memories/shared` with different bodies to
+      each using `akm remember ... --bundle <name>`.
+- [ ] `akm show precedence-a//memories/shared` and
+      `akm show precedence-b//memories/shared` return the corresponding bodies;
+      the fully qualified identity is preserved in each result.
+- [ ] `akm show memories/shared` follows `defaultBundle` and installation
+      precedence rather than selecting a random duplicate.
+- [ ] `akm bundle list --kind filesystem` includes both bundles and no
+      non-filesystem entries; `akm bundle show precedence-a` returns only its
+      resolved descriptor and component state.
+
+### 17.2 Write fidelity and correction metadata
+
+- [ ] `akm remember "linked body" --name linked --path qa --xref skills/k8s-deploy`
+      writes `memories/qa/linked.md` with `type`, `updated`, and one canonical
+      `xrefs` entry while preserving the body bytes.
+- [ ] Repeating the same write without `--force` fails with
+      `RESOURCE_ALREADY_EXISTS`; adding `--force` replaces only that asset.
+- [ ] Import a Markdown file containing custom nested frontmatter with
+      `--xref skills/k8s-deploy`; the custom fields and body survive and the
+      new `updated`/`xrefs` fields are merged without a nested frontmatter block.
+- [ ] Write a correction using `--supersedes memories/test-memory`; the new
+      asset links the old ref, and the old asset gains `beliefState:
+      superseded` plus `supersededBy` without losing unrelated frontmatter.
+- [ ] `akm search memory --type memory --belief current` returns the correction
+      and hides the superseded asset; `--belief all` can return both.
+
+### 17.3 Output formats and destinations
+
+- [ ] `akm show skills/k8s-deploy --format md --output "$AKM_SANDBOX/show.md"`
+      writes Markdown to the file and emits no result payload on stdout.
+- [ ] `akm health --report --format html --output "$AKM_SANDBOX/health.html"`
+      writes HTML containing the full report dataset.
+- [ ] `akm info --format text` is plain key/value text, not JSON wearing a
+      text flag.
+- [ ] `akm search docker --shape summary` fails with `INVALID_SHAPE_VALUE` and
+      exit 2 because `summary` is valid only for `show`.
+- [ ] `akm env path env/test-env --format yaml` still prints one raw path and
+      warns on stderr that this command is format-exempt.
+- [ ] `akm search docker --format jsonl --output "$AKM_SANDBOX/ignored"`
+      continues to stream JSONL to stdout and does not create the output file.
+
+### 17.4 Lint and task schema
+
+- [ ] In a disposable lint-only directory, create one frontmatter-bearing
+      memory without `updated`; `akm lint --dir <dir> --fail-on-flagged` reports
+      `missing-updated` and exits 1.
+- [ ] `akm lint --dir <dir> --auto-fix` stamps `updated`, reports the issue as
+      fixed, and a subsequent `--fail-on-flagged` run exits 0.
+- [ ] `akm task doctor` reports the native backend, executable binding, log
+      directory, and supported schedule subset without modifying the scheduler.
+- [ ] Hand-write a disabled command-only `tasks/manual-run.yml`, then run
+      `akm task run manual-run`; manual execution succeeds and
+      `akm task history --id manual-run --limit 1` records the attempt.
+- [ ] `akm task add invalid --schedule '@daily' --command true --prompt text`
+      fails before writing or touching the scheduler because exactly one target
+      is required.
+
+### 17.5 Env lifecycle and filtering
+
+- [ ] Seed a dedicated fixture with
+      `printf 'API_KEY=secret-value\nSECOND_KEY=second-value\n' | akm env create extended-env --from-stdin`.
+- [ ] `akm env export env/extended-env --out "$AKM_SANDBOX/extended-env.sh"`
+      writes a mode-0600 shell file, prints no values, and safely single-quotes
+      values.
+- [ ] Run `akm env run env/extended-env --only API_KEY -- bash -lc 'test
+      "$API_KEY" = secret-value && test -z "$SECOND_KEY"'`; it exits 0.
+- [ ] `akm env run env/extended-env --only API_KEY --except SECOND_KEY -- true`
+      fails with `INVALID_FLAG_VALUE` because the filters are mutually
+      exclusive.
+- [ ] Create a sensitive env from stdin; `akm env list` and normal search omit
+      it, while `akm env path` can still resolve it.
+- [ ] `akm env remove env/extended-env --yes` removes the env and any sensitive
+      marker through the normal write boundary.
+
+### 17.6 Tracking and durable log cursors
+
+- [ ] Record tagged feedback with `--tag slice:manual --tag team:qa`, then inspect
+      it with `akm log --include-tags slice:manual --limit 1 --detail full`; the
+      event contains its numeric id, both tags, and structured feedback metadata.
+- [ ] `akm log --exclude-tags slice:manual --detail full` excludes that event.
+- [ ] Copy the event's numeric `id` and run `akm log --since @offset:<id>`;
+      only later events are returned, proving the cursor survives a new process.
+- [ ] Capture the latest event id, run
+      `akm show skills/k8s-deploy --no-track-usage`, and verify no later usage
+      event was appended for that read.
+- [ ] `akm log --run <run-id>` returns only events whose metadata belongs to
+      that workflow run.
+
+### 17.7 Workflow terminal transitions and engine gate
+
+- [ ] Copy `.run.id` from `akm workflow start`, then run
+      `akm workflow list --active --ref workflows/test-created`; it returns only
+      active runs for the normalized fully qualified ref. `akm workflow status
+      <run-id> --units` includes a `units` collection without changing run state.
+- [ ] `akm workflow abandon <run-id>` marks the run failed and removes it from
+      `workflow list --active`; `akm workflow resume <run-id>` reopens it.
+- [ ] Starting the same workflow again without `--force` fails with
+      `RESOURCE_ALREADY_EXISTS`; `--force` creates a distinct parallel run.
+- [ ] With `experimental.workflowEngine` unset/false, `akm workflow brief
+      <run-id>`, `akm workflow run <run-id>`, and `akm workflow report <run-id>`
+      fail with the documented config gate before acquiring an engine lease or
+      changing the run.
+- [ ] With the experiment enabled, `workflow brief`/`report` require a
+      compatible seeded workflow and disposable run. Record the exact brief,
+      report command, unit state, and terminal status. `workflow run` additionally
+      requires a configured runner/engine.
+
+### 17.8 Proposal dry-runs and archive lifecycle
+
+- [ ] `akm proposal list --queue <source-name> --status pending --type memory`
+      applies every filter without mutating the queue. Use an actual configured
+      source name from `akm bundle list`; omit `--queue` for the default queue.
+- [ ] `akm proposal accept --generator distill --dry-run` and
+      `akm proposal reject --generator distill --reason "manual qa" --dry-run`
+      require no prompt, report only matching proposals, and leave statuses
+      unchanged.
+- [ ] `akm proposal drain --policy manual --dry-run` reports accept/reject/defer
+      decisions without writing assets or queue state.
+- [ ] For an accepted update proposal with a backup,
+      `akm proposal revert <full-uuid>` restores the exact prior bytes and
+      changes archive status to `reverted`; a new-asset proposal without a
+      backup fails structurally.
+
+### 17.9 Setup bootstrap and config recovery
+
+Run these in a second fully isolated sandbox so they cannot disturb the main
+checklist state.
+
+- [ ] `akm setup --from <valid.json> --yes --dir <new-bundle> --no-init`
+      writes the requested config but does not scaffold `<new-bundle>`.
+- [ ] The equivalent YAML bootstrap produces the same normalized config.
+- [ ] Passing both `--from` and `--config` fails with `INVALID_FLAG_VALUE`
+      before writing config.
+- [ ] A malformed bootstrap file fails with `INVALID_CONFIG_FILE`, leaves any
+      existing config byte-for-byte unchanged, and prints no stack trace.
+- [ ] `akm config set semanticSearchMode auto --silent` and the matching
+      `config unset semanticSearchMode --silent` modify config while leaving
+      stdout empty.
+
+### 17.10 Source limits and install safety
+
+- [ ] Add a disposable local bundle containing an env file with `LD_PRELOAD` or
+      `NODE_OPTIONS`; non-interactive `akm bundle add` blocks with
+      `DANGEROUS_ENV_KEY`, rolls back the config entry, and emits no success
+      envelope. `--allow-insecure` is required to bypass after review.
+- [ ] **Network-gated:** add a controlled website with
+      `--max-pages 2 --max-depth 1`; persisted `bundles.<name>.website` contains
+      numeric values for both limits and the crawl does not exceed either bound.
+- [ ] **Network-gated:** `akm bundle update <name> --force` refreshes the
+      controlled remote; `bundle update --all` reports each processed bundle
+      independently and does not alter filesystem-only bundles.
+- [ ] **Network-gated:** provider `--options` accepts a JSON object and rejects
+      malformed JSON or non-object JSON with a structured usage error.
+
+### 17.11 Platform and credential gates
+
+- [ ] **Agent/LLM-gated:** run `akm agent`, `proposal new`, `proposal extract`,
+      and a non-dry-run `improve` with disposable credentials. Verify timeout,
+      redaction, proposal provenance, and no credential text in logs/output.
+- [ ] **Linux scheduler:** in a disposable container/account, `task add`,
+      `sync`, scheduled execution, history, disable-by-file-edit, and removal
+      operate only on the test crontab.
+- [ ] **macOS scheduler:** repeat the scheduler lifecycle on launchd and retain
+      generated plist plus `launchctl` evidence.
+- [ ] **Windows scheduler:** repeat on `schtasks` and retain generated XML plus
+      scheduler query evidence.
+- [ ] **Runtime/release:** execute the packaged CLI on supported Node versions,
+      the standalone binary matrix, npm upgrade path, semantic-search gate, and
+      Docker install matrix. Record artifact digests and exact release commit.
+- [ ] **Crash/recovery:** execute migration kill-point and rollback-journal cases
+      only in the dedicated disposable recovery harness described in 16.3.
+
+---
+
+## 18. Error Handling
 
 Spot-check that failures always arrive as structured JSON on stderr with
 `{ok:false, error, code?, hint?}` and exit non-zero.
@@ -699,21 +909,18 @@ If any failure prints a bare stack trace, that is a regression.
 
 ---
 
-## 18. Format Round-Trip
+## 19. Format Round-Trip
 
 Confirm representative commands are parseable as JSON/YAML/JSONL.
 
 ```sh
-for cmd in \
-  'list' \
-  'search docker' \
-  'show skills/k8s-deploy' \
-  'info' \
-  'config list' \
-  'curate "review code"' \
-  'log --ref skills/k8s-deploy'; do
-  akm $cmd --format json | jq -e . > /dev/null || exit 1
-done
+akm bundle list --format json | jq -e . > /dev/null
+akm search docker --format json | jq -e . > /dev/null
+akm show skills/k8s-deploy --format json | jq -e . > /dev/null
+akm info --format json | jq -e . > /dev/null
+akm config list --format json | jq -e . > /dev/null
+akm curate "review code" --format json | jq -e . > /dev/null
+akm log --ref skills/k8s-deploy --format json | jq -e . > /dev/null
 ```
 
 - [ ] All representative `--format json` commands parse successfully.
@@ -722,7 +929,7 @@ done
 
 ---
 
-## 19. Sandbox Cleanup
+## 20. Sandbox Cleanup
 
 ```sh
 rm -rf "$AKM_SANDBOX"
@@ -739,9 +946,10 @@ unalias akm
 ## When to Run This
 
 - **Before tagging a release**: full pass.
-- **After CLI-surface changes**: sections 4, 5, 6, 17 minimum.
-- **After write-path or git-path changes**: sections 7, 8, 11, 12, 13, 15.
-- **After runtime/dependency changes**: sections 5, 10, 14, 18.
+- **After CLI-surface changes**: sections 4, 5, 6, 17, 18, and 19 minimum.
+- **After write-path or git-path changes**: sections 7, 8, 11, 12, 13, 15,
+  and 17.1-17.2.
+- **After runtime/dependency changes**: sections 5, 10, 14, 17.11, and 19.
 
 Record results in `docs/migration/release-notes/<version>.md` under a
 "Manual QA" subsection when the release includes user-visible changes.

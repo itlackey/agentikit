@@ -151,7 +151,8 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   if (!isWithin(assetPath, typeRoot)) {
     throw new UsageError(`Resolved task path escapes the stash: "${id}".`, "PATH_ESCAPE_VIOLATION");
   }
-  if (fs.existsSync(assetPath) && !input.force) {
+  const legacyAssetPath = path.join(typeRoot, `${id}.md`);
+  if ((fs.existsSync(assetPath) || fs.existsSync(legacyAssetPath)) && !input.force) {
     throw new UsageError(
       `Task "${id}" already exists. Pass --force to overwrite, or delete its file and run \`akm task sync\` first.`,
       "RESOURCE_ALREADY_EXISTS",

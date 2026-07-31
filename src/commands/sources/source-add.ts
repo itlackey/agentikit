@@ -134,12 +134,17 @@ async function addWebsiteSource(
   const allowPrivateHosts = shouldAllowPrivateWebsiteUrlForTests(ref);
   const normalizedUrl = validateWebsiteInputUrl(ref, { allowPrivateHosts });
   const maxPages = typeof options?.maxPages === "number" ? (options.maxPages as number) : undefined;
+  const maxDepth = typeof options?.maxDepth === "number" ? (options.maxDepth as number) : undefined;
   let entry: SourceConfigEntry | undefined;
   mutateConfig((config) => {
     const bundles: Record<string, BundleConfigEntry> = { ...(config.bundles ?? {}) };
     const existingKey = bundleKeyForUrl(config, normalizedUrl);
     const key = existingKey ?? nextBundleKey(bundles, name ?? toWebsiteName(normalizedUrl), normalizedUrl);
-    const website = { url: normalizedUrl, ...(maxPages !== undefined ? { maxPages } : {}) };
+    const website = {
+      url: normalizedUrl,
+      ...(maxPages !== undefined ? { maxPages } : {}),
+      ...(maxDepth !== undefined ? { maxDepth } : {}),
+    };
     const nextBundle: BundleConfigEntry = {
       ...(existingKey ? bundles[key] : {}),
       website,
