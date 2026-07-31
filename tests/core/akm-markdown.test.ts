@@ -20,7 +20,44 @@ describe("AKM Markdown OKF compatibility", () => {
   });
 
   test("leaves an already conformant native document byte-identical", () => {
-    const input = "---\ntype: workflow\ndescription: Keep formatting\n---\n\n# Workflow: Test\n";
+    // Conformant means type AND updated — `akm lint` flags a frontmatter-
+    // bearing document with no `updated` as `missing-updated`.
+    const input = "---\ntype: workflow\nupdated: 2026-01-15\ndescription: Keep formatting\n---\n\n# Workflow: Test\n";
     expect(ensureAkmMarkdownType(input, "workflow")).toBe(input);
+  });
+
+  // Every asset akm writes goes through this chokepoint. Without an `updated`
+  // stamp, `akm remember` / `akm import` / accepted proposals produced files
+  // that akm's own `akm lint` immediately flagged `missing-updated`.
+  describe("updated stamp", () => {
+    const FIXED_NOW = new Date(2026, 2, 14); // 2026-03-14, local time
+
+    test("stamps updated when adding frontmatter to a bare body", () => {
+      const parsed = parseFrontmatter(ensureAkmMarkdownType("Body bytes.\n", "knowledge", FIXED_NOW));
+      expect(parsed.data.type).toBe("knowledge");
+      expect(parsed.data.updated).toBe("2026-03-14");
+    });
+
+    test("stamps updated on an existing frontmatter block that lacks it", () => {
+      const input = "---\ntype: memory\ndescription: Note\n---\n\nBody.\n";
+      const parsed = parseFrontmatter(ensureAkmMarkdownType(input, "memory", FIXED_NOW));
+      expect(parsed.data.updated).toBe("2026-03-14");
+      expect(parsed.data.description).toBe("Note");
+      expect(parsed.content).toBe("\nBody.\n");
+    });
+
+    test("never overwrites an author's existing updated value", () => {
+      const input = "---\ntype: knowledge\nupdated: 2020-01-01\n---\n\nBody.\n";
+      const parsed = parseFrontmatter(ensureAkmMarkdownType(input, "knowledge", FIXED_NOW));
+      expect(parsed.data.updated).toBe("2020-01-01");
+    });
+
+    test("stamps updated even when the type already matches", () => {
+      // The type check used to short-circuit the whole function, so a
+      // correctly-typed document could never acquire the stamp.
+      const input = "---\ntype: knowledge\ndescription: Already typed\n---\n\nBody.\n";
+      const parsed = parseFrontmatter(ensureAkmMarkdownType(input, "knowledge", FIXED_NOW));
+      expect(parsed.data.updated).toBe("2026-03-14");
+    });
   });
 });

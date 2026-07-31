@@ -66,10 +66,20 @@ export const CREATE_MODEL_ID_TERM_NAME = "jnl-create-model-id-term";
  * "just naming the input ref". `label` and `body` still make each fixture's
  * *content* (and therefore its hash) distinct.
  */
+/**
+ * A conformant fixture lesson.
+ *
+ * `updated` is REQUIRED here, not decoration: `ensureAkmMarkdownType` stamps a
+ * today-dated `updated` onto any written `.md` that lacks one, so a fixture
+ * without it would produce file content — and therefore `fileTreeManifest`
+ * hashes — that change every calendar day and break these goldens overnight.
+ * A fixed value keeps the capture deterministic.
+ */
 export function lessonContent(label: string, body: string): string {
   return (
     "---\ndescription: Fixture-local golden capture content for the proposal journal round-trip suite.\n" +
-    `when_to_use: Testing proposal accept, revert, and reject engine outcomes (${label}).\n---\n\n${body}\n`
+    `when_to_use: Testing proposal accept, revert, and reject engine outcomes (${label}).\n` +
+    `updated: 2026-01-15\n---\n\n${body}\n`
   );
 }
 

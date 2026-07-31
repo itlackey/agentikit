@@ -151,8 +151,18 @@ export const lintCommand = defineCommand({
     ...GLOBAL_OUTPUT_ARGS,
     fix: {
       type: "boolean",
-      alias: "auto-fix",
-      description: "Apply auto-fixes in place (alias: --auto-fix)",
+      description: "Apply auto-fixes in place",
+      default: false,
+    },
+    // Declared as its own arg rather than `alias: "auto-fix"`: citty passes
+    // aliases to mri, which only understands SINGLE-character ones. A
+    // multi-char alias rendered in help as `-auto-fix` (one dash) and parsed
+    // as a pile of junk single-char flags, so BOTH advertised spellings —
+    // `-auto-fix` and `--auto-fix` — silently ran a plain lint while claiming
+    // to fix. Two real boolean args, OR'd at the call site, work and render.
+    "auto-fix": {
+      type: "boolean",
+      description: "Apply auto-fixes in place (same as --fix)",
       default: false,
     },
     dir: { type: "string", description: "Override bundle root directory (default: from config)" },
@@ -170,7 +180,7 @@ export const lintCommand = defineCommand({
   async run({ args }) {
     await runWithJsonErrors(async () => {
       const result = akmLint({
-        fix: args.fix ?? false,
+        fix: args.fix === true || args["auto-fix"] === true,
         dir: getStringArg(args, "dir"),
         typeFilter: getStringArg(args, "type"),
       });

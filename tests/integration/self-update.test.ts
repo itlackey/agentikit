@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import * as childProcess from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   checkForUpdate,
@@ -11,6 +12,7 @@ import {
   getPackageManagerUpgradeCommand,
   type InstallSignals,
   performUpgrade,
+  streamResponseToFile,
 } from "../../src/commands/sources/self-update";
 import { upgradeCommand } from "../../src/commands/sources/sources-cli";
 import { sandboxHome, withEnv } from "../_helpers/sandbox";
@@ -920,5 +922,88 @@ describe("getPackageManagerUpgradeCommand", () => {
   test("returns undefined for non-package-manager installs", () => {
     expect(getPackageManagerUpgradeCommand("binary", "akm-cli")).toBeUndefined();
     expect(getPackageManagerUpgradeCommand("unknown", "akm-cli")).toBeUndefined();
+  });
+});
+
+// ── Binary download body bounds ──────────────────────────────────────────────
+
+describe("streamResponseToFile body deadline", () => {
+  const scratch: string[] = [];
+  const destPath = (): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-dl-"));
+    scratch.push(dir);
+    return path.join(dir, "akm.bin");
+  };
+
+  afterEach(() => {
+    for (const dir of scratch.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A Response whose body emits `chunks`, then stalls forever if `stall`. */
+  const streamingResponse = (chunks: Uint8Array[], stall: boolean): Response => {
+    const body = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        // Never close and never enqueue again: the exact shape of an endpoint
+        // that accepted the request and then went silent mid-body.
+        if (!stall) controller.close();
+      },
+    });
+    return new Response(body, { headers: { "content-type": "application/octet-stream" } });
+  };
+
+  test("writes and hashes a well-behaved body", async () => {
+    const payload = new TextEncoder().encode("akm-binary-payload");
+    const dest = destPath();
+
+    const result = await streamResponseToFile(streamingResponse([payload], false), dest, 1024);
+
+    expect(result.byteSize).toBe(payload.byteLength);
+    expect(result.sha256).toBe(createHash("sha256").update(payload).digest("hex"));
+    expect(fs.readFileSync(dest)).toEqual(Buffer.from(payload));
+  });
+
+  test("aborts a stalled body instead of hanging forever", async () => {
+    // Without a read deadline this call never settles — the pre-fix behavior,
+    // since fetchWithTimeout's timer only covers time-to-headers.
+    const dest = destPath();
+
+    await expect(
+      streamResponseToFile(streamingResponse([new Uint8Array([1, 2, 3])], true), dest, 1024, {
+        stallTimeoutMs: 50,
+      }),
+    ).rejects.toThrow(/exceeded 50ms/);
+  });
+
+  test("removes the partial file when the deadline fires", async () => {
+    const dest = destPath();
+
+    await expect(
+      streamResponseToFile(streamingResponse([new Uint8Array([1, 2, 3])], true), dest, 1024, {
+        stallTimeoutMs: 50,
+      }),
+    ).rejects.toThrow();
+
+    expect(fs.existsSync(dest)).toBe(false);
+  });
+
+  test("the overall bound also caps a body that keeps trickling", async () => {
+    // Chunks arrive faster than the stall window, so only the overall deadline
+    // can stop this one — the evasion a stall-only bound would miss.
+    const trickle = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        controller.enqueue(new Uint8Array([0]));
+      },
+    });
+    const dest = destPath();
+
+    await expect(
+      streamResponseToFile(new Response(trickle), dest, 1024 * 1024, {
+        stallTimeoutMs: 10_000,
+        totalTimeoutMs: 60,
+      }),
+      // Reports the OVERALL bound, not the (untripped) stall window.
+    ).rejects.toThrow(/exceeded 60ms/);
   });
 });
