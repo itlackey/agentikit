@@ -41,6 +41,9 @@ jobs:
       # must be green on the exact tagged commit — a release must never publish
       # code that CI has not validated at this ref.
       - name: Check
+        env:
+          NPM_CONFIG_USERCONFIG: /dev/null
+          NODE_AUTH_TOKEN: ""
         run: bun run check
 
       - name: Verify version
