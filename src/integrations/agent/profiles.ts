@@ -151,6 +151,17 @@ const BUILTINS: Record<string, AgentProfile> = {
   },
 };
 
+/**
+ * Binary the `opencode-sdk` harness needs on PATH.
+ *
+ * The embedded SDK is not self-contained: its runner spawns `opencode serve`
+ * and talks HTTP to it (see `harnesses/opencode-sdk/sdk-runner.ts`), so the
+ * `opencode` binary gates the SDK path exactly as it gates the CLI path.
+ * `opencode-sdk` deliberately has no {@link BUILTINS} entry — it dispatches
+ * without argv construction — so this is the one place that pairing lives.
+ */
+export const OPENCODE_SDK_SERVER_BIN = "opencode";
+
 /** Names of the canonical built-in harness descriptors. Stable, sorted. */
 export const BUILTIN_AGENT_PROFILE_NAMES: readonly string[] = Object.freeze(Object.keys(BUILTINS).sort());
 

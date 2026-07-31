@@ -54,8 +54,11 @@
 
 import path from "node:path";
 import { isDangerousEnvKey } from "../../../commands/lint/env-key-rules";
+import { TASK_SCHEMA_VERSION } from "../../../tasks/schema";
 import { compileWorkflowPlan } from "../../../workflows/ir/compile";
 import { parseWorkflow } from "../../../workflows/parser";
+import { deriveCanonicalAssetNameFromStashRoot } from "../../asset/asset-placement";
+import { conceptIdFromTypeName } from "../../asset/resolve-ref";
 import type { BundleComponent, Diagnostic, ValidateContext } from "../types";
 
 /** Recommended `category` values for facts — `commands/lint/fact-linter.ts:9`. */
@@ -165,16 +168,21 @@ function collectSuppressedKeys(raw: string): Set<string> {
 /**
  * env/secret dangerous-key scan (`lint/index.ts:191-218` + `env-key-rules.ts#checkEnvForDangerousKeys`),
  * keyed on `type` and preserving the `.env`-suffix narrowness (see file header).
- * Reads the overlay `raw`, not disk. `type`==="env" ⇒ ref prefix `env:`;
- * `type`==="secret" ⇒ `secret:` (`lint/index.ts:201-204`).
+ * Reads the overlay `raw`, not disk.
+ *
+ * The emitted `Ref:` is built through the SAME placement + conceptId helpers
+ * every other emission site uses, so a user can paste it straight into
+ * `akm show`. It used to be hand-built as `env:<base>` / `secret:<base>`, a
+ * colon grammar the 0.9.0 ref parser rejects outright
+ * (`asset/resolve-ref.ts`) — a dead-end ref on a *security* finding.
  */
 export function dangerousEnvKeyDiagnostics(type: string | undefined, relPath: string, raw: string): Diagnostic[] {
   if (type !== "env" && type !== "secret") return [];
   const baseNameWithExt = path.basename(relPath);
   if (!baseNameWithExt.endsWith(".env")) return []; // NARROWNESS: collectEnvFiles only visits *.env
-  const refPrefix = type === "env" ? "env" : "secret";
-  const baseName = path.basename(relPath, ".env");
-  const ref = baseName === "" ? `${refPrefix}:.env` : `${refPrefix}:${baseName}`;
+  // `relPath` is already stash-root-relative, so "." IS the stash root here.
+  const name = deriveCanonicalAssetNameFromStashRoot(type, ".", relPath);
+  const ref = name === undefined ? relPath : conceptIdFromTypeName(type, name);
 
   const keys = scanKeys(raw);
   const suppressed = collectSuppressedKeys(raw);
@@ -292,15 +300,31 @@ export function factDiagnostics(relPath: string, data: Record<string, unknown>):
   return [];
 }
 
-/** TaskLinter extra check (`task-linter.ts:25-58`). `data` is the parsed YAML. */
+/**
+ * TaskLinter extra check (`task-linter.ts:25-58`). `data` is the parsed YAML.
+ *
+ * Mirrors what `src/tasks/parser.ts` ACTUALLY enforces at load time, so lint
+ * and runtime cannot disagree in either direction. They previously did, both
+ * ways: lint demanded `enabled` (which the parser defaults to `true`, so a
+ * perfectly runnable task was flagged) and never checked `version` (which the
+ * parser hard-requires as `2`, so a lint-clean task died at runtime with
+ * TASK_SCHEMA_VERSION_UNSUPPORTED). `schemas/akm-task.json` agrees with the
+ * parser: `required: [version, schedule]`, `version: {const: 2}`, `enabled`
+ * optional.
+ */
 export function taskDiagnostics(relPath: string, data: Record<string, unknown>): Diagnostic[] {
   if (data === null || Object.keys(data).length === 0) return [];
   const missing: string[] = [];
+  if (data.version !== TASK_SCHEMA_VERSION) {
+    missing.push(`version (must be ${TASK_SCHEMA_VERSION})`);
+  }
   if (!("schedule" in data) || typeof data.schedule !== "string" || data.schedule.trim() === "") {
     missing.push("schedule");
   }
-  if (!("enabled" in data) || typeof data.enabled !== "boolean") {
-    missing.push("enabled (must be a boolean)");
+  // `enabled` is OPTIONAL (parser defaults it to true) but must be a boolean
+  // when present — the parser throws on any other type.
+  if ("enabled" in data && typeof data.enabled !== "boolean") {
+    missing.push("enabled (must be a boolean when present)");
   }
   const hasTarget = "prompt" in data || "workflow" in data || "command" in data;
   if (!hasTarget) missing.push("prompt, workflow, or command");

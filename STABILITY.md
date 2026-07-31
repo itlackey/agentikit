@@ -445,7 +445,7 @@ on them.
 | `AKM_BUNDLE_DIR`, `AKM_CONFIG_DIR`, `AKM_DATA_DIR`, `AKM_CACHE_DIR` | Filesystem layout overrides |
 | `AKM_LLM_API_KEY`, `AKM_EMBED_API_KEY`, `AKM_ENGINE_<NAME>_API_KEY` | Credential provision for `$VAR` config references |
 | `AKM_LLM_ENDPOINT`, `AKM_LLM_BASE_URL` | Setup provider inference |
-| `AKM_VERBOSE`, `AKM_DEBUG`, `AKM_NON_INTERACTIVE` | Diagnostics and CI behavior |
+| `AKM_VERBOSE`, `AKM_DEBUG` | Diagnostics |
 | `AKM_REGISTRY_URL` | akm registry mirror override |
 | `AKM_NPM_REGISTRY` | npm mirror override — redirects BOTH the trusted-tarball host allowlist and package metadata lookups (`npm view`-equivalent resolution) to the given registry base, replacing `registry.npmjs.org` wholesale rather than merging with it |
 | `AKM_SQLITE_JOURNAL_MODE` | SQLite journal mode (network filesystems) |

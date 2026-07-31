@@ -271,7 +271,16 @@ const setupCommand = defineCommand({
         output("setup", result);
         printSetupTtyHint(result);
       } else {
-        // Interactive wizard
+        // Interactive wizard. Guard the TTY first: the wizard's prompts read
+        // from stdin, so a piped/redirected/CI invocation would render the
+        // first prompt and then block forever instead of failing — and `akm
+        // setup` is the first command users automate.
+        if (process.stdin.isTTY !== true) {
+          throw new UsageError(
+            "Interactive setup requires a TTY. Pass --yes to accept defaults, or --config <json> / --from <file> to configure non-interactively.",
+            "NON_INTERACTIVE_REQUIRES_YES",
+          );
+        }
         const { runSetupWizard } = await import("./setup/setup");
         await runSetupWizard({ dir: args.dir, noInit });
       }

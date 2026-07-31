@@ -16,7 +16,7 @@
       "relPath": "nightly-index.yml",
       "type": "task",
       "issues": [],
-      "note": "schedule '@daily' + enabled false + exactly one target (prompt) → valid."
+      "note": "version 2 + schedule '@daily' + enabled false + exactly one target (prompt) → valid. `version: 2` is required (src/tasks/parser.ts requireVersion, schemas/akm-task.json `const: 2`); `enabled` is optional and defaults to true."
     },
     "invalidTwoTargets": {
       "relPath": "two-targets.yml",
@@ -29,7 +29,7 @@
           "fixed": false
         }
       ],
-      "note": "single violation: two targets. schedule + enabled are present, so only the one-target rule fails."
+      "note": "single violation: two targets. version + schedule are valid, so only the one-target rule fails."
     }
   }
 }

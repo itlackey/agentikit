@@ -225,7 +225,13 @@ function classifyBySmartMd(ctx: FileContext): MatchFact | null {
   }
 
   if (fm) {
-    if ("toolPolicy" in fm || "tools" in fm) {
+    // `tools` is the ONE authoring key for an agent's tool grant. A
+    // `toolPolicy` frontmatter key used to classify here too, but nothing ever
+    // read it back — the renderer projects the response's `toolPolicy` field
+    // from `tools` alone — so authoring it produced an agent whose grant
+    // silently vanished. Recognizing only what is actually honoured keeps the
+    // authoring surface truthful.
+    if ("tools" in fm) {
       return { type: "agent", specificity: 20 };
     }
 
