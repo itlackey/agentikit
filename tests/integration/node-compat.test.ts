@@ -765,7 +765,7 @@ describe("setup parity", () => {
 describe("scope flag parity", () => {
   afterEach(() => cleanup());
 
-  test.skipIf(!ENABLED)("--scope type:memory search returns same exit on Bun and Node", async () => {
+  test.skipIf(!ENABLED)("--scope on search is rejected identically on Bun and Node", async () => {
     setupStorage();
     await boundedWithEnv({ AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" }, async () => {
       await runCliCapture(["remember", "scope flag parity test"]);
@@ -774,7 +774,12 @@ describe("scope flag parity", () => {
 
     const nodeResult = nodeRun(["search", "scope flag parity", "--scope", "type:memory"], nodeEnv);
     assertNoBoundaryLeak(nodeResult, "scope-search");
-    expect([0, 1]).toContain(nodeResult.status);
+    // `--scope` is not a search flag. mri used to drop it silently (exit 0,
+    // unscoped results); unknown-flag validation now rejects it as a usage
+    // error. The parity contract this suite guards is that Node takes the
+    // same path — same exit, same envelope, no Bun-boundary leak.
+    expect(nodeResult.status).toBe(2);
+    expect(nodeResult.stderr).toContain("UNKNOWN_FLAG");
 
     const bunResult = await boundedWithEnv(
       { AKM_BUNDLE_DIR: stashDir, ...nodeEnv, AKM_OUTPUT: "json", NO_COLOR: "1" },
