@@ -47,7 +47,7 @@
       "ref": "sample-claude//agents/reviewer",
       "name": "reviewer",
       "description": "Read-only code reviewer. Delegate when a diff needs a careful correctness pass.",
-      "derivation": ".md under agents/ + tools/model frontmatter probe (spec §6 agent row: '.md under agents/ + tools(/legacy toolPolicy)/model probe')"
+      "derivation": ".md under agents/ + tools/model frontmatter probe (spec §6 agent row: '.md under agents/ + tools/model probe')"
     },
     "skills/pdf-processing/SKILL.md": {
       "recognized": true,
