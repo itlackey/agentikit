@@ -289,6 +289,8 @@ describe("family C — akm task", () => {
 
     const doctor = await runCli(["task", "doctor", "--format=json"]);
     expect(doctor.code).toBe(0);
+    const doctorJson = JSON.parse(doctor.stdout) as Record<string, unknown>;
+    if (doctorJson.remediation !== undefined) expect(doctorJson.remediation).toBe("akm task sync --rebind");
 
     expectGolden(
       "tests/fixtures/goldens/cli/c-tasks-family.json",
@@ -300,7 +302,12 @@ describe("family C — akm task", () => {
           resultStatus: runJson.result.status,
         },
         history: { exitCode: history.code, stdoutKeys: Object.keys(JSON.parse(history.stdout)).sort() },
-        doctor: { exitCode: doctor.code, stdoutKeys: Object.keys(JSON.parse(doctor.stdout)).sort() },
+        doctor: {
+          exitCode: doctor.code,
+          stdoutKeys: Object.keys(doctorJson)
+            .filter((key) => key !== "remediation")
+            .sort(),
+        },
       },
       { stash: storage.stashDir, data: storage.dataDir },
     );
