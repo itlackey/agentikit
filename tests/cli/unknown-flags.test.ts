@@ -65,6 +65,8 @@ describe("accepts every legitimate spelling", () => {
     ["repeated flags", ["search", "foo", "--type", "skill", "--type", "command"]],
     ["boolean negation", ["show", "knowledge/a", "--no-track-usage"]],
     ["short alias", ["index", "-q"]],
+    ["bundled boolean aliases", ["proposal", "accept", "p-1", "-qy"]],
+    ["short alias with attached value", ["sync", "-mrelease"]],
     ["nested subcommand flags", ["proposal", "new", "skill", "demo", "--task", "do a thing"]],
     ["three-level nesting", ["bundle", "add", "github:owner/repo", "--writable"]],
     ["kebab-cased flag", ["lint", "--fail-on-flagged"]],
@@ -84,6 +86,10 @@ describe("accepts every legitimate spelling", () => {
   test("a bare `-` and negative numbers are not flags", () => {
     expect(() => check(["import", "-"])).not.toThrow();
     expect(() => check(["log", "--limit", "-5"])).not.toThrow();
+  });
+
+  test("one-dash long names are parsed as short bundles, not accepted as long flags", () => {
+    expect(errorFor(["lint", "-auto-fix"]).code).toBe("UNKNOWN_FLAG");
   });
 });
 
@@ -105,6 +111,15 @@ describe("stands down when the command itself is the problem", () => {
     expect(() => check(["index", "--enrich"])).not.toThrow();
     expect(() => check(["proposal", "accept", "p-1", "--source", "distill"])).not.toThrow();
     expect(() => check(["workflow", "next", "workflows/x", "--dry-run"])).not.toThrow();
+    expect(() => check(["search", "foo", "--source", "local"])).not.toThrow();
+    expect(() => check(["curate", "foo", "--source", "local"])).not.toThrow();
+    expect(() => check(["remember", "note", "--target", "team"])).not.toThrow();
+    expect(() => check(["clone", "skills/a", "--target", "team"])).not.toThrow();
+    expect(() => check(["improve", "--target", "team"])).not.toThrow();
+    expect(() => check(["task", "add", "nightly", "--schedule", "@daily", "--target", "team"])).not.toThrow();
+    expect(() => check(["task", "run", "nightly", "--target", "team"])).not.toThrow();
+    expect(() => check(["task", "history", "--target", "team"])).not.toThrow();
+    expect(() => check(["task", "sync", "--target", "team"])).not.toThrow();
   });
 
   test("a retired flag is exempt ONLY on the command that diagnoses it", () => {

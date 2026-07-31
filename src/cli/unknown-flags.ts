@@ -64,7 +64,15 @@ const SELF_DIAGNOSED_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
     "proposal reject": ["source"], // renamed to --generator
     "proposal drain": ["profile"], // retired, points at --strategy
     "workflow next": ["dry-run", "from"], // rejected with a bespoke explanation
-    improve: ["auto-accept"], // retired in 0.9.0, warn-and-ignore
+    search: ["source"], // renamed to --from
+    curate: ["source"], // renamed to --from
+    remember: ["target"], // renamed to --bundle
+    clone: ["target"], // renamed to --bundle
+    improve: ["auto-accept", "target"], // retired in 0.9.0 / renamed to --bundle
+    "task add": ["target"], // renamed to --bundle
+    "task run": ["target"], // renamed to --bundle
+    "task history": ["target"], // renamed to --bundle
+    "task sync": ["target"], // renamed to --bundle
   }).map(([path, flags]) => [path, new Set(flags.map(cittyComparableName))]),
 );
 
@@ -184,6 +192,33 @@ export function assertKnownFlags(root: FlagScanCommand, rawArgs: readonly string
     const token = ownArgs[i] as string;
     // Not a flag: positional, a bare `-` (stdin), or a negative number.
     if (!token.startsWith("-") || token === "-" || /^-\d/.test(token)) continue;
+
+    // Node's util.parseArgs, which citty delegates to, treats one-dash tokens
+    // as bundled short flags. Boolean aliases may be combined (`-qy`), while a
+    // string alias consumes the remainder (`-mhello`) or the following token.
+    // It never treats `-auto-fix` as the long `auto-fix` option.
+    if (!token.startsWith("--")) {
+      const shortFlags = token.slice(1);
+      for (let offset = 0; offset < shortFlags.length; offset += 1) {
+        const rawName = shortFlags[offset] as string;
+        const candidate = cittyComparableName(rawName);
+        if (!known.names.has(candidate)) {
+          const suggestion = closestMatch(`-${rawName}`, known.displayNames, 2);
+          throw new UsageError(
+            `Unknown flag "${token}".`,
+            "UNKNOWN_FLAG",
+            suggestion
+              ? `Did you mean \`${suggestion}\`? Run the command with \`--help\` to see its accepted flags.`
+              : undefined,
+          );
+        }
+        if (known.valueFlags.has(candidate)) {
+          if (offset === shortFlags.length - 1) i += 1;
+          break;
+        }
+      }
+      continue;
+    }
 
     const withoutDashes = token.replace(/^-{1,2}/, "");
     const [rawName = ""] = withoutDashes.split("=", 1);

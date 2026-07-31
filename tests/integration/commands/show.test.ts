@@ -452,6 +452,20 @@ describe("akmShow content-based classification", () => {
     expect(result.prompt).toContain("You are a hybrid agent.");
   });
 
+  test("legacy toolPolicy frontmatter remains an agent and exposes its policy", async () => {
+    writeFile(
+      path.join(stashDir, "commands", "legacy-policy.md"),
+      ["---", "toolPolicy:", "  - Read", "  - Write", "---", "You are a legacy agent."].join("\n"),
+    );
+
+    saveConfig({ semanticSearchMode: "off" });
+
+    const result = await akmShow({ ref: "agents/commands/legacy-policy" });
+
+    expect(result.type).toBe("agent");
+    expect(result.toolPolicy).toEqual(["Read", "Write"]);
+  });
+
   test("command in commands/ directory extracts OpenCode-style frontmatter", async () => {
     writeFile(
       path.join(stashDir, "commands", "deploy.md"),

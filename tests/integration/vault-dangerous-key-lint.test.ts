@@ -21,6 +21,7 @@ import {
 } from "../../src/commands/lint/env-key-rules";
 import { akmLint } from "../../src/commands/lint/index";
 import { typeNameFromConceptId } from "../../src/core/asset/resolve-ref";
+import type { AkmConfig } from "../../src/core/config/config";
 
 // ── Temp dir helpers ──────────────────────────────────────────────────────────
 
@@ -377,6 +378,25 @@ describe("akmLint dangerous-vault-key integration", () => {
         .map((i) => refOf(i.detail));
 
       expect(refs).toContain("secrets/creds.env");
+    });
+
+    test("refs from non-default bundles include their bundle id", () => {
+      const primary = makeTempStash("akm-lint-primary-");
+      const secondary = makeTempStash("akm-lint-secondary-");
+      writeVault(primary, "prod.env", "LD_PRELOAD=/primary.so\n");
+      writeVault(secondary, "prod.env", "LD_PRELOAD=/secondary.so\n");
+      const config: AkmConfig = {
+        semanticSearchMode: "off",
+        defaultBundle: "primary",
+        bundles: { primary: { path: primary }, team: { path: secondary } },
+      };
+
+      const refs = akmLint({ config })
+        .flagged.filter((i) => i.issue === "dangerous-env-key")
+        .map((i) => refOf(i.detail));
+
+      expect(refs).toContain("env/prod");
+      expect(refs).toContain("team//env/prod");
     });
 
     test("every emitted ref resolves to a real type through the ref grammar", () => {
