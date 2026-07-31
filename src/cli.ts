@@ -279,7 +279,10 @@ const setupCommand = defineCommand({
 });
 
 const healthCommand = defineCommand({
-  meta: { name: "health", description: "Check akm runtime health, artifacts, and improve metrics" },
+  meta: {
+    name: "health",
+    description: "Check akm runtime health, artifacts, and improve metrics",
+  },
   args: {
     // R-051: `health` is a raw `defineCommand` (not `defineJsonCommand`), so
     // it does not get `GLOBAL_OUTPUT_ARGS` for free. `--format`/`--detail`/
@@ -742,7 +745,12 @@ function buildUsageParentForPath(path: readonly string[]): AnyCittyCommand {
   // `parentMeta.version` when the resolved command itself declares none
   // (true of every subcommand here), and the real parent it substitutes for
   // always resolves to `main`, which does declare one.
-  return { meta: { name: ["akm", ...path.slice(0, -1)].join(" "), version: pkgVersion } };
+  return {
+    meta: {
+      name: ["akm", ...path.slice(0, -1)].join(" "),
+      version: pkgVersion,
+    },
+  };
 }
 
 // ── Sectioned root help (S11) ────────────────────────────────────────────────
@@ -754,15 +762,36 @@ function buildUsageParentForPath(path: readonly string[]): AnyCittyCommand {
 // banner/USAGE/OPTIONS portion (so it stays byte-identical to every
 // subcommand's own `--help`) and replacing only the COMMANDS section.
 
-const HELP_SECTIONS: ReadonlyArray<{ readonly title: string; readonly commands: readonly string[] }> = [
+const HELP_SECTIONS: ReadonlyArray<{
+  readonly title: string;
+  readonly commands: readonly string[];
+}> = [
   {
     title: "AGENT LOOP",
-    commands: ["search", "curate", "show", "remember", "import", "feedback", "sync", "index", "improve"],
+    commands: ["curate", "search", "show", "feedback", "remember"],
   },
-  { title: "ASSETS", commands: ["clone", "lint"] },
-  { title: "AUTOMATIONS", commands: ["agent", "workflow", "task"] },
-  { title: "MANAGE", commands: ["bundle", "proposal", "env", "secret", "registry", "config"] },
-  { title: "SYSTEM", commands: ["setup", "health", "info", "log", "upgrade", "help", "hints", "completions"] },
+  {
+    title: "ASSETS",
+    commands: ["import", "clone", "bundle", "env", "secret", "sync", "proposal"],
+  },
+  { title: "AUTOMATION", commands: ["improve", "agent", "workflow", "task"] },
+  {
+    title: "SYSTEM",
+    commands: [
+      "setup",
+      "index",
+      "lint",
+      "health",
+      "config",
+      "registry",
+      "info",
+      "log",
+      "help",
+      "hints",
+      "upgrade",
+      "completions",
+    ],
+  },
 ];
 
 /** Abbreviations whose trailing period does not end a sentence. */
@@ -852,7 +881,12 @@ function findUnknownCommandAttempt(
     const token = idx >= 0 ? args[idx] : undefined;
     if (token === undefined) return undefined;
     const sub = findCittySubCommandByName(subCommands, token);
-    if (!sub) return { attempted: token, candidates: Object.keys(subCommands), parentPath };
+    if (!sub)
+      return {
+        attempted: token,
+        candidates: Object.keys(subCommands),
+        parentPath,
+      };
     parentPath.push(token);
     cmd = sub;
     args = args.slice(idx + 1);
