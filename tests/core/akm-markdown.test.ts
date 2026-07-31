@@ -52,6 +52,28 @@ describe("AKM Markdown OKF compatibility", () => {
       expect(parsed.data.updated).toBe("2020-01-01");
     });
 
+    test("preserves YAML comments and formatting when only adding updated", () => {
+      // Round-tripping the mapping through the serializer to contribute one
+      // field would silently erase user-authored comments — unacceptable for
+      // a write path every accepted proposal and asset edit passes through.
+      const input = [
+        "---",
+        "type: knowledge",
+        "# rotate quarterly — see runbook",
+        'description: "Prod notes"',
+        "---",
+        "",
+        "Body.",
+      ].join("\n");
+
+      const out = ensureAkmMarkdownType(input, "knowledge", FIXED_NOW);
+
+      expect(out).toContain("# rotate quarterly — see runbook");
+      expect(out).toContain('description: "Prod notes"');
+      expect(parseFrontmatter(out).data.updated).toBe("2026-03-14");
+      expect(parseFrontmatter(out).content).toBe("\nBody.\n".replace(/\n$/, ""));
+    });
+
     test("stamps updated even when the type already matches", () => {
       // The type check used to short-circuit the whole function, so a
       // correctly-typed document could never acquire the stamp.

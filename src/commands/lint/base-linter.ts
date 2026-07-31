@@ -37,6 +37,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { assetPathForName, stashDirFor } from "../../core/asset/asset-placement";
 import { BUNDLE_REF_RE } from "../../core/asset/asset-ref";
+import { spliceFrontmatterLine } from "../../core/asset/frontmatter";
 import { typeNameFromConceptId } from "../../core/asset/resolve-ref";
 import { localDateStamp } from "../../core/common";
 import { findFenceRegions } from "./markdown-insertion";
@@ -86,13 +87,7 @@ function checkMissingUpdated(data: Record<string, unknown>, frontmatterText: str
 }
 
 function fixMissingUpdated(raw: string, mtime: Date): string {
-  const dateStr = localDateStamp(mtime);
-  const lines = raw.split(/\r?\n/);
-  if (lines[0]?.trim() !== "---") return raw;
-  const closeIdx = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
-  if (closeIdx === -1) return raw;
-  lines.splice(closeIdx, 0, `updated: ${dateStr}`);
-  return lines.join("\n");
+  return spliceFrontmatterLine(raw, `updated: ${localDateStamp(mtime)}`) ?? raw;
 }
 
 // ── stale-path helpers ────────────────────────────────────────────────────────

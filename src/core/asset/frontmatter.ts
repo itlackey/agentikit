@@ -204,6 +204,27 @@ function countLines(text: string): number {
 }
 
 /**
+ * Insert one `key: value` line just before the closing `---` of an existing
+ * frontmatter block, leaving every other byte — YAML comments, quoting, key
+ * order, line endings — untouched. Returns null when `raw` has no well-formed
+ * block, so callers can fall back to a parse-and-serialize path.
+ *
+ * This is the source-preserving way to ADD a field to user-authored
+ * frontmatter: round-tripping the mapping through the YAML serializer drops
+ * comments and normalizes formatting, which is unacceptable for a write that
+ * only needs to contribute one line. Shared by `ensureAkmMarkdownType`
+ * (stamping `updated:` on write) and lint's `--fix` for `missing-updated`.
+ */
+export function spliceFrontmatterLine(raw: string, line: string): string | null {
+  const lines = raw.split(/\r?\n/);
+  if (lines[0]?.trim() !== "---") return null;
+  const closeIdx = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
+  if (closeIdx === -1) return null;
+  lines.splice(closeIdx, 0, line);
+  return lines.join("\n");
+}
+
+/**
  * Parse a YAML scalar value (string, boolean, or number).
  *
  * For quoted strings (single or double), delegates to the `yaml` library so

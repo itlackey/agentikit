@@ -81,6 +81,8 @@ interface KnownArgs {
   readonly names: ReadonlySet<string>;
   /** Comparable names of flags that consume the following token as a value. */
   readonly valueFlags: ReadonlySet<string>;
+  /** Comparable names of boolean flags — the only ones `--no-` may negate. */
+  readonly booleanFlags: ReadonlySet<string>;
   /** Human-readable spellings, for the did-you-mean suggestion. */
   readonly displayNames: readonly string[];
   /** Resolved command path tokens (e.g. ["proposal", "accept"]). */
@@ -104,6 +106,7 @@ interface KnownArgs {
 function collectKnownArgs(root: FlagScanCommand, rawArgs: readonly string[]): KnownArgs {
   const names = new Set<string>(IMPLICIT_FLAGS.map(cittyComparableName));
   const valueFlags = new Set<string>();
+  const booleanFlags = new Set<string>();
   const displayNames: string[] = [];
   const path: string[] = [];
 
@@ -120,9 +123,11 @@ function collectKnownArgs(root: FlagScanCommand, rawArgs: readonly string[]): Kn
         displayNames.push(`--${key}`);
       }
       if (def.type === "string" || def.type === "enum") valueFlags.add(comparable);
+      if (def.type === "boolean") booleanFlags.add(comparable);
       for (const alias of toAliasArray(def.alias)) {
         names.add(cittyComparableName(alias));
         if (def.type === "string" || def.type === "enum") valueFlags.add(cittyComparableName(alias));
+        if (def.type === "boolean") booleanFlags.add(cittyComparableName(alias));
       }
     }
 
@@ -131,17 +136,17 @@ function collectKnownArgs(root: FlagScanCommand, rawArgs: readonly string[]): Kn
     const idx = findCittyTopLevelCommandIndex(args, (cmd.args ?? {}) as CittyArgsDefinitionForScan);
     const token = idx >= 0 ? args[idx] : undefined;
     // A group with no subcommand token: citty reports "no command specified".
-    if (token === undefined) return { names, valueFlags, displayNames, path, resolved: false };
+    if (token === undefined) return { names, valueFlags, booleanFlags, displayNames, path, resolved: false };
     const sub = subCommands[token];
     // An unrecognized token: citty reports the unknown command, which is the
     // real problem — its flags are beside the point.
-    if (!sub) return { names, valueFlags, displayNames, path, resolved: false };
+    if (!sub) return { names, valueFlags, booleanFlags, displayNames, path, resolved: false };
     path.push(token);
     cmd = sub;
     args = args.slice(idx + 1);
   }
 
-  return { names, valueFlags, displayNames, path, resolved: true };
+  return { names, valueFlags, booleanFlags, displayNames, path, resolved: true };
 }
 
 /** Single-row-at-a-time edit-distance DP (inputs are short flag/command names). */
@@ -223,8 +228,14 @@ export function assertKnownFlags(root: FlagScanCommand, rawArgs: readonly string
     const withoutDashes = token.replace(/^-{1,2}/, "");
     const [rawName = ""] = withoutDashes.split("=", 1);
     const hasInlineValue = withoutDashes.includes("=");
-    // `--no-foo` is citty's boolean negation of `--foo`.
-    const negated = rawName.startsWith("no-") ? rawName.slice(3) : undefined;
+    // `--no-foo` is citty's negation of the BOOLEAN `--foo`. Resolving it
+    // against a value flag would accept `--no-limit`, which mri then parses as
+    // `limit: false` — a boolean reaching a string parser, i.e. an internal
+    // error (exit 70) instead of the usage error (exit 2) this is here to give.
+    const negated =
+      rawName.startsWith("no-") && known.booleanFlags.has(cittyComparableName(rawName.slice(3)))
+        ? rawName.slice(3)
+        : undefined;
 
     const candidates = [cittyComparableName(rawName), ...(negated ? [cittyComparableName(negated)] : [])];
     if (selfDiagnosed !== undefined && candidates.some((name) => selfDiagnosed.has(name))) continue;

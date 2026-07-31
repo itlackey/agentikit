@@ -6,7 +6,7 @@ import { parse as parseYaml } from "yaml";
 import { localDateStamp } from "../common";
 import { UsageError } from "../errors";
 import { serializeFrontmatter } from "./asset-serialize";
-import { parseFrontmatterBlock } from "./frontmatter";
+import { parseFrontmatterBlock, spliceFrontmatterLine } from "./frontmatter";
 
 /**
  * Ensure an AKM-authored Markdown concept is also a conformant OKF concept.
@@ -21,6 +21,13 @@ import { parseFrontmatterBlock } from "./frontmatter";
  * An existing `updated` is left alone: this fills a gap, it does not
  * re-stamp on every write (which would churn timestamps and manufacture
  * needless diffs in git-backed bundles).
+ *
+ * Source preservation: when the type already matches and the ONLY change is
+ * adding `updated`, the line is spliced into the original block textually —
+ * round-tripping through the YAML serializer would drop user-authored
+ * comments and normalize formatting just to contribute one field. Only a
+ * document whose `type` must actually be corrected takes the re-serialize
+ * path (as it always has).
  */
 export function ensureAkmMarkdownType(content: string, type: string, now: Date = new Date()): string {
   const block = parseFrontmatterBlock(content);
@@ -40,7 +47,13 @@ export function ensureAkmMarkdownType(content: string, type: string, now: Date =
   }
   const data = parsed as Record<string, unknown>;
   const needsUpdated = !("updated" in data);
-  if (data.type === type && !needsUpdated) return content;
+  if (data.type === type) {
+    if (!needsUpdated) return content;
+    const spliced = spliceFrontmatterLine(content, `updated: ${localDateStamp(now)}`);
+    if (spliced !== null) return spliced;
+    // Unreachable in practice (parseFrontmatterBlock succeeded above), but a
+    // re-serialized document beats a non-conformant one.
+  }
   const { type: _priorType, ...rest } = data;
   const next: Record<string, unknown> = { type, ...rest };
   if (needsUpdated) next.updated = localDateStamp(now);

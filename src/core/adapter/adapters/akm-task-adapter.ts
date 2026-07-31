@@ -13,11 +13,13 @@
  *
  * ── validate (spec §6 task validation column) ──
  *
- * A task must declare a `schedule`, an `enabled` boolean, and EXACTLY ONE
- * target (`prompt` XOR `workflow` XOR `command`). The akm adapter's
- * `TaskLinter` port checks "at least one" target; the native task family here is
- * STRICTER — declaring two targets is `invalid-task-yaml`. So this adapter owns
- * a purpose-built one-target check rather than reusing that port.
+ * A task must declare `version: 2`, a `schedule`, and EXACTLY ONE target
+ * (`prompt` XOR `workflow` XOR `command`). `enabled` is OPTIONAL — the parser
+ * defaults it to `true`, so an omitted field means an ACTIVE task — but must
+ * be a boolean when present. The akm adapter's `TaskLinter` port checks
+ * "at least one" target; the native task family here is STRICTER — declaring
+ * two targets is `invalid-task-yaml`. So this adapter owns a purpose-built
+ * one-target check rather than reusing that port.
  *
  * Conformance oracle (authored, DO NOT modify): fixture
  * `tests/fixtures/bundles/akm-task/` + goldens

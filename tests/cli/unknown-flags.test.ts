@@ -75,6 +75,14 @@ describe("accepts every legitimate spelling", () => {
     expect(() => check(args as string[])).not.toThrow();
   });
 
+  test("`--no-` negates a declared boolean but never a value flag", () => {
+    // `--no-limit` used to be accepted by resolving against the value flag
+    // `--limit`; mri then handed `limit: false` to a string parser, so the
+    // user got an internal error (exit 70) instead of a usage error.
+    expect(() => check(["show", "knowledge/a", "--no-track-usage"])).not.toThrow();
+    expect(errorFor(["search", "foo", "--no-limit"]).code).toBe("UNKNOWN_FLAG");
+  });
+
   test("a value that looks like a flag is not scanned as one", () => {
     expect(() => check(["feedback", "skills/a", "--negative", "--reason", "--not-a-flag"])).not.toThrow();
   });
