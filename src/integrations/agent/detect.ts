@@ -39,9 +39,12 @@ export type WhichFn = (bin: string) => string | undefined;
  * there, which silently hides the "installed CLI agent" option during setup.
  */
 export function defaultWhich(bin: string, envSource: NodeJS.ProcessEnv = process.env): string | undefined {
+  // Computed once per call — not per PATH entry — since it never varies.
+  const suffixes = executableSuffixes(envSource);
   if (!bin || bin.includes("/") || bin.includes("\\")) {
     // Absolute / relative paths: caller already specified location.
-    for (const candidate of executableCandidates(bin, envSource)) {
+    for (const suffix of suffixes) {
+      const candidate = bin + suffix;
       try {
         if (fs.statSync(candidate).isFile()) return candidate;
       } catch {
@@ -55,7 +58,9 @@ export function defaultWhich(bin: string, envSource: NodeJS.ProcessEnv = process
   const sep = pathVar.includes(";") && !pathVar.includes(":") ? ";" : path.delimiter;
   for (const dir of pathVar.split(sep)) {
     if (!dir) continue;
-    for (const candidate of executableCandidates(path.join(dir, bin), envSource)) {
+    const base = path.join(dir, bin);
+    for (const suffix of suffixes) {
+      const candidate = base + suffix;
       try {
         const st = fs.statSync(candidate);
         if (st.isFile()) return candidate;
@@ -71,20 +76,20 @@ export function defaultWhich(bin: string, envSource: NodeJS.ProcessEnv = process
 const DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
 
 /**
- * Executable spellings to try for one candidate path, bare name first so POSIX
- * resolution is byte-for-byte unchanged. Extensions are appended only on win32
- * or when the env supplies PATHEXT (which is also the seam tests use to cover
- * Windows resolution from a POSIX runner).
+ * Executable suffixes to try for each candidate path, bare name (`""`) first
+ * so POSIX resolution is byte-for-byte unchanged. Extensions are appended only
+ * on win32 or when the env supplies PATHEXT (which is also the seam tests use
+ * to cover Windows resolution from a POSIX runner).
  */
-function executableCandidates(base: string, envSource: NodeJS.ProcessEnv): string[] {
+function executableSuffixes(envSource: NodeJS.ProcessEnv): string[] {
   const pathext = envSource.PATHEXT ?? envSource.Pathext ?? envSource.pathext;
-  if (process.platform !== "win32" && !pathext) return [base];
+  if (process.platform !== "win32" && !pathext) return [""];
   const exts = (pathext ?? DEFAULT_PATHEXT)
     .split(";")
     .map((ext) => ext.trim())
     .filter(Boolean)
     .map((ext) => (ext.startsWith(".") ? ext : `.${ext}`));
-  return [base, ...exts.map((ext) => base + ext)];
+  return ["", ...exts];
 }
 
 /** Result of probing one profile during setup. */

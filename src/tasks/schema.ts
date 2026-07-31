@@ -16,6 +16,27 @@
 
 export const TASK_SCHEMA_VERSION = 2;
 
+/**
+ * Lint-level shape problems for a parsed task YAML mapping: the field rules
+ * `src/tasks/parser.ts` enforces at load time, phrased as diagnostics. The ONE
+ * definition shared by both task linters (`core/adapter/adapters/akm-lint.ts`
+ * and `akm-task-adapter.ts`) so lint and runtime cannot disagree — they
+ * previously did, in both directions: lint demanded `enabled` (which the
+ * parser defaults to `true`, so a runnable task was flagged) and never checked
+ * `version` (which the parser hard-requires as `2`, so a lint-clean task died
+ * at runtime with TASK_SCHEMA_VERSION_UNSUPPORTED). `schemas/akm-task.json`
+ * agrees with the parser: `required: [version, schedule]`, `version:
+ * {const: 2}`, `enabled` optional but boolean. Target-arity rules stay with
+ * each caller (they legitimately differ: at-least-one vs exactly-one).
+ */
+export function taskFieldProblems(data: Record<string, unknown>): string[] {
+  const problems: string[] = [];
+  if (data.version !== TASK_SCHEMA_VERSION) problems.push(`version (must be ${TASK_SCHEMA_VERSION})`);
+  if (typeof data.schedule !== "string" || data.schedule.trim() === "") problems.push("schedule");
+  if ("enabled" in data && typeof data.enabled !== "boolean") problems.push("enabled (must be a boolean when present)");
+  return problems;
+}
+
 export interface TaskWorkflowTarget {
   kind: "workflow";
   /** A workflow ref, e.g. `workflows/daily-backup`. */

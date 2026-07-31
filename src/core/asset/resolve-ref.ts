@@ -36,7 +36,12 @@
  */
 
 import { NotFoundError, UsageError } from "../errors";
-import { placementSpecFor, stashDirFor, typeForStashDir } from "./asset-placement";
+import {
+  deriveCanonicalAssetNameFromStashRoot,
+  placementSpecFor,
+  stashDirFor,
+  typeForStashDir,
+} from "./asset-placement";
 import { type BundleRef, isBundleSlug, parseBundleRef } from "./asset-ref";
 
 // ── Parsed-ref value object (the `type`/`name`/`origin` decomposition) ────────
@@ -182,6 +187,20 @@ export interface DisplayRefItem {
 export function conceptIdFromTypeName(type: string, name: string): string {
   const stashDir = stashDirFor(type);
   return stashDir !== undefined ? `${stashDir}/${name}` : name;
+}
+
+/**
+ * User-facing conceptId for a file on disk, derived through the placement
+ * spec's canonical-name rule — the ONE way a diagnostic should spell a ref it
+ * expects the user to paste into `akm show`. (The dangerous-env-key lint used
+ * to hand-build `env:<base>` colon refs the parser rejects; both its emission
+ * sites now route through here.) For a type with no placement spec — which no
+ * built-in caller passes — falls back to the raw name so the output is still
+ * informative rather than empty.
+ */
+export function conceptIdForStashFile(type: string, stashRoot: string, filePath: string): string {
+  const name = deriveCanonicalAssetNameFromStashRoot(type, stashRoot, filePath);
+  return name === undefined ? filePath : conceptIdFromTypeName(type, name);
 }
 
 /**

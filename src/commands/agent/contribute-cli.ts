@@ -27,6 +27,7 @@ import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
 import { EXIT_CODES, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { loadConfig } from "../../core/config/config";
 import { resolveUsageEventSource } from "../../indexer/usage/usage-events";
+import { getHyphenatedBoolean } from "../../output/context";
 import { akmLint } from "../lint/index";
 import { akmAgentDispatch } from "./agent-dispatch";
 
@@ -180,7 +181,7 @@ export const lintCommand = defineCommand({
   async run({ args }) {
     await runWithJsonErrors(async () => {
       const result = akmLint({
-        fix: args.fix === true || args["auto-fix"] === true,
+        fix: args.fix === true || getHyphenatedBoolean(args, "auto-fix"),
         dir: getStringArg(args, "dir"),
         typeFilter: getStringArg(args, "type"),
       });

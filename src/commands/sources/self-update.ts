@@ -104,10 +104,8 @@ export async function streamResponseToFile(
       if (done) break;
       if (!value) continue;
       byteSize += value.byteLength;
-      if (byteSize > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        throw new ResponseTooLargeError(response.url || "binary download", maxBytes, byteSize);
-      }
+      // The catch block cancels the reader for every throw path, this included.
+      if (byteSize > maxBytes) throw new ResponseTooLargeError(url, maxBytes, byteSize);
       hash.update(value);
       let written = 0;
       while (written < value.byteLength) written += fs.writeSync(fd, value, written, value.byteLength - written);

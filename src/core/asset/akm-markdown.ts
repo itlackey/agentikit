@@ -3,17 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { parse as parseYaml } from "yaml";
+import { localDateStamp } from "../common";
 import { UsageError } from "../errors";
 import { serializeFrontmatter } from "./asset-serialize";
 import { parseFrontmatterBlock } from "./frontmatter";
-
-/** `YYYY-MM-DD`, matching the `updated` spelling `akm lint` reads and writes. */
-function formatUpdatedDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 
 /**
  * Ensure an AKM-authored Markdown concept is also a conformant OKF concept.
@@ -31,7 +24,9 @@ function formatUpdatedDate(d: Date): string {
  */
 export function ensureAkmMarkdownType(content: string, type: string, now: Date = new Date()): string {
   const block = parseFrontmatterBlock(content);
-  if (!block) return `---\ntype: ${type}\nupdated: ${formatUpdatedDate(now)}\n---\n${content}`;
+  if (!block) {
+    return `---\n${serializeFrontmatter({ type, updated: localDateStamp(now) })}\n---\n${content}`;
+  }
 
   let parsed: unknown;
   try {
@@ -48,6 +43,6 @@ export function ensureAkmMarkdownType(content: string, type: string, now: Date =
   if (data.type === type && !needsUpdated) return content;
   const { type: _priorType, ...rest } = data;
   const next: Record<string, unknown> = { type, ...rest };
-  if (needsUpdated) next.updated = formatUpdatedDate(now);
+  if (needsUpdated) next.updated = localDateStamp(now);
   return `---\n${serializeFrontmatter(next)}\n---\n${block.content}`;
 }

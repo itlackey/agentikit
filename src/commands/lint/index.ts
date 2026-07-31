@@ -15,9 +15,9 @@ import {
   workflowStructureDiagnostics,
 } from "../../core/adapter/adapters/akm-lint";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
-import { deriveCanonicalAssetNameFromStashRoot, stashDirFor } from "../../core/asset/asset-placement";
+import { stashDirFor } from "../../core/asset/asset-placement";
 import { parseFrontmatter, parseFrontmatterBlock } from "../../core/asset/frontmatter";
-import { conceptIdFromTypeName } from "../../core/asset/resolve-ref";
+import { conceptIdForStashFile } from "../../core/asset/resolve-ref";
 import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
 import { loadConfig, primaryBundlePath } from "../../core/config/config";
@@ -359,17 +359,15 @@ export function akmLint(options: AkmLintOptions = {}): AkmLintResult {
   const envRoots = [stashRoot, ...extraStashRoots];
   for (const root of envRoots) {
     // `env` assets live under `env/`, whole-file `secret` assets under
-    // `secrets/`. Build the finding's `Ref:` through the same placement +
-    // conceptId helpers every other emission site uses, so what lint prints is
-    // what `akm show` accepts — the old hand-built `env:<base>` / `secret:<base>`
-    // colon grammar is rejected by the 0.9.0 ref parser, which dead-ended a
-    // user copying the ref off a security finding.
+    // `secrets/`. `conceptIdForStashFile` spells the finding's `Ref:` exactly
+    // as `akm show` accepts it — the old hand-built `env:<base>` colon grammar
+    // is rejected by the 0.9.0 ref parser, which dead-ended a user copying the
+    // ref off a security finding.
     for (const assetType of ["env", "secret"] as const) {
-      const dir = path.join(root, stashDirFor(assetType) ?? assetType);
+      const dir = path.join(root, stashDirFor(assetType) as string);
       if (!fs.existsSync(dir)) continue;
       for (const envPath of collectEnvFiles(dir)) {
-        const name = deriveCanonicalAssetNameFromStashRoot(assetType, root, envPath);
-        const ref = name === undefined ? path.basename(envPath) : conceptIdFromTypeName(assetType, name);
+        const ref = conceptIdForStashFile(assetType, root, envPath);
         const relPath = path.relative(root, envPath);
         for (const issue of checkEnvForDangerousKeys(envPath, relPath, ref)) {
           flagged.push(issue);

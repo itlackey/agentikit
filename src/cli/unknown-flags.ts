@@ -13,36 +13,31 @@
  * and every other typo — the command ran with the default instead, and the user
  * had no signal.
  *
- * This walks the same subcommand path citty resolves, unions the arg
- * definitions declared along it, and fails a flag that matches nothing. The
- * union (rather than the leaf's args alone) is deliberate: parent-level flags
- * may legally appear before the subcommand token, and a false positive here
- * would reject a VALID invocation — much worse than the silence it replaces.
- *
- * Deliberately conservative in four more ways:
- *   - everything after a literal `--` is passthrough and never inspected;
- *   - a value that follows a declared string/enum flag is skipped, so
- *     `--reason "--not-a-flag"` is not mistaken for a flag;
- *   - `--no-<name>` negation resolves against `<name>`;
- *   - a bare `-` (stdin convention) and negative numbers are left alone.
+ * This walks the same subcommand path citty resolves (via the shared scan
+ * helpers in `./invocation`), unions the arg definitions declared along it,
+ * and fails a flag that matches nothing. The union (rather than the leaf's
+ * args alone) is deliberate: parent-level flags may legally appear before the
+ * subcommand token, and a false positive here would reject a VALID invocation
+ * — much worse than the silence it replaces. In the same spirit, everything
+ * after a literal `--` is passthrough, a declared value flag's value is never
+ * scanned as a flag, `--no-<name>` resolves against `<name>`, and a bare `-`
+ * (stdin convention) and negative numbers are left alone. A subcommand invoked
+ * by a `meta.name` alias rather than its key takes the stand-down path (no
+ * validation) — conservative by design.
  */
 
 import { UsageError } from "../core/errors";
+import {
+  type CittyArgsDefinitionForScan,
+  cittyComparableName,
+  findCittyTopLevelCommandIndex,
+  toAliasArray,
+} from "./invocation";
 
 /** The structural subset of a citty command this module reads. */
 export interface FlagScanCommand {
   readonly args?: Record<string, { readonly type?: string; readonly alias?: string | readonly string[] }>;
   readonly subCommands?: Record<string, FlagScanCommand> | undefined;
-}
-
-/** citty compares `foo-bar` and `fooBar` as the same arg name. */
-function comparableName(name: string): string {
-  return name.replace(/[-_]+([a-zA-Z0-9])/g, (_match, char: string) => char.toUpperCase());
-}
-
-function aliasList(alias: string | readonly string[] | undefined): readonly string[] {
-  if (Array.isArray(alias)) return alias;
-  return typeof alias === "string" ? [alias] : [];
 }
 
 /** Flags citty implements itself, which no command declares. */
@@ -51,27 +46,26 @@ const IMPLICIT_FLAGS = ["help", "h", "version", "v"];
 /**
  * Retired flags whose commands still diagnose them THEMSELVES, with a message
  * that names the replacement ("`--scope` was removed, use `--filter`",
- * "`--source` was renamed to `--generator`"). A generic "unknown flag" here
- * would preempt the better diagnosis, so these are passed through to the
- * handler that owns them. Everything NOT in this list — every genuine typo —
- * still fails fast.
+ * "`--source` was renamed to `--generator`"). A generic "unknown flag" would
+ * preempt the better diagnosis, so these are passed through — but ONLY on the
+ * command path that owns the diagnostic, keyed by the resolved path. On every
+ * other command the same spelling is a genuine typo and still fails fast
+ * (e.g. `--dry-run` is diagnosed by `workflow next` but rejected everywhere
+ * else, where silently dropping it could run a real mutation).
  *
  * Shrink-only: when a command drops its bespoke diagnostic, drop the entry and
  * the generic error takes over.
  */
-const SELF_DIAGNOSED_FLAGS: ReadonlySet<string> = new Set(
-  [
-    "akmView", // akm show — removed view grammar
-    "scope", // akm show — removed, points at --filter
-    "enrich", // akm index — removed
-    "re-enrich", // akm index — removed
-    "source", // akm proposal accept/reject — renamed to --generator
-    "profile", // akm proposal drain — retired, points at --strategy
-    "status", // akm proposal — bare-group filter, retired
-    "dry-run", // akm workflow next — rejected with a bespoke explanation
-    "from", // akm workflow next — rejected with a bespoke explanation
-    "auto-accept", // akm improve — retired in 0.9.0, warn-and-ignore
-  ].map(comparableName),
+const SELF_DIAGNOSED_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+  Object.entries({
+    show: ["akmView", "scope"], // removed view grammar; --scope points at --filter
+    index: ["enrich", "re-enrich"], // removed index-time enrichment flags
+    "proposal accept": ["source"], // renamed to --generator
+    "proposal reject": ["source"], // renamed to --generator
+    "proposal drain": ["profile"], // retired, points at --strategy
+    "workflow next": ["dry-run", "from"], // rejected with a bespoke explanation
+    improve: ["auto-accept"], // retired in 0.9.0, warn-and-ignore
+  }).map(([path, flags]) => [path, new Set(flags.map(cittyComparableName))]),
 );
 
 interface KnownArgs {
@@ -81,6 +75,8 @@ interface KnownArgs {
   readonly valueFlags: ReadonlySet<string>;
   /** Human-readable spellings, for the did-you-mean suggestion. */
   readonly displayNames: readonly string[];
+  /** Resolved command path tokens (e.g. ["proposal", "accept"]). */
+  readonly path: readonly string[];
   /**
    * False when the command path did not fully resolve — an unknown command
    * token, or a group with no subcommand given. citty's own UNKNOWN_COMMAND /
@@ -92,15 +88,16 @@ interface KnownArgs {
 }
 
 /**
- * Union the arg definitions declared along the resolved command path.
- *
- * The subcommand walk mirrors citty's own: a value flag consumes the token
- * after it, so the first bare token that follows is the subcommand name.
+ * Union the arg definitions declared along the resolved command path. The
+ * subcommand walk delegates to {@link findCittyTopLevelCommandIndex} — the
+ * same scan `src/cli.ts` resolves commands with — so both agree on which
+ * token is the subcommand name.
  */
-export function collectKnownArgs(root: FlagScanCommand, rawArgs: readonly string[]): KnownArgs {
-  const names = new Set<string>(IMPLICIT_FLAGS.map(comparableName));
+function collectKnownArgs(root: FlagScanCommand, rawArgs: readonly string[]): KnownArgs {
+  const names = new Set<string>(IMPLICIT_FLAGS.map(cittyComparableName));
   const valueFlags = new Set<string>();
   const displayNames: string[] = [];
+  const path: string[] = [];
 
   let cmd: FlagScanCommand = root;
   let args: readonly string[] = rawArgs;
@@ -108,58 +105,38 @@ export function collectKnownArgs(root: FlagScanCommand, rawArgs: readonly string
     for (const [key, def] of Object.entries(cmd.args ?? {})) {
       // Positionals are not flags; including them would accept `--<positional>`.
       if (def.type === "positional") continue;
-      names.add(comparableName(key));
-      displayNames.push(`--${key}`);
-      if (def.type === "string" || def.type === "enum") valueFlags.add(comparableName(key));
-      for (const alias of aliasList(def.alias)) {
-        names.add(comparableName(alias));
-        if (def.type === "string" || def.type === "enum") valueFlags.add(comparableName(alias));
+      const comparable = cittyComparableName(key);
+      // Shared args (GLOBAL_OUTPUT_ARGS) recur at every level; suggest each once.
+      if (!names.has(comparable)) {
+        names.add(comparable);
+        displayNames.push(`--${key}`);
+      }
+      if (def.type === "string" || def.type === "enum") valueFlags.add(comparable);
+      for (const alias of toAliasArray(def.alias)) {
+        names.add(cittyComparableName(alias));
+        if (def.type === "string" || def.type === "enum") valueFlags.add(cittyComparableName(alias));
       }
     }
 
     const subCommands = cmd.subCommands;
     if (!subCommands || Object.keys(subCommands).length === 0) break;
-    const idx = findSubCommandIndex(args, cmd);
+    const idx = findCittyTopLevelCommandIndex(args, (cmd.args ?? {}) as CittyArgsDefinitionForScan);
     const token = idx >= 0 ? args[idx] : undefined;
     // A group with no subcommand token: citty reports "no command specified".
-    if (token === undefined) return { names, valueFlags, displayNames, resolved: false };
-    const sub = resolveSubCommand(subCommands, token);
+    if (token === undefined) return { names, valueFlags, displayNames, path, resolved: false };
+    const sub = subCommands[token];
     // An unrecognized token: citty reports the unknown command, which is the
     // real problem — its flags are beside the point.
-    if (!sub) return { names, valueFlags, displayNames, resolved: false };
+    if (!sub) return { names, valueFlags, displayNames, path, resolved: false };
+    path.push(token);
     cmd = sub;
     args = args.slice(idx + 1);
   }
 
-  return { names, valueFlags, displayNames, resolved: true };
+  return { names, valueFlags, displayNames, path, resolved: true };
 }
 
-/** Index of the subcommand token, skipping flags and their values. */
-function findSubCommandIndex(args: readonly string[], cmd: FlagScanCommand): number {
-  const valueFlags = new Set<string>();
-  for (const [key, def] of Object.entries(cmd.args ?? {})) {
-    if (def.type !== "string" && def.type !== "enum") continue;
-    valueFlags.add(comparableName(key));
-    for (const alias of aliasList(def.alias)) valueFlags.add(comparableName(alias));
-  }
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i] as string;
-    if (arg === "--") return -1;
-    if (arg.startsWith("-") && arg !== "-") {
-      if (!arg.includes("=") && valueFlags.has(comparableName(arg.replace(/^-{1,2}/, "")))) i += 1;
-      continue;
-    }
-    return i;
-  }
-  return -1;
-}
-
-/** citty matches a subcommand by key or by its `meta.name`; key is enough here. */
-function resolveSubCommand(subCommands: Record<string, FlagScanCommand>, token: string): FlagScanCommand | undefined {
-  return subCommands[token];
-}
-
-/** Edit distance, for suggesting the flag the user meant. */
+/** Single-row-at-a-time edit-distance DP (inputs are short flag/command names). */
 function editDistance(a: string, b: string): number {
   let previous: number[] = Array.from({ length: b.length + 1 }, (_, j) => j);
   for (let i = 1; i <= a.length; i += 1) {
@@ -173,7 +150,13 @@ function editDistance(a: string, b: string): number {
   return previous[b.length] ?? 0;
 }
 
-function closestFlag(attempted: string, candidates: readonly string[]): string | undefined {
+/**
+ * Closest candidate within `threshold` edit distance, or undefined when
+ * nothing is close enough to be worth suggesting. Shared by the unknown-flag
+ * and unknown-command (src/cli.ts) did-you-mean paths, which pick different
+ * thresholds.
+ */
+export function closestMatch(attempted: string, candidates: readonly string[], threshold: number): string | undefined {
   let best: string | undefined;
   let bestDistance = Number.POSITIVE_INFINITY;
   for (const candidate of candidates) {
@@ -183,7 +166,6 @@ function closestFlag(attempted: string, candidates: readonly string[]): string |
       best = candidate;
     }
   }
-  const threshold = Math.max(2, Math.ceil(attempted.length / 3));
   return best !== undefined && bestDistance <= threshold ? best : undefined;
 }
 
@@ -196,6 +178,7 @@ export function assertKnownFlags(root: FlagScanCommand, rawArgs: readonly string
   const ownArgs = passthroughAt === -1 ? rawArgs : rawArgs.slice(0, passthroughAt);
   const known = collectKnownArgs(root, rawArgs);
   if (!known.resolved) return;
+  const selfDiagnosed = SELF_DIAGNOSED_FLAGS.get(known.path.join(" "));
 
   for (let i = 0; i < ownArgs.length; i += 1) {
     const token = ownArgs[i] as string;
@@ -208,16 +191,19 @@ export function assertKnownFlags(root: FlagScanCommand, rawArgs: readonly string
     // `--no-foo` is citty's boolean negation of `--foo`.
     const negated = rawName.startsWith("no-") ? rawName.slice(3) : undefined;
 
-    const candidates = [comparableName(rawName), ...(negated ? [comparableName(negated)] : [])];
-    if (candidates.some((name) => SELF_DIAGNOSED_FLAGS.has(name))) continue;
+    const candidates = [cittyComparableName(rawName), ...(negated ? [cittyComparableName(negated)] : [])];
+    if (selfDiagnosed !== undefined && candidates.some((name) => selfDiagnosed.has(name))) continue;
     if (!candidates.some((name) => known.names.has(name))) {
-      const suggestion = closestFlag(`--${rawName}`, known.displayNames);
+      const threshold = Math.max(2, Math.ceil(`--${rawName}`.length / 3));
+      const suggestion = closestMatch(`--${rawName}`, known.displayNames, threshold);
+      // No explicit hint when there is no suggestion — UNKNOWN_FLAG's canned
+      // hint (core/errors.ts) already says to run the command with --help.
       throw new UsageError(
         `Unknown flag "${token.split("=")[0]}".`,
         "UNKNOWN_FLAG",
         suggestion
           ? `Did you mean \`${suggestion}\`? Run the command with \`--help\` to see its accepted flags.`
-          : "Run the command with `--help` to see its accepted flags.",
+          : undefined,
       );
     }
 

@@ -38,17 +38,11 @@ import path from "node:path";
 import { assetPathForName, stashDirFor } from "../../core/asset/asset-placement";
 import { BUNDLE_REF_RE } from "../../core/asset/asset-ref";
 import { typeNameFromConceptId } from "../../core/asset/resolve-ref";
+import { localDateStamp } from "../../core/common";
 import { findFenceRegions } from "./markdown-insertion";
 import type { LintContext, LintIssue } from "./types";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function formatDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 
 function checkUnquotedColon(frontmatterText: string | null): string | null {
   if (!frontmatterText) return null;
@@ -92,7 +86,7 @@ function checkMissingUpdated(data: Record<string, unknown>, frontmatterText: str
 }
 
 function fixMissingUpdated(raw: string, mtime: Date): string {
-  const dateStr = formatDate(mtime);
+  const dateStr = localDateStamp(mtime);
   const lines = raw.split(/\r?\n/);
   if (lines[0]?.trim() !== "---") return raw;
   const closeIdx = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
@@ -542,7 +536,7 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
       issues.push({
         file: ctx.relPath,
         issue: "missing-updated",
-        detail: `stamped updated: ${formatDate(mtime)}`,
+        detail: `stamped updated: ${localDateStamp(mtime)}`,
         fixed: true,
       });
     } else {

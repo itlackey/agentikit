@@ -28,7 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { FileContext } from "../../../indexer/walk/file-context";
-import { TASK_SCHEMA_VERSION } from "../../../tasks/schema";
+import { taskFieldProblems } from "../../../tasks/schema";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
@@ -79,20 +79,13 @@ function parseTaskYaml(raw: string): Record<string, unknown> {
 }
 
 /**
- * The native `invalid-task-yaml` check: version + schedule + EXACTLY ONE
- * target, mirroring what `src/tasks/parser.ts` enforces at load time.
- *
- * `version` is checked because the parser hard-requires `2` (and
- * `schemas/akm-task.json` pins it with `const`), so omitting it here let a
- * lint-clean task fail at runtime. `enabled` is OPTIONAL — the parser defaults
- * it to `true` — but must be a boolean when present.
+ * The native `invalid-task-yaml` check: the shared field rules
+ * ({@link taskFieldProblems} — see its doc for the lint-vs-parser
+ * reconciliation story) plus this adapter's stricter EXACTLY-ONE-target rule.
  */
 function taskDiagnostics(relPath: string, data: Record<string, unknown>): Diagnostic[] {
   if (Object.keys(data).length === 0) return [];
-  const problems: string[] = [];
-  if (data.version !== TASK_SCHEMA_VERSION) problems.push(`version (must be ${TASK_SCHEMA_VERSION})`);
-  if (typeof data.schedule !== "string" || data.schedule.trim() === "") problems.push("schedule");
-  if ("enabled" in data && typeof data.enabled !== "boolean") problems.push("enabled (must be a boolean when present)");
+  const problems = taskFieldProblems(data);
   const targets = TARGET_KEYS.filter((k) => k in data && data[k] !== undefined && data[k] !== null);
   if (targets.length === 0) problems.push("exactly one target (prompt, workflow, or command)");
   else if (targets.length > 1) problems.push(`exactly one target — declares ${targets.length} (${targets.join(", ")})`);

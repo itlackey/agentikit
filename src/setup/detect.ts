@@ -468,7 +468,10 @@ export interface DetectedEnvironment {
  * Pure aside from the dynamic import resolution (which performs no network).
  */
 export async function detectHarness(whichFn: WhichFn = defaultWhich): Promise<DetectedHarness> {
-  if (whichFn(OPENCODE_SDK_SERVER_BIN)) {
+  // Probed once; reused below so the `opencode` CLI fallback doesn't repeat
+  // the identical full-PATH walk this just performed.
+  const opencodePath = whichFn(OPENCODE_SDK_SERVER_BIN);
+  if (opencodePath) {
     try {
       await import("@opencode-ai/sdk");
       return "opencode-sdk";
@@ -478,9 +481,14 @@ export async function detectHarness(whichFn: WhichFn = defaultWhich): Promise<De
     }
   }
   for (const harness of AGENT_DISPATCH_HARNESSES) {
-    // opencode-sdk has no CLI profile of its own; it is handled above.
+    // The SDK harness dispatches without a CLI profile and was decided above;
+    // an explicit skip so a future BUILTINS entry for it can't silently
+    // reintroduce it here after the import guard already rejected it.
+    if (harness.id === "opencode-sdk") continue;
     const bin = getBuiltinAgentProfile(harness.id)?.bin;
-    if (bin && whichFn(bin)) return harness.id;
+    if (!bin) continue;
+    const found = bin === OPENCODE_SDK_SERVER_BIN ? opencodePath : whichFn(bin);
+    if (found) return harness.id;
   }
   return "none";
 }

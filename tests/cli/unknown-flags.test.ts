@@ -103,5 +103,16 @@ describe("stands down when the command itself is the problem", () => {
     // `--source` with "renamed to --generator" — better than "unknown flag".
     expect(() => check(["show", "knowledge/a", "--scope", "user=x"])).not.toThrow();
     expect(() => check(["index", "--enrich"])).not.toThrow();
+    expect(() => check(["proposal", "accept", "p-1", "--source", "distill"])).not.toThrow();
+    expect(() => check(["workflow", "next", "workflows/x", "--dry-run"])).not.toThrow();
+  });
+
+  test("a retired flag is exempt ONLY on the command that diagnoses it", () => {
+    // The passthrough is keyed by command path. On any other command the same
+    // spelling is a genuine typo — silently dropping `--dry-run` there could
+    // run a real mutation the user believed was a rehearsal.
+    expect(errorFor(["registry", "remove", "x", "--dry-run"]).code).toBe("UNKNOWN_FLAG");
+    expect(errorFor(["search", "foo", "--scope", "user=x"]).code).toBe("UNKNOWN_FLAG");
+    expect(errorFor(["show", "knowledge/a", "--enrich"]).code).toBe("UNKNOWN_FLAG");
   });
 });
