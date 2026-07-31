@@ -277,6 +277,8 @@ export function akmLint(options: AkmLintOptions = {}): AkmLintResult {
     // Tasks are .yml files; everything else (including workflows, one
     // markdown format now) is .md
     const files = subdir === "tasks" ? collectYamlFiles(dirPath) : collectMarkdownFiles(dirPath, true);
+    const assetFiles =
+      subdir === "workflows" ? files.filter((file) => path.basename(file).toLowerCase() !== "readme.md") : files;
 
     // Directory-level check: skills require a SKILL.md entry point (was
     // SkillLinter.lintDirectory). Run once per direct subdirectory before the
@@ -296,7 +298,7 @@ export function akmLint(options: AkmLintOptions = {}): AkmLintResult {
       }
     }
 
-    for (const filePath of files) {
+    for (const filePath of assetFiles) {
       // Skip registry-cached read-only files — --fix must not mutate them.
       if (filePath.includes("/.cache/") || filePath.includes("/registry/")) continue;
       const relPath = path.relative(stashRoot, filePath);

@@ -74,6 +74,15 @@ describe("akm lint --type workflows", () => {
     expect(result.flagged).toHaveLength(0);
   });
 
+  test("README documentation in the workflows directory is not treated as a workflow asset", () => {
+    const stashDir = makeTempStash();
+    writeWorkflowFile(stashDir, "README.md", "# Workflow documentation\n");
+
+    const result = akmLint({ dir: stashDir, typeFilter: "workflows" });
+
+    expect(result.flagged).toHaveLength(0);
+  });
+
   test("a workflow missing the required `steps` list is a parse-stage finding", () => {
     const stashDir = makeTempStash();
     writeWorkflowFile(

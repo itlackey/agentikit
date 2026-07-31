@@ -272,7 +272,7 @@ describe("scheduler runtime binding", () => {
     }
   });
 
-  test("doctor groups current backend bindings and reports remediation", async () => {
+  test("doctor groups current backend bindings and reports remediation for unhealthy bindings", async () => {
     const storage = withIsolatedAkmStorage();
     try {
       fs.mkdirSync(storage.stashDir, { recursive: true });
@@ -320,6 +320,36 @@ describe("scheduler runtime binding", () => {
       });
       expect(result.caller.kind).toBe("standalone");
       expect(result.remediation).toBe("akm task sync --rebind");
+    } finally {
+      storage.cleanup();
+    }
+  });
+
+  test("doctor trusts an eligible npm binding over the checkout path heuristic", async () => {
+    const storage = withIsolatedAkmStorage();
+    try {
+      fs.mkdirSync(storage.stashDir, { recursive: true });
+      const contextPath = writeSchedulerContextDescriptor(schedulerContextDescriptor());
+      // This path has a Git ancestor, matching an npm launcher that resolves through a linked checkout.
+      const argv = [
+        process.execPath,
+        path.join(process.cwd(), "tests", "integration", "tasks-runtime-binding.test.ts"),
+      ];
+      const backend: TaskBackend = {
+        name: "cron",
+        install() {},
+        uninstall() {},
+        setEnabled() {},
+        list: () => [{ id: "stable", binding: argv, contextPath }],
+      };
+
+      const result = await akmTasksDoctor({
+        backend,
+        resolveInvocation: () => ({ argv, via: "npm", kind: "npm", eligible: true }),
+      });
+
+      expect(result.bindings).toEqual([{ argv, contextPath, taskIds: ["stable"], status: ["ok"] }]);
+      expect(result.remediation).toBeUndefined();
     } finally {
       storage.cleanup();
     }

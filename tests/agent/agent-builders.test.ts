@@ -128,6 +128,14 @@ describe("opencodeBuilder — basic dispatch", () => {
     expect(cmd.argv).toEqual(["opencode", "run", "--", "do work"]);
   });
 
+  test("without a model override, configured model args are preserved", async () => {
+    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
+    const builder = getCommandBuilder("opencode");
+    const profile = makeOpencodeProfile({ args: ["run", "--model", "openai/gpt-5.4-mini"] });
+    const cmd = builder.build(profile, { prompt: "do work" });
+    expect(cmd.argv).toEqual(["opencode", "run", "--model", "openai/gpt-5.4-mini", "--", "do work"]);
+  });
+
   test("with systemPrompt: --system-prompt flag present before prompt", async () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
     const builder = getCommandBuilder("opencode");
@@ -165,6 +173,30 @@ describe("opencodeBuilder — basic dispatch", () => {
     expect(idx).toBeGreaterThan(-1);
     // "opus" resolves to "opencode/claude-opus-4-7" for the opencode platform
     expect(argv[idx + 1]).toBe("opencode/claude-opus-4-7");
+  });
+
+  test("bare override replaces the configured model and retains its provider", async () => {
+    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
+    const builder = getCommandBuilder("opencode");
+    const profile = makeOpencodeProfile({ args: ["run", "--model", "openai/gpt-5.4-mini"] });
+    const cmd = builder.build(profile, { prompt: "do work", model: "gpt-5.6-terra" });
+    expect(cmd.argv).toEqual(["opencode", "run", "--model", "openai/gpt-5.6-terra", "--", "do work"]);
+  });
+
+  test("provider-qualified override replaces the configured model unchanged", async () => {
+    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
+    const builder = getCommandBuilder("opencode");
+    const profile = makeOpencodeProfile({ args: ["run", "--model=openai/gpt-5.4-mini"] });
+    const cmd = builder.build(profile, { prompt: "do work", model: "openai/gpt-5.6-terra" });
+    expect(cmd.argv).toEqual(["opencode", "run", "--model", "openai/gpt-5.6-terra", "--", "do work"]);
+  });
+
+  test("alias override replaces the configured model without provider rewriting", async () => {
+    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
+    const builder = getCommandBuilder("opencode");
+    const profile = makeOpencodeProfile({ args: ["run", "--model", "openai/gpt-5.4-mini"] });
+    const cmd = builder.build(profile, { prompt: "do work", model: "opus" });
+    expect(cmd.argv).toEqual(["opencode", "run", "--model", "opencode/claude-opus-4-7", "--", "do work"]);
   });
 
   test("tool policy is NOT emitted (opencode ignores toolPolicy)", async () => {

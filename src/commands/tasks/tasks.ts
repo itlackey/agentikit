@@ -523,7 +523,7 @@ export interface TasksDoctorResult {
     taskIds: string[];
     status: string[];
   }>;
-  remediation: "akm task sync --rebind";
+  remediation?: "akm task sync --rebind";
   logDir: string;
   historyDir: string;
   engine: { defaultEngine?: string; available: string[] };
@@ -589,7 +589,7 @@ export async function akmTasksDoctor(
       );
     }
   }
-  const bindings = groupInstalledBindings(installed);
+  const bindings = groupInstalledBindings(installed, invocation);
   const config = loadConfig();
   const defaultEngine = config.defaults?.engine;
   const engines = Object.keys(config.engines ?? {});
@@ -634,7 +634,9 @@ export async function akmTasksDoctor(
     akm: invocation,
     caller: invocation,
     bindings,
-    remediation: "akm task sync --rebind",
+    ...(bindings.some((binding) => !binding.status.includes("ok"))
+      ? { remediation: "akm task sync --rebind" as const }
+      : {}),
     logDir: getTaskLogDir(),
     historyDir: getTaskHistoryDir(),
     engine: { defaultEngine, available: engines },
@@ -696,11 +698,14 @@ export function prepareSchedulerRuntime(
   return { binding: invocation.argv, contextPath, eligible: invocation.eligible, kind: invocation.kind };
 }
 
-function groupInstalledBindings(entries: readonly InstalledTaskRef[]): TasksDoctorResult["bindings"] {
+function groupInstalledBindings(
+  entries: readonly InstalledTaskRef[],
+  invocation: TasksDoctorResult["akm"],
+): TasksDoctorResult["bindings"] {
   const groups = new Map<string, TasksDoctorResult["bindings"][number]>();
   for (const entry of entries) {
     const argv = entry.binding;
-    const status = inspectInstalledBinding(entry);
+    const status = inspectInstalledBinding(entry, invocation);
     const key = JSON.stringify([argv, entry.contextPath, status]);
     const existing = groups.get(key);
     if (existing) {
@@ -717,10 +722,11 @@ function groupInstalledBindings(entries: readonly InstalledTaskRef[]): TasksDoct
   return [...groups.values()].map((group) => ({ ...group, taskIds: group.taskIds.sort() }));
 }
 
-function inspectInstalledBinding(entry: InstalledTaskRef): string[] {
+function inspectInstalledBinding(entry: InstalledTaskRef, invocation: TasksDoctorResult["akm"]): string[] {
   const status: string[] = [];
   const binding = entry.binding;
   if (
+    !(invocation.eligible === true && sameArgv(binding, invocation.argv)) &&
     binding.some(
       (part) =>
         /(?:^|[\\/])src[\\/]cli\.ts$|(?:^|[\\/])dist[\\/](?:cli\.js|cli-node\.mjs)$/i.test(part) ||
@@ -739,6 +745,10 @@ function inspectInstalledBinding(entry: InstalledTaskRef): string[] {
   if (absolutePaths.some((part) => !fs.existsSync(part))) status.push("missing-path");
   if (status.length === 0) status.push("ok");
   return status;
+}
+
+function sameArgv(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function hasGitAncestor(file: string): boolean {

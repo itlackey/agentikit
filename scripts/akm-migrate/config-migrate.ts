@@ -1741,6 +1741,35 @@ function isTaskOnlyRepair(manifest: MigrationBackupManifest): boolean {
   );
 }
 
+/**
+ * A completed cutover deletes workflow.db and leaves its own durable marker in
+ * state.db. Later state-only migrations must not create a new cutover operation:
+ * its operation id cannot match the historical marker. Active journals still use
+ * the operation-bound checks above when recovering an interrupted cutover.
+ */
+function isPostCutoverStateMigrationOnly(plan: MigrationPlan): boolean {
+  return (
+    plan.artifacts.config.status === "current" &&
+    plan.artifacts.state.status === "old" &&
+    plan.artifacts.state.migrationIds?.includes("020-three-db-cutover") === true &&
+    plan.artifacts.workflow.status === "missing" &&
+    cutoverMergeCommitted(getStateDbPathInDataDir())
+  );
+}
+
+function runPostCutoverStateMigrations(): void {
+  const db = openDatabaseFinalizing(getStateDbPathInDataDir());
+  try {
+    runStateMigrations(db);
+  } finally {
+    db.close();
+  }
+  const artifacts = inspectMigrationState();
+  if (artifacts.state.status !== "current" || artifacts.workflow.status !== "missing") {
+    throw new ConfigError("Post-cutover state migration did not leave the expected artifact state.", "INVALID_CONFIG_FILE");
+  }
+}
+
 function runTaskOnlyRepair(journal: ApplyJournal, plan: ReturnType<typeof planTaskTargetRefMigration>): void {
   advanceApplyJournal(journal, "tasks-prepared");
   if (journal.phase === "tasks-prepared") runTaskTargetMigrationStep(journal, plan);
@@ -2612,6 +2641,21 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
       }
       const { plan, target, migrationLockEntries } = requireEligiblePlan(options.preparedConfigPath, active);
       if (plan.status === "current") return { plan };
+      const taskTargetPlan = planTaskTargetRefMigration(
+        target,
+        active.journal?.pathResolutionBase ?? process.cwd(),
+        migrationLockEntries,
+      );
+      if (
+        !active.journal &&
+        isPostCutoverStateMigrationOnly(plan) &&
+        taskTargetPlan.rewrites.length === 0 &&
+        inspectLegacyProposalRepair().count === 0
+      ) {
+        const backup = ensureMigrationBackupWithConfigLockHeld();
+        runPostCutoverStateMigrations();
+        return { plan: inspectMigrationPlan(), backup };
+      }
       const backup = active.journal
         ? { path: active.journal.backupPath, manifest: verifyMigrationBackup(active.journal.backupPath) }
         : ensureMigrationBackupWithConfigLockHeld();
@@ -2640,11 +2684,6 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
       const taskOnlyRepair = isTaskOnlyRepair(backup.manifest);
       let forwardRecoveryRequired = isForwardRecoveryPhase(journal.phase);
       try {
-        const taskTargetPlan = planTaskTargetRefMigration(
-          target,
-          journal.pathResolutionBase,
-          journal.migrationLockEntries,
-        );
         if (taskOnlyRepair) {
           repairAlreadyCurrentProposalState(journal.operationId);
           crashInMutationGapForTests("proposal-repair");

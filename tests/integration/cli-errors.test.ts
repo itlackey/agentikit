@@ -541,7 +541,7 @@ describe("S11: sectioned root help", () => {
 
   test("akm --help pins section order and command membership", () => {
     const { stdout } = spawnCli(["--help"], { cwd: repoRoot });
-    const headings = ["AGENT LOOP", "ASSETS", "AUTOMATIONS", "MANAGE", "SYSTEM"];
+    const headings = ["AGENT LOOP", "ASSETS", "AUTOMATION", "SYSTEM"];
     const sections = Object.fromEntries(
       headings.map((heading, index) => {
         const start = stdout.indexOf(`${heading}\n`);
@@ -556,11 +556,23 @@ describe("S11: sectioned root help", () => {
       }),
     );
     expect(sections).toEqual({
-      "AGENT LOOP": ["search", "curate", "show", "remember", "import", "feedback", "sync", "index", "improve"],
-      ASSETS: ["clone", "lint"],
-      AUTOMATIONS: ["agent", "workflow", "task"],
-      MANAGE: ["bundle", "proposal", "env", "secret", "registry", "config"],
-      SYSTEM: ["setup", "health", "info", "log", "upgrade", "help", "hints", "completions"],
+      "AGENT LOOP": ["curate", "search", "show", "feedback", "remember"],
+      ASSETS: ["import", "clone", "bundle", "env", "secret", "sync", "proposal"],
+      AUTOMATION: ["improve", "agent", "workflow", "task"],
+      SYSTEM: [
+        "setup",
+        "index",
+        "lint",
+        "health",
+        "config",
+        "registry",
+        "info",
+        "log",
+        "help",
+        "hints",
+        "upgrade",
+        "completions",
+      ],
     });
     expect(stdout).toContain("Run `akm help <command>`");
     expect(stdout).toContain("Agents: run `akm hints`");

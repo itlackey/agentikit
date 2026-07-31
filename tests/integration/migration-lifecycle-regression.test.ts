@@ -547,6 +547,45 @@ describe("migration lifecycle regressions", () => {
     expect(ready.stdout).toContain('"targetConfig"');
   });
 
+  test("applies a pending additive state migration after a completed cutover without replaying it", async () => {
+    writeConfig("0.9.0");
+    seedPreCutoverState("post-cutover");
+    const state = openDatabaseFinalizing(getStateDbPathInDataDir());
+    try {
+      runSqliteMigrations(state, STATE_MIGRATIONS.slice(0, -1));
+      state.exec(`
+        CREATE TABLE akm_cutover_ledger (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          operation_id TEXT NOT NULL,
+          merged_at TEXT NOT NULL
+        );
+        INSERT INTO akm_cutover_ledger VALUES (1, 'completed-cutover-operation', datetime('now'));
+      `);
+      expect(state.prepare("SELECT id FROM schema_migrations ORDER BY rowid DESC LIMIT 1").get()).toEqual({
+        id: "020-three-db-cutover",
+      });
+    } finally {
+      state.close();
+    }
+    expect(fs.existsSync(getLegacyWorkflowDbPath())).toBe(false);
+
+    const applied = await runCliCapture(["migrate", "apply"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+
+    const completed = new Database(getStateDbPathInDataDir(), { readonly: true });
+    try {
+      expect(completed.query("SELECT id FROM schema_migrations ORDER BY rowid DESC LIMIT 1").get()).toEqual({
+        id: "021-asset-state-missing-since",
+      });
+      expect(completed.query("SELECT operation_id FROM akm_cutover_ledger WHERE singleton = 1").get()).toEqual({
+        operation_id: "completed-cutover-operation",
+      });
+    } finally {
+      completed.close();
+    }
+  });
+
   for (const phase of ["prepared", "rollback-prepared"] as const) {
     test(`migrate status leaves source WAL artifacts untouched for an exact ${phase} journal`, async () => {
       writeConfig("0.8.0");
