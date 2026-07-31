@@ -92,7 +92,6 @@ describe("akm workflow complete — refused while a live engine lease is held (C
     });
 
     const { code, stderr } = await runCliCapture([
-      "--json",
       "workflow",
       "complete",
       runId,
@@ -109,7 +108,7 @@ describe("akm workflow complete — refused while a live engine lease is held (C
     expect(env.error).toMatch(/being driven by engine|run lease/);
 
     // The refusal did not advance the step — it is still the current step.
-    const { stdout } = await runCliCapture(["--json", "workflow", "status", runId]);
+    const { stdout } = await runCliCapture(["workflow", "status", runId]);
     const status = JSON.parse(stdout) as { run: { currentStepId: string; status: string } };
     expect(status.run.currentStepId).toBe("only-step");
     expect(status.run.status).toBe("active");
@@ -126,7 +125,7 @@ describe("akm workflow refs — unknown bundles fail consistently", () => {
       ["workflow", "brief", "ghost//missing"],
     ];
     for (const command of commands) {
-      const result = await runCliCapture(["--json", ...command]);
+      const result = await runCliCapture([...command]);
       expect(result.code, `${command.join(" ")}: ${result.stderr}`).toBe(2);
       expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
     }

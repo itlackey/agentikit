@@ -10,7 +10,7 @@ import { stashDirNames } from "../../core/asset/asset-placement";
 import { resolveStashDir } from "../../core/common";
 import type { AkmConfig, SourceConfigEntry } from "../../core/config/config";
 import { getSources, loadConfig, resolveConfiguredSources } from "../../core/config/config";
-import { UsageError } from "../../core/errors";
+import { NotFoundError, UsageError } from "../../core/errors";
 import { sanitizeCommitMessage } from "../../core/git-message";
 import { lockContentRootFor } from "../../integrations/lockfile";
 import { runGit } from "./git-install";
@@ -146,7 +146,9 @@ export function saveGitStash(
   if (name) {
     const config = loadConfig();
     const stash = findGitStashByTarget(getSources(config), name);
-    if (!stash) throw new UsageError(`No git stash found with name "${name}"`);
+    // NotFoundError (exit 1), not UsageError (exit 2): the argument is
+    // well-formed, the bundle just isn't configured.
+    if (!stash) throw new NotFoundError(`No git bundle found with name "${name}"`, "SOURCE_NOT_FOUND");
     if (stash.type !== "git") {
       throw new UsageError(`Stash "${name}" is not a git stash (type: ${stash.type})`);
     }

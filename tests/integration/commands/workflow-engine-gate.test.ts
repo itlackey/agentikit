@@ -89,7 +89,7 @@ describe("akm workflow — experimental.workflowEngine gate OFF (default)", () =
     writeSingleStepWorkflow("gated-run");
     const started = await startWorkflowRun("workflows/gated-run", {});
 
-    const { code, stderr } = await runCliCapture(["--json", "workflow", "run", started.run.id]);
+    const { code, stderr } = await runCliCapture(["workflow", "run", started.run.id]);
 
     expect(code).toBe(78);
     const env = JSON.parse(stderr) as ErrorEnvelope;
@@ -103,7 +103,7 @@ describe("akm workflow — experimental.workflowEngine gate OFF (default)", () =
     writeSingleStepWorkflow("gated-brief");
     const started = await startWorkflowRun("workflows/gated-brief", {});
 
-    const { code, stderr } = await runCliCapture(["--json", "workflow", "brief", started.run.id]);
+    const { code, stderr } = await runCliCapture(["workflow", "brief", started.run.id]);
     expect(code).toBe(78);
     const env = JSON.parse(stderr) as ErrorEnvelope;
     expect(env.ok).toBe(false);
@@ -115,7 +115,7 @@ describe("akm workflow — experimental.workflowEngine gate OFF (default)", () =
     writeSingleStepWorkflow("gated-report");
     const started = await startWorkflowRun("workflows/gated-report", {});
 
-    const { code, stderr } = await runCliCapture(["--json", "workflow", "report", started.run.id, "--settle"]);
+    const { code, stderr } = await runCliCapture(["workflow", "report", started.run.id, "--settle"]);
     expect(code).toBe(78);
     const env = JSON.parse(stderr) as ErrorEnvelope;
     expect(env.ok).toBe(false);
@@ -128,7 +128,7 @@ describe("akm workflow — experimental.workflowEngine gate OFF (default)", () =
   // longer a gated surface at all — it is now a plain, always-on usage error
   // regardless of `experimental.workflowEngine`. Pinned below (gate-independent).
   test("`workflow create <name>.yaml` refuses unconditionally: workflows are markdown-only now", async () => {
-    const { code, stderr } = await runCliCapture(["--json", "workflow", "create", "gated-program.yaml"]);
+    const { code, stderr } = await runCliCapture(["workflow", "create", "gated-program.yaml"]);
     expect(code).toBe(2);
     const env = JSON.parse(stderr) as ErrorEnvelope;
     expect(env.ok).toBe(false);
@@ -139,7 +139,7 @@ describe("akm workflow — experimental.workflowEngine gate OFF (default)", () =
 
 describe("akm workflow — surfaces NOT gated by experimental.workflowEngine", () => {
   test("`workflow create <name>.md` (markdown, the default) is unaffected", async () => {
-    const { code, stdout } = await runCliCapture(["--json", "workflow", "create", "ungated-md"]);
+    const { code, stdout } = await runCliCapture(["workflow", "create", "ungated-md"]);
     expect(code).toBe(0);
     const env = JSON.parse(stdout) as { ok: boolean; ref: string };
     expect(env.ok).toBe(true);
@@ -148,11 +148,11 @@ describe("akm workflow — surfaces NOT gated by experimental.workflowEngine", (
 
   test("`workflow start`/`status` (the classic manual contract) are unaffected", async () => {
     writeSingleStepWorkflow("ungated-manual");
-    const started = await runCliCapture(["--json", "workflow", "start", "workflows/ungated-manual"]);
+    const started = await runCliCapture(["workflow", "start", "workflows/ungated-manual"]);
     expect(started.code).toBe(0);
     const startedJson = JSON.parse(started.stdout) as { run: { id: string } };
 
-    const status = await runCliCapture(["--json", "workflow", "status", startedJson.run.id]);
+    const status = await runCliCapture(["workflow", "status", startedJson.run.id]);
     expect(status.code).toBe(0);
   });
 });
@@ -165,7 +165,7 @@ describe("akm workflow — experimental.workflowEngine gate ON", () => {
   // Opting into the gate does NOT resurrect the deleted YAML-program format —
   // `create <name>.yaml` still refuses (workflow-format-unification, spec §3).
   test("`workflow create <name>.yaml` still refuses even with the gate opted in", async () => {
-    const { code, stderr } = await runCliCapture(["--json", "workflow", "create", "opted-in-program.yaml"]);
+    const { code, stderr } = await runCliCapture(["workflow", "create", "opted-in-program.yaml"]);
     expect(code).toBe(2);
     const env = JSON.parse(stderr) as ErrorEnvelope;
     expect(env.ok).toBe(false);
@@ -176,16 +176,16 @@ describe("akm workflow — experimental.workflowEngine gate ON", () => {
     writeSingleStepWorkflow("opted-in-brief");
     const started = await startWorkflowRun("workflows/opted-in-brief", {});
 
-    const { code, stdout } = await runCliCapture(["--json", "workflow", "brief", started.run.id]);
+    const { code, stdout } = await runCliCapture(["workflow", "brief", started.run.id]);
     expect(code).toBe(0);
     expect((JSON.parse(stdout) as { ok: boolean }).ok).toBe(true);
   });
 
   test("`akm config set experimental.workflowEngine true` resolves against the schema (not `Unknown config key`)", async () => {
-    const set = await runCliCapture(["--json", "config", "set", "experimental.workflowEngine", "true"]);
+    const set = await runCliCapture(["config", "set", "experimental.workflowEngine", "true"]);
     expect(set.code).toBe(0);
 
-    const get = await runCliCapture(["--json", "config", "get", "experimental.workflowEngine"]);
+    const get = await runCliCapture(["config", "get", "experimental.workflowEngine"]);
     expect(get.code).toBe(0);
   });
 });

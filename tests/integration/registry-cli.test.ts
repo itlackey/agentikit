@@ -220,12 +220,17 @@ describe("registry remove confirmation guard (WS0)", () => {
     expect(after.registries?.some((r) => r.name === "beta")).toBe(true);
   });
 
-  test("remove of a non-existent registry is a no-op and needs no confirmation", async () => {
+  test("remove of a non-existent registry fails as not-found, without prompting", async () => {
+    // Was a SUCCESS envelope (`removed: false`, exit 0), so
+    // `akm registry remove typo && deploy` ran the deploy. A missing target is
+    // exit 1 like every other not-found, and still never prompts.
     seedRegistries();
     const result = await runCliCapture(["registry", "remove", "does-not-exist", "--format=json"]);
-    expect(result.code).toBe(0);
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.removed).toBe(false);
+    expect(result.code).toBe(1);
+    const parsed = JSON.parse(result.stderr);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("SOURCE_NOT_FOUND");
+    expect(parsed.hint).toContain("akm registry list");
   });
 });
 

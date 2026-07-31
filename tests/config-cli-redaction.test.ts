@@ -53,11 +53,11 @@ describe("config command apiKey redaction", () => {
         defaults: { llmEngine: "default" },
       });
 
-      const list = await runCliCapture(["--json", "config", "list"]);
-      const embedding = await runCliCapture(["--json", "config", "get", "embedding"]);
-      const llm = await runCliCapture(["--json", "config", "get", "engines.default"]);
-      const engines = await runCliCapture(["--json", "config", "get", "engines"]);
-      const llmApiKey = await runCliCapture(["--json", "config", "get", "engines.default.apiKey"]);
+      const list = await runCliCapture(["config", "list"]);
+      const embedding = await runCliCapture(["config", "get", "embedding"]);
+      const llm = await runCliCapture(["config", "get", "engines.default"]);
+      const engines = await runCliCapture(["config", "get", "engines"]);
+      const llmApiKey = await runCliCapture(["config", "get", "engines.default.apiKey"]);
 
       return { list, embedding, llm, engines, llmApiKey };
     });

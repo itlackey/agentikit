@@ -327,9 +327,13 @@ describe("akm feedback", () => {
     writeFile(path.join(stashDir, "memories", "beta.md"), "---\ndescription: beta memory\n---\nBeta body.\n");
 
     const result = await runCli(["feedback", "memories/beta", "--positive", "--format=json"]);
-    expect(result.status).toBe(2); // UsageError exit code
+    // Exit 1 (not found), not 2 (usage): the flags parsed fine, the asset just
+    // isn't indexed. The documented exit-code table reserves 1 for a missing
+    // resource and scripts branch on it.
+    expect(result.status).toBe(1);
     const parsed = parseJsonOutput(result);
     expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("ASSET_NOT_FOUND");
     expect(parsed.error ?? parsed.message ?? "").toMatch(/not in the index/i);
   });
 

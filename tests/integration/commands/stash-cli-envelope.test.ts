@@ -61,7 +61,7 @@ afterEach(() => {
 
 describe("akm stash-lifecycle cluster — JSON envelope snapshot (WS6)", () => {
   test("info: success envelope carries version + assetTypes array (exit 0)", async () => {
-    const { stdout, status } = await runCli(["--json", "info"]);
+    const { stdout, status } = await runCli(["info"]);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(typeof env.version).toBe("string");
@@ -70,7 +70,7 @@ describe("akm stash-lifecycle cluster — JSON envelope snapshot (WS6)", () => {
   });
 
   test("index --enrich (removed flag): {ok:false} usage envelope on stderr (exit 2)", async () => {
-    const { stderr, status } = await runCli(["--json", "index", "--enrich"]);
+    const { stderr, status } = await runCli(["index", "--enrich"]);
     expect(status).toBe(2);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);
@@ -79,7 +79,7 @@ describe("akm stash-lifecycle cluster — JSON envelope snapshot (WS6)", () => {
   });
 
   test("index --re-enrich (removed flag): {ok:false} usage envelope on stderr (exit 2)", async () => {
-    const { stderr, status } = await runCli(["--json", "index", "--re-enrich"]);
+    const { stderr, status } = await runCli(["index", "--re-enrich"]);
     expect(status).toBe(2);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);
@@ -88,7 +88,7 @@ describe("akm stash-lifecycle cluster — JSON envelope snapshot (WS6)", () => {
   });
 
   test("import --name with '/': assertFlatAssetName → {ok:false} usage envelope on stderr (exit 2)", async () => {
-    const { stderr, status } = await runCli(["--json", "import", "-", "--name", "nested/bad"]);
+    const { stderr, status } = await runCli(["import", "-", "--name", "nested/bad"]);
     expect(status).toBe(2);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);

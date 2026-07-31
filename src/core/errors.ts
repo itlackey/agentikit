@@ -80,7 +80,11 @@ export type UsageErrorCode =
   // citty's own CLIError (unknown top-level command or subcommand), reclassified
   // by src/cli.ts so it flows through the same JSON envelope as every other
   // usage error instead of citty's raw usage-banner + console.error path.
-  | "UNKNOWN_COMMAND";
+  | "UNKNOWN_COMMAND"
+  // A flag the resolved command does not declare. citty/mri silently ignore
+  // these, so a typo used to parse "successfully" and exit 0 — a `--fail-on-flaged`
+  // in CI meant the gate never fired.
+  | "UNKNOWN_FLAG";
 
 /** Stable, machine-readable codes for NotFoundError. */
 export type NotFoundErrorCode =
@@ -88,6 +92,7 @@ export type NotFoundErrorCode =
   | "STASH_NOT_FOUND"
   | "SOURCE_NOT_FOUND"
   | "WORKFLOW_NOT_FOUND"
+  | "PROPOSAL_NOT_FOUND"
   | "FILE_NOT_FOUND";
 
 /**
@@ -128,6 +133,7 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   MISSING_REQUIRED_ARGUMENT:
     "Refs use the form [bundle//]conceptId, e.g. `akm show knowledge/guide.md` or `akm show skills/deploy`.",
   UNKNOWN_COMMAND: "Run `akm --help` to see available commands.",
+  UNKNOWN_FLAG: "Run the command with `--help` to see its accepted flags.",
 };
 
 /** Default hint for each NotFoundError code. */
@@ -135,6 +141,10 @@ const NOT_FOUND_HINTS: Partial<Record<NotFoundErrorCode, string>> = {
   ASSET_NOT_FOUND: "Run `akm search <query>` or `akm index` to refresh the index.",
   SOURCE_NOT_FOUND: "Run `akm bundle list` to view your sources, then retry with one of those values.",
   WORKFLOW_NOT_FOUND: "Run `akm workflow list --active` to see runs.",
+  // A proposal is addressed by id or ref, never by path — reusing
+  // FILE_NOT_FOUND here handed users "check the path exists and is readable"
+  // for a mistyped id, which points at the wrong thing entirely.
+  PROPOSAL_NOT_FOUND: "Run `akm proposal list` to see pending proposals and their ids.",
   FILE_NOT_FOUND: "Check the path exists and is readable.",
 };
 

@@ -83,7 +83,7 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
   test("workflow create: success envelope reports the written workflow", async () => {
     const stash = makeStashDir();
     const src = writeWorkflowSource();
-    const { stdout, status } = await runCli(["--json", "workflow", "create", "release-flow", "--from", src], stash);
+    const { stdout, status } = await runCli(["workflow", "create", "release-flow", "--from", src], stash);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env.ok).toBe(true);
@@ -94,7 +94,7 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
   test("workflow list: envelope wraps runs under `runs`", async () => {
     const stash = makeStashDir();
     await createReleaseFlow(stash);
-    const { stdout, status } = await runCli(["--json", "workflow", "list"], stash);
+    const { stdout, status } = await runCli(["workflow", "list"], stash);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(Array.isArray(env.runs)).toBe(true);
@@ -103,13 +103,13 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
   test("workflow start + status: success envelopes carry the run id and steps", async () => {
     const stash = makeStashDir();
     await createReleaseFlow(stash);
-    const started = await runCli(["--json", "workflow", "start", "workflows/release-flow"], stash);
+    const started = await runCli(["workflow", "start", "workflows/release-flow"], stash);
     expect(started.status).toBe(0);
     const startEnv = JSON.parse(started.stdout);
     const runId = startEnv.run.id as string;
     expect(typeof runId).toBe("string");
 
-    const status = await runCli(["--json", "workflow", "status", runId], stash);
+    const status = await runCli(["workflow", "status", runId], stash);
     expect(status.status).toBe(0);
     const statusEnv = JSON.parse(status.stdout);
     expect(Array.isArray(statusEnv.workflow.steps)).toBe(true);
@@ -117,7 +117,7 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
 
   test("workflow create --print: raw template on stdout (no envelope), writes nothing", async () => {
     const stash = makeStashDir();
-    const { stdout, status } = await runCli(["--json", "workflow", "create", "print-flow", "--print"], stash);
+    const { stdout, status } = await runCli(["workflow", "create", "print-flow", "--print"], stash);
     expect(status).toBe(0);
     // Deliberately NOT an envelope even under --json: --print's contract is a
     // pipeable raw starter document (parity with the removed `workflow
@@ -132,10 +132,7 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
 
   test("workflow create YAML --print is a usage error", async () => {
     const stash = makeStashDir();
-    const { stdout, stderr, status } = await runCli(
-      ["--json", "workflow", "create", "print-flow.yaml", "--print"],
-      stash,
-    );
+    const { stdout, stderr, status } = await runCli(["workflow", "create", "print-flow.yaml", "--print"], stash);
     expect(status).toBe(2);
     expect(stdout).toBe("");
     expect(JSON.parse(stderr).error).toContain("markdown-only");
@@ -143,10 +140,7 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
 
   test("workflow status: unknown run → byte-identical {ok:false} not-found envelope on stderr", async () => {
     const stash = makeStashDir();
-    const { stderr, status } = await runCli(
-      ["--json", "workflow", "status", "00000000-0000-4000-8000-000000000000"],
-      stash,
-    );
+    const { stderr, status } = await runCli(["workflow", "status", "00000000-0000-4000-8000-000000000000"], stash);
     expect(status).toBe(1);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);
@@ -156,10 +150,7 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
   test("workflow next: --dry-run is rejected with the INVALID_FLAG_VALUE usage envelope", async () => {
     const stash = makeStashDir();
     await createReleaseFlow(stash);
-    const { stderr, status } = await runCli(
-      ["--json", "workflow", "next", "workflows/release-flow", "--dry-run"],
-      stash,
-    );
+    const { stderr, status } = await runCli(["workflow", "next", "workflows/release-flow", "--dry-run"], stash);
     expect(status).toBe(2);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);

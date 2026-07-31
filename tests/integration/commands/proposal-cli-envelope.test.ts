@@ -64,7 +64,7 @@ describe("akm proposal — JSON envelope snapshot (WS6)", () => {
   test("proposal list: envelope shape is pinned (success path)", async () => {
     const stash = makeStashDir();
     seedProposal(stash);
-    const { stdout, status } = await runCli(["--json", "proposal", "list"], stash);
+    const { stdout, status } = await runCli(["proposal", "list"], stash);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     // Pin the top-level shape (keys + types) without binding to the volatile id.
@@ -78,7 +78,7 @@ describe("akm proposal — JSON envelope snapshot (WS6)", () => {
 
   test("proposal list: invalid --status → byte-identical {ok:false} error envelope on stderr", async () => {
     const stash = makeStashDir();
-    const { stderr, status } = await runCli(["--json", "proposal", "list", "--status", "bogus"], stash);
+    const { stderr, status } = await runCli(["proposal", "list", "--status", "bogus"], stash);
     expect(status).toBe(2);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);
@@ -89,7 +89,7 @@ describe("akm proposal — JSON envelope snapshot (WS6)", () => {
   test("proposal show: envelope carries proposal + validation report", async () => {
     const stash = makeStashDir();
     const id = seedProposal(stash);
-    const { stdout, status } = await runCli(["--json", "proposal", "show", id], stash);
+    const { stdout, status } = await runCli(["proposal", "show", id], stash);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env.proposal.id).toBe(id);
@@ -100,7 +100,7 @@ describe("akm proposal — JSON envelope snapshot (WS6)", () => {
   test("proposal accept: success envelope materialises asset", async () => {
     const stash = makeStashDir();
     const id = seedProposal(stash);
-    const { stdout, status } = await runCli(["--json", "proposal", "accept", id], stash);
+    const { stdout, status } = await runCli(["proposal", "accept", id], stash);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env.ok).toBe(true);

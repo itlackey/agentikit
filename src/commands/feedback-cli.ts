@@ -10,7 +10,7 @@ import { parseFrontmatter, parseFrontmatterBlock } from "../core/asset/frontmatt
 import { type AssetRef, conceptIdFromTypeName, parseRefInput } from "../core/asset/resolve-ref";
 import { isWithin, writeFileAtomic } from "../core/common";
 import { FEEDBACK_FAILURE_MODES, loadConfig } from "../core/config/config";
-import { UsageError } from "../core/errors";
+import { NotFoundError, UsageError } from "../core/errors";
 import { appendEvent } from "../core/events";
 import { resolveMutationTarget } from "../core/mutation-target";
 import { getDbPath } from "../core/paths";
@@ -382,9 +382,13 @@ export const feedbackCommand = defineJsonCommand({
       const lookupRef = makeBundleRef(parsedRef.bundle, parsedRef.conceptId);
       const entryId = findEntryIdByRef(db, lookupRef, requestedSource?.path);
       if (entryId === undefined) {
-        throw new UsageError(
+        // NotFoundError (exit 1), not UsageError (exit 2): the flags parsed
+        // fine, the asset just isn't there. The documented exit-code table
+        // reserves 1 for "requested resource missing", and scripts branch on it.
+        throw new NotFoundError(
           `Ref "${ref}" is not in the index. ` +
             "Run 'akm search' to verify the asset exists, then 'akm index' if it was recently added.",
+          "ASSET_NOT_FOUND",
         );
       }
       // Persist the feedback signal into usage_events. Both positive and

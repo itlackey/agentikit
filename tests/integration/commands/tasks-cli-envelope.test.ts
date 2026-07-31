@@ -63,7 +63,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
   // the next test covers the explicit `akm task doctor` this replaces.
   test("bare `akm task` → usage-error envelope, exit 2", async () => {
     const stash = makeStashDir();
-    const { stderr, status } = await runCli(["--json", "task"], stash);
+    const { stderr, status } = await runCli(["task"], stash);
     expect(status).toBe(2);
     const env = JSON.parse(stderr.trim());
     expect(env.ok).toBe(false);
@@ -74,7 +74,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
 
   test("tasks doctor: success envelope reports the active scheduler backend", async () => {
     const stash = makeStashDir();
-    const { stdout, status } = await runCli(["--json", "task", "doctor"], stash);
+    const { stdout, status } = await runCli(["task", "doctor"], stash);
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env.shape).toBe("task-doctor");
@@ -84,7 +84,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
 
   test("tasks run: unknown id → {ok:false} not-found envelope on stderr", async () => {
     const stash = makeStashDir();
-    const { stderr, status } = await runCli(["--json", "task", "run", "does-not-exist"], stash);
+    const { stderr, status } = await runCli(["task", "run", "does-not-exist"], stash);
     expect(status).toBe(1);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);
@@ -95,7 +95,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
     const stash = makeStashDir();
     writeDisabledCommandTask(stash);
 
-    const { stdout, status } = await runCli(["--json", "task", "run", "disabled-command"], stash);
+    const { stdout, status } = await runCli(["task", "run", "disabled-command"], stash);
 
     expect(status).toBe(0);
     expect(JSON.parse(stdout).result.status).toBe("completed");
@@ -112,7 +112,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
 
     const { code, stdout, stderr } = await withEnv({ AKM_BUNDLE_DIR: ambientStash }, () => {
       const consumed = consumeSchedulerContextArg(generated.argv);
-      return runCliCapture(["--json", ...consumed.slice(1)]);
+      return runCliCapture([...consumed.slice(1)]);
     });
 
     expect(code, stderr).toBe(0);
