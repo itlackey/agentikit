@@ -378,7 +378,7 @@ describe("akm CLI mutation events", () => {
     await runCli(["index", "--full", "--format=json"]);
     await runCli(["feedback", "memories/gamma", "--positive", "--format=json"]);
 
-    const filtered = await runCli(["log", "--type", "feedback", "--format=json"]);
+    const filtered = await runCli(["log", "--type", "feedback", "--ref", "memories/gamma", "--format=json"]);
     expect(filtered.status).toBe(0);
     const parsed = JSON.parse(filtered.stdout) as Record<string, unknown>;
     const events = parsed.events as Array<Record<string, unknown>>;

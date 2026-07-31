@@ -18,6 +18,7 @@
  */
 
 import { makeBundleRef, parseBundleRef } from "../core/asset/asset-ref";
+import { loadConfig } from "../core/config/config";
 import { UsageError } from "../core/errors";
 import { type EventsContext, readEvents } from "../core/events";
 import type { EventEnvelope } from "../core/events-types";
@@ -92,7 +93,7 @@ function validateRef(ref: string | undefined): string | undefined {
     throw new UsageError("--ref cannot be empty.", "INVALID_FLAG_VALUE");
   }
   const parsed = parseBundleRef(trimmed);
-  return makeBundleRef(parsed.bundle, parsed.conceptId);
+  return makeBundleRef(parsed.bundle ?? loadConfig().defaultBundle, parsed.conceptId);
 }
 
 function validateRunId(run: string | undefined): string | undefined {

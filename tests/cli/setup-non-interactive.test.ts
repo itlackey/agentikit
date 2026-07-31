@@ -39,4 +39,14 @@ describe("akm setup without a TTY", () => {
     expect(error).toContain("--config");
     expect(error).toContain("--from");
   });
+
+  test("classifies malformed --config JSON as a usage error", async () => {
+    const { code, stderr } = await runCliCapture(["setup", "--config", "not-json"]);
+
+    expect(code).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("INVALID_FLAG_VALUE");
+    expect(parsed.error).toContain("Invalid JSON in --config");
+  });
 });

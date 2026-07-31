@@ -31,8 +31,12 @@ your real config, real stash, real shell profile, or a globally installed `akm`
 you care about.
 
 - [ ] Use a disposable shell session.
-- [ ] Isolate `HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`,
-      `AKM_DATA_DIR`, and `AKM_BUNDLE_DIR` under one temp directory.
+- [ ] Isolate `HOME`, all four `XDG_*_HOME` variables, `AKM_CACHE_DIR`,
+      `AKM_DATA_DIR`, `AKM_STATE_DIR`, and `AKM_BUNDLE_DIR` under one temp
+      directory.
+- [ ] Set `AKM_FORCE_SETUP_TMP_STASH=1` to explicitly authorize `akm setup`
+      to persist the disposable bundle path. Without it, setup correctly rejects
+      transient paths that the OS may reap.
 - [ ] Invoke the CLI from this repo (`bun ./src/cli.ts` or the freshly built
       binary from this branch), not a previously installed global `akm`.
 - [ ] Only add disposable local paths, test registries, and remotes you control.
@@ -61,9 +65,13 @@ export HOME="$AKM_SANDBOX/home"
 export XDG_CONFIG_HOME="$AKM_SANDBOX/config"
 export XDG_CACHE_HOME="$AKM_SANDBOX/cache"
 export XDG_DATA_HOME="$AKM_SANDBOX/data"
+export XDG_STATE_HOME="$AKM_SANDBOX/xdg-state"
+export AKM_CACHE_DIR="$AKM_SANDBOX/cache-home"
 export AKM_DATA_DIR="$AKM_SANDBOX/data-home"
+export AKM_STATE_DIR="$AKM_SANDBOX/state-home"
 export AKM_BUNDLE_DIR="$AKM_SANDBOX/stash"
-mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$AKM_DATA_DIR" "$AKM_BUNDLE_DIR"
+export AKM_FORCE_SETUP_TMP_STASH=1
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$AKM_CACHE_DIR" "$AKM_DATA_DIR" "$AKM_STATE_DIR" "$AKM_BUNDLE_DIR"
 
 # 2.3 Convenience alias for this shell only
 alias akm='bun ./src/cli.ts'
@@ -539,7 +547,7 @@ Run only inside the sandbox.
 - [ ] `akm config set defaultWriteTarget <source-name>` now works.
 - [ ] `akm help migrate 0.6.0` prints bundled migration notes.
 - [ ] `akm help migrate v0.6.0-rc1` normalizes to the stable note.
-- [ ] `akm help migrate latest` picks the newest bundled note.
+- [ ] `akm help migrate latest` prints the newest release guidance.
 - [ ] `akm help migrate 9.9.9` prints a graceful fallback listing available
       notes.
 
@@ -674,10 +682,11 @@ statement). `secret set` still writes one secret at a time and keeps its
 Spot-check that failures always arrive as structured JSON on stderr with
 `{ok:false, error, code?, hint?}` and exit non-zero.
 
-- [ ] `akm search` with no query should fail with `MISSING_REQUIRED_ARGUMENT`;
-      if it returns filler results instead, log that as a bug.
+- [ ] `akm search` with no query browses indexed assets rather than failing or
+      returning relevance-ranked filler for an invented query.
 - [ ] `akm curate ""` fails with `MISSING_REQUIRED_ARGUMENT`.
-- [ ] `akm show foo` fails with a ref-parse usage error.
+- [ ] `akm show foo` treats `foo` as a valid short concept id and fails with
+      `ASSET_NOT_FOUND` when no such asset exists.
 - [ ] `akm config set sources weird-thing` fails with a structured JSON/usage
       error.
 - [ ] `akm help migrate` with no version fails with `MISSING_REQUIRED_ARGUMENT`.
@@ -717,7 +726,7 @@ done
 
 ```sh
 rm -rf "$AKM_SANDBOX"
-unset AKM_SANDBOX HOME XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME AKM_DATA_DIR AKM_BUNDLE_DIR
+unset AKM_SANDBOX HOME XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_STATE_HOME AKM_CACHE_DIR AKM_DATA_DIR AKM_STATE_DIR AKM_BUNDLE_DIR AKM_FORCE_SETUP_TMP_STASH
 unalias akm
 ```
 
