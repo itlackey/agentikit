@@ -17,7 +17,7 @@ my-bundle/
   scripts/        # .sh, .ts, .js, .py, .rb, .go, etc.
   skills/         # Directories containing SKILL.md
   commands/       # .md prompt templates (agent frontmatter, $ARGUMENTS)
-  agents/         # .md files with model or tools frontmatter (legacy: toolPolicy)
+  agents/         # .md files with model or tools frontmatter
   knowledge/      # .md reference documents
   env/            # .env environment files (mode-0600)
   secrets/        # One sensitive value per file (auth tokens, keys, certs)

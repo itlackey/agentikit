@@ -365,7 +365,7 @@ describe("recognizeMatch", () => {
     expect(result?.specificity).toBe(18);
   });
 
-  test("smartMdMatcher: a legacy toolPolicy-only file remains an agent", () => {
+  test("smartMdMatcher: a toolPolicy-only file is not an agent", () => {
     const root = tmpDir();
     const filePath = path.join(root, "misc", "legacy-policy.md");
     writeFile(filePath, ["---", "toolPolicy:", "  read: allow", "---", "You are an agent."].join("\n"));
@@ -373,8 +373,7 @@ describe("recognizeMatch", () => {
     const ctx = buildFileContext(root, filePath);
     const result = smartMdMatcher(ctx);
 
-    expect(result?.type).toBe("agent");
-    expect(result?.specificity).toBe(20);
+    expect(result?.type).toBe("knowledge");
   });
 
   test("smartMdMatcher: tools (20) beats agent frontmatter command signal (18)", () => {

@@ -225,9 +225,9 @@ function classifyBySmartMd(ctx: FileContext): MatchFact | null {
   }
 
   if (fm) {
-    // `tools` is canonical; `toolPolicy` remains a documented legacy synonym.
-    // The renderer honors both, so either key is a truthful agent signal.
-    if ("tools" in fm || "toolPolicy" in fm) {
+    // `tools` is the one authoring key for an agent's tool grant. Recognition
+    // covers only the key the renderer honors.
+    if ("tools" in fm) {
       return { type: "agent", specificity: 20 };
     }
 

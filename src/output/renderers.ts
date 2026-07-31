@@ -252,12 +252,11 @@ const agentMdRenderer: AssetRenderer = {
       action: "Dispatch using the prompt below verbatim. Use modelHint and toolPolicy if present.",
       description: asNonEmptyString(parsedMd.data.description),
       prompt: parsedMd.content,
-      // `tools` is canonical; `toolPolicy` remains a documented legacy synonym.
-      // The provenance CEILING that decides whether this self-declared policy is
-      // honoured is applied at the show layer (`akmShowUnified`), which knows
-      // whether the source is the operator's own writable stash vs a read-only
-      // third-party source (07 P1-D).
-      toolPolicy: (parsedMd.data.tools ?? parsedMd.data.toolPolicy) as ShowResponse["toolPolicy"],
+      // `tools` is self-declared frontmatter. The provenance CEILING that decides
+      // whether this self-declared policy is honoured is applied at the show
+      // layer (`akmShowUnified`), which knows whether the source is the operator's
+      // own writable stash vs a read-only third-party source (07 P1-D).
+      toolPolicy: parsedMd.data.tools as ShowResponse["toolPolicy"],
       modelHint: typeof parsedMd.data.model === "string" ? parsedMd.data.model : undefined,
     };
   },

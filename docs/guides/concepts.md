@@ -120,11 +120,10 @@ There are fourteen asset types:
 Scripts and knowledge are classified by **what they are**: a `.sh` file is a
 script; a plain `.md` file is knowledge. Commands and agents are classified by
 **how an LLM should use them**: a `.md` file with `$ARGUMENTS` placeholders is
-a command template; one with `tools` in its frontmatter (or the legacy
-synonym `toolPolicy`) is an agent definition. Workflows are classified by
-their markdown structure (`# Workflow:`, `## Step:`, `Step ID:`,
-`### Instructions`). Skills are a
-**packaging convention**: a directory containing a `SKILL.md` file.
+a command template; one with `tools` in its frontmatter is an agent definition.
+Workflows are classified by their markdown structure (`# Workflow:`, `## Step:`,
+`Step ID:`, `### Instructions`). Skills are a **packaging convention**: a
+directory containing a `SKILL.md` file.
 
 See [technical/classification.md](../architecture/internals/classification.md) for the full
 specificity-based matching system.

@@ -100,7 +100,7 @@ ties broken by registration order (later wins). The signals:
 | Specificity | Signal | Result |
 | --- | --- | --- |
 | 25 | `SKILL.md` (skill directory) | `skill` |
-| 20 | `tools` (or legacy `toolPolicy`) frontmatter | `agent` |
+| 20 | `tools` frontmatter | `agent` |
 | 19 | workflow markdown structure | `workflow` |
 | 18 | command frontmatter / `$ARGUMENTS` body placeholders | `command` |
 | 15 | immediate parent dir hint | directory-specific type |
@@ -127,7 +127,7 @@ ties broken by registration order (later wins). The signals:
 
 | Signal | Type | Specificity |
 | --- | --- | --- |
-| `tools` (or legacy `toolPolicy`) in frontmatter | `agent` | 20 |
+| `tools` in frontmatter | `agent` | 20 |
 | workflow heading/step structure | `workflow` | 19 |
 | `agent` in frontmatter | `command` | 18 |
 | `$ARGUMENTS` or `$1`-`$3` in body | `command` | 18 |
