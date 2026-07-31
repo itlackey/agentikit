@@ -309,7 +309,9 @@ akm lint --fail-on-flagged                    # Exit non-zero when summary.flagg
 akm upgrade                                   # Upgrade akm using its install method
 akm upgrade --check                           # Check for updates
 akm help migrate 0.6.0                        # Print migration notes for a release (or: latest)
+akm help bundle                               # Print options and subcommands for one command
 akm help agents --full                        # Print this reference
+akm hints                                     # Print this complete agent guide
 akm completions                               # Print bash completion script
 akm completions --install                     # Install completions
 ```
@@ -404,7 +406,8 @@ Result-envelope commands accept `--format`, `--detail`, and `--shape` flags:
 - `--shape agent` — agent-optimized output: strips non-actionable fields
 - `--shape summary` — metadata only (no content/template/prompt), under 200 tokens; only valid on `akm show`
 
-Run `akm -h` or `akm <command> -h` for per-command help.
+Run `akm help <command>` or `akm <command> -h` for per-command help. Run
+`akm --help` for the sectioned command overview.
 
 ### Piping JSON to jq
 

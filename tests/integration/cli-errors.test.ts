@@ -494,7 +494,6 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
       [["update"], "akm bundle update"],
       [["tasks", "doctor"], "akm task <subcommand>"],
       [["history"], "akm log --ref"],
-      [["hints"], "akm help agents"],
       [["mv", "a", "b"], "rekey-asset-ref.ts"],
       [["extract"], "akm proposal extract"],
     ];
@@ -532,6 +531,14 @@ describe("R-032: citty CLIError family exits 2, not 1", () => {
 // citty's flat alphabetical-by-declaration COMMANDS dump, and hides the
 // self-update-only `migrate` group from it (while it still executes).
 describe("S11: sectioned root help", () => {
+  test("bare akm prints the sectioned overview and exits 0", () => {
+    const { status, stdout, stderr } = spawnCli([], { cwd: repoRoot });
+    expect(status).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("AGENT LOOP");
+    expect(stdout).toContain("Run `akm help <command>`");
+  });
+
   test("akm --help pins section order and command membership", () => {
     const { stdout } = spawnCli(["--help"], { cwd: repoRoot });
     const headings = ["AGENT LOOP", "ASSETS", "AUTOMATIONS", "MANAGE", "SYSTEM"];
@@ -553,9 +560,10 @@ describe("S11: sectioned root help", () => {
       ASSETS: ["clone", "lint"],
       AUTOMATIONS: ["agent", "workflow", "task"],
       MANAGE: ["bundle", "proposal", "env", "secret", "registry", "config"],
-      SYSTEM: ["setup", "health", "info", "log", "upgrade", "help", "completions"],
+      SYSTEM: ["setup", "health", "info", "log", "upgrade", "help", "hints", "completions"],
     });
-    expect(stdout).toContain("agents: run `akm help agents`");
+    expect(stdout).toContain("Run `akm help <command>`");
+    expect(stdout).toContain("Agents: run `akm hints`");
   });
 
   test("akm --help does not list the hidden migrate group", () => {
@@ -576,7 +584,15 @@ describe("S11: sectioned root help", () => {
     const { status, stdout } = spawnCli(["help"], { cwd: repoRoot });
     expect(status).toBe(0);
     expect(stdout).toContain("AGENT LOOP");
-    expect(stdout).toContain("agents: run `akm help agents`");
+    expect(stdout).toContain("Run `akm help <command>`");
+  });
+
+  test.each(["bundle", "env", "task"])("akm help %s renders that command's usage", (command) => {
+    const { status, stdout, stderr } = spawnCli(["help", command], { cwd: repoRoot });
+    expect(status).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain(`akm ${command}`);
+    expect(stdout).toContain("USAGE");
   });
 
   test("akm task run --help includes the akm prefix on nested USAGE lines", () => {
@@ -585,8 +601,8 @@ describe("S11: sectioned root help", () => {
   });
 });
 
-// R-051: five non-exempt TERMINAL leaf commands (akm health, akm index, akm
-// lint, akm log tail, akm hints) were declared via a raw
+// R-051: five TERMINAL leaf commands (akm health, akm index, akm lint, the
+// former akm log tail, and akm hints) were declared via a raw
 // `defineCommand`/inline `runWithJsonErrors` rather than `defineJsonCommand`,
 // so they did not automatically inherit `GLOBAL_OUTPUT_ARGS`
 // (src/cli/shared.ts) the way every `defineJsonCommand` leaf does. All five
@@ -596,8 +612,7 @@ describe("S11: sectioned root help", () => {
 // package (PKG-8) owns and fixed three of the five (`health`/`index`/
 // `lint`); the other two (`log tail`, `hints`) lived in
 // src/commands/observability-cli.ts, owned by a different package at the
-// time — `hints` was fixed and dropped from the (now-removed)
-// out-of-package allowlist first (it is format-exempt instead, see
+// time — `hints` is format-exempt (see
 // `formatExemptSurfaces()` below), and `log tail` was the last one, fixed by
 // the W3-A backlog package. All six leaves now declare the flags, so the
 // allowlist this comment used to describe is gone: the guard below simply

@@ -21,9 +21,8 @@
  * table via a polling loop and would have made this snapshot
  * non-deterministic.
  *
- * 0.9.0 CLI overhaul (S11): the top-level `akm hints` command is REMOVED
- * (hard break) — its guide payload moved to `akm help agents` (src/cli.ts),
- * short by default with `--full` for the long one. Covered below.
+ * Agent guidance is available through both `akm hints` (full by default,
+ * preserving its original contract) and `akm help agents` (short by default).
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -74,6 +73,14 @@ describe("akm observability cluster — JSON envelope snapshot (WS6)", () => {
     const short = await runCli(["help", "agents"]);
     const full = await runCli(["help", "agents", "--full"]);
     expect(full.status).toBe(0);
+    expect(full.stdout.length).toBeGreaterThan(short.stdout.length);
+  });
+
+  test("hints: prints the complete guide, with --detail brief selecting the short guide", async () => {
+    const full = await runCli(["hints"]);
+    const short = await runCli(["hints", "--detail", "brief"]);
+    expect(full.status).toBe(0);
+    expect(short.status).toBe(0);
     expect(full.stdout.length).toBeGreaterThan(short.stdout.length);
   });
 });

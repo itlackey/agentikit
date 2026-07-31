@@ -67,7 +67,7 @@ function generate(): JsonSchema {
     $id: `https://itlackey.github.io/akm/schemas/akm-config.${CURRENT_CONFIG_VERSION}.json`,
     title: "AKM Configuration",
     description:
-      "Configuration file for the akm CLI (Agent Knowledge Management). Stored at " +
+      "Configuration file for the akm CLI (Agent Knowledge Manager). Stored at " +
       "~/.config/akm/config.json (Linux/macOS) or %APPDATA%\\akm\\config.json " +
       "(Windows). Supports JSONC (JavaScript-style comments). Auto-generated " +
       "from src/core/config/config-schema.ts by scripts/gen-config-schema.ts — do NOT edit by hand.",

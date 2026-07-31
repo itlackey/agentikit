@@ -1,6 +1,6 @@
 # CLI Reference
 
-The CLI is called `akm` (Agent Knowledge Management). Commands default to structured
+The CLI is called `akm` (Agent Knowledge Manager). Commands default to structured
 JSON at `--detail brief`. Use `--format json|jsonl|yaml|text|md|html`,
 `--detail brief|normal|full`, and `--shape human|agent|summary` when you want a
 different presentation. Errors include `error` and `hint` fields.
@@ -1423,11 +1423,13 @@ See [configuration.md](configuration.md) for details.
 
 ### help
 
-Print focused help topics: the sectioned command overview, agent usage
-instructions, or a release's migration guidance.
+Print the sectioned command overview, detailed help for any command, agent
+usage instructions, or a release's migration guidance.
 
 ```sh
 akm help                       # Sectioned command overview (same as `akm --help`)
+akm help bundle                # Detailed options and subcommands for `bundle`
+akm help env                   # Detailed options and subcommands for `env`
 akm help agents                # Agent-facing usage instructions
 akm help migrate 0.6.0         # Notes for a specific release
 akm help migrate v0.6.0        # v-prefix accepted
@@ -1435,7 +1437,8 @@ akm help migrate v0.6.0-rc1    # Prereleases normalize to the stable note
 akm help migrate latest        # Resolve against the most recent CHANGELOG entry
 ```
 
-Bare `akm help` prints the same sectioned overview as `akm --help` and exits
+`akm help <command>` is equivalent to `akm <command> --help`. Bare `akm help`
+prints the same sectioned overview as `akm --help` and exits
 `0` — this is the one group where a bare invocation is a complete request,
 not the canonical bare-group usage error.
 
@@ -1455,6 +1458,17 @@ one.
 
 ```sh
 akm help agents
+```
+
+### hints
+
+Print the agent-facing CLI guide directly. The complete guide is the default;
+use `--detail brief` for the compact version. `akm help agents` remains the
+short-first form and accepts `--full`.
+
+```sh
+akm hints
+akm hints --detail brief
 ```
 
 ### env vs secret — which do I use?

@@ -122,7 +122,7 @@ import { plainize } from "./core/tty";
 import { info, isQuiet, setQuiet, setVerbose, warn } from "./core/warn";
 import { disposeDispatchResources } from "./integrations/agent/runner-dispatch";
 import { EMBEDDED_HINTS, EMBEDDED_HINTS_FULL } from "./output/cli-hints";
-import { getOutputMode, initOutputMode } from "./output/context";
+import { getOutputMode, initOutputMode, parseDetailLevel } from "./output/context";
 import { isFormatExemptCommand } from "./output/format-exempt";
 import { consumeSchedulerContextArg } from "./tasks/scheduler-invocation";
 import { pkgVersion } from "./version";
@@ -394,85 +394,29 @@ const healthCommand = defineCommand({
   },
 });
 
-/**
- * R-006 (S11 relocation): `loadAgentHints` used to prefer reading
- * `<pkgroot>/docs/agents/AGENTS[.full].md` off disk (the pre-0.9 `akm hints`
- * command), falling back to the embedded `EMBEDDED_HINTS[_FULL]` constants
- * only when that path didn't resolve — an npm/binary install always fell
- * through to the embedded copy while a git checkout always read the
- * separate `docs/agents/` copy instead, and the two had already drifted.
- * Single-sourced now: always the embedded constant
- * (`src/assets/hints/cli-hints-{short,full}.md`), in every environment.
- * `akm hints` is REMOVED in 0.9.0 (hard break) — `akm help agents` is the
- * only reference to point readers at now.
- */
 function loadAgentHints(full: boolean): string {
   return full ? EMBEDDED_HINTS_FULL : EMBEDDED_HINTS;
 }
 
-const helpCommand = defineGroupCommand({
+const hintsCommand = defineCommand({
   meta: {
-    name: "help",
+    name: "hints",
     description:
-      "Print focused help topics: the sectioned command overview, agent usage instructions, or a release's migration guidance",
+      "Print agent instructions on how to use akm — the complete guide by default; pass --detail brief for the short one",
   },
-  subCommands: {
-    agents: defineCommand({
-      meta: {
-        name: "agents",
-        description:
-          "Print agent instructions on how to use akm — the short guide by default; pass --full for the complete guide",
-      },
-      args: {
-        full: {
-          type: "boolean",
-          default: false,
-          description: "Print the complete guide instead of the short one.",
-        },
-      },
-      run({ args }) {
-        return runWithJsonErrors(() => {
-          process.stdout.write(loadAgentHints(args.full === true));
-        });
-      },
-    }),
-    migrate: defineCommand({
-      meta: {
-        name: "migrate",
-        description:
-          "Print release notes and migration guidance for a version. Bundled notes live in docs/migration/release-notes/<version>.md; an unknown version lists what's available.",
-      },
-      args: {
-        // Optional in citty so run() is invoked even when omitted; we
-        // re-validate below to surface a structured UsageError (exit 2)
-        // instead of citty's default help-banner exit-0.
-        version: {
-          type: "positional",
-          description: "Version to review (for example 0.6.0, v0.6.0, 0.6.0-rc1, or latest)",
-          required: false,
-        },
-      },
-      run({ args }) {
-        return runWithJsonErrors(() => {
-          const version = resolveHelpMigrateVersionArg(typeof args.version === "string" ? args.version : undefined);
-          if (!version?.trim()) {
-            throw new UsageError(
-              "Usage: akm help migrate <version>.",
-              "MISSING_REQUIRED_ARGUMENT",
-              "Pass a version like `0.6.0`, `v0.6.0`, `0.6.0-rc1`, or `latest`.",
-            );
-          }
-          process.stdout.write(renderMigrationHelp(version));
-        });
-      },
-    }),
+  args: {
+    detail: {
+      type: "string",
+      description:
+        "Hints detail level (brief|normal|full). `brief` prints the short guide; `normal`/`full` print the complete guide.",
+      default: "normal",
+    },
   },
-  // Bare `akm help` (S11): print the same sectioned overview as `akm --help`,
-  // exit 0 — NOT the canonical bare-group usage error every other group
-  // gets, since `help` with no subcommand is a normal, complete request, not
-  // a mistake.
-  async defaultRun() {
-    process.stdout.write(`${await renderSectionedRootHelp()}\n`);
+  run({ args }) {
+    return runWithJsonErrors(() => {
+      const detail = parseDetailLevel(args.detail as string | undefined) ?? "normal";
+      process.stdout.write(loadAgentHints(detail !== "brief"));
+    });
   },
 });
 
@@ -518,12 +462,118 @@ const completionsCommand = defineCommand({
   },
 });
 
+const commands = {
+  setup: setupCommand,
+  index: indexCommand,
+  health: healthCommand,
+  info: infoCommand,
+  bundle: bundleCommand,
+  upgrade: upgradeCommand,
+  search: searchCommand,
+  curate: curateCommand,
+  show: showCommand,
+  workflow: workflowCommand,
+  remember: rememberCommand,
+  import: importKnowledgeCommand,
+  sync: syncCommand,
+  clone: cloneCommand,
+  registry: registryCommand,
+  migrate: migrateCommand,
+  config: configCommand,
+  feedback: feedbackCommand,
+  log: logCommand,
+  agent: agentCommand,
+  lint: lintCommand,
+  improve: improveCommand,
+  proposal: proposalCommand,
+  completions: completionsCommand,
+  env: envCommand,
+  secret: secretCommand,
+  task: taskCommand,
+  hints: hintsCommand,
+};
+
+function commandHelpTopic(name: string, command: AnyCittyCommand): AnyCittyCommand {
+  return defineCommand({
+    meta: { name, description: `Print help for akm ${name}` },
+    async run() {
+      await showUsage(command as CommandDef, buildUsageParentForPath([name]) as CommandDef);
+    },
+  });
+}
+
+const commandHelpTopics = Object.fromEntries(
+  Object.entries(commands)
+    .filter(([name]) => name !== "migrate")
+    .map(([name, command]) => [name, commandHelpTopic(name, command)]),
+);
+
+const helpCommand = defineGroupCommand({
+  meta: {
+    name: "help",
+    description:
+      "Print the command overview, detailed help for a command, agent instructions, or a release's migration guidance",
+  },
+  subCommands: {
+    ...commandHelpTopics,
+    agents: defineCommand({
+      meta: {
+        name: "agents",
+        description:
+          "Print agent instructions on how to use akm — the short guide by default; pass --full for the complete guide",
+      },
+      args: {
+        full: {
+          type: "boolean",
+          default: false,
+          description: "Print the complete guide instead of the short one.",
+        },
+      },
+      run({ args }) {
+        return runWithJsonErrors(() => {
+          process.stdout.write(loadAgentHints(args.full === true));
+        });
+      },
+    }),
+    migrate: defineCommand({
+      meta: {
+        name: "migrate",
+        description:
+          "Print release notes and migration guidance for a version. Bundled notes live in docs/migration/release-notes/<version>.md; an unknown version lists what's available.",
+      },
+      args: {
+        version: {
+          type: "positional",
+          description: "Version to review (for example 0.6.0, v0.6.0, 0.6.0-rc1, or latest)",
+          required: false,
+        },
+      },
+      run({ args }) {
+        return runWithJsonErrors(() => {
+          const version = resolveHelpMigrateVersionArg(typeof args.version === "string" ? args.version : undefined);
+          if (!version?.trim()) {
+            throw new UsageError(
+              "Usage: akm help migrate <version>.",
+              "MISSING_REQUIRED_ARGUMENT",
+              "Pass a version like `0.6.0`, `v0.6.0`, `0.6.0-rc1`, or `latest`.",
+            );
+          }
+          process.stdout.write(renderMigrationHelp(version));
+        });
+      },
+    }),
+  },
+  async defaultRun() {
+    process.stdout.write(`${await renderSectionedRootHelp()}\n`);
+  },
+});
+
 export const main = defineCommand({
   meta: {
     name: "akm",
     version: pkgVersion,
     description:
-      "Agent Knowledge Management — search, show, and manage assets from your bundle.\n\n" +
+      "Agent Knowledge Manager — search, show, and manage assets from your bundle.\n\n" +
       "Exit codes:\n" +
       "  0   success\n" +
       "  1   not found / command-reported failure\n" +
@@ -541,34 +591,8 @@ export const main = defineCommand({
     detail: { ...GLOBAL_OUTPUT_ARGS.detail, default: "brief" },
   },
   subCommands: {
-    setup: setupCommand,
-    index: indexCommand,
-    health: healthCommand,
-    info: infoCommand,
-    bundle: bundleCommand,
-    upgrade: upgradeCommand,
-    search: searchCommand,
-    curate: curateCommand,
-    show: showCommand,
-    workflow: workflowCommand,
-    remember: rememberCommand,
-    import: importKnowledgeCommand,
-    sync: syncCommand,
-    clone: cloneCommand,
-    registry: registryCommand,
-    migrate: migrateCommand,
-    config: configCommand,
-    feedback: feedbackCommand,
-    log: logCommand,
-    agent: agentCommand,
-    lint: lintCommand,
-    improve: improveCommand,
-    proposal: proposalCommand,
+    ...commands,
     help: helpCommand,
-    completions: completionsCommand,
-    env: envCommand,
-    secret: secretCommand,
-    task: taskCommand,
   },
 });
 
@@ -738,7 +762,7 @@ const HELP_SECTIONS: ReadonlyArray<{ readonly title: string; readonly commands: 
   { title: "ASSETS", commands: ["clone", "lint"] },
   { title: "AUTOMATIONS", commands: ["agent", "workflow", "task"] },
   { title: "MANAGE", commands: ["bundle", "proposal", "env", "secret", "registry", "config"] },
-  { title: "SYSTEM", commands: ["setup", "health", "info", "log", "upgrade", "help", "completions"] },
+  { title: "SYSTEM", commands: ["setup", "health", "info", "log", "upgrade", "help", "hints", "completions"] },
 ];
 
 /** Abbreviations whose trailing period does not end a sentence. */
@@ -801,8 +825,8 @@ async function renderSectionedRootHelp(): Promise<string> {
       "e.g. `akm show skills/deploy`, or `akm show work//skills/deploy` for a named bundle. Copy ids from " +
       "`akm search` output rather than synthesizing them.",
     "",
-    "Run `akm <command> --help` for details on any command.",
-    "agents: run `akm help agents`",
+    "Run `akm help <command>` or `akm <command> --help` for details on any command.",
+    "Agents: run `akm hints` for the complete guide or `akm help agents` for the short guide.",
   ].join("\n");
   return [head, "", renderCommandSections(), "", epilogue].join("\n");
 }
@@ -1011,6 +1035,10 @@ async function runCli(): Promise<void> {
 
   const rawArgs = process.argv.slice(2);
   try {
+    if (rawArgs.length === 0) {
+      process.stdout.write(`${await renderSectionedRootHelp()}\n`);
+      return;
+    }
     // Mirrors citty's own builtin-flag short-circuit in `runMain` (main's own
     // args never declare `help`/`h`/`version`/`v`, so both stay the fixed
     // defaults citty would have computed too).

@@ -116,11 +116,15 @@ Fixture refs worth using throughout this doc:
 - [ ] `akm config path --all` returns sandbox-local paths only.
 - [ ] `akm help agents` prints non-empty text.
 - [ ] `akm help agents --full` prints the extended hint text.
+- [ ] `akm help bundle`, `akm help env`, and `akm help task` print the same
+      command usage available through each command's `--help` flag.
+- [ ] `akm hints` prints the complete agent guide; `akm hints --detail brief`
+      prints the short guide.
 - [ ] `akm --help` lists the current command surface:
       `setup`, `index`, `health`, `info`, `bundle`, `upgrade`, `search`,
       `curate`, `show`, `workflow`, `remember`, `import`, `sync`, `clone`,
       `registry`, `config`, `feedback`, `log`, `agent`, `lint`, `improve`,
-      `proposal`, `help`, `completions`, `env`, `secret`, `task`. There is no
+      `proposal`, `help`, `hints`, `completions`, `env`, `secret`, `task`. There is no
       `wiki` command (removed in 0.9.0 in favor of the `llm-wiki` bundle
       format). There are no top-level `init`/`add`/`list`/`remove`/`update`
       commands — see `akm bundle create`/`add`/`list`/`remove`/`update`.
@@ -129,8 +133,7 @@ Fixture refs worth using throughout this doc:
       --report`), `graph` (summary counts folded into `akm health`), or
       `lessons` (the `lesson` asset type is read/written via
       `akm search`/`akm show`/the proposal queue, not a command group)
-      command. There is no top-level `hints` command — see `akm help
-      agents`. There are no top-level `extract`/`propose` commands — see
+      command. There are no top-level `extract`/`propose` commands — see
       `akm proposal extract` / `akm proposal new`.
 - [ ] `akm config enable` and `akm config disable` fail as unknown subcommands
       (removed in 0.9.0 — use `akm registry add|remove`).

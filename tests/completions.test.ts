@@ -86,6 +86,7 @@ describe("completions command", () => {
       "registry",
       "config",
       "help",
+      "hints",
       "completions",
     ];
     for (const cmd of expected) {
@@ -118,6 +119,13 @@ describe("completions command", () => {
     expect(script).toContain('"akm registry"');
     for (const sub of ["list", "add", "remove", "search"]) {
       expect(script).toContain(sub);
+    }
+  });
+
+  test("offers command names as help topics", () => {
+    expect(script).toContain('"akm help"');
+    for (const topic of ["bundle", "env", "task", "agents", "migrate"]) {
+      expect(script).toContain(`"akm help ${topic}"`);
     }
   });
 

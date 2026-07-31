@@ -18,10 +18,8 @@
  * ranking's `lessonStrength` contributor is untouched, only the CLI read
  * surface for it goes away.
  *
- * 0.9.0 CLI overhaul (S11): the top-level `akm hints` command is REMOVED
- * (hard break, no alias) — its embedded-guide payload moved to
- * `akm help agents` (src/cli.ts, alongside `help migrate`), so the
- * `loadHints`/`EMBEDDED_HINTS*` wiring moved there too.
+ * The embedded agent-guide surfaces (`akm hints` and `akm help agents`) live
+ * in src/cli.ts, so their loading code is intentionally outside this module.
  *
  * The leaf handler's body is a plain `runWithJsonErrors(...) + output(...)`,
  * migrated onto `defineJsonCommand`, which emits the same JSON envelope

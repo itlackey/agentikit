@@ -99,6 +99,7 @@ enumeration of the whole `proposal` noun group.
 | `akm help` | Stable | |
 | `akm help agents` | Stable | |
 | `akm help migrate` | Stable | Only renders release notes. |
+| `akm hints` | Stable | Format-exempt agent guide; `--detail brief` selects the compact version. |
 | `akm completions` | Stable | Format-exempt (emits shell script source). |
 | `akm env list` | Stable | Read-and-inject surface. |
 | `akm env path` | Stable | Read-and-inject surface. |
@@ -152,7 +153,7 @@ enumeration of the whole `proposal` noun group.
 - **Read commands** — `akm search`, `akm show`, `akm bundle list`, `akm curate`,
   `akm info`, `akm config get`, `akm config list`, `akm config path`,
   `akm env list`, `akm secret list`, `akm proposal list` (list filters),
-  `akm help`, `akm help agents`, `akm completions`.
+  `akm help`, `akm help agents`, `akm hints`, `akm completions`.
 - **Write commands core surface** — `akm bundle add`, `akm bundle update`,
   `akm bundle remove`, `akm clone`, `akm import`, `akm sync`, `akm index`,
   `akm bundle create`, `akm setup`, `akm remember`, `akm feedback`,

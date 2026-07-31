@@ -38,7 +38,6 @@ const RETIRED_COMMAND_HINTS: Record<string, string> = {
   lesson: "`akm lesson` was removed in 0.9 — lesson strength is indexed; use `akm search --type lesson`.",
 
   // Relocated guidance / removed asset verbs.
-  hints: "`akm hints` moved in 0.9 — use `akm help agents`.",
   mv: "`akm mv` was removed in 0.9 — move the file, then run `akm index` and `akm lint` (to carry ranking signal: `bun scripts/rekey-asset-ref.ts <old-ref> <new-ref>`).",
 
   // Pre-0.9 removals agents still trip over.

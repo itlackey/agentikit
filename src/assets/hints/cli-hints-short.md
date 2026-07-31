@@ -28,6 +28,7 @@ akm search "<query>" --type workflow          # Filter to workflow assets
 akm search "memories/projectA/"               # List a subtree (conceptId prefix; trailing slash required)
 akm search "<query>" --from all               # Also search registries
 akm show <ref>                                # View asset details
+akm help <command>                            # Show a command's options and subcommands
 akm workflow next <ref>                       # Start or resume a workflow
 akm remember "Deployment needs VPN access"    # Record a memory in your bundle
 akm remember "note" --bundle my-bundle         # Route write to a named writable bundle source
@@ -124,4 +125,6 @@ akm proposal reject skills/my-skill --reason "not ready" # Reject by asset ref
 akm search "<query>" --include-proposed        # Surface proposal-queue entries in search
 ```
 
-Run `akm -h` for the full command reference.
+Run `akm help <command>` for that command's options and subcommands. Run
+`akm --help` for the command overview or `akm hints --detail full` for the
+complete agent guide.

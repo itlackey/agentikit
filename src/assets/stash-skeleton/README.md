@@ -1,7 +1,7 @@
 # AKM Stash
 
 This is an **AKM stash** — a structured knowledge repository that stores reusable
-assets for you and your AI agents. AKM (Agent Knowledge Management) indexes, ranks,
+assets for you and your AI agents. AKM (Agent Knowledge Manager) indexes, ranks,
 and surfaces these assets at the right moment during coding sessions, improving
 consistency and reducing repeated context-setting.
 

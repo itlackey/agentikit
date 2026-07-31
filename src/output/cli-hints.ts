@@ -3,8 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Embedded "agent CLI hints" rendered by `akm hints` when no other source
- * is available.
+ * Embedded agent CLI guide rendered by `akm hints` and `akm help agents`.
  *
  * Extracted from `src/cli.ts` so it does not bloat the CLI module and so
  * docs/CI tooling can re-use the same constants. Two flavors:

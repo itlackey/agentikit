@@ -42,6 +42,8 @@ const EXEMPT_COMMANDS: ReadonlySet<string> = new Set([
   // the embedded CLI-reference guide (`src/output/cli-hints.ts`) — none of
   // the three render a result envelope.
   "help",
+  // Embedded agent guide document.
+  "hints",
 ]);
 
 /**
