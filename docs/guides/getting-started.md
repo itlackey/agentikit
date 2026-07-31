@@ -240,6 +240,13 @@ export AKM_BUNDLE_DIR="$SANDBOX/bundle"
 
 akm setup --yes                 # initialize the sandbox bundle
 akm index --full                # empty but valid index
+
+# Workflows need an engine selected before a run can be planned. `akm setup`
+# picks one up automatically when an agent CLI is installed; in a bare
+# sandbox (or CI image) there is nothing to detect, so set one explicitly:
+akm config set engines.claude '{"kind":"agent","platform":"claude"}'
+akm config set defaults.engine claude
+
 akm workflow create demo        # create a template-backed workflow asset
 akm workflow start workflows/demo
 # ... exercise the flow ...

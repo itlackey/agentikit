@@ -8,14 +8,27 @@ human approves gates.
 
 > **The native orchestration engine requires an opt-in.** `start` / `next` /
 > `complete` / `status` / `list` / `create` / `resume` / `abandon` —
-> everything through [Writing a workflow](#writing-a-workflow) below — work
-> with no config changes, including a workflow whose frontmatter declares
-> `map`/`route`/`gate`. But `akm workflow run`, `akm workflow brief`, and
-> `akm workflow report` — the surfaces that actually dispatch a step's units
-> with the native engine or the driver protocol — refuse outright until
+> everything through [Writing a workflow](#writing-a-workflow) below — need no
+> `experimental.workflowEngine` opt-in, including a workflow whose frontmatter
+> declares `map`/`route`/`gate`. But `akm workflow run`, `akm workflow brief`,
+> and `akm workflow report` — the surfaces that actually dispatch a step's
+> units with the native engine or the driver protocol — refuse outright until
 > `experimental.workflowEngine` is set — see [Enabling the workflow
 > engine](#enabling-the-workflow-engine-opt-in-in-090) before trying any of
 > those three.
+
+> **Every workflow run needs a selected engine.** `akm workflow start` freezes
+> a plan, and freezing resolves an engine for each unit, so a config with no
+> `defaults.engine` fails with `INVALID_CONFIG_FILE` ("No workflow engine is
+> selected") and exit 78 — even for the manual `start`/`next` path, and even
+> when `experimental.workflowEngine` is off. `akm setup` fills this in
+> whenever it detects an installed agent CLI; on a machine with none (a bare
+> container or CI image), set one explicitly first:
+>
+> ```sh
+> akm config set engines.claude '{"kind":"agent","platform":"claude"}'
+> akm config set defaults.engine claude
+> ```
 
 ## akm workflow start
 

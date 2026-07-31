@@ -53,6 +53,12 @@ export function compileResolveFreezeWorkflow(asset: WorkflowAsset, config: AkmCo
       throw new ConfigError(
         "No workflow engine is selected. Set defaults.engine or workflow defaults.engine.",
         "INVALID_CONFIG_FILE",
+        // Reachable from a clean install whenever setup detected no agent CLI —
+        // the message above names the KEY but not how to fill it, which is the
+        // whole question at that point.
+        "Run `akm setup` to detect an installed agent, or set one explicitly: " +
+          '`akm config set engines.claude \'{"kind":"agent","platform":"claude"}\'` ' +
+          "then `akm config set defaults.engine claude`.",
       );
     const engine = engineDefinition(config, name);
     addSnapshot(config, name, engines);

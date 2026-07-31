@@ -102,6 +102,8 @@ positional arguments:
 
 ```markdown
 ---
+name: ship-release
+type: command
 description: "Run the release workflow"
 model: "claude-sonnet-4-20250514"
 agent: build
@@ -109,6 +111,12 @@ agent: build
 Tag the current commit with the next semantic version, push the tag, and
 wait for CI to complete. Target environment: $ARGUMENTS.
 ```
+
+Commands and agents are the two types where `akm lint` requires **both**
+`name` and `type` in frontmatter (`missing-name-or-type`) — they are the
+dispatch surface, so the declared identity has to be explicit rather than
+inferred from the filename. A file with no frontmatter at all is left alone;
+the rule applies once a frontmatter block exists.
 
 Commands are automatically detected by content signals -- `agent`
 frontmatter or `$ARGUMENTS`/`$1`-`$3` placeholders -- even outside the
@@ -121,6 +129,8 @@ and `tools` fields:
 
 ```markdown
 ---
+name: typescript-advisor
+type: agent
 description: "TypeScript architecture advisor"
 model: "claude-sonnet-4-20250514"
 tools: ["Read", "Grep", "Glob"]
