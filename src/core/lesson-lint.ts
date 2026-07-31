@@ -14,9 +14,7 @@
  *
  * Lint produces structured findings rather than throwing so callers can
  * batch-validate (e.g. `akm proposal accept` over a queue) and surface every
- * violation in a single pass. A strict wrapper (`assertLessonValid`) throws
- * a `UsageError` for call sites that want a fail-fast contract — most
- * notably the proposal-accept path described in v1 spec §13.1.
+ * violation in a single pass.
  *
  * The lint is intentionally side-effect free and does not import the indexer
  * or filesystem walker; it operates on a single file path + raw string. This
@@ -26,7 +24,6 @@
 
 import fs from "node:fs";
 import { parseFrontmatter } from "./asset/frontmatter";
-import { UsageError } from "./errors";
 
 /** A single finding produced by `lintLessonContent` / `lintLessonFile`. */
 export interface LessonLintFinding {
@@ -97,21 +94,4 @@ export function lintLessonContent(raw: string, pathForMessages: string): LessonL
 export function lintLessonFile(filePath: string): LessonLintReport {
   const raw = fs.readFileSync(filePath, "utf8");
   return lintLessonContent(raw, filePath);
-}
-
-/**
- * Strict variant: throws a `UsageError` if any finding is present. The thrown
- * error carries the full set of findings on its message and a hint pointing
- * at v1 spec §13. The first finding's `field` becomes the error's primary
- * field for callers that want to highlight the first violation.
- */
-export function assertLessonValid(filePath: string): void {
-  const report = lintLessonFile(filePath);
-  if (report.findings.length === 0) return;
-  const message = report.findings.map((f) => f.message).join("\n");
-  throw new UsageError(
-    message,
-    "MISSING_REQUIRED_ARGUMENT",
-    "Lessons require non-empty `description` and `when_to_use` frontmatter fields. See v1 spec §13.",
-  );
 }

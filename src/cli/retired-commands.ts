@@ -29,6 +29,17 @@ const RETIRED_COMMAND_HINTS: Record<string, string> = {
   // Verbs absorbed by the `proposal` group.
   extract: "`akm extract` moved in 0.9 — use `akm proposal extract`.",
   propose: "`akm propose` moved in 0.9 — use `akm proposal new`.",
+  proposals: "`akm proposals` moved in 0.9 — use `akm proposal list`.",
+  accept: "`akm accept` moved in 0.9 — use `akm proposal accept <id>`.",
+  reject: '`akm reject` moved in 0.9 — use `akm proposal reject <id> --reason "..."`.',
+  diff: "`akm diff` moved in 0.9 — use `akm proposal diff <id>`.",
+  revert: "`akm revert` moved in 0.9 — use `akm proposal revert <id>`.",
+  reflect: "`akm reflect` was folded into 0.9 — use `akm improve <ref>`.",
+  distill: "`akm distill` was folded into 0.9 — use `akm improve <ref>`.",
+
+  // Renamed persistence and observability verbs.
+  save: "`akm save` moved in 0.9 — use `akm sync`.",
+  events: "`akm events` moved in 0.9 — use `akm log`.",
 
   // Removed observability surfaces.
   history: "`akm history` was removed in 0.9 — use `akm log --ref <ref>` for an asset's event trail.",

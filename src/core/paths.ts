@@ -262,11 +262,6 @@ export function getStateDbPathInDataDir(): string {
   return path.join(getDataDir(), "state.db");
 }
 
-/** Path for the task history directory in $DATA. */
-export function getTaskHistoryStateDir(): string {
-  return path.join(getDataDir(), "tasks", "history");
-}
-
 /** Content-addressed scheduler runtime descriptors. */
 export function getTaskContextDir(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(getDataDir(env), "tasks", "context");
@@ -292,10 +287,6 @@ export function getRegistryCacheDir(): string {
 
 export function getRegistryIndexCacheDir(): string {
   return path.join(getCacheDir(), "registry-index");
-}
-
-export function getBinDir(): string {
-  return path.join(getCacheDir(), "bin");
 }
 
 // ── Scheduled-task runtime directories (logs + history) ──────────────────────

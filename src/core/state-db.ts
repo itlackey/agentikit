@@ -76,7 +76,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { type Database, openDatabase, type SqlValue } from "../storage/database";
 import { assertCurrentMigrationLedger, assertMigrationLedger } from "../storage/engines/sqlite-migrations";
-import { openManagedDatabase, withManagedDb, withManagedDbAsync } from "../storage/managed-db";
+import { openManagedDatabase, withManagedDb } from "../storage/managed-db";
 import { acquireMaintenanceActivitySync } from "./maintenance-barrier";
 import { assertNoPendingMigrationOperation } from "./migration-operation";
 import { getDataDir } from "./paths";
@@ -180,18 +180,6 @@ export function openStateDatabase(dbPath?: string): Database {
  */
 export function withStateDb<T>(fn: (db: Database) => T, opts?: { path?: string; borrowed?: Database }): T {
   return withManagedDb(() => openStateDatabase(opts?.path), fn, opts);
-}
-
-/**
- * Async sibling of {@link withStateDb} — for `fn`s that hold the handle across
- * an `await` (the sync version would close it too early). Same borrow/own +
- * optional `path` override semantics.
- */
-export function withStateDbAsync<T>(
-  fn: (db: Database) => Promise<T>,
-  opts?: { path?: string; borrowed?: Database },
-): Promise<T> {
-  return withManagedDbAsync(() => openStateDatabase(opts?.path), fn, opts);
 }
 
 /**

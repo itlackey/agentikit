@@ -56,8 +56,9 @@ The two terms come up often:
   Named by `defaultBundle` in config and registered automatically as a
   `filesystem` source.
 
-If you don't pick a write destination explicitly with `--target` or
-`defaultWriteTarget`, writes land in the working bundle.
+If you don't pick a write destination explicitly with `--target` (or a
+command-specific `--bundle`) or `defaultWriteTarget`, writes land in the
+working bundle.
 
 ## What's In a Bundle?
 
@@ -77,6 +78,7 @@ my-bundle/
   commands/       # Slash commands (.md with $ARGUMENTS or agent frontmatter)
   agents/         # Agent definitions (.md with model/tools frontmatter)
   knowledge/      # Reference documents (.md)
+  instructions/   # Project guidance (.md)
   env/            # Environment files (.env) — groups of related config, loaded whole
   secrets/        # Secrets — one sensitive value per file (auth tokens, keys, certs)
   workflows/      # Unified workflow assets (.md)
@@ -94,7 +96,7 @@ regular bundle. See [Wikis](wikis.md) for how akm recognizes and indexes them.
 
 ## Asset Types
 
-There are thirteen asset types:
+There are fourteen asset types:
 
 | Type | Purpose | What the agent gets |
 | --- | --- | --- |
@@ -103,9 +105,10 @@ There are thirteen asset types:
 | **command** | A prompt template | A template with placeholders to fill in |
 | **agent** | An agent definition | A system prompt, model hint, and tool policy |
 | **knowledge** | A reference document | Navigable content with TOC and section views |
+| **instruction** | Project guidance | Instructions an agent should follow in the project |
 | **env** | A `.env` file of related **configuration** for an app/service | Key names and comments, never values. Holds a group of related settings (URLs, flags, and any credentials it needs); values may or may not be sensitive but are always protected. Key names are intentionally discoverable — they appear in `env list`, search results, and agent context by design. Inject via `akm env run <ref> -- <cmd>`; prefer `--clean` in agent contexts so the child starts from a minimal inherited environment. |
 | **secret** | A single sensitive value for **authentication** (token, key, cert) | Name only — the entire file is the value and never appears in output. Use for one credential used on its own; for a group of related config use `env`. Access via `akm secret run` |
-| **workflow** | A structured multi-step procedure | Parsed steps, completion criteria, and resumable run state |
+| **workflow** | A unified Markdown/frontmatter multi-step procedure | Parsed steps, completion criteria, and resumable run state |
 | **lesson** | A distilled feedback lesson | `when_to_use` guidance plus the lesson body (see [`akm improve`](../reference/cli.md#improve)) |
 | **memory** | Context from external systems | Background information the agent should consider |
 | **fact** | A durable bundle-level fact | Mostly-static semantic knowledge — personal/team/project details, coding conventions / "constitution", and bundle-meta (naming conventions, active projects). `category` scopes it; `pinned: true` marks always-injected core context |

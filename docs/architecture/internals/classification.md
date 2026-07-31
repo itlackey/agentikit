@@ -24,7 +24,7 @@ registration call required. Eleven built-ins, in probe order:
 | `akm-workflow` | Workflow-dir component | workflow programs |
 | `akm-task` | Task-dir component | scheduled task definitions |
 | `llm-wiki` | LLM Wiki bundle | a wiki root (`schema.md` + `pages/`) and its pages, raw, xrefs, citations |
-| `akm` | The classic AKM stash layout | scripts, skills, commands, agents, knowledge, workflows, memories, lessons, env, secrets, facts, tasks, sessions |
+| `akm` | The classic AKM stash layout | scripts, skills, commands, agents, knowledge, instructions, workflows, memories, lessons, env, secrets, facts, tasks, sessions |
 | `okf` | Open Knowledge Format bundle | OKF concept documents of any open type |
 | `generic-files` | Catch-all file mount | explicit configuration only — never auto-probed |
 
@@ -43,13 +43,14 @@ first because AKM Markdown is an OKF-compatible superset.
 
 `type` is an open descriptive string. The core accepts every non-empty value;
 the owning adapter decides whether a value receives specialized behavior. The
-`akm` adapter emits its defined native set:
+`akm` adapter emits its fourteen defined native types:
 
 - `script`
 - `skill`
 - `command`
 - `agent`
 - `knowledge`
+- `instruction`
 - `workflow`
 - `memory`
 - `lesson`

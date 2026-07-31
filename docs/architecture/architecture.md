@@ -11,12 +11,13 @@ current-truth reference.
 
 ## Asset Types
 
-Built-in asset types are:
+The fourteen built-in asset types are:
 
 - `skill`
 - `command`
 - `agent`
 - `knowledge`
+- `instruction`
 - `workflow`
 - `script`
 - `memory`
@@ -35,8 +36,8 @@ not a per-file type stamped by the classifier (see
 
 Each type maps to a canonical source directory through
 `src/core/asset/asset-placement.ts`'s `PLACEMENT_SPECS` map (`skills/`,
-`commands/`, `agents/`, `knowledge/`, `workflows/`, `scripts/`, `memories/`,
-`lessons/`, `facts/`, `env/`, `secrets/`, `tasks/`, `sessions/`).
+`commands/`, `agents/`, `knowledge/`, `instructions/`, `workflows/`, `scripts/`,
+`memories/`, `lessons/`, `facts/`, `env/`, `secrets/`, `tasks/`, `sessions/`).
 
 ---
 

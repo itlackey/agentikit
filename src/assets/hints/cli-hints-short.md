@@ -8,7 +8,7 @@ For any task, follow this loop:
 1. `akm curate "<task>"` — find the best matching asset
 2. `akm show <ref>` — read the schema (field names and structure)
 3. Edit the workspace file using schema field names + task-specific values from your README
-4. `akm feedback <ref> --positive` — record success
+4. `akm feedback <ref> --positive` — record success; use `--negative --reason "..."` when it fails
 
 For workflow tasks:
 1. `akm workflow next workflows/<name>` — get current step instructions
@@ -92,8 +92,9 @@ success results also carry an additive `tip` field (a plain-text suggestion)
 when the result set is empty.
 
 `env run`, `secret run`, and `migrate` preserve the spawned process's exact
-status. `task run` and `agent` map a failed result to exit 1 while retaining
-the child status in their result envelope.
+status. `task run` preserves configuration failures as exit 78; other failed
+task results and failed `agent` dispatches map to exit 1 while retaining the
+child status in their result envelope.
 
 `akm lint` is the exception: it exits **0 on every successful run regardless
 of findings**. Read `summary.flagged` to detect issues, or pass

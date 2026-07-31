@@ -61,10 +61,9 @@ describe("migration help", () => {
     }
   });
 
-  test("latest alias resolves to the 0.9.0 release target", () => {
+  test("latest alias resolves to the newest release changelog section", () => {
     const result = renderMigrationHelp("latest");
-    expect(result).toContain("Migration notes for akm v0.9.0");
-    expect(result).toContain("## [0.9.0]");
+    expect(result).toContain("## [0.9.0-rc.13]");
   });
 
   test("renders dedicated message when no bundled note or changelog entry exists", () => {

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { retiredCommandHint } from "../../src/cli/retired-commands";
 import { EMBEDDED_HINTS, EMBEDDED_HINTS_FULL } from "../../src/output/cli-hints";
 
 describe("embedded exit-code hints", () => {
@@ -19,5 +20,32 @@ describe("embedded exit-code hints", () => {
   test("full hints scope the two-signal guarantee to envelope surfaces", () => {
     expect(EMBEDDED_HINTS_FULL).toContain("On result-envelope surfaces, both signals are always set consistently.");
     expect(EMBEDDED_HINTS_FULL).toContain("Passthrough surfaces");
+  });
+
+  test("shipped task and show guidance uses the 0.9 contracts", () => {
+    expect(EMBEDDED_HINTS).toContain("`task run` preserves configuration failures as exit 78");
+    expect(EMBEDDED_HINTS_FULL).toContain("other failures exit 1");
+    expect(EMBEDDED_HINTS_FULL).toContain("local index and materialized bundle files only");
+    expect(EMBEDDED_HINTS_FULL).toContain("selected engine invocation timeout");
+    expect(EMBEDDED_HINTS_FULL).toContain("--negative --reason");
+  });
+
+  test("every retired top-level proposal and renamed verb has an explicit replacement", () => {
+    const expected: Record<string, string> = {
+      proposals: "akm proposal list",
+      accept: "akm proposal accept <id>",
+      reject: "akm proposal reject <id>",
+      diff: "akm proposal diff <id>",
+      revert: "akm proposal revert <id>",
+      save: "akm sync",
+      events: "akm log",
+      reflect: "akm improve <ref>",
+      distill: "akm improve <ref>",
+    };
+    for (const [command, replacement] of Object.entries(expected)) {
+      expect(retiredCommandHint([], command)).toContain(replacement);
+    }
+    expect(retiredCommandHint(["task"], "enable")).toContain("enabled: true");
+    expect(retiredCommandHint(["task"], "disable")).toContain("enabled: false");
   });
 });

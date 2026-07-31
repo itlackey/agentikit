@@ -18,7 +18,7 @@ Task-oriented guides for using akm.
 
 - [CLI](reference/cli.md) -- All `akm` commands and flags
 - [Configuration](reference/configuration.md) -- Engines, strategies, bundles, and settings
-- [Workflows](reference/workflows.md) -- Workflow source formats, run state, and the YAML orchestration engine
+- [Workflows](reference/workflows.md) -- Unified Markdown workflow schema, run state, and native orchestration engine
 - [Wiki Snapshot Fetchers](reference/wiki-snapshot-fetchers.md) -- The pluggable fetcher API for URL-based knowledge reads
 - [Registry](reference/registry.md) -- Registries, search, hosting, and managing sources
 - [Data & Telemetry](reference/data-and-telemetry.md) -- Exactly what akm reads and writes on your machine (no remote telemetry)

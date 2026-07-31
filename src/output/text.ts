@@ -33,7 +33,6 @@ import { bundleShowFormatters } from "./text/bundle-show";
 import { cloneFormatters } from "./text/clone";
 import { configFormatters } from "./text/config";
 import { curateFormatters } from "./text/curate";
-import { enableDisableFormatters } from "./text/enable-disable";
 import { envFormatters } from "./text/env";
 import { eventsFormatters } from "./text/events";
 import { feedbackFormatters } from "./text/feedback";
@@ -83,7 +82,6 @@ const BUILT_IN_TEXT_FORMATTERS: TextFormatterEntry[] = [
   ...rememberFormatters,
   ...importFormatters,
   ...syncFormatters,
-  ...enableDisableFormatters,
   ...registryCommandFormatters,
   ...envFormatters,
 ];

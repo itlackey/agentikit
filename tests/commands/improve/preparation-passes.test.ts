@@ -271,7 +271,6 @@ describe("buildSnapshotManifest", () => {
     const snap = buildSnapshotManifest({
       postCleanupRefs: [ref("memories/a")],
       validationFailureRefs: new Set(),
-      options: { config: {} as AkmConfig },
     });
 
     expect(snap.latestFeedbackTs.size).toBe(0);
@@ -288,7 +287,6 @@ describe("buildSnapshotManifest", () => {
     const snap = buildSnapshotManifest({
       postCleanupRefs: [ref("memories/broken")],
       validationFailureRefs: new Set(["memories/broken"]),
-      options: { config: {} as AkmConfig },
     });
     expect(snap.latestFeedbackTs.size).toBe(0);
   });

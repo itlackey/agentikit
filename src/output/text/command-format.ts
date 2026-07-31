@@ -101,13 +101,6 @@ export function formatSyncPlain(r: Record<string, unknown>): string {
   return parts.join(" — ");
 }
 
-export function formatToggleComponentPlain(command: string, r: Record<string, unknown>): string {
-  const verb = command === "enable" ? "Enabled" : "Disabled";
-  const component = String(r.component ?? "?");
-  const changed = r.changed === true;
-  return changed ? `${verb} ${component}` : `${component} was already ${command}d`;
-}
-
 export function formatRegistryListPlain(r: Record<string, unknown>): string {
   const registries = Array.isArray(r.registries) ? (r.registries as Array<Record<string, unknown>>) : [];
   if (registries.length === 0) {
@@ -181,20 +174,6 @@ export function formatEnvExportPlain(r: Record<string, unknown>): string {
 export function formatEnvRemovePlain(r: Record<string, unknown>): string {
   const removed = r.removed === true;
   return removed ? `Removed env ${String(r.ref ?? "?")}` : `Env ${String(r.ref ?? "?")} was not present`;
-}
-
-export function formatEnvSetPlain(r: Record<string, unknown>): string {
-  return `Set ${String(r.key ?? "?")} in env ${String(r.ref ?? "?")} (value not displayed)`;
-}
-
-export function formatEnvUnsetPlain(r: Record<string, unknown>): string {
-  const removed = Array.isArray(r.removed) ? (r.removed as unknown[]).map(String) : [];
-  const missing = Array.isArray(r.missing) ? (r.missing as unknown[]).map(String) : [];
-  const ref = String(r.ref ?? "?");
-  const parts: string[] = [];
-  if (removed.length > 0) parts.push(`Removed ${removed.join(", ")} from env ${ref}`);
-  if (missing.length > 0) parts.push(`Not present in env ${ref}: ${missing.join(", ")}`);
-  return parts.join("\n") || `No keys changed in env ${ref}`;
 }
 
 export function formatEventsPlain(r: Record<string, unknown>): string {

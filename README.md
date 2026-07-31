@@ -4,46 +4,9 @@
 [![CI](https://github.com/itlackey/akm/actions/workflows/ci.yml/badge.svg)](https://github.com/itlackey/akm/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/akm-cli)](LICENSE)
 
-**A knowledge toolkit for AI agents** — capture, curate, search, and share scripts, skills, commands, agents, knowledge, memories, workflows, wikis, env files, secrets, lessons, and scheduled tasks — working with any AI coding assistant that can run shell commands.
+**A knowledge toolkit for AI agents** — capture, curate, search, and share scripts, skills, commands, agents, knowledge, instructions, memories, workflows, env files, secrets, lessons, tasks, sessions, and facts — working with any AI coding assistant that can run shell commands.
 
 akm gives agents a curated, searchable library built from local directories, GitHub repos, npm packages, and websites. Instead of front-loading a giant prompt, agents pull exactly what they need, when they need it, and feed results back so the library improves over time.
-
-## Install
-
-**Option 1 — npm package (recommended; requires [Node.js](https://nodejs.org) >= 22):**
-
-```sh
-npm install -g akm-cli
-```
-
-**Option 2 — Prebuilt binary (no runtime required):**
-
-```sh
-# Linux / macOS
-curl -fsSL https://github.com/itlackey/akm/releases/latest/download/install.sh | bash
-
-# Windows (PowerShell)
-irm https://github.com/itlackey/akm/releases/latest/download/install.ps1 | iex
-```
-
-Upgrade in place: `akm upgrade`
-
-The npm package always uses Node.js to bootstrap its cross-platform command.
-If a working [Bun](https://bun.sh) >= 1.0 is also on `PATH`, the launcher
-prefers Bun for execution; old, unusable, or absent Bun installations fall back
-to Node.js. Node.js remains required for the npm package. The standalone
-binaries are runtime-free.
-
-See [Privacy & data](docs/reference/data-and-telemetry.md) for details on what akm stores locally.
-
-### From source (contributors only)
-
-```sh
-git clone https://github.com/itlackey/akm.git
-cd akm
-bun install
-bun run build
-```
 
 ## What akm does
 
@@ -79,6 +42,33 @@ bun run build
   akm improve && akm proposal list
   ```
 
+
+## Install
+
+**Option 1 — npm package (recommended; requires [Node.js](https://nodejs.org) >= 22):**
+
+```sh
+npm install -g akm-cli
+```
+
+**Option 2 — Prebuilt binary (no runtime required):**
+
+```sh
+# Linux / macOS
+curl -fsSL https://github.com/itlackey/akm/releases/latest/download/install.sh | bash
+
+# Windows (PowerShell)
+irm https://github.com/itlackey/akm/releases/latest/download/install.ps1 | iex
+```
+
+Upgrade in place: `akm upgrade`
+
+The npm package always uses Node.js to bootstrap its cross-platform command.
+If a working [Bun](https://bun.sh) >= 1.0 is also on `PATH`, the launcher
+prefers Bun for execution; old, unusable, or absent Bun installations fall back
+to Node.js. Node.js remains required for the npm package. The standalone
+binaries are runtime-free.
+
 ## Quick start
 
 ```sh
@@ -106,12 +96,14 @@ See [docs/guides/getting-started.md](docs/guides/getting-started.md) for a full 
 | **command** | A prompt template with placeholders | `commands/summarize` |
 | **agent** | System prompt + model + tool policy | `agents/reviewer` |
 | **knowledge** | A reference document | `knowledge/api-guide` |
+| **instruction** | Project guidance for agents | `instructions/repository` |
 | **env** | Whole `.env` group (key names surfaced, values never) | `env/prod` |
 | **secret** | A single sensitive value | `secrets/deploy-token` |
 | **workflow** | Structured multi-step procedure with resumable run state | `workflows/ship-release` |
 | **lesson** | Distilled feedback insight | `lessons/prefer-dry-run` |
 | **memory** | Recalled context from a previous session | `memories/vpn-note` |
 | **task** | Scheduled prompt/command/workflow job | `tasks/nightly-review` |
+| **session** | Indexed session summary | `sessions/claude/session-id` |
 | **fact** | Durable bundle-level fact (identity, conventions, bundle-meta) | `facts/team/tool-stack` |
 
 See [docs/guides/concepts.md](docs/guides/concepts.md) for classification rules and the ref format.
@@ -189,8 +181,8 @@ Add this to your `AGENTS.md`, `CLAUDE.md`, or system prompt:
 ## Resources & Capabilities
 
 You have access to a searchable library of scripts, skills, commands, agents,
-knowledge, workflows, env files, secrets, wikis, lessons, and memories via the
-`akm` CLI. Use `akm -h` for details.
+knowledge, instructions, workflows, env files, secrets, lessons, tasks,
+sessions, facts, and memories via the `akm` CLI. Use `akm -h` for details.
 ```
 
 No plugins or SDKs required. Platform-specific integrations are available in [akm-plugins](https://github.com/itlackey/akm-plugins).

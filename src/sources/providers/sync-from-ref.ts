@@ -25,8 +25,6 @@ export async function syncFromRef(ref: string, options?: SyncOptions): Promise<S
     const { syncGitRef } = await import("./git-install");
     return syncGitRef(ref, options);
   }
-  // Exhaustiveness — `parseRegistryRef` only emits the four sources above.
-  const _exhaustive: never = parsed;
   throw new UsageError(`No syncable provider for ref: ${ref}`);
 }
 

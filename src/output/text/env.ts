@@ -4,14 +4,7 @@
 
 // Output text formatters for `akm env *` commands.
 
-import {
-  formatEnvCreatePlain,
-  formatEnvExportPlain,
-  formatEnvListPlain,
-  formatEnvRemovePlain,
-  formatEnvSetPlain,
-  formatEnvUnsetPlain,
-} from "./helpers";
+import { formatEnvCreatePlain, formatEnvExportPlain, formatEnvListPlain, formatEnvRemovePlain } from "./helpers";
 import type { TextFormatterEntry } from "./registry";
 
 export const envFormatters: TextFormatterEntry[] = [
@@ -19,6 +12,4 @@ export const envFormatters: TextFormatterEntry[] = [
   { command: "env-create", handler: (r) => formatEnvCreatePlain(r) },
   { command: "env-export", handler: (r) => formatEnvExportPlain(r) },
   { command: "env-remove", handler: (r) => formatEnvRemovePlain(r) },
-  { command: "env-set", handler: (r) => formatEnvSetPlain(r) },
-  { command: "env-unset", handler: (r) => formatEnvUnsetPlain(r) },
 ];

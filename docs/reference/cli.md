@@ -112,7 +112,8 @@ detect failure. Scripts can rely on the exit code alone.
 
 `env run`, `secret run`, and `migrate` preserve the spawned process's exact
 status and raw streams instead of replacing them with an akm failure envelope.
-`tasks run` maps task status to 0 or 1 while retaining a command child's exact
+`task run` maps completed, active, and disabled status to 0; blocked and failed
+status to 1; and configuration errors to 78. It retains a command child's exact
 status in `result.detail.exitCode`. `agent` maps a failed dispatch to 1 while
 retaining the child status in its formatted result envelope.
 
@@ -133,7 +134,8 @@ akm setup --yes                  # Non-interactive, accepts all defaults
 
 Creates one subdirectory per asset type under the bundle path — currently
 `scripts/`, `skills/`, `commands/`, `agents/`, `knowledge/`, `workflows/`,
-`memories/`, `env/`, `secrets/`, and `lessons/`. See
+`instructions/`, `memories/`, `env/`, `secrets/`, `lessons/`, `tasks/`,
+`sessions/`, and `facts/`. See
 [technical/filesystem.md](../architecture/internals/storage-locations.md) for config file locations.
 
 ```sh
@@ -209,7 +211,8 @@ directory lingers in the index across incremental runs. With `--dry-run`, report
 which entries would be removed without modifying the database.
 
 `akm index` always rebuilds the search index and keeps metadata in the index.
-When `akm.llm` is configured and the per-pass gate allows it, metadata
+When a selected named LLM engine (`defaults.llmEngine` or an indexing-pass
+override) is configured and the per-pass gate allows it, metadata
 enhancement runs during indexing. In text mode, the default CLI UI shows a
 spinner with processed-versus-total source counts; structured output modes
 (`json`, `yaml`, `jsonl`) stay clean and machine-readable.
@@ -357,7 +360,8 @@ tip names the conceptId spelling that replaces it.
 | `--filter` | `<key>=<value>` | _(none)_ | Scope filter — repeatable. Valid keys: `user`, `agent`, `run`, `channel`. Example: `--filter user=alice --filter channel=ops`. Narrows the result set; ranking is unchanged. |
 | `--include-proposed` | flag | `false` | Include entries with `quality: "proposed"` in the result set. Default search excludes them; `generated` and `curated` quality entries are always included. Unknown quality values warn once and remain searchable. |
 | `--belief` | `all`, `current`, `historical` | `all` | Memory belief filter. `current` keeps active memory beliefs; `historical` keeps contradicted/superseded/archived ones. |
-| `--no-project-context` | flag | `false` | Disable the automatic project-context ranking boost for this search only (also disabled by `AKM_DISABLE_PROJECT_CONTEXT=1`) |
+| `--no-project-context` | flag | `false` | Disable the automatic project-context ranking boost for this search only |
+| `--track-usage`, `--no-track-usage` | flag | `true` | Record or suppress local usage-event and ranking updates for this successful read |
 | `--include-sessions` | flag | `false` | Include session assets, which are excluded from default results via `config.search.defaultExcludeTypes` |
 | `--format` | `json`, `jsonl`, `yaml`, `text`, `md`, `html` | `json` | Output format |
 | `--detail` | `brief`, `normal`, `full` | `brief` | Output verbosity level |
@@ -431,6 +435,7 @@ akm curate "learn the release workflow" --from all --format text
 | `--type` | `skill`, `command`, `agent`, `knowledge`, `instruction`, `workflow`, `script`, `memory`, `env`, `secret`, `lesson`, `task`, `session`, `fact`, `any` | `any` | Filter curated results by asset type |
 | `--limit` | number | `4` | Maximum curated results |
 | `--from` | `local`, `registry`, `all` | `local` | Where to search before curating |
+| `--track-usage`, `--no-track-usage` | flag | `true` | Record or suppress local usage-event and ranking updates for this successful read |
 
 `akm curate` selects a small relevance-first shortlist. It preserves the
 strongest search hits first, uses only small type-aware nudges for close-score
@@ -445,12 +450,17 @@ only for read-only items. Their `followUp` remains `akm show <ref>` rather than
 being replaced by clone guidance.
 Use `--type workflow` when you want curated step-by-step procedures instead of
 individual scripts, skills, or docs.
+Use `--no-track-usage` when this inspection must not update local usage or
+ranking signals.
 
 ### show
 
 Display an asset by ref. On a markdown document `#fragment` selects one
 section by heading slug (falling back to case-insensitive heading text); an
 unmatched fragment lists the available slugs.
+
+Successful reads record local usage and ranking signals by default; pass
+`--no-track-usage` to suppress those updates.
 
 ```sh
 akm show scripts/deploy.sh
@@ -760,13 +770,12 @@ See [Workflows](workflows.md) for the complete authoring contract.
 | --- | --- |
 | `akm bundle add ~/.claude/skills` | Registers a local directory as a `filesystem` source |
 | `akm bundle add github:owner/repo` | Clones the repo into akm's cache as a `git` source |
-| `akm bundle add @scope/pkg` | Installs the npm package as a `git`/`npm` source |
+| `akm bundle add @scope/pkg` | Installs the npm package as an `npm` source |
 | `akm bundle add https://docs.example.com` | Crawls and caches a website as a `website` source |
 | `akm registry add <url>` | Adds a discovery registry (separate concept) |
 
-HTTP(S) URLs pointing to known git hosts (GitHub, GitLab, Bitbucket, Codeberg,
-SourceHut) or ending in `.git` are treated as git sources. All other HTTP(S)
-URLs are treated as website sources.
+HTTP(S) URLs on known Git hosts, and URLs ending in `.git`, are treated as git
+sources. Other HTTP(S) URLs are crawled as website sources.
 
 ### bundle add
 
@@ -781,14 +790,14 @@ akm bundle add https://github.com/owner/repo
 akm bundle add git+https://gitlab.com/org/bundle
 akm bundle add ./path/to/local/bundle
 akm bundle add github:andrewyng/context-hub --name context-hub  # context-hub as a git bundle
-akm bundle add https://docs.example.com --name docs              # Website
+akm bundle add https://docs.example.com --name docs
 akm bundle add https://docs.example.com --max-pages 100 --max-depth 5
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--name` | Human-friendly name for the source |
-| `--provider` | Provider type (e.g. `website`, `npm`). Required for URL sources where inference would be ambiguous |
+| `--provider` | Explicit provider for declarative source configuration; normally inferred from the input |
 | `--writable` | Mark a git source as writable so `akm sync` also pushes (default: false) |
 | `--options` | Provider options as JSON (e.g. `'{"ref":"main"}'`) |
 | `--allow-insecure` | Bypass plain-HTTP source rejection **and** dangerous env key blocking. Accepts two risks: (1) plain-HTTP download without TLS, (2) env keys that can hijack process execution. Use only after reviewing the bundle manually |
@@ -835,10 +844,9 @@ for guidance on env files that legitimately need these keys.
 
 #### Website sources
 
-When the input is an HTTP(S) URL that isn't a known git host, akm treats it as
-a website source. It crawls the site breadth-first from the given URL, converts
-each page to markdown, and stores the results as knowledge assets with the URL
-path hierarchy preserved.
+An HTTP(S) URL outside known Git hosts is treated as a website source. akm
+crawls the site breadth-first from the given URL, converts each page to markdown,
+and stores the results as knowledge assets with the URL path hierarchy preserved.
 
 ```sh
 akm bundle add https://www.agentic-patterns.com/ --name agent-patterns

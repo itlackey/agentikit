@@ -49,7 +49,8 @@ akm curate "review architecture" --type workflow # Restrict to one asset type
 
 ## Show
 
-Display an asset by ref. On a markdown document `#fragment` selects one section by heading slug.
+Display an asset by ref from the local index and materialized bundle files only.
+On a markdown document `#fragment` selects one section by heading slug.
 
 ```sh
 akm show scripts/deploy.sh                    # Show script (returns run command)
@@ -60,7 +61,7 @@ akm show workflows/ship-release               # Show parsed workflow steps
 akm show knowledge/guide                      # Whole document
 akm show knowledge/guide#auth                 # Just the "Auth" section
 akm show knowledge/guide#nope                 # Lists the available fragment slugs
-akm show knowledge/my-doc                     # Show content (local or remote)
+akm show knowledge/my-doc                     # Show materialized local content
 ```
 
 | Type | Key fields returned |
@@ -94,7 +95,7 @@ akm workflow create ship-release               # Create a workflow asset in the 
 akm lint --type workflows                      # Parse and compile every unified markdown workflow; list every error
 akm workflow next workflows/ship-release       # Start or resume the next workflow step
 akm feedback skills/code-review --positive     # Record that an asset helped
-akm feedback agents/reviewer --negative        # Record that an asset missed the mark
+akm feedback agents/reviewer --negative --reason "wrong framework" # Record why an asset missed the mark
 akm feedback memories/deployment-notes --positive # Works for memories too
 akm feedback env/prod --positive               # Records env feedback without surfacing values
 ```
@@ -366,7 +367,7 @@ To disable a task, set `enabled: false` in its YAML and run `akm task sync`
 (the cron line stays, commented). To remove one, delete the YAML and run
 `akm task sync` — the scheduler entry is unbound. Per-task `timeoutMs` in
 the YAML may be `null` (disable the agent kill timer for long local-model
-runs) or a number of milliseconds overriding `config.agent.timeoutMs`.
+runs) or a number of milliseconds overriding the selected engine invocation timeout.
 
 ## Agent Dispatch
 
@@ -454,10 +455,10 @@ the exit code is the preferred signal for shell scripts. Passthrough surfaces
 below preserve the child's own streams and status instead.
 
 `env run`, `secret run`, and `migrate` are process passthroughs and preserve
-the spawned process's exact status. `task run` maps task status to 0 or 1 and
-retains a command child's exact status in `result.detail.exitCode`. `agent`
-maps a failed dispatch to 1 and retains the child status in its final result
-envelope.
+the spawned process's exact status. `task run` preserves configuration failures
+as exit 78; successful task results exit 0 and other failures exit 1, while a
+command child's exact status remains in `result.detail.exitCode`. `agent` maps
+a failed dispatch to 1 and retains the child status in its final result envelope.
 
 `akm lint` is the one command that does not follow the exit-code table above:
 it exits **0 on every successful run regardless of findings**. Read

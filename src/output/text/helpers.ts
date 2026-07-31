@@ -27,8 +27,6 @@ export {
   formatEnvExportPlain,
   formatEnvListPlain,
   formatEnvRemovePlain,
-  formatEnvSetPlain,
-  formatEnvUnsetPlain,
   formatEventLine,
   formatEventsPlain,
   formatFeedbackPlain,
@@ -45,7 +43,6 @@ export {
   formatRemovePlain,
   formatSearchPlain,
   formatSyncPlain,
-  formatToggleComponentPlain,
   formatUpdatePlain,
   formatUpgradePlain,
 } from "./command-format";

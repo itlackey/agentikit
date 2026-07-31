@@ -37,7 +37,6 @@ import type {
   AkmSearchType,
   BeliefFilterMode,
   RegistrySearchResultHit,
-  SearchHit,
   SearchResponse,
   SearchSource,
   SourceSearchHit,

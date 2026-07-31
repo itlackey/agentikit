@@ -31,35 +31,6 @@ describe("session log aggregation", () => {
     });
   });
 
-  test("collectSessionEvents falls back to readEvents for legacy-only harnesses", () => {
-    // A legacy-only harness opts out of readSession via supportsReadSession:false
-    // and MUST keep working off the flat readEvents scan (behaviour-preserving).
-    const legacyHarness: SessionLogHarness = {
-      name: "legacy",
-      supportsReadSession: false,
-      isAvailable: () => true,
-      *readEvents() {
-        yield { harness: "legacy", text: "timeout while syncing repo" };
-        yield { harness: "legacy", text: "timeout while syncing repo" };
-      },
-      // listSessions/readSession would surface different data — assert they are
-      // NOT consulted for a legacy-only harness.
-      listSessions: () => {
-        throw new Error("listSessions must not be called for supportsReadSession:false");
-      },
-      readSession: () => {
-        throw new Error("readSession must not be called for supportsReadSession:false");
-      },
-    };
-
-    const sinceMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const entries = aggregateSessionEvents(collectSessionEvents([legacyHarness], sinceMs));
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.topic).toBe("timeout while syncing repo");
-    expect(entries[0]?.frequency).toBe(2);
-    expect(entries[0]?.source).toBe("legacy");
-  });
-
   test("collectSessionEvents surfaces structured readSession content to the candidate path (#568)", () => {
     // The richer readSession pipeline exposes structured tool-call content that
     // the legacy flat readEvents scan dropped. Here readEvents yields only a
@@ -80,7 +51,6 @@ describe("session log aggregation", () => {
     };
     const richHarness: SessionLogHarness = {
       name: "rich",
-      // supportsReadSession omitted ⇒ treated as readSession-capable.
       isAvailable: () => true,
       // Legacy scan loses the structured tool content — only a bland status line.
       *readEvents() {

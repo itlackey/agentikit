@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { defineCommand } from "citty";
 import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
 import type { RegistryConfigEntry } from "../core/config/config";
 import { getEffectiveRegistries, loadUserConfig, mutateConfig } from "../core/config/config";

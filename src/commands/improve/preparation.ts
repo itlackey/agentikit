@@ -854,7 +854,7 @@ export async function runImprovePreparationStage(args: {
 
   const recentErrors = seedRecentErrorWindows(schemaRepairs);
 
-  const snapshot = buildSnapshotManifest({ postCleanupRefs, validationFailureRefs, options });
+  const snapshot = buildSnapshotManifest({ postCleanupRefs, validationFailureRefs });
 
   const gathered = gatherCandidates({
     scope,
@@ -874,7 +874,6 @@ export async function runImprovePreparationStage(args: {
     options,
     primaryStashDir,
     eventsCtx,
-    improveProfile,
     mergedRefs: gathered.mergedRefs,
     eligibilitySourceByRef: gathered.eligibilitySourceByRef,
     feedbackSummary: gathered.feedbackSummary,
@@ -1069,9 +1068,8 @@ interface SignalDeltaSnapshot {
 export function buildSnapshotManifest(args: {
   postCleanupRefs: ImproveEligibleRef[];
   validationFailureRefs: Set<string>;
-  options: AkmImproveOptions;
 }): SignalDeltaSnapshot {
-  const { postCleanupRefs, validationFailureRefs, options } = args;
+  const { postCleanupRefs, validationFailureRefs } = args;
   // ── Phase 2: signal-delta eligibility sets built EARLY ────────────────────
   // 0.8.0 replaces the flat time-based cooldowns (which produced synchronised
   // waves whenever many refs cooled at the same instant — see the 2026-05-26
@@ -1166,7 +1164,6 @@ function gatherCandidates(args: {
   const feedbackSummary = buildFeedbackSummaryMap({
     processableRefs,
     noFeedbackPool,
-    options,
     eventsCtx,
     feedbackSinceCutoff,
   });
@@ -1452,11 +1449,10 @@ export function partitionBySignalDelta(args: {
 function buildFeedbackSummaryMap(args: {
   processableRefs: ImproveEligibleRef[];
   noFeedbackPool: ImproveEligibleRef[];
-  options: AkmImproveOptions;
   eventsCtx?: EventsContext;
   feedbackSinceCutoff: string;
 }): Map<string, { hasSignal: boolean; positive: number; negative: number }> {
-  const { processableRefs, noFeedbackPool, options, eventsCtx, feedbackSinceCutoff } = args;
+  const { processableRefs, noFeedbackPool, eventsCtx, feedbackSinceCutoff } = args;
   // Gap 6: only surface feedback signals from the last 30 days so that
   // ancient one-off feedback events don't permanently lock an asset into
   // every improve run. Assets with only stale signals fall through to the
@@ -1773,7 +1769,6 @@ function scoreSalience(args: {
   options: AkmImproveOptions;
   primaryStashDir?: string;
   eventsCtx?: EventsContext;
-  improveProfile: import("../../core/config/config").ImproveProfileConfig;
   mergedRefs: ImproveEligibleRef[];
   eligibilitySourceByRef: Map<string, EligibilitySource>;
   feedbackSummary: Map<string, { hasSignal: boolean; positive: number; negative: number }>;
@@ -1793,7 +1788,6 @@ function scoreSalience(args: {
     options,
     primaryStashDir,
     eventsCtx,
-    improveProfile,
     eligibilitySourceByRef,
     feedbackSummary,
     retrievalCounts,
@@ -2085,7 +2079,6 @@ function computeSalienceVectors(args: {
     withStateDb(
       (dbForStoredEncoding) => {
         for (const r of mergedRefs) {
-          const type = assetTypeOf(r.ref);
           const row = readAssetSalienceForImproveRef(dbForStoredEncoding, r.ref, itemRefByRef.get(r.ref));
           if (row && isContentEncodingRow(row)) {
             storedEncodingByRef.set(r.ref, row.encoding_salience);

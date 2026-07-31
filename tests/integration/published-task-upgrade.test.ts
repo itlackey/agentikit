@@ -254,7 +254,21 @@ test.skipIf(!ENABLED)(
       fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
       fs.writeFileSync(
         workflowPath,
-        "# Workflow: Published Upgrade Noop\n\n## Step: Only\nStep ID: only\n\n### Instructions\nStart this deterministic local workflow without external access.\n",
+        [
+          "---",
+          "type: workflow",
+          "description: Deterministic local workflow for published upgrade acceptance",
+          "steps:",
+          "  - id: only",
+          "---",
+          "",
+          "# Published Upgrade Noop",
+          "",
+          "## only",
+          "",
+          "Start this deterministic local workflow without external access.",
+          "",
+        ].join("\n"),
       );
 
       // Migration input must use the grammar accepted by published 0.8.14.
@@ -487,13 +501,13 @@ test.skipIf(!ENABLED)(
       expect(crontab).not.toContain(path.join(REPO_ROOT, "src", "cli.ts"));
       const disabledBody = cronBody(crontab, "upgrade-disabled");
       expect(disabledBody).toStartWith("# akm:disabled ");
-      expect(disabledBody).toContain("tasks run upgrade-disabled");
+      expect(disabledBody).toContain("task run upgrade-disabled");
       expect(disabledBody).toContain("--scheduled");
       expect(
         crontab
           .split(/\r?\n/)
           .filter((line) => !line.startsWith("#"))
-          .some((line) => line.includes("tasks run upgrade-disabled")),
+          .some((line) => line.includes("task run upgrade-disabled")),
       ).toBe(false);
       expect(cronBody(crontab, "backup")).toStartWith("# akm:disabled ");
 
@@ -501,7 +515,7 @@ test.skipIf(!ENABLED)(
       expect(scheduledCommand).toContain(currentPackageRoot);
       expect(scheduledCommand).toContain("--scheduler-context");
       expect(scheduledCommand).not.toContain("PATH=");
-      expect(scheduledCommand).toContain("tasks run upgrade-command");
+      expect(scheduledCommand).toContain("task run upgrade-command");
       const scheduled = run(["/bin/sh", "-c", scheduledCommand], { ...storageEnv, PATH: "/usr/bin:/bin" });
       expectSuccess(scheduled, "execute generated packed-artifact cron command with stripped PATH");
 
@@ -533,8 +547,11 @@ test.skipIf(!ENABLED)(
         ...storageEnv,
         PATH: "/usr/bin:/bin",
       });
-      expectSuccess(scheduledWorkflow, "execute generated deterministic no-network workflow cron command");
       const workflowHistory = readLatestHistory(currentCli, "upgrade-workflow", currentEnv);
+      expectSuccess(
+        scheduledWorkflow,
+        `execute generated deterministic no-network workflow cron command\nhistory:\n${JSON.stringify(workflowHistory, null, 2)}\nlog:\n${fs.readFileSync(workflowHistory.log, "utf8")}`,
+      );
       expect(workflowHistory).toMatchObject({
         status: "active",
         target: { kind: "workflow", ref: "workflows/upgrade-noop" },
@@ -558,7 +575,7 @@ test.skipIf(!ENABLED)(
       expect(fs.readFileSync(manualDisabledHistory.log, "utf8")).toContain(candidatePackage.version);
 
       const scheduledDisabledCommand = generatedDisabledCronCommand(crontab, "upgrade-disabled");
-      expect(scheduledDisabledCommand).toContain("tasks run upgrade-disabled --scheduled");
+      expect(scheduledDisabledCommand).toContain("task run upgrade-disabled --scheduled");
       const scheduledDisabled = run(["/bin/sh", "-c", scheduledDisabledCommand], {
         ...storageEnv,
         PATH: "/usr/bin:/bin",

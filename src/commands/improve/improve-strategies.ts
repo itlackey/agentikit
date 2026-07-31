@@ -107,10 +107,6 @@ export function resolveImproveStrategy(name: string | undefined, config: AkmConf
   return { name: selectedName, config: resolved };
 }
 
-export function resolveStrategyProcessEnabled(strategy: SelectedStrategy, processName: string): boolean {
-  return resolveProcessEnabled(processName, strategy.config);
-}
-
 export type ImproveLlmRunner = Extract<RunnerSpec, { kind: "llm" }>;
 export type ImproveProcessName = keyof typeof IMPROVE_PROCESS_ENGINE_CAPABILITIES;
 

@@ -120,16 +120,13 @@ export function aggregateSessionEvents(events: Iterable<SessionEvent>): SessionL
  * Collect normalized session events from a set of harnesses for the health
  * candidate scan (#568).
  *
- * Pipeline selection per harness (capability-gated):
- *   - readSession-capable harness (`supportsReadSession !== false`): drive the
- *     richer `listSessions()` + `readSession()` pipeline. `readSession` flattens
+ * Pipeline selection per harness:
+ *   - Drive the richer `listSessions()` + `readSession()` pipeline. `readSession` flattens
  *     structured content — tool calls, assistant content blocks, thinking,
  *     tool_result — into event text (e.g. ClaudeCodeProvider's `parseClaudeEvent`
  *     surfaces `[tool:*]` / `[tool_result]` blocks that the legacy flat
  *     `readEvents` scan drops entirely). This is what lets health advisories see
  *     repeated tool failures / long runs that the flat scan hid.
- *   - legacy-only harness (`supportsReadSession === false`): fall back to the
- *     legacy flat `readEvents()` scan (behaviour-preserving).
  *
  * Extracted as a pure function (harnesses injected) so it is unit-testable
  * without touching the real on-disk session-log locations.
@@ -142,8 +139,7 @@ export function aggregateSessionEvents(events: Iterable<SessionEvent>): SessionL
  * health command (`akm health`, which calls this synchronously) blow past its
  * latency budget. `listSessions()` returns summaries sorted newest-first, so
  * capping to the most-recent N sessions per harness keeps the richer signal
- * for what actually matters (recent activity) while bounding cost. The legacy
- * flat-scan path is naturally cheaper and is left uncapped.
+ * for what actually matters (recent activity) while bounding cost.
  */
 const DEFAULT_MAX_SESSIONS_PER_HARNESS = 50;
 
@@ -155,11 +151,6 @@ export function collectSessionEvents(
   const events: SessionEvent[] = [];
   for (const harness of harnesses) {
     try {
-      if (harness.supportsReadSession === false) {
-        // Legacy-only harness: only the flat event scan is available.
-        events.push(...harness.readEvents({ sinceMs }));
-        continue;
-      }
       // Rich path: enumerate sessions cheaply, then read each one's full
       // structured event stream. Falls back to readEvents if listSessions
       // surfaces nothing (e.g. a harness that wired readSession but whose

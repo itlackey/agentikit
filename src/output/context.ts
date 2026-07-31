@@ -27,8 +27,6 @@ export interface OutputMode {
   format: OutputFormat;
   detail: DetailLevel;
   shape: ShapeMode;
-  /** Derived convenience: true when shape === "agent". */
-  forAgent: boolean;
   /**
    * Destination file for rendered output (`--output <path>`). When set,
    * `output()` writes the rendered document to this path instead of stdout.
@@ -132,7 +130,7 @@ export function resolveOutputMode(argv: string[], defaults: OutputDefaults | und
   const shape: ShapeMode = parseShapeMode(rawShape) ?? "human";
   const outputPath = parseFlagValue(argv, "--output");
 
-  return { format, detail, shape, forAgent: shape === "agent", ...(outputPath ? { outputPath } : {}) };
+  return { format, detail, shape, ...(outputPath ? { outputPath } : {}) };
 }
 
 let _mode: OutputMode | undefined;

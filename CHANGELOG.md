@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0-rc.13] - 2026-07-31
+
 ### Security
 
 - **`akm update` no longer deletes a previous install directory without
@@ -99,24 +101,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`instruction` is a stash-resident asset type.** It was already in
   `KNOWN_TYPES` and had a presentation entry, but had no placement spec — so
-  there was nowhere to put one and the indexer never recognized one. `akm init`
+  there was nowhere to put one and the indexer never recognized one. `akm bundle create`
   now creates an `instructions/` directory, `.md` files under it index as
   `instruction`, and `--type instruction` is accepted and tab-completable
   everywhere `--type` is. A compile-time assertion now pins
   `placementTypes() ⊆ KnownType`, so the half-registered state this fixes
   cannot recur silently.
 
-- **Schedule tasks from any configured bundle via `--target <bundle>`** (#711).
-  `akm tasks add`, `enable`, `disable`, `run`, and `sync` (plus `history` /
-  `doctor`) now accept `--target <bundle>` to operate on a non-default bundle
-  instead of only the primary stash. `add`/`enable`/`disable` resolve the bundle
-  through the normal writable-target rules (an unknown or non-writable bundle
-  fails fast); `run --target X` resolves the task file and its relative asset refs
-  from bundle X. A non-default bundle is recorded in the installed scheduler entry
-  as a single `--target <bundle>` token — the provenance record that lets the
-  scheduled `akm tasks run` resolve the right bundle. Scheduler ids stay the bare
-  task id (never namespaced): enabling a task whose id is already scheduled from a
-  different bundle is a hard error rather than a silent clobber.
+- **Schedule tasks from any configured bundle via `--bundle <bundle>`** (#711).
+  `akm task add`, `run`, `sync`, and `history` accept `--bundle` to
+  operate on a non-default bundle instead of only the primary stash. `add`
+  resolves through the normal writable-target rules; `run --bundle X` resolves
+  the task file and relative asset refs from bundle X. A non-default bundle is
+  recorded in the scheduler entry as `--bundle <bundle>`, so scheduled
+  `akm task run` resolves the right bundle. Scheduler ids stay bare and a
+  collision with another bundle is a hard error rather than a silent clobber.
 
 - **Orphan-GC pass for unresolvable `asset_salience` / `asset_outcome` state
   rows** (#733). A new improve maintenance pass (`runOrphanStateGcPass`, run
@@ -189,7 +188,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **BREAKING: a command group invoked with no subcommand is now always a usage
   error, exit 2** (owner ruling 12). The eleven `akm <group>` groups did three
   different things when invoked bare: `graph`, `config`, `env`, `secret`,
-  `tasks`, `workflow`, and `proposal` ran an implicit default action and exited
+  `task`, `workflow`, and `proposal` ran an implicit default action and exited
   0 (bare `akm graph` silently rendered `graph summary`); `registry`, `log`, and
   `lessons` printed citty's human usage banner to stdout; only `migrate` raised
   a structured error. All eleven now emit the same
@@ -201,7 +200,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   Migration: name the subcommand. `akm graph` → `akm graph summary`,
   `akm config` → `akm config list`, `akm env` → `akm env list`, `akm secret` →
-  `akm secret list`, `akm tasks` → `akm tasks doctor`, `akm workflow` →
+  `akm secret list`, `akm task` → `akm task doctor`, `akm workflow` →
   `akm workflow list --active`, `akm proposal` → `akm proposal list` (which
   takes the same `--status`/`--queue`/`--ref`/`--type` flags the bare form did).
 
@@ -271,11 +270,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   decision D8). The command stays ON — schedules, reflect/distill proposals, and
   graph extraction are unchanged — but the lanes that mutate assets *without*
   review now require `akm config set experimental.improveAutonomy true`:
-  consolidate's merge/delete, memory-inference writes, the memory-cleanup pass,
-  the contradiction pass, and triage `applyMode: "promote"` (which downgrades to
-  `queue` rather than disabling triage). Previously none of these were gated, and
-  two of them — memory cleanup and contradiction detection — had **no strategy
-  flag at all** and ran on any improve run covering memories.
+  memory-inference writes, the memory-cleanup pass, and triage
+  `applyMode: "promote"` (which downgrades to `queue` rather than disabling
+  triage). Consolidation remains review-oriented and is not gated.
 
   A gated lane is never a silent no-op: it warns on stderr naming the lane and
   the key, appends an `improve_skipped` event with `reason: "autonomy_gated"`,
@@ -454,12 +451,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   conceptId spelling that replaces it. `scripts/lint-shipped-assets.ts` no
   longer exempts the old spelling, so it is an offense in agent-facing assets.
 
-- **`akm tasks sync [--target <bundle>]` reconciles a single bundle.** Sync now
+- **`akm task sync [--bundle <bundle>]` reconciles a single bundle.** Sync now
   attributes each installed scheduler entry to its bundle (parsed from the
-  `--target` token; absent ⇒ primary) and reconciles only the entries for the
+  `--bundle` token; absent ⇒ primary) and reconciles only the entries for the
   bundle being synced. A plain (primary) sync never installs from, updates, or
   removes another bundle's entries, and sync never scans all bundles — task
-  activation stays explicit (`enable` / `add --target`), so registering a bundle
+  activation stays explicit (`add --bundle` or `sync --bundle`), so registering a bundle
   still never activates code. When the target is the default bundle (or omitted),
   installed scheduler entries are byte-identical to before, so upgrading shows no
   spurious drift.
@@ -676,8 +673,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   could never be set — the ranking boost was identical with and without it. The
   flag users type is unchanged.
 
-- **`akm env run`, `akm secret run`, `akm migrate`, `akm agent`, `akm propose`,
-  `akm tasks run`, and `akm improve` no longer skip cleanup on exit.** They
+- **`akm env run`, `akm secret run`, `akm migrate`, `akm agent`, `akm proposal new`,
+  `akm task run`, and `akm improve` no longer skip cleanup on exit.** They
   called `process.exit()` directly — in two cases even on success — bypassing
   teardown of spawned subprocesses. Exit codes, including forwarded non-zero
   child codes, are unchanged.
@@ -793,12 +790,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   removed `akm backup` command (superseded by `akm-migrate backup`). Already
   unreachable; no user-visible effect.
 
-- **`akm tasks list`, `akm tasks show`, and `akm tasks remove` are removed** as
+- **`akm task list`, `akm task show`, and `akm task remove` are removed** as
   redundant with the generic asset commands. List and inspect tasks with `akm
   search` / `akm show <bundle//tasks/id>` (both already cross-bundle); to remove a
-  scheduled task, delete its file in the owning bundle and run `akm tasks sync`
-  (sync uninstalls the orphaned scheduler entry). Run `akm tasks doctor` for
-  scheduler diagnostics — bare `akm tasks` is a usage error, see the canonical
+  scheduled task, delete its file in the owning bundle and run `akm task sync`
+  (sync uninstalls the orphaned scheduler entry). Run `akm task doctor` for
+  scheduler diagnostics — bare `akm task` is a usage error, see the canonical
   bare-group change above.
 
 - **The `akm show <ref> toc|section|lines|frontmatter|full` view-mode grammar is
@@ -816,7 +813,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The undocumented `--akmView` / `--akmHeading` / `--akmStart` / `--akmEnd`
   flags the grammar injected into argv are gone with it.
 
-## [0.9.0] - 2026-07-20
+## [0.9.0] (planned)
 
 0.9.0 is the format-neutral **bundle / adapter** refactor: it replaces the flat
 asset-type registry with per-format adapters, adopts one canonical ref grammar,

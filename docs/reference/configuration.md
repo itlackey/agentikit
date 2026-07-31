@@ -280,12 +280,11 @@ section, an absent key, and an explicit `false` all read identically as off.
 }
 ```
 
-- **`experimental.improveAutonomy`** — allows `akm improve` to mutate assets
-  without review through memory cleanup, memory-inference writes, and triage
-  `applyMode: "promote"`. `akm improve` itself always runs; this only gates the
-  lanes that act without a human in the loop. Consolidation stays enabled
-  because merge/delete/contradict operations are advisory and promotion emits a
-  reviewable proposal. `sync.push` is deliberately **not** gated by this key.
+- **`experimental.improveAutonomy`** — gates only the autonomous
+  `memoryInference`, `triagePromote`, and `memoryCleanup` lanes. `akm improve`
+  itself always runs; this only gates mutations without a human in the loop.
+  Consolidation is not gated: it remains advisory and emits reviewable
+  proposals. `sync.push` is deliberately **not** gated by this key.
 - **`experimental.workflowEngine`** — allows the native `akm workflow`
   orchestration engine to run through `akm workflow run`/`brief`/`report`.
   Authoring and linting the unified markdown workflow format, plus the manual
@@ -328,7 +327,6 @@ generic walker.
 | `AKM_SQLITE_JOURNAL_MODE` | SQLite journal mode: `WAL` (default), `DELETE`, or `TRUNCATE` |
 | `AKM_VERBOSE` | Truthy value enables the same diagnostics as `--verbose` |
 | `AKM_DEBUG` | `1` prints a stack trace on unexpected internal errors |
-| `AKM_DISABLE_PROJECT_CONTEXT` | Referenced in help text and comments as a way to disable the project-context ranking boost, but **not currently read anywhere in `src/`** — use `search --no-project-context` instead, which does work |
 
 For an engine named `fast`, its fallback variable is
 `AKM_ENGINE_FAST_API_KEY`. An explicit `apiKey` symbolic reference is

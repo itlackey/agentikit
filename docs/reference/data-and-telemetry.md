@@ -201,6 +201,10 @@ engagement, feedback signals, stable refs, and timestamps. It never leaves the
 machine unless you explicitly copy the database or send derived content to a
 configured endpoint.
 
+Successful `search`, `curate`, and `show` commands record usage by default.
+Pass `--no-track-usage` to any of those commands to leave local usage events
+and ranking signals unchanged.
+
 Every runtime writer stamps provenance as `user`, `improve`, `task`, `audit`, or
 `unknown`. Direct interactive CLI traffic defaults to `user`; internal improve,
 scheduled-task, and eval subprocesses preserve their stamp across nested

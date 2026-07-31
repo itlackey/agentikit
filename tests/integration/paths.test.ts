@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import path from "node:path";
 import {
-  getBinDir,
   getCacheDir,
   getConfigDir,
   getConfigPath,
@@ -12,7 +11,6 @@ import {
   getLockfilePath,
   getRegistryCacheDir,
   getRegistryIndexCacheDir,
-  getTaskHistoryStateDir,
 } from "../../src/core/paths";
 
 // ── Environment helpers ─────────────────────────────────────────────────────
@@ -422,16 +420,6 @@ describe("getLockfileLockPath", () => {
   });
 });
 
-// ── getTaskHistoryStateDir ──────────────────────────────────────────────────
-
-describe("getTaskHistoryStateDir", () => {
-  test("returns tasks/history under data dir", () => {
-    process.env.XDG_DATA_HOME = "/data";
-    delete process.env.AKM_DATA_DIR;
-    expect(getTaskHistoryStateDir()).toBe(path.join("/data", "akm", "tasks", "history"));
-  });
-});
-
 // ── getRegistryCacheDir ─────────────────────────────────────────────────────
 
 describe("getRegistryCacheDir", () => {
@@ -447,15 +435,6 @@ describe("getRegistryIndexCacheDir", () => {
   test("returns registry-index subdir under cache dir", () => {
     process.env.XDG_CACHE_HOME = "/cache";
     expect(getRegistryIndexCacheDir()).toBe(path.join("/cache", "akm", "registry-index"));
-  });
-});
-
-// ── getBinDir ───────────────────────────────────────────────────────────────
-
-describe("getBinDir", () => {
-  test("returns bin subdir under cache dir", () => {
-    process.env.XDG_CACHE_HOME = "/cache";
-    expect(getBinDir()).toBe(path.join("/cache", "akm", "bin"));
   });
 });
 

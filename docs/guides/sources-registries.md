@@ -7,8 +7,9 @@ searchable library that can pull from anywhere and grow over time.
 
 ## akm bundle add
 
-`akm bundle add` connects a new source. The source kind is inferred from the input:
-no flags required for the common cases.
+`akm bundle add` connects a new source. The source kind is inferred from the
+input: known git hosts and URLs ending in `.git` are git sources, while other
+HTTP(S) URLs are website sources.
 
 ```sh
 akm bundle add ~/.claude/skills                          # Local directory (filesystem)
@@ -29,9 +30,9 @@ akm bundle add git@github.com:org/skills.git --provider git --name my-skills --w
 | Source kind | Input shape | Behavior |
 | --- | --- | --- |
 | `filesystem` | local path | Indexed in place, writable by default |
-| `git` | `github:`, git URL | Cloned into `~/.cache/akm/registry/`, read-only by default |
+| `git` | `github:`, known git-host URL, or URL ending in `.git` | Cloned into `~/.cache/akm/registry/`, read-only by default |
 | `npm` | `@scope/pkg` | Installed into cache, read-only |
-| `website` | HTTP/HTTPS URL (non-git host) | Crawled, converted to markdown, refreshed every 12 hours |
+| `website` | Other HTTP/HTTPS URL | Crawled, converted to markdown, refreshed every 12 hours |
 
 After `akm bundle add`, run `akm index` to bring the search index up to date.
 
@@ -127,8 +128,8 @@ Writes that land on a writable git source via an explicit destination flag
 (e.g. `akm remember --bundle my-skills`, proposal accept/revert, consolidate) are
 committed automatically in a single batch at the end of the operation — one
 complete commit (staging `.akm/` + assets together), pushed under the same
-`writable + remote` gate as `akm sync`. The per-asset `options.pushOnCommit`
-knob is deprecated; rely on `writable: true` + push instead.
+`writable + remote` gate as `akm sync`. `options.pushOnCommit` is rejected at
+config load; remove it and rely on `writable: true` + push instead.
 
 **Example: publish your own bundle**
 

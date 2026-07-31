@@ -51,7 +51,7 @@ process.on("unhandledRejection", (reason) => {
     ),
   );
   if (process.env.AKM_DEBUG === "1" && err.stack) console.error(err.stack);
-  process.exit(1);
+  process.exit(EXIT_CODES.INTERNAL);
 });
 process.on("uncaughtException", (err) => {
   console.error(
@@ -67,7 +67,7 @@ process.on("uncaughtException", (err) => {
     ),
   );
   if (process.env.AKM_DEBUG === "1" && err.stack) console.error(err.stack);
-  process.exit(1);
+  process.exit(EXIT_CODES.INTERNAL);
 });
 
 import fs from "node:fs";
@@ -188,7 +188,8 @@ const setupCommand = defineCommand({
     ...GLOBAL_OUTPUT_ARGS,
     config: {
       type: "string",
-      description: 'Config JSON to apply non-interactively, e.g. \'{"llm":{"endpoint":"...","model":"..."}}\'',
+      description:
+        'Config JSON to apply non-interactively, e.g. \'{"engines":{"local":{"kind":"llm","endpoint":"...","model":"..."}},"defaults":{"llmEngine":"local"}}\'',
     },
     from: {
       type: "string",

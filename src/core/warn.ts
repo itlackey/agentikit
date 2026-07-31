@@ -97,10 +97,6 @@ export function clearLogFile(): void {
   logFilePath = undefined;
 }
 
-export function getLogFile(): string | undefined {
-  return logFilePath;
-}
-
 function appendToLogFile(level: "INFO" | "WARN" | "ERROR", args: unknown[]): void {
   if (!logFilePath) return;
   const ts = new Date().toISOString();

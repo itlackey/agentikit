@@ -193,29 +193,7 @@ function stdinIterator(): AsyncIterable<Uint8Array> {
 // ── File write ──────────────────────────────────────────────────────────────
 
 /**
- * Stream a `Response` (or its body) to `filePath`. On Bun uses `Bun.write`,
- * which natively streams a `Response` to disk; on Node pipes the response body
- * through `stream/promises.pipeline` so the archive is never fully buffered.
- */
-export async function writeResponseToFile(filePath: string, res: Response): Promise<void> {
-  if (isBun) {
-    await bunGlobal().write(filePath, res);
-    return;
-  }
-  if (res.body) {
-    const readable = Readable.fromWeb(res.body as unknown as Parameters<typeof Readable.fromWeb>[0]);
-    await pipeline(readable, createWriteStream(filePath));
-    return;
-  }
-  const buf = Buffer.from(await res.arrayBuffer());
-  await pipeline(Readable.from(buf), createWriteStream(filePath));
-}
-
-/**
- * Defensive ceiling on a streamed-to-disk download (1 GiB). `writeResponseToFile`
- * imposes no size or duration bound — a compromised or misconfigured endpoint
- * could stream until the disk fills or dribble bytes forever. Archive-download
- * paths use {@link writeResponseToFileCapped} with these bounds instead.
+ * Defensive ceiling on a streamed-to-disk download (1 GiB).
  */
 export const MAX_STREAMED_DOWNLOAD_BYTES = 1024 * 1024 * 1024;
 
@@ -237,7 +215,7 @@ function endWriteStream(out: WriteStream): Promise<void> {
 
 /**
  * Stream a `Response` body to `filePath` enforcing an explicit max-bytes cap
- * and an overall body-read deadline — the bounds `writeResponseToFile` lacks.
+ * and an overall body-read deadline.
  *
  * Refuses before reading when `Content-Length` exceeds the cap; otherwise
  * streams chunk-by-chunk, aborting with {@link ResponseTooLargeError} the

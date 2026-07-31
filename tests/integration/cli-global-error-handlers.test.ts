@@ -5,10 +5,9 @@
 /**
  * VALUE-11: real-subprocess coverage for the global `unhandledRejection` /
  * `uncaughtException` handlers registered at the top of src/cli.ts
- * (:39-71) — before this file, `UNHANDLED_REJECTION` and
- * `UNCAUGHT_EXCEPTION` appeared in zero tests repo-wide.
+ * — both must retain stable machine-readable classifications.
  *
- * WHY A REAL SUBPROCESS: both handlers end in `process.exit(1)`. Triggering
+ * WHY A REAL SUBPROCESS: both handlers terminate the process. Triggering
  * them in-process would kill the test runner itself.
  *
  * WHY A THROWAWAY HARNESS FILE, NOT THE CLI DIRECTLY: the handlers exist to
@@ -73,16 +72,15 @@ function runHarness(triggerSource: string, opts?: { debug?: boolean }) {
   return spawnSync("bun", [harnessFile], { encoding: "utf8", env, timeout: 15_000 });
 }
 
-describe("src/cli.ts global unhandledRejection handler (VALUE-11, src/cli.ts:39-55)", () => {
-  test("a fire-and-forget rejected promise is routed through the JSON error envelope and exits 1", () => {
+describe("src/cli.ts global unhandledRejection handler", () => {
+  test("a fire-and-forget rejected promise uses the classified JSON envelope and exits 70", () => {
     const result = runHarness('Promise.reject(new Error("value-11 probe: unhandled rejection"));');
 
-    expect(result.status).toBe(1);
+    expect(result.status).toBe(70);
     const envelope = JSON.parse(result.stderr) as Record<string, unknown>;
     expect(envelope.ok).toBe(false);
     expect(envelope.code).toBe("UNHANDLED_REJECTION");
     expect(envelope.error).toBe("Unhandled rejection: value-11 probe: unhandled rejection");
-    expect(typeof envelope.hint).toBe("string");
     expect(envelope.hint).toContain("AKM_DEBUG=1");
   });
 
@@ -91,7 +89,7 @@ describe("src/cli.ts global unhandledRejection handler (VALUE-11, src/cli.ts:39-
     // the non-Error branch explicitly.
     const result = runHarness('Promise.reject("plain string reason");');
 
-    expect(result.status).toBe(1);
+    expect(result.status).toBe(70);
     const envelope = JSON.parse(result.stderr) as Record<string, unknown>;
     expect(envelope.code).toBe("UNHANDLED_REJECTION");
     expect(envelope.error).toBe("Unhandled rejection: plain string reason");
@@ -100,7 +98,7 @@ describe("src/cli.ts global unhandledRejection handler (VALUE-11, src/cli.ts:39-
   test("AKM_DEBUG=1 appends the real stack trace after the JSON envelope", () => {
     const result = runHarness('Promise.reject(new Error("value-11 probe: debug stack"));', { debug: true });
 
-    expect(result.status).toBe(1);
+    expect(result.status).toBe(70);
     expect(result.stderr).toContain('"code": "UNHANDLED_REJECTION"');
     expect(result.stderr).toContain("Error: value-11 probe: debug stack");
     // The stack trace prints AFTER the JSON block (console.error(err.stack)
@@ -113,16 +111,15 @@ describe("src/cli.ts global unhandledRejection handler (VALUE-11, src/cli.ts:39-
   });
 });
 
-describe("src/cli.ts global uncaughtException handler (VALUE-11, src/cli.ts:56-71)", () => {
-  test("a throw from a background timer is routed through the JSON error envelope and exits 1", () => {
+describe("src/cli.ts global uncaughtException handler", () => {
+  test("a throw from a background timer uses the classified JSON envelope and exits 70", () => {
     const result = runHarness('setTimeout(() => { throw new Error("value-11 probe: uncaught exception"); }, 0);');
 
-    expect(result.status).toBe(1);
+    expect(result.status).toBe(70);
     const envelope = JSON.parse(result.stderr) as Record<string, unknown>;
     expect(envelope.ok).toBe(false);
     expect(envelope.code).toBe("UNCAUGHT_EXCEPTION");
     expect(envelope.error).toBe("Uncaught exception: value-11 probe: uncaught exception");
-    expect(typeof envelope.hint).toBe("string");
     expect(envelope.hint).toContain("AKM_DEBUG=1");
   });
 
@@ -131,7 +128,7 @@ describe("src/cli.ts global uncaughtException handler (VALUE-11, src/cli.ts:56-7
       debug: true,
     });
 
-    expect(result.status).toBe(1);
+    expect(result.status).toBe(70);
     expect(result.stderr).toContain('"code": "UNCAUGHT_EXCEPTION"');
     expect(result.stderr).toContain("Error: value-11 probe: debug stack");
     const jsonEnd = result.stderr.indexOf("}");

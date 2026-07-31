@@ -161,6 +161,21 @@ describe("completions command", () => {
     expect(script).toContain("local registry all");
   });
 
+  test("includes canonical negated boolean flags", () => {
+    for (const flag of ["--no-init", "--no-project-context", "--no-track-usage", "--no-push"]) {
+      expect(script).toContain(flag);
+    }
+  });
+
+  test("recognizes subcommands without treating positionals and option values as command paths", () => {
+    expect(script).toContain('"akm task:run") cmd_path="akm task run"');
+    expect(script).toContain('"akm workflow:create") cmd_path="akm workflow create"');
+    expect(script).toContain("skip_value=1; continue");
+    expect(script).toContain("if (( skip_value )); then");
+    const legacyPathAppend = 'cmd_path="$' + "{cmd_path} $" + '{words[i]}"';
+    expect(script).not.toContain(legacyPathAppend);
+  });
+
   // R-052(a): --from means a closed enum on search/curate but a free-form
   // existing-file path (workflow create) elsewhere. FLAG_VALUES used to be a
   // flat Record keyed by flag NAME, so the enum leaked onto every command

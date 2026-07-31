@@ -93,6 +93,7 @@ interface CommandInfo {
   path: string; // e.g. "registry search"
   subcommands: string[];
   flags: string[];
+  valueFlags: string[];
 }
 
 function walkCommandTree(cmd: AnyCmd, parentPath = ""): CommandInfo[] {
@@ -108,15 +109,18 @@ function walkCommandTree(cmd: AnyCmd, parentPath = ""): CommandInfo[] {
   );
   const subcommands = visibleSubEntries.map(([key]) => key);
   const flags: string[] = [];
+  const valueFlags: string[] = [];
 
   if (cmd.args) {
     for (const [flagName, arg] of Object.entries(cmd.args as Record<string, AnyCmd>)) {
       if (arg.type === "positional") continue;
       flags.push(`--${flagName}`);
+      if (arg.type === "boolean" && arg.default === true) flags.push(`--no-${flagName}`);
+      if (arg.type !== "boolean") valueFlags.push(`--${flagName}`);
     }
   }
 
-  result.push({ path: currentPath, subcommands, flags });
+  result.push({ path: currentPath, subcommands, flags, valueFlags });
 
   for (const [, sub] of visibleSubEntries) {
     result.push(...walkCommandTree(sub, currentPath));
@@ -134,6 +138,7 @@ export function generateBashCompletions(cmd: AnyCmd): string {
   // Collect global flags from root command
   const rootInfo = commands.find((c) => c.path === rootName);
   const globalFlags = rootInfo?.flags ?? [];
+  const valueFlags = [...new Set(commands.flatMap((info) => info.valueFlags))];
 
   // Build the case blocks for subcommand completion
   const caseBlocks: string[] = [];
@@ -181,13 +186,33 @@ _${rootName}() {
     cword=\${COMP_CWORD}
   fi
 
-  # Build the command path from COMP_WORDS (computed BEFORE flag-value
-  # completion below, so a path-scoped rule — e.g. --from — can match on it)
+  # Build the command path from recognized subcommand transitions only. Positional
+  # arguments and option values cannot extend the path, so completion remains
+  # command-aware after either one.
   local cmd_path="${rootName}"
+  local skip_value=0
   for (( i=1; i < cword; i++ )); do
+    if (( skip_value )); then
+      skip_value=0
+      continue
+    fi
     case "\${words[i]}" in
+      --) break ;;
+      --*=*) continue ;;
+      ${valueFlags.join("|")}) skip_value=1; continue ;;
       -*) continue ;;
-      *) cmd_path="\${cmd_path} \${words[i]}" ;;
+      *)
+        case "\${cmd_path}:\${words[i]}" in
+${commands
+  .filter((info) => info.subcommands.length > 0)
+  .flatMap((info) =>
+    info.subcommands.map(
+      (subcommand) => `          "${info.path}:${subcommand}") cmd_path="${info.path} ${subcommand}" ;;`,
+    ),
+  )
+  .join("\n")}
+        esac
+        ;;
     esac
   done
 

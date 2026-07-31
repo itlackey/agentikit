@@ -15,12 +15,10 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  type AkmImproveOptions,
   buildDryRunResult,
   buildLockSkippedResult,
   refilterProactiveLoopRefs,
 } from "../../../src/commands/improve/improve";
-import type { AkmConfig } from "../../../src/core/config/config";
 import type { ImproveEligibleRef } from "../../../src/core/improve-types";
 import { makeStashDir, sandboxXdgDataHome } from "../../_helpers/sandbox";
 
@@ -79,15 +77,13 @@ describe("buildDryRunResult — the P3 envelope", () => {
 });
 
 describe("refilterProactiveLoopRefs — post-lock cooldown re-filter", () => {
-  const options: AkmImproveOptions = { config: {} as AkmConfig };
-
   test("no proactive refs → the SAME array instance passes through", () => {
     disposers.push(sandboxXdgDataHome(), makeStashDir());
     const loopRefs: ImproveEligibleRef[] = [
       { ref: "memories/a", reason: "scope-type", eligibilitySource: "signal-delta" },
     ];
 
-    const out = refilterProactiveLoopRefs(loopRefs, options, {});
+    const out = refilterProactiveLoopRefs(loopRefs, {});
 
     expect(out).toBe(loopRefs);
   });
@@ -101,7 +97,7 @@ describe("refilterProactiveLoopRefs — post-lock cooldown re-filter", () => {
 
     // Empty sandboxed event store → no proposal timestamps → the proactive
     // ref is still due → the original loopRefs array passes through unchanged.
-    const out = refilterProactiveLoopRefs(loopRefs, options, {});
+    const out = refilterProactiveLoopRefs(loopRefs, {});
 
     expect(out).toBe(loopRefs);
     expect(out.map((r) => r.ref)).toEqual(["memories/a", "memories/b"]);

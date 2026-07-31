@@ -176,7 +176,7 @@ akm bundle add git+https://gitlab.com/org/stash
 akm bundle add git+https://gitlab.com/org/stash#v1.0
 akm bundle add git+ssh://git@gitlab.com/org/stash.git
 
-# Non-GitHub https URLs are automatically treated as git repos
+# URLs on known git hosts are treated as git repos
 akm bundle add https://gitlab.com/org/my-stash
 
 # Local directory (path or file: URI)
@@ -187,11 +187,13 @@ akm bundle add file:///absolute/path/to/stash
 
 ### What Happens During Install
 
-1. **Ref parsing** -- The ref is classified as npm, GitHub, git, or local
-   directory.
+1. **Ref parsing** -- The ref is classified as npm, GitHub/git, website, or
+   local directory. Known git hosts and `.git` URLs are git sources; other
+   HTTP(S) URLs are website sources.
 2. **Artifact resolution** -- For npm, the latest (or requested) version
-   tarball URL is resolved. For GitHub, the latest release tarball is used, or
-   the default branch if no releases exist. For git, the repo is shallow-cloned.
+   tarball URL is resolved. GitHub/git refs prefer a shallow clone at the
+   resolved revision so normal git credentials work; GitHub API tarballs are a
+   fallback when clone resolution is unavailable.
 3. **Download and extract** -- The tarball is downloaded (or repo cloned) to a
    cache directory under `~/.cache/akm/registry/` and extracted securely
    (path traversal is rejected).

@@ -18,7 +18,7 @@ import type { ScheduleBackend } from "../schedule";
 import { CRON_BACKEND, type CronBackendOptions } from "./cron";
 import { LAUNCHD_BACKEND, type LaunchdBackendOptions } from "./launchd";
 import { SCHTASKS_BACKEND, type SchtasksBackendOptions } from "./schtasks";
-import type { InstalledTaskRef, TaskBackend } from "./types";
+import type { TaskBackend } from "./types";
 
 export interface SelectBackendOptions {
   platform?: NodeJS.Platform;

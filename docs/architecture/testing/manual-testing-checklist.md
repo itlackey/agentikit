@@ -250,7 +250,7 @@ remove. Only use disposable targets.
 
 ### 7.4 Website source
 
-- [ ] `akm bundle add https://example-skills-site.dev --name docs-site` adds the
+- [ ] `akm bundle add https://example-skills-site.dev --provider website --name docs-site` adds the
       source.
 - [ ] `akm bundle list` shows the remote/website source.
 - [ ] `akm bundle update docs-site` either refreshes it successfully or returns a

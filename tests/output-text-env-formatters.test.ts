@@ -15,7 +15,7 @@ import { describe, expect, it } from "bun:test";
 import "../src/output/text";
 import { getTextFormatterHandler } from "../src/output/text/registry";
 
-const ENV_COMMANDS = ["env-list", "env-create", "env-export", "env-remove", "env-set", "env-unset"] as const;
+const ENV_COMMANDS = ["env-list", "env-create", "env-export", "env-remove"] as const;
 
 describe("env text formatters (WS7 rename guard)", () => {
   for (const command of ENV_COMMANDS) {

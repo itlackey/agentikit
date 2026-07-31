@@ -10,9 +10,7 @@ import { chmodSync } from "node:fs";
 //   2. Mirror module-local YAML templates next to compiler outputs in `dist/`.
 //      The files are imported `with { type: "text" }` from nearby TypeScript
 //      modules, so this keeps runtime-compatible paths intact.
-//   3. Copy schema artifacts (`schemas/**`) so published packages expose
-//      contract artifacts in `dist/schemas` for source-less deploys.
-//   4. Bundle the standalone migration tool into dist/scripts/ so
+//   3. Bundle the standalone migration tool into dist/scripts/ so
 //      globally-installed npm users can run it without
 //      `../src/...` import paths breaking (#469).
 import { mkdir } from "node:fs/promises";
@@ -37,14 +35,7 @@ for await (const src of yamlTemplateGlob.scan(".")) {
   await Bun.write(dest, Bun.file(src));
 }
 
-const schemaGlob = new Bun.Glob("schemas/**/*");
-for await (const src of schemaGlob.scan(".")) {
-  const dest = src.replace(/^schemas\//, "dist/schemas/");
-  await mkdir(dirname(dest), { recursive: true });
-  await Bun.write(dest, Bun.file(src));
-}
-
-// 5. Copy the published launchers plus the core CLI's Node-runtime entry
+// 4. Copy the published launchers plus the core CLI's Node-runtime entry
 //    wrapper and text-import loader hook into dist/. Both launchers prefer Bun
 //    and fall back to Node.
 const runtimeFiles = [

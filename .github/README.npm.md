@@ -1,14 +1,15 @@
 # akm -- Agent Knowledge Manager
 
-> **akm** (Agent Knowledge Manager) -- A package manager for AI agent skills, commands, tools, and knowledge.
+> **akm** (Agent Knowledge Manager) -- A knowledge toolkit for AI agents.
 
 [![npm version](https://img.shields.io/npm/v/akm-cli)](https://www.npmjs.com/package/akm-cli)
 [![npm downloads](https://img.shields.io/npm/dm/akm-cli)](https://www.npmjs.com/package/akm-cli)
 [![license](https://img.shields.io/github/license/itlackey/akm)](https://github.com/itlackey/akm/blob/main/LICENSE)
 
-`akm` is a package manager for AI agent capabilities -- scripts, skills, commands,
-agents, knowledge, memories, workflows, wikis, env files, secrets, lessons, and
-scheduled tasks. It works with any AI coding assistant that can run shell commands,
+`akm` is a knowledge toolkit for AI agent capabilities -- scripts, skills, commands,
+agents, knowledge, instructions, memories, workflows, env files, secrets, lessons,
+tasks, sessions, and facts. It can discover and install bundles from npm, git, local
+directories, and configured registries. It works with any AI coding assistant that can run shell commands,
 including [Claude Code](https://claude.ai/code),
 [OpenCode](https://opencode.ai), [Cursor](https://cursor.com), and more.
 
@@ -78,7 +79,7 @@ storage path, or the installed runtime path changes, run
 ## Why akm?
 
 - **Works with any AI agent** -- No plugins or SDKs required. Any model that can run shell commands can use `akm`.
-- **One command to search everything** -- Local bundle, registries, and community skills from [skills.sh](https://skills.sh) in a single query.
+- **One command to search your knowledge** -- Local assets are searched by default. Add `--from registry` or `--from all` for configured registry results; [skills.sh](https://skills.sh) participates only when enabled.
 - **Install bundles from anywhere** -- npm, GitHub, GitLab, local directories.
 - **Semantic search** -- Optional local embeddings (via Ollama or HuggingFace) for finding assets by meaning, not just keywords.
 - **Private registries** -- Host your own registry for team or enterprise use.
@@ -91,8 +92,8 @@ Add this to your `AGENTS.md`, `CLAUDE.md`, or system prompt:
 ## Resources & Capabilities
 
 You have access to a searchable library of scripts, skills, commands, agents,
-knowledge, memories, workflows, wikis, env files, secrets, lessons, and scheduled tasks
-via the `akm` CLI. Use `akm -h` for details.
+knowledge, instructions, memories, workflows, env files, secrets, lessons, tasks,
+sessions, and facts via the `akm` CLI. Use `akm -h` for details.
 ```
 
 ## Install Bundles from Anywhere

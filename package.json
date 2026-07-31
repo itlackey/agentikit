@@ -1,6 +1,6 @@
 {
   "name": "akm-cli",
-  "version": "0.9.0-rc.12",
+  "version": "0.9.0-rc.13",
   "type": "module",
   "description": "akm (Agent Knowledge Manager) — A knowledge toolkit for AI agents: capture, curate, search, and share skills, commands, tools, and knowledge. Works with Claude Code, OpenCode, Cursor, and any AI coding assistant.",
   "keywords": [
@@ -85,12 +85,12 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.14",
-    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.19.17",
     "@types/semver": "^7.5.8",
     "bun-types": "^1.3.13",
     "cmd-shim": "9.0.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "zod-to-json-schema": "^3.23.0"
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^4.2.0",
@@ -107,7 +107,6 @@
     "dotenv": "^17.4.2",
     "semver": "^7.6.0",
     "yaml": "^2.8.4",
-    "zod": "^3.23.0",
-    "zod-to-json-schema": "^3.23.0"
+    "zod": "^3.23.0"
   }
 }

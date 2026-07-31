@@ -916,7 +916,6 @@ function preloadRejectedProposals(): Map<string, EventEnvelope> {
  */
 export function refilterProactiveLoopRefs(
   loopRefs: ImprovePreparationResult["loopRefs"],
-  options: AkmImproveOptions,
   improveProfile: import("../../core/config/config").ImproveProfileConfig,
 ): ImprovePreparationResult["loopRefs"] {
   // Re-read cooldown timestamps immediately before execution so external
@@ -1135,7 +1134,7 @@ async function runImproveStageSequence(args: {
     const rejectedProposalsByRef = preloadRejectedProposals();
 
     const runLoop = () => {
-      const postLockLoopRefs = refilterProactiveLoopRefs(preparation.loopRefs, options, improveProfile);
+      const postLockLoopRefs = refilterProactiveLoopRefs(preparation.loopRefs, improveProfile);
 
       return runImproveLoopStageImpl({
         ctx,

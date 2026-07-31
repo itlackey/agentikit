@@ -955,7 +955,7 @@ itself.
 ## Security: workflow sources are executed code
 
 Workflow steps that include shell commands run with **the full environment
-and PATH of the user invoking `akm workflow next`** — same as if the user had
+and PATH of the user invoking `akm workflow run`** — same as if the user had
 typed those commands in their shell. There is no sandbox, no env-var
 allowlist, and no separation between trusted and untrusted workflows.
 
@@ -967,7 +967,7 @@ The consequence is that **you should treat workflow sources the same way you
 treat package dependencies**:
 
 - **Only add workflow sources you trust.** `akm bundle add github:<some-user>/stash`
-  followed by `akm workflow next workflows/<their-thing>` is functionally
+  followed by `akm workflow run workflows/<their-thing>` is functionally
   equivalent to piping a stranger's bash script into your shell. Read the
   workflow file first (`akm show workflows/<name>`) before running it.
 - **Audit before run** for any workflow that touches secrets, deploys to
@@ -980,8 +980,8 @@ treat package dependencies**:
   can become hostile if its upstream is compromised.
 - **Workflow steps cannot escape this trust model** by being labeled
   `dryRun` or `interactive` — those flags affect bookkeeping, not execution.
-  An `akm workflow next` invocation always runs the next step's instructions
-  in your shell.
+  `akm workflow next` is read-only and returns the current actionable step;
+  `akm workflow run` executes instructions in your shell.
 
 If you operate a CI runner or shared host where untrusted workflows might be
 executed, scope the process: a dedicated user account with no secrets in its

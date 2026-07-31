@@ -145,11 +145,8 @@ import { LIFETIME_UNIT_CAP, scheduleUnits, UnitCapExceededError } from "./schedu
 // (this module + run-workflow.ts) and, from R3, the brief/report driver
 // protocol. This module dispatches; step-work.ts owns the pure decisions.
 import {
-  buildArtifactSummary,
   computeStepWorkList,
-  DEFAULT_UNIT_TIMEOUT_MS,
   type GateFeedback,
-  projectStepOutput,
   reduceEmptyStep,
   reduceStepOutcomes,
   type StepWorkUnit,

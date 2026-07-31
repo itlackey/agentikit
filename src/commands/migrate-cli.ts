@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { defineGroupCommand, defineJsonCommand } from "../cli/shared";
-import { UsageError } from "../core/errors";
 import { runMigrationTool } from "./migration-tool";
 
 const configArg = {
