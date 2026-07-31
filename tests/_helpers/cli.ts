@@ -97,6 +97,9 @@ export interface CliResult {
   stderr: string;
 }
 
+// Captures replace process-wide streams and argv, so concurrent callers must not overlap.
+let captureQueue: Promise<void> = Promise.resolve();
+
 const EXIT_GENERAL = 1;
 const EXIT_USAGE = 2;
 const EXIT_INTERNAL = 70;
@@ -132,6 +135,20 @@ const joinParts = (parts: unknown[]): string => parts.map((p) => (typeof p === "
  *   (e.g. `["search", "test", "--from", "invalid"]`).
  */
 export async function runCliCapture(args: string[]): Promise<CliResult> {
+  let release = (): void => {};
+  const previous = captureQueue;
+  captureQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await runCliCaptureUnlocked(args);
+  } finally {
+    release();
+  }
+}
+
+async function runCliCaptureUnlocked(args: string[]): Promise<CliResult> {
   // Reset module-level singletons so this run re-reads the (sandboxed) env,
   // matching fresh-subprocess semantics even for back-to-back calls in one test.
   resetAllProcessState();
