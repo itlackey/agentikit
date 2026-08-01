@@ -114,7 +114,7 @@ feature branch, each phase following the same six-step cycle:
 ┌─────────────────────────────────────────────────────────────────┐
 │ Step 1  SPEC        Opus 5 agent writes a behavior spec          │
 │ Step 2  TESTS       Sonnet 5 agent writes failing tests          │
-│ Step 3  TEST REVIEW Opus 5 agent (independent) reviews tests     │
+│ Step 3  TEST REVIEW Sonnet 5 agent (independent) reviews tests   │
 │ Step 4  IMPLEMENT   Sonnet 5 agent makes the tests pass          │
 │ Step 5  CODE REVIEW Opus 5 agent (independent) adversarial review│
 │ Step 6  GATE        bun run check green + review findings closed │
@@ -127,9 +127,9 @@ feature branch, each phase following the same six-step cycle:
 |------|-------|-------------------|
 | Spec author | **Opus 5** (`claude-opus-5`) | Reads inform source + akm architecture; produces the phase spec (behavior table, edge cases, security requirements, acceptance criteria). |
 | Test author | **Sonnet 5** (`claude-sonnet-5`) | Works only from the spec + akm test conventions. Writes tests that fail against current `main`-of-branch. |
-| Test reviewer | **Opus 5** | Fresh context; has NOT seen the test author's reasoning. Checks: tests actually pin the spec, cover the edge cases, are hermetic, would catch a null implementation, don't over-fit an anticipated implementation. |
+| Test reviewer | **Sonnet 5** (`claude-sonnet-5`) | Fresh context; has NOT seen the test author's reasoning. Checks: tests actually pin the spec, cover the edge cases, are hermetic, would catch a null implementation, don't over-fit an anticipated implementation. |
 | Implementer | **Sonnet 5** | Works from spec + reviewed tests. May not modify tests except with a written justification the code reviewer must countersign. |
-| Code reviewer | **Opus 5** | Fresh context; adversarial. Reviews the diff for: convention violations (§2), SSRF gaps, silent behavior changes, missing error paths, style drift. Verdict per finding: CONFIRMED (must fix) or ADVISORY. |
+| Code reviewer (final gate) | **Opus 5** | Fresh context; adversarial. The heavyweight review of each phase. Reviews the diff for: convention violations (§2), SSRF gaps, silent behavior changes, missing error paths, style drift. Verdict per finding: CONFIRMED (must fix) or ADVISORY. |
 | Orchestrator | session model | Runs the cycle, resolves disputes, commits at gates. |
 
 **Independence is enforced by context**: reviewer agents are launched as fresh
@@ -152,7 +152,7 @@ new tests fail, everything pre-existing passes
 (`bun test tests/<new-file>.test.ts` shows red; `bun run test:unit` on
 untouched files stays green).
 
-**Step 3 — Test review.** Opus reviewer returns a findings list. CONFIRMED
+**Step 3 — Test review.** Sonnet reviewer returns a findings list. CONFIRMED
 findings are fixed by the test author before implementation starts. The
 reviewer explicitly answers: *"Would a trivially wrong implementation (returns
 empty, ignores robots, echoes input) pass these tests?"* If yes, tests are
@@ -163,7 +163,7 @@ phase's tests pass plus `bun run lint`, `bunx tsc --noEmit`, and the full
 `bun run test:unit && bun run test:integration` are green. Commit:
 `feat(pN): <capability>`.
 
-**Step 5 — Code review.** Opus reviewer gets the full phase diff
+**Step 5 — Code review (final gate for the phase).** Opus reviewer gets the full phase diff
 (`git diff <phase-start>..HEAD`). Findings are triaged: CONFIRMED → implementer
 fixes and re-runs the gate; ADVISORY → recorded in the phase spec's
 "review log" section. A phase needs a clean CONFIRMED-free review to close.
