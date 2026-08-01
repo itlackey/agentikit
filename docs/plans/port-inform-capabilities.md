@@ -149,6 +149,13 @@ feature branch, each phase following the same six-step cycle:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+This cycle is mechanized in `.claude/workflows/port-inform-phase.js`. Run one
+phase with `Workflow({name: "port-inform-phase", args: {phase: "P1"}})`. The
+script owns sequencing, the review gates, and the bounded fix loops, so the
+process cannot be shortcut by an agent deciding it is done. Agents receive
+*pointers* into this plan (section headings to read) rather than pasted plan
+text, which keeps each subagent's context to the sections it actually needs.
+
 ### Agent roles and models
 
 | Role | Model | Independence rule |
