@@ -130,7 +130,20 @@ export function getWebsiteCachePaths(siteUrl: string): {
 
 export async function ensureWebsiteMirror(
   config: SourceConfigEntry,
-  options?: { requireStashDir?: boolean; force?: boolean; allowPrivateHosts?: boolean },
+  options?: {
+    requireStashDir?: boolean;
+    force?: boolean;
+    allowPrivateHosts?: boolean;
+    /**
+     * TEST-ONLY. Overrides `WEBSITE_CRAWL_WALL_CLOCK_MS` for this crawl.
+     * Mirrors the `allowPrivateHosts` escape hatch: production callers never
+     * set this, but the crawl's wall-clock cap is otherwise a hardcoded
+     * 10-minute constant, which makes deadline-boundary behavior (breaking
+     * a crawl rather than sleeping past the cap) impossible to exercise in a
+     * fast test without it. Not surfaced through config.
+     */
+    wallClockCapMs?: number;
+  },
 ): Promise<ReturnType<typeof getWebsiteCachePaths>> {
   const rawUrl = config.url ?? "";
   const normalizedUrl = validateWebsiteUrl(rawUrl, { allowPrivateHosts: options?.allowPrivateHosts });
@@ -149,6 +162,7 @@ export async function ensureWebsiteMirror(
         maxPages: coercePositiveInt(config.options?.maxPages, MAX_PAGES_DEFAULT),
         maxDepth: coercePositiveInt(config.options?.maxDepth, MAX_DEPTH_DEFAULT),
         allowPrivateHosts: options?.allowPrivateHosts,
+        wallClockCapMs: options?.wallClockCapMs,
       });
       fs.writeFileSync(
         cachePaths.manifestPath,
@@ -180,7 +194,7 @@ function hasExtractedSite(stashDir: string): boolean {
 async function scrapeWebsiteToStash(
   startUrl: string,
   stashDir: string,
-  options: { maxPages: number; maxDepth: number; allowPrivateHosts?: boolean },
+  options: { maxPages: number; maxDepth: number; allowPrivateHosts?: boolean; wallClockCapMs?: number },
 ): Promise<void> {
   const pages = await crawlWebsite(startUrl, options);
   if (pages.length === 0) {
@@ -266,14 +280,15 @@ function websiteMarkdownSnapshotFromResult(snapshot: WikiSnapshotResult): Websit
 
 async function crawlWebsite(
   startUrl: string,
-  options: { maxPages: number; maxDepth: number; allowPrivateHosts?: boolean },
+  options: { maxPages: number; maxDepth: number; allowPrivateHosts?: boolean; wallClockCapMs?: number },
 ): Promise<WebsitePage[]> {
   const start = new URL(normalizeSiteUrl(startUrl));
   const allowedOrigin = start.origin;
   const queue: Array<{ url: string; depth: number }> = [{ url: start.toString(), depth: 0 }];
   const visited = new Set<string>();
   const pages: WebsitePage[] = [];
-  const deadline = Date.now() + WEBSITE_CRAWL_WALL_CLOCK_MS;
+  const wallClockCapMs = options.wallClockCapMs ?? WEBSITE_CRAWL_WALL_CLOCK_MS;
+  const deadline = Date.now() + wallClockCapMs;
 
   while (queue.length > 0 && pages.length < options.maxPages) {
     if (Date.now() > deadline) break;
@@ -300,7 +315,7 @@ async function crawlWebsite(
   if (Date.now() > deadline) {
     warn(
       "[akm] website crawl stopped at the %ds wall-clock cap with %d/%d pages collected from %s.",
-      WEBSITE_CRAWL_WALL_CLOCK_MS / 1000,
+      wallClockCapMs / 1000,
       pages.length,
       options.maxPages,
       startUrl,

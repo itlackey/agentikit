@@ -380,6 +380,42 @@ describe("isPathAllowedByRobots", () => {
     const rules = ruleSet([{ kind: "disallow", pattern: "/" }]);
     expect(isPathAllowedByRobots(rules, "not a url")).toBe(true);
   });
+
+  // §6.4 ReDoS / pattern-collapse: consecutive '*' must collapse to a single
+  // '.*' per run, not one '.*' per '*'. A naive `pattern.replace(/\*/g, ".*")`
+  // (one '.*' per star, uncollapsed) compiles a regex with 40 sequential
+  // '.*' groups; matched against a long string containing none of the
+  // required trailing literal, that shape forces the engine to explore every
+  // backtracking split point across all 40 groups — catastrophic, effectively
+  // non-terminating for realistic input sizes. A correct implementation
+  // collapses the run to one '.*' and resolves in linear time regardless of
+  // how many literal '*' characters appear in the pattern.
+  //
+  // The time budget is enforced via bun's own per-test `timeout` (not a
+  // manual `Date.now()`/`performance.now()` delta assertion, which
+  // `scripts/lint-tests-isolation.ts` bans as flake-prone): a correct
+  // (collapsed) implementation resolves in well under a millisecond, while a
+  // naive uncollapsed one blows this budget by many orders of magnitude.
+  test(
+    "§6.4: a pathological run of consecutive '*' resolves quickly, not via catastrophic backtracking",
+    () => {
+      const rules = ruleSet([{ kind: "disallow", pattern: `/${"*".repeat(40)}x` }]);
+
+      // No "x" anywhere in the path, so the pattern can never match no matter
+      // how the collapsed (or, if buggy, uncollapsed) wildcard run is split —
+      // the worst case for a backtracking engine, since it must exhaust every
+      // split combination before concluding failure.
+      const nonMatchingPath = `/${"a".repeat(60)}`;
+      expect(isPathAllowedByRobots(rules, urlFor(nonMatchingPath))).toBe(true); // no match => allowed
+
+      // A matching path exercises the same pathological pattern shape on the
+      // success path, confirming collapse doesn't just "fail fast" — it still
+      // matches correctly when the trailing literal is present.
+      const matchingPath = `/${"a".repeat(60)}x`;
+      expect(isPathAllowedByRobots(rules, urlFor(matchingPath))).toBe(false); // matches => disallowed
+    },
+    { timeout: 100 },
+  );
 });
 
 // ── §4.4 createRobotsPolicy / createAllowAllRobotsPolicy (L-01…L-04) ───────
@@ -546,6 +582,16 @@ describe("loadRobotsTxt", () => {
       () => new Response("unavailable", { status: 503 }),
     );
     expect(outcome).toEqual({ kind: "unreachable" });
+  });
+
+  test("F-07: an unusual non-2xx status outside 3xx/4xx/5xx (101) is unavailable with no diagnostic", async () => {
+    const outcome = await withMockedFetch(
+      () => loadRobotsTxt(ROBOTS_URL, { resolveHostname }),
+      () => new Response("", { status: 101 }),
+    );
+    expect(outcome).toEqual({ kind: "unavailable" });
+    expect(warnCalls).toEqual([]);
+    expect(warnVerboseCalls).toEqual([]);
   });
 
   test("F-08: an oversized body (via Content-Length) is unavailable and warns naming the URL and cap", async () => {

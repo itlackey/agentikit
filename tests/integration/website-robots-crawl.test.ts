@@ -21,7 +21,9 @@ import fs from "node:fs";
 import path from "node:path";
 import type { SourceConfigEntry } from "../../src/core/config/config";
 import { UsageError } from "../../src/core/errors";
+import { _setWarnSinkForTests } from "../../src/core/warn";
 import { ensureWebsiteMirror, getWebsiteCachePaths } from "../../src/sources/snapshot-fetchers/website-ingest";
+import { overrideSeam } from "../_helpers/seams";
 
 // ── Fixture server ───────────────────────────────────────────────────────────
 
@@ -241,6 +243,90 @@ describe("crawlWebsite robots.txt compliance", () => {
       }
       const gapMs = secondHit.at - firstHit.at;
       expect(gapMs).toBeGreaterThanOrEqual(100);
+    },
+    { timeout: 15_000 },
+  );
+
+  test(
+    "C-10: a Crawl-delay that would cross the wall-clock deadline breaks the crawl instead of sleeping past it",
+    async () => {
+      const warnCalls: string[] = [];
+      overrideSeam(_setWarnSinkForTests, (level, args) => {
+        if (level !== "warn") return;
+        warnCalls.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
+      });
+
+      const { url, requestLog } = startFixtureServer({
+        // 5s Crawl-delay: deliberately far larger than the injected wall-clock
+        // cap below, so honoring it verbatim would blow straight through the
+        // deadline.
+        robots: { body: "User-agent: *\nCrawl-delay: 5\n" },
+        pages: {
+          "/": '<html><body><a href="/page-2">2</a></body></html>',
+          "/page-2": "<html><body>Page 2</body></html>",
+        },
+      });
+      trackCache(url);
+
+      // wallClockCapMs is a test-only seam (mirrors allowPrivateHosts): the
+      // real wall-clock cap is a hardcoded 10 minutes, which makes this
+      // deadline-boundary behavior untestable at reasonable cost without it.
+      //
+      // The 2s test-level timeout below (far under the 5s Crawl-delay) IS the
+      // time-budget assertion: it fails the test if the crawl actually sleeps
+      // the delay in full instead of noticing upfront that doing so would
+      // cross the deadline and breaking. This uses bun's own per-test
+      // `timeout` rather than a manual `Date.now()` delta assertion, which
+      // `scripts/lint-tests-isolation.ts` bans as flake-prone.
+      const cachePaths = await ensureWebsiteMirror(websiteEntry(url), {
+        allowPrivateHosts: true,
+        wallClockCapMs: 400,
+      });
+
+      // The first (undelayed) page still made it into the stash...
+      expect(stashContainsSourceUrl(cachePaths.stashDir, `${url}/`)).toBe(true);
+      // ...but the delay-gated second page was never even fetched.
+      expect(requestLog.some((r) => r.pathname === "/page-2")).toBe(false);
+      // The existing wall-clock warn() fires for this break, same as a
+      // deadline hit mid-loop.
+      expect(warnCalls.some((m) => /wall-clock/i.test(m))).toBe(true);
+    },
+    { timeout: 2_000 },
+  );
+
+  test(
+    "C-11: a robots-skipped URL between two allowed pages does not add an extra delay-sized gap",
+    async () => {
+      const { url, requestLog } = startFixtureServer({
+        // 200ms: large enough that "one interval" (~200ms) and "two
+        // intervals" (~400ms, the bug this guards against — the skipped
+        // /secret URL incorrectly consuming a slot in the delay-pacing
+        // counter) are unambiguous even under CI jitter.
+        robots: { body: "User-agent: *\nDisallow: /secret\nCrawl-delay: 0.2\n" },
+        pages: {
+          "/": '<html><body><a href="/secret">Secret</a> <a href="/page-2">2</a></body></html>',
+          "/secret": "<html><body>Secret content</body></html>",
+          "/page-2": "<html><body>Page 2</body></html>",
+        },
+      });
+      trackCache(url);
+
+      await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
+
+      // The disallowed page between the two allowed ones must never be fetched.
+      expect(requestLog.some((r) => r.pathname === "/secret")).toBe(false);
+
+      const pageHits = requestLog.filter((r) => r.pathname === "/" || r.pathname === "/page-2");
+      const [firstHit, secondHit] = pageHits;
+      if (!firstHit || !secondHit) {
+        throw new Error(`expected exactly 2 allowed-page fetches, got ${pageHits.length}`);
+      }
+      const gapMs = secondHit.at - firstHit.at;
+      // One crawl-delay interval (~200ms), not two: the fetch-attempt counter
+      // used for delay pacing must not increment on a robots-skipped URL
+      // (spec §4.6 C-11).
+      expect(gapMs).toBeGreaterThanOrEqual(150);
+      expect(gapMs).toBeLessThan(350);
     },
     { timeout: 15_000 },
   );
