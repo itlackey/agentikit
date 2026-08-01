@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`website` sources now respect `robots.txt` by default.** Before crawling
+  an origin, akm fetches and parses that origin's `/robots.txt` and skips
+  paths disallowed for the `akm`/`akm-cli` product tokens (or `*`), honoring
+  `Crawl-delay` (clamped to 10s) between page fetches. This is a deliberate
+  behavior change: **existing website sources may return fewer pages, or
+  fail with an error if the start URL itself is disallowed, after
+  upgrading.** Re-running `akm bundle update` on a website source is what
+  surfaces it. Opt out with `"respectRobots": false` on the website
+  descriptor to restore the exact pre-upgrade behavior (no `/robots.txt`
+  request at all):
+
+  ```json
+  { "bundles": { "docs": { "website": { "url": "https://docs.example.com", "respectRobots": false } } } }
+  ```
+
 ## [0.9.0-rc.13] - 2026-07-31
 
 ### Security

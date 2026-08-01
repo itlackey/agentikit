@@ -458,6 +458,9 @@
               "maxDepth": {
                 "type": "integer",
                 "exclusiveMinimum": 0
+              },
+              "respectRobots": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -2096,6 +2099,9 @@
                   "maxDepth": {
                     "type": "integer",
                     "exclusiveMinimum": 0
+                  },
+                  "respectRobots": {
+                    "type": "boolean"
                   }
                 },
                 "required": [

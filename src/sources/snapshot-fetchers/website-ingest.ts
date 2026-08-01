@@ -17,10 +17,19 @@ import {
 import type { SourceConfigEntry } from "../../core/config/config";
 import { ConfigError, UsageError } from "../../core/errors";
 import { getRegistryIndexCacheDir } from "../../core/paths";
-import { warn } from "../../core/warn";
+import { warn, warnVerbose } from "../../core/warn";
 import { withFreshnessCache } from "../freshness";
 import { sanitizeString } from "../providers/provider-utils";
 import { loadWikiSnapshotFetchers } from "./registry";
+import {
+  createAllowAllRobotsPolicy,
+  createRobotsPolicy,
+  isPathAllowedByRobots,
+  ROBOTS_BODY_TIMEOUT_MS,
+  ROBOTS_BYTE_CAP,
+  type RobotsFetchOutcome,
+  type RobotsPolicy,
+} from "./robots";
 import type { FetcherContext, WikiSnapshotResult } from "./types";
 
 /** Refresh website snapshots every 12 hours to balance freshness with scraping load. */
@@ -161,6 +170,7 @@ export async function ensureWebsiteMirror(
       await scrapeWebsiteToStash(normalizedUrl, cachePaths.stashDir, {
         maxPages: coercePositiveInt(config.options?.maxPages, MAX_PAGES_DEFAULT),
         maxDepth: coercePositiveInt(config.options?.maxDepth, MAX_DEPTH_DEFAULT),
+        respectRobots: coerceRespectRobots(config.options?.respectRobots),
         allowPrivateHosts: options?.allowPrivateHosts,
         wallClockCapMs: options?.wallClockCapMs,
       });
@@ -194,7 +204,13 @@ function hasExtractedSite(stashDir: string): boolean {
 async function scrapeWebsiteToStash(
   startUrl: string,
   stashDir: string,
-  options: { maxPages: number; maxDepth: number; allowPrivateHosts?: boolean; wallClockCapMs?: number },
+  options: {
+    maxPages: number;
+    maxDepth: number;
+    respectRobots?: boolean;
+    allowPrivateHosts?: boolean;
+    wallClockCapMs?: number;
+  },
 ): Promise<void> {
   const pages = await crawlWebsite(startUrl, options);
   if (pages.length === 0) {
@@ -278,9 +294,45 @@ function websiteMarkdownSnapshotFromResult(snapshot: WikiSnapshotResult): Websit
   };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * C-02/C-03: fail fast, before any page fetch, when the start URL itself is
+ * off-limits. A 5xx robots.txt (RobotsPolicy caches `DISALLOW_ALL_RULES` for
+ * that case) gets a distinct message calling out the server error, per spec
+ * §4.6.
+ */
+async function assertStartUrlAllowedByRobots(robots: RobotsPolicy, start: URL): Promise<void> {
+  const startUrl = start.toString();
+  const robotsUrl = new URL("/robots.txt", start.origin).toString();
+  const rules = await robots.rulesFor(startUrl);
+
+  if (rules.disallowAll) {
+    throw new UsageError(
+      `Refusing to crawl ${startUrl}: ${robotsUrl} returned a server error, which robots.txt conventions ` +
+        `treat as a full disallow until it recovers. Set respectRobots: false on this website source to bypass ` +
+        `robots.txt.`,
+    );
+  }
+  if (!isPathAllowedByRobots(rules, startUrl)) {
+    throw new UsageError(
+      `Refusing to crawl ${startUrl}: disallowed by ${robotsUrl}. Set respectRobots: false on this website ` +
+        `source to bypass robots.txt.`,
+    );
+  }
+}
+
 async function crawlWebsite(
   startUrl: string,
-  options: { maxPages: number; maxDepth: number; allowPrivateHosts?: boolean; wallClockCapMs?: number },
+  options: {
+    maxPages: number;
+    maxDepth: number;
+    respectRobots?: boolean;
+    allowPrivateHosts?: boolean;
+    wallClockCapMs?: number;
+  },
 ): Promise<WebsitePage[]> {
   const start = new URL(normalizeSiteUrl(startUrl));
   const allowedOrigin = start.origin;
@@ -290,13 +342,46 @@ async function crawlWebsite(
   const wallClockCapMs = options.wallClockCapMs ?? WEBSITE_CRAWL_WALL_CLOCK_MS;
   const deadline = Date.now() + wallClockCapMs;
 
+  const robots =
+    options.respectRobots === false
+      ? createAllowAllRobotsPolicy()
+      : createRobotsPolicy((robotsUrl) => loadRobotsTxt(robotsUrl, { allowPrivateHosts: options.allowPrivateHosts }));
+
+  await assertStartUrlAllowedByRobots(robots, start);
+
+  // Counts actual `fetchWebsitePage` invocations (regardless of outcome) so
+  // Crawl-delay pacing skips the first fetch and never charges a delay slot
+  // to a URL that robots.txt skipped without ever being fetched (C-11).
+  let fetchAttempts = 0;
+  let deadlineHit = false;
+
   while (queue.length > 0 && pages.length < options.maxPages) {
-    if (Date.now() > deadline) break;
+    if (Date.now() > deadline) {
+      deadlineHit = true;
+      break;
+    }
     const next = queue.shift();
     if (!next) break;
     const normalized = normalizeCrawlUrl(next.url);
     if (!normalized || visited.has(normalized)) continue;
     visited.add(normalized);
+
+    if (!(await robots.isAllowed(normalized))) {
+      warnVerbose("[akm] website crawl: skipping %s (disallowed by robots.txt)", normalized);
+      continue;
+    }
+
+    if (fetchAttempts > 0) {
+      const delayMs = await robots.crawlDelayMs(normalized);
+      if (delayMs > 0) {
+        if (Date.now() + delayMs >= deadline) {
+          deadlineHit = true;
+          break;
+        }
+        await sleep(delayMs);
+      }
+    }
+    fetchAttempts++;
 
     const fetched = await fetchWebsitePage(normalized, { allowPrivateHosts: options.allowPrivateHosts });
     if (!fetched) continue;
@@ -312,7 +397,7 @@ async function crawlWebsite(
     }
   }
 
-  if (Date.now() > deadline) {
+  if (deadlineHit || Date.now() > deadline) {
     warn(
       "[akm] website crawl stopped at the %ds wall-clock cap with %d/%d pages collected from %s.",
       wallClockCapMs / 1000,
@@ -408,6 +493,94 @@ async function fetchWebsiteResponse(
   }
 
   return response;
+}
+
+/**
+ * Fetches and classifies `<origin>/robots.txt`. Reuses `fetchWebsiteResponse`
+ * (spec §6.2: no second fetch path) so robots.txt gets the exact same SSRF
+ * guards, retry, and redirect handling as a page fetch.
+ *
+ * Steps 1–2 (the guard on the INITIAL URL) run OUTSIDE the try/catch on
+ * purpose: a guard rejection there must propagate as-is, never be downgraded
+ * to "unavailable" (spec §4.5 F-12, §6.2). Guard rejections on a LATER
+ * redirect hop happen inside `fetchWebsiteResponse`, which the try/catch
+ * below does cover — the guard has already refused to fetch that host, so
+ * only the error *reporting* is downgraded (F-11).
+ */
+export async function loadRobotsTxt(
+  robotsUrl: string,
+  options?: WebsiteValidationOptions,
+): Promise<RobotsFetchOutcome> {
+  assertWebsiteRequestUrl(robotsUrl, UsageError, options);
+  await assertResolvedHostAllowed(new URL(robotsUrl).hostname, options);
+
+  try {
+    const response = await fetchWebsiteResponse(robotsUrl, 0, options);
+
+    if (response.status >= 200 && response.status < 300) {
+      try {
+        const text = await readBodyWithByteCap(response, ROBOTS_BYTE_CAP, {
+          bodyTimeoutMs: ROBOTS_BODY_TIMEOUT_MS,
+        });
+        return { kind: "body", text };
+      } catch (err) {
+        if (err instanceof ResponseTooLargeError) {
+          warn(
+            "[akm] robots.txt at %s exceeded the %d-byte cap; treating it as unavailable.",
+            robotsUrl,
+            ROBOTS_BYTE_CAP,
+          );
+          return { kind: "unavailable" };
+        }
+        throw err;
+      }
+    }
+
+    if (response.status >= 500 && response.status < 600) {
+      // RFC 9309 §2.3.1.4: an unreachable robots.txt is a full disallow, not
+      // an allow-all. `fetchWithRetry` already retried this once, so a
+      // transient blip does not trip it.
+      warn(
+        "[akm] robots.txt at %s returned %d; treating the crawl as fully disallowed until it recovers. " +
+          "Set respectRobots: false on this website source to bypass robots.txt.",
+        robotsUrl,
+        response.status,
+      );
+      return { kind: "unreachable" };
+    }
+
+    // 4xx (404 is the common, silent case), and any other non-2xx/5xx status.
+    return { kind: "unavailable" };
+  } catch (err) {
+    warnVerbose(
+      "[akm] failed to fetch robots.txt at %s: %s",
+      robotsUrl,
+      err instanceof Error ? err.message : String(err),
+    );
+    return { kind: "unavailable" };
+  }
+}
+
+/**
+ * Coerces `SourceConfigEntry.options.respectRobots` to a boolean. The bundle
+ * descriptor is boolean-validated at config load (schema), but the legacy
+ * `sources[].options` bag is `z.record(z.unknown())` and accepts anything, so
+ * the runtime read still validates. A misspelled non-boolean opt-out fails
+ * loudly (`ConfigError`) rather than silently defaulting either way — the
+ * user would otherwise think robots.txt handling is something other than
+ * what akm is actually doing (spec §4.7).
+ */
+export function coerceRespectRobots(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+  }
+  throw new ConfigError(
+    `Invalid value for respectRobots: expected a boolean (or "true"/"false"), got ${JSON.stringify(value)}.`,
+  );
 }
 
 function buildMarkdownSnapshot(page: WebsitePage, slug: string, tags?: string[]): string {

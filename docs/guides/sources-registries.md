@@ -36,6 +36,26 @@ akm bundle add git@github.com:org/skills.git --provider git --name my-skills --w
 
 After `akm bundle add`, run `akm index` to bring the search index up to date.
 
+**Website crawl options.** `website` sources accept `maxPages` (default 50),
+`maxDepth` (default 3), and `respectRobots` (default `true`) under the bundle's
+`website` descriptor. `respectRobots` makes akm honor the origin's
+`/robots.txt` — skipping disallowed paths and pacing requests by
+`Crawl-delay` (clamped to 10s) — for the `akm`/`akm-cli` product tokens (or
+`*`). If the crawl's start URL is itself disallowed, `akm bundle add` /
+`akm bundle update` fails with an error naming the opt-out. Set
+`"respectRobots": false` on the descriptor to skip `/robots.txt` entirely and
+crawl every reachable page as akm did before this behavior existed:
+
+```json
+{
+  "bundles": {
+    "docs": {
+      "website": { "url": "https://docs.example.com", "maxPages": 200, "maxDepth": 5, "respectRobots": false }
+    }
+  }
+}
+```
+
 **Example: add a team bundle from GitHub**
 
 ```sh

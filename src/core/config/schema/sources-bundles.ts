@@ -88,6 +88,11 @@ const BundleWebsiteDescriptorSchema = z
     refresh: z.string().min(1).optional(),
     maxPages: positiveInt.optional(),
     maxDepth: positiveInt.optional(),
+    // Default true: crawl-scoped robots.txt compliance (Disallow/Crawl-delay
+    // for the akm/akm-cli product tokens or "*"). See
+    // src/sources/snapshot-fetchers/robots.ts. Opt out with `false` to
+    // restore pre-P1 behavior exactly (no /robots.txt request at all).
+    respectRobots: z.boolean().optional(),
   })
   .passthrough();
 
