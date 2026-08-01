@@ -113,7 +113,7 @@ const SKIP_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".wo
  * empty by default; every entry here is a deliberate, narrow decision, not a
  * template to copy for convenience.
  *
- *  - `src/core/state/migrations.ts:71` - a `--` SQL comment INSIDE the `up`
+ *  - `src/core/state/migrations.ts:76` - a `--` SQL comment INSIDE the `up`
  *    body of migration `001-initial-schema`. That body is checksum-sealed
  *    (`migrationChecksum` in `src/storage/engines/sqlite-migrations.ts`
  *    hashes `id + "\0" + up` verbatim) and compared against the checksum
@@ -126,7 +126,7 @@ const SKIP_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".wo
  *    migrations that must stay covered by this gate), so it is named down to
  *    the exact line instead.
  */
-const ALLOWED_OFFENSES: ReadonlySet<string> = new Set(["src/core/state/migrations.ts:71:lesson:alpha"]);
+const ALLOWED_OFFENSES: ReadonlySet<string> = new Set(["src/core/state/migrations.ts:76:lesson:alpha"]);
 
 // `wiki` was a real AKM-owned type up through chunk 3 and was deliberately
 // RETIRED in chunk 4 ("the wiki ASSET-TYPE dies", plan §11 Chunk 4/§7.4) - the

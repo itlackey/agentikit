@@ -24,11 +24,13 @@ const bunProbe = process.versions.bun
 const [bunMajor = 0] = (bunProbe.status === 0 ? bunProbe.stdout.trim() : "").split(".").map(Number);
 const useBun = bunMajor >= 1;
 const bunEntry = fileURLToPath(new URL("./scripts/akm-migrate.js", import.meta.url));
+const nodeEntry = fileURLToPath(new URL("./scripts/akm-migrate-node.js", import.meta.url));
 
 {
   const command = process.versions.bun ? process.execPath : useBun ? "bun" : process.execPath;
+  const entry = process.versions.bun || useBun ? bunEntry : nodeEntry;
   const result = await new Promise((resolve) => {
-    const child = spawn(command, [bunEntry, ...process.argv.slice(2)], { stdio: "inherit" });
+    const child = spawn(command, [entry, ...process.argv.slice(2)], { stdio: "inherit" });
     child.once("error", (error) => resolve({ error }));
     child.once("exit", (code, signal) => resolve({ code, signal }));
   });

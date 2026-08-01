@@ -13,8 +13,10 @@
  * touches the developer's real databases.
  */
 
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
+import path from "node:path";
 import {
   buildTaskRunId,
   getLoggedRunIds,
@@ -75,6 +77,48 @@ describe("openLogsDatabase", () => {
       expect(queryTaskLogs(second, { taskId: "t" })).toHaveLength(1);
     } finally {
       second.close();
+    }
+  });
+
+  test("seals the checksum-less logs ledger published by 0.8.14 and keeps its rows", () => {
+    const dbPath = getLogsDbPath();
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE task_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        stream TEXT NOT NULL DEFAULT 'stdout',
+        level TEXT NOT NULL DEFAULT 'info',
+        line TEXT NOT NULL
+      );
+      CREATE INDEX idx_task_logs_ts ON task_logs(ts);
+      CREATE INDEX idx_task_logs_task_id ON task_logs(task_id);
+      CREATE INDEX idx_task_logs_run_id ON task_logs(run_id);
+      CREATE TABLE schema_migrations (
+        id TEXT PRIMARY KEY,
+        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO schema_migrations(id) VALUES ('001-task-logs');
+      INSERT INTO task_logs(ts, task_id, run_id, line)
+      VALUES ('2026-01-01T00:00:00.000Z', 'legacy', 'legacy@1', 'published row');
+    `);
+    legacy.close();
+
+    const migrated = openLogsDatabase();
+    try {
+      expect(queryTaskLogs(migrated, { taskId: "legacy" }).map((row) => row.line)).toEqual(["published row"]);
+      expect(
+        (
+          migrated.prepare("SELECT checksum FROM schema_migrations WHERE id='001-task-logs'").get() as {
+            checksum: string;
+          }
+        ).checksum,
+      ).toBe("d587420b669200522dcedc0fbb3c8015ff44d04dfab3aea9cccdfe92edc54715");
+    } finally {
+      migrated.close();
     }
   });
 });

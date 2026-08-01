@@ -18,6 +18,7 @@ import {
   inspectMigrationState,
 } from "../../scripts/akm-migrate/migration-backup";
 import { getConfigPath, getDbPath, getLockfilePath, getStateDbPathInDataDir } from "../../src/core/paths";
+import { STATE_MIGRATIONS } from "../../src/core/state/migrations";
 import { openStateDatabase } from "../../src/core/state-db";
 import { type Database as AkmDatabase, openDatabaseFinalizing } from "../../src/storage/database";
 import { runMigrations as runSqliteMigrations } from "../../src/storage/engines/sqlite-migrations";
@@ -117,9 +118,14 @@ afterEach(() => {
 });
 
 function ledger(db: Database, ids: readonly string[]): void {
-  db.exec("CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))");
-  const insert = db.prepare("INSERT INTO schema_migrations(id) VALUES (?)");
-  for (const id of ids) insert.run(id);
+  const checksums = new Map(
+    [...STATE_MIGRATIONS, ...FROZEN_WORKFLOW_MIGRATIONS].map(({ id, checksum }) => [id, checksum] as const),
+  );
+  db.exec(
+    "CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')), checksum TEXT)",
+  );
+  const insert = db.prepare("INSERT INTO schema_migrations(id, checksum) VALUES (?, ?)");
+  for (const id of ids) insert.run(id, checksums.get(id) ?? null);
 }
 
 function seed(options?: { failingWorkflow?: boolean }): string {

@@ -110,7 +110,11 @@ beforeAll(async () => {
   );
   fs.writeFileSync(
     path.join(packageDir, "scripts", "akm-migrate.js"),
-    'console.log(JSON.stringify({ artifact: process.versions.bun ? "bun-migrate" : "node-migrate", args: process.argv.slice(2) }));\n',
+    'console.log(JSON.stringify({ artifact: "bun-migrate", args: process.argv.slice(2) }));\n',
+  );
+  fs.writeFileSync(
+    path.join(packageDir, "scripts", "akm-migrate-node.js"),
+    'console.log(JSON.stringify({ artifact: "node-migrate", args: process.argv.slice(2) }));\n',
   );
   fs.writeFileSync(path.join(consumerDir, "package.json"), JSON.stringify({ name: "consumer", private: true }));
 

@@ -15,7 +15,10 @@ import {
   runMigrationApply,
 } from "../../scripts/akm-migrate/config-migrate";
 import { getLegacyWorkflowDbPath } from "../../scripts/akm-migrate/migrate/legacy/legacy-paths";
-import { FROZEN_WORKFLOW_MIGRATIONS } from "../../scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies";
+import {
+  FROZEN_WORKFLOW_BASE_SCHEMA_DDL,
+  FROZEN_WORKFLOW_MIGRATIONS,
+} from "../../scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies";
 import {
   _setRestoreRollbackBoundaryHookForTests,
   createMigrationBackup,
@@ -38,7 +41,6 @@ import { openStateDatabase } from "../../src/core/state-db";
 import { openDatabaseFinalizing } from "../../src/storage/database";
 import { runMigrations as runSqliteMigrations } from "../../src/storage/engines/sqlite-migrations";
 import { runCliCapture } from "../_helpers/cli";
-import { createLegacyWorkflowDb } from "../_helpers/legacy-workflow-db";
 import {
   type Cleanup,
   sandboxHome,
@@ -140,9 +142,14 @@ function writeConfig(version: string): void {
 }
 
 function seedLedger(db: Database, ids: readonly string[]): void {
-  db.exec("CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))");
-  const insert = db.prepare("INSERT INTO schema_migrations(id) VALUES (?)");
-  for (const id of ids) insert.run(id);
+  const checksums = new Map(
+    [...STATE_MIGRATIONS, ...FROZEN_WORKFLOW_MIGRATIONS].map(({ id, checksum }) => [id, checksum] as const),
+  );
+  db.exec(
+    "CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')), checksum TEXT)",
+  );
+  const insert = db.prepare("INSERT INTO schema_migrations(id, checksum) VALUES (?, ?)");
+  for (const id of ids) insert.run(id, checksums.get(id) ?? null);
 }
 
 function seedPreCutoverState(value = "before"): void {
@@ -792,11 +799,12 @@ describe("migration lifecycle regressions", () => {
       const ids = db.query("SELECT id FROM schema_migrations ORDER BY rowid").all() as Array<{ id: string }>;
       expect(ids.map((row) => row.id)).toEqual([...STATE_PRE_CUTOVER_IDS]);
       expect(
-        db
-          .query("PRAGMA table_info(schema_migrations)")
-          .all()
-          .some((column) => (column as { name: string }).name === "checksum"),
-      ).toBe(false);
+        (
+          db.query("SELECT COUNT(*) AS count FROM schema_migrations WHERE checksum IS NOT NULL").get() as {
+            count: number;
+          }
+        ).count,
+      ).toBe(STATE_PRE_CUTOVER_IDS.length);
       expect((db.query("SELECT COUNT(*) AS count FROM events").get() as { count: number }).count).toBe(0);
     } finally {
       db.close();
@@ -1403,13 +1411,16 @@ describe("migration lifecycle regressions", () => {
     ).toBeGreaterThan(0);
   });
 
-  test("current but unsealed ledgers require migration and are sealed only by backed-up apply", async () => {
+  test("published 0.8 ledgers are sealed only by backed-up apply", async () => {
     writeConfig("0.9.0");
-    openStateDatabase().close();
-    // A pre-cutover workflow.db at its final (unsealed) ledger, built from the
-    // frozen bodies (src/workflows/db.ts is deleted). The migrate-apply cutover
-    // rolls + merges + deletes it.
-    createLegacyWorkflowDb(getLegacyWorkflowDbPath());
+    fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
+    const legacyState = new Database(getStateDbPathInDataDir());
+    runSqliteMigrations(legacyState as never, STATE_MIGRATIONS.slice(0, 5));
+    legacyState.close();
+    const legacyWorkflow = new Database(getLegacyWorkflowDbPath());
+    legacyWorkflow.exec(FROZEN_WORKFLOW_BASE_SCHEMA_DDL);
+    runSqliteMigrations(legacyWorkflow as never, FROZEN_WORKFLOW_MIGRATIONS.slice(0, 3));
+    legacyWorkflow.close();
     removeLedgerChecksums(getStateDbPathInDataDir());
     removeLedgerChecksums(getLegacyWorkflowDbPath());
 
@@ -1437,6 +1448,46 @@ describe("migration lifecycle regressions", () => {
     }
     expect(fs.existsSync(getLegacyWorkflowDbPath())).toBe(false);
     expect(fs.existsSync(getMigrationBackupRoot())).toBe(true);
+  });
+
+  test("preflight rejects checksum-less 0.9 preview migrations without mutation", async () => {
+    writeConfig("0.9.0");
+    fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
+    const preview = new Database(getStateDbPathInDataDir());
+    runSqliteMigrations(preview as never, STATE_MIGRATIONS.slice(0, 6));
+    preview.close();
+    removeLedgerChecksums(getStateDbPathInDataDir());
+    const before = fs.readFileSync(getStateDbPathInDataDir());
+
+    expect(inspectMigrationPlan()).toMatchObject({
+      status: "blocked",
+      artifacts: { state: { status: "inconsistent", detail: expect.stringContaining("supported released lineage") } },
+    });
+    await expect(runMigrationApply()).rejects.toThrow(/migration is blocked/i);
+    expect(fs.readFileSync(getStateDbPathInDataDir())).toEqual(before);
+    expect(fs.existsSync(getMigrationBackupRoot())).toBe(false);
+  });
+
+  test("preflight rejects checksum-less 0.9 workflow preview migrations without mutation", async () => {
+    writeConfig("0.9.0");
+    openStateDatabase().close();
+    const workflowPath = getLegacyWorkflowDbPath();
+    const preview = new Database(workflowPath);
+    preview.exec(FROZEN_WORKFLOW_BASE_SCHEMA_DDL);
+    runSqliteMigrations(preview as never, FROZEN_WORKFLOW_MIGRATIONS.slice(0, 4));
+    preview.close();
+    removeLedgerChecksums(workflowPath);
+    const before = fs.readFileSync(workflowPath);
+
+    expect(inspectMigrationPlan()).toMatchObject({
+      status: "blocked",
+      artifacts: {
+        workflow: { status: "inconsistent", detail: expect.stringContaining("supported released lineage") },
+      },
+    });
+    await expect(runMigrationApply()).rejects.toThrow(/migration is blocked/i);
+    expect(fs.readFileSync(workflowPath)).toEqual(before);
+    expect(fs.existsSync(getMigrationBackupRoot())).toBe(false);
   });
 
   test("status and apply dry-run perform identical blocked eligibility checks without mutation", async () => {

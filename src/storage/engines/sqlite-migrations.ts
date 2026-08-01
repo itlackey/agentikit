@@ -32,8 +32,12 @@ import type { Database } from "../database";
  *
  * @see The migration-safety contract in this module's header.
  */
-export interface Migration {
+export interface SealedMigration {
   id: string;
+  checksum: string;
+}
+
+export interface Migration extends SealedMigration {
   up: string;
 }
 
@@ -47,6 +51,8 @@ export interface RunMigrationsOptions {
   applyPending?: boolean;
   /** Durable operation marker used to authenticate migration-journal adjacent generations. */
   generationMarker?: { operationId: string; phase: string };
+  /** Authorize sealing legacy NULL checksums only through this released migration ID. */
+  sealNullChecksumsThrough?: string;
 }
 
 export type MigrationLedgerStatus = "old" | "current" | "newer" | "inconsistent";
@@ -58,6 +64,11 @@ export interface MigrationLedgerState {
   detail?: string;
 }
 
+export interface InspectMigrationLedgerOptions {
+  /** Classify NULL checksums after this released migration ID as unsupported. */
+  allowNullChecksumsThrough?: string;
+}
+
 /**
  * A released migration's IDENTITY without its `up` body: the stable `id` plus
  * the pre-computed {@link migrationChecksum}. This is what a ledger inspection
@@ -67,13 +78,34 @@ export interface MigrationLedgerState {
  * is expressed as `SealedMigration[]` so backups stay verifiable without the
  * live bodies.
  */
-export interface SealedMigration {
-  id: string;
-  checksum: string;
+export function migrationChecksum(migration: Pick<Migration, "id" | "up">): string {
+  return crypto.createHash("sha256").update(migration.id).update("\0").update(migration.up).digest("hex");
 }
 
-export function migrationChecksum(migration: Migration): string {
-  return crypto.createHash("sha256").update(migration.id).update("\0").update(migration.up).digest("hex");
+const SHA256_HEX = /^[a-f0-9]{64}$/;
+
+export function assertSealedMigrationRegistry(migrations: readonly SealedMigration[]): void {
+  const seen = new Set<string>();
+  for (const migration of migrations) {
+    if (seen.has(migration.id)) throw new Error(`Migration registry contains duplicate ID ${migration.id}.`);
+    seen.add(migration.id);
+    if (!SHA256_HEX.test(migration.checksum)) {
+      throw new Error(`Migration ${migration.id} has an invalid sealed checksum.`);
+    }
+  }
+}
+
+/** Verify immutable migration bodies before any database can be inspected or mutated. */
+export function assertMigrationRegistry(migrations: readonly Migration[]): void {
+  assertSealedMigrationRegistry(migrations);
+  for (const migration of migrations) {
+    const actual = migrationChecksum(migration);
+    if (actual !== migration.checksum) {
+      throw new Error(
+        `Migration ${migration.id} body does not match its sealed checksum (expected ${migration.checksum}, got ${actual}).`,
+      );
+    }
+  }
 }
 
 function migrationsTableExists(db: Database): boolean {
@@ -92,15 +124,17 @@ function ledgerHasChecksum(db: Database): boolean {
  * {@link inspectSealedMigrationLedger} (frozen pre-computed checksums) route
  * here so the two entry points can never diverge.
  */
-function inspectLedgerAgainst(db: Database, expected: readonly SealedMigration[]): MigrationLedgerState {
+function inspectLedgerAgainst(
+  db: Database,
+  expected: readonly SealedMigration[],
+  opts?: InspectMigrationLedgerOptions,
+): MigrationLedgerState {
+  assertSealedMigrationRegistry(expected);
   const registryIds = expected.map((entry) => entry.id);
-  if (new Set(registryIds).size !== registryIds.length) {
-    return {
-      status: "inconsistent",
-      migrationIds: [],
-      checksums: [],
-      detail: "migration registry contains duplicate IDs",
-    };
+  const nullChecksumCeiling =
+    opts?.allowNullChecksumsThrough === undefined ? undefined : registryIds.indexOf(opts.allowNullChecksumsThrough);
+  if (opts?.allowNullChecksumsThrough !== undefined && nullChecksumCeiling === -1) {
+    throw new Error(`Unknown legacy checksum inspection ceiling ${opts.allowNullChecksumsThrough}.`);
   }
   if (!migrationsTableExists(db))
     return { status: registryIds.length === 0 ? "current" : "old", migrationIds: [], checksums: [] };
@@ -112,9 +146,8 @@ function inspectLedgerAgainst(db: Database, expected: readonly SealedMigration[]
   const migrationIds = rows.map((row) => row.id);
   const checksums = rows.map((row) => row.checksum ?? null);
 
-  for (let index = 0; index < rows.length; index += 1) {
+  for (const [index, row] of rows.entries()) {
     const entry = expected[index];
-    const row = rows[index]!;
     if (!entry) {
       return { status: "newer", migrationIds, checksums, detail: `unknown migration ID ${row.id}` };
     }
@@ -129,7 +162,7 @@ function inspectLedgerAgainst(db: Database, expected: readonly SealedMigration[]
           : `unknown migration ID ${row.id}`,
       };
     }
-    if (row.checksum && row.checksum !== entry.checksum) {
+    if (row.checksum !== null && row.checksum !== undefined && row.checksum !== entry.checksum) {
       return {
         status: "inconsistent",
         migrationIds,
@@ -137,6 +170,18 @@ function inspectLedgerAgainst(db: Database, expected: readonly SealedMigration[]
         detail: `migration ${row.id} checksum does not match the released migration body`,
       };
     }
+  }
+
+  const unsupportedNullChecksum = checksums.findIndex(
+    (checksum, index) => checksum === null && nullChecksumCeiling !== undefined && index > nullChecksumCeiling,
+  );
+  if (unsupportedNullChecksum >= 0) {
+    return {
+      status: "inconsistent",
+      migrationIds,
+      checksums,
+      detail: `unsealed migration ${migrationIds[unsupportedNullChecksum]} is not part of a supported released lineage`,
+    };
   }
 
   const missingChecksum = checksums.indexOf(null);
@@ -156,11 +201,13 @@ function inspectLedgerAgainst(db: Database, expected: readonly SealedMigration[]
   };
 }
 
-export function inspectMigrationLedger(db: Database, migrations: readonly Migration[]): MigrationLedgerState {
-  return inspectLedgerAgainst(
-    db,
-    migrations.map((migration) => ({ id: migration.id, checksum: migrationChecksum(migration) })),
-  );
+export function inspectMigrationLedger(
+  db: Database,
+  migrations: readonly Migration[],
+  opts?: InspectMigrationLedgerOptions,
+): MigrationLedgerState {
+  assertMigrationRegistry(migrations);
+  return inspectLedgerAgainst(db, migrations, opts);
 }
 
 /**
@@ -169,8 +216,12 @@ export function inspectMigrationLedger(db: Database, migrations: readonly Migrat
  * to {@link inspectMigrationLedger} — the checksums are simply pre-computed
  * rather than derived from `up` bodies.
  */
-export function inspectSealedMigrationLedger(db: Database, sealed: readonly SealedMigration[]): MigrationLedgerState {
-  return inspectLedgerAgainst(db, sealed);
+export function inspectSealedMigrationLedger(
+  db: Database,
+  sealed: readonly SealedMigration[],
+  opts?: InspectMigrationLedgerOptions,
+): MigrationLedgerState {
+  return inspectLedgerAgainst(db, sealed, opts);
 }
 
 export function assertMigrationLedger(db: Database, migrations: readonly Migration[]): MigrationLedgerState {
@@ -223,18 +274,35 @@ export function ensureMigrationsTable(db: Database): void {
  * @param opts        Migration execution options.
  */
 export function runMigrations(db: Database, migrations: readonly Migration[], opts?: RunMigrationsOptions): void {
+  assertMigrationRegistry(migrations);
+  const sealThroughIndex =
+    opts?.sealNullChecksumsThrough === undefined
+      ? undefined
+      : migrations.findIndex((migration) => migration.id === opts.sealNullChecksumsThrough);
+  if (opts?.sealNullChecksumsThrough !== undefined && sealThroughIndex === -1) {
+    throw new Error(`Unknown legacy checksum sealing ceiling ${opts.sealNullChecksumsThrough}.`);
+  }
   if (opts?.applyPending === false) {
     assertMigrationLedger(db, migrations);
     return;
   }
-  if (migrationsTableExists(db)) assertMigrationLedger(db, migrations);
-  ensureMigrationsTable(db);
+  const ledger = migrationsTableExists(db)
+    ? assertMigrationLedger(db, migrations)
+    : { status: "old" as const, migrationIds: [], checksums: [] };
+  for (let index = 0; index < ledger.checksums.length; index += 1) {
+    if (ledger.checksums[index] !== null) continue;
+    if (sealThroughIndex === undefined || index > sealThroughIndex) {
+      throw new Error(
+        `Refusing to seal legacy migration ${ledger.migrationIds[index]} without an authorized released checksum ceiling.`,
+      );
+    }
+  }
 
-  const ledger = assertMigrationLedger(db, migrations);
+  ensureMigrationsTable(db);
   db.transaction(() => {
     const update = db.prepare("UPDATE schema_migrations SET checksum = ? WHERE id = ? AND checksum IS NULL");
-    for (let index = 0; index < ledger.migrationIds.length; index += 1) {
-      update.run(migrationChecksum(migrations[index]!), ledger.migrationIds[index]!);
+    for (const migration of migrations.slice(0, ledger.migrationIds.length)) {
+      update.run(migration.checksum, migration.id);
     }
     if (opts?.generationMarker) {
       db.exec(`
@@ -260,10 +328,7 @@ export function runMigrations(db: Database, migrations: readonly Migration[], op
 
     db.transaction(() => {
       db.exec(migration.up);
-      db.prepare("INSERT INTO schema_migrations (id, checksum) VALUES (?, ?)").run(
-        migration.id,
-        migrationChecksum(migration),
-      );
+      db.prepare("INSERT INTO schema_migrations (id, checksum) VALUES (?, ?)").run(migration.id, migration.checksum);
     })();
   }
 }

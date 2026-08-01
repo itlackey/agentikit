@@ -63,6 +63,10 @@ import {
 import { getLegacyWorkflowDbPath } from "./migrate/legacy/legacy-paths";
 import { importLegacyProposalsIntoState } from "./migrate/legacy/proposal-fs-import";
 import {
+  PUBLISHED_08_STATE_CHECKSUM_CEILING,
+  PUBLISHED_08_WORKFLOW_CHECKSUM_CEILING,
+} from "../../src/storage/released-migration-lineage";
+import {
   applyTaskTargetRefMigration,
   planTaskTargetRefMigration,
 } from "./migrate/legacy/task-target-ref-migration";
@@ -1774,7 +1778,16 @@ function runTaskOnlyRepair(journal: ApplyJournal, plan: ReturnType<typeof planTa
   advanceApplyJournal(journal, "tasks-prepared");
   if (journal.phase === "tasks-prepared") runTaskTargetMigrationStep(journal, plan);
   advanceApplyJournal(journal, "committed");
-  clearApplyJournal();
+}
+
+/** Idempotently absorb task files created after the journal's original task phase. */
+function repairCommittedTaskTargets(journal: ApplyJournal, target: AkmConfig): void {
+  const pending = planTaskTargetRefMigration(
+    target,
+    journal.pathResolutionBase,
+    journal.migrationLockEntries,
+  );
+  if (pending.rewrites.length > 0) applyTaskTargetRefMigration(pending);
 }
 
 function runStateMigrationStep(journal: ApplyJournal): void {
@@ -1791,7 +1804,7 @@ function runStateMigrationStep(journal: ApplyJournal): void {
       }
       if (!marker) {
         db.transaction(() => {
-          runStateMigrations(db);
+          runStateMigrations(db, { sealNullChecksumsThrough: PUBLISHED_08_STATE_CHECKSUM_CEILING });
           bindStateGenerationMarker(db, journal.operationId);
         })();
       } else {
@@ -2133,6 +2146,7 @@ function runFrozenWorkflowRoll(operationId: string): void {
     // the crash-recovery generation-fingerprint invariants that flow pins.
     runSqliteMigrations(db, FROZEN_WORKFLOW_MIGRATIONS, {
       generationMarker: { operationId, phase: "workflow-applied" },
+      sealNullChecksumsThrough: PUBLISHED_08_WORKFLOW_CHECKSUM_CEILING,
     });
   } finally {
     db.close();
@@ -2497,10 +2511,16 @@ function loadTargetConfig(
 
 type ApplyJournalRead = ReturnType<typeof readApplyJournal>;
 
-function buildMigrationPlan(preparedConfigPath: string | undefined, activeApply: ApplyJournalRead): MigrationPlan {
+function buildMigrationPlan(
+  preparedConfigPath: string | undefined,
+  activeApply: ApplyJournalRead,
+  options: { ignoreApplyJournal?: boolean } = {},
+): MigrationPlan {
   const artifacts = activeApply.artifacts ?? inspectMigrationStateFromSnapshots();
   const restorePending = fs.existsSync(getMigrationRestoreJournalPath());
-  const target = activeApply.journal
+  const activeJournal = activeApply.journal;
+  const useApplyJournal = !!activeJournal && options.ignoreApplyJournal !== true;
+  const target = useApplyJournal && activeJournal
     ? {
         state: {
           status: activeApply.config ? ("current" as const) : ("corrupt" as const),
@@ -2509,7 +2529,7 @@ function buildMigrationPlan(preparedConfigPath: string | undefined, activeApply:
           ...(!activeApply.config && activeApply.error ? { detail: activeApply.error } : {}),
         },
         config: activeApply.config,
-        migrationLockEntries: activeApply.journal.migrationLockEntries,
+        migrationLockEntries: activeJournal.migrationLockEntries,
       }
     : loadTargetConfig(preparedConfigPath, artifacts);
   const blockers = [
@@ -2519,7 +2539,7 @@ function buildMigrationPlan(preparedConfigPath: string | undefined, activeApply:
     unsafeArtifact("index.db", artifacts.index),
   ].filter((blocker): blocker is string => blocker !== undefined);
   if (target.state.status !== "current") blockers.push(target.state.detail ?? "A current target config is required.");
-  if (activeApply.error && (!activeApply.journal || target.state.status === "current"))
+  if (activeApply.error && (!activeJournal || options.ignoreApplyJournal === true || target.state.status === "current"))
     blockers.push(activeApply.error);
   if (restorePending) blockers.push(`Restore recovery is pending at ${getMigrationRestoreJournalPath()}.`);
 
@@ -2528,8 +2548,8 @@ function buildMigrationPlan(preparedConfigPath: string | undefined, activeApply:
     try {
       taskRewrites = planTaskTargetRefMigration(
         target.config,
-        activeApply.journal?.pathResolutionBase ?? process.cwd(),
-        target.migrationLockEntries ?? [],
+        activeJournal?.pathResolutionBase ?? process.cwd(),
+        activeJournal?.migrationLockEntries ?? target.migrationLockEntries ?? [],
       ).rewrites.length;
     } catch (error) {
       blockers.push(error instanceof Error ? error.message : String(error));
@@ -2541,7 +2561,7 @@ function buildMigrationPlan(preparedConfigPath: string | undefined, activeApply:
   if (blockers.length === 0 && proposalRepair.blocker) blockers.push(proposalRepair.blocker);
 
   const needsApply =
-    !!activeApply.journal ||
+    useApplyJournal ||
     artifacts.config.status !== "current" ||
     artifacts.state.status === "old" ||
     artifacts.workflow.status === "old" ||
@@ -2561,11 +2581,11 @@ function buildMigrationPlan(preparedConfigPath: string | undefined, activeApply:
             journalPath: getMigrationRestoreJournalPath(),
           },
         }
-      : activeApply.journal
+      : useApplyJournal && activeJournal
         ? {
             activeOperation: {
               kind: "apply" as const,
-              phase: activeApply.journal.phase,
+              phase: activeJournal.phase,
               journalPath: getMigrationApplyJournalPath(),
             },
           }
@@ -2575,6 +2595,18 @@ function buildMigrationPlan(preparedConfigPath: string | undefined, activeApply:
 
 export function inspectMigrationPlan(preparedConfigPath?: string): MigrationPlan {
   return buildMigrationPlan(preparedConfigPath, readApplyJournal());
+}
+
+function requireCurrentMigrationPlan(plan: MigrationPlan, context: string): MigrationPlan {
+  if (plan.status !== "current") {
+    const detail = plan.blockers.length > 0 ? plan.blockers.join("; ") : `final status was ${plan.status}`;
+    throw new ConfigError(`${context} did not converge to a current installation: ${detail}.`, "INVALID_CONFIG_FILE");
+  }
+  return plan;
+}
+
+function inspectFinalMigrationPlan(journal: ApplyJournal): MigrationPlan {
+  return buildMigrationPlan(undefined, { journal }, { ignoreApplyJournal: true });
 }
 
 function printPlan(plan: MigrationPlan): void {
@@ -2654,7 +2686,7 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
       ) {
         const backup = ensureMigrationBackupWithConfigLockHeld();
         runPostCutoverStateMigrations();
-        return { plan: inspectMigrationPlan(), backup };
+        return { plan: requireCurrentMigrationPlan(inspectMigrationPlan(), "Post-cutover state migration"), backup };
       }
       const backup = active.journal
         ? { path: active.journal.backupPath, manifest: verifyMigrationBackup(active.journal.backupPath) }
@@ -2689,7 +2721,13 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
           crashInMutationGapForTests("proposal-repair");
           forwardRecoveryRequired = true;
           runTaskOnlyRepair(journal, taskTargetPlan);
-          return { plan: inspectMigrationPlan(), backup };
+          repairCommittedTaskTargets(journal, target);
+          const completed = requireCurrentMigrationPlan(
+            inspectFinalMigrationPlan(journal),
+            "Task-only migration repair",
+          );
+          clearApplyJournal();
+          return { plan: completed, backup };
         }
 
         runStateMigrationStep(journal);
@@ -2767,8 +2805,9 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
             journal.formatVersion === 5 ? cutoverRefMapIdentity(journal) : undefined,
           );
         }
+        repairCommittedTaskTargets(journal, target);
+        const completed = requireCurrentMigrationPlan(inspectFinalMigrationPlan(journal), "Migration apply");
         clearApplyJournal();
-        const completed = inspectMigrationPlan();
         return { plan: completed, backup };
       } catch (error) {
         if (error instanceof MigrationPreflightGenerationError || error instanceof MigrationSnapshotChangedError) {
@@ -2817,7 +2856,6 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
   console.log(
     JSON.stringify({
       ...result.plan,
-      status: result.plan.status === "blocked" ? "blocked" : "current",
       ...(result.backup ? { backupPath: result.backup.path, backupRunId: result.backup.manifest.runId } : {}),
     }),
   );

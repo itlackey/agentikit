@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { getLegacyWorkflowDbPath } from "../../scripts/akm-migrate/migrate/legacy/legacy-paths";
+import { FROZEN_WORKFLOW_MIGRATIONS } from "../../scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies";
 import {
   createMigrationBackup,
   getMigrationBackupDir,
@@ -21,7 +22,7 @@ import {
   getLockfileLockPath,
   getStateDbPathInDataDir,
 } from "../../src/core/paths";
-import { runMigrations as runStateMigrations } from "../../src/core/state/migrations";
+import { runMigrations as runStateMigrations, STATE_MIGRATIONS } from "../../src/core/state/migrations";
 import { openStateDatabase } from "../../src/core/state-db";
 import { acquireIndexWriterLease } from "../../src/indexer/index-writer-lock";
 import { openLegacyWorkflowDb } from "../_helpers/legacy-workflow-db";
@@ -329,7 +330,7 @@ describe("0.9 migration backup", () => {
     // missing_since) needs that table to exist too.
     state.exec(`
       CREATE TABLE improve_runs(id TEXT PRIMARY KEY, profile TEXT, started_at TEXT);
-      CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
+      CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')), checksum TEXT);
       CREATE TABLE asset_outcome (
         asset_ref                TEXT    PRIMARY KEY,
         last_retrieved_at        INTEGER NOT NULL DEFAULT 0,
@@ -356,7 +357,7 @@ describe("0.9 migration backup", () => {
       );
       CREATE INDEX idx_asset_salience_rank ON asset_salience(rank_score DESC);
     `);
-    const stateInsert = state.prepare("INSERT INTO schema_migrations(id) VALUES (?)");
+    const stateInsert = state.prepare("INSERT INTO schema_migrations(id, checksum) VALUES (?, ?)");
     for (const id of [
       "001-initial-schema",
       "002-task-history-per-run",
@@ -375,7 +376,9 @@ describe("0.9 migration backup", () => {
       "015-asset-salience-encoding-source",
       "016-collapse-churn-detector",
     ]) {
-      stateInsert.run(id);
+      const migration = STATE_MIGRATIONS.find((candidate) => candidate.id === id);
+      if (!migration) throw new Error(`Missing state migration fixture ${id}`);
+      stateInsert.run(id, migration.checksum);
     }
     state.close();
 
@@ -384,9 +387,9 @@ describe("0.9 migration backup", () => {
       CREATE TABLE workflow_runs(id TEXT PRIMARY KEY, workflow_ref TEXT, status TEXT, scope_key TEXT);
       CREATE TABLE workflow_run_steps(run_id TEXT, step_id TEXT, sequence_index INTEGER);
       CREATE TABLE workflow_run_units(run_id TEXT, unit_id TEXT);
-      CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
+      CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')), checksum TEXT);
     `);
-    const workflowInsert = workflow.prepare("INSERT INTO schema_migrations(id) VALUES (?)");
+    const workflowInsert = workflow.prepare("INSERT INTO schema_migrations(id, checksum) VALUES (?, ?)");
     for (const id of [
       "001-add-scope-key",
       "002-add-agent-identity",
@@ -398,7 +401,9 @@ describe("0.9 migration backup", () => {
       "008-unit-attempts",
       "009-unit-claim",
     ]) {
-      workflowInsert.run(id);
+      const migration = FROZEN_WORKFLOW_MIGRATIONS.find((candidate) => candidate.id === id);
+      if (!migration) throw new Error(`Missing workflow migration fixture ${id}`);
+      workflowInsert.run(id, migration.checksum);
     }
     workflow.close();
 

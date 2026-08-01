@@ -11,7 +11,11 @@ import { FROZEN_WORKFLOW_MIGRATIONS } from "../../scripts/akm-migrate/migrate/le
 import { runMigrations as runStateMigrations, STATE_MIGRATIONS } from "../../src/core/state/migrations";
 import { openStateDatabase } from "../../src/core/state-db";
 import type { Database as AkmDatabase } from "../../src/storage/database";
-import { migrationChecksum, runMigrations as runSqliteMigrations } from "../../src/storage/engines/sqlite-migrations";
+import {
+  type Migration,
+  migrationChecksum,
+  runMigrations as runSqliteMigrations,
+} from "../../src/storage/engines/sqlite-migrations";
 import { openLegacyWorkflowDb } from "../_helpers/legacy-workflow-db";
 
 /**
@@ -56,6 +60,11 @@ function snapshotSchema(db: AkmDatabase): {
   return { migrations, schema };
 }
 
+function testMigration(id: string, up: string): Migration {
+  const body = { id, up };
+  return { ...body, checksum: migrationChecksum(body) };
+}
+
 describe("SQLite migration runner characterization", () => {
   let tmpDir: string;
 
@@ -70,7 +79,8 @@ describe("SQLite migration runner characterization", () => {
   test("state.db: released initial migration body remains checksum-sealed", () => {
     const initial = STATE_MIGRATIONS[0];
     if (!initial) throw new Error("Initial state migration is missing");
-    expect(migrationChecksum(initial)).toBe("670c210dabf8c12022678aac76b90531321b33f7a328b99c52f38bda224be6c3");
+    expect(initial.checksum).toBe("8e213a59645b1e32438c6ddcd99add91de6cd66255ab1ef10c26ac8bd62879e8");
+    expect(migrationChecksum(initial)).toBe(initial.checksum);
   });
 
   test("state.db: fresh-DB migration replay produces a stable schema + ledger", () => {
@@ -228,7 +238,7 @@ describe("SQLite migration runner characterization", () => {
         INSERT INTO schema_migrations(id) VALUES ('001-known'), ('999-future');
       `);
       expect(() =>
-        runSqliteMigrations(db as never, [{ id: "001-known", up: "CREATE TABLE known(value TEXT)" }]),
+        runSqliteMigrations(db as never, [testMigration("001-known", "CREATE TABLE known(value TEXT)")]),
       ).toThrow(/newer|unknown|prefix/i);
       expect(db.query("SELECT name FROM sqlite_master WHERE name='known'").get()).toBeNull();
     } finally {
@@ -238,9 +248,9 @@ describe("SQLite migration runner characterization", () => {
 
   test("rejects holey and out-of-order ledgers", () => {
     const migrations = [
-      { id: "001-one", up: "CREATE TABLE one(value TEXT)" },
-      { id: "002-two", up: "CREATE TABLE two(value TEXT)" },
-      { id: "003-three", up: "CREATE TABLE three(value TEXT)" },
+      testMigration("001-one", "CREATE TABLE one(value TEXT)"),
+      testMigration("002-two", "CREATE TABLE two(value TEXT)"),
+      testMigration("003-three", "CREATE TABLE three(value TEXT)"),
     ];
     for (const ids of [
       ["001-one", "003-three"],
@@ -262,14 +272,20 @@ describe("SQLite migration runner characterization", () => {
 
   test("seals legacy ledger rows with checksums and rejects changed released SQL", () => {
     const db = new Database(path.join(tmpDir, "checksum.db"));
-    const released = { id: "001-released", up: "CREATE TABLE released(value TEXT)" };
+    const released = testMigration("001-released", "CREATE TABLE released(value TEXT)");
     try {
       db.exec(`
         CREATE TABLE released(value TEXT);
         CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
         INSERT INTO schema_migrations(id) VALUES ('001-released');
       `);
-      runSqliteMigrations(db as never, [released]);
+      expect(() => runSqliteMigrations(db as never, [released])).toThrow(/authorized released checksum ceiling/i);
+      expect(
+        (db.query("PRAGMA table_info(schema_migrations)").all() as Array<{ name: string }>).some(
+          (column) => column.name === "checksum",
+        ),
+      ).toBe(false);
+      runSqliteMigrations(db as never, [released], { sealNullChecksumsThrough: released.id });
       expect(
         (db.query("SELECT checksum FROM schema_migrations WHERE id='001-released'").get() as { checksum: string })
           .checksum,
@@ -279,6 +295,57 @@ describe("SQLite migration runner characterization", () => {
       ).toThrow(/checksum/i);
     } finally {
       db.close();
+    }
+  });
+
+  test("rejects a registry body mismatch before creating a migration ledger", () => {
+    const db = new Database(path.join(tmpDir, "bad-registry.db"));
+    const migration = testMigration("001-bad", "CREATE TABLE bad(value TEXT)");
+    try {
+      expect(() => runSqliteMigrations(db as never, [{ ...migration, up: "CREATE TABLE bad(value INTEGER)" }])).toThrow(
+        /sealed checksum/i,
+      );
+      expect(db.query("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get()).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  test("rejects empty and unsupported NULL checksums before mutation", () => {
+    const migrations = [
+      testMigration("001-one", "CREATE TABLE one(value TEXT)"),
+      testMigration("002-two", "CREATE TABLE two(value TEXT)"),
+    ];
+    const empty = new Database(path.join(tmpDir, "empty-checksum.db"));
+    try {
+      empty.exec(`
+        CREATE TABLE one(value TEXT);
+        CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')), checksum TEXT);
+        INSERT INTO schema_migrations(id, checksum) VALUES ('001-one', '');
+      `);
+      expect(() => runSqliteMigrations(empty as never, migrations)).toThrow(/checksum/i);
+    } finally {
+      empty.close();
+    }
+
+    const unsupported = new Database(path.join(tmpDir, "unsupported-null.db"));
+    try {
+      unsupported.exec(`
+        CREATE TABLE one(value TEXT);
+        CREATE TABLE two(value TEXT);
+        CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
+        INSERT INTO schema_migrations(id) VALUES ('001-one'), ('002-two');
+      `);
+      expect(() =>
+        runSqliteMigrations(unsupported as never, migrations, { sealNullChecksumsThrough: "001-one" }),
+      ).toThrow(/authorized released checksum ceiling/i);
+      expect(
+        (unsupported.query("PRAGMA table_info(schema_migrations)").all() as Array<{ name: string }>).some(
+          (column) => column.name === "checksum",
+        ),
+      ).toBe(false);
+    } finally {
+      unsupported.close();
     }
   });
 });

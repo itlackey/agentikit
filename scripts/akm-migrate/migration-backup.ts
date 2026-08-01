@@ -17,6 +17,10 @@ import {
   type SealedMigration,
 } from "../../src/storage/engines/sqlite-migrations";
 import {
+  PUBLISHED_08_STATE_CHECKSUM_CEILING,
+  PUBLISHED_08_WORKFLOW_CHECKSUM_CEILING,
+} from "../../src/storage/released-migration-lineage";
+import {
   MAX_CONFIG_FILE_BYTES,
   MAX_LOCAL_METADATA_BYTES,
   readTextFileWithLimit,
@@ -273,13 +277,17 @@ function quickCheck(db: ReturnType<typeof openDatabaseFinalizing>, filePath: str
   }
 }
 
-function inspectSqlite(filePath: string, migrations: readonly Migration[]): MigrationArtifactState {
+function inspectSqlite(
+  filePath: string,
+  migrations: readonly Migration[],
+  allowNullChecksumsThrough: string,
+): MigrationArtifactState {
   if (!fs.existsSync(filePath)) return { status: "missing" };
   let db: ReturnType<typeof openDatabaseFinalizing> | undefined;
   try {
     db = openDatabaseFinalizing(filePath, { readonly: true });
     quickCheck(db, filePath);
-    return mapLedgerState(inspectMigrationLedger(db, migrations));
+    return mapLedgerState(inspectMigrationLedger(db, migrations, { allowNullChecksumsThrough }));
   } catch (error) {
     return { status: "corrupt", detail: error instanceof Error ? error.message : String(error) };
   } finally {
@@ -293,13 +301,17 @@ function inspectSqlite(filePath: string, migrations: readonly Migration[]): Migr
  * three-DB cutover (WI-8.3) but whose pre-cutover backups must stay verifiable
  * (plan §3.3 item 1). Behaviourally identical to {@link inspectSqlite}.
  */
-function inspectSqliteSealed(filePath: string, sealed: readonly SealedMigration[]): MigrationArtifactState {
+function inspectSqliteSealed(
+  filePath: string,
+  sealed: readonly SealedMigration[],
+  allowNullChecksumsThrough: string,
+): MigrationArtifactState {
   if (!fs.existsSync(filePath)) return { status: "missing" };
   let db: ReturnType<typeof openDatabaseFinalizing> | undefined;
   try {
     db = openDatabaseFinalizing(filePath, { readonly: true });
     quickCheck(db, filePath);
-    return mapLedgerState(inspectSealedMigrationLedger(db, sealed));
+    return mapLedgerState(inspectSealedMigrationLedger(db, sealed, { allowNullChecksumsThrough }));
   } catch (error) {
     return { status: "corrupt", detail: error instanceof Error ? error.message : String(error) };
   } finally {
@@ -335,16 +347,30 @@ export interface MigrationInspectionPaths {
 
 /** Recoverability inspection per artifact, optionally against caller-owned SQLite snapshots. */
 function inspectLedgerArtifact(name: Exclude<ArtifactName, "config.json">, filePath: string): MigrationArtifactState {
-  if (name === "state.db") return inspectSqlite(filePath, STATE_MIGRATIONS);
-  if (name === "workflow.db") return inspectSqliteSealed(filePath, WORKFLOW_MIGRATIONS_CHECKSUMS);
+  if (name === "state.db")
+    return inspectSqlite(filePath, STATE_MIGRATIONS, PUBLISHED_08_STATE_CHECKSUM_CEILING);
+  if (name === "workflow.db")
+    return inspectSqliteSealed(
+      filePath,
+      WORKFLOW_MIGRATIONS_CHECKSUMS,
+      PUBLISHED_08_WORKFLOW_CHECKSUM_CEILING,
+    );
   return inspectIndexDbArtifact(filePath);
 }
 
 export function inspectMigrationState(paths: MigrationInspectionPaths = {}): MigrationState {
   return {
     config: inspectConfig(getConfigPath()),
-    state: inspectSqlite(paths.stateDbPath ?? getStateDbPathInDataDir(), STATE_MIGRATIONS),
-    workflow: inspectSqliteSealed(paths.workflowDbPath ?? getLegacyWorkflowDbPath(), WORKFLOW_MIGRATIONS_CHECKSUMS),
+    state: inspectSqlite(
+      paths.stateDbPath ?? getStateDbPathInDataDir(),
+      STATE_MIGRATIONS,
+      PUBLISHED_08_STATE_CHECKSUM_CEILING,
+    ),
+    workflow: inspectSqliteSealed(
+      paths.workflowDbPath ?? getLegacyWorkflowDbPath(),
+      WORKFLOW_MIGRATIONS_CHECKSUMS,
+      PUBLISHED_08_WORKFLOW_CHECKSUM_CEILING,
+    ),
     index: inspectIndexDbArtifact(paths.indexDbPath ?? getDbPath()),
   };
 }

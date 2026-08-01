@@ -9,8 +9,10 @@ import { NotFoundError } from "../core/errors";
 
 function migrationEntryPoint(): string | undefined {
   const candidates = [
-    fileURLToPath(new URL("../../scripts/akm-migrate.ts", import.meta.url)),
-    fileURLToPath(new URL("../scripts/akm-migrate.js", import.meta.url)),
+    fileURLToPath(
+      new URL(process.versions.bun ? "../scripts/akm-migrate.js" : "../scripts/akm-migrate-node.js", import.meta.url),
+    ),
+    ...(process.versions.bun ? [fileURLToPath(new URL("../../scripts/akm-migrate.ts", import.meta.url))] : []),
   ];
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
@@ -34,8 +36,7 @@ export async function runMigrationTool(args: readonly string[]): Promise<void> {
   // `scripts/akm-standalone.ts`, which embeds the migrator and dispatches to
   // it when `AKM_MIGRATE_ENTRY=1` — so re-exec ourselves with the marker.
   // (src must not import scripts/: the dist build's tsc has `rootDir: src`.)
-  const runtime = process.versions.bun ? process.execPath : "bun";
-  const result = spawnSync(runtime, entry ? [entry, ...args] : [...args], {
+  const result = spawnSync(process.execPath, entry ? [entry, ...args] : [...args], {
     encoding: "utf8",
     env: entry ? process.env : { ...process.env, AKM_MIGRATE_ENTRY: "1" },
     maxBuffer: 16 * 1024 * 1024,
@@ -44,7 +45,7 @@ export async function runMigrationTool(args: readonly string[]): Promise<void> {
     throw new NotFoundError(
       `Cannot start the standalone akm-migrate tool: ${result.error.message}`,
       "FILE_NOT_FOUND",
-      "Install Bun, then run akm-migrate directly.",
+      "Reinstall akm-cli, or use a runtime-free standalone release binary.",
     );
   }
   if (result.stdout) process.stdout.write(result.stdout);

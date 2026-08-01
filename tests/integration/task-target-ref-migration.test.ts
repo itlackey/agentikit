@@ -25,11 +25,15 @@ beforeEach(() => {
 
 afterEach(() => storage.cleanup());
 
-function seedMigration(workflowRef: string, createWorkflow = true): { prepared: string; taskPath: string } {
+function seedMigration(
+  workflowRef: string,
+  createWorkflow = true,
+  configuredStashDir = storage.stashDir,
+): { prepared: string; taskPath: string } {
   fs.mkdirSync(path.dirname(getConfigPath()), { recursive: true });
   fs.writeFileSync(
     getConfigPath(),
-    `${JSON.stringify({ configVersion: "0.8.0", stashDir: storage.stashDir, sources: [] })}\n`,
+    `${JSON.stringify({ configVersion: "0.8.0", stashDir: configuredStashDir, sources: [] })}\n`,
     { mode: 0o600 },
   );
   const prepared = path.join(storage.root, "prepared-0.9.json");
@@ -37,7 +41,7 @@ function seedMigration(workflowRef: string, createWorkflow = true): { prepared: 
     prepared,
     `${JSON.stringify({
       configVersion: "0.9.0",
-      stashDir: storage.stashDir,
+      stashDir: configuredStashDir,
       sources: [],
       semanticSearchMode: "off",
     })}\n`,
@@ -119,6 +123,48 @@ test("a crash after task mutation resumes the journaled forward phase idempotent
   const resumed = await runCliCapture(["migrate", "apply"]);
   expect(resumed.code, resumed.stderr).toBe(0);
   expect(fs.readFileSync(taskPath, "utf8")).toBe(migratedTask);
+  expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+});
+
+test("committed recovery rewrites task work discovered after the original task phase", async () => {
+  const initialCwd = path.join(storage.root, "initial-cwd");
+  const resumeCwd = path.join(storage.root, "resume-cwd", "nested");
+  fs.mkdirSync(initialCwd, { recursive: true });
+  fs.mkdirSync(resumeCwd, { recursive: true });
+  const relativeStash = path.relative(initialCwd, storage.stashDir);
+  const { prepared } = seedMigration("workflow:upgrade-noop", true, relativeStash);
+  const cliPath = path.resolve(import.meta.dir, "../..", "src", "cli.ts");
+  const child = Bun.spawn([process.execPath, cliPath, "migrate", "apply", "--config", prepared], {
+    cwd: initialCwd,
+    env: { ...process.env, AKM_TEST_MIGRATION_CRASH_AFTER: "tasks" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  expect(JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8")).phase).toBe("tasks-applied");
+
+  const lateTask = path.join(storage.stashDir, "tasks", "late-legacy.yml");
+  fs.writeFileSync(lateTask, 'schedule: "@daily"\nworkflow: workflow:upgrade-noop\nenabled: true\n');
+  const wrongStash = path.resolve(resumeCwd, relativeStash);
+  const phantomTask = path.join(wrongStash, "tasks", "phantom.yml");
+  fs.mkdirSync(path.dirname(phantomTask), { recursive: true });
+  fs.writeFileSync(phantomTask, 'schedule: "@daily"\nworkflow: workflow:phantom\nenabled: true\n');
+
+  const resumed = Bun.spawn([process.execPath, cliPath, "migrate", "apply"], {
+    cwd: resumeCwd,
+    env: { ...process.env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [resumeCode, resumeStdout, resumeStderr] = await Promise.all([
+    resumed.exited,
+    new Response(resumed.stdout).text(),
+    new Response(resumed.stderr).text(),
+  ]);
+  expect(resumeCode, resumeStderr).toBe(0);
+  expect(JSON.parse(resumeStdout)).toMatchObject({ status: "current" });
+  expect(fs.readFileSync(lateTask, "utf8")).toContain("workflow: workflows/upgrade-noop");
+  expect(fs.readFileSync(phantomTask, "utf8")).toContain("workflow: workflow:phantom");
   expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
 });
 

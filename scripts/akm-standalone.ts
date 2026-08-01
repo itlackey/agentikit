@@ -14,8 +14,8 @@
  * there, and the documented `./akm-<ver> migrate status/apply` upgrade path
  * used to dead-end with FILE_NOT_FOUND. src must never import scripts/ (the
  * dist build's tsc has `rootDir: src`), so the coupling lives HERE, in the
- * migrator's own home — mirroring how dist/ ships the migrator as a separate
- * `Bun.build` bundle (scripts/copy-assets.ts).
+ * migrator's own home — mirroring how dist/ ships separate Bun- and Node-targeted
+ * `Bun.build` bundles (scripts/copy-assets.ts).
  *
  * Dispatch:
  *   - `AKM_MIGRATE_ENTRY=1` (set by `runMigrationTool` when it re-execs this
