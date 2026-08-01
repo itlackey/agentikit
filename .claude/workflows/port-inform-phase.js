@@ -16,7 +16,29 @@ export const meta = {
 // Config
 // ---------------------------------------------------------------------------
 
-const REPO = args?.repo ?? '/home/user/akm'
+// The runtime may hand us `args` as a real object or as a JSON-encoded string,
+// depending on how the tool call was serialized. A string has no `.phase`
+// property, so reading it directly yields undefined and looks identical to
+// "no args passed at all" — normalize before use and keep the distinction
+// visible in the error below.
+function normalizeArgs(raw) {
+  if (raw == null) return {}
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim()
+    if (!trimmed) return {}
+    try {
+      const parsed = JSON.parse(trimmed)
+      return typeof parsed === 'object' && parsed !== null ? parsed : { phase: String(parsed) }
+    } catch {
+      return { phase: trimmed } // bare "P1"
+    }
+  }
+  return raw
+}
+
+const input = normalizeArgs(args)
+
+const REPO = input.repo ?? '/home/user/akm'
 const BRANCH = 'claude/inform-akm-porting-nk81wa'
 const PLAN = 'docs/plans/port-inform-capabilities.md'
 
@@ -60,10 +82,14 @@ const PHASES = {
   },
 }
 
-const key = String(args?.phase ?? '').toUpperCase()
+const key = String(input.phase ?? '').toUpperCase()
 const phaseDef = PHASES[key]
 if (!phaseDef) {
-  throw new Error(`Unknown phase ${JSON.stringify(args?.phase)}. Pass args {phase: "P1".."P5"}.`)
+  throw new Error(
+    `Unknown phase ${JSON.stringify(input.phase)}. ` +
+      `Received args as typeof=${typeof args}, raw=${JSON.stringify(args)}. ` +
+      `Pass args {phase: "P1".."P5"}.`,
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +471,7 @@ Phase ${key} passed its gate. Close it out:
      test review and the code review, with its disposition.
   2. Tick the acceptance-criteria checkboxes in ${phaseDef.spec} that are now met.
      Leave unmet ones unticked and note why.
-  3. Add a CHANGELOG.md entry for this phaseDef.${key === 'P1' ? ' P1 changes default behavior — the entry MUST document that robots.txt is now honored by default and name the respectRobots opt-out.' : ''}
+  3. Add a CHANGELOG.md entry for this phase.${key === 'P1' ? ' P1 changes default behavior — the entry MUST document that robots.txt is now honored by default and name the respectRobots opt-out.' : ''}
   4. Commit, then: git push -u origin ${BRANCH}
 
 Advisory findings to record:
