@@ -638,7 +638,11 @@ describe("tasks parity", () => {
       const launcher = path.join(REPO_ROOT, "dist", "akm");
       const resolvedNode = Bun.which(NODE_BIN);
       if (!resolvedNode) throw new Error(`Could not resolve Node executable: ${NODE_BIN}`);
+      const isolatedNodeDir = path.join(root, "node-bin");
+      const isolatedNode = path.join(isolatedNodeDir, "node");
       fs.mkdirSync(fakeBin, { recursive: true });
+      fs.mkdirSync(isolatedNodeDir, { recursive: true });
+      fs.symlinkSync(fs.realpathSync(resolvedNode), isolatedNode);
       fs.writeFileSync(
         path.join(fakeBin, "crontab"),
         [
@@ -655,9 +659,7 @@ describe("tasks parity", () => {
         { mode: 0o755 },
       );
 
-      const schedulerPath = [fakeBin, path.dirname(launcher), path.dirname(resolvedNode), "/usr/bin", "/bin"].join(
-        path.delimiter,
-      );
+      const schedulerPath = [fakeBin, path.dirname(launcher), isolatedNodeDir, "/usr/bin", "/bin"].join(path.delimiter);
       expect(schedulerPath.split(path.delimiter)).not.toContain(path.dirname(process.execPath));
       const schedulerEnv = {
         ...nodeEnv,
@@ -674,7 +676,7 @@ describe("tasks parity", () => {
       delete schedulerProcessEnv.BUN_TEST;
       delete schedulerProcessEnv.NODE_ENV;
       const launcherRun = (args: string[]): NodeResult => {
-        const result = nodeSpawnSync(resolvedNode, [launcher, ...args], {
+        const result = nodeSpawnSync(isolatedNode, [launcher, ...args], {
           env: schedulerProcessEnv,
           encoding: "utf8",
           timeout: 120_000,

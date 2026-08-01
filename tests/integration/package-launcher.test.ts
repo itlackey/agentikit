@@ -12,6 +12,7 @@ const nodeOnlyPathDir = path.join(testRoot, "node path");
 const oldBunPathDir = path.join(testRoot, "old bun path");
 const unusableBunPathDir = path.join(testRoot, "unusable bun path");
 const windowsShimDir = path.join(testRoot, "generated windows shims");
+const isolatedNode = path.join(nodeOnlyPathDir, process.platform === "win32" ? "node.exe" : "node");
 const launcher = path.join(packageDir, "akm");
 const migrateLauncher = path.join(packageDir, "akm-migrate");
 
@@ -125,7 +126,6 @@ beforeAll(async () => {
 
   const node = Bun.which("node");
   if (!node) throw new Error("Node.js is required for the package launcher contract test");
-  const isolatedNode = path.join(nodeOnlyPathDir, process.platform === "win32" ? "node.exe" : "node");
   fs.symlinkSync(fs.realpathSync(node), isolatedNode);
 
   fakeBun(oldBunPathDir, "0.9.9");
@@ -172,7 +172,7 @@ describe("package launcher", () => {
     if (!node) throw new Error("Node.js is required for the package launcher contract test");
 
     for (const bunDir of [oldBunPathDir, unusableBunPathDir]) {
-      const pathValue = runtimePath(node, path.join(bunDir, "bun"));
+      const pathValue = runtimePath(isolatedNode, path.join(bunDir, "bun"));
       const core = launchThroughNpmShim(akmCase.bin, pathValue);
       expect(new TextDecoder().decode(core.stderr)).toBe("");
       expect(core.exitCode).toBe(0);
