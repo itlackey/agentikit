@@ -37,11 +37,39 @@ conventions, security posture, and test-isolation harness.
   follow-up optimization, not part of this port.
 - **inform's YouTube ingester**: akm already has a superior InnerTube-based
   implementation (`snapshot-fetchers/youtube.ts`).
-- **Turndown dependency**: inform uses `turndown` for HTML→Markdown. akm is
-  dependency-averse here; we improve akm's existing regex converter with
-  content-scoping (P2) rather than adding a DOM-emulation dependency. If the
-  Opus review of P2 concludes the regex approach is insufficient, adding a
-  dependency requires a separate decision, not a silent install.
+### Approved dependencies
+
+akm has been dependency-averse on this path, but the owner has approved adding
+real parsers rather than extending the hand-rolled regex converters (see §1.1).
+The following are **approved**; anything beyond them needs a fresh decision:
+
+| Dependency | Phase | Purpose |
+|-----------|-------|---------|
+| `turndown` | P2 | HTML→Markdown conversion (the library inform uses; ships its own DOM shim for Node) |
+| a DOM selector lib (`node-html-parser` proposed) | P2 | Selecting the main-content region before conversion |
+| `fast-xml-parser` | P3 | RSS 2.0 / Atom 1.0 / RDF feed parsing (also inform's choice) |
+
+The P2 spec must confirm the exact selector library and verify that
+`bun run build` still produces working standalone binaries — akm compiles with
+`bun build --compile`, so a dependency with native bindings or dynamic
+`require` would break the release artifacts. `./tests/release-check.sh` must
+pass before P2 closes.
+
+### 1.1 Decisions on record
+
+Settled by the repo owner on 2026-08-01, before implementation started. These
+are inputs to the phase specs, not open questions:
+
+1. **robots.txt is honored by default.** `respectRobots` defaults to `true`.
+   This is an intentional behavior change — existing website sources may return
+   fewer pages after upgrade. Requires a `CHANGELOG.md` callout and a
+   documented opt-out.
+2. **P2 uses a real DOM parser plus `turndown`**, not extended regex scanning.
+   One code path on both Bun and Node; no HTMLRewriter runtime branching.
+3. **P3 uses `fast-xml-parser`**, matching inform, rather than hand-rolled feed
+   scanning.
+4. **X bearer token resolves from `X_BEARER_TOKEN` *and* akm's secret store**
+   via `src/core/env-secret-ref.ts`. P5 stays in scope.
 
 ### Licensing note
 
@@ -205,9 +233,10 @@ Port of inform's `RobotsParser` semantics, adapted:
   10s) so a hostile robots.txt cannot stall the crawl against the existing
   10-minute wall-clock cap.
 - Config surface: `options.respectRobots` on the website source entry,
-  **default `true`** — this is a deliberate behavior change turning akm into a
-  polite crawler; the spec must call it out and the changelog entry must
-  document the opt-out.
+  **default `true`** (decision §1.1.1) — a deliberate behavior change turning
+  akm into a polite crawler. The spec must call it out, the changelog entry
+  must document the opt-out, and an integration test must prove that
+  `respectRobots: false` fully restores the old behavior.
 - Disallowed start URL ⇒ `UsageError` explaining robots.txt blocked it and
   naming the opt-out.
 
@@ -222,15 +251,27 @@ test with a robots.txt-serving fixture server), crawl-delay clamping,
 **New:** `src/sources/snapshot-fetchers/content-extract.ts`
 **Modified:** `website-ingest.ts` (`htmlToMarkdown` gains a pre-pass)
 
-inform uses Bun's `HTMLRewriter`; akm must also run under Node ≥ 22 (npm
-package path), so **the spec's first task is a runtime decision**: use
-`HTMLRewriter` when available with a regex fallback, or a pure
-regex/string-scanning approach everywhere. Default proposal: pure string
-scanning (consistent with the existing `htmlToMarkdown`), extracting the first
-match of a selector priority list — `<main>`, `<article>`,
-`role="main"`, `id`/`class` ∈ {content, main-content, docs-content, markdown-body} —
-falling back to `<body>` with `<nav>/<header>/<footer>/<aside>` blocks
-stripped, falling back to current whole-page behavior.
+Per decision §1.1.2, this phase replaces the hand-rolled converter with a real
+DOM parse plus `turndown`, giving one code path on both Bun and Node (no
+`HTMLRewriter` branching).
+
+- **Selection:** parse once, then take the first match of a selector priority
+  list — `<main>`, `<article>`, `[role="main"]`, `id`/`class` ∈
+  {content, main-content, docs-content, markdown-body} — falling back to
+  `<body>` with `<nav>/<header>/<footer>/<aside>` removed, falling back to the
+  whole document.
+- **Conversion:** `turndown` configured as inform configures it (atx headings,
+  fenced code blocks, `_` emphasis) plus inform's custom rules: drop
+  `script`/`style`/`noscript`, fenced `<pre><code>` with language detection
+  from the `language-*` class, and empty-link removal.
+- **Security carry-over (must not regress):** the existing
+  `stripDangerousBlockTag` behavior and the `isSafeLinkUrl` http/https-only
+  check on rewritten links are load-bearing. Turndown rules must reproduce
+  both, and the SSRF/link-safety tests must still pass unchanged.
+- **This churns every website-snapshot golden.** Output quality should improve
+  markedly (real tables, nested lists, correct code fences), but the Opus
+  review at Step 5 must walk the golden diff file-by-file rather than accepting
+  it wholesale.
 
 - Link extraction for the crawl queue stays **whole-page** (nav links are how
   crawls find pages) — only the saved markdown is content-scoped. This matches
@@ -250,11 +291,15 @@ stripped, falling back to current whole-page behavior.
   `<rdf:RDF` prologue) so `matches` can pass ambiguous URLs through and
   `fetch` returns `null` for non-feeds (registry falls through to the website
   crawler — this fall-through is the contract, pin it with a test).
-- Parsing: **no `fast-xml-parser` dependency.** Feed item extraction
-  (title/link/date/description/content) via the same bounded
-  regex/string-scanning style as `youtube.ts`'s transcript parsing. Handles
-  RSS 2.0, Atom 1.0, RDF/RSS 1.0, CDATA sections, entity decoding (reuse
-  `decodeHtmlEntities`), item limit (default 50, `options.limit`).
+- Parsing: **`fast-xml-parser`** (decision §1.1.3), configured as inform
+  configures it — `ignoreAttributes: false`, `@_` attribute prefix,
+  `isArray` for `item`/`entry`/`category`/`link`, `parseTagValue: false` so
+  values stay strings. Handles RSS 2.0, Atom 1.0, RDF/RSS 1.0, CDATA, entity
+  decoding, item limit (default 50, `options.limit`).
+- **Parser hardening:** XML parsing on untrusted input needs explicit limits —
+  the spec must confirm `fast-xml-parser` is not entity-expansion-vulnerable
+  under our config (it does not resolve external entities by default), and the
+  feed body must still go through `readBodyWithByteCap` before parsing.
 - Output: one snapshot per feed (items concatenated as `## <title>` sections
   with source links and ISO dates), `preferredName: feeds/<slugified-host+path>`,
   tags `["rss", host]`. Single-snapshot (not per-item files) keeps it inside
@@ -281,9 +326,9 @@ stripped, falling back to current whole-page behavior.
 **New:** `src/sources/snapshot-fetchers/x.ts` (+ registry entry)
 
 - `matches`: `x.com/<user>`, `twitter.com/<user>` profile URLs.
-- Strategy chain (from inform): X API v2 when a bearer token is present
-  (env `X_BEARER_TOKEN`; **spec decision**: whether to also read akm's
-  env/secret store via `src/core/env-secret-ref.ts` — recommended), else RSS
+- Strategy chain (from inform): X API v2 when a bearer token is present —
+  resolved from env `X_BEARER_TOKEN` **and** akm's secret store via
+  `src/core/env-secret-ref.ts` (decision §1.1.4), else RSS
   template (env `X_RSS_TEMPLATE`, e.g. a Nitter instance) delegating to the
   P3 rss module, else return `null` **with a single `warn()`** naming both
   options — never a hard error, because `matches` firing on an x.com URL must
@@ -325,7 +370,10 @@ progress is always recoverable.
 
 - [ ] `bun run check` fully green (lint, typecheck, unit, integration).
 - [ ] Every new file: MPL header, Biome-clean, no `console.*`, no raw `fetch`.
-- [ ] No new npm dependencies (or a spec amendment explicitly approving one).
+- [ ] Only the three approved dependencies added (§2 "Approved dependencies");
+      anything else requires a new decision.
+- [ ] `bun run build` produces working standalone binaries with the new
+      dependencies bundled, and `./tests/release-check.sh` passes.
 - [ ] All five phase specs exist with closed review logs.
 - [ ] robots.txt honored by default on website crawls, with documented opt-out.
 - [ ] `akm bundle add <rss-url | bsky-profile | x-profile>` produces indexed,
