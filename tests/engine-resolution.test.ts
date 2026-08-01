@@ -187,9 +187,9 @@ describe("engine resolution", () => {
     }
   });
 
-  test("uses 60s for CLI agents and inherits the fallback LLM timeout for SDK agents", () => {
+  test("uses no timeout for CLI agents and inherits the fallback LLM timeout for SDK agents", () => {
     const direct = resolveEngine("reviewer", config);
-    expect(direct.timeoutMs).toBe(60_000);
+    expect(direct.timeoutMs).toBeNull();
 
     const inherited = resolveEngine("sdk", {
       ...config,

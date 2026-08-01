@@ -69,11 +69,9 @@ import type { SummaryJudge } from "../validate-summary";
 import { enqueueUnitWrite } from "./unit-writer";
 
 /**
- * Default per-unit timeout. Deliberately NOT the 60 s agent default
- * (`DEFAULT_AGENT_TIMEOUT_MS`) — workflow units routinely run real coding
- * tasks on slow local models; 10 minutes matches the LLM-path default
- * (`tryLlmFeature`). A unit's `timeout` declaration overrides this; `none`
- * disables.
+ * Default per-unit timeout for workflow units. A unit's `timeout` declaration
+ * overrides this; `none` disables it. Direct agent dispatch has no timeout by
+ * default, while workflow units retain an independent safety ceiling.
  */
 export const DEFAULT_UNIT_TIMEOUT_MS = 600_000;
 

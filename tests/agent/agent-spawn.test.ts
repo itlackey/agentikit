@@ -138,6 +138,25 @@ describe("runAgent — captured stdio", () => {
 });
 
 describe("runAgent — timeout", () => {
+  test("does not schedule a default kill timer", async () => {
+    const timers: Array<{ ms: number }> = [];
+    const fakeSet = ((_: () => void, ms?: number) => {
+      timers.push({ ms: ms ?? 0 });
+      return { unref() {} } as unknown as ReturnType<typeof setTimeout>;
+    }) as unknown as typeof setTimeout;
+    const fakeClear = (() => {}) as unknown as typeof clearTimeout;
+
+    const { spawn } = fakeSpawnFn({ exitCode: 0 });
+    const result = await runAgent(makeProfile(), "go", {
+      spawn,
+      setTimeoutFn: fakeSet,
+      clearTimeoutFn: fakeClear,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(timers.some(({ ms }) => ms === 60_000)).toBe(false);
+  });
+
   test("kills the subprocess and reports `timeout`", async () => {
     // Drive the timer manually so the assertion is deterministic.
     const timers: Array<{ cb: () => void; ms: number }> = [];
