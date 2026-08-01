@@ -59,7 +59,7 @@
  */
 
 import { renderUsage, runCommand } from "citty";
-import { main, shouldBypassConfigStartup } from "../../src/cli";
+import { main, normalizeCittyCliError, shouldBypassConfigStartup } from "../../src/cli";
 import { emitJsonError } from "../../src/cli/shared";
 import { assertKnownFlags, type FlagScanCommand } from "../../src/cli/unknown-flags";
 import { DEFAULT_CONFIG, loadConfig, resetConfigCache } from "../../src/core/config/config";
@@ -265,10 +265,16 @@ export async function runCliCapture(args: string[]): Promise<CliResult> {
     if (error instanceof ExitSignal) {
       code = error.exitCode;
     } else {
-      // An error escaped the command without going through emitJsonError; map it
-      // to an exit code the same way main()/emitJsonError would.
-      code = classifyExitCode(error);
-      stderr += `${error instanceof Error ? error.message : String(error)}\n`;
+      const normalized = normalizeCittyCliError(error, rawArgs);
+      if (normalized !== error) {
+        emitJsonError(normalized);
+        code = typeof process.exitCode === "number" ? process.exitCode : 2;
+      } else {
+        // An error escaped the command without going through emitJsonError; map it
+        // to an exit code the same way main()/emitJsonError would.
+        code = classifyExitCode(error);
+        stderr += `${error instanceof Error ? error.message : String(error)}\n`;
+      }
     }
   } finally {
     await disposeDispatchResources();

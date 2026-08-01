@@ -644,8 +644,16 @@ describe("OKF first-class conformance", () => {
       semanticSearchMode: "off",
       defaultBundle: "native",
       defaultWriteTarget: "native",
-      engines: { "test-agent": { kind: "agent", platform: "opencode-sdk" } },
-      defaults: { engine: "test-agent" },
+      engines: {
+        "test-agent": { kind: "agent", platform: "opencode-sdk" },
+        "test-llm": {
+          kind: "llm",
+          endpoint: "http://localhost:1/v1/chat/completions",
+          model: "test-model",
+        },
+      },
+      defaults: { engine: "test-agent", llmEngine: "test-llm" },
+      workflow: { judgeEngine: "test-llm" },
       bundles: {
         local: { path: storage.stashDir },
         native: {
@@ -685,15 +693,23 @@ describe("OKF first-class conformance", () => {
     expect(nested.ref).toBe("knowledge/nested");
     expect((await loadWorkflowAsset(nested.ref)).path).toBe(nested.path);
     const release = createWorkflowAsset({ name: "release1" });
-    expect((await runCliCapture(["workflow", "next", release.ref])).code).toBe(0);
+    await expect(getNextWorkflowStep(release.ref)).resolves.toMatchObject({ autoStarted: true });
 
     fs.unlinkSync(created.path);
     writeSandboxConfig({
       semanticSearchMode: "off",
       defaultBundle: "local",
       defaultWriteTarget: "local",
-      engines: { "test-agent": { kind: "agent", platform: "opencode-sdk" } },
-      defaults: { engine: "test-agent" },
+      engines: {
+        "test-agent": { kind: "agent", platform: "opencode-sdk" },
+        "test-llm": {
+          kind: "llm",
+          endpoint: "http://localhost:1/v1/chat/completions",
+          model: "test-model",
+        },
+      },
+      defaults: { engine: "test-agent", llmEngine: "test-llm" },
+      workflow: { judgeEngine: "test-llm" },
       bundles: { local: { path: storage.stashDir, writable: true } },
     });
     resetConfigCache();
@@ -756,8 +772,16 @@ describe("OKF first-class conformance", () => {
     writeSandboxConfig({
       semanticSearchMode: "off",
       defaultBundle: "local",
-      engines: { "test-agent": { kind: "agent", platform: "opencode-sdk" } },
-      defaults: { engine: "test-agent" },
+      engines: {
+        "test-agent": { kind: "agent", platform: "opencode-sdk" },
+        "test-llm": {
+          kind: "llm",
+          endpoint: "http://localhost:1/v1/chat/completions",
+          model: "test-model",
+        },
+      },
+      defaults: { engine: "test-agent", llmEngine: "test-llm" },
+      workflow: { judgeEngine: "test-llm" },
       bundles: {
         local: {
           path: storage.stashDir,

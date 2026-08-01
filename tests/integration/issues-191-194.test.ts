@@ -219,12 +219,13 @@ describe("issue #194 — workflow create --from then start has non-null workflow
     expect(created.status).toBe(0);
 
     // No explicit `akm index` — `workflow create --from` should leave the
-    // FTS index in a state that lets `workflow start` resolve a workflowEntryId.
+    // FTS index in a state that lets canonical `workflow run` resolve a
+    // workflowEntryId. A 1ms cooperative timeout stops before external work.
     const started = await runCli(
-      ["workflow", "start", "workflows/imported", "--params", '{"app_name":"sandbox-app"}'],
+      ["workflow", "run", "workflows/imported", "--app_name=sandbox-app", "--timeout=1ms"],
       env,
     );
-    expect(started.status).toBe(0);
+    expect(started.status).toBe(1);
     const startJson = JSON.parse(started.stdout) as {
       run: { id: string; workflowEntryId: number | null };
     };

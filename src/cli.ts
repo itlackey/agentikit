@@ -958,6 +958,11 @@ function toUsageErrorFromCliError(error: Error, rawArgs: readonly string[]): Usa
   return new UsageError(message, code, hint);
 }
 
+/** Normalize citty's private CLIError for the real entrypoint and in-process test harness. */
+export function normalizeCittyCliError(error: unknown, rawArgs: readonly string[]): unknown {
+  return isCittyCliError(error) ? toUsageErrorFromCliError(error, rawArgs) : error;
+}
+
 /**
  * The CLI's real startup sequence, extracted into a function so error paths
  * can `return` early — top-level `return` is a syntax error in an ES module,
@@ -1092,7 +1097,7 @@ async function runCli(): Promise<void> {
       // + raw `console.error(message)` — a one-line diagnosis plus a short
       // hint (with a did-you-mean suggestion when applicable), not a ~46KB
       // usage dump.
-      emitJsonError(toUsageErrorFromCliError(error, rawArgs));
+      emitJsonError(normalizeCittyCliError(error, rawArgs));
       return;
     }
     // Anything else escaping here is a genuinely unexpected failure outside

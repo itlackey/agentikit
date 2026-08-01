@@ -29,7 +29,7 @@ function shellQuote(value: string): string {
 }
 
 export function buildWorkflowAction(ref: string): string {
-  return `Resume the active run or start a new run with \`akm workflow next ${shellQuote(ref)}\`.`;
+  return `Start or resume execution with \`akm workflow run ${shellQuote(ref)}\`.`;
 }
 
 function deriveName(ctx: RenderContext): string {
@@ -138,7 +138,7 @@ export const workflowMdRenderer: AssetRenderer = {
   buildShowResponse(ctx: RenderContext): ShowResponse {
     const name = deriveName(ctx);
     const doc = loadDocument(ctx);
-    // WI-8.5b (display flip): the `akm workflow next <ref>` action is DISPLAY
+    // WI-8.5b (display flip): the `akm workflow run <ref>` action is DISPLAY
     // output — its spelling follows the D-R5 display rule (`displayRef`). A
     // primary/default-bundle workflow renders the SHORT conceptId
     // (`workflows/<name>`); a named source qualifies it as

@@ -139,6 +139,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Workflow execution is consolidated on stable `akm workflow run`.** The
+  public `workflow start`, `next`, and `complete` commands are removed with
+  explicit `UNKNOWN_COMMAND` migration hints; `run <ref|run-id>` now owns
+  creation, active-run continuation, native dispatch, completion, and durable
+  replay. It is no longer gated by `experimental.workflowEngine`; only the
+  experimental `brief`/`report` external-driver protocol retains that opt-in.
+  Workflow parameters move from the opaque `--params '<json>'` bag to exact
+  declared flags (`--version 1.2.3`, repeated array flags, JSON object/array
+  values) coerced through the frozen parameter schemas. New invocation controls
+  add bounded failed-step retries (`--max-retries`) and a whole-run timeout
+  (`--timeout N|Nms|Ns|Nm`); failures, gate rejection, timeout, and signals now
+  produce non-zero process statuses while leaving interrupted work resumable.
+
+  Criteria-bearing gates now require `workflow.judgeEngine`, which may name a
+  configured LLM or agent engine and is frozen into the run. Verification is
+  fail-closed: a missing/failing verifier or malformed verdict rejects instead
+  of silently advancing. Scheduled workflow tasks now execute through the same
+  native orchestrator rather than stopping after run creation. Migration:
+  replace `workflow start/next/complete` loops with `workflow run`, replace
+  `--params` with exact declared flags, and configure `workflow.judgeEngine`
+  before running a workflow with a non-empty `### gate` rubric.
+
 - **The two workflow authoring formats — markdown documents and YAML
   orchestration programs — are unified into one format**, per
   `docs/architecture/specs/workflow-format-unification.md`. A workflow is
@@ -169,15 +191,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bullet section — they live under a step's `### gate` sub-heading, the
   format's one reserved marker, as full prose a judge receives byte-exact.
   Frontmatter `gate:` now carries only optional `max_loops` configuration.
-  Omitted or empty rubric text skips validation; a non-empty rubric enables
-  fail-open validation, and unavailable or malformed judges are skipped.
+  Omitted or empty rubric text skips validation; a non-empty rubric requires
+  the frozen `workflow.judgeEngine`, and unavailable or malformed judges reject
+  the gate.
 
-  This is a **pre-1.0 change to an unshipped, opt-in feature** —
-  `experimental.workflowEngine` has never been enabled by default, and no
-  workflow asset has shipped outside the ten example workflows under
-  `scripts/akm-eval/example-stash/workflows/`, all rewritten to the
-  unified format in this change. There is nothing on disk to migrate and
-  no users to break.
+  This is a **pre-1.0 format change**. The ten example workflows under
+  `scripts/akm-eval/example-stash/workflows/` are rewritten to the unified
+  format in this change; existing user-authored workflow assets must be updated
+  manually before execution.
 
 - **akm is described as a knowledge toolkit, not a package manager** (R-048).
   The npm one-liner, the README lede, and the `concepts.md` opener all led with

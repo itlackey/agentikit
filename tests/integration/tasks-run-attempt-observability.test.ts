@@ -354,10 +354,10 @@ describe("tasks run attempt observability", () => {
       stashDir: storage.stashDir,
       logDir: blockedLogDir,
       now: () => new Date("2026-07-13T12:00:01.000Z"),
-      startWorkflowRunImpl: async (ref, params = {}) => ({
+      runWorkflowStepsImpl: async ({ target, params = {} }) => ({
         run: {
           id: "workflow-run",
-          workflowRef: ref,
+          workflowRef: target,
           workflowTitle: "Noop",
           status: "completed",
           params,
@@ -366,7 +366,8 @@ describe("tasks run attempt observability", () => {
           completedAt: "2026-07-13T12:00:01.000Z",
           currentStepId: null,
         },
-        workflow: { ref, title: "Noop", steps: [] },
+        executed: [],
+        done: true,
       }),
     });
 

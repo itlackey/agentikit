@@ -50,8 +50,8 @@ const IMPLICIT_FLAGS = ["help", "h", "version", "v"];
  * preempt the better diagnosis, so these are passed through — but ONLY on the
  * command path that owns the diagnostic, keyed by the resolved path. On every
  * other command the same spelling is a genuine typo and still fails fast
- * (e.g. `--dry-run` is diagnosed by `workflow next` but rejected everywhere
- * else, where silently dropping it could run a real mutation).
+ * A retired flag is rejected everywhere else, where silently dropping it could
+ * run a real mutation.
  *
  * Shrink-only: when a command drops its bespoke diagnostic, drop the entry and
  * the generic error takes over.
@@ -63,7 +63,6 @@ const SELF_DIAGNOSED_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
     "proposal accept": ["source"], // renamed to --generator
     "proposal reject": ["source"], // renamed to --generator
     "proposal drain": ["profile"], // retired, points at --strategy
-    "workflow next": ["dry-run", "from"], // rejected with a bespoke explanation
     search: ["source"], // renamed to --from
     curate: ["source"], // renamed to --from
     remember: ["target"], // renamed to --bundle
@@ -191,6 +190,7 @@ export function assertKnownFlags(root: FlagScanCommand, rawArgs: readonly string
   const ownArgs = passthroughAt === -1 ? rawArgs : rawArgs.slice(0, passthroughAt);
   const known = collectKnownArgs(root, rawArgs);
   if (!known.resolved) return;
+  const dynamicWorkflowParams = known.path.join(" ") === "workflow run";
   const selfDiagnosed = SELF_DIAGNOSED_FLAGS.get(known.path.join(" "));
 
   for (let i = 0; i < ownArgs.length; i += 1) {
@@ -240,6 +240,10 @@ export function assertKnownFlags(root: FlagScanCommand, rawArgs: readonly string
     const candidates = [cittyComparableName(rawName), ...(negated ? [cittyComparableName(negated)] : [])];
     if (selfDiagnosed !== undefined && candidates.some((name) => selfDiagnosed.has(name))) continue;
     if (!candidates.some((name) => known.names.has(name))) {
+      // `workflow run` owns one deliberately dynamic namespace: long options
+      // become exact-name workflow parameters and are checked against the
+      // frozen plan before a run is inserted. Short flags remain strict.
+      if (dynamicWorkflowParams) continue;
       const threshold = Math.max(2, Math.ceil(`--${rawName}`.length / 3));
       const suggestion = closestMatch(`--${rawName}`, known.displayNames, threshold);
       // No explicit hint when there is no suggestion — UNKNOWN_FLAG's canned

@@ -543,10 +543,8 @@ Author, inspect, and execute structured workflow assets.
 akm workflow create ship-release --print
 akm workflow create ship-release
 akm workflow create ship-release --from ./ship-release.md
-akm workflow start workflows/ship-release --params '{"version":"1.2.3"}'
-akm workflow next workflows/ship-release
-akm workflow next workflows/ship-release --params '{"version":"1.2.3"}'
-akm workflow complete <run-id> --step validate --state completed --summary "Inputs verified" --notes "reviewed by CI"
+akm workflow run workflows/ship-release --version 1.2.3
+akm workflow run <run-id>                  # continue an active partial run
 akm workflow status <run-id>
 akm workflow status workflows/ship-release
 akm workflow resume <run-id>
@@ -562,51 +560,75 @@ Subcommands:
 | Subcommand | Description |
 | --- | --- |
 | `create <name>` | Validate and write a unified markdown workflow under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites; `--print` prints the template that would be written instead of writing it |
-| `start <ref>` | Create a new persisted workflow run. `--params <json>` supplies parameters; `--force` allows a parallel run when an active run already exists in this scope |
-| `next <run-id\|ref>` | Return the current actionable step; resumes active runs and starts a new run when the ref has no active run |
-| `complete <run-id> --step <step-id>` | Update the current pending step on an active run and persist status, notes, and evidence. `--summary` is **required** and is optionally validated against the step's gate rubric; `--evidence <json>` attaches structured evidence |
+| `run <run-id\|ref>` | Stable canonical start/resume/execute command. A ref starts a run or continues the active run in the current scope; a run id continues that exact active run. Executes until completion, failure, verification rejection, interruption, or an explicit limit |
 | `status <run-id\|ref>` | Show the full run state, including all step statuses. `--units` also lists per-unit rows from the run journal (diagnostics only) |
 | `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`) |
 | `resume <run-id>` | Flip a `blocked` or `failed` run back to `active`. Completed runs cannot be resumed |
 | `abandon <run-id>` | Mark a run failed so it stops counting as active (`resume` can reopen it) |
-| `run <run-id\|ref>` | **EXPERIMENTAL, gated.** Execute a run's steps with the native engine, dispatching each step's units to the configured runner |
 | `brief <run-id\|ref>` | **EXPERIMENTAL, gated.** Describe the active step as an executable work-list for any agent session (read-only, mutates nothing) |
 | `report <run-id\|ref>` | **EXPERIMENTAL, gated.** Report a unit's result back into a run — the mutating half of the harness-neutral driver protocol; `--settle` advances a route-only/empty step with no unit to report |
 
-There is no `akm workflow template` or `akm workflow validate` either (0.9.0:
-dropped). `akm workflow create --print` prints the template `template` used
-to; `akm lint --type workflows` structurally validates both markdown workflow
-frontmatter and body prose. There is no `akm workflow watch` either —
-poll `akm log --since '@offset:<id>' --run <run-id>` instead (see the [`log`
-section](#log)).
+The public `workflow start`, `next`, and `complete` lifecycle was removed in
+0.9. Use `workflow run` for native orchestration, `workflow status` for
+inspection, and the experimental `brief`/`report` protocol only when an
+external agent must drive an existing run. The removed commands fail with an
+`UNKNOWN_COMMAND` envelope and a migration hint; there are no compatibility
+aliases.
 
-#### The experimental workflow engine (`run`/`brief`/`report`)
+There is also no `akm workflow template`, `validate`, or `watch`.
+`workflow create --print` prints a starter, `akm lint --type workflows`
+validates it, and `akm log --run <id> --since '@offset:<id>'` provides durable
+event polling.
 
-`akm workflow run`, `brief`, and `report` are gated behind the
-`experimental.workflowEngine` config key. Authoring and linting the unified
-markdown format are not gated. Until the engine is enabled, those three
-execution commands refuse with a `ConfigError`
-(**exit 78**) instead of running:
+#### workflow run
 
 ```sh
-$ akm workflow run <run-id>
-{
-  "ok": false,
-  "error": "`akm workflow run` is EXPERIMENTAL and refuses to run until `experimental.workflowEngine` is set. Run `akm config set experimental.workflowEngine true` to enable it.",
-  "code": "WORKFLOW_ENGINE_NOT_ENABLED"
-}
-# exit 78
-
-akm config set experimental.workflowEngine true   # opt in
+akm workflow run workflows/ship-release --version 1.2.3
+akm workflow run workflows/review --files a.ts --files b.ts
+akm workflow run <run-id> --max-steps 3
+akm workflow run <run-id> --max-retries 2 --timeout 10m
 ```
 
-The manual workflow CLI contract — `start`, `next`, `complete`, `status`,
-`list`, `create`, `resume`, `abandon` — is **not** gated and is stable per
-STABILITY.md; those verbs author or progress the same unified markdown asset
-without invoking the native engine.
+Parameter flags must follow the target and exactly match keys declared in the
+workflow's `params` frontmatter. AKM coerces each value from the declared JSON
+Schema before persisting the run:
+
+- strings retain their exact spelling;
+- numbers, integers, booleans, and `null` use their schema types;
+- object values are JSON;
+- array flags may be repeated (`--files a.ts --files b.ts`) or supplied once as
+  a JSON array.
+
+A bare boolean flag means `true`. Hyphen/underscore aliases are not inferred:
+declared `include_processes` requires `--include_processes`, not
+`--include-processes`. Parameters can be supplied only when a new run is
+created; a later invocation against an active run rejects parameter flags.
+The old `--params <json>` bag is removed.
+
+| Flag | Description |
+| --- | --- |
+| `--max-steps <n>` | Stop after executing at most this many steps, leaving a partial run active. Must be at least 1. |
+| `--max-retries <n>` | When a step fails, reopen the same run and retry the failed step up to this many additional times. Range: 0 through 100; default 0. Gate rejection and interruption are not retried. |
+| `--timeout <duration>` | Abort the whole invocation after `N`, `Nms`, `Ns`, or `Nm`; bare `N` is milliseconds. The active step remains resumable. |
+
+The result includes the current `run`, an `executed` step report list, and
+optional `done`, `gateRejection`, `aborted`, or `timedOut` markers. A failed
+run, rejected verification gate, timeout, or interrupt exits nonzero. `SIGINT`
+and `SIGTERM` map to 130 and 143; a timeout maps to exit 1. Reaching
+`--max-steps` with an active resumable run is successful.
+
+`run` is Stable and does not consult `experimental.workflowEngine`. Every
+non-empty `### gate` requires `workflow.judgeEngine` to name a configured LLM
+or agent engine before a new run can be frozen. Gate evaluation is fail-closed.
+
+#### Experimental external driver (`brief`/`report`)
+
+`brief` and `report` remain gated behind `experimental.workflowEngine`. Until
+enabled, they refuse with `WORKFLOW_ENGINE_NOT_ENABLED` and exit 78. `run`,
+authoring, linting, status, and recovery remain available with the key off.
 
 ```sh
-akm workflow run workflows/ship-release --max-steps 3
+akm config set experimental.workflowEngine true
 akm workflow brief <run-id>                     # per-unit instructions, output schema, env bindings
 akm workflow report <run-id> --unit <unit-id> --status completed --result '{"ok":true}'
 akm workflow report <run-id> --unit <unit-id> --status running --note "still working"
@@ -615,7 +637,6 @@ akm workflow report <run-id> --settle           # advance a route-only/empty ste
 
 | Flag | Applies to | Description |
 | --- | --- | --- |
-| `--max-steps <n>` | `run` | Stop after executing this many steps |
 | `--unit <id>` | `report` | Content-derived unit id from `workflow brief` (copy verbatim). Omit with `--settle`. |
 | `--settle` | `report` | Advance/finalize a run whose active step has no unit left to report. Mutually exclusive with `--unit`. |
 | `--expect-step <id>` | `report` | Guard: refuse if the run's active step has moved since you briefed against it |
@@ -629,7 +650,7 @@ repos or directories. akm resolves that context from the nearest `.akm/config.js
 ancestor when present, otherwise the nearest git root, otherwise the bundle root
 when the cwd is inside it, otherwise the cwd itself. In practice this means:
 
-- `workflow next workflows/<name>` resumes the active run for the current project/worktree/directory only.
+- `workflow run workflows/<name>` continues the active run for the current project/worktree/directory, or starts one when none is active.
 - `workflow status workflows/<name>` resolves the most-recently-updated run in the current scope only.
 - `workflow list` shows runs for the current scope only.
 - Direct run-id commands like `workflow status <run-id>` still work even if the run was started from another directory.
@@ -663,70 +684,9 @@ with `--path`, but the bare `--name` positional is rejected if it contains a
 (`knowledge`, `env`, `secret`, …) uses — `akm workflow create release/ship`
 directly is a usage error (exit 2).
 
-#### workflow start
-
-```sh
-akm workflow start workflows/ship-release
-akm workflow start workflows/ship-release --params '{"version":"1.2.3"}'
-akm workflow start workflows/ship-release --force   # allow a second, parallel run in this scope
-```
-
-| Flag | Description |
-| --- | --- |
-| `--params` | Workflow parameters as a JSON object |
-| `--force` | Allow a parallel run when an active run already exists in this scope. Without it, starting a workflow that already has an active run in the current scope is a usage error — use `akm workflow next` to resume it instead. |
-
-#### workflow next
-
-```sh
-akm workflow next workflows/ship-release
-akm workflow next <run-id>
-akm workflow next workflows/ship-release --params '{"version":"1.2.3"}'
-```
-
-When multiple active runs exist for the same workflow ref in the current scope,
-`next` selects the **most-recently-updated** run.
-
-When no active run exists, `next` auto-starts a new run for the workflow ref.
-Pass `--params` to supply parameters for the auto-started run. If an active run
-already exists, `--params` is rejected with a usage error.
-
-Response shape:
-
-| Field | When present |
-| --- | --- |
-| `step` | The current actionable step object, or `null` when the run is complete |
-| `done` | `true` when the resolved run is already complete |
-| `autoStarted` | `true` when `next` auto-started a new run (no active run existed) |
-| `run` | The run object |
-
-When `done: true` is present, `step` is `null` and no further action is needed
-for this run. Start a new run with `akm workflow start` if required.
-
-**Snapshot isolation:** workflow runs snapshot their step list when started.
-Edits to the source workflow file after a run has started do not affect
-in-flight runs. The run always follows the steps that were defined at start
-time.
-
-#### workflow complete
-
-```sh
-akm workflow complete <run-id> --step <step-id> --summary "Inputs verified"
-akm workflow complete <run-id> --step <step-id> --state completed --summary "Done" --notes "extra context"
-akm workflow complete <run-id> --step <step-id> --state skipped
-akm workflow complete <run-id> --step <step-id> --evidence '{"testsPassed": true}'
-```
-
-| Flag | Description |
-| --- | --- |
-| `--step <id>` | Workflow step id (required) |
-| `--state` | Step state. One of: `completed`, `blocked`, `failed`, `skipped`. Default: `completed`. |
-| `--summary` | Summary of work done — **required when completing a step** (i.e. when `--state` resolves to `completed`); optionally validated against the step's gate rubric. A well-formed rejection returns a `workflow-complete-rejected` result (the step stays pending) rather than throwing. |
-| `--notes` | Free-text notes for the step |
-| `--evidence` | Evidence JSON object for the step |
-
-`--state` defaults to `completed` when omitted. Accepted values: `completed`,
-`blocked`, `failed`, `skipped`.
+**Snapshot isolation:** `workflow run` compiles and freezes the workflow plan
+when it creates a run. Edits to the source workflow after that point do not
+affect the in-flight run.
 
 #### workflow status
 
@@ -2309,3 +2269,9 @@ Prompt targets dispatch through `--engine` or `defaults.engine` and may set
 `--engine`, `--model`, `--timeout-ms`, `--params`, `--name`, `--when-to-use`,
 `--description`, and `--tags`. A v1 task is diagnosed by sync and doctor
 but is never rewritten or executed.
+
+A workflow-target task executes the same native orchestration as `akm workflow
+run`; it does not stop after creating a run. Completion maps to task
+`completed`, while workflow failure or verifier rejection maps to task
+`failed`. The task schema's `params` mapping remains the non-CLI way a scheduled
+definition supplies its new-run parameter snapshot.

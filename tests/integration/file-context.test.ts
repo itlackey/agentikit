@@ -678,7 +678,7 @@ describe("Renderer", () => {
     const renderCtx = buildRenderContext(ctx, match, [root], "npm:@scope/pkg");
     const response = renderer.buildShowResponse(renderCtx);
 
-    expect(response.action).toContain("akm workflow next 'npm:@scope/pkg//workflows/release flow'");
+    expect(response.action).toContain("akm workflow run 'npm:@scope/pkg//workflows/release flow'");
   });
 });
 

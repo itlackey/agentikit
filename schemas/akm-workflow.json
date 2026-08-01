@@ -213,7 +213,7 @@
         "engine": {
           "type": "string",
           "minLength": 1,
-          "description": "Named engine selected at workflow start."
+          "description": "Named engine selected when the workflow run is created."
         },
         "model": {
           "type": "string",

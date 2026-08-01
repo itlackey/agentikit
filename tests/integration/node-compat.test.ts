@@ -853,17 +853,17 @@ describe("workflow smoke parity", () => {
     expect(json?.summary?.flagged).toBe(0);
   });
 
-  test.skipIf(!ENABLED)("workflow create + start + status round-trips through workflow.db on Node", () => {
+  test.skipIf(!ENABLED)("workflow create + run + status round-trips through state.db on Node", () => {
     setupStorage();
-    configureEngine("workflow-smoke", { kind: "agent", platform: "opencode" }, { engine: "workflow-smoke" });
+    configureDeadLlm();
     const created = nodeRun(["workflow", "create", "smoke-flow"], nodeEnv);
     assertNoBoundaryLeak(created, "workflow create");
     expect(created.status).toBe(0);
 
-    const start = nodeRun(["workflow", "start", "workflows/smoke-flow"], nodeEnv);
-    assertNoBoundaryLeak(start, "workflow start");
-    expect(start.status).toBe(0);
-    const runId = (parseJson(start.stdout) as { run?: { id?: string } } | undefined)?.run?.id;
+    const run = nodeRun(["workflow", "run", "workflows/smoke-flow", "--timeout=1ms"], nodeEnv);
+    assertNoBoundaryLeak(run, "workflow run");
+    expect(run.status).toBe(1);
+    const runId = (parseJson(run.stdout) as { run?: { id?: string } } | undefined)?.run?.id;
     expect(typeof runId).toBe("string");
 
     const status = nodeRun(["workflow", "status", runId as string], nodeEnv);
@@ -900,6 +900,9 @@ function configureDeadLlm(): void {
     },
     { engine: "smoke-llm", llmEngine: "smoke-llm" },
   );
+  const setJudge = nodeRun(["config", "set", "workflow.judgeEngine", "smoke-llm"], nodeEnv);
+  assertNoBoundaryLeak(setJudge, "config set workflow.judgeEngine");
+  expect(setJudge.status).toBe(0);
 }
 
 /**
@@ -916,9 +919,16 @@ function writeJudgeWorkflow(name: string): void {
       "---",
       "type: workflow",
       "description: Node-compat smoke workflow.",
+      "params:",
+      "  mode: { type: string }",
       "steps:",
       "  - id: only-step",
+      "    route:",
+      "      input: params.mode",
+      "      when: [{ match: go, step: after }]",
+      "      default: after",
       "    gate: {}",
+      "  - id: after",
       "---",
       "",
       "## only-step",
@@ -929,6 +939,32 @@ function writeJudgeWorkflow(name: string): void {
       "",
       "- the work is done",
       "",
+      "## after",
+      "",
+      "Finish.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
+function writeDispatchWorkflow(name: string): void {
+  const file = path.join(stashDir, "workflows", `${name}.md`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(
+    file,
+    [
+      "---",
+      "type: workflow",
+      "description: Node-compat dispatch smoke workflow.",
+      "steps:",
+      "  - id: only-step",
+      "---",
+      "",
+      "## only-step",
+      "",
+      "Do the smoke work.",
+      "",
     ].join("\n"),
     "utf8",
   );
@@ -938,30 +974,18 @@ describe("workflow LLM import-site parity (reviewer #9)", () => {
   afterEach(() => cleanup());
 
   test.skipIf(!ENABLED)(
-    "the summary-judge LLM import path loads under Node (fails open, no require ReferenceError)",
+    "the summary-judge LLM import path loads under Node and fails closed without a require ReferenceError",
     () => {
       setupStorage();
       configureDeadLlm();
       writeJudgeWorkflow("judge-smoke");
 
-      const start = nodeRun(["workflow", "start", "workflows/judge-smoke"], nodeEnv);
-      assertNoBoundaryLeak(start, "judge start");
-      expect(start.status).toBe(0);
-      const runId = (parseJson(start.stdout) as { run?: { id?: string } } | undefined)?.run?.id;
-      expect(typeof runId).toBe("string");
-
-      // `workflow complete` builds the DEFAULT summary judge (getDefaultLlmConfig)
-      // and — because the step has completion criteria — invokes it, hitting the
-      // `await import("../../llm/client")` site that was a bare `require`. The
-      // dead endpoint makes chatCompletion fail; the gate is fail-open, so the
-      // step completes and the command exits 0. The point is the import LOADED.
-      const done = nodeRun(
-        ["workflow", "complete", runId as string, "--step", "only-step", "--summary", "Did the smoke work fully."],
-        nodeEnv,
-      );
-      assertNoBoundaryLeak(done, "judge complete");
-      expect(done.stdout + done.stderr).not.toContain(REQUIRE_NOT_DEFINED);
-      expect(done.status).toBe(0);
+      // The route-only first step reaches its frozen judge without dispatching
+      // a unit. The dead endpoint rejects the gate, but the dynamic import must load.
+      const run = nodeRun(["workflow", "run", "workflows/judge-smoke", "--mode=go", "--max-steps=1"], nodeEnv);
+      assertNoBoundaryLeak(run, "judge run");
+      expect(run.stdout + run.stderr).not.toContain(REQUIRE_NOT_DEFINED);
+      expect(run.status).toBe(1);
     },
     60_000,
   );
@@ -971,19 +995,7 @@ describe("workflow LLM import-site parity (reviewer #9)", () => {
     () => {
       setupStorage();
       configureDeadLlm();
-      writeJudgeWorkflow("dispatch-smoke");
-      // Q-05: `workflow run` is gated behind `experimental.workflowEngine`
-      // (off by default) — opt in so this test still exercises the native
-      // engine's import sites instead of stopping at the gate's refusal.
-      const gate = nodeRun(["config", "set", "experimental.workflowEngine", "true"], nodeEnv);
-      assertNoBoundaryLeak(gate, "config set experimental.workflowEngine");
-      expect(gate.status).toBe(0);
-
-      const start = nodeRun(["workflow", "start", "workflows/dispatch-smoke"], nodeEnv);
-      assertNoBoundaryLeak(start, "dispatch start");
-      expect(start.status).toBe(0);
-      const runId = (parseJson(start.stdout) as { run?: { id?: string } } | undefined)?.run?.id;
-      expect(typeof runId).toBe("string");
+      writeDispatchWorkflow("dispatch-smoke");
 
       // `workflow run` drives the native engine: `defaultUnitDispatcher` →
       // `resolveUnitRunner`/`requireDefaultLlm` reach the `await import` sites for
@@ -991,7 +1003,7 @@ describe("workflow LLM import-site parity (reviewer #9)", () => {
       // that were bare `require`s. With the dead endpoint the unit dispatch fails
       // (the run does not complete), but the import sites must LOAD without a
       // `require is not defined` — that is the whole regression.
-      const run = nodeRun(["workflow", "run", runId as string], nodeEnv);
+      const run = nodeRun(["workflow", "run", "workflows/dispatch-smoke"], nodeEnv);
       assertNoBoundaryLeak(run, "workflow run");
       expect(run.stdout + run.stderr).not.toContain(REQUIRE_NOT_DEFINED);
       // A failed unit dispatch is a normal outcome here (exit 0 with a failed run

@@ -5,7 +5,7 @@
 /**
  * Task asset schema. A task pairs a cron-style schedule with exactly one of:
  *
- *   • a workflow target  — invoked via `startWorkflowRun()`
+ *   • a workflow target  — executed via `runWorkflowSteps()`
  *   • a prompt target    — invoked via `runAgent()` against the configured
  *                          agent harness (e.g. `opencode run`)
  *   • a command target   — invoked directly via `Bun.spawn()`, no AI agent

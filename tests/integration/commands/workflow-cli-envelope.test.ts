@@ -30,19 +30,25 @@ afterEach(() => {
 const ONE_STEP_WORKFLOW = `---
 type: workflow
 description: Envelope test workflow
+params:
+  release: { type: string }
 steps:
+  - id: choose
+    route:
+      input: params.release
+      when: [{ match: stable, step: deploy }]
+      default: deploy
   - id: deploy
 ---
 
 # Release Flow
 
+## choose
+
 ## deploy
 
 Run the deployment command and watch health checks.
 
-### gate
-
-- Deployment confirmed
 `;
 
 function makeStashDir(): string {
@@ -100,14 +106,18 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
     expect(Array.isArray(env.runs)).toBe(true);
   });
 
-  test("workflow start + status: success envelopes carry the run id and steps", async () => {
+  test("workflow run + status: success envelopes carry typed params, run id, and steps", async () => {
     const stash = makeStashDir();
     await createReleaseFlow(stash);
-    const started = await runCli(["workflow", "start", "workflows/release-flow"], stash);
-    expect(started.status).toBe(0);
-    const startEnv = JSON.parse(started.stdout);
-    const runId = startEnv.run.id as string;
+    const run = await runCli(
+      ["workflow", "run", "workflows/release-flow", "--release=stable", "--max-steps", "1"],
+      stash,
+    );
+    expect(run.status).toBe(0);
+    const runEnv = JSON.parse(run.stdout);
+    const runId = runEnv.run.id as string;
     expect(typeof runId).toBe("string");
+    expect(runEnv.run.params).toEqual({ release: "stable" });
 
     const status = await runCli(["workflow", "status", runId], stash);
     expect(status.status).toBe(0);
@@ -147,13 +157,14 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
     expect(env.code).toBe("WORKFLOW_NOT_FOUND");
   });
 
-  test("workflow next: --dry-run is rejected with the INVALID_FLAG_VALUE usage envelope", async () => {
+  test("retired workflow next returns an unknown-command envelope with a migration hint", async () => {
     const stash = makeStashDir();
     await createReleaseFlow(stash);
     const { stderr, status } = await runCli(["workflow", "next", "workflows/release-flow", "--dry-run"], stash);
     expect(status).toBe(2);
     const env = JSON.parse(stderr);
     expect(env.ok).toBe(false);
-    expect(env.code).toBe("INVALID_FLAG_VALUE");
+    expect(env.code).toBe("UNKNOWN_COMMAND");
+    expect(env.hint).toContain("workflow run");
   });
 });

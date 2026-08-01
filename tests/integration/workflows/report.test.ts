@@ -1757,7 +1757,7 @@ describe("report --settle finalizes a fully-terminal step still needing completi
     return unit;
   }
 
-  test("brief points at --settle and --settle skips validation when no judge is available", async () => {
+  test("brief points at --settle and --settle refuses to bypass an unavailable judge", async () => {
     const p = plan(GATED_WF);
     seedResumedFullyTerminal(p);
 
@@ -1768,13 +1768,12 @@ describe("report --settle finalizes a fully-terminal step still needing completi
     expect(brief.workList.units[0]!.report).toBeUndefined();
     expect(brief.settleCommand).toContain("--settle");
 
-    // --settle runs the shared completion path; no judge means validation is skipped.
-    const settled = await settleWorkflowSpine({ target: RUN_ID, expectStep: "work", summaryJudge: null });
-    expect(settled.stepOutcome?.kind).toBe("advanced");
-    expect(settled.runStatus).toBe("completed");
-    expect(settled.recorded).toBe("not-recorded");
+    await expect(settleWorkflowSpine({ target: RUN_ID, expectStep: "work", summaryJudge: null })).rejects.toThrow(
+      /frozen plan has no judge/,
+    );
     const status = await getWorkflowStatus(RUN_ID);
-    expect(status.workflow.steps[0]!.status).toBe("completed");
+    expect(status.workflow.steps[0]!.status).toBe("pending");
+    expect(status.run.status).toBe("active");
   });
 
   test("--settle completes the fully-terminal step under a passing judge", async () => {

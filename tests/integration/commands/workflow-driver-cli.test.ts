@@ -7,10 +7,8 @@
  * code + JSON envelope the module-level suites (run-lease) prove only at the
  * function boundary:
  *
- *   - `akm workflow complete` is refused at the CLI while a LIVE engine lease is
- *     held; the {ok:false} error envelope (exit 2) names the holder so a scripted
- *     driver knows to back off (module coverage: run-lease.test.ts).
- *   - `akm workflow start` surfaces a YAML program's compiler warnings as
+ *   - unknown workflow refs use consistent structured envelopes;
+ *   - starting a run surfaces a workflow's compiler warnings as
  *     non-fatal `warn()` lines on stderr; the run still starts.
  *
  * Driven in-process via `runCliCapture` against per-test isolated storage
@@ -22,7 +20,6 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { _setWarnSinkForTests } from "../../../src/core/warn";
-import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { runCliCapture } from "../../_helpers/cli";
 import {
@@ -38,7 +35,7 @@ let storage: IsolatedAkmStorage;
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
   writeWorkflowTestConfig();
-  // Q-05: `brief`/`report`/`run` are gated behind `experimental.workflowEngine`
+  // Q-05: `brief`/`report` are gated behind `experimental.workflowEngine`
   // (off by default). This file's tests exist to pin the driver-protocol CLI
   // envelope contracts, not the gate itself (that is
   // `tests/integration/commands/workflow-engine-gate.test.ts`), so opt in here
@@ -76,50 +73,10 @@ function writeSingleStepWorkflow(stashDir: string, name: string): void {
   );
 }
 
-function isoIn(ms: number): string {
-  return new Date(Date.now() + ms).toISOString();
-}
-
-describe("akm workflow complete — refused while a live engine lease is held (CLI envelope)", () => {
-  test("the {ok:false} error envelope names the holder and exits 2", async () => {
-    writeSingleStepWorkflow(storage.stashDir, "lease-block");
-    const started = await startWorkflowRun("workflows/lease-block", {});
-    const runId = started.run.id;
-
-    // Plant a LIVE engine lease directly (simulates an engine driving the run).
-    await withWorkflowRunsRepo((repo) => {
-      expect(repo.acquireEngineLease(runId, "engine-XYZ", isoIn(90_000), new Date().toISOString())).toBe(true);
-    });
-
-    const { code, stderr } = await runCliCapture([
-      "workflow",
-      "complete",
-      runId,
-      "--step",
-      "only-step",
-      "--summary",
-      "Tried to complete it by hand while the engine drives.",
-    ]);
-
-    expect(code).toBe(2);
-    const env = JSON.parse(stderr) as { ok: boolean; error: string };
-    expect(env.ok).toBe(false);
-    expect(env.error).toContain("engine-XYZ");
-    expect(env.error).toMatch(/being driven by engine|run lease/);
-
-    // The refusal did not advance the step — it is still the current step.
-    const { stdout } = await runCliCapture(["workflow", "status", runId]);
-    const status = JSON.parse(stdout) as { run: { currentStepId: string; status: string } };
-    expect(status.run.currentStepId).toBe("only-step");
-    expect(status.run.status).toBe("active");
-  });
-});
-
 describe("akm workflow refs — unknown bundles fail consistently", () => {
-  test("start, next, list, status, and brief return the usage envelope", async () => {
+  test("run, list, status, and brief return the usage envelope", async () => {
     const commands = [
-      ["workflow", "start", "ghost//missing"],
-      ["workflow", "next", "ghost//missing"],
+      ["workflow", "run", "ghost//missing"],
       ["workflow", "list", "--ref", "ghost//missing"],
       ["workflow", "status", "ghost//missing"],
       ["workflow", "brief", "ghost//missing"],
@@ -132,7 +89,7 @@ describe("akm workflow refs — unknown bundles fail consistently", () => {
   });
 });
 
-describe("akm workflow start — surfaces program warnings on stderr", () => {
+describe("workflow run start boundary — surfaces program warnings on stderr", () => {
   /**
    * Write a unified-format workflow that trips both non-fatal warnings
    * (`collectWorkflowWarnings`, ir/compile.ts): a map step with no `output:`
@@ -169,7 +126,7 @@ describe("akm workflow start — surfaces program warnings on stderr", () => {
     return file;
   }
 
-  test("workflow start emits the program's warnings as non-fatal warn() lines (stderr)", async () => {
+  test("starting a run emits the program's warnings as non-fatal warn() lines", async () => {
     writeWarnyProgram(storage.stashDir, "warny-start");
     const captured: string[] = [];
     await withSeam(
@@ -184,7 +141,7 @@ describe("akm workflow start — surfaces program warnings on stderr", () => {
       },
     );
     const joined = captured.join("\n");
-    expect(joined).toMatch(/workflow start:.*no `output:` schema/);
-    expect(joined).toMatch(/workflow start:.*params\.changed_file.*not declared/);
+    expect(joined).toMatch(/workflow run:.*no `output:` schema/);
+    expect(joined).toMatch(/workflow run:.*params\.changed_file.*not declared/);
   });
 });

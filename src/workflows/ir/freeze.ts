@@ -260,14 +260,20 @@ function addSnapshot(config: AkmConfig, name: string, target: Record<string, Fro
   target[name] = snapshot;
 }
 
-function freezeGateJudge(config: AkmConfig, engines: Record<string, FrozenEngineSnapshot>): IrInvocation | null {
-  const resolved = resolveLlmEngineUse(config, [], { optional: true });
-  if (!resolved) return null;
-  addSnapshot(config, resolved.engine, engines);
+function freezeGateJudge(config: AkmConfig, engines: Record<string, FrozenEngineSnapshot>): IrInvocation {
+  const name = config.workflow?.judgeEngine;
+  if (!name) {
+    throw new ConfigError(
+      "This workflow declares completion criteria but no verification engine is configured. Set workflow.judgeEngine to a named LLM or agent engine.",
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const engine = engineDefinition(config, name);
+  addSnapshot(config, name, engines);
   return {
-    engine: resolved.engine,
-    model: exactModel(config, resolved.engine, engineDefinition(config, resolved.engine), []),
-    timeoutMs: resolved.timeoutMs,
+    engine: name,
+    model: exactModel(config, name, engine, []),
+    timeoutMs: effectiveTimeout(config, engine, []),
   };
 }
 

@@ -32,8 +32,8 @@ steps:
     # THIS step's units with the judge's feedback, bounded by max_loops. If
     # the batch still isn't clean after 8 loops, the step (and the run)
     # fails — the escalation the original design wanted is exactly what a
-    # failed/blocked run already is: a human resolves it via
-    # `akm workflow resume`/`complete`/`abandon`.
+    # failed run already is: a human resolves it via `akm workflow resume`
+    # or `akm workflow abandon`.
     gate: { max_loops: 8 }
   - id: integrate
     inputs: [steps.implement.output]
@@ -52,7 +52,7 @@ out one unit per issue — each running in its own isolated git worktree, up to
 3 at a time. `implement`'s own gate re-runs the step (with the judge's
 feedback) up to 8 times when the batch is not yet clean; if it still isn't
 clean after that, the step — and the run — fails, and a human resolves it
-via `akm workflow resume`/`complete`/`abandon`, which is the escalation the
+via `akm workflow resume` or `akm workflow abandon`, which is the escalation the
 original design wanted. Adjust the `implement` step's `concurrency` in this
 file's frontmatter to change how many issues run in parallel.
 
@@ -63,16 +63,16 @@ work, establish a clean baseline and confirm every parameter is actionable.
 
 ### Verify parameters
 
-1. Parse the `issues` parameter. Abort the run with `--state blocked` if it
+1. Parse the `issues` parameter. Fail the step with a precise diagnostic if it
    is not a non-empty list of positive integers.
 2. Confirm the repository named by the `repo` parameter is reachable via
    `gh repo view <repo>`. If the CLI is unauthenticated, surface the error
-   verbatim and block the run — do not attempt to log in silently.
+   verbatim and fail the step — do not attempt to log in silently.
 3. Resolve the `base_branch` parameter (default `main`) and confirm it
    exists on the remote with `git ls-remote --heads origin <base_branch>`.
 4. If the `env` parameter is provided, call `akm show <env>` and verify every
    key the downstream tooling needs is declared. Do not print values. If any
-   key is missing, block the run with notes listing the missing keys.
+   key is missing, fail the step with a diagnostic listing the missing keys.
 
 ### Capture ground truth for every issue
 
@@ -427,10 +427,18 @@ working from the PRs opened by `open-prs`, attached to this unit as input.
   exponential backoff.
 - On a red check, fetch the failing job logs and produce a minimal
   reproduction. Do not patch the red check in isolation on this branch —
-  file a `ci-regression` brief and drive the fix through a fresh
-  `akm workflow start` of this workflow (scoped to just that issue) so the
-  fix goes through the full implement/review/test loop again, rather than
-  landing unreviewed.
+  file a `ci-regression` brief and drive the fix through a fresh full run so it
+  goes through the implement/review/test loop again rather than landing
+  unreviewed:
+
+  ```sh
+  akm workflow run workflows/github-issues-parallel-implementer \
+    --repo "<repo>" \
+    --issues '[<n>]' \
+    --base_branch "<base_branch>" \
+    --reviewers '<reviewers-json-array>' \
+    --required_checks '<required-checks-json-array>'
+  ```
 
 ### Review feedback
 

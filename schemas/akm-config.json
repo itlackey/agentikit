@@ -1613,6 +1613,11 @@
         "maxConcurrency": {
           "type": "integer",
           "exclusiveMinimum": 0
+        },
+        "judgeEngine": {
+          "type": "string",
+          "maxLength": 63,
+          "pattern": "^(?!akm-)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
         }
       },
       "additionalProperties": true
@@ -3251,6 +3256,11 @@
             "maxConcurrency": {
               "type": "integer",
               "exclusiveMinimum": 0
+            },
+            "judgeEngine": {
+              "type": "string",
+              "maxLength": 63,
+              "pattern": "^(?!akm-)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
             }
           },
           "additionalProperties": true

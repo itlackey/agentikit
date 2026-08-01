@@ -23,7 +23,7 @@ please file it.
 | --- | --- |
 | **Stable** | Scripted use is supported. Changes are additive within a minor release; breaking changes are called out in the CHANGELOG with a migration note. |
 | **Evolving** | Available across minor releases, but flag names, prompts, and payload shapes may shift. Breaking changes are flagged in the CHANGELOG. |
-| **Experimental** | Subject to change without notice. Not recommended for scripted use. Some experimental surfaces additionally require an explicit opt-in — see [`akm improve` autonomy](#akm-improve-autonomy--opt-in-in-090) and [`akm workflow` engine](#akm-workflow-engine--opt-in-in-090). |
+| **Experimental** | Subject to change without notice. Not recommended for scripted use. Some experimental surfaces additionally require an explicit opt-in — see [`akm improve` autonomy](#akm-improve-autonomy--opt-in-in-090) and the [`akm workflow` driver protocol](#akm-workflow-driver-protocol--opt-in-in-090). |
 | **Internal** | Not a public interface. May change or disappear in any release, without a CHANGELOG note. Listed here only so you can recognize it. |
 
 ## Command tier index
@@ -57,17 +57,14 @@ enumeration of the whole `proposal` noun group.
 | `akm search` | Stable | |
 | `akm curate` | Stable | |
 | `akm show` | Stable | |
-| `akm workflow start` | Stable | Classic linear markdown workflow contract. |
-| `akm workflow next` | Stable | |
-| `akm workflow complete` | Stable | |
 | `akm workflow status` | Stable | |
 | `akm workflow list` | Stable | |
 | `akm workflow create` | Stable | |
 | `akm workflow resume` | Stable | |
 | `akm workflow abandon` | Stable | |
-| `akm workflow run` | Experimental | Requires `experimental.workflowEngine` opt-in. |
-| `akm workflow brief` | Experimental | Harness-neutral driver protocol; same opt-in as `run`. |
-| `akm workflow report` | Experimental | Harness-neutral driver protocol; same opt-in as `run`. |
+| `akm workflow run` | Stable | Canonical start/resume/execute command. |
+| `akm workflow brief` | Experimental | Harness-neutral driver protocol; requires `experimental.workflowEngine`. |
+| `akm workflow report` | Experimental | Harness-neutral driver protocol; requires `experimental.workflowEngine`. |
 | `akm remember` | Stable | |
 | `akm import` | Stable | |
 | `akm sync` | Stable | |
@@ -327,43 +324,36 @@ for scripted use.
   the design of the improve processes, so **keys in these two families may be
   added, renamed, or dropped in any 0.9.x or 0.10.x release**. The `akm
   improve` *command* surface is Evolving (above); its tuning config is not.
-- **`akm workflow run` + the driver protocol** — native execution of unified
-  markdown workflows, plus `akm workflow brief` / `akm workflow report`.
-  Requires the `experimental.workflowEngine` opt-in — see
-  [below](#akm-workflow-engine--opt-in-in-090). Engine flags and JSON output
-  shapes may change. The unified format and manual workflow CLI contract
-  (`start` / `next` / `complete` / `status` / `list` / `create` / `resume` /
-  `abandon`) are stable and ungated. There is no `akm workflow template`,
-  `akm workflow validate`, or `akm workflow watch` (0.9.0: dropped —
-  `create --print`, `akm lint --type workflows`, and `akm log --run <id>`
-  are the replacements, respectively).
+- **The `akm workflow brief` / `akm workflow report` driver protocol** — an
+  external agent can execute units from an existing frozen run and report the
+  results through the native completion path. It requires the
+  `experimental.workflowEngine` opt-in; see
+  [below](#akm-workflow-driver-protocol--opt-in-in-090). Its flags and JSON
+  shapes may change. The unified workflow format and canonical `workflow run`
+  orchestration command are Stable and ungated.
 
-### `akm workflow` engine — opt-in in 0.9.0
+### `akm workflow` driver protocol — opt-in in 0.9.0
 
-**The native workflow engine requires an explicit opt-in in 0.9.0.** Authoring,
-linting, and manually progressing unified markdown workflows through `start` /
-`next` / `complete` / `status` / `list` / `create` / `resume` / `abandon` are
-unaffected and ship unconditionally. The engine-execution surface is gated:
+**The harness-neutral external-driver protocol requires an explicit opt-in in
+0.9.0.** Native execution through `akm workflow run`, authoring, linting,
+inspection, and recovery ship unconditionally. Enable external driving with:
 
 ```sh
 akm config set experimental.workflowEngine true
 ```
 
-Without it, these refuse OUTRIGHT rather than degrading — unlike the improve
-autonomy gate below, a workflow step either executes or it does not, so there
-is no partial-execution fallback to downgrade into:
+Without it, these experimental surfaces refuse outright rather than degrading:
 
 | Surface | What it does when enabled |
 | --- | --- |
-| `akm workflow run` | Executes a run's steps with the native engine, dispatching each step's units to the configured runner |
 | `akm workflow brief` | Read-only half of the harness-neutral driver protocol |
 | `akm workflow report` | Mutating half of the harness-neutral driver protocol |
 
 Each refusal is a classified `ConfigError` (`WORKFLOW_ENGINE_NOT_ENABLED`, exit
 78) naming the exact surface and config key — never a silent no-op — and `akm
 task doctor` reports the gate's state under `workflowEngine.enabled` /
-`workflowEngine.configKey`. `akm lint --type workflows` and `akm workflow
-create` are unaffected because authoring and validation do not execute a run.
+`workflowEngine.configKey`. `akm workflow run` is unaffected because it is the
+Stable native execution path.
 
 The engine is never enabled by inference: an absent `experimental` section, an
 absent key, and an explicit `false` all read as off.

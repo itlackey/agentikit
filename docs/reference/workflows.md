@@ -1,81 +1,59 @@
 # Workflows
 
 A workflow is a structured markdown document that defines a multi-step
-procedure. akm parses it, persists run state, and lets you advance through
-steps one at a time — resuming after interruptions, blocking on human review
-gates, and tracking completion criteria per step. The agent follows steps; the
-human approves gates.
+procedure. `akm workflow run` compiles it to a frozen plan, persists run and
+unit state, dispatches its work, verifies declared gates, and can resume after
+an interruption without replaying completed units.
 
-> **The native orchestration engine requires an opt-in.** `start` / `next` /
-> `complete` / `status` / `list` / `create` / `resume` / `abandon` —
-> everything through [Writing a workflow](#writing-a-workflow) below — need no
-> `experimental.workflowEngine` opt-in, including a workflow whose frontmatter
-> declares `map`/`route`/`gate`. But `akm workflow run`, `akm workflow brief`,
-> and `akm workflow report` — the surfaces that actually dispatch a step's
-> units with the native engine or the driver protocol — refuse outright until
-> `experimental.workflowEngine` is set — see [Enabling the workflow
-> engine](#enabling-the-workflow-engine-opt-in-in-090) before trying any of
-> those three.
+> **Native orchestration is Stable and ungated.** `akm workflow run` is the
+> canonical start/resume/execute command. Only the optional harness-neutral
+> `brief`/`report` external-driver protocol requires
+> `experimental.workflowEngine`; see [External driver protocol](#external-driver-protocol-opt-in-in-090).
 
-> **Every workflow run needs a selected engine.** `akm workflow start` freezes
-> a plan, and freezing resolves an engine for each unit, so a config with no
-> `defaults.engine` fails with `INVALID_CONFIG_FILE` ("No workflow engine is
-> selected") and exit 78 — even for the manual `start`/`next` path, and even
-> when `experimental.workflowEngine` is off. `akm setup` fills this in
-> whenever it detects an installed agent CLI; on a machine with none (a bare
-> container or CI image), set one explicitly first:
+> **Every workflow run needs a selected engine.** Freezing resolves an engine
+> for each unit, so a config with no `defaults.engine` fails with
+> `INVALID_CONFIG_FILE` and exit 78. A workflow with a non-empty `### gate`
+> additionally requires `workflow.judgeEngine` to name a configured LLM or
+> agent engine. `akm setup` normally selects a default execution engine; on a
+> bare container or CI image, set one explicitly:
 >
 > ```sh
 > akm config set engines.claude '{"kind":"agent","platform":"claude"}'
 > akm config set defaults.engine claude
 > ```
 
-## akm workflow start
+## akm workflow run
 
-`akm workflow start` creates a new persisted run for a workflow asset. Run
-state is scoped to the current project directory (nearest `.akm/config.json`,
-git root, or stash root), so concurrent runs in different directories stay
-independent.
-
-```sh
-akm workflow start workflows/ship-release
-akm workflow start workflows/ship-release --params '{"version":"1.2.3"}'
-```
-
-The run snapshots the step list at start time. Edits to the source workflow
-file after a run has started do not affect in-flight runs.
-
-**Example: kick off a release**
+`akm workflow run <run-id|workflows/ref>` starts or continues a persisted run
+and executes it until completion, failure, verification rejection,
+interruption, or an explicit invocation limit. Run state is scoped to the
+current project directory (nearest `.akm/config.json`, git root, bundle root,
+or current directory), so the same workflow can run independently in separate
+projects.
 
 ```sh
-akm workflow start workflows/ship-release --params '{"version":"2.0.0"}'
-# → {"run": {"id":"<uuid>","status":"active","currentStepId":"validate",...}}
+akm workflow run workflows/ship-release --version 1.2.3
+akm workflow run workflows/review --changed_files a.ts --changed_files b.ts
+akm workflow run <run-id> --max-retries 2 --timeout 10m
 ```
 
-## akm workflow next
+Parameter flags must come after the target and exactly match declared `params`
+keys. Values are coerced through each parameter's JSON Schema: repeat an array
+flag, pass an object or whole array as JSON, and use a bare boolean flag for
+`true`. There are no hyphen/underscore aliases. The old `--params` JSON bag is
+removed, and parameters are accepted only while creating a new run.
 
-`akm workflow next` returns the current actionable step for an active run. If
-no active run exists for the given ref in the current scope, it auto-starts
-one. This is the primary command an agent calls in a loop.
+`--max-steps <n>` leaves a partial run active after at most `n` steps.
+`--max-retries <n>` retries a failed step on the same run up to `n` additional
+times (0 through 100). `--timeout <duration>` bounds the whole invocation and
+accepts `N`, `Nms`, `Ns`, or `Nm`; bare `N` is milliseconds. A timeout or
+signal abort releases the run lease without advancing the active step, so the
+run remains resumable. Failed, gate-rejected, timed-out, and interrupted runs
+exit nonzero.
 
-```sh
-akm workflow next workflows/ship-release
-akm workflow next <run-id>
-akm workflow next workflows/ship-release --params '{"version":"1.2.3"}'  # auto-start params
-```
-
-The response includes the step object (`title`, `instructions`,
-`completionCriteria`) or `"done": true` when the run is complete.
-
-**Example: step through an onboarding workflow**
-
-```sh
-# Agent loop:
-akm workflow next workflows/repo-onboarding
-# read instructions → perform work → mark complete → repeat
-akm workflow complete <run-id> --step setup-ci --notes "CI configured in .github/workflows/"
-akm workflow next workflows/repo-onboarding
-```
+The run freezes its plan, exact models, execution limits, parameter snapshot,
+and verifier selection at creation. Edits to source or config do not alter an
+in-flight run.
 
 ## akm workflow status
 
@@ -195,9 +173,9 @@ attached to this unit as input. Fix any failures before proceeding.
 3. Inside a step's section, an optional `### gate` sub-heading starts that
    step's gate rubric, running to the section end — the format's **single
    reserved marker**. The judge that evaluates the step receives this whole
-   section byte-exact. An omitted or empty `### gate` section skips
-   validation. A non-empty rubric enables optional validation; frontmatter
-   `gate:` only tunes its retry bound.
+   section byte-exact. An omitted or empty `### gate` section needs no
+   verification. A non-empty rubric enables mandatory fail-closed verification;
+   frontmatter `gate:` only tunes its retry bound.
 
 Prose is never templated — see [The reference grammar](#the-reference-grammar)
 for how a step's instructions refer to run params, upstream artifacts, and a
@@ -318,8 +296,8 @@ Ship the change.
 
 ## rework
 
-Address the review findings. Confirming the fix is a fresh `akm workflow
-start` of this workflow, not a step this run routes back to.
+Address the review findings. Confirming the fix is a fresh `akm workflow run`
+of this workflow, not a step this run routes back to.
 
 ## manual-triage
 
@@ -378,10 +356,7 @@ step's execution produced:
   `output`) or its text;
 - a `map` step → the collected array of per-item results, in item order
   (under `on_error: continue`, a failed item's slot is `null`), unless the
-  step's own `output` schema describes a reduced, single-value shape
-  instead;
-- a step completed manually through `akm workflow complete` exposes whatever
-  evidence was recorded for it as its output.
+  step's own `output` schema describes a reduced, single-value shape instead.
 
 **An empty successful free-text output is treated as no output.** When a
 schemaless unit (one that declares no `output` schema) succeeds but returns
@@ -397,18 +372,12 @@ empty string. A unit that declares an `output` schema is unaffected — an
 empty response is not valid JSON, so it fails as a parse error and can never
 satisfy a schema as a silent `null`.
 
-## Enabling the workflow engine (opt-in in 0.9.0)
+## External driver protocol (opt-in in 0.9.0)
 
-Everything above this line — `start`, `next`, `complete`, `status`, `list`,
-`create`, `resume`, and `abandon` — ships unconditionally and needs no config
-change, whether or not the workflow's frontmatter declares `map`/`route`/
-`gate`.
-
-The rest of this doc describes the **native orchestration engine**: the
-map/route/gate/retry/budget/isolation capabilities a workflow's frontmatter
-can declare, and the commands that execute them. Those commands are gated
-behind an explicit opt-in and refuse outright — a classified `ConfigError`
-(`WORKFLOW_ENGINE_NOT_ENABLED`, exit code 78) — until you set:
+Native orchestration through `akm workflow run` is Stable and always
+available. The optional **harness-neutral external-driver protocol** is still
+Experimental: `brief` and `report` refuse with `WORKFLOW_ENGINE_NOT_ENABLED`
+(exit 78) until enabled:
 
 ```sh
 akm config set experimental.workflowEngine true
@@ -416,7 +385,6 @@ akm config set experimental.workflowEngine true
 
 | Surface | What it does when enabled |
 | --- | --- |
-| `akm workflow run` | Executes a run's steps with the native engine, dispatching each step's units to the configured runner |
 | `akm workflow brief` | Read-only half of the harness-neutral driver protocol |
 | `akm workflow report` | Mutating half of the harness-neutral driver protocol |
 
@@ -425,18 +393,16 @@ The refusal names the exact surface and config key, e.g.:
 ```jsonc
 {
   "ok": false,
-  "error": "`akm workflow run` is EXPERIMENTAL and refuses to run until `experimental.workflowEngine` is set. Run `akm config set experimental.workflowEngine true` to enable it.",
+  "error": "`akm workflow brief` is EXPERIMENTAL and refuses to run until `experimental.workflowEngine` is set. Run `akm config set experimental.workflowEngine true` to enable it.",
   "code": "WORKFLOW_ENGINE_NOT_ENABLED"
 }
 ```
 
-`akm lint --type workflows` is **not** gated — it only type-checks a
-workflow's frontmatter and body without executing anything. `akm task
-doctor` reports the gate's live state under `workflowEngine.enabled`
-and `workflowEngine.configKey`, so you can confirm whether it is on without
-tripping a refusal. The engine is never enabled by inference: an absent
-`experimental` section, an absent `workflowEngine` key, and an explicit
-`false` all read as off — only `true` turns it on.
+`akm task doctor` reports this opt-in under `workflowEngine.enabled` and
+`workflowEngine.configKey`. The external driver is never enabled by inference:
+an absent `experimental` section, an absent key, and explicit `false` all read
+as off. `run`, `create`, `status`, `list`, `resume`, `abandon`, and workflow
+linting are unaffected.
 
 See [STABILITY.md](../../STABILITY.md) for the full stability classification
 of these surfaces.
@@ -446,8 +412,7 @@ graph into a plan, freezes that plan on the run, dispatches each step's units
 to the configured engine (fan-out runs units concurrently), records every
 unit in `workflow_run_units`, and advances the run through the normal
 completion gates. A workflow with no `map`/`route` steps compiles to a linear
-plan, and the manual `next`/`complete` loop keeps working on every run either
-way.
+plan and follows the same journaled execution semantics.
 
 The native engine is not the only thing that can drive an orchestrated run.
 The **harness-neutral driver protocol** (`akm workflow brief` /
@@ -460,12 +425,12 @@ byte-identical unit graphs.
 
 ## Frozen plans
 
-`akm workflow start` compiles the workflow and freezes the resulting plan on
-the run row (`plan_json` + `plan_hash`). **A run executes the plan compiled
-at start; edits to the source file need a new run** — the file is never
-re-read for an in-flight run, so `run`, `next`, and `resume` all see the same
-workflow no matter what has changed on disk. Orchestration decisions are pure
-functions of the frozen plan, the run params, and journaled unit results.
+The first `akm workflow run <ref>` compiles the workflow and freezes the
+resulting plan on the run row (`plan_json` + `plan_hash`). **A run executes the
+plan compiled at creation; edits to the source file need a new run** — the file
+is never re-read for an in-flight run, so `run` and `resume` retain the same
+workflow no matter what changed on disk. Orchestration decisions are pure
+functions of the frozen plan, run params, and journaled unit results.
 
 **Resume is journaled replay.** Every dispatched unit is journaled with a
 content-derived identity — the step id plus a hash of the unit's frozen
@@ -520,9 +485,7 @@ on the step doing the work, not as routing.
 Route decisions are journaled, so a resumed run replays the same choice.
 Skips cascade: when a route step is itself skipped (it was the unselected
 target of an earlier route), its own branch targets are skipped too — a
-router that never decided selects nothing. Routing (like fan-out) is an
-engine feature: it applies under `akm workflow run` — the manual
-`next`/`complete` loop does not auto-skip.
+router that never decided selects nothing.
 
 ## Typed step artifacts
 
@@ -551,17 +514,19 @@ context. The feedback changes each unit's inputs, so the re-run naturally
 dispatches fresh units instead of replaying journaled results. When the loop
 budget is spent, the rejection stands exactly as in the one-shot case.
 
-## Optional validation
+## Fail-closed verification
 
-Workflow gates are always optional validation. With no non-empty `### gate`
-rubric, no validation runs. When a rubric exists but no LLM judge is available,
-the judge throws, or its response is malformed, validation is skipped and the
-step completes. Only a well-formed `complete: false` verdict rejects the step
-and can trigger another `max_loops` attempt.
+With no non-empty `### gate` rubric, no verification runs. When a rubric is
+present, the workflow requires `workflow.judgeEngine` to name a configured LLM
+or agent engine before the plan can be frozen. That verifier invocation is
+frozen into the run.
 
-This behavior is identical under `akm workflow run`, manual completion, and
-the `akm workflow report` driver path. Use explicit workflow steps or external
-CI checks for validation that must be mandatory.
+Only a well-formed `complete: true` verdict advances a criteria-bearing step.
+A missing verifier, dispatch failure, or malformed result rejects the gate
+instead of silently bypassing it. A well-formed `complete: false` verdict
+returns its missing criteria and feedback and can trigger another bounded
+`max_loops` attempt. The same fail-closed completion path is used by native
+`run` and external-driver `report`.
 
 ## Budget ceilings
 
@@ -582,10 +547,9 @@ between steps, and released when the invocation exits. A second
 `workflow run` against a live-leased run refuses up front, naming the holder
 and the expiry. An *expired* lease is claimable, so a crashed engine never
 wedges a run — wait out the expiry and re-run. While the lease is live the
-engine owns the step spine: manual `akm workflow complete` is refused with
-the same holder/expiry message until the engine finishes or the lease
-lapses. `workflow next`/`status` remain read-only and always work; run
-detail surfaces a live lease as `engineLease` (holder + expiry). An
+engine owns the step spine, so external-driver `report` is refused until the
+engine finishes or the lease lapses. `workflow status` and `brief` remain
+read-only; run detail surfaces a live lease as `engineLease` (holder + expiry). An
 orchestrated run can also be driven by an external agent instead of the
 engine — see *Driving a run from any agent (brief/report)* below.
 
@@ -621,7 +585,7 @@ redacted without breaking the input-hash contract and cross-surface parity.
 **Never put credentials in params.** Put secrets in **env bindings** (`env:`
 refs), which `brief` surfaces by **name only** and never resolves.
 
-As a guardrail, both `akm workflow start` and every `brief` emit a best-effort
+As a guardrail, run creation and every `brief` emit a best-effort
 **secret-shaped-value warning** (in the response `warnings` array) when a param
 value *looks* like a credential — a secret-suggesting key name, a long
 high-entropy string, or a known token prefix. It is advisory only: it **never
@@ -664,7 +628,7 @@ brief reports the run is done.
    `warnings` array (see *Params are not secret* above).
 
    **The spine can move under you.** Between the `brief` you plan against and
-   the `report` you send, a concurrent `report`/`run`/manual completion can
+   the `report` you send, a concurrent `report` or `run` can
    advance the run to a different step. Every brief report command therefore
    carries `--expect-step <activeStep>`: `report` refuses (with a clear message
    pointing you back at `brief`) if the run's active step no longer matches, so
@@ -804,14 +768,12 @@ workflow source.
 
 ### Worked example
 
-Drive a two-step review workflow by hand. Start a run without dispatching,
-then loop brief → execute → report:
+Drive an existing active review run by hand. `brief` is deliberately read-only
+and does not create runs, so `r1` below must already exist (for example, a
+native invocation stopped at an explicit limit or was interrupted). Then loop
+brief → execute → report:
 
 ```sh
-# Start the run (freezes the plan; does not dispatch).
-akm workflow start workflows/review-changes --params '{"changed_files":["a.ts"]}'
-# → {"run":{"id":"r1","status":"active","currentStepId":"discover",...}}
-
 akm workflow brief r1
 ```
 
@@ -993,8 +955,8 @@ treat package dependencies**:
   can become hostile if its upstream is compromised.
 - **Workflow steps cannot escape this trust model** by being labeled
   `dryRun` or `interactive` — those flags affect bookkeeping, not execution.
-  `akm workflow next` is read-only and returns the current actionable step;
-  `akm workflow run` executes instructions in your shell.
+  `akm workflow status` is read-only; `akm workflow run` executes configured
+  units with your process's access.
 
 If you operate a CI runner or shared host where untrusted workflows might be
 executed, scope the process: a dedicated user account with no secrets in its

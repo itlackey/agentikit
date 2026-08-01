@@ -53,9 +53,8 @@ export type ConfigErrorCode =
   // contract, filesystem permissions, or leftover upgrade state). The error
   // message carries the specific remediation.
   | "UPGRADE_BLOCKED"
-  // Q-05: `akm workflow run`/`brief`/`report`, and creating a YAML
-  // workflow program, refuse outright until `experimental.workflowEngine` is
-  // set — see src/workflows/exec/workflow-engine-gate.ts.
+  // Q-05: the experimental `akm workflow brief`/`report` external-driver
+  // protocol refuses until `experimental.workflowEngine` is set.
   | "WORKFLOW_ENGINE_NOT_ENABLED";
 
 /** Stable, machine-readable codes for UsageError. */

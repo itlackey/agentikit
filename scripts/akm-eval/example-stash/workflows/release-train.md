@@ -1,6 +1,6 @@
 ---
 type: workflow
-description: Drive a recurring release from a quiet base branch to a tagged, deployed, retrospected release. Composes other workflows as nested runs — `weekly-dependency-audit`, `code-review-pr` (per release-blocker PR), and a final retrospective — so the orchestrator stays small and the heavy lifting lives in dedicated, individually testable workflows.
+description: Drive a recurring release from a quiet base branch to a tagged, deployed, retrospected release. Delegates dependency audit and per-PR review to independent workflow runs, records their IDs, and owns the release-wide artifacts and retrospective.
 tags: [example, release, nested-workflows, orchestration, env]
 params:
   release_version: { type: string, description: "Semver version being released (e.g. `1.4.0`). The workflow validates this against the changelog and tags." }
@@ -24,31 +24,26 @@ steps:
       concurrency: 3
   - id: tag-deploy-announce
     inputs: [steps.nested-pr-reviews.output]
-  - id: nested-retrospective
+  - id: retrospective
     inputs: [steps.tag-deploy-announce.output]
   - id: close-release-book
-    inputs: [steps.nested-retrospective.output]
+    inputs: [steps.retrospective.output]
 ---
 
 # Release Train
 
 This workflow is an **orchestrator**. It does very little real work itself.
-Each major phase delegates to a *nested run* of another workflow in this
+The two specialist phases delegate to independent runs of workflows in this
 stash:
 
 - pre-flight maintenance → `workflows/weekly-dependency-audit`
 - per-PR sign-off → one `workflows/code-review-pr` run per blocker
-- post-release learning → `workflows/release-retrospective` (a sibling
-  workflow you can split out; see `nested-retrospective` below)
 
-The pattern is intentional. Each nested workflow is *individually*
-runnable, testable, and resumable. The orchestrator's only job is to
-sequence them, stitch their outputs together, and own the cross-cutting
-release artefacts (changelog, tag, deploy, announcement). Because every
-nested run gets its own run id, an interrupted release can resume by asking
-`akm workflow status` of the orchestrator and walking down to the nested
-runs it spawned. Paths below are relative to the directory named by the
-`workspace_dir` parameter, unless stated otherwise.
+Each delegated workflow is individually runnable, testable, and resumable.
+AKM does not provide automatic workflow nesting or status-tree traversal: this
+orchestrator explicitly launches each child with `workflow run` and records its
+run ID in `release-book.md`. Paths below are relative to the directory named by
+the `workspace_dir` parameter, unless stated otherwise.
 
 ## open-release-book
 
@@ -90,38 +85,26 @@ branch, building on the release book opened by `open-release-book`,
 attached to this unit as input. We do not duplicate that logic here — we
 *call* it.
 
-1. If `skip_dependency_audit` is `true`, mark this step
-   `--state skipped --notes "hotfix release"` and continue. Otherwise:
-2. Start the nested run, passing through the parameters it needs:
+1. If `skip_dependency_audit` is `true`, return a successful no-op result that
+   records `hotfix release` and continue. Otherwise, run the delegated audit
+   with the exact parameters it needs:
 
    ```sh
-   akm workflow start workflows/weekly-dependency-audit \
-     --params '{"package_manager":"bun","base_branch":"<base_branch>",
-                "freeze_list":[]}'
+   akm workflow run workflows/weekly-dependency-audit \
+     --package_manager bun \
+     --base_branch "<base_branch>" \
+     --freeze_list '[]'
    ```
 
-   Capture the returned run id — call it `DEP_RUN_ID` — and append it to
-   the `Nested runs` section of `release-book.md`.
-3. Drive the nested run to completion exactly as a human would. Each
-   call returns the next actionable step:
-
-   ```sh
-   akm workflow next $DEP_RUN_ID
-   # ... do the work for that step ...
-   akm workflow complete $DEP_RUN_ID --step <step-id> --state completed \
-     --notes "..." --evidence '{"artefact":"path/to/output"}'
-   ```
-
-   Repeat until `akm workflow status $DEP_RUN_ID` reports the run as
-   `completed`.
-4. Read the nested run's `handoff.md` artefact. If it produced a
+   The command executes the child to a terminal state. Capture its returned
+   run ID as `DEP_RUN_ID` and append the ID and final status to `release-book.md`.
+2. Read the child run's `handoff.md` artefact. If it produced a
    green-band PR, add that PR to `in-scope-prs.json` for this release.
    If it produced any red-band issues, link them in `release-book.md`
    under `Anomalies` so the retrospective can pick them up.
-5. If the nested run finishes in `blocked` or `failed`, do not paper
-   over it. Block this orchestrator step with the nested run id in the
-   notes — the release does not advance until the dependency audit is
-   resolved (which may itself need `akm workflow resume`).
+3. If the child run fails or its gate rejects, fail this orchestrator step with
+   the child run ID. The release does not advance until that run is corrected,
+   resumed, and completed.
 
 ### gate
 
@@ -173,21 +156,21 @@ per PR in `in_scope_prs`, up to 3 in parallel. For the PR number you were
 given, drive it through the standard review workflow as a nested run and
 report back its outcome.
 
-1. Start the nested run for your PR:
+1. Run the delegated review for your PR:
 
    ```sh
-   akm workflow start workflows/code-review-pr \
-     --params '{"pr_ref":"gh:itlackey/akm#<n>","conventions_query":"<pr title>",
-                "knowledge_wiki":"<knowledge_wiki>"}'
+   akm workflow run workflows/code-review-pr \
+     --pr_ref "gh:itlackey/akm#<n>" \
+     --conventions_query "<pr title>" \
+     --knowledge_wiki "<knowledge_wiki>"
    ```
 
-   Record the returned run id in your own status file (e.g. a
+   The command executes the review to a terminal state. Record its returned run
+   ID and result in your own status file (e.g. a
    `review-status/<n>.md` under this run's scratch area) rather than
    appending directly to a shared worklist file — the workflow's final
    steps aggregate every unit's status file once the fan-out completes.
-2. Drive it via `akm workflow next` / `akm workflow complete` until the
-   nested run reports `completed`.
-3. Re-read its `rubric.md` artefact:
+2. Re-read its `rubric.md` artefact:
    - If every rubric item is `pass` or `concern`, report your PR as
      reviewed.
    - If any rubric item is `block`, the PR is *not* releasable this round.
@@ -231,9 +214,8 @@ input, is reviewed and merged.
    ```
 
    Verify the deploy health check passes before continuing. If it
-   fails, mark this step `--state failed` and let the retrospective run
-   pick up the incident — do not attempt to clean up the partial deploy
-   here.
+   fails, fail this step with the deploy diagnostic so the retrospective can
+   pick up the incident — do not attempt to clean up the partial deploy here.
 4. Post the release announcement using `CHANGELOG.md` as the body. Link
    to this run's id and to each nested run id so reviewers can audit the
    path the release took.
@@ -246,44 +228,23 @@ input, is reviewed and merged.
 - The announcement links to the orchestrator's run id for full audit
   traceability.
 
-## nested-retrospective
+## retrospective
 
-Every release ends with a small retrospective so the *next* release
-inherits this one's lessons, drawing on the deploy performed by
-`tag-deploy-announce`, attached to this unit as input. We delegate to a
-focused workflow rather than burying the retro inside the orchestrator.
+Every release ends with a small retrospective so the *next* release inherits
+this one's lessons, drawing on the deploy performed by `tag-deploy-announce`,
+attached to this unit as input.
 
-1. Start the nested retrospective run:
-
-   ```sh
-   akm workflow start workflows/release-retrospective \
-     --params '{"release_version":"<release_version>",
-                "orchestrator_run_id":"<run-id>",
-                "knowledge_wiki":"<knowledge_wiki>"}'
-   ```
-
-   Append the run id to `release-book.md` under `Nested runs`.
-2. Drive the nested run to completion. Its responsibilities (defined in
-   that workflow, not here) are:
-   - read `release-book.md` and every nested run's notes
-   - extract patterns: which steps blocked, which `Anomalies` recurred
-     across releases, which nested workflows themselves need updates
-   - publish a retrospective page under
-     `pages/releases/<release_version>.md` in the wiki named by the
-     `knowledge_wiki` parameter
-   - file follow-up issues for each actionable lesson
-3. When the retro finishes, link its wiki page from `release-book.md`
-   under `Artefacts`.
-
-If `workflows/release-retrospective` does not yet exist in the stash,
-this step blocks with a note pointing the next agent to create it —
-that creation work is itself a small `ship-feature-from-spec` run, and
-recording the gap in the run is more valuable than papering it over with
-ad-hoc notes here.
+1. Read `release-book.md` and every delegated run's final result.
+2. Extract patterns: which steps failed, which `Anomalies` recurred across
+   releases, and which delegated workflows need updates.
+3. Publish a retrospective page under
+   `pages/releases/<release_version>.md` in the wiki named by the
+   `knowledge_wiki` parameter.
+4. File follow-up issues for each actionable lesson.
+5. Link the retrospective page from `release-book.md` under `Artefacts`.
 
 ### gate
 
-- A nested retro run is started, completed, and its run id is recorded.
 - A retrospective wiki page exists at
   `pages/releases/<release_version>.md` in the `knowledge_wiki` wiki and
   is linked from `release-book.md`.
@@ -293,7 +254,7 @@ ad-hoc notes here.
 ## close-release-book
 
 Make the orchestrator's audit trail self-contained, using the retrospective
-produced by `nested-retrospective`, attached to this unit as input.
+produced by `retrospective`, attached to this unit as input.
 
 1. Update `release-book.md` so every section has a real value:
    `Inputs`, `Nested runs` (with each id and final state), `Artefacts`

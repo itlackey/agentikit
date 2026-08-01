@@ -70,6 +70,7 @@ import { UNIT_STALE_MS } from "../runtime/unit-checkin";
 import type { SummaryJudge } from "../validate-summary";
 import { buildLease, resolveRunId } from "./brief";
 import { frozenSummaryJudge } from "./frozen-judge";
+import { defaultUnitDispatcher } from "./native-executor";
 import {
   activeGateLoop,
   cascadeSkippedRouter,
@@ -130,7 +131,8 @@ export interface ReportUnitInput {
   note?: string;
   /**
    * Test seam: completion-criteria judge for the step gate (same seam as the
-   * engine). `undefined` ⇒ build the default from config; `null` ⇒ fail-open.
+   * engine). `undefined` builds the frozen default; `null` is valid only for
+   * a step without criteria.
    */
   summaryJudge?: SummaryJudge | null;
   /** Test seam for the clock. */
@@ -726,7 +728,9 @@ async function finalizeReportedUnit(
         gateLoop,
         priorEvidence,
         summaryJudge:
-          input.summaryJudge === undefined ? frozenSummaryJudge(plan, stepPlan.gate.judge) : input.summaryJudge,
+          input.summaryJudge === undefined
+            ? frozenSummaryJudge(plan, stepPlan.gate.judge, undefined, defaultUnitDispatcher)
+            : input.summaryJudge,
         now: nowFn,
         written: { unitId: journalId, status },
         recorded: "written",
@@ -791,7 +795,10 @@ async function finalizeReportedUnit(
     byUnit,
     gateLoop,
     priorEvidence,
-    summaryJudge: input.summaryJudge === undefined ? frozenSummaryJudge(plan, stepPlan.gate.judge) : input.summaryJudge,
+    summaryJudge:
+      input.summaryJudge === undefined
+        ? frozenSummaryJudge(plan, stepPlan.gate.judge, undefined, defaultUnitDispatcher)
+        : input.summaryJudge,
     now: nowFn,
     written: { unitId: journalId, status },
     recorded: idempotent ? "idempotent" : "written",
@@ -1352,7 +1359,7 @@ async function finalizeStep(args: {
         feedback: completion.feedback,
         summary: completion.feedback,
       },
-      `Step "${stepState.id}" was rejected and its ${maxLoops}-loop gate budget is exhausted. Resolve it manually (\`akm workflow complete\`/\`resume\`/\`abandon\`).`,
+      `Step "${stepState.id}" was rejected and its ${maxLoops}-loop gate budget is exhausted. Inspect the evidence, then abandon it or start a corrected workflow run.`,
       recorded,
     );
   }
@@ -1417,7 +1424,10 @@ async function settleSpine(args: {
     const step = state.step;
     const sp = plan.steps.find((s) => s.stepId === step.id);
     if (!sp) break;
-    const stepJudge = summaryJudge === undefined ? frozenSummaryJudge(plan, sp.gate.judge) : summaryJudge;
+    const stepJudge =
+      summaryJudge === undefined
+        ? frozenSummaryJudge(plan, sp.gate.judge, undefined, defaultUnitDispatcher)
+        : summaryJudge;
 
     // A route-skipped target: complete it as skipped, cascading if it is itself
     // a router (identical to the engine loop's skip handling).

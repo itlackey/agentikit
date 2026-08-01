@@ -376,7 +376,7 @@ export async function buildWorkflowBrief(target: string): Promise<WorkflowBrief>
   if (!stepPlan) {
     throw new UsageError(
       `Step "${stepState.id}" of run ${run.id} is not present in the run's frozen plan. The plan and the step ` +
-        `journal disagree — this run cannot be described; drive it manually with \`akm workflow complete\`.`,
+        "journal disagree; this run cannot be described safely. Abandon it and start a new run.",
     );
   }
 

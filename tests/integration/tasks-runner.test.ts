@@ -13,10 +13,7 @@ import { resolveAkmInvocation } from "../../src/tasks/resolve-akm-bin";
 import { exitCodeForStatus, readTaskHistory, runTask } from "../../src/tasks/runner";
 import { withEnv } from "../_helpers/sandbox";
 
-type FakeWorkflowRunner = (
-  ref: string,
-  params?: Record<string, unknown>,
-) => Promise<{
+type FakeWorkflowRunner = (options: { target: string; params?: Record<string, unknown> }) => Promise<{
   run: {
     id: string;
     workflowRef: string;
@@ -28,7 +25,8 @@ type FakeWorkflowRunner = (
     completedAt: string | null;
     currentStepId: string | null;
   };
-  workflow: { ref: string; title: string; steps: [] };
+  executed: [];
+  done?: true;
 }>;
 
 type FakeRunAgent = (...args: unknown[]) => Promise<AgentRunResult>;
@@ -190,15 +188,15 @@ async function fireWhenRegistered(timers: FakeTimer[], ms: number): Promise<void
 }
 
 describe("runTask — workflow target", () => {
-  test("dispatches to startWorkflowRun and writes log + history to state.db", async () => {
+  test("dispatches to runWorkflowSteps and writes log + history to state.db", async () => {
     writeTask("wf", ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", ""].join("\n"));
     const calls: Array<{ ref: string; params: Record<string, unknown> }> = [];
-    const fakeWf: FakeWorkflowRunner = async (ref, params = {}) => {
-      calls.push({ ref, params });
+    const fakeWf: FakeWorkflowRunner = async ({ target, params = {} }) => {
+      calls.push({ ref: target, params });
       return {
         run: {
           id: "run-id-1",
-          workflowRef: ref,
+          workflowRef: target,
           workflowTitle: "Noop",
           status: "completed",
           params,
@@ -207,14 +205,15 @@ describe("runTask — workflow target", () => {
           completedAt: "2025-01-01T00:00:00Z",
           currentStepId: null,
         },
-        workflow: { ref, title: "Noop", steps: [] },
+        executed: [],
+        done: true,
       };
     };
 
     const result = await runTask("wf", {
       stashDir,
       logDir,
-      startWorkflowRunImpl: fakeWf as never,
+      runWorkflowStepsImpl: fakeWf as never,
       now: () => new Date("2025-01-01T00:00:00Z"),
     });
 
@@ -245,10 +244,10 @@ describe("runTask — workflow target", () => {
   for (const { wf, expected } of STATUS_CASES) {
     test(`maps workflow run status "${wf}" → task status "${expected}"`, async () => {
       writeTask("map", ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", ""].join("\n"));
-      const fakeWf: FakeWorkflowRunner = async (ref, params = {}) => ({
+      const fakeWf: FakeWorkflowRunner = async ({ target, params = {} }) => ({
         run: {
           id: "run-map",
-          workflowRef: ref,
+          workflowRef: target,
           workflowTitle: "Noop",
           status: wf,
           params,
@@ -257,13 +256,13 @@ describe("runTask — workflow target", () => {
           completedAt: null,
           currentStepId: null,
         },
-        workflow: { ref, title: "Noop", steps: [] },
+        executed: [],
       });
 
       const result = await runTask("map", {
         stashDir,
         logDir,
-        startWorkflowRunImpl: fakeWf as never,
+        runWorkflowStepsImpl: fakeWf as never,
         now: () => new Date("2025-01-01T00:00:00Z"),
       });
 
@@ -671,12 +670,12 @@ describe("runTask — disabled tasks", () => {
   test("manual invocation dispatches an intentionally disabled task", async () => {
     writeTask("off", ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "enabled: false", ""].join("\n"));
     let called = false;
-    const fakeWf: FakeWorkflowRunner = async (ref, params = {}) => {
+    const fakeWf: FakeWorkflowRunner = async ({ target, params = {} }) => {
       called = true;
       return {
         run: {
           id: "manual-disabled",
-          workflowRef: ref,
+          workflowRef: target,
           workflowTitle: "Manual disabled run",
           status: "completed",
           params,
@@ -685,14 +684,15 @@ describe("runTask — disabled tasks", () => {
           completedAt: "2025-01-01T00:00:00Z",
           currentStepId: null,
         },
-        workflow: { ref, title: "Manual disabled run", steps: [] },
+        executed: [],
+        done: true,
       };
     };
 
     const result = await runTask("off", {
       stashDir,
       logDir,
-      startWorkflowRunImpl: fakeWf as never,
+      runWorkflowStepsImpl: fakeWf as never,
       now: () => new Date("2025-01-01T00:00:00Z"),
     });
 
@@ -710,7 +710,7 @@ describe("runTask — disabled tasks", () => {
     const result = await runTask("off", {
       stashDir,
       logDir,
-      startWorkflowRunImpl: fakeWf as never,
+      runWorkflowStepsImpl: fakeWf as never,
       now: () => new Date("2025-01-01T00:00:00Z"),
       scheduled: true,
     });

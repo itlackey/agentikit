@@ -99,6 +99,14 @@ describe("accepts every legitimate spelling", () => {
   test("one-dash long names are parsed as short bundles, not accepted as long flags", () => {
     expect(errorFor(["lint", "-auto-fix"]).code).toBe("UNKNOWN_FLAG");
   });
+
+  test("workflow run reserves unknown long flags for exact workflow parameters", () => {
+    expect(() =>
+      check(["workflow", "run", "workflows/health", "--include_processes=true", "--labels", "one", "--labels", "two"]),
+    ).not.toThrow();
+    expect(errorFor(["workflow", "run", "workflows/health", "-x"]).code).toBe("UNKNOWN_FLAG");
+    expect(errorFor(["workflow", "status", "workflows/health", "--include_processes"]).code).toBe("UNKNOWN_FLAG");
+  });
 });
 
 describe("stands down when the command itself is the problem", () => {
@@ -118,7 +126,6 @@ describe("stands down when the command itself is the problem", () => {
     expect(() => check(["show", "knowledge/a", "--scope", "user=x"])).not.toThrow();
     expect(() => check(["index", "--enrich"])).not.toThrow();
     expect(() => check(["proposal", "accept", "p-1", "--source", "distill"])).not.toThrow();
-    expect(() => check(["workflow", "next", "workflows/x", "--dry-run"])).not.toThrow();
     expect(() => check(["search", "foo", "--source", "local"])).not.toThrow();
     expect(() => check(["curate", "foo", "--source", "local"])).not.toThrow();
     expect(() => check(["remember", "note", "--target", "team"])).not.toThrow();

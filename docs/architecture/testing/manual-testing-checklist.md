@@ -422,18 +422,19 @@ Workflows now include authoring, validation, execution, and recovery flows.
       writes and indexes the workflow, confirming intro prose is accepted.
 - [ ] `akm lint --type workflows` reports no `invalid-workflow-structure`
       finding for `workflows/test-created`.
-- [ ] `akm workflow start workflows/test-created` returns a run with `id`,
-      `workflowRef`, and steps.
+- [ ] With disposable execution and verifier engines configured, `akm workflow
+      run workflows/test-created --example_param test --max-steps 1` returns a
+      run with `id`, `workflowRef`, and an executed-step report.
 - [ ] `akm workflow status <run-id>` returns the full run state.
 - [ ] `akm workflow status workflows/test-created` resolves the most recent run
       for that ref.
-- [ ] `akm workflow next workflows/test-created` returns the current actionable
-      step. If no active run exists, it may auto-start one.
-- [ ] `akm workflow complete <run-id> --step <step-id> --state blocked --notes "waiting"`
-      marks the step blocked.
-- [ ] `akm workflow resume <run-id>` flips the blocked run back to active.
-- [ ] `akm workflow complete <run-id> --step <step-id> --state completed --summary "work completed" --notes "done"`
-      succeeds after resume.
+- [ ] Re-running `akm workflow run workflows/test-created --max-steps 1`
+      continues that active run without accepting a second parameter snapshot.
+- [ ] `akm workflow abandon <run-id>` marks the partial run failed;
+      `akm workflow resume <run-id>` flips it back to active, and `akm workflow
+      run <run-id>` continues it.
+- [ ] `akm workflow start`, `next`, and `complete` each fail with
+      `UNKNOWN_COMMAND` and a migration hint.
 - [ ] `akm workflow create bad-name!` fails with a structured usage error.
 - [ ] `akm workflow create test-created --force` fails unless paired with
       `--from` or `--reset`.
@@ -801,24 +802,23 @@ explicitly marked as gated.
 - [ ] `akm log --run <run-id>` returns only events whose metadata belongs to
       that workflow run.
 
-### 17.7 Workflow terminal transitions and engine gate
+### 17.7 Workflow terminal transitions and external-driver gate
 
-- [ ] Copy `.run.id` from `akm workflow start`, then run
+- [ ] Copy `.run.id` from a bounded `akm workflow run --max-steps 1`, then run
       `akm workflow list --active --ref workflows/test-created`; it returns only
       active runs for the normalized fully qualified ref. `akm workflow status
       <run-id> --units` includes a `units` collection without changing run state.
 - [ ] `akm workflow abandon <run-id>` marks the run failed and removes it from
       `workflow list --active`; `akm workflow resume <run-id>` reopens it.
-- [ ] Starting the same workflow again without `--force` fails with
-      `RESOURCE_ALREADY_EXISTS`; `--force` creates a distinct parallel run.
+- [ ] Invoking `workflow run` by ref while a run is active continues that run;
+      supplying parameter flags again fails because params are creation-only.
 - [ ] With `experimental.workflowEngine` unset/false, `akm workflow brief
-      <run-id>`, `akm workflow run <run-id>`, and `akm workflow report <run-id>`
-      fail with the documented config gate before acquiring an engine lease or
-      changing the run.
-- [ ] With the experiment enabled, `workflow brief`/`report` require a
-      compatible seeded workflow and disposable run. Record the exact brief,
-      report command, unit state, and terminal status. `workflow run` additionally
-      requires a configured runner/engine.
+      <run-id>` and `akm workflow report <run-id>` fail with the documented
+      config gate before changing the run; `akm workflow run <run-id>` remains
+      available and ungated.
+- [ ] With the experiment enabled, `workflow brief`/`report` operate on a
+      compatible existing active run. Record the exact brief, report command,
+      unit state, and terminal status.
 
 ### 17.8 Proposal dry-runs and archive lifecycle
 
@@ -900,7 +900,7 @@ Spot-check that failures always arrive as structured JSON on stderr with
 - [ ] `akm config set sources weird-thing` fails with a structured JSON/usage
       error.
 - [ ] `akm help migrate` with no version fails with `MISSING_REQUIRED_ARGUMENT`.
-- [ ] `akm workflow next definitely-not-a-run-id` fails structurally and does
+- [ ] `akm workflow status definitely-not-a-run-id` fails structurally and does
       not dump a stack trace.
 - [ ] `akm env path missing-env` fails with `ASSET_NOT_FOUND` or the
       current typed not-found envelope.

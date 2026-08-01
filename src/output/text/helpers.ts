@@ -59,10 +59,8 @@ export {
 export { formatShowPlain } from "./show-format";
 export {
   formatWorkflowBriefPlain,
-  formatWorkflowCompleteRejectedPlain,
   formatWorkflowCreatePlain,
   formatWorkflowListPlain,
-  formatWorkflowNextPlain,
   formatWorkflowResumePlain,
   formatWorkflowRunPlain,
   formatWorkflowStatusPlain,

@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { ConfigError } from "../../../src/core/errors";
 import { openStateDatabase } from "../../../src/core/state-db";
 import type { WorkflowRunUnitRow } from "../../../src/storage/repositories/workflow-runs-repository";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
@@ -1039,7 +1040,7 @@ describe("reviewer #6 — the gate-evaluation row is finalized even when complet
   });
 });
 
-// ── Optional validation gates fail open when no verdict is available ─────────
+// ── Declared validation gates fail closed without an affirmative verdict ─────
 
 const GATED_WF = `---
 type: workflow
@@ -1056,12 +1057,11 @@ Do the work.
 the work is thorough
 `;
 
-describe("optional validation gates", () => {
-  test("no judge skips validation and advances without journaling a gate row", async () => {
+describe("fail-closed validation gates", () => {
+  test("no judge refuses completion without journaling a gate row", async () => {
     seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
-    const fin = await finalizeExecutedStep(finalizeArgs({ summaryJudge: null }));
-    expect(fin.kind).toBe("advanced");
-    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("completed");
+    await expect(finalizeExecutedStep(finalizeArgs({ summaryJudge: null }))).rejects.toBeInstanceOf(ConfigError);
+    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("pending");
     const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(RUN_ID, "work"));
     expect(rows.some((row) => row.unit_id === "work.gate:l1")).toBe(false);
   });
@@ -1074,37 +1074,54 @@ describe("optional validation gates", () => {
     expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("completed");
   });
 
-  test("a judge that throws skips validation and advances", async () => {
+  test("a judge that throws rejects completion and leaves a failed gate row", async () => {
     seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
     const judge: SummaryJudge = async () => {
       throw new Error("LLM unreachable");
     };
     const fin = await finalizeExecutedStep(finalizeArgs({ summaryJudge: judge }));
-    expect(fin.kind).toBe("advanced");
-    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("completed");
+    expect(fin).toMatchObject({
+      kind: "gate-exhausted",
+      gateRejection: { stepId: "work", missing: ["the work is thorough"] },
+    });
+    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("pending");
     const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(RUN_ID, "work"));
     const gate = rows.find((r) => r.unit_id === "work.gate:l1");
     expect(gate?.status).toBe("failed");
-    expect(gate?.result_json).toBeNull();
+    expect(JSON.parse(gate?.result_json ?? "null")).toMatchObject({
+      complete: false,
+      missing: ["the work is thorough"],
+    });
   });
 
-  test("an unparseable verdict skips validation and advances", async () => {
+  test("an unparseable verdict rejects completion and journals the rejection", async () => {
     seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
     const judge: SummaryJudge = async () => "not json at all";
     const fin = await finalizeExecutedStep(finalizeArgs({ summaryJudge: judge }));
-    expect(fin.kind).toBe("advanced");
-    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("completed");
+    expect(fin).toMatchObject({
+      kind: "gate-exhausted",
+      gateRejection: { stepId: "work", missing: ["the work is thorough"] },
+    });
+    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("pending");
+    const rows = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(RUN_ID, "work"));
+    const gate = rows.find((r) => r.unit_id === "work.gate:l1");
+    expect(gate?.status).toBe("completed");
+    expect(JSON.parse(gate?.result_json ?? "null")).toMatchObject({
+      complete: false,
+      missing: ["the work is thorough"],
+    });
   });
 
-  test("the engine also skips validation when no judge is configured", async () => {
+  test("the engine also refuses to bypass validation when no judge is configured", async () => {
     seedRun([{ id: "work", criteria: ["the work is thorough"] }], plan(GATED_WF));
-    const result = await runWorkflowSteps({
-      target: RUN_ID,
-      loadPlan: async () => plan(GATED_WF),
-      dispatcher: async () => ({ ok: true, text: "did the work" }),
-      summaryJudge: null,
-    });
-    expect(result.done).toBe(true);
-    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("completed");
+    await expect(
+      runWorkflowSteps({
+        target: RUN_ID,
+        loadPlan: async () => plan(GATED_WF),
+        dispatcher: async () => ({ ok: true, text: "did the work" }),
+        summaryJudge: null,
+      }),
+    ).rejects.toBeInstanceOf(ConfigError);
+    expect((await getWorkflowStatus(RUN_ID)).workflow.steps.find((s) => s.id === "work")?.status).toBe("pending");
   });
 });

@@ -80,7 +80,7 @@ export const logCommand = defineJsonCommand({
     ref: { type: "string", description: "Filter by asset ref ([bundle//]conceptId)" },
     run: {
       type: "string",
-      description: "Filter to a workflow run's events (metadata.runId), e.g. the id from `akm workflow start`",
+      description: "Filter to a workflow run's events (metadata.runId), e.g. the id from `akm workflow run`",
     },
     "exclude-tags": {
       type: "string",

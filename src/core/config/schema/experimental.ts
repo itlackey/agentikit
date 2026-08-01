@@ -30,20 +30,12 @@ export const ExperimentalConfigSchema = z
     improveAutonomy: z.boolean().optional(),
 
     /**
-     * Allow the `akm workflow` native engine to run (Q-05).
+     * Allow the harness-neutral workflow external-driver protocol (Q-05).
      *
-     * OFF by default. Gates `akm workflow run` (the native step-execution
-     * engine) and `akm workflow brief`/`report` (the harness-neutral driver
-     * protocol).
-     *
-     * Deliberately NOT gated: authoring/linting the unified markdown format
-     * and the manual workflow CLI contract (`start`/`next`/`complete`/
-     * `status`/`list`/`create`/`resume`/`abandon`) remain stable regardless of
-     * this key.
-     *
-     * Unlike `improveAutonomy`, a gated call here REFUSES outright rather than
-     * degrading: a workflow step either executes or it does not, so there is
-     * no safe partial-execution fallback to fall back to.
+     * OFF by default. Gates only `akm workflow brief`/`report`. Stable native
+     * orchestration through `workflow run`, authoring/linting, inspection, and
+     * recovery remain available regardless of this key. A gated driver call
+     * refuses outright rather than degrading.
      */
     workflowEngine: z.boolean().optional(),
   })

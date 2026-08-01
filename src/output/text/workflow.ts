@@ -6,10 +6,8 @@
 
 import {
   formatWorkflowBriefPlain,
-  formatWorkflowCompleteRejectedPlain,
   formatWorkflowCreatePlain,
   formatWorkflowListPlain,
-  formatWorkflowNextPlain,
   formatWorkflowResumePlain,
   formatWorkflowRunPlain,
   formatWorkflowStatusPlain,
@@ -17,11 +15,7 @@ import {
 import type { TextFormatterEntry } from "./registry";
 
 export const workflowFormatters: TextFormatterEntry[] = [
-  { command: "workflow-start", handler: (r) => formatWorkflowStatusPlain(r) },
   { command: "workflow-status", handler: (r) => formatWorkflowStatusPlain(r) },
-  { command: "workflow-complete", handler: (r) => formatWorkflowStatusPlain(r) },
-  { command: "workflow-complete-rejected", handler: (r) => formatWorkflowCompleteRejectedPlain(r) },
-  { command: "workflow-next", handler: (r) => formatWorkflowNextPlain(r) },
   { command: "workflow-list", handler: (r) => formatWorkflowListPlain(r) },
   { command: "workflow-create", handler: (r) => formatWorkflowCreatePlain(r) },
   { command: "workflow-resume", handler: (r) => formatWorkflowResumePlain(r) },
