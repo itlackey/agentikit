@@ -54,7 +54,7 @@ export const PRE_CUTOVER_STATE_CEILING = "019-proposal-fingerprints";
  * full live chain (which now includes the cutover DDL), so a genuine
  * pre-cutover FROM-state fixture cannot use it. This applies exactly the prefix
  * `[001 … ceilingId]` via the real shared migration runner (never hand-written
- * DDL — the checksums are still sealed), leaving the DB legitimately "old"
+ * DDL), leaving the DB legitimately "old"
  * relative to the live ledger. Caller owns the returned handle (seed, then
  * close).
  */

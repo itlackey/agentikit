@@ -1347,11 +1347,11 @@ akm migrate apply --config ./prepared-config.json
 
 `--config` is required when the active config is legacy or absent. When the
 active config is current, apply safely uses it as the target. Apply is
-idempotent and creates a verified recovery run before sealing checksums or
-changing any artifact. Durable per-artifact phases make a killed apply
-resumable; while an apply or restore journal is pending, ordinary canonical
-config/database access fails closed. Apply refuses before backup when managed
-handles, maintenance activities, mutation locks, or workflow claims are live.
+idempotent and creates a semantically verified recovery run before changing any
+artifact. One phase-free incomplete sentinel makes a killed apply replayable;
+while apply or restore is incomplete, ordinary canonical config/database access
+fails closed. Apply refuses before backup when managed handles, maintenance
+activities, mutation locks, or workflow claims are live.
 
 ### config
 

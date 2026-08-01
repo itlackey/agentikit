@@ -3,19 +3,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Chunk-8 WI-8.3 — the frozen `{ id, checksum, up }` migration BODIES copy
+ * Chunk-8 WI-8.3 — the frozen `{ id, up }` migration bodies
  * (`scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts`, plan §3.3 / §8.2).
  *
- * Two groups, mirroring `workflow-migrations-frozen.test.ts`:
- *
- *   1. **Self-containment** — the bodies module imports NOTHING from
- *      `src/workflows/` (it must survive that directory's WI-8.3 deletion);
- *      its only `src/` import is the shared migration engine.
- *   2. **Checksum pin** — each frozen body's computed `migrationChecksum`
- *      EQUALS the corresponding `WORKFLOW_MIGRATIONS_CHECKSUMS` entry, id for
- *      id, in order. Because the checksum snapshot was itself pinned to the
- *      (now-deleted) live `WORKFLOW_MIGRATIONS` array in WI-8.1, this
- *      transitively proves the frozen bodies are byte-faithful to that array.
+ * The bodies module imports nothing from `src/workflows/` so it survives that
+ * directory's deletion. Its ordered IDs are the workflow ledger contract.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -25,8 +17,6 @@ import {
   FROZEN_WORKFLOW_BASE_SCHEMA_DDL,
   FROZEN_WORKFLOW_MIGRATIONS,
 } from "../../../scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies";
-import { WORKFLOW_MIGRATIONS_CHECKSUMS } from "../../../scripts/akm-migrate/migrate/legacy/workflow-migrations-frozen";
-import { migrationChecksum } from "../../../src/storage/engines/sqlite-migrations";
 
 const BODIES_PATH = path.resolve(
   __dirname,
@@ -41,13 +31,7 @@ describe("workflow-migrations-bodies — self-containment", () => {
   });
 });
 
-describe("workflow-migrations-bodies — checksum pin to the frozen ledger", () => {
-  test("each frozen body's checksum equals its WORKFLOW_MIGRATIONS_CHECKSUMS entry, in order", () => {
-    const computed = FROZEN_WORKFLOW_MIGRATIONS.map((m) => ({ id: m.id, checksum: migrationChecksum(m) }));
-    expect(FROZEN_WORKFLOW_MIGRATIONS.map(({ id, checksum }) => ({ id, checksum }))).toEqual(computed);
-    expect(computed).toEqual(WORKFLOW_MIGRATIONS_CHECKSUMS.map((e) => ({ id: e.id, checksum: e.checksum })));
-  });
-
+describe("workflow-migrations-bodies — frozen ledger", () => {
   test("exactly the 10 pre-cutover ids, 001 through 010, unique and ordered", () => {
     const ids = FROZEN_WORKFLOW_MIGRATIONS.map((m) => m.id);
     expect(ids.length).toBe(10);

@@ -633,30 +633,24 @@ checklist did not exercise.
       staged status fail and verify the old executable remains byte-identical.
 - [ ] Hold canonical state and workflow handles, then run migrate apply. It
       refuses before creating a backup and names the active maintenance blocker.
-- [ ] SIGKILL apply after state, workflow, and config phases. Canonical opens
-      fail closed, status reports the retained phase without mutation, and the
-      next apply completes one current generation.
-- [ ] Leave a prepared restore journal with a published database and quarantined
-      predecessor. Config/database access refuses before accepting writes or
-      recreating an absent peer database; apply recovers the journal first.
-- [ ] Inject a crash after each prepared rollback destination, stage, sidecar,
-      and pre-journal-delete boundary. Every retry authenticates the original
-      fingerprint and completes; substituting a same-ledger database fails closed.
-- [ ] Substitute a same-ledger database after an apply phase is journaled. Status,
-      resume, and rollback reject the exact-generation mismatch without replacing
-      the substituted file.
-- [ ] SIGKILL immediately after each durable state/workflow/config mutation but
-      before journal advancement. The operation marker or exact config target is
-      recognized as one adjacent generation and apply resumes successfully.
-- [ ] SIGKILL after rollback restore commits but before apply-journal deletion.
-      The next apply authenticates the backup generation, removes the stale apply
-      journal, and leaves restored artifacts byte-identical.
-- [ ] Populate more than 100 active workflow leases/claims. Restore reports a
+- [ ] Interrupt apply after the database cutover but before cleanup. Canonical
+      opens fail closed, status reports one phase-free incomplete sentinel, and
+      the next apply reruns the transforms to semantic completion using the same
+      backup.
+- [ ] Interrupt restore after one database replacement. Config/database access
+      refuses while the phase-free restore sentinel exists; retry republishes all
+      selected artifacts, verifies their semantic state, and clears the sentinel.
+- [ ] Inject failures in schema application, cutover, content rewriting, task
+      rewriting, and cleanup. Each failure retains the same sentinel and backup;
+      repairing the input and rerunning apply converges without duplicate rows.
+- [ ] Verify config is still the old config after a pre-publication failure and
+      is published only after database and asset transforms succeed.
+- [ ] Populate more than 20 active workflow leases/claims. Restore reports a
       capped sample plus an additional-blockers marker; it never materializes the
       unbounded result set.
 - [ ] Use a valid prepared config just below the config read cap whose expanded
-      target makes the apply journal exceed its cap. Apply rejects before writing
-      the journal or mutating config/databases.
+      target makes the apply sentinel exceed its cap. Apply rejects before writing
+      the sentinel or mutating config/databases.
 - [ ] `AKM_NO_AUTO_MIGRATE=1 akm config list` behaves exactly like the command
       without that retired variable: legacy config is rejected and disk is not
       modified.
@@ -882,8 +876,9 @@ checklist state.
 - [ ] **Runtime/release:** execute the packaged CLI on supported Node versions,
       the standalone binary matrix, npm upgrade path, semantic-search gate, and
       Docker install matrix. Record artifact digests and exact release commit.
-- [ ] **Crash/recovery:** execute migration kill-point and rollback-journal cases
-      only in the dedicated disposable recovery harness described in 16.3.
+- [ ] **Crash/recovery:** execute migration kill-point and phase-free sentinel
+      replay cases only in the dedicated disposable recovery harness described
+      in 16.3.
 
 ---
 

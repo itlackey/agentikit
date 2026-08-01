@@ -80,7 +80,7 @@ describe("openLogsDatabase", () => {
     }
   });
 
-  test("seals the checksum-less logs ledger published by 0.8.14 and keeps its rows", () => {
+  test("opens the ID-only logs ledger published by 0.8.14 and keeps its rows", () => {
     const dbPath = getLogsDbPath();
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     const legacy = new Database(dbPath);
@@ -110,13 +110,9 @@ describe("openLogsDatabase", () => {
     const migrated = openLogsDatabase();
     try {
       expect(queryTaskLogs(migrated, { taskId: "legacy" }).map((row) => row.line)).toEqual(["published row"]);
-      expect(
-        (
-          migrated.prepare("SELECT checksum FROM schema_migrations WHERE id='001-task-logs'").get() as {
-            checksum: string;
-          }
-        ).checksum,
-      ).toBe("d587420b669200522dcedc0fbb3c8015ff44d04dfab3aea9cccdfe92edc54715");
+      expect(migrated.prepare("SELECT id FROM schema_migrations WHERE id='001-task-logs'").get()).toEqual({
+        id: "001-task-logs",
+      });
     } finally {
       migrated.close();
     }

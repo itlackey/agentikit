@@ -14,7 +14,7 @@ import { openLegacyWorkflowDb } from "../../_helpers/legacy-workflow-db";
  * `src/workflows/db.ts` (`openWorkflowDatabase` / live `WORKFLOW_MIGRATIONS`) is
  * deleted; the migration BODIES survive frozen in
  * `scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts` and are rolled through the
- * shared engine by `config-migrate.ts#runFrozenWorkflowRoll` at cutover time.
+ * shared engine by `config-migrate.ts#applyWorkflowSchema` at cutover time.
  * `openLegacyWorkflowDb` (test helper) drives that same base-schema + frozen
  * migration chain. Covers:
  *  - Fresh DB: schema_migrations table is created and every frozen migration is
@@ -136,7 +136,7 @@ describe("workflow.db migrations (frozen pre-cutover chain)", () => {
     // schema_migrations table. WI-8.3 retired the bootstrap back-fill; such DBs
     // are out of the migrator FROM-state, so the frozen roll fails closed
     // (migration 001's ALTER ADD scope_key hits "duplicate column name" — the
-    // clean operator message lives in config-migrate.ts#runFrozenWorkflowRoll's
+    // clean operator message lives in config-migrate.ts#applyWorkflowSchema's
     // pre-versioning guard).
     const legacy = new Database(dbPath);
     legacy.exec("PRAGMA journal_mode = WAL");

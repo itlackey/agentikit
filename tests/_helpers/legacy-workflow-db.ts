@@ -10,7 +10,7 @@
  * `WORKFLOW_MIGRATIONS`). Migration/backup/cutover suites that still need a
  * faithful pre-cutover workflow.db source it here from the FROZEN migration
  * bodies (`scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts`) through the shared
- * engine — exactly as `config-migrate.ts#runFrozenWorkflowRoll` does at
+ * engine — exactly as `config-migrate.ts#applyWorkflowSchema` does at
  * migrate-apply time. This keeps pre-cutover coverage alive (§15.3: extend, do
  * not rewrite) without resurrecting the deleted module.
  */

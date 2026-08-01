@@ -17,8 +17,8 @@ migration guide](../migration/v0.8-to-v0.9.md) before editing an existing
 installation.
 
 Canonical config and durable database access fail closed while a restore or
-migration-apply journal is pending. Use `akm migrate status` to inspect the
-phase and `akm migrate apply` to resume; do not delete journal files manually.
+migration-apply operation is incomplete. Use `akm migrate status` to inspect it
+and `akm migrate apply` to retry; do not delete migration control files manually.
 
 AKM 0.8 does not provide these migration commands. To cross from 0.8 to 0.9,
 prepare the target and an independent filesystem backup first, install or stage

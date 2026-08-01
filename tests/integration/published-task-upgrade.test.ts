@@ -536,13 +536,14 @@ test.skipIf(!ENABLED)(
       expect(fs.readFileSync(commandHistory.log, "utf8")).toContain(candidatePackage.version);
       const logs = new Database(path.join(dataHome, "akm", "logs.db"), { readonly: true });
       try {
+        expect(logs.query("SELECT id FROM schema_migrations WHERE id='001-task-logs'").get()).toEqual({
+          id: "001-task-logs",
+        });
         expect(
-          (
-            logs.query("SELECT checksum FROM schema_migrations WHERE id='001-task-logs'").get() as {
-              checksum: string;
-            }
-          ).checksum,
-        ).toBe("d587420b669200522dcedc0fbb3c8015ff44d04dfab3aea9cccdfe92edc54715");
+          (logs.query("PRAGMA table_info(schema_migrations)").all() as Array<{ name: string }>).map(
+            (column) => column.name,
+          ),
+        ).toEqual(["id", "applied_at"]);
         expect(
           (
             logs.query("SELECT COUNT(*) AS count FROM task_logs WHERE task_id='upgrade-command'").get() as {
@@ -579,12 +580,12 @@ test.skipIf(!ENABLED)(
         `execute generated deterministic no-network workflow cron command\nhistory:\n${JSON.stringify(workflowHistory, null, 2)}\nlog:\n${fs.readFileSync(workflowHistory.log, "utf8")}`,
       );
       expect(workflowHistory).toMatchObject({
-        status: "active",
+        status: "completed",
         target: { kind: "workflow", ref: "workflows/upgrade-noop" },
       });
       expect(workflowHistory.detail?.runId).toBeTruthy();
       expect(fs.readFileSync(workflowHistory.log, "utf8")).toContain(
-        `run_id=${workflowHistory.detail?.runId} status=active`,
+        `run_id=${workflowHistory.detail?.runId} status=completed`,
       );
 
       const manualDisabled = run([currentCli, "task", "run", "upgrade-disabled"], currentEnv);

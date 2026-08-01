@@ -35,7 +35,7 @@ import {
   quarantineIndexDb,
   repairAlreadyCurrentProposalRefs,
 } from "../../scripts/akm-migrate/migrate/legacy/three-db-cutover";
-import { getMigrationApplyJournalPath } from "../../scripts/akm-migrate/migration-backup";
+import { getMigrationApplyJournalPath, restoreMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
 import { createProposal } from "../../src/commands/proposal/repository";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import { deriveBundleIds } from "../../src/core/bundle-id";
@@ -184,6 +184,19 @@ function ledgerIds(db: Database): string[] {
   return (db.query("SELECT id FROM schema_migrations ORDER BY rowid").all() as Array<{ id: string }>).map((r) => r.id);
 }
 
+function backupRunIdFromApply(stdout: string): string {
+  const line = stdout.trim().split("\n").at(-1);
+  const runId = line ? (JSON.parse(line) as { backupRunId?: unknown }).backupRunId : undefined;
+  if (typeof runId !== "string") throw new Error("Migration apply did not report its backup run ID.");
+  return runId;
+}
+
+function seedSalienceRef(assetRef: string): void {
+  const state = openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING);
+  state.prepare("INSERT INTO asset_salience (asset_ref) VALUES (?)").run(assetRef);
+  state.close();
+}
+
 test("cutover ref map tolerates a pre-provenance index without item_ref", () => {
   fs.mkdirSync(path.dirname(getDbPath()), { recursive: true });
   const index = new Database(getDbPath());
@@ -261,6 +274,46 @@ test("cutover ref map rekeys pre-reservation bundle ids to their configured owne
   expect(walkedMap.get(oldPrimaryRef)).toBe(newPrimaryRef);
   expect(walkedMap.get(oldSecondaryRef)).toBe(newSecondaryRef);
 });
+
+test("rebuilds the cutover ref map after restore when the bundle id changes", async () => {
+  const stash = path.join(getDataDir(), "stash");
+  const knowledgeDir = path.join(stash, "knowledge");
+  const legacyRef = retiredRef("knowledge", "bundle-owner");
+  fs.mkdirSync(knowledgeDir, { recursive: true });
+  fs.writeFileSync(path.join(knowledgeDir, "bundle-owner.md"), "# Bundle owner\n");
+  seedSalienceRef(legacyRef);
+  const prepared = writeConfigs();
+
+  const first = await runCliCapture(["migrate", "apply", "--config", prepared]);
+  expect(first.code, first.stderr).toBe(0);
+  const firstState = readState();
+  try {
+    expect(refsIn(firstState, "asset_salience", "asset_ref")).toEqual(["stash//knowledge/bundle-owner"]);
+  } finally {
+    firstState.close();
+  }
+
+  restoreMigrationBackup(true, backupRunIdFromApply(first.stdout));
+  fs.writeFileSync(
+    prepared,
+    `${JSON.stringify({
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      bundles: { primary: { path: stash, writable: true } },
+      defaultBundle: "primary",
+    })}\n`,
+    { mode: 0o600 },
+  );
+
+  const reapplied = await runCliCapture(["migrate", "apply", "--config", prepared]);
+  expect(reapplied.code, reapplied.stderr).toBe(0);
+  const finalState = readState();
+  try {
+    expect(refsIn(finalState, "asset_salience", "asset_ref")).toEqual(["primary//knowledge/bundle-owner"]);
+  } finally {
+    finalState.close();
+  }
+}, 30_000);
 
 test("cutover legacy-id inference reserves non-materialized configured bundles", () => {
   const primaryRoot = path.join(getDataDir(), "stash");
@@ -369,7 +422,7 @@ function seedInstalledBundleMigration(): { prepared: string; installedRoot: stri
   return { prepared, installedRoot, oldRef, itemRef };
 }
 
-test("a real v17 index and a crash-resume preserve installed-bundle durable state", async () => {
+test("a real v17 index preserves installed-bundle durable state", async () => {
   const { prepared, installedRoot, oldRef, itemRef } = seedInstalledBundleMigration();
   const primaryRoot = path.join(getDataDir(), "primary-with-same-ref");
   fs.mkdirSync(path.join(primaryRoot, "skills", "deploy"), { recursive: true });
@@ -408,22 +461,7 @@ test("a real v17 index and a crash-resume preserve installed-bundle durable stat
     );
   index.close();
 
-  const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "apply", "--config", prepared], {
-    cwd: path.resolve(import.meta.dir, "../.."),
-    env: { ...process.env, AKM_TEST_MIGRATION_CRASH_AFTER: "workflow" },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-  const journal = JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8"));
-  // The journal captures the resolved installed-bundle lock entry once, at
-  // creation time; a crash mid-flight and a plain resume must reuse that
-  // recorded entry as-is rather than re-deriving it from the live lockfile.
-  expect(journal.migrationLockEntries).toEqual([
-    { id: "installed-owner-repo", source: "github", ref: "owner/repo", localRoot: installedRoot },
-  ]);
-
-  const applied = await runCliCapture(["migrate", "apply"]);
+  const applied = await runCliCapture(["migrate", "apply", "--config", prepared]);
   expect(applied.code, applied.stderr).toBe(0);
 
   const migrated = readState();
@@ -448,7 +486,7 @@ test("a malformed lockfile blocks before mutation", async () => {
 
   const failed = await runCliCapture(["migrate", "apply", "--config", prepared]);
   expect(failed.code).not.toBe(0);
-  expect(failed.stderr).toMatch(/Cannot plan migration lock entries/i);
+  expect(failed.stderr).toMatch(/Cannot merge migration lock entries/i);
   expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
   expect(JSON.parse(fs.readFileSync(getConfigPath(), "utf8")).configVersion).toBe("0.8.0");
   expect(fs.readFileSync(getLockfilePath(), "utf8")).toBe("not a lockfile");
@@ -462,7 +500,7 @@ test("a malformed lockfile blocks before mutation", async () => {
   expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
 }, 30_000);
 
-test("relative pre-cutover roots resume against the journaled cwd", async () => {
+test("relative pre-cutover roots resolve against the apply cwd", async () => {
   const initialCwd = path.join(getDataDir(), "migration-initial", "working");
   const resumeCwd = path.join(getDataDir(), "migration-resume", "deeper", "working");
   const relativeStash = path.join("..", "relative-stash");
@@ -503,43 +541,18 @@ test("relative pre-cutover roots resume against the journaled cwd", async () => 
   openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
 
   const cliPath = path.resolve(import.meta.dir, "../..", "src", "cli.ts");
-  const crashed = Bun.spawn([process.execPath, cliPath, "migrate", "apply", "--config", prepared], {
+  const applied = Bun.spawn([process.execPath, cliPath, "migrate", "apply", "--config", prepared], {
     cwd: initialCwd,
-    env: { ...process.env, AKM_TEST_MIGRATION_CRASH_AFTER: "workflow" },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [crashCode] = await Promise.all([
-    crashed.exited,
-    new Response(crashed.stdout).text(),
-    new Response(crashed.stderr).text(),
-  ]);
-  expect(crashCode).not.toBe(0);
-  const journal = JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8"));
-  expect(journal).toMatchObject({
-    formatVersion: 5,
-    pathResolutionBase: initialCwd,
-    phase: "workflow-applied",
-  });
-
-  expect(fs.existsSync(path.join(memoriesDir, ".stash.json"))).toBe(true);
-  expect(fs.readFileSync(taskPath, "utf8")).toContain(["workflow", "relative"].join(":"));
-
-  // Resume from a DIFFERENT cwd than the crashed process used: relative
-  // source paths must still resolve correctly via the journal's own
-  // recorded pathResolutionBase, not the resuming process's cwd.
-  const resumed = Bun.spawn([process.execPath, cliPath, "migrate", "apply"], {
-    cwd: resumeCwd,
     env: { ...process.env },
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [resumeCode, , resumeStderr] = await Promise.all([
-    resumed.exited,
-    new Response(resumed.stdout).text(),
-    new Response(resumed.stderr).text(),
+  const [applyCode, , applyStderr] = await Promise.all([
+    applied.exited,
+    new Response(applied.stdout).text(),
+    new Response(applied.stderr).text(),
   ]);
-  expect(resumeCode, resumeStderr).toBe(0);
+  expect(applyCode, applyStderr).toBe(0);
   expect(fs.existsSync(path.join(memoriesDir, ".stash.json"))).toBe(false);
   expect(parseFrontmatter(fs.readFileSync(path.join(memoriesDir, "note.md"), "utf8")).data.description).toBe(
     "Resolved from the original migration cwd",
@@ -856,11 +869,11 @@ describe("WI-8.2 (d) — the cutover runs exactly once", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// (e) fail-closed — an unparseable ref restores the pre-state
+// (e) fail-closed - an unparseable ref leaves a retryable sentinel
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("WI-8.2 (e) — an integrity failure fails closed to restore", () => {
-  test("an unparseable stored ref aborts the cutover and restores the pre-state", async () => {
+describe("WI-8.2 (e) - an integrity failure remains retryable", () => {
+  test("an unparseable stored ref aborts the transaction and succeeds after repair", async () => {
     const db = openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING);
     db.prepare(`INSERT INTO asset_salience (asset_ref, encoding_salience, updated_at) VALUES (?, 0.5, 100)`).run(
       RC_TRAIN_LIVE_REFS.skill,
@@ -880,29 +893,34 @@ describe("WI-8.2 (e) — an integrity failure fails closed to restore", () => {
     const pre = readState();
     const preSalience = refsIn(pre, "asset_salience", "asset_ref");
     const preEvents = refsIn(pre, "events", "ref");
-    const preLedger = ledgerIds(pre);
     pre.close();
 
     const applied = await runCliCapture(["migrate", "apply", "--config", prepared]);
     expect(applied.code).not.toBe(0);
-    expect(applied.stderr).toMatch(/restored|unparseable|integrity/i);
-    expect(applied.stderr).not.toMatch(/rollback could not complete/i);
-    expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
+    expect(applied.stderr).toMatch(/incomplete|unparseable|integrity/i);
+    expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(true);
+    expect(JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8")).phase).toBeUndefined();
 
     const post = readState();
     try {
-      // Pre-state preserved: the live scalar ref was not re-keyed, the malformed
-      // event remains present, and the ledger rolled back to the pre-cutover ceiling.
+      // The cutover transaction rolled back, while additive schema migrations
+      // remain safely applied for the retry.
       expect(refsIn(post, "asset_salience", "asset_ref").sort()).toEqual(preSalience.sort());
       expect(refsIn(post, "asset_salience", "asset_ref")).toContain(RC_TRAIN_LIVE_REFS.skill);
       expect(refsIn(post, "events", "ref")).toEqual(preEvents);
       expect(refsIn(post, "events", "ref")).toContain(":bad");
-      expect(ledgerIds(post)).toEqual(preLedger);
-      expect(ledgerIds(post).at(-1)).toBe(PRE_CUTOVER_STATE_CEILING); // 020 rolled back
+      expect(ledgerIds(post).at(-1)).not.toBe(PRE_CUTOVER_STATE_CEILING);
       expect(fs.readFileSync(treatmentFile, "utf8")).toBe(`${RC_TRAIN_LIVE_REFS.skill}\n`);
     } finally {
       post.close();
     }
+
+    const repaired = new Database(getStateDbPathInDataDir());
+    repaired.run("DELETE FROM events WHERE ref=':bad'");
+    repaired.close();
+    const resumed = await runCliCapture(["migrate", "apply"]);
+    expect(resumed.code, resumed.stderr).toBe(0);
+    expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
   }, 30_000);
 });
 
@@ -1028,41 +1046,12 @@ describe("WI-8.2 pilot treatment recovery", () => {
 
     const failed = await runCliCapture(["migrate", "apply", "--config", prepared]);
     expect(failed.code).not.toBe(0);
-    expect(failed.stderr).toMatch(/pilot treatment|forward recovery|directory/i);
+    expect(failed.stderr).toMatch(/incomplete|directory/i);
     expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(true);
-    expect(JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8")).phase).toBe("pilot-prepared");
+    expect(JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8")).phase).toBeUndefined();
 
     fs.rmSync(treatmentFile, { recursive: true });
     fs.writeFileSync(treatmentFile, `${RC_TRAIN_LIVE_REFS.skill}\n`);
-    const resumed = await runCliCapture(["migrate", "apply"]);
-    expect(resumed.code, resumed.stderr).toBe(0);
-    expect(fs.readFileSync(treatmentFile, "utf8")).toBe(`${SKILL_ITEM_REF}\n`);
-    expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
-  }, 30_000);
-
-  test("resumes after a crash between treatment rewrite and journal advancement", async () => {
-    openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
-    seedOldIndexDb();
-    const treatmentFile = path.join(getDataDir(), "stash", ".akm", "measurement", "treatment-pilot-2026-06-14.txt");
-    fs.mkdirSync(path.dirname(treatmentFile), { recursive: true });
-    fs.writeFileSync(treatmentFile, `${RC_TRAIN_LIVE_REFS.skill}\n`);
-    const prepared = writeConfigs();
-
-    const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "apply", "--config", prepared], {
-      cwd: path.resolve(import.meta.dir, "../.."),
-      env: { ...process.env, AKM_TEST_MIGRATION_CRASH_GAP: "pilot" },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [exitCode] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    expect(exitCode).not.toBe(0);
-    expect(fs.readFileSync(treatmentFile, "utf8")).toBe(`${SKILL_ITEM_REF}\n`);
-    expect(JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8")).phase).toBe("pilot-prepared");
-
     const resumed = await runCliCapture(["migrate", "apply"]);
     expect(resumed.code, resumed.stderr).toBe(0);
     expect(fs.readFileSync(treatmentFile, "utf8")).toBe(`${SKILL_ITEM_REF}\n`);
@@ -1226,6 +1215,31 @@ describe("WI-8.5d (f) — content migration folds .stash.json + D-R6 renames mis
       sidecarReports: [],
     });
   }, 30_000);
+
+  test("re-applies a double-digit reserved rename after restoring the original migration backup", async () => {
+    seedSalienceRef("knowledge/index");
+    seedContentStash();
+    const knowledgeDir = path.join(CONTENT_STASH(), "knowledge");
+    for (const suffix of ["", "-2", "-3", "-4", "-5", "-6", "-7", "-8", "-9"]) {
+      fs.writeFileSync(path.join(knowledgeDir, `index-content${suffix}.md`), "occupied\n");
+    }
+    const prepared = writeConfigs();
+
+    const first = await runCliCapture(["migrate", "apply", "--config", prepared]);
+    expect(first.code, first.stderr).toBe(0);
+    restoreMigrationBackup(true, backupRunIdFromApply(first.stdout));
+
+    const reapplied = await runCliCapture(["migrate", "apply", "--config", prepared]);
+    expect(reapplied.code, reapplied.stderr).toBe(0);
+    const state = readState();
+    try {
+      expect(refsIn(state, "asset_salience", "asset_ref")).toEqual(["knowledge/index-content-10"]);
+    } finally {
+      state.close();
+    }
+    expect(fs.existsSync(path.join(knowledgeDir, "index.md"))).toBe(false);
+    expect(fs.existsSync(path.join(knowledgeDir, "index-content-10.md"))).toBe(true);
+  }, 30_000);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1328,6 +1342,37 @@ describe("(g) migrate apply imports pre-0.9 filesystem proposals into state.db",
     expect(importLegacyProposalsIntoState(getStateDbPathInDataDir(), [{ path: stash, bundleId: "stash" }])).toBe(0);
     expect(readProposalRows(stash).map((r) => r.id)).toEqual([pendingId, acceptedId]);
   }, 30_000);
+
+  test("rekeys an earlier reserved-ref proposal before idempotent UUID import", async () => {
+    openStateDbAtCeiling(getStateDbPathInDataDir(), PRE_CUTOVER_STATE_CEILING).close();
+    seedContentStash();
+    const stash = CONTENT_STASH();
+    const id = "44444444-4444-4444-8444-444444444444";
+    const oldRef = "stash//knowledge/index";
+    const finalRef = "stash//knowledge/index-content";
+    writeLegacyProposal(stash, legacyProposalRecord(id, oldRef, "pending"));
+    expect(importLegacyProposalsIntoState(getStateDbPathInDataDir(), [{ path: stash, bundleId: "stash" }])).toBe(1);
+
+    const earlierRc = readState();
+    try {
+      expect(refsIn(earlierRc, "proposals", "ref")).toEqual([oldRef]);
+    } finally {
+      earlierRc.close();
+    }
+
+    const applied = await runCliCapture(["migrate", "apply", "--config", writeConfigs()]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(readContentReport().legacyProposalsImported).toBe(0);
+    const second = await runCliCapture(["migrate", "apply"]);
+    expect(second.code, second.stderr).toBe(0);
+
+    const migrated = readState();
+    try {
+      expect(refsIn(migrated, "proposals", "ref")).toEqual([finalRef]);
+    } finally {
+      migrated.close();
+    }
+  }, 30_000);
 });
 
 describe("index quarantine boundary recovery", () => {
@@ -1424,44 +1469,6 @@ describe("already-current proposal ref repair", () => {
     } finally {
       repaired.close();
     }
-  });
-
-  test("resumes after crashing immediately after current proposal repair commit", async () => {
-    fs.writeFileSync(getConfigPath(), '{"configVersion":"0.9.0","semanticSearchMode":"off"}\n', { mode: 0o600 });
-    const state = openStateDatabase(getStateDbPathInDataDir());
-    state
-      .prepare(
-        "INSERT INTO proposals(id, stash_dir, ref, status, source, created_at, updated_at, content, frontmatter_json, metadata_json) VALUES (?, '/stash', ?, 'rejected', 'legacy', 'c', 'u', 'body', NULL, '{}')",
-      )
-      .run("91919191-9191-4191-8191-919191919191", retiredRef("lesson", "terminal-crash"));
-    state.close();
-
-    const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "apply"], {
-      cwd: path.resolve(import.meta.dir, "../.."),
-      env: { ...process.env, AKM_TEST_MIGRATION_CRASH_GAP: "proposal-repair" },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [exitCode] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    expect(exitCode).not.toBe(0);
-    expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(true);
-    const afterCrash = new Database(getStateDbPathInDataDir(), { readonly: true });
-    try {
-      expect(afterCrash.query("SELECT COUNT(*) AS count FROM proposals").get()).toEqual({ count: 0 });
-      expect(afterCrash.query("SELECT old_ref FROM legacy_state").get()).toEqual({
-        old_ref: retiredRef("lesson", "terminal-crash"),
-      });
-    } finally {
-      afterCrash.close();
-    }
-
-    const resumed = await runCliCapture(["migrate", "apply"]);
-    expect(resumed.code, resumed.stderr).toBe(0);
-    expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
   });
 
   test("rekeys mapped rows and quarantines unmappable terminal rows in one transaction", () => {

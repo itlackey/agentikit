@@ -13,7 +13,7 @@ import { chmodSync } from "node:fs";
 //   3. Bundle runtime-specific migration tools into dist/scripts/ so
 //      globally-installed npm users can run them without
 //      `../src/...` import paths breaking (#469). Bun and Node must never run
-//      each other's target: migration bodies are checksum-sealed runtime data.
+//      each other's target because their runtime dependencies differ.
 import { mkdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 

@@ -11,6 +11,7 @@ import { FROZEN_WORKFLOW_MIGRATIONS } from "../../scripts/akm-migrate/migrate/le
 import {
   createMigrationBackup,
   getMigrationBackupDir,
+  getMigrationRestoreJournalPath,
   restoreMigrationBackup,
   verifyMigrationBackup,
 } from "../../scripts/akm-migrate/migration-backup";
@@ -26,7 +27,13 @@ import { runMigrations as runStateMigrations, STATE_MIGRATIONS } from "../../src
 import { openStateDatabase } from "../../src/core/state-db";
 import { acquireIndexWriterLease } from "../../src/indexer/index-writer-lock";
 import { openLegacyWorkflowDb } from "../_helpers/legacy-workflow-db";
-import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome, sandboxXdgDataHome } from "../_helpers/sandbox";
+import {
+  type Cleanup,
+  sandboxXdgCacheHome,
+  sandboxXdgConfigHome,
+  sandboxXdgDataHome,
+  withEnvSync,
+} from "../_helpers/sandbox";
 
 let cleanup: Cleanup | undefined;
 
@@ -55,7 +62,7 @@ function hasColumn(db: Database, table: string, column: string): boolean {
 }
 
 describe("0.9 migration backup", () => {
-  test("captures live WAL databases, verifies checksums/modes, and restores exact presence", () => {
+  test("captures live WAL databases, verifies semantics, and restores exact presence", () => {
     const configBefore = seedLegacyConfig();
     fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
     const state = new Database(getStateDbPathInDataDir());
@@ -68,7 +75,7 @@ describe("0.9 migration backup", () => {
     expect(manifest.artifacts["config.json"].present).toBe(true);
     expect(manifest.artifacts["state.db"].present).toBe(true);
     expect(manifest.artifacts["workflow.db"].present).toBe(false);
-    expect(manifest.artifacts["state.db"].sha256).toHaveLength(64);
+    expect(manifest.artifacts["state.db"]).not.toHaveProperty("sha256");
     if (process.platform !== "win32") {
       expect(fs.statSync(result.path).mode & 0o777).toBe(0o700);
       expect(fs.statSync(path.join(result.path, "state.db")).mode & 0o777).toBe(0o600);
@@ -91,6 +98,36 @@ describe("0.9 migration backup", () => {
     expect(fs.existsSync(result.path)).toBe(true);
   });
 
+  test("replays an interrupted restore after one artifact publication", () => {
+    const configBefore = seedLegacyConfig();
+    fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
+    const state = new Database(getStateDbPathInDataDir());
+    state.exec("CREATE TABLE durable(value TEXT); INSERT INTO durable VALUES ('before')");
+    state.close();
+    const backup = createMigrationBackup();
+
+    const changed = new Database(getStateDbPathInDataDir());
+    changed.exec("UPDATE durable SET value='after'");
+    changed.close();
+    fs.writeFileSync(getConfigPath(), '{"configVersion":"0.9.0"}\n');
+
+    expect(() =>
+      withEnvSync({ AKM_TEST_MIGRATION_FAIL_RESTORE_AFTER: "state.db" }, () =>
+        restoreMigrationBackup(true, backup.manifest.runId),
+      ),
+    ).toThrow(/injected restore interruption after state\.db/);
+    expect(fs.existsSync(getMigrationRestoreJournalPath())).toBe(true);
+    expect(() => openStateDatabase()).toThrow(/recovery is pending/i);
+    expect(fs.readFileSync(getConfigPath(), "utf8")).toBe('{"configVersion":"0.9.0"}\n');
+
+    restoreMigrationBackup(true);
+    expect(fs.existsSync(getMigrationRestoreJournalPath())).toBe(false);
+    expect(fs.readFileSync(getConfigPath(), "utf8")).toBe(configBefore);
+    const restored = new Database(getStateDbPathInDataDir(), { readonly: true });
+    expect(restored.query("SELECT value FROM durable").get()).toEqual({ value: "before" });
+    restored.close();
+  });
+
   test("can snapshot an existing current config when databases require independent classification", () => {
     fs.writeFileSync(getConfigPath(), '{"configVersion":"0.9.0"}\n');
     expect(createMigrationBackup().manifest.artifacts["config.json"].status).toBe("current");
@@ -103,11 +140,11 @@ describe("0.9 migration backup", () => {
     expect(createMigrationBackup().created).toBe(true);
   });
 
-  test("fails closed when an immutable bundle artifact is checksum-corrupted", () => {
+  test("fails closed when a backup artifact is no longer semantically valid", () => {
     seedLegacyConfig();
     const corrupted = createMigrationBackup();
     fs.appendFileSync(path.join(corrupted.path, "config.json"), "corruption");
-    expect(() => verifyMigrationBackup(corrupted.path)).toThrow(/checksum verification/);
+    expect(() => verifyMigrationBackup(corrupted.path)).toThrow(/semantic verification/);
     expect(createMigrationBackup().created).toBe(true);
   });
 
@@ -129,6 +166,19 @@ describe("0.9 migration backup", () => {
       expect(() => restoreMigrationBackup(true)).toThrow(/locks, activities, or workflow leases are active/);
       fs.rmSync(lockPath);
     }
+  });
+
+  test("refuses restore for an improve lock under a configured stash", () => {
+    const stash = path.join(getDataDir(), "configured-stash");
+    fs.mkdirSync(path.join(stash, ".akm"), { recursive: true });
+    fs.writeFileSync(getConfigPath(), `${JSON.stringify({ configVersion: "0.8.0", stashDir: stash, sources: [] })}\n`, {
+      mode: 0o600,
+    });
+    createMigrationBackup();
+
+    const lockPath = path.join(stash, ".akm", "improve.lock");
+    fs.writeFileSync(lockPath, String(process.pid));
+    expect(() => restoreMigrationBackup(true)).toThrow(/configured-stash.*improve\.lock/);
   });
 
   test("refuses restore while a lockfile writer owns its sentinel", () => {
@@ -211,7 +261,7 @@ describe("0.9 migration backup", () => {
       message = error instanceof Error ? error.message : String(error);
     }
     expect(message).toContain("additional-active-workflow-blockers");
-    expect((message.match(/#run=/g) ?? []).length).toBe(100);
+    expect((message.match(/#run=/g) ?? []).length).toBe(20);
     expect(message.length).toBeLessThan(20_000);
   });
 
@@ -244,6 +294,34 @@ describe("0.9 migration backup", () => {
     expect(message.length).toBeLessThan(2_000);
   });
 
+  test("workflow blocker diagnostics share one UTF-8 byte budget", () => {
+    createMigrationBackup();
+    fs.mkdirSync(path.dirname(getLegacyWorkflowDbPath()), { recursive: true });
+    const workflow = new Database(getLegacyWorkflowDbPath());
+    workflow.exec(`
+      CREATE TABLE workflow_runs(
+        id TEXT PRIMARY KEY,
+        engine_lease_holder TEXT,
+        engine_lease_until TEXT
+      );
+    `);
+    const insert = workflow.prepare("INSERT INTO workflow_runs VALUES (?, ?, ?)");
+    const expires = new Date(Date.now() + 60_000).toISOString();
+    for (let index = 0; index < 20; index += 1) {
+      insert.run(`${index}-${"界".repeat(1_000)}`, `${"界".repeat(1_000)}-${index}`, expires);
+    }
+    workflow.close();
+
+    let message = "";
+    try {
+      restoreMigrationBackup(true);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("Refusing artifact replacement");
+    expect(Buffer.byteLength(message, "utf8")).toBeLessThanOrEqual(16 * 1024);
+  });
+
   test("large blocker directories are sampled and still fail closed with a bounded diagnostic", () => {
     createMigrationBackup();
     const lockDir = path.join(getDataDir(), "extract-locks");
@@ -262,6 +340,17 @@ describe("0.9 migration backup", () => {
     expect(message).toMatch(/additional|omitted|directory/i);
     expect(Buffer.byteLength(message, "utf8")).toBeLessThanOrEqual(16 * 1024);
     expect((message.match(/oversized-directory-/g) ?? []).length).toBeLessThanOrEqual(100);
+  });
+
+  test("lock-directory overflow fails closed even when sampled locks are stale", () => {
+    createMigrationBackup();
+    const lockDir = path.join(getDataDir(), "extract-locks");
+    fs.mkdirSync(lockDir, { recursive: true });
+    for (let index = 0; index < 101; index += 1) {
+      fs.writeFileSync(path.join(lockDir, `stale-${index}.lock`), "999999999");
+    }
+
+    expect(() => restoreMigrationBackup(true)).toThrow(/more than 100 lock files/);
   });
 
   test("operation mutex databases do not count toward the lock sample cap", () => {
@@ -357,7 +446,7 @@ describe("0.9 migration backup", () => {
       );
       CREATE INDEX idx_asset_salience_rank ON asset_salience(rank_score DESC);
     `);
-    const stateInsert = state.prepare("INSERT INTO schema_migrations(id, checksum) VALUES (?, ?)");
+    const stateInsert = state.prepare("INSERT INTO schema_migrations(id) VALUES (?)");
     for (const id of [
       "001-initial-schema",
       "002-task-history-per-run",
@@ -376,9 +465,10 @@ describe("0.9 migration backup", () => {
       "015-asset-salience-encoding-source",
       "016-collapse-churn-detector",
     ]) {
-      const migration = STATE_MIGRATIONS.find((candidate) => candidate.id === id);
-      if (!migration) throw new Error(`Missing state migration fixture ${id}`);
-      stateInsert.run(id, migration.checksum);
+      if (!STATE_MIGRATIONS.some((candidate) => candidate.id === id)) {
+        throw new Error(`Missing state migration fixture ${id}`);
+      }
+      stateInsert.run(id);
     }
     state.close();
 
@@ -387,9 +477,9 @@ describe("0.9 migration backup", () => {
       CREATE TABLE workflow_runs(id TEXT PRIMARY KEY, workflow_ref TEXT, status TEXT, scope_key TEXT);
       CREATE TABLE workflow_run_steps(run_id TEXT, step_id TEXT, sequence_index INTEGER);
       CREATE TABLE workflow_run_units(run_id TEXT, unit_id TEXT);
-      CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')), checksum TEXT);
+      CREATE TABLE schema_migrations(id TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
     `);
-    const workflowInsert = workflow.prepare("INSERT INTO schema_migrations(id, checksum) VALUES (?, ?)");
+    const workflowInsert = workflow.prepare("INSERT INTO schema_migrations(id) VALUES (?)");
     for (const id of [
       "001-add-scope-key",
       "002-add-agent-identity",
@@ -401,9 +491,10 @@ describe("0.9 migration backup", () => {
       "008-unit-attempts",
       "009-unit-claim",
     ]) {
-      const migration = FROZEN_WORKFLOW_MIGRATIONS.find((candidate) => candidate.id === id);
-      if (!migration) throw new Error(`Missing workflow migration fixture ${id}`);
-      workflowInsert.run(id, migration.checksum);
+      if (!FROZEN_WORKFLOW_MIGRATIONS.some((candidate) => candidate.id === id)) {
+        throw new Error(`Missing workflow migration fixture ${id}`);
+      }
+      workflowInsert.run(id);
     }
     workflow.close();
 
@@ -412,7 +503,7 @@ describe("0.9 migration backup", () => {
     runStateMigrations(stateToMigrate as never);
     stateToMigrate.close();
     // Roll the pre-cutover workflow.db to its final ledger (010) via the frozen
-    // bodies — the way config-migrate.ts#runFrozenWorkflowRoll does it now that
+    // bodies — the way config-migrate.ts#applyWorkflowSchema does it now that
     // src/workflows/db.ts is deleted.
     openLegacyWorkflowDb(getLegacyWorkflowDbPath()).close();
 
@@ -433,9 +524,9 @@ describe("0.9 migration backup", () => {
     migratedWorkflow.close();
   });
 
-  // ── chunk-8 WI-8.1: manifest v3 (pre-rescue index.db) ──
+  // ── pre-rescue index.db backup ──
 
-  test("v3 round-trip: a present index.db is captured, sha-pinned, and restored", () => {
+  test("a present index.db is captured, verified, and restored", () => {
     seedLegacyConfig();
     fs.mkdirSync(path.dirname(getStateDbPathInDataDir()), { recursive: true });
     const state = new Database(getStateDbPathInDataDir());
@@ -448,10 +539,10 @@ describe("0.9 migration backup", () => {
 
     const result = createMigrationBackup();
     const manifest = verifyMigrationBackup(result.path);
-    expect(manifest.formatVersion).toBe(3);
+    expect(manifest.formatVersion).toBe(4);
     expect(manifest.artifacts["index.db"].present).toBe(true);
     expect(manifest.artifacts["index.db"].status).toBe("current");
-    expect(manifest.artifacts["index.db"].sha256).toHaveLength(64);
+    expect(manifest.artifacts["index.db"]).not.toHaveProperty("sha256");
     expect(fs.existsSync(path.join(result.path, "index.db"))).toBe(true);
 
     fs.rmSync(getDbPath());
@@ -470,7 +561,7 @@ describe("0.9 migration backup", () => {
 
     // Absent index.db → present:false, status "missing".
     const absent = createMigrationBackup();
-    expect(absent.manifest.formatVersion).toBe(3);
+    expect(absent.manifest.formatVersion).toBe(4);
     expect(absent.manifest.artifacts["index.db"]?.present).toBe(false);
     expect(absent.manifest.artifacts["index.db"]?.status).toBe("missing");
     expect(fs.existsSync(path.join(absent.path, "index.db"))).toBe(false);

@@ -47,7 +47,6 @@ import {
   runMigrations as runSqliteMigrations,
 } from "../storage/engines/sqlite-migrations";
 import { openManagedDatabase } from "../storage/managed-db";
-import { PUBLISHED_08_LOGS_CHECKSUM_CEILING } from "../storage/released-migration-lineage";
 import { getDataDir } from "./paths";
 
 // Re-export the boundary Database type so consumers can type their handles
@@ -127,7 +126,6 @@ const MIGRATIONS: Migration[] = [
   // No automatic deletion occurs here.
   {
     id: "001-task-logs",
-    checksum: "d587420b669200522dcedc0fbb3c8015ff44d04dfab3aea9cccdfe92edc54715",
     up: `
       CREATE TABLE IF NOT EXISTS task_logs (
         id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,7 +155,7 @@ assertMigrationRegistry(MIGRATIONS);
  * {@link openLogsDatabase}; exported for the same test seams state-db exposes.
  */
 export function runMigrations(db: Database): void {
-  runSqliteMigrations(db, MIGRATIONS, { sealNullChecksumsThrough: PUBLISHED_08_LOGS_CHECKSUM_CEILING });
+  runSqliteMigrations(db, MIGRATIONS);
 }
 
 // ── Row types ────────────────────────────────────────────────────────────────

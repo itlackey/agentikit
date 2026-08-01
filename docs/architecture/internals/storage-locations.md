@@ -309,7 +309,7 @@ non-regenerable telemetry does not belong in a rebuildable derived cache.
 | `entry_ref` | TEXT | Stable ref string (survives entry ID changes across index rebuilds) |
 | `signal` | TEXT | Feedback signal: `positive` or `negative` |
 | `metadata` | TEXT | JSON free-form metadata |
-| `source` | TEXT NOT NULL DEFAULT 'user' | Provenance: `user`, `improve`, `task`, `audit`, or `unknown`. The SQL default is retained for the sealed cutover schema; runtime writers always pass an explicit value. |
+| `source` | TEXT NOT NULL DEFAULT 'user' | Provenance: `user`, `improve`, `task`, `audit`, or `unknown`. The SQL default is retained in the cutover schema; runtime writers always pass an explicit value. |
 | `created_at` | TEXT NOT NULL | ISO-8601 |
 
 Indexes: `idx_usage_events_entry`, `idx_usage_events_type`, `idx_usage_events_ref`, `idx_usage_events_source`.

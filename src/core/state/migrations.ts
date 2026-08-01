@@ -19,7 +19,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // ── Migration 001 — initial schema ──────────────────────────────────────────
   {
     id: "001-initial-schema",
-    checksum: "8e213a59645b1e32438c6ddcd99add91de6cd66255ab1ef10c26ac8bd62879e8",
     up: `
       -- ── events ──────────────────────────────────────────────────────────────
       --
@@ -73,7 +72,7 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
       --   id          TEXT PK     — UUID (crypto.randomUUID()); stable directory name.
       --   stash_dir   TEXT        — absolute stash root; multi-stash installs need
       --                             this to partition proposal lists per stash.
-      --   ref         TEXT        — target asset ref (e.g. "lesson:alpha");
+      --   ref         TEXT        — target asset ref (e.g. "lessons/alpha");
       --                             indexed for ref-scoped queue views.
       --   status      TEXT        — "pending" | "accepted" | "rejected"; indexed
       --                             so pending-queue queries are fast.
@@ -189,7 +188,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // table is created, data is copied, and the old table is dropped.
   {
     id: "002-task-history-per-run",
-    checksum: "938bc5083e8ac25fee7bfed565e13f8b69745472ed92e1826b23ce2d74654700",
     up: `
       ALTER TABLE task_history RENAME TO task_history_v1;
 
@@ -268,7 +266,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // `purgeOldImproveRuns()`. No automatic deletion occurs here.
   {
     id: "003-improve-runs",
-    checksum: "ef7bee50c79d6ba2fac7fe9fb10a2fc9dc524522a4fec3acad6b2de016e90434",
     up: `
       CREATE TABLE IF NOT EXISTS improve_runs (
         id            TEXT    PRIMARY KEY,
@@ -338,7 +335,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // WHERE processed_at < ?` for cleanup if desired.
   {
     id: "004-extract-sessions-seen",
-    checksum: "34376b8de261c5b37ed6a41c2d3941e7fdfcc6126794f9dc90631ca087aaef9e",
     up: `
       CREATE TABLE IF NOT EXISTS extract_sessions_seen (
         harness          TEXT    NOT NULL,
@@ -374,9 +370,9 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // (`scripts/akm-migrate/migrate/legacy/proposal-fs-import.ts`, wired through
   // `akm-migrate apply`),
   // whose idempotency is INSERT OR IGNORE on the proposal UUID plus migrate-apply's
-  // own journal — it no longer reads or writes this ledger. The CREATE TABLE
-  // stays because the migration registry is APPEND-ONLY and checksum-sealed:
-  // removing a released fragment would make the schema_migrations ledger of an
+  // incomplete sentinel — it no longer reads or writes this ledger. The CREATE TABLE
+  // stays because migration IDs are append-only: removing a released migration
+  // would make the schema_migrations ledger of an
   // already-migrated rc database stop being an exact ordered prefix, and the
   // runner would refuse to open it. The empty table is harmless.
   //
@@ -392,7 +388,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   //   imported_count INTEGER  — rows actually inserted by the import.
   {
     id: "005-proposal-fs-imports",
-    checksum: "7cab4e7949f025e4698a5bce88dab3d89729f5ff20deb22c5ee59fccc3fb72d3",
     up: `
       CREATE TABLE IF NOT EXISTS proposal_fs_imports (
         stash_dir      TEXT    PRIMARY KEY,
@@ -411,7 +406,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // that lookup index-covered under contention.
   {
     id: "006-proposals-pending-ref-source",
-    checksum: "b0abdfded6f983e52356d47cb2667d465c243647a2b5539489125c33eb7cc7eb",
     up: `
       CREATE INDEX IF NOT EXISTS idx_proposals_stash_status_ref_source
         ON proposals(stash_dir, status, ref, source);
@@ -448,7 +442,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // with `DELETE FROM consolidation_judged WHERE judged_at < ?` if desired.
   {
     id: "007-consolidation-judged",
-    checksum: "68071b40003576791fb96be867793e30787ed36db21fa977a620e2b15234d52c",
     up: `
       CREATE TABLE IF NOT EXISTS consolidation_judged (
         entry_key    TEXT    PRIMARY KEY,
@@ -485,7 +478,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // (~20 MB at 13 k memories — acceptable).
   {
     id: "008-body-embeddings",
-    checksum: "8856c19f79ef20567605bbaf006e1fcc3c8900d3f1624a7e6e65e3c35bca4048",
     up: `
       CREATE TABLE IF NOT EXISTS body_embeddings (
         content_hash TEXT    PRIMARY KEY,
@@ -525,7 +517,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // accumulate harmlessly until an operator prunes them.
   {
     id: "009-asset-salience",
-    checksum: "426374c9d738c58cc65730a5f3371cfaf1a3daeba930048a4041494078237772",
     up: `
       CREATE TABLE IF NOT EXISTS asset_salience (
         asset_ref          TEXT    PRIMARY KEY,
@@ -574,7 +565,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   //     with `DELETE FROM asset_outcome WHERE updated_at < ?` if desired.
   {
     id: "010-asset-outcome",
-    checksum: "6b67c52c422d91b326c2522d7b65186782faf296d9b1b38f16e783af4688cc23",
     up: `
       CREATE TABLE IF NOT EXISTS asset_outcome (
         asset_ref                TEXT    PRIMARY KEY,
@@ -612,7 +602,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // not the canonical source of the salience value).
   {
     id: "011-asset-salience-homeostatic-demoted-at",
-    checksum: "fb4de5b420df7b6154a1fb9312a55ebbc4ab30b2b5901bf6c2c358558c2ecd66",
     up: `
       ALTER TABLE asset_salience ADD COLUMN homeostatic_demoted_at INTEGER DEFAULT NULL;
     `,
@@ -635,7 +624,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // `persistPhaseThreshold` writes it after each auto-tune step.
   {
     id: "012-improve-gate-thresholds",
-    checksum: "dcb3c1b7f3d4fcc6b9fe80385ab6b4b3acc8b46694721d1a8defed89d9f4d389",
     up: `
       CREATE TABLE IF NOT EXISTS improve_gate_thresholds (
         phase       TEXT    NOT NULL PRIMARY KEY,
@@ -660,7 +648,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // Never mutate migration 004 (the original table) — this column is appended.
   {
     id: "013-extract-sessions-content-hash",
-    checksum: "f9156402c8d9ae83acad3a37aca40f8b9b846d8d7772a48adf3e8af84093b871",
     up: `
       ALTER TABLE extract_sessions_seen ADD COLUMN content_hash TEXT DEFAULT NULL;
     `,
@@ -702,7 +689,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   //   metadata_json      TEXT — reserved for future forensics; defaults to '{}'.
   {
     id: "014-recombine-hypotheses",
-    checksum: "404b3f6aa925694cb593ec695c9549932ce97e961032ce55a764cc33856e3908",
     up: `
       CREATE TABLE IF NOT EXISTS recombine_hypotheses (
         hypothesis_ref    TEXT PRIMARY KEY,
@@ -740,7 +726,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // on genuine novelty/magnitude/prediction-error, not the asset type.
   {
     id: "015-asset-salience-encoding-source",
-    checksum: "39cd67508e2cef5d6244057183170a37f98b3510763fd41913e574d43e8cc6d1",
     up: `
       ALTER TABLE asset_salience ADD COLUMN encoding_source TEXT DEFAULT NULL;
     `,
@@ -765,7 +750,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   //     comparing across canary re-mints.
   {
     id: "016-collapse-churn-detector",
-    checksum: "cd046ac15281fe5322a2547e188fdf0004d36aebae4e7803341371e1faabc8a1",
     up: `
       CREATE TABLE IF NOT EXISTS canary_queries (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -806,7 +790,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // selected improve strategy in this additive column.
   {
     id: "017-improve-run-strategy",
-    checksum: "8d8a120cc7d6260ce7b06e6aedf289d86d7c3ca95b35d6fad279e6300ea59e88",
     up: `
       ALTER TABLE improve_runs ADD COLUMN strategy TEXT;
       CREATE INDEX IF NOT EXISTS idx_improve_runs_strategy_started ON improve_runs(strategy, started_at);
@@ -831,7 +814,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   //     pending. `retrieval_count`/`outcome_score` and their index are untouched.
   {
     id: "018-drop-dead-lane-schema",
-    checksum: "5ad8e6095e41966b1dfb908f4976006daeed84604a7386debfd6dafe9d5deb5f",
     up: `
       DROP INDEX IF EXISTS idx_recombine_hypotheses_last_seen;
       DROP TABLE IF EXISTS recombine_hypotheses;
@@ -855,7 +837,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // table itself and needs no schema.
   {
     id: "019-proposal-fingerprints",
-    checksum: "7cadb4a99c146db54306d84343f486b74a1c0273ce89627a346efac4b2be3c35",
     up: `
       CREATE TABLE IF NOT EXISTS proposal_fingerprints (
         stash_dir TEXT NOT NULL,
@@ -876,12 +857,11 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   //
   // The state.db half of the three-DB merge (plan §3.2/§8, normative §11.4,
   // chunk-8 cutover design §1). This migration is PURE,
-  // SEALABLE, IDEMPOTENT DDL ONLY — `CREATE TABLE IF NOT EXISTS` (+ indexes),
+  // IDEMPOTENT DDL ONLY — `CREATE TABLE IF NOT EXISTS` (+ indexes),
   // never a DROP or a data move. The actual data movement (the workflow.db merge,
   // the usage_events rescue from index.db, the full old-ref→item_ref re-key, and
-  // the workflow.db delete / index.db quarantine) is CODE — a journaled step of
-  // the migrate-apply flow (`scripts/akm-migrate/config-migrate.ts`
-  // `cutover-applied` phase), driven by
+  // the workflow.db delete / index.db quarantine) is idempotent migrate-apply
+  // code driven by
   // `scripts/akm-migrate/migrate/legacy/three-db-cutover.ts`. See the no-DROP
   // contract carve-out note in `src/core/state-db.ts`.
   //
@@ -896,7 +876,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // Nothing else — NO bindings/lifecycle tables (Tier B / deferred, §3.2).
   {
     id: "020-three-db-cutover",
-    checksum: "c71f710d889960f181079bb619fd14d00ababebca16b9713f0e2d334448b8a3a",
     up: `
       -- ── workflow_runs (workflows/db.ts base + migrations 001/002/003/006/010) ──
       CREATE TABLE IF NOT EXISTS workflow_runs (
@@ -1024,7 +1003,6 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // both a fresh row and a pre-migration row read back NULL here).
   {
     id: "021-asset-state-missing-since",
-    checksum: "9dd51ccd62c71db9cda0cd1a3178c441a4f325793247224cd4cde7ce1f6862ee",
     up: `
       ALTER TABLE asset_salience ADD COLUMN missing_since INTEGER DEFAULT NULL;
       ALTER TABLE asset_outcome ADD COLUMN missing_since INTEGER DEFAULT NULL;
@@ -1042,17 +1020,6 @@ assertMigrationRegistry(STATE_MIGRATIONS);
  *
  * Called automatically by `openStateDatabase()`.
  */
-export function runMigrations(
-  db: Database,
-  options?: {
-    applyPending?: boolean;
-    generationMarker?: { operationId: string; phase: string };
-    sealNullChecksumsThrough?: string;
-  },
-): void {
-  runSqliteMigrations(db, STATE_MIGRATIONS, {
-    applyPending: options?.applyPending,
-    generationMarker: options?.generationMarker,
-    sealNullChecksumsThrough: options?.sealNullChecksumsThrough,
-  });
+export function runMigrations(db: Database, options?: { applyPending?: boolean }): void {
+  runSqliteMigrations(db, STATE_MIGRATIONS, { applyPending: options?.applyPending });
 }

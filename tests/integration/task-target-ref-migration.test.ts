@@ -83,8 +83,8 @@ test("a stale persisted workflow target is rewritten without blocking core migra
   expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
 });
 
-test("task planning uses the migration journal's managed-bundle root", () => {
-  const managedRoot = path.join(storage.root, "journal-managed-root");
+test("task planning uses the migration sentinel's managed-bundle root", () => {
+  const managedRoot = path.join(storage.root, "sentinel-managed-root");
   fs.mkdirSync(path.join(managedRoot, "tasks"), { recursive: true });
   fs.mkdirSync(path.join(managedRoot, "workflows"), { recursive: true });
   fs.writeFileSync(path.join(managedRoot, "workflows", "managed.md"), "# Managed\n");
@@ -104,68 +104,6 @@ test("task planning uses the migration journal's managed-bundle root", () => {
   expect(plan.rewrites).toHaveLength(1);
   expect(plan.rewrites[0]?.filePath).toBe(taskPath);
   expect(plan.rewrites[0]?.to).toBe("workflows/managed");
-});
-
-test("a crash after task mutation resumes the journaled forward phase idempotently", async () => {
-  const { prepared, taskPath } = seedMigration("workflow:upgrade-noop");
-  const child = Bun.spawn(["bun", "src/cli.ts", "migrate", "apply", "--config", prepared], {
-    cwd: path.resolve(import.meta.dir, "../.."),
-    env: { ...process.env, AKM_TEST_MIGRATION_CRASH_GAP: "tasks" },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-
-  expect(JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8")).phase).toBe("tasks-prepared");
-  const migratedTask = fs.readFileSync(taskPath, "utf8");
-  expect(migratedTask).toContain("workflow: workflows/upgrade-noop");
-
-  const resumed = await runCliCapture(["migrate", "apply"]);
-  expect(resumed.code, resumed.stderr).toBe(0);
-  expect(fs.readFileSync(taskPath, "utf8")).toBe(migratedTask);
-  expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
-});
-
-test("committed recovery rewrites task work discovered after the original task phase", async () => {
-  const initialCwd = path.join(storage.root, "initial-cwd");
-  const resumeCwd = path.join(storage.root, "resume-cwd", "nested");
-  fs.mkdirSync(initialCwd, { recursive: true });
-  fs.mkdirSync(resumeCwd, { recursive: true });
-  const relativeStash = path.relative(initialCwd, storage.stashDir);
-  const { prepared } = seedMigration("workflow:upgrade-noop", true, relativeStash);
-  const cliPath = path.resolve(import.meta.dir, "../..", "src", "cli.ts");
-  const child = Bun.spawn([process.execPath, cliPath, "migrate", "apply", "--config", prepared], {
-    cwd: initialCwd,
-    env: { ...process.env, AKM_TEST_MIGRATION_CRASH_AFTER: "tasks" },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-  expect(JSON.parse(fs.readFileSync(getMigrationApplyJournalPath(), "utf8")).phase).toBe("tasks-applied");
-
-  const lateTask = path.join(storage.stashDir, "tasks", "late-legacy.yml");
-  fs.writeFileSync(lateTask, 'schedule: "@daily"\nworkflow: workflow:upgrade-noop\nenabled: true\n');
-  const wrongStash = path.resolve(resumeCwd, relativeStash);
-  const phantomTask = path.join(wrongStash, "tasks", "phantom.yml");
-  fs.mkdirSync(path.dirname(phantomTask), { recursive: true });
-  fs.writeFileSync(phantomTask, 'schedule: "@daily"\nworkflow: workflow:phantom\nenabled: true\n');
-
-  const resumed = Bun.spawn([process.execPath, cliPath, "migrate", "apply"], {
-    cwd: resumeCwd,
-    env: { ...process.env },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [resumeCode, resumeStdout, resumeStderr] = await Promise.all([
-    resumed.exited,
-    new Response(resumed.stdout).text(),
-    new Response(resumed.stderr).text(),
-  ]);
-  expect(resumeCode, resumeStderr).toBe(0);
-  expect(JSON.parse(resumeStdout)).toMatchObject({ status: "current" });
-  expect(fs.readFileSync(lateTask, "utf8")).toContain("workflow: workflows/upgrade-noop");
-  expect(fs.readFileSync(phantomTask, "utf8")).toContain("workflow: workflow:phantom");
-  expect(fs.existsSync(getMigrationApplyJournalPath())).toBe(false);
 });
 
 test("migrate status and apply repair a legacy task after core artifacts are already current", async () => {

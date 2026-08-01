@@ -98,6 +98,25 @@ test("does not overwrite malformed frontmatter during source backref migration",
   }
 });
 
+test("rewrites source backrefs atomically and idempotently", () => {
+  const sandbox = makeSandboxDir("akm-content-source-backref");
+  try {
+    const dir = path.join(sandbox.dir, "memories");
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, "derived.md");
+    fs.writeFileSync(filePath, "---\nsource: memory:parent\n---\nBody.\n", { mode: 0o640 });
+
+    expect(runContentMigration([sandbox.dir]).sourceBackrefsRewritten).toBe(1);
+    const migrated = fs.readFileSync(filePath, "utf8");
+    expect(parseFrontmatter(migrated).data.source).toBe("memories/parent");
+    expect(fs.statSync(filePath).mode & 0o777).toBe(0o640);
+    expect(runContentMigration([sandbox.dir]).sourceBackrefsRewritten).toBe(0);
+    expect(fs.readFileSync(filePath, "utf8")).toBe(migrated);
+  } finally {
+    sandbox.cleanup();
+  }
+});
+
 test("rescues reserved files indexed by the frozen layout without renaming wiki structure", () => {
   const sandbox = makeSandboxDir("akm-content-reserved-rescue");
   try {
@@ -119,7 +138,7 @@ test("rescues reserved files indexed by the frozen layout without renaming wiki 
   }
 });
 
-test("persists an operation-bound rename batch before mutation and publishes without replacement", () => {
+test("persists a rename plan before mutation and never replaces an existing target", () => {
   const sandbox = makeSandboxDir("akm-content-reserved-batch");
   try {
     const knowledge = path.join(sandbox.dir, "knowledge");
@@ -133,8 +152,9 @@ test("persists an operation-bound rename batch before mutation and publishes wit
     expect(fs.existsSync(source)).toBe(true);
     expect(fs.existsSync(target)).toBe(false);
     expect(JSON.parse(fs.readFileSync(batchPath, "utf8"))).toMatchObject({
+      formatVersion: 1,
       operationId: "operation-1",
-      entries: [{ from: source, to: target, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }],
+      entries: [{ from: source, to: target }],
     });
 
     fs.writeFileSync(target, "concurrent target\n");
@@ -166,75 +186,6 @@ test("resumes the persisted rename batch after publication removed the source", 
     expect(fs.existsSync(source)).toBe(false);
     expect(fs.readFileSync(target, "utf8")).toContain("Legacy");
   } finally {
-    sandbox.cleanup();
-  }
-});
-
-test("resumes after the hard-linked target was published before source unlink", () => {
-  const sandbox = makeSandboxDir("akm-content-reserved-both");
-  try {
-    const knowledge = path.join(sandbox.dir, "knowledge");
-    fs.mkdirSync(knowledge, { recursive: true });
-    const source = path.join(knowledge, "index.md");
-    const target = path.join(knowledge, "index-content.md");
-    const batchPath = path.join(sandbox.dir, "rename-batch.json");
-    fs.writeFileSync(source, "---\ndescription: Legacy\n---\nBody\n");
-    const batch = planReservedRenameBatch([sandbox.dir], batchPath, "operation-both");
-    fs.linkSync(source, target);
-
-    applyReservedRenameBatch(batch, "operation-both");
-    expect(fs.existsSync(source)).toBe(false);
-    expect(fs.readFileSync(target, "utf8")).toContain("Legacy");
-  } finally {
-    sandbox.cleanup();
-  }
-});
-
-test("preserves both paths when an independent byte-identical target appears", () => {
-  const sandbox = makeSandboxDir("akm-content-reserved-independent-copy");
-  try {
-    const knowledge = path.join(sandbox.dir, "knowledge");
-    fs.mkdirSync(knowledge, { recursive: true });
-    const source = path.join(knowledge, "index.md");
-    const target = path.join(knowledge, "index-content.md");
-    const batchPath = path.join(sandbox.dir, "rename-batch.json");
-    fs.writeFileSync(source, "---\ndescription: Legacy\n---\nBody\n");
-    const batch = planReservedRenameBatch([sandbox.dir], batchPath, "operation-independent-copy");
-    fs.copyFileSync(source, target, fs.constants.COPYFILE_EXCL);
-
-    expect(() => applyReservedRenameBatch(batch, "operation-independent-copy")).toThrow(/hard link/i);
-    expect(fs.existsSync(source)).toBe(true);
-    expect(fs.existsSync(target)).toBe(true);
-  } finally {
-    sandbox.cleanup();
-  }
-});
-
-test("direct hard-link publication preserves the source when the filesystem rejects links", () => {
-  const sandbox = makeSandboxDir("akm-content-link-failure");
-  const original = fs.linkSync;
-  try {
-    const knowledge = path.join(sandbox.dir, "knowledge");
-    fs.mkdirSync(knowledge, { recursive: true });
-    const source = path.join(knowledge, "index.md");
-    const target = path.join(knowledge, "index-content.md");
-    const batchPath = path.join(sandbox.dir, "rename-batch.json");
-    fs.writeFileSync(source, "---\ndescription: Legacy\n---\nBody\n");
-    const batch = planReservedRenameBatch([sandbox.dir], batchPath, "operation-link-failure");
-    let attempted: [fs.PathLike, fs.PathLike] | undefined;
-    fs.linkSync = ((existingPath, newPath) => {
-      attempted = [existingPath, newPath];
-      const error = new Error("hard links unavailable") as NodeJS.ErrnoException;
-      error.code = "EPERM";
-      throw error;
-    }) as typeof fs.linkSync;
-
-    expect(() => applyReservedRenameBatch(batch, "operation-link-failure")).toThrow(/hard links unavailable/i);
-    expect(attempted).toEqual([source, target]);
-    expect(fs.existsSync(source)).toBe(true);
-    expect(fs.existsSync(target)).toBe(false);
-  } finally {
-    fs.linkSync = original;
     sandbox.cleanup();
   }
 });
