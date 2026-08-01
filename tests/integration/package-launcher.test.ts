@@ -172,9 +172,6 @@ describe("package launcher", () => {
   });
 
   test("handles Bun below the supported floor or unusable according to each launcher contract", () => {
-    const node = Bun.which("node");
-    if (!node) throw new Error("Node.js is required for the package launcher contract test");
-
     for (const bunDir of [oldBunPathDir, unusableBunPathDir]) {
       const pathValue = runtimePath(isolatedNode, path.join(bunDir, "bun"));
       const core = launchThroughNpmShim(akmCase.bin, pathValue);

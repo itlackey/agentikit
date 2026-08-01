@@ -151,6 +151,10 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
   if (!isWithin(assetPath, typeRoot)) {
     throw new UsageError(`Resolved task path escapes the stash: "${id}".`, "PATH_ESCAPE_VIOLATION");
   }
+  // Pre-0.8.0 tasks were markdown; the 0.8.0 cutover moved them to pure YAML
+  // (see the tasks dir rule in src/indexer/walk/matchers.ts). A leftover
+  // `<id>.md` still names the same task, so creating `<id>.yml` beside it
+  // must collide loudly rather than silently minting a duplicate.
   const legacyAssetPath = path.join(typeRoot, `${id}.md`);
   if ((fs.existsSync(assetPath) || fs.existsSync(legacyAssetPath)) && !input.force) {
     throw new UsageError(

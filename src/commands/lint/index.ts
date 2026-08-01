@@ -16,9 +16,8 @@ import {
 } from "../../core/adapter/adapters/akm-lint";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { stashDirFor } from "../../core/asset/asset-placement";
-import { makeBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter, parseFrontmatterBlock } from "../../core/asset/frontmatter";
-import { conceptIdForStashFile } from "../../core/asset/resolve-ref";
+import { conceptIdForStashFile, displayRefForConceptId } from "../../core/asset/resolve-ref";
 import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
 import { loadConfig, primaryBundlePath } from "../../core/config/config";
@@ -360,18 +359,18 @@ export function akmLint(options: AkmLintOptions = {}): AkmLintResult {
   const envRoots = [stashRoot, ...extraStashRoots];
   const bundleIdByRoot = new Map(sources.map((source) => [path.resolve(source.path), source.registryId]));
   for (const root of envRoots) {
+    const bundleId = bundleIdByRoot.get(path.resolve(root));
     // `env` assets live under `env/`, whole-file `secret` assets under
-    // `secrets/`. Build the same short-default / qualified-secondary `Ref:`
-    // spelling that `akm show` emits. The old hand-built `env:<base>` colon
-    // grammar is rejected by the 0.9.0 ref parser, which dead-ended a user
-    // copying the ref off a security finding.
+    // `secrets/`. `displayRefForConceptId` owns the short-default /
+    // qualified-secondary `Ref:` spelling `akm show` emits — the old
+    // hand-built `env:<base>` colon grammar is rejected by the 0.9.0 ref
+    // parser, which dead-ended a user copying the ref off a security finding.
     for (const assetType of ["env", "secret"] as const) {
       const dir = path.join(root, stashDirFor(assetType) as string);
       if (!fs.existsSync(dir)) continue;
       for (const envPath of collectEnvFiles(dir)) {
         const conceptId = conceptIdForStashFile(assetType, root, envPath);
-        const bundleId = bundleIdByRoot.get(path.resolve(root));
-        const ref = makeBundleRef(bundleId === cfg.defaultBundle ? undefined : bundleId, conceptId);
+        const ref = displayRefForConceptId(conceptId, bundleId, cfg.defaultBundle);
         const relPath = path.relative(root, envPath);
         for (const issue of checkEnvForDangerousKeys(envPath, relPath, ref)) {
           flagged.push(issue);

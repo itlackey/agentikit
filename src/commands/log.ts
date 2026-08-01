@@ -93,6 +93,10 @@ function validateRef(ref: string | undefined): string | undefined {
     throw new UsageError("--ref cannot be empty.", "INVALID_FLAG_VALUE");
   }
   const parsed = parseBundleRef(trimmed);
+  // Deliberately shallow qualification: a bare conceptId is assumed to mean
+  // the default bundle, without the full priority-walk `resolveRef` performs —
+  // event refs are recorded fully qualified, so the default is the only
+  // spelling a short --ref can usefully mean here.
   return makeBundleRef(parsed.bundle ?? loadConfig().defaultBundle, parsed.conceptId);
 }
 

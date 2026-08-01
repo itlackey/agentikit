@@ -1083,8 +1083,8 @@ async function runCli(): Promise<void> {
       console.log(pkgVersion);
       return;
     }
-    // mri (under citty) silently ignores undeclared flags, so a typo used to
-    // run the command with defaults and exit 0. Checked here, after --help and
+    // citty's parseArgs (strict: false) silently ignores undeclared flags, so
+    // a typo used to run the command with defaults and exit 0. Checked here, after --help and
     // --version, so those keep working on any command.
     assertKnownFlags(main as FlagScanCommand, rawArgs);
     await runCommand(main, { rawArgs });

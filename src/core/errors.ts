@@ -80,8 +80,9 @@ export type UsageErrorCode =
   // by src/cli.ts so it flows through the same JSON envelope as every other
   // usage error instead of citty's raw usage-banner + console.error path.
   | "UNKNOWN_COMMAND"
-  // A flag the resolved command does not declare. citty/mri silently ignore
-  // these, so a typo used to parse "successfully" and exit 0 — a `--fail-on-flaged`
+  // A flag the resolved command does not declare. citty (node:util parseArgs,
+  // strict: false) silently ignores these, so a typo used to parse
+  // "successfully" and exit 0 — a `--fail-on-flaged`
   // in CI meant the gate never fired.
   | "UNKNOWN_FLAG";
 

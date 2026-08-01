@@ -5,8 +5,9 @@
 /**
  * Reject flags the resolved command does not declare.
  *
- * citty forwards argv to mri, which has no strict mode: an undeclared flag is
- * collected into the parsed object and silently ignored by the handler. Nothing
+ * citty (0.2.x) parses argv with `node:util`'s parseArgs in non-strict mode
+ * (`strict: false`), so an undeclared flag is collected into the parsed object
+ * and silently ignored by the handler. Nothing
  * downstream noticed, so `akm lint --fail-on-flaged` (one transposed letter in
  * the flag STABILITY.md documents as a CI contract) parsed fine, exited 0, and
  * the gate it was meant to enforce never fired. Same for `--limt 3`, `--jsn`,
@@ -182,6 +183,27 @@ export function closestMatch(attempted: string, candidates: readonly string[], t
 }
 
 /**
+ * The one unknown-flag rejection, shared by the short- and long-flag scans so
+ * the user-facing error contract cannot drift between them. No explicit hint
+ * when there is no suggestion — UNKNOWN_FLAG's canned hint (core/errors.ts)
+ * already says to run the command with --help.
+ *
+ * @param shown      The flag as the user typed it (dashes, no `=value`).
+ * @param attempted  The spelling to edit-distance against `--long` candidates.
+ */
+function throwUnknownFlag(shown: string, attempted: string, known: KnownArgs): never {
+  const threshold = Math.max(2, Math.ceil(attempted.length / 3));
+  const suggestion = closestMatch(attempted, known.displayNames, threshold);
+  throw new UsageError(
+    `Unknown flag "${shown}".`,
+    "UNKNOWN_FLAG",
+    suggestion
+      ? `Did you mean \`${suggestion}\`? Run the command with \`--help\` to see its accepted flags.`
+      : undefined,
+  );
+}
+
+/**
  * Throw a {@link UsageError} naming the first flag the resolved command does
  * not declare. Returns silently when every flag is known.
  */
@@ -207,16 +229,7 @@ export function assertKnownFlags(root: FlagScanCommand, rawArgs: readonly string
       for (let offset = 0; offset < shortFlags.length; offset += 1) {
         const rawName = shortFlags[offset] as string;
         const candidate = cittyComparableName(rawName);
-        if (!known.names.has(candidate)) {
-          const suggestion = closestMatch(`-${rawName}`, known.displayNames, 2);
-          throw new UsageError(
-            `Unknown flag "${token}".`,
-            "UNKNOWN_FLAG",
-            suggestion
-              ? `Did you mean \`${suggestion}\`? Run the command with \`--help\` to see its accepted flags.`
-              : undefined,
-          );
-        }
+        if (!known.names.has(candidate)) throwUnknownFlag(token, `-${rawName}`, known);
         if (known.valueFlags.has(candidate)) {
           if (offset === shortFlags.length - 1) i += 1;
           break;
@@ -229,8 +242,9 @@ export function assertKnownFlags(root: FlagScanCommand, rawArgs: readonly string
     const [rawName = ""] = withoutDashes.split("=", 1);
     const hasInlineValue = withoutDashes.includes("=");
     // `--no-foo` is citty's negation of the BOOLEAN `--foo`. Resolving it
-    // against a value flag would accept `--no-limit`, which mri then parses as
-    // `limit: false` — a boolean reaching a string parser, i.e. an internal
+    // against a value flag would accept `--no-limit`, which citty's own `--no-`
+    // preprocessing force-sets to `limit: false` (no type check, before
+    // parseArgs runs) — a boolean reaching a string parser, i.e. an internal
     // error (exit 70) instead of the usage error (exit 2) this is here to give.
     const negated =
       rawName.startsWith("no-") && known.booleanFlags.has(cittyComparableName(rawName.slice(3)))
@@ -244,17 +258,7 @@ export function assertKnownFlags(root: FlagScanCommand, rawArgs: readonly string
       // become exact-name workflow parameters and are checked against the
       // frozen plan before a run is inserted. Short flags remain strict.
       if (dynamicWorkflowParams) continue;
-      const threshold = Math.max(2, Math.ceil(`--${rawName}`.length / 3));
-      const suggestion = closestMatch(`--${rawName}`, known.displayNames, threshold);
-      // No explicit hint when there is no suggestion — UNKNOWN_FLAG's canned
-      // hint (core/errors.ts) already says to run the command with --help.
-      throw new UsageError(
-        `Unknown flag "${token.split("=")[0]}".`,
-        "UNKNOWN_FLAG",
-        suggestion
-          ? `Did you mean \`${suggestion}\`? Run the command with \`--help\` to see its accepted flags.`
-          : undefined,
-      );
+      throwUnknownFlag(token.split("=")[0] as string, `--${rawName}`, known);
     }
 
     // Skip a declared value flag's value so `--reason "--x"` is not scanned.

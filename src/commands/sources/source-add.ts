@@ -133,8 +133,9 @@ async function addWebsiteSource(
 ): Promise<AddResponse> {
   const allowPrivateHosts = shouldAllowPrivateWebsiteUrlForTests(ref);
   const normalizedUrl = validateWebsiteInputUrl(ref, { allowPrivateHosts });
-  const maxPages = typeof options?.maxPages === "number" ? (options.maxPages as number) : undefined;
-  const maxDepth = typeof options?.maxDepth === "number" ? (options.maxDepth as number) : undefined;
+  const numberOption = (value: unknown): number | undefined => (typeof value === "number" ? value : undefined);
+  const maxPages = numberOption(options?.maxPages);
+  const maxDepth = numberOption(options?.maxDepth);
   let entry: SourceConfigEntry | undefined;
   mutateConfig((config) => {
     const bundles: Record<string, BundleConfigEntry> = { ...(config.bundles ?? {}) };

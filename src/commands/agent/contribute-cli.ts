@@ -155,8 +155,9 @@ export const lintCommand = defineCommand({
       description: "Apply auto-fixes in place",
       default: false,
     },
-    // Declared as its own arg rather than `alias: "auto-fix"`: citty passes
-    // aliases to mri, which only understands SINGLE-character ones. A
+    // Declared as its own arg rather than `alias: "auto-fix"`: citty's alias
+    // handling (node:util parseArgs `short` options) only supports
+    // SINGLE-character aliases. A
     // multi-char alias rendered in help as `-auto-fix` (one dash) and parsed
     // as a pile of junk single-char flags, so BOTH advertised spellings —
     // `-auto-fix` and `--auto-fix` — silently ran a plain lint while claiming

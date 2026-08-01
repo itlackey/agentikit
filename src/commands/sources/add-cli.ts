@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import * as p from "../../cli/clack";
-import { parsePositiveIntFlag } from "../../cli/parse-args";
+import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineJsonCommand, output } from "../../cli/shared";
 import { decideDangerousKeyInstall } from "../../core/activation-policy";
 import { UsageError } from "../../core/errors";
@@ -17,13 +17,12 @@ import { addStash } from "./source-manage";
 
 // ── Shared website-options helper ──────────
 
-export function buildWebsiteOptions(args: Record<string, unknown>): Record<string, unknown> {
-  const websiteOptions: Record<string, unknown> = {};
-  if (typeof args["max-pages"] === "string" && args["max-pages"].length > 0)
-    websiteOptions.maxPages = parsePositiveIntFlag(args["max-pages"], "--max-pages");
-  if (typeof args["max-depth"] === "string" && args["max-depth"].length > 0)
-    websiteOptions.maxDepth = parsePositiveIntFlag(args["max-depth"], "--max-depth");
-  return websiteOptions;
+export function buildWebsiteOptions(args: Record<string, unknown>): { maxPages?: number; maxDepth?: number } {
+  // getStringArg maps absent/blank to undefined; parsePositiveIntFlag maps
+  // undefined to undefined — so an unsupplied flag simply omits the key.
+  const maxPages = parsePositiveIntFlag(getStringArg(args, "max-pages"), "--max-pages");
+  const maxDepth = parsePositiveIntFlag(getStringArg(args, "max-depth"), "--max-depth");
+  return { ...(maxPages !== undefined ? { maxPages } : {}), ...(maxDepth !== undefined ? { maxDepth } : {}) };
 }
 
 // ── HTTP safety check ─────────────────────────────────────────────────────────
