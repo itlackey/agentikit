@@ -429,9 +429,9 @@ exactly instead of imitating it loosely:
   the same line 07 P1-D draws for self-declared tool grants
   (`show.ts:433-445`): keyed off primary-stash identity, explicitly *not*
   the writable bit, failing closed.
-- Evaluated where the asset is resolved — freeze for workflows, dispatch
-  for tasks — so there is no sync-time/fire-time gap and no standing
-  grant for a bundle update to swap content under.
+- Evaluated in the **resolve stage** (§5.1) — the shared stage both
+  surfaces run before any execution — so there is no sync-time/fire-time
+  gap and no standing grant for a bundle update to swap content under.
 - Composition chains inherit the rule from the **defining asset's own
   source**: a primary-stash task that `uses:` a third-party script — or
   composes a third-party task whose target is shell — refuses with an
